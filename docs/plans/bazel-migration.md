@@ -67,7 +67,7 @@ repo root/
     └── BUILD.bazel
 ```
 
-**Dependency resolution.** `MODULE.bazel` uses `crate.from_cargo(manifests = ["//:Cargo.toml"])` — only the workspace root manifest is listed; `crate_universe` follows the `members` field in `[workspace]` to discover the rest. Cargo.toml and Cargo.lock stay as single source of truth. Adding a dep is still `cargo add`, followed by `CARGO_BAZEL_REPIN=1 bazel mod tidy` to refresh the Bazel crate index. Adding a new workspace member does **not** require editing `MODULE.bazel`.
+**Dependency resolution.** `MODULE.bazel` uses `crate.from_cargo(manifests = ["//:Cargo.toml"])` — only the workspace root manifest is listed; `crate_universe` follows the `members` field in `[workspace]` to discover the rest. Cargo.toml and Cargo.lock stay as single source of truth. Adding a dep is still `cargo add`, followed by `CARGO_BAZEL_REPIN=1 bazel mod tidy && bazel mod tidy` to refresh the Bazel crate index. (The second, un-forced `bazel mod tidy` resets the lock's recorded `CARGO_BAZEL_REPIN` env fingerprint to `null`: a single `CARGO_BAZEL_REPIN=1 bazel mod tidy` bakes `"1"` into `MODULE.bazel.lock`'s `envVariables`, after which every later plain `bazel` invocation rewrites that line back to `null`, dirtying the tree — the normalizing second run keeps the committed lock stable. See PR #342.) Adding a new workspace member does **not** require editing `MODULE.bazel`.
 
 **Known limitation.** rules_rust issue #1574: `workspace.dependencies` inheritance has edge cases in `crate_universe`. Mitigation: if repin fails on a specific crate, declare that crate directly in MODULE.bazel with `crate.spec(...)`. Track cases in this file as they arise.
 
