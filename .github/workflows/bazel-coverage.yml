@@ -137,6 +137,13 @@ jobs:
           # collect_coverage log "Spawning llvm-profdata/llvm-cov/Success!" so the
           # always() step sees whether the tools finished in seconds. Pure
           # instrumentation — no behavior change.
+          # Live hang diagnostic: stream what's actually running every 30s
+          # (tools/ci/bazel-hang-sampler.sh). Survives the timeout cap because it
+          # is already in the streamed log — and unlike --profile (which records
+          # only COMPLETED actions, so a hung-then-killed action is invisible) it
+          # shows the running subprocess + CPU/load/mem during the stall.
+          bash tools/ci/bazel-hang-sampler.sh & HANG_SAMPLER_PID=$!
+          trap 'kill "$HANG_SAMPLER_PID" 2>/dev/null || true' EXIT
           PROFILE="${RUNNER_TEMP:-/tmp}/bazel-cov-profile.json.gz"
           timeout --signal=INT --kill-after=2m 50m \
             bazel coverage --config=ci --config=coverage "${REMOTE_FLAGS[@]}" \

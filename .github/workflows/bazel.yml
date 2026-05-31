@@ -182,6 +182,14 @@ jobs:
           if [[ "$RUNNER_OS" != "Linux" ]]; then
             REMOTE_FLAGS+=(--spawn_strategy=local)
           fi
+          # Live hang diagnostic on Linux (the bazel ubuntu BDD run is a frequent
+          # hanger, like bazel-coverage). Streams what's actually running every 30s
+          # so a hung-then-cancelled BDD/OmniSim action is attributable even though
+          # --profile only records COMPLETED actions; see tools/ci/bazel-hang-sampler.sh.
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            bash tools/ci/bazel-hang-sampler.sh & HANG_SAMPLER_PID=$!
+            trap 'kill "$HANG_SAMPLER_PID" 2>/dev/null || true' EXIT
+          fi
           bazel test --config=ci "${REMOTE_FLAGS[@]}" --test_tag_filters=bdd \
             --execution_log_compact_file="${RUNNER_TEMP}/bdd-exec.log.zst" \
             --profile="${RUNNER_TEMP}/bdd-profile.json.gz" \
