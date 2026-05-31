@@ -35,6 +35,9 @@ pub enum QhyFocuserError {
 
     #[error("Move failed: {0}")]
     MoveFailed(String),
+
+    #[error("Serialization error: {0}")]
+    Serialization(#[from] serde_json::Error),
 }
 
 impl QhyFocuserError {

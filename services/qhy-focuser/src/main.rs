@@ -3,15 +3,18 @@
 //! Command-line interface for the QHY Q-Focuser ASCOM Alpaca driver.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use clap::Parser;
 use rusty_photon_service_lifecycle::ServiceRunner;
 use tracing::{debug, info, Level};
 
+use qhy_focuser::config::{load_effective_config, CliOverrides};
 #[cfg(feature = "mock")]
-use qhy_focuser::{load_config, Config, MockQhyTransportFactory, ServerBuilder};
+use qhy_focuser::{Config, MockQhyTransportFactory, ServerBuilder};
 #[cfg(not(feature = "mock"))]
-use qhy_focuser::{load_config, Config, ServerBuilder};
+use qhy_focuser::{Config, ServerBuilder};
 
 #[derive(Parser)]
 #[command(name = "qhy-focuser")]
@@ -56,6 +59,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.config, args.port, args.server_port, args.log_level
     );
 
+    // CLI overrides are tracked (not just applied) so config.apply can keep them
+    // out of the persisted file — a transient `--port` is never baked in.
+    let overrides = CliOverrides {
+        serial_port: args.port.clone(),
+        server_port: args.server_port,
+    };
+
     // Resolve the config path (explicit --config, else the per-user platform
     // config dir) and ensure the focuser has a persisted, spec-compliant
     // `UniqueID`. `materialize_identity` mints a UUIDv4 on first run, writes the
@@ -75,39 +85,62 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         outcome.wrote, outcome.filled
     );
 
-    debug!("Loading configuration from {:?}", config_path);
-    let mut config = load_config(&config_path)?;
-
-    if let Some(port) = args.port {
-        config.serial.port = port;
-    }
-    if let Some(server_port) = args.server_port {
-        config.server.port = server_port;
-    }
-
     info!("Starting QHY Q-Focuser driver");
     #[cfg(feature = "mock")]
     info!("Running in MOCK MODE - no real hardware");
-    #[cfg(not(feature = "mock"))]
-    info!("Serial port: {}", config.serial.port);
-    info!("Baud rate: {}", config.serial.baud_rate);
-    info!("Server port: {}", config.server.port);
 
-    ServiceRunner::new("qhy-focuser").run(move |shutdown| async move {
-        #[cfg(feature = "mock")]
-        let bound = {
-            let factory = std::sync::Arc::new(MockQhyTransportFactory::default());
-            ServerBuilder::new()
-                .with_config(config)
-                .with_factory(factory)
-                .build()
-                .await?
-        };
+    // Reload loop: a `config.apply` that changes a field fires the reload signal,
+    // which breaks `start()` out via the combined stop future; the loop then
+    // re-reads the freshly-persisted config and rebuilds the server. Awaiting
+    // `start()` to completion lets the old server drain HTTP and release the
+    // serial port before the rebuilt one binds (mirrors filemonitor / dsd-fp2).
+    ServiceRunner::new("qhy-focuser")
+        .with_reload()
+        .run_with_reload(move |shutdown, reload| async move {
+            loop {
+                let config = load_effective_config(&config_path, &overrides)?;
+                #[cfg(not(feature = "mock"))]
+                info!("Serial port: {}", config.serial.port);
+                info!("Server port: {}", config.server.port);
 
-        #[cfg(not(feature = "mock"))]
-        let bound = ServerBuilder::new().with_config(config).build().await?;
+                #[cfg(feature = "mock")]
+                let bound = {
+                    let factory = Arc::new(MockQhyTransportFactory::default());
+                    ServerBuilder::new()
+                        .with_config(config)
+                        .with_factory(factory)
+                        .with_config_source(config_path.clone(), overrides.clone())
+                        .with_reload_signal(reload.clone())
+                        .build()
+                        .await?
+                };
+                #[cfg(not(feature = "mock"))]
+                let bound = ServerBuilder::new()
+                    .with_config(config)
+                    .with_config_source(config_path.clone(), overrides.clone())
+                    .with_reload_signal(reload.clone())
+                    .build()
+                    .await?;
 
-        bound.start(shutdown.cancelled()).await?;
-        Ok(())
-    })
+                let reloaded = Arc::new(AtomicBool::new(false));
+                let stop = {
+                    let reloaded = Arc::clone(&reloaded);
+                    let shutdown = shutdown.cancelled();
+                    let reload = reload.clone();
+                    async move {
+                        tokio::select! {
+                            () = shutdown => {}
+                            () = reload.recv() => reloaded.store(true, Ordering::SeqCst),
+                        }
+                    }
+                };
+                bound.start(stop).await?;
+
+                if reloaded.load(Ordering::SeqCst) {
+                    debug!("reloading qhy-focuser configuration");
+                    continue;
+                }
+                return Ok(());
+            }
+        })
 }

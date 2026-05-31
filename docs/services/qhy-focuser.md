@@ -153,16 +153,40 @@ installation); otherwise leave it empty and let the service generate one.
 | `--server-port` | Server port (overrides config) |
 | `-l, --log-level` | Log level: trace, debug, info, warn, error |
 
+### Config actions
+
+The focuser exposes its configuration over HTTP as the vendor ASCOM actions
+`config.get` / `config.apply` / `config.schema`, the cross-driver protocol
+documented in [`config-actions.md`](config-actions.md) and implemented generically
+in `rusty_photon_config::actions`. `config_actions.rs` supplies only the
+driver-specific half via `ConfigurableDriver for QhyFocuserDriver`:
+
+- **Secrets redacted on read / carried forward on apply:** `/server/auth/password_hash`.
+- **Locked (identity) field:** `focuser.unique_id` — the driver owns and mints it;
+  the UI renders it read-only behind an "unlock to edit" escape hatch.
+- **Hard read-only fields:** `server.port` (the BFF cannot follow a port rebind)
+  and `focuser.enabled` (disabling tears down the device the actions live on).
+- **CLI-override-pinned fields:** `serial.port` (`--port`) and `server.port`
+  (`--server-port`) are reported in `config.get`'s `overrides[]` and never
+  persisted by `config.apply`.
+
+A `config.apply` that changes any field persists atomically, returns
+`status:"applying"`, and fires the in-process reload (`main.rs` runs under
+`ServiceRunner::with_reload().run_with_reload(...)`): the loop tears the old
+server down — draining HTTP and releasing the serial port — and rebuilds from the
+freshly-persisted file, rebinding the same port.
+
 ## Module Structure
 
 | Module | Description |
 |--------|-------------|
 | `codec.rs` | `QhyCodec` (frame ↔ typed response) + error mapping |
-| `config.rs` | Configuration types and loading |
+| `config.rs` | Configuration types, loading, `CliOverrides`, `load_effective_config` |
+| `config_actions.rs` | `ConfigurableDriver` impl: validation, secrets, editability tiers |
 | `error.rs` | Error types with ASCOM error mapping |
-| `focuser_device.rs` | ASCOM Device + Focuser trait implementation |
-| `lib.rs` | Module declarations, ServerBuilder |
-| `main.rs` | CLI entry point; lifecycle owned by `rusty-photon-service-lifecycle::ServiceRunner` |
+| `focuser_device.rs` | ASCOM Device + Focuser trait implementation; config-action dispatch |
+| `lib.rs` | Module declarations, ServerBuilder (config source + reload signal) |
+| `main.rs` | CLI entry point; `run_with_reload` loop owned by `rusty-photon-service-lifecycle::ServiceRunner` |
 | `manager.rs` | `FocuserManager` + handshake / poll-loop hooks |
 | `mock.rs` | Mock transport (feature-gated for binaries; always on under `cfg(test)`) |
 | `protocol.rs` | JSON command serialization + response parsers |
