@@ -3355,6 +3355,7 @@ dependencies = [
  "rusty-photon-i18n",
  "rusty-photon-service-lifecycle",
  "rusty-photon-shared-transport",
+ "schemars 1.2.1",
  "serde",
  "serde_json",
  "tempfile",

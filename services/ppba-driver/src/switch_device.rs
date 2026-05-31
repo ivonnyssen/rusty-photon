@@ -17,6 +17,7 @@ use tracing::debug;
 
 use crate::codec::PpbaCodec;
 use crate::config::SwitchConfig;
+use crate::config_actions::{self, ConfigActionCtx};
 use crate::error::{PpbaError, Result};
 use crate::manager::PpbaManager;
 use crate::protocol::PpbaCommand;
@@ -42,6 +43,10 @@ pub struct PpbaSwitchDevice {
     session: Arc<RwLock<Option<Session<PpbaCodec>>>>,
     #[debug(skip)]
     manager: Arc<PpbaManager>,
+    /// Shared (cloned) config-action context; `Some` on the normal path through
+    /// `ServerBuilder`, `None` for focused unit-test devices.
+    #[debug(skip)]
+    config_ctx: Option<ConfigActionCtx>,
 }
 
 impl PpbaSwitchDevice {
@@ -50,7 +55,15 @@ impl PpbaSwitchDevice {
             config,
             session: Arc::new(RwLock::new(None)),
             manager,
+            config_ctx: None,
         }
+    }
+
+    /// Attach the shared config-action context, enabling `config.get` /
+    /// `config.apply` / `config.schema` on this device.
+    pub fn with_config_actions(mut self, ctx: ConfigActionCtx) -> Self {
+        self.config_ctx = Some(ctx);
+        self
     }
 
     async fn get_switch_value_internal(&self, id: usize) -> Result<f64> {
@@ -241,6 +254,14 @@ impl Device for PpbaSwitchDevice {
 
     async fn driver_version(&self) -> ASCOMResult<String> {
         Ok(env!("CARGO_PKG_VERSION").to_string())
+    }
+
+    async fn supported_actions(&self) -> ASCOMResult<Vec<String>> {
+        Ok(config_actions::supported_actions(&self.config_ctx))
+    }
+
+    async fn action(&self, action: String, parameters: String) -> ASCOMResult<String> {
+        config_actions::dispatch(&self.config_ctx, action, parameters).await
     }
 }
 

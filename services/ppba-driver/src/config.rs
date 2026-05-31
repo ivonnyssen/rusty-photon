@@ -5,7 +5,7 @@ use std::path::Path;
 use std::time::Duration;
 
 /// Main configuration structure
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, schemars::JsonSchema)]
 pub struct Config {
     pub serial: SerialConfig,
     pub server: ServerConfig,
@@ -14,19 +14,23 @@ pub struct Config {
 }
 
 /// Serial port configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SerialConfig {
     pub port: String,
     #[serde(default = "default_baud_rate")]
     pub baud_rate: u32,
+    // `humantime_serde` stores the duration as a string; schemars describes it
+    // as a string so the schema matches the wire form.
     #[serde(default = "default_polling_interval", with = "humantime_serde")]
+    #[schemars(with = "String")]
     pub polling_interval: Duration,
     #[serde(default = "default_timeout", with = "humantime_serde")]
+    #[schemars(with = "String")]
     pub timeout: Duration,
 }
 
 /// Server configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ServerConfig {
     pub port: u16,
     #[serde(default = "default_discovery_port")]
@@ -42,7 +46,7 @@ fn default_discovery_port() -> Option<u16> {
 }
 
 /// Switch device configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SwitchConfig {
     pub name: String,
     /// ASCOM `UniqueID`. Minted as a UUIDv4 on first run and persisted by
@@ -56,7 +60,7 @@ pub struct SwitchConfig {
 }
 
 /// ObservingConditions device configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ObservingConditionsConfig {
     pub name: String,
     /// ASCOM `UniqueID`. Minted as a UUIDv4 on first run and persisted by
@@ -68,6 +72,7 @@ pub struct ObservingConditionsConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default = "default_averaging_period", with = "humantime_serde")]
+    #[schemars(with = "String")]
     pub averaging_period: Duration,
 }
 
@@ -152,6 +157,74 @@ pub struct DeviceConfig {
 pub fn load_config(path: &Path) -> std::result::Result<Config, Box<dyn std::error::Error>> {
     let content = std::fs::read_to_string(path)?;
     let config: Config = serde_json::from_str(&content)?;
+    Ok(config)
+}
+
+/// CLI overrides layered over the file config. Tracks which fields are pinned by
+/// a command-line flag so the config actions can distinguish file vs. override
+/// layers (see `docs/services/ppba-driver.md` "Config Actions").
+#[derive(Debug, Clone, Default)]
+pub struct CliOverrides {
+    /// `--port` → `serial.port`.
+    pub serial_port: Option<String>,
+    /// `--server-port` → `server.port`.
+    pub server_port: Option<u16>,
+    /// `--enable-switch` → `switch.enabled`.
+    pub enable_switch: Option<bool>,
+    /// `--enable-observingconditions` → `observingconditions.enabled`.
+    pub enable_observingconditions: Option<bool>,
+}
+
+impl CliOverrides {
+    /// Dotted JSON paths currently pinned by an active override.
+    pub fn pinned_paths(&self) -> Vec<String> {
+        let mut paths = Vec::new();
+        if self.serial_port.is_some() {
+            paths.push("serial.port".to_string());
+        }
+        if self.server_port.is_some() {
+            paths.push("server.port".to_string());
+        }
+        if self.enable_switch.is_some() {
+            paths.push("switch.enabled".to_string());
+        }
+        if self.enable_observingconditions.is_some() {
+            paths.push("observingconditions.enabled".to_string());
+        }
+        paths
+    }
+
+    /// Apply the overrides onto `config` in place.
+    pub fn apply(&self, config: &mut Config) {
+        if let Some(port) = &self.serial_port {
+            config.serial.port = port.clone();
+        }
+        if let Some(port) = self.server_port {
+            config.server.port = port;
+        }
+        if let Some(enable) = self.enable_switch {
+            config.switch.enabled = enable;
+        }
+        if let Some(enable) = self.enable_observingconditions {
+            config.observingconditions.enabled = enable;
+        }
+    }
+}
+
+/// Load the effective config: the file at `path` if it exists, else
+/// `Config::default()`, with CLI `overrides` applied on top. A present-but-
+/// corrupt file is surfaced (naming the path) rather than silently reset.
+pub fn load_effective_config(
+    path: &Path,
+    overrides: &CliOverrides,
+) -> std::result::Result<Config, Box<dyn std::error::Error>> {
+    let mut config = match std::fs::read_to_string(path) {
+        Ok(content) => serde_json::from_str(&content)
+            .map_err(|e| format!("config file {} is not valid JSON: {e}", path.display()))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Config::default(),
+        Err(e) => return Err(format!("could not read config file {}: {e}", path.display()).into()),
+    };
+    overrides.apply(&mut config);
     Ok(config)
 }
 
