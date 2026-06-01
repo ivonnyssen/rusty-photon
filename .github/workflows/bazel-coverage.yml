@@ -100,36 +100,159 @@ jobs:
           # --test_output=all surfaces rp:bdd's unbuffered BDD-TRACE breadcrumbs
           # (ENTER / reset-ok / EXIT, tagged +Ns) even on a *passing* run — parity
           # with the BDD leg in bazel.yml. The default --test_output=errors hides
-          # the per-scenario timing on slow-but-passing rp:bdd runs. With
-          # --test_timeout=900 (.bazelrc) a hung rp:bdd is now FAILED rather than
-          # wall-cancelled, so its breadcrumbs flush here too — closing the open
-          # item #339 noted (a wall-cancelled run still won't flush).
+          # the per-scenario timing on slow-but-passing rp:bdd runs. NOTE: --test_output=all
+          # only PRINTS a test's log when it COMPLETES; --test_timeout=900 (.bazelrc)
+          # was meant to convert a hung rp:bdd into a clean FAILED-with-flushed-log,
+          # but has been observed NOT to fire under `bazel coverage` (runs still
+          # wall-cancel at 60 min with nothing flushed — PR #342). The timeout-bound
+          # (C) below + the always() capture step (B) are what surface a hung run.
+          # There is deliberately NO custom live per-scenario tailer: bazel sandboxes
+          # the test, so bazel-testlogs/services/rp/bdd/test.log only materialises when
+          # the action ENDS (verified on PR #342 — a tailer of it fired exactly once,
+          # at interrupt). bazel's own "Testing //services/rp:bdd; Ns" progress line is
+          # the liveness signal during the run; for live per-scenario output the tool
+          # is a targeted `--test_output=streamed` re-run (which serialises tests).
           # Capture bazel's exit code. `|| status=$?` is robust whether or not
           # `set -e` is active (GitHub's default step shell adds `-eo pipefail`):
           # the `||` keeps a non-zero exit from aborting the step and records the
           # code, so the classification below can tell exit 3 (tests failed/timed
           # out — tolerated) from a real build failure.
+
+          # --- observability (C): bound the run ~10 min below the 60-min job
+          # timeout. `timeout --signal=INT 50m` interrupts bazel cleanly (it flushes
+          # the in-progress test.log) with headroom for the always() capture step to
+          # run unhurried, instead of a hard job-cancel at 60 min that flushes
+          # nothing. --kill-after SIGKILLs if bazel ignores the INT. `timeout` exits
+          # 124 when it fired (137 if it had to escalate to SIGKILL).
           status=0
-          bazel coverage --config=ci --config=coverage "${REMOTE_FLAGS[@]}" \
+          # --- observability (D): ATTRIBUTE the post-[Summary] ~40-min wall.
+          # A 26-agent analysis (PR #342) MEASURED the LLVM coverage tools at
+          # merge ~0.5s / export ~0.3s and the file count in the hundreds — so the
+          # ~40 min is NOT CPU; it is a byte-proportional I/O wait, and bazel's
+          # "Testing //services/rp:bdd; Ns" progress line MIS-ATTRIBUTES it on a
+          # --keep_going run (the repo-wide --combined_report action and
+          # --remote_download_outputs=all WAN-materialization of every per-test
+          # coverage.dat keep that label ticking). --profile records every action's
+          # wall-time so we can tell those apart; VERBOSE_COVERAGE makes rules_rust's
+          # collect_coverage log "Spawning llvm-profdata/llvm-cov/Success!" so the
+          # always() step sees whether the tools finished in seconds. Pure
+          # instrumentation — no behavior change.
+          # Live hang diagnostic: stream what's actually running every 30s
+          # (tools/ci/bazel-hang-sampler.sh). Survives the timeout cap because it
+          # is already in the streamed log — and unlike --profile (which records
+          # only COMPLETED actions, so a hung-then-killed action is invisible) it
+          # shows the running subprocess + CPU/load/mem during the stall.
+          bash tools/ci/bazel-hang-sampler.sh & HANG_SAMPLER_PID=$!
+          trap 'kill "$HANG_SAMPLER_PID" 2>/dev/null || true' EXIT
+          PROFILE="${RUNNER_TEMP:-/tmp}/bazel-cov-profile.json.gz"
+          timeout --signal=INT --kill-after=2m 50m \
+            bazel coverage --config=ci --config=coverage "${REMOTE_FLAGS[@]}" \
             --test_tag_filters=-requires-cargo \
+            --remote_timeout=3 \
+            --spawn_strategy=local \
             --remote_download_outputs=all \
             --test_output=all \
+            --test_env=VERBOSE_COVERAGE=1 \
+            --profile="$PROFILE" --noslim_profile \
+            --experimental_profile_include_target_label \
             //... || status=$?
-          # Bazel exit codes: 0 = everything passed; 3 = build OK but one or more
-          # tests FAILED or TIMED OUT. In shadow coverage we tolerate 3: with
-          # --keep_going every other target still ran, the --combined_report still
-          # builds from their coverage.dat, and the split/upload steps below then
-          # publish the coverage of everything that DID pass. This converts a
-          # single instrumented-BDD hang (killed by --test_timeout) from a 60-min
-          # job-cancel-with-no-output into an uploaded partial report. Any other
-          # non-zero (1 build error, 2 bad flags, 4 no tests, 8 interrupted, ...)
-          # is a real failure and aborts the job.
-          if [[ $status -eq 3 ]]; then
-            echo "::warning::Some coverage tests failed or timed out (bazel exit 3); uploading partial coverage for the targets that passed."
+          # Bazel exit codes: 0 = all tests passed (publish coverage below); ANY non-zero =
+          # something did not validly complete, so we FAIL. Rationale: coverage from a run with
+          # a failed/killed test (exit 3) — or a build/flag error — does not correspond to a
+          # passing suite, so the number is misleading; we do NOT publish it (a non-zero exit
+          # here skips the no-`if:` Split step, which is the intended behaviour). The always()
+          # diagnostic + test-log steps still run regardless, so a failure is fully triage-able.
+          # NOTE: honest-red, but NOT yet a required merge gate — the rp:bdd park is an
+          # intermittent infra flake (~18-65%); promote to required only once it is confirmed
+          # dead (3s --remote_timeout + --spawn_strategy=local). See docs/plans/bazel-migration.md.
+          if [[ $status -eq 124 || $status -eq 137 ]]; then
+            echo "::error title=bazel coverage capped::Hit the 50-min observability cap (exit $status) — a test (almost certainly //services/rp:bdd) did not finish in time. The next step classifies whether a SCENARIO hung or all scenarios passed and the action hung POST-scenario (coverage collection). Full log in the 'bazel-testlogs' artifact."
+            exit 1
+          elif [[ $status -eq 3 ]]; then
+            echo "::error title=bazel coverage test failure::A coverage test FAILED or hit its --test_timeout (bazel exit 3). Coverage from a failed run does not reflect a passing suite, so it is NOT published. See the rp:bdd hang classification + test logs below / in the 'bazel-testlogs' artifact."
+            exit 1
           elif [[ $status -ne 0 ]]; then
-            echo "::error::bazel coverage failed (exit $status)"
+            echo "::error title=bazel coverage failed::bazel coverage failed (exit $status — 1=build error, 2=bad flags, 4=no tests, 8=interrupted/superseded)."
             exit "$status"
           fi
+
+      # --- observability (B): capture test logs even when rp:bdd hangs/times out.
+      # bazel writes bazel-testlogs/.../test.log when the action ends (incl. on the
+      # SIGINT from the timeout cap), so this always() step surfaces the breadcrumb
+      # trail inline + as an artifact, and CLASSIFIES the hang: a scenario stuck
+      # (ENTER without EXIT) vs all-scenarios-passed-but-action-hung-post-scenario
+      # (the coverage-collection case observed on PR #342: 265/265 passed in ~420s
+      # of BDD time, yet the test action ran ~2802s).
+      - name: Surface bazel test logs (rp:bdd hang diagnostics)
+        if: always()
+        run: |
+          set +e +o pipefail  # diagnostic: best-effort; a grep miss or a SIGPIPE
+          # (head closing the sort/jq pipe) must NOT propagate and fail the job.
+          TESTLOGS="$(readlink -f bazel-testlogs 2>/dev/null || echo bazel-testlogs)"
+          DEST=bazel-testlogs-captured
+          mkdir -p "$DEST"
+          # Copy every test.log/test.xml out of the (symlinked) testlogs tree into
+          # a real dir so the upload is clean and survives the symlink.
+          if [[ -d "$TESTLOGS" ]]; then
+            ( cd "$TESTLOGS" && find . \( -name test.log -o -name test.xml \) -print0 \
+                | tar --null -cf - -T - ) | tar -C "$DEST" -xf - 2>/dev/null
+          fi
+          RP_BDD_LOG="$TESTLOGS/services/rp/bdd/test.log"
+          if [[ -f "$RP_BDD_LOG" ]]; then
+            echo "===== rp:bdd BDD-TRACE trail (last 80 breadcrumbs) ====="
+            grep -aE 'BDD-TRACE' "$RP_BDD_LOG" | tail -80
+            STUCK="$(comm -23 \
+              <(grep -aoE 'ENTER .*scenario="[^"]*"' "$RP_BDD_LOG" | grep -aoE 'scenario="[^"]*"' | sort -u) \
+              <(grep -aoE 'EXIT scenario="[^"]*"'   "$RP_BDD_LOG" | grep -aoE 'scenario="[^"]*"' | sort -u))"
+            SUMMARY="$(grep -aE '[0-9]+ scenarios \(' "$RP_BDD_LOG" | tail -1)"
+            echo "===== rp:bdd hang classification ====="
+            if [[ -n "$STUCK" ]]; then
+              echo "SCENARIO HANG — entered but never exited:"
+              echo "$STUCK"
+            elif [[ -n "$SUMMARY" ]]; then
+              echo "NOT a scenario hang — all scenarios reported: $SUMMARY"
+              echo "If the action was capped/killed, the time went POST-scenario:"
+              echo "coverage collection of BDD-spawned binaries (LLVM_PROFILE_FILE / child"
+              echo ".profraw merge — see .bazelrc 'Child-process coverage' +"
+              echo "crates/bdd-infra/src/lib.rs). Cross-check: bazel 'Testing //services/rp:bdd; Ns'"
+              echo "wall-time >> the last BDD-TRACE +Ns means a post-scenario hang."
+            else
+              echo "Inconclusive — no stuck scenario and no cucumber summary in test.log; see tail."
+            fi
+            echo "===== rp:bdd coverage collector timing (VERBOSE_COVERAGE) ====="
+            echo "(if 'Spawning llvm-*'/'Success!' appear right after [Summary], the LLVM tools are fast"
+            echo " and the remaining wall is post-collector I/O staging, not coverage CPU)"
+            grep -aE 'Spawning llvm-profdata|Spawning llvm-cov|Success!|Coverage runner|Not collecting coverage' "$RP_BDD_LOG" | tail -20
+            echo "===== rp:bdd test.log tail (last 80 lines) ====="
+            tail -80 "$RP_BDD_LOG"
+          else
+            echo "No rp:bdd test.log at $RP_BDD_LOG (target may not have started)."
+          fi
+          # Attribute the wall-time: top actions/phases by duration from the bazel
+          # profile (tells rp:bdd's own action from the repo-wide combined-report
+          # action and from remote-download/output-staging phases).
+          PROFILE="${RUNNER_TEMP:-/tmp}/bazel-cov-profile.json.gz"
+          if [[ -f "$PROFILE" ]]; then
+            cp -f "$PROFILE" "$DEST/" 2>/dev/null
+            echo "===== top 25 longest bazel actions/phases (where the wall-time went) ====="
+            if command -v jq >/dev/null; then
+              zcat "$PROFILE" 2>/dev/null \
+                | jq -r '.traceEvents[]? | select(.dur != null and .dur > 1000000) | "\((.dur/1000000)|floor)s\t\(.cat // "?")\t\(.name)"' 2>/dev/null \
+                | sort -rn | head -25 || true
+            else
+              echo "(jq unavailable; profile uploaded as artifact for offline analysis)"
+            fi
+          fi
+          exit 0  # diagnostic step is best-effort — must never fail the job
+
+      - name: Upload bazel test logs (artifact)
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: bazel-testlogs
+          path: bazel-testlogs-captured/**
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Split combined lcov per package
         run: |
