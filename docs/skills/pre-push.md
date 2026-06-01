@@ -302,7 +302,9 @@ bazel test //...           # filters out tagged `requires-cargo` and `bdd`
 If you added a crates.io dependency, refresh the Bazel index:
 
 ```bash
-CARGO_BAZEL_REPIN=1 bazel mod tidy
+# 2nd (un-forced) `bazel mod tidy` resets the lock's recorded CARGO_BAZEL_REPIN
+# fingerprint to null, so the committed lock doesn't churn on later plain `bazel` runs.
+CARGO_BAZEL_REPIN=1 bazel mod tidy && bazel mod tidy
 git add MODULE.bazel.lock
 ```
 

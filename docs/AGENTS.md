@@ -31,7 +31,7 @@
 
 9. You MUST use `debug!()` log messages throughout. Only use `info!()` log messages where users will derive clear advantage from them when using the services, such as `Service started succesfully`.
 
-10. You MUST add dependencies to the workspace Cargo.toml when more than one service has the same dependency. Cargo.toml and Cargo.lock remain the single source of truth for dependency versions; Bazel's `crate_universe` reads them. After adding a crates.io dep, run `CARGO_BAZEL_REPIN=1 bazel mod tidy` to refresh `MODULE.bazel.lock` before committing.
+10. You MUST add dependencies to the workspace Cargo.toml when more than one service has the same dependency. Cargo.toml and Cargo.lock remain the single source of truth for dependency versions; Bazel's `crate_universe` reads them. After adding a crates.io dep, run `CARGO_BAZEL_REPIN=1 bazel mod tidy && bazel mod tidy` to refresh `MODULE.bazel.lock` before committing. (The second, un-forced `bazel mod tidy` resets the lock's recorded `CARGO_BAZEL_REPIN` env fingerprint back to `null` — otherwise the lock records `"1"` and every later plain `bazel` run rewrites that line, dirtying the working tree.)
 
 11. You MUST persist project-wide knowledge (design decisions, motivations, conventions) in the repository documentation (docs/, README.md, ADRs) rather than in local agent memory. This ensures all operators and machines share the same context.
 

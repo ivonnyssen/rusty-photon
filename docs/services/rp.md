@@ -3354,9 +3354,15 @@ of the environment variables above. In CI, the
 automatically.
 
 **CI pins a patched fork**, not upstream: the action defaults to
-[`ivonnyssen/ASCOM.Alpaca.Simulators` `v0.5.0-326.1`](https://github.com/ivonnyssen/ASCOM.Alpaca.Simulators/releases/tag/v0.5.0-326.1),
-a build of upstream `v0.5.0` plus a `TelescopeHardware` locking fix for
-the `center_on_target` slew-state race (issue #326). The action's `repo`
+[`ivonnyssen/ASCOM.Alpaca.Simulators` `v0.5.0-326.3`](https://github.com/ivonnyssen/ASCOM.Alpaca.Simulators/releases/tag/v0.5.0-326.3),
+a build of upstream `v0.5.0` plus a series of `TelescopeHardware` fixes
+for the `center_on_target` slew-state hang (issue #326): 326.1/.2 put the
+slew-engine writers and the `IsSlewing`/RA/Dec/`AtPark`/`SlewState`
+readers under `hardwareLock`; 326.3 disposes the per-`Init()` slew timer
+(it leaked one live timer per per-scenario "restart to clean state"
+reset, accumulating tick sources that raced the single static slew
+engine) and resets the slew state — including the `slewing` flag — under
+`hardwareLock`. The action's `repo`
 and `version` inputs revert to upstream
 [`v0.5.0`](https://github.com/ASCOMInitiative/ASCOM.Alpaca.Simulators/releases/tag/v0.5.0)
 in one line once the fix lands upstream. For local runs upstream `v0.5.0`

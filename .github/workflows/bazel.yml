@@ -179,10 +179,28 @@ jobs:
           else
             REMOTE_FLAGS+=(--remote_upload_local_results=false)
           fi
-          if [[ "$RUNNER_OS" != "Linux" ]]; then
-            REMOTE_FLAGS+=(--spawn_strategy=local)
+          # EXPERIMENT (branch worktree-center-on-target): --spawn_strategy=local on ALL OSes,
+          # including Linux. The rp:bdd post-scenario park is Linux-ONLY, and Linux is the only OS
+          # that runs BDD under processwrapper-sandbox — mac/win already bypass it via local and
+          # never park. Testing whether dropping the sandbox on Linux too makes it match their 0%
+          # park rate (i.e. whether the sandbox teardown, not the cache RPC, is the locus).
+          # (mac/win independently NEED local because darwin-sandbox blocks OmniSim port-binding.)
+          REMOTE_FLAGS+=(--spawn_strategy=local)
+          # Live hang diagnostic on Linux (the bazel ubuntu BDD run is a frequent
+          # hanger, like bazel-coverage). Streams what's actually running every 30s
+          # so a hung-then-cancelled BDD/OmniSim action is attributable even though
+          # --profile only records COMPLETED actions; see tools/ci/bazel-hang-sampler.sh.
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            bash tools/ci/bazel-hang-sampler.sh & HANG_SAMPLER_PID=$!
+            trap 'kill "$HANG_SAMPLER_PID" 2>/dev/null || true' EXIT
           fi
+          # EXPERIMENT (branch worktree-center-on-target): drop --remote_timeout 600 -> 3 to test
+          # whether the rp:bdd post-scenario park collapses. It bounds a stale-keepalive cache
+          # RPC (see memory bazel-coverage-rp-bdd-hang). --remote_timeout is an idle/inactivity
+          # timeout, so healthy byte-flowing transfers survive; the risk at 3s is cold-object
+          # time-to-first-byte tripping spurious retries (acceptable for a diagnostic run).
           bazel test --config=ci "${REMOTE_FLAGS[@]}" --test_tag_filters=bdd \
+            --remote_timeout=3 \
             --execution_log_compact_file="${RUNNER_TEMP}/bdd-exec.log.zst" \
             --profile="${RUNNER_TEMP}/bdd-profile.json.gz" \
             --noslim_profile \
