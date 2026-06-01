@@ -30,7 +30,9 @@ derive_more = { workspace = true }
 hostname = "0.4"
 instant-acme = { workspace = true }
 hyper-util = { version = "0.1", features = ["tokio", "server-auto", "service"] }
-time = "0.3"
+# Floor pinned to 0.3.47 — fixes RUSTSEC-2026-0009 (DoS via stack exhaustion in
+# RFC 2822 parsing). Affected: >=0.3.6, <0.3.47.
+time = "0.3.47"
 
 [dev-dependencies]
 mockall = { workspace = true }

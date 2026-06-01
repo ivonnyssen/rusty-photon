@@ -94,6 +94,7 @@ rust_test(
     env = {
         "BDD_PACKAGE_DIR": "services/sky-survey-camera",
         "SKY_SURVEY_CAMERA_BINARY": "$(rootpath :sky-survey-camera)",
+        "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :sky-survey-camera)",
     },
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
@@ -128,6 +129,7 @@ rust_test(
     edition = "2021",
     env = {
         "SKY_SURVEY_CAMERA_BINARY": "$(rootpath :sky-survey-camera_mock)",
+        "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :sky-survey-camera_mock)",
     },
     proc_macro_deps = all_crate_deps(
         proc_macro = True,

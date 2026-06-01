@@ -71,7 +71,7 @@ rust_test(
     ),
     data = [":filemonitor"],
     edition = "2021",
-    env = {"FILEMONITOR_BINARY": "$(rootpath :filemonitor)"},
+    env = {"FILEMONITOR_BINARY": "$(rootpath :filemonitor)", "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :filemonitor)"},
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,
@@ -93,7 +93,7 @@ rust_test(
     crate_features = ["conformu"],
     data = [":filemonitor"],
     edition = "2021",
-    env = {"FILEMONITOR_BINARY": "$(rootpath :filemonitor)"},
+    env = {"FILEMONITOR_BINARY": "$(rootpath :filemonitor)", "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :filemonitor)"},
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,
@@ -132,6 +132,7 @@ rust_test(
     env = {
         "BDD_PACKAGE_DIR": "services/filemonitor",
         "FILEMONITOR_BINARY": "$(rootpath :filemonitor)",
+        "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :filemonitor)",
     },
     proc_macro_deps = all_crate_deps(
         proc_macro = True,

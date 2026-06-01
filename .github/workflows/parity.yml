@@ -36,3 +36,24 @@ jobs:
       # on ubuntu-latest.
       - name: Check Bazel/Cargo target parity
         run: ./scripts/check-bazel-cargo-parity.sh
+
+      # Guard the pinned rules_rust coverage patch (MODULE.bazel
+      # single_version_override -> third_party/patches/collect_coverage_extra_objects.patch).
+      # It teaches collect_coverage to export spawned-binary coverage via
+      # RUST_COVERAGE_EXTRA_OBJECTS; a rules_rust bump that drops or relocates it
+      # would silently regress BDD child-process coverage. A non-applying patch
+      # already fails every bazel command (fetch-time error); this asserts an
+      # applied-but-ineffective patch is caught too, by requiring both the env-var
+      # marker AND the structural anchor (the find_extra_object helper) to survive.
+      # --nobuild forces the fetch+patch without compiling the collector; the
+      # behavioural backstop is the bazel-coverage shadow job, which compiles and
+      # runs the patched collector on every PR.
+      - name: Guard - rules_rust coverage patch applied & effective
+        run: |
+          bazel build --nobuild @rules_rust//util/collect_coverage:collect_coverage
+          src="$(bazel info output_base)/external/rules_rust+/util/collect_coverage/collect_coverage.rs"
+          if ! grep -q 'RUST_COVERAGE_EXTRA_OBJECTS' "$src" || ! grep -q 'fn find_extra_object' "$src"; then
+            echo "::error::collect_coverage patch not effective: $src is missing RUST_COVERAGE_EXTRA_OBJECTS / find_extra_object. A rules_rust upgrade likely needs the patch re-rebased (third_party/patches/collect_coverage_extra_objects.patch)."
+            exit 1
+          fi
+          echo "rules_rust collect_coverage patch is applied and effective."

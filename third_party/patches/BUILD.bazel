@@ -1,0 +1,2 @@
+# Patch sources for bzlmod single_version_override (see MODULE.bazel).
+exports_files(glob(["*.patch"]))

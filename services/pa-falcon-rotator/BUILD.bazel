@@ -113,6 +113,7 @@ rust_test(
     edition = "2021",
     env = {
         "PA_FALCON_ROTATOR_BINARY": "$(rootpath :pa-falcon-rotator_mock)",
+        "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :pa-falcon-rotator_mock)",
     },
     proc_macro_deps = all_crate_deps(
         proc_macro = True,

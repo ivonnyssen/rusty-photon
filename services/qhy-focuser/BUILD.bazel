@@ -85,6 +85,7 @@ rust_test(
     edition = "2021",
     env = {
         "QHY_FOCUSER_BINARY": "$(rootpath :qhy-focuser_mock)",
+        "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :qhy-focuser_mock)",
     },
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
@@ -141,6 +142,7 @@ rust_test(
     env = {
         "BDD_PACKAGE_DIR": "services/qhy-focuser",
         "QHY_FOCUSER_BINARY": "$(rootpath :qhy-focuser_mock)",
+        "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :qhy-focuser_mock)",
     },
     proc_macro_deps = all_crate_deps(
         proc_macro = True,

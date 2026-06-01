@@ -88,7 +88,8 @@ parking_lot = "0.12.5"
 tokio-serial = "5.4.5"
 ascom-alpaca = { git = "https://github.com/ivonnyssen/ascom-alpaca-rs.git", branch = "integration", default-features = false }
 axum = "0.8"
-reqwest = { version = "0.13.3", features = ["form", "json"] }
+tower = "0.5"
+reqwest = { version = "0.13.4", features = ["form", "json"] }
 rp-auth = { path = "crates/rp-auth" }
 rp-catalog = { path = "crates/rp-catalog" }
 rp-ephemeris = { path = "crates/rp-ephemeris" }

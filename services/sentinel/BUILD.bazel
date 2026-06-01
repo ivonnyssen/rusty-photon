@@ -68,6 +68,7 @@ rust_test(
         "BDD_PACKAGE_DIR": "services/sentinel",
         "FILEMONITOR_BINARY": "$(rootpath //services/filemonitor:filemonitor)",
         "SENTINEL_BINARY": "$(rootpath :sentinel)",
+        "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath //services/filemonitor:filemonitor):$(rootpath :sentinel)",
     },
     proc_macro_deps = all_crate_deps(
         proc_macro = True,

@@ -73,6 +73,7 @@ rust_test(
     # discovers the binary. See tests/supervision_integration.rs.
     env = {
         "MOCK_ASTAP_BINARY": "$(rootpath :mock_astap)",
+        "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :mock_astap)",
     },
     data = [":mock_astap"],
     edition = "2021",
@@ -99,6 +100,7 @@ rust_test(
     size = "small",
     env = {
         "MOCK_ASTAP_BINARY": "$(rootpath :mock_astap)",
+        "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :mock_astap)",
     },
     data = [":mock_astap"],
     edition = "2021",
@@ -139,6 +141,7 @@ rust_test(
         "BDD_PACKAGE_DIR": "services/plate-solver",
         "MOCK_ASTAP_BINARY": "$(rootpath :mock_astap)",
         "PLATE_SOLVER_BINARY": "$(rootpath :plate-solver)",
+        "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :mock_astap):$(rootpath :plate-solver)",
     },
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
