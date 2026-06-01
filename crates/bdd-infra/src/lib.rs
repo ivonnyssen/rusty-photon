@@ -153,9 +153,10 @@ fn binary_env_var(package_name: &str) -> String {
 /// binaries and sets `COVERAGE_DIR` for the test action, but only the test
 /// process's own `.profraw` is collected by default — a spawned child inherits
 /// the parent test's `LLVM_PROFILE_FILE` and would clobber it. Point each child
-/// at a distinct file inside `COVERAGE_DIR` (`<pkg>-<pid>-<sig>.profraw`, via the
-/// LLVM `%p`/`%m` patterns) so Bazel's lcov merger — which globs that directory —
-/// folds the child's coverage into the combined report. This is the
+/// at its own online-merge pool inside `COVERAGE_DIR` (`<pkg>-%8m.profraw`) so
+/// Bazel's lcov merger — which globs that directory — folds the child's coverage
+/// into the combined report, while the `%Nm` pool keeps the raw-profile count
+/// (and the bytes Bazel must stage after the test) bounded. This is the
 /// child-process-coverage contingency from `docs/plans/bazel-migration.md`.
 ///
 /// Returns `None` when `COVERAGE_DIR` is unset: under plain `bazel test`, and
@@ -169,16 +170,27 @@ fn child_coverage_profile_var(package_name: &str) -> Option<(&'static str, std::
     ))
 }
 
-/// Build the `<COVERAGE_DIR>/<pkg>-%p-%m.profraw` path. Split out from
+/// Build the `<COVERAGE_DIR>/<pkg>-%8m.profraw` path. Split out from
 /// [`child_coverage_profile_var`] so the path construction is unit-testable
-/// without mutating process env. `%p` (pid) and `%m` (binary signature) keep
-/// each spawned child's file distinct from the parent's and from each other.
+/// without mutating process env.
+///
+/// `%8m` (binary signature with an 8-file online-merge POOL), NOT `%p-%m`. The
+/// `%p` (pid) made a SEPARATE file per child PROCESS: across `rp:bdd`'s ~265
+/// scenarios each spawning `rp` + `sky-survey-camera`, that is hundreds of
+/// ~6 MB `.profraw` (~1.5 GB) that Bazel's sandbox must stage/tear down after
+/// the test — the dominant cost of the post-`[Summary]` coverage phase. `%Nm`
+/// instead has the LLVM runtime merge each process's counters on exit into a
+/// bounded pool of N files per binary signature (file-locked), so the same ~265
+/// processes collapse to <=8 files (~50 MB). Verified empirically: 20 runs of an
+/// instrumented binary => 20 files with `%p-%m`, 8 files with `%8m`. The
+/// `<pkg>-` prefix keeps each service's pool distinct from the others and from
+/// the test binary's own profraw.
 fn child_coverage_profile_path(
     coverage_dir: &std::ffi::OsStr,
     package_name: &str,
 ) -> std::ffi::OsString {
     let mut path = std::path::PathBuf::from(coverage_dir);
-    path.push(format!("{package_name}-%p-%m.profraw"));
+    path.push(format!("{package_name}-%8m.profraw"));
     path.into_os_string()
 }
 
@@ -825,10 +837,11 @@ mod tests {
     fn test_child_coverage_profile_path_joins_dir_and_llvm_pattern() {
         let path = child_coverage_profile_path(std::ffi::OsStr::new("/cov/dir"), "rp");
         let path = std::path::PathBuf::from(path);
-        // Distinct per-child file inside COVERAGE_DIR; %p/%m keep it unique.
+        // Per-service online-merge pool inside COVERAGE_DIR; %8m bounds the file
+        // count (no %p, which would make one file per child process).
         assert_eq!(
             path.file_name().unwrap(),
-            std::ffi::OsStr::new("rp-%p-%m.profraw")
+            std::ffi::OsStr::new("rp-%8m.profraw")
         );
         assert_eq!(path.parent().unwrap(), std::path::Path::new("/cov/dir"));
     }
@@ -839,7 +852,7 @@ mod tests {
         let path = std::path::PathBuf::from(path);
         assert_eq!(
             path.file_name().unwrap(),
-            std::ffi::OsStr::new("ppba-driver-%p-%m.profraw")
+            std::ffi::OsStr::new("ppba-driver-%8m.profraw")
         );
     }
 
@@ -873,7 +886,7 @@ mod tests {
         assert_eq!(value.parent().unwrap(), std::path::Path::new("/cov/dir"));
         assert_eq!(
             value.file_name().unwrap(),
-            std::ffi::OsStr::new("rp-%p-%m.profraw")
+            std::ffi::OsStr::new("rp-%8m.profraw")
         );
     }
 

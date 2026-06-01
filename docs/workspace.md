@@ -325,5 +325,7 @@ pre-push command is still `cargo rail run --merge-base` (see
 [docs/skills/pre-push.md](skills/pre-push.md)).
 
 After adding a crates.io dependency to the workspace, run
-`CARGO_BAZEL_REPIN=1 bazel mod tidy` to refresh `MODULE.bazel.lock` before
-committing.
+`CARGO_BAZEL_REPIN=1 bazel mod tidy && bazel mod tidy` to refresh
+`MODULE.bazel.lock` before committing. The second, un-forced `bazel mod tidy`
+resets the lock's recorded `CARGO_BAZEL_REPIN` env fingerprint to `null` so the
+committed lock doesn't churn on later plain `bazel` runs.
