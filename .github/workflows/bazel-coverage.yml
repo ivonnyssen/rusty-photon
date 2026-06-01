@@ -156,22 +156,23 @@ jobs:
             --profile="$PROFILE" --noslim_profile \
             --experimental_profile_include_target_label \
             //... || status=$?
-          # Bazel exit codes: 0 = everything passed; 3 = build OK but one or more
-          # tests FAILED or TIMED OUT. In shadow coverage we tolerate 3: with
-          # --keep_going every other target still ran, the --combined_report still
-          # builds from their coverage.dat, and the split/upload steps below then
-          # publish the coverage of everything that DID pass. This converts a
-          # single instrumented-BDD hang (killed by --test_timeout) from a 60-min
-          # job-cancel-with-no-output into an uploaded partial report. Any other
-          # non-zero (1 build error, 2 bad flags, 4 no tests, 8 interrupted, ...)
-          # is a real failure and aborts the job.
+          # Bazel exit codes: 0 = all tests passed (publish coverage below); ANY non-zero =
+          # something did not validly complete, so we FAIL. Rationale: coverage from a run with
+          # a failed/killed test (exit 3) — or a build/flag error — does not correspond to a
+          # passing suite, so the number is misleading; we do NOT publish it (a non-zero exit
+          # here skips the no-`if:` Split step, which is the intended behaviour). The always()
+          # diagnostic + test-log steps still run regardless, so a failure is fully triage-able.
+          # NOTE: honest-red, but NOT yet a required merge gate — the rp:bdd park is an
+          # intermittent infra flake (~18-65%); promote to required only once it is confirmed
+          # dead (3s --remote_timeout + --spawn_strategy=local). See docs/plans/bazel-migration.md.
           if [[ $status -eq 124 || $status -eq 137 ]]; then
             echo "::error title=bazel coverage capped::Hit the 50-min observability cap (exit $status) — a test (almost certainly //services/rp:bdd) did not finish in time. The next step classifies whether a SCENARIO hung or all scenarios passed and the action hung POST-scenario (coverage collection). Full log in the 'bazel-testlogs' artifact."
             exit 1
           elif [[ $status -eq 3 ]]; then
-            echo "::warning::Some coverage tests failed or timed out (bazel exit 3); uploading partial coverage for the targets that passed."
+            echo "::error title=bazel coverage test failure::A coverage test FAILED or hit its --test_timeout (bazel exit 3). Coverage from a failed run does not reflect a passing suite, so it is NOT published. See the rp:bdd hang classification + test logs below / in the 'bazel-testlogs' artifact."
+            exit 1
           elif [[ $status -ne 0 ]]; then
-            echo "::error::bazel coverage failed (exit $status)"
+            echo "::error title=bazel coverage failed::bazel coverage failed (exit $status — 1=build error, 2=bad flags, 4=no tests, 8=interrupted/superseded)."
             exit "$status"
           fi
 
