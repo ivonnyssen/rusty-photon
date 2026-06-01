@@ -190,7 +190,13 @@ jobs:
             bash tools/ci/bazel-hang-sampler.sh & HANG_SAMPLER_PID=$!
             trap 'kill "$HANG_SAMPLER_PID" 2>/dev/null || true' EXIT
           fi
+          # EXPERIMENT (branch worktree-center-on-target): drop --remote_timeout 600 -> 3 to test
+          # whether the rp:bdd post-scenario park collapses. It bounds a stale-keepalive cache
+          # RPC (see memory bazel-coverage-rp-bdd-hang). --remote_timeout is an idle/inactivity
+          # timeout, so healthy byte-flowing transfers survive; the risk at 3s is cold-object
+          # time-to-first-byte tripping spurious retries (acceptable for a diagnostic run).
           bazel test --config=ci "${REMOTE_FLAGS[@]}" --test_tag_filters=bdd \
+            --remote_timeout=3 \
             --execution_log_compact_file="${RUNNER_TEMP}/bdd-exec.log.zst" \
             --profile="${RUNNER_TEMP}/bdd-profile.json.gz" \
             --noslim_profile \

@@ -34,6 +34,13 @@ INTERVAL="${HANG_SAMPLER_INTERVAL:-30}"
 # Broad enough to catch the test binary (bdd), the .NET simulator
 # (ascom.alpaca.simulators / dotnet), and the coverage/sandbox tooling.
 relevant='bazel|llvm-profdata|llvm-cov|profdata|genhtml|lcov|CoverageOutput|java|process-wrapper|linux-sandbox|ascom|dotnet|simulator|omnisim|sky-survey|calibrator|cucumber|/bdd|[ /]bdd-|rp_bdd'
+# Resolve the remote-cache host once so we can watch the sockets to it during a park.
+# H1 (stale pooled keep-alive): a half-open socket is reused, the request write
+# blackholes, and the op blocks until --remote_timeout -> the socket shows ESTABLISHED
+# with Send-Q stuck non-zero / Recv-Q 0, and the bazel JVM has a remote/netty thread
+# parked in LockSupport.park. These two lines name it the next time it parks.
+CACHE_HOST="${BAZEL_CACHE_HOST:-cache.rustyphoton.space}"
+CACHE_IP="$(getent hosts "$CACHE_HOST" 2>/dev/null | awk '{print $1; exit}')"
 
 while :; do
   ts="$(date -u +%H:%M:%SZ)"
@@ -53,6 +60,21 @@ while :; do
   echo "-- explicit: any rp:bdd / OmniSim / dotnet survivor? (broad match, with wchan) --"
   ps -eo pid,ppid,etimes,pcpu,stat,wchan:22,comm,args --no-headers 2>/dev/null \
     | grep -aiE "${relevant}" | grep -avE 'hang-sampler|grep -aiE' | head -14
+  echo "-- remote-cache sockets to ${CACHE_HOST} (${CACHE_IP:-unresolved}): State Recv-Q Send-Q Local Peer --"
+  if [ -n "${CACHE_IP:-}" ]; then
+    ss -tan 2>/dev/null | grep -F "${CACHE_IP}" | head -10 || echo "  (none established to cache IP)"
+  else
+    echo "  (cache host did not resolve)"
+  fi
+  echo "-- bazel JVM remote/netty threads (jcmd Thread.print, filtered) --"
+  bpid="$(pgrep -f 'A-server\.jar' 2>/dev/null | head -1)"
+  if [ -n "${bpid:-}" ] && command -v jcmd >/dev/null 2>&1; then
+    jcmd "${bpid}" Thread.print 2>/dev/null \
+      | grep -iE 'remote|netty|grpc|Downloader|ChannelPool|epollWait|SocketChannel|LockSupport.park' \
+      | head -20 || echo "  (no matching threads)"
+  else
+    echo "  (jcmd unavailable or bazel server pid not found: pid=${bpid:-none})"
+  fi
   echo "::endgroup::"
   sleep "${INTERVAL}"
 done

@@ -148,6 +148,7 @@ jobs:
           timeout --signal=INT --kill-after=2m 50m \
             bazel coverage --config=ci --config=coverage "${REMOTE_FLAGS[@]}" \
             --test_tag_filters=-requires-cargo \
+            --remote_timeout=3 \
             --remote_download_outputs=all \
             --test_output=all \
             --test_env=VERBOSE_COVERAGE=1 \
