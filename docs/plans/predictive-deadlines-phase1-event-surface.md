@@ -14,16 +14,16 @@ sequencing. Ordered test-first per
 - **Scope:** one PR.
 - **Branch:** `worktree-predictive-deadlines-and-watchdog`, branched from
   `main` @ `3aa2d72`.
-- **Progress (2026-05-31):** Steps 0–1 landed; Steps 2–4 remaining.
+- **Progress (2026-05-31):** Steps 0–4 landed; Phase 1 complete.
 
   | Step | State | Commit |
   |---|---|---|
   | (plan) | done | `ac13be0` |
   | 0 — Doc reconciliation (rp.md §Event Envelope, workspace.md index, parent §1.1 as-built note) | **done** | `e27efe6` |
   | 1 — `EventEnvelope` + `EventBus` broadcast refactor (`events.rs`) + unit tests | **done** | `cdee24b` |
-  | 2 — `operation_id` + started/complete/failed triple at each blocking entry point | _todo_ | — |
-  | 3 — Per-family unit tests (broadcast seam) + `operation_events.feature` + `event_steps` | _todo_ | — |
-  | 4 — New event rows in rp.md table + fmt/rail/build gate | _todo_ | — |
+  | 2 — `operation_id` + started/complete/failed triple at each blocking entry point | **done** | this PR |
+  | 3 — Per-family unit tests (broadcast seam) + `operation_events.feature` + `event_steps` | **done** | this PR |
+  | 4 — New event rows in rp.md table + fmt/rail/build gate | **done** | this PR |
 
   Gates green through Step 1: `cargo rail --profile commit` (438 tests),
   clippy `-D warnings`, husky pre-commit hook, 4 new `events::` tests.

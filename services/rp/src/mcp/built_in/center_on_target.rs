@@ -99,16 +99,21 @@ impl McpHandler {
             return Ok(tool_error!("{}", e));
         }
 
-        self.event_bus.emit(
-            "centering_started",
-            serde_json::json!({
-                "camera_id": camera_id,
-                "ra": ra,
-                "dec": dec,
-                "tolerance_arcsec": tolerance_arcsec,
-                "max_attempts": max_attempts,
-            }),
-        );
+        let operation_id = uuid::Uuid::new_v4().to_string();
+        let started_at = chrono::Utc::now();
+        self.event_bus
+            .emit_operation(crate::events::EventEnvelope::started(
+                "centering",
+                &operation_id,
+                started_at,
+                serde_json::json!({
+                    "camera_id": camera_id,
+                    "ra": ra,
+                    "dec": dec,
+                    "tolerance_arcsec": tolerance_arcsec,
+                    "max_attempts": max_attempts,
+                }),
+            ));
 
         let cot_params = imaging::tools::center_on_target::CenterOnTargetParams {
             ra,
@@ -156,16 +161,19 @@ impl McpHandler {
         .await
         {
             Ok(result) => {
-                self.event_bus.emit(
-                    "centering_complete",
-                    serde_json::json!({
-                        "camera_id": camera_id,
-                        "final_error_arcsec": result.final_error_arcsec,
-                        "attempts": result.attempts,
-                        "final_ra": result.final_ra,
-                        "final_dec": result.final_dec,
-                    }),
-                );
+                self.event_bus
+                    .emit_operation(crate::events::EventEnvelope::complete(
+                        "centering",
+                        &operation_id,
+                        started_at,
+                        serde_json::json!({
+                            "camera_id": camera_id,
+                            "final_error_arcsec": result.final_error_arcsec,
+                            "attempts": result.attempts,
+                            "final_ra": result.final_ra,
+                            "final_dec": result.final_dec,
+                        }),
+                    ));
                 let iterations =
                     serde_json::to_value(&result.iterations).unwrap_or(serde_json::Value::Null);
                 Ok(tool_success!({
@@ -176,7 +184,16 @@ impl McpHandler {
                     "iterations": iterations,
                 }))
             }
-            Err(e) => Ok(tool_error!("{}", e)),
+            Err(e) => {
+                self.event_bus
+                    .emit_operation(crate::events::EventEnvelope::failed(
+                        "centering",
+                        &operation_id,
+                        started_at,
+                        &e.to_string(),
+                    ));
+                Ok(tool_error!("{}", e))
+            }
         }
     }
 }

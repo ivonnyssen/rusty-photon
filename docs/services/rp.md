@@ -321,20 +321,46 @@ disk", not "live as long as `rp` is up".
 `rp` emits events. Plugins and services subscribe via webhooks.
 The application does not know or care what subscribers do with events.
 
+Every blocking operation emits a lifecycle *triple* — a `*_started`
+event at entry and a matching `*_complete` or `*_failed` at exit —
+correlated by a shared `operation_id` and wrapped in the uniform
+[Event Envelope](#event-envelope) below. (`sync_mount` is instant, so it
+emits only `_complete` / `_failed`, with no `_started`.) Point events
+(e.g. `filter_switch`, `session_started`) carry no `operation_id`.
+
 ### Events
 
 | Event | Payload | When |
 |-------|---------|------|
 | `session_started` | session config, target list, equipment | Session begins |
 | `session_stopped` | session summary, reason | Session ends (manual, safety, dawn) |
-| `exposure_started` | camera_id, target, filter, duration | Shutter opens |
-| `exposure_complete` | document, file_path | Readout finished |
-| `slew_started` | target coordinates | Mount begins slew |
-| `slew_complete` | target coordinates, actual coordinates | Mount reports slew done |
-| `centering_started` | target, attempt number | Plate solve + correct begins |
-| `centering_complete` | target, error arcsec | Centering converged |
+| `exposure_started` | camera_id, duration | Exposure begins |
+| `exposure_complete` | document_id, file_path | Readout finished, document persisted |
+| `exposure_failed` | error | Exposure failed (start error, camera error state, readout timeout, or FITS write) |
+| `slew_started` | ra, dec | Mount begins slew |
+| `slew_complete` | ra, dec, actual_ra, actual_dec | Mount reports slew done |
+| `slew_failed` | error | Slew failed or timed out (best-effort abort issued) |
+| `park_started` | — | Mount begins parking |
+| `park_complete` | — | Mount reports `AtPark` |
+| `park_failed` | error | Park failed or timed out (no auto-abort, per the park contract) |
+| `unpark_started` | — | Mount begins unpark |
+| `unpark_complete` | — | Mount unparked |
+| `unpark_failed` | error | Unpark failed |
+| `sync_mount_complete` | ra, dec | Mount sync applied (instant — no `_started`) |
+| `sync_mount_failed` | error | Mount sync failed |
+| `move_focuser_started` | focuser_id, position | Focuser begins move to the target position |
+| `move_focuser_complete` | focuser_id, position | Focuser idle at the read-back position |
+| `move_focuser_failed` | error | Focuser move failed or timed out |
+| `plate_solve_started` | document_id, image_path, use_mount_hints | Plate solve begins |
+| `plate_solve_complete` | ra_center, dec_center, pixel_scale_arcsec, rotation_deg, solver | Plate solve succeeded |
+| `plate_solve_failed` | error | Plate solve failed |
+| `centering_started` | camera_id, ra, dec, tolerance_arcsec, max_attempts | Plate-solve + correct loop begins |
+| `centering_iteration` | camera_id, document_id, residual_arcsec, solved_ra, solved_dec, action | One centering iteration completed |
+| `centering_complete` | camera_id, final_error_arcsec, attempts, final_ra, final_dec | Centering converged |
+| `centering_failed` | error | Centering failed |
 | `focus_started` | camera_id, focuser_id, position, temperature | Auto-focus begins |
 | `focus_complete` | camera_id, focuser_id, position, hfr, samples_used | Auto-focus result |
+| `focus_failed` | error | Auto-focus failed |
 | `guide_started` | guider_id | Guiding loop started |
 | `guide_settled` | rms_ra, rms_dec | Guiding RMS below threshold |
 | `guide_stopped` | reason | Guiding stopped |

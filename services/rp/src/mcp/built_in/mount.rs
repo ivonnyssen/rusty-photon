@@ -281,10 +281,42 @@ impl McpHandler {
             Err(e) => return Ok(tool_error!("{}", e)),
         };
 
+        // Mount resolved — wrap the unpark in the operation triple. There
+        // is no `do_unpark_blocking` helper (the per-driver unpark is a
+        // possibly multi-step Action), so the triple is emitted here. A
+        // resolve failure above emits nothing, matching the other tools.
+        let operation_id = uuid::Uuid::new_v4().to_string();
+        let started_at = chrono::Utc::now();
+        self.event_bus
+            .emit_operation(crate::events::EventEnvelope::started(
+                "unpark",
+                &operation_id,
+                started_at,
+                serde_json::json!({}),
+            ));
+
         debug!("unparking mount");
         match mount.unpark().await {
-            Ok(()) => Ok(tool_success!({})),
-            Err(e) => Ok(tool_error!("failed to unpark: {}", e)),
+            Ok(()) => {
+                self.event_bus
+                    .emit_operation(crate::events::EventEnvelope::complete(
+                        "unpark",
+                        &operation_id,
+                        started_at,
+                        serde_json::json!({}),
+                    ));
+                Ok(tool_success!({}))
+            }
+            Err(e) => {
+                self.event_bus
+                    .emit_operation(crate::events::EventEnvelope::failed(
+                        "unpark",
+                        &operation_id,
+                        started_at,
+                        &format!("failed to unpark: {}", e),
+                    ));
+                Ok(tool_error!("failed to unpark: {}", e))
+            }
         }
     }
 
