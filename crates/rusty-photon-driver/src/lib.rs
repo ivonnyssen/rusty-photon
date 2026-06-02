@@ -1,3 +1,4 @@
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 //! `rusty-photon-driver` — the shared ASCOM-driver runtime layer.
 //!
 //! Where [`rusty_photon_config`] is the transport- and consumer-agnostic config
