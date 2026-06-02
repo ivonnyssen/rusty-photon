@@ -204,6 +204,21 @@ async fn event_reserves_deadline_fields(world: &mut RpWorld, event_type: String)
     );
 }
 
+#[then(expr = "the {string} event carries the deadline fields")]
+async fn event_carries_deadline_fields(world: &mut RpWorld, event_type: String) {
+    let ev = find_event(world, &event_type).await;
+    let predicted = ev
+        .predicted_duration_ms
+        .unwrap_or_else(|| panic!("'{event_type}' must carry predicted_duration_ms"));
+    let max = ev
+        .max_duration_ms
+        .unwrap_or_else(|| panic!("'{event_type}' must carry max_duration_ms"));
+    assert!(
+        max >= predicted,
+        "'{event_type}' max_duration_ms ({max}) must be >= predicted_duration_ms ({predicted})"
+    );
+}
+
 #[then(expr = "the {string} event payload includes {string}")]
 async fn event_payload_includes(world: &mut RpWorld, event_type: String, field: String) {
     let ev = find_event(world, &event_type).await;

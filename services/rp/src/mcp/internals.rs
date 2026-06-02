@@ -36,6 +36,19 @@ use super::progress::{ProgressEmitter, PROGRESS_INTERVAL};
 /// readout/download latency on top of the exposure itself.
 const CAPTURE_READOUT_GRACE: Duration = Duration::from_secs(120);
 
+/// Floor on the predictive slew deadline (§2.1 of the predictive-deadlines
+/// plan). A tiny corrective slew of arc-seconds still gets at least this
+/// long before it's considered overrun, absorbing fixed mount overheads
+/// (command latency, the ramp into `Slewing`).
+const MIN_SLEW_DEADLINE: Duration = Duration::from_secs(5);
+
+/// Slew deadline used when the predicted deadline can't be computed — the
+/// mount isn't resolvable yet, or the pre-slew pointing read failed. A
+/// prediction is an optimization, not a precondition for slewing, so the
+/// deadline degrades to the historical 300 s ceiling rather than failing
+/// the slew.
+const SLEW_DEADLINE_FALLBACK: Duration = Duration::from_secs(300);
+
 // ---------------------------------------------------------------------------
 // Private helper types shared across imaging tool bodies. All
 // `pub(crate)` so individual category files can construct them.
@@ -867,8 +880,59 @@ impl McpHandler {
         Ok((entry, device))
     }
 
+    /// Size the predictive slew deadline from the mount's current
+    /// pointing, the requested target, the configured slew rate, and the
+    /// settle time (§2.1). `ra` is in hours (the `slew` boundary unit),
+    /// `dec` in degrees. Returns the poll deadline plus the
+    /// `(predicted_ms, max_ms)` pair for the `slew_started` envelope.
+    ///
+    /// `Err` if the mount can't be resolved or a pre-slew pointing read
+    /// fails; the caller then falls back to [`SLEW_DEADLINE_FALLBACK`] and
+    /// omits the envelope deadline fields.
+    async fn compute_slew_deadline(
+        &self,
+        ra: f64,
+        dec: f64,
+        settle_after: Duration,
+    ) -> std::result::Result<(Duration, u64, u64), String> {
+        let (entry, mount) = self.resolve_mount()?;
+        let rate = entry.config.slew_rate_arcsec_per_sec.value();
+        let current_ra = mount
+            .right_ascension()
+            .await
+            .map_err(|e| format!("failed to read mount right_ascension: {}", e))?;
+        let current_dec = mount
+            .declination()
+            .await
+            .map_err(|e| format!("failed to read mount declination: {}", e))?;
+        // `haversine_arcsec` takes degrees for both coordinates; RA is in
+        // hours at this boundary, so scale both RA terms by 15 (matching
+        // `center_on_target`).
+        let distance_arcsec =
+            imaging::haversine_arcsec(current_ra * 15.0, current_dec, ra * 15.0, dec);
+        let predicted_secs = distance_arcsec / rate + settle_after.as_secs_f64();
+        let max_secs = (predicted_secs * 3.0).max(MIN_SLEW_DEADLINE.as_secs_f64());
+        // A finite, positive rate can still be small enough that
+        // distance / rate overflows f64 to infinity, which would panic
+        // `Duration::from_secs_f64`. Treat a non-finite result as a
+        // prediction failure so the caller falls back to the 300 s
+        // ceiling rather than crashing.
+        if !max_secs.is_finite() {
+            return Err(format!(
+                "predicted slew deadline is not finite \
+                 (slew_rate_arcsec_per_sec {rate} too small for distance {distance_arcsec} arcsec)"
+            ));
+        }
+        Ok((
+            Duration::from_secs_f64(max_secs),
+            (predicted_secs * 1000.0).round() as u64,
+            (max_secs * 1000.0).round() as u64,
+        ))
+    }
+
     /// Resolve the mount, issue an async slew, poll `slewing()` until
-    /// idle (with a 300 s deadline), sleep `settle_after`, then read
+    /// idle (bounded by a predicted deadline; see
+    /// [`Self::compute_slew_deadline`]), sleep `settle_after`, then read
     /// the post-slew RA/Dec and return them.
     ///
     /// Best-effort `abort_slew()` on deadline expiry before returning
@@ -883,9 +947,9 @@ impl McpHandler {
     ///
     /// When `progress` is `Some`, the inner `poll_slewing_until_idle`
     /// and the `settle_after` sleep emit `notifications/progress`
-    /// every [`PROGRESS_INTERVAL`] so rmcp's 300 s session
-    /// keep-alive cannot fire during a legitimate long slew (which
-    /// has the same 300 s deadline).
+    /// every [`PROGRESS_INTERVAL`] so rmcp's 300 s session keep-alive
+    /// cannot fire during a legitimate long slew (whose deadline scales
+    /// with distance and can exceed the 300 s keep-alive).
     pub(crate) async fn do_slew_blocking(
         &self,
         ra: f64,
@@ -895,14 +959,33 @@ impl McpHandler {
     ) -> std::result::Result<(f64, f64), String> {
         let operation_id = Uuid::new_v4().to_string();
         let started_at = chrono::Utc::now();
-        self.event_bus.emit_operation(EventEnvelope::started(
-            "slew",
-            &operation_id,
-            started_at,
-            serde_json::json!({ "ra": ra, "dec": dec }),
-        ));
+
+        // Size the deadline from the slew's actual workload. If the mount
+        // can't be resolved or the pre-slew pointing read fails, fall back
+        // to the historical 300 s ceiling and omit the deadline fields —
+        // a prediction is an optimization, not a precondition for slewing.
+        let started_payload = serde_json::json!({ "ra": ra, "dec": dec });
+        let (deadline, started_event) = match self
+            .compute_slew_deadline(ra, dec, settle_after)
+            .await
+        {
+            Ok((deadline, predicted_ms, max_ms)) => (
+                deadline,
+                EventEnvelope::started("slew", &operation_id, started_at, started_payload)
+                    .with_deadlines(predicted_ms, max_ms),
+            ),
+            Err(e) => {
+                debug!(error = %e, "slew deadline prediction unavailable; using fallback ceiling");
+                (
+                    SLEW_DEADLINE_FALLBACK,
+                    EventEnvelope::started("slew", &operation_id, started_at, started_payload),
+                )
+            }
+        };
+        self.event_bus.emit_operation(started_event);
+
         let result = self
-            .do_slew_blocking_inner(ra, dec, settle_after, progress)
+            .do_slew_blocking_inner(ra, dec, settle_after, deadline, progress)
             .await;
         match &result {
             Ok((actual_ra, actual_dec)) => self.event_bus.emit_operation(EventEnvelope::complete(
@@ -931,12 +1014,15 @@ impl McpHandler {
     /// it in the `slew_started` / `slew_complete` / `slew_failed` event
     /// triple under one `operation_id`. Every call (including
     /// `center_on_target`'s per-iteration slews) emits its own triple;
-    /// Sentinel filters inner-vs-outer in Phase 4.
+    /// Sentinel filters inner-vs-outer in Phase 4. `deadline` is the
+    /// predicted poll ceiling sized by the wrapper (see
+    /// [`Self::compute_slew_deadline`]).
     async fn do_slew_blocking_inner(
         &self,
         ra: f64,
         dec: f64,
         settle_after: Duration,
+        deadline: Duration,
         progress: Option<&dyn ProgressEmitter>,
     ) -> std::result::Result<(f64, f64), String> {
         let (_entry, mount) = self.resolve_mount()?;
@@ -947,7 +1033,7 @@ impl McpHandler {
             .await
             .map_err(|e| format!("failed to slew: {}", e))?;
 
-        match poll_slewing_until_idle(mount.as_ref(), progress).await {
+        match poll_slewing_until_idle(mount.as_ref(), deadline, progress).await {
             Ok(()) => {}
             Err(PollIdleError::Timeout) => {
                 // Best-effort abort; ignore the abort's own result and
@@ -1481,8 +1567,10 @@ pub(crate) enum PollIdleError {
 const SLEWING_READ_ERROR_TOLERANCE: u32 = 5;
 
 /// Poll `mount.slewing()` every 100 ms until it returns `false`,
-/// bounded by a 300 s deadline. Used by `do_slew_blocking`. (The
-/// sibling `do_park_blocking` polls `at_park()` directly rather than
+/// bounded by `deadline`. `do_slew_blocking` sizes the deadline from the
+/// slew distance (see `compute_slew_deadline`); a flaky pre-slew read
+/// falls back to `SLEW_DEADLINE_FALLBACK`. (The sibling
+/// `do_park_blocking` polls `at_park()` directly rather than
 /// `slewing()` because `IsSlewing` is sticky on `MoveAxis` rate
 /// state and `AtPark` is the ASCOM-canonical "park is complete"
 /// signal — see the comment on `do_park_blocking`.) On
@@ -1498,13 +1586,14 @@ const SLEWING_READ_ERROR_TOLERANCE: u32 = 5;
 /// When `progress` is `Some`, the loop emits
 /// `notifications/progress` every [`PROGRESS_INTERVAL`] so rmcp's
 /// 300 s session keep-alive cannot fire during a legitimate slew
-/// (the slew's own deadline is also 300 s — without progress
-/// emission the two timers race).
+/// (a long slew's `deadline` can exceed the 300 s keep-alive — without
+/// progress emission the two timers race).
 pub(crate) async fn poll_slewing_until_idle(
     mount: &(dyn ascom_alpaca::api::Telescope + Send + Sync),
+    deadline: Duration,
     progress: Option<&dyn ProgressEmitter>,
 ) -> std::result::Result<(), PollIdleError> {
-    let total_budget = Duration::from_secs(300);
+    let total_budget = deadline;
     let total_budget_secs = total_budget.as_secs_f64();
     let started_at = Instant::now();
     let deadline = started_at + total_budget;

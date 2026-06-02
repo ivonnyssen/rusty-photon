@@ -38,9 +38,11 @@ pub struct ReceivedEvent {
     pub ended_at: Option<String>,
     /// Wall-clock duration in ms, on `*_complete`/`*_failed` only.
     pub elapsed_ms: Option<u64>,
-    /// Reserved for Phase 2; always absent in Phase 1.
+    /// Present on `slew_started` (Phase 2.1); absent for operations not
+    /// yet converted to predictive deadlines.
     pub predicted_duration_ms: Option<u64>,
-    /// Reserved for Phase 2; always absent in Phase 1.
+    /// Present on `slew_started` (Phase 2.1); absent for operations not
+    /// yet converted to predictive deadlines.
     pub max_duration_ms: Option<u64>,
     pub payload: Value,
     pub received_at: std::time::Instant,

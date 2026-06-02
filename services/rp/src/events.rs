@@ -15,9 +15,10 @@
 //! **additive** over the historical webhook body: the `event_id`, `event`,
 //! `timestamp`, and `payload` keys keep their exact meaning, so existing
 //! plugins are unaffected. New fields (`event_seq`, `operation_id`, the
-//! `started_at` / `ended_at` / `elapsed_ms` timing, and the reserved
-//! `predicted_duration_ms` / `max_duration_ms` deadline slots that Phase 2
-//! will populate) are carried alongside.
+//! `started_at` / `ended_at` / `elapsed_ms` timing, and the
+//! `predicted_duration_ms` / `max_duration_ms` deadline fields — populated
+//! on `slew_started` since Phase 2.1, omitted for operations not yet
+//! converted) are carried alongside.
 //!
 //! Blocking operations emit a *triple*: a `*_started` envelope at the
 //! entry point and a `*_complete` or `*_failed` envelope at the end, all
@@ -81,12 +82,14 @@ pub struct EventEnvelope {
     /// `*_complete` / `*_failed`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub elapsed_ms: Option<u64>,
-    /// Predicted operation duration. Reserved for Phase 2; always `None`
-    /// (omitted) in Phase 1.
+    /// Predicted operation duration. Populated on `slew_started`
+    /// (Phase 2.1); omitted for operations not yet converted to
+    /// predictive deadlines.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub predicted_duration_ms: Option<u64>,
     /// Hard ceiling beyond which the operation is considered overrun.
-    /// Reserved for Phase 2; always `None` (omitted) in Phase 1.
+    /// Populated on `slew_started` (Phase 2.1); omitted for operations
+    /// not yet converted to predictive deadlines.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_duration_ms: Option<u64>,
     /// Operation-specific detail. For `*_started` this carries the inputs
@@ -119,6 +122,17 @@ impl EventEnvelope {
             max_duration_ms: None,
             payload,
         }
+    }
+
+    /// Attach the predicted duration and hard-ceiling deadline (both in
+    /// milliseconds) to a `*_started` envelope (Phase 2). Chainable; every
+    /// other field is untouched, so operations without a prediction keep
+    /// both fields `None` (omitted from the JSON).
+    #[must_use]
+    pub fn with_deadlines(mut self, predicted_ms: u64, max_ms: u64) -> Self {
+        self.predicted_duration_ms = Some(predicted_ms);
+        self.max_duration_ms = Some(max_ms);
+        self
     }
 
     /// Build a `*_complete` envelope, computing `ended_at` and `elapsed_ms`
