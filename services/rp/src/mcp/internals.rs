@@ -18,6 +18,7 @@ use tracing::debug;
 use uuid::Uuid;
 
 use crate::equipment::alpaca::retry_idempotent_read;
+use crate::events::EventEnvelope;
 use crate::imaging::{self, BackgroundStats, DetectionParams, Star};
 use crate::persistence::{self, CachedImage, CachedPixels, ExposureDocument};
 
@@ -469,211 +470,251 @@ impl McpHandler {
         let uuid8 = &document_id[..8];
         let image_path = format!("{}/{}.fits", self.session_config.data_directory, uuid8);
 
-        self.event_bus.emit(
-            "exposure_started",
+        let operation_id = Uuid::new_v4().to_string();
+        let started_at = chrono::Utc::now();
+        self.event_bus.emit_operation(EventEnvelope::started(
+            "exposure",
+            &operation_id,
+            started_at,
             serde_json::json!({
                 "camera_id": camera_id,
                 "duration": humantime::format_duration(duration).to_string(),
             }),
-        );
+        ));
 
-        cam.start_exposure(duration, true)
-            .await
-            .map_err(|e| format!("failed to start exposure: {}", e))?;
+        // Run the exposure body (start → poll → download → write FITS →
+        // persist) inside one future so the public method emits exactly
+        // one of `exposure_complete` / `exposure_failed` to mirror the
+        // `exposure_started` above, under a shared `operation_id`. `?`
+        // and early `return Err` inside resolve to this block's Result.
+        let capture_result: std::result::Result<(), String> = async {
+            cam.start_exposure(duration, true)
+                .await
+                .map_err(|e| format!("failed to start exposure: {}", e))?;
 
-        // Poll until the frame is ready — but a not-ready camera is not
-        // necessarily still exposing. An Alpaca camera that *fails* an
-        // exposure transitions to `CameraState::Error` and leaves
-        // `ImageReady` false forever; polling `ImageReady` alone treats
-        // that as "still exposing" and loops indefinitely. That is the
-        // bug that ran CI's closed-loop centering BDD to GitHub's 6 h job
-        // cap: `sky-survey-camera`'s follow-mode mount read timed out
-        // under load, the exposure failed, and `do_capture` span here
-        // forever. Treat `Error` as terminal (surfacing the camera's
-        // stored reason via `image_array`), and cap the total wait with a
-        // deadline as a backstop for a camera wedged in `Exposing`.
-        let started_at = Instant::now();
-        let total_budget = duration + CAPTURE_READOUT_GRACE;
-        let deadline = started_at + total_budget;
-        let total_budget_secs = total_budget.as_secs_f64();
-        // While `image_ready` returns `false` *before* the requested
-        // exposure window elapses, the camera is shuttering. Switch the
-        // emitted message to `"reading_out"` once we cross that mark —
-        // most cameras hold `image_ready` false until the readout
-        // download finishes too, which is when the keep-alive race is
-        // most likely to bite (a long sky-survey download in CI). The
-        // boundary is informational; the emit cadence is unchanged.
-        let mut last_progress_at = started_at;
-        loop {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            match cam.image_ready().await {
-                Ok(true) => break,
-                Ok(false) => {
-                    // A transient `camera_state` read error is non-fatal —
-                    // `ImageReady` stays the primary signal and the deadline
-                    // below still bounds the wait.
-                    if let Ok(CameraState::Error) = cam.camera_state().await {
-                        let detail = cam
-                            .image_array()
-                            .await
-                            .err()
-                            .map(|e| e.to_string())
-                            .unwrap_or_else(|| "camera reported error state".to_string());
-                        return Err(format!("exposure failed: {}", detail));
-                    }
-                    let now = Instant::now();
-                    if now >= deadline {
-                        return Err(format!(
-                            "timeout waiting for image_ready after {:?}",
-                            total_budget
-                        ));
-                    }
-                    if let Some(sink) = progress {
-                        if now.duration_since(last_progress_at) >= PROGRESS_INTERVAL {
-                            let elapsed = now.duration_since(started_at).as_secs_f64();
-                            let phase = if now.duration_since(started_at) < duration {
-                                "exposing"
-                            } else {
-                                "reading_out"
-                            };
-                            sink.emit(elapsed, Some(total_budget_secs), Some(phase.to_string()))
+            // Poll until the frame is ready — but a not-ready camera is not
+            // necessarily still exposing. An Alpaca camera that *fails* an
+            // exposure transitions to `CameraState::Error` and leaves
+            // `ImageReady` false forever; polling `ImageReady` alone treats
+            // that as "still exposing" and loops indefinitely. That is the
+            // bug that ran CI's closed-loop centering BDD to GitHub's 6 h job
+            // cap: `sky-survey-camera`'s follow-mode mount read timed out
+            // under load, the exposure failed, and `do_capture` span here
+            // forever. Treat `Error` as terminal (surfacing the camera's
+            // stored reason via `image_array`), and cap the total wait with a
+            // deadline as a backstop for a camera wedged in `Exposing`.
+            let started_at = Instant::now();
+            let total_budget = duration + CAPTURE_READOUT_GRACE;
+            let deadline = started_at + total_budget;
+            let total_budget_secs = total_budget.as_secs_f64();
+            // While `image_ready` returns `false` *before* the requested
+            // exposure window elapses, the camera is shuttering. Switch the
+            // emitted message to `"reading_out"` once we cross that mark —
+            // most cameras hold `image_ready` false until the readout
+            // download finishes too, which is when the keep-alive race is
+            // most likely to bite (a long sky-survey download in CI). The
+            // boundary is informational; the emit cadence is unchanged.
+            let mut last_progress_at = started_at;
+            loop {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                match cam.image_ready().await {
+                    Ok(true) => break,
+                    Ok(false) => {
+                        // A transient `camera_state` read error is non-fatal —
+                        // `ImageReady` stays the primary signal and the deadline
+                        // below still bounds the wait.
+                        if let Ok(CameraState::Error) = cam.camera_state().await {
+                            let detail = cam
+                                .image_array()
+                                .await
+                                .err()
+                                .map(|e| e.to_string())
+                                .unwrap_or_else(|| "camera reported error state".to_string());
+                            return Err(format!("exposure failed: {}", detail));
+                        }
+                        let now = Instant::now();
+                        if now >= deadline {
+                            return Err(format!(
+                                "timeout waiting for image_ready after {:?}",
+                                total_budget
+                            ));
+                        }
+                        if let Some(sink) = progress {
+                            if now.duration_since(last_progress_at) >= PROGRESS_INTERVAL {
+                                let elapsed = now.duration_since(started_at).as_secs_f64();
+                                let phase = if now.duration_since(started_at) < duration {
+                                    "exposing"
+                                } else {
+                                    "reading_out"
+                                };
+                                sink.emit(
+                                    elapsed,
+                                    Some(total_budget_secs),
+                                    Some(phase.to_string()),
+                                )
                                 .await;
-                            last_progress_at = now;
+                                last_progress_at = now;
+                            }
                         }
                     }
+                    Err(e) => return Err(format!("error checking image ready: {}", e)),
                 }
-                Err(e) => return Err(format!("error checking image ready: {}", e)),
             }
-        }
 
-        let image_array = cam
-            .image_array()
-            .await
-            .map_err(|e| format!("failed to download image array: {}", e))?;
+            let image_array = cam
+                .image_array()
+                .await
+                .map_err(|e| format!("failed to download image array: {}", e))?;
 
-        let (dim_x, dim_y, _planes) = image_array.dim();
-        let width = dim_x as u32;
-        let height = dim_y as u32;
+            let (dim_x, dim_y, _planes) = image_array.dim();
+            let width = dim_x as u32;
+            let height = dim_y as u32;
 
-        // `captured_max_adu` decides whether we need a u16 or i32 buffer,
-        // so it is consulted *before* collecting pixels to let us collect
-        // straight into the destination type and avoid the wasted i32→u16
-        // round trip.
-        //
-        // max_adu feeds three consumers: on-disk FITS bit-depth, cache
-        // variant, and the exposure document's `max_adu` field
-        // (sidecar self-describing for rehydration/archival lineage).
-        // The value was read once at connect time and stashed on
-        // `CameraEntry` — see its docstring for the connect-time-failure
-        // semantics. When `None` we still persist the document with
-        // `max_adu: None`, write the FITS as i32 (lossless fallback), and
-        // skip the cache insert.
-        let captured_max_adu: Option<u32> = cached_max_adu;
+            // `captured_max_adu` decides whether we need a u16 or i32 buffer,
+            // so it is consulted *before* collecting pixels to let us collect
+            // straight into the destination type and avoid the wasted i32→u16
+            // round trip.
+            //
+            // max_adu feeds three consumers: on-disk FITS bit-depth, cache
+            // variant, and the exposure document's `max_adu` field
+            // (sidecar self-describing for rehydration/archival lineage).
+            // The value was read once at connect time and stashed on
+            // `CameraEntry` — see its docstring for the connect-time-failure
+            // semantics. When `None` we still persist the document with
+            // `max_adu: None`, write the FITS as i32 (lossless fallback), and
+            // skip the cache insert.
+            let captured_max_adu: Option<u32> = cached_max_adu;
 
-        // Optical geometry for the sidecar's `optics` block. Combines the
-        // operator-supplied focal length with the cached pixel-size and
-        // sensor-dimension reads from `CameraEntry`. Any missing piece
-        // (focal length not configured, connect-time read failed) drops
-        // the whole block — see `docs/services/rp.md` §"Core Fields".
-        let optics = match focal_length_mm {
-            Some(focal_length_mm) => {
-                match (
-                    cached_pixel_size_x_um,
-                    cached_pixel_size_y_um,
-                    cached_sensor_width_px,
-                    cached_sensor_height_px,
-                ) {
-                    (Some(px), Some(py), Some(sw), Some(sh)) => {
-                        let derived = persistence::Optics::from_camera_geometry(
-                            focal_length_mm,
-                            px,
-                            py,
-                            sw,
-                            sh,
-                        );
-                        if derived.is_none() {
-                            // All cached values are present but the
-                            // derivation declined — typically a non-
-                            // positive or wild-magnitude reading that
-                            // would have overflowed the derived pixel
-                            // scale / FOV. Surface enough to diagnose
-                            // bad camera state or a misconfigured focal
-                            // length.
-                            debug!(
-                                camera_id,
+            // Optical geometry for the sidecar's `optics` block. Combines the
+            // operator-supplied focal length with the cached pixel-size and
+            // sensor-dimension reads from `CameraEntry`. Any missing piece
+            // (focal length not configured, connect-time read failed) drops
+            // the whole block — see `docs/services/rp.md` §"Core Fields".
+            let optics = match focal_length_mm {
+                Some(focal_length_mm) => {
+                    match (
+                        cached_pixel_size_x_um,
+                        cached_pixel_size_y_um,
+                        cached_sensor_width_px,
+                        cached_sensor_height_px,
+                    ) {
+                        (Some(px), Some(py), Some(sw), Some(sh)) => {
+                            let derived = persistence::Optics::from_camera_geometry(
                                 focal_length_mm,
-                                pixel_size_x_um = px,
-                                pixel_size_y_um = py,
-                                sensor_width_px = sw,
-                                sensor_height_px = sh,
-                                "optics derivation declined; omitting block"
+                                px,
+                                py,
+                                sw,
+                                sh,
                             );
+                            if derived.is_none() {
+                                // All cached values are present but the
+                                // derivation declined — typically a non-
+                                // positive or wild-magnitude reading that
+                                // would have overflowed the derived pixel
+                                // scale / FOV. Surface enough to diagnose
+                                // bad camera state or a misconfigured focal
+                                // length.
+                                debug!(
+                                    camera_id,
+                                    focal_length_mm,
+                                    pixel_size_x_um = px,
+                                    pixel_size_y_um = py,
+                                    sensor_width_px = sw,
+                                    sensor_height_px = sh,
+                                    "optics derivation declined; omitting block"
+                                );
+                            }
+                            derived
                         }
-                        derived
+                        _ => None,
                     }
-                    _ => None,
                 }
-            }
-            None => {
-                debug!(
-                    camera_id,
-                    "focal_length_mm not configured; omitting optics block"
-                );
-                None
-            }
-        };
+                None => {
+                    debug!(
+                        camera_id,
+                        "focal_length_mm not configured; omitting optics block"
+                    );
+                    None
+                }
+            };
 
-        // Dispatch on max_adu, collecting pixels directly into the
-        // narrowest type each path needs and reusing the same buffer
-        // for the cache insert.
-        let shape = (width as usize, height as usize);
-        let cached_pixels: Option<CachedPixels> = match captured_max_adu {
-            Some(max_adu) if max_adu <= u16::MAX as u32 => {
-                let max_adu_i32 = max_adu as i32;
-                let u16_pixels: Vec<u16> = image_array
-                    .iter()
-                    .map(|&p| p.clamp(0, max_adu_i32) as u16)
-                    .collect();
-                drop(image_array);
-                persistence::write_fits_u16(&image_path, &u16_pixels, width, height, &document_id)
+            // Dispatch on max_adu, collecting pixels directly into the
+            // narrowest type each path needs and reusing the same buffer
+            // for the cache insert.
+            let shape = (width as usize, height as usize);
+            let cached_pixels: Option<CachedPixels> = match captured_max_adu {
+                Some(max_adu) if max_adu <= u16::MAX as u32 => {
+                    let max_adu_i32 = max_adu as i32;
+                    let u16_pixels: Vec<u16> = image_array
+                        .iter()
+                        .map(|&p| p.clamp(0, max_adu_i32) as u16)
+                        .collect();
+                    drop(image_array);
+                    persistence::write_fits_u16(
+                        &image_path,
+                        &u16_pixels,
+                        width,
+                        height,
+                        &document_id,
+                    )
                     .await
                     .map_err(|e| format!("failed to write FITS file: {}", e))?;
-                CachedPixels::from_u16_pixels(u16_pixels, shape)
-            }
-            _ => {
-                let i32_pixels: Vec<i32> = image_array.iter().copied().collect();
-                drop(image_array);
-                persistence::write_fits_i32(&image_path, &i32_pixels, width, height, &document_id)
+                    CachedPixels::from_u16_pixels(u16_pixels, shape)
+                }
+                _ => {
+                    let i32_pixels: Vec<i32> = image_array.iter().copied().collect();
+                    drop(image_array);
+                    persistence::write_fits_i32(
+                        &image_path,
+                        &i32_pixels,
+                        width,
+                        height,
+                        &document_id,
+                    )
                     .await
                     .map_err(|e| format!("failed to write FITS file: {}", e))?;
-                captured_max_adu.and_then(|m| CachedPixels::from_i32_pixels(i32_pixels, shape, m))
-            }
-        };
+                    captured_max_adu
+                        .and_then(|m| CachedPixels::from_i32_pixels(i32_pixels, shape, m))
+                }
+            };
 
-        let doc = ExposureDocument {
-            id: document_id.clone(),
-            captured_at: chrono::Utc::now().to_rfc3339(),
-            file_path: image_path.clone(),
-            width,
-            height,
-            camera_id: Some(camera_id.to_string()),
-            duration: Some(duration),
-            max_adu: captured_max_adu,
-            optics,
-            sections: serde_json::Map::new(),
-        };
-        self.persist_capture_artifact(doc, cached_pixels, captured_max_adu)
-            .await;
+            let doc = ExposureDocument {
+                id: document_id.clone(),
+                captured_at: chrono::Utc::now().to_rfc3339(),
+                file_path: image_path.clone(),
+                width,
+                height,
+                camera_id: Some(camera_id.to_string()),
+                duration: Some(duration),
+                max_adu: captured_max_adu,
+                optics,
+                sections: serde_json::Map::new(),
+            };
+            self.persist_capture_artifact(doc, cached_pixels, captured_max_adu)
+                .await;
 
-        self.event_bus.emit(
-            "exposure_complete",
-            serde_json::json!({
-                "document_id": document_id,
-                "file_path": image_path,
-            }),
-        );
+            Ok(())
+        }
+        .await;
 
-        Ok((image_path, document_id))
+        match &capture_result {
+            Ok(()) => self.event_bus.emit_operation(EventEnvelope::complete(
+                "exposure",
+                &operation_id,
+                started_at,
+                serde_json::json!({
+                    "document_id": document_id,
+                    "file_path": image_path,
+                }),
+            )),
+            Err(e) => self.event_bus.emit_operation(EventEnvelope::failed(
+                "exposure",
+                &operation_id,
+                started_at,
+                e,
+            )),
+        }
+        capture_result.map(|()| (image_path, document_id))
     }
 
     /// Resolve a focuser, validate the requested `position` against the
@@ -691,6 +732,44 @@ impl McpHandler {
     /// run that approaches its own 120 s deadline. `None` (unit tests,
     /// clients without `progressToken`) makes the emission a no-op.
     pub(crate) async fn do_move_focuser_blocking(
+        &self,
+        focuser_id: &str,
+        position: i32,
+        progress: Option<&dyn ProgressEmitter>,
+    ) -> std::result::Result<i32, String> {
+        let operation_id = Uuid::new_v4().to_string();
+        let started_at = chrono::Utc::now();
+        self.event_bus.emit_operation(EventEnvelope::started(
+            "move_focuser",
+            &operation_id,
+            started_at,
+            serde_json::json!({ "focuser_id": focuser_id, "position": position }),
+        ));
+        let result = self
+            .do_move_focuser_blocking_inner(focuser_id, position, progress)
+            .await;
+        match &result {
+            Ok(final_position) => self.event_bus.emit_operation(EventEnvelope::complete(
+                "move_focuser",
+                &operation_id,
+                started_at,
+                serde_json::json!({ "focuser_id": focuser_id, "position": final_position }),
+            )),
+            Err(e) => self.event_bus.emit_operation(EventEnvelope::failed(
+                "move_focuser",
+                &operation_id,
+                started_at,
+                e,
+            )),
+        }
+        result
+    }
+
+    /// Inner body of [`do_move_focuser_blocking`] — resolve + bounds-check
+    /// then move, poll until idle, and read back. Split out so the public
+    /// method wraps it in the `move_focuser_started` /
+    /// `move_focuser_complete` / `move_focuser_failed` triple.
+    async fn do_move_focuser_blocking_inner(
         &self,
         focuser_id: &str,
         position: i32,
@@ -814,6 +893,52 @@ impl McpHandler {
         settle_after: Duration,
         progress: Option<&dyn ProgressEmitter>,
     ) -> std::result::Result<(f64, f64), String> {
+        let operation_id = Uuid::new_v4().to_string();
+        let started_at = chrono::Utc::now();
+        self.event_bus.emit_operation(EventEnvelope::started(
+            "slew",
+            &operation_id,
+            started_at,
+            serde_json::json!({ "ra": ra, "dec": dec }),
+        ));
+        let result = self
+            .do_slew_blocking_inner(ra, dec, settle_after, progress)
+            .await;
+        match &result {
+            Ok((actual_ra, actual_dec)) => self.event_bus.emit_operation(EventEnvelope::complete(
+                "slew",
+                &operation_id,
+                started_at,
+                serde_json::json!({
+                    "ra": ra,
+                    "dec": dec,
+                    "actual_ra": actual_ra,
+                    "actual_dec": actual_dec,
+                }),
+            )),
+            Err(e) => self.event_bus.emit_operation(EventEnvelope::failed(
+                "slew",
+                &operation_id,
+                started_at,
+                e,
+            )),
+        }
+        result
+    }
+
+    /// Inner body of [`do_slew_blocking`] — the slew + poll-until-idle +
+    /// settle + post-slew read. Split out so the public method can wrap
+    /// it in the `slew_started` / `slew_complete` / `slew_failed` event
+    /// triple under one `operation_id`. Every call (including
+    /// `center_on_target`'s per-iteration slews) emits its own triple;
+    /// Sentinel filters inner-vs-outer in Phase 4.
+    async fn do_slew_blocking_inner(
+        &self,
+        ra: f64,
+        dec: f64,
+        settle_after: Duration,
+        progress: Option<&dyn ProgressEmitter>,
+    ) -> std::result::Result<(f64, f64), String> {
         let (_entry, mount) = self.resolve_mount()?;
 
         debug!(ra, dec, "slewing mount");
@@ -893,6 +1018,42 @@ impl McpHandler {
         &self,
         progress: Option<&dyn ProgressEmitter>,
     ) -> std::result::Result<(), String> {
+        let operation_id = Uuid::new_v4().to_string();
+        let started_at = chrono::Utc::now();
+        self.event_bus.emit_operation(EventEnvelope::started(
+            "park",
+            &operation_id,
+            started_at,
+            serde_json::json!({}),
+        ));
+        let result = self.do_park_blocking_inner(progress).await;
+        match &result {
+            Ok(()) => self.event_bus.emit_operation(EventEnvelope::complete(
+                "park",
+                &operation_id,
+                started_at,
+                serde_json::json!({}),
+            )),
+            Err(e) => self.event_bus.emit_operation(EventEnvelope::failed(
+                "park",
+                &operation_id,
+                started_at,
+                e,
+            )),
+        }
+        result
+    }
+
+    /// Inner body of [`do_park_blocking`] — the `park()` call + the
+    /// `at_park` poll loop. Split out so the public method wraps it in
+    /// the `park_started` / `park_complete` / `park_failed` triple. The
+    /// timeout path still returns `Err` (so `park_failed` fires) and
+    /// still does NOT auto-abort — the watchdog ladder owns that decision
+    /// in Phase 5.
+    async fn do_park_blocking_inner(
+        &self,
+        progress: Option<&dyn ProgressEmitter>,
+    ) -> std::result::Result<(), String> {
         let (_entry, mount) = self.resolve_mount()?;
 
         debug!("parking mount");
@@ -939,6 +1100,34 @@ impl McpHandler {
     /// tool's per-iteration sync; one helper, one place to change
     /// the error-mapping convention.
     pub(crate) async fn do_sync_mount(
+        &self,
+        ra_hours: f64,
+        dec_deg: f64,
+    ) -> std::result::Result<(), String> {
+        let operation_id = Uuid::new_v4().to_string();
+        let started_at = chrono::Utc::now();
+        let result = self.do_sync_mount_inner(ra_hours, dec_deg).await;
+        match &result {
+            Ok(()) => self.event_bus.emit_operation(EventEnvelope::complete(
+                "sync_mount",
+                &operation_id,
+                started_at,
+                serde_json::json!({ "ra": ra_hours, "dec": dec_deg }),
+            )),
+            Err(e) => self.event_bus.emit_operation(EventEnvelope::failed(
+                "sync_mount",
+                &operation_id,
+                started_at,
+                e,
+            )),
+        }
+        result
+    }
+
+    /// Inner body of [`do_sync_mount`]. Sync is instant per ASCOM, so the
+    /// public method emits only `sync_mount_complete` /
+    /// `sync_mount_failed` (no `_started` / timer).
+    async fn do_sync_mount_inner(
         &self,
         ra_hours: f64,
         dec_deg: f64,
@@ -1005,6 +1194,49 @@ impl McpHandler {
     /// - `center_on_target` always supplies `document_id` and
     ///   hardcodes `pointing_hint: None, use_mount_hints: true`.
     pub(crate) async fn do_plate_solve(
+        &self,
+        input: DoPlateSolveInput<'_>,
+    ) -> Result<DoPlateSolveOutput, String> {
+        let operation_id = Uuid::new_v4().to_string();
+        let started_at = chrono::Utc::now();
+        self.event_bus.emit_operation(EventEnvelope::started(
+            "plate_solve",
+            &operation_id,
+            started_at,
+            serde_json::json!({
+                "document_id": input.document_id,
+                "image_path": input.image_path,
+                "use_mount_hints": input.use_mount_hints,
+            }),
+        ));
+        let result = self.do_plate_solve_inner(input).await;
+        match &result {
+            Ok(out) => self.event_bus.emit_operation(EventEnvelope::complete(
+                "plate_solve",
+                &operation_id,
+                started_at,
+                serde_json::json!({
+                    "ra_center": out.ra_center,
+                    "dec_center": out.dec_center,
+                    "pixel_scale_arcsec": out.pixel_scale_arcsec,
+                    "rotation_deg": out.rotation_deg,
+                    "solver": out.solver,
+                }),
+            )),
+            Err(e) => self.event_bus.emit_operation(EventEnvelope::failed(
+                "plate_solve",
+                &operation_id,
+                started_at,
+                e,
+            )),
+        }
+        result
+    }
+
+    /// Inner body of [`do_plate_solve`]. Split out so the public method
+    /// wraps it in the `plate_solve_started` / `plate_solve_complete` /
+    /// `plate_solve_failed` triple under one `operation_id`.
+    async fn do_plate_solve_inner(
         &self,
         input: DoPlateSolveInput<'_>,
     ) -> Result<DoPlateSolveOutput, String> {
