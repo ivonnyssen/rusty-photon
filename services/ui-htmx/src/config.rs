@@ -66,9 +66,12 @@ pub struct DriverTarget {
 }
 
 /// HTTP Basic credentials the BFF presents to a driver.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, derive_more::Debug)]
 pub struct DriverAuth {
     pub username: String,
+    /// Plaintext Basic-Auth password — redacted from `Debug` so it never lands
+    /// in logs or test output.
+    #[debug("<redacted>")]
     pub password: String,
 }
 
@@ -182,5 +185,17 @@ mod tests {
     #[test]
     fn load_config_missing_file_errors() {
         load_config(Path::new("/tmp/ui_htmx_nonexistent_4242.json")).unwrap_err();
+    }
+
+    #[test]
+    fn driver_auth_password_redacted_in_debug() {
+        let auth = DriverAuth {
+            username: "obs".to_string(),
+            password: "hunter2".to_string(),
+        };
+        let rendered = format!("{auth:?}");
+        assert!(!rendered.contains("hunter2"), "password leaked: {rendered}");
+        assert!(rendered.contains("obs"));
+        assert!(rendered.contains("<redacted>"));
     }
 }

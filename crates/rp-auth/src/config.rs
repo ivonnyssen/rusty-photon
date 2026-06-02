@@ -4,9 +4,12 @@ use serde::{Deserialize, Serialize};
 ///
 /// Stored in each service's config file. The password is hashed with Argon2id;
 /// use `rp hash-password` to generate the hash.
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Serialize, Deserialize, schemars::JsonSchema, derive_more::Debug)]
 pub struct AuthConfig {
     pub username: String,
+    /// Argon2id hash — redacted from `Debug` so credential material never lands
+    /// in logs or test output.
+    #[debug("<redacted>")]
     pub password_hash: String,
 }
 
@@ -16,9 +19,12 @@ pub struct AuthConfig {
 /// monitoring an auth-enabled filemonitor). The password is stored in plaintext
 /// because the client needs the actual password for HTTP Basic Auth headers.
 /// File permissions (`chmod 600`) are the recommended protection.
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Serialize, Deserialize, schemars::JsonSchema, derive_more::Debug)]
 pub struct ClientAuthConfig {
     pub username: String,
+    /// Plaintext (needed for the HTTP Basic-Auth header) — redacted from `Debug`
+    /// so it never lands in logs or test output.
+    #[debug("<redacted>")]
     pub password: String,
 }
 
@@ -55,6 +61,36 @@ mod tests {
         let config: ClientAuthConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.username, "observatory");
         assert_eq!(config.password, "secret");
+    }
+
+    #[test]
+    fn auth_config_redacts_password_hash_in_debug() {
+        let config = AuthConfig {
+            username: "observatory".to_string(),
+            password_hash: "$argon2id$v=19$m=19456,t=2,p=1$secret-hash".to_string(),
+        };
+        let rendered = format!("{config:?}");
+        assert!(
+            !rendered.contains("secret-hash") && !rendered.contains("argon2id"),
+            "password hash leaked into Debug: {rendered}"
+        );
+        assert!(rendered.contains("observatory"));
+        assert!(rendered.contains("<redacted>"));
+    }
+
+    #[test]
+    fn client_auth_config_redacts_password_in_debug() {
+        let config = ClientAuthConfig {
+            username: "observatory".to_string(),
+            password: "hunter2".to_string(),
+        };
+        let rendered = format!("{config:?}");
+        assert!(
+            !rendered.contains("hunter2"),
+            "plaintext password leaked into Debug: {rendered}"
+        );
+        assert!(rendered.contains("observatory"));
+        assert!(rendered.contains("<redacted>"));
     }
 
     #[test]

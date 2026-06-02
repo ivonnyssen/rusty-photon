@@ -117,24 +117,17 @@ pub struct DeviceState {
     pub survey_client: Arc<dyn SurveyClient>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, derive_more::Debug)]
 pub struct SkySurveyCamera {
     state: Arc<DeviceState>,
     /// `Some` when built through the reload loop with a config source; `None`
     /// for focused unit-test devices that don't exercise config actions.
+    ///
+    /// Skipped from `Debug`: the shared `ConfigActionCtx<D>` has no `Debug` impl.
+    /// (The follow-mode credentials its effective `Config` carries are redacted
+    /// at the leaf regardless — see [`rp_auth::config::ClientAuthConfig`].)
+    #[debug(skip)]
     config_ctx: Option<ConfigActionCtx<SkySurveyCameraDriver>>,
-}
-
-// Manual `Debug` (not derived): the shared `ConfigActionCtx<D>` deliberately
-// omits a `Debug` impl, so summarize the field as a presence flag rather than
-// printing the effective config (which would also leak follow-mode secrets).
-impl std::fmt::Debug for SkySurveyCamera {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SkySurveyCamera")
-            .field("state", &self.state)
-            .field("config_actions_enabled", &self.config_ctx.is_some())
-            .finish()
-    }
 }
 
 impl SkySurveyCamera {
