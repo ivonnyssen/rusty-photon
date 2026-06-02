@@ -1,0 +1,36 @@
+[package]
+name = "rusty-photon-driver"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Shared ASCOM-driver runtime layer for rusty-photon: the common DriverError model, its ASCOM error-code mapping, and the generic config.get/apply/schema action dispatch"
+
+[lints]
+workspace = true
+
+[dependencies]
+# Only the core ASCOM error types (`ASCOMError`/`ASCOMResult`/`ASCOMErrorCode`,
+# unfeatured in `errors.rs`) are used. lib.rs `compile_error!`s unless one device
+# and one network feature are on. The device guard keys off the empty `__anydevice`
+# marker, so we satisfy it without enabling any real device trait — no
+# cover_calibrator leaking into every driver's graph via feature unification. The
+# network side needs a *real* feature though: the always-built `api::device_state`
+# module's serde derives are gated on `client`/`server`, not on `__anynetwork`, so
+# the marker alone won't compile. `server` is the lightest sufficient choice and is
+# already enabled by every driver, so it adds nothing to any driver's build graph.
+ascom-alpaca = { workspace = true, features = ["__anydevice", "server"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+rusty-photon-config = { workspace = true }
+rusty-photon-service-lifecycle = { workspace = true }
+rusty-photon-shared-transport = { workspace = true }
+
+[dev-dependencies]
+serde = { workspace = true }
+schemars = { workspace = true }
+tempfile = { workspace = true }

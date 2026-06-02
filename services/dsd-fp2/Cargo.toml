@@ -41,6 +41,7 @@ thiserror = { workspace = true }
 rusty-photon-shared-transport = { workspace = true }
 rusty-photon-service-lifecycle = { workspace = true }
 rusty-photon-config = { workspace = true }
+rusty-photon-driver = { workspace = true }
 rp-tls = { workspace = true }
 rp-auth = { workspace = true }
 axum = { workspace = true }

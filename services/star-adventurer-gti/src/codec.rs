@@ -261,39 +261,6 @@ pub fn decode_frame_for(cmd: &Command, frame: &[u8]) -> Result<Response, Protoco
     Response::decode(frame, cmd)
 }
 
-/// Single classification point for a [`TransportError`] into
-/// [`StarAdvError`]. Every other transport-arm in this module
-/// (`From<SkywatcherCodecError>::Transport(_)`, `From<SessionError<…>>
-/// ::Transport(_)`) delegates here via `.into()`, so a connect-time
-/// transport failure (surfaced through the handshake hook as
-/// `Codec(Transport(_))`) gets the *same* `Timeout` /
-/// `ConnectionFailed` / `Transport` classification a steady-state
-/// failure (surfaced as top-level `Transport(_)`) would. Without this
-/// single point, a connect-time timeout would land as
-/// `INVALID_OPERATION` instead of the structured ASCOM timeout the
-/// client expects.
-///
-/// Also used directly via `.map_err(StarAdvError::from)?` on a
-/// `Session::close()` (which returns `Result<_, TransportError>`) —
-/// no need to wrap the [`TransportError`] in a
-/// [`SessionError::Transport`] just to reuse the mapping.
-impl From<TransportError> for StarAdvError {
-    fn from(t: TransportError) -> Self {
-        match t {
-            TransportError::Open(e) => StarAdvError::ConnectionFailed(e.to_string()),
-            TransportError::Io(e) => StarAdvError::Io(e),
-            TransportError::Timeout(d) => {
-                StarAdvError::Timeout(format!("transport timeout after {d:?}"))
-            }
-            TransportError::Eof => StarAdvError::Transport("connection closed".to_string()),
-            TransportError::Framing(s) => StarAdvError::Transport(format!("framing: {s}")),
-            TransportError::Reconnecting => {
-                StarAdvError::Transport("transport is reconnecting".to_string())
-            }
-        }
-    }
-}
-
 /// Per-variant classification for the codec's own error type. The
 /// `From<SessionError<…>> for StarAdvError` impl below delegates the
 /// `SessionError::Codec(_)` arm here so each error layer owns its own
@@ -517,17 +484,18 @@ mod tests {
     }
 
     #[test]
-    fn session_error_transport_framing_maps_to_transport_with_prefix() {
+    fn session_error_transport_framing_maps_to_communication_with_prefix() {
         // The Framing branch flattens the wire-side framing error
-        // string into `StarAdvError::Transport(...)` with a "framing: "
-        // prefix so logs can tell it apart from other transport faults.
+        // string into `StarAdvError::Communication(...)` with a
+        // "framing: " prefix (the shared `From<TransportError>` mapping)
+        // so logs can tell it apart from other transport faults.
         let err: SessionError<SkywatcherCodecError> =
             SessionError::Transport(TransportError::Framing("too big".to_string()));
         match StarAdvError::from(err) {
-            StarAdvError::Transport(s) => {
+            StarAdvError::Communication(s) => {
                 assert!(s.starts_with("framing:") && s.contains("too big"));
             }
-            other => panic!("expected Transport, got {other:?}"),
+            other => panic!("expected Communication, got {other:?}"),
         }
     }
 
@@ -535,8 +503,8 @@ mod tests {
     fn session_error_transport_eof_maps_to_connection_closed() {
         let err: SessionError<SkywatcherCodecError> = SessionError::Transport(TransportError::Eof);
         match StarAdvError::from(err) {
-            StarAdvError::Transport(s) => assert!(s.contains("connection closed")),
-            other => panic!("expected Transport, got {other:?}"),
+            StarAdvError::Communication(s) => assert!(s.contains("Connection closed")),
+            other => panic!("expected Communication, got {other:?}"),
         }
     }
 
@@ -618,8 +586,8 @@ mod tests {
         let err: SessionError<SkywatcherCodecError> =
             SessionError::Codec(SkywatcherCodecError::Transport(TransportError::Eof));
         match StarAdvError::from(err) {
-            StarAdvError::Transport(s) => assert!(s.contains("connection closed")),
-            other => panic!("expected Transport, got {other:?}"),
+            StarAdvError::Communication(s) => assert!(s.contains("Connection closed")),
+            other => panic!("expected Communication, got {other:?}"),
         }
     }
 
@@ -723,16 +691,16 @@ mod tests {
     }
 
     #[test]
-    fn from_transport_error_eof_maps_to_transport_connection_closed() {
+    fn from_transport_error_eof_maps_to_communication_connection_closed() {
         let err: StarAdvError = TransportError::Eof.into();
-        assert!(matches!(err, StarAdvError::Transport(s) if s.contains("connection closed")));
+        assert!(matches!(err, StarAdvError::Communication(s) if s.contains("Connection closed")));
     }
 
     #[test]
-    fn from_transport_error_framing_maps_to_transport_with_prefix() {
+    fn from_transport_error_framing_maps_to_communication_with_prefix() {
         let err: StarAdvError = TransportError::Framing("too big".to_string()).into();
         assert!(
-            matches!(err, StarAdvError::Transport(s) if s.starts_with("framing:") && s.contains("too big"))
+            matches!(err, StarAdvError::Communication(s) if s.starts_with("framing:") && s.contains("too big"))
         );
     }
 }

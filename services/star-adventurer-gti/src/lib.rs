@@ -43,7 +43,7 @@ use rp_tls::config::TlsConfig;
 use rusty_photon_service_lifecycle::ReloadSignal;
 use tracing::{debug, info};
 
-use crate::config_actions::ConfigActionCtx;
+use crate::config_actions::StarAdvDriver;
 
 /// Builder for the Alpaca server bound to a configured Transport.
 ///
@@ -174,14 +174,18 @@ impl ServerBuilder {
                 );
                 // Enable the config vendor actions when built with a config file
                 // path + reload signal (the normal path through `main`).
-                if let (Some(path), Some(reload)) =
-                    (self.config_file_path.clone(), self.reload.clone())
-                {
-                    device = device.with_config_actions(ConfigActionCtx {
-                        effective: self.config.clone(),
-                        path,
-                        reload,
-                    });
+                let config_ctx: Option<rusty_photon_driver::ConfigActionCtx<StarAdvDriver>> =
+                    match (self.config_file_path.clone(), self.reload.clone()) {
+                        (Some(path), Some(reload)) => Some(rusty_photon_driver::ConfigActionCtx {
+                            effective: self.config.clone(),
+                            path,
+                            overrides: (),
+                            reload,
+                        }),
+                        _ => None,
+                    };
+                if let Some(ctx) = config_ctx {
+                    device = device.with_config_actions(ctx);
                 }
                 server.devices.register(device);
                 info!("Registered Telescope device: {}", self.config.mount.name);

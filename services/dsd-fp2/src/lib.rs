@@ -20,7 +20,7 @@ pub use config::{
     load_config, load_effective_config, resolve_config_path, CliOverrides, Config,
     CoverCalibratorConfig, SerialConfig, ServerConfig,
 };
-pub use device::{ConfigActionCtx, DsdFp2Device};
+pub use device::DsdFp2Device;
 pub use error::{DsdFp2Error, Result};
 pub use manager::{CachedState, FlatPanelManager};
 pub use transport::Fp2SerialTransportFactory;
@@ -39,6 +39,8 @@ use rp_tls::config::TlsConfig;
 use rusty_photon_service_lifecycle::ReloadSignal;
 use rusty_photon_shared_transport::TransportFactory;
 use tracing::{debug, info};
+
+use crate::config_actions::DsdFp2Driver;
 
 /// Builder for the FP2 ASCOM Alpaca server.
 pub struct ServerBuilder {
@@ -141,13 +143,18 @@ impl ServerBuilder {
             if self.config.cover_calibrator.enabled {
                 let mut device =
                     DsdFp2Device::new(self.config.cover_calibrator.clone(), Arc::clone(&manager));
-                if let (Some(path), Some(reload)) = (config_path.clone(), reload.clone()) {
-                    device = device.with_config_actions(ConfigActionCtx {
-                        effective: self.config.clone(),
-                        path,
-                        overrides: overrides.clone(),
-                        reload,
-                    });
+                let config_ctx: Option<rusty_photon_driver::ConfigActionCtx<DsdFp2Driver>> =
+                    match (config_path.clone(), reload.clone()) {
+                        (Some(path), Some(reload)) => Some(rusty_photon_driver::ConfigActionCtx {
+                            effective: self.config.clone(),
+                            path,
+                            overrides: overrides.clone(),
+                            reload,
+                        }),
+                        _ => None,
+                    };
+                if let Some(ctx) = config_ctx {
+                    device = device.with_config_actions(ctx);
                 }
                 server.devices.register(device);
                 info!(

@@ -442,6 +442,13 @@ along the natural driver ⇆ BFF fault line.
 - ⬜ Follow-up (not blocking): a generic `oneOf`/enum (discriminated-union)
   renderer and a dedicated password input for redacted-secret leaves — until then
   those fields round-trip read-only via the blob and are edited in the config file.
+- ✅ Landed (PR #344): the ASCOM-facing glue duplicated across the six drivers —
+  the `config.apply` `ApplyError → ASCOMError` mapping, the `ConfigActionCtx` +
+  generic action `dispatch`, and the common transport-driver error model — was
+  extracted into the new **`rusty-photon-driver`** crate (the macro `driver_error!`
+  generates each driver's error enum). `rusty-photon-config` stays the ascom-free
+  protocol *model*; `rusty-photon-driver` is the ASCOM *adapter*. See
+  [ADR-007](../../decisions/007-rusty-photon-driver-shared-crate.md).
 - Future: promote the shared helper to a standalone vendor-neutral crate once it
   has settled (see [Decisions](#decisions-2026-05-27)).
 

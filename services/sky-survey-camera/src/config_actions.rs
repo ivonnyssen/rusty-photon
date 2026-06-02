@@ -1,5 +1,9 @@
-//! sky-survey-camera's [`ConfigurableDriver`] implementation plus the action
-//! dispatch the camera device delegates to.
+//! sky-survey-camera's [`ConfigurableDriver`] implementation.
+//!
+//! The generic `config.get` / `config.apply` / `config.schema` action dispatch
+//! the camera device delegates to lives in [`rusty_photon_driver`]; this module
+//! supplies only what varies for the camera — its `Config`, validation, secrets,
+//! and editability tiers.
 //!
 //! Single ASCOM device (the camera); follow-mode telescope/rotator blocks are
 //! *client* config, so their plaintext credentials are treated as secrets
@@ -9,25 +13,12 @@
 //!
 //! [`docs/services/sky-survey-camera.md`]: ../../../docs/services/sky-survey-camera.md
 
-use std::path::PathBuf;
-use std::time::Duration;
-
-use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
-use rusty_photon_config::actions::{
-    self, ApplyError, ApplyStatus, ConfigAction, ConfigurableDriver, FieldError,
-};
-use rusty_photon_service_lifecycle::ReloadSignal;
-use serde_json::Error as JsonError;
-use tracing::debug;
+use rusty_photon_config::actions::{ConfigurableDriver, FieldError};
 
 use crate::config::Config;
 
 /// Re-exported so the camera and tests can name the redaction sentinel.
 pub use rusty_photon_config::actions::REDACTED;
-
-/// Delay before firing the reload so the `config.apply` HTTP response — served
-/// by the very server the reload tears down — flushes before the blip.
-const RELOAD_AFTER_RESPONSE_DELAY: Duration = Duration::from_millis(100);
 
 /// Driver marker wiring the camera's `Config` into the generic protocol.
 pub struct SkySurveyCameraDriver;
@@ -112,110 +103,6 @@ impl ConfigurableDriver for SkySurveyCameraDriver {
     }
 }
 
-/// State the config actions need.
-#[derive(Clone, Debug)]
-pub struct ConfigActionCtx {
-    /// Effective config this server instance is running.
-    pub effective: Config,
-    /// Where `config.apply` persists; what reload re-reads.
-    pub path: PathBuf,
-    /// Fired (after the response flushes) to trigger the in-process reload.
-    pub reload: ReloadSignal,
-}
-
-fn ser_err(e: JsonError) -> ASCOMError {
-    ASCOMError::new(
-        ASCOMErrorCode::INVALID_OPERATION,
-        format!("config: serialization error: {e}"),
-    )
-}
-
-/// The supported-actions list for a device that may or may not carry a config
-/// context (ctx-less focused-test devices advertise none).
-pub fn supported_actions(ctx: &Option<ConfigActionCtx>) -> Vec<String> {
-    if ctx.is_some() {
-        ConfigAction::ALL
-            .iter()
-            .map(|action| action.name().to_string())
-            .collect()
-    } else {
-        Vec::new()
-    }
-}
-
-/// Dispatch a vendor action against the config context. The camera's
-/// `Device::action` impl delegates here.
-pub async fn dispatch(
-    ctx: &Option<ConfigActionCtx>,
-    action: String,
-    parameters: String,
-) -> ASCOMResult<String> {
-    let Some(parsed) = ConfigAction::from_name(&action) else {
-        return Err(ASCOMError::new(
-            ASCOMErrorCode::ACTION_NOT_IMPLEMENTED,
-            format!("unknown action {action:?}"),
-        ));
-    };
-    let ctx = ctx.as_ref().ok_or_else(|| {
-        ASCOMError::new(
-            ASCOMErrorCode::ACTION_NOT_IMPLEMENTED,
-            "config actions are not configured for this device instance",
-        )
-    })?;
-
-    match parsed {
-        ConfigAction::Get => {
-            let response = actions::config_get::<SkySurveyCameraDriver>(&ctx.effective, &())
-                .map_err(ser_err)?;
-            Ok(serde_json::to_string(&response).map_err(ser_err)?)
-        }
-        ConfigAction::Schema => {
-            let response = actions::config_schema::<SkySurveyCameraDriver>();
-            Ok(serde_json::to_string(&response).map_err(ser_err)?)
-        }
-        ConfigAction::Apply => {
-            let response = match actions::config_apply::<SkySurveyCameraDriver>(
-                &ctx.path,
-                &(),
-                &ctx.effective,
-                &parameters,
-            ) {
-                Ok(response) => response,
-                Err(ApplyError::Parse(e)) => {
-                    return Err(ASCOMError::new(
-                        ASCOMErrorCode::INVALID_VALUE,
-                        format!("config.apply: invalid config JSON: {e}"),
-                    ))
-                }
-                Err(ApplyError::ReadFile(e)) => {
-                    return Err(ASCOMError::new(
-                        ASCOMErrorCode::INVALID_OPERATION,
-                        format!("config.apply: {e}"),
-                    ))
-                }
-                Err(ApplyError::Persist(e)) => {
-                    return Err(ASCOMError::new(
-                        ASCOMErrorCode::INVALID_OPERATION,
-                        format!("config.apply: failed to persist config: {e}"),
-                    ))
-                }
-                Err(ApplyError::Serialize(e)) => return Err(ser_err(e)),
-            };
-
-            if matches!(response.status, ApplyStatus::Applying) {
-                let reload = ctx.reload.clone();
-                tokio::spawn(async move {
-                    tokio::time::sleep(RELOAD_AFTER_RESPONSE_DELAY).await;
-                    debug!("firing in-process reload after config.apply");
-                    reload.notify();
-                });
-            }
-
-            Ok(serde_json::to_string(&response).map_err(ser_err)?)
-        }
-    }
-}
-
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
@@ -226,6 +113,7 @@ mod tests {
         SurveyConfig, TelescopeFollowConfig,
     };
     use std::path::PathBuf as P;
+    use std::time::Duration;
 
     fn base() -> Config {
         Config {
@@ -316,10 +204,5 @@ mod tests {
                 "/pointing/rotator/auth/password"
             ]
         );
-    }
-
-    #[test]
-    fn supported_actions_gated_on_ctx() {
-        assert!(supported_actions(&None).is_empty());
     }
 }

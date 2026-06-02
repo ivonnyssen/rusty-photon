@@ -32,7 +32,8 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use crate::config_actions::ConfigActionCtx;
+use crate::config_actions::SkySurveyCameraDriver;
+use rusty_photon_driver::ConfigActionCtx;
 
 /// Bind the ASCOM Alpaca Camera server (with the `/sky-survey/*`
 /// custom routes composed in front of it), print `bound_addr=` for
@@ -92,9 +93,10 @@ pub async fn run_reloadable(
     loop {
         let config = load_config(config_path).await?;
         let survey_client = build_survey_client(&config)?;
-        let ctx = ConfigActionCtx {
+        let ctx: ConfigActionCtx<SkySurveyCameraDriver> = ConfigActionCtx {
             effective: config.clone(),
             path: config_path.to_path_buf(),
+            overrides: (),
             reload: reload.clone(),
         };
 
@@ -136,7 +138,7 @@ pub async fn run_with_client(
 pub async fn run_with_client_ctx(
     config: Config,
     survey_client: Arc<dyn SurveyClient>,
-    config_ctx: Option<ConfigActionCtx>,
+    config_ctx: Option<ConfigActionCtx<SkySurveyCameraDriver>>,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<(), SkySurveyCameraError> {
     let device = build_device(config.clone(), survey_client)?;

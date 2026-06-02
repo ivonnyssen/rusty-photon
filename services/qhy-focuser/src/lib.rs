@@ -48,7 +48,7 @@ use rusty_photon_shared_transport::TransportFactory;
 use tracing::{debug, info};
 
 use crate::config::CliOverrides;
-use crate::focuser_device::ConfigActionCtx;
+use crate::config_actions::QhyFocuserDriver;
 
 /// Builder for the ASCOM Alpaca server.
 ///
@@ -130,15 +130,20 @@ impl ServerBuilder {
                     QhyFocuserDevice::new(self.config.focuser.clone(), Arc::clone(&manager));
                 // Enable config actions when built with a config source + reload
                 // signal (the normal path through `main`); ctx-less otherwise.
-                if let (Some((path, overrides)), Some(reload)) =
-                    (self.config_source.clone(), self.reload.clone())
-                {
-                    focuser_device = focuser_device.with_config_actions(ConfigActionCtx {
-                        effective: self.config.clone(),
-                        path,
-                        overrides,
-                        reload,
-                    });
+                let config_ctx: Option<rusty_photon_driver::ConfigActionCtx<QhyFocuserDriver>> =
+                    match (self.config_source.clone(), self.reload.clone()) {
+                        (Some((path, overrides)), Some(reload)) => {
+                            Some(rusty_photon_driver::ConfigActionCtx {
+                                effective: self.config.clone(),
+                                path,
+                                overrides,
+                                reload,
+                            })
+                        }
+                        _ => None,
+                    };
+                if let Some(ctx) = config_ctx {
+                    focuser_device = focuser_device.with_config_actions(ctx);
                 }
                 server.devices.register(focuser_device);
                 info!("Registered Focuser device: {}", self.config.focuser.name);

@@ -8,43 +8,21 @@
 //! qhy-focuser structurally and removes the rollback bookkeeping from
 //! #258 since the shared-transport core owns it).
 
-use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 
 use ascom_alpaca::api::{Device, Focuser};
 use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
 use async_trait::async_trait;
-use rusty_photon_config::actions::{self, ApplyError, ApplyStatus, ConfigAction};
-use rusty_photon_service_lifecycle::ReloadSignal;
+use rusty_photon_driver::ConfigActionCtx;
 use rusty_photon_shared_transport::Session;
 use tokio::sync::RwLock;
 use tracing::debug;
 
 use crate::codec::QhyCodec;
-use crate::config::{CliOverrides, Config, FocuserConfig};
+use crate::config::FocuserConfig;
 use crate::config_actions::QhyFocuserDriver;
 use crate::error::QhyFocuserError;
 use crate::manager::FocuserManager;
-
-/// Delay before firing the reload so the `config.apply` HTTP response — served
-/// by the very server the reload tears down — flushes before the blip.
-const RELOAD_AFTER_RESPONSE_DELAY: Duration = Duration::from_millis(100);
-
-/// State the `config.get` / `config.apply` / `config.schema` actions need: the
-/// effective config this server instance is running, where to persist edits,
-/// which fields are CLI-override-pinned, and the in-process reload trigger.
-#[derive(Clone)]
-pub struct ConfigActionCtx {
-    /// Effective config (file + CLI overrides) this server was built with.
-    pub effective: Config,
-    /// Where `config.apply` persists; what reload re-reads.
-    pub path: PathBuf,
-    /// CLI overrides, so config actions can distinguish file vs. override layers.
-    pub overrides: CliOverrides,
-    /// Fired (after the response flushes) to trigger the in-process reload.
-    pub reload: ReloadSignal,
-}
 
 /// Guard macro that returns NOT_CONNECTED if the device is not connected.
 macro_rules! ensure_connected {
@@ -70,7 +48,7 @@ pub struct QhyFocuserDevice {
     /// normal path); `None` for focused unit-test devices that don't exercise
     /// config actions.
     #[debug(skip)]
-    config_ctx: Option<ConfigActionCtx>,
+    config_ctx: Option<ConfigActionCtx<QhyFocuserDriver>>,
 }
 
 impl QhyFocuserDevice {
@@ -85,69 +63,9 @@ impl QhyFocuserDevice {
 
     /// Attach the config-action context, enabling `config.get` / `config.apply`
     /// / `config.schema` on this device.
-    pub fn with_config_actions(mut self, ctx: ConfigActionCtx) -> Self {
+    pub fn with_config_actions(mut self, ctx: ConfigActionCtx<QhyFocuserDriver>) -> Self {
         self.config_ctx = Some(ctx);
         self
-    }
-
-    /// `config.get`: effective config (secrets redacted) + CLI-override paths.
-    async fn handle_config_get(&self, ctx: &ConfigActionCtx) -> ASCOMResult<String> {
-        let response = actions::config_get::<QhyFocuserDriver>(&ctx.effective, &ctx.overrides)
-            .map_err(QhyFocuserError::from)?;
-        Ok(serde_json::to_string(&response).map_err(QhyFocuserError::from)?)
-    }
-
-    /// `config.apply`: delegate to the generic protocol, map its hard failures
-    /// onto ASCOM error codes, and fire the in-process reload after the response
-    /// flushes when something changed.
-    async fn handle_config_apply(
-        &self,
-        ctx: &ConfigActionCtx,
-        parameters: &str,
-    ) -> ASCOMResult<String> {
-        let response = match actions::config_apply::<QhyFocuserDriver>(
-            &ctx.path,
-            &ctx.overrides,
-            &ctx.effective,
-            parameters,
-        ) {
-            Ok(response) => response,
-            Err(ApplyError::Parse(e)) => {
-                return Err(ASCOMError::new(
-                    ASCOMErrorCode::INVALID_VALUE,
-                    format!("config.apply: invalid config JSON: {e}"),
-                ))
-            }
-            Err(ApplyError::ReadFile(e)) => {
-                return Err(ASCOMError::new(
-                    ASCOMErrorCode::INVALID_OPERATION,
-                    format!("config.apply: {e}"),
-                ))
-            }
-            Err(ApplyError::Persist(e)) => {
-                return Err(ASCOMError::new(
-                    ASCOMErrorCode::INVALID_OPERATION,
-                    format!("config.apply: failed to persist config: {e}"),
-                ))
-            }
-            Err(ApplyError::Serialize(e)) => {
-                return Err(ASCOMError::new(
-                    ASCOMErrorCode::INVALID_OPERATION,
-                    format!("config.apply: {e}"),
-                ))
-            }
-        };
-
-        if matches!(response.status, ApplyStatus::Applying) {
-            let reload = ctx.reload.clone();
-            tokio::spawn(async move {
-                tokio::time::sleep(RELOAD_AFTER_RESPONSE_DELAY).await;
-                debug!("firing in-process reload after config.apply");
-                reload.notify();
-            });
-        }
-
-        Ok(serde_json::to_string(&response).map_err(QhyFocuserError::from)?)
     }
 }
 
@@ -216,39 +134,12 @@ impl Device for QhyFocuserDevice {
     }
 
     async fn supported_actions(&self) -> ASCOMResult<Vec<String>> {
-        // Only advertise the config actions when this instance was built with a
-        // config source; a ctx-less device (focused unit tests) has none.
-        if self.config_ctx.is_some() {
-            Ok(ConfigAction::ALL
-                .iter()
-                .map(|action| action.name().to_string())
-                .collect())
-        } else {
-            Ok(Vec::new())
-        }
+        Ok(rusty_photon_driver::supported_actions(&self.config_ctx))
     }
 
     async fn action(&self, action: String, parameters: String) -> ASCOMResult<String> {
-        let Some(parsed) = ConfigAction::from_name(&action) else {
-            return Err(ASCOMError::new(
-                ASCOMErrorCode::ACTION_NOT_IMPLEMENTED,
-                format!("unknown action {action:?}"),
-            ));
-        };
-        let ctx = self.config_ctx.as_ref().ok_or_else(|| {
-            ASCOMError::new(
-                ASCOMErrorCode::ACTION_NOT_IMPLEMENTED,
-                "config actions are not configured for this device instance",
-            )
-        })?;
-        match parsed {
-            ConfigAction::Get => self.handle_config_get(ctx).await,
-            ConfigAction::Apply => self.handle_config_apply(ctx, &parameters).await,
-            ConfigAction::Schema => {
-                let response = actions::config_schema::<QhyFocuserDriver>();
-                Ok(serde_json::to_string(&response).map_err(QhyFocuserError::from)?)
-            }
-        }
+        rusty_photon_driver::dispatch::<QhyFocuserDriver>(&self.config_ctx, action, parameters)
+            .await
     }
 }
 

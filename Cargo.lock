@@ -1151,6 +1151,7 @@ dependencies = [
  "rp-auth",
  "rp-tls",
  "rusty-photon-config",
+ "rusty-photon-driver",
  "rusty-photon-service-lifecycle",
  "rusty-photon-shared-transport",
  "schemars 1.2.1",
@@ -3097,6 +3098,7 @@ dependencies = [
  "rp-auth",
  "rp-tls",
  "rusty-photon-config",
+ "rusty-photon-driver",
  "rusty-photon-service-lifecycle",
  "rusty-photon-shared-transport",
  "schemars 1.2.1",
@@ -3352,6 +3354,7 @@ dependencies = [
  "rp-tls",
  "rust-embed",
  "rusty-photon-config",
+ "rusty-photon-driver",
  "rusty-photon-i18n",
  "rusty-photon-service-lifecycle",
  "rusty-photon-shared-transport",
@@ -3577,6 +3580,7 @@ dependencies = [
  "rp-auth",
  "rp-tls",
  "rusty-photon-config",
+ "rusty-photon-driver",
  "rusty-photon-service-lifecycle",
  "rusty-photon-shared-transport",
  "schemars 1.2.1",
@@ -4450,6 +4454,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "rusty-photon-driver"
+version = "0.1.0"
+dependencies = [
+ "ascom-alpaca",
+ "rusty-photon-config",
+ "rusty-photon-service-lifecycle",
+ "rusty-photon-shared-transport",
+ "schemars 1.2.1",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "rusty-photon-i18n"
 version = "0.1.0"
 dependencies = [
@@ -4992,6 +5013,7 @@ dependencies = [
  "rp-auth",
  "rp-fits",
  "rusty-photon-config",
+ "rusty-photon-driver",
  "rusty-photon-service-lifecycle",
  "schemars 1.2.1",
  "serde",
@@ -5101,6 +5123,7 @@ dependencies = [
  "rp-auth",
  "rp-tls",
  "rusty-photon-config",
+ "rusty-photon-driver",
  "rusty-photon-service-lifecycle",
  "rusty-photon-shared-transport",
  "schemars 1.2.1",

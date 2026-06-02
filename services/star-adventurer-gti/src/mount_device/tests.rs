@@ -719,7 +719,7 @@ fn ascom_transport_err_helper_flattens_transport_error_into_ascom() {
     use rusty_photon_shared_transport::TransportError;
     let err = MountDevice::ascom_transport_err(TransportError::Eof);
     assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
-    assert!(err.message.contains("connection closed"));
+    assert!(err.message.contains("Connection closed"));
 }
 
 #[test]
@@ -3841,8 +3841,10 @@ async fn watcher_poll_with_retry_exhausts_then_issues_best_effort_stop() {
         .await
         .expect_err("retry budget should be exhausted");
     match err {
-        StarAdvError::Transport(_) => {}
-        other => panic!("expected Transport error, got {other:?}"),
+        // The flaky transport fails recv with `TransportError::Eof`, which the
+        // shared `From<TransportError>` mapping routes to `Communication`.
+        StarAdvError::Communication(_) => {}
+        other => panic!("expected Communication error, got {other:?}"),
     }
     // Best-effort `:L` must fire on both axes regardless of whether
     // it lands — the test counts the frames before the fail check

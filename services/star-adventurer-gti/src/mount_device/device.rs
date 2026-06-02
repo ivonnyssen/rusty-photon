@@ -17,6 +17,7 @@ use tracing::debug;
 
 use super::actions::ApParkAction;
 use super::MountDevice;
+use crate::config_actions::StarAdvDriver;
 
 #[async_trait]
 impl Device for MountDevice {
@@ -136,7 +137,7 @@ impl Device for MountDevice {
             .collect();
         // Append the config vendor actions when this instance was built with a
         // config-action context (the normal path through `ServerBuilder`).
-        names.extend(crate::config_actions::config_action_names(&self.config_ctx));
+        names.extend(rusty_photon_driver::supported_actions(&self.config_ctx));
         Ok(names)
     }
 
@@ -157,7 +158,10 @@ impl Device for MountDevice {
             }
             // Not an ApPark action — try the config vendor actions. A truly
             // unknown name surfaces as ACTION_NOT_IMPLEMENTED from there too.
-            None => crate::config_actions::dispatch(&self.config_ctx, action, parameters).await,
+            None => {
+                rusty_photon_driver::dispatch::<StarAdvDriver>(&self.config_ctx, action, parameters)
+                    .await
+            }
         }
     }
 }

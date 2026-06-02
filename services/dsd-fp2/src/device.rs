@@ -8,46 +8,23 @@
 //! through `Session::request` so they share the same request arbitration
 //! lock as the poll loop.
 
-use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 
 use ascom_alpaca::api::cover_calibrator::{CalibratorStatus, CoverStatus};
 use ascom_alpaca::api::{CoverCalibrator, Device};
 use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
 use async_trait::async_trait;
-use rusty_photon_service_lifecycle::ReloadSignal;
+use rusty_photon_driver::ConfigActionCtx;
 use rusty_photon_shared_transport::Session;
 use tokio::sync::RwLock;
 use tracing::debug;
 
-use rusty_photon_config::actions::{self, ApplyError, ApplyStatus, ConfigAction};
-
 use crate::codec::Fp2Codec;
-use crate::config::{CliOverrides, Config, CoverCalibratorConfig};
+use crate::config::CoverCalibratorConfig;
 use crate::config_actions::DsdFp2Driver;
 use crate::error::DsdFp2Error;
 use crate::manager::FlatPanelManager;
 use crate::protocol::{Command, CLOSED_ANGLE, MAX_BRIGHTNESS, OPEN_ANGLE};
-
-/// Delay before firing the reload so the `config.apply` HTTP response — served
-/// by the very server the reload tears down — flushes before the blip.
-const RELOAD_AFTER_RESPONSE_DELAY: Duration = Duration::from_millis(100);
-
-/// State the `config.get` / `config.apply` actions need: the effective config
-/// this server instance is running, where to persist edits, which fields are
-/// pinned by a CLI override, and the in-process reload trigger.
-#[derive(Clone)]
-pub struct ConfigActionCtx {
-    /// Effective config (file + CLI overrides) this server was built with.
-    pub effective: Config,
-    /// Where `config.apply` persists; what reload re-reads.
-    pub path: PathBuf,
-    /// CLI overrides, so config actions can distinguish file vs. override layers.
-    pub overrides: CliOverrides,
-    /// Fired (after the response flushes) to trigger the in-process reload.
-    pub reload: ReloadSignal,
-}
 
 /// Deep Sky Dad FP2 as an ASCOM CoverCalibrator.
 #[derive(derive_more::Debug)]
@@ -61,7 +38,7 @@ pub struct DsdFp2Device {
     /// through `ServerBuilder`); `None` for focused unit-test devices that
     /// don't exercise config actions.
     #[debug(skip)]
-    config_ctx: Option<ConfigActionCtx>,
+    config_ctx: Option<ConfigActionCtx<DsdFp2Driver>>,
 }
 
 impl DsdFp2Device {
@@ -75,7 +52,7 @@ impl DsdFp2Device {
     }
 
     /// Attach the config-action context, enabling `config.get` / `config.apply`.
-    pub fn with_config_actions(mut self, ctx: ConfigActionCtx) -> Self {
+    pub fn with_config_actions(mut self, ctx: ConfigActionCtx<DsdFp2Driver>) -> Self {
         self.config_ctx = Some(ctx);
         self
     }
@@ -84,71 +61,6 @@ impl DsdFp2Device {
     /// `calibrator_on`'s validation share this so they can't disagree.
     fn effective_max_brightness(&self) -> u32 {
         self.config.max_brightness.min(MAX_BRIGHTNESS as u32)
-    }
-
-    /// `config.get`: return the effective config (secrets redacted) plus the
-    /// CLI-override-pinned field paths, via the generic protocol layer.
-    async fn handle_config_get(&self, ctx: &ConfigActionCtx) -> ASCOMResult<String> {
-        let response = actions::config_get::<DsdFp2Driver>(&ctx.effective, &ctx.overrides)
-            .map_err(DsdFp2Error::from)?;
-        Ok(serde_json::to_string(&response).map_err(DsdFp2Error::from)?)
-    }
-
-    /// `config.apply`: delegate to the generic protocol (parse → normalize →
-    /// validate → layer-aware persist → classify), map its hard failures onto
-    /// ASCOM error codes, and fire the in-process reload after the response
-    /// flushes when something changed (`status:"applying"`).
-    async fn handle_config_apply(
-        &self,
-        ctx: &ConfigActionCtx,
-        parameters: &str,
-    ) -> ASCOMResult<String> {
-        let response = match actions::config_apply::<DsdFp2Driver>(
-            &ctx.path,
-            &ctx.overrides,
-            &ctx.effective,
-            parameters,
-        ) {
-            Ok(response) => response,
-            Err(ApplyError::Parse(e)) => {
-                return Err(ASCOMError::new(
-                    ASCOMErrorCode::INVALID_VALUE,
-                    format!("config.apply: invalid config JSON: {e}"),
-                ))
-            }
-            Err(ApplyError::ReadFile(e)) => {
-                return Err(ASCOMError::new(
-                    ASCOMErrorCode::INVALID_OPERATION,
-                    format!("config.apply: {e}"),
-                ))
-            }
-            Err(ApplyError::Persist(e)) => {
-                return Err(ASCOMError::new(
-                    ASCOMErrorCode::INVALID_OPERATION,
-                    format!("config.apply: failed to persist config: {e}"),
-                ))
-            }
-            Err(ApplyError::Serialize(e)) => {
-                return Err(ASCOMError::new(
-                    ASCOMErrorCode::INVALID_OPERATION,
-                    format!("config.apply: {e}"),
-                ))
-            }
-        };
-
-        if matches!(response.status, ApplyStatus::Applying) {
-            debug!(path = %ctx.path.display(), reload = ?response.reload, "config.apply persisted; scheduling reload");
-            // Fire-after-response: the server serving this request is the one
-            // the reload tears down, so yield until the response has flushed.
-            let reload = ctx.reload.clone();
-            tokio::spawn(async move {
-                tokio::time::sleep(RELOAD_AFTER_RESPONSE_DELAY).await;
-                debug!("firing in-process reload after config.apply");
-                reload.notify();
-            });
-        }
-
-        Ok(serde_json::to_string(&response).map_err(DsdFp2Error::from)?)
     }
 }
 
@@ -218,39 +130,11 @@ impl Device for DsdFp2Device {
     }
 
     async fn supported_actions(&self) -> ASCOMResult<Vec<String>> {
-        // Only advertise the config actions when this instance was built with a
-        // config source; a ctx-less device (focused unit tests) has none.
-        if self.config_ctx.is_some() {
-            Ok(ConfigAction::ALL
-                .iter()
-                .map(|action| action.name().to_string())
-                .collect())
-        } else {
-            Ok(Vec::new())
-        }
+        Ok(rusty_photon_driver::supported_actions(&self.config_ctx))
     }
 
     async fn action(&self, action: String, parameters: String) -> ASCOMResult<String> {
-        let Some(parsed) = ConfigAction::from_name(&action) else {
-            return Err(ASCOMError::new(
-                ASCOMErrorCode::ACTION_NOT_IMPLEMENTED,
-                format!("unknown action {action:?}"),
-            ));
-        };
-        let ctx = self.config_ctx.as_ref().ok_or_else(|| {
-            ASCOMError::new(
-                ASCOMErrorCode::ACTION_NOT_IMPLEMENTED,
-                "config actions are not configured for this device instance",
-            )
-        })?;
-        match parsed {
-            ConfigAction::Get => self.handle_config_get(ctx).await,
-            ConfigAction::Apply => self.handle_config_apply(ctx, &parameters).await,
-            ConfigAction::Schema => {
-                let response = actions::config_schema::<DsdFp2Driver>();
-                Ok(serde_json::to_string(&response).map_err(DsdFp2Error::from)?)
-            }
-        }
+        rusty_photon_driver::dispatch::<DsdFp2Driver>(&self.config_ctx, action, parameters).await
     }
 }
 
@@ -454,8 +338,9 @@ mod tests {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod mock_tests {
     use super::*;
-    use crate::config::{Config, CoverCalibratorConfig, SerialConfig, ServerConfig};
+    use crate::config::{CliOverrides, Config, CoverCalibratorConfig, SerialConfig, ServerConfig};
     use crate::mock::MockTransportFactory;
+    use rusty_photon_service_lifecycle::ReloadSignal;
     use std::time::Duration;
 
     fn test_config() -> Config {

@@ -437,7 +437,7 @@ mod tests {
     fn from_protocol_other_variants_flatten_to_invalid_response() {
         let err = FalconCodecError::from_protocol(FalconRotatorError::NotConnected);
         match err {
-            FalconCodecError::InvalidResponse(s) => assert!(s.contains("Not connected")),
+            FalconCodecError::InvalidResponse(s) => assert!(s.contains("not connected")),
             other => panic!("expected InvalidResponse, got {other:?}"),
         }
     }

@@ -35,8 +35,21 @@ pub trait ConfigurableDriver {
 The generic functions — `config_get::<D>`, `config_apply::<D>`, `config_schema::<D>`
 — implement the invariant protocol: secret redaction, layer-aware persist,
 effective-config diff, and schemars JSON-Schema generation. They return plain
-values / `ApplyError`; each driver's `device.rs` wraps those into `ASCOMResult`
-(so `rusty-photon-config` carries no `ascom-alpaca` dependency).
+values / `ApplyError`, so **`rusty-photon-config` carries no `ascom-alpaca`
+dependency** — it is the transport-/consumer-agnostic config *model*, shared with
+the plain-REST `rp` / `sentinel` services.
+
+The ASCOM **adapter** — wrapping those results into `ASCOMResult`, the generic
+`config.get` / `config.apply` / `config.schema` action dispatch, the
+`ConfigActionCtx`, and the shared transport-driver error model — lives in the
+separate [`rusty-photon-driver`](../../crates/rusty-photon-driver) crate (which
+*does* depend on `ascom-alpaca`, used only by the six driver services). Each
+driver delegates `Device::action` / `Device::supported_actions` to
+`rusty_photon_driver::dispatch::<D>` / `rusty_photon_driver::supported_actions`,
+and defines its error type with the `rusty_photon_driver::driver_error!` macro —
+so the dispatch, the `ApplyError → ASCOMError` mapping, and the common
+`DriverError` variants each exist in exactly one place. See
+[ADR-007](../decisions/007-rusty-photon-driver-shared-crate.md).
 
 ## The three actions
 
@@ -122,6 +135,7 @@ rendering and multi-driver routing.
 ## References
 
 - Protocol design + phasing: [`docs/plans/ui-design/config-actions.md`](../plans/ui-design/config-actions.md)
-- Generic implementation: [`crates/rusty-photon-config/src/actions.rs`](../../crates/rusty-photon-config/src/actions.rs)
+- Protocol model (no ASCOM dep): [`crates/rusty-photon-config/src/actions.rs`](../../crates/rusty-photon-config/src/actions.rs)
+- ASCOM adapter (dispatch + `driver_error!` macro + error model): [`crates/rusty-photon-driver`](../../crates/rusty-photon-driver) — see [ADR-007](../decisions/007-rusty-photon-driver-shared-crate.md)
 - Reload lifecycle: [`docs/skills/service-lifecycle.md`](../skills/service-lifecycle.md)
 - Per-driver specifics: each `docs/services/<driver>.md` "Config actions" section.

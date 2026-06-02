@@ -54,7 +54,7 @@ use rusty_photon_shared_transport::TransportFactory;
 use tracing::{debug, info};
 
 use crate::config::CliOverrides;
-use crate::config_actions::ConfigActionCtx;
+use crate::config_actions::PpbaDriver;
 
 /// Builder for the ASCOM Alpaca server.
 pub struct ServerBuilder {
@@ -125,15 +125,18 @@ impl ServerBuilder {
             // Build the shared config-action context once (when a config source
             // + reload signal were supplied) and clone it to each device, so both
             // advertise the actions against the one driver config + reload signal.
-            let config_ctx = match (self.config_source.clone(), self.reload.clone()) {
-                (Some((path, overrides)), Some(reload)) => Some(ConfigActionCtx {
-                    effective: self.config.clone(),
-                    path,
-                    overrides,
-                    reload,
-                }),
-                _ => None,
-            };
+            let config_ctx: Option<rusty_photon_driver::ConfigActionCtx<PpbaDriver>> =
+                match (self.config_source.clone(), self.reload.clone()) {
+                    (Some((path, overrides)), Some(reload)) => {
+                        Some(rusty_photon_driver::ConfigActionCtx {
+                            effective: self.config.clone(),
+                            path,
+                            overrides,
+                            reload,
+                        })
+                    }
+                    _ => None,
+                };
 
             if self.config.switch.enabled {
                 let mut switch_device =

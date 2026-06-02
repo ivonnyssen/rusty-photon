@@ -298,7 +298,7 @@ mod tests {
     fn from_protocol_other_variants_flatten_to_invalid_response() {
         let err = PpbaCodecError::from_protocol(PpbaError::NotConnected);
         match err {
-            PpbaCodecError::InvalidResponse(s) => assert!(s.contains("Not connected")),
+            PpbaCodecError::InvalidResponse(s) => assert!(s.contains("not connected")),
             other => panic!("expected InvalidResponse, got {other:?}"),
         }
     }

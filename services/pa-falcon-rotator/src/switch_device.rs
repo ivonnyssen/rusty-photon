@@ -26,9 +26,10 @@ use tracing::debug;
 
 use crate::codec::FalconCodec;
 use crate::config::SwitchConfig;
-use crate::config_actions::{self, ConfigActionCtx};
+use crate::config_actions::FalconRotatorDriver;
 use crate::error::FalconRotatorError;
 use crate::manager::FalconManager;
+use rusty_photon_driver::ConfigActionCtx;
 
 /// Number of switches advertised by this device. The design doc pins this at 2
 /// (id 0 = voltage, id 1 = limit-hit); any other id is out of range.
@@ -117,7 +118,7 @@ pub struct FalconStatusSwitchDevice {
     /// Shared (cloned) config-action context; `Some` on the normal path through
     /// `ServerBuilder`, `None` for focused unit-test devices.
     #[debug(skip)]
-    config_ctx: Option<ConfigActionCtx>,
+    config_ctx: Option<ConfigActionCtx<FalconRotatorDriver>>,
 }
 
 impl FalconStatusSwitchDevice {
@@ -132,7 +133,7 @@ impl FalconStatusSwitchDevice {
 
     /// Attach the shared config-action context, enabling `config.get` /
     /// `config.apply` / `config.schema` on this device.
-    pub fn with_config_actions(mut self, ctx: ConfigActionCtx) -> Self {
+    pub fn with_config_actions(mut self, ctx: ConfigActionCtx<FalconRotatorDriver>) -> Self {
         self.config_ctx = Some(ctx);
         self
     }
@@ -220,11 +221,12 @@ impl Device for FalconStatusSwitchDevice {
     }
 
     async fn supported_actions(&self) -> ASCOMResult<Vec<String>> {
-        Ok(config_actions::supported_actions(&self.config_ctx))
+        Ok(rusty_photon_driver::supported_actions(&self.config_ctx))
     }
 
     async fn action(&self, action: String, parameters: String) -> ASCOMResult<String> {
-        config_actions::dispatch(&self.config_ctx, action, parameters).await
+        rusty_photon_driver::dispatch::<FalconRotatorDriver>(&self.config_ctx, action, parameters)
+            .await
     }
 }
 

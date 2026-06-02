@@ -348,7 +348,7 @@ services/pa-falcon-rotator/
 │   ├── lib.rs              # ServerBuilder, BoundServer
 │   ├── main.rs             # CLI entry point; lifecycle owned by `rusty-photon-service-lifecycle::ServiceRunner`
 │   ├── config.rs           # Config types + JSON loading
-│   ├── error.rs            # FalconRotatorError enum (thiserror)
+│   ├── error.rs            # FalconRotatorError (via rusty_photon_driver::driver_error!)
 │   ├── rotator_device.rs   # ASCOM Device + Rotator trait impl
 │   ├── switch_device.rs    # ASCOM Device + Switch trait impl (voltage + limit)
 │   ├── codec.rs            # FalconCodec + FalconResponse + FalconCodecError

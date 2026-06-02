@@ -23,10 +23,11 @@ use tracing::debug;
 
 use crate::codec::FalconCodec;
 use crate::config::RotatorConfig;
-use crate::config_actions::{self, ConfigActionCtx};
+use crate::config_actions::FalconRotatorDriver;
 use crate::error::FalconRotatorError;
 use crate::manager::FalconManager;
 use crate::units::{MechanicalDegrees, SkyDegrees};
+use rusty_photon_driver::ConfigActionCtx;
 
 /// Guard macro that returns NOT_CONNECTED if the device is not connected.
 ///
@@ -58,7 +59,7 @@ pub struct FalconRotatorDevice {
     /// Shared (cloned) config-action context; `Some` on the normal path through
     /// `ServerBuilder`, `None` for focused unit-test devices.
     #[debug(skip)]
-    config_ctx: Option<ConfigActionCtx>,
+    config_ctx: Option<ConfigActionCtx<FalconRotatorDriver>>,
 }
 
 impl FalconRotatorDevice {
@@ -73,7 +74,7 @@ impl FalconRotatorDevice {
 
     /// Attach the shared config-action context, enabling `config.get` /
     /// `config.apply` / `config.schema` on this device.
-    pub fn with_config_actions(mut self, ctx: ConfigActionCtx) -> Self {
+    pub fn with_config_actions(mut self, ctx: ConfigActionCtx<FalconRotatorDriver>) -> Self {
         self.config_ctx = Some(ctx);
         self
     }
@@ -165,11 +166,12 @@ impl Device for FalconRotatorDevice {
     }
 
     async fn supported_actions(&self) -> ASCOMResult<Vec<String>> {
-        Ok(config_actions::supported_actions(&self.config_ctx))
+        Ok(rusty_photon_driver::supported_actions(&self.config_ctx))
     }
 
     async fn action(&self, action: String, parameters: String) -> ASCOMResult<String> {
-        config_actions::dispatch(&self.config_ctx, action, parameters).await
+        rusty_photon_driver::dispatch::<FalconRotatorDriver>(&self.config_ctx, action, parameters)
+            .await
     }
 }
 
