@@ -31,7 +31,7 @@ distance to the target and the mount's slew rate:
 ```text
 predicted = great_circle_arcsec(current_pointing, target) / slew_rate_arcsec_per_sec
             + settle_after.as_secs_f64()
-max       = max(predicted * 3, MIN_SLEW_DEADLINE)   // 5 s floor
+max       = max(predicted * 3, MIN_SLEW_DEADLINE)   // 60 s floor
 ```
 
 `max` becomes the poll deadline (replacing the fixed 300 s); `predicted`
@@ -56,9 +56,21 @@ and `max` are emitted (rounded to ms) on the `slew_started` envelope.
   read must not fail an otherwise-valid slew. On read error the deadline
   degrades to the legacy 300 s ceiling and the deadline fields are omitted
   from the envelope; the slew proceeds.
-- **D4 — `MIN_SLEW_DEADLINE = 5 s`** floor (so a 2″ corrective slew still
-  gets a sane minimum), and the `× 3` headroom over `predicted` absorbs
-  acceleration ramps and rate over-optimism.
+- **D4 — `MIN_SLEW_DEADLINE = 60 s`** floor, and the `× 3` headroom over
+  `predicted` absorbs acceleration ramps and rate over-optimism. The floor
+  value is set by the **OmniSim BDD simulator**, not a real mount: OmniSim
+  slews at 20°/s with a fixed deceleration tail (`TelescopeHardware.cs`),
+  and resets its *physical* axes to a startup position before each scenario
+  while `sync_mount` moves only the *reported* coordinates — so the first
+  `center_on_target` slew physically traverses home→target and takes up to
+  ~12 s, even though the reported distance rp sizes the deadline from is
+  tiny. An initial 5 s floor deadlocked every `center_on_target` BDD
+  scenario on all platforms (the prior hardcoded 300 s ceiling had always
+  hidden OmniSim's slew time). 60 s clears OmniSim's ~12 s bound with margin
+  for CI timer-stretch; a real mount's tiny slew is far quicker, so the
+  floor is slack in production yet still surfaces a wedged slew ~5× sooner
+  than 300 s (and before rmcp's 300 s keep-alive). See the OmniSim source
+  (sibling repo `ASCOM.Alpaca.Simulators/TelescopeSimulator`).
 - **D5 — Reuse `haversine_arcsec`** (`imaging/tools/center_on_target.rs`),
   already wrap-safe and unit-tested. RA is in **hours** at the
   `do_slew_blocking` boundary (validated `[0, 24)` in `slew_inner`), so
@@ -120,7 +132,7 @@ and `max` are emitted (rounded to ms) on the `slew_started` envelope.
 - The slew path's `Duration::from_secs(300)` is gone (replaced by the
   parameter; the fallback 300 s is an explicit named constant).
 - `slew_started` carries `predicted_duration_ms`/`max_duration_ms`; a tiny
-  slew floors at 5 s and a stuck mount fails in its computed window, not
+  slew floors at 60 s and a stuck mount fails in its computed window, not
   300 s.
 - rp.md documents the formula, the `MIN_SLEW_DEADLINE` default, and the
   `mount.slew_rate_arcsec_per_sec` config (CLAUDE.md rule 2).

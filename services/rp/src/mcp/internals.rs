@@ -37,10 +37,20 @@ use super::progress::{ProgressEmitter, PROGRESS_INTERVAL};
 const CAPTURE_READOUT_GRACE: Duration = Duration::from_secs(120);
 
 /// Floor on the predictive slew deadline (§2.1 of the predictive-deadlines
-/// plan). A tiny corrective slew of arc-seconds still gets at least this
-/// long before it's considered overrun, absorbing fixed mount overheads
-/// (command latency, the ramp into `Slewing`).
-const MIN_SLEW_DEADLINE: Duration = Duration::from_secs(5);
+/// plan). A short slew still gets at least this long before it's considered
+/// overrun, covering fixed overheads that `distance / rate` ignores:
+/// acceleration ramps and controller/`IsSlewing` latency. The binding
+/// constraint is the OmniSim BDD simulator — it slews at 20°/s with a fixed
+/// deceleration tail, so a from-rest slew (its physical axes reset to a
+/// startup position each scenario, while `sync_mount` only moves the
+/// *reported* coordinates) takes up to ~12 s regardless of the small
+/// reported distance rp sizes the deadline from. A real mount's tiny slew
+/// is far quicker, so this floor is slack in production. 60 s leaves
+/// generous margin for CI timer-stretch while still surfacing a wedged slew
+/// ~5× sooner than the prior hardcoded 300 s ceiling — and well before
+/// rmcp's 300 s session keep-alive, the swallowed-hang trigger this plan
+/// fixes.
+const MIN_SLEW_DEADLINE: Duration = Duration::from_secs(60);
 
 /// Slew deadline used when the predicted deadline can't be computed — the
 /// mount isn't resolvable yet, or the pre-slew pointing read failed. A
