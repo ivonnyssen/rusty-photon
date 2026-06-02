@@ -130,15 +130,20 @@ impl McpHandler {
             Err(e) => return Ok(tool_error!("failed to read focuser position: {}", e)),
         };
         let starting_temperature_c: Option<f64> = foc.temperature().await.ok();
-        self.event_bus.emit(
-            "focus_started",
-            serde_json::json!({
-                "camera_id": camera_id,
-                "focuser_id": focuser_id,
-                "position": starting_position,
-                "temperature": starting_temperature_c,
-            }),
-        );
+        let operation_id = uuid::Uuid::new_v4().to_string();
+        let started_at = chrono::Utc::now();
+        self.event_bus
+            .emit_operation(crate::events::EventEnvelope::started(
+                "focus",
+                &operation_id,
+                started_at,
+                serde_json::json!({
+                    "camera_id": camera_id,
+                    "focuser_id": focuser_id,
+                    "position": starting_position,
+                    "temperature": starting_temperature_c,
+                }),
+            ));
 
         let bounds = (foc_entry.config.min_position, foc_entry.config.max_position);
         let af_params = imaging::tools::auto_focus::AutoFocusParams {
@@ -175,16 +180,19 @@ impl McpHandler {
         .await
         {
             Ok(result) => {
-                self.event_bus.emit(
-                    "focus_complete",
-                    serde_json::json!({
-                        "camera_id": camera_id,
-                        "focuser_id": focuser_id,
-                        "position": result.best_position,
-                        "hfr": result.best_hfr,
-                        "samples_used": result.samples_used,
-                    }),
-                );
+                self.event_bus
+                    .emit_operation(crate::events::EventEnvelope::complete(
+                        "focus",
+                        &operation_id,
+                        started_at,
+                        serde_json::json!({
+                            "camera_id": camera_id,
+                            "focuser_id": focuser_id,
+                            "position": result.best_position,
+                            "hfr": result.best_hfr,
+                            "samples_used": result.samples_used,
+                        }),
+                    ));
                 let curve_points =
                     serde_json::to_value(&result.curve_points).unwrap_or(serde_json::Value::Null);
                 Ok(tool_success!({
@@ -196,7 +204,16 @@ impl McpHandler {
                     "temperature_c": result.temperature_c,
                 }))
             }
-            Err(e) => Ok(tool_error!("{}", e)),
+            Err(e) => {
+                self.event_bus
+                    .emit_operation(crate::events::EventEnvelope::failed(
+                        "focus",
+                        &operation_id,
+                        started_at,
+                        &e.to_string(),
+                    ));
+                Ok(tool_error!("{}", e))
+            }
         }
     }
 }

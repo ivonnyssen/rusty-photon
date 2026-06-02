@@ -14,11 +14,34 @@ use serde_json::Value;
 use tokio::sync::RwLock;
 
 /// A single event captured by [`WebhookReceiver`].
+///
+/// The historical fields (`event_id`, `event_type`, `timestamp`,
+/// `payload`) capture the legacy webhook body. The
+/// predictive-deadlines event envelope adds the operation-lifecycle
+/// fields below; they are `Option` so legacy point events (which omit
+/// them) and operation events (which carry them) both parse. See
+/// `services/rp/src/events.rs::EventEnvelope`.
 #[derive(Debug, Clone)]
 pub struct ReceivedEvent {
     pub event_id: String,
     pub event_type: String,
     pub timestamp: String,
+    /// Monotonic per-emission sequence number. Present on every
+    /// envelope; `None` only if a malformed body omits it.
+    pub event_seq: Option<u64>,
+    /// Correlation key shared by an operation's `*_started`,
+    /// `*_complete`, and `*_failed` events. Absent on point events.
+    pub operation_id: Option<String>,
+    /// RFC-3339 operation start, on the `*_started`/`*_complete`/`*_failed` triple.
+    pub started_at: Option<String>,
+    /// RFC-3339 operation end, on `*_complete`/`*_failed` only.
+    pub ended_at: Option<String>,
+    /// Wall-clock duration in ms, on `*_complete`/`*_failed` only.
+    pub elapsed_ms: Option<u64>,
+    /// Reserved for Phase 2; always absent in Phase 1.
+    pub predicted_duration_ms: Option<u64>,
+    /// Reserved for Phase 2; always absent in Phase 1.
+    pub max_duration_ms: Option<u64>,
     pub payload: Value,
     pub received_at: std::time::Instant,
 }
@@ -102,22 +125,23 @@ async fn webhook_handler(
     State(state): State<WebhookReceiverState>,
     axum::Json(body): axum::Json<Value>,
 ) -> (StatusCode, axum::Json<Value>) {
+    let str_field = |key: &str| {
+        body.get(key)
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+    };
+    let u64_field = |key: &str| body.get(key).and_then(|v| v.as_u64());
     let event = ReceivedEvent {
-        event_id: body
-            .get("event_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string(),
-        event_type: body
-            .get("event")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string(),
-        timestamp: body
-            .get("timestamp")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string(),
+        event_id: str_field("event_id").unwrap_or_default(),
+        event_type: str_field("event").unwrap_or_default(),
+        timestamp: str_field("timestamp").unwrap_or_default(),
+        event_seq: u64_field("event_seq"),
+        operation_id: str_field("operation_id"),
+        started_at: str_field("started_at"),
+        ended_at: str_field("ended_at"),
+        elapsed_ms: u64_field("elapsed_ms"),
+        predicted_duration_ms: u64_field("predicted_duration_ms"),
+        max_duration_ms: u64_field("max_duration_ms"),
         payload: body.get("payload").cloned().unwrap_or(Value::Null),
         received_at: std::time::Instant::now(),
     };

@@ -199,9 +199,27 @@ the events are an *additional* stream the supervisor uses to react.
 **One PR. Blocking for every later phase.** Adds the missing
 `*_started` / `*_complete` / `*_failed` events with a uniform payload
 schema, including the predicted-deadline fields that Phase 2 will
-populate (Phase 1 ships them as `null`).
+populate (omitted from the wire in Phase 1 — see the §1.1 as-built
+note).
 
 ### 1.1 Uniform event payload schema
+
+> **As-built note (Phase 1.1 shipped).** The envelope landed in
+> `services/rp/src/events.rs` as `EventEnvelope`. The **authoritative
+> schema** is [`docs/services/rp.md` §Event Envelope](../services/rp.md#event-envelope).
+> Three compat-driven refinements over the sketch below, all following
+> from Decision A (preserve the historical webhook keys; see the phase-1
+> implementation plan, [`predictive-deadlines-phase1-event-surface.md`](predictive-deadlines-phase1-event-surface.md)):
+> (1) the envelope keeps the historical **`event`** field (e.g.
+> `"slew_started"`) — there is no separate `operation` field; the
+> operation family is the event-name prefix. (2) Both the `*_started`
+> inputs and the `*_complete` / `*_failed` outcome live under the
+> historical **`payload`** key — there is no separate `details` or
+> `outcome` key, because today's `exposure_complete` already ships its
+> outcome under `payload` and changing that would break webhook
+> consumers. (3) `predicted_duration_ms` / `max_duration_ms` are
+> **omitted** when absent (rather than serialized as `null`); Phase 2
+> populates them. The sketch below is preserved for design intent.
 
 Define a shared envelope for every operation event. Today's events
 have inconsistent shapes (`exposure_started` carries

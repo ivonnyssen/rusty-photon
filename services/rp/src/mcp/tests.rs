@@ -4737,3 +4737,352 @@ async fn progress_sink_emit_sends_via_real_peer() {
     // both shut down on drop at end of scope.
     drop(running);
 }
+
+// -----------------------------------------------------------------------
+// Operation-event triple tests (predictive-deadlines Phase 1, Step 2)
+//
+// Each blocking helper emits a `*_started` envelope at entry and a
+// `*_complete` / `*_failed` envelope at exit, all sharing one
+// `operation_id`. Decision B: the assertion seam is the `EventBus`
+// broadcast `Receiver` — exercising the real production fan-out path
+// with no test-only abstraction. `emit_operation` publishes
+// synchronously, so by the time a helper returns its envelopes are
+// already queued on a receiver that subscribed beforehand.
+// -----------------------------------------------------------------------
+
+/// Drain the next envelope, failing the test (rather than hanging) if
+/// none is queued within a generous bound.
+async fn next_event(
+    rx: &mut tokio::sync::broadcast::Receiver<crate::events::EventEnvelope>,
+) -> crate::events::EventEnvelope {
+    tokio::time::timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("expected an operation event but the channel stayed empty")
+        .expect("event channel closed or lagged")
+}
+
+/// Assert the channel has no further envelope queued.
+async fn assert_no_more_events(
+    rx: &mut tokio::sync::broadcast::Receiver<crate::events::EventEnvelope>,
+) {
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), rx.recv())
+            .await
+            .is_err(),
+        "expected no further operation events on the bus"
+    );
+}
+
+/// Assertions common to every `*_complete` / `*_failed` envelope: it
+/// shares the started envelope's `operation_id`, carries a fresh
+/// `event_id` and a strictly greater `event_seq`, has the full timing
+/// trio, and — in Phase 1 — never populates the reserved deadline
+/// fields.
+fn assert_end_mirrors_start(
+    start: &crate::events::EventEnvelope,
+    end: &crate::events::EventEnvelope,
+) {
+    assert_eq!(
+        start.operation_id, end.operation_id,
+        "started and ended envelopes must share one operation_id"
+    );
+    assert!(start.operation_id.is_some(), "operation_id must be present");
+    assert_ne!(
+        start.event_id, end.event_id,
+        "each emission carries its own event_id"
+    );
+    assert!(
+        end.event_seq > start.event_seq,
+        "event_seq is monotonic across the triple"
+    );
+    assert!(start.started_at.is_some(), "started_at present on start");
+    assert!(end.started_at.is_some(), "started_at echoed on end");
+    assert!(end.ended_at.is_some(), "ended_at present on end");
+    assert!(end.elapsed_ms.is_some(), "elapsed_ms present on end");
+    assert!(
+        start.ended_at.is_none(),
+        "no ended_at on the start envelope"
+    );
+    for ev in [start, end] {
+        assert!(
+            ev.predicted_duration_ms.is_none(),
+            "Phase 1 reserves but never populates predicted_duration_ms"
+        );
+        assert!(
+            ev.max_duration_ms.is_none(),
+            "Phase 1 reserves but never populates max_duration_ms"
+        );
+    }
+}
+
+#[tokio::test]
+async fn slew_emits_started_complete_triple() {
+    let mount = MockTelescope {
+        ra_value: 10.6847,
+        dec_value: 41.2689,
+        ..Default::default()
+    };
+    let handler = test_handler(mount_registry(Arc::new(mount), None));
+    let mut rx = handler.event_bus.subscribe();
+
+    let (actual_ra, actual_dec) = handler
+        .do_slew_blocking(10.6847, 41.2689, Duration::ZERO, None)
+        .await
+        .unwrap();
+    assert_eq!(actual_ra, 10.6847);
+    assert_eq!(actual_dec, 41.2689);
+
+    let started = next_event(&mut rx).await;
+    let complete = next_event(&mut rx).await;
+    assert_no_more_events(&mut rx).await;
+
+    assert_eq!(started.event, "slew_started");
+    assert_eq!(complete.event, "slew_complete");
+    assert_eq!(started.payload["ra"], 10.6847);
+    assert_eq!(started.payload["dec"], 41.2689);
+    assert_eq!(complete.payload["actual_ra"], 10.6847);
+    assert_eq!(complete.payload["actual_dec"], 41.2689);
+    assert_end_mirrors_start(&started, &complete);
+}
+
+#[tokio::test]
+async fn slew_failure_emits_started_then_failed() {
+    let mount = MockTelescope {
+        fail_slew: true,
+        ..Default::default()
+    };
+    let handler = test_handler(mount_registry(Arc::new(mount), None));
+    let mut rx = handler.event_bus.subscribe();
+
+    let err = handler
+        .do_slew_blocking(0.0, 0.0, Duration::ZERO, None)
+        .await
+        .unwrap_err();
+    assert!(err.contains("failed to slew"));
+
+    let started = next_event(&mut rx).await;
+    let failed = next_event(&mut rx).await;
+    assert_no_more_events(&mut rx).await;
+
+    assert_eq!(started.event, "slew_started");
+    assert_eq!(failed.event, "slew_failed");
+    assert!(failed.payload["error"]
+        .as_str()
+        .unwrap()
+        .contains("failed to slew"));
+    assert_end_mirrors_start(&started, &failed);
+}
+
+#[tokio::test]
+async fn park_emits_started_complete_triple() {
+    let mount = MockTelescope {
+        at_park_value: true,
+        ..Default::default()
+    };
+    let handler = test_handler(mount_registry(Arc::new(mount), None));
+    let mut rx = handler.event_bus.subscribe();
+
+    handler.do_park_blocking(None).await.unwrap();
+
+    let started = next_event(&mut rx).await;
+    let complete = next_event(&mut rx).await;
+    assert_no_more_events(&mut rx).await;
+
+    assert_eq!(started.event, "park_started");
+    assert_eq!(complete.event, "park_complete");
+    assert_end_mirrors_start(&started, &complete);
+}
+
+#[tokio::test]
+async fn move_focuser_emits_started_complete_triple() {
+    let foc = MockFocuser {
+        position_value: 4321,
+        ..Default::default()
+    };
+    let handler = test_handler(focuser_registry(Arc::new(foc), None, None));
+    let mut rx = handler.event_bus.subscribe();
+
+    let final_position = handler
+        .do_move_focuser_blocking("foc", 4321, None)
+        .await
+        .unwrap();
+    assert_eq!(final_position, 4321);
+
+    let started = next_event(&mut rx).await;
+    let complete = next_event(&mut rx).await;
+    assert_no_more_events(&mut rx).await;
+
+    assert_eq!(started.event, "move_focuser_started");
+    assert_eq!(complete.event, "move_focuser_complete");
+    assert_eq!(started.payload["focuser_id"], "foc");
+    assert_eq!(started.payload["position"], 4321);
+    assert_eq!(complete.payload["position"], 4321);
+    assert_end_mirrors_start(&started, &complete);
+}
+
+#[tokio::test]
+async fn move_focuser_failure_emits_started_then_failed() {
+    let foc = MockFocuser {
+        fail_move: true,
+        ..Default::default()
+    };
+    let handler = test_handler(focuser_registry(Arc::new(foc), None, None));
+    let mut rx = handler.event_bus.subscribe();
+
+    let err = handler
+        .do_move_focuser_blocking("foc", 1000, None)
+        .await
+        .unwrap_err();
+    assert!(err.contains("failed to move focuser"));
+
+    let started = next_event(&mut rx).await;
+    let failed = next_event(&mut rx).await;
+    assert_no_more_events(&mut rx).await;
+
+    assert_eq!(started.event, "move_focuser_started");
+    assert_eq!(failed.event, "move_focuser_failed");
+    assert_end_mirrors_start(&started, &failed);
+}
+
+#[tokio::test]
+async fn sync_mount_emits_complete_only_no_started() {
+    // Sync is instant per ASCOM, so the helper emits the
+    // `sync_mount_complete` / `sync_mount_failed` pair *without* a
+    // `_started` (parent plan §1.2).
+    let mount = MockTelescope::default();
+    let handler = test_handler(mount_registry(Arc::new(mount), None));
+    let mut rx = handler.event_bus.subscribe();
+
+    handler.do_sync_mount(5.0, -10.0).await.unwrap();
+
+    let complete = next_event(&mut rx).await;
+    assert_no_more_events(&mut rx).await;
+
+    assert_eq!(complete.event, "sync_mount_complete");
+    assert!(complete.operation_id.is_some());
+    assert!(complete.ended_at.is_some());
+    assert_eq!(complete.payload["ra"], 5.0);
+    assert_eq!(complete.payload["dec"], -10.0);
+    assert!(complete.predicted_duration_ms.is_none());
+}
+
+#[tokio::test]
+async fn sync_mount_failure_emits_failed_only() {
+    let mount = MockTelescope {
+        fail_sync: true,
+        ..Default::default()
+    };
+    let handler = test_handler(mount_registry(Arc::new(mount), None));
+    let mut rx = handler.event_bus.subscribe();
+
+    let err = handler.do_sync_mount(5.0, -10.0).await.unwrap_err();
+    assert!(err.contains("failed to sync mount"));
+
+    let failed = next_event(&mut rx).await;
+    assert_no_more_events(&mut rx).await;
+
+    assert_eq!(failed.event, "sync_mount_failed");
+    assert!(failed.payload["error"]
+        .as_str()
+        .unwrap()
+        .contains("failed to sync mount"));
+    assert!(failed.elapsed_ms.is_some());
+}
+
+#[tokio::test]
+async fn capture_migrated_emits_exposure_triple_with_shared_operation_id() {
+    // The historical `exposure_started` / `exposure_complete` point
+    // events are migrated onto the envelope under one operation_id; their
+    // payloads are preserved byte-for-byte (Decision A).
+    let handler = test_handler(camera_registry(Arc::new(MockCamera::default())));
+    let mut rx = handler.event_bus.subscribe();
+
+    let (image_path, document_id) = handler
+        .do_capture("cam", Duration::from_millis(100), None)
+        .await
+        .unwrap();
+
+    let started = next_event(&mut rx).await;
+    let complete = next_event(&mut rx).await;
+    assert_no_more_events(&mut rx).await;
+
+    assert_eq!(started.event, "exposure_started");
+    assert_eq!(complete.event, "exposure_complete");
+    // Legacy payload shape preserved.
+    assert_eq!(started.payload["camera_id"], "cam");
+    assert!(started.payload["duration"].is_string());
+    assert_eq!(complete.payload["document_id"], document_id);
+    assert_eq!(complete.payload["file_path"], image_path);
+    assert_end_mirrors_start(&started, &complete);
+}
+
+#[tokio::test]
+async fn capture_failure_emits_exposure_failed() {
+    let cam = MockCamera {
+        fail_start_exposure: true,
+        ..Default::default()
+    };
+    let handler = test_handler(camera_registry(Arc::new(cam)));
+    let mut rx = handler.event_bus.subscribe();
+
+    let err = handler
+        .do_capture("cam", Duration::from_millis(100), None)
+        .await
+        .unwrap_err();
+    assert!(err.contains("failed to start exposure"));
+
+    let started = next_event(&mut rx).await;
+    let failed = next_event(&mut rx).await;
+    assert_no_more_events(&mut rx).await;
+
+    assert_eq!(started.event, "exposure_started");
+    assert_eq!(failed.event, "exposure_failed");
+    assert!(failed.payload["error"]
+        .as_str()
+        .unwrap()
+        .contains("failed to start exposure"));
+    assert_end_mirrors_start(&started, &failed);
+}
+
+#[tokio::test]
+async fn unpark_emits_started_complete_triple() {
+    let mount = MockTelescope::default();
+    let handler = test_handler(mount_registry(Arc::new(mount), None));
+    let mut rx = handler.event_bus.subscribe();
+
+    let result = handler.unpark(Parameters(UnparkParams {})).await.unwrap();
+    assert!(!result.is_error.unwrap_or(false));
+
+    let started = next_event(&mut rx).await;
+    let complete = next_event(&mut rx).await;
+    assert_no_more_events(&mut rx).await;
+
+    assert_eq!(started.event, "unpark_started");
+    assert_eq!(complete.event, "unpark_complete");
+    assert_end_mirrors_start(&started, &complete);
+}
+
+#[tokio::test]
+async fn unpark_failure_emits_started_then_failed() {
+    let mount = MockTelescope {
+        fail_unpark: true,
+        ..Default::default()
+    };
+    let handler = test_handler(mount_registry(Arc::new(mount), None));
+    let mut rx = handler.event_bus.subscribe();
+
+    let result = handler.unpark(Parameters(UnparkParams {})).await.unwrap();
+    assert!(result.is_error.unwrap_or(false));
+
+    let started = next_event(&mut rx).await;
+    let failed = next_event(&mut rx).await;
+    assert_no_more_events(&mut rx).await;
+
+    assert_eq!(started.event, "unpark_started");
+    assert_eq!(failed.event, "unpark_failed");
+    assert!(failed.payload["error"]
+        .as_str()
+        .unwrap()
+        .contains("failed to unpark"));
+    assert_end_mirrors_start(&started, &failed);
+}
