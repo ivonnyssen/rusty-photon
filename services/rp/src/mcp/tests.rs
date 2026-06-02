@@ -2605,7 +2605,7 @@ async fn test_slew_alpaca_error_propagates() {
 /// indefinitely, the predicted deadline expires, `abort_slew()` is
 /// called (best-effort, ignored result), and the tool returns the
 /// timeout error. With current pointing == target (distance 0) the
-/// deadline floors at `MIN_SLEW_DEADLINE` (60 s), so the test also
+/// deadline floors at `MIN_SLEW_DEADLINE` (30 s), so the test also
 /// asserts the failure lands far under the old 300 s ceiling — proof
 /// the deadline now scales with the slew (§2.6). `start_paused` lets
 /// tokio auto-advance virtual time so the test runs in real-time ms.
@@ -2630,8 +2630,8 @@ async fn test_slew_timeout_returns_error_after_abort() {
     let elapsed = started_at.elapsed();
     assert_tool_error(result, "timeout waiting for mount to settle");
     assert!(
-        elapsed < Duration::from_secs(120),
-        "a zero-distance slew should hit the ~60 s MIN_SLEW_DEADLINE floor, \
+        elapsed < Duration::from_secs(60),
+        "a zero-distance slew should hit the ~30 s MIN_SLEW_DEADLINE floor, \
          not the old 300 s ceiling; elapsed {elapsed:?}"
     );
 }
@@ -4878,15 +4878,15 @@ async fn slew_emits_started_complete_triple() {
 
     // current == target (the mock reports the slew target as its current
     // pointing), so the great-circle distance is 0: predicted floors at
-    // 0 ms and max at the 60 s MIN_SLEW_DEADLINE floor.
+    // 0 ms and max at the 30 s MIN_SLEW_DEADLINE floor.
     assert_eq!(started.predicted_duration_ms, Some(0));
-    assert_eq!(started.max_duration_ms, Some(60000));
+    assert_eq!(started.max_duration_ms, Some(30000));
 }
 
 /// §2.1: the `slew_started` envelope carries a deadline sized from the
 /// great-circle distance to the target. Current pointing (0h, 0°) →
 /// target (0h, 60°) is 60° = 216000″; at the default 7200″/s rate with no
-/// settle, predicted = 30 s and max = max(30 × 3, 60 s floor) = 90 s
+/// settle, predicted = 30 s and max = max(30 × 3, 30 s floor) = 90 s
 /// (target chosen large enough that `predicted × 3` clears the floor, so
 /// the distance scaling — not the floor — is what's asserted).
 #[tokio::test]
@@ -4914,7 +4914,7 @@ async fn slew_started_carries_distance_scaled_deadline() {
     assert_eq!(
         started.max_duration_ms,
         Some(90000),
-        "max = predicted × 3 = 90 s (above the 60 s floor)"
+        "max = predicted × 3 = 90 s (above the 30 s floor)"
     );
 }
 

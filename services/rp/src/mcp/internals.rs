@@ -45,12 +45,14 @@ const CAPTURE_READOUT_GRACE: Duration = Duration::from_secs(120);
 /// startup position each scenario, while `sync_mount` only moves the
 /// *reported* coordinates) takes up to ~12 s regardless of the small
 /// reported distance rp sizes the deadline from. A real mount's tiny slew
-/// is far quicker, so this floor is slack in production. 60 s leaves
-/// generous margin for CI timer-stretch while still surfacing a wedged slew
-/// ~5× sooner than the prior hardcoded 300 s ceiling — and well before
-/// rmcp's 300 s session keep-alive, the swallowed-hang trigger this plan
-/// fixes.
-const MIN_SLEW_DEADLINE: Duration = Duration::from_secs(60);
+/// is far quicker, so this floor is slack in production. 30 s is ~2.5×
+/// OmniSim's ~12 s worst case — margin for a contended CI runner dropping
+/// timer ticks (the goto-slew advances a fixed angle per tick, so a stalled
+/// timer stretches wall-clock time) — while still surfacing a wedged slew
+/// ~10× sooner than the prior hardcoded 300 s ceiling, and well before
+/// rmcp's 300 s session keep-alive (the swallowed-hang trigger this plan
+/// fixes).
+const MIN_SLEW_DEADLINE: Duration = Duration::from_secs(30);
 
 /// Slew deadline used when the predicted deadline can't be computed — the
 /// mount isn't resolvable yet, or the pre-slew pointing read failed. A
