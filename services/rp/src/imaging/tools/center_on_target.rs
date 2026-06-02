@@ -15,7 +15,7 @@
 //!
 //! **BDD-author note.** `do_slew_blocking` now sizes its deadline from
 //! the slew distance (`compute_slew_deadline`, §2.1): a small
-//! inner-iteration corrective slew floors at `MIN_SLEW_DEADLINE` (5 s), so
+//! inner-iteration corrective slew floors at `MIN_SLEW_DEADLINE` (30 s), so
 //! it no longer approaches rmcp's 300 s MCP-transport keep-alive — only a
 //! multi-degree slew gets a deadline near that bound. Keeping BDD canned
 //! WCS values within ~2′ of any prior synced position still matters: it

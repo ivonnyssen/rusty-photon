@@ -4481,10 +4481,10 @@ async fn auto_focus_happy_path_emits_focus_complete_and_returns_curve() {
 async fn do_slew_blocking_emits_progress_during_slew() {
     // 120 polls × 100 ms tick ≈ 12 s of simulated `slewing()==true`.
     // After 12 s of activity, `PROGRESS_INTERVAL == 5 s` produces a
-    // tick at 5 s and at 10 s — assert ≥ 2 emissions. The target is 20°
-    // off the mock's (0, 0) pointing so the predicted deadline (≈30 s)
-    // comfortably exceeds the 12 s simulated slew — a (0,0)→(0,0) target
-    // would floor the deadline at 5 s and time out before completion.
+    // tick at 5 s and at 10 s — assert ≥ 2 emissions. current == target
+    // (distance 0) so the deadline is the `MIN_SLEW_DEADLINE` floor
+    // (30 s), comfortably above the 12 s simulated slew — and a canary:
+    // a floor dropped below ~12 s would make this slew time out.
     let mount = MockTelescope {
         slewing_true_count: 120,
         ..Default::default()
@@ -4492,7 +4492,7 @@ async fn do_slew_blocking_emits_progress_during_slew() {
     let handler = test_handler(mount_registry(Arc::new(mount), None));
     let emitter = super::progress::test_support::CountingProgressEmitter::default();
     let (actual_ra, actual_dec) = handler
-        .do_slew_blocking(0.0, 20.0, Duration::ZERO, Some(&emitter))
+        .do_slew_blocking(0.0, 0.0, Duration::ZERO, Some(&emitter))
         .await
         .expect("slew completes when the mount reports idle");
     assert_eq!(actual_ra, 0.0);
@@ -4951,9 +4951,11 @@ async fn slew_started_omits_deadline_when_pointing_read_fails() {
 }
 
 /// §2.1 robustness: a finite, positive, but absurdly small slew rate makes
-/// `distance / rate` overflow f64 to +∞. `compute_slew_deadline` must
-/// detect the non-finite deadline and fall back (300 s ceiling, deadline
-/// fields omitted) rather than panicking in `Duration::from_secs_f64`.
+/// `distance / rate` a *finite* value far too large for `Duration` to hold
+/// — the case a bare `is_finite()` check misses (it slips through to
+/// `Duration::from_secs_f64`, which panics on overflow). `compute_slew_deadline`
+/// rejects it via `try_from_secs_f64` and falls back (300 s ceiling,
+/// deadline fields omitted) rather than crashing.
 #[tokio::test]
 async fn slew_deadline_overflow_falls_back_without_panic() {
     let registry = crate::equipment::EquipmentRegistry {
@@ -4968,7 +4970,7 @@ async fn slew_deadline_overflow_falls_back_without_panic() {
                 device_number: 0,
                 settle_after_slew: None,
                 slew_rate_arcsec_per_sec: crate::config::mount::SlewRateArcsecPerSec::try_new(
-                    1e-320,
+                    1e-20,
                 )
                 .unwrap(),
                 auth: None,
@@ -4979,8 +4981,9 @@ async fn slew_deadline_overflow_falls_back_without_panic() {
     let handler = test_handler(registry);
     let mut rx = handler.event_bus.subscribe();
 
-    // current (0,0) → (0, 80°) at a ~0 rate overflows predicted to +∞;
-    // the slew still completes on the fallback deadline.
+    // current (0,0) → (0, 80°): 80° / 1e-20 arcsec·s⁻¹ ≈ 2.9e25 s —
+    // finite but far beyond Duration's range, so the prediction is
+    // rejected and the slew completes on the fallback deadline.
     handler
         .do_slew_blocking(0.0, 80.0, Duration::ZERO, None)
         .await

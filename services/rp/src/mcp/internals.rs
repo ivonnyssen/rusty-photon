@@ -924,19 +924,20 @@ impl McpHandler {
             imaging::haversine_arcsec(current_ra * 15.0, current_dec, ra * 15.0, dec);
         let predicted_secs = distance_arcsec / rate + settle_after.as_secs_f64();
         let max_secs = (predicted_secs * 3.0).max(MIN_SLEW_DEADLINE.as_secs_f64());
-        // A finite, positive rate can still be small enough that
-        // distance / rate overflows f64 to infinity, which would panic
-        // `Duration::from_secs_f64`. Treat a non-finite result as a
-        // prediction failure so the caller falls back to the 300 s
-        // ceiling rather than crashing.
-        if !max_secs.is_finite() {
-            return Err(format!(
-                "predicted slew deadline is not finite \
-                 (slew_rate_arcsec_per_sec {rate} too small for distance {distance_arcsec} arcsec)"
-            ));
-        }
+        // An absurdly small (but config-valid) rate makes distance / rate
+        // huge — either +inf, or finite-but-larger than a `Duration` can
+        // hold. `try_from_secs_f64` rejects non-finite, negative, AND
+        // overflowing values, so we fall back to the 300 s ceiling rather
+        // than panicking (which `Duration::from_secs_f64` would do for any
+        // of those).
+        let deadline = Duration::try_from_secs_f64(max_secs).map_err(|e| {
+            format!(
+                "predicted slew deadline out of range \
+                 (slew_rate_arcsec_per_sec {rate}, distance {distance_arcsec} arcsec): {e}"
+            )
+        })?;
         Ok((
-            Duration::from_secs_f64(max_secs),
+            deadline,
             (predicted_secs * 1000.0).round() as u64,
             (max_secs * 1000.0).round() as u64,
         ))
