@@ -358,11 +358,20 @@ fn build_persist_value(
 
     for path in pinned_paths {
         let pointer = dotted_to_pointer(path);
-        if let (Some(file_val), Some(slot)) = (
-            file_current.pointer(&pointer).cloned(),
-            to_write.pointer_mut(&pointer),
-        ) {
-            *slot = file_val;
+        match file_current.pointer(&pointer).cloned() {
+            // Present on disk: write the file's prior value through, discarding the
+            // submitted (override-shadowed) value.
+            Some(file_val) => {
+                if let Some(slot) = to_write.pointer_mut(&pointer) {
+                    *slot = file_val;
+                }
+            }
+            // Absent on disk (e.g. a `#[serde(default)]` field left at its default,
+            // like `switch.enabled`): the file's prior state is "unset", so drop the
+            // field from the persist payload — otherwise a transient CLI override
+            // (or a disabled-field edit) to a pinned field would still be baked into
+            // the file.
+            None => remove_at_pointer(&mut to_write, &pointer),
         }
     }
 
@@ -382,6 +391,18 @@ fn build_persist_value(
     }
 
     (to_write, pinned_paths.to_vec())
+}
+
+/// Remove the leaf at a JSON pointer from `value`, if its parent is an object.
+/// Used to drop an override-pinned field that is absent from the on-disk config so
+/// `config.apply` persists the file's prior "unset" state rather than the submitted
+/// (override-shadowed) value.
+fn remove_at_pointer(value: &mut Value, pointer: &str) {
+    if let Some((parent, key)) = pointer.rsplit_once('/') {
+        if let Some(Value::Object(map)) = value.pointer_mut(parent) {
+            map.remove(key);
+        }
+    }
 }
 
 /// Dotted JSON paths whose leaf values differ between `before` and `after`.
@@ -753,6 +774,44 @@ mod tests {
         assert_eq!(
             on_disk.pointer("/device/name").and_then(Value::as_str),
             Some("Renamed")
+        );
+    }
+
+    #[test]
+    fn build_persist_value_drops_pinned_field_absent_from_file() {
+        // A pinned field omitted from the on-disk file (e.g. a `#[serde(default)]`
+        // bool at its default) must NOT be persisted from the submitted value — the
+        // file keeps its prior "unset" state. Regression for the override-pinned-
+        // but-absent persist leak.
+        let submitted = serde_json::json!({ "switch": { "enabled": false, "name": "sw" } });
+        let file_current = serde_json::json!({ "switch": { "name": "sw" } });
+        let (to_write, skipped) = build_persist_value(
+            &submitted,
+            &file_current,
+            &["switch.enabled".to_string()],
+            &[],
+        );
+        assert!(
+            to_write.pointer("/switch/enabled").is_none(),
+            "pinned field absent on disk must not be persisted: {to_write}"
+        );
+        assert_eq!(
+            to_write.pointer("/switch/name").and_then(Value::as_str),
+            Some("sw")
+        );
+        assert_eq!(skipped, vec!["switch.enabled".to_string()]);
+    }
+
+    #[test]
+    fn build_persist_value_writes_through_pinned_field_present_on_file() {
+        // Present on disk: the file's prior value wins over the submitted value.
+        let submitted = serde_json::json!({ "server": { "port": 9999 } });
+        let file_current = serde_json::json!({ "server": { "port": 11111 } });
+        let (to_write, _) =
+            build_persist_value(&submitted, &file_current, &["server.port".to_string()], &[]);
+        assert_eq!(
+            to_write.pointer("/server/port").and_then(Value::as_u64),
+            Some(11111)
         );
     }
 
