@@ -31,10 +31,10 @@ sequencing. Ordered test-first per
 ## Goal
 
 Every blocking MCP tool emits a `*_started` / `*_complete` / `*_failed`
-triple wrapped in a uniform **event envelope** that already carries the
-(null-for-now) predictive-deadline fields Phase 2 will populate. No
-behaviour of the existing webhook-delivery path changes; the envelope is
-purely additive.
+triple wrapped in a uniform **event envelope** that already reserves the
+predictive-deadline fields Phase 2 will populate (omitted from the wire
+in Phase 1 until then). No behaviour of the existing webhook-delivery
+path changes; the envelope is purely additive.
 
 ## Starting-state facts (verified against code)
 
@@ -122,8 +122,8 @@ Phase 4. Flagged for reviewer.
   `details` → `payload` (Decision A).
 - `docs/services/rp.md` §Event System (line 319): document the envelope
   schema (`event_id`, `event_seq`, `operation_id`, `started_at` /
-  `ended_at`, `elapsed_ms`, `predicted_duration_ms` / `max_duration_ms` =
-  null in Phase 1, `outcome`); add the new `*_started` / `*_failed`
+  `ended_at`, `elapsed_ms`, `predicted_duration_ms` / `max_duration_ms`
+  omitted until Phase 2, `payload`); add the new `*_started` / `*_failed`
   rows; note the webhook body is additive.
 - `docs/workspace.md`: add `predictive-deadlines-and-watchdog.md` to the
   Plans index (currently missing — pre-existing gap).
@@ -140,10 +140,9 @@ pub struct EventEnvelope {            // serializes to the wire body
     pub started_at: Option<String>,
     pub ended_at: Option<String>,
     pub elapsed_ms: Option<u64>,
-    pub predicted_duration_ms: Option<u64>, // null in Phase 1
-    pub max_duration_ms: Option<u64>,       // null in Phase 1
-    pub payload: Value,               // today's payload (Decision A)
-    pub outcome: Option<Value>,       // complete / failed only
+    pub predicted_duration_ms: Option<u64>, // None in Phase 1 (omitted from JSON)
+    pub max_duration_ms: Option<u64>,       // None in Phase 1 (omitted from JSON)
+    pub payload: Value,               // inputs (started) + outcome (complete/failed), one key — Decision A
 }
 
 pub struct EventBus {
@@ -189,9 +188,9 @@ result
 
 - Multiple early returns → extract bodies into `*_inner` returning
   `Result`, wrap once (mirrors the existing `slew_inner` / `park_inner`).
-- `details` / `outcome` carry today's payload keys verbatim (slew:
-  `{ra,dec,from_ra,from_dec}` / `{actual_ra,actual_dec}`; focuser:
-  target / final position; etc.).
+- `payload` carries today's keys verbatim — inputs on `*_started`,
+  outcome on `*_complete` (slew: `{ra,dec,from_ra,from_dec}` /
+  `{actual_ra,actual_dec}`; focuser: target / final position; etc.).
 - **sync_mount:** complete / failed only (instant, no `_started`/timer) —
   parent §1.2.
 - **unpark:** wire at the tool method `mount.rs:275` (no helper); the
@@ -206,7 +205,7 @@ result
   each helper with a mock Alpaca (success + failure), assert the triple —
   fresh `event_id` / `event_seq` per emission, `event_seq` monotonic,
   **same `operation_id`** on start↔end, `started_at` / `ended_at`
-  present, deadline fields **null**. Use `result.unwrap()` (AGENTS rule
+  present, deadline fields **absent**. Use `result.unwrap()` (AGENTS rule
   7); `tokio::test(start_paused = true)` for timed paths.
 - **BDD:** new `services/rp/tests/features/operation_events.feature` —
   per family, a scenario asserting envelope shape over the

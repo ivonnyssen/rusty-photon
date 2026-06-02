@@ -199,7 +199,8 @@ the events are an *additional* stream the supervisor uses to react.
 **One PR. Blocking for every later phase.** Adds the missing
 `*_started` / `*_complete` / `*_failed` events with a uniform payload
 schema, including the predicted-deadline fields that Phase 2 will
-populate (Phase 1 ships them as `null`).
+populate (omitted from the wire in Phase 1 — see the §1.1 as-built
+note).
 
 ### 1.1 Uniform event payload schema
 
