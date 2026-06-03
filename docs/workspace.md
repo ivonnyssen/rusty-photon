@@ -33,6 +33,7 @@ belong in any single service design doc.
 | [docs/skills/pre-push.md](skills/pre-push.md) | Skill: running CI quality gates before pushing |
 | **Crate design docs** (substantial workspace libraries — see [docs/crates/](crates/)) | |
 | [docs/crates/rp-ephemeris.md](crates/rp-ephemeris.md) | `rp-ephemeris` — `Ephemeris` trait, ERFA wrapping, panic-safety + NaN-degradation, derived helpers, time-scale treatment |
+| [docs/crates/rp-targets.md](crates/rp-targets.md) | `rp-targets` — `redb`-backed imaging-plan store: targets, acquisition goals, per-target grading-threshold + scheduling-constraint overrides; `TargetStore` trait. Design stage; crate not yet built. |
 | **References** | |
 | [docs/references/ascom-alpaca.md](references/ascom-alpaca.md) | ASCOM Alpaca protocol reference |
 | [docs/references/skywatcher-motor-controller-command-set.md](references/skywatcher-motor-controller-command-set.md) | Sky-Watcher motor-controller wire protocol (USB + UDP/11880) — used by `star-adventurer-gti` |
