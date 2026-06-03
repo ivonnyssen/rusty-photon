@@ -5,8 +5,8 @@
 **Draft — design.** This plan describes how to close the implementation
 gap behind two long-standing sections of the rp design doc:
 
-- [`docs/services/rp.md` §Sentinel Watchdog Integration](../services/rp.md#sentinel-watchdog-integration) (lines 2756–2806)
-- [`docs/services/rp.md` §Real-Time Stream](../services/rp.md#real-time-stream) (lines 2871–2882)
+- [`docs/services/rp.md` §Sentinel Watchdog Integration](../services/rp.md#sentinel-watchdog-integration)
+- [`docs/services/rp.md` §Real-Time Stream](../services/rp.md#real-time-stream)
 
 Both have lived in the design doc since rp was first sketched; neither
 has any code behind them today. The catalyst for picking this up was

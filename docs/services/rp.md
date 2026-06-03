@@ -393,7 +393,9 @@ and absent optional fields are omitted from the JSON.
   "event": "slew_started",
   "timestamp": "2026-05-19T20:14:33Z",
   "started_at": "2026-05-19T20:14:33.412Z",
-  "payload": { "ra": 12.0, "dec": -30.0, "from_ra": 11.998, "from_dec": -29.991 }
+  "predicted_duration_ms": 21000,
+  "max_duration_ms": 63000,
+  "payload": { "ra": 12.0, "dec": -30.0 }
 }
 ```
 
@@ -406,7 +408,7 @@ and absent optional fields are omitted from the JSON.
 | `timestamp` | ISO-8601 emission time. Unchanged historical format. |
 | `started_at` / `ended_at` | RFC-3339 (millisecond) operation start / end. `started_at` is on the `*_started`/`*_complete`/`*_failed` triple; `ended_at` only on `*_complete`/`*_failed`. |
 | `elapsed_ms` | Wall-clock operation duration, on `*_complete`/`*_failed`. |
-| `predicted_duration_ms` / `max_duration_ms` | Reserved for the predicted-deadline phase; currently always omitted. Will carry the operation's expected and hard-ceiling durations. |
+| `predicted_duration_ms` / `max_duration_ms` | The operation's expected duration and hard-ceiling deadline, in integer milliseconds (a boundary serialization of an internal `Duration`). Populated on `slew_started` (Phase 2.1): `predicted = great-circle distance / mount.slew_rate_arcsec_per_sec + settle`, `max = max(predicted × 3, MIN_SLEW_DEADLINE = 30 s)`. Omitted for operations not yet converted to predictive deadlines. |
 | `payload` | Operation detail. For `*_started`, the inputs; for `*_complete`/`*_failed`, the outcome (or `{"error": "..."}` on failure). |
 
 A blocking operation emits a **triple** — a `*_started` envelope at the
@@ -739,7 +741,7 @@ the exact parameter types and return structure.
 | `move_focuser` | focuser_id, position | actual_position | Move focuser to absolute position |
 | `get_focuser_position` | focuser_id | position | Read current focuser position |
 | `get_focuser_temperature` | focuser_id | temperature_c | Read focuser temperature sensor |
-| `slew` | ra, dec, settle_after (optional) | actual_ra, actual_dec | Slew the singular mount to coordinates (blocks until `Slewing == false` plus configured / per-call settle). Tracking must be on; ASCOM error propagates otherwise |
+| `slew` | ra, dec, settle_after (optional) | actual_ra, actual_dec | Slew the singular mount to coordinates (blocks until `Slewing == false` plus configured / per-call settle). Tracking must be on; ASCOM error propagates otherwise. Bounded by a **predicted deadline**: `predicted = great-circle(current, target) / mount.slew_rate_arcsec_per_sec + settle`; `max = max(predicted × 3, MIN_SLEW_DEADLINE = 30 s)`. The current pointing is read before the slew to size the deadline; if that read fails it falls back to a 300 s ceiling. On timeout `slew` best-effort aborts (unlike `park`); `predicted`/`max` ride the `slew_started` envelope as `predicted_duration_ms`/`max_duration_ms` |
 | `sync_mount` | ra, dec | — | Sync mount position to given coordinates |
 | `get_mount_position` | — | ra, dec | Read the mount's current pointing |
 | `get_tracking` | — | tracking, can_set_tracking | Read tracking state and `CanSetTracking` capability; fails loud on read error |
@@ -2847,7 +2849,7 @@ the disconnection is an immediate trigger for Sentinel to attempt recovery.
 | Operation | Starts on event | Expected completion | Timeout = |
 |-----------|----------------|--------------------|----|
 | Exposure | `exposure_started` | `exposure_complete` | duration + configurable buffer |
-| Slew | `slew_started` | `slew_complete` | configurable max slew time |
+| Slew | `slew_started` | `slew_complete` | `max_duration_ms` from the `slew_started` envelope (rp-computed: `(distance / rate + settle) × 3`, floored at `MIN_SLEW_DEADLINE`) |
 | Focus | `focus_started` | `focus_complete` | configurable max focus time |
 | Guide settle | `guide_started` | `guide_settled` | configurable settle timeout |
 | Centering | `centering_started` | `centering_complete` | configurable max attempts * solve time |
@@ -2973,7 +2975,10 @@ trains; `mount` stays singular. Multi-mount support is in
 [Future Considerations](#future-considerations). `mount.settle_after_slew`
 is applied by `slew` after the mount reports `Slewing == false`; per-call
 `settle_after` on `slew` overrides this value (including `"0s"` to skip
-when the config sets a non-zero default).
+when the config sets a non-zero default). `mount.slew_rate_arcsec_per_sec`
+(default `7200` = 2°/s, a conservative slow-stepper rate) feeds the
+predictive slew deadline; set it per-rig for a tighter bound. It must be a
+finite positive number — a bad value is rejected at config load.
 
 The `site` block is required for the ephemeris and planner tools
 (`compute_alt_az`, `get_twilight`, `get_next_target`, …); when present
@@ -3025,7 +3030,8 @@ return a structured "site not configured" error.
     "mount": {
       "alpaca_url": "http://localhost:11122",
       "device_number": 0,
-      "settle_after_slew": "3s"
+      "settle_after_slew": "3s",
+      "slew_rate_arcsec_per_sec": 7200
     },
     "focusers": [
       {

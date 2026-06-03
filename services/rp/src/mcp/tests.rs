@@ -1001,6 +1001,7 @@ fn mount_registry(
                 alpaca_url: "http://localhost:1".to_string(),
                 device_number: 0,
                 settle_after_slew,
+                slew_rate_arcsec_per_sec: Default::default(),
                 auth: None,
             },
             device: Some(mount),
@@ -1030,6 +1031,7 @@ fn disconnected_mount_registry() -> crate::equipment::EquipmentRegistry {
                 alpaca_url: "http://localhost:1".to_string(),
                 device_number: 0,
                 settle_after_slew: None,
+                slew_rate_arcsec_per_sec: Default::default(),
                 auth: None,
             },
             device: None,
@@ -2600,10 +2602,13 @@ async fn test_slew_alpaca_error_propagates() {
 }
 
 /// Drives the timeout escalation path: `slewing()` returns `true`
-/// indefinitely, the 300 s deadline expires, `abort_slew()` is
+/// indefinitely, the predicted deadline expires, `abort_slew()` is
 /// called (best-effort, ignored result), and the tool returns the
-/// timeout error. `start_paused` lets tokio auto-advance virtual
-/// time so the test runs in real-time milliseconds.
+/// timeout error. With current pointing == target (distance 0) the
+/// deadline floors at `MIN_SLEW_DEADLINE` (30 s), so the test also
+/// asserts the failure lands far under the old 300 s ceiling — proof
+/// the deadline now scales with the slew (§2.6). `start_paused` lets
+/// tokio auto-advance virtual time so the test runs in real-time ms.
 #[tokio::test(start_paused = true)]
 async fn test_slew_timeout_returns_error_after_abort() {
     let mount = MockTelescope {
@@ -2611,6 +2616,7 @@ async fn test_slew_timeout_returns_error_after_abort() {
         ..Default::default()
     };
     let handler = test_handler(mount_registry(Arc::new(mount), None));
+    let started_at = tokio::time::Instant::now();
     let result = handler
         .slew_inner(
             SlewParams {
@@ -2621,7 +2627,13 @@ async fn test_slew_timeout_returns_error_after_abort() {
             None,
         )
         .await;
+    let elapsed = started_at.elapsed();
     assert_tool_error(result, "timeout waiting for mount to settle");
+    assert!(
+        elapsed < Duration::from_secs(60),
+        "a zero-distance slew should hit the ~30 s MIN_SLEW_DEADLINE floor, \
+         not the old 300 s ceiling; elapsed {elapsed:?}"
+    );
 }
 
 /// Per-call `settle_after` overrides the config default. Passes
@@ -3031,7 +3043,7 @@ async fn poll_slewing_tolerates_transient_read_errors_then_idles() {
         stuck_slewing: false,
         ..Default::default()
     };
-    super::internals::poll_slewing_until_idle(&mount, None)
+    super::internals::poll_slewing_until_idle(&mount, Duration::from_secs(300), None)
         .await
         .expect("transient slewing() errors below the tolerance must not abort the slew");
 }
@@ -3394,6 +3406,7 @@ fn handler_with_site_and_mount() -> McpHandler {
         alpaca_url: "http://unused".into(),
         device_number: 0,
         settle_after_slew: None,
+        slew_rate_arcsec_per_sec: Default::default(),
         auth: None,
     };
     // Skip the connect-time HTTP fetch by hand-building a registry
@@ -4468,7 +4481,10 @@ async fn auto_focus_happy_path_emits_focus_complete_and_returns_curve() {
 async fn do_slew_blocking_emits_progress_during_slew() {
     // 120 polls × 100 ms tick ≈ 12 s of simulated `slewing()==true`.
     // After 12 s of activity, `PROGRESS_INTERVAL == 5 s` produces a
-    // tick at 5 s and at 10 s — assert ≥ 2 emissions.
+    // tick at 5 s and at 10 s — assert ≥ 2 emissions. current == target
+    // (distance 0) so the deadline is the `MIN_SLEW_DEADLINE` floor
+    // (30 s), comfortably above the 12 s simulated slew — and a canary:
+    // a floor dropped below ~12 s would make this slew time out.
     let mount = MockTelescope {
         slewing_true_count: 120,
         ..Default::default()
@@ -4776,8 +4792,10 @@ async fn assert_no_more_events(
 /// Assertions common to every `*_complete` / `*_failed` envelope: it
 /// shares the started envelope's `operation_id`, carries a fresh
 /// `event_id` and a strictly greater `event_seq`, has the full timing
-/// trio, and — in Phase 1 — never populates the reserved deadline
-/// fields.
+/// trio, and never carries the deadline fields (those ride only the
+/// matching `*_started`, and only for operations with a predictive
+/// deadline). The start envelope's deadline fields are asserted
+/// per-operation by that operation's own test.
 fn assert_end_mirrors_start(
     start: &crate::events::EventEnvelope,
     end: &crate::events::EventEnvelope,
@@ -4803,16 +4821,30 @@ fn assert_end_mirrors_start(
         start.ended_at.is_none(),
         "no ended_at on the start envelope"
     );
-    for ev in [start, end] {
+    // The matching `*_started` envelope carries deadline fields only for
+    // operations with a predictive deadline (slew, §2.1); every other
+    // operation's start must still omit them. (slew's start is asserted
+    // present by its own test.)
+    if !start.event.starts_with("slew") {
         assert!(
-            ev.predicted_duration_ms.is_none(),
-            "Phase 1 reserves but never populates predicted_duration_ms"
+            start.predicted_duration_ms.is_none(),
+            "{} start envelope must omit predicted_duration_ms",
+            start.event
         );
         assert!(
-            ev.max_duration_ms.is_none(),
-            "Phase 1 reserves but never populates max_duration_ms"
+            start.max_duration_ms.is_none(),
+            "{} start envelope must omit max_duration_ms",
+            start.event
         );
     }
+    assert!(
+        end.predicted_duration_ms.is_none(),
+        "the end envelope must not carry predicted_duration_ms"
+    );
+    assert!(
+        end.max_duration_ms.is_none(),
+        "the end envelope must not carry max_duration_ms"
+    );
 }
 
 #[tokio::test]
@@ -4843,6 +4875,127 @@ async fn slew_emits_started_complete_triple() {
     assert_eq!(complete.payload["actual_ra"], 10.6847);
     assert_eq!(complete.payload["actual_dec"], 41.2689);
     assert_end_mirrors_start(&started, &complete);
+
+    // current == target (the mock reports the slew target as its current
+    // pointing), so the great-circle distance is 0: predicted floors at
+    // 0 ms and max at the 30 s MIN_SLEW_DEADLINE floor.
+    assert_eq!(started.predicted_duration_ms, Some(0));
+    assert_eq!(started.max_duration_ms, Some(30000));
+}
+
+/// §2.1: the `slew_started` envelope carries a deadline sized from the
+/// great-circle distance to the target. Current pointing (0h, 0°) →
+/// target (0h, 60°) is 60° = 216000″; at the default 7200″/s rate with no
+/// settle, predicted = 30 s and max = max(30 × 3, 30 s floor) = 90 s
+/// (target chosen large enough that `predicted × 3` clears the floor, so
+/// the distance scaling — not the floor — is what's asserted).
+#[tokio::test]
+async fn slew_started_carries_distance_scaled_deadline() {
+    let mount = MockTelescope {
+        ra_value: 0.0,
+        dec_value: 0.0,
+        ..Default::default()
+    };
+    let handler = test_handler(mount_registry(Arc::new(mount), None));
+    let mut rx = handler.event_bus.subscribe();
+
+    handler
+        .do_slew_blocking(0.0, 60.0, Duration::ZERO, None)
+        .await
+        .unwrap();
+
+    let started = next_event(&mut rx).await;
+    assert_eq!(started.event, "slew_started");
+    assert_eq!(
+        started.predicted_duration_ms,
+        Some(30000),
+        "60° / 7200 arcsec·s⁻¹ = 30 s predicted"
+    );
+    assert_eq!(
+        started.max_duration_ms,
+        Some(90000),
+        "max = predicted × 3 = 90 s (above the 30 s floor)"
+    );
+}
+
+/// §2.1 fallback: when the pre-slew pointing read fails the deadline can't
+/// be predicted, so `slew_started` omits the deadline fields and the slew
+/// proceeds on the fallback ceiling. (Here the same failing read also
+/// fails the post-slew read, so the operation ends in error — the point
+/// under test is that the started envelope carries no deadline fields.)
+#[tokio::test]
+async fn slew_started_omits_deadline_when_pointing_read_fails() {
+    let mount = MockTelescope {
+        fail_right_ascension: true,
+        ..Default::default()
+    };
+    let handler = test_handler(mount_registry(Arc::new(mount), None));
+    let mut rx = handler.event_bus.subscribe();
+
+    let err = handler
+        .do_slew_blocking(0.0, 10.0, Duration::ZERO, None)
+        .await
+        .unwrap_err();
+    assert!(err.contains("right_ascension"), "got: {err}");
+
+    let started = next_event(&mut rx).await;
+    assert_eq!(started.event, "slew_started");
+    assert!(
+        started.predicted_duration_ms.is_none(),
+        "fallback path must omit predicted_duration_ms"
+    );
+    assert!(
+        started.max_duration_ms.is_none(),
+        "fallback path must omit max_duration_ms"
+    );
+}
+
+/// §2.1 robustness: a finite, positive, but absurdly small slew rate makes
+/// `distance / rate` a *finite* value far too large for `Duration` to hold
+/// — the case a bare `is_finite()` check misses (it slips through to
+/// `Duration::from_secs_f64`, which panics on overflow). `compute_slew_deadline`
+/// rejects it via `try_from_secs_f64` and falls back (300 s ceiling,
+/// deadline fields omitted) rather than crashing.
+#[tokio::test]
+async fn slew_deadline_overflow_falls_back_without_panic() {
+    let registry = crate::equipment::EquipmentRegistry {
+        cameras: vec![],
+        filter_wheels: vec![],
+        cover_calibrators: vec![],
+        focusers: vec![],
+        mount: Some(crate::equipment::MountEntry {
+            connected: true,
+            config: crate::config::MountConfig {
+                alpaca_url: "http://localhost:1".to_string(),
+                device_number: 0,
+                settle_after_slew: None,
+                slew_rate_arcsec_per_sec: crate::config::mount::SlewRateArcsecPerSec::try_new(
+                    1e-20,
+                )
+                .unwrap(),
+                auth: None,
+            },
+            device: Some(Arc::new(MockTelescope::default())),
+        }),
+    };
+    let handler = test_handler(registry);
+    let mut rx = handler.event_bus.subscribe();
+
+    // current (0,0) → (0, 80°): 80° / 1e-20 arcsec·s⁻¹ ≈ 2.9e25 s —
+    // finite but far beyond Duration's range, so the prediction is
+    // rejected and the slew completes on the fallback deadline.
+    handler
+        .do_slew_blocking(0.0, 80.0, Duration::ZERO, None)
+        .await
+        .unwrap();
+
+    let started = next_event(&mut rx).await;
+    assert_eq!(started.event, "slew_started");
+    assert!(
+        started.predicted_duration_ms.is_none(),
+        "overflow must fall back and omit predicted_duration_ms"
+    );
+    assert!(started.max_duration_ms.is_none());
 }
 
 #[tokio::test]

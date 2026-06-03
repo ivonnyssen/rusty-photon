@@ -113,6 +113,7 @@ mod tests {
             alpaca_url: url.to_string(),
             device_number: 0,
             settle_after_slew: None,
+            slew_rate_arcsec_per_sec: Default::default(),
             auth: None,
         }
     }

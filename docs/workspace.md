@@ -43,7 +43,7 @@ belong in any single service design doc.
 | [ADR-004](decisions/004-testing-strategy-for-http-client-error-paths.md) | Testing strategy for HTTP-client error paths |
 | [ADR-005](decisions/005-plate-solver.md) | Plate solver: ASTAP via subprocess + verification spike |
 | **Plans** (in-flight initiatives — see [docs/plans/](plans/)) | |
-| [predictive-deadlines-and-watchdog.md](plans/predictive-deadlines-and-watchdog.md) | Predictive operation deadlines in `rp` + Sentinel operation watchdog (5 phases); [phase-1 implementation plan](plans/predictive-deadlines-phase1-event-surface.md) |
+| [predictive-deadlines-and-watchdog.md](plans/predictive-deadlines-and-watchdog.md) | Predictive operation deadlines in `rp` + Sentinel operation watchdog (5 phases); [phase-1 implementation plan](plans/predictive-deadlines-phase1-event-surface.md), [phase-2 §2.1 slew plan](plans/predictive-deadlines-phase2-slew.md) |
 | [bazel-migration.md](plans/bazel-migration.md) | Bazel build alongside Cargo (shadow mode) |
 | [filemonitor-packaging.md](plans/filemonitor-packaging.md) | Filemonitor OS packaging |
 | [i18n.md](plans/i18n.md) | Workspace internationalization: scope, tech-stack, and translation-sourcing options |

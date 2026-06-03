@@ -13,15 +13,15 @@
 //! Behavioral contract: `docs/services/rp.md` → Compound Tools →
 //! `center_on_target` Contract.
 //!
-//! **BDD-author note.** `do_slew_blocking`'s 300 s deadline races
-//! rmcp's 300 s MCP-transport keep-alive — both fire at the same
-//! moment, so a single inner-iteration slew that approaches 5 minutes
-//! breaks the test client before the loop can return its
-//! `tolerance_not_reached` / `equipment` error. Keep BDD canned WCS
-//! values within ~2′ of any prior synced position so iter-1's sync +
-//! slew traverse a small distance even under heavy CI load. See
-//! `services/rp/tests/features/center_on_target.feature` for the
-//! worked numbers.
+//! **BDD-author note.** `do_slew_blocking` now sizes its deadline from
+//! the slew distance (`compute_slew_deadline`, §2.1): a small
+//! inner-iteration corrective slew floors at `MIN_SLEW_DEADLINE` (30 s), so
+//! it no longer approaches rmcp's 300 s MCP-transport keep-alive — only a
+//! multi-degree slew gets a deadline near that bound. Keeping BDD canned
+//! WCS values within ~2′ of any prior synced position still matters: it
+//! keeps iter-1's sync + slew traversal small (and fast) even under heavy
+//! CI load. See `services/rp/tests/features/center_on_target.feature` for
+//! the worked numbers.
 //!
 //! Note: the closed-loop centering BDD hit *two* distinct hang classes
 //! in May 2026, neither the slew/keep-alive race above:

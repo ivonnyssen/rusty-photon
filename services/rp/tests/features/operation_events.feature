@@ -5,9 +5,9 @@ Feature: Operation event envelopes
   event at exit, all sharing one `operation_id` so a consumer can
   correlate the triple. Each emission carries its own `event_id` and a
   monotonic `event_seq`; the start carries `started_at` and the end adds
-  `ended_at` plus `elapsed_ms`. The `predicted_duration_ms` /
-  `max_duration_ms` deadline fields are reserved for a later phase and
-  are absent today.
+  `ended_at` plus `elapsed_ms`. The `slew_started` event also carries the
+  `predicted_duration_ms` / `max_duration_ms` deadline fields (Phase 2.1);
+  operations not yet converted to predictive deadlines omit them.
 
   The envelope is additive over the historical webhook body: the
   `event_id`, `event`, `timestamp`, and `payload` keys keep their exact
@@ -30,7 +30,7 @@ Feature: Operation event envelopes
     And the "slew_complete" event has a higher event_seq than the "slew_started" event
     And the "slew_started" event carries a started_at timestamp
     And the "slew_complete" event carries ended_at and elapsed_ms
-    And the "slew_started" event reserves the deadline fields as absent
+    And the "slew_started" event carries the deadline fields
     And the "slew_started" event payload includes "ra"
     And the "slew_complete" event payload includes "actual_ra"
 
@@ -60,6 +60,7 @@ Feature: Operation event envelopes
     And the webhook delivers the "park_complete" event
     And the "park_started" and "park_complete" events share one operation_id
     And the "park_complete" event has a higher event_seq than the "park_started" event
+    And the "park_started" event reserves the deadline fields as absent
 
   Scenario: Sync emits a complete event with no started event
     Given a running Alpaca simulator
