@@ -7,6 +7,7 @@
 mod alpaca;
 pub mod camera;
 pub mod config;
+pub mod config_actions;
 pub mod error;
 pub mod fits;
 #[cfg(feature = "mock")]
@@ -25,9 +26,14 @@ pub use survey::SurveyClient;
 
 use ascom_alpaca::api::CargoServerInfo;
 use ascom_alpaca::Server;
+use rusty_photon_service_lifecycle::{ReloadSignal, Shutdown};
 use std::future::Future;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+
+use crate::config_actions::SkySurveyCameraDriver;
+use rusty_photon_driver::ConfigActionCtx;
 
 /// Bind the ASCOM Alpaca Camera server (with the `/sky-survey/*`
 /// custom routes composed in front of it), print `bound_addr=` for
@@ -63,6 +69,60 @@ pub async fn run(
     run_with_client(config, survey_client, shutdown).await
 }
 
+/// Reload-aware entry point used by `main`: materialize the identity once, then
+/// loop — load the config, serve until shutdown OR a `config.apply`-fired reload
+/// breaks out, and on reload rebuild from the freshly-persisted file. Awaiting
+/// the serve to completion lets the old server's graceful shutdown drain before
+/// the rebuilt one binds.
+pub async fn run_reloadable(
+    config_path: &Path,
+    shutdown: Shutdown,
+    reload: ReloadSignal,
+) -> Result<(), SkySurveyCameraError> {
+    // Mint a spec-compliant ASCOM UniqueID on first run (idempotent). Only when
+    // the file exists — a missing config is a hard error in `load_config`.
+    if config_path.exists() {
+        let outcome = rusty_photon_config::materialize_identity(
+            config_path,
+            &serde_json::Value::Object(Default::default()),
+            &["/device/unique_id"],
+        )?;
+        tracing::debug!(path = ?config_path, wrote = outcome.wrote, filled = ?outcome.filled, "materialized device identity");
+    }
+
+    loop {
+        let config = load_config(config_path).await?;
+        let survey_client = build_survey_client(&config)?;
+        let ctx: ConfigActionCtx<SkySurveyCameraDriver> = ConfigActionCtx {
+            effective: config.clone(),
+            path: config_path.to_path_buf(),
+            overrides: (),
+            reload: reload.clone(),
+        };
+
+        // Stop on shutdown OR a config.apply-fired reload, recording which fired.
+        let reloaded = Arc::new(AtomicBool::new(false));
+        let stop = {
+            let reloaded = Arc::clone(&reloaded);
+            let shutdown = shutdown.cancelled();
+            let reload = reload.clone();
+            async move {
+                tokio::select! {
+                    () = shutdown => {}
+                    () = reload.recv() => reloaded.store(true, Ordering::SeqCst),
+                }
+            }
+        };
+        run_with_client_ctx(config, survey_client, Some(ctx), stop).await?;
+
+        if reloaded.load(Ordering::SeqCst) {
+            tracing::debug!("reloading sky-survey-camera configuration");
+            continue;
+        }
+        return Ok(());
+    }
+}
+
 /// Variant of [`run`] used by tests / the `mock` feature where the
 /// caller has already constructed an [`Arc<dyn SurveyClient>`].
 pub async fn run_with_client(
@@ -70,7 +130,22 @@ pub async fn run_with_client(
     survey_client: Arc<dyn SurveyClient>,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<(), SkySurveyCameraError> {
+    run_with_client_ctx(config, survey_client, None, shutdown).await
+}
+
+/// As [`run_with_client`], but attaches an optional config-action context to the
+/// registered camera device so it advertises `config.get`/`apply`/`schema`.
+pub async fn run_with_client_ctx(
+    config: Config,
+    survey_client: Arc<dyn SurveyClient>,
+    config_ctx: Option<ConfigActionCtx<SkySurveyCameraDriver>>,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> Result<(), SkySurveyCameraError> {
     let device = build_device(config.clone(), survey_client)?;
+    let device = match config_ctx {
+        Some(ctx) => device.with_config_actions(ctx),
+        None => device,
+    };
     let shared_state = device.shared_state();
 
     let mut server = Server::new(CargoServerInfo!());

@@ -13,6 +13,7 @@
 
 pub mod codec;
 pub mod config;
+pub mod config_actions;
 pub mod error;
 pub mod manager;
 #[cfg(feature = "mock")]
@@ -37,13 +38,18 @@ pub use mock::MockFalconTransportFactory;
 
 use std::future::Future;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use ascom_alpaca::api::CargoServerInfo;
 use ascom_alpaca::Server;
 use rp_tls::config::TlsConfig;
+use rusty_photon_service_lifecycle::ReloadSignal;
 use rusty_photon_shared_transport::TransportFactory;
 use tracing::{debug, info};
+
+use crate::config::CliOverrides;
+use crate::config_actions::FalconRotatorDriver;
 
 /// Builder for the ASCOM Alpaca server.
 ///
@@ -54,6 +60,11 @@ use tracing::{debug, info};
 pub struct ServerBuilder {
     config: Config,
     factory: Arc<dyn TransportFactory>,
+    /// Where `config.apply` persists + which fields are CLI-pinned. `Some`
+    /// enables the config actions on both registered devices.
+    config_source: Option<(PathBuf, CliOverrides)>,
+    /// In-process reload trigger handed to the devices' `config.apply` handler.
+    reload: Option<ReloadSignal>,
 }
 
 impl Default for ServerBuilder {
@@ -62,6 +73,8 @@ impl Default for ServerBuilder {
         Self {
             config: Config::default(),
             factory: Arc::new(factory),
+            config_source: None,
+            reload: None,
         }
     }
 }
@@ -86,6 +99,21 @@ impl ServerBuilder {
         self
     }
 
+    /// Wire the config-action source (persist path + CLI overrides) so both
+    /// registered devices advertise `config.get` / `config.apply` /
+    /// `config.schema`.
+    pub fn with_config_source(mut self, path: PathBuf, overrides: CliOverrides) -> Self {
+        self.config_source = Some((path, overrides));
+        self
+    }
+
+    /// Hand the devices the in-process reload trigger fired after a `config.apply`
+    /// that needs a reload.
+    pub fn with_reload_signal(mut self, reload: ReloadSignal) -> Self {
+        self.reload = Some(reload);
+        self
+    }
+
     pub async fn build(self) -> std::result::Result<BoundServer, Box<dyn std::error::Error>> {
         let manager = FalconManager::new(self.factory);
 
@@ -106,16 +134,38 @@ impl ServerBuilder {
             server.listen_addr = SocketAddr::from(([0, 0, 0, 0], self.config.server.port));
             server.discovery_port = self.config.server.discovery_port;
 
+            // Build the shared config-action context once (when a config source
+            // + reload signal were supplied) and clone it to each device, so both
+            // advertise the actions against the one driver config + reload signal.
+            let config_ctx: Option<rusty_photon_driver::ConfigActionCtx<FalconRotatorDriver>> =
+                match (self.config_source.clone(), self.reload.clone()) {
+                    (Some((path, overrides)), Some(reload)) => {
+                        Some(rusty_photon_driver::ConfigActionCtx {
+                            effective: self.config.clone(),
+                            path,
+                            overrides,
+                            reload,
+                        })
+                    }
+                    _ => None,
+                };
+
             if self.config.rotator.enabled {
-                let rotator_device =
+                let mut rotator_device =
                     FalconRotatorDevice::new(self.config.rotator.clone(), Arc::clone(&manager));
+                if let Some(ctx) = config_ctx.clone() {
+                    rotator_device = rotator_device.with_config_actions(ctx);
+                }
                 server.devices.register(rotator_device);
                 info!("Registered Rotator device: {}", self.config.rotator.name);
             }
 
             if self.config.switch.enabled {
-                let switch_device =
+                let mut switch_device =
                     FalconStatusSwitchDevice::new(self.config.switch.clone(), Arc::clone(&manager));
+                if let Some(ctx) = config_ctx.clone() {
+                    switch_device = switch_device.with_config_actions(ctx);
+                }
                 server.devices.register(switch_device);
                 info!(
                     "Registered Status Switch device: {}",

@@ -1492,6 +1492,33 @@ behind a future config flag if hardware sessions show it's needed.
 | `--server-port <PORT>` | Override `server.port` |
 | `-l, --log-level <LEVEL>` | `trace` / `debug` / `info` / `warn` / `error` |
 
+### Config actions
+
+The mount exposes its configuration over HTTP as the vendor ASCOM actions
+`config.get` / `config.apply` / `config.schema` — the cross-driver protocol in
+[`config-actions.md`](config-actions.md) — *alongside* its `SetPark` /
+`*ApPark*` vendor actions (the `action()` dispatch tries the `ApParkAction` set
+first, then falls through to the config actions). `config_actions.rs` supplies
+the driver-specific half (`ConfigurableDriver for StarAdvDriver`).
+
+- **Secret redacted / carried forward:** `/server/auth/password_hash`.
+- **Locked (identity) field:** `mount.unique_id`.
+- **Hard read-only fields:** the whole `transport` block (`transport.kind`,
+  `.port`, `.address`, `.baud_rate`, `.command_timeout`, `.polling_interval` —
+  the `usb`/`udp` enum is best edited in the config file), `server.port`, and
+  `mount.enabled`.
+- **Overrides:** `Overrides = ()`. The CLI overrides (`--transport`/`--port`/
+  `--baud`/`--server-port`) all target read-only fields, so there is nothing to
+  override-pin; the read-only tier is the practical equivalent.
+
+The mount's parse-don't-validate config types self-validate at deserialize, so a
+malformed submission fails with `INVALID_VALUE` before `validate` runs; the only
+`status:"invalid"` path is an empty `mount.unique_id`. A `config.apply` that
+changes a field persists atomically, returns `status:"applying"`, and fires the
+in-process reload: `main.rs` runs under
+`ServiceRunner::with_reload().run_with_reload(...)`, whose loop re-reads + re-
+applies the CLI overrides and rebuilds the server from the freshly-persisted file.
+
 ## Module Structure
 
 ### `crates/skywatcher-motor-protocol`

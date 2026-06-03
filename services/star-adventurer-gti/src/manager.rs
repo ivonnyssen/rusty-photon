@@ -1111,9 +1111,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn handshake_eof_surfaces_as_staradv_transport_connection_closed() {
-        // EOF mid-handshake → device-layer `Transport("connection closed")`,
-        // not `Protocol(FrameError("connection closed"))`.
+    async fn handshake_eof_surfaces_as_staradv_communication_connection_closed() {
+        // EOF mid-handshake → device-layer `Communication("Connection closed")`
+        // (the shared `From<TransportError>` mapping), not
+        // `Protocol(FrameError("connection closed"))`.
         let manager = make_manager_with_failing_recv(TransportError::Eof);
         let err = manager
             .transport()
@@ -1122,8 +1123,8 @@ mod tests {
             .expect_err("handshake EOF must surface as Err");
         let mapped = StarAdvError::from(err);
         match mapped {
-            StarAdvError::Transport(s) => assert!(s.contains("connection closed")),
-            other => panic!("expected StarAdvError::Transport, got {other:?}"),
+            StarAdvError::Communication(s) => assert!(s.contains("Connection closed")),
+            other => panic!("expected StarAdvError::Communication, got {other:?}"),
         }
         assert!(
             !manager.is_available(),

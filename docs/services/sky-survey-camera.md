@@ -240,6 +240,29 @@ fov_y_deg = plate_scale_y_arcsec_per_px * sensor_height_px / 3600
 
 These are computed once at construction and exposed via debug logging.
 
+### Config actions
+
+The camera exposes its configuration over HTTP as the vendor ASCOM actions
+`config.get` / `config.apply` / `config.schema` — the cross-driver protocol in
+[`config-actions.md`](config-actions.md), implemented generically in
+`rusty_photon_config::actions`. `config_actions.rs` supplies the driver-specific
+half (`ConfigurableDriver for SkySurveyCameraDriver`, `Overrides = ()` — the
+binary has no CLI overrides) plus the `dispatch` the camera device delegates to.
+
+- **Secrets redacted / carried forward:** the follow-mode client passwords
+  `/pointing/telescope/auth/password` and `/pointing/rotator/auth/password`.
+- **Locked (identity) field:** `device.unique_id`.
+- **Hard read-only field:** `server.port`.
+- **Validation** mirrors load-time `config::validate` (telescope offsets finite,
+  request timeouts > 0, rotator-requires-telescope) as field-level errors.
+
+Because the config has mandatory `optics` fields and no `Config::default()`, the
+shared `config_apply` seeds its file-read fallback from the running config rather
+than a default. A `config.apply` that changes a field persists atomically,
+returns `status:"applying"`, and fires the in-process reload: `main.rs` runs
+under `ServiceRunner::with_reload().run_with_reload(...)`, whose loop
+(`run_reloadable`) rebuilds the server from the freshly-persisted file.
+
 ## Operation
 
 ### Pointing State

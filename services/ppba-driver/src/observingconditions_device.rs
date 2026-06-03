@@ -15,8 +15,10 @@ use tracing::debug;
 
 use crate::codec::PpbaCodec;
 use crate::config::ObservingConditionsConfig;
+use crate::config_actions::PpbaDriver;
 use crate::error::PpbaError;
 use crate::manager::PpbaManager;
+use rusty_photon_driver::ConfigActionCtx;
 
 macro_rules! ensure_connected {
     ($self:ident) => {
@@ -34,6 +36,10 @@ pub struct PpbaObservingConditionsDevice {
     session: Arc<RwLock<Option<Session<PpbaCodec>>>>,
     #[debug(skip)]
     manager: Arc<PpbaManager>,
+    /// Shared (cloned) config-action context; `Some` on the normal path through
+    /// `ServerBuilder`, `None` for focused unit-test devices.
+    #[debug(skip)]
+    config_ctx: Option<ConfigActionCtx<PpbaDriver>>,
 }
 
 impl PpbaObservingConditionsDevice {
@@ -42,7 +48,15 @@ impl PpbaObservingConditionsDevice {
             config,
             session: Arc::new(RwLock::new(None)),
             manager,
+            config_ctx: None,
         }
+    }
+
+    /// Attach the shared config-action context, enabling `config.get` /
+    /// `config.apply` / `config.schema` on this device.
+    pub fn with_config_actions(mut self, ctx: ConfigActionCtx<PpbaDriver>) -> Self {
+        self.config_ctx = Some(ctx);
+        self
     }
 }
 
@@ -101,6 +115,14 @@ impl Device for PpbaObservingConditionsDevice {
 
     async fn driver_version(&self) -> ASCOMResult<String> {
         Ok(env!("CARGO_PKG_VERSION").to_string())
+    }
+
+    async fn supported_actions(&self) -> ASCOMResult<Vec<String>> {
+        Ok(rusty_photon_driver::supported_actions(&self.config_ctx))
+    }
+
+    async fn action(&self, action: String, parameters: String) -> ASCOMResult<String> {
+        rusty_photon_driver::dispatch::<PpbaDriver>(&self.config_ctx, action, parameters).await
     }
 }
 

@@ -13,6 +13,7 @@ workspace = true
 
 [dependencies]
 axum = { workspace = true }
+derive_more = { workspace = true }
 maud = { version = "0.27", features = ["axum"] }
 reqwest = { workspace = true }
 serde = { workspace = true }
@@ -24,6 +25,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 clap = { workspace = true }
 rp-tls = { workspace = true }
+rusty-photon-config = { workspace = true }
 rusty-photon-service-lifecycle = { workspace = true }
 
 [dev-dependencies]

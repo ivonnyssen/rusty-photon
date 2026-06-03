@@ -1,9 +1,13 @@
 //! Configuration for the `ui-htmx` BFF.
 //!
-//! The BFF is not an ASCOM device; this is its own small config. Phase 2 targets
-//! a single hard-coded driver (`dsd-fp2`); later the device list is derived from
-//! `rp`'s equipment roster (see `docs/services/ui-htmx.md`).
+//! The BFF is not an ASCOM device; this is its own small config. It targets a
+//! **map of drivers** keyed by service id (`dsd-fp2`, `qhy-focuser`, …); each
+//! entry says how to reach that driver's Alpaca config actions. The default
+//! config carries a single local `dsd-fp2` entry so `cargo run` works with no
+//! config file. Later the device list is derived from `rp`'s equipment roster
+//! (see `docs/services/ui-htmx.md`).
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -26,17 +30,28 @@ pub struct ServerConfig {
     pub port: u16,
 }
 
-/// The driver targets the BFF knows about. Phase 2 has exactly one.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct Drivers {
-    #[serde(rename = "dsd-fp2", default)]
-    pub dsd_fp2: DriverTarget,
+/// The driver targets the BFF knows about, keyed by service id (the path
+/// segment in `/config/{service}`). A newtype over the map so it can carry a
+/// non-empty default (a single local `dsd-fp2`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Drivers(pub BTreeMap<String, DriverTarget>);
+
+impl Default for Drivers {
+    fn default() -> Self {
+        let mut map = BTreeMap::new();
+        map.insert("dsd-fp2".to_string(), DriverTarget::default());
+        Self(map)
+    }
 }
 
 /// How to reach one driver's Alpaca config actions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DriverTarget {
-    #[serde(default = "default_dsd_fp2_base_url")]
+    /// Display name shown in the UI; falls back to the service id when absent.
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default = "default_base_url")]
     pub base_url: String,
     #[serde(default = "default_device_type")]
     pub device_type: String,
@@ -51,9 +66,12 @@ pub struct DriverTarget {
 }
 
 /// HTTP Basic credentials the BFF presents to a driver.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, derive_more::Debug)]
 pub struct DriverAuth {
     pub username: String,
+    /// Plaintext Basic-Auth password — redacted from `Debug` so it never lands
+    /// in logs or test output.
+    #[debug("<redacted>")]
     pub password: String,
 }
 
@@ -65,7 +83,7 @@ fn default_port() -> u16 {
     11120
 }
 
-fn default_dsd_fp2_base_url() -> String {
+fn default_base_url() -> String {
     "http://127.0.0.1:11119".to_string()
 }
 
@@ -85,7 +103,8 @@ impl Default for ServerConfig {
 impl Default for DriverTarget {
     fn default() -> Self {
         Self {
-            base_url: default_dsd_fp2_base_url(),
+            name: None,
+            base_url: default_base_url(),
             device_type: default_device_type(),
             device_number: 0,
             auth: None,
@@ -112,10 +131,11 @@ mod tests {
         let c = Config::default();
         assert_eq!(c.server.bind, "127.0.0.1");
         assert_eq!(c.server.port, 11120);
-        assert_eq!(c.drivers.dsd_fp2.base_url, "http://127.0.0.1:11119");
-        assert_eq!(c.drivers.dsd_fp2.device_type, "covercalibrator");
-        assert_eq!(c.drivers.dsd_fp2.device_number, 0);
-        assert!(c.drivers.dsd_fp2.auth.is_none());
+        let dsd = c.drivers.0.get("dsd-fp2").unwrap();
+        assert_eq!(dsd.base_url, "http://127.0.0.1:11119");
+        assert_eq!(dsd.device_type, "covercalibrator");
+        assert_eq!(dsd.device_number, 0);
+        assert!(dsd.auth.is_none());
     }
 
     #[test]
@@ -124,25 +144,33 @@ mod tests {
         let c: Config = serde_json::from_str(json).unwrap();
         assert_eq!(c.server.port, 9000);
         assert_eq!(c.server.bind, "127.0.0.1");
-        // The driver target falls back entirely to its defaults.
-        assert_eq!(c.drivers.dsd_fp2.base_url, "http://127.0.0.1:11119");
+        // Omitting `drivers` falls back to the default single dsd-fp2 entry.
+        assert!(c.drivers.0.contains_key("dsd-fp2"));
     }
 
     #[test]
-    fn deserialises_driver_auth_and_url() {
+    fn deserialises_multiple_drivers() {
         let json = r#"{
             "drivers": {
                 "dsd-fp2": {
                     "base_url": "https://pi.local:11119",
                     "auth": { "username": "obs", "password": "secret" }
+                },
+                "qhy-focuser": {
+                    "base_url": "http://127.0.0.1:11121",
+                    "device_type": "focuser"
                 }
             }
         }"#;
         let c: Config = serde_json::from_str(json).unwrap();
-        assert_eq!(c.drivers.dsd_fp2.base_url, "https://pi.local:11119");
-        let auth = c.drivers.dsd_fp2.auth.unwrap();
+        assert_eq!(c.drivers.0.len(), 2);
+        let dsd = c.drivers.0.get("dsd-fp2").unwrap();
+        assert_eq!(dsd.base_url, "https://pi.local:11119");
+        let auth = dsd.auth.as_ref().unwrap();
         assert_eq!(auth.username, "obs");
         assert_eq!(auth.password, "secret");
+        let qhy = c.drivers.0.get("qhy-focuser").unwrap();
+        assert_eq!(qhy.device_type, "focuser");
     }
 
     #[test]
@@ -157,5 +185,17 @@ mod tests {
     #[test]
     fn load_config_missing_file_errors() {
         load_config(Path::new("/tmp/ui_htmx_nonexistent_4242.json")).unwrap_err();
+    }
+
+    #[test]
+    fn driver_auth_password_redacted_in_debug() {
+        let auth = DriverAuth {
+            username: "obs".to_string(),
+            password: "hunter2".to_string(),
+        };
+        let rendered = format!("{auth:?}");
+        assert!(!rendered.contains("hunter2"), "password leaked: {rendered}");
+        assert!(rendered.contains("obs"));
+        assert!(rendered.contains("<redacted>"));
     }
 }

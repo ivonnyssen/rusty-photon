@@ -4,6 +4,8 @@
 // husky precommit hook (`-D warnings`) stays green between slices.
 #![allow(dead_code)]
 
+use ascom_alpaca::api::{Camera, TypedDevice};
+use ascom_alpaca::Client as AlpacaClient;
 use bdd_infra::ServiceHandle;
 use cucumber::World;
 use serde_json::Value;
@@ -114,6 +116,13 @@ pub struct SkySurveyCameraWorld {
 
     /// Path to the config.json the service was started with.
     pub config_path: Option<PathBuf>,
+
+    /// Parsed JSON body of the last config.get / config.apply / config.schema action.
+    pub last_response: Option<Value>,
+    /// Result of the last supported_actions query.
+    pub last_supported_actions: Option<Vec<String>>,
+    /// ASCOM error code (raw) from the last config action that failed.
+    pub last_action_error_code: Option<u16>,
 
     /// Optics config under construction by Given steps.
     pub focal_length_mm: Option<f64>,
@@ -424,6 +433,68 @@ impl SkySurveyCameraWorld {
     pub fn base_url(&self) -> String {
         let handle = self.service.as_ref().expect("service not started");
         format!("http://127.0.0.1:{}", handle.port)
+    }
+
+    /// The OS-assigned port the spawned service bound.
+    pub fn bound_port(&self) -> u16 {
+        self.service.as_ref().expect("service not started").port
+    }
+
+    /// Acquire a typed ASCOM Camera client, polling until the device is
+    /// advertised.
+    pub async fn acquire_camera(&self) -> Arc<dyn Camera> {
+        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], self.bound_port()));
+        let client = AlpacaClient::new_from_addr(addr);
+        for _ in 0..60 {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            if let Ok(mut devices) = client.get_devices().await {
+                if let Some(TypedDevice::Camera(c)) = devices.next() {
+                    return c;
+                }
+            }
+        }
+        panic!("sky-survey-camera did not advertise a Camera within 15s");
+    }
+
+    /// Call `config.get`, stash the parsed response, and return the `config`
+    /// object so a When step can edit it and re-apply.
+    pub async fn current_config(&mut self) -> Value {
+        let camera = self.acquire_camera().await;
+        let body = camera
+            .action("config.get".to_string(), String::new())
+            .await
+            .expect("config.get failed");
+        let parsed: Value = serde_json::from_str(&body).expect("config.get returned invalid JSON");
+        let config = parsed
+            .get("config")
+            .cloned()
+            .expect("config.get response missing `config`");
+        self.last_response = Some(parsed);
+        config
+    }
+
+    /// Call `config.apply` with `params`, stashing the parsed response.
+    pub async fn call_config_apply(&mut self, params: Value) {
+        let camera = self.acquire_camera().await;
+        let body = camera
+            .action("config.apply".to_string(), params.to_string())
+            .await
+            .expect("config.apply failed");
+        self.last_response =
+            Some(serde_json::from_str(&body).expect("config.apply returned invalid JSON"));
+    }
+
+    /// Poll `config.get` via a fresh client until `device.description` equals
+    /// `expected`, tolerating the brief blip while the server rebinds.
+    pub async fn wait_for_config_description(&self, expected: &str) {
+        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], self.bound_port()));
+        for _ in 0..80 {
+            if try_get_description(addr).await.as_deref() == Some(expected) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        panic!("reloaded service did not report description {expected} within 20s");
     }
 
     /// PUT /api/v1/camera/0/connected — toggle ASCOM Connected.
@@ -760,4 +831,22 @@ async fn handle_rotator_position(
             "ErrorMessage": "simulated rotator read failure"
         })),
     }
+}
+
+/// Read `device.description` from `config.get` via a fresh client, returning
+/// `None` on any transport/parse failure (e.g. mid-reload).
+async fn try_get_description(addr: std::net::SocketAddr) -> Option<String> {
+    let client = AlpacaClient::new_from_addr(addr);
+    let mut devices = client.get_devices().await.ok()?;
+    if let Some(TypedDevice::Camera(c)) = devices.next() {
+        let body = c
+            .action("config.get".to_string(), String::new())
+            .await
+            .ok()?;
+        let parsed: Value = serde_json::from_str(&body).ok()?;
+        return parsed["config"]["device"]["description"]
+            .as_str()
+            .map(str::to_string);
+    }
+    None
 }

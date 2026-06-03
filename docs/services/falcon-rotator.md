@@ -318,6 +318,28 @@ minted; set it explicitly only to migrate a known id.
 | `--server-port` | Server port (overrides config) |
 | `-l, --log-level` | Log level: `trace`, `debug`, `info`, `warn`, `error` |
 
+### Config actions
+
+Both devices expose the configuration over HTTP as the vendor ASCOM actions
+`config.get` / `config.apply` / `config.schema` — the cross-driver protocol in
+[`config-actions.md`](config-actions.md), implemented generically in
+`rusty_photon_config::actions`. `config_actions.rs` supplies the driver-specific
+half (`ConfigurableDriver for FalconRotatorDriver`) **and** the shared `dispatch`
+both `rotator_device.rs` and `switch_device.rs` delegate to, so an apply on
+either device operates on the one full driver config and fires the one reload
+(`ReloadSignal::notify` coalesces).
+
+- **Secret redacted / carried forward:** `/server/auth/password_hash`.
+- **Locked (identity) fields:** `rotator.unique_id`, `switch.unique_id`.
+- **Hard read-only fields:** `server.port`, `rotator.enabled`, `switch.enabled`.
+- **CLI-override-pinned:** `serial.port` (`--port`), `server.port` (`--server-port`).
+
+A `config.apply` that changes a field persists atomically, returns
+`status:"applying"`, and fires the in-process reload; `main.rs` runs under
+`ServiceRunner::with_reload().run_with_reload(...)`, which tears the old server
+down (releasing the shared serial port) and rebuilds from the freshly-persisted
+file.
+
 ## Module Structure
 
 ```
@@ -326,7 +348,7 @@ services/pa-falcon-rotator/
 │   ├── lib.rs              # ServerBuilder, BoundServer
 │   ├── main.rs             # CLI entry point; lifecycle owned by `rusty-photon-service-lifecycle::ServiceRunner`
 │   ├── config.rs           # Config types + JSON loading
-│   ├── error.rs            # FalconRotatorError enum (thiserror)
+│   ├── error.rs            # FalconRotatorError (via rusty_photon_driver::driver_error!)
 │   ├── rotator_device.rs   # ASCOM Device + Rotator trait impl
 │   ├── switch_device.rs    # ASCOM Device + Switch trait impl (voltage + limit)
 │   ├── codec.rs            # FalconCodec + FalconResponse + FalconCodecError

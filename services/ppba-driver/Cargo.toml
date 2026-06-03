@@ -27,12 +27,14 @@ ascom-alpaca = { workspace = true, features = [
   "observing_conditions",
 ] }
 rusty-photon-config = { workspace = true }
+rusty-photon-driver = { workspace = true }
 rusty-photon-service-lifecycle = { workspace = true }
 rusty-photon-shared-transport = { workspace = true }
 tokio = { workspace = true }
 tokio-serial = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+schemars = { workspace = true }
 humantime-serde = { workspace = true }
 clap = { workspace = true }
 async-trait = { workspace = true }

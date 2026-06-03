@@ -1,3 +1,4 @@
+pub mod config_actions_steps;
 pub mod connection_steps;
 pub mod halt_steps;
 pub mod metadata_steps;

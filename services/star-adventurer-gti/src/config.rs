@@ -10,7 +10,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 /// Top-level configuration deserialised from the JSON config file.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, schemars::JsonSchema)]
 pub struct Config {
     pub transport: TransportConfig,
     pub server: ServerConfig,
@@ -18,7 +18,7 @@ pub struct Config {
 }
 
 /// Transport block — `usb` (serial) or `udp` (WiFi).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum TransportConfig {
     Usb(UsbConfig),
@@ -54,19 +54,21 @@ impl TransportConfig {
 }
 
 /// USB-CDC serial transport config.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct UsbConfig {
     pub port: String,
     #[serde(default = "default_baud_rate")]
     pub baud_rate: u32,
     #[serde(default = "default_command_timeout", with = "humantime_serde")]
+    #[schemars(with = "String")]
     pub command_timeout: Duration,
     #[serde(default = "default_polling_interval", with = "humantime_serde")]
+    #[schemars(with = "String")]
     pub polling_interval: Duration,
 }
 
 /// UDP/WiFi transport config.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct UdpConfig {
     pub address: IpAddr,
     #[serde(default = "default_udp_port")]
@@ -75,12 +77,14 @@ pub struct UdpConfig {
     /// in AP mode.
     pub bind_address: IpAddr,
     #[serde(default = "default_command_timeout", with = "humantime_serde")]
+    #[schemars(with = "String")]
     pub command_timeout: Duration,
     #[serde(default = "default_polling_interval", with = "humantime_serde")]
+    #[schemars(with = "String")]
     pub polling_interval: Duration,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ServerConfig {
     pub port: u16,
     #[serde(default = "default_discovery_port")]
@@ -91,7 +95,7 @@ pub struct ServerConfig {
     pub auth: Option<rp_auth::config::AuthConfig>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct MountConfig {
     pub name: String,
     /// Spec-compliant ASCOM `UniqueID`. Ships **empty** so that
@@ -116,6 +120,7 @@ pub struct MountConfig {
     pub site_elevation_m: f64,
 
     #[serde(default = "default_settle_after_slew", with = "humantime_serde")]
+    #[schemars(with = "String")]
     pub settle_after_slew: Duration,
 
     /// Reserved for future expansion. Sidereal only in MVP.
@@ -256,7 +261,7 @@ pub struct MountConfig {
 /// target's hour angle falls inside the meridian window of width
 /// `2 × flip_range_hours`. See the design doc for the full decision
 /// tree and the per-side safety envelopes.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct FlipPolicy {
     /// Master switch. Defaults `false` until the first real-hardware
     /// meridian flip on a GTi has been verified.
@@ -305,7 +310,7 @@ pub const MAX_TRACKING_GUARD_MARGIN_HOURS: f64 = 1.0;
 
 /// Half-width of the meridian-flip window, hours. Valid `(0, MAX_FLIP_RANGE_HOURS]`.
 /// JSON form is a bare number.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(into = "f64", try_from = "f64")]
 pub struct FlipRangeHours(f64);
 
@@ -351,7 +356,7 @@ impl From<FlipRangeHours> for f64 {
 
 /// Tracking-guard slack before the CW exclusion zone, hours. Valid
 /// `[0, MAX_TRACKING_GUARD_MARGIN_HOURS]`. JSON form is a bare number.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(into = "f64", try_from = "f64")]
 pub struct TrackingGuardMarginHours(f64);
 
@@ -392,14 +397,14 @@ impl From<TrackingGuardMarginHours> for f64 {
 /// An active CW exclusion interval in encoder mech_HA (signed hours, folded
 /// `[-12, +12)`): `-12 <= min_hours < max_hours <= 12`. JSON form is
 /// `{ "min_hours": .., "max_hours": .. }`.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(into = "ActiveZoneWire", try_from = "ActiveZoneWire")]
 pub struct ActiveZone {
     min_hours: f64,
     max_hours: f64,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, schemars::JsonSchema)]
 struct ActiveZoneWire {
     min_hours: f64,
     max_hours: f64,
@@ -468,7 +473,7 @@ impl From<ActiveZone> for ActiveZoneWire {
 /// explicitly [`Disabled`](CwExclusionZone::Disabled). Replaces the old
 /// `binding_zone_min/max_hours` pair and its `min >= max = disabled`
 /// convention. JSON form is the active object, or `null` for disabled.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(from = "Option<ActiveZone>", into = "Option<ActiveZone>")]
 pub enum CwExclusionZone {
     Active(ActiveZone),
@@ -506,14 +511,14 @@ impl From<CwExclusionZone> for Option<ActiveZone> {
 
 /// Safe declination envelope, degrees: `-90 <= min_degrees < max_degrees <= 90`.
 /// JSON form is `{ "min_degrees": .., "max_degrees": .. }`.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(into = "DecLimitsWire", try_from = "DecLimitsWire")]
 pub struct DecLimits {
     min_degrees: f64,
     max_degrees: f64,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, schemars::JsonSchema)]
 struct DecLimitsWire {
     min_degrees: f64,
     max_degrees: f64,
@@ -631,7 +636,10 @@ impl Default for DecLimits {
 /// for Park 4 (target on the meridian, anti-pole side) and at
 /// `mech_HA = 0` for Park 5 (target on the anti-meridian, pole side
 /// horizon), and the Dec encoder is past the celestial pole.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// Custom Serialize/Deserialize map to `preferred` / `ap_park_0..5` strings; the
+// derived JsonSchema is advisory (the schema only shapes the UI form — the
+// custom Deserialize is the gate). Rendered read-only in the UI regardless.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, schemars::JsonSchema)]
 pub enum ApPark {
     /// "Current position." No encoder seeding — the driver trusts the
     /// firmware encoder as-is on connect. The operator asserts they
@@ -905,7 +913,9 @@ impl ApPark {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[derive(
+    Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq, schemars::JsonSchema,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum TrackingRateName {
     #[default]

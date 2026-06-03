@@ -142,6 +142,33 @@ with the default scaffold and the two freshly-minted UUIDs. CLI overrides
 are applied to the in-memory config *after* loading and are never written back
 to disk.
 
+### Config actions
+
+Both devices expose the configuration over HTTP as the vendor ASCOM actions
+`config.get` / `config.apply` / `config.schema` — the cross-driver protocol in
+[`config-actions.md`](config-actions.md), implemented generically in
+`rusty_photon_config::actions`. `config_actions.rs` supplies the driver-specific
+half (`ConfigurableDriver for PpbaDriver`) **and** the shared `dispatch` both
+`switch_device.rs` and `observingconditions_device.rs` delegate to, so an apply
+on either device operates on the one full driver config and fires the one reload
+(`ReloadSignal::notify` coalesces).
+
+- **Secret redacted / carried forward:** `/server/auth/password_hash`.
+- **Locked (identity) fields:** `switch.unique_id`, `observingconditions.unique_id`.
+- **Hard read-only fields:** `server.port`, `switch.enabled`,
+  `observingconditions.enabled` (disabling a device tears down the endpoint the
+  config actions live on).
+- **CLI-override-pinned:** `serial.port` (`--port`), `server.port`
+  (`--server-port`), `switch.enabled` (`--enable-switch`),
+  `observingconditions.enabled` (`--enable-observingconditions`) — reported in
+  `config.get`'s `overrides[]` and never persisted by `config.apply`.
+
+A `config.apply` that changes a field persists atomically, returns
+`status:"applying"`, and fires the in-process reload; `main.rs` runs under
+`ServiceRunner::with_reload().run_with_reload(...)`, which tears the old server
+down (releasing the shared serial port) and rebuilds from the freshly-persisted
+file, rebinding the same port.
+
 ## Usage
 
 ### Starting the Service

@@ -2,8 +2,13 @@
 
 **Status:** Phase 1 **landed** (dsd-fp2 `config.get`/`config.apply` + in-process
 reload). Phase 2 **landed** — the BFF skeleton + dsd-fp2 config page ship as the
-`ui-htmx` service ([`docs/services/ui-htmx.md`](../../services/ui-htmx.md)). Key
-protocol decisions resolved 2026-05-24 — see [Resolved](#resolved-2026-05-24).
+`ui-htmx` service ([`docs/services/ui-htmx.md`](../../services/ui-htmx.md)). Phase 3
+**landed** — the `config.get`/`config.apply`/`config.schema` protocol is generalised
+across **all six** drivers via the shared `rusty-photon-config::actions` module (see
+[`docs/services/config-actions.md`](../../services/config-actions.md)), and the
+`ui-htmx` BFF now renders **any** driver's form generically from `config.schema`,
+routing every configured driver under `/config/{service}`. Key protocol decisions
+resolved 2026-05-24 — see [Resolved](#resolved-2026-05-24).
 **Companion to:** [`mocks/README.md`](mocks/README.md) (the chosen UI direction and stack).
 
 ## Summary
@@ -394,22 +399,58 @@ credential, discovery, self-lockout, and convention-crate calls that shape this.
 **Phase 2 — BFF skeleton + hand-built `dsd-fp2` config page. ✅ Landed.**
 - New `services/ui-htmx` crate (axum + Maud + HTMX, embedded assets, dark theme).
 - `GET/POST /config/dsd-fp2` wired to the driver's config actions; validation,
-  override-pinned-field read-only, and "applying/reconnecting" states. 7 BDD
+  override-pinned-field read-only, and "applying/reconnecting" states. 8 BDD
   scenarios that spawn the real BFF + a real mock-mode `dsd-fp2` and drive it
   over HTTP (including the full apply → reload → reconnect round trip), plus
   handler/wire-parsing unit tests. *Deliverable: a working config page for
   `dsd-fp2`.*
 
-**Phase 3 — Generalise across drivers.**
-- Extract a shared `config-actions` helper so other drivers adopt `config.get`/
-  `config.apply` with minimal boilerplate; roll out to `qhy-focuser` and the rest.
-  Once the pattern is proven, promote that helper to a **small, standalone,
-  vendor-neutral crate** (convention constants + request/response types + optional
-  `config.schema` + a helper to wire the actions onto any `ascom-alpaca` `Device`)
-  so *third parties* can adopt the convention cheaply and auto-detect as *managed*
-  (see [Decisions](#decisions-2026-05-27)).
-- Optional: add `config.schema` (via `schemars`) + a schema-driven form renderer
-  in the BFF to replace hand-built forms.
+**Phase 3 — Generalise across drivers. ✅ Landed.** Both halves shipped in one PR,
+along the natural driver ⇆ BFF fault line.
+
+*Phase 3a — driver-side protocol. ✅ Landed.*
+- ✅ Extracted the shared `config-actions` helper into the existing
+  `rusty-photon-config` crate (`actions` module: the `ConfigurableDriver` trait +
+  generic `config_get`/`config_apply`/`config_schema`). The cross-driver protocol
+  is documented in [`docs/services/config-actions.md`](../../services/config-actions.md).
+- ✅ Rolled out to **all six** drivers — `dsd-fp2` (refactored onto the shared
+  crate), `qhy-focuser`, `pa-falcon-rotator`, `ppba-driver`, `sky-survey-camera`,
+  `star-adventurer-gti` — each with a `config_actions.feature` BDD suite covering
+  advertise / schema+tiers / get / apply→reload→rebind / invalid / unknown-action.
+- ✅ Added `config.schema` (via `schemars`) as the **third action**: returns a
+  JSON Schema plus the editability tiers (`locked_fields` / `read_only_fields`).
+- ✅ The shipped Phase-2 `dsd-fp2` BFF page stays green unchanged — `config.get`
+  keeps its `{config, overrides}` shape and `ApplyStatus { applying, ok, invalid }`
+  is preserved verbatim, so `ui-htmx`'s existing parsing and `config_page.feature`
+  are untouched.
+
+*Phase 3b — schema-driven BFF renderer. ✅ Landed.*
+- ✅ The `ui-htmx` BFF now renders **any** driver's form generically: `FieldModel`
+  walks `config.schema` into a flat list of scalar leaves (resolving `$ref`,
+  recursing plain objects, **skipping** `oneOf`/`anyOf`/`enum`/`const` subtrees,
+  which round-trip via the hidden blob — keeping redacted secrets safe), and
+  `merge_form` coerces submissions back per leaf (`string`/`bool`/`integer`/`number`,
+  using the schema's `minimum`/`maximum`/nullability). The hand-built `dsd-fp2`
+  field lists are gone.
+- ✅ Editability tiers come straight from the driver: `config.get`'s `overrides[]`
+  plus `config.schema`'s `locked_fields` / `read_only_fields`. No BFF-side
+  per-driver lists remain, so a new driver needs no BFF change.
+- ✅ Multi-driver routing: `AppState` holds a map of clients; `/config/{service}`
+  (+ `…/status`) routes per service; the index lists every configured driver. The
+  `config_page.feature` BDD gained a multi-driver scenario; `ui-htmx` reuses the
+  shared `rusty_photon_config::actions` wire types (its duplicated copies deleted).
+- ⬜ Follow-up (not blocking): a generic `oneOf`/enum (discriminated-union)
+  renderer and a dedicated password input for redacted-secret leaves — until then
+  those fields round-trip read-only via the blob and are edited in the config file.
+- ✅ Landed (PR #344): the ASCOM-facing glue duplicated across the six drivers —
+  the `config.apply` `ApplyError → ASCOMError` mapping, the `ConfigActionCtx` +
+  generic action `dispatch`, and the common transport-driver error model — was
+  extracted into the new **`rusty-photon-driver`** crate (the macro `driver_error!`
+  generates each driver's error enum). `rusty-photon-config` stays the ascom-free
+  protocol *model*; `rusty-photon-driver` is the ASCOM *adapter*. See
+  [ADR-007](../../decisions/007-rusty-photon-driver-shared-crate.md).
+- Future: promote the shared helper to a standalone vendor-neutral crate once it
+  has settled (see [Decisions](#decisions-2026-05-27)).
 
 **Phase 4 — Sentinel `service.restart`.**
 - Implement the `Restarter` + per-service `restart_command` config; expose

@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// Top-level service configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, schemars::JsonSchema)]
 pub struct Config {
     pub serial: SerialConfig,
     pub server: ServerConfig,
@@ -14,19 +14,24 @@ pub struct Config {
 }
 
 /// Serial port configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SerialConfig {
     pub port: String,
     #[serde(default = "default_baud_rate")]
     pub baud_rate: u32,
+    // `humantime_serde` stores the duration as a string (e.g. "500ms"); tell
+    // schemars to describe it as a string so the generated schema matches the
+    // wire form rather than the `{secs, nanos}` auto-derive.
     #[serde(default = "default_polling_interval", with = "humantime_serde")]
+    #[schemars(with = "String")]
     pub polling_interval: Duration,
     #[serde(default = "default_timeout", with = "humantime_serde")]
+    #[schemars(with = "String")]
     pub timeout: Duration,
 }
 
 /// Server configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ServerConfig {
     pub port: u16,
     #[serde(default = "default_discovery_port")]
@@ -38,7 +43,7 @@ pub struct ServerConfig {
 }
 
 /// CoverCalibrator device configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct CoverCalibratorConfig {
     pub name: String,
     /// Stable ASCOM `UniqueID`. Defaults to empty: a spec-compliant UUIDv4 is
@@ -181,8 +186,8 @@ pub fn load_effective_config(
 ) -> std::result::Result<Config, Box<dyn std::error::Error>> {
     let mut config = match std::fs::read_to_string(path) {
         // Wrap both failure paths with the path (matching
-        // `config_actions::read_file_value`) so a startup/reload failure names
-        // the offending file instead of a bare "Permission denied" / parse error.
+        // `rusty_photon_config::read_file_value`) so a startup/reload failure
+        // names the offending file instead of a bare "Permission denied" error.
         Ok(content) => serde_json::from_str(&content)
             .map_err(|e| format!("config file {} is not valid JSON: {e}", path.display()))?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Config::default(),

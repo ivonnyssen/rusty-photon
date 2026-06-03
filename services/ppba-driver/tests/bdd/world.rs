@@ -34,6 +34,11 @@ pub struct PpbaWorld {
 
     /// Auth test password (plaintext, for building requests)
     pub auth_password: Option<String>,
+
+    /// Parsed JSON body of the last config.get / config.apply / config.schema action.
+    pub last_response: Option<serde_json::Value>,
+    /// Result of the last supported_actions query.
+    pub last_supported_actions: Option<Vec<String>>,
 }
 
 impl PpbaWorld {
@@ -88,6 +93,55 @@ impl PpbaWorld {
                 Err(e) => panic!("Failed to discover devices after 20 attempts: {e}"),
             }
         }
+    }
+
+    /// The OS-assigned port the spawned service bound.
+    pub fn bound_port(&self) -> u16 {
+        self.ppba.as_ref().expect("service not started").port
+    }
+
+    /// Call `config.get` on the switch device, stash the parsed response, and
+    /// return the `config` object so a When step can edit it and re-apply.
+    pub async fn current_config(&mut self) -> serde_json::Value {
+        let switch = Arc::clone(self.switch.as_ref().expect("switch not discovered"));
+        let body = switch
+            .action("config.get".to_string(), String::new())
+            .await
+            .expect("config.get failed");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&body).expect("config.get returned invalid JSON");
+        let config = parsed
+            .get("config")
+            .cloned()
+            .expect("config.get response missing `config`");
+        self.last_response = Some(parsed);
+        config
+    }
+
+    /// Call `config.apply` on the switch device with `params`, stashing the
+    /// parsed response.
+    pub async fn call_config_apply(&mut self, params: serde_json::Value) {
+        let switch = Arc::clone(self.switch.as_ref().expect("switch not discovered"));
+        let body = switch
+            .action("config.apply".to_string(), params.to_string())
+            .await
+            .expect("config.apply failed");
+        self.last_response =
+            Some(serde_json::from_str(&body).expect("config.apply returned invalid JSON"));
+    }
+
+    /// Poll `config.get` via a fresh client until `switch.name` equals
+    /// `expected`, tolerating the brief blip while the server rebinds. Panics
+    /// after ~20 s — which is the point if the reload failed to rebind.
+    pub async fn wait_for_config_switch_name(&self, expected: &str) {
+        let base_url = self.base_url.as_ref().expect("server not started").clone();
+        for _ in 0..80 {
+            if try_get_switch_name(&base_url).await.as_deref() == Some(expected) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        panic!("reloaded service did not report switch name {expected} within 20s");
     }
 
     /// Get a reference to the typed Switch device.
@@ -160,4 +214,24 @@ impl PpbaWorld {
         }
         panic!("OC data did not become available within 30 seconds");
     }
+}
+
+/// Read `switch.name` from `config.get` via a fresh client, returning `None` on
+/// any transport/parse failure (e.g. mid-reload).
+async fn try_get_switch_name(base_url: &str) -> Option<String> {
+    let client = Client::new(base_url).ok()?;
+    let devices = client.get_devices().await.ok()?;
+    for device in devices {
+        if let TypedDevice::Switch(s) = device {
+            let body = s
+                .action("config.get".to_string(), String::new())
+                .await
+                .ok()?;
+            let parsed: serde_json::Value = serde_json::from_str(&body).ok()?;
+            return parsed["config"]["switch"]["name"]
+                .as_str()
+                .map(str::to_string);
+        }
+    }
+    None
 }

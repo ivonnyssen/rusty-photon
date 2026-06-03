@@ -12,6 +12,7 @@
 
 pub mod codec;
 pub mod config;
+pub mod config_actions;
 pub mod error;
 pub mod focuser_device;
 pub mod manager;
@@ -36,13 +37,18 @@ pub use mock::MockQhyTransportFactory;
 
 use std::future::Future;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use ascom_alpaca::api::CargoServerInfo;
 use ascom_alpaca::Server;
 use rp_tls::config::TlsConfig;
+use rusty_photon_service_lifecycle::ReloadSignal;
 use rusty_photon_shared_transport::TransportFactory;
 use tracing::{debug, info};
+
+use crate::config::CliOverrides;
+use crate::config_actions::QhyFocuserDriver;
 
 /// Builder for the ASCOM Alpaca server.
 ///
@@ -53,6 +59,11 @@ use tracing::{debug, info};
 pub struct ServerBuilder {
     config: Config,
     factory: Option<Arc<dyn TransportFactory>>,
+    /// Where `config.apply` persists + which fields are CLI-pinned. `Some`
+    /// enables the config actions on the registered device.
+    config_source: Option<(PathBuf, CliOverrides)>,
+    /// In-process reload trigger handed to the device's `config.apply` handler.
+    reload: Option<ReloadSignal>,
 }
 
 impl ServerBuilder {
@@ -67,6 +78,21 @@ impl ServerBuilder {
 
     pub fn with_factory(mut self, factory: Arc<dyn TransportFactory>) -> Self {
         self.factory = Some(factory);
+        self
+    }
+
+    /// Wire the config-action source (persist path + CLI overrides) so the
+    /// registered focuser device advertises `config.get` / `config.apply` /
+    /// `config.schema`.
+    pub fn with_config_source(mut self, path: PathBuf, overrides: CliOverrides) -> Self {
+        self.config_source = Some((path, overrides));
+        self
+    }
+
+    /// Hand the device the in-process reload trigger fired after a `config.apply`
+    /// that needs a reload.
+    pub fn with_reload_signal(mut self, reload: ReloadSignal) -> Self {
+        self.reload = Some(reload);
         self
     }
 
@@ -100,8 +126,25 @@ impl ServerBuilder {
             server.discovery_port = self.config.server.discovery_port;
 
             if self.config.focuser.enabled {
-                let focuser_device =
+                let mut focuser_device =
                     QhyFocuserDevice::new(self.config.focuser.clone(), Arc::clone(&manager));
+                // Enable config actions when built with a config source + reload
+                // signal (the normal path through `main`); ctx-less otherwise.
+                let config_ctx: Option<rusty_photon_driver::ConfigActionCtx<QhyFocuserDriver>> =
+                    match (self.config_source.clone(), self.reload.clone()) {
+                        (Some((path, overrides)), Some(reload)) => {
+                            Some(rusty_photon_driver::ConfigActionCtx {
+                                effective: self.config.clone(),
+                                path,
+                                overrides,
+                                reload,
+                            })
+                        }
+                        _ => None,
+                    };
+                if let Some(ctx) = config_ctx {
+                    focuser_device = focuser_device.with_config_actions(ctx);
+                }
                 server.devices.register(focuser_device);
                 info!("Registered Focuser device: {}", self.config.focuser.name);
             }

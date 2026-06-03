@@ -5,6 +5,7 @@ exports_files(["Cargo.toml"], visibility = ["//visibility:public"])
 
 _INTRA_WORKSPACE_DEPS = [
     "//crates/rp-tls:rp-tls",
+    "//crates/rusty-photon-config:rusty-photon-config",
     "//crates/rusty-photon-service-lifecycle:rusty-photon-service-lifecycle",
 ]
 

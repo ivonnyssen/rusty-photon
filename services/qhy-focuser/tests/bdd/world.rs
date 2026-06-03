@@ -30,6 +30,11 @@ pub struct QhyFocuserWorld {
 
     /// Auth test state — plaintext password for HTTP Basic Auth assertions
     pub auth_password: Option<String>,
+
+    /// Parsed JSON body of the last config.get / config.apply / config.schema action.
+    pub last_response: Option<serde_json::Value>,
+    /// Result of the last supported_actions query.
+    pub last_supported_actions: Option<Vec<String>>,
 }
 
 impl QhyFocuserWorld {
@@ -82,6 +87,57 @@ impl QhyFocuserWorld {
         self.focuser_handle = Some(handle);
     }
 
+    /// The OS-assigned port the spawned service bound.
+    pub fn bound_port(&self) -> u16 {
+        self.focuser_handle
+            .as_ref()
+            .expect("service not started")
+            .port
+    }
+
+    /// Call `config.get`, stash the parsed response, and return the `config`
+    /// object so a When step can edit a field and re-`config.apply` it.
+    pub async fn current_config(&mut self) -> serde_json::Value {
+        let focuser = Arc::clone(self.focuser());
+        let body = focuser
+            .action("config.get".to_string(), String::new())
+            .await
+            .expect("config.get failed");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&body).expect("config.get returned invalid JSON");
+        let config = parsed
+            .get("config")
+            .cloned()
+            .expect("config.get response missing `config`");
+        self.last_response = Some(parsed);
+        config
+    }
+
+    /// Call `config.apply` with `params` and stash the parsed response.
+    pub async fn call_config_apply(&mut self, params: serde_json::Value) {
+        let focuser = Arc::clone(self.focuser());
+        let body = focuser
+            .action("config.apply".to_string(), params.to_string())
+            .await
+            .expect("config.apply failed");
+        self.last_response =
+            Some(serde_json::from_str(&body).expect("config.apply returned invalid JSON"));
+    }
+
+    /// Poll `config.get` via a fresh client until `focuser.max_step` equals
+    /// `expected`, tolerating the brief blip while the server rebinds. Panics
+    /// after ~20 s — which is the point if the reload failed to rebind.
+    pub async fn wait_for_config_max_step(&self, expected: u32) {
+        let addr = SocketAddr::from(([127, 0, 0, 1], self.bound_port()));
+        for _ in 0..80 {
+            if try_get_max_step(addr).await == Some(u64::from(expected)) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        panic!("reloaded service did not report max_step {expected} within 20s");
+    }
+
     /// Poll until the server returns a Focuser device via the Alpaca client.
     async fn acquire_focuser(&self, handle: &ServiceHandle) -> Arc<dyn Focuser> {
         let addr = SocketAddr::from(([127, 0, 0, 1], handle.port));
@@ -96,4 +152,20 @@ impl QhyFocuserWorld {
         }
         panic!("qhy-focuser did not become healthy within 30 seconds");
     }
+}
+
+/// Read `focuser.max_step` from `config.get` via a fresh client, returning
+/// `None` on any transport/parse failure (e.g. mid-reload).
+async fn try_get_max_step(addr: SocketAddr) -> Option<u64> {
+    let client = AlpacaClient::new_from_addr(addr);
+    let mut devices = client.get_devices().await.ok()?;
+    if let Some(TypedDevice::Focuser(focuser)) = devices.next() {
+        let body = focuser
+            .action("config.get".to_string(), String::new())
+            .await
+            .ok()?;
+        let parsed: serde_json::Value = serde_json::from_str(&body).ok()?;
+        return parsed["config"]["focuser"]["max_step"].as_u64();
+    }
+    None
 }

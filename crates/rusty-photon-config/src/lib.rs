@@ -11,6 +11,8 @@
 
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
+pub mod actions;
+
 use std::path::{Path, PathBuf};
 
 use directories::ProjectDirs;

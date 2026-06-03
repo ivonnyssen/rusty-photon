@@ -1,100 +1,76 @@
 //! Error types for the star-adventurer-gti driver.
+//!
+//! The shared transport-driver common core (`NotConnected`, `ConnectionFailed`,
+//! `Io`, `Timeout`, `Serialization`, `InvalidValue`, …) plus its ASCOM
+//! classification, `From<TransportError>`, and the `Result` alias are generated
+//! by [`rusty_photon_driver::driver_error!`]. Only the mount-specific variants
+//! (`Transport`, `Protocol`, `InvalidOperation`, `Parked`, `Config`,
+//! `Timekeeping`, `WrongDevice`) are written inline. The codec-layer
+//! `From<SessionError<SkywatcherCodecError>>` / `From<SkywatcherCodecError>`
+//! impls live in [`crate::codec`] and target this (local) enum.
 
-use ascom_alpaca::{ASCOMError, ASCOMErrorCode};
+rusty_photon_driver::driver_error! {
+    /// Errors that can arise inside the driver.
+    pub enum StarAdvError {
+        #[error("transport error: {0}")]
+        Transport(String),
 
-/// Errors that can arise inside the driver.
-#[derive(Debug, thiserror::Error)]
-pub enum StarAdvError {
-    #[error("not connected to mount")]
-    NotConnected,
+        #[error("protocol error: {0}")]
+        Protocol(#[from] skywatcher_motor_protocol::ProtocolError),
 
-    #[error("connection failed: {0}")]
-    ConnectionFailed(String),
+        #[error("invalid operation: {0}")]
+        InvalidOperation(String),
 
-    #[error("transport error: {0}")]
-    Transport(String),
+        #[error("parked")]
+        Parked,
 
-    #[error("io error: {0}")]
-    Io(#[from] std::io::Error),
+        #[error("config error: {0}")]
+        Config(String),
 
-    #[error("timeout: {0}")]
-    Timeout(String),
+        /// ERFA-side time-conversion failure. In practice this is
+        /// `eraCal2jd` (reached transitively from `Dtf2d`) returning
+        /// `-1` for a year outside its calendar floor (`IYMIN = -4799`)
+        /// — a host clock set absurdly far in the past. ERFA's
+        /// leap-second-table boundary (years before 1960 or beyond
+        /// `IYV + 5`) is *not* this error; `Utctai` reports it as
+        /// status `1` ("dubious") which the erfars binding maps to
+        /// `Ok((value, 1))`, so the LST still computes normally for
+        /// any realistic future-shifted clock. The chrono-validated
+        /// `Dtf2d` calendar-component checks are unreachable in
+        /// practice but are folded into the same variant so the call
+        /// site stays a total function.
+        #[error("timekeeping error: {0}")]
+        Timekeeping(String),
 
-    #[error("protocol error: {0}")]
-    Protocol(#[from] skywatcher_motor_protocol::ProtocolError),
-
-    #[error("invalid value: {0}")]
-    InvalidValue(String),
-
-    #[error("invalid operation: {0}")]
-    InvalidOperation(String),
-
-    #[error("parked")]
-    Parked,
-
-    #[error("config error: {0}")]
-    Config(String),
-
-    /// ERFA-side time-conversion failure. In practice this is
-    /// `eraCal2jd` (reached transitively from `Dtf2d`) returning
-    /// `-1` for a year outside its calendar floor (`IYMIN = -4799`)
-    /// — a host clock set absurdly far in the past. ERFA's
-    /// leap-second-table boundary (years before 1960 or beyond
-    /// `IYV + 5`) is *not* this error; `Utctai` reports it as
-    /// status `1` ("dubious") which the erfars binding maps to
-    /// `Ok((value, 1))`, so the LST still computes normally for
-    /// any realistic future-shifted clock. The chrono-validated
-    /// `Dtf2d` calendar-component checks are unreachable in
-    /// practice but are folded into the same variant so the call
-    /// site stays a total function.
-    #[error("timekeeping error: {0}")]
-    Timekeeping(String),
-
-    /// The connect handshake's first wire query (`:e1`) returned a reply
-    /// that doesn't look like a Sky-Watcher motor-board-version response.
-    /// The most likely cause is that the configured transport target
-    /// (serial port or UDP host) points at a different device — a power
-    /// box, focuser, or unrelated USB-CDC peripheral sharing the host's
-    /// USB bus on the serial path, or the wrong host / wrong network on
-    /// the UDP path. See [issue #254][issue].
-    ///
-    /// [issue]: https://github.com/ivonnyssen/rusty-photon/issues/254
-    #[error(
-        "handshake to {port} returned unexpected data ({reason}); this device may not be a \
-         Sky-Watcher motor controller. Common cause: the configured transport target points \
-         at the wrong device (e.g. wrong serial port to a focuser / power box / other \
-         USB-CDC peripheral, or wrong UDP host). Verify that {port} is the GTi's transport \
-         endpoint."
-    )]
-    WrongDevice { port: String, reason: String },
-}
-
-/// Map a driver error to the closest ASCOM error code.
-///
-/// This is the single point of truth for the [`StarAdvError`] →
-/// [`ASCOMError`] conversion; call sites use `.into()` /
-/// `ASCOMError::from(err)` to invoke it. Inline-matched here so there's no
-/// detour through an intermediate named helper.
-impl From<StarAdvError> for ASCOMError {
-    fn from(err: StarAdvError) -> Self {
-        let msg = err.to_string();
-        match err {
-            StarAdvError::NotConnected => ASCOMError::new(ASCOMErrorCode::NOT_CONNECTED, msg),
-            StarAdvError::InvalidValue(_) => ASCOMError::new(ASCOMErrorCode::INVALID_VALUE, msg),
-            StarAdvError::Parked => ASCOMError::new(ASCOMErrorCode::INVALID_WHILE_PARKED, msg),
-            _ => ASCOMError::invalid_operation(msg),
-        }
+        /// The connect handshake's first wire query (`:e1`) returned a reply
+        /// that doesn't look like a Sky-Watcher motor-board-version response.
+        /// The most likely cause is that the configured transport target
+        /// (serial port or UDP host) points at a different device — a power
+        /// box, focuser, or unrelated USB-CDC peripheral sharing the host's
+        /// USB bus on the serial path, or the wrong host / wrong network on
+        /// the UDP path. See [issue #254][issue].
+        ///
+        /// [issue]: https://github.com/ivonnyssen/rusty-photon/issues/254
+        #[error(
+            "handshake to {port} returned unexpected data ({reason}); this device may not be a \
+             Sky-Watcher motor controller. Common cause: the configured transport target points \
+             at the wrong device (e.g. wrong serial port to a focuser / power box / other \
+             USB-CDC peripheral, or wrong UDP host). Verify that {port} is the GTi's transport \
+             endpoint."
+        )]
+        WrongDevice { port: String, reason: String },
+    }
+    ascom {
+        Self::Parked => INVALID_WHILE_PARKED,
     }
 }
-
-/// Driver result alias.
-pub type Result<T> = std::result::Result<T, StarAdvError>;
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;
+    use ascom_alpaca::{ASCOMError, ASCOMErrorCode};
 
     #[test]
     fn not_connected_maps_to_ascom_not_connected() {

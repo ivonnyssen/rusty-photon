@@ -3,6 +3,8 @@
 //! Command-line interface for the Pegasus Astro Pocket Powerbox Advance Gen2 Switch driver.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use clap::Parser;
 use rust_embed::RustEmbed;
@@ -10,10 +12,11 @@ use rusty_photon_i18n::{fl, fluent_language_loader, LocalizedParser};
 use rusty_photon_service_lifecycle::ServiceRunner;
 use tracing::Level;
 
+use ppba_driver::config::{load_effective_config, CliOverrides};
 #[cfg(feature = "mock")]
-use ppba_driver::{load_config, Config, MockPpbaTransportFactory, ServerBuilder};
+use ppba_driver::{Config, MockPpbaTransportFactory, ServerBuilder};
 #[cfg(not(feature = "mock"))]
-use ppba_driver::{load_config, Config, ServerBuilder};
+use ppba_driver::{Config, ServerBuilder};
 
 #[derive(RustEmbed)]
 #[folder = "i18n/"]
@@ -134,46 +137,69 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::debug!("Device identities already present at {:?}", config_path);
     }
 
-    // Load the (now-materialized) configuration from disk.
-    tracing::debug!("Loading configuration from {:?}", config_path);
-    let mut config = load_config(&config_path)?;
-
-    // Apply CLI overrides
-    if let Some(port) = args.port {
-        config.serial.port = port;
-    }
-    if let Some(server_port) = args.server_port {
-        config.server.port = server_port;
-    }
-    if let Some(enable) = args.enable_switch {
-        config.switch.enabled = enable;
-    }
-    if let Some(enable) = args.enable_observingconditions {
-        config.observingconditions.enabled = enable;
-    }
+    // CLI overrides are tracked (not just applied) so config.apply keeps them
+    // out of the persisted file — a transient `--port` / `--enable-switch` is
+    // never baked in.
+    let overrides = CliOverrides {
+        serial_port: args.port.clone(),
+        server_port: args.server_port,
+        enable_switch: args.enable_switch,
+        enable_observingconditions: args.enable_observingconditions,
+    };
 
     tracing::info!("Starting PPBA driver");
     #[cfg(feature = "mock")]
     tracing::info!("Running in MOCK MODE - no real hardware");
-    #[cfg(not(feature = "mock"))]
-    tracing::info!("Serial port: {}", config.serial.port);
-    tracing::info!("Baud rate: {}", config.serial.baud_rate);
-    tracing::info!("Server port: {}", config.server.port);
 
-    ServiceRunner::new("ppba-driver").run(move |shutdown| async move {
-        #[cfg(feature = "mock")]
-        let bound = {
-            let factory = std::sync::Arc::new(MockPpbaTransportFactory::default());
-            ServerBuilder::new(config)
-                .with_factory(factory)
-                .build()
-                .await?
-        };
+    // Reload loop: a `config.apply` that changes a field fires the reload signal
+    // (from either device); the loop re-reads the freshly-persisted config and
+    // rebuilds the server, awaiting `start()` to completion so the old server
+    // drains HTTP and releases the serial port before the rebuilt one binds.
+    ServiceRunner::new("ppba-driver")
+        .with_reload()
+        .run_with_reload(move |shutdown, reload| async move {
+            loop {
+                let config = load_effective_config(&config_path, &overrides)?;
+                #[cfg(not(feature = "mock"))]
+                tracing::info!("Serial port: {}", config.serial.port);
+                tracing::info!("Server port: {}", config.server.port);
 
-        #[cfg(not(feature = "mock"))]
-        let bound = ServerBuilder::new(config).build().await?;
+                #[cfg(feature = "mock")]
+                let bound = {
+                    let factory = Arc::new(MockPpbaTransportFactory::default());
+                    ServerBuilder::new(config)
+                        .with_factory(factory)
+                        .with_config_source(config_path.clone(), overrides.clone())
+                        .with_reload_signal(reload.clone())
+                        .build()
+                        .await?
+                };
+                #[cfg(not(feature = "mock"))]
+                let bound = ServerBuilder::new(config)
+                    .with_config_source(config_path.clone(), overrides.clone())
+                    .with_reload_signal(reload.clone())
+                    .build()
+                    .await?;
 
-        bound.start(shutdown.cancelled()).await?;
-        Ok(())
-    })
+                let reloaded = Arc::new(AtomicBool::new(false));
+                let stop = {
+                    let reloaded = Arc::clone(&reloaded);
+                    let shutdown = shutdown.cancelled();
+                    let reload = reload.clone();
+                    async move {
+                        tokio::select! {
+                            () = shutdown => {}
+                            () = reload.recv() => reloaded.store(true, Ordering::SeqCst),
+                        }
+                    }
+                };
+                bound.start(stop).await?;
+
+                if reloaded.load(Ordering::SeqCst) {
+                    tracing::debug!("reloading ppba-driver configuration");
+                    continue;
+                }
+                return Ok(());
+            }
+        })
 }

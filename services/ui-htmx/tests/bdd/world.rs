@@ -88,6 +88,22 @@ impl UiWorld {
         self.start_bff_pointing_at(self.driver_port).await;
     }
 
+    /// Spawn a real dsd-fp2 driver and a BFF that exposes it under **two**
+    /// service ids (`dsd-fp2` and `dsd-fp2-alt`), to drive the multi-driver
+    /// index + per-service routing end to end. (A single real driver behind two
+    /// ids is enough to exercise the map → routing → index paths; the
+    /// generic-render-across-different-schemas path is unit-tested.)
+    pub async fn start_driver_and_multi_bff(&mut self, serial_port: &str, max_brightness: u32) {
+        let config_path = self.write_driver_config(serial_port, max_brightness);
+        let handle = ServiceHandle::start("dsd-fp2", &config_path).await;
+        self.driver_port = handle.port;
+        self.driver = Some(handle);
+        self.wait_for_driver_ready().await;
+        let port = self.driver_port;
+        self.start_bff_with_drivers(&[("dsd-fp2", port), ("dsd-fp2-alt", port)])
+            .await;
+    }
+
     /// Spawn a BFF pointed at a driver that is not running, so `config.get` is
     /// refused.
     pub async fn start_bff_with_unreachable_driver(&mut self) {
@@ -95,15 +111,27 @@ impl UiWorld {
     }
 
     async fn start_bff_pointing_at(&mut self, driver_port: u16) {
-        let config = json!({
-            "server": { "bind": "127.0.0.1", "port": 0 },
-            "drivers": {
-                "dsd-fp2": {
-                    "base_url": format!("http://127.0.0.1:{driver_port}"),
+        self.start_bff_with_drivers(&[("dsd-fp2", driver_port)])
+            .await;
+    }
+
+    /// Spawn a BFF configured with the given `(service id, driver port)` entries,
+    /// all on loopback. The same real driver can appear under several ids.
+    async fn start_bff_with_drivers(&mut self, drivers: &[(&str, u16)]) {
+        let mut map = serde_json::Map::new();
+        for (service, port) in drivers {
+            map.insert(
+                (*service).to_string(),
+                json!({
+                    "base_url": format!("http://127.0.0.1:{port}"),
                     "device_type": "covercalibrator",
                     "device_number": 0
-                }
-            }
+                }),
+            );
+        }
+        let config = json!({
+            "server": { "bind": "127.0.0.1", "port": 0 },
+            "drivers": Value::Object(map),
         });
         let path = self.temp_path("ui-htmx.json");
         std::fs::write(&path, config.to_string()).expect("failed to write BFF config");

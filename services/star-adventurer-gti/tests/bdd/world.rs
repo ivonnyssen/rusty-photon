@@ -50,6 +50,11 @@ pub struct StarAdventurerWorld {
     /// spawn. Each `queue_seed` call overwrites by key, so the map
     /// always carries the latest desired state.
     pub pending_seed: serde_json::Map<String, serde_json::Value>,
+
+    /// Parsed JSON body of the last config.get / config.apply / config.schema action.
+    pub last_response: Option<Value>,
+    /// Result of the last supported_actions query.
+    pub last_supported_actions: Option<Vec<String>>,
 }
 
 impl StarAdventurerWorld {
@@ -86,6 +91,55 @@ impl StarAdventurerWorld {
         self.mount = Some(mount);
         self.service_handle = Some(handle);
         self.apply_pending_seed().await;
+    }
+
+    /// The OS-assigned port the spawned service bound.
+    pub fn bound_port(&self) -> u16 {
+        self.service_handle
+            .as_ref()
+            .expect("service not started")
+            .port
+    }
+
+    /// Call `config.get`, stash the parsed response, and return the `config`
+    /// object so a When step can edit it and re-apply.
+    pub async fn current_config(&mut self) -> Value {
+        let mount = Arc::clone(self.mount());
+        let body = mount
+            .action("config.get".to_string(), String::new())
+            .await
+            .expect("config.get failed");
+        let parsed: Value = serde_json::from_str(&body).expect("config.get returned invalid JSON");
+        let config = parsed
+            .get("config")
+            .cloned()
+            .expect("config.get response missing `config`");
+        self.last_response = Some(parsed);
+        config
+    }
+
+    /// Call `config.apply` with `params`, stashing the parsed response.
+    pub async fn call_config_apply(&mut self, params: Value) {
+        let mount = Arc::clone(self.mount());
+        let body = mount
+            .action("config.apply".to_string(), params.to_string())
+            .await
+            .expect("config.apply failed");
+        self.last_response =
+            Some(serde_json::from_str(&body).expect("config.apply returned invalid JSON"));
+    }
+
+    /// Poll `config.get` via a fresh client until `mount.description` equals
+    /// `expected`, tolerating the brief blip while the server rebinds.
+    pub async fn wait_for_config_description(&self, expected: &str) {
+        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], self.bound_port()));
+        for _ in 0..80 {
+            if try_get_mount_description(addr).await.as_deref() == Some(expected) {
+                return;
+            }
+            sleep(std::time::Duration::from_millis(250)).await;
+        }
+        panic!("reloaded service did not report description {expected} within 20s");
     }
 
     /// POST the queued state seed to `/debug/v1/mock-state`. No-op when
@@ -250,4 +304,22 @@ async fn acquire_mount(handle: &ServiceHandle) -> Arc<dyn Telescope> {
         }
     }
     panic!("star-adventurer-gti did not become healthy within 30 seconds");
+}
+
+/// Read `mount.description` from `config.get` via a fresh client, returning
+/// `None` on any transport/parse failure (e.g. mid-reload).
+async fn try_get_mount_description(addr: SocketAddr) -> Option<String> {
+    let client = AlpacaClient::new_from_addr(addr);
+    let mut devices = client.get_devices().await.ok()?;
+    if let Some(TypedDevice::Telescope(mount)) = devices.next() {
+        let body = mount
+            .action("config.get".to_string(), String::new())
+            .await
+            .ok()?;
+        let parsed: Value = serde_json::from_str(&body).ok()?;
+        return parsed["config"]["mount"]["description"]
+            .as_str()
+            .map(str::to_string);
+    }
+    None
 }

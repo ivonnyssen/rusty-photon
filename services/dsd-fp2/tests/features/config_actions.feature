@@ -1,17 +1,27 @@
 Feature: Configuration actions
   The driver exposes its own configuration over HTTP as the vendor ASCOM
-  actions `config.get` and `config.apply`. `config.get` returns the effective
-  configuration (secrets redacted) plus the CLI-override-pinned field paths.
-  `config.apply` parses and validates a full configuration blob: invalid input
-  returns `status:"invalid"` with field-level errors and leaves the file
-  unchanged, while a valid change is persisted atomically, classified, and
-  applied through an in-process reload (`status:"applying"`). The actions work
-  whether or not the device is connected.
+  actions `config.get`, `config.apply`, and `config.schema`. `config.get`
+  returns the effective configuration (secrets redacted) plus the
+  CLI-override-pinned field paths. `config.apply` parses and validates a full
+  configuration blob: invalid input returns `status:"invalid"` with field-level
+  errors and leaves the file unchanged, while a valid change is persisted
+  atomically, classified, and applied through an in-process reload
+  (`status:"applying"`). `config.schema` returns a JSON Schema describing the
+  configuration's shape plus the editability tiers (identity/locked and hard
+  read-only fields) the web UI renders the form from. The actions work whether
+  or not the device is connected.
 
   Scenario: The config actions are advertised
     Given a running FP2 service
     When the supported actions are queried
     Then the supported actions should include config.get and config.apply
+
+  Scenario: The configuration schema is served with its editability tiers
+    Given a running FP2 service
+    When config.schema is called
+    Then the schema should describe the serial, server, and cover_calibrator sections
+    And the schema should mark cover_calibrator.unique_id as a locked field
+    And the schema should mark server.port as a read-only field
 
   Scenario: Read the current configuration while disconnected
     Given a running FP2 service

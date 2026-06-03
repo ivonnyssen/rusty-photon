@@ -1,4 +1,5 @@
 pub mod cancellation_steps;
+pub mod config_actions_steps;
 pub mod connection_steps;
 pub mod exposure_survey_steps;
 pub mod exposure_validation_steps;

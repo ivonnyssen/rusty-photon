@@ -6,6 +6,7 @@
 
 pub mod codec;
 pub mod config;
+pub mod config_actions;
 pub mod coordinates;
 pub mod error;
 pub mod manager;
@@ -39,7 +40,10 @@ use std::sync::Arc;
 use ascom_alpaca::api::CargoServerInfo;
 use ascom_alpaca::Server;
 use rp_tls::config::TlsConfig;
+use rusty_photon_service_lifecycle::ReloadSignal;
 use tracing::{debug, info};
+
+use crate::config_actions::StarAdvDriver;
 
 /// Builder for the Alpaca server bound to a configured Transport.
 ///
@@ -57,6 +61,9 @@ pub struct ServerBuilder {
     /// and `SetPark` returns `NOT_IMPLEMENTED`. See the design doc's
     /// [§"Park persistence"](../../../docs/services/star-adventurer-gti.md#park-persistence).
     config_file_path: Option<PathBuf>,
+    /// In-process reload trigger handed to the device's `config.apply` handler.
+    /// `Some` (with `config_file_path`) enables the config vendor actions.
+    reload: Option<ReloadSignal>,
     /// Optional handle to a [`MockMountState`] that the build path mounts
     /// at `/debug/v1/mock-commands`. Set by mock-mode code paths
     /// (`main.rs` under `feature = "mock"`, BDD tests) so the test
@@ -84,6 +91,14 @@ impl ServerBuilder {
     /// `--config`), `CanSetPark` is `false`.
     pub fn with_config_file_path(mut self, path: Option<PathBuf>) -> Self {
         self.config_file_path = path;
+        self
+    }
+
+    /// Hand the mount device the in-process reload trigger fired after a
+    /// `config.apply` that needs a reload. Combined with a config file path,
+    /// this enables `config.get` / `config.apply` / `config.schema`.
+    pub fn with_reload_signal(mut self, reload: ReloadSignal) -> Self {
+        self.reload = Some(reload);
         self
     }
 
@@ -152,11 +167,26 @@ impl ServerBuilder {
             server.discovery_port = self.config.server.discovery_port;
 
             if self.config.mount.enabled {
-                let device = MountDevice::with_config_file_path(
+                let mut device = MountDevice::with_config_file_path(
                     self.config.mount.clone(),
                     Arc::clone(&manager),
                     self.config_file_path.clone(),
                 );
+                // Enable the config vendor actions when built with a config file
+                // path + reload signal (the normal path through `main`).
+                let config_ctx: Option<rusty_photon_driver::ConfigActionCtx<StarAdvDriver>> =
+                    match (self.config_file_path.clone(), self.reload.clone()) {
+                        (Some(path), Some(reload)) => Some(rusty_photon_driver::ConfigActionCtx {
+                            effective: self.config.clone(),
+                            path,
+                            overrides: (),
+                            reload,
+                        }),
+                        _ => None,
+                    };
+                if let Some(ctx) = config_ctx {
+                    device = device.with_config_actions(ctx);
+                }
                 server.devices.register(device);
                 info!("Registered Telescope device: {}", self.config.mount.name);
             }

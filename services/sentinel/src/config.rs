@@ -122,14 +122,16 @@ impl MonitorConfig {
 }
 
 /// Notifier configuration with tagged enum for extensibility
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, derive_more::Debug)]
 #[serde(tag = "type")]
 pub enum NotifierConfig {
     #[serde(rename = "pushover")]
     Pushover {
         #[serde(default)]
+        #[debug("<redacted>")]
         api_token: String,
         #[serde(default)]
+        #[debug("<redacted>")]
         user_key: String,
         #[serde(default = "default_pushover_title")]
         default_title: String,
@@ -256,6 +258,17 @@ mod tests {
 
     /// Mutex to serialize tests that mutate environment variables.
     static ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn pushover_notifier_redacts_secrets_in_debug() {
+        let config = pushover_config("super-secret-token", "super-secret-userkey");
+        let rendered = format!("{:?}", config.notifiers[0]);
+        assert!(
+            !rendered.contains("super-secret-token") && !rendered.contains("super-secret-userkey"),
+            "pushover credentials leaked into Debug: {rendered}"
+        );
+        assert!(rendered.contains("<redacted>"));
+    }
 
     fn pushover_config(api_token: &str, user_key: &str) -> Config {
         Config {

@@ -18,6 +18,17 @@ async fn call_config_get(world: &mut Fp2World) {
     world.call_config_get().await;
 }
 
+#[when("config.schema is called")]
+async fn call_config_schema(world: &mut Fp2World) {
+    let device = Arc::clone(world.device());
+    let body = device
+        .action("config.schema".to_string(), String::new())
+        .await
+        .expect("config.schema failed");
+    world.last_response =
+        Some(serde_json::from_str(&body).expect("config.schema returned invalid JSON"));
+}
+
 #[when(regex = r"^config\.apply sets max_brightness to (\d+)$")]
 async fn apply_max_brightness(world: &mut Fp2World, value: u32) {
     let mut config = world.current_config().await;
@@ -63,6 +74,46 @@ async fn assert_supported_actions(world: &mut Fp2World) {
     assert!(
         actions.iter().any(|a| a == "config.apply"),
         "config.apply missing from {actions:?}"
+    );
+}
+
+#[then("the schema should describe the serial, server, and cover_calibrator sections")]
+async fn assert_schema_sections(world: &mut Fp2World) {
+    let response = world.last_response.as_ref().expect("no response stashed");
+    let props = response["schema"]["properties"]
+        .as_object()
+        .expect("schema.properties is not an object");
+    for section in ["serial", "server", "cover_calibrator"] {
+        assert!(
+            props.contains_key(section),
+            "schema is missing section {section}: {props:?}"
+        );
+    }
+}
+
+#[then("the schema should mark cover_calibrator.unique_id as a locked field")]
+async fn assert_schema_locked_field(world: &mut Fp2World) {
+    let response = world.last_response.as_ref().expect("no response stashed");
+    let locked = response["locked_fields"]
+        .as_array()
+        .expect("`locked_fields` is not an array");
+    assert!(
+        locked
+            .iter()
+            .any(|f| f.as_str() == Some("cover_calibrator.unique_id")),
+        "locked_fields {locked:?} does not include cover_calibrator.unique_id"
+    );
+}
+
+#[then("the schema should mark server.port as a read-only field")]
+async fn assert_schema_read_only_field(world: &mut Fp2World) {
+    let response = world.last_response.as_ref().expect("no response stashed");
+    let read_only = response["read_only_fields"]
+        .as_array()
+        .expect("`read_only_fields` is not an array");
+    assert!(
+        read_only.iter().any(|f| f.as_str() == Some("server.port")),
+        "read_only_fields {read_only:?} does not include server.port"
     );
 }
 

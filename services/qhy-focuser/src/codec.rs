@@ -359,7 +359,7 @@ mod tests {
     #[test]
     fn from_protocol_other_variants_flatten_to_invalid_response() {
         let err = QhyCodecError::from_protocol(QhyFocuserError::NotConnected);
-        assert!(matches!(err, QhyCodecError::InvalidResponse(s) if s.contains("Not connected")));
+        assert!(matches!(err, QhyCodecError::InvalidResponse(s) if s.contains("not connected")));
     }
 
     // ============================================================================

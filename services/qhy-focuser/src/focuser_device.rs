@@ -13,12 +13,14 @@ use std::sync::Arc;
 use ascom_alpaca::api::{Device, Focuser};
 use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
 use async_trait::async_trait;
+use rusty_photon_driver::ConfigActionCtx;
 use rusty_photon_shared_transport::Session;
 use tokio::sync::RwLock;
 use tracing::debug;
 
 use crate::codec::QhyCodec;
 use crate::config::FocuserConfig;
+use crate::config_actions::QhyFocuserDriver;
 use crate::error::QhyFocuserError;
 use crate::manager::FocuserManager;
 
@@ -42,6 +44,11 @@ pub struct QhyFocuserDevice {
     session: Arc<RwLock<Option<Session<QhyCodec>>>>,
     #[debug(skip)]
     manager: Arc<FocuserManager>,
+    /// `Some` when built through `ServerBuilder` with a config source (the
+    /// normal path); `None` for focused unit-test devices that don't exercise
+    /// config actions.
+    #[debug(skip)]
+    config_ctx: Option<ConfigActionCtx<QhyFocuserDriver>>,
 }
 
 impl QhyFocuserDevice {
@@ -50,7 +57,15 @@ impl QhyFocuserDevice {
             config,
             session: Arc::new(RwLock::new(None)),
             manager,
+            config_ctx: None,
         }
+    }
+
+    /// Attach the config-action context, enabling `config.get` / `config.apply`
+    /// / `config.schema` on this device.
+    pub fn with_config_actions(mut self, ctx: ConfigActionCtx<QhyFocuserDriver>) -> Self {
+        self.config_ctx = Some(ctx);
+        self
     }
 }
 
@@ -116,6 +131,15 @@ impl Device for QhyFocuserDevice {
 
     async fn driver_version(&self) -> ASCOMResult<String> {
         Ok(env!("CARGO_PKG_VERSION").to_string())
+    }
+
+    async fn supported_actions(&self) -> ASCOMResult<Vec<String>> {
+        Ok(rusty_photon_driver::supported_actions(&self.config_ctx))
+    }
+
+    async fn action(&self, action: String, parameters: String) -> ASCOMResult<String> {
+        rusty_photon_driver::dispatch::<QhyFocuserDriver>(&self.config_ctx, action, parameters)
+            .await
     }
 }
 

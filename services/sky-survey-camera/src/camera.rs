@@ -9,9 +9,11 @@ use std::time::{Duration, SystemTime};
 use tracing::{debug, warn};
 
 use crate::config::Config;
+use crate::config_actions::SkySurveyCameraDriver;
 use crate::fits::parse_primary_hdu;
 use crate::pointing::{PointingSource, PointingState, SharedPointing};
 use crate::survey::{try_cache_load, try_cache_store, SurveyClient, SurveyError, SurveyRequest};
+use rusty_photon_driver::ConfigActionCtx;
 
 /// 0x500 — ASCOM "unspecified" / driver-specific catch-all. The
 /// Behavioral Contracts in `docs/services/sky-survey-camera.md` use
@@ -115,9 +117,17 @@ pub struct DeviceState {
     pub survey_client: Arc<dyn SurveyClient>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone, derive_more::Debug)]
 pub struct SkySurveyCamera {
     state: Arc<DeviceState>,
+    /// `Some` when built through the reload loop with a config source; `None`
+    /// for focused unit-test devices that don't exercise config actions.
+    ///
+    /// Skipped from `Debug`: the shared `ConfigActionCtx<D>` has no `Debug` impl.
+    /// (The follow-mode credentials its effective `Config` carries are redacted
+    /// at the leaf regardless — see [`rp_auth::config::ClientAuthConfig`].)
+    #[debug(skip)]
+    config_ctx: Option<ConfigActionCtx<SkySurveyCameraDriver>>,
 }
 
 impl SkySurveyCamera {
@@ -177,7 +187,15 @@ impl SkySurveyCamera {
         };
         Self {
             state: Arc::new(state),
+            config_ctx: None,
         }
+    }
+
+    /// Attach the config-action context, enabling `config.get` / `config.apply`
+    /// / `config.schema` on this device.
+    pub fn with_config_actions(mut self, ctx: ConfigActionCtx<SkySurveyCameraDriver>) -> Self {
+        self.config_ctx = Some(ctx);
+        self
     }
 
     pub fn shared_state(&self) -> Arc<DeviceState> {
@@ -427,6 +445,15 @@ impl Device for SkySurveyCamera {
 
     async fn driver_version(&self) -> ASCOMResult<String> {
         Ok(env!("CARGO_PKG_VERSION").to_string())
+    }
+
+    async fn supported_actions(&self) -> ASCOMResult<Vec<String>> {
+        Ok(rusty_photon_driver::supported_actions(&self.config_ctx))
+    }
+
+    async fn action(&self, action: String, parameters: String) -> ASCOMResult<String> {
+        rusty_photon_driver::dispatch::<SkySurveyCameraDriver>(&self.config_ctx, action, parameters)
+            .await
     }
 }
 
