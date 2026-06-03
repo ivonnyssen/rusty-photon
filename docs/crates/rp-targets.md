@@ -168,9 +168,10 @@ pub struct GradingThresholds {
 
 `TargetSlug` is a parse-don't-validate newtype (see
 [development-workflow.md](../skills/development-workflow.md#parse-dont-validate-for-config)):
-constructed via `TargetSlug::new(&str)`, it lower-cases, trims, and
-rejects anything outside `[a-z0-9-]` (so it is always a safe directory
-and filename token). The slug is **immutable** once created — it is the
+constructed via `TargetSlug::new(&str)`, it lower-cases, **strips all
+whitespace** (mirroring `rp-catalog`'s name normalization, so
+`"NGC 7000"` → `ngc7000`), and rejects anything still outside `[a-z0-9-]`
+(so it is always a safe directory and filename token). The slug is **immutable** once created — it is the
 on-disk acquisition identity (the `{target}` token in every frame's path
 and name), so changing it would orphan existing frames. Renames change
 `display_name`, never the slug. Slug collisions on add are the caller's
@@ -345,9 +346,10 @@ matching Rule-2 update. The authoritative home for these contracts is
    within a small tolerance) → treat as an in-place edit: reuse the slug
    and `upsert` (the rename / re-add path).
 4. **Present and a different object** → allocate the lowest unused
-   `"{base}-{n}"` for `n` from 2 (`ngc7000-2`, `ngc7000-3`, …), bounded
-   by the `list_targets` count; if exhausted, return a defined error
-   rather than spin.
+   `"{base}-{n}"` for `n` from 2 (`ngc7000-2`, `ngc7000-3`, …), taking
+   the first free suffix. By the pigeonhole principle a free suffix is
+   guaranteed within `list_targets().len() + 1` probes, so the search
+   always terminates — no arbitrary cap or exhaustion error is needed.
 
 Contract: adding NGC 7000 twice with different framing yields `ngc7000`
 and `ngc7000-2`; re-adding the same object updates it in place. This is
