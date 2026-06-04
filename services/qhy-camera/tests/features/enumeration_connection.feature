@@ -1,0 +1,46 @@
+@wip @serial
+Feature: Camera enumeration and connection lifecycle
+  qhy-camera enumerates every connected QHY camera (and CFW when
+  filterwheel.enabled) at startup and registers each as an ASCOM device,
+  index 0, 1, 2, ..., on one port (C0). Each device's UniqueID is derived
+  from its SDK serial, so two identical-model cameras are distinguished by
+  serial. Connect is per-device (C4): connecting or disconnecting one camera
+  does not affect the others. Opening a device (C1) caches its CCD info,
+  valid binning modes, and exposure/gain/offset limits. An open failure
+  leaves the device not connected (C2). Disconnect closes the device and
+  cancels any in-flight exposure (C3). With zero cameras discovered the
+  service still starts, registering no Camera devices and logging a warning.
+  Against the qhyccd-rs simulation backend exactly one camera
+  (QHY178M-Simulated, 3072x2048, monochrome, 16-bit) and one 7-position
+  filter wheel are present.
+
+  Background:
+    Given the qhy-camera service running with the simulation backend
+
+  Scenario: The simulated camera is registered as device 0
+    Then ASCOM camera device 0 is available
+    And camera device 0 reports a non-empty UniqueID
+
+  Scenario: A camera starts disconnected
+    Then camera device 0 reports Connected as false
+
+  Scenario: Connecting opens the camera
+    When I connect camera device 0
+    Then camera device 0 reports Connected as true
+
+  Scenario: Disconnecting leaves the camera not connected
+    When I connect camera device 0
+    And I disconnect camera device 0
+    Then camera device 0 reports Connected as false
+
+  Scenario: Disconnecting cancels an in-flight exposure
+    Given camera device 0 is connected
+    And an exposure is in flight on camera device 0
+    When I disconnect camera device 0
+    Then camera device 0 reports ImageReady as false
+    And camera device 0 reports Connected as false
+
+  Scenario: The service starts with no Camera devices when no camera is present
+    Given the qhy-camera service running with an empty simulation backend
+    Then no ASCOM camera devices are registered
+    And the service is healthy

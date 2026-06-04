@@ -212,9 +212,11 @@ toggle and the port.
 
 ```jsonc
 {
-  // Optional, keyed by SDK serial. A device with no entry uses SDK-derived
-  // defaults (name from model+serial; CFW filter names "Filter0".."FilterN").
-  "overrides": {
+  // Optional per-device overrides, keyed by SDK serial. A device with no
+  // entry uses SDK-derived defaults (name from model+serial; CFW filter names
+  // "Filter0".."FilterN"). Named `devices` (not `overrides`) to avoid colliding
+  // with the config.get response's own `overrides[]` (CLI-pinned paths) field.
+  "devices": {
     "QHY600M-0123456789": {
       "name": "Main Imaging",
       "description": "QHY600M @ 1000mm"
@@ -234,9 +236,10 @@ toggle and the port.
 
 Sections:
 
-- **overrides** — Optional map keyed by **SDK serial**. Lets an operator give a
-  friendly `name`/`description` to a specific camera and human `filter_names` to a
-  specific CFW. Any device without an override uses SDK-derived defaults. v0 does
+- **devices** — Optional per-device override map keyed by **SDK serial**. Lets an
+  operator give a friendly `name`/`description` to a specific camera and human
+  `filter_names` to a specific CFW. Any device without an entry uses SDK-derived
+  defaults. v0 does
   **not** carry per-camera connect-time tuning (gain/offset/target temperature) —
   with heterogeneous cameras those are per-serial concerns and clients set them
   over ASCOM; per-serial defaults are deferred (see *Future Work*).
@@ -261,10 +264,10 @@ supplies `ConfigurableDriver for QhyCameraDriver`:
 - **Hard read-only fields:** `/server/port`, `/filterwheel/enabled` (enabling
   /disabling adds/removes registered endpoints → restart-required, not a live
   apply).
-- **Editable fields:** the `overrides` map (per-serial `name` / `description` /
+- **Editable fields:** the `devices` map (per-serial `name` / `description` /
   `filter_names`).
 - **Validation** at load (parse-don't-validate): `filter_names` entries are
-  non-empty strings; override keys are free-form serial strings.
+  non-empty strings; `devices` keys are free-form serial strings.
 
 `config.apply` persists atomically, returns `status:"applying"` when a field
 changed, and fires the in-process reload (`main.rs` runs under
