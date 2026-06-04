@@ -590,7 +590,7 @@ test-log capture + artifact upload); and the now-empty diagnostics-upload step i
 `bazel.yml`. What **remains** for cheap future triage: the `BDD-TRACE`
 per-scenario breadcrumbs in `services/rp/tests/bdd.rs` surfaced by
 `--test_output=all`; the `timeout --signal=INT --kill-after=2m 50m` job-safety cap
-and exit-3 tolerance in `bazel-coverage.yml`; the `coverage:coverage
+and exit-code classification in `bazel-coverage.yml`; the `coverage:coverage
 --test_timeout=900` per-test cap in `.bazelrc`; and the captured `bazel-testlogs`
 artifact.
 
