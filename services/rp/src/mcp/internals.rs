@@ -790,9 +790,11 @@ impl McpHandler {
     /// deadline plus the `(predicted_ms, max_ms)` pair for the
     /// `move_focuser_started` envelope.
     ///
-    /// `Err` if the focuser can't be resolved or the pre-move position read
-    /// fails; the caller then falls back to [`FOCUSER_DEADLINE_FALLBACK`]
-    /// and omits the envelope deadline fields.
+    /// `Err` if the focuser can't be resolved, the pre-move position read
+    /// fails, or an absurdly small (but config-valid) step rate makes the
+    /// deadline overflow `Duration` (`try_from_secs_f64`); the caller then
+    /// falls back to [`FOCUSER_DEADLINE_FALLBACK`] and omits the envelope
+    /// deadline fields.
     async fn compute_focuser_deadline(
         &self,
         focuser_id: &str,
@@ -1214,9 +1216,11 @@ impl McpHandler {
     /// deadline plus the `(predicted_ms, max_ms)` pair for the
     /// `park_started` envelope.
     ///
-    /// `Err` only when no mount is configured (the caller then falls back
-    /// to [`PARK_DEADLINE_FALLBACK`] and omits the envelope deadline
-    /// fields — though park fails immediately without a mount anyway).
+    /// `Err` when no mount is configured, or when an absurdly small (but
+    /// config-valid) slew rate makes the worst-case deadline overflow
+    /// `Duration` (`try_from_secs_f64`). The caller then falls back to
+    /// [`PARK_DEADLINE_FALLBACK`] and omits the envelope deadline fields
+    /// (and park fails immediately anyway when no mount is configured).
     fn compute_park_deadline(&self) -> std::result::Result<(Duration, u64, u64), String> {
         let entry = self
             .equipment

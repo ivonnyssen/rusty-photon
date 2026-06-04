@@ -6,9 +6,11 @@ Feature: Operation event envelopes
   correlate the triple. Each emission carries its own `event_id` and a
   monotonic `event_seq`; the start carries `started_at` and the end adds
   `ended_at` plus `elapsed_ms`. The `slew_started`, `park_started`, and
-  `move_focuser_started` events also carry the `predicted_duration_ms` /
-  `max_duration_ms` deadline fields (Phase 2); operations not yet converted
-  to predictive deadlines omit them.
+  `move_focuser_started` events carry the `predicted_duration_ms` /
+  `max_duration_ms` deadline fields (Phase 2) when the deadline can be
+  predicted, and omit them on the fallback path (e.g. a pre-read failure, or
+  no mount configured for park); operations not yet converted to predictive
+  deadlines always omit them.
 
   The envelope is additive over the historical webhook body: the
   `event_id`, `event`, `timestamp`, and `payload` keys keep their exact
