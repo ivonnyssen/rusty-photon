@@ -103,8 +103,8 @@ jobs:
           # inherited from `.bazelrc` test:ci/build:ci.
           #
           # `|| status=$?` keeps a non-zero exit from aborting the step and records
-          # the code, so the classification below can tell exit 3 (tests
-          # failed/timed out — tolerated) from a real build failure.
+          # the code, so the classification below can distinguish bazel exit 3
+          # (tests failed/timed out) from build/flag failures.
           #
           # observability (C): bound the run ~10 min below the 60-min job timeout.
           # `timeout --signal=INT 50m` interrupts bazel cleanly (it flushes the
