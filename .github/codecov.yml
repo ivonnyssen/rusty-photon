@@ -29,8 +29,9 @@ comment:
 #   * Cargo (test.yml): narrows uploads to the changed packages via cargo-rail,
 #     so most commits upload only a subset of flags.
 #   * Bazel shadow (bazel-coverage.yml): uploads every bazel-<pkg> flag each run,
-#     but the run is sometimes cancelled (an instrumented-BDD hang hitting the
-#     60-min wall), uploading nothing for that commit.
+#     but a run that fails or hits its time cap uploads nothing for that commit
+#     (historically the rp:bdd post-scenario park cancelled ~half of these at the
+#     60-min wall — now fixed; see docs/plans/bazel-migration.md).
 # Declaring carryforward here makes it explicit and version-controlled for every
 # flag, and — critically — applies it to the bazel-<pkg> shadow flags, which had
 # no carried baseline and rendered "unknown" on every commit whose bazel-coverage

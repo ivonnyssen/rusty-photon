@@ -121,11 +121,36 @@ build:ci --color=yes
 build:ci --show_timestamps
 build:ci --announce_rc
 build:ci --remote_download_outputs=toplevel  # build-without-the-bytes
-build:ci --remote_timeout=600
 build:ci --jobs=auto
 build:ci --experimental_ui_max_stdouterr_bytes=10485760
 test:ci --test_output=errors
 test:ci --test_summary=terse
+
+# --remote_timeout is the per-RPC idle/inactivity timeout for remote-cache
+# operations, NOT a total transfer cap — healthy byte-flowing transfers survive
+# it; it only bites an RPC that has stalled with no bytes moving. Dropped from
+# the old 600s to 3s as the confirmed fix for the intermittent `//services/rp:bdd`
+# post-scenario park (PR #342 + the park experiment; see
+# docs/plans/bazel-migration.md): the park was a stale pooled keep-alive cache
+# RPC that blackholed and blocked until the timeout, so a tight idle bound
+# collapses it. On `build:ci`, so it applies to every CI invocation (build, fast
+# test, BDD, coverage) — the build/fast-test steps therefore also use 3s now; the
+# only risk there is a cold-object time-to-first-byte tripping a spurious retry,
+# which has not materialized in CI. Raise this if a slow cold cache starts
+# retrying healthy transfers.
+build:ci --remote_timeout=3
+
+# Bypass the sandbox for tests under CI. Required on macOS/Windows (darwin-sandbox
+# blocks the BDD-spawned ASCOM OmniSim from binding network ports) AND now on
+# Linux: dropping the Linux processwrapper-sandbox is the confirmed fix for the
+# `//services/rp:bdd` post-scenario park (the sandbox teardown, not the cache RPC,
+# was the residual locus; mac/win already bypassed it and never parked — see the
+# park experiment in docs/plans/bazel-migration.md). On `test:ci` (inherited by
+# `bazel coverage --config=ci`), so it also covers the fast-test step, which now
+# runs unsandboxed too — acceptable, since these tests already run sandbox-free
+# under Cargo. Scheduling/execution-only: does not enter action keys, so it never
+# perturbs the remote cache.
+test:ci --spawn_strategy=local
 
 # Forward OMNISIM_PATH (the install-omnisim action's pinned OmniSim binary path,
 # consumed by bdd_infra::rp_harness::OmniSimHandle::start) into test sandboxes.

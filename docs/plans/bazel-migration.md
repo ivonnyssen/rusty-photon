@@ -551,23 +551,66 @@ so the WAN-`.dat`-download theory was ruled out and the lower-leverage fallbacks
 below were *not* needed. (One green run; the symptom is intermittent, so eyeball
 the next couple of `main`/nightly runs to fully cement.)
 
-**If it stalls again — the pick-up-here playbook (instrumentation lives in
-`bazel-coverage.yml`).** The shadow job now: (1) wraps bazel in
-`timeout --signal=INT --kill-after=2m 50m`, so a stall fails *with output* at
-50 min instead of a blind 60-min cancel (classified as exit 124/137); (2) runs
-`--profile --noslim_profile --experimental_profile_include_target_label`;
-(3) sets `--test_env=VERBOSE_COVERAGE=1`; and (4) has an `always()` step that
-prints the **top-25 longest profile actions/phases** (jq over the gz profile),
-the `rp:bdd` `BDD-TRACE` trail + a **scenario-hang classifier** (a scenario with
-an `ENTER` and no matching `EXIT`), the collector's `Spawning llvm-*/Success!`
-lines, and uploads `bazel-testlogs` (incl. the profile) as an artifact. To triage
-a fresh stall, read the profile top-actions to attribute the wall:
+**The residual post-scenario park is fixed (park experiment, CONFIRMED 2026-06-03).**
+After the `%8m` collection fix a *separate*, intermittent stall remained: on
+~18–65% of runs all scenarios passed (last `BDD-TRACE +Ns` ≈ `[Summary]`) yet the
+`rp:bdd` *action* wall kept climbing 20–37 min while the box was **near-idle**
+(load ~0.00). Unlike the collection hang (a byte-proportional I/O wait), this was a
+*wait* not compute — a lock / network / teardown stall. Two coupled mitigations
+were trialled inline in the BDD legs of `bazel.yml` and `bazel-coverage.yml`:
+- `--remote_timeout=3` (down from 600) — bounds a stale pooled keep-alive
+  remote-cache RPC that blackholes and blocks until the idle timeout (hypothesis
+  A). `--remote_timeout` is an idle/inactivity timeout, so healthy byte-flowing
+  transfers are unaffected.
+- `--spawn_strategy=local` on **Linux** (mac/win already bypass the sandbox so the
+  BDD-spawned OmniSim can bind ports) — drops the Linux processwrapper-sandbox
+  teardown, the hypothesised locus given the park was Linux-only and Linux was the
+  only OS running BDD under that sandbox (hypothesis B).
+
+**The experiment succeeded — the park no longer reproduces.** Both flags are now
+**permanent**, hoisted out of the inline CI overrides into `.bazelrc`
+(`build:ci --remote_timeout=3`, `test:ci --spawn_strategy=local`), so every CI
+invocation inherits them. Side-effects of the hoist, accepted: the build/fast-test
+steps now also use the 3s idle timeout (only risk: a cold-object time-to-first-byte
+tripping a spurious retry — not seen), and the fast-test step now runs unsandboxed
+(acceptable — those tests already run sandbox-free under Cargo). This clears the
+last blocker flagged in `bazel-coverage.yml` for promoting `bazel coverage` to a
+**required** gate at the Phase 7 cutover.
+
+**Hang/park instrumentation has been retired** (the experiment is over). Removed:
+the live process-tree sampler (`tools/ci/bazel-hang-sampler.sh`, deleted) and its
+launch/trap in both workflows; the `--profile`/`--noslim_profile`/
+`--experimental_profile_*` Chrome-trace + `--execution_log_compact_file` exec-log
+captures on **every** step (this also retires the build/fast-test diagnostics that
+had chased the separate, unresolved **Windows loading-phase silent-stall** — that
+investigation is being closed without a root-cause; the Windows build remains the
+slow leg but passes); `--test_env=VERBOSE_COVERAGE=1` and the elaborate `always()`
+`rp:bdd` hang-classifier step in `bazel-coverage.yml` (replaced by a minimal
+test-log capture + artifact upload); and the now-empty diagnostics-upload step in
+`bazel.yml`. What **remains** for cheap future triage: the `BDD-TRACE`
+per-scenario breadcrumbs in `services/rp/tests/bdd.rs` surfaced by
+`--test_output=all`; the `timeout --signal=INT --kill-after=2m 50m` job-safety cap
+and exit-3 tolerance in `bazel-coverage.yml`; the `coverage:coverage
+--test_timeout=900` per-test cap in `.bazelrc`; and the captured `bazel-testlogs`
+artifact.
+
+**If it recurs — how to re-instrument.** The diagnostics were deleted, not
+disabled; recover them from this cleanup's revert (`chore/bazel-hang-instrumentation-cleanup`).
+Re-add the `--profile --noslim_profile --experimental_profile_include_target_label`
+flag set to read the **top longest actions/phases** (jq over the gz profile) and
+attribute the wall, alongside the `BDD-TRACE` trail (kept) and a scenario-hang
+classifier (an `ENTER` with no matching `EXIT`):
 - wall in **`Testing //services/rp:bdd`** with `BDD-TRACE +Ns` ≈ the action wall →
-  scenario time; if a scenario shows `ENTER`-without-`EXIT` it is a real scenario
-  hang (OmniSim slew-wedge family — a mount-side bug, not a coverage bug);
-- action wall ≫ the last `+Ns` → post-summary **collection** again → re-check the
-  profraw volume / that the `%8m` pattern is still in `bdd-infra` (`lib.rs`
-  `child_coverage_profile_path`);
+  scenario time; an `ENTER`-without-`EXIT` is a real scenario hang (OmniSim
+  slew-wedge family — a mount-side bug, not a coverage bug);
+- action wall ≫ the last `+Ns` but the box is **busy** → post-summary
+  **collection** again → re-check the profraw volume / that the `%8m` pattern is
+  still in `bdd-infra` (`lib.rs` `child_coverage_profile_path`);
+- action wall ≫ the last `+Ns` but the box is **near-idle** → the post-scenario
+  **park** is back → re-check that `--remote_timeout=3` + `--spawn_strategy=local`
+  are still in `.bazelrc`, then re-add `tools/ci/bazel-hang-sampler.sh` (process
+  tree + `wchan` + cache-socket sampler) to localise A (bazel-side cache RPC) vs B
+  (test-binary tokio runtime-drop join);
 - a separate **`CoverageReport`/`--combined_report`** action or a
   **remote-download** phase dominates → it is the WAN/staging path → apply the
   deferred levers.
@@ -628,7 +671,7 @@ defensible. The branch exists so the change is ready when that call is made.
 **Verify on the first Bazel-9 CI run — DONE.** Validated 2026-05-31 on PR #345 (`worktree-upgrade-bazel`); all Bazel shadow jobs passed on a **cold cache**. Build+test run `26719683890`, coverage run `26719683891`, parity run `26719683882`.
 - [x] Full 3-OS `bazel.yml` matrix green: **ubuntu 16m15s, macos 17m23s, windows 31m38s**. **Windows passed** — the `--experimental_platform_in_output_dir=Auto` default flip did **not** erode MAX_PATH headroom, so the `C:/b` short-output-base + aws-lc-sys deep-include workarounds still hold; the `build:windows --noexperimental_platform_in_output_dir` pin was **not needed**. (Keep it in mind if a future cl.exe C1083/MAX_PATH regression appears.)
 - [x] macOS green (17m23s) including the BDD step — the `--spawn_strategy=local` OmniSim path works under 9 with the moved output base (`$HOME/Library/Caches/bazel`).
-- [x] `--experimental_ui_max_stdouterr_bytes` and `bazel.yml`'s `--experimental_profile_include_*` diagnostic flags are **still accepted** under Bazel 9.1.0 (the build+test job that sets them passed); none needed dropping.
+- [x] `--experimental_ui_max_stdouterr_bytes` and `bazel.yml`'s `--experimental_profile_include_*` diagnostic flags are **still accepted** under Bazel 9.1.0 (the build+test job that sets them passed); none needed dropping. (The `--profile`/`--experimental_profile_*`/`--execution_log_compact_file` diagnostics have since been **retired** as part of the park-experiment cleanup — see above; `--experimental_ui_max_stdouterr_bytes` remains.)
 - [x] `MODULE.bazel.lock` regenerated under 9 via `CARGO_BAZEL_REPIN=1 bazel mod tidy` — **no resolution drift**: identical 589-crate `@cr` set, full 129-target graph clean under `bazel build --nobuild //... --lockfile_mode=error`, `MODULE.bazel` unchanged. The ~4.5k-line diff is a `lockFileVersion` 24→26 reserialization (compaction), not data change.
 - [x] `bazel coverage` shadow run green (18m14s) — combined lcov emitted and per-package split/upload worked; the cold-cache `rp:bdd` 60-min hang risk did **not** materialize. The `bazel/cargo target parity` patch-guard also passed (1m07s), confirming the vendored coverage patch applies and is effective under Bazel 9 in CI.
 

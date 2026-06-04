@@ -107,9 +107,10 @@ bdd_infra::bdd_main! {
     // that elapses on the rp:bdd action wall *after* this breadcrumb is teardown:
     // the `#[tokio::main]` runtime drop (which joins the blocking pool — a stuck
     // reqwest getaddrinfo here would park the process), then process exit +
-    // `PR_SET_PDEATHSIG` reaping OmniSim. The post-scenario park (20-37 min, see
-    // tools/ci/bazel-hang-sampler.sh) shows up as the gap between this `+Ns` and
-    // the bazel action completing. If this line prints but the action still hangs,
-    // the hang is in/after the runtime drop, not in any scenario.
+    // `PR_SET_PDEATHSIG` reaping OmniSim. A post-scenario park here used to add
+    // 20-37 min to the rp:bdd action wall; it was fixed by the CI park mitigations
+    // (`--spawn_strategy=local` + `--remote_timeout=3`, now in `.bazelrc` — see
+    // docs/plans/bazel-migration.md). If this line prints but the action hangs
+    // again, the hang is in/after the runtime drop, not in any scenario.
     trace("POST-RUN cucumber suite returned; entering tokio runtime drop (teardown)");
 }
