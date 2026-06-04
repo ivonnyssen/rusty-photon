@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use cucumber::{given, then, when};
 
-use bdd_infra::rp_harness::{ReceivedEvent, WebhookReceiver};
+use bdd_infra::rp_harness::{FocuserConfig, ReceivedEvent, WebhookReceiver};
 
 use crate::world::RpWorld;
 
@@ -56,6 +56,20 @@ async fn rp_with_camera_and_plugin(world: &mut RpWorld) {
     crate::steps::tool_steps::start_rp(world).await;
 }
 
+#[given("rp is running with a focuser and the operation-event plugin")]
+async fn rp_with_focuser_and_plugin(world: &mut RpWorld) {
+    crate::steps::tool_steps::ensure_omnisim(world).await;
+    let url = world.omnisim_url();
+    world.focusers.push(FocuserConfig {
+        id: "main-focuser".to_string(),
+        alpaca_url: url,
+        device_number: 0,
+        min_position: None,
+        max_position: None,
+    });
+    crate::steps::tool_steps::start_rp(world).await;
+}
+
 // --- When steps --------------------------------------------------------
 
 #[when(expr = "the operator slews to ra {float} dec {float}")]
@@ -74,6 +88,17 @@ async fn operator_parks(world: &mut RpWorld) {
 #[when("the operator unparks the mount")]
 async fn operator_unparks(world: &mut RpWorld) {
     let _ = world.mcp().call_tool("unpark", serde_json::json!({})).await;
+}
+
+#[when(expr = "the operator moves the focuser to position {int}")]
+async fn operator_moves_focuser(world: &mut RpWorld, position: i32) {
+    let _ = world
+        .mcp()
+        .call_tool(
+            "move_focuser",
+            serde_json::json!({ "focuser_id": "main-focuser", "position": position }),
+        )
+        .await;
 }
 
 #[when(expr = "the operator syncs the mount to ra {float} dec {float}")]

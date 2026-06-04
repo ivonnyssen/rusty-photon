@@ -408,7 +408,7 @@ and absent optional fields are omitted from the JSON.
 | `timestamp` | ISO-8601 emission time. Unchanged historical format. |
 | `started_at` / `ended_at` | RFC-3339 (millisecond) operation start / end. `started_at` is on the `*_started`/`*_complete`/`*_failed` triple; `ended_at` only on `*_complete`/`*_failed`. |
 | `elapsed_ms` | Wall-clock operation duration, on `*_complete`/`*_failed`. |
-| `predicted_duration_ms` / `max_duration_ms` | The operation's expected duration and hard-ceiling deadline, in integer milliseconds (a boundary serialization of an internal `Duration`). Populated on `slew_started` (Phase 2.1): `predicted = great-circle distance / mount.slew_rate_arcsec_per_sec + settle`, `max = max(predicted × 3, MIN_SLEW_DEADLINE = 30 s)`. Omitted for operations not yet converted to predictive deadlines. |
+| `predicted_duration_ms` / `max_duration_ms` | The operation's expected duration and hard-ceiling deadline, in integer milliseconds (a boundary serialization of an internal `Duration`). Populated (Phase 2) on: `slew_started` — `predicted = great-circle distance / mount.slew_rate_arcsec_per_sec + settle`, `max = max(predicted × 3, MIN_SLEW_DEADLINE = 30 s)`; `park_started` — `predicted = 180° / mount.slew_rate_arcsec_per_sec + settle` (worst-case traverse; rp can't read the park position via Alpaca), `max = max(predicted × 2, MIN_PARK_DEADLINE = 60 s)`; `move_focuser_started` — `predicted = \|target − current\| / focuser.steps_per_sec`, `max = max(predicted × 2, MIN_FOCUSER_DEADLINE = 5 s)`. Omitted for operations not yet converted to predictive deadlines. |
 | `payload` | Operation detail. For `*_started`, the inputs; for `*_complete`/`*_failed`, the outcome (or `{"error": "..."}` on failure). |
 
 A blocking operation emits a **triple** — a `*_started` envelope at the
@@ -738,7 +738,7 @@ the exact parameter types and return structure.
 |--------|-----------|---------|-------------|
 | `capture` | camera_id, duration, binning | image_path, document_id | Take an exposure, download `image_array`, save FITS file, create exposure document |
 | `get_camera_info` | camera_id | max_adu, exposure_min, exposure_max, sensor_x, sensor_y, bin_x, bin_y | Read camera capabilities and current settings |
-| `move_focuser` | focuser_id, position | actual_position | Move focuser to absolute position |
+| `move_focuser` | focuser_id, position | actual_position | Move focuser to absolute position (blocks polling `is_moving` until idle). Bounded by a **predicted deadline**: `predicted = \|target − current\| / focuser.steps_per_sec` (current position read before the move); `max = max(predicted × 2, MIN_FOCUSER_DEADLINE = 5 s)`. If the pre-move read fails it falls back to a 120 s ceiling; `predicted`/`max` ride the `move_focuser_started` envelope as `predicted_duration_ms`/`max_duration_ms` |
 | `get_focuser_position` | focuser_id | position | Read current focuser position |
 | `get_focuser_temperature` | focuser_id | temperature_c | Read focuser temperature sensor |
 | `slew` | ra, dec, settle_after (optional) | actual_ra, actual_dec | Slew the singular mount to coordinates (blocks until `Slewing == false` plus configured / per-call settle). Tracking must be on; ASCOM error propagates otherwise. Bounded by a **predicted deadline**: `predicted = great-circle(current, target) / mount.slew_rate_arcsec_per_sec + settle`; `max = max(predicted × 3, MIN_SLEW_DEADLINE = 30 s)`. The current pointing is read before the slew to size the deadline; if that read fails it falls back to a 300 s ceiling. On timeout `slew` best-effort aborts (unlike `park`); `predicted`/`max` ride the `slew_started` envelope as `predicted_duration_ms`/`max_duration_ms` |
@@ -746,7 +746,7 @@ the exact parameter types and return structure.
 | `get_mount_position` | — | ra, dec | Read the mount's current pointing |
 | `get_tracking` | — | tracking, can_set_tracking | Read tracking state and `CanSetTracking` capability; fails loud on read error |
 | `set_tracking` | enabled | — | Enable or disable sidereal tracking |
-| `park` | — | — | Park the mount (blocks polling `AtPark` every 100 ms until it returns `true`, 300 s deadline). `AtPark` is the ASCOM-canonical completion signal — `Slewing` is sticky on `MoveAxis` rate state and unrelated `SlewState` activity, so polling it would be over-conservative. Per ASCOM, a successful park clears `Tracking`. Unlike `slew`, does NOT auto-abort on timeout — call `abort_slew` to interrupt a stuck park |
+| `park` | — | — | Park the mount (blocks polling `AtPark` every 100 ms until it returns `true`). Bounded by a **predicted deadline**: rp can't read the park position via Alpaca, so it sizes a worst-case full-axis traverse — `predicted = 180° / mount.slew_rate_arcsec_per_sec + settle`; `max = max(predicted × 2, MIN_PARK_DEADLINE = 60 s)` (falls back to a 300 s ceiling with no mount configured); `predicted`/`max` ride the `park_started` envelope. `AtPark` is the ASCOM-canonical completion signal — `Slewing` is sticky on `MoveAxis` rate state and unrelated `SlewState` activity, so polling it would be over-conservative. Per ASCOM, a successful park clears `Tracking`. Unlike `slew`, does NOT auto-abort on timeout — call `abort_slew` to interrupt a stuck park |
 | `unpark` | — | — | Clear the mount's `AtPark` flag. Returns immediately. Does NOT auto-enable `Tracking`; call `set_tracking` before slewing |
 | `get_park_state` | — | at_park, can_park, can_unpark | Read park state and capabilities; fails loud on `AtPark` read error |
 | `abort_slew` | — | — | Abort an in-progress mount slew or park. Per ASCOM, only valid while `Slewing == true`; the natural Alpaca error propagates otherwise |
@@ -2384,9 +2384,13 @@ exactly one mount.
 - MCP session keep-alive vs. per-tool deadlines → companion fix on
   the same PR (#319). rmcp's `LocalSessionManager` defaults to a
   300 s `keep_alive` that fires if the session sees no activity. The
-  per-iteration `do_slew_blocking` (300 s slew deadline),
-  `do_park_blocking` (300 s), and `do_capture` (`duration + 120 s`
-  readout grace) all approach or match that 300 s. Without
+  per-iteration `do_slew_blocking`, `do_park_blocking`, and
+  `do_move_focuser_blocking` now carry **predicted deadlines** that
+  usually fall well under 300 s (a slew/park/focuser-move's
+  `max_duration_ms`), but a long legitimate slew or park can still
+  exceed the keep-alive; `do_capture` (`duration + 120 s` readout
+  grace) likewise approaches or matches 300 s for long exposures.
+  Without
   emission they race the keep-alive: when both fire near the same
   moment the SSE response stream EOFs and the client's `call_tool`
   future never resolves (BDD's 360 s `MCP_CALL_TIMEOUT` is the only
@@ -2850,6 +2854,8 @@ the disconnection is an immediate trigger for Sentinel to attempt recovery.
 |-----------|----------------|--------------------|----|
 | Exposure | `exposure_started` | `exposure_complete` | duration + configurable buffer |
 | Slew | `slew_started` | `slew_complete` | `max_duration_ms` from the `slew_started` envelope (rp-computed: `(distance / rate + settle) × 3`, floored at `MIN_SLEW_DEADLINE`) |
+| Park | `park_started` | `park_complete` | `max_duration_ms` from the `park_started` envelope (rp-computed worst-case traverse: `(180° / rate + settle) × 2`, floored at `MIN_PARK_DEADLINE`) |
+| Move focuser | `move_focuser_started` | `move_focuser_complete` | `max_duration_ms` from the `move_focuser_started` envelope (rp-computed: `(\|target − current\| / steps_per_sec) × 2`, floored at `MIN_FOCUSER_DEADLINE`) |
 | Focus | `focus_started` | `focus_complete` | configurable max focus time |
 | Guide settle | `guide_started` | `guide_settled` | configurable settle timeout |
 | Centering | `centering_started` | `centering_complete` | configurable max attempts * solve time |
@@ -2979,6 +2985,9 @@ when the config sets a non-zero default). `mount.slew_rate_arcsec_per_sec`
 (default `7200` = 2°/s, a conservative slow-stepper rate) feeds the
 predictive slew deadline; set it per-rig for a tighter bound. It must be a
 finite positive number — a bad value is rejected at config load.
+`focuser.steps_per_sec` (default `500`, a conservative slow rate) feeds the
+predictive `move_focuser` deadline the same way — likewise a finite
+positive number rejected at load otherwise.
 
 The `site` block is required for the ephemeris and planner tools
 (`compute_alt_az`, `get_twilight`, `get_next_target`, …); when present
@@ -3040,7 +3049,8 @@ return a structured "site not configured" error.
         "alpaca_url": "http://localhost:11113",
         "device_number": 0,
         "min_position": 0,
-        "max_position": 100000
+        "max_position": 100000,
+        "steps_per_sec": 1200
       },
       {
         "id": "guide-focuser",

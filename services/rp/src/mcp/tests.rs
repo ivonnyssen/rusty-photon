@@ -978,6 +978,7 @@ fn focuser_registry(
                 device_number: 0,
                 min_position,
                 max_position,
+                steps_per_sec: Default::default(),
                 auth: None,
             },
             device: Some(foc),
@@ -2286,6 +2287,11 @@ async fn test_move_focuser_position_read_fails() {
     assert_tool_error(result, "failed to read focuser position");
 }
 
+/// §2.6: `is_moving()` stays `true`, the predicted deadline expires, and the
+/// move returns the timeout error. With current 0 → target 1000 at the
+/// default 500 steps/s the deadline is `max(2 s × 2, 5 s floor) = 5 s`, so
+/// the failure lands far under the old 120 s ceiling — proof the deadline
+/// now scales with the move. `start_paused` auto-advances virtual time.
 #[tokio::test(start_paused = true)]
 async fn test_move_focuser_timeout() {
     let foc = MockFocuser {
@@ -2293,6 +2299,7 @@ async fn test_move_focuser_timeout() {
         ..Default::default()
     };
     let handler = test_handler(focuser_registry(Arc::new(foc), None, None));
+    let started_at = tokio::time::Instant::now();
     let result = handler
         .move_focuser_inner(
             MoveFocuserParams {
@@ -2302,7 +2309,13 @@ async fn test_move_focuser_timeout() {
             None,
         )
         .await;
+    let elapsed = started_at.elapsed();
     assert_tool_error(result, "timeout waiting for focuser to settle");
+    assert!(
+        elapsed < Duration::from_secs(60),
+        "a short move should hit its computed ~5 s deadline, not the old \
+         120 s ceiling; elapsed {elapsed:?}"
+    );
 }
 
 #[tokio::test]
@@ -2321,6 +2334,7 @@ async fn test_move_focuser_not_connected() {
                 device_number: 0,
                 min_position: None,
                 max_position: None,
+                steps_per_sec: Default::default(),
                 auth: None,
             },
             device: None,
@@ -2373,6 +2387,7 @@ async fn test_get_focuser_position_not_connected() {
                 device_number: 0,
                 min_position: None,
                 max_position: None,
+                steps_per_sec: Default::default(),
                 auth: None,
             },
             device: None,
@@ -2885,11 +2900,12 @@ async fn test_park_alpaca_error_propagates() {
     assert_tool_error(result, "failed to park");
 }
 
-/// 300 s deadline expires while `at_park()` keeps returning `false`.
-/// Unlike `slew`, `park` does NOT auto-abort — it surfaces the
-/// timeout and lets the caller decide. `start_paused` lets tokio
-/// auto-advance virtual time so the test runs in real-time
-/// milliseconds.
+/// The predicted deadline expires while `at_park()` keeps returning
+/// `false`. Unlike `slew`, `park` does NOT auto-abort — it surfaces the
+/// timeout and lets the caller decide. §2.2: the deadline is the worst-case
+/// 180° traverse at the default 7200″/s rate (`90 s × 2 = 180 s`), so the
+/// failure lands below the old 300 s ceiling. `start_paused` auto-advances
+/// virtual time so the test runs in real-time milliseconds.
 #[tokio::test(start_paused = true)]
 async fn test_park_timeout_does_not_auto_abort() {
     let mount = MockTelescope {
@@ -2897,8 +2913,15 @@ async fn test_park_timeout_does_not_auto_abort() {
         ..Default::default()
     };
     let handler = test_handler(mount_registry(Arc::new(mount), None));
+    let started_at = tokio::time::Instant::now();
     let result = handler.park_inner(ParkParams {}, None).await;
+    let elapsed = started_at.elapsed();
     assert_tool_error(result, "timeout waiting for mount to park");
+    assert!(
+        elapsed < Duration::from_secs(250),
+        "park should hit its computed worst-case deadline (~180 s at the \
+         default rate), not the old 300 s ceiling; elapsed {elapsed:?}"
+    );
 }
 
 #[tokio::test]
@@ -4329,6 +4352,7 @@ fn auto_focus_registry(starting_position: i32) -> crate::equipment::EquipmentReg
                 device_number: 0,
                 min_position: None,
                 max_position: None,
+                steps_per_sec: Default::default(),
                 auth: None,
             },
             device: Some(Arc::new(focuser)),
@@ -4634,7 +4658,10 @@ async fn do_capture_emits_exposing_phase_before_readout() {
 /// `is_moving == true` for ~12 s and then `false` must fire at least two
 /// progress notifications (5 s + 10 s marks) tagged `"focuser_moving"`
 /// during the settle poll — the focuser counterpart to the slew/park/
-/// capture progress tests.
+/// capture progress tests. The target (10000) sits far enough from the
+/// current position (4321) that the predicted deadline
+/// (`5679 / 500 × 2 ≈ 22.7 s`) comfortably covers the 12 s move; the mock's
+/// fixed readback still returns 4321.
 #[tokio::test(start_paused = true)]
 async fn do_move_focuser_blocking_emits_progress_during_move() {
     let foc = MockFocuser {
@@ -4645,7 +4672,7 @@ async fn do_move_focuser_blocking_emits_progress_during_move() {
     let handler = test_handler(focuser_registry(Arc::new(foc), None, None));
     let emitter = super::progress::test_support::CountingProgressEmitter::default();
     let position = handler
-        .do_move_focuser_blocking("foc", 4321, Some(&emitter))
+        .do_move_focuser_blocking("foc", 10000, Some(&emitter))
         .await
         .expect("move completes when the focuser reports idle");
     assert_eq!(position, 4321);
@@ -4822,10 +4849,13 @@ fn assert_end_mirrors_start(
         "no ended_at on the start envelope"
     );
     // The matching `*_started` envelope carries deadline fields only for
-    // operations with a predictive deadline (slew, §2.1); every other
-    // operation's start must still omit them. (slew's start is asserted
-    // present by its own test.)
-    if !start.event.starts_with("slew") {
+    // operations with a predictive deadline (slew §2.1, park + move_focuser
+    // §2.2/§2.3); every other operation's start must still omit them. (Each
+    // converted operation's start is asserted present by its own test.)
+    let has_predictive_deadline = start.event.starts_with("slew")
+        || start.event.starts_with("park")
+        || start.event.starts_with("move_focuser");
+    if !has_predictive_deadline {
         assert!(
             start.predicted_duration_ms.is_none(),
             "{} start envelope must omit predicted_duration_ms",
@@ -5044,6 +5074,12 @@ async fn park_emits_started_complete_triple() {
     assert_eq!(started.event, "park_started");
     assert_eq!(complete.event, "park_complete");
     assert_end_mirrors_start(&started, &complete);
+
+    // §2.2: no park coordinates are knowable via Alpaca, so the deadline is
+    // the worst-case 180° traverse at the default 7200″/s rate: predicted =
+    // 648000″ / 7200 = 90 s, max = 90 × 2 = 180 s (above the 60 s floor).
+    assert_eq!(started.predicted_duration_ms, Some(90000));
+    assert_eq!(started.max_duration_ms, Some(180000));
 }
 
 #[tokio::test]
@@ -5071,6 +5107,72 @@ async fn move_focuser_emits_started_complete_triple() {
     assert_eq!(started.payload["position"], 4321);
     assert_eq!(complete.payload["position"], 4321);
     assert_end_mirrors_start(&started, &complete);
+
+    // §2.3: current == target (4321) ⇒ distance 0, so predicted floors at
+    // 0 ms and max at the 5 s MIN_FOCUSER_DEADLINE floor.
+    assert_eq!(started.predicted_duration_ms, Some(0));
+    assert_eq!(started.max_duration_ms, Some(5000));
+}
+
+/// §2.3: the `move_focuser_started` envelope carries a deadline sized from
+/// the step travel. Current 0 → target 10000 at the default 500 steps/s is
+/// predicted = 20 s and max = max(20 × 2, 5 s floor) = 40 s (target chosen
+/// large enough that `predicted × 2` clears the floor, so the distance
+/// scaling — not the floor — is what's asserted).
+#[tokio::test]
+async fn move_focuser_started_carries_distance_scaled_deadline() {
+    let foc = MockFocuser {
+        position_value: 0,
+        ..Default::default()
+    };
+    let handler = test_handler(focuser_registry(Arc::new(foc), None, None));
+    let mut rx = handler.event_bus.subscribe();
+
+    handler
+        .do_move_focuser_blocking("foc", 10000, None)
+        .await
+        .unwrap();
+
+    let started = next_event(&mut rx).await;
+    assert_eq!(started.event, "move_focuser_started");
+    assert_eq!(
+        started.predicted_duration_ms,
+        Some(20000),
+        "10000 steps / 500 steps·s⁻¹ = 20 s predicted"
+    );
+    assert_eq!(
+        started.max_duration_ms,
+        Some(40000),
+        "max = predicted × 2 = 40 s (above the 5 s floor)"
+    );
+}
+
+/// §2.3 fallback: when the pre-move position read fails the deadline can't
+/// be predicted, so `move_focuser_started` omits the deadline fields and the
+/// move proceeds on the fallback ceiling. (Here the same failing read also
+/// fails the post-move read, so the operation ends in error — the point
+/// under test is that the started envelope carries no deadline fields.)
+#[tokio::test]
+async fn move_focuser_started_omits_deadline_when_position_read_fails() {
+    let foc = MockFocuser {
+        fail_position: true,
+        ..Default::default()
+    };
+    let handler = test_handler(focuser_registry(Arc::new(foc), None, None));
+    let mut rx = handler.event_bus.subscribe();
+
+    let _ = handler.do_move_focuser_blocking("foc", 1000, None).await;
+
+    let started = next_event(&mut rx).await;
+    assert_eq!(started.event, "move_focuser_started");
+    assert!(
+        started.predicted_duration_ms.is_none(),
+        "fallback path must omit predicted_duration_ms"
+    );
+    assert!(
+        started.max_duration_ms.is_none(),
+        "fallback path must omit max_duration_ms"
+    );
 }
 
 #[tokio::test]

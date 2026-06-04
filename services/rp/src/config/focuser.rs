@@ -1,5 +1,55 @@
 use serde::Deserialize;
 
+/// Conservative default focuser step rate: 500 steps/sec. Deliberately
+/// slower than a typical EAF/Q-Focuser so the predicted move duration
+/// over-estimates and the deadline won't false-abort a healthy move.
+const DEFAULT_FOCUSER_STEPS_PER_SEC: f64 = 500.0;
+
+/// Assumed focuser step rate in steps/sec, feeding the predictive
+/// `move_focuser` deadline (`predicted = |target − current| / rate`). The
+/// Alpaca `Focuser` trait exposes no step-*rate* property (`MaxIncrement` /
+/// `MaxStep` are step *counts*, not rates), so this config value is the rate
+/// source; set it per-rig for a tighter deadline.
+///
+/// Validated at load (parse-don't-validate): a non-finite or non-positive
+/// rate is rejected during deserialization, so a bad config fails at
+/// startup rather than at move time.
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[serde(try_from = "f64")]
+pub struct FocuserStepsPerSec(f64);
+
+impl FocuserStepsPerSec {
+    /// The single validating constructor. Rejects non-finite or
+    /// non-positive rates, naming the field in the error.
+    pub fn try_new(value: f64) -> Result<Self, String> {
+        if !value.is_finite() || value <= 0.0 {
+            return Err(format!(
+                "steps_per_sec must be a finite positive number, got {value}"
+            ));
+        }
+        Ok(Self(value))
+    }
+
+    /// The rate in steps/sec.
+    pub fn value(self) -> f64 {
+        self.0
+    }
+}
+
+impl Default for FocuserStepsPerSec {
+    fn default() -> Self {
+        Self(DEFAULT_FOCUSER_STEPS_PER_SEC)
+    }
+}
+
+impl TryFrom<f64> for FocuserStepsPerSec {
+    type Error = String;
+
+    fn try_from(value: f64) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct FocuserConfig {
     pub id: String,
@@ -16,6 +66,11 @@ pub struct FocuserConfig {
     /// Operator-supplied upper bound for `move_focuser` validation.
     #[serde(default)]
     pub max_position: Option<i32>,
+    /// Assumed focuser step rate (steps/sec) used to size the predictive
+    /// `move_focuser` deadline. Defaults to 500 (a conservative slow rate);
+    /// set per-rig for a tighter bound.
+    #[serde(default)]
+    pub steps_per_sec: FocuserStepsPerSec,
     /// Optional HTTP Basic Auth credentials for connecting to auth-enabled Alpaca services
     #[serde(default)]
     pub auth: Option<rp_auth::config::ClientAuthConfig>,
@@ -94,5 +149,97 @@ mod tests {
         let auth = f.auth.as_ref().unwrap();
         assert_eq!(auth.username, "u");
         assert_eq!(auth.password, "p");
+    }
+
+    #[test]
+    fn focuser_config_steps_per_sec_defaults_to_500() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "session": {"data_directory": "/tmp/rp-test"},
+                "equipment": {
+                    "focusers": [
+                        {"id": "main-focuser", "alpaca_url": "http://localhost:11113"}
+                    ]
+                },
+                "server": {}
+            }"#,
+        )
+        .unwrap();
+
+        let config = load_config(&path).unwrap();
+        assert_eq!(config.equipment.focusers[0].steps_per_sec.value(), 500.0);
+    }
+
+    #[test]
+    fn focuser_config_steps_per_sec_explicit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "session": {"data_directory": "/tmp/rp-test"},
+                "equipment": {
+                    "focusers": [
+                        {
+                            "id": "main-focuser",
+                            "alpaca_url": "http://localhost:11113",
+                            "steps_per_sec": 1200
+                        }
+                    ]
+                },
+                "server": {}
+            }"#,
+        )
+        .unwrap();
+
+        let config = load_config(&path).unwrap();
+        assert_eq!(config.equipment.focusers[0].steps_per_sec.value(), 1200.0);
+    }
+
+    #[test]
+    fn focuser_config_steps_per_sec_rejects_non_positive() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "session": {"data_directory": "/tmp/rp-test"},
+                "equipment": {
+                    "focusers": [
+                        {
+                            "id": "main-focuser",
+                            "alpaca_url": "http://localhost:11113",
+                            "steps_per_sec": 0
+                        }
+                    ]
+                },
+                "server": {}
+            }"#,
+        )
+        .unwrap();
+
+        let err = load_config(&path).unwrap_err().to_string();
+        assert!(
+            err.contains("steps_per_sec must be a finite positive number"),
+            "expected the validation message, got: {err}"
+        );
+    }
+
+    #[test]
+    fn focuser_steps_per_sec_newtype_validation_boundaries() {
+        use super::FocuserStepsPerSec;
+        assert_eq!(FocuserStepsPerSec::default().value(), 500.0);
+        assert_eq!(FocuserStepsPerSec::try_new(1200.0).unwrap().value(), 1200.0);
+        // The `<= 0.0` edge and the non-finite branch (unreachable from
+        // JSON, defensive-only) are rejected and name the field.
+        assert!(FocuserStepsPerSec::try_new(0.0)
+            .unwrap_err()
+            .contains("steps_per_sec"));
+        assert!(FocuserStepsPerSec::try_new(-1.0).is_err());
+        assert!(FocuserStepsPerSec::try_new(f64::NAN).is_err());
+        assert!(FocuserStepsPerSec::try_new(f64::INFINITY).is_err());
     }
 }

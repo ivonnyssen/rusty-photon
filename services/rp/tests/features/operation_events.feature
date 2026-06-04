@@ -5,9 +5,12 @@ Feature: Operation event envelopes
   event at exit, all sharing one `operation_id` so a consumer can
   correlate the triple. Each emission carries its own `event_id` and a
   monotonic `event_seq`; the start carries `started_at` and the end adds
-  `ended_at` plus `elapsed_ms`. The `slew_started` event also carries the
-  `predicted_duration_ms` / `max_duration_ms` deadline fields (Phase 2.1);
-  operations not yet converted to predictive deadlines omit them.
+  `ended_at` plus `elapsed_ms`. The `slew_started`, `park_started`, and
+  `move_focuser_started` events carry the `predicted_duration_ms` /
+  `max_duration_ms` deadline fields (Phase 2) when the deadline can be
+  predicted, and omit them on the fallback path (e.g. a pre-read failure, or
+  no mount configured for park); operations not yet converted to predictive
+  deadlines always omit them.
 
   The envelope is additive over the historical webhook body: the
   `event_id`, `event`, `timestamp`, and `payload` keys keep their exact
@@ -60,7 +63,7 @@ Feature: Operation event envelopes
     And the webhook delivers the "park_complete" event
     And the "park_started" and "park_complete" events share one operation_id
     And the "park_complete" event has a higher event_seq than the "park_started" event
-    And the "park_started" event reserves the deadline fields as absent
+    And the "park_started" event carries the deadline fields
 
   Scenario: Sync emits a complete event with no started event
     Given a running Alpaca simulator
@@ -96,3 +99,16 @@ Feature: Operation event envelopes
     And the "exposure_started" event payload includes "camera_id"
     And the "exposure_complete" event payload includes "document_id"
     And the "exposure_complete" event payload includes "file_path"
+
+  Scenario: Move-focuser emits a started and complete event under one operation_id
+    Given a running Alpaca simulator
+    And a webhook subscriber for the "move_focuser" operation
+    And rp is running with a focuser and the operation-event plugin
+    And an MCP client connected to rp
+    When the operator moves the focuser to position 25500
+    Then the webhook delivers the "move_focuser_started" event
+    And the webhook delivers the "move_focuser_complete" event
+    And the "move_focuser_started" and "move_focuser_complete" events share one operation_id
+    And the "move_focuser_started" event carries the deadline fields
+    And the "move_focuser_started" event payload includes "focuser_id"
+    And the "move_focuser_complete" event payload includes "position"
