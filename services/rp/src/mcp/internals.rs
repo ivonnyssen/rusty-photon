@@ -61,6 +61,47 @@ const MIN_SLEW_DEADLINE: Duration = Duration::from_secs(30);
 /// the slew.
 const SLEW_DEADLINE_FALLBACK: Duration = Duration::from_secs(300);
 
+/// Worst-case axis traverse used to size the park deadline (§2.2). The
+/// generic Alpaca `Telescope` trait exposes no park-position getter, so rp
+/// cannot compute a great-circle distance to the park position the way
+/// `slew` does. 180° is the maximum angular separation between any two
+/// points on the sphere — the honest upper bound on how far park can
+/// traverse without reading the park coordinates.
+const PARK_WORST_CASE_TRAVERSE_DEG: f64 = 180.0;
+
+/// Headroom multiplier over the worst-case park `predicted`. Smaller than
+/// slew's ×3 (which sits over a *measured* small distance): park's
+/// `predicted` is already a worst-case 180° traverse, so ×3 would re-approach
+/// the old 300 s ceiling and defeat the point.
+const PARK_DEADLINE_HEADROOM: f64 = 2.0;
+
+/// Floor on the predictive park deadline. More generous than
+/// [`MIN_SLEW_DEADLINE`] — park traverses to a fixed mechanical position
+/// that can be a long way off, and OmniSim's BDD park is a from-rest
+/// physical traverse.
+const MIN_PARK_DEADLINE: Duration = Duration::from_secs(60);
+
+/// Park deadline used when no mount is configured (the only case in which
+/// the park deadline can't be sized). Park would fail immediately without a
+/// mount anyway; the fallback keeps the poll loop bounded for symmetry with
+/// the slew path.
+const PARK_DEADLINE_FALLBACK: Duration = Duration::from_secs(300);
+
+/// Headroom multiplier over the focuser `predicted` (§2.3): `max =
+/// max(predicted × 2, MIN_FOCUSER_DEADLINE)`.
+const FOCUSER_DEADLINE_HEADROOM: f64 = 2.0;
+
+/// Floor on the predictive `move_focuser` deadline — a tiny move still gets
+/// at least this long, covering fixed controller/`IsMoving` latency.
+const MIN_FOCUSER_DEADLINE: Duration = Duration::from_secs(5);
+
+/// Move-focuser deadline used when the predicted deadline can't be computed
+/// — the focuser isn't resolvable, or the pre-move position read failed. A
+/// prediction is an optimization, not a precondition for moving, so the
+/// deadline degrades to the historical 120 s ceiling rather than failing
+/// the move.
+const FOCUSER_DEADLINE_FALLBACK: Duration = Duration::from_secs(120);
+
 // ---------------------------------------------------------------------------
 // Private helper types shared across imaging tool bodies. All
 // `pub(crate)` so individual category files can construct them.
@@ -742,10 +783,57 @@ impl McpHandler {
         capture_result.map(|()| (image_path, document_id))
     }
 
+    /// Size the predictive `move_focuser` deadline from the focuser's
+    /// current position, the requested target, and the configured step rate
+    /// (§2.3): `predicted = |target − current| / steps_per_sec`,
+    /// `max = max(predicted × 2, MIN_FOCUSER_DEADLINE)`. Returns the poll
+    /// deadline plus the `(predicted_ms, max_ms)` pair for the
+    /// `move_focuser_started` envelope.
+    ///
+    /// `Err` if the focuser can't be resolved or the pre-move position read
+    /// fails; the caller then falls back to [`FOCUSER_DEADLINE_FALLBACK`]
+    /// and omits the envelope deadline fields.
+    async fn compute_focuser_deadline(
+        &self,
+        focuser_id: &str,
+        target: i32,
+    ) -> std::result::Result<(Duration, u64, u64), String> {
+        let foc_entry = self
+            .equipment
+            .find_focuser(focuser_id)
+            .ok_or_else(|| format!("focuser not found: {focuser_id}"))?;
+        let foc = foc_entry
+            .device
+            .as_ref()
+            .ok_or_else(|| format!("focuser not connected: {focuser_id}"))?;
+        let rate = foc_entry.config.steps_per_sec.value();
+        let current = foc
+            .position()
+            .await
+            .map_err(|e| format!("failed to read focuser position: {e}"))?;
+        // i64 difference can't overflow two i32s; abs gives the step travel.
+        let distance = (i64::from(target) - i64::from(current)).unsigned_abs() as f64;
+        let predicted_secs = distance / rate;
+        let max_secs =
+            (predicted_secs * FOCUSER_DEADLINE_HEADROOM).max(MIN_FOCUSER_DEADLINE.as_secs_f64());
+        let deadline = Duration::try_from_secs_f64(max_secs).map_err(|e| {
+            format!(
+                "predicted focuser deadline out of range \
+                 (steps_per_sec {rate}, distance {distance} steps): {e}"
+            )
+        })?;
+        Ok((
+            deadline,
+            (predicted_secs * 1000.0).round() as u64,
+            (max_secs * 1000.0).round() as u64,
+        ))
+    }
+
     /// Resolve a focuser, validate the requested `position` against the
     /// operator-supplied `min_position`/`max_position` bounds, issue the
-    /// Alpaca move, poll `is_moving` until idle (with a 120 s deadline),
-    /// and return the focuser's reported `position` after settling.
+    /// Alpaca move, poll `is_moving` until idle (bounded by a predicted
+    /// deadline; see [`Self::compute_focuser_deadline`]), and return the
+    /// focuser's reported `position` after settling.
     ///
     /// This is the shared body of the `move_focuser` MCP tool and the
     /// `auto_focus` compound tool's per-step focuser drive — both want
@@ -754,7 +842,7 @@ impl McpHandler {
     /// When `progress` is `Some`, the `is_moving` poll loop emits
     /// `notifications/progress` every [`PROGRESS_INTERVAL`] so rmcp's
     /// 300 s session keep-alive sees session activity from a focuser
-    /// run that approaches its own 120 s deadline. `None` (unit tests,
+    /// run that approaches its own deadline. `None` (unit tests,
     /// clients without `progressToken`) makes the emission a no-op.
     pub(crate) async fn do_move_focuser_blocking(
         &self,
@@ -764,14 +852,38 @@ impl McpHandler {
     ) -> std::result::Result<i32, String> {
         let operation_id = Uuid::new_v4().to_string();
         let started_at = chrono::Utc::now();
-        self.event_bus.emit_operation(EventEnvelope::started(
-            "move_focuser",
-            &operation_id,
-            started_at,
-            serde_json::json!({ "focuser_id": focuser_id, "position": position }),
-        ));
+
+        // Size the deadline from the move's actual workload. If the focuser
+        // can't be resolved or the pre-move position read fails, fall back to
+        // the historical 120 s ceiling and omit the deadline fields — a
+        // prediction is an optimization, not a precondition for moving.
+        let started_payload = serde_json::json!({ "focuser_id": focuser_id, "position": position });
+        let (deadline, started_event) = match self
+            .compute_focuser_deadline(focuser_id, position)
+            .await
+        {
+            Ok((deadline, predicted_ms, max_ms)) => (
+                deadline,
+                EventEnvelope::started("move_focuser", &operation_id, started_at, started_payload)
+                    .with_deadlines(predicted_ms, max_ms),
+            ),
+            Err(e) => {
+                debug!(error = %e, "move_focuser deadline prediction unavailable; using fallback ceiling");
+                (
+                    FOCUSER_DEADLINE_FALLBACK,
+                    EventEnvelope::started(
+                        "move_focuser",
+                        &operation_id,
+                        started_at,
+                        started_payload,
+                    ),
+                )
+            }
+        };
+        self.event_bus.emit_operation(started_event);
+
         let result = self
-            .do_move_focuser_blocking_inner(focuser_id, position, progress)
+            .do_move_focuser_blocking_inner(focuser_id, position, deadline, progress)
             .await;
         match &result {
             Ok(final_position) => self.event_bus.emit_operation(EventEnvelope::complete(
@@ -793,11 +905,14 @@ impl McpHandler {
     /// Inner body of [`do_move_focuser_blocking`] — resolve + bounds-check
     /// then move, poll until idle, and read back. Split out so the public
     /// method wraps it in the `move_focuser_started` /
-    /// `move_focuser_complete` / `move_focuser_failed` triple.
+    /// `move_focuser_complete` / `move_focuser_failed` triple. `deadline` is
+    /// the predicted poll ceiling sized by the wrapper (see
+    /// [`Self::compute_focuser_deadline`]).
     async fn do_move_focuser_blocking_inner(
         &self,
         focuser_id: &str,
         position: i32,
+        deadline: Duration,
         progress: Option<&dyn ProgressEmitter>,
     ) -> std::result::Result<i32, String> {
         let foc_entry = self
@@ -832,7 +947,7 @@ impl McpHandler {
             .await
             .map_err(|e| format!("failed to move focuser: {}", e))?;
 
-        let total_budget = Duration::from_secs(120);
+        let total_budget = deadline;
         let total_budget_secs = total_budget.as_secs_f64();
         let started_at = Instant::now();
         let deadline = started_at + total_budget;
@@ -1089,8 +1204,43 @@ impl McpHandler {
         Ok((actual_ra, actual_dec))
     }
 
+    /// Size the park deadline (§2.2). rp can't read the mount's park
+    /// coordinates — the generic Alpaca `Telescope` trait exposes no
+    /// park-position getter — so the deadline is the worst-case full-axis
+    /// traverse ([`PARK_WORST_CASE_TRAVERSE_DEG`]) at the configured slew
+    /// rate, not a distance-scaled prediction like slew:
+    /// `predicted = 180° / slew_rate + settle`,
+    /// `max = max(predicted × 2, MIN_PARK_DEADLINE)`. Returns the poll
+    /// deadline plus the `(predicted_ms, max_ms)` pair for the
+    /// `park_started` envelope.
+    ///
+    /// `Err` only when no mount is configured (the caller then falls back
+    /// to [`PARK_DEADLINE_FALLBACK`] and omits the envelope deadline
+    /// fields — though park fails immediately without a mount anyway).
+    fn compute_park_deadline(&self) -> std::result::Result<(Duration, u64, u64), String> {
+        let entry = self
+            .equipment
+            .find_mount()
+            .ok_or_else(|| "no mount configured".to_string())?;
+        let rate = entry.config.slew_rate_arcsec_per_sec.value();
+        let settle = entry.config.settle_after_slew.unwrap_or(Duration::ZERO);
+        let worst_case_arcsec = PARK_WORST_CASE_TRAVERSE_DEG * 3600.0;
+        let predicted_secs = worst_case_arcsec / rate + settle.as_secs_f64();
+        let max_secs =
+            (predicted_secs * PARK_DEADLINE_HEADROOM).max(MIN_PARK_DEADLINE.as_secs_f64());
+        let deadline = Duration::try_from_secs_f64(max_secs).map_err(|e| {
+            format!("predicted park deadline out of range (slew_rate_arcsec_per_sec {rate}): {e}")
+        })?;
+        Ok((
+            deadline,
+            (predicted_secs * 1000.0).round() as u64,
+            (max_secs * 1000.0).round() as u64,
+        ))
+    }
+
     /// Resolve the mount, issue `park()`, then poll `at_park()` every
-    /// 100 ms until it returns `true` (300 s deadline).
+    /// 100 ms until it returns `true`, bounded by a predicted deadline
+    /// (see [`Self::compute_park_deadline`]).
     ///
     /// `AtPark` is the ASCOM-canonical "park is complete" signal — set
     /// in exactly one code path (the slew-to-park completion handler).
@@ -1112,20 +1262,39 @@ impl McpHandler {
     /// When `progress` is `Some`, the `at_park` poll loop emits
     /// `notifications/progress` every [`PROGRESS_INTERVAL`] so rmcp's
     /// 300 s session keep-alive cannot fire during a legitimate
-    /// long park (which has the same 300 s deadline).
+    /// long park (whose deadline can exceed the keep-alive).
     pub(crate) async fn do_park_blocking(
         &self,
         progress: Option<&dyn ProgressEmitter>,
     ) -> std::result::Result<(), String> {
         let operation_id = Uuid::new_v4().to_string();
         let started_at = chrono::Utc::now();
-        self.event_bus.emit_operation(EventEnvelope::started(
-            "park",
-            &operation_id,
-            started_at,
-            serde_json::json!({}),
-        ));
-        let result = self.do_park_blocking_inner(progress).await;
+
+        // Size the deadline from the worst-case traverse at the configured
+        // slew rate. With no mount configured, fall back to the historical
+        // 300 s ceiling and omit the deadline fields.
+        let (deadline, started_event) = match self.compute_park_deadline() {
+            Ok((deadline, predicted_ms, max_ms)) => (
+                deadline,
+                EventEnvelope::started("park", &operation_id, started_at, serde_json::json!({}))
+                    .with_deadlines(predicted_ms, max_ms),
+            ),
+            Err(e) => {
+                debug!(error = %e, "park deadline prediction unavailable; using fallback ceiling");
+                (
+                    PARK_DEADLINE_FALLBACK,
+                    EventEnvelope::started(
+                        "park",
+                        &operation_id,
+                        started_at,
+                        serde_json::json!({}),
+                    ),
+                )
+            }
+        };
+        self.event_bus.emit_operation(started_event);
+
+        let result = self.do_park_blocking_inner(deadline, progress).await;
         match &result {
             Ok(()) => self.event_bus.emit_operation(EventEnvelope::complete(
                 "park",
@@ -1148,9 +1317,11 @@ impl McpHandler {
     /// the `park_started` / `park_complete` / `park_failed` triple. The
     /// timeout path still returns `Err` (so `park_failed` fires) and
     /// still does NOT auto-abort — the watchdog ladder owns that decision
-    /// in Phase 5.
+    /// in Phase 5. `deadline` is the predicted poll ceiling sized by the
+    /// wrapper (see [`Self::compute_park_deadline`]).
     async fn do_park_blocking_inner(
         &self,
+        deadline: Duration,
         progress: Option<&dyn ProgressEmitter>,
     ) -> std::result::Result<(), String> {
         let (_entry, mount) = self.resolve_mount()?;
@@ -1161,7 +1332,7 @@ impl McpHandler {
             .await
             .map_err(|e| format!("failed to park: {}", e))?;
 
-        let total_budget = Duration::from_secs(300);
+        let total_budget = deadline;
         let total_budget_secs = total_budget.as_secs_f64();
         let started_at = Instant::now();
         let deadline = started_at + total_budget;
