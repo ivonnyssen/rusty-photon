@@ -69,7 +69,7 @@ does not break the SDK-less default build.
 
 | Concern | Mechanism |
 |---|---|
-| `cargo build --all` / local dev without SDK | The package is a normal workspace member, but the SDK-less build path is `cargo build -p qhy-camera` is **expected to fail to link** without the SDK. Devs without the SDK use the rest of the workspace normally; `cargo rail`'s `merge_base=true` (affected-packages-only) means the package is only built when *its* files change. Documented in the service README and `MEMORY.md`. |
+| `cargo build --all` / local dev without SDK | The package is a normal workspace member, but **`cargo build -p qhy-camera` is expected to fail to link without the SDK**. Devs without the SDK use the rest of the workspace normally; `cargo rail`'s `merge_base=true` (affected-packages-only) means the package is only built when *its* files change. Documented in this design doc and the service README. |
 | CI | Add an explicit SDK-provisioning step that **pulls SDK 25.09.29 from the NAS / bazel-remote cache** (not a per-build qhyccd.com fetch) + installs `libusb-1.0-0-dev`, before building/testing this package, mirroring the cross-spawn pre-build pattern already in `.github/workflows/test.yml`. |
 | Raspberry Pi nightly runner | Add the SDK (25.09.29) + `libusb` install to `scripts/setup-pi-runner.sh`. **aarch64 confirmed available and linking** — `qhy-camera` is included in the Pi5 arm64 nightly matrix. |
 | Bazel (shadow build) | Tag the target `requires-cargo` initially (kept out of `bazel test //...` by `.bazelrc`'s default `-requires-cargo`). Later replace with a hand-written `crate.annotation` for `libqhyccd-sys` (link-search to the installed SDK, `static=qhyccd`, `dylib=usb-1.0`). Run `CARGO_BAZEL_REPIN=1 bazel mod tidy && bazel mod tidy` after adding `qhyccd-rs` (Rule 10). |
@@ -80,9 +80,12 @@ does not break the SDK-less default build.
   0.1.9 targets. (The `24.12.26` in the older `qhyccd-alpaca` doc is stale.)
 - **arm64: supported and linking** on the Pi5 runner — `qhy-camera` is in the
   arm64 nightly matrix.
-- **SDK distribution: cached** on the NAS / bazel-remote (10.0.0.11). CI and
-  Bazel pull the SDK 25.09.29 from the cache — **no per-build fetch from
-  qhyccd.com**, keeping builds hermetic and offline-capable.
+- **SDK distribution: cached** on the self-hosted build cache (see
+  [`bazel-remote-cache.md`](../skills/bazel-remote-cache.md)). CI and Bazel pull
+  SDK 25.09.29 from the cache — **no per-build fetch from qhyccd.com** — keeping
+  builds hermetic and offline-capable. The proprietary SDK blob must live behind
+  the authenticated/internal cache tier, **not** the anonymous-read public mirror
+  (`cache.rustyphoton.space`), pending the redistribution-terms question below.
 
 ### Open questions still to resolve before Track A lands
 
@@ -535,7 +538,6 @@ driver itself).
 - **`StopExposure`** (graceful stop with readout) — currently `NOT_IMPLEMENTED`.
 - **FastReadout** validation on real hardware.
 - **PulseGuide** / `CanPulseGuide`.
-- **Multiple cameras per service instance** (v0 binds one).
 - **Focuser consolidation.** `qhyccd-rs` also covers QHY focusers; a future
   evaluation could let this SDK supersede the serial [`qhy-focuser`](qhy-focuser.md).
 - **TLS / Basic Auth** via `rp-tls` / `rp-auth`.

@@ -21,6 +21,12 @@ Coverage has two columns: **Cargo** is the canonical, required coverage; **Bazel
 | [star-adventurer-gti](services/star-adventurer-gti) | ASCOM Telescope | 11117 | [![coverage][cov-star-adventurer-gti]][cov-star-adventurer-gti-link] | [![coverage][cov-bazel-star-adventurer-gti]][cov-bazel-star-adventurer-gti-link] | Driver for Sky-Watcher Star Adventurer GTi (USB and WiFi/UDP) |
 | [pa-falcon-rotator](services/pa-falcon-rotator) | ASCOM Rotator + Switch (status) | 11118 | [![coverage][cov-pa-falcon-rotator]][cov-pa-falcon-rotator-link] | [![coverage][cov-bazel-pa-falcon-rotator]][cov-bazel-pa-falcon-rotator-link] | Driver for Pegasus Astro Falcon Rotator (firmware ≥ 1.3) |
 | [dsd-fp2](services/dsd-fp2) | ASCOM CoverCalibrator | 11119 | [![coverage][cov-dsd-fp2]][cov-dsd-fp2-link] | [![coverage][cov-bazel-dsd-fp2]][cov-bazel-dsd-fp2-link] | Driver for Deep Sky Dad Flat Panel 2 (motorised flat field panel) |
+| [ui-htmx](services/ui-htmx) | Web config UI (BFF) | 11120 | [![coverage][cov-ui-htmx]][cov-ui-htmx-link] | [![coverage][cov-bazel-ui-htmx]][cov-bazel-ui-htmx-link] | Server-rendered configuration UI (axum + Maud + HTMX); edits any driver's config via its `config.get`/`config.apply` actions |
+| [plate-solver](services/plate-solver) | rp-managed HTTP service | 11131 | [![coverage][cov-plate-solver]][cov-plate-solver-link] | [![coverage][cov-bazel-plate-solver]][cov-bazel-plate-solver-link] | Wraps the ASTAP CLI for plate solving in a supervised, crash-isolated process |
+
+> 🚧 **In development:** [qhy-camera](services/qhy-camera) — ASCOM Camera (+ FilterWheel) driver for QHYCCD hardware (port 11121; design + BDD scaffold landed). Links a proprietary vendor SDK, so it is gated out of the default build. See [docs/services/qhy-camera.md](docs/services/qhy-camera.md).
+
+`sentinel-app` is a Leptos web frontend crate (a `cargo leptos` build target for the sentinel dashboard), not a standalone service, so it is not listed above.
 
 ### RP (Main Application)
 
@@ -87,6 +93,22 @@ See [docs/services/falcon-rotator.md](docs/services/falcon-rotator.md) for desig
 ASCOM Alpaca CoverCalibrator driver for the Deep Sky Dad Flat Panel 2 (FP2), a motorised flat-field panel combining a 4096-step EL light source with a servo-driven cover. Built on the workspace's `rusty-photon-shared-transport` crate (PR #269): the FP2's bracketed-ASCII protocol (`[GFRM]`, `[STRG270]`, `[SLBR1234]`, …) is plugged in as an `Fp2Codec`, `Fp2SerialTransportFactory` opens the USB-CDC port (115200 baud, `/dev/ttyACM*`), and a thin `FlatPanelManager` over `SharedTransport<Fp2Codec>` handles refcounting, request arbitration, and the polling task via `Hooks`. Pairs with `calibrator-flats` for automated flat-field calibration without any orchestrator changes.
 
 See [docs/services/dsd-fp2.md](docs/services/dsd-fp2.md) for design documentation.
+
+### UI-HTMX
+
+Browser-facing, server-rendered configuration UI — a standalone backend-for-frontend (BFF) that holds no UI logic inside `rp`. Renders HTML with axum + Maud and adds interactivity with HTMX. It is a **client** of the drivers, reading and writing each one's configuration through the cross-driver `config.get` / `config.apply` / `config.schema` ASCOM actions, so a single UI can configure any driver without driver-specific knowledge.
+
+See [docs/services/ui-htmx.md](docs/services/ui-htmx.md) for design documentation.
+
+### Plate Solver
+
+An **rp-managed** HTTP service that wraps an operator-supplied [ASTAP](https://www.hnsky.org/astap.htm) CLI install and exposes a narrow solve API to `rp`. Plate solving is a hang-prone, crash-prone external binary, so it runs in its own supervised process where its failure modes cannot threaten `rp`'s liveness. Stateless across requests: every solve spawns a fresh `astap_cli` subprocess under a wall-clock timeout.
+
+See [docs/services/plate-solver.md](docs/services/plate-solver.md) for design documentation.
+
+### QHY Camera 🚧
+
+ASCOM Alpaca **Camera (+ FilterWheel)** driver for real QHYCCD hardware, built natively on the published `qhyccd-rs` crate. It enumerates every connected QHY camera and CFW and exposes each as an ASCOM device on one port. **In development** — the design doc and BDD scaffold have landed; implementation is gated behind the proprietary QHYCCD SDK, so the service is excluded from the default build. See [docs/services/qhy-camera.md](docs/services/qhy-camera.md) for design documentation.
 
 ## Getting Started
 
@@ -176,20 +198,36 @@ rusty-photon/
   MODULE.bazel            Bazel module (shadow build, see docs/plans/bazel-migration.md)
   CLAUDE.md / AGENTS.md   Operating rules for AI agents and human contributors
   crates/
-    bdd-infra/             Shared BDD test infrastructure (ServiceHandle)
-    rp-auth/               Shared HTTP Basic Auth (Argon2id + axum middleware, see ADR-003)
-    rp-fits/               FITS file reader/writer wrapper (see ADR-001)
-    rp-tls/                Shared TLS/ACME helpers for inter-service comms (ADR-002)
+    bdd-infra/                       Shared BDD test infrastructure (ServiceHandle + rp-harness)
+    rp-auth/                         HTTP Basic Auth utilities (Argon2id + axum, ADR-003)
+    rp-catalog/                      Embedded Messier/NGC/IC catalog with name resolution
+    rp-ephemeris/                    Astronomical math (Ephemeris + ERFA wrapper + Site)
+    rp-fits/                         FITS reader/writer wrapper (ADR-001)
+    rp-plate-solver/                 HTTP client for the plate-solver service
+    rp-tls/                          TLS/ACME helpers for inter-service comms (ADR-002)
+    rusty-photon-config/             Config-path + first-run UniqueID + config.get/apply/schema protocol
+    rusty-photon-driver/             Shared ASCOM-driver runtime: DriverError + config-action dispatch (ADR-007)
+    rusty-photon-i18n/               Workspace Fluent i18n loader + locale resolver
+    rusty-photon-i18n-derive/        Proc-macro deriving LocalizedParser for clap structs
+    rusty-photon-service-lifecycle/  Unified lifecycle: runtime + signals + optional Windows SCM
+    rusty-photon-shared-transport/   Refcounted multi-client transport scaffolding (serial + UDP)
+    skywatcher-motor-protocol/       Sky-Watcher motor-controller wire protocol codec (USB + UDP)
   services/
-    rp/                    Main application: equipment gateway, event bus
+    rp/                    Main application: equipment gateway, event bus, safety enforcer
     filemonitor/           ASCOM SafetyMonitor (file-based)
     ppba-driver/           ASCOM Switch + ObservingConditions (serial)
     qhy-focuser/           ASCOM Focuser (serial)
+    dsd-fp2/               ASCOM CoverCalibrator — Deep Sky Dad FP2 (serial)
+    pa-falcon-rotator/     ASCOM Rotator + Switch — Pegasus Falcon (serial)
+    star-adventurer-gti/   ASCOM Telescope — Sky-Watcher GTi (USB + WiFi/UDP)
+    sky-survey-camera/     ASCOM Camera simulator backed by NASA SkyView
+    qhy-camera/            ASCOM Camera + FilterWheel — QHYCCD hardware (design + BDD scaffold; SDK-gated)
     phd2-guider/           PHD2 client library (TCP/JSON RPC)
     sentinel/              Monitoring service (HTTP consumer)
-    sentinel-app/          Leptos web frontend for sentinel dashboard
-    calibrator-flats/      Flat field calibration orchestrator (CoverCalibrator)
-    sky-survey-camera/     ASCOM Camera simulator backed by NASA SkyView
+    sentinel-app/          Leptos web frontend for the sentinel dashboard
+    calibrator-flats/      Flat-field calibration orchestrator plugin (CoverCalibrator)
+    plate-solver/          rp-managed HTTP service wrapping the ASTAP CLI
+    ui-htmx/               Server-rendered web configuration UI (BFF)
   docs/
     services/              Per-service design documentation
     skills/                How-to playbooks for agents and operators
@@ -242,6 +280,10 @@ Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT L
 [cov-dsd-fp2-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=dsd-fp2
 [cov-pa-falcon-rotator]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=pa-falcon-rotator
 [cov-pa-falcon-rotator-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=pa-falcon-rotator
+[cov-ui-htmx]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=ui-htmx
+[cov-ui-htmx-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=ui-htmx
+[cov-plate-solver]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=plate-solver
+[cov-plate-solver-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=plate-solver
 
 <!-- per-service coverage badges (Bazel shadow build, flag=bazel-<pkg>; read "unknown" until .github/workflows/bazel-coverage.yml has run on main) -->
 [cov-bazel-rp]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=bazel-rp
@@ -266,3 +308,7 @@ Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT L
 [cov-bazel-dsd-fp2-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=bazel-dsd-fp2
 [cov-bazel-pa-falcon-rotator]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=bazel-pa-falcon-rotator
 [cov-bazel-pa-falcon-rotator-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=bazel-pa-falcon-rotator
+[cov-bazel-ui-htmx]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=bazel-ui-htmx
+[cov-bazel-ui-htmx-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=bazel-ui-htmx
+[cov-bazel-plate-solver]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=bazel-plate-solver
+[cov-bazel-plate-solver-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=bazel-plate-solver
