@@ -4,7 +4,8 @@ Feature: Sensor geometry and type
   info (G1): CameraXSize / CameraYSize in pixels and PixelSizeX / PixelSizeY
   in microns. SensorType is RGGB when the colour control is present and
   Monochrome otherwise, with BayerOffsetX / BayerOffsetY following the
-  reported Bayer pattern (ST1). MaxADU is 2^OutputDataActualBits. The
+  reported Bayer pattern (ST1). MaxADU is (2^OutputDataActualBits) - 1, i.e.
+  65535 for a 16-bit sensor. The
   simulated QHY178M-Simulated camera is a 3072x2048 monochrome 16-bit sensor.
 
   Background:

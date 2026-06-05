@@ -176,7 +176,8 @@ The MVP boundary drives BDD scenario selection (Phase 2). Grounded in what
 - **Cooling** — `CoolerOn`, `CCDTemperature`, `SetCCDTemperature`, `CoolerPower`,
   `CanSetCCDTemperature`, `CanGetCoolerPower` — all gated on the `Cooler` control.
 - **Sensor type** — `Monochrome` vs `RGGB`/colour + `BayerOffsetX/Y`.
-- **`MaxADU`** = `2^OutputDataActualBits`; `SensorName` from the device id.
+- **`MaxADU`** = `(2^OutputDataActualBits) - 1` (e.g. 65535 for a 16-bit
+  sensor); `SensorName` from the device id.
 - **FilterWheel** as a second ASCOM device on the same port (when present):
   `Names`, `Position` (with moving state), `set_position`, `FocusOffsets`.
 - **Dark frames on shutter-equipped models** — `Light = false` closes the
@@ -410,7 +411,7 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
 | `BinX` / `BinY` / `MaxBinX` / `MaxBinY` | Symmetric; max from valid binning modes |
 | `CanAsymmetricBin` | `false` |
 | `NumX` / `NumY` / `StartX` / `StartY` | Setters relaxed; validated at `StartExposure` |
-| `MaxADU` | `2^OutputDataActualBits` |
+| `MaxADU` | `(2^OutputDataActualBits) - 1` (65535 for 16-bit) |
 | `ElectronsPerADU` / `FullWellCapacity` | `NOT_IMPLEMENTED` (placeholder only if ConformU demands) |
 | `ExposureMin` / `Max` / `Resolution` | From SDK `get_parameter_min_max_step(Exposure)` |
 | `Gain` / `GainMin` / `GainMax` | SDK `Gain` control; `NOT_IMPLEMENTED` if absent |
