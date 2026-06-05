@@ -33,14 +33,24 @@ rust_binary(
     deps = [":pa-falcon-rotator_lib"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
 
+# Unit tests compile the lib with `crate_features = ["mock"]` so the in-lib
+# `#[cfg(all(test, feature = "mock"))]` suites in manager.rs / rotator_device.rs
+# / switch_device.rs compile and run, matching the Cargo coverage job's
+# `cargo test --all-features`. The default non-mock compile cfg-excluded them —
+# the dominant bazel<cargo coverage gap (see docs/plans/bazel-migration.md
+# "Coverage under Bazel"). `crate_features` must be on the rust_test itself —
+# `crate = ":..._lib_mock"` does NOT inherit the library's features. The `mock`
+# module is additive and every `not(feature = "mock")` block lives in main.rs
+# (outside this lib), so nothing is lost. Same pattern as `test_lib` below.
 rust_test(
     name = "pa-falcon-rotator_unit_test",
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,
     ),
-    size = "small",
+    size = "medium",
     crate = ":pa-falcon-rotator_lib",
+    crate_features = ["mock"],
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,

@@ -35,14 +35,30 @@ rust_binary(
     deps = [":star-adventurer-gti_lib"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
 
+# Unit tests compile the lib with `crate_features = ["mock"]` so the in-lib
+# `#[cfg(all(test, feature = "mock"))]` suites — most importantly the 184 tests
+# in src/mount_device/tests.rs — compile and run, matching the Cargo coverage
+# job's `cargo test --all-features`. The default non-mock compile cfg-excluded
+# those suites entirely, which was the dominant bazel<cargo coverage gap
+# (manager.rs/slew.rs/actions.rs etc. only got BDD coverage; see
+# docs/plans/bazel-migration.md "Coverage under Bazel"). `crate_features` must be
+# set on the rust_test itself — `crate = ":..._lib_mock"` does NOT inherit the
+# library target's features (verified: it still cfg-excluded the mock tests). The
+# `mock` module is additive (real transport stays compiled) and every
+# `not(feature = "mock")` block lives in main.rs (outside this lib), so nothing
+# is lost. Same pattern as the `test_lib` target below.
 rust_test(
     name = "star-adventurer-gti_unit_test",
-    size = "small",
+    # ~184 extra mock-gated tests: bump small -> medium so the non-coverage
+    # `bazel test` run has headroom (coverage itself runs under the .bazelrc
+    # `coverage:coverage --test_timeout=900` cap).
+    size = "medium",
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,
     ),
     crate = ":star-adventurer-gti_lib",
+    crate_features = ["mock"],
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,

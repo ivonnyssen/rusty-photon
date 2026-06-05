@@ -234,9 +234,10 @@ test:conformu --test_env=CONFORMU_PATH
 # Child-process coverage (two halves): under `bazel coverage //...` the spawned
 # service binaries ARE instrumented (first-party targets matching the filter).
 # (1) COLLECT: bdd-infra's spawn path sets a per-child
-# LLVM_PROFILE_FILE=$COVERAGE_DIR/<pkg>-%p-%m.profraw when COVERAGE_DIR is set
-# (child_coverage_profile_var in crates/bdd-infra/src/lib.rs), so each child's
-# counters land in the merged profdata. (2) EXPORT: a pinned rules_rust patch
+# LLVM_PROFILE_FILE=$COVERAGE_DIR/<pkg>-%8m.profraw when COVERAGE_DIR is set
+# (child_coverage_profile_var in crates/bdd-infra/src/lib.rs; the `%8m`
+# online-merge pool — not `%p-%m` — bounds the profraw volume, see PR #342), so
+# each child's counters land in the merged profdata. (2) EXPORT: a pinned rules_rust patch
 # (MODULE.bazel single_version_override) adds each spawned binary as an
 # `llvm-cov export -object` via the RUST_COVERAGE_EXTRA_OBJECTS env var set on the
 # BDD/integration targets — without it the merged child counters have no covmap
