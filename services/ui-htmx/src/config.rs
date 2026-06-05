@@ -157,7 +157,7 @@ mod tests {
                     "auth": { "username": "obs", "password": "secret" }
                 },
                 "qhy-focuser": {
-                    "base_url": "http://127.0.0.1:11121",
+                    "base_url": "http://127.0.0.1:11113",
                     "device_type": "focuser"
                 }
             }

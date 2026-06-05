@@ -374,7 +374,7 @@ mod tests {
         let json = r#"{
             "drivers": {
                 "dsd-fp2": { "base_url": "http://127.0.0.1:11119" },
-                "qhy-focuser": { "base_url": "http://127.0.0.1:11121", "device_type": "focuser" }
+                "qhy-focuser": { "base_url": "http://127.0.0.1:11113", "device_type": "focuser" }
             }
         }"#;
         let config: Config = serde_json::from_str(json).unwrap();
