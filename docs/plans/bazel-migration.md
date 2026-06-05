@@ -653,13 +653,17 @@ exactly the mock-gated unit suites (per-action `coverage.dat`: `_unit_test` cove
 `manager.rs` 0/303, `test_lib` 124, `bdd` 258, combined 258 = the lossless union).
 
 The fix (three parts, all landed on this branch):
-- **A — unit tests link the mock variant.** `star-adventurer-gti`, `pa-falcon-rotator`,
-  and `dsd-fp2` now set `<svc>_unit_test`'s `crate = ":<svc>_lib_mock"` (was `:<svc>_lib`),
-  matching `cargo test --all-features` and the existing `rp_unit_test` →
-  `rp_lib_with_mock` precedent. The `_lib_mock` library already existed (the `_mock`
-  binary links it); the `mock` module is additive and every `not(feature = "mock")` block
-  lives in `main.rs` (outside the lib), so no test is lost, and `--combined_report=lcov`
-  unions by `SF:`line so the extra unit-test action cannot double-count a %. The
+- **A — run the mock-gated unit tests under Bazel.** `star-adventurer-gti`,
+  `pa-falcon-rotator`, and `dsd-fp2` now compile `<svc>_unit_test` with
+  `crate_features = ["mock"]` (keeping `crate = ":<svc>_lib"`), matching `cargo test
+  --all-features`. `crate_features` must be set on the `rust_test` itself —
+  `crate = ":<svc>_lib_mock"` does **not** inherit the library target's features
+  (verified: that form still cfg-excluded the suites and ran only the 168 plain tests,
+  `manager.rs` 0/303), so this mirrors the same package's `test_lib` target (which
+  already sets `crate_features = ["mock"]`), not `rp_lib_with_mock`. The `mock` module is
+  additive and every `not(feature = "mock")` block lives in `main.rs` (outside the lib),
+  so no test is lost, and `--combined_report=lcov` unions by `SF:`line so the extra
+  unit-test action cannot double-count a %. The
   `_unit_test` size was bumped small→medium for the added tests (coverage itself runs
   under the `coverage:coverage --test_timeout=900` cap). `qhy-focuser` / `ppba-driver`
   gate the mock module on `cfg(any(feature = "mock", test))`, so their non-mock unit tests

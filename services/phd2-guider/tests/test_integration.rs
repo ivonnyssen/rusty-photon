@@ -49,7 +49,7 @@ fn apply_child_coverage_profile(cmd: &mut Command) {
     if let Some(dir) = std::env::var_os("COVERAGE_DIR") {
         let mut path = PathBuf::from(&dir);
         // Absolutize so the child resolves it regardless of its own cwd (this
-        // test never chdir's, but be robust like bdd-infra's bdd_main!).
+        // test never chdirs, but be robust like bdd-infra's bdd_main!).
         if path.is_relative() {
             if let Ok(cwd) = std::env::current_dir() {
                 path = cwd.join(path);
