@@ -335,7 +335,7 @@ ASCOM discovery (see [Deferred](#deferred)).
       "ca_cert_path": null     // optional PEM CA for a TLS-enabled driver
     },
     "qhy-focuser": {
-      "base_url": "http://127.0.0.1:11121",
+      "base_url": "http://127.0.0.1:11113",
       "device_type": "focuser"
     }
   }
