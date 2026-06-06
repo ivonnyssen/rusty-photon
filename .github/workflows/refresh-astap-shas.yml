@@ -635,26 +635,19 @@ jobs:
               ``,
               `Workflow run: ${runUrl}`,
             ].join("\n");
-            // Dedupe like install-astap.yml's notify-on-failure: search
-            // open AND closed so a maintainer who closed a previous
-            // instance gets a re-open + comment, not a fresh duplicate.
-            // Per Copilot review.
+            // Search only OPEN issues: while a blocker is open each
+            // recurrence appends a comment; once it is closed the
+            // investigation is considered done, so a later rotation that
+            // re-breaks verification opens a fresh blocker rather than
+            // resurrecting the closed one.
             const existing = await github.paginate(github.rest.issues.listForRepo, {
               owner: context.repo.owner,
               repo: context.repo.repo,
-              state: 'all',
+              state: 'open',
               labels: 'astap-refresh-blocked',
             });
             const match = existing.find(i => i.title === title);
             if (match) {
-              if (match.state === 'closed') {
-                await github.rest.issues.update({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  issue_number: match.number,
-                  state: 'open',
-                });
-              }
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -684,29 +677,22 @@ jobs:
           script: |
             const allPassed = process.env.ALL_PASSED === 'true';
             const prUrl = process.env.PR_URL;
-            // Search open AND closed (state: 'all') so we stay coherent
-            // if a maintainer closed the tracking issue manually between
-            // the install-astap failure and this run. Reopen-then-comment
-            // mirrors install-astap.yml's own dedupe pattern.
-            // Per Copilot review.
+            // Search only OPEN issues. install-astap's notify-on-failure
+            // keeps at most one open tracking issue per failure mode, so an
+            // open match is the live issue to update. If it has already been
+            // closed (failure handled) we leave it closed and skip the
+            // comment rather than resurrecting it — the refresh PR stands on
+            // its own.
             const tracker = await github.paginate(github.rest.issues.listForRepo, {
               owner: context.repo.owner,
               repo: context.repo.repo,
-              state: 'all',
+              state: 'open',
               labels: 'install-astap-nightly',
             });
             const issue = tracker.find(i => i.title === 'nightly: install-astap smoke failing (likely upstream SHA rotation)');
             if (!issue) {
-              console.log('No install-astap tracking issue (open or closed) to comment on.');
+              console.log('No open install-astap tracking issue to comment on.');
               return;
-            }
-            if (issue.state === 'closed') {
-              await github.rest.issues.update({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: issue.number,
-                state: 'open',
-              });
             }
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const msg = allPassed

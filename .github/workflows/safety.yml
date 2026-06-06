@@ -87,6 +87,7 @@ jobs:
         with:
           script: |
             const title = `nightly: safety sanitizers failing`;
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const body = [
               `The nightly safety workflow failed on at least one sanitizer.`,
               ``,
@@ -95,37 +96,31 @@ jobs:
               `added or recently changed unsafe code. Inspect the failed job in the`,
               `linked run for the sanitizer report.`,
               ``,
-              `Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              `Run: ${runUrl}`,
               ``,
-              `This issue is opened automatically when the workflow fails on schedule.`,
-              `It will be updated (rather than re-opened) on subsequent failures so the`,
-              `notification cadence stays low. Close it once the underlying issue is`,
-              `resolved; the next failure will reopen.`,
+              `This issue was opened automatically by a scheduled run that`,
+              `failed. While it stays open, each subsequent scheduled failure`,
+              `is appended here as a comment linking its own run. Closing it`,
+              `marks the failure handled — it is never re-opened; the next`,
+              `scheduled failure opens a fresh issue instead.`,
             ].join("\n");
-            // Search both open AND closed so the body's "the next failure
-            // will reopen" promise is honored. Mirrors the install-astap.yml
-            // pattern.
+            // Search only OPEN issues. While a tracking issue is open each
+            // failure appends a comment; once it is closed the failure is
+            // considered handled, so the next scheduled failure opens a
+            // fresh issue rather than resurrecting the closed one.
             const existing = await github.paginate(github.rest.issues.listForRepo, {
               owner: context.repo.owner,
               repo: context.repo.repo,
-              state: "all",
+              state: "open",
               labels: "safety-nightly",
             });
             const match = existing.find(i => i.title === title);
             if (match) {
-              if (match.state === "closed") {
-                await github.rest.issues.update({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  issue_number: match.number,
-                  state: "open",
-                });
-              }
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: match.number,
-                body: `Failed again: run ${context.runId}`,
+                body: `Failed again — run: ${runUrl}`,
               });
             } else {
               await github.rest.issues.create({
