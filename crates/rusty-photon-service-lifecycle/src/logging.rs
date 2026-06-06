@@ -1,15 +1,25 @@
 //! Tracing/logging initialization shared by every Rusty Photon service binary.
 //!
-//! All service binaries log to **stderr**, never stdout. Stdout is reserved for
-//! the machine-readable `bound_addr=<host>:<port>` line that `bdd-infra`'s
-//! `ServiceHandle` parses to discover a test-spawned service's port (and, more
-//! generally, for any structured handshake a supervisor might read). Routing
-//! logs to stdout meant the BDD harness's stdout-drain task silently swallowed
-//! every line, and — because the drain's read end is closed during shutdown —
-//! produced a flood of `[tracing-subscriber] Unable to write an event ... Broken
-//! pipe` noise in CI. Stderr is the conventional place for diagnostics and is
-//! inherited by child processes by default, so logs flow to the same place as
-//! the test binary's own output without extra wiring.
+//! All service binaries log to **stderr**, never stdout, for two standing
+//! reasons:
+//!
+//! 1. Stdout is reserved for the machine-readable `bound_addr=<host>:<port>`
+//!    line that `bdd-infra`'s `ServiceHandle` parses to discover a test-spawned
+//!    service's port (and, more generally, for any structured handshake a
+//!    supervisor might read).
+//! 2. The BDD harness drains and *discards* a service's stdout, so anything
+//!    logged there is invisible during tests. Stderr is the conventional place
+//!    for diagnostics and is inherited by child processes by default, so logs
+//!    flow to the same destination as the test binary's own output without extra
+//!    wiring.
+//!
+//! Historically, logging to stdout also produced a flood of
+//! `[tracing-subscriber] Unable to write an event ... Broken pipe` noise in CI:
+//! the harness aborted its stdout-drain task before the child exited, closing
+//! the pipe's read end while the child was still writing shutdown-path logs.
+//! That harness defect has since been fixed (the drain stays open until the
+//! child exits), so stderr logging is no longer *required* to avoid the EPIPE —
+//! but it remains the right destination for reasons 1 and 2.
 //!
 //! Filtering follows `RUST_LOG` when set, otherwise falls back to the level the
 //! binary passes in (typically its `--log-level` flag, defaulting to `info`).

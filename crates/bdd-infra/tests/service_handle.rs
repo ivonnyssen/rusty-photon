@@ -174,14 +174,21 @@ async fn test_port_is_actually_listening() {
     handle.stop().await;
 }
 
-/// Read the broken-pipe probe marker, treating "file absent" as "no broken
-/// pipe observed". The probe (see `test_service`'s `--epipe-probe`) only writes
-/// the file if one of its stdout writes failed with `BrokenPipe`.
+/// Did the probe child record a broken stdout pipe? The probe (see
+/// `test_service`'s `--epipe-probe`) writes `EPIPE` to the marker only if one of
+/// its stdout writes failed with `BrokenPipe`.
+///
+/// The marker is a pre-created temp file, so it normally exists and is empty
+/// unless the probe wrote to it. We deliberately do *not* swallow arbitrary I/O
+/// errors: an absent marker is unambiguously "no broken pipe", but any other
+/// read failure is a test-infra problem and must fail loudly rather than pass.
 #[cfg(unix)]
 fn probe_observed_broken_pipe(marker: &std::path::Path) -> bool {
-    std::fs::read_to_string(marker)
-        .map(|s| !s.is_empty())
-        .unwrap_or(false)
+    match std::fs::read_to_string(marker) {
+        Ok(contents) => contents.contains("EPIPE"),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+        Err(e) => panic!("failed to read probe marker {}: {e}", marker.display()),
+    }
 }
 
 /// Regression guard for the stdout-drain shutdown race that flooded BDD/CI logs
