@@ -218,16 +218,22 @@ jobs:
         with:
           script: |
             const title = `nightly: plate-solver real-ASTAP smoke failing`;
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const body = [
               `The nightly cross-platform real-ASTAP smoke workflow failed.`,
               ``,
-              `Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              `Run: ${runUrl}`,
               ``,
-              `This issue is opened automatically when the workflow fails on schedule.`,
-              `It will be updated (rather than re-opened) on subsequent failures so the`,
-              `notification cadence stays low. Close it once the underlying issue is`,
-              `resolved; the next failure will reopen.`,
+              `This issue was opened automatically by a scheduled run that`,
+              `failed. While it stays open, each subsequent scheduled failure`,
+              `is appended here as a comment linking its own run. Closing it`,
+              `marks the failure handled — it is never re-opened; the next`,
+              `scheduled failure opens a fresh issue instead.`,
             ].join("\n");
+            // Search only OPEN issues. While a tracking issue is open each
+            // failure appends a comment; once it is closed the failure is
+            // considered handled, so the next scheduled failure opens a
+            // fresh issue rather than resurrecting the closed one.
             const existing = await github.paginate(github.rest.issues.listForRepo, {
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -240,7 +246,7 @@ jobs:
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: match.number,
-                body: `Failed again: run ${context.runId}`,
+                body: `Failed again — run: ${runUrl}`,
               });
             } else {
               await github.rest.issues.create({
