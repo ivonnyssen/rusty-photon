@@ -174,6 +174,71 @@ async fn test_port_is_actually_listening() {
     handle.stop().await;
 }
 
+/// Read the broken-pipe probe marker, treating "file absent" as "no broken
+/// pipe observed". The probe (see `test_service`'s `--epipe-probe`) only writes
+/// the file if one of its stdout writes failed with `BrokenPipe`.
+#[cfg(unix)]
+fn probe_observed_broken_pipe(marker: &std::path::Path) -> bool {
+    std::fs::read_to_string(marker)
+        .map(|s| !s.is_empty())
+        .unwrap_or(false)
+}
+
+/// Regression guard for the stdout-drain shutdown race that flooded BDD/CI logs
+/// with "[tracing-subscriber] Unable to write an event ... Broken pipe".
+///
+/// `stop()` must keep draining the child's stdout until the child has exited.
+/// The probe child (test_service `--epipe-probe`) installs a SIGTERM handler and
+/// keeps writing to stdout through its shutdown window; if `stop()` aborts the
+/// drain *before* the child exits (the old bug), those writes hit a broken pipe
+/// and the child records it. A correct `stop()` leaves the marker empty.
+///
+/// Unix-gated because the probe relies on a SIGTERM handler to keep writing
+/// during shutdown; multi-threaded to match the real `#[tokio::main]` BDD
+/// harness, where the aborted drain is dropped on another worker promptly.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_stop_does_not_break_child_stdout_pipe() {
+    init_test_binary_env();
+    let config = empty_config();
+    let marker = tempfile::NamedTempFile::new().unwrap();
+    let marker_path = marker.path().to_path_buf();
+
+    let mut handle = ServiceHandle::start_with_args(
+        "test-service",
+        &[
+            "--config",
+            config.path().to_str().unwrap(),
+            "--epipe-probe",
+            marker_path.to_str().unwrap(),
+        ],
+    )
+    .await;
+
+    // Let the probe reach steady state (the harness draining its stdout).
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    handle.stop().await;
+
+    // Allow any late probe write to land before we read the marker.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    assert!(
+        !probe_observed_broken_pipe(&marker_path),
+        "child saw a broken stdout pipe during stop() — the drain was aborted \
+         before the child exited (regressing the broken-pipe-log fix)"
+    );
+}
+
+// Note: the `Drop` path shares the same "don't abort the drain before the child
+// exits" invariant, and `Drop`'s no-abort logic is what enforces it there. We
+// deliberately do not add a `Drop` analogue of the probe test: on `Drop` the
+// child handle's `kill_on_drop(true)` SIGKILLs the child near-instantly, so the
+// probe's shutdown burst is cut off before it can deterministically observe the
+// broken pipe under the *old* ordering — such a test passes under both orderings
+// and would be a vacuous guard. `test_drop_cleans_up_process` covers `Drop`'s
+// process teardown; the `stop()` probe above guards the broken-pipe invariant.
+
 /// Graceful shutdown must complete well under the 5-second SIGKILL fallback
 /// timeout. If the shutdown signal is not delivered (e.g. a no-op
 /// `send_sigterm`), `stop()` would wait the full 5 seconds before hard-killing.
