@@ -26,13 +26,17 @@ this doc covers the crate's own design.
 - Cooperative-shutdown propagation: the handle is a
   `CancellationToken`-backed clone, so spawned subtasks observe the
   same cancellation as the main loop.
+- Install the shared tracing subscriber ([`init_tracing`]): logs go to
+  stderr (stdout is reserved for the `bound_addr=` handshake the BDD
+  harness parses), filtered by `RUST_LOG` when set, otherwise at a
+  caller-supplied fallback level. Idempotent. Every service binary calls
+  this once at startup so logging is configured identically everywhere.
 
 Out of scope:
 
-- Initializing `tracing` / logging. Services vary on log filters,
-  formats, and CLI flags; the runner does not own this.
 - Owning CLI argument parsing. Services keep `clap`; the runner takes
-  a service name and a closure.
+  a service name and a closure. (Services still own their `--log-level`
+  flag and pass its value to [`init_tracing`] as the fallback level.)
 - Defining what graceful shutdown means for any particular server.
   Services compose `shutdown.cancelled()` into their own server stop
   (a `tokio::select!` race, `axum::with_graceful_shutdown(...)`, or
@@ -45,7 +49,8 @@ Out of scope:
 
 ## Public API
 
-Three types. [`Shutdown`] is constructed only by the runner.
+Three types and one free function ([`init_tracing`]).
+[`Shutdown`] is constructed only by the runner.
 [`ReloadSignal`] has a public constructor so integration tests can
 drive a service's run loop with synthetic reload events, and so
 non-signal-driven reload sources (e.g. a file-watcher) can share the
@@ -65,6 +70,8 @@ Shutdown::is_cancelled() -> bool
 ReloadSignal::new()      -> ReloadSignal      // for tests / alt sources
 ReloadSignal::notify(&self)                   // wake one waiter
 ReloadSignal::recv(&self) -> impl Future<Output = ()> + '_
+
+init_tracing(default_level: tracing::Level)   // stderr + RUST_LOG/EnvFilter subscriber; idempotent
 ```
 
 The closure passed to `run` / `run_with_reload` is `FnOnce(...) -> Fut`
@@ -353,6 +360,7 @@ in the crate; the service binary just opts in.
 ```
 crates/rusty-photon-service-lifecycle/src/
 ├── lib.rs       # crate root: //! docs, module decls, re-exports
+├── logging.rs   # init_tracing — shared stderr + EnvFilter subscriber
 ├── shutdown.rs  # Shutdown — thin wrapper over CancellationToken
 ├── reload.rs    # ReloadSignal — thin wrapper over Arc<Notify>
 └── runner.rs    # ServiceRunner — builder + run/run_with_reload

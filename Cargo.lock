@@ -546,7 +546,6 @@ dependencies = [
  "tokio",
  "tokio-test",
  "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -3246,7 +3245,6 @@ dependencies = [
  "tokio",
  "tokio-test",
  "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -3298,7 +3296,6 @@ dependencies = [
  "tokio",
  "tokio-test",
  "tracing",
- "tracing-subscriber",
  "wcs",
 ]
 
@@ -4122,7 +4119,6 @@ dependencies = [
  "tokio",
  "tokio-test",
  "tracing",
- "tracing-subscriber",
  "uuid",
 ]
 
@@ -4504,6 +4500,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "tracing-subscriber",
  "windows-service",
 ]
 
@@ -4669,7 +4666,6 @@ dependencies = [
  "tower",
  "tower-http",
  "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -5790,7 +5786,6 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

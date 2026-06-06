@@ -315,9 +315,6 @@ impl ServiceHandle {
     ///
     /// Graceful shutdown allows the process to flush coverage data (profraw files).
     pub async fn stop(&mut self) {
-        if let Some(handle) = self.stdout_drain.take() {
-            handle.abort();
-        }
         if let Some(mut child) = self.child.take() {
             if let Some(pid) = child.id() {
                 send_sigterm(pid);
@@ -335,14 +332,46 @@ impl ServiceHandle {
                 let _ = child.wait().await;
             }
         }
+
+        // Stop draining stdout only *after* the child has exited. With the
+        // child's stdout write end now closed, the drain task observes EOF and
+        // finishes on its own, so we join it rather than aborting it.
+        //
+        // Aborting the drain *before* the child exits (the previous behaviour)
+        // closed the read end of the stdout pipe while the child was still
+        // running its SIGTERM shutdown path. Every shutdown-path log line the
+        // child then wrote to stdout hit a broken pipe (EPIPE); because the
+        // services build their subscriber with `tracing_subscriber::fmt()`
+        // (whose builder defaults `log_internal_errors = true`),
+        // tracing-subscriber echoed each failure as
+        // "[tracing-subscriber] Unable to write an event ... Broken pipe
+        // (os error 32)" to the inherited stderr, polluting the BDD/CI logs.
+        //
+        // The 1s cap + abort is a belt-and-braces guard against the join
+        // hanging; with the child already reaped it cannot itself break a pipe.
+        if let Some(mut handle) = self.stdout_drain.take() {
+            if tokio::time::timeout(Duration::from_secs(1), &mut handle)
+                .await
+                .is_err()
+            {
+                handle.abort();
+            }
+        }
     }
 }
 
 impl Drop for ServiceHandle {
     fn drop(&mut self) {
-        if let Some(handle) = self.stdout_drain.take() {
-            handle.abort();
-        }
+        // Request graceful shutdown, but deliberately do NOT abort the stdout
+        // drain task. Aborting closes the read end of the child's stdout pipe
+        // while the child is still alive, so the child's shutdown-path log
+        // writes hit a broken pipe and tracing-subscriber prints
+        // "[tracing-subscriber] Unable to write an event ... Broken pipe" to
+        // the inherited stderr, polluting test logs (see [`ServiceHandle::stop`]
+        // for the full chain). Dropping the `stdout_drain` JoinHandle along with
+        // the rest of the struct *detaches* the task rather than cancelling it,
+        // so the read end stays open until the child exits; `kill_on_drop` on
+        // the child handle guarantees that — and thus the drain's EOF — arrives.
         if let Some(ref mut child) = self.child {
             if let Some(pid) = child.id() {
                 send_sigterm(pid);

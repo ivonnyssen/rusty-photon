@@ -32,7 +32,6 @@ async-trait = { workspace = true }
 derive_more = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
 axum = { workspace = true }
 reqwest = { workspace = true }
 ndarray = { workspace = true }
@@ -49,6 +48,7 @@ base64 = { workspace = true }
 command = "cargo test -p sky-survey-camera --features conformu --test conformu_integration -- --nocapture"
 
 [dev-dependencies]
+tracing-subscriber = { workspace = true }
 bdd-infra = { workspace = true, features = ["conformu"] }
 cucumber = { workspace = true }
 tempfile = { workspace = true }

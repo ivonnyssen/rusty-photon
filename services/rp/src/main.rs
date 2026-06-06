@@ -1,9 +1,8 @@
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
-use rusty_photon_service_lifecycle::{ServiceRunner, Shutdown};
-use tracing::debug;
-use tracing_subscriber::EnvFilter;
+use rusty_photon_service_lifecycle::{init_tracing, ServiceRunner, Shutdown};
+use tracing::{debug, Level};
 
 #[derive(Parser)]
 #[command(name = "rp", about = "Rusty Photon - equipment gateway and event bus")]
@@ -16,8 +15,8 @@ struct Cli {
     config: Option<PathBuf>,
 
     /// Log level (trace, debug, info, warn, error)
-    #[arg(long, default_value = "info")]
-    log_level: String,
+    #[arg(long, default_value = "info", value_parser = clap::value_parser!(Level))]
+    log_level: Level,
 }
 
 #[derive(Subcommand)]
@@ -29,14 +28,14 @@ enum Commands {
         config: PathBuf,
 
         /// Log level (trace, debug, info, warn, error)
-        #[arg(long, default_value = "info")]
-        log_level: String,
+        #[arg(long, default_value = "info", value_parser = clap::value_parser!(Level))]
+        log_level: Level,
     },
     /// Hash a password for use in service auth configuration
     HashPassword {
         /// Log level (trace, debug, info, warn, error)
-        #[arg(long, default_value = "info")]
-        log_level: String,
+        #[arg(long, default_value = "info", value_parser = clap::value_parser!(Level))]
+        log_level: Level,
 
         /// Read password from stdin (no prompt, no confirmation)
         #[arg(long)]
@@ -81,8 +80,8 @@ enum Commands {
         staging: bool,
 
         /// Log level (trace, debug, info, warn, error)
-        #[arg(long, default_value = "info")]
-        log_level: String,
+        #[arg(long, default_value = "info", value_parser = clap::value_parser!(Level))]
+        log_level: Level,
     },
 }
 
@@ -91,11 +90,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match cli.command {
         Some(Commands::Serve { config, log_level }) => {
-            init_tracing(&log_level);
+            init_tracing(log_level);
             run_serve(config)
         }
         Some(Commands::HashPassword { log_level, stdin }) => {
-            init_tracing(&log_level);
+            init_tracing(log_level);
             rp::hash_password_cmd::run(stdin)
         }
         Some(Commands::InitTls {
@@ -110,7 +109,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             staging,
             log_level,
         }) => {
-            init_tracing(&log_level);
+            init_tracing(log_level);
             if acme {
                 let rt = tokio::runtime::Builder::new_multi_thread()
                     .enable_all()
@@ -136,29 +135,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let config = cli.config.ok_or(
                 "no subcommand given. Use `rp serve --config <path>` or `rp --config <path>`",
             )?;
-            init_tracing(&cli.log_level);
+            init_tracing(cli.log_level);
             run_serve(config)
         }
     }
-}
-
-fn init_tracing(log_level: &str) {
-    // Tracing goes to stderr, not stdout. rp's stdout is reserved for
-    // the `Bound rp server bound_addr=...` line that the BDD harness
-    // and ServiceHandle parse to discover the bound port; if tracing
-    // landed on stdout, the harness's drain task would silently
-    // swallow every log line (which is exactly what was happening
-    // before — rp's `error!()` and `info!()` from `connect_*` retry
-    // logging never reached CI logs). Stderr is also the conventional
-    // place for diagnostics, and a child process's stderr is
-    // inherited by default, so rp's logs flow to the same destination
-    // as the test binary's own output without any extra wiring.
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(log_level)),
-        )
-        .init();
 }
 
 fn run_serve(config_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {

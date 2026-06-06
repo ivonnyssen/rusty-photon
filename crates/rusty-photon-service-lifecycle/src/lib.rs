@@ -24,6 +24,9 @@
 //! * [`ReloadSignal`] — opt-in (via [`ServiceRunner::with_reload`]) reload
 //!   notifier, driven by `SIGHUP` on Unix or `ServiceControl::ParamChange` in
 //!   SCM mode. On Windows console mode it never fires.
+//! * [`init_tracing`] — installs the shared tracing subscriber: logs to stderr
+//!   (stdout is reserved for the `bound_addr=` handshake), filtered by `RUST_LOG`
+//!   or a fallback level. Every service binary calls this at startup.
 //!
 //! ## Minimal example
 //!
@@ -57,10 +60,12 @@
 
 #![deny(unsafe_code)]
 
+mod logging;
 mod reload;
 mod runner;
 mod shutdown;
 
+pub use logging::init_tracing;
 pub use reload::ReloadSignal;
 pub use runner::ServiceRunner;
 pub use shutdown::Shutdown;
