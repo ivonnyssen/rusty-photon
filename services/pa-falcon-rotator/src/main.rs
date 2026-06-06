@@ -51,9 +51,7 @@ fn parse_log_level(s: &str) -> Result<Level, String> {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
-    tracing_subscriber::fmt()
-        .with_max_level(args.log_level)
-        .init();
+    rusty_photon_service_lifecycle::init_tracing(args.log_level);
 
     debug!(
         "Parsed command line arguments: config={:?}, port={:?}, server_port={:?}, log_level={:?}",

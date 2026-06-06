@@ -22,7 +22,6 @@ tokio = { workspace = true }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
 clap = { workspace = true }
 rp-tls = { workspace = true }
 rusty-photon-config = { workspace = true }

@@ -2,8 +2,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use rusty_photon_service_lifecycle::ServiceRunner;
-use tracing::debug;
-use tracing_subscriber::EnvFilter;
+use tracing::{debug, Level};
 
 #[derive(Parser)]
 #[command(
@@ -24,18 +23,14 @@ struct Cli {
     bind_address: String,
 
     /// Log level (trace, debug, info, warn, error)
-    #[arg(long, default_value = "info")]
-    log_level: String,
+    #[arg(long, default_value = "info", value_parser = clap::value_parser!(Level))]
+    log_level: Level,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&cli.log_level)),
-        )
-        .init();
+    rusty_photon_service_lifecycle::init_tracing(cli.log_level);
 
     ServiceRunner::new("calibrator-flats").run(move |shutdown| async move {
         debug!(config_path = %cli.config.display(), "loading configuration");

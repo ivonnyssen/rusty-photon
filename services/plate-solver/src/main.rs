@@ -7,10 +7,10 @@
 
 use clap::Parser;
 use plate_solver::{load_config, ServerBuilder};
-use rusty_photon_service_lifecycle::ServiceRunner;
+use rusty_photon_service_lifecycle::{init_tracing, ServiceRunner};
 use std::path::PathBuf;
 use std::process::ExitCode;
-use tracing_subscriber::EnvFilter;
+use tracing::Level;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -22,17 +22,16 @@ struct Cli {
     /// Path to the JSON config file.
     #[arg(short, long)]
     config: PathBuf,
+
+    /// Log level (trace, debug, info, warn, error)
+    #[arg(long, default_value = "info", value_parser = clap::value_parser!(Level))]
+    log_level: Level,
 }
 
 fn main() -> ExitCode {
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .with_writer(std::io::stderr)
-        .try_init();
-
     let cli = Cli::parse();
+
+    init_tracing(cli.log_level);
 
     let config = match load_config(&cli.config) {
         Ok(c) => c,
