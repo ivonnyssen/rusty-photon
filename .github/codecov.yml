@@ -11,11 +11,19 @@ coverage:
         # Avoid false negatives
         threshold: 1%
 
-# Test files, mock binaries, and test helper binaries aren't important for coverage
+# Test files, mock binaries, test helper binaries, and examples aren't important
+# for coverage. Examples are built-but-never-run: `cargo build --all-targets`
+# (the Cargo coverage job) instruments services/rp/examples/*.rs but no test
+# executes them, so they would otherwise sit at 0% in the Cargo `rp` denominator
+# and drag that flag down — while the Bazel job's split_lcov routes them to `rp`
+# too. Ignoring `**/examples/**` drops them from BOTH reports symmetrically so
+# the cargo-vs-bazel per-package comparison is apples-to-apples. See
+# docs/plans/bazel-migration.md "Coverage under Bazel".
 ignore:
   - "tests"
   - "**/bin/mock_*.rs"
   - "**/bin/test_*.rs"
+  - "**/examples/**"
 
 # Make comments less noisy
 comment:

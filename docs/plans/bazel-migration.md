@@ -633,6 +633,92 @@ nothing.
 This supersedes the Phase 7 note that coverage stays a Cargo-only gate: coverage
 now has a Bazel shadow path, to be validated in CI before any cutover.
 
+**Residual gap characterized + closed (2026-06-04): mock-feature unit-test variant skew.**
+The `bazel < cargo` deltas that survived the export-object fix (star-adventurer-gti
+~78–85% vs ~95% cargo; smaller for dsd-fp2 / pa-falcon-rotator) were **not** a
+coverage-pipeline bug. A controlled diff settled it: on a pure leaf crate with no
+binary / BDD / features (`skywatcher-motor-protocol`), `cargo llvm-cov` and `bazel
+coverage` emit **bit-identical** lcov — same files, 311/332 lines on both sides — so
+instrumentation, `-ignore-filename-regex`, line counting, the `%8m` pool, and
+`split_lcov.py` routing are all at parity. The entire residual was real
+**undercoverage**: the Cargo coverage job runs `cargo test --all-features`, so each
+service's in-lib `#[cfg(all(test, feature = "mock"))] mod tests` suites compile and run
+— e.g. star-adventurer's `src/mount_device/tests.rs` (184 tests) densely covering
+`manager.rs` / `slew.rs` / `actions.rs` / `telescope.rs` / `inherent.rs` via the mock
+transport. Bazel's `<svc>_unit_test` linked the **non-mock** `:<svc>_lib`, so those
+suites were cfg-excluded and never ran; the combined report got those files only from
+`bdd` + `test_lib`. Measured on star-adventurer: cargo's unit tests *alone* cover 92.3%
+of `src`, while Bazel's whole combined report sat at 84.6% — the missing lines are
+exactly the mock-gated unit suites (per-action `coverage.dat`: `_unit_test` covered
+`manager.rs` 0/303, `test_lib` 124, `bdd` 258, combined 258 = the lossless union).
+
+The fix (three parts, all landed on this branch):
+- **A — run the mock-gated unit tests under Bazel.** `star-adventurer-gti`,
+  `pa-falcon-rotator`, and `dsd-fp2` now compile `<svc>_unit_test` with
+  `crate_features = ["mock"]` (keeping `crate = ":<svc>_lib"`), matching `cargo test
+  --all-features`. `crate_features` must be set on the `rust_test` itself —
+  `crate = ":<svc>_lib_mock"` does **not** inherit the library target's features
+  (verified: that form still cfg-excluded the suites and ran only the 168 plain tests,
+  `manager.rs` 0/303), so this mirrors the same package's `test_lib` target (which
+  already sets `crate_features = ["mock"]`), not `rp_lib_with_mock`. The `mock` module is
+  additive and every `not(feature = "mock")` block lives in `main.rs` (outside the lib),
+  so no test is lost, and `--combined_report=lcov` unions by `SF:`line so the extra
+  unit-test action cannot double-count a %. The
+  `_unit_test` size was bumped small→medium for the added tests (coverage itself runs
+  under the `coverage:coverage --test_timeout=900` cap). `qhy-focuser` / `ppba-driver`
+  gate the mock module on `cfg(any(feature = "mock", test))`, so their non-mock unit tests
+  already compiled those suites — never affected, unchanged. `sky-survey-camera` has no
+  `cfg(all(test, feature="mock"))` suites; `rp` / `sentinel` / `filemonitor` have no
+  `mock` feature at all — their (smaller) residual is binary-only / cross-spawn, not this.
+- **B — examples excluded symmetrically.** `**/examples/**` added to `.github/codecov.yml`
+  `ignore:`. `cargo build --all-targets` instruments `services/rp/examples/*.rs` (built,
+  never run → 0%) into cargo's `rp` denominator, and `split_lcov.py` would route them to
+  `rp` too; ignoring drops them from both reports so the per-package comparison is
+  apples-to-apples. (Net effect: raises cargo-`rp` slightly by removing dead 0% lines —
+  a fairness fix, not a gap closer.)
+- **C1 — phd2-guider subprocess coverage (correctness fix; phd2-guider was already at
+  parity).** `tests/test_integration.rs` spawned the `phd2-guider` CLI and `mock_phd2` with
+  raw `Command`s, so under `bazel coverage` each child inherited and overwrote the parent
+  test's `LLVM_PROFILE_FILE`. The spawn helpers now set a per-child
+  `LLVM_PROFILE_FILE=$COVERAGE_DIR/phd2-guider-%8m.profraw` when `COVERAGE_DIR` is set,
+  mirroring `bdd_infra::child_coverage_profile_var`, so the spawned CLI's exercise of the
+  **library** files (`client.rs`/`connection.rs`/`process.rs`, whose covmap is in both the
+  test binary and the spawned binary) is collected. Measured result: phd2-guider's
+  codecov-relevant coverage is **89.45% under Bazel vs 86.9% under cargo** — Bazel was
+  **already ≥ cargo**, so this is hygiene/consistency, not a gap closer. (Why ≥: see the
+  binary-only caveat below — the one file Bazel omits, `main.rs`, is *below* the lib average,
+  so omitting it inflates rather than deflates the Bazel number.)
+
+**KNOWN systemic residual — binary-only `main.rs` is not exported under Bazel coverage.**
+For every spawn-driven service (star-adventurer-gti, phd2-guider, …) `src/main.rs` is
+**absent** from the Bazel combined report, while cargo captures it (e.g. phd2-guider's
+284-line CLI `main.rs` at 86% under cargo). `main.rs` lives only in the spawned *binary*,
+not in the `rust_test` binary, and despite the `RUST_COVERAGE_EXTRA_OBJECTS` patch adding the
+binary as an `llvm-cov export -object`, the binary-only counters do not surface in CI-faithful
+runs (the earlier "filemonitor main.rs 100%" was a local spike that does not reproduce here —
+the covmap/profraw binding for an object whose source is in *no* other `-object` is the open
+question). Impact is **usually small and in Bazel's favour** (services keep logic in libs, so
+`main.rs` is thin — star-adventurer matched cargo to +0.04pp with `main.rs` absent on both-ish
+sides), but it is a real accuracy blind spot for a service whose CLI lives in `main.rs`
+(phd2-guider). Closing it is a separate rules_rust-collector investigation, out of scope here;
+the same-commit parity gate (above) will surface any service where it flips to bazel < cargo.
+
+Confirmed **NEUTRAL** (ruled out — do not chase): the `%8m` vs `%p-%16m` pool (lossless),
+doctests (none runnable), `build.rs` / `OUT_DIR` codegen (none in-workspace), benches
+(none), macro-generated `error.rs` (def-site spans, symmetric), `split_lcov` path routing,
+the `scm` / `hydrate` features (off on Linux/x86 both sides), `rp-plate-solver` mockall
+(its unit test already uses the `_with_mock` variant), and cargo-rail narrowing + Codecov
+carryforward (carryforward restores the correct full value; the only quantified table,
+Run #1 / PR #340, was an `infra=true` full-vs-full diff).
+
+**Cutover gate (Option E, not yet built).** Before flipping any `bazel-<pkg>` flag to
+replace `<pkg>`, add a CI step that computes the **same-commit** `|cargo-<pkg>% −
+bazel-<pkg>%|` (both jobs already upload against the PR head SHA) and warns above a small
+threshold (≈2–3pp, **not** 0 — some paths are legitimately unreachable under Bazel's
+behavioural-only model, e.g. `transport/udp.rs` exercised by neither suite). Cutover swaps
+the flag *source*, not the gate's union math, and `bazel-*` covers a subset of cargo lines,
+so the Codecov project status cannot regress on the swap.
+
 ## Bazel 9 upgrade (evaluated 2026-05-31)
 
 **Status of Bazel 9.** 9.0.0 LTS went GA 2026-01-20; **9.1.0 (2026-04-20) is the

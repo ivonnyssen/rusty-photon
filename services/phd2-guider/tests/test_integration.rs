@@ -29,6 +29,37 @@ fn get_available_port() -> u16 {
     listener.local_addr().unwrap().port()
 }
 
+/// Route a spawned child's coverage counters into the `bazel coverage` test
+/// action's `COVERAGE_DIR` (its own `%8m` online-merge pool) instead of letting
+/// the child inherit — and overwrite — the parent test's `LLVM_PROFILE_FILE`.
+///
+/// Without this the spawned `phd2-guider` CLI's `main.rs`/`cli.rs` counters are
+/// written to the parent's profraw path and lost, so the CLI subprocess tests
+/// contribute no coverage under Bazel even though the `test_integration`
+/// `RUST_COVERAGE_EXTRA_OBJECTS` env (BUILD.bazel) already lists the binary as
+/// an `llvm-cov export -object`. cargo-llvm-cov has no equivalent problem: it
+/// sets a shared `LLVM_PROFILE_FILE` (with `%p`/`%m`) inherited by the whole
+/// process tree and merges the entire target dir.
+///
+/// No-op unless `COVERAGE_DIR` is set, so cargo, `cargo llvm-cov` (which sets
+/// `LLVM_PROFILE_FILE`, not `COVERAGE_DIR`), and plain `bazel test` are
+/// untouched. Mirrors `bdd_infra`'s `child_coverage_profile_var`; `%8m` is an
+/// 8-file online-merge pool that bounds the profraw volume (see PR #342).
+fn apply_child_coverage_profile(cmd: &mut Command) {
+    if let Some(dir) = std::env::var_os("COVERAGE_DIR") {
+        let mut path = PathBuf::from(&dir);
+        // Absolutize so the child resolves it regardless of its own cwd (this
+        // test never chdirs, but be robust like bdd-infra's bdd_main!).
+        if path.is_relative() {
+            if let Ok(cwd) = std::env::current_dir() {
+                path = cwd.join(path);
+            }
+        }
+        path.push("phd2-guider-%8m.profraw");
+        cmd.env("LLVM_PROFILE_FILE", path);
+    }
+}
+
 /// Fixed port for error-path tests (exit_immediately, connection_timeout).
 /// These tests require that nothing is listening on the port, so they use a
 /// dedicated fixed port and serialize via ERROR_PATH_LOCK to prevent any
@@ -590,11 +621,10 @@ fn find_mock_phd2_binary() -> Option<PathBuf> {
 fn start_mock_phd2(port: u16) -> Option<Child> {
     let binary = find_mock_phd2_binary()?;
 
-    let child = Command::new(binary)
-        .arg("--port")
-        .arg(port.to_string())
-        .spawn()
-        .ok()?;
+    let mut cmd = Command::new(binary);
+    cmd.arg("--port").arg(port.to_string());
+    apply_child_coverage_profile(&mut cmd);
+    let child = cmd.spawn().ok()?;
 
     // Give the server time to start
     std::thread::sleep(Duration::from_millis(200));
@@ -618,13 +648,13 @@ fn spawn_mock_phd2_dynamic_port(
     mode: &str,
     stderr: Stdio,
 ) -> Option<(u16, Child)> {
-    let mut child = Command::new(binary.as_ref())
-        .env("MOCK_PHD2_PORT", "0")
+    let mut cmd = Command::new(binary.as_ref());
+    cmd.env("MOCK_PHD2_PORT", "0")
         .env("MOCK_PHD2_MODE", mode)
         .stdout(Stdio::piped())
-        .stderr(stderr)
-        .spawn()
-        .ok()?;
+        .stderr(stderr);
+    apply_child_coverage_profile(&mut cmd);
+    let mut child = cmd.spawn().ok()?;
 
     let stdout = child.stdout.take()?;
     let port = BufReader::new(stdout).lines().find_map(|line| {
@@ -1732,6 +1762,17 @@ fn phd2_guider_bin() -> String {
         .expect("PHD2_GUIDER_BINARY (Bazel) or CARGO_BIN_EXE_phd2-guider (cargo) must be set")
 }
 
+/// Build a `Command` for the phd2-guider CLI binary with the per-child coverage
+/// profile already applied (see [`apply_child_coverage_profile`]), so every CLI
+/// subprocess this test spawns has its `main.rs`/`cli.rs` coverage collected
+/// under `bazel coverage`. Use this instead of `Command::new(phd2_guider_bin())`.
+fn phd2_guider_command() -> Command {
+    let bin = phd2_guider_bin();
+    let mut cmd = Command::new(bin);
+    apply_child_coverage_profile(&mut cmd);
+    cmd
+}
+
 /// Spawn the mock_phd2 server with a specific mode.
 ///
 /// Delegates to [`spawn_mock_phd2_dynamic_port`] for the actual spawn-and-parse;
@@ -1761,7 +1802,7 @@ fn run_cli(args: &[&str], port: u16) -> Output {
 
 /// Run the phd2-guider CLI with a custom timeout
 fn run_cli_with_timeout(args: &[&str], port: u16, timeout: Duration) -> Output {
-    let mut cmd = Command::new(phd2_guider_bin());
+    let mut cmd = phd2_guider_command();
     cmd.args(["--port", &port.to_string()])
         .args(args)
         .stdout(Stdio::piped())
@@ -1793,7 +1834,7 @@ fn run_cli_with_timeout(args: &[&str], port: u16, timeout: Duration) -> Output {
 
 /// Run the CLI without connecting to any server (for argument parsing tests)
 fn run_cli_no_server(args: &[&str]) -> Output {
-    Command::new(phd2_guider_bin())
+    phd2_guider_command()
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -2272,7 +2313,7 @@ fn test_custom_host_port() {
     let (_server, port) = spawn_mock_server();
 
     // Run CLI directly without using run_cli helper to test explicit --host and --port
-    let output = Command::new(phd2_guider_bin())
+    let output = phd2_guider_command()
         .args(["--host", "127.0.0.1", "--port", &port.to_string(), "status"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -2352,7 +2393,7 @@ fn test_config_file_option() {
     let config_path = temp_dir.join("test_phd2_config.json");
     std::fs::write(&config_path, config_content).expect("Failed to write config file");
 
-    let output = Command::new(phd2_guider_bin())
+    let output = phd2_guider_command()
         .args(["--config", config_path.to_str().unwrap(), "status"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -2402,7 +2443,7 @@ fn test_monitor_receives_version_event() {
     let (_server, port) = spawn_mock_server();
 
     // Start monitor in background and kill it after a short time
-    let mut child = Command::new(phd2_guider_bin())
+    let mut child = phd2_guider_command()
         .args(["--port", &port.to_string(), "monitor"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -2486,7 +2527,7 @@ fn test_monitor_shuts_down_on_sigterm() {
     // phd2-guider monitor logs every PHD2 event — an undrained piped
     // stream can fill the OS pipe buffer and deadlock the child. Same
     // pattern as spawn_mock_phd2_dynamic_port's default in this file.
-    let mut child = Command::new(phd2_guider_bin())
+    let mut child = phd2_guider_command()
         .args(["--port", &port.to_string(), "monitor"])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
