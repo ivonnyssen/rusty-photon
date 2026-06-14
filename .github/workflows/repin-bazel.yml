@@ -1,0 +1,90 @@
+# Auto-repin the Bazel crate index on Dependabot PRs.
+#
+# Dependabot bumps Cargo.toml + Cargo.lock but never touches
+# MODULE.bazel.lock, so the Bazel crate_universe index (which reads
+# Cargo.lock via `crate.from_cargo`) drifts stale on every cargo update
+# (see CLAUDE.md rule 10 + docs/plans/bazel-migration.md). This job runs the
+# repin on the PR branch and pushes the refreshed lock back, so the author
+# never has to remember the manual `CARGO_BAZEL_REPIN=1 bazel mod tidy` dance.
+#
+# Scope: Dependabot cargo PRs only. The push uses the default GITHUB_TOKEN,
+# whose commits intentionally do NOT re-trigger workflows (GitHub loop
+# prevention). That means the non-required `bazel`/`parity` shadow jobs will
+# not re-run on the repinned commit — so this job validates the refreshed lock
+# in-place with `bazel build --nobuild //... --lockfile_mode=error` before
+# pushing. The repin only rewrites MODULE.bazel.lock (nothing Cargo builds),
+# so the required `coverage` check from the pre-repin commit stays valid.
+permissions:
+  contents: write
+on:
+  pull_request:
+    paths:
+      - "Cargo.lock"
+      - "**/Cargo.toml"
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+name: repin-bazel
+
+jobs:
+  repin:
+    # Only Dependabot PRs. Other PRs that change deps are expected to repin by
+    # hand (rule 10); the `parity`/`bazel` shadow jobs surface any miss there.
+    if: github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    name: repin MODULE.bazel.lock
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # Check out the actual PR head branch (not the detached merge ref) with
+      # persisted credentials so the repin commit can be pushed back to it.
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.head_ref }}
+
+      - name: Install lld
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq lld >/dev/null
+
+      - name: Setup bazelisk
+        uses: bazelbuild/setup-bazelisk@v3
+        with:
+          bazelisk-version: 1.28.1
+
+      # CARGO_BAZEL_REPIN=1 forces crate_universe to re-resolve against the
+      # current Cargo.lock; the second un-forced run resets the lock's recorded
+      # CARGO_BAZEL_REPIN fingerprint back to null so the committed lock stays
+      # stable on later plain `bazel` runs (see docs/plans/bazel-migration.md).
+      - name: Repin crate index
+        run: |
+          CARGO_BAZEL_REPIN=1 bazel mod tidy
+          bazel mod tidy
+
+      - name: Skip if already in sync
+        id: changed
+        run: |
+          if git diff --quiet -- MODULE.bazel.lock; then
+            echo "MODULE.bazel.lock already in sync; nothing to push."
+            echo "dirty=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "dirty=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Validate the refreshed lock resolves the full target graph before
+      # pushing. --lockfile_mode=error fails if the lock is stale; --nobuild
+      # skips compilation. Reads the public remote cache anonymously (no write).
+      - name: Validate lock resolves
+        if: steps.changed.outputs.dirty == 'true'
+        run: |
+          bazel build --nobuild --config=ci --config=remote-cache \
+            --remote_upload_local_results=false \
+            --lockfile_mode=error //...
+
+      - name: Commit and push repin
+        if: steps.changed.outputs.dirty == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add MODULE.bazel.lock
+          git commit -m "chore(bazel): repin MODULE.bazel.lock for ${{ github.head_ref }}"
+          git push origin HEAD:${{ github.head_ref }}
