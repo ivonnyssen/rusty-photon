@@ -11,7 +11,7 @@ inputs:
   version:
     description: OmniSim release version
     required: false
-    default: "v0.5.0-326.3"
+    default: "v0.5.0-326.4"
 
 runs:
   using: composite
@@ -19,13 +19,17 @@ runs:
     # Per-OS table. SHA-256 values are pinned against the OmniSim
     # release assets named below. They currently point at the patched
     # fork ivonnyssen/ASCOM.Alpaca.Simulators (default `repo` input,
-    # tag v0.5.0-326.3), which carries the issue #326 TelescopeHardware
-    # locking fix (ivonnyssen/rusty-photon#326) — 326.1 locked the
-    # slew-engine writers + IsSlewing/RA/Dec readers; 326.2 adds the
-    # AtPark/SlewState readers (closes the park-poll hang); 326.3 disposes
-    # the prior slew timer on Init() (was leaking one live timer per
-    # per-scenario reset) and resets the slew state under hardwareLock
-    # (closes the center_on_target IsSlewing wedge). To revert to upstream,
+    # tag v0.5.0-326.4). The 326.x series fixes TelescopeHardware slew
+    # bugs behind the center_on_target hang/flake (ivonnyssen/rusty-photon
+    # #326, #319): 326.1 locked the slew-engine writers + IsSlewing/RA/Dec
+    # readers; 326.2 adds the AtPark/SlewState readers (closes the park-poll
+    # hang); 326.3 disposes the prior slew timer on Init() (was leaking one
+    # live timer on each per-scenario reset) and resets the slew state under
+    # hardwareLock; 326.4 closes the center_on_target IsSlewing wedge proper
+    # (issue #319) — a GEM goto whose short-path rotation crossed the
+    # hour-angle limit pinned IsSlewing=true forever; DoSlew now takes the
+    # limit-avoiding rotation to the same target (pier side unchanged), plus
+    # a no-progress guard. ConformU-clean vs upstream. To revert to upstream,
     # set `repo` to ASCOMInitiative/ASCOM.Alpaca.Simulators and `version`
     # back to v0.5.0, then refresh every SHA below. Bumping either input
     # requires refreshing the SHAs — the verify step fails closed on any
@@ -37,23 +41,23 @@ runs:
         case "${{ runner.os }}-${{ runner.arch }}" in
           Linux-X64)
             ASSET="ascom.alpaca.simulators.linux-x64.tar.xz"
-            SHA256="3883f928c6ef935775dca114347ead573ae0f1e49a6c97ddebbabc51f5e84974"
+            SHA256="74d96ae5b1c41f4eae27336c5dafc47e8264939ce8946f2178949eb3fcbf0153"
             ;;
           Linux-ARM64)
             ASSET="ascom.alpaca.simulators.linux-aarch64.tar.xz"
-            SHA256="04d49b455bfaac0c2c2e2c2e1b84aea207a6eca6bb4cf31e748fbd27e86dfe7a"
+            SHA256="5218f57038cc520139b63454265eb53f6ecbbb7b8cee9374ad74dd759af48e30"
             ;;
           macOS-ARM64)
             ASSET="ascom.alpaca.simulators.macos-arm64.zip"
-            SHA256="100a972050544e0b8852752f2e863d4436b4c2fae95b7bc8a00258e181d09adb"
+            SHA256="54c0d8aaf18222f572e348fc36addc884013a5ab734ace1f3c475b9603c57ee5"
             ;;
           macOS-X64)
             ASSET="ascom.alpaca.simulators.macos-x64.zip"
-            SHA256="d7b4056e34867bb3b5e1a47ab05b57942ce3c5bf672b2518b3952bb12b3f6ea6"
+            SHA256="1af188a340dfc46f0d86391af67007202a47e377b2eac0d21d0b7b26b1234336"
             ;;
           Windows-X64)
             ASSET="ascom.alpaca.simulators.windows-x64.zip"
-            SHA256="78cea87a4d2cc3f8eef10281361e108b70206f852b3b80b29996929d3ebbd067"
+            SHA256="4aacde332d3c92ddd27924d0609d50bde020e1294d14ec6f4844a87df0a9d938"
             ;;
           *)
             echo "::error::Unsupported platform: ${{ runner.os }}-${{ runner.arch }}"
