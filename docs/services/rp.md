@@ -3440,8 +3440,8 @@ a build of upstream `v0.5.0` plus a series of `TelescopeHardware` fixes
 for the `center_on_target` slew-state hang/flake (issues #326, #319):
 326.1/.2 put the slew-engine writers and the
 `IsSlewing`/RA/Dec/`AtPark`/`SlewState` readers under `hardwareLock`;
-326.3 disposes the per-`Init()` slew timer (it leaked one live timer per
-per-scenario "restart to clean state" reset, accumulating tick sources
+326.3 disposes the per-`Init()` slew timer (it leaked one live timer on
+each per-scenario "restart to clean state" reset, accumulating tick sources
 that raced the single static slew engine) and resets the slew state —
 including the `slewing` flag — under `hardwareLock`. Those addressed the
 locking/leak races but **not** the underlying wedge: 326.4 fixes it
@@ -3456,8 +3456,10 @@ rotation to the *same* target (pier side unchanged, so ConformU stays
 clean) and adds a no-progress guard. The action's `repo`
 and `version` inputs revert to upstream
 [`v0.5.0`](https://github.com/ASCOMInitiative/ASCOM.Alpaca.Simulators/releases/tag/v0.5.0)
-in one line once the fix lands upstream. For local runs upstream `v0.5.0`
-is fine unless you're specifically reproducing #326.
+in one line once the fix lands upstream. For local runs, use the pinned
+fork as well — upstream `v0.5.0` still carries both the #326 races and
+the sidereal-time-gated #319 wedge, so it can hang `center_on_target`
+intermittently and is not recommended for local BDD runs.
 
 #### Graceful Shutdown and Coverage
 
