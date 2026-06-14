@@ -88,6 +88,11 @@ mockall = "0.14.0"
 parking_lot = "0.12.5"
 tokio-serial = "5.4.5"
 ascom-alpaca = { git = "https://github.com/ivonnyssen/ascom-alpaca-rs.git", branch = "integration", default-features = false }
+# ZWO ASI camera + EFW filter-wheel FFI (safe wrapper over `libzwo-sys`), for the
+# `zwo-camera` service. Lockstep dev pin to the author-maintained repo; swap to a
+# crates.io `= "=0.1.x"` once published (see docs/plans/zwo-driver.md). Unused
+# until a member crate consumes it, so not yet in Cargo.lock (no Bazel repin yet).
+zwo-rs = { git = "https://github.com/ivonnyssen/zwo-rs", rev = "1e978c461e52cd786b15d33708fceda170b23524" }
 axum = "0.8"
 tower = "0.5"
 reqwest = { version = "0.13.4", features = ["form", "json"] }

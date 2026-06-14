@@ -2,11 +2,17 @@
 
 ## Status
 
-**Draft — design/planning (pre-implementation).** No code yet; this plan is the
-agreed decision record that will drive `docs/services/zwo-camera.md` (the service
-design doc), the BDD scenarios, and the implementation, per the
-design→BDD→implementation flow in
-[`docs/skills/development-workflow.md`](../skills/development-workflow.md).
+**Design/planning — FFI crates stood up; `zwo-camera` service pre-implementation.**
+The `zwo-rs` + `libzwo-sys` FFI crates now exist as a standalone repo
+([github.com/ivonnyssen/zwo-rs](https://github.com/ivonnyssen/zwo-rs), MIT/Apache-2.0):
+a `bindgen` FFI skeleton that generates and links the ZWO SDK with green CI
+(`check` + `test` on Linux x86_64; built and tested locally on aarch64). The
+rusty-photon side has **no code yet** — this plan remains the agreed decision
+record that will drive `docs/services/zwo-camera.md` (the service design doc), the
+BDD scenarios, and the implementation, per the design→BDD→implementation flow in
+[`docs/skills/development-workflow.md`](../skills/development-workflow.md). The
+workspace now pins the FFI crate at the lockstep rev (see *Monorepo integration
+recipe*).
 
 It is the ZWO analogue of the in-design
 [`qhy-camera`](../services/qhy-camera.md) service. Where `qhy-camera` consumes the
@@ -152,7 +158,7 @@ EFW → `IFilterWheelV2`: `EFWGetNum → EFWGetID → EFWOpen → EFWGetProperty
 | **`simulation` feature** | In `zwo-rs`, covering **camera + EFW** (mirrors `qhyccd-rs`'s sim; fabricates frames + EFW position/moving). |
 | **Canonical home** | Each crate is its own repo, published to crates.io. **Not** vendored into the monorepo tree, **not** a git submodule. |
 | **SDK delivery / link** | System-installed; `libzwo-sys` `build.rs` links **unconditionally** (`ASICamera2` + `EFWFilter` + `dylib=usb-1.0`), mirroring `libqhyccd-sys`. `simulation` removes the camera, **not** the link. |
-| **Cargo wiring** | Declared once in `[workspace.dependencies]`, per-service `{ workspace = true }`. **Lockstep dev:** `zwo-rs = { git = "…/zwo-rs", rev = "<sha>" }` → swap to `= "=0.1.0"` before the PR merges. Local edit loop: uncommitted `.cargo/config.toml` `paths = ["../zwo-rs"]`. |
+| **Cargo wiring** | Declared once in `[workspace.dependencies]`, per-service `{ workspace = true }`. **Lockstep dev:** `zwo-rs = { git = "https://github.com/ivonnyssen/zwo-rs", rev = "1e978c4" }` → swap to `= "=0.1.0"` before the PR merges. Local edit loop: uncommitted `.cargo/config.toml` `paths = ["../zwo-rs"]`. |
 | **Bazel wiring** | `@cr` `from_cargo` picks up the git dep automatically (the `ascom-alpaca` git dep already does this). Tag `zwo-camera` `requires-cargo` first → later a `crate.annotation` on `libzwo-sys` for the native link. SDK blob on the **public** R2 cache (MIT permits). Repin-twice (Rule 10) on every rev/version change. |
 | **Service shape** | One combined `zwo-camera` (Camera + FilterWheel), enumerate-all, port **`11122`** (11121 is `qhy-camera`). |
 | **Device identity** | `ASIGetSerialNumber` (open briefly at enumeration → close) → fall back to `ASIGetID` → else refuse + `warn!`. Serial-derived UniqueID; no `materialize_identity`, no `unique_id` config field (follows `qhy-camera`). |
@@ -169,7 +175,7 @@ published crate repos. Hence: **consume as external deps**, not as members.
 
 ```toml
 # workspace Cargo.toml — [workspace.dependencies], declared once
-zwo-rs = { git = "https://github.com/ivonnyssen/zwo-rs", rev = "<sha>" }  # lockstep
+zwo-rs = { git = "https://github.com/ivonnyssen/zwo-rs", rev = "1e978c461e52cd786b15d33708fceda170b23524" }  # lockstep
 # zwo-rs = "=0.1.0"   # ← swap in before the PR merges
 ```
 ```toml
@@ -217,11 +223,15 @@ The crate is the long pole (~40–50% of effort) and holds the real unknowns
 `crate.annotation`). Once `simulation` works, the driver builds entirely against
 it, leaning on the `sky-survey-camera` + `qhy-camera` scaffolding.
 
-- **Phase A — `libzwo-sys`:** bindgen over `ASICamera2.h` + `EFW_filter.h`;
-  `build.rs` unconditional system-link (mirror `libqhyccd-sys`). Long pole: green
-  link on x86_64 + Pi5 aarch64 + macOS arm64.
-- **Phase B — `zwo-rs`:** safe handles/enums + error mapping + the `simulation`
-  backend (camera frames + EFW position/moving). Publish 0.1.0.
+- **Phase A — `libzwo-sys`:** ✅ *skeleton stood up* — `bindgen` over `ASICamera2.h`
+  + `EFW_filter.h` + `EAF_focuser.h` (parsed as C++ for the bare `bool`),
+  `build.rs` unconditional system-link of `ASICamera2` + `EFWFilter` (+ `usb-1.0`,
+  `stdc++`/`c++`, `udev`/IOKit; mirror `libqhyccd-sys`). Green `check` + `test` on
+  CI (Linux x86_64) and built + tested locally on aarch64. *Remaining (long pole):*
+  confirm green link on Pi5 aarch64 CI + macOS arm64.
+- **Phase B — `zwo-rs`:** ⚙️ *skeleton stood up* — safe `Sdk`/`Error` surface +
+  `simulation`-feature stub. *Remaining:* real safe handles/enums + error mapping +
+  the `simulation` backend (camera frames + EFW position/moving); publish 0.1.0.
 - **Phase C — Track A:** bare `zwo-camera` serving an empty/sim Camera on `:11122`;
   prove build/link, CI SDK provisioning, Pi5 aarch64, Bazel `requires-cargo`,
   repin-twice — *before* device-trait work.
