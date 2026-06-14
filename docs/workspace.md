@@ -49,6 +49,7 @@ belong in any single service design doc.
 | [bazel-migration.md](plans/bazel-migration.md) | Bazel build alongside Cargo (shadow mode) |
 | [filemonitor-packaging.md](plans/filemonitor-packaging.md) | Filemonitor OS packaging |
 | [i18n.md](plans/i18n.md) | Workspace internationalization: scope, tech-stack, and translation-sourcing options |
+| [ui-testing.md](plans/ui-testing.md) | ui-htmx UI-behavior testing strategy: BDD-embedded `scraper` DOM assertions + cross-OS `insta` snapshots + an advisory `thirtyfour` browser layer, with an anticipatory spike plan; Bazel-primary aware; Gherkin stays the source of truth |
 | [i18n-cli-spike.md](plans/archive/i18n-cli-spike.md) | Tech spike landing Fluent + `i18n-embed` behind `ppba-driver`'s clap CLI (en + de, archived 2026-05-24) |
 | [plate-solver.md](plans/archive/plate-solver.md) | plate-solver rp-managed service implementation (ADR-005 sequencing, archived 2026-05-15) |
 | [pa-falcon-rotator-implementation.md](plans/archive/pa-falcon-rotator-implementation.md) | pa-falcon-rotator Phase 2 (BDD scaffold) + Phase 3 (Rotator + Status Switch implementation, archived 2026-05-18) |
