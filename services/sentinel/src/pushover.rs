@@ -23,6 +23,9 @@ pub struct PushoverNotifier {
     default_priority: i8,
     #[debug(skip)]
     default_sound: String,
+    /// API endpoint to POST to. Defaults to [`PUSHOVER_API_URL`]; overridden
+    /// by the notifier config's `api_url` (stub server in tests, self-hosted relay).
+    endpoint: String,
     #[debug(skip)]
     http: Arc<dyn HttpClient>,
 }
@@ -35,9 +38,26 @@ impl PushoverNotifier {
             default_title,
             default_priority,
             default_sound,
+            api_url,
         } = config;
 
-        tracing::debug!("Created PushoverNotifier with title '{}'", default_title);
+        // A blank or whitespace-only override is a misconfiguration; treat it as
+        // unset and fall back to the public endpoint rather than POSTing to an
+        // empty URL (mirrors how empty env-var secrets are ignored in config.rs).
+        let endpoint = match api_url.as_deref().map(str::trim) {
+            Some(url) if !url.is_empty() => url.to_string(),
+            Some(_) => {
+                tracing::debug!("Pushover api_url is blank; using default endpoint");
+                PUSHOVER_API_URL.to_string()
+            }
+            None => PUSHOVER_API_URL.to_string(),
+        };
+
+        tracing::debug!(
+            "Created PushoverNotifier with title '{}' targeting {}",
+            default_title,
+            endpoint
+        );
 
         Self {
             api_token: api_token.clone(),
@@ -45,6 +65,7 @@ impl PushoverNotifier {
             default_title: default_title.clone(),
             default_priority: *default_priority,
             default_sound: default_sound.clone(),
+            endpoint,
             http,
         }
     }
@@ -85,7 +106,7 @@ impl Notifier for PushoverNotifier {
             priority
         );
 
-        let response = self.http.post_form(PUSHOVER_API_URL, &params).await?;
+        let response = self.http.post_form(&self.endpoint, &params).await?;
 
         if response.status != 200 {
             return Err(crate::SentinelError::Notifier(format!(
@@ -106,14 +127,36 @@ mod tests {
     use super::*;
     use crate::io::{HttpResponse, MockHttpClient};
 
-    fn test_config() -> NotifierConfig {
+    fn config_with_url(api_url: Option<&str>) -> NotifierConfig {
         NotifierConfig::Pushover {
             api_token: "test-token".to_string(),
             user_key: "test-user".to_string(),
             default_title: "Test Alert".to_string(),
             default_priority: 0,
             default_sound: "pushover".to_string(),
+            api_url: api_url.map(str::to_string),
         }
+    }
+
+    fn test_config() -> NotifierConfig {
+        config_with_url(None)
+    }
+
+    /// A mock that asserts `post_form` is called with exactly `expected_url` and
+    /// returns a 200, so the only thing under test is which endpoint is used.
+    fn mock_expecting_url(expected_url: &'static str) -> MockHttpClient {
+        let mut mock = MockHttpClient::new();
+        mock.expect_post_form()
+            .withf(move |url, _params| url == expected_url)
+            .returning(|_, _| {
+                Box::pin(async {
+                    Ok(HttpResponse {
+                        status: 200,
+                        body: r#"{"status":1}"#.to_string(),
+                    })
+                })
+            });
+        mock
     }
 
     fn test_notification() -> Notification {
@@ -148,6 +191,31 @@ mod tests {
             });
 
         let notifier = PushoverNotifier::new(&test_config(), Arc::new(mock));
+        notifier.notify(&test_notification()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn posts_to_configured_api_url_override() {
+        let mock = mock_expecting_url("https://relay.example/1/messages.json");
+        let config = config_with_url(Some("https://relay.example/1/messages.json"));
+        let notifier = PushoverNotifier::new(&config, Arc::new(mock));
+        notifier.notify(&test_notification()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn blank_api_url_falls_back_to_default_endpoint() {
+        let mock = mock_expecting_url(PUSHOVER_API_URL);
+        // Whitespace-only override must be ignored, not POSTed to verbatim.
+        let config = config_with_url(Some("   "));
+        let notifier = PushoverNotifier::new(&config, Arc::new(mock));
+        notifier.notify(&test_notification()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn api_url_override_is_trimmed() {
+        let mock = mock_expecting_url("https://relay.example/msg");
+        let config = config_with_url(Some("  https://relay.example/msg  "));
+        let notifier = PushoverNotifier::new(&config, Arc::new(mock));
         notifier.notify(&test_notification()).await.unwrap();
     }
 

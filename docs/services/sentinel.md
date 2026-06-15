@@ -63,7 +63,10 @@ See `examples/config.json` for a complete example.
 
 ### Notifier Types
 
-- `pushover` — Sends push notifications via the Pushover API
+- `pushover` — Sends push notifications via the Pushover API. Accepts an
+  optional `api_url` field that overrides the endpoint
+  (`https://api.pushover.net/1/messages.json` by default); set it to point at a
+  self-hosted Pushover-compatible relay, or at a local stub in tests.
 
 ### Environment Variable Overrides
 

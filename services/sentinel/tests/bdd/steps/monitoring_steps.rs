@@ -83,36 +83,29 @@ fn file_changes(world: &mut SentinelWorld, content: String) {
     std::fs::write(path, content).expect("failed to write to temp file");
 }
 
-#[when("I wait for the state to change")]
-async fn wait_for_state_change(world: &mut SentinelWorld) {
-    world.wait_for_state_change().await;
-}
-
 // --- Then steps ---
 
 #[then(expr = "the dashboard status should show {string} for {string}")]
 async fn dashboard_status_shows(world: &mut SentinelWorld, expected_state: String, name: String) {
-    let statuses = world.get_status().await;
-    let monitor = statuses
-        .iter()
-        .find(|m| m["name"].as_str() == Some(&name))
-        .unwrap_or_else(|| panic!("Monitor '{}' not found in status response", name));
-    let state = monitor["state"]
-        .as_str()
-        .expect("monitor has no 'state' field");
+    let state = world.wait_for_status(&name, &expected_state).await;
     assert_eq!(
-        state, expected_state,
-        "Expected '{}' to be in state '{}', but got '{}'",
-        name, expected_state, state
+        state.as_deref(),
+        Some(expected_state.as_str()),
+        "Expected '{}' to reach state '{}', but last observed {:?}",
+        name,
+        expected_state,
+        state
     );
 }
 
 #[then(expr = "the dashboard history should contain a record for {string}")]
 async fn dashboard_history_contains(world: &mut SentinelWorld, monitor_name: String) {
-    let history = world.get_history().await;
+    let history = world
+        .wait_for_history(|h| h["monitor_name"].as_str() == Some(monitor_name.as_str()))
+        .await;
     let found = history
         .iter()
-        .any(|h| h["monitor_name"].as_str() == Some(&monitor_name));
+        .any(|h| h["monitor_name"].as_str() == Some(monitor_name.as_str()));
     assert!(
         found,
         "Expected notification history to contain record for '{}', but it didn't. History: {:?}",
@@ -122,7 +115,14 @@ async fn dashboard_history_contains(world: &mut SentinelWorld, monitor_name: Str
 
 #[then(expr = "the history record message should contain {string}")]
 async fn history_record_message_contains(world: &mut SentinelWorld, expected: String) {
-    let history = world.get_history().await;
+    let history = world
+        .wait_for_history(|h| {
+            h["message"]
+                .as_str()
+                .map(|m| m.contains(&expected))
+                .unwrap_or(false)
+        })
+        .await;
     let found = history.iter().any(|h| {
         h["message"]
             .as_str()
