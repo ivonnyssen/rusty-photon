@@ -1,4 +1,4 @@
-@wip @serial
+@serial
 Feature: Sensor geometry and type
   Once connected, a camera reports its sensor geometry from the cached CCD
   info (G1): CameraXSize / CameraYSize in pixels and PixelSizeX / PixelSizeY

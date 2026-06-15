@@ -1,4 +1,4 @@
-@wip @serial
+@serial
 Feature: Filter wheel
   When filterwheel.enabled is set, qhy-camera registers each discovered CFW
   as an ASCOM FilterWheel device alongside the cameras. Names lists the

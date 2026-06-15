@@ -1,4 +1,4 @@
-@wip @serial
+@serial
 Feature: Cooling
   Cooling is gated on the SDK Cooler control: CanSetCCDTemperature and
   CanGetCoolerPower are true only when the control is present, and the

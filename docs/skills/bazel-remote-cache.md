@@ -52,6 +52,24 @@ curl -s -o/dev/null -w '%{http_code}\n' -X PUT --data x \
 A healthy CI run shows `… processes: N remote cache hit` without long
 `Downloading …` stalls.
 
+## Proprietary blob tier (QHYCCD SDK)
+
+The QHYCCD SDK that `qhy-camera` links (`static=qhyccd`, pinned 25.09.29) is
+**redistribution-restricted** and must **not** be hosted on the anonymous-read
+public mirror `cache.rustyphoton.space`. It lives on a separate authenticated
+internal tier, fetched with a Bearer token by the
+[`install-qhy-sdk`](../../.github/actions/install-qhy-sdk/action.yml) composite
+action and `scripts/setup-pi-runner.sh`. Wiring (kept out of the repo — the host
+is internal):
+
+- `QHY_SDK_CACHE_BASE` — a repo **variable** with the internal tier base URL.
+- `QHY_SDK_CACHE_TOKEN` — a repo **secret** (Bearer token), not exposed to fork PRs.
+- per-arch SHA-256 pins in the action / setup script (fail-closed on mismatch).
+
+On Linux the SDK installs into `/usr/local/lib` (where `libqhyccd-sys`'s
+`build.rs` hard-codes the link-search path), not via env vars. See
+`docs/services/qhy-camera.md` "Native dependency & build gating".
+
 ## References
 
 - [tools/bazel-cache-worker/](../../tools/bazel-cache-worker/README.md) — Worker code + deploy runbook.

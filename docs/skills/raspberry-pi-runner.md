@@ -76,6 +76,7 @@ sudo apt-get install -y \
   jq \
   libssl-dev \
   libcfitsio-dev \
+  libusb-1.0-0-dev \
   unzip \
   ca-certificates
 ```
@@ -84,7 +85,24 @@ sudo apt-get install -y \
 the `rp-fits`, `filemonitor`, and `sky-survey-camera` packages fail to
 compile (this is the "use `-p <package>`" caveat that the user-level
 `MEMORY.md` references). `libssl-dev` is required by transitive C-FFI
-crates in the workspace.
+crates in the workspace. `libusb-1.0-0-dev` is required by the QHYCCD SDK
+that `qhy-camera` links (next paragraph).
+
+#### QHYCCD SDK (for `qhy-camera`)
+
+`qhy-camera` links the proprietary QHYCCD SDK (`libqhyccd-sys` →
+`static=qhyccd` + `libusb-1.0` + `stdc++`). The Pi5 arm64 nightly builds the
+full workspace, so the SDK (pinned **25.09.29**, aarch64) must be installed —
+the `setup-pi-runner.sh` `=== 1b. QHYCCD SDK ===` section installs it into
+`/usr/local/lib` (where `libqhyccd-sys`'s `build.rs` hard-codes the linker
+search path). It is pulled from the authenticated internal cache tier
+(`QHY_SDK_CACHE_BASE` + `QHY_SDK_CACHE_TOKEN`, SHA-pinned via
+`QHY_SDK_SHA256`) — **not** the anonymous-read public mirror, because its
+redistribution terms forbid public hosting (see
+[`bazel-remote-cache.md`](bazel-remote-cache.md)). Set `QHY_SDK_SKIP=1` to skip
+when the SDK is already installed by hand. This is the only service excluded
+from the GitHub-hosted CI matrix (the SDK is Linux-only and proprietary), so
+the Pi nightly is its primary CI coverage.
 
 ### 2. Dedicated unprivileged user
 

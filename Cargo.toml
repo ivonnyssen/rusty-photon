@@ -18,6 +18,7 @@ members = [
   "services/pa-falcon-rotator",
   "services/phd2-guider",
   "services/ppba-driver",
+  "services/qhy-camera",
   "services/qhy-focuser",
   "services/calibrator-flats",
   "services/dsd-fp2",
@@ -87,6 +88,13 @@ base64 = "0.22.1"
 mockall = "0.14.0"
 parking_lot = "0.12.5"
 tokio-serial = "5.4.5"
+# QHYCCD camera SDK FFI. Pinned exactly: pre-1.0 single-maintainer crate
+# (0.1.7/0.1.8/0.1.9 shipped within days). `libqhyccd-sys` (transitively)
+# links the proprietary static `qhyccd` lib + `libusb-1.0` — see
+# `docs/services/qhy-camera.md` "Native dependency & build gating". Only
+# `qhy-camera` depends on it today; declared at workspace level so the exact
+# pin + native-policy rationale live in one place.
+qhyccd-rs = "=0.1.9"
 ascom-alpaca = { git = "https://github.com/ivonnyssen/ascom-alpaca-rs.git", branch = "integration", default-features = false }
 axum = "0.8"
 tower = "0.5"

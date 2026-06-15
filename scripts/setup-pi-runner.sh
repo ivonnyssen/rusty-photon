@@ -75,8 +75,47 @@ sudo apt-get install -y \
   jq \
   libssl-dev \
   libcfitsio-dev \
+  libusb-1.0-0-dev \
   unzip \
   ca-certificates
+
+# === 1b. QHYCCD SDK (proprietary, pinned 25.09.29) ===
+#
+# qhy-camera links libqhyccd-sys (links = "qhyccd") + libusb-1.0 + stdc++. The
+# Pi5 arm64 nightly builds the full workspace, so the SDK must be present and
+# discoverable or qhy-camera fails to link. On Linux libqhyccd-sys hard-codes the
+# linker search path `/usr/local/lib`, so we install the SDK there (aarch64 is
+# confirmed supported). The blob is pulled from the authenticated internal tier
+# (set QHY_SDK_CACHE_BASE + QHY_SDK_CACHE_TOKEN; keep the real host out of the
+# repo — pass it via env, never commit it) and SHA-pinned. Set
+# QHY_SDK_SKIP=1 to skip (e.g. when the SDK is already installed by hand).
+QHY_SDK_VERSION="${QHY_SDK_VERSION:-25.09.29}"
+if [[ "${QHY_SDK_SKIP:-0}" == "1" ]]; then
+  log "QHY_SDK_SKIP=1; skipping QHYCCD SDK install."
+elif [[ -f /usr/local/lib/libqhyccd.a ]]; then
+  log "QHYCCD SDK already installed at /usr/local/lib; skipping."
+elif [[ -z "${QHY_SDK_CACHE_BASE:-}" || -z "${QHY_SDK_CACHE_TOKEN:-}" ]]; then
+  log "QHY_SDK_CACHE_BASE / QHY_SDK_CACHE_TOKEN unset; skipping QHYCCD SDK install."
+  log "  (qhy-camera will not link on this runner until the SDK is installed in /usr/local/lib.)"
+else
+  log "Installing QHYCCD SDK $QHY_SDK_VERSION (aarch64) into /usr/local..."
+  : "${QHY_SDK_SHA256:?set QHY_SDK_SHA256 to the pinned aarch64 tarball checksum}"
+  QHY_SDK_URL="${QHY_SDK_CACHE_BASE%/}/${QHY_SDK_VERSION}/sdk_linux_arm64_${QHY_SDK_VERSION}.tar.bz2"
+  TMP=$(mktemp -d)
+  curl -fsSL --retry 3 --retry-delay 2 \
+    -H "Authorization: Bearer ${QHY_SDK_CACHE_TOKEN}" \
+    -o "$TMP/qhy-sdk.tar.bz2" "$QHY_SDK_URL"
+  ACTUAL=$(sha256sum "$TMP/qhy-sdk.tar.bz2" | awk '{print $1}')
+  [[ "$ACTUAL" == "$QHY_SDK_SHA256" ]] || { log "QHYCCD SDK SHA-256 mismatch (expected $QHY_SDK_SHA256, got $ACTUAL)"; exit 1; }
+  tar xf "$TMP/qhy-sdk.tar.bz2" -C "$TMP"
+  LIB_SRC=$(find "$TMP" -type f -name 'libqhyccd.a' -printf '%h\n' | head -n1)
+  INC_SRC=$(find "$TMP" -type f -name 'qhyccd.h' -printf '%h\n' | head -n1)
+  sudo cp -a "$LIB_SRC"/libqhyccd.* /usr/local/lib/
+  [[ -n "$INC_SRC" ]] && sudo cp -a "$INC_SRC"/*.h /usr/local/include/
+  sudo ldconfig
+  rm -rf "$TMP"
+  log "QHYCCD SDK installed into /usr/local/lib."
+fi
 
 # === 2. Dedicated unprivileged user ===
 

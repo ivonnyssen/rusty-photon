@@ -76,6 +76,10 @@ jobs:
               '[.[] | select(. as $pkg | ($affected | split(" ") | .[] | select(. == $pkg)) // empty)]')
           fi
 
+          # qhy-camera links the Linux-only proprietary QHYCCD SDK, so its
+          # BDD suite cannot run on the Windows matrix; drop it (it runs on
+          # the Pi nightly instead).
+          BDD_PACKAGES=$(echo "$BDD_PACKAGES" | jq -c 'map(select(. != "qhy-camera"))')
           COUNT=$(echo "$BDD_PACKAGES" | jq 'length')
           echo "packages=$BDD_PACKAGES" >> $GITHUB_OUTPUT
           echo "has_bdd=$([ "$COUNT" -gt 0 ] && echo true || echo false)" >> $GITHUB_OUTPUT
@@ -104,10 +108,10 @@ jobs:
       # Pre-build all targets (bins + test/bench/example targets) so nextest
       # and BDD tests find cached binaries without recompilation
       - name: cargo build
-        run: cargo build --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --all-targets
+        run: cargo build --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace --exclude qhy-camera' || needs.plan.outputs.cargo-args }} --all-features --all-targets
       # https://twitter.com/jonhoo/status/1571290371124260865
       - name: cargo nextest run
-        run: cargo nextest run --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --all-targets
+        run: cargo nextest run --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace --exclude qhy-camera' || needs.plan.outputs.cargo-args }} --all-features --all-targets
       # BDD cross-spawn deps not visible to cargo-rail: sentinel's BDD
       # spawns filemonitor; calibrator-flats's BDD spawns rp; ui-htmx's BDD
       # spawns dsd-fp2. Narrow cargo-args can miss them, so pre-build
@@ -118,7 +122,7 @@ jobs:
         run: cargo build --locked --package filemonitor --package rp --package dsd-fp2 --all-features --all-targets
       # BDD tests use custom harness (bdd_main!) incompatible with nextest
       - name: cargo test --test bdd
-        run: cargo test --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --test bdd
+        run: cargo test --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace --exclude qhy-camera' || needs.plan.outputs.cargo-args }} --all-features --test bdd
       # OmniSim's stdout/stderr now lands in target/bdd-infra-omnisim-logs/
       # (see crates/bdd-infra/src/rp_harness/omnisim.rs::OmniSimProcess::log_dir).
       # Uploading on failure preserves the only off-runner copy of those logs
@@ -134,7 +138,7 @@ jobs:
           retention-days: 14
       # https://github.com/rust-lang/cargo/issues/6669
       - name: cargo test --doc
-        run: cargo test --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --doc
+        run: cargo test --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace --exclude qhy-camera' || needs.plan.outputs.cargo-args }} --all-features --doc
   macos:
     needs: plan
     if: needs.plan.outputs.test == 'true' || needs.plan.outputs.infra == 'true' || needs.plan.outputs.has-bdd == 'true'
@@ -156,15 +160,15 @@ jobs:
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
       - name: cargo build
-        run: cargo build --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --all-targets
+        run: cargo build --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace --exclude qhy-camera' || needs.plan.outputs.cargo-args }} --all-features --all-targets
       - name: cargo nextest run
-        run: cargo nextest run --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --all-targets
+        run: cargo nextest run --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace --exclude qhy-camera' || needs.plan.outputs.cargo-args }} --all-features --all-targets
       # BDD cross-spawn deps not visible to cargo-rail — see ubuntu job above.
       - name: cargo build BDD cross-spawn deps
         if: needs.plan.outputs.has-bdd == 'true' && needs.plan.outputs.infra != 'true'
         run: cargo build --locked --package filemonitor --package rp --package dsd-fp2 --all-features --all-targets
       - name: cargo test --test bdd
-        run: cargo test --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --test bdd
+        run: cargo test --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace --exclude qhy-camera' || needs.plan.outputs.cargo-args }} --all-features --test bdd
       - name: Upload OmniSim logs (on failure)
         if: failure()
         uses: actions/upload-artifact@v7
@@ -201,9 +205,9 @@ jobs:
       # Build full workspace so the cache saved by this job includes all
       # binaries needed by the per-service BDD jobs
       - name: cargo build
-        run: cargo build --locked --workspace --all-features --all-targets
+        run: cargo build --locked --workspace --exclude qhy-camera --all-features --all-targets
       - name: cargo nextest run
-        run: cargo nextest run --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --all-targets
+        run: cargo nextest run --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace --exclude qhy-camera' || needs.plan.outputs.cargo-args }} --all-features --all-targets
   windows-bdd:
     # Per-service BDD tests on Windows, run in parallel via matrix.
     # Each service spawns its own process per scenario; on Windows this takes
@@ -299,11 +303,11 @@ jobs:
       - name: Build with coverage instrumentation
         run: |
           source <(cargo llvm-cov show-env --sh)
-          cargo build --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --all-targets
+          cargo build --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace --exclude qhy-camera' || needs.plan.outputs.cargo-args }} --all-features --all-targets
       - name: Run tests with coverage
         run: |
           source <(cargo llvm-cov show-env --sh)
-          cargo test --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --all-targets
+          cargo test --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace --exclude qhy-camera' || needs.plan.outputs.cargo-args }} --all-features --all-targets
       - name: Upload OmniSim logs (on failure)
         if: failure()
         uses: actions/upload-artifact@v7

@@ -1,11 +1,12 @@
 # Qhy-Camera Service Design
 
-> **Status:** Design phase (pre-implementation), per the design→BDD→implementation
-> workflow in
-> [`docs/skills/development-workflow.md`](../skills/development-workflow.md). No
-> code yet; this document is the specification that drives the BDD scenarios and
-> implementation. (Distinct from the *Delivery phasing* §, whose Phase 0–6 track
-> the SDK-de-risk → full-driver rollout.)
+> **Status:** Implemented (v0). The driver lives in
+> [`services/qhy-camera`](../../services/qhy-camera). All 8 BDD feature suites
+> (56 scenarios) and the unit tests are green against the `qhyccd-rs`
+> `simulation` backend; ConformU runs in CI. This document remains the
+> behavioural specification — the handful of implementation deviations from the
+> original design are called out inline (search "*Implementation note*"). The
+> *Delivery phasing* § Phase 0–6 tracked the SDK-de-risk → full-driver rollout.
 
 ## Overview
 
@@ -91,10 +92,10 @@ does not break the SDK-less default build.
 
 1. **`qhyccd-rs` churn.** Single-maintainer, pre-1.0 (0.1.7/0.1.8/0.1.9 all
    shipped within days). Pin exactly (`=0.1.9`) and track upstream closely.
-2. **Shutter actuation API** *(Track-A verification item).* Confirm `qhyccd-rs`
-   exposes a shutter open/close call (not just `CamMechanicalShutter` presence) —
-   gates the dark-frame behaviour (E4). If only presence is queryable, v0 dark
-   support degrades to reject on all models and moves to Future Work.
+2. **Shutter actuation API** *(resolved).* `qhyccd-rs` 0.1.9 exposes only shutter
+   *presence* (`CamMechanicalShutter`), no open/close actuation. Per the E4
+   degradation clause, v0 rejects all dark frames with `NOT_IMPLEMENTED`;
+   shutter-actuated darks are Future Work.
 
 ---
 
@@ -180,8 +181,9 @@ The MVP boundary drives BDD scenario selection (Phase 2). Grounded in what
   sensor); `SensorName` from the device id.
 - **FilterWheel** as a second ASCOM device on the same port (when present):
   `Names`, `Position` (with moving state), `set_position`, `FocusOffsets`.
-- **Dark frames on shutter-equipped models** — `Light = false` closes the
-  mechanical shutter and captures; shutterless models reject (see E4).
+- **Dark frames** — `Light = false` returns `NOT_IMPLEMENTED` on all models in
+  v0 (qhyccd-rs 0.1.9 has no shutter actuation; see E4). `HasShutter` still
+  reports `CamMechanicalShutter` presence.
 - `config.get`/`config.apply`/`config.schema` actions; hardware-derived
   `UniqueID` (camera/CFW SDK serial); in-process reload.
 - ConformU integration test driven against the `qhyccd-rs` `simulation` backend
@@ -346,12 +348,13 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
 - **E2.** `StartExposure` while exposing returns `INVALID_OPERATION`.
 - **E3.** `StartExposure` `Duration` outside `[ExposureMin, ExposureMax]` returns
   `INVALID_VALUE`.
-- **E4.** `StartExposure` with `Light = false` (dark/bias): if the camera has a
-  mechanical shutter (`CamMechanicalShutter`), the shutter is closed and a dark
-  frame is captured; **on shutterless models it returns `NOT_IMPLEMENTED`**.
-  *(Implementation check: confirm `qhyccd-rs` exposes a shutter open/close call —
-  not just `CamMechanicalShutter` presence. If only presence is queryable, v0
-  degrades to reject on all models and dark support moves to Future Work.)*
+- **E4.** `StartExposure` with `Light = false` (dark/bias) returns
+  `NOT_IMPLEMENTED`. *Implementation note:* `qhyccd-rs` 0.1.9 exposes shutter
+  *presence* (`CamMechanicalShutter`) but no shutter open/close *actuation* call,
+  so v0 cannot capture a true dark on any model — the design's "close shutter +
+  capture on shutter-equipped models" degrades (as foreseen below) to reject on
+  all models. `has_shutter()` still reports presence; shutter-actuated darks move
+  to Future Work. The simulated QHY178M-Simulated is shutterless.
 - **E5.** A successful light `StartExposure` sets exposure µs, runs the SDK
   single-frame capture on the blocking bridge, and on completion produces an
   `ImageArray` of the binned sub-frame, `ImageReady = true`,
@@ -426,7 +429,7 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
 | `PercentCompleted` | From remaining-exposure µs, clamped ≤ 100 |
 | `CanAbortExposure` / `CanStopExposure` | `true` / `false` |
 | `CanPulseGuide` | `false` |
-| `StartExposure` (`Light=false`) | Close shutter + capture if `HasShutter`; else `NOT_IMPLEMENTED` |
+| `StartExposure` (`Light=false`) | `NOT_IMPLEMENTED` (no shutter actuation in qhyccd-rs 0.1.9; see E4) |
 | `StartExposure` / `AbortExposure` / `ImageReady` / `ImageArray` / `ImageArrayVariant` | Per *Exposure* contracts; `ImageArray` axes `[X, Y]` |
 | `StopExposure` | `NOT_IMPLEMENTED` |
 
@@ -482,10 +485,13 @@ Layered per [`testing.md`](../skills/testing.md).
   gain/offset/readout (GO1–RM1), cooling (K1–K4), and FilterWheel (FW1–FW3 when
   enabled), driven against the `qhyccd-rs` `simulation` backend.
 - **ConformU** (`tests/conformu_integration.rs`, gated by the `conformu` feature)
-  — launches the production binary with `--features simulation` and runs the
-  official validator via `run_conformu_tests::<dyn Camera>()` (and
-  `::<dyn FilterWheel>()` when enabled). **Reuses the upstream harness shape**,
-  which already uses the same `ascom-alpaca` helper.
+  — launches the production binary (built `--features conformu`, which pulls in
+  `simulation`) via `bdd_infra::ServiceHandle::try_start` and drives the official
+  validator with `bdd_infra::run_conformu("camera", …)` and
+  `run_conformu("filterwheel", …)` over HTTP. *Implementation note:* this matches
+  the `sky-survey-camera` / `dsd-fp2` ConformU shape (launch the real binary),
+  not a `run_conformu_tests::<dyn Camera>()` generic. `CONFORMU_PATH` unset ⇒ the
+  run is skipped (so the test passes without ConformU installed); CI sets it.
 
 > **CI caveat (critical):** the `simulation` feature removes the *camera*
 > requirement, **not the SDK**. All build/test/ConformU jobs for this package
@@ -518,24 +524,78 @@ driver itself).
   intractable, fall back to the `requires-cargo` carve-out (Cargo remains
   canonical); the camera still builds and runs under Cargo.*
 - **Phase 3 — this design doc** *(done)* + the `docs/workspace.md` row.
-- **Phase 4 — Track B: full driver (Option C, confirmed).** Implement
+- **Phase 4 — Track B: full driver (Option C, confirmed)** *(done)*. Implemented
   `Device + Camera` **and `+ FilterWheel`** natively against `qhyccd-rs`, using
-  `qhyccd-alpaca`'s `lib.rs` as the behavioural spec only (no vendored fork); wire
-  lifecycle, hardware-derived identity, and config-actions.
-- **Phase 5 — test + gate.** BDD + ConformU on the `simulation` backend;
-  `cargo rail run --profile commit -q` + `cargo fmt` green; verify the CI
-  pre-build path.
-- **Phase 6 — consumer + Bazel finish.** Add `CameraConfig { alpaca_url:
-  http://localhost:11121, device_number }` in `rp`; replace the `requires-cargo`
-  tag with a proper `libqhyccd-sys` `crate.annotation`; update READMEs/docs.
+  `qhyccd-alpaca`'s `main.rs` as the behavioural spec only (no vendored fork); a
+  thin in-crate SDK seam (`backend.rs`) wraps the blocking `qhyccd-rs` handles so
+  the device logic is unit-testable without hardware. Lifecycle, hardware-derived
+  identity, and config-actions wired.
+- **Phase 5 — test + gate** *(done)*. 8 BDD feature suites (56 scenarios) + unit
+  tests green against the `simulation` backend; ConformU wired (skips without
+  `CONFORMU_PATH`); `cargo rail run --profile commit -q` + `cargo fmt` + clippy
+  green.
+- **Phase 6 — consumer + Bazel finish** *(partial)*. CI/Pi SDK provisioning +
+  `requires-cargo`-tagged `BUILD.bazel` landed. Still pending: the `rp`
+  `CameraConfig { alpaca_url: http://localhost:11121, device_number }` consumer
+  and replacing the `requires-cargo` tag with a proper `libqhyccd-sys`
+  `crate.annotation`.
 
 ---
 
+## Implementation notes (v0 deviations from the original design)
+
+Behaviour the implementation pins down or diverges from the design above. The
+behavioural contracts and the BDD feature files remain the authority; these are
+the "how" decisions made while building.
+
+- **SDK seam (`backend.rs`).** The device structs hold an `Arc<dyn CameraHandle>`
+  / `Arc<dyn FilterWheelHandle>` over a thin trait that wraps the blocking
+  `qhyccd-rs` handles and collapses its `eyre::Report` into one typed error. A
+  production wrapper drives the real SDK; a test mock lets the unit tests — incl.
+  the E9 `Error`-state path and colour/shutter models the mono sim can't show —
+  run with neither hardware nor the SDK runtime.
+- **MaxADU.** `2^bits − 1` where `bits` is `OutputDataActualBits`, **falling back
+  to the cached `ccd_info.bits_per_pixel`** when that control is unavailable
+  (both give 16 ⇒ 65535 on the sim).
+- **Dark frames** → `NOT_IMPLEMENTED` on all models (E4) — no shutter actuation
+  in `qhyccd-rs` 0.1.9.
+- **FilterWheel `UniqueID`** is `CFW-<sdk-id>` (prefixed), because a `qhyccd-rs`
+  `FilterWheel` delegates `id()` to its underlying camera and would otherwise
+  collide with the camera's `UniqueID` on single-handle models.
+- **Empty simulation backend** (the C0 zero-camera scenario) is selected by a
+  hidden, `simulation`-feature-gated `--simulation-empty` CLI flag that makes
+  `build()` use `Sdk::new_simulated()` (empty) instead of `Sdk::new()`.
+- **Transport.** v0 binds with plain `axum::serve` on `server.port` (config
+  carries only the port; `discovery_port` is disabled), like `sky-survey-camera`.
+  TLS / Basic Auth (`rp-tls` / `rp-auth`) are Future Work.
+- **SDK call serialization.** The single in-flight capture is the one logical
+  owner of the device's blocking SDK calls: `start_exposure` claims an
+  `exposure_in_flight` slot via CAS, and `cancel_exposure` (abort/disconnect)
+  bumps a generation + signals the SDK cancel but does **not** clear the slot —
+  the capture task clears it only after its blocking chain has fully drained, so
+  a new exposure cannot start and race the still-running SDK calls. A short
+  `result_lock` makes the task's "check generation + commit result" atomic
+  against an abort, so a just-completing capture can never resurrect an aborted
+  frame.
+- **Camera + CFW share one physical handle (known real-hardware consideration).**
+  `qhyccd-rs` derives the CFW from the *same* camera id as the enumerated camera
+  (a QHY CFW is driven over the camera's USB, not a separate device), so the
+  Camera and FilterWheel ASCOM devices open/close the same physical camera
+  through independent SDK handles — as the reference `qhyccd-alpaca` does. The
+  simulation gives each an independent in-memory `is_open`, so this is untested
+  here; ref-counting the open/close across both devices is Future Work once real
+  hardware is available to validate.
+- **Cooling model.** `set_cooler_on(true)` engages a nominal 1% *manual* PWM
+  (matching the reference), which on real hardware is distinct from the automatic
+  target-temperature regulation `SetCCDTemperature` drives. Unifying the two
+  (re-asserting the stored target on `CoolerOn = true`) is Future Work.
+
 ## Future Work
 
-- **Dark/bias on shutterless cameras** — v0 supports darks only via a mechanical
-  shutter; add a cap-on / explicit-override workflow for shutterless models
-  (e.g. the 5III series) so `calibrator-flats` darks/bias work there too.
+- **Dark/bias frames** — v0 rejects all darks (`NOT_IMPLEMENTED`) because
+  `qhyccd-rs` 0.1.9 exposes no shutter actuation. Add shutter open/close support
+  (plus a cap-on / explicit-override workflow for shutterless models, e.g. the
+  5III series) so `calibrator-flats` darks/bias work.
 - **`StopExposure`** (graceful stop with readout) — currently `NOT_IMPLEMENTED`.
 - **FastReadout** validation on real hardware.
 - **PulseGuide** / `CanPulseGuide`.

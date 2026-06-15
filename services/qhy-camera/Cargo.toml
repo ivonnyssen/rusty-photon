@@ -1,0 +1,64 @@
+[package]
+name = "qhy-camera"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "ASCOM Alpaca Camera (+ FilterWheel) driver for QHYCCD hardware"
+
+[features]
+default = []
+# `simulation` forwards qhyccd-rs's simulation backend so `Sdk::new()` yields a
+# QHY178M-Simulated camera + 7-position CFW instead of scanning USB. It is
+# camera-free but NOT SDK-free — the static `qhyccd` lib is still required at
+# link time (see docs/services/qhy-camera.md "Native dependency & build gating").
+simulation = ["qhyccd-rs/simulation"]
+# `mock` is the project-wide convention name BDD/CI build with (`--features mock`
+# / `--all-features`); for this SDK-backed service it is just an alias that
+# forwards the simulation backend.
+mock = ["simulation"]
+# `conformu` enables `mock` so a single `--features conformu` flag builds and
+# runs the compliance test against the simulation backend.
+conformu = ["mock"]
+
+[lints]
+workspace = true
+
+[dependencies]
+ascom-alpaca = { workspace = true, features = ["server", "camera", "filter_wheel", "client"] }
+qhyccd-rs = { workspace = true }
+rusty-photon-config = { workspace = true }
+rusty-photon-driver = { workspace = true }
+rusty-photon-service-lifecycle = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+clap = { workspace = true }
+async-trait = { workspace = true }
+derive_more = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+axum = { workspace = true }
+ndarray = { workspace = true }
+parking_lot = { workspace = true }
+
+[package.metadata.conformu]
+command = "cargo test -p qhy-camera --features conformu --test conformu_integration -- --nocapture"
+
+[dev-dependencies]
+tracing-subscriber = { workspace = true }
+bdd-infra = { workspace = true, features = ["conformu"] }
+cucumber = { workspace = true }
+tempfile = { workspace = true }
+tokio-test = { workspace = true }
+# Raw HTTP for the one BDD path the typed Alpaca client cannot express: a
+# StartExposure with a negative Duration (rejected by the server before the
+# typed client can carry it — `std::time::Duration` is unsigned).
+reqwest = { workspace = true }
+
+[[test]]
+name = "bdd"
+harness = false

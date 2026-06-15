@@ -1,4 +1,4 @@
-@wip @serial
+@serial
 Feature: Camera enumeration and connection lifecycle
   qhy-camera enumerates every connected QHY camera (and CFW when
   filterwheel.enabled) at startup and registers each as an ASCOM device,

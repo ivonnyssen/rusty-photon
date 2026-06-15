@@ -1,0 +1,152 @@
+load("@cr//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+
+exports_files(["Cargo.toml"], visibility = ["//visibility:public"])
+
+# qhy-camera links the proprietary QHYCCD SDK (libqhyccd-sys → static=qhyccd +
+# libusb-1.0 + stdc++), which is NOT installed in the default Bazel actions. Every
+# target here is tagged `requires-cargo` so it is excluded from `bazel test //...`
+# by .bazelrc's default `-requires-cargo` filter (Cargo remains canonical). When
+# the SDK is provisioned into Bazel actions, replace this with a `libqhyccd-sys`
+# crate.annotation in MODULE.bazel and drop the tags. See
+# docs/services/qhy-camera.md "Native dependency & build gating".
+_REQUIRES_SDK = ["requires-cargo"]
+
+_INTRA_WORKSPACE_DEPS = [
+    "//crates/rusty-photon-config:rusty-photon-config",
+    "//crates/rusty-photon-driver:rusty-photon-driver",
+    "//crates/rusty-photon-service-lifecycle:rusty-photon-service-lifecycle",
+]
+
+rust_library(
+    name = "qhy-camera_lib",
+    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]),
+    aliases = aliases(),
+    crate_name = "qhy_camera",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    tags = _REQUIRES_SDK,
+    visibility = ["//visibility:public"],
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+)
+
+rust_binary(
+    name = "qhy-camera",
+    srcs = ["src/main.rs"],
+    aliases = aliases(),
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    tags = _REQUIRES_SDK,
+    visibility = ["//visibility:public"],
+    deps = [":qhy-camera_lib"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "qhy-camera_unit_test",
+    size = "small",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate = ":qhy-camera_lib",
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    tags = _REQUIRES_SDK,
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+# The `simulation`-backed (mock alias) library + binary for BDD / ConformU.
+rust_library(
+    name = "qhy-camera_lib_sim",
+    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]),
+    aliases = aliases(),
+    crate_features = ["mock"],
+    crate_name = "qhy_camera",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    tags = _REQUIRES_SDK,
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+)
+
+rust_binary(
+    name = "qhy-camera_sim",
+    srcs = ["src/main.rs"],
+    aliases = aliases(),
+    crate_features = ["mock"],
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    tags = _REQUIRES_SDK,
+    deps = [":qhy-camera_lib_sim"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "conformu_integration",
+    srcs = ["tests/conformu_integration.rs"],
+    size = "large",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate_features = [
+        "mock",
+        "conformu",
+    ],
+    data = [":qhy-camera_sim"],
+    edition = "2021",
+    env = {
+        "QHY_CAMERA_BINARY": "$(rootpath :qhy-camera_sim)",
+        "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :qhy-camera_sim)",
+    },
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    rustc_env = {"CARGO_PKG_NAME": "qhy-camera"},
+    tags = _REQUIRES_SDK + ["conformu"],
+    deps = [
+        ":qhy-camera_lib_sim",
+        "//crates/bdd-infra:bdd-infra_conformu",
+    ] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+rust_test(
+    name = "bdd",
+    srcs = ["tests/bdd.rs"] + glob(["tests/bdd/**/*.rs"]),
+    size = "small",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate_root = "tests/bdd.rs",
+    data = [
+        ":qhy-camera_sim",
+        "Cargo.toml",
+    ] + glob(["tests/features/**"]),
+    edition = "2021",
+    env = {
+        "BDD_PACKAGE_DIR": "services/qhy-camera",
+        "QHY_CAMERA_BINARY": "$(rootpath :qhy-camera_sim)",
+        "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :qhy-camera_sim)",
+    },
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    # bdd-infra derives {PKG_UPPER_SNAKE}_BINARY from CARGO_PKG_NAME; it must be
+    # the service name, not the crate name ("bdd").
+    rustc_env = {"CARGO_PKG_NAME": "qhy-camera"},
+    tags = _REQUIRES_SDK + ["bdd"],
+    use_libtest_harness = False,
+    deps = [":qhy-camera_lib_sim", "//crates/bdd-infra:bdd-infra"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
