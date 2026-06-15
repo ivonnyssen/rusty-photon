@@ -427,6 +427,24 @@ it's been 330 s, what's going on?"
 
 ### 2.5 Centering deadline
 
+> **As-built note (§2.5 shipped — completes Phase 2).** Landed in a new
+> `services/rp/src/config/centering.rs` (`CenteringConfig {
+> solve_time_estimate (default 30 s), slew_overhead_estimate (default
+> 10 s) }`, humantime, `#[serde(default)]` on `Config.centering`) +
+> `centering_deadlines()` in `services/rp/src/mcp/internals.rs`, threaded
+> onto `McpHandler` via `with_centering_config` and stamped on
+> `centering_started` in `center_on_target_inner`. Decisions: (1) **outer
+> loop only**, per the design's open-question resolution — the watchdog
+> tracks overall convergence; each per-iteration `slew`/`capture` already
+> carries its own predictive deadline, so the centering envelope does not
+> double-count them. (2) `predicted` is one iteration (optimistic
+> single-pass convergence) and `max` is `max_attempts × per_iter`, giving
+> the envelope's two fields distinct, useful meanings. (3) advisory only —
+> rp does not enforce it (same posture as §2.4 exposure). The
+> authoritative contract is
+> [`docs/services/rp.md` §Event Envelope](../services/rp.md#event-envelope)
+> and the [`center_on_target` Contract](../services/rp.md#center_on_target-contract).
+
 `max = max_attempts * (capture_duration + solve_time_estimate +
 slew_overhead_estimate)`. `capture_duration` is the operator's
 `duration` parameter; the others are per-rig config values with

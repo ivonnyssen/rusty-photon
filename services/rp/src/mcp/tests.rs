@@ -6,6 +6,7 @@
 
 use super::built_in::auto_focus::*;
 use super::built_in::camera::*;
+use super::built_in::center_on_target::*;
 use super::built_in::cover_calibrator::*;
 use super::built_in::filter_wheel::*;
 use super::built_in::focuser::*;
@@ -1009,6 +1010,18 @@ fn mount_registry(
             device: Some(mount),
         }),
     }
+}
+
+/// A registry holding both a camera ("cam") and the singular mount, so
+/// `center_on_target_inner` resolves its devices and emits
+/// `centering_started`. The camera reuses `camera_registry`'s shape.
+fn camera_mount_registry(
+    cam: Arc<dyn ascom_alpaca::api::Camera>,
+    mount: Arc<dyn ascom_alpaca::api::Telescope>,
+) -> crate::equipment::EquipmentRegistry {
+    let mut registry = camera_registry(cam);
+    registry.mount = mount_registry(mount, None).mount;
+    registry
 }
 
 fn empty_registry() -> crate::equipment::EquipmentRegistry {
@@ -4852,13 +4865,14 @@ fn assert_end_mirrors_start(
     );
     // The matching `*_started` envelope carries deadline fields only for
     // operations with a predictive deadline (slew §2.1, park + move_focuser
-    // §2.2/§2.3, exposure §2.4); every other operation's start must still
-    // omit them. (Each converted operation's start is asserted present by
-    // its own test.)
+    // §2.2/§2.3, exposure §2.4, centering §2.5); every other operation's
+    // start must still omit them. (Each converted operation's start is
+    // asserted present by its own test.)
     let has_predictive_deadline = start.event.starts_with("slew")
         || start.event.starts_with("park")
         || start.event.starts_with("move_focuser")
-        || start.event.starts_with("exposure");
+        || start.event.starts_with("exposure")
+        || start.event.starts_with("centering");
     if !has_predictive_deadline {
         assert!(
             start.predicted_duration_ms.is_none(),
@@ -5321,6 +5335,58 @@ fn exposure_deadlines_add_readout_and_headroom() {
         super::internals::exposure_deadlines(Duration::from_secs(300), Duration::from_secs(8));
     assert_eq!(predicted_ms, 308_000, "300 s exposure + 8 s readout");
     assert_eq!(max_ms, 338_000, "predicted + 30 s readout headroom");
+}
+
+#[test]
+fn centering_deadlines_compose_per_iteration_over_max_attempts() {
+    // §2.5: per_iter = capture + solve + slew_overhead; predicted = per_iter
+    // (single-pass convergence); max = max_attempts × per_iter.
+    let (predicted_ms, max_ms) = super::internals::centering_deadlines(
+        5,
+        Duration::from_millis(100),
+        Duration::from_secs(30),
+        Duration::from_secs(10),
+    );
+    assert_eq!(
+        predicted_ms, 40_100,
+        "100 ms capture + 30 s solve + 10 s slew"
+    );
+    assert_eq!(max_ms, 200_500, "5 attempts × 40_100 ms");
+}
+
+#[tokio::test]
+async fn centering_started_carries_outer_loop_deadline() {
+    // §2.5 wiring: center_on_target stamps the outer-loop deadline on
+    // `centering_started` from the default centering config (30 s solve,
+    // 10 s slew overhead) and the call's duration + max_attempts. The loop
+    // then fails (no plate solver configured), but the started event — the
+    // first on the bus — carries the deadline regardless.
+    let handler = test_handler(camera_mount_registry(
+        Arc::new(MockCamera::default()),
+        Arc::new(MockTelescope::default()),
+    ));
+    let mut rx = handler.event_bus.subscribe();
+
+    let _ = handler
+        .center_on_target_inner(
+            CenterOnTargetToolParams {
+                camera_id: Some("cam".to_string()),
+                ra: Some(0.7123),
+                dec: Some(41.269),
+                duration: Some(Duration::from_millis(100)),
+                tolerance_arcsec: Some(60.0),
+                max_attempts: Some(5),
+            },
+            None,
+        )
+        .await;
+
+    let started = next_event(&mut rx).await;
+    assert_eq!(started.event, "centering_started");
+    assert_eq!(started.payload["max_attempts"], 5);
+    // per_iter = 100 ms + 30 s + 10 s = 40_100 ms; max = 5 × per_iter.
+    assert_eq!(started.predicted_duration_ms, Some(40_100));
+    assert_eq!(started.max_duration_ms, Some(200_500));
 }
 
 #[tokio::test]

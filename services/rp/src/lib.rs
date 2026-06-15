@@ -146,7 +146,8 @@ impl ServerBuilder {
             site,
         )
         .with_planner_config(targets, default_min_alt)
-        .with_plate_solver(plate_solver_client, plate_solver_default_radius);
+        .with_plate_solver(plate_solver_client, plate_solver_default_radius)
+        .with_centering_config(config.centering.clone());
 
         // Cancellation token for in-flight SSE streams
         // (`/api/events/subscribe`). Cloned into AppState so the handler can

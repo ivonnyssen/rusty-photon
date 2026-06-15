@@ -72,6 +72,30 @@ pub(crate) fn exposure_deadlines(duration: Duration, readout_estimate: Duration)
     )
 }
 
+/// Size the predictive `center_on_target` deadline (§2.5) for the
+/// `centering_started` envelope. The Sentinel watchdog tracks only the
+/// outer loop (each per-iteration `slew`/`capture` carries its own
+/// deadline), so: `per_iter = capture_duration + solve_time_estimate +
+/// slew_overhead_estimate`, `predicted = per_iter` (optimistic single-pass
+/// convergence), `max = max_attempts × per_iter` (every attempt used).
+/// Pure millisecond math returning the `(predicted_ms, max_ms)` envelope
+/// pair; saturating arithmetic guards against overflow from an absurd
+/// `duration` or `max_attempts`. Like [`exposure_deadlines`], this is
+/// advisory only — rp does not enforce it (the inner ops do).
+pub(crate) fn centering_deadlines(
+    max_attempts: usize,
+    capture_duration: Duration,
+    solve_time_estimate: Duration,
+    slew_overhead_estimate: Duration,
+) -> (u64, u64) {
+    let per_iter = capture_duration
+        .saturating_add(solve_time_estimate)
+        .saturating_add(slew_overhead_estimate);
+    let predicted_ms = u64::try_from(per_iter.as_millis()).unwrap_or(u64::MAX);
+    let max_ms = predicted_ms.saturating_mul(max_attempts as u64);
+    (predicted_ms, max_ms)
+}
+
 /// Floor on the predictive slew deadline (§2.1 of the predictive-deadlines
 /// plan). A short slew still gets at least this long before it's considered
 /// overrun, covering fixed overheads that `distance / rate` ignores:
