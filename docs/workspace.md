@@ -18,6 +18,7 @@ belong in any single service design doc.
 | [calibrator-flats](services/calibrator-flats.md) | — (orchestrator plugin) | 11170 | `docs/services/calibrator-flats.md` |
 | [sky-survey-camera](services/sky-survey-camera.md) | Camera (simulator) | 11116 | `docs/services/sky-survey-camera.md` |
 | [qhy-camera](services/qhy-camera.md) | Camera (+ FilterWheel) — QHYCCD hardware | 11121 | `docs/services/qhy-camera.md` (design + BDD scaffold landed, all scenarios `@wip` pending implementation; native QHYCCD SDK dep, gated out of default build) |
+| [zwo-camera](services/zwo-camera.md) | Camera (+ FilterWheel) — ZWO ASI/EFW hardware | 11122 | `docs/services/zwo-camera.md` (design + ADR-008 + BDD feature files landed, all scenarios `@wip` pending implementation; native ZWO SDK dep, gated out of default build) |
 | [star-adventurer-gti](services/star-adventurer-gti.md) | Telescope | 11117 | `docs/services/star-adventurer-gti.md` (Phase 2 — BDD scaffold landed; all scenarios `@wip` pending Phase 3 implementation) |
 | [pa-falcon-rotator](services/falcon-rotator.md) | Rotator + Switch (status) | 11118 | `docs/services/falcon-rotator.md` |
 | sentinel-app | — (standalone Leptos crate; `cargo leptos` build target `sentinel-dashboard`, **not yet wired into sentinel**) | — | — |
@@ -44,12 +45,16 @@ belong in any single service design doc.
 | [ADR-003](decisions/003-authentication-for-device-access.md) | Authentication for device access |
 | [ADR-004](decisions/004-testing-strategy-for-http-client-error-paths.md) | Testing strategy for HTTP-client error paths |
 | [ADR-005](decisions/005-plate-solver.md) | Plate solver: ASTAP via subprocess + verification spike |
+| [ADR-006](decisions/006-typed-physical-quantities-for-mount-pointing.md) | Typed physical quantities (newtypes) for mount pointing |
+| [ADR-007](decisions/007-rusty-photon-driver-shared-crate.md) | Extract `rusty-photon-driver` — the shared ASCOM-driver adapter |
+| [ADR-008](decisions/008-zwo-camera-native-sdk-ffi.md) | `zwo-camera` native ZWO SDK: author-maintained `zwo-rs`/`libzwo-sys` FFI + MIT-SDK public caching |
 | **Plans** (in-flight initiatives — see [docs/plans/](plans/)) | |
 | [predictive-deadlines-and-watchdog.md](plans/predictive-deadlines-and-watchdog.md) | Predictive operation deadlines in `rp` + Sentinel operation watchdog (5 phases); [phase-1 implementation plan](plans/predictive-deadlines-phase1-event-surface.md), [phase-2 §2.1 slew plan](plans/predictive-deadlines-phase2-slew.md) |
 | [bazel-migration.md](plans/bazel-migration.md) | Bazel build alongside Cargo (shadow mode) |
 | [filemonitor-packaging.md](plans/filemonitor-packaging.md) | Filemonitor OS packaging |
 | [i18n.md](plans/i18n.md) | Workspace internationalization: scope, tech-stack, and translation-sourcing options |
 | [ui-testing.md](plans/ui-testing.md) | ui-htmx UI-behavior testing strategy: BDD-embedded `scraper` DOM assertions + cross-OS `insta` snapshots + an advisory `thirtyfour` browser layer, with an anticipatory spike plan; Bazel-primary aware; Gherkin stays the source of truth |
+| [zwo-driver.md](plans/zwo-driver.md) | ZWO ASI camera + EFW filter-wheel Alpaca driver (`zwo-camera`, port 11122) + author-maintained `zwo-rs`/`libzwo-sys` FFI; the ZWO analogue of `qhy-camera` (MIT SDK → public cache, but no pre-existing Rust FFI). See [`docs/services/zwo-camera.md`](services/zwo-camera.md) + [ADR-008](decisions/008-zwo-camera-native-sdk-ffi.md) |
 | [i18n-cli-spike.md](plans/archive/i18n-cli-spike.md) | Tech spike landing Fluent + `i18n-embed` behind `ppba-driver`'s clap CLI (en + de, archived 2026-05-24) |
 | [plate-solver.md](plans/archive/plate-solver.md) | plate-solver rp-managed service implementation (ADR-005 sequencing, archived 2026-05-15) |
 | [pa-falcon-rotator-implementation.md](plans/archive/pa-falcon-rotator-implementation.md) | pa-falcon-rotator Phase 2 (BDD scaffold) + Phase 3 (Rotator + Status Switch implementation, archived 2026-05-18) |
