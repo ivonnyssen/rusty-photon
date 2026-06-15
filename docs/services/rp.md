@@ -2956,19 +2956,58 @@ application logic.
 
 #### System
 - `GET /health` — health check
-- `GET /api/events/subscribe` — WebSocket or SSE stream of real-time events
+- `GET /api/events/subscribe` — SSE (Server-Sent Events) stream of real-time events
 
 ### Real-Time Stream
 
-The `/api/events/subscribe` endpoint provides a WebSocket (or SSE) connection
-that streams all events in real time. Any consumer that needs live events
-connects here — UIs for rendering state, and monitoring services like
-Sentinel for tracking operation deadlines. The stream includes the same
-events that are delivered to plugin webhooks.
+`GET /api/events/subscribe` is a [Server-Sent Events](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events)
+stream (`Content-Type: text/event-stream`) carrying every event the
+[Event System](#event-system) emits — the same envelopes delivered to plugin
+webhooks, plus stream-control frames. Any consumer that needs live events
+connects here: UIs for rendering state, and the Sentinel operation watchdog
+for tracking deadlines and rp liveness. It is the primary mechanism for
+passive consumers — push updates without the webhook ack/completion protocol.
 
-This is the primary mechanism for passive consumers. Clients receive push
-updates over the stream without the overhead of the webhook
-ack/completion protocol.
+**Frame format.** Each event is one SSE frame:
+
+- `id:` — the envelope's `event_seq` (the monotonic total order; doubles as
+  the `Last-Event-ID` replay cursor).
+- `event:` — the event type (e.g. `slew_started`).
+- `data:` — the full [Event Envelope](#event-envelope) as JSON.
+
+A `:keep-alive` comment is sent every 15 s so idle connections survive
+middleboxes.
+
+**Reconnect & replay.** rp retains the most recent 512 events in memory. A
+reconnecting client sends its last seen `event_seq` — via the standard
+`Last-Event-ID` header (the browser `EventSource` API sets this automatically)
+or the explicit `?last_event_id=<seq>` query parameter (the header wins if
+both are present). The server replays every retained event after that cursor,
+oldest first, then resumes the live tail. The replay→live handoff is
+exactly-once: an event is delivered via replay or live, never both, never
+neither.
+
+**Gaps.** If the cursor predates the retained window (the client was gone long
+enough that its next expected event was evicted), the stream leads with a
+`stream_gap` event — `event: stream_gap`, no `id`,
+`data: {"event":"stream_gap","requested_after":<cursor>,"oldest_available":<seq>}`
+— so the consumer knows it lost history. Sentinel treats a `stream_gap` as a
+trigger to escalate any operation it was tracking when the gap occurred.
+
+**Slow consumers.** A consumer that falls more than the broadcast buffer
+(256 events) behind the live tail is sent a final `stream_gap`
+(`{"event":"stream_gap","lagged":<n>}`) and disconnected, rather than being
+allowed to back up the in-process channel. It recovers by reconnecting with
+its `Last-Event-ID` (replayed from the 512-event history, or told of the gap
+if it fell too far behind).
+
+**Liveness.** When rp shuts down it ends all in-flight subscribe streams, so a
+dropped stream is itself a signal: Sentinel treats the disconnection as an
+immediate trigger to attempt recovery (see
+[Sentinel Watchdog Integration](#sentinel-watchdog-integration)).
+
+Authentication and TLS, when configured, apply to this endpoint exactly as to
+every other route.
 
 ## Configuration
 

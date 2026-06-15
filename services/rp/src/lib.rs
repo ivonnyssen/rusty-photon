@@ -19,6 +19,7 @@ use std::sync::Arc;
 use tracing::{debug, info};
 
 use rp_tls::config::TlsConfig;
+use tokio_util::sync::CancellationToken;
 
 use crate::config::Config;
 use crate::equipment::EquipmentRegistry;
@@ -147,11 +148,19 @@ impl ServerBuilder {
         .with_planner_config(targets, default_min_alt)
         .with_plate_solver(plate_solver_client, plate_solver_default_radius);
 
+        // Cancellation token for in-flight SSE streams
+        // (`/api/events/subscribe`). Cloned into AppState so the handler can
+        // end its stream, and stored on BoundServer so `start()` can cancel it
+        // when the lifecycle shutdown fires — otherwise a long-lived SSE body
+        // would block axum's graceful shutdown from ever completing.
+        let sse_shutdown = CancellationToken::new();
+
         let state = AppState {
             equipment,
             mcp,
             session: session.clone(),
             image_cache,
+            sse_shutdown: sse_shutdown.clone(),
         };
 
         let router = build_router(state);
@@ -191,6 +200,7 @@ impl ServerBuilder {
             router,
             local_addr,
             tls,
+            sse_shutdown,
         })
     }
 }
@@ -207,6 +217,10 @@ pub struct BoundServer {
     router: axum::Router,
     local_addr: SocketAddr,
     tls: Option<TlsConfig>,
+    /// Cancelled by `start()` when the lifecycle shutdown future resolves, so
+    /// in-flight `/api/events/subscribe` SSE streams end and axum's graceful
+    /// shutdown can drain. A clone lives in `AppState` for the handler.
+    sse_shutdown: CancellationToken,
 }
 
 impl BoundServer {
@@ -215,17 +229,28 @@ impl BoundServer {
     }
 
     pub async fn start(self, shutdown: impl Future<Output = ()> + Send + 'static) -> Result<()> {
+        // Chain the lifecycle shutdown to the SSE cancellation token: when the
+        // signal fires, cancel in-flight `/api/events/subscribe` streams first
+        // so their long-lived response bodies end, then let axum's graceful
+        // shutdown drain the remaining connections. Without this, a connected
+        // SSE consumer would keep the server from ever shutting down.
+        let sse_shutdown = self.sse_shutdown;
+        let graceful = async move {
+            shutdown.await;
+            sse_shutdown.cancel();
+        };
+
         match self.tls {
             Some(ref tls_config) => {
                 info!("rp service started on {} (TLS)", self.local_addr);
-                rp_tls::server::serve_tls(self.listener, self.router, tls_config, shutdown)
+                rp_tls::server::serve_tls(self.listener, self.router, tls_config, graceful)
                     .await
                     .map_err(|e| crate::error::RpError::Server(e.to_string()))?;
             }
             None => {
                 info!("rp service started on {}", self.local_addr);
                 axum::serve(self.listener, self.router)
-                    .with_graceful_shutdown(shutdown)
+                    .with_graceful_shutdown(graceful)
                     .await?;
             }
         }
