@@ -71,8 +71,8 @@ does not break the SDK-less default build.
 | Concern | Mechanism |
 |---|---|
 | `cargo build --all` / local dev without SDK | The package is a normal workspace member, but **`cargo build -p qhy-camera` is expected to fail to link without the SDK**. Devs without the SDK use the rest of the workspace normally; `cargo rail`'s `merge_base=true` (affected-packages-only) means the package is only built when *its* files change. Documented in this design doc and the service README. |
-| CI | Add an explicit SDK-provisioning step that **pulls SDK 25.09.29 from the NAS / bazel-remote cache** (not a per-build qhyccd.com fetch) + installs `libusb-1.0-0-dev`, before building/testing this package, mirroring the cross-spawn pre-build pattern already in `.github/workflows/test.yml`. |
-| Raspberry Pi nightly runner | Add the SDK (25.09.29) + `libusb` install to `scripts/setup-pi-runner.sh`. **aarch64 confirmed available and linking** — `qhy-camera` is included in the Pi5 arm64 nightly matrix. |
+| CI | The ubuntu (`required` + `coverage`) jobs install the SDK via the author's published [`ivonnyssen/qhyccd-sdk-install@v1`](https://github.com/ivonnyssen/qhyccd-sdk-install) action (`version: "25.09.29"`) + `libusb-1.0-0-dev` (cached apt), gated on qhy-camera being in scope, **before** building. The SDK is publicly downloadable from qhyccd.com (no secret/auth), exactly as the reference `qhyccd-alpaca` / `qhyccd-rs` CI does. macOS/Windows jobs **exclude** qhy-camera (`--workspace --exclude qhy-camera`) and it is dropped from the windows-bdd matrix — Linux x86_64 only, matching the reference's Linux-only CI. |
+| Raspberry Pi nightly runner | `scripts/setup-pi-runner.sh` installs the SDK (25.09.29) + `libusb` from qhyccd.com into `/usr/local/lib`. **aarch64 confirmed available and linking** — `qhy-camera` builds on the Pi5 arm64 nightly (the published action covers x86_64/Windows/macOS, not linux-arm64, hence the Pi-side install; the arm64 tarball name differs from `sdk_linux64_*` — set `QHY_SDK_FILE`). |
 | Bazel (shadow build) | Tag the target `requires-cargo` initially (kept out of `bazel test //...` by `.bazelrc`'s default `-requires-cargo`). Later replace with a hand-written `crate.annotation` for `libqhyccd-sys` (link-search to the installed SDK, `static=qhyccd`, `dylib=usb-1.0`). Run `CARGO_BAZEL_REPIN=1 bazel mod tidy && bazel mod tidy` after adding `qhyccd-rs` (Rule 10). |
 
 ### Resolved facts (decided)
@@ -81,12 +81,16 @@ does not break the SDK-less default build.
   0.1.9 targets. (The `24.12.26` in the older `qhyccd-alpaca` doc is stale.)
 - **arm64: supported and linking** on the Pi5 runner — `qhy-camera` is in the
   arm64 nightly matrix.
-- **SDK distribution: cached** on the self-hosted build cache (see
-  [`bazel-remote-cache.md`](../skills/bazel-remote-cache.md)). CI and Bazel pull
-  SDK 25.09.29 from the cache — **no per-build fetch from qhyccd.com** — keeping
-  builds hermetic and offline-capable. The proprietary SDK blob must live behind
-  the authenticated/internal cache tier, **not** the anonymous-read public mirror
-  (`cache.rustyphoton.space`), pending the redistribution-terms question below.
+- **SDK distribution: public, via the published action.** *(Decision revised to
+  match the reference CI.)* The QHYCCD SDK is **publicly downloadable from
+  qhyccd.com** (`.../publish/SDK/25.09.29/sdk_linux64_25.09.29.tgz`); the author's
+  `ivonnyssen/qhyccd-sdk-install` action wraps the download + the SDK's own
+  `install.sh` (→ `/usr/local/lib` + `ldconfig`) and caches it. So **no
+  authenticated tier, secret, or SHA pin is needed** — the earlier
+  "authenticated/internal cache tier pending the redistribution-terms question"
+  plan was superseded once the reference's CI confirmed the SDK is fetched
+  publicly. (A self-hosted cache could still front it for hermeticity, but is not
+  required.)
 
 ### Open questions still to resolve before Track A lands
 

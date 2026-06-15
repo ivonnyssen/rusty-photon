@@ -84,37 +84,46 @@ sudo apt-get install -y \
 # qhy-camera links libqhyccd-sys (links = "qhyccd") + libusb-1.0 + stdc++. The
 # Pi5 arm64 nightly builds the full workspace, so the SDK must be present and
 # discoverable or qhy-camera fails to link. On Linux libqhyccd-sys hard-codes the
-# linker search path `/usr/local/lib`, so we install the SDK there (aarch64 is
-# confirmed supported). The blob is pulled from the authenticated internal tier
-# (set QHY_SDK_CACHE_BASE + QHY_SDK_CACHE_TOKEN; keep the real host out of the
-# repo — pass it via env, never commit it) and SHA-pinned. Set
+# linker search path `/usr/local/lib`, so the SDK's own install.sh (which copies
+# into /usr/local) is what we run. The SDK is publicly downloadable from
+# qhyccd.com (the `ivonnyssen/qhyccd-sdk-install` action does the same for the
+# x86_64 GitHub runners; that action does NOT cover linux-arm64, hence this).
+#
+# The arm64 tarball name on qhyccd.com differs from the x86_64 `sdk_linux64_*`
+# one — set QHY_SDK_FILE to the correct aarch64 archive for this release (the
+# default is a best guess; confirm it on qhyccd.com's SDK page). Set
 # QHY_SDK_SKIP=1 to skip (e.g. when the SDK is already installed by hand).
 QHY_SDK_VERSION="${QHY_SDK_VERSION:-25.09.29}"
+QHY_SDK_BASE="${QHY_SDK_BASE:-https://www.qhyccd.com/file/repository/publish/SDK}"
+QHY_SDK_FILE="${QHY_SDK_FILE:-sdk_Arm64_${QHY_SDK_VERSION}.tgz}"
 if [[ "${QHY_SDK_SKIP:-0}" == "1" ]]; then
   log "QHY_SDK_SKIP=1; skipping QHYCCD SDK install."
 elif [[ -f /usr/local/lib/libqhyccd.a ]]; then
   log "QHYCCD SDK already installed at /usr/local/lib; skipping."
-elif [[ -z "${QHY_SDK_CACHE_BASE:-}" || -z "${QHY_SDK_CACHE_TOKEN:-}" ]]; then
-  log "QHY_SDK_CACHE_BASE / QHY_SDK_CACHE_TOKEN unset; skipping QHYCCD SDK install."
-  log "  (qhy-camera will not link on this runner until the SDK is installed in /usr/local/lib.)"
 else
-  log "Installing QHYCCD SDK $QHY_SDK_VERSION (aarch64) into /usr/local..."
-  : "${QHY_SDK_SHA256:?set QHY_SDK_SHA256 to the pinned aarch64 tarball checksum}"
-  QHY_SDK_URL="${QHY_SDK_CACHE_BASE%/}/${QHY_SDK_VERSION}/sdk_linux_arm64_${QHY_SDK_VERSION}.tar.bz2"
+  log "Installing QHYCCD SDK $QHY_SDK_VERSION (aarch64) from qhyccd.com into /usr/local..."
   TMP=$(mktemp -d)
-  curl -fsSL --retry 3 --retry-delay 2 \
-    -H "Authorization: Bearer ${QHY_SDK_CACHE_TOKEN}" \
-    -o "$TMP/qhy-sdk.tar.bz2" "$QHY_SDK_URL"
-  ACTUAL=$(sha256sum "$TMP/qhy-sdk.tar.bz2" | awk '{print $1}')
-  [[ "$ACTUAL" == "$QHY_SDK_SHA256" ]] || { log "QHYCCD SDK SHA-256 mismatch (expected $QHY_SDK_SHA256, got $ACTUAL)"; exit 1; }
-  tar xf "$TMP/qhy-sdk.tar.bz2" -C "$TMP"
-  LIB_SRC=$(find "$TMP" -type f -name 'libqhyccd.a' -printf '%h\n' | head -n1)
-  INC_SRC=$(find "$TMP" -type f -name 'qhyccd.h' -printf '%h\n' | head -n1)
-  sudo cp -a "$LIB_SRC"/libqhyccd.* /usr/local/lib/
-  [[ -n "$INC_SRC" ]] && sudo cp -a "$INC_SRC"/*.h /usr/local/include/
-  sudo ldconfig
+  if curl -fsSL --retry 3 --retry-delay 2 -o "$TMP/qhy-sdk.tgz" \
+       "${QHY_SDK_BASE%/}/${QHY_SDK_VERSION}/${QHY_SDK_FILE}"; then
+    tar xzf "$TMP/qhy-sdk.tgz" -C "$TMP"
+    SDK_DIR=$(find "$TMP" -maxdepth 1 -type d -name 'sdk_*' | head -n1)
+    if [[ -n "$SDK_DIR" && -f "$SDK_DIR/install.sh" ]]; then
+      (cd "$SDK_DIR" && sudo sh install.sh)   # copies into /usr/local + ldconfig
+    else
+      # Fall back to copying the lib/include tree directly.
+      LIB_SRC=$(find "$TMP" -type f -name 'libqhyccd.a' -printf '%h\n' | head -n1)
+      INC_SRC=$(find "$TMP" -type f -name 'qhyccd.h' -printf '%h\n' | head -n1)
+      [[ -n "$LIB_SRC" ]] && sudo cp -a "$LIB_SRC"/libqhyccd.* /usr/local/lib/
+      [[ -n "$INC_SRC" ]] && sudo cp -a "$INC_SRC"/*.h /usr/local/include/
+      sudo ldconfig
+    fi
+    log "QHYCCD SDK installed into /usr/local/lib."
+  else
+    log "Could not download $QHY_SDK_FILE from qhyccd.com; set QHY_SDK_FILE to the"
+    log "  correct aarch64 archive (or install the SDK by hand). qhy-camera will not"
+    log "  link on this runner until the SDK is present in /usr/local/lib."
+  fi
   rm -rf "$TMP"
-  log "QHYCCD SDK installed into /usr/local/lib."
 fi
 
 # === 2. Dedicated unprivileged user ===

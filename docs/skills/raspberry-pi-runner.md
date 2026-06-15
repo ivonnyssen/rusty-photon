@@ -93,16 +93,16 @@ that `qhy-camera` links (next paragraph).
 `qhy-camera` links the proprietary QHYCCD SDK (`libqhyccd-sys` →
 `static=qhyccd` + `libusb-1.0` + `stdc++`). The Pi5 arm64 nightly builds the
 full workspace, so the SDK (pinned **25.09.29**, aarch64) must be installed —
-the `setup-pi-runner.sh` `=== 1b. QHYCCD SDK ===` section installs it into
-`/usr/local/lib` (where `libqhyccd-sys`'s `build.rs` hard-codes the linker
-search path). It is pulled from the authenticated internal cache tier
-(`QHY_SDK_CACHE_BASE` + `QHY_SDK_CACHE_TOKEN`, SHA-pinned via
-`QHY_SDK_SHA256`) — **not** the anonymous-read public mirror, because its
-redistribution terms forbid public hosting (see
-[`bazel-remote-cache.md`](bazel-remote-cache.md)). Set `QHY_SDK_SKIP=1` to skip
-when the SDK is already installed by hand. This is the only service excluded
-from the GitHub-hosted CI matrix (the SDK is Linux-only and proprietary), so
-the Pi nightly is its primary CI coverage.
+the `setup-pi-runner.sh` `=== 1b. QHYCCD SDK ===` section downloads it from
+**qhyccd.com** (publicly, no auth) and runs the SDK's `install.sh`, landing the
+libs in `/usr/local/lib` (where `libqhyccd-sys`'s `build.rs` hard-codes the
+linker search path). The published `ivonnyssen/qhyccd-sdk-install` action used by
+the GitHub-hosted x86_64 jobs does **not** cover linux-arm64, hence the Pi-side
+install; the arm64 archive name on qhyccd.com differs from the x86_64
+`sdk_linux64_*` one, so set `QHY_SDK_FILE` to the correct aarch64 archive (or
+`QHY_SDK_SKIP=1` if the SDK is already installed by hand). The GitHub-hosted
+**macOS/Windows** jobs exclude qhy-camera (Linux-only, matching the reference's
+Linux-only CI); ubuntu builds it with the SDK installed.
 
 ### 2. Dedicated unprivileged user
 
