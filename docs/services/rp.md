@@ -38,8 +38,9 @@ by calling tools on `rp`.
 ```
                        ┌───────────────────┐
                        │     Web UI        │
-                       │  (Leptos/WASM or  │
-                       │   any framework)  │
+                       │  (server-rendered │
+                       │   HTML or any     │
+                       │   framework)      │
                        │  NO app logic     │
                        └────────┬──────────┘
                                 │ REST + WebSocket
