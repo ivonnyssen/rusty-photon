@@ -393,6 +393,25 @@ The focuser driver knows its step rate; expose it via the Alpaca
 
 ### 2.4 Exposure deadline
 
+> **As-built note (§2.4 shipped).** Landed in
+> `services/rp/src/config/camera.rs` (`readout_time_estimate: Option<Duration>`,
+> humantime, per-camera) + `services/rp/src/mcp/internals.rs`
+> (`exposure_deadlines()` + `DEFAULT_READOUT_TIME_ESTIMATE = 15 s`,
+> `EXPOSURE_READOUT_HEADROOM = 30 s`), wired onto `exposure_started` in
+> `do_capture` via `.with_deadlines()`. Two decisions over the sketch
+> below: (1) the deadline is **advisory** — rp does **not** enforce it.
+> The plan said "rp itself does not need to enforce it (the camera driver
+> does)", so `do_capture`'s existing internal readout backstop
+> (`CAPTURE_READOUT_GRACE`, a separate and deliberately more-generous
+> `duration + 120 s` ceiling) is unchanged; the new `predicted`/`max`
+> ride the envelope purely for the Sentinel watchdog. (2) a single
+> conservative `DEFAULT_READOUT_TIME_ESTIMATE` (15 s) replaces the
+> per-detector-family default table — over-estimating `predicted` for fast
+> CMOS is harmless (it only relaxes the watchdog), and a real rig sets the
+> per-camera value. The authoritative contract is
+> [`docs/services/rp.md` §Event Envelope](../services/rp.md#event-envelope)
+> and the `capture` catalog row.
+
 ```text
 predicted = exposure_duration + camera.readout_time_estimate
 max       = predicted + READOUT_HEADROOM   // e.g. + 30 s for slow USB 2 cameras

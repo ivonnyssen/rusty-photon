@@ -896,6 +896,7 @@ fn camera_registry_with_meta(
                 gain: None,
                 offset: None,
                 focal_length_mm,
+                readout_time_estimate: None,
                 auth: None,
             },
             device: Some(cam),
@@ -4327,6 +4328,7 @@ fn auto_focus_registry(starting_position: i32) -> crate::equipment::EquipmentReg
                 gain: None,
                 offset: None,
                 focal_length_mm: None,
+                readout_time_estimate: None,
                 auth: None,
             },
             device: Some(Arc::new(camera)),
@@ -4850,11 +4852,13 @@ fn assert_end_mirrors_start(
     );
     // The matching `*_started` envelope carries deadline fields only for
     // operations with a predictive deadline (slew §2.1, park + move_focuser
-    // §2.2/§2.3); every other operation's start must still omit them. (Each
-    // converted operation's start is asserted present by its own test.)
+    // §2.2/§2.3, exposure §2.4); every other operation's start must still
+    // omit them. (Each converted operation's start is asserted present by
+    // its own test.)
     let has_predictive_deadline = start.event.starts_with("slew")
         || start.event.starts_with("park")
-        || start.event.starts_with("move_focuser");
+        || start.event.starts_with("move_focuser")
+        || start.event.starts_with("exposure");
     if !has_predictive_deadline {
         assert!(
             start.predicted_duration_ms.is_none(),
@@ -5269,6 +5273,12 @@ async fn capture_migrated_emits_exposure_triple_with_shared_operation_id() {
     assert_eq!(complete.payload["document_id"], document_id);
     assert_eq!(complete.payload["file_path"], image_path);
     assert_end_mirrors_start(&started, &complete);
+
+    // §2.4: the exposure deadline rides `exposure_started`. The camera has
+    // no configured `readout_time_estimate`, so the 15 s default applies:
+    // predicted = 100 ms + 15 s = 15100 ms; max = predicted + 30 s headroom.
+    assert_eq!(started.predicted_duration_ms, Some(15_100));
+    assert_eq!(started.max_duration_ms, Some(45_100));
 }
 
 #[tokio::test]
@@ -5297,6 +5307,20 @@ async fn capture_failure_emits_exposure_failed() {
         .unwrap()
         .contains("failed to start exposure"));
     assert_end_mirrors_start(&started, &failed);
+
+    // The deadline is sized from the request, not the camera's success, so a
+    // failed exposure still advertises it on `exposure_started` (§2.4).
+    assert_eq!(started.predicted_duration_ms, Some(15_100));
+    assert_eq!(started.max_duration_ms, Some(45_100));
+}
+
+#[test]
+fn exposure_deadlines_add_readout_and_headroom() {
+    // §2.4: predicted = duration + readout_estimate; max = predicted + 30 s.
+    let (predicted_ms, max_ms) =
+        super::internals::exposure_deadlines(Duration::from_secs(300), Duration::from_secs(8));
+    assert_eq!(predicted_ms, 308_000, "300 s exposure + 8 s readout");
+    assert_eq!(max_ms, 338_000, "predicted + 30 s readout headroom");
 }
 
 #[tokio::test]
