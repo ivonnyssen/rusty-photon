@@ -209,7 +209,7 @@ note).
 > schema** is [`docs/services/rp.md` §Event Envelope](../services/rp.md#event-envelope).
 > Three compat-driven refinements over the sketch below, all following
 > from Decision A (preserve the historical webhook keys; see the phase-1
-> implementation plan, [`predictive-deadlines-phase1-event-surface.md`](predictive-deadlines-phase1-event-surface.md)):
+> implementation plan, [`predictive-deadlines-phase1-event-surface.md`](archive/predictive-deadlines-phase1-event-surface.md)):
 > (1) the envelope keeps the historical **`event`** field (e.g.
 > `"slew_started"`) — there is no separate `operation` field; the
 > operation family is the event-name prefix. (2) Both the `*_started`

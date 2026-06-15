@@ -1,12 +1,22 @@
 # Phase 1 — Complete the Event Surface (implementation plan)
 
+**Status: COMPLETE (archived 2026-06-14).** Delivered in PR #346. The
+operation-event envelope (`EventEnvelope`), the `EventBus` `broadcast`
+refactor, and the `*_started` / `*_complete` / `*_failed` triple on every
+blocking operation all shipped to `main` and are verified there
+(`services/rp/src/events.rs`, the emit sites in
+`services/rp/src/mcp/internals.rs` and `services/rp/src/mcp/built_in/`, the
+`services/rp/tests/features/operation_events.feature` BDD suite, and
+`docs/services/rp.md` §Event Envelope). Parent plan (still active):
+[`predictive-deadlines-and-watchdog.md`](../predictive-deadlines-and-watchdog.md).
+
 This is the execution breakdown for **Phase 1** of
-[`predictive-deadlines-and-watchdog.md`](predictive-deadlines-and-watchdog.md).
+[`predictive-deadlines-and-watchdog.md`](../predictive-deadlines-and-watchdog.md).
 The parent plan defines *what* Phase 1 is (§Phase 1, §1.1–1.4); this doc
 records *how* it lands: concrete code changes at verified `file:line`
 anchors, the test seam, BDD scenarios, doc updates, decisions taken, and
 sequencing. Ordered test-first per
-[`development-workflow.md`](../skills/development-workflow.md).
+[`development-workflow.md`](../../skills/development-workflow.md).
 
 ## Status
 
