@@ -64,14 +64,23 @@ jobs:
       # in the test's instrumented_files manifest and survives Bazel's post-collector
       # LcovMerger intersection. Without it, the (1) EXPORT patch's main.rs coverage is
       # silently filtered back out. A rules_rust bump that drops/relocates this hunk would
-      # regress main.rs coverage with no test failure, so assert the patched line survives.
+      # regress main.rs coverage with no test failure, so assert the patched hunk survives.
       - name: Guard - rules_rust instrumented-files (data) patch applied & effective
         run: |
           # Force fetch+patch of rules_rust (the .bzl source is not itself a target).
           bazel build --nobuild @rules_rust//util/collect_coverage:collect_coverage
           src="$(bazel info output_base)/external/rules_rust+/rust/private/rustc.bzl"
-          if ! grep -Eq '"dependency_attributes": \[.*"data".*\]' "$src"; then
-            echo "::error::instrumented_files patch not effective: $src no longer has \"data\" in the coverage dependency_attributes. A rules_rust upgrade likely needs the patch re-rebased (third_party/patches/instrumented_files_include_data.patch)."
+          # Anchor the check to the coverage `instrumented_files_kwargs` block specifically,
+          # not just any dependency_attributes list that happens to contain "data" (rules_rust
+          # has unrelated ["data", "compile_data"] lists elsewhere). awk so the assertion is
+          # identical on GNU grep / BSD / CI; matches only `data` inside the kwargs `{ ... }`.
+          if ! awk '
+            /instrumented_files_kwargs = \{/ { inblk = 1 }
+            inblk && /"dependency_attributes":/ && /"data"/ { found = 1 }
+            inblk && /\}/ { inblk = 0 }
+            END { exit(found ? 0 : 1) }
+          ' "$src"; then
+            echo "::error::instrumented_files patch not effective: the coverage instrumented_files_kwargs block in $src no longer carries \"data\" in dependency_attributes. A rules_rust upgrade likely needs the patch re-rebased (third_party/patches/instrumented_files_include_data.patch)."
             exit 1
           fi
           echo "rules_rust instrumented-files (data) patch is applied and effective."
