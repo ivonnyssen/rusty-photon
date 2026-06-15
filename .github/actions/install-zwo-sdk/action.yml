@@ -1,0 +1,97 @@
+name: Install ZWO ASI/EFW SDK
+description: >-
+  Install the MIT-licensed ZWO ASI camera + EFW filter-wheel SDK (and the
+  libusb-1.0 / libclang prerequisites) so the `zwo-camera` service can link.
+  The SDK links unconditionally via libzwo-sys, so this is required even for
+  `--features simulation` builds (it removes the camera, not the link). See
+  docs/services/zwo-camera.md "Native dependency & build gating" and ADR-008.
+
+inputs:
+  ref:
+    description: >-
+      indi-3rdparty git ref to pull the vendored ZWO `.bin` shared libraries
+      from. Pin to a commit SHA for reproducibility. INDI vendors ZWO's
+      upstream prebuilt blobs (MIT) under libasi/<arch>/.
+    default: master
+  prefix:
+    description: Install prefix for the SDK libraries and headers.
+    default: /usr/local
+
+runs:
+  using: composite
+  steps:
+    # Windows is not a Phase C target for this service (the INDI mirror ships
+    # ELF/Mach-O blobs only; the Windows ZWO SDK is a separate package). CI
+    # excludes zwo-camera from the Windows build instead — see test.yml.
+    - name: Skip on Windows
+      if: runner.os == 'Windows'
+      shell: bash
+      run: echo "ZWO SDK provisioning is not supported on Windows; zwo-camera is excluded from the Windows build."
+
+    - name: Install libusb + clang (Linux)
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo apt-get update -qq
+        # libusb-1.0-0-dev: the SDK links `-lusb-1.0`.
+        # clang/libclang-dev: bindgen (in libzwo-sys' build script) needs libclang.
+        sudo apt-get install -y --no-install-recommends \
+          libusb-1.0-0-dev \
+          clang \
+          libclang-dev
+
+    - name: Install libusb + llvm (macOS)
+      if: runner.os == 'macOS'
+      shell: bash
+      run: |
+        brew install libusb llvm
+        # bindgen needs libclang; surface Homebrew's llvm to subsequent steps.
+        echo "LIBCLANG_PATH=$(brew --prefix llvm)/lib" >> "$GITHUB_ENV"
+
+    - name: Download + install the ZWO SDK (Linux/macOS)
+      if: runner.os != 'Windows'
+      shell: bash
+      env:
+        PREFIX: ${{ inputs.prefix }}
+        REF: ${{ inputs.ref }}
+      run: |
+        set -euo pipefail
+        BASE="https://github.com/indilib/indi-3rdparty/raw/${REF}/libasi"
+        case "${{ runner.os }}-${{ runner.arch }}" in
+          Linux-X64)    ARCH=x64 ;;
+          Linux-ARM64)  ARCH=armv8 ;;
+          macOS-ARM64)  ARCH=mac_arm64 ;;
+          macOS-X64)    ARCH=mac_x64 ;;
+          *) echo "::error::unsupported ZWO SDK arch: ${{ runner.os }}-${{ runner.arch }}"; exit 1 ;;
+        esac
+        echo "install-zwo-sdk: arch=$ARCH prefix=$PREFIX ref=$REF"
+        sudo install -d "$PREFIX/lib" "$PREFIX/include"
+
+        # Headers (MIT) — also include the license notice, which must travel
+        # with the cached blob.
+        for h in ASICamera2.h EFW_filter.h EAF_focuser.h license.txt; do
+          sudo curl -fsSL "$BASE/$h" -o "$PREFIX/include/$h"
+        done
+
+        # Shared libraries. INDI's `.bin` is ZWO's upstream `.so`/`.dylib`;
+        # install under the linker name so `-lASICamera2` / `-lEFWFilter` resolve.
+        if [[ "${{ runner.os }}" == "macOS" ]]; then
+          EXT=dylib
+        else
+          EXT=so
+        fi
+        sudo curl -fsSL "$BASE/$ARCH/libASICamera2.bin" -o "$PREFIX/lib/libASICamera2.$EXT"
+        sudo curl -fsSL "$BASE/$ARCH/libEFWFilter.bin"  -o "$PREFIX/lib/libEFWFilter.$EXT"
+        # EAF focuser is not linked yet (Future Work); install it so the runner is
+        # ready when focuser support lands — mirrors zwo-rs/ci/install-zwo-sdk.sh.
+        sudo curl -fsSL "$BASE/$ARCH/libEAFFocuser.bin" -o "$PREFIX/lib/libEAFFocuser.$EXT" || true
+
+        if [[ "${{ runner.os }}" == "macOS" ]]; then
+          # macOS dylibs ship with an install_name that must match the on-disk
+          # path before they will link (INDI automates this).
+          sudo install_name_tool -id "$PREFIX/lib/libASICamera2.dylib" "$PREFIX/lib/libASICamera2.dylib"
+          sudo install_name_tool -id "$PREFIX/lib/libEFWFilter.dylib" "$PREFIX/lib/libEFWFilter.dylib"
+        elif command -v ldconfig >/dev/null 2>&1; then
+          sudo ldconfig
+        fi
+        echo "install-zwo-sdk: installed libASICamera2 + libEFWFilter under $PREFIX/lib"

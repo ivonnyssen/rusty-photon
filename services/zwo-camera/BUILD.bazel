@@ -1,0 +1,75 @@
+load("@cr//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+
+exports_files(["Cargo.toml"], visibility = ["//visibility:public"])
+
+# zwo-camera links the native ZWO ASI/EFW SDK transitively via
+# zwo-rs → libzwo-sys (see docs/services/zwo-camera.md "Native dependency & build
+# gating" and ADR-008). Bazel cannot link the prebuilt blob until a hand-written
+# `crate.annotation` for libzwo-sys lands, so every target here carries:
+#   - `manual`        — excludes it from `//...` wildcards (the only tag that
+#                       gates `bazel build //...`, which CI runs), keeping the
+#                       shadow Bazel build green on runners without the SDK.
+#   - `requires-cargo` — the workspace's semantic marker for "needs a real
+#                       toolchain/native dep"; also keeps the test out of
+#                       `bazel test`'s default `-requires-cargo` filter.
+# Build locally (with the SDK installed) via
+# `bazel build //services/zwo-camera:zwo-camera`.
+_GATING_TAGS = [
+    "manual",
+    "requires-cargo",
+]
+
+_INTRA_WORKSPACE_DEPS = [
+    "//crates/rusty-photon-config:rusty-photon-config",
+    "//crates/rusty-photon-service-lifecycle:rusty-photon-service-lifecycle",
+]
+
+rust_library(
+    name = "zwo-camera_lib",
+    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]),
+    aliases = aliases(),
+    crate_name = "zwo_camera",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    tags = _GATING_TAGS,
+    visibility = ["//visibility:public"],
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+)
+
+rust_binary(
+    name = "zwo-camera",
+    srcs = ["src/main.rs"],
+    aliases = aliases(),
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    # Pin CARGO_PKG_NAME to the Cargo package name (rules_rust defaults it to the
+    # Bazel target name), matching the other services.
+    rustc_env = {"CARGO_PKG_NAME": "zwo-camera"},
+    tags = _GATING_TAGS,
+    visibility = ["//visibility:public"],
+    deps = [":zwo-camera_lib"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+)
+
+# Unit tests compile the lib with `crate_features = ["simulation"]` so the
+# `#[cfg(all(test, feature = "simulation"))]` end-to-end build/bind test compiles
+# and runs, matching the Cargo `--all-features` coverage job.
+rust_test(
+    name = "zwo-camera_unit_test",
+    size = "small",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate = ":zwo-camera_lib",
+    crate_features = ["simulation"],
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    tags = _GATING_TAGS,
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)

@@ -18,7 +18,7 @@ belong in any single service design doc.
 | [calibrator-flats](services/calibrator-flats.md) | — (orchestrator plugin) | 11170 | `docs/services/calibrator-flats.md` |
 | [sky-survey-camera](services/sky-survey-camera.md) | Camera (simulator) | 11116 | `docs/services/sky-survey-camera.md` |
 | [qhy-camera](services/qhy-camera.md) | Camera (+ FilterWheel) — QHYCCD hardware | 11121 | `docs/services/qhy-camera.md` (design + BDD scaffold landed, all scenarios `@wip` pending implementation; native QHYCCD SDK dep, gated out of default build) |
-| [zwo-camera](services/zwo-camera.md) | Camera (+ FilterWheel) — ZWO ASI/EFW hardware | 11122 | `docs/services/zwo-camera.md` (design + ADR-008 + BDD feature files landed, all scenarios `@wip` pending implementation; native ZWO SDK dep, gated out of default build) |
+| [zwo-camera](services/zwo-camera.md) | Camera (+ FilterWheel) — ZWO ASI/EFW hardware | 11122 | Phase C (Track A) scaffold landed: bare Alpaca server enumerating ASI cameras via `zwo-rs`, builds/links the native SDK, serves the simulation camera; Bazel `manual`+`requires-cargo`-gated. Device traits are Phase E (BDD scenarios `@wip`). Native ZWO SDK dep, gated out of the default build. See `docs/services/zwo-camera.md` + ADR-008. |
 | [star-adventurer-gti](services/star-adventurer-gti.md) | Telescope | 11117 | `docs/services/star-adventurer-gti.md` (Phase 2 — BDD scaffold landed; all scenarios `@wip` pending Phase 3 implementation) |
 | [pa-falcon-rotator](services/falcon-rotator.md) | Rotator + Switch (status) | 11118 | `docs/services/falcon-rotator.md` |
 | sentinel-app | — (standalone Leptos crate; `cargo leptos` build target `sentinel-dashboard`, **not yet wired into sentinel**) | — | — |

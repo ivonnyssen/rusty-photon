@@ -1,14 +1,29 @@
 # Zwo-Camera Service Design
 
-> **Status:** Design phase (pre-implementation), per the design→BDD→implementation
-> workflow in
-> [`docs/skills/development-workflow.md`](../skills/development-workflow.md). No
-> service code yet; this document is the specification that drives the BDD
-> scenarios and implementation. The FFI crates it consumes
-> ([`zwo-rs`](https://github.com/ivonnyssen/zwo-rs) + `libzwo-sys`) are stood up
-> as a standalone repo (bindgen skeleton, green CI). (Distinct from the *Delivery
-> phasing* §, whose Phase A–G track the FFI-de-risk → full-driver rollout; the
-> agreed decision record is [`docs/plans/zwo-driver.md`](../plans/zwo-driver.md).)
+> **Status:** **Phase C (Track A) scaffold landed.** The `services/zwo-camera`
+> crate now stands up a *bare* Alpaca server on port 11122 that enumerates ASI
+> cameras via `zwo-rs` and registers each as a minimal `Camera` device (identity
+> + cached geometry; the rest of the imaging surface is the trait's
+> `NOT_IMPLEMENTED` default). It builds and links the native SDK
+> (`zwo-camera → zwo-rs → libzwo-sys → ` ZWO SDK), is gate-green
+> (`cargo rail --profile commit` + clippy `--all-features`), serves the
+> simulation camera over Alpaca, and is wired into Cargo (`{ workspace = true }`,
+> `zwo-rs` pinned at the real-handles rev) and Bazel (a `manual` +
+> `requires-cargo`-tagged `BUILD.bazel`, kept out of `bazel build //...` until a
+> `libzwo-sys` `crate.annotation` Bazel-izes the native link; `MODULE.bazel.lock`
+> repinned). The **device-trait work is Phase E** (this document remains its
+> specification, driving the `@wip` BDD scenarios). The FFI crates it consumes
+> ([`zwo-rs`](https://github.com/ivonnyssen/zwo-rs) + `libzwo-sys`) live in a
+> standalone repo. (Distinct from the *Delivery phasing* §, whose Phase A–G track
+> the FFI-de-risk → full-driver rollout; the agreed decision record is
+> [`docs/plans/zwo-driver.md`](../plans/zwo-driver.md).)
+>
+> **Remaining Track-A item:** wiring the SDK-provisioning step into the shared CI
+> workflows (`test.yml`/`conformu.yml`/`safety.yml`) across the OS matrix — the
+> reusable `.github/actions/install-zwo-sdk` composite action and the Pi-runner
+> provisioning have landed, but the cross-platform wiring (esp. Windows, where the
+> INDI mirror ships no blob, and the `infra`-triggered full-`--workspace` builds)
+> is an unresolved cross-cutting decision (see *Gating plan* and *Open questions*).
 
 ## Overview
 

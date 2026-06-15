@@ -1,0 +1,36 @@
+[package]
+name = "zwo-camera"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "ASCOM Alpaca Camera (+ EFW FilterWheel) driver for ZWO ASI hardware"
+
+[features]
+default = []
+# Forwards to `zwo-rs/simulation`: a hardware-free, in-Rust simulated camera/EFW
+# for development and tests. As in qhyccd-rs this removes the *camera*, NOT the
+# SDK *link* — the native ZWO SDK is still linked. See the README and
+# docs/services/zwo-camera.md "Native dependency & build gating".
+simulation = ["zwo-rs/simulation"]
+# Cross-driver alias for `simulation` (the workspace-wide test-backend name).
+mock = ["simulation"]
+
+[lints]
+workspace = true
+
+[dependencies]
+ascom-alpaca = { workspace = true, features = ["server", "camera"] }
+zwo-rs = { workspace = true }
+tokio = { workspace = true }
+axum = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+rusty-photon-config = { workspace = true }
+rusty-photon-service-lifecycle = { workspace = true }
