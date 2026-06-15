@@ -24,7 +24,6 @@ members = [
   "services/rp",
   "services/plate-solver",
   "services/sentinel",
-  "services/sentinel-app",
   "services/sky-survey-camera",
   "services/star-adventurer-gti",
   "services/ui-htmx",
@@ -149,15 +148,6 @@ unic-langid = { version = "0.9", features = ["macros"] }
 syn = { version = "2", features = ["full"] }
 quote = "1"
 proc-macro2 = "1"
-
-[[workspace.metadata.leptos]]
-name = "sentinel-dashboard"
-bin-package = "sentinel"
-lib-package = "sentinel-app"
-site-root = "target/site"
-site-pkg-dir = "pkg"
-site-addr = "127.0.0.1:11114"
-reload-port = 11115
 
 # Trim debug info to keep `target/` small and link fast. Workspace code keeps
 # line tables so panic backtraces still resolve to file:line; deps get nothing

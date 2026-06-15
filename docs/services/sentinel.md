@@ -134,7 +134,7 @@ The web dashboard runs on port 11114 (configurable) and provides:
 - **JSON API**: `/api/status` (monitor statuses), `/api/history` (notification history)
 - **Health check**: `/health` returns 200 OK
 
-The `sentinel-app` crate contains Leptos components for a future WASM-hydrated frontend. Currently the dashboard uses server-rendered HTML with vanilla JavaScript for simplicity. The Leptos components are available for `cargo-leptos` builds.
+The dashboard is server-rendered HTML with vanilla JavaScript, built with `format!()` in `services/sentinel/src/dashboard.rs`. (An experimental `sentinel-app` Leptos/WASM frontend was scaffolded and later abandoned; it was removed in 2026-06 — see [docs/plans/archive/sentinel-app-leptos-dashboard.md](../plans/archive/sentinel-app-leptos-dashboard.md).)
 
 ## Module Structure
 

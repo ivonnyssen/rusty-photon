@@ -112,8 +112,10 @@ repo root/
 
 ### Phase 4 — `sentinel-app` WASM (DROPPED 2026-05-24)
 
-Cancelled: Leptos is not used today, so `sentinel-app` stays out of the Bazel
-graph. If a WASM UI returns, re-open this phase — the `wasm_bindgen` /
+Cancelled: Leptos is not used today, so `sentinel-app` stayed out of the Bazel
+graph. The crate was removed entirely in 2026-06 (see
+[archive/sentinel-app-leptos-dashboard.md](archive/sentinel-app-leptos-dashboard.md)).
+If a WASM UI returns, re-open this phase — the `wasm_bindgen` /
 `@platforms//cpu:wasm32` / hydrate+ssr approach noted in earlier revisions is
 the starting point.
 

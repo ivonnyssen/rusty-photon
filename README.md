@@ -26,8 +26,6 @@ Coverage has two columns: **Cargo** is the canonical, required coverage; **Bazel
 
 > 🚧 **In development:** [qhy-camera](services/qhy-camera) — ASCOM Camera (+ FilterWheel) driver for QHYCCD hardware (port 11121; design + BDD scaffold landed). Links a proprietary vendor SDK, so it is gated out of the default build. See [docs/services/qhy-camera.md](docs/services/qhy-camera.md).
 
-`sentinel-app` is a Leptos web frontend crate (a `cargo leptos` build target for the sentinel dashboard), not a standalone service, so it is not listed above.
-
 ### RP (Main Application)
 
 Equipment gateway, event bus, and safety enforcer. Exposes all hardware as MCP tools, emits events for plugins to consume, and enforces safety constraints. Orchestration is handled by a separate orchestrator plugin that drives the session by calling tools on `rp`.
@@ -224,7 +222,6 @@ rusty-photon/
     qhy-camera/            ASCOM Camera + FilterWheel — QHYCCD hardware (design + BDD scaffold; SDK-gated)
     phd2-guider/           PHD2 client library (TCP/JSON RPC)
     sentinel/              Monitoring service (HTTP consumer)
-    sentinel-app/          Leptos web frontend for the sentinel dashboard
     calibrator-flats/      Flat-field calibration orchestrator plugin (CoverCalibrator)
     plate-solver/          rp-managed HTTP service wrapping the ASTAP CLI
     ui-htmx/               Server-rendered web configuration UI (BFF)
