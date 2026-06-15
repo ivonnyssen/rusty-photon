@@ -21,20 +21,37 @@ module(
 bazel_dep(name = "rules_rust", version = "0.70.0")
 bazel_dep(name = "platforms", version = "1.0.0")
 
-# Pinned single-file patch to rules_rust's coverage collector. BDD rust_tests
-# spawn the service binary as a child process; the collector merges the child's
-# profraw but `llvm-cov export` only emits coverage for functions in an -object
-# on its command line, and stock rules_rust passes ONLY the test binary. The
-# patch appends each spawned binary (RUST_COVERAGE_EXTRA_OBJECTS, set on the BDD
-# targets) as an extra -object so spawned-binary src/ coverage is exported.
-# Inert when the var is unset. Upstream has no equivalent hook (PRs #3490/#3808
-# unmerged; HEAD identical), so this is carried until upstreamed. The
-# `bazel/cargo target parity` CI job guards that the patch still applies and is
-# effective. See docs/plans/bazel-migration.md "Coverage under Bazel".
+# Two pinned patches to rules_rust, both serving spawned-service-binary coverage
+# (the two halves of getting a BDD/integration child binary's src/ — including
+# src/main.rs — into the report). See docs/plans/bazel-migration.md.
+#
+# 1. collect_coverage_extra_objects.patch — BDD rust_tests spawn the service
+#    binary as a child process; the collector merges the child's profraw but
+#    `llvm-cov export` only emits coverage for functions in an -object on its
+#    command line, and stock rules_rust passes ONLY the test binary. The patch
+#    appends each spawned binary (RUST_COVERAGE_EXTRA_OBJECTS, set on the BDD
+#    targets) as an extra -object so spawned-binary src/ coverage is EXPORTED.
+#    Inert when the var is unset.
+#
+# 2. instrumented_files_include_data.patch — adds `data` to the rust rules'
+#    coverage `dependency_attributes`. llvm-cov (via patch 1) emits main.rs, but
+#    bazel's lcov_merger then INTERSECTS that report with the test's
+#    instrumented-files manifest, which is built only from `deps`/`crate`/`srcs`
+#    — so a spawned binary reached via `data` (its src/main.rs) is filtered back
+#    out. Including `data` puts the instrumented service binary's sources in the
+#    manifest so main.rs survives the merge. Without this, patch 1's exported
+#    main.rs coverage is silently dropped.
+#
+# Upstream has no equivalent hooks (collect_coverage PRs #3490/#3808 unmerged;
+# HEAD identical), so these are carried until upstreamed. The `bazel/cargo
+# target parity` CI job guards that the patches still apply and are effective.
 single_version_override(
     module_name = "rules_rust",
     patch_strip = 1,
-    patches = ["//third_party/patches:collect_coverage_extra_objects.patch"],
+    patches = [
+        "//third_party/patches:collect_coverage_extra_objects.patch",
+        "//third_party/patches:instrumented_files_include_data.patch",
+    ],
 )
 
 # --- Rust toolchain --------------------------------------------------------
