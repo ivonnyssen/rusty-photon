@@ -18,12 +18,18 @@
 > the FFI-de-risk → full-driver rollout; the agreed decision record is
 > [`docs/plans/zwo-driver.md`](../plans/zwo-driver.md).)
 >
-> **Remaining Track-A item:** wiring the SDK-provisioning step into the shared CI
-> workflows (`test.yml`/`conformu.yml`/`safety.yml`) across the OS matrix — the
-> reusable `.github/actions/install-zwo-sdk` composite action and the Pi-runner
-> provisioning have landed, but the cross-platform wiring (esp. Windows, where the
-> INDI mirror ships no blob, and the `infra`-triggered full-`--workspace` builds)
-> is an unresolved cross-cutting decision (see *Gating plan* and *Open questions*).
+> **CI provisioning landed (full cross-platform).** The
+> `.github/actions/install-zwo-sdk` composite action provisions the SDK on
+> Linux + macOS (INDI mirror) and Windows (ZWO's developer-SDK CDN zips), and is
+> wired into `test.yml`'s build/test jobs (Linux/macOS/Windows + coverage), gated
+> so only `infra`- or zwo-camera-affected PRs pay the cost. `conformu.yml` /
+> `safety.yml` exclude `zwo-camera` (no ConformU test / no sanitizer value yet),
+> and the aarch64 Pi-nightly runner is provisioned via `scripts/setup-pi-runner.sh`.
+> Bazel stays excluded via the `manual` tag, so it needs no SDK. **Remaining
+> Track-A validation** (can't be exercised from a Linux dev box): confirm the
+> macOS arm64 + Windows x64 link on real runners, re-run the updated
+> `setup-pi-runner.sh` on the Pi, and pin the SDK refs / add download caching
+> (the Windows camera zip is ~112 MB). See *Gating plan* and *Open questions*.
 
 ## Overview
 
