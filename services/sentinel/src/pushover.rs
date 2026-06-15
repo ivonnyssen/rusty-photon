@@ -23,6 +23,9 @@ pub struct PushoverNotifier {
     default_priority: i8,
     #[debug(skip)]
     default_sound: String,
+    /// API endpoint to POST to. Defaults to [`PUSHOVER_API_URL`]; overridden
+    /// by the notifier config's `api_url` (stub server in tests, self-hosted relay).
+    endpoint: String,
     #[debug(skip)]
     http: Arc<dyn HttpClient>,
 }
@@ -35,9 +38,18 @@ impl PushoverNotifier {
             default_title,
             default_priority,
             default_sound,
+            api_url,
         } = config;
 
-        tracing::debug!("Created PushoverNotifier with title '{}'", default_title);
+        let endpoint = api_url
+            .clone()
+            .unwrap_or_else(|| PUSHOVER_API_URL.to_string());
+
+        tracing::debug!(
+            "Created PushoverNotifier with title '{}' targeting {}",
+            default_title,
+            endpoint
+        );
 
         Self {
             api_token: api_token.clone(),
@@ -45,6 +57,7 @@ impl PushoverNotifier {
             default_title: default_title.clone(),
             default_priority: *default_priority,
             default_sound: default_sound.clone(),
+            endpoint,
             http,
         }
     }
@@ -85,7 +98,7 @@ impl Notifier for PushoverNotifier {
             priority
         );
 
-        let response = self.http.post_form(PUSHOVER_API_URL, &params).await?;
+        let response = self.http.post_form(&self.endpoint, &params).await?;
 
         if response.status != 200 {
             return Err(crate::SentinelError::Notifier(format!(
@@ -113,6 +126,7 @@ mod tests {
             default_title: "Test Alert".to_string(),
             default_priority: 0,
             default_sound: "pushover".to_string(),
+            api_url: None,
         }
     }
 
