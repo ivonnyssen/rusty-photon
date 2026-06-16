@@ -27,6 +27,13 @@ struct Args {
     /// Log level: trace, debug, info, warn, error.
     #[arg(short, long, default_value = "info", value_parser = parse_log_level)]
     log_level: Level,
+
+    /// Test-only: start with an *empty* simulation backend (no cameras), to
+    /// exercise the zero-camera startup path (contract C0). Only meaningful when
+    /// built with `--features simulation`.
+    #[cfg(feature = "simulation")]
+    #[arg(long, hide = true)]
+    simulation_empty: bool,
 }
 
 fn parse_log_level(s: &str) -> Result<Level, String> {
@@ -43,6 +50,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // so config editing is never disabled for lack of one.
     let config_path = rusty_photon_config::resolve_config_path("zwo-camera", args.config)?;
     let overrides = CliOverrides { port: args.port };
+    #[cfg(feature = "simulation")]
+    let simulation_empty = args.simulation_empty;
     debug!(config = ?config_path, "starting zwo-camera");
 
     // No materialize_identity: ASCOM UniqueIDs are derived from the camera/EFW
@@ -56,7 +65,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .run_with_reload(move |shutdown, reload| async move {
             loop {
                 let config = load_effective_config(&config_path, &overrides)?;
-                let bound = ServerBuilder::new().with_config(config).build().await?;
+
+                let builder = ServerBuilder::new()
+                    .with_config(config)
+                    .with_config_source(config_path.clone(), overrides.clone())
+                    .with_reload_signal(reload.clone());
+
+                #[cfg(feature = "simulation")]
+                let builder = builder.with_empty(simulation_empty);
+
+                let bound = builder.build().await?;
 
                 let reloaded = Arc::new(AtomicBool::new(false));
                 let stop = {

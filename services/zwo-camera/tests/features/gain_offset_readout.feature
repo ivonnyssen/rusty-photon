@@ -1,4 +1,4 @@
-@wip @serial
+@serial
 Feature: Gain, offset, and readout modes
   Gain and Offset return the current SDK value, or NOT_IMPLEMENTED when the
   model lacks the control (GO1). Setters validate against the cached

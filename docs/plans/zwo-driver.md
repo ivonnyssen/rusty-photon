@@ -237,10 +237,11 @@ it, leaning on the `sky-survey-camera` + `qhy-camera` scaffolding.
   repin-twice — *before* device-trait work.
 - **Phase D — design doc + ADR + workspace row + BDD feature files** (design→BDD→
   implementation).
-- **Phase E — Track B full Camera:** `Device + Camera` over `zwo-rs` (ROI/bin,
-  gain/offset, cooling, readout, exposure state machine, abort + graceful stop,
-  PulseGuide, sensor type), config-actions, identity, `spawn_blocking` bridge,
-  mock seam.
+- **Phase E — Track B full Camera:** ✅ *landed.* `Device + Camera` over `zwo-rs`
+  (ROI/bin, gain/offset, cooling, readout, exposure state machine, abort +
+  graceful stop, PulseGuide, sensor type), config-actions, serial identity,
+  `spawn_blocking` bridge, `backend.rs` mock seam. 42 unit + 54 BDD scenarios
+  green; six camera feature files live (`filter_wheel.feature` `@wip` for Phase F).
 - **Phase F — EFW `FilterWheel`** fast-follow (4-method trait, position/moving/
   names/offsets), config toggle, BDD/ConformU.
 - **Phase G — test + gate + consumer:** BDD + ConformU on the sim backend; `cargo

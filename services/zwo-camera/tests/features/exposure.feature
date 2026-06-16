@@ -1,4 +1,4 @@
-@wip @serial
+@serial
 Feature: Exposure lifecycle
   StartExposure requires a connected device (E1, NOT_CONNECTED) and rejects
   a second exposure while one is in flight (E2, INVALID_OPERATION). A

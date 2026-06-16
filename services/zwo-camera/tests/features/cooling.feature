@@ -1,4 +1,4 @@
-@wip @serial
+@serial
 Feature: Cooling
   Cooling is gated on ASI_CAMERA_INFO.IsCoolerCam: CanSetCCDTemperature and
   CanGetCoolerPower are true only when the camera is a cooled model, and the

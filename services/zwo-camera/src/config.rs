@@ -8,6 +8,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::error::ZwoCameraError;
@@ -17,7 +18,7 @@ use crate::error::ZwoCameraError;
 pub const DEFAULT_PORT: u16 = 11122;
 
 /// Effective service configuration.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct Config {
     /// Optional per-device overrides keyed by SDK serial (Phase E+).
@@ -29,7 +30,7 @@ pub struct Config {
 }
 
 /// Friendly overrides for a specific device, keyed by its SDK serial.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct DeviceOverride {
     /// Display name override.
@@ -41,7 +42,7 @@ pub struct DeviceOverride {
 }
 
 /// Whether discovered EFW filter wheels are registered as ASCOM devices.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct FilterWheelConfig {
     /// Register discovered EFWs as FilterWheel devices when `true`.
@@ -49,7 +50,7 @@ pub struct FilterWheelConfig {
 }
 
 /// HTTP server settings.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct ServerConfig {
     /// The listening port (one port hosts every enumerated device).

@@ -1,4 +1,4 @@
-@wip @serial
+@serial
 Feature: Sensor geometry, type, and signal
   Once connected, a camera reports its sensor geometry from the cached
   ASI_CAMERA_INFO (G1): CameraXSize / CameraYSize in pixels and PixelSizeX /

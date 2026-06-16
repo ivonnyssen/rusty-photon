@@ -1,4 +1,4 @@
-@wip @serial
+@serial
 Feature: Camera enumeration and connection lifecycle
   zwo-camera enumerates every connected ASI camera (and EFW when
   filterwheel.enabled) at startup and registers each as an ASCOM device,

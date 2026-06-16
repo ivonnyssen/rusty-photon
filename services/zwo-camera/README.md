@@ -10,22 +10,24 @@ full design, [`docs/plans/zwo-driver.md`](../../docs/plans/zwo-driver.md) for th
 decision record, and [ADR-008](../../docs/decisions/008-zwo-camera-native-sdk-ffi.md)
 for the native-SDK / FFI-crate decision.
 
-## Status — Phase C (Track A) scaffold
+## Status — Phase E (full Camera) landed
 
-This crate currently stands up a **bare** Alpaca server: it enumerates every
-connected ASI camera via `zwo-rs` and registers each as a minimal `Camera`
-device (identity + cached sensor geometry; most of the imaging surface is the
-trait's `NOT_IMPLEMENTED` default). Its purpose is to prove the build/link chain
-and the CI / Bazel gating around the native SDK **before** the full device-trait
-work. Roadmap:
+This crate implements the full ASCOM `Device` + `Camera` surface over the
+`zwo-rs` SDK seam (`backend.rs`): connection lifecycle, sensor geometry,
+symmetric binning, ROI with the ASI `%8`/`%2` alignment rules, gain/offset,
+cooling, readout modes, ST4 pulse guiding, and the snap-mode exposure state
+machine (start; abort *discards* / graceful stop *preserves*; `ImageArray`,
+`CameraState`, `PercentCompleted`, mid-exposure `Error`), plus serial-derived
+identity and the `config.get`/`apply`/`schema` actions. Validated by **42 unit
+tests** (against the in-crate mock seam) and **54 BDD scenarios**. Roadmap:
 
-- **Phase E** — full `Camera`: exposure state machine, ROI/binning, gain/offset,
-  cooling, readout modes, ST4 pulse guiding, config actions.
 - **Phase F** — EFW `FilterWheel` (gated on `filterwheel.enabled`).
-- **Phase G** — BDD + ConformU on the simulation backend; `rp` consumer.
+- **Phase G** — wire ConformU into `conformu.yml` (the `conformu_integration.rs`
+  harness exists; blocked on a `zwo-rs` sim full-frame-fill speedup, see the
+  design doc); `rp` `CameraConfig` consumer.
 
-The BDD feature files under `tests/features/` are the Phase E–G contract and are
-tagged `@wip` until their scenarios are implemented.
+The six camera BDD feature files under `tests/features/` are live;
+`filter_wheel.feature` stays `@wip` for Phase F.
 
 ## Native dependency (the crux)
 
@@ -80,7 +82,7 @@ cargo run  -p zwo-camera --features simulation -- --port 11122
 
 ```jsonc
 {
-  "devices": {},          // per-serial name/description/filter_names overrides (Phase E+)
+  "devices": {},          // per-serial name/description/filter_names overrides
   "filterwheel": { "enabled": false },  // register discovered EFWs (Phase F)
   "server": { "port": 11122 }
 }
@@ -92,3 +94,4 @@ cargo run  -p zwo-camera --features simulation -- --port 11122
 |---|---|
 | `simulation` | Forwards to `zwo-rs/simulation`: a fabricated `ASI2600MM-Pro-Simulated` camera. Removes the camera, **not** the SDK link. |
 | `mock` | Alias for `simulation` (the cross-driver test-backend name). |
+| `conformu` | Enables `mock`; builds + runs the ConformU compliance test (`tests/conformu_integration.rs`). |

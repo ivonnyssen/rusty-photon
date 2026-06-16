@@ -17,20 +17,45 @@ default = []
 simulation = ["zwo-rs/simulation"]
 # Cross-driver alias for `simulation` (the workspace-wide test-backend name).
 mock = ["simulation"]
+# `conformu` enables `mock` so a single `--features conformu` flag builds and
+# runs the compliance test against the simulation backend.
+conformu = ["mock"]
 
 [lints]
 workspace = true
 
 [dependencies]
-ascom-alpaca = { workspace = true, features = ["server", "camera"] }
+ascom-alpaca = { workspace = true, features = ["server", "camera", "client"] }
 zwo-rs = { workspace = true }
+rusty-photon-config = { workspace = true }
+rusty-photon-driver = { workspace = true }
+rusty-photon-service-lifecycle = { workspace = true }
 tokio = { workspace = true }
 axum = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+schemars = { workspace = true }
 clap = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
-rusty-photon-config = { workspace = true }
-rusty-photon-service-lifecycle = { workspace = true }
+derive_more = { workspace = true }
+ndarray = { workspace = true }
+parking_lot = { workspace = true }
+
+[package.metadata.conformu]
+command = "cargo test -p zwo-camera --features conformu --test conformu_integration -- --nocapture"
+
+[dev-dependencies]
+tracing-subscriber = { workspace = true }
+bdd-infra = { workspace = true, features = ["conformu"] }
+cucumber = { workspace = true }
+tempfile = { workspace = true }
+tokio-test = { workspace = true }
+# Raw HTTP for the one BDD path the typed Alpaca client cannot express: a
+# StartExposure with a negative Duration (`std::time::Duration` is unsigned).
+reqwest = { workspace = true }
+
+[[test]]
+name = "bdd"
+harness = false
