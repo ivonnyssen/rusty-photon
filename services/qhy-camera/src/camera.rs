@@ -1052,16 +1052,26 @@ impl Camera for QhyCameraDevice {
     }
 
     async fn last_exposure_duration(&self) -> ASCOMResult<Duration> {
-        (*self.state.last_exposure_duration.lock())
-            .map(|d| d.as_secs_f64())
-            .map(Duration::from_secs_f64)
-            .ok_or(ASCOMError::VALUE_NOT_SET)
+        // Return the stored Duration as-is; round-tripping through secs_f64 only
+        // introduces floating-point rounding (the value is already exact).
+        (*self.state.last_exposure_duration.lock()).ok_or(ASCOMError::VALUE_NOT_SET)
     }
 
     async fn image_array(&self) -> ASCOMResult<ImageArray> {
         self.ensure_connected()?;
         if let Some(msg) = self.state.last_error.lock().clone() {
             return Err(ASCOMError::new(UNSPECIFIED_ERROR, msg));
+        }
+        // ASCOM: `ImageArray` is only valid once `ImageReady` is true. Mirror the
+        // `image_ready()` condition (a frame is committed and no exposure is in
+        // flight) and error otherwise, so a client can never read a stale frame
+        // from a previous exposure during a new capture or after an abort.
+        let ready = self.state.image_ready.load(Ordering::Acquire)
+            && !self.state.exposure_in_flight.load(Ordering::Acquire);
+        if !ready {
+            return Err(ASCOMError::invalid_operation(
+                "no image available; ImageReady is false",
+            ));
         }
         self.state
             .last_image
@@ -1485,6 +1495,25 @@ mod tests {
         assert_eq!(
             device.stop_exposure().await.unwrap_err().code,
             ASCOMErrorCode::NOT_IMPLEMENTED
+        );
+    }
+
+    #[tokio::test]
+    async fn image_array_errors_after_abort_instead_of_returning_stale_frame() {
+        let handle = MockCameraHandle::default();
+        handle.set_single_frame_delay(Duration::from_secs(5));
+        let device = connected_device(handle);
+        device
+            .start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap();
+        device.abort_exposure().await.unwrap();
+        // No fresh frame is ready after an abort, so ImageArray must error
+        // rather than hand back a stale image from a previous exposure.
+        assert!(!device.image_ready().await.unwrap());
+        assert_eq!(
+            device.image_array().await.unwrap_err().code,
+            ASCOMErrorCode::INVALID_OPERATION
         );
     }
 }

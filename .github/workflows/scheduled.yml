@@ -42,7 +42,7 @@ jobs:
       # qhy-camera links the proprietary QHYCCD SDK unconditionally; the
       # --workspace build below compiles it, so install the SDK + libusb.
       - name: Install libusb (qhy-camera)
-        uses: awalsh128/cache-apt-pkgs-action@latest
+        uses: awalsh128/cache-apt-pkgs-action@v1
         with:
           packages: libusb-1.0-0-dev
           version: 1.0
@@ -148,7 +148,7 @@ jobs:
       # --workspace build below compiles it, so install the SDK + libusb.
       - name: Install libusb (qhy-camera)
         if: hashFiles('Cargo.lock') != ''
-        uses: awalsh128/cache-apt-pkgs-action@latest
+        uses: awalsh128/cache-apt-pkgs-action@v1
         with:
           packages: libusb-1.0-0-dev
           version: 1.0
@@ -194,7 +194,7 @@ jobs:
       # qhy-camera links the proprietary QHYCCD SDK unconditionally; the
       # --workspace build below compiles it, so install the SDK + libusb.
       - name: Install libusb (qhy-camera)
-        uses: awalsh128/cache-apt-pkgs-action@latest
+        uses: awalsh128/cache-apt-pkgs-action@v1
         with:
           packages: libusb-1.0-0-dev
           version: 1.0

@@ -134,11 +134,20 @@ impl Device for QhyFilterWheelDevice {
 impl FilterWheel for QhyFilterWheelDevice {
     async fn names(&self) -> ASCOMResult<Vec<String>> {
         self.ensure_connected()?;
-        let count = self.filter_count()?;
-        match &self.filter_names {
-            Some(names) => Ok(names.clone()),
-            None => Ok((0..count).map(|i| format!("Filter{i}")).collect()),
-        }
+        let count = self.filter_count()? as usize;
+        // ASCOM requires the `Names` array to have exactly one entry per slot
+        // (matching `FocusOffsets` and the `Position` range). The hardware slot
+        // count is unknown until connect, so configured `filter_names` cannot be
+        // validated at config-load time — normalise here: take the first `count`
+        // configured names and pad any remainder with generated `Filter{i}`.
+        Ok((0..count)
+            .map(|i| {
+                self.filter_names
+                    .as_ref()
+                    .and_then(|names| names.get(i).cloned())
+                    .unwrap_or_else(|| format!("Filter{i}"))
+            })
+            .collect())
     }
 
     async fn focus_offsets(&self) -> ASCOMResult<Vec<i32>> {
@@ -214,6 +223,27 @@ mod tests {
             .collect::<Vec<_>>();
         let device = connected(Some(custom.clone()));
         assert_eq!(device.names().await.unwrap(), custom);
+    }
+
+    #[tokio::test]
+    async fn too_few_config_names_are_padded_to_slot_count() {
+        let device = connected(Some(vec!["L".into(), "R".into(), "G".into()]));
+        let names = device.names().await.unwrap();
+        assert_eq!(names.len(), 7, "Names must have one entry per slot");
+        assert_eq!(names[0], "L");
+        assert_eq!(names[2], "G");
+        assert_eq!(names[3], "Filter3");
+        assert_eq!(names[6], "Filter6");
+    }
+
+    #[tokio::test]
+    async fn too_many_config_names_are_truncated_to_slot_count() {
+        let nine = (0..9).map(|i| format!("F{i}")).collect::<Vec<_>>();
+        let device = connected(Some(nine));
+        let names = device.names().await.unwrap();
+        assert_eq!(names.len(), 7, "Names must have one entry per slot");
+        assert_eq!(names[0], "F0");
+        assert_eq!(names[6], "F6");
     }
 
     #[tokio::test]

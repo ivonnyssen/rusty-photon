@@ -201,10 +201,10 @@ The MVP boundary drives BDD scenario selection (Phase 2). Grounded in what
 
 **Deferred (see *Future Work*)**
 
-- **Dark/bias on shutterless cameras.** v0 captures darks only when the camera
-  has a mechanical shutter (e.g. QHY600M); shutterless models (e.g. the 5III
-  series) still reject `Light = false`. A cap-on operator workflow / explicit
-  override for shutterless darks is deferred.
+- **Dark/bias frames.** v0 rejects all `Light = false` exposures with
+  `NOT_IMPLEMENTED` (qhyccd-rs 0.1.9 has no shutter open/close actuation; see
+  E4). Shutter-actuated darks on mechanical-shutter models (e.g. QHY600M) and a
+  cap-on operator workflow for shutterless darks are deferred to Future Work.
 - `StopExposure` (graceful stop) — upstream returns `NOT_IMPLEMENTED`; only
   `AbortExposure` works.
 - `FastReadout` — upstream untested; ship as `CanFastReadout` reflecting the

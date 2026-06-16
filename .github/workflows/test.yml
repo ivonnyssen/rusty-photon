@@ -124,7 +124,7 @@ jobs:
       # qhy-camera. Narrowed builds that exclude it skip the SDK.
       - name: Install libusb (qhy-camera)
         if: needs.plan.outputs.infra == 'true' || needs.plan.outputs.cargo-args == '' || contains(needs.plan.outputs.cargo-args, 'qhy-camera')
-        uses: awalsh128/cache-apt-pkgs-action@latest
+        uses: awalsh128/cache-apt-pkgs-action@v1
         with:
           packages: libusb-1.0-0-dev
           version: 1.0
@@ -357,7 +357,7 @@ jobs:
       # on the same "build includes qhy-camera" condition as the ubuntu job.
       - name: Install libusb (qhy-camera)
         if: needs.plan.outputs.infra == 'true' || needs.plan.outputs.cargo-args == '' || contains(needs.plan.outputs.cargo-args, 'qhy-camera')
-        uses: awalsh128/cache-apt-pkgs-action@latest
+        uses: awalsh128/cache-apt-pkgs-action@v1
         with:
           packages: libusb-1.0-0-dev
           version: 1.0
