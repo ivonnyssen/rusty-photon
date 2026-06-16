@@ -44,11 +44,22 @@ OSes — but the SDK requirement is still the dominant design constraint. See
 This is the single most consequential fact about this service and the reason it
 is delivered in two tracks.
 
-- The imaging path is `qhy-camera → qhyccd-rs (0.1.9) → libqhyccd-sys (0.1.4) →`
-  the **proprietary QHYCCD SDK** (a closed-source static lib) **+ libusb-1.0**.
+- The imaging path is `qhy-camera → qhyccd-rs (0.1.9) → libqhyccd-sys (0.1.4,
+  git-patched — see below) →` the **proprietary QHYCCD SDK** (a closed-source
+  static lib) **+ libusb-1.0**.
 - `libqhyccd-sys` declares `links = "qhyccd"` and its `build.rs` emits
   `cargo:rustc-link-lib=static=qhyccd` + `dylib=usb-1.0` **unconditionally** —
   there is **no feature/cfg gate** on the link.
+- **macOS link fix (`[patch.crates-io]`):** the *published* crates.io
+  `libqhyccd-sys 0.1.4` was cut before the macOS link fix landed — on macOS its
+  `build.rs` emits only `static=qhyccd` + `dylib=c++` and **never links
+  `libusb-1.0`**, so the workspace fails to link on macOS with
+  `Undefined symbols … _libusb_*`. The workspace `[patch.crates-io]` (root
+  `Cargo.toml`) pins `libqhyccd-sys` to the upstream **GitHub `main`** commit
+  (`d84f867…`, still crate version `0.1.4`, so it satisfies what `qhyccd-rs
+  0.1.9` requires), which adds the `/opt/homebrew/lib` search path + the
+  `dylib=usb-1.0` directive. Linux/Windows behaviour is unchanged. Drop the
+  patch once a fixed `libqhyccd-sys` is published to crates.io.
 - **Consequence:** *every machine that compiles this package* — dev laptops, CI
   runners, Bazel actions — needs the QHYCCD SDK installed and discoverable, plus
   `libusb-1.0` dev headers. Not just machines with a camera attached.

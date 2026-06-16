@@ -166,3 +166,15 @@ debug = "line-tables-only"
 
 [profile.dev.package."*"]
 debug = false
+
+# Patch `libqhyccd-sys` to its upstream GitHub source. The published crates.io
+# `libqhyccd-sys 0.1.4` was cut before the macOS link fix landed: on macOS its
+# build.rs emits only `static=qhyccd` + `dylib=c++` and never links
+# `libusb-1.0`, so the workspace fails to link on macOS with
+# "Undefined symbols ... _libusb_*". GitHub `main` (still crate version 0.1.4,
+# so the patch matches what `qhyccd-rs 0.1.9` requires) already adds the
+# `/opt/homebrew/lib` search path + the `dylib=usb-1.0` directive. Pin to that
+# commit until a fixed `libqhyccd-sys` is published to crates.io. Linux/Windows
+# behaviour is unchanged by the patch. See `docs/services/qhy-camera.md`.
+[patch.crates-io]
+libqhyccd-sys = { git = "https://github.com/ivonnyssen/qhyccd-rs", rev = "d84f86732686be253dc59086c061e9d4d4c75ec1" }

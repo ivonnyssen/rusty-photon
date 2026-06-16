@@ -2101,8 +2101,7 @@ checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
 [[package]]
 name = "libqhyccd-sys"
 version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a53bcbd65ff2806fb6c1587a6522301cdebc5ad8f4ad901e8b12151677c8d2a0"
+source = "git+https://github.com/ivonnyssen/qhyccd-rs?rev=d84f86732686be253dc59086c061e9d4d4c75ec1#d84f86732686be253dc59086c061e9d4d4c75ec1"
 
 [[package]]
 name = "libredox"
