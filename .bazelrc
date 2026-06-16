@@ -245,17 +245,23 @@ test:conformu --test_env=CONFORMU_PATH
 # `bazel coverage --config=coverage` needs OmniSim installed + OMNISIM_PATH set,
 # exactly like a local `bazel test --test_tag_filters=bdd` run.
 #
-# Child-process coverage (two halves): under `bazel coverage //...` the spawned
+# Child-process coverage (three stages): under `bazel coverage //...` the spawned
 # service binaries ARE instrumented (first-party targets matching the filter).
 # (1) COLLECT: bdd-infra's spawn path sets a per-child
 # LLVM_PROFILE_FILE=$COVERAGE_DIR/<pkg>-%8m.profraw when COVERAGE_DIR is set
 # (child_coverage_profile_var in crates/bdd-infra/src/lib.rs; the `%8m`
 # online-merge pool — not `%p-%m` — bounds the profraw volume, see PR #342), so
 # each child's counters land in the merged profdata. (2) EXPORT: a pinned rules_rust patch
-# (MODULE.bazel single_version_override) adds each spawned binary as an
+# (third_party/patches/collect_coverage_extra_objects.patch) adds each spawned binary as an
 # `llvm-cov export -object` via the RUST_COVERAGE_EXTRA_OBJECTS env var set on the
 # BDD/integration targets — without it the merged child counters have no covmap
-# to bind to and are dropped. See docs/plans/bazel-migration.md.
+# to bind to and are dropped. (3) MANIFEST: a second pinned patch
+# (instrumented_files_include_data.patch) adds `data` to the rust rules' coverage
+# dependency_attributes, so the spawned binary's sources (src/main.rs) join the test's
+# instrumented_files manifest. Without it Bazel's post-collector LcovMerger intersects the
+# exported report against that manifest and silently DROPS main.rs (it is reached only via
+# `data`, not `deps`). Both patches are wired in MODULE.bazel single_version_override and
+# guarded in parity.yml. See docs/plans/bazel-migration.md.
 coverage:coverage --@rules_rust//rust/toolchain/channel=nightly
 coverage:coverage --@rules_rust//rust/settings:extra_rustc_flags=--cfg=coverage_nightly
 coverage:coverage --instrumentation_filter=^//crates,^//services

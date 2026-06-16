@@ -21,7 +21,6 @@ belong in any single service design doc.
 | [zwo-camera](services/zwo-camera.md) | Camera (+ FilterWheel) — ZWO ASI/EFW hardware | 11122 | Phase C (Track A) scaffold landed: bare Alpaca server enumerating ASI cameras via `zwo-rs`, builds/links the native SDK, serves the simulation camera; Bazel `manual`+`requires-cargo`-gated. Device traits are Phase E (BDD scenarios `@wip`). Native ZWO SDK dep, gated out of the default build. See `docs/services/zwo-camera.md` + ADR-008. |
 | [star-adventurer-gti](services/star-adventurer-gti.md) | Telescope | 11117 | `docs/services/star-adventurer-gti.md` (Phase 2 — BDD scaffold landed; all scenarios `@wip` pending Phase 3 implementation) |
 | [pa-falcon-rotator](services/falcon-rotator.md) | Rotator + Switch (status) | 11118 | `docs/services/falcon-rotator.md` |
-| sentinel-app | — (standalone Leptos crate; `cargo leptos` build target `sentinel-dashboard`, **not yet wired into sentinel**) | — | — |
 
 ## Documentation Index
 
@@ -58,6 +57,7 @@ belong in any single service design doc.
 | [i18n-cli-spike.md](plans/archive/i18n-cli-spike.md) | Tech spike landing Fluent + `i18n-embed` behind `ppba-driver`'s clap CLI (en + de, archived 2026-05-24) |
 | [plate-solver.md](plans/archive/plate-solver.md) | plate-solver rp-managed service implementation (ADR-005 sequencing, archived 2026-05-15) |
 | [pa-falcon-rotator-implementation.md](plans/archive/pa-falcon-rotator-implementation.md) | pa-falcon-rotator Phase 2 (BDD scaffold) + Phase 3 (Rotator + Status Switch implementation, archived 2026-05-18) |
+| [sentinel-app-leptos-dashboard.md](plans/archive/sentinel-app-leptos-dashboard.md) | Abandoned Leptos/WASM sentinel dashboard frontend; design intent + why removed (crate removed, archived 2026-06-14) |
 
 ## Shared Crates
 
@@ -157,22 +157,12 @@ lib.rs       — Plugin server bootstrap
 main.rs      — Entry point
 ```
 
-### Monitoring service + Leptos frontend (sentinel, sentinel-app)
+### Monitoring service (sentinel)
 
 `sentinel` is a standalone Axum + reqwest backend. The dashboard at
-`http://127.0.0.1:11114/` works today, but it is **not** Leptos: it's
-hand-rolled HTML built with `format!()` in
+`http://127.0.0.1:11114/` is hand-rolled HTML built with `format!()` in
 `services/sentinel/src/dashboard.rs`, refreshed client-side by a vanilla
 `fetch()` loop hitting `/api/status` and `/api/history` every five seconds.
-
-`sentinel-app` is a separate Leptos crate (`cdylib + rlib`) intended to
-replace that hand-rolled UI in the future, via `cargo leptos` (build
-target `sentinel-dashboard`, declared in the workspace-root
-`[[workspace.metadata.leptos]]` block). At present the `sentinel` binary
-does **not** depend on `sentinel-app`, on `leptos`, on `leptos_axum`, or
-on any static-file middleware (`tower-http` is pulled with `["cors"]`
-only) — the integration is scaffolded in workspace metadata but not yet
-in code.
 
 ```
 sentinel/src/
@@ -187,20 +177,20 @@ sentinel/src/
   engine.rs        — Orchestrates monitors, transitions, notifiers
   dashboard.rs     — Axum routes for JSON API + dashboard HTML
   lib.rs / main.rs — Server bootstrap and entry point
-
-sentinel-app/src/
-  lib.rs           — Crate root (re-exports App)
-  app.rs           — Root Leptos component
-  api.rs           — Client-side API helpers
-  components/      — monitor_table, history_table, status_badge
 ```
+
+> A `sentinel-app` Leptos/WASM crate was scaffolded as an alternative
+> dashboard frontend and later abandoned in favour of the hand-rolled UI
+> above (and the `ui-htmx` direction for config UIs). It was removed in
+> 2026-06; see
+> [docs/plans/archive/sentinel-app-leptos-dashboard.md](plans/archive/sentinel-app-leptos-dashboard.md).
 
 ## MSRV
 
 The minimum supported Rust version is pinned in `[workspace.package]` of the
 root `Cargo.toml` (`rust-version = "1.94.1"`). All workspace members —
 services (`filemonitor`, `phd2-guider`, `ppba-driver`, `qhy-focuser`,
-`calibrator-flats`, `rp`, `sentinel`, `sentinel-app`, `sky-survey-camera`)
+`calibrator-flats`, `rp`, `sentinel`, `sky-survey-camera`)
 and shared crates (`bdd-infra`, `rp-auth`, `rp-tls`) — inherit it via
 `rust-version.workspace = true`.
 
@@ -307,12 +297,6 @@ worked example.
 - **`mock`** — Enables `MockSerialPortFactory` with persistent state for
   integration testing (ConformU, server tests). Used by ppba-driver and
   qhy-focuser. Not used for unit tests — those define inline mocks.
-- **`hydrate`** / **`ssr`** — Leptos rendering modes for `sentinel-app`.
-  `ssr` is intended for native compilation linked into a server binary;
-  `hydrate` is intended for `wasm32-unknown-unknown` + wasm-bindgen
-  client-side hydration. The `sentinel` binary does not yet link
-  `sentinel-app` in either mode — `cargo build -p sentinel-app` exercises
-  the crate in isolation pending the integration work.
 
 ## Build Notes
 

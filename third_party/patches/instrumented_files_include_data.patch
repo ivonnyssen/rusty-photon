@@ -1,0 +1,17 @@
+--- a/rust/private/rustc.bzl
++++ b/rust/private/rustc.bzl
+@@ -1765,7 +1765,13 @@
+     executable = crate_info.output if crate_info.type == "bin" or crate_info.is_test else None
+ 
+     instrumented_files_kwargs = {
+-        "dependency_attributes": ["deps", "crate"],
++        # rusty-photon patch (instrumented_files_include_data): include `data` so a
++        # spawned, instrumented service binary (e.g. //services/<svc>:<svc>, a data dep
++        # of the BDD/integration rust_test) contributes its sources (src/main.rs) to the
++        # test coverage manifest. Without it, bazel's lcov_merger intersects the llvm-cov
++        # report with the manifest and DROPS main.rs even though the collect_coverage
++        # patch made llvm-cov emit it. The other half: collect_coverage_extra_objects.patch.
++        "dependency_attributes": ["deps", "crate", "data"],
+         "extensions": ["rs"],
+         "source_attributes": ["srcs"],
+     }

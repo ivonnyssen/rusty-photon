@@ -323,6 +323,7 @@ mod tests {
                 default_title: "Alert".to_string(),
                 default_priority: 0,
                 default_sound: "pushover".to_string(),
+                api_url: None,
             }],
             ..Config::default()
         };
@@ -420,6 +421,7 @@ mod tests {
                 default_title: "Alert".to_string(),
                 default_priority: 0,
                 default_sound: "pushover".to_string(),
+                api_url: None,
             }],
             ..Config::default()
         };

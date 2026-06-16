@@ -340,8 +340,6 @@ Known limitations during migration:
 - A few tests in `bdd-infra`, `phd2-guider`, and `filemonitor:test_cli`
   shell out to `cargo` or assume `target/debug` paths; they are tagged
   `requires-cargo` and skipped under Bazel.
-- `sentinel-app` builds with default features only; the `ssr` and
-  `hydrate` (wasm-bindgen) build paths are Phase 4 work.
 - Conformu integration tests and Miri continue to run only under Cargo.
 
 ---
