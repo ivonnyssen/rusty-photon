@@ -31,7 +31,7 @@ jobs:
     outputs:
       test: ${{ steps.rail.outputs.test }}
       infra: ${{ steps.rail.outputs.infra }}
-      cargo-args: ${{ steps.rail.outputs.cargo-args }}
+      cargo-args: ${{ steps.scope.outputs.cargo-args }}
       bdd-packages: ${{ steps.bdd.outputs.packages }}
       has-bdd: ${{ steps.bdd.outputs.has_bdd }}
     steps:
@@ -42,6 +42,25 @@ jobs:
         id: rail
         with:
           since: ${{ github.event.pull_request.base.sha || github.event.before }}
+      # cargo-rail-action@v4 no longer emits the `crates` / `cargo-args` step
+      # outputs the affected-package narrowing below relies on. Reconstruct
+      # them from the planner's `scope-json` contract: `.crates` is the
+      # impacted set (the union of impact.direct_crates + transitive_crates),
+      # and cargo-args is the matching `-p` flag list. An empty list means
+      # "nothing crate-specific changed" and the build/test commands fall back
+      # to the whole workspace (cargo's default with no -p and no
+      # default-members), which the SDK gates account for.
+      - name: Derive affected crates from scope-json
+        id: scope
+        env:
+          SCOPE_JSON: ${{ steps.rail.outputs.scope-json }}
+        run: |
+          if [ -z "$SCOPE_JSON" ]; then SCOPE_JSON='{}'; fi
+          CRATES=$(jq -r '.crates // [] | join(" ")' <<<"$SCOPE_JSON")
+          CARGO_ARGS=$(jq -r '.crates // [] | map("-p " + .) | join(" ")' <<<"$SCOPE_JSON")
+          echo "crates=$CRATES" >> "$GITHUB_OUTPUT"
+          echo "cargo-args=$CARGO_ARGS" >> "$GITHUB_OUTPUT"
+          echo "Affected crates: ${CRATES:-<none>}; cargo-args: ${CARGO_ARGS:-<empty -> full workspace>}"
       - name: Discover BDD packages
         id: bdd
         run: |
@@ -51,8 +70,8 @@ jobs:
 
           # If infra changed, test all BDD packages; otherwise intersect with
           # affected. "Affected" combines two sources:
-          #   1. cargo-rail's `crates` output — tracks Rust source / Cargo.toml
-          #      changes per crate.
+          #   1. the `scope` step's `crates` (reconstructed from the planner's
+          #      scope-json) — tracks Rust source / Cargo.toml changes per crate.
           #   2. Feature-file changes under `services/<pkg>/tests/features/`
           #      that rail doesn't see as crate-affecting (cargo metadata
           #      doesn't index resource files). Without this augmentation a
@@ -71,7 +90,7 @@ jobs:
                 | sort -u \
                 | tr '\n' ' ')
             fi
-            AFFECTED='${{ steps.rail.outputs.crates }}'" $FEATURE_AFFECTED"
+            AFFECTED='${{ steps.scope.outputs.crates }}'" $FEATURE_AFFECTED"
             BDD_PACKAGES=$(echo "$ALL_BDD" | jq -c --arg affected "$AFFECTED" \
               '[.[] | select(. as $pkg | ($affected | split(" ") | .[] | select(. == $pkg)) // empty)]')
           fi
@@ -99,18 +118,18 @@ jobs:
       # three GitHub-hosted OSes; the Pi nightly covers linux-arm64 (which the
       # action does not).
       #
-      # Installed UNCONDITIONALLY: cargo-rail-action@v4 no longer emits the
-      # `cargo-args` output, so the selector below resolves to an empty string
-      # on non-infra PRs and cargo builds the whole workspace (incl qhy-camera).
-      # A `contains(cargo-args, …)` gate would skip the SDK and the build would
-      # fail to link. (If the affected-package narrowing is restored, re-narrow
-      # this to `infra || contains(cargo-args, 'qhy-camera')`.)
+      # Install when this job actually compiles qhy-camera, i.e. when the build
+      # selector below includes it: infra (=> --workspace), an EMPTY cargo-args
+      # (=> cargo's default whole-workspace build), or cargo-args naming
+      # qhy-camera. Narrowed builds that exclude it skip the SDK.
       - name: Install libusb (qhy-camera)
+        if: needs.plan.outputs.infra == 'true' || needs.plan.outputs.cargo-args == '' || contains(needs.plan.outputs.cargo-args, 'qhy-camera')
         uses: awalsh128/cache-apt-pkgs-action@latest
         with:
           packages: libusb-1.0-0-dev
           version: 1.0
       - name: Install QHYCCD SDK (qhy-camera)
+        if: needs.plan.outputs.infra == 'true' || needs.plan.outputs.cargo-args == '' || contains(needs.plan.outputs.cargo-args, 'qhy-camera')
         uses: ivonnyssen/qhyccd-sdk-install@v2
         with:
           version: "25.09.29"
@@ -171,12 +190,13 @@ jobs:
       # qhy-camera links the proprietary QHYCCD SDK on macOS too (static=qhyccd
       # + libc++). The static lib references libusb, so install it via brew
       # exactly as the upstream qhyccd-rs macOS CI does, then provision the SDK
-      # via the published action (covers x86_64-linux/macOS/Windows).
-      # Unconditional for the same reason as the ubuntu job: cargo-rail-action@v4
-      # dropped `cargo-args`, so this job builds the whole workspace.
+      # via the published action (covers x86_64-linux/macOS/Windows). Gated on
+      # the same "build includes qhy-camera" condition as the ubuntu job.
       - name: Install libusb (qhy-camera, macOS)
+        if: needs.plan.outputs.infra == 'true' || needs.plan.outputs.cargo-args == '' || contains(needs.plan.outputs.cargo-args, 'qhy-camera')
         run: brew install libusb
       - name: Install QHYCCD SDK (qhy-camera)
+        if: needs.plan.outputs.infra == 'true' || needs.plan.outputs.cargo-args == '' || contains(needs.plan.outputs.cargo-args, 'qhy-camera')
         uses: ivonnyssen/qhyccd-sdk-install@v2
         with:
           version: "25.09.29"
@@ -333,15 +353,16 @@ jobs:
       # static=qhyccd) + libusb-1.0. The SDK is publicly downloadable from
       # qhyccd.com; the published action installs it into /usr/local/lib on
       # Linux (where libqhyccd-sys's build.rs looks). Coverage runs on Linux
-      # only; the SDK action also covers macOS/Windows for the test jobs.
-      # Unconditional: cargo-rail-action@v4 dropped `cargo-args`, so this job
-      # builds the whole workspace (incl qhy-camera) on every run.
+      # only; the SDK action also covers macOS/Windows for the test jobs. Gated
+      # on the same "build includes qhy-camera" condition as the ubuntu job.
       - name: Install libusb (qhy-camera)
+        if: needs.plan.outputs.infra == 'true' || needs.plan.outputs.cargo-args == '' || contains(needs.plan.outputs.cargo-args, 'qhy-camera')
         uses: awalsh128/cache-apt-pkgs-action@latest
         with:
           packages: libusb-1.0-0-dev
           version: 1.0
       - name: Install QHYCCD SDK (qhy-camera)
+        if: needs.plan.outputs.infra == 'true' || needs.plan.outputs.cargo-args == '' || contains(needs.plan.outputs.cargo-args, 'qhy-camera')
         uses: ivonnyssen/qhyccd-sdk-install@v2
         with:
           version: "25.09.29"
