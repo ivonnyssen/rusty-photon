@@ -102,6 +102,20 @@ build:windows --action_env=AWS_LC_SYS_NO_JITTER_ENTROPY=1
 # registry key) and the short output base (C:/b) to stay within limits.
 build:windows --enable_runfiles
 
+# zwo-camera's `libzwo-sys` build script (bindgen) + link step need native ZWO
+# SDK toolchain env that `--incompatible_strict_action_env` (above) otherwise
+# strips. The `install-zwo-sdk` composite action (run in bazel.yml /
+# bazel-coverage.yml) exports these into the job env; forward them BY NAME so the
+# value stays out of the analysis key (same pattern as the OMNISIM_PATH /
+# CONFORMU_PATH test_envs below). Scoped per-OS so the Linux action cache is
+# untouched — Linux finds libclang and the SDK (ldconfig'd /usr/local/lib) on
+# default paths with no env. macOS needs LIBCLANG_PATH for bindgen (Homebrew llvm
+# is off the default search path); Windows needs ZWO_SDK_LIB_DIR for the
+# import-lib link search. (Windows test-runtime DLL discovery is validated on the
+# first shadow CI run — see services/zwo-camera/BUILD.bazel.)
+build:macos --action_env=LIBCLANG_PATH
+build:windows --action_env=ZWO_SDK_LIB_DIR
+
 # --- Disk cache ------------------------------------------------------------
 
 # Keep a local disk cache so repeated `bazel build` across branches reuses

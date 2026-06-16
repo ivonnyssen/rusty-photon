@@ -8,10 +8,11 @@
 > (`zwo-camera → zwo-rs → libzwo-sys → ` ZWO SDK), is gate-green
 > (`cargo rail --profile commit` + clippy `--all-features`), serves the
 > simulation camera over Alpaca, and is wired into Cargo (`{ workspace = true }`,
-> `zwo-rs` pinned at the real-handles rev) and Bazel (a `manual` +
-> `requires-cargo`-tagged `BUILD.bazel`, kept out of `bazel build //...` until a
-> `libzwo-sys` `crate.annotation` Bazel-izes the native link; `MODULE.bazel.lock`
-> repinned). The **device-trait work is Phase E** (this document remains its
+> `zwo-rs` pinned at the real-handles rev) and Bazel (a first-class `BUILD.bazel`,
+> **no `manual`/`requires-cargo` gating** — it builds, links, and runs under
+> `bazel build/test //...` like every other service once the SDK is provisioned,
+> verified on Linux; `MODULE.bazel.lock` repinned). The **device-trait work is
+> Phase E** (this document remains its
 > specification, driving the `@wip` BDD scenarios). The FFI crates it consumes
 > ([`zwo-rs`](https://github.com/ivonnyssen/zwo-rs) + `libzwo-sys`) live in a
 > standalone repo. (Distinct from the *Delivery phasing* §, whose Phase A–G track
@@ -25,9 +26,14 @@
 > so only `infra`- or zwo-camera-affected PRs pay the cost. `conformu.yml` /
 > `safety.yml` exclude `zwo-camera` (no ConformU test / no sanitizer value yet),
 > and the aarch64 Pi-nightly runner is provisioned via `scripts/setup-pi-runner.sh`.
-> Bazel stays excluded via the `manual` tag, so it needs no SDK. **Remaining
-> Track-A validation** (can't be exercised from a Linux dev box): confirm the
-> macOS arm64 + Windows x64 link on real runners, re-run the updated
+> The **Bazel** shadow workflows (`bazel.yml`, `bazel-coverage.yml`) also run
+> `install-zwo-sdk` — `zwo-camera` is a normal `//...` target there, honoring the
+> migration plan's "all workspace crates build and test under Bazel" contract
+> (`docs/plans/bazel-migration.md`); on the shadow build the install is
+> unconditional (no narrowing job). **Remaining Track-A validation** (can't be
+> exercised from a Linux dev box): confirm the macOS arm64 + Windows x64 link on
+> real runners (both the Cargo *and* Bazel legs — under Bazel, the Windows
+> test-runtime DLL discovery is the one unproven piece), re-run the updated
 > `setup-pi-runner.sh` on the Pi, and pin the SDK refs / add download caching
 > (the Windows camera zip is ~112 MB). See *Gating plan* and *Open questions*.
 
@@ -110,7 +116,7 @@ the cached blob. See [ADR-008](../decisions/008-zwo-camera-native-sdk-ffi.md).
 | `cargo build --all` / local dev without SDK | Normal workspace member, but **`cargo build -p zwo-camera` is expected to fail to link without the SDK**. Devs without the SDK use the rest of the workspace normally; `cargo rail`'s `merge_base=true` (affected-packages-only) builds the package only when *its* files change. Documented here and in the service README. |
 | CI | An explicit SDK-provisioning step **pulls the pinned ASI/EFW SDK from the public cache** + installs `libusb-1.0-0-dev`, before building/testing this package, mirroring the cross-spawn pre-build pattern already in `.github/workflows/test.yml`. Required even for `simulation`/ConformU jobs; only `cargo check`/clippy jobs (no linker) can skip it. |
 | Raspberry Pi nightly runner | Add the SDK + `libusb-1.0-0-dev` + udev `99-asi.rules` to `scripts/setup-pi-runner.sh`. **aarch64 (Pi 5) must be confirmed linking** and added to the matrix. |
-| Bazel (shadow build) | Tag the target `requires-cargo` initially (kept out of `bazel test //...` by `.bazelrc`'s default `-requires-cargo`). Later replace with a hand-written `crate.annotation` for `libzwo-sys` (link-search to the installed SDK, `ASICamera2` + `EFWFilter` + `dylib=usb-1.0`). Run `CARGO_BAZEL_REPIN=1 bazel mod tidy && bazel mod tidy` after a `zwo-rs` rev/version change (Rule 10). |
+| Bazel (shadow build) | **First-class `//...` target — no `manual`/`requires-cargo` gating.** The migration plan requires every workspace crate to build and test under Bazel (it becomes the *required* gate at the Phase-7 cutover, where a `manual`-excluded crate would silently carry zero CI). The `bazel.yml` / `bazel-coverage.yml` shadow workflows run the `install-zwo-sdk` composite action (like they install OmniSim), so `libzwo-sys` links against the system SDK; `.bazelrc` forwards `LIBCLANG_PATH` (macOS bindgen) / `ZWO_SDK_LIB_DIR` (Windows link) per-OS under `strict_action_env`. Verified on Linux: `bazel test //services/zwo-camera:zwo-camera_unit_test` builds, links, and runs in-sandbox. A future hermetic `crate.annotation` (turning the SDK into a Bazel-managed `cc_import` dep, removing the imperative install) is optional cleanup, not a prerequisite. Run `CARGO_BAZEL_REPIN=1 bazel mod tidy && bazel mod tidy` after a `zwo-rs` rev/version change (Rule 10). |
 
 ### udev / USB
 
@@ -593,8 +599,9 @@ driver itself). The FFI crate is the long pole (~40–50% of effort); once
   `simulation`-feature stub. *Remaining:* real safe handles/enums + error mapping
   + the `simulation` backend (camera frames + EFW position/moving); publish 0.1.0.
 - **Phase C — Track A.** Bare `zwo-camera` serving an empty/sim Camera on
-  `:11122`; prove build/link, CI SDK provisioning, Pi 5 aarch64, Bazel
-  `requires-cargo`, repin-twice — *before* device-trait work.
+  `:11122`; prove build/link, CI SDK provisioning (Cargo *and* Bazel shadow
+  workflows), Pi 5 aarch64, Bazel as a first-class `//...` target (no `manual`
+  gating), repin-twice — *before* device-trait work.
 - **Phase D — design doc + ADR + workspace row + BDD feature files** *(this
   document, [ADR-008](../decisions/008-zwo-camera-native-sdk-ffi.md), the
   `docs/workspace.md` row, and the `@wip` feature files)*.
@@ -606,7 +613,8 @@ driver itself). The FFI crate is the long pole (~40–50% of effort); once
   config toggle, BDD/ConformU.
 - **Phase G — test + gate + consumer.** BDD + ConformU on the sim backend; `cargo
   rail run --profile commit` + `cargo fmt` green; `rp` `CameraConfig` consumer;
-  Bazel `crate.annotation` finish; READMEs/`docs/workspace.md`.
+  optional hermetic Bazel `crate.annotation` (SDK as a `cc_import` dep, dropping
+  the imperative install) — cleanup, not blocking; READMEs/`docs/workspace.md`.
 
 ---
 

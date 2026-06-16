@@ -5,20 +5,20 @@ exports_files(["Cargo.toml"], visibility = ["//visibility:public"])
 
 # zwo-camera links the native ZWO ASI/EFW SDK transitively via
 # zwo-rs → libzwo-sys (see docs/services/zwo-camera.md "Native dependency & build
-# gating" and ADR-008). Bazel cannot link the prebuilt blob until a hand-written
-# `crate.annotation` for libzwo-sys lands, so every target here carries:
-#   - `manual`        — excludes it from `//...` wildcards (the only tag that
-#                       gates `bazel build //...`, which CI runs), keeping the
-#                       shadow Bazel build green on runners without the SDK.
-#   - `requires-cargo` — the workspace's semantic marker for "needs a real
-#                       toolchain/native dep"; also keeps the test out of
-#                       `bazel test`'s default `-requires-cargo` filter.
-# Build locally (with the SDK installed) via
-# `bazel build //services/zwo-camera:zwo-camera`.
-_GATING_TAGS = [
-    "manual",
-    "requires-cargo",
-]
+# gating" and ADR-008). Unlike a pure-Rust crate it cannot link without the SDK
+# present, so every Bazel runner that builds `//...` must provision it first:
+# `.github/workflows/bazel.yml` and `bazel-coverage.yml` run the
+# `./.github/actions/install-zwo-sdk` composite action exactly like they install
+# OmniSim. With the SDK on the link path the targets build, link, and run like any
+# other service — verified on Linux via
+# `bazel test //services/zwo-camera:zwo-camera_unit_test` — so they carry NO
+# `manual` / `requires-cargo` gating. The migration plan's "all workspace crates
+# build and test under Bazel" contract (docs/plans/bazel-migration.md) applies
+# here too: at the Phase 7 cutover the Bazel job becomes the required gate, and a
+# `manual`-excluded target would silently carry zero CI. Build locally with the
+# SDK ldconfig'd on the link path (`/usr/local/lib`). bindgen needs libclang;
+# macOS/Windows additionally forward `LIBCLANG_PATH` / `ZWO_SDK_LIB_DIR` to the
+# build-script action via `.bazelrc` (Linux finds both on the default paths).
 
 _INTRA_WORKSPACE_DEPS = [
     "//crates/rusty-photon-config:rusty-photon-config",
@@ -32,7 +32,6 @@ rust_library(
     crate_name = "zwo_camera",
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
-    tags = _GATING_TAGS,
     visibility = ["//visibility:public"],
     deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
@@ -46,7 +45,6 @@ rust_binary(
     # Pin CARGO_PKG_NAME to the Cargo package name (rules_rust defaults it to the
     # Bazel target name), matching the other services.
     rustc_env = {"CARGO_PKG_NAME": "zwo-camera"},
-    tags = _GATING_TAGS,
     visibility = ["//visibility:public"],
     deps = [":zwo-camera_lib"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
@@ -67,7 +65,6 @@ rust_test(
         proc_macro = True,
         proc_macro_dev = True,
     ),
-    tags = _GATING_TAGS,
     deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(
         normal = True,
         normal_dev = True,
