@@ -23,6 +23,10 @@ bdd_infra::bdd_main! {
                     if let Some(fm) = world.filemonitor.as_mut() {
                         fm.stop().await;
                     }
+                    // Shut down the Pushover stub server, if this scenario started one.
+                    if let Some(stub) = world.pushover_stub.take() {
+                        stub.abort();
+                    }
                 }
             })
         })

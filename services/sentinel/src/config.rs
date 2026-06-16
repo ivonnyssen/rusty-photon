@@ -139,6 +139,11 @@ pub enum NotifierConfig {
         default_priority: i8,
         #[serde(default = "default_pushover_sound")]
         default_sound: String,
+        /// Override the Pushover API endpoint. Defaults to the public
+        /// `https://api.pushover.net/1/messages.json`. Set this to point at a
+        /// local stub (BDD tests) or a self-hosted Pushover-compatible relay.
+        #[serde(default)]
+        api_url: Option<String>,
     },
 }
 
@@ -278,6 +283,7 @@ mod tests {
                 default_title: default_pushover_title(),
                 default_priority: 0,
                 default_sound: default_pushover_sound(),
+                api_url: None,
             }],
             ..Config::default()
         }

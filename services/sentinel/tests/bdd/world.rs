@@ -35,6 +35,11 @@ pub struct SentinelWorld {
 
     // TLS test state
     pub tls_pki_dir: Option<TempDir>,
+
+    // Local Pushover API stub so notification scenarios never hit the real
+    // api.pushover.net (slow, non-hermetic, rejects test credentials).
+    pub pushover_stub: Option<tokio::task::JoinHandle<()>>,
+    pub pushover_stub_url: Option<String>,
 }
 
 impl SentinelWorld {
@@ -105,11 +110,16 @@ impl SentinelWorld {
         });
 
         if self.sentinel_has_notifiers {
-            config["notifiers"] = serde_json::json!([{
+            let mut pushover = serde_json::json!({
                 "type": "pushover",
                 "api_token": "test-token",
                 "user_key": "test-user"
-            }]);
+            });
+            // Point the notifier at the local stub instead of api.pushover.net.
+            if let Some(url) = &self.pushover_stub_url {
+                pushover["api_url"] = serde_json::json!(url);
+            }
+            config["notifiers"] = serde_json::json!([pushover]);
         }
 
         // Set polling interval on all monitors
@@ -151,8 +161,36 @@ impl SentinelWorld {
         }));
     }
 
+    /// Start a local stub that mimics the Pushover API, replying 200 to any
+    /// request. Lets notification scenarios exercise the dispatch path without
+    /// the real api.pushover.net round-trip (slow, network-dependent, and the
+    /// source of the flaky "history is empty" race the fixed sleep used to mask).
+    pub async fn start_pushover_stub(&mut self) {
+        use axum::Router;
+
+        let app = Router::new().fallback(|| async {
+            axum::Json(serde_json::json!({ "status": 1, "request": "stub" }))
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("failed to bind pushover stub listener");
+        let addr = listener
+            .local_addr()
+            .expect("pushover stub listener has no local addr");
+        let handle = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        self.pushover_stub = Some(handle);
+        self.pushover_stub_url = Some(format!("http://{addr}/1/messages.json"));
+    }
+
     /// Start sentinel binary with the accumulated config.
     pub async fn start_sentinel(&mut self) {
+        // Stand up the Pushover stub before sentinel so its URL can be baked
+        // into the config the child process loads.
+        if self.sentinel_has_notifiers && self.pushover_stub_url.is_none() {
+            self.start_pushover_stub().await;
+        }
         let config_json = self.build_sentinel_config();
         let dir = self
             .temp_dir
@@ -209,10 +247,44 @@ impl SentinelWorld {
         panic!("sentinel did not poll within 30 seconds");
     }
 
-    /// Wait for a state change to propagate through filemonitor polling + sentinel polling.
-    pub async fn wait_for_state_change(&self) {
-        // Need to wait for filemonitor to re-read the file AND sentinel to re-poll
-        tokio::time::sleep(Duration::from_secs(4)).await;
+    /// Poll `/api/status` until `name` reports `expected_state`, or ~15s elapses.
+    /// Returns the last observed state for that monitor (so a timeout produces a
+    /// useful assertion message). Replaces a blind fixed sleep, removing the race
+    /// against filemonitor + sentinel polling latency.
+    pub async fn wait_for_status(&self, name: &str, expected_state: &str) -> Option<String> {
+        let mut last = None;
+        for _ in 0..60 {
+            for monitor in self.get_status().await {
+                if monitor["name"].as_str() == Some(name) {
+                    let state = monitor["state"].as_str().map(str::to_string);
+                    if state.as_deref() == Some(expected_state) {
+                        return state;
+                    }
+                    last = state;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        last
+    }
+
+    /// Poll `/api/history` until a record matches `predicate`, or ~15s elapses.
+    /// Returns the final history snapshot regardless, so the caller can assert and
+    /// print it on failure. Waits for the notification record to actually land
+    /// rather than assuming a fixed delay is enough.
+    pub async fn wait_for_history<F>(&self, predicate: F) -> Vec<serde_json::Value>
+    where
+        F: Fn(&serde_json::Value) -> bool,
+    {
+        let mut history = self.get_history().await;
+        for _ in 0..60 {
+            if history.iter().any(&predicate) {
+                return history;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            history = self.get_history().await;
+        }
+        history
     }
 
     /// GET a dashboard endpoint and return the response body as string.

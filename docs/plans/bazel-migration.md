@@ -112,8 +112,10 @@ repo root/
 
 ### Phase 4 — `sentinel-app` WASM (DROPPED 2026-05-24)
 
-Cancelled: Leptos is not used today, so `sentinel-app` stays out of the Bazel
-graph. If a WASM UI returns, re-open this phase — the `wasm_bindgen` /
+Cancelled: Leptos is not used today, so `sentinel-app` stayed out of the Bazel
+graph. The crate was removed entirely in 2026-06 (see
+[archive/sentinel-app-leptos-dashboard.md](archive/sentinel-app-leptos-dashboard.md)).
+If a WASM UI returns, re-open this phase — the `wasm_bindgen` /
 `@platforms//cpu:wasm32` / hydrate+ssr approach noted in earlier revisions is
 the starting point.
 
@@ -691,19 +693,43 @@ The fix (three parts, all landed on this branch):
   binary-only caveat below — the one file Bazel omits, `main.rs`, is *below* the lib average,
   so omitting it inflates rather than deflates the Bazel number.)
 
-**KNOWN systemic residual — binary-only `main.rs` is not exported under Bazel coverage.**
-For every spawn-driven service (star-adventurer-gti, phd2-guider, …) `src/main.rs` is
-**absent** from the Bazel combined report, while cargo captures it (e.g. phd2-guider's
-284-line CLI `main.rs` at 86% under cargo). `main.rs` lives only in the spawned *binary*,
-not in the `rust_test` binary, and despite the `RUST_COVERAGE_EXTRA_OBJECTS` patch adding the
-binary as an `llvm-cov export -object`, the binary-only counters do not surface in CI-faithful
-runs (the earlier "filemonitor main.rs 100%" was a local spike that does not reproduce here —
-the covmap/profraw binding for an object whose source is in *no* other `-object` is the open
-question). Impact is **usually small and in Bazel's favour** (services keep logic in libs, so
-`main.rs` is thin — star-adventurer matched cargo to +0.04pp with `main.rs` absent on both-ish
-sides), but it is a real accuracy blind spot for a service whose CLI lives in `main.rs`
-(phd2-guider). Closing it is a separate rules_rust-collector investigation, out of scope here;
-the same-commit parity gate (above) will surface any service where it flips to bazel < cargo.
+**RESOLVED — binary-only `main.rs` is now exported under Bazel coverage** (was a known
+systemic residual). For every spawn-driven service (filemonitor, star-adventurer-gti,
+phd2-guider, …) `src/main.rs` used to be **absent** from the Bazel combined report while
+cargo captured it. The earlier framing — "a local spike that does not reproduce in CI",
+"the covmap/profraw binding for an object whose source is in no other `-object`" — was a
+**misdiagnosis**. Root-caused empirically (2026-06-14):
+
+- `main.rs` coverage is **fully and deterministically computed**. The
+  `RUST_COVERAGE_EXTRA_OBJECTS` patch makes `llvm-cov export` emit a complete, counter-bound
+  `main.rs` record into the collector's *intermediate* `coverage.dat` (verified:
+  filemonitor `FNF:3 FNH:3 LF:14 LH:14`; one workflow run measured phd2-guider `main.rs`
+  243/284 ≈ 86%). The "local spike" was simply someone reading that pre-filter intermediate.
+- It was then dropped by the **second, post-collector stage**: Bazel's LcovMerger
+  (the coverage `output_generator`, rules_rust `rust/private/rust.bzl:851-855`) **intersects**
+  each test's intermediate report with that target's `InstrumentedFilesInfo` manifest
+  (`<test>.instrumented_files`, passed as `--source_file_manifest`). `rust_test` builds that
+  manifest with `dependency_attributes = ["deps", "crate"]` (`rust/private/rustc.bzl:1768`),
+  so a binary reached **only via `data`** (the spawned `:<svc>` binary, whose sole source is
+  `main.rs`) is not on the manifest and is filtered back out. `lib.rs` survived because it is
+  linked into the test binary via `deps`. Proven by re-running the LcovMerger with `main.rs`
+  appended to the manifest: `main.rs` then survives the merge.
+
+**The fix (two complementary rules_rust patches, both in `third_party/patches/`):**
+1. `collect_coverage_extra_objects.patch` — makes `llvm-cov export` *emit* spawned-binary
+   coverage (the EXPORT half; pre-existing).
+2. `instrumented_files_include_data.patch` — adds `data` to the rust rules' coverage
+   `dependency_attributes` so the instrumented spawned binary's `main.rs` lands in the test's
+   manifest and *survives* the LcovMerger intersection (the MANIFEST half; new).
+
+End-to-end verified on `filemonitor`: `main.rs` now appears in the per-test `coverage.dat`,
+the `--combined_report=lcov` output, and the `split_lcov.py` `filemonitor` bucket
+(`FNF:3 FNH:3 LF:12 LH:12`). The fix is generic — it requires no per-service BUILD change and
+covers every spawn-driven service at once. Whole-repo analysis (`bazel build --nobuild //...`)
+is unaffected; `data` deps without instrumented Rust sources contribute nothing (the
+`extensions=["rs"]` + instrumentation-filter gates still apply), so no stray files enter the
+report. The same-commit parity gate (above) plus the new patch-guard in `parity.yml` keep it
+from regressing under a rules_rust bump.
 
 Confirmed **NEUTRAL** (ruled out — do not chase): the `%8m` vs `%p-%16m` pool (lossless),
 doctests (none runnable), `build.rs` / `OUT_DIR` codegen (none in-workspace), benches

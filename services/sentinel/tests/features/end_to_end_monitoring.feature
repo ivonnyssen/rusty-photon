@@ -27,7 +27,6 @@ Feature: End-to-end safety monitoring
     When I wait for sentinel to poll
     Then the dashboard status should show "Safe" for "Roof Monitor"
     When the monitoring file changes to "CLOSED"
-    And I wait for the state to change
     Then the dashboard status should show "Unsafe" for "Roof Monitor"
 
   Scenario: State transition is recorded in notification history
@@ -38,7 +37,6 @@ Feature: End-to-end safety monitoring
     And sentinel is running
     When I wait for sentinel to poll
     And the monitoring file changes to "CLOSED"
-    And I wait for the state to change
     Then the dashboard history should contain a record for "Roof Monitor"
     And the history record message should contain "Unsafe"
 
