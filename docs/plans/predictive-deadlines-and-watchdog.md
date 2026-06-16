@@ -465,6 +465,33 @@ defaults.
 
 ## Phase 3 — `/api/events/subscribe` SSE endpoint
 
+> **As-built note (Phase 3 shipped).** The endpoint streams every
+> `EventBus` event as SSE — `id` = `event_seq`, `event` = type, `data` =
+> the full `EventEnvelope` JSON. Landed in `services/rp/src/events.rs` (a
+> bounded 512-event history ring + `subscribe_with_history`, which snapshots
+> history and subscribes under one lock for a race-free replay→live handoff),
+> `services/rp/src/routes.rs` (`GET /api/events/subscribe` via a hand-rolled
+> `async-stream` body: replay-after-`Last-Event-ID` → live tail → end), and
+> the shutdown seam in `lib.rs` (a `CancellationToken` in `AppState`,
+> cancelled by `start()` so in-flight streams end and graceful shutdown
+> drains — no `main.rs` change). `Last-Event-ID` is read from the header or
+> `?last_event_id=`; a reconnect whose cursor predates the ring gets a leading
+> `stream_gap`; a consumer that lags `BROADCAST_CAPACITY` (256) gets a final
+> `stream_gap` and is disconnected (it reconnects and replays from history).
+> One new dep: **`async-stream`** (the parent's "no dep churn" note was
+> optimistic — axum's `Sse` consumes a `Stream` but doesn't make one from a
+> `broadcast::Receiver`). Verified by unit tests (ring/handoff, gap detection,
+> `Last-Event-ID` parsing, lag→`stream_gap` via a deterministic
+> broadcast-overrun integration test) and BDD `event_subscribe.feature`
+> (subscribe→live and reconnect→replay over real HTTP, driven by a new
+> `bdd_infra::rp_harness::SseClient` that reads the body with
+> `reqwest::Response::chunk` — no `stream` feature needed). The
+> authoritative contract is
+> [`docs/services/rp.md` §Real-Time Stream](../services/rp.md#real-time-stream);
+> the execution plan is
+> [`predictive-deadlines-phase3-sse.md`](predictive-deadlines-phase3-sse.md)
+> (archive on merge). **Sentinel's consumer (Phase 4) is the next gate.**
+
 **One PR.** Wires the broadcast channel from Phase 1.3 to an HTTP
 endpoint.
 

@@ -15,14 +15,27 @@ broadcast channel over the wire — `EventBus::subscribe()` exists
 
 ## Status
 
+**All steps delivered on `worktree-predictive-deadlines`; archive on merge.**
+
 | Step | What | State |
 |---|---|---|
-| 0 | Design-doc updates (rp.md §Real-Time Stream as-built, parent §3 as-built note) | not started |
-| 1 | Bounded event-history ring on `EventBus` + race-free `subscribe_with_history` | not started |
-| 2 | `GET /api/events/subscribe` SSE handler (`routes.rs`) + router wiring | not started |
-| 3 | `Last-Event-ID` replay + `stream_gap` + lag/disconnect semantics | not started |
-| 4 | Graceful-shutdown cooperation (thread the lifecycle `CancellationToken` into the handler) | not started |
-| 5 | Unit tests (ring buffer, replay handoff) + BDD `event_subscribe.feature` + SSE test helper | not started |
+| 0 | Design-doc updates (rp.md §Real-Time Stream as-built, parent §3 as-built note) | ✅ done |
+| 1 | Bounded event-history ring on `EventBus` + race-free `subscribe_with_history` | ✅ done (`da4f314`) |
+| 2 | `GET /api/events/subscribe` SSE handler (`routes.rs`) + router wiring | ✅ done (`60c5cb8`) |
+| 3 | `Last-Event-ID` replay + `stream_gap` + lag/disconnect semantics | ✅ done (`60c5cb8`) |
+| 4 | Graceful-shutdown cooperation (thread the lifecycle `CancellationToken` into the handler) | ✅ done (`60c5cb8`) |
+| 5 | Unit tests (ring buffer, replay handoff) + BDD `event_subscribe.feature` + SSE test helper | ✅ done |
+
+> **As-built deltas from the plan below.** Step 5's lag-disconnect check is a
+> deterministic **routes-level integration test** (overrun the broadcast
+> channel before polling the body) rather than a BDD load test — acceptance
+> §3.3(3) explicitly permits "BDD or integration", and forcing a 256-event
+> lag over real HTTP would be slow and flaky. The SSE test helper
+> (`bdd_infra::rp_harness::SseClient`) reads the body with
+> `reqwest::Response::chunk` rather than `bytes_stream()`, so **no `stream`
+> reqwest feature and no Bazel repin were needed** (correcting Step 6's
+> expectation). `event_subscribe.feature` covers subscribe→live and
+> reconnect→replay over real HTTP + OmniSim; both pass.
 
 **Scope: the SSE endpoint and its replay buffer only.** Sentinel's consumer
 (`OperationDeadlineMonitor`, Phase 4) and the corrective-action ladder

@@ -734,4 +734,47 @@ mod tests {
         headers.insert("last-event-id", "not-a-number".parse().unwrap());
         assert_eq!(parse_last_event_id(&headers, &params), None);
     }
+
+    /// Acceptance §3.3(3): a consumer that lags the broadcast channel is
+    /// disconnected (server-initiated end-of-body) rather than backing it up.
+    /// We subscribe, then overrun `BROADCAST_CAPACITY` (256) *before* the
+    /// response body is polled, so the subscriber's first `recv()` returns
+    /// `Lagged`; the handler must emit a final `stream_gap` (carrying the
+    /// `lagged` count) and end the stream. `to_bytes` completing at all proves
+    /// the body ended — a backed-up stream would hang here.
+    #[tokio::test]
+    async fn lagged_consumer_gets_stream_gap_then_disconnect() {
+        use axum::response::IntoResponse;
+
+        let state = test_app_state(ImageCache::new(64, 4, PathBuf::from("/tmp")));
+        let bus = state.mcp.event_bus.clone();
+        let response = subscribe_events(
+            State(state),
+            HeaderMap::new(),
+            Query(SubscribeParams {
+                last_event_id: None,
+            }),
+        )
+        .await
+        .into_response();
+
+        // The receiver was created inside `subscribe_events`; flooding it now
+        // (before the body is read) overruns the channel deterministically.
+        for i in 0..400 {
+            bus.emit("stress_event", serde_json::json!({ "i": i }));
+        }
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8(body.to_vec()).unwrap();
+        assert!(
+            text.contains("event: stream_gap"),
+            "a lagged consumer must receive a stream_gap frame; body was: {text:?}"
+        );
+        assert!(
+            text.contains("\"lagged\""),
+            "the lag stream_gap must carry the lagged count; body was: {text:?}"
+        );
+    }
 }
