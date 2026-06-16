@@ -12,7 +12,12 @@
 //! The mock is deliberately not exposed unless the `mock` feature is on
 //! so a production build cannot accidentally pick it up.
 
+// `#[cfg(feature = "mock")]`-gated test-helper infrastructure that never
+// ships in production builds. Excluded from coverage so the workspace
+// coverage number reflects only production-shipped code — counting these
+// never-shipped mock lines would produce false coverage figures.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+#![cfg_attr(coverage_nightly, coverage(off))]
 
 use std::sync::Arc;
 
@@ -608,7 +613,6 @@ impl TransportFactory for CapturingMockFactory {
 }
 
 #[cfg(test)]
-#[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;
