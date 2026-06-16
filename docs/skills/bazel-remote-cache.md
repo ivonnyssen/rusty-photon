@@ -56,12 +56,13 @@ A healthy CI run shows `… processes: N remote cache hit` without long
 
 The QHYCCD SDK that `qhy-camera` links (`static=qhyccd`, pinned 25.09.29) does
 **not** go through this cache. It is publicly downloadable from qhyccd.com, and
-the GitHub-hosted ubuntu jobs install it via the author's published
-`ivonnyssen/qhyccd-sdk-install@v1` action (which wraps the download + the SDK's
-own `install.sh` → `/usr/local/lib`, and caches it) — no secret, no SHA pin, no
+the GitHub-hosted ubuntu/macOS/Windows jobs install it via the author's
+published `ivonnyssen/qhyccd-sdk-install@v2` action (which wraps the download —
+running the SDK's own `install.sh` → `/usr/local/lib` on Linux, extracting into
+the workspace on macOS/Windows — and caches it) — no secret, no SHA pin, no
 internal tier. The Pi nightly installs it from qhyccd.com via
-`scripts/setup-pi-runner.sh`. See `docs/services/qhy-camera.md` "Native
-dependency & build gating".
+`scripts/setup-pi-runner.sh` (the action does not cover linux-arm64). See
+`docs/services/qhy-camera.md` "Native dependency & build gating".
 
 ## References
 

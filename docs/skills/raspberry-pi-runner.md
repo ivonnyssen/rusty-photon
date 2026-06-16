@@ -96,13 +96,14 @@ full workspace, so the SDK (pinned **25.09.29**, aarch64) must be installed —
 the `setup-pi-runner.sh` `=== 1b. QHYCCD SDK ===` section downloads it from
 **qhyccd.com** (publicly, no auth) and runs the SDK's `install.sh`, landing the
 libs in `/usr/local/lib` (where `libqhyccd-sys`'s `build.rs` hard-codes the
-linker search path). The published `ivonnyssen/qhyccd-sdk-install` action used by
-the GitHub-hosted x86_64 jobs does **not** cover linux-arm64, hence the Pi-side
-install; the arm64 archive name on qhyccd.com differs from the x86_64
-`sdk_linux64_*` one, so set `QHY_SDK_FILE` to the correct aarch64 archive (or
-`QHY_SDK_SKIP=1` if the SDK is already installed by hand). The GitHub-hosted
-**macOS/Windows** jobs exclude qhy-camera (Linux-only, matching the reference's
-Linux-only CI); ubuntu builds it with the SDK installed.
+linker search path). The published `ivonnyssen/qhyccd-sdk-install@v2` action used
+by the GitHub-hosted jobs covers x86_64-linux, macOS, and Windows but **not**
+linux-arm64, hence the Pi-side install; the arm64 archive name on qhyccd.com
+differs from the x86_64 `sdk_linux64_*` one, so set `QHY_SDK_FILE` to the correct
+aarch64 archive (or `QHY_SDK_SKIP=1` if the SDK is already installed by hand).
+The GitHub-hosted **ubuntu, macOS, and Windows** jobs all build qhy-camera with
+the SDK installed via the action; only the sanitizer job (`safety.yml`) excludes
+it. The Pi covers linux-arm64.
 
 ### 2. Dedicated unprivileged user
 

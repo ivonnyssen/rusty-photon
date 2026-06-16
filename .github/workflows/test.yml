@@ -76,10 +76,6 @@ jobs:
               '[.[] | select(. as $pkg | ($affected | split(" ") | .[] | select(. == $pkg)) // empty)]')
           fi
 
-          # qhy-camera links the Linux-only proprietary QHYCCD SDK, so its
-          # BDD suite cannot run on the Windows matrix; drop it (it runs on
-          # the Pi nightly instead).
-          BDD_PACKAGES=$(echo "$BDD_PACKAGES" | jq -c 'map(select(. != "qhy-camera"))')
           COUNT=$(echo "$BDD_PACKAGES" | jq 'length')
           echo "packages=$BDD_PACKAGES" >> $GITHUB_OUTPUT
           echo "has_bdd=$([ "$COUNT" -gt 0 ] && echo true || echo false)" >> $GITHUB_OUTPUT
@@ -97,18 +93,25 @@ jobs:
         uses: ./.github/actions/install-omnisim
       # qhy-camera links the proprietary QHYCCD SDK (libqhyccd-sys →
       # static=qhyccd) + libusb-1.0. The SDK is publicly downloadable from
-      # qhyccd.com; the published action installs it (its install.sh puts the
-      # libs in /usr/local/lib, where libqhyccd-sys's build.rs looks). Linux
-      # x86_64 only — qhy-camera is excluded from the macOS/Windows jobs.
+      # qhyccd.com; the published action installs it on Linux/macOS/Windows
+      # (on Linux its install.sh puts the libs in /usr/local/lib, where
+      # libqhyccd-sys's build.rs looks). qhy-camera is built/tested on all
+      # three GitHub-hosted OSes; the Pi nightly covers linux-arm64 (which the
+      # action does not).
+      #
+      # Installed UNCONDITIONALLY: cargo-rail-action@v4 no longer emits the
+      # `cargo-args` output, so the selector below resolves to an empty string
+      # on non-infra PRs and cargo builds the whole workspace (incl qhy-camera).
+      # A `contains(cargo-args, …)` gate would skip the SDK and the build would
+      # fail to link. (If the affected-package narrowing is restored, re-narrow
+      # this to `infra || contains(cargo-args, 'qhy-camera')`.)
       - name: Install libusb (qhy-camera)
-        if: needs.plan.outputs.infra == 'true' || contains(needs.plan.outputs.cargo-args, 'qhy-camera')
         uses: awalsh128/cache-apt-pkgs-action@latest
         with:
           packages: libusb-1.0-0-dev
           version: 1.0
       - name: Install QHYCCD SDK (qhy-camera)
-        if: needs.plan.outputs.infra == 'true' || contains(needs.plan.outputs.cargo-args, 'qhy-camera')
-        uses: ivonnyssen/qhyccd-sdk-install@v1
+        uses: ivonnyssen/qhyccd-sdk-install@v2
         with:
           version: "25.09.29"
       - name: Install stable
@@ -165,6 +168,18 @@ jobs:
       - uses: actions/checkout@v5
       - name: Install ASCOM OmniSim
         uses: ./.github/actions/install-omnisim
+      # qhy-camera links the proprietary QHYCCD SDK on macOS too (static=qhyccd
+      # + libc++). The static lib references libusb, so install it via brew
+      # exactly as the upstream qhyccd-rs macOS CI does, then provision the SDK
+      # via the published action (covers x86_64-linux/macOS/Windows).
+      # Unconditional for the same reason as the ubuntu job: cargo-rail-action@v4
+      # dropped `cargo-args`, so this job builds the whole workspace.
+      - name: Install libusb (qhy-camera, macOS)
+        run: brew install libusb
+      - name: Install QHYCCD SDK (qhy-camera)
+        uses: ivonnyssen/qhyccd-sdk-install@v2
+        with:
+          version: "25.09.29"
       - name: Install stable
         uses: dtolnay/rust-toolchain@stable
       - name: Install cargo-nextest
@@ -176,15 +191,15 @@ jobs:
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
       - name: cargo build
-        run: cargo build --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace --exclude qhy-camera' || needs.plan.outputs.cargo-args }} --all-features --all-targets
+        run: cargo build --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --all-targets
       - name: cargo nextest run
-        run: cargo nextest run --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace --exclude qhy-camera' || needs.plan.outputs.cargo-args }} --all-features --all-targets
+        run: cargo nextest run --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --all-targets
       # BDD cross-spawn deps not visible to cargo-rail — see ubuntu job above.
       - name: cargo build BDD cross-spawn deps
         if: needs.plan.outputs.has-bdd == 'true' && needs.plan.outputs.infra != 'true'
         run: cargo build --locked --package filemonitor --package rp --package dsd-fp2 --all-features --all-targets
       - name: cargo test --test bdd
-        run: cargo test --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace --exclude qhy-camera' || needs.plan.outputs.cargo-args }} --all-features --test bdd
+        run: cargo test --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --test bdd
       - name: Upload OmniSim logs (on failure)
         if: failure()
         uses: actions/upload-artifact@v7
@@ -206,6 +221,16 @@ jobs:
       - uses: actions/checkout@v5
       - name: Install ASCOM OmniSim
         uses: ./.github/actions/install-omnisim
+      # qhy-camera links the proprietary QHYCCD SDK on Windows (static=qhyccd
+      # from pkg_win\x64; no separate libusb needed). This job always builds
+      # the full --workspace to warm the cache for the per-service windows-bdd
+      # jobs, so the SDK must be present unconditionally. The published action
+      # extracts the WinMix SDK into the workspace where libqhyccd-sys's
+      # build.rs looks and adds pkg_win\x64 to PATH for runtime DLL loading.
+      - name: Install QHYCCD SDK (qhy-camera)
+        uses: ivonnyssen/qhyccd-sdk-install@v2
+        with:
+          version: "25.09.29"
       - name: Install stable
         uses: dtolnay/rust-toolchain@stable
       - name: Install cargo-nextest
@@ -221,9 +246,9 @@ jobs:
       # Build full workspace so the cache saved by this job includes all
       # binaries needed by the per-service BDD jobs
       - name: cargo build
-        run: cargo build --locked --workspace --exclude qhy-camera --all-features --all-targets
+        run: cargo build --locked --workspace --all-features --all-targets
       - name: cargo nextest run
-        run: cargo nextest run --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace --exclude qhy-camera' || needs.plan.outputs.cargo-args }} --all-features --all-targets
+        run: cargo nextest run --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --all-targets
   windows-bdd:
     # Per-service BDD tests on Windows, run in parallel via matrix.
     # Each service spawns its own process per scenario; on Windows this takes
@@ -247,6 +272,13 @@ jobs:
       - uses: actions/checkout@v5
       - name: Install ASCOM OmniSim
         uses: ./.github/actions/install-omnisim
+      # Only qhy-camera links the proprietary QHYCCD SDK; provision it for that
+      # matrix leg so its BDD binary builds and loads on Windows.
+      - name: Install QHYCCD SDK (qhy-camera)
+        if: matrix.package == 'qhy-camera'
+        uses: ivonnyssen/qhyccd-sdk-install@v2
+        with:
+          version: "25.09.29"
       - name: Install stable
         uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -299,18 +331,18 @@ jobs:
         uses: ./.github/actions/install-omnisim
       # qhy-camera links the proprietary QHYCCD SDK (libqhyccd-sys →
       # static=qhyccd) + libusb-1.0. The SDK is publicly downloadable from
-      # qhyccd.com; the published action installs it (its install.sh puts the
-      # libs in /usr/local/lib, where libqhyccd-sys's build.rs looks). Linux
-      # x86_64 only — qhy-camera is excluded from the macOS/Windows jobs.
+      # qhyccd.com; the published action installs it into /usr/local/lib on
+      # Linux (where libqhyccd-sys's build.rs looks). Coverage runs on Linux
+      # only; the SDK action also covers macOS/Windows for the test jobs.
+      # Unconditional: cargo-rail-action@v4 dropped `cargo-args`, so this job
+      # builds the whole workspace (incl qhy-camera) on every run.
       - name: Install libusb (qhy-camera)
-        if: needs.plan.outputs.infra == 'true' || contains(needs.plan.outputs.cargo-args, 'qhy-camera')
         uses: awalsh128/cache-apt-pkgs-action@latest
         with:
           packages: libusb-1.0-0-dev
           version: 1.0
       - name: Install QHYCCD SDK (qhy-camera)
-        if: needs.plan.outputs.infra == 'true' || contains(needs.plan.outputs.cargo-args, 'qhy-camera')
-        uses: ivonnyssen/qhyccd-sdk-install@v1
+        uses: ivonnyssen/qhyccd-sdk-install@v2
         with:
           version: "25.09.29"
       - name: Install nightly (for coverage instrumentation)

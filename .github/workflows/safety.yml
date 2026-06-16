@@ -52,19 +52,25 @@ jobs:
           fi
           sed -i '/^\s*\[profile.dev\]/,/^\s*\[/ {/^\s*opt-level/d}' Cargo.toml
           sed -i '/^\s*\[profile.dev\]/a opt-level = 1' Cargo.toml
+      # exclude qhy-camera: it links the proprietary QHYCCD SDK (a static C/C++
+      # blob built without sanitizer instrumentation, plus libusb) which we
+      # cannot fix, so LSan would report unactionable leaks from its init paths.
+      # The SDK is not installed on this runner either, so qhy-camera must be
+      # excluded. Its memory safety is exercised by the normal test jobs / Pi.
       - name: cargo build
-        run: cargo build --workspace --all-features --all-targets
+        run: cargo build --workspace --exclude qhy-camera --all-features --all-targets
         env:
           RUSTFLAGS: "-Z sanitizer=${{ matrix.sanitizer }}"
       - name: cargo test
         # only --lib --tests for asan b/c of https://github.com/rust-lang/rust/issues/53945
         # exclude bdd-infra: its unit tests look for binaries in target/debug/
         # which doesn't exist when CARGO_BUILD_TARGET is set
+        # exclude qhy-camera: proprietary SDK, see the build step above
         run: |
           if [ "${{ matrix.sanitizer }}" = "address" ]; then
-            cargo test --workspace --exclude bdd-infra --lib --tests --all-features
+            cargo test --workspace --exclude bdd-infra --exclude qhy-camera --lib --tests --all-features
           else
-            cargo test --workspace --exclude bdd-infra --all-features --all-targets
+            cargo test --workspace --exclude bdd-infra --exclude qhy-camera --all-features --all-targets
           fi
         env:
           ASAN_OPTIONS: "detect_odr_violation=0:detect_leaks=0"

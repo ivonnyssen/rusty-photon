@@ -86,8 +86,9 @@ sudo apt-get install -y \
 # discoverable or qhy-camera fails to link. On Linux libqhyccd-sys hard-codes the
 # linker search path `/usr/local/lib`, so the SDK's own install.sh (which copies
 # into /usr/local) is what we run. The SDK is publicly downloadable from
-# qhyccd.com (the `ivonnyssen/qhyccd-sdk-install` action does the same for the
-# x86_64 GitHub runners; that action does NOT cover linux-arm64, hence this).
+# qhyccd.com (the `ivonnyssen/qhyccd-sdk-install@v2` action does the same for the
+# x86_64-linux/macOS/Windows GitHub runners; it does NOT cover linux-arm64,
+# hence this Pi-side install).
 #
 # The arm64 tarball name on qhyccd.com differs from the x86_64 `sdk_linux64_*`
 # one — set QHY_SDK_FILE to the correct aarch64 archive for this release (the

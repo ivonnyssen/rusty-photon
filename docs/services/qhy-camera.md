@@ -29,10 +29,13 @@ reusable FFI layer), using `qhyccd-alpaca`'s device-trait code only as the
 behavioural reference. See *Delivery phasing* and
 [ADR — to be written] for why.
 
-**Not cross-platform.** Unlike `filemonitor` / `sky-survey-camera`, this service
-links a **proprietary native SDK** and is therefore gated out of the default
-workspace build. See *Native dependency & build gating* — this is the dominant
-design constraint.
+**Requires a proprietary native SDK.** Unlike `filemonitor` /
+`sky-survey-camera`, this service links a **proprietary native SDK** that must be
+provisioned before it will link, so a developer without the SDK cannot build
+`-p qhy-camera`. The SDK *is* cross-platform on x86 (Linux/macOS/Windows via the
+install action; linux-arm64 via the Pi), so CI builds it on all GitHub-hosted
+OSes — but the SDK requirement is still the dominant design constraint. See
+*Native dependency & build gating*.
 
 ---
 
@@ -71,7 +74,7 @@ does not break the SDK-less default build.
 | Concern | Mechanism |
 |---|---|
 | `cargo build --all` / local dev without SDK | The package is a normal workspace member, but **`cargo build -p qhy-camera` is expected to fail to link without the SDK**. Devs without the SDK use the rest of the workspace normally; `cargo rail`'s `merge_base=true` (affected-packages-only) means the package is only built when *its* files change. Documented in this design doc and the service README. |
-| CI | The ubuntu (`required` + `coverage`) jobs install the SDK via the author's published [`ivonnyssen/qhyccd-sdk-install@v1`](https://github.com/ivonnyssen/qhyccd-sdk-install) action (`version: "25.09.29"`) + `libusb-1.0-0-dev` (cached apt), gated on qhy-camera being in scope, **before** building. The SDK is publicly downloadable from qhyccd.com (no secret/auth), exactly as the reference `qhyccd-alpaca` / `qhyccd-rs` CI does. macOS/Windows jobs **exclude** qhy-camera (`--workspace --exclude qhy-camera`) and it is dropped from the windows-bdd matrix — Linux x86_64 only, matching the reference's Linux-only CI. |
+| CI | Every job that compiles qhy-camera installs the SDK via the author's published [`ivonnyssen/qhyccd-sdk-install@v2`](https://github.com/ivonnyssen/qhyccd-sdk-install) action (`version: "25.09.29"`), which provisions it on **Linux, macOS, and Windows** — exactly as the upstream `qhyccd-rs` CI does. Per-OS libusb: `libusb-1.0-0-dev` (cached apt) on Linux, `brew install libusb` on macOS, none on Windows (the WinMix SDK bundles it). `test.yml` builds + tests qhy-camera on the ubuntu / macOS / windows jobs and the windows-bdd matrix; `conformu.yml` runs its ConformU suite on all three OSes; `scheduled.yml` (nightly/beta) builds it. The SDK is publicly downloadable from qhyccd.com (no secret/auth). **Exception:** `safety.yml` (ASan/LSan) **excludes** qhy-camera (`--exclude qhy-camera`) — its proprietary static lib is built without sanitizer instrumentation and would emit unactionable leak reports. |
 | Raspberry Pi nightly runner | `scripts/setup-pi-runner.sh` installs the SDK (25.09.29) + `libusb` from qhyccd.com into `/usr/local/lib`. **aarch64 confirmed available and linking** — `qhy-camera` builds on the Pi5 arm64 nightly (the published action covers x86_64/Windows/macOS, not linux-arm64, hence the Pi-side install; the arm64 tarball name differs from `sdk_linux64_*` — set `QHY_SDK_FILE`). |
 | Bazel (shadow build) | Tag the target `requires-cargo` initially (kept out of `bazel test //...` by `.bazelrc`'s default `-requires-cargo`). Later replace with a hand-written `crate.annotation` for `libqhyccd-sys` (link-search to the installed SDK, `static=qhyccd`, `dylib=usb-1.0`). Run `CARGO_BAZEL_REPIN=1 bazel mod tidy && bazel mod tidy` after adding `qhyccd-rs` (Rule 10). |
 
@@ -84,8 +87,11 @@ does not break the SDK-less default build.
 - **SDK distribution: public, via the published action.** *(Decision revised to
   match the reference CI.)* The QHYCCD SDK is **publicly downloadable from
   qhyccd.com** (`.../publish/SDK/25.09.29/sdk_linux64_25.09.29.tgz`); the author's
-  `ivonnyssen/qhyccd-sdk-install` action wraps the download + the SDK's own
-  `install.sh` (→ `/usr/local/lib` + `ldconfig`) and caches it. So **no
+  `ivonnyssen/qhyccd-sdk-install@v2` action wraps the download and caches it on
+  **Linux, macOS, and Windows**. On Linux it runs the SDK's own `install.sh`
+  (→ `/usr/local/lib` + `ldconfig`); on macOS/Windows it extracts into
+  `$GITHUB_WORKSPACE` where `libqhyccd-sys`'s `build.rs` looks (and adds
+  `pkg_win\x64` to `PATH` on Windows). So **no
   authenticated tier, secret, or SHA pin is needed** — the earlier
   "authenticated/internal cache tier pending the redistribution-terms question"
   plan was superseded once the reference's CI confirmed the SDK is fetched

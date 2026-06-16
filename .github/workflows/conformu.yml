@@ -104,6 +104,24 @@ jobs:
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
 
+      # qhy-camera opts into ConformU and links the proprietary QHYCCD SDK
+      # unconditionally (static=qhyccd, even under the simulation feature), so
+      # the --workspace pre-build needs the SDK + libusb on both Linux and
+      # macOS. The published action provisions the SDK on all three OSes.
+      - name: Install libusb (qhy-camera, Linux)
+        if: runner.os == 'Linux'
+        uses: awalsh128/cache-apt-pkgs-action@latest
+        with:
+          packages: libusb-1.0-0-dev
+          version: 1.0
+      - name: Install libusb (qhy-camera, macOS)
+        if: runner.os == 'macOS'
+        run: brew install libusb
+      - name: Install QHYCCD SDK (qhy-camera)
+        uses: ivonnyssen/qhyccd-sdk-install@v2
+        with:
+          version: "25.09.29"
+
       - name: Pre-build workspace
         run: cargo build --locked --workspace --all-features --all-targets
 
@@ -181,6 +199,14 @@ jobs:
       - name: cargo generate-lockfile
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
+
+      # Only qhy-camera links the proprietary QHYCCD SDK; provision it for that
+      # service's per-package build/run on Windows (no separate libusb needed).
+      - name: Install QHYCCD SDK (qhy-camera)
+        if: matrix.service.name == 'qhy-camera'
+        uses: ivonnyssen/qhyccd-sdk-install@v2
+        with:
+          version: "25.09.29"
 
       - name: Pre-build
         run: cargo build --locked --package ${{ matrix.service.name }} --all-features --all-targets
