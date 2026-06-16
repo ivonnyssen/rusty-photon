@@ -33,8 +33,9 @@ Dashboard (axum + hand-rolled HTML) --- web UI w/ JS polling
 
 ### Key Traits
 
-- **`Monitor`** — `poll() -> MonitorState`, `connect()`, `disconnect()`, `polling_interval() -> Duration`. First implementation: `AlpacaSafetyMonitor`.
-- **`Notifier`** — `notify(notification)`. First implementation: `PushoverNotifier`.
+- **`Monitor`** — `poll() -> MonitorState`, `connect()`, `disconnect()`, `polling_interval() -> Duration`. A **pull-based** monitor the engine polls on a fixed interval. First implementation: `AlpacaSafetyMonitor`.
+- **`EventMonitor`** — `name()`, `run(cancel)`. A **push-based** monitor that owns a long-lived connection and reacts to a stream of events rather than being polled. It runs until the cancellation token fires. First implementation: `OperationDeadlineMonitor` (see [Operation Watchdog](#operation-watchdog)). Added because the watchdog's natural interface is "react to each event as it arrives", which a `poll() -> State` shape cannot express; the engine spawns a parallel task per `EventMonitor` alongside the per-`Monitor` poll loops.
+- **`Notifier`** — `notify(notification)`. First implementation: `PushoverNotifier`. The watchdog reuses this dispatch path — an expiry or liveness escalation is just another notification.
 - **`HttpClient`** — wraps `reqwest` for testability (mockall in tests). Used by both monitors and notifiers.
 
 ### Dependency Injection
@@ -60,6 +61,8 @@ See `examples/config.json` for a complete example.
 ### Monitor Types
 
 - `alpaca_safety_monitor` — Polls an ASCOM Alpaca SafetyMonitor device. Supports optional `auth` section with `username` and `password` (plaintext) for connecting to auth-enabled services. See [ADR-003](../decisions/003-authentication-for-device-access.md).
+
+In addition to the polled monitors above, the optional `operation_watchdog` block configures the push-based [Operation Watchdog](#operation-watchdog), which subscribes to an rp event stream rather than polling a device.
 
 ### Notifier Types
 
@@ -126,6 +129,144 @@ See [ADR-003](../decisions/003-authentication-for-device-access.md).
 }
 ```
 
+## Operation Watchdog
+
+The operation watchdog is sentinel's second monitoring loop. Where
+`AlpacaSafetyMonitor` answers "is the sky safe?", the watchdog answers
+"is the running operation making progress, and is rp itself alive?".
+It is the Sentinel half of the two-loop supervision design described in
+[`docs/services/rp.md` §Sentinel Watchdog Integration](rp.md#sentinel-watchdog-integration)
+and the
+[predictive-deadlines plan](../plans/predictive-deadlines-and-watchdog.md);
+rp is the inner loop (every blocking operation emits a `*_started` event
+carrying a predicted and a maximum duration, then a `*_complete` /
+`*_failed`), and the watchdog is the outer loop that tracks those
+deadlines independently and escalates when one is missed.
+
+It is implemented as an `EventMonitor` (`OperationDeadlineMonitor`) that
+subscribes to rp's Server-Sent-Events stream
+(`GET {rp_url}/api/events/subscribe`, see
+[rp.md §Real-Time Stream](rp.md#real-time-stream)) and reacts to each
+event as it arrives. It is entirely optional: with no `operation_watchdog`
+block in the config, sentinel behaves exactly as before (safety polling
+only).
+
+### What it tracks
+
+Every event on the stream carries an envelope with an `event` type (e.g.
+`"slew_started"`), an `event_seq` (the monotonic SSE id / replay cursor),
+an `operation_id` (shared across one operation's lifecycle events), and —
+on `*_started` events for operations with predictive deadlines — a
+`max_duration_ms`. The watchdog keys open operations by `operation_id`:
+
+| Event suffix | Action |
+|---|---|
+| `*_started` | Begin tracking this `operation_id`. If the envelope carries `max_duration_ms`, arm an expiry timer for `max_duration_ms + buffer` (the **buffer** covers wire latency and gives rp's own internal deadline a chance to fire first). If it does not (operations not yet on predictive deadlines, e.g. `plate_solve`), track it open with no timer — it clears only on completion or via the liveness pulse. |
+| `*_complete` / `*_failed` | Stop tracking this `operation_id`; cancel its timer. The operation finished within its deadline — no escalation. |
+| timer expiry (no matching completion) | **Escalate** per the operation family's `on_expiry` policy. |
+
+The operation **family** (the key used to look up `buffer` / `on_expiry`)
+is the event name with its `_started` / `_complete` / `_failed` suffix
+stripped: `slew_started` → `slew`, `move_focuser_complete` →
+`move_focuser`, `centering_started` → `centering`. A family with no
+configured entry uses the watchdog's `default_buffer` and a `notify_only`
+policy.
+
+The timer is armed from the moment the `*_started` frame is **received**,
+not from the envelope's `started_at` wall-clock — this needs no clock
+synchronisation between hosts, and on reconnect (below) a replayed
+`*_started` that is already overdue fires almost immediately, which is the
+correct conservative behaviour.
+
+### Liveness pulse (stream disconnect)
+
+The stream doubles as a heartbeat on rp. If the connection drops — rp
+crashed, wedged, or restarted — the watchdog:
+
+1. Reconnects with `Last-Event-ID` set to the highest `event_seq` it has
+   seen, so rp replays everything buffered since (see
+   [rp.md §Real-Time Stream](rp.md#real-time-stream) — rp keeps a 512-event
+   history ring). Reconnect uses a fixed `reconnect_backoff` delay, up to
+   `reconnect_max_attempts` times.
+2. If rp answers a reconnect with a leading `stream_gap` event (the
+   client's cursor predates the history ring, so some events were lost),
+   the watchdog **escalates every operation it is currently tracking** —
+   it can no longer be sure those operations completed — and then resumes
+   from the live tail.
+3. If every reconnect attempt fails, the watchdog escalates **"rp
+   unresponsive"** — this is the end-to-end liveness trigger the design
+   calls out: a hung or crashed rp is itself a watchdog event, not just a
+   silent gap.
+
+A clean reconnect that replays without a gap resumes tracking
+transparently: completions that arrived during the brief disconnect clear
+their operations on replay, and still-open operations keep their original
+timers.
+
+### Escalation (corrective-action ladder)
+
+On expiry or a liveness trigger the watchdog runs the configured
+corrective action. **This release implements the first rung only —
+`notify_only`:** it dispatches a `Notification` through the same
+`Notifier` chain the safety monitor uses (so a Pushover alert fires) and
+records it in the dashboard notification history. The `on_expiry` policy
+is parsed and stored, but every value behaves as notify-only for now; the
+`abort` and `restart` rungs (`abort_then_restart`) are the next phase of
+the plan (`docs/plans/predictive-deadlines-and-watchdog.md` Phase 5) and
+will branch on this same field without a config change.
+
+### Configuration
+
+The watchdog is configured by an optional top-level `operation_watchdog`
+block:
+
+```json
+{
+  "operation_watchdog": {
+    "rp_url": "http://localhost:8080",
+    "reconnect_max_attempts": 5,
+    "reconnect_backoff": "5s",
+    "default_buffer": "10s",
+    "notifiers": ["pushover"],
+    "message_template": "Operation {operation} ({operation_id}) exceeded its deadline after {elapsed}",
+    "operations": {
+      "slew":         { "buffer": "5s",  "on_expiry": "abort_then_restart" },
+      "park":         { "buffer": "30s", "on_expiry": "notify_only"        },
+      "exposure":     { "buffer": "30s", "on_expiry": "abort_then_restart" },
+      "centering":    { "buffer": "0s",  "on_expiry": "abort_then_restart" },
+      "move_focuser": { "buffer": "5s",  "on_expiry": "abort_then_restart" }
+    }
+  }
+}
+```
+
+| Field | Default | Meaning |
+|---|---|---|
+| `rp_url` | *(required)* | Base URL of the rp instance to watch; the watchdog subscribes to `{rp_url}/api/events/subscribe`. |
+| `reconnect_max_attempts` | `5` | How many consecutive reconnect attempts before escalating "rp unresponsive". |
+| `reconnect_backoff` | `5s` | Delay between reconnect attempts (humantime). |
+| `default_buffer` | `10s` | Buffer added to `max_duration_ms` for families with no `operations` entry. |
+| `notifiers` | *(all)* | Which notifier `type`s receive escalations; omitted means every configured notifier. |
+| `message_template` | built-in | Escalation message; placeholders `{operation}`, `{operation_id}`, `{elapsed}`, `{reason}`. |
+| `operations.<family>.buffer` | `default_buffer` | Buffer for this operation family. |
+| `operations.<family>.on_expiry` | `notify_only` | Corrective-action policy (`notify_only` \| `abort_then_restart`; both notify-only this release). |
+
+`reconnect_max_attempts` of `0` means "never give up reconnecting" (the
+watchdog keeps retrying without ever escalating an unresponsive rp), and a
+`reconnect_backoff` of `0s` retries immediately.
+
+### Edge cases
+
+| Scenario | Behavior |
+|----------|----------|
+| Operation completes within its deadline | Tracking entry removed on `*_complete` / `*_failed`. No notification. |
+| Operation's `max_duration_ms + buffer` elapses with no completion | One escalation notification per expiry, recorded in history. |
+| `*_started` without `max_duration_ms` | Tracked open, no timer; clears on completion or on a liveness escalation. |
+| Stream drops, reconnect succeeds within `reconnect_max_attempts` | Replays buffered events, resumes tracking. No escalation unless a `stream_gap` is reported. |
+| Reconnect reports `stream_gap` | Every currently-tracked operation is escalated (completions may have been lost); tracking resumes from the live tail. |
+| rp unreachable for `reconnect_max_attempts` reconnects | "rp unresponsive" escalation. |
+| `operation_watchdog` block absent | Watchdog disabled; sentinel runs safety polling only. |
+
 ## Dashboard
 
 The web dashboard runs on port 11114 (configurable) and provides:
@@ -147,6 +288,7 @@ services/sentinel/src/
   io.rs                HttpClient trait + ReqwestHttpClient
   monitor.rs           Monitor trait + MonitorState + StateChange
   alpaca_client.rs     AlpacaSafetyMonitor (Monitor impl)
+  watchdog.rs          EventMonitor trait + OperationDeadlineMonitor + SSE event source + deadline tracking
   notifier.rs          Notifier trait + Notification types
   pushover.rs          PushoverNotifier (Notifier impl)
   engine.rs            Engine: polling loops + transition matching + dispatch

@@ -9,10 +9,12 @@ use crate::config::{TransitionConfig, TransitionDirection};
 use crate::monitor::{Monitor, MonitorState};
 use crate::notifier::{Notification, NotificationRecord, Notifier};
 use crate::state::StateHandle;
+use crate::watchdog::EventMonitor;
 
 /// The engine orchestrates polling monitors and dispatching notifications
 pub struct Engine {
     monitors: Vec<Arc<dyn Monitor>>,
+    event_monitors: Vec<Arc<dyn EventMonitor>>,
     notifiers: Vec<Arc<dyn Notifier>>,
     transitions: Vec<TransitionConfig>,
     state: StateHandle,
@@ -22,6 +24,7 @@ pub struct Engine {
 impl Engine {
     pub fn new(
         monitors: Vec<Arc<dyn Monitor>>,
+        event_monitors: Vec<Arc<dyn EventMonitor>>,
         notifiers: Vec<Arc<dyn Notifier>>,
         transitions: Vec<TransitionConfig>,
         state: StateHandle,
@@ -29,6 +32,7 @@ impl Engine {
     ) -> Self {
         Self {
             monitors,
+            event_monitors,
             notifiers,
             transitions,
             state,
@@ -70,6 +74,17 @@ impl Engine {
 
             let handle = tokio::spawn(async move {
                 poll_loop(monitor, state, transitions, notifiers, interval, cancel).await;
+            });
+            handles.push(handle);
+        }
+
+        // Event monitors (e.g. the operation watchdog) own a long-lived
+        // connection and run until cancelled, in parallel with the poll loops.
+        for event_monitor in &self.event_monitors {
+            let event_monitor = Arc::clone(event_monitor);
+            let cancel = self.cancel.clone();
+            let handle = tokio::spawn(async move {
+                event_monitor.run(cancel).await;
             });
             handles.push(handle);
         }

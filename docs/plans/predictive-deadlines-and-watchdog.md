@@ -568,6 +568,46 @@ unresponsive" anyway.
 
 ## Phase 4 — Sentinel `OperationDeadlineMonitor`
 
+> **As-built note (Phase 4 shipped).** Landed in a new
+> `services/sentinel/src/watchdog.rs` plus config + engine + builder wiring.
+> The authoritative contract is
+> [`docs/services/sentinel.md` §Operation Watchdog](../services/sentinel.md#operation-watchdog).
+> Decisions over the sketch below:
+> (1) **New `EventMonitor` trait, not a widened `Monitor`** — the plan's
+> conservative option (§4.1). It is push-based (`name()` + `run(cancel)`);
+> the `Engine` spawns one task per `EventMonitor` alongside the per-`Monitor`
+> poll loops. `OperationDeadlineMonitor` is the first impl.
+> (2) **Injectable event source.** A `WatchdogEventSource` seam separates the
+> SSE transport from the deadline-tracking logic: `HttpWatchdogEventSource`
+> reads the stream with `reqwest::Response::chunk` (no `stream` cargo feature,
+> matching Phase 3's `SseClient`), and a mock source feeds scripted frames to
+> the unit tests under `start_paused` virtual time.
+> (3) **Notify-only rung only** (§5.1 lands implicitly here). `on_expiry` is
+> an enum (`notify_only` | `abort_then_restart`) that is parsed and stored,
+> but both values notify-only this release; the abort/restart rungs and their
+> `services` config block (abort_url/restart_command) are Phase 5 — left out
+> now to avoid dead config. Escalation reuses the existing `Notifier` chain +
+> dashboard history.
+> (4) **Arrival-anchored deadlines.** The timer is armed for
+> `max_duration_ms + buffer` from when the `*_started` frame is *received*
+> (no host clock-sync needed; a replayed-overdue start fires immediately). A
+> `*_started` with no `max_duration_ms` (e.g. `plate_solve`) is tracked open
+> with no timer.
+> (5) **Liveness.** Disconnect → reconnect with `Last-Event-ID` (fixed
+> backoff, up to `reconnect_max_attempts`); a `stream_gap` escalates every
+> open operation (completions may have been lost); reconnect exhaustion
+> escalates "rp unresponsive". The whole `operation_watchdog` block is
+> optional — absent means today's safety-polling-only behavior.
+> (6) **Tests.** Six `start_paused` unit tests cover all four §4.4 behaviors
+> deterministically (complete-in-time, overrun, stream-gap, reconnect-replay,
+> rp-unresponsive) plus SSE parsing/classification. BDD
+> `operation_watchdog.feature` (complete→no alert, overrun→escalate,
+> unreachable→unresponsive) drives the **real sentinel binary** over real
+> HTTP against a controllable raw-tokio chunked SSE stub (no new dependency);
+> the reconnect/replay case is unit-covered rather than via a flaky
+> real-timeout BDD. **No Cargo.toml dep churn.** Phase 5 (health → abort →
+> restart) is the next gate.
+
 **One or two PRs.** Adds the second `Monitor` impl alongside
 `AlpacaSafetyMonitor`.
 

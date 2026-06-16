@@ -24,6 +24,10 @@ pub struct Config {
     /// Path to CA certificate for trusting TLS-enabled services
     #[serde(default)]
     pub ca_cert: Option<String>,
+    /// Optional push-based operation watchdog. Absent means safety polling
+    /// only (today's behavior). See [`OperationWatchdogConfig`].
+    #[serde(default)]
+    pub operation_watchdog: Option<OperationWatchdogConfig>,
 }
 
 impl Config {
@@ -178,6 +182,69 @@ pub enum TransitionDirection {
     Both,
 }
 
+/// Operation watchdog configuration — the push-based event monitor that
+/// subscribes to an rp event stream and tracks per-operation deadlines.
+///
+/// Optional: when the `operation_watchdog` block is absent, sentinel runs
+/// safety polling only. See `docs/services/sentinel.md` §Operation Watchdog.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OperationWatchdogConfig {
+    /// Base URL of the rp instance to watch. The watchdog subscribes to
+    /// `{rp_url}/api/events/subscribe`.
+    pub rp_url: String,
+    /// Consecutive reconnect attempts before escalating "rp unresponsive".
+    /// `0` means never give up (keep retrying without escalating).
+    #[serde(default = "default_reconnect_max_attempts")]
+    pub reconnect_max_attempts: u32,
+    /// Delay between reconnect attempts.
+    #[serde(default = "default_reconnect_backoff", with = "humantime_serde")]
+    pub reconnect_backoff: Duration,
+    /// Buffer added to `max_duration_ms` for operation families that have no
+    /// explicit `operations` entry.
+    #[serde(default = "default_watchdog_buffer", with = "humantime_serde")]
+    pub default_buffer: Duration,
+    /// Which notifier `type`s receive escalations. Empty means every
+    /// configured notifier.
+    #[serde(default)]
+    pub notifiers: Vec<String>,
+    /// Escalation message template. Placeholders: `{operation}`,
+    /// `{operation_id}`, `{elapsed}`, `{reason}`.
+    #[serde(default = "default_watchdog_message_template")]
+    pub message_template: String,
+    /// Per-operation-family policy overrides, keyed by family (the event
+    /// name with its `_started` / `_complete` / `_failed` suffix stripped).
+    #[serde(default)]
+    pub operations: std::collections::HashMap<String, OperationPolicy>,
+}
+
+/// Per-operation-family watchdog policy.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OperationPolicy {
+    /// Buffer added to this family's `max_duration_ms`. Falls back to the
+    /// watchdog's `default_buffer` when absent.
+    #[serde(default, with = "humantime_serde")]
+    pub buffer: Option<Duration>,
+    /// Corrective-action policy on expiry. `notify_only` and
+    /// `abort_then_restart` both notify-only this release; the abort/restart
+    /// rungs are Phase 5.
+    #[serde(default)]
+    pub on_expiry: OnExpiry,
+}
+
+/// Corrective-action policy selector. Both variants notify-only this
+/// release (the abort/restart rungs are Phase 5 of the predictive-deadlines
+/// plan); the variant is parsed and stored so Phase 5 branches on it without
+/// a config change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OnExpiry {
+    #[default]
+    NotifyOnly,
+    AbortThenRestart,
+}
+
 /// Dashboard configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DashboardConfig {
@@ -239,6 +306,22 @@ fn default_true() -> bool {
 
 fn default_dashboard_port() -> u16 {
     11114
+}
+
+fn default_reconnect_max_attempts() -> u32 {
+    5
+}
+
+fn default_reconnect_backoff() -> Duration {
+    Duration::from_secs(5)
+}
+
+fn default_watchdog_buffer() -> Duration {
+    Duration::from_secs(10)
+}
+
+fn default_watchdog_message_template() -> String {
+    "Operation {operation} ({operation_id}) {reason} after {elapsed}".to_string()
 }
 
 fn default_history_size() -> usize {
@@ -569,6 +652,88 @@ mod tests {
         let _lock = ENV_MUTEX.lock().unwrap();
         let mut config = Config::default();
         config.resolve_secrets().unwrap();
+    }
+
+    #[test]
+    fn operation_watchdog_absent_by_default() {
+        let config: Config = serde_json::from_str("{}").unwrap();
+        assert!(config.operation_watchdog.is_none());
+    }
+
+    #[test]
+    fn parse_operation_watchdog_full() {
+        let json = r#"{
+            "operation_watchdog": {
+                "rp_url": "http://localhost:8080",
+                "reconnect_max_attempts": 3,
+                "reconnect_backoff": "2s",
+                "default_buffer": "15s",
+                "notifiers": ["pushover"],
+                "message_template": "{operation} stuck",
+                "operations": {
+                    "slew": { "buffer": "5s", "on_expiry": "abort_then_restart" },
+                    "park": { "on_expiry": "notify_only" }
+                }
+            }
+        }"#;
+        let config: Config = serde_json::from_str(json).unwrap();
+        let wd = config.operation_watchdog.unwrap();
+        assert_eq!(wd.rp_url, "http://localhost:8080");
+        assert_eq!(wd.reconnect_max_attempts, 3);
+        assert_eq!(wd.reconnect_backoff, Duration::from_secs(2));
+        assert_eq!(wd.default_buffer, Duration::from_secs(15));
+        assert_eq!(wd.notifiers, vec!["pushover".to_string()]);
+        assert_eq!(wd.message_template, "{operation} stuck");
+
+        let slew = wd.operations.get("slew").unwrap();
+        assert_eq!(slew.buffer, Some(Duration::from_secs(5)));
+        assert_eq!(slew.on_expiry, OnExpiry::AbortThenRestart);
+
+        let park = wd.operations.get("park").unwrap();
+        assert_eq!(park.buffer, None);
+        assert_eq!(park.on_expiry, OnExpiry::NotifyOnly);
+    }
+
+    #[test]
+    fn operation_watchdog_defaults() {
+        let json = r#"{
+            "operation_watchdog": { "rp_url": "http://rp:9000" }
+        }"#;
+        let config: Config = serde_json::from_str(json).unwrap();
+        let wd = config.operation_watchdog.unwrap();
+        assert_eq!(wd.reconnect_max_attempts, 5);
+        assert_eq!(wd.reconnect_backoff, Duration::from_secs(5));
+        assert_eq!(wd.default_buffer, Duration::from_secs(10));
+        assert!(wd.notifiers.is_empty());
+        assert!(wd.operations.is_empty());
+        assert!(wd.message_template.contains("{operation}"));
+    }
+
+    #[test]
+    fn operation_watchdog_requires_rp_url() {
+        let json = r#"{ "operation_watchdog": { "reconnect_backoff": "5s" } }"#;
+        let err = serde_json::from_str::<Config>(json).unwrap_err();
+        assert!(
+            err.to_string().contains("rp_url"),
+            "missing rp_url should be reported: {err}"
+        );
+    }
+
+    #[test]
+    fn operation_watchdog_rejects_unknown_field() {
+        let json = r#"{
+            "operation_watchdog": { "rp_url": "http://rp", "bogus": true }
+        }"#;
+        let err = serde_json::from_str::<Config>(json).unwrap_err();
+        assert!(
+            err.to_string().contains("bogus"),
+            "unknown field should be rejected: {err}"
+        );
+    }
+
+    #[test]
+    fn on_expiry_defaults_to_notify_only() {
+        assert_eq!(OnExpiry::default(), OnExpiry::NotifyOnly);
     }
 
     #[test]

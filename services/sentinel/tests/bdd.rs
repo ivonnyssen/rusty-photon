@@ -27,6 +27,8 @@ bdd_infra::bdd_main! {
                     if let Some(stub) = world.pushover_stub.take() {
                         stub.abort();
                     }
+                    // Shut down the rp SSE stub (drops its connections), if any.
+                    world.rp_event_stub = None;
                 }
             })
         })

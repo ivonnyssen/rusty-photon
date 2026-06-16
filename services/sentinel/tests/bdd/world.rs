@@ -6,6 +6,9 @@ use std::time::Duration;
 use bdd_infra::ServiceHandle;
 use cucumber::World;
 use tempfile::TempDir;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
+use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Default, World)]
 pub struct SentinelWorld {
@@ -40,6 +43,11 @@ pub struct SentinelWorld {
     // api.pushover.net (slow, non-hermetic, rejects test credentials).
     pub pushover_stub: Option<tokio::task::JoinHandle<()>>,
     pub pushover_stub_url: Option<String>,
+
+    // Operation watchdog: a controllable stub standing in for rp's SSE
+    // stream, plus the URL sentinel's watchdog should subscribe to.
+    pub rp_event_stub: Option<RpEventStub>,
+    pub watchdog_rp_url: Option<String>,
 }
 
 impl SentinelWorld {
@@ -127,6 +135,21 @@ impl SentinelWorld {
             for m in monitors.iter_mut() {
                 m["polling_interval"] = serde_json::json!(format!("{polling}s"));
             }
+        }
+
+        // Wire the operation watchdog when a watched rp URL is set. Buffers are
+        // zeroed so the tracked deadline equals the operation's
+        // `max_duration_ms` exactly, keeping the BDD fast and deterministic;
+        // reconnect is tight so the "unresponsive" path resolves quickly.
+        if let Some(rp_url) = &self.watchdog_rp_url {
+            config["operation_watchdog"] = serde_json::json!({
+                "rp_url": rp_url,
+                "reconnect_max_attempts": 2,
+                "reconnect_backoff": "1s",
+                "default_buffer": "0s",
+                "notifiers": ["pushover"],
+                "operations": { "slew": { "buffer": "0s" } }
+            });
         }
 
         config
@@ -324,5 +347,83 @@ impl SentinelWorld {
             .await
             .expect("failed to GET /api/history");
         resp.json().await.expect("failed to parse history JSON")
+    }
+
+    /// Start the controllable rp SSE stub with the given pre-formatted SSE
+    /// frames and point the watchdog at it.
+    pub async fn start_rp_event_stub(&mut self, frames: Vec<String>) {
+        let stub = RpEventStub::start(frames).await;
+        self.watchdog_rp_url = Some(stub.base_url().to_string());
+        self.rp_event_stub = Some(stub);
+    }
+}
+
+/// A minimal, controllable Server-Sent-Events server standing in for rp's
+/// `GET /api/events/subscribe`. Every accepted connection receives the
+/// pre-scripted frames (as one chunked-transfer body) and is then held open —
+/// no disconnect — so the sentinel watchdog tracks exactly the operations the
+/// script describes. Built on raw tokio TCP so it pulls in no new dependency.
+#[derive(Debug)]
+pub struct RpEventStub {
+    base_url: String,
+    cancel: CancellationToken,
+}
+
+impl RpEventStub {
+    /// Bind on an ephemeral loopback port and serve `frames` (each an SSE
+    /// block without its trailing blank line) to every connection.
+    pub async fn start(frames: Vec<String>) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("failed to bind rp event stub");
+        let addr = listener.local_addr().expect("rp event stub has no addr");
+        let cancel = CancellationToken::new();
+        let body: String = frames.iter().map(|f| format!("{f}\n\n")).collect();
+        let server_cancel = cancel.clone();
+
+        tokio::spawn(async move {
+            loop {
+                let accepted = tokio::select! {
+                    _ = server_cancel.cancelled() => break,
+                    res = listener.accept() => res,
+                };
+                let Ok((mut sock, _)) = accepted else { break };
+                let body = body.clone();
+                let conn_cancel = server_cancel.clone();
+                tokio::spawn(async move {
+                    // Drain the request so the client's write completes.
+                    let mut buf = [0u8; 2048];
+                    let _ = sock.read(&mut buf).await;
+                    let chunk = format!("{:x}\r\n{}\r\n", body.len(), body);
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\n\
+                         Content-Type: text/event-stream\r\n\
+                         Cache-Control: no-cache\r\n\
+                         Transfer-Encoding: chunked\r\n\r\n{chunk}"
+                    );
+                    if sock.write_all(response.as_bytes()).await.is_err() {
+                        return;
+                    }
+                    let _ = sock.flush().await;
+                    // Hold the connection open until the stub is shut down.
+                    conn_cancel.cancelled().await;
+                });
+            }
+        });
+
+        Self {
+            base_url: format!("http://{addr}"),
+            cancel,
+        }
+    }
+
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+}
+
+impl Drop for RpEventStub {
+    fn drop(&mut self) {
+        self.cancel.cancel();
     }
 }
