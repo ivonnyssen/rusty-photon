@@ -204,18 +204,28 @@ pub struct OperationWatchdogConfig {
     /// explicit `operations` entry.
     #[serde(default = "default_watchdog_buffer", with = "humantime_serde")]
     pub default_buffer: Duration,
+    /// Time budget for a `restart_command` to exit *and* the restarted
+    /// service to become responsive again (the corrective ladder's restart
+    /// rung). See [`ServiceConfig::restart_command`].
+    #[serde(default = "default_max_restart_duration", with = "humantime_serde")]
+    pub max_restart_duration: Duration,
     /// Which notifier `type`s receive escalations. Empty means every
     /// configured notifier.
     #[serde(default)]
     pub notifiers: Vec<String>,
     /// Escalation message template. Placeholders: `{operation}`,
-    /// `{operation_id}`, `{elapsed}`, `{reason}`.
+    /// `{operation_id}`, `{elapsed}`, `{reason}`, `{action}` (the
+    /// corrective-action summary, empty for `notify_only`).
     #[serde(default = "default_watchdog_message_template")]
     pub message_template: String,
     /// Per-operation-family policy overrides, keyed by family (the event
     /// name with its `_started` / `_complete` / `_failed` suffix stripped).
     #[serde(default)]
     pub operations: std::collections::HashMap<String, OperationPolicy>,
+    /// Services the corrective ladder can health-check, abort, and restart,
+    /// keyed by a name that `operations.<family>.service` references.
+    #[serde(default)]
+    pub services: std::collections::HashMap<String, ServiceConfig>,
 }
 
 /// Per-operation-family watchdog policy.
@@ -226,23 +236,46 @@ pub struct OperationPolicy {
     /// watchdog's `default_buffer` when absent.
     #[serde(default, with = "humantime_serde")]
     pub buffer: Option<Duration>,
-    /// Corrective-action policy on expiry. `notify_only` and
-    /// `abort_then_restart` both notify-only this release; the abort/restart
-    /// rungs are Phase 5.
+    /// Corrective-action policy on expiry.
     #[serde(default)]
     pub on_expiry: OnExpiry,
+    /// Service (a key into [`OperationWatchdogConfig::services`]) that owns
+    /// this family. Required for `abort_then_restart`; an `abort_then_restart`
+    /// family with no resolvable `service` degrades to `notify_only`.
+    #[serde(default)]
+    pub service: Option<String>,
 }
 
-/// Corrective-action policy selector. Both variants notify-only this
-/// release (the abort/restart rungs are Phase 5 of the predictive-deadlines
-/// plan); the variant is parsed and stored so Phase 5 branches on it without
-/// a config change.
+/// Corrective-action policy selector — what the watchdog does when an
+/// operation of this family misses its deadline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OnExpiry {
+    /// Notify through the `Notifier` chain only (the default, and the only
+    /// action for liveness triggers).
     #[default]
     NotifyOnly,
+    /// Run the corrective ladder (health → abort → restart) against the
+    /// family's `service`, then notify.
     AbortThenRestart,
+}
+
+/// A service the corrective ladder can health-check, abort, and restart.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServiceConfig {
+    /// Alpaca API base of the service, e.g. `http://host:port/api/v1`. The
+    /// ladder appends `{device-type}/{device_number}/connected` (health) or
+    /// the family's abort verb to it.
+    pub base_url: String,
+    /// Alpaca device number for the health-check / abort URLs.
+    #[serde(default)]
+    pub device_number: u32,
+    /// Shell command (`sh -c`) that restarts the service. `null` marks the
+    /// service as not restartable (the ladder stops at abort) — the canonical
+    /// example is a remote MCU we cannot `systemctl`.
+    #[serde(default)]
+    pub restart_command: Option<String>,
 }
 
 /// Dashboard configuration
@@ -320,8 +353,12 @@ fn default_watchdog_buffer() -> Duration {
     Duration::from_secs(10)
 }
 
+fn default_max_restart_duration() -> Duration {
+    Duration::from_secs(60)
+}
+
 fn default_watchdog_message_template() -> String {
-    "Operation {operation} ({operation_id}) {reason} after {elapsed}".to_string()
+    "Operation {operation} ({operation_id}) {reason} after {elapsed}{action}".to_string()
 }
 
 fn default_history_size() -> usize {
@@ -668,11 +705,20 @@ mod tests {
                 "reconnect_max_attempts": 3,
                 "reconnect_backoff": "2s",
                 "default_buffer": "15s",
+                "max_restart_duration": "45s",
                 "notifiers": ["pushover"],
                 "message_template": "{operation} stuck",
                 "operations": {
-                    "slew": { "buffer": "5s", "on_expiry": "abort_then_restart" },
+                    "slew": { "buffer": "5s", "on_expiry": "abort_then_restart", "service": "mount" },
                     "park": { "on_expiry": "notify_only" }
+                },
+                "services": {
+                    "mount": {
+                        "base_url": "http://localhost:11112/api/v1",
+                        "device_number": 2,
+                        "restart_command": "systemctl restart mount"
+                    },
+                    "camera": { "base_url": "http://localhost:11111/api/v1" }
                 }
             }
         }"#;
@@ -682,16 +728,34 @@ mod tests {
         assert_eq!(wd.reconnect_max_attempts, 3);
         assert_eq!(wd.reconnect_backoff, Duration::from_secs(2));
         assert_eq!(wd.default_buffer, Duration::from_secs(15));
+        assert_eq!(wd.max_restart_duration, Duration::from_secs(45));
         assert_eq!(wd.notifiers, vec!["pushover".to_string()]);
         assert_eq!(wd.message_template, "{operation} stuck");
 
         let slew = wd.operations.get("slew").unwrap();
         assert_eq!(slew.buffer, Some(Duration::from_secs(5)));
         assert_eq!(slew.on_expiry, OnExpiry::AbortThenRestart);
+        assert_eq!(slew.service.as_deref(), Some("mount"));
 
         let park = wd.operations.get("park").unwrap();
         assert_eq!(park.buffer, None);
         assert_eq!(park.on_expiry, OnExpiry::NotifyOnly);
+        assert_eq!(park.service, None);
+
+        let mount = wd.services.get("mount").unwrap();
+        assert_eq!(mount.base_url, "http://localhost:11112/api/v1");
+        assert_eq!(mount.device_number, 2);
+        assert_eq!(
+            mount.restart_command.as_deref(),
+            Some("systemctl restart mount")
+        );
+
+        let camera = wd.services.get("camera").unwrap();
+        assert_eq!(camera.device_number, 0, "device_number defaults to 0");
+        assert_eq!(
+            camera.restart_command, None,
+            "restart_command defaults to null"
+        );
     }
 
     #[test]
@@ -704,9 +768,35 @@ mod tests {
         assert_eq!(wd.reconnect_max_attempts, 5);
         assert_eq!(wd.reconnect_backoff, Duration::from_secs(5));
         assert_eq!(wd.default_buffer, Duration::from_secs(10));
+        assert_eq!(wd.max_restart_duration, Duration::from_secs(60));
         assert!(wd.notifiers.is_empty());
         assert!(wd.operations.is_empty());
+        assert!(wd.services.is_empty());
         assert!(wd.message_template.contains("{operation}"));
+    }
+
+    #[test]
+    fn service_config_rejects_unknown_field() {
+        let json = r#"{
+            "operation_watchdog": {
+                "rp_url": "http://rp",
+                "services": { "mount": { "base_url": "http://x", "bogus": 1 } }
+            }
+        }"#;
+        let err = serde_json::from_str::<Config>(json).unwrap_err();
+        assert!(err.to_string().contains("bogus"), "{err}");
+    }
+
+    #[test]
+    fn service_config_requires_base_url() {
+        let json = r#"{
+            "operation_watchdog": {
+                "rp_url": "http://rp",
+                "services": { "mount": { "device_number": 0 } }
+            }
+        }"#;
+        let err = serde_json::from_str::<Config>(json).unwrap_err();
+        assert!(err.to_string().contains("base_url"), "{err}");
     }
 
     #[test]

@@ -29,6 +29,8 @@ bdd_infra::bdd_main! {
                     }
                     // Shut down the rp SSE stub (drops its connections), if any.
                     world.rp_event_stub = None;
+                    // Shut down the corrective-ladder mount service stub, if any.
+                    world.mount_stub = None;
                 }
             })
         })

@@ -708,6 +708,51 @@ policy (Phase 5).
 
 ## Phase 5 — Corrective-action ladder
 
+> **As-built note (Phase 5 shipped — all rungs, one PR).** Landed in a new
+> `services/sentinel/src/corrective.rs` plus config + watchdog + factory
+> wiring. The authoritative contract is
+> [`docs/services/sentinel.md` §Operation Watchdog → Escalation](../services/sentinel.md#escalation-corrective-action-ladder).
+> Decisions over the sketch below:
+> (1) **All rungs in one PR, not one-per-rung.** The user opted into a single
+> PR; the rungs are tightly coupled (they share the `CorrectiveTarget`
+> resolution + the `Corrective` seam), so splitting bought nothing.
+> (2) **`Corrective` seam + three rung traits.** `CorrectiveLadder` composes
+> `HealthChecker` / `Aborter` / `Restarter` (HTTP + shell default impls)
+> behind one `Corrective::run(target)` the watchdog calls — so the watchdog's
+> policy branching is unit-tested against a recording mock, the ladder's
+> orchestration against mock rungs, and each default impl against a mock
+> `HttpClient` / `sh`.
+> (3) **Escalating ladder, not literal abort-then-restart.** Health → abort →
+> restart, taking the *least-invasive* action that resolves the stall: a
+> responsive service is aborted (ladder stops on a clean abort); an
+> unresponsive one — or a failed abort, or a family with no abort verb
+> (compound `centering`, `plate_solve`) — falls through to restart. Restart is
+> bounded by `max_restart_duration` and followed by a health re-poll to
+> confirm recovery. `restart_command: null` = not restartable (ladder stops at
+> abort).
+> (4) **Family → service is explicit config.** `operations.<family>.service`
+> names the owning service (resolved against a new `services` map of
+> `{base_url, device_number, restart_command}`); a static family→Alpaca table
+> supplies the device type + abort verb. An `abort_then_restart` family with
+> no resolvable `service` **degrades to notify_only** with a warning — a
+> config mistake never aborts the wrong device (tenet #2).
+> (5) **rp-side callbacks deferred.** §5.3/§5.4's `POST /api/internal/
+> operation-aborted` and `/api/internal/service-restarted` are **not** built:
+> rp has no abort-recovery / reconnect-after-restart machinery to consume
+> them today, so the endpoints would be dead no-ops (against the no-dead-code
+> tenet). They land with that rp-side recovery work.
+> (6) **Tests.** Corrective orchestration + default impls are unit-tested
+> (responsive→abort-stops, unresponsive→restart→recovery, abort-fail→restart,
+> compound-skips-abort, not-restartable-stops, restart-fail; HTTP health/abort
+> mapping; shell restarter exit-0 / nonzero / timeout, `#[cfg(unix)]`). The
+> watchdog's policy branch is unit-tested (abort_then_restart runs the ladder;
+> unresolvable service degrades to notify). BDD `operation_watchdog.feature`
+> adds one end-to-end scenario: a stuck `abort_then_restart` slew aborts a stub
+> Alpaca service through the **real sentinel binary** (health-check responsive
+> → `abortslew` PUT recorded), proving the wiring; the restart rung is
+> unit-covered rather than shelled out in BDD. **No Cargo.toml dep churn**
+> (`tokio` already has the `process` feature). **This completes the plan.**
+
 **One PR per ladder rung, three or four PRs total.** Each rung is
 independently useful; ship them in order.
 

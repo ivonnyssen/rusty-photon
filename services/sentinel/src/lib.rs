@@ -5,6 +5,7 @@
 
 pub mod alpaca_client;
 pub mod config;
+pub mod corrective;
 pub mod dashboard;
 pub mod engine;
 pub mod error;
@@ -24,6 +25,7 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 use crate::alpaca_client::AlpacaSafetyMonitor;
+use crate::corrective::{Corrective, CorrectiveLadder};
 use crate::engine::Engine;
 use crate::io::ReqwestHttpClient;
 use crate::monitor::Monitor;
@@ -91,22 +93,29 @@ impl Config {
 
     /// Build the push-based event monitors from config. Today this is the
     /// optional `operation_watchdog`; an absent block yields no event
-    /// monitors (safety-polling-only behavior).
+    /// monitors (safety-polling-only behavior). The watchdog's corrective
+    /// ladder shares the same `http` client used for polling.
     pub fn build_event_monitors(
         &self,
         notifiers: &[Arc<dyn Notifier>],
         state: &StateHandle,
+        http: &Arc<dyn io::HttpClient>,
     ) -> Vec<Arc<dyn EventMonitor>> {
         match &self.operation_watchdog {
             Some(watchdog) => {
                 let source: Arc<dyn WatchdogEventSource> =
                     Arc::new(HttpWatchdogEventSource::new(&watchdog.rp_url));
+                let corrective: Arc<dyn Corrective> = Arc::new(CorrectiveLadder::http(
+                    Arc::clone(http),
+                    watchdog.max_restart_duration,
+                ));
                 let monitor = OperationDeadlineMonitor::new(
                     "Operation Watchdog",
                     source,
                     notifiers.to_vec(),
                     Arc::clone(state),
                     watchdog.clone(),
+                    corrective,
                 );
                 vec![Arc::new(monitor)]
             }
@@ -207,7 +216,7 @@ impl SentinelBuilder {
         // through the notifier chain and record into shared state.
         let event_monitors = self
             .event_monitors
-            .unwrap_or_else(|| config.build_event_monitors(&notifiers, &state));
+            .unwrap_or_else(|| config.build_event_monitors(&notifiers, &state, &http));
 
         // Build engine
         let engine = Engine::new(

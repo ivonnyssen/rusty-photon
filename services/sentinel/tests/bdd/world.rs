@@ -48,6 +48,12 @@ pub struct SentinelWorld {
     // stream, plus the URL sentinel's watchdog should subscribe to.
     pub rp_event_stub: Option<RpEventStub>,
     pub watchdog_rp_url: Option<String>,
+
+    // Corrective ladder: a stub Alpaca service the watchdog can health-check
+    // and abort, plus the Alpaca base URL baked into the watchdog `services`
+    // config. Present only for the abort scenario.
+    pub mount_stub: Option<MountServiceStub>,
+    pub mount_service_url: Option<String>,
 }
 
 impl SentinelWorld {
@@ -142,14 +148,28 @@ impl SentinelWorld {
         // `max_duration_ms` exactly, keeping the BDD fast and deterministic;
         // reconnect is tight so the "unresponsive" path resolves quickly.
         if let Some(rp_url) = &self.watchdog_rp_url {
-            config["operation_watchdog"] = serde_json::json!({
+            let mut watchdog = serde_json::json!({
                 "rp_url": rp_url,
                 "reconnect_max_attempts": 2,
                 "reconnect_backoff": "1s",
                 "default_buffer": "0s",
+                "max_restart_duration": "2s",
                 "notifiers": ["pushover"],
                 "operations": { "slew": { "buffer": "0s" } }
             });
+            // When a corrective service stub is configured, make `slew` run the
+            // abort ladder against it (responsive service + abort verb => the
+            // ladder stops at a clean abort, so `restart_command` stays null and
+            // the BDD never shells out).
+            if let Some(svc_url) = &self.mount_service_url {
+                watchdog["operations"]["slew"]["on_expiry"] =
+                    serde_json::json!("abort_then_restart");
+                watchdog["operations"]["slew"]["service"] = serde_json::json!("mount");
+                watchdog["services"] = serde_json::json!({
+                    "mount": { "base_url": svc_url, "restart_command": null }
+                });
+            }
+            config["operation_watchdog"] = watchdog;
         }
 
         config
@@ -355,6 +375,86 @@ impl SentinelWorld {
         let stub = RpEventStub::start(frames).await;
         self.watchdog_rp_url = Some(stub.base_url().to_string());
         self.rp_event_stub = Some(stub);
+    }
+
+    /// Start a stub Alpaca telescope service the corrective ladder can probe
+    /// (reports connected) and abort (records the call), and wire the watchdog
+    /// `services` config at its URL.
+    pub async fn start_mount_service_stub(&mut self) {
+        let stub = MountServiceStub::start().await;
+        self.mount_service_url = Some(format!("{}/api/v1", stub.base_url()));
+        self.mount_stub = Some(stub);
+    }
+}
+
+/// A stub Alpaca telescope service for the corrective-ladder BDD: it answers
+/// `GET .../telescope/0/connected` as responsive and records every
+/// `PUT .../telescope/0/abortslew` so the test can assert the watchdog aborted
+/// the right device.
+#[derive(Debug)]
+pub struct MountServiceStub {
+    base_url: String,
+    abort_count: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    handle: tokio::task::JoinHandle<()>,
+}
+
+impl MountServiceStub {
+    pub async fn start() -> Self {
+        use axum::routing::{get, put};
+        use axum::{Json, Router};
+        use std::sync::atomic::Ordering;
+
+        let abort_count = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let count = std::sync::Arc::clone(&abort_count);
+        let app = Router::new()
+            .route(
+                "/api/v1/telescope/0/connected",
+                get(|| async {
+                    Json(serde_json::json!({
+                        "Value": true, "ErrorNumber": 0, "ErrorMessage": ""
+                    }))
+                }),
+            )
+            .route(
+                "/api/v1/telescope/0/abortslew",
+                put(move || {
+                    let count = std::sync::Arc::clone(&count);
+                    async move {
+                        count.fetch_add(1, Ordering::SeqCst);
+                        Json(serde_json::json!({ "ErrorNumber": 0, "ErrorMessage": "" }))
+                    }
+                }),
+            );
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("failed to bind mount service stub");
+        let addr = listener
+            .local_addr()
+            .expect("mount service stub has no addr");
+        let handle = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        Self {
+            base_url: format!("http://{addr}"),
+            abort_count,
+            handle,
+        }
+    }
+
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
+    /// Number of `abortslew` calls received so far.
+    pub fn abort_count(&self) -> u32 {
+        self.abort_count.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl Drop for MountServiceStub {
+    fn drop(&mut self) {
+        self.handle.abort();
     }
 }
 

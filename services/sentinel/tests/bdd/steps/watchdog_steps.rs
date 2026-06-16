@@ -49,6 +49,31 @@ async fn rp_unreachable(world: &mut SentinelWorld) {
     world.watchdog_rp_url = Some("http://127.0.0.1:1".to_string());
 }
 
+#[given("the mount service is reachable and records aborts")]
+async fn mount_service_reachable(world: &mut SentinelWorld) {
+    // The slew family is wired `abort_then_restart` against this stub, so an
+    // overrun runs the corrective ladder: health-check (responsive) -> abort.
+    world.start_mount_service_stub().await;
+}
+
+#[then("the watchdog aborts the mount service")]
+async fn watchdog_aborts_mount(world: &mut SentinelWorld) {
+    let stub = world
+        .mount_stub
+        .as_ref()
+        .expect("mount service stub not started");
+    for _ in 0..60 {
+        if stub.abort_count() > 0 {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+    panic!(
+        "watchdog never aborted the mount service (abort_count={})",
+        stub.abort_count()
+    );
+}
+
 #[then(expr = "the watchdog records an escalation mentioning {string}")]
 async fn watchdog_records_escalation(world: &mut SentinelWorld, needle: String) {
     let history = world

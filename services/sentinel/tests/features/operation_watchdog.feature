@@ -22,3 +22,10 @@ Feature: Operation watchdog
     Given rp's event stream is unreachable
     And sentinel is running
     Then the watchdog records an escalation mentioning "unresponsive"
+
+  Scenario: An overrunning abort_then_restart operation aborts its service
+    Given the mount service is reachable and records aborts
+    And rp is streaming a slew operation that never completes
+    And sentinel is running
+    Then the watchdog aborts the mount service
+    And the watchdog records an escalation mentioning "abort=ok"

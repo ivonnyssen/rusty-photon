@@ -36,7 +36,8 @@ Dashboard (axum + hand-rolled HTML) --- web UI w/ JS polling
 - **`Monitor`** — `poll() -> MonitorState`, `connect()`, `disconnect()`, `polling_interval() -> Duration`. A **pull-based** monitor the engine polls on a fixed interval. First implementation: `AlpacaSafetyMonitor`.
 - **`EventMonitor`** — `name()`, `run(cancel)`. A **push-based** monitor that owns a long-lived connection and reacts to a stream of events rather than being polled. It runs until the cancellation token fires. First implementation: `OperationDeadlineMonitor` (see [Operation Watchdog](#operation-watchdog)). Added because the watchdog's natural interface is "react to each event as it arrives", which a `poll() -> State` shape cannot express; the engine spawns a parallel task per `EventMonitor` alongside the per-`Monitor` poll loops.
 - **`Notifier`** — `notify(notification)`. First implementation: `PushoverNotifier`. The watchdog reuses this dispatch path — an expiry or liveness escalation is just another notification.
-- **`HttpClient`** — wraps `reqwest` for testability (mockall in tests). Used by both monitors and notifiers.
+- **`Corrective`** / **`HealthChecker`** / **`Aborter`** / **`Restarter`** — the watchdog's corrective-action ladder for `abort_then_restart` operations. `CorrectiveLadder` composes the three rung traits (health → abort → restart) behind the single `Corrective::run` seam the watchdog calls; HTTP and shell default impls live in `corrective.rs`. See [Operation Watchdog](#operation-watchdog).
+- **`HttpClient`** — wraps `reqwest` for testability (mockall in tests). Used by monitors, notifiers, and the corrective health-check / abort rungs.
 
 ### Dependency Injection
 
@@ -205,15 +206,53 @@ timers.
 
 ### Escalation (corrective-action ladder)
 
-On expiry or a liveness trigger the watchdog runs the configured
-corrective action. **This release implements the first rung only —
-`notify_only`:** it dispatches a `Notification` through the same
-`Notifier` chain the safety monitor uses (so a Pushover alert fires) and
-records it in the dashboard notification history. The `on_expiry` policy
-is parsed and stored, but every value behaves as notify-only for now; the
-`abort` and `restart` rungs (`abort_then_restart`) are the next phase of
-the plan (`docs/plans/predictive-deadlines-and-watchdog.md` Phase 5) and
-will branch on this same field without a config change.
+On expiry the watchdog runs the corrective action selected by the
+operation family's `on_expiry` policy:
+
+- **`notify_only`** — dispatch a `Notification` through the same `Notifier`
+  chain the safety monitor uses (so a Pushover alert fires) and record it
+  in the dashboard notification history. This is the default, and it is
+  also the *only* action for the liveness triggers below (a `stream_gap`
+  or an unresponsive rp has no single service to abort).
+- **`abort_then_restart`** — run an **escalating ladder** against the
+  service that owns the family (named by `operations.<family>.service` and
+  resolved against the `services` map), then notify. The ladder takes the
+  least-invasive action that can clear the stall, in order:
+  1. **Health check** — `GET {base_url}/{device}/{n}/connected` with a 2 s
+     timeout. A clean `200` means the service is alive and the *operation*
+     is stuck; anything else (non-200, timeout, connection refused) means
+     the service itself is unresponsive.
+  2. **Abort** — if the service is responsive and the family maps to an
+     ASCOM abort verb (`slew`/`park` → `telescope/{n}/abortslew`,
+     `exposure` → `camera/{n}/abortexposure`, `move_focuser` →
+     `focuser/{n}/halt`), `PUT` that verb. A successful abort **ends the
+     ladder** — the aborted operation surfaces a `*_failed` / `*_complete`
+     on the stream, which clears its tracking entry.
+  3. **Restart** — if the service is unresponsive, the abort failed, or the
+     family has no abort verb (e.g. the compound `centering`), and a
+     `restart_command` is configured, run it (bounded by
+     `max_restart_duration`) and then poll the health check until the
+     service is responsive again or the budget elapses.
+     `restart_command: null` marks a service as **not restartable** (a
+     remote MCU such as the star-adventurer-gti is the canonical example) —
+     the ladder stops at abort.
+  4. **Notify** — always, through the `Notifier` chain, with a message that
+     reports which rungs ran and their outcome (rendered into the
+     `{action}` placeholder).
+
+A family configured `abort_then_restart` whose `service` cannot be
+resolved (no `service` set, or a name absent from `services`) **degrades
+safely to `notify_only`** with a logged warning — a config mistake never
+aborts the wrong device or wedges the watchdog (tenet #2, robustness).
+
+> **Deferred — rp-side recovery callbacks.** The plan
+> (`docs/plans/predictive-deadlines-and-watchdog.md` §5.3–5.4) sketches two
+> follow-up POSTs from sentinel to rp — `/api/internal/operation-aborted`
+> (clear sticky state, re-plan) and `/api/internal/service-restarted`
+> (reconnect the driver). They are **not** implemented: rp has no
+> abort-recovery or reconnect-after-restart machinery to consume them
+> today, so the endpoints would be no-ops. They land with that rp-side
+> recovery work, not here.
 
 ### Configuration
 
@@ -227,14 +266,20 @@ block:
     "reconnect_max_attempts": 5,
     "reconnect_backoff": "5s",
     "default_buffer": "10s",
+    "max_restart_duration": "60s",
     "notifiers": ["pushover"],
-    "message_template": "Operation {operation} ({operation_id}) exceeded its deadline after {elapsed}",
+    "message_template": "Operation {operation} ({operation_id}) {reason} after {elapsed}{action}",
     "operations": {
-      "slew":         { "buffer": "5s",  "on_expiry": "abort_then_restart" },
+      "slew":         { "buffer": "5s",  "on_expiry": "abort_then_restart", "service": "star-adventurer" },
       "park":         { "buffer": "30s", "on_expiry": "notify_only"        },
-      "exposure":     { "buffer": "30s", "on_expiry": "abort_then_restart" },
-      "centering":    { "buffer": "0s",  "on_expiry": "abort_then_restart" },
-      "move_focuser": { "buffer": "5s",  "on_expiry": "abort_then_restart" }
+      "exposure":     { "buffer": "30s", "on_expiry": "abort_then_restart", "service": "qhyccd-alpaca"   },
+      "centering":    { "buffer": "0s",  "on_expiry": "notify_only"        },
+      "move_focuser": { "buffer": "5s",  "on_expiry": "abort_then_restart", "service": "qhy-focuser"     }
+    },
+    "services": {
+      "star-adventurer": { "base_url": "http://localhost:11112/api/v1", "restart_command": null },
+      "qhyccd-alpaca":   { "base_url": "http://localhost:11111/api/v1", "device_number": 0, "restart_command": "systemctl --user restart qhyccd-alpaca" },
+      "qhy-focuser":     { "base_url": "http://localhost:11113/api/v1", "restart_command": "systemctl --user restart qhy-focuser" }
     }
   }
 }
@@ -246,10 +291,15 @@ block:
 | `reconnect_max_attempts` | `5` | How many consecutive reconnect attempts before escalating "rp unresponsive". |
 | `reconnect_backoff` | `5s` | Delay between reconnect attempts (humantime). |
 | `default_buffer` | `10s` | Buffer added to `max_duration_ms` for families with no `operations` entry. |
+| `max_restart_duration` | `60s` | Time budget for a `restart_command` to exit *and* the service to become responsive again. |
 | `notifiers` | *(all)* | Which notifier `type`s receive escalations; omitted means every configured notifier. |
-| `message_template` | built-in | Escalation message; placeholders `{operation}`, `{operation_id}`, `{elapsed}`, `{reason}`. |
+| `message_template` | built-in | Escalation message; placeholders `{operation}`, `{operation_id}`, `{elapsed}`, `{reason}`, `{action}` (the corrective-action summary, empty for `notify_only`). |
 | `operations.<family>.buffer` | `default_buffer` | Buffer for this operation family. |
-| `operations.<family>.on_expiry` | `notify_only` | Corrective-action policy (`notify_only` \| `abort_then_restart`; both notify-only this release). |
+| `operations.<family>.on_expiry` | `notify_only` | Corrective-action policy: `notify_only`, or `abort_then_restart` (runs the ladder against `service`). |
+| `operations.<family>.service` | *(none)* | Service (key into `services`) that owns this family. Required for `abort_then_restart`; ignored otherwise. |
+| `services.<name>.base_url` | *(required)* | Alpaca API base of the service, e.g. `http://host:port/api/v1`; used for the health-check and abort calls. |
+| `services.<name>.device_number` | `0` | Alpaca device number for the health-check / abort URLs. |
+| `services.<name>.restart_command` | `null` | Shell command (`sh -c`) to restart the service; `null` = not restartable (ladder stops at abort). |
 
 `reconnect_max_attempts` of `0` means "never give up reconnecting" (the
 watchdog keeps retrying without ever escalating an unresponsive rp), and a
@@ -260,7 +310,11 @@ watchdog keeps retrying without ever escalating an unresponsive rp), and a
 | Scenario | Behavior |
 |----------|----------|
 | Operation completes within its deadline | Tracking entry removed on `*_complete` / `*_failed`. No notification. |
-| Operation's `max_duration_ms + buffer` elapses with no completion | One escalation notification per expiry, recorded in history. |
+| Operation's `max_duration_ms + buffer` elapses with no completion | One escalation per expiry, recorded in history (and, for `abort_then_restart`, after the ladder runs). |
+| Expiry, `abort_then_restart`, service responsive | Health check passes → abort verb `PUT`; ladder stops; notification reports `abort=ok`. |
+| Expiry, `abort_then_restart`, service unresponsive | Abort skipped → `restart_command` run (if set) → recovery awaited up to `max_restart_duration`; notification reports the restart outcome. |
+| Expiry, `abort_then_restart`, family has no abort verb (`centering`, `plate_solve`) | Abort skipped; restart attempted if configured, else notify-only. |
+| Expiry, `abort_then_restart`, `service` unset or unknown | Degrades to `notify_only` with a logged warning. |
 | `*_started` without `max_duration_ms` | Tracked open, no timer; clears on completion or on a liveness escalation. |
 | Stream drops, reconnect succeeds within `reconnect_max_attempts` | Replays buffered events, resumes tracking. No escalation unless a `stream_gap` is reported. |
 | Reconnect reports `stream_gap` | Every currently-tracked operation is escalated (completions may have been lost); tracking resumes from the live tail. |
@@ -289,6 +343,7 @@ services/sentinel/src/
   monitor.rs           Monitor trait + MonitorState + StateChange
   alpaca_client.rs     AlpacaSafetyMonitor (Monitor impl)
   watchdog.rs          EventMonitor trait + OperationDeadlineMonitor + SSE event source + deadline tracking
+  corrective.rs        Corrective-action ladder: HealthChecker/Aborter/Restarter traits + HTTP/shell impls + CorrectiveLadder
   notifier.rs          Notifier trait + Notification types
   pushover.rs          PushoverNotifier (Notifier impl)
   engine.rs            Engine: polling loops + transition matching + dispatch

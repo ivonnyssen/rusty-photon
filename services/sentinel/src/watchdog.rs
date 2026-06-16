@@ -21,6 +21,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 use crate::config::{OnExpiry, OperationWatchdogConfig};
+use crate::corrective::{Corrective, CorrectiveTarget};
 use crate::notifier::{Notification, NotificationRecord, Notifier};
 use crate::state::StateHandle;
 
@@ -218,6 +219,9 @@ pub struct OperationDeadlineMonitor {
     notifiers: Vec<Arc<dyn Notifier>>,
     state: StateHandle,
     config: OperationWatchdogConfig,
+    /// Corrective-action ladder, run on expiry for `abort_then_restart`
+    /// families. Never invoked for `notify_only` or liveness triggers.
+    corrective: Arc<dyn Corrective>,
 }
 
 impl OperationDeadlineMonitor {
@@ -227,6 +231,7 @@ impl OperationDeadlineMonitor {
         notifiers: Vec<Arc<dyn Notifier>>,
         state: StateHandle,
         config: OperationWatchdogConfig,
+        corrective: Arc<dyn Corrective>,
     ) -> Self {
         Self {
             name: name.into(),
@@ -234,6 +239,42 @@ impl OperationDeadlineMonitor {
             notifiers,
             state,
             config,
+            corrective,
+        }
+    }
+
+    /// Resolve the corrective target for a family: its configured `service`
+    /// must exist in the `services` map. `None` for unconfigured / mismatched
+    /// families (the caller degrades to notify-only).
+    fn resolve_target(&self, family: &str) -> Option<CorrectiveTarget> {
+        let service_name = self.config.operations.get(family)?.service.as_deref()?;
+        let service = self.config.services.get(service_name)?;
+        Some(CorrectiveTarget::new(service_name, family, service))
+    }
+
+    /// Run the corrective ladder for an expired family and return the message
+    /// suffix describing what ran. `notify_only` — and an `abort_then_restart`
+    /// family with no resolvable `service` — produce an empty suffix.
+    async fn corrective_action(&self, family: &str) -> String {
+        if self.on_expiry_for(family) != OnExpiry::AbortThenRestart {
+            return String::new();
+        }
+        match self.resolve_target(family) {
+            Some(target) => {
+                debug!(
+                    "watchdog '{}' running corrective ladder for {} via service '{}'",
+                    self.name, family, target.service_name
+                );
+                self.corrective.run(&target).await.action_suffix()
+            }
+            None => {
+                warn!(
+                    "watchdog '{}' family '{}' is abort_then_restart but has no resolvable \
+                     service; notifying only",
+                    self.name, family
+                );
+                String::new()
+            }
         }
     }
 
@@ -340,6 +381,7 @@ impl OperationDeadlineMonitor {
                         &operation_id,
                         elapsed,
                         "is unconfirmed after an event-stream gap",
+                        "",
                     )
                     .await;
                 }
@@ -358,24 +400,41 @@ impl OperationDeadlineMonitor {
             .collect();
         for operation_id in expired {
             if let Some(t) = tracked.remove(&operation_id) {
-                let _policy = self.on_expiry_for(&t.family); // Phase 5 branches here.
                 let elapsed = t.started.elapsed();
-                self.escalate(&t.family, &operation_id, elapsed, "exceeded its deadline")
-                    .await;
+                // Run the corrective ladder (abort_then_restart) before
+                // notifying, so the alert reports what was attempted.
+                let action = self.corrective_action(&t.family).await;
+                self.escalate(
+                    &t.family,
+                    &operation_id,
+                    elapsed,
+                    "exceeded its deadline",
+                    &action,
+                )
+                .await;
             }
         }
     }
 
     /// Dispatch one escalation through the configured notifier chain and
-    /// record it in the dashboard notification history.
-    async fn escalate(&self, operation: &str, operation_id: &str, elapsed: Duration, reason: &str) {
+    /// record it in the dashboard notification history. `action` is the
+    /// corrective-ladder summary (empty for notify-only / liveness triggers).
+    async fn escalate(
+        &self,
+        operation: &str,
+        operation_id: &str,
+        elapsed: Duration,
+        reason: &str,
+        action: &str,
+    ) {
         let message = self
             .config
             .message_template
             .replace("{operation}", operation)
             .replace("{operation_id}", operation_id)
             .replace("{elapsed}", &format!("{:.1}s", elapsed.as_secs_f64()))
-            .replace("{reason}", reason);
+            .replace("{reason}", reason)
+            .replace("{action}", action);
 
         warn!("watchdog '{}' escalation: {}", self.name, message);
 
@@ -468,6 +527,7 @@ impl EventMonitor for OperationDeadlineMonitor {
                             "-",
                             Duration::ZERO,
                             "is unresponsive (event stream unreachable)",
+                            "",
                         )
                         .await;
                         // Reset so a recovered rp resumes tracking and a
@@ -719,6 +779,24 @@ mod tests {
         }
     }
 
+    /// Records every corrective target it is asked to act on, and returns a
+    /// fixed action suffix so the escalation message can be asserted.
+    #[derive(Debug, Default)]
+    struct RecordingCorrective {
+        targets: Arc<Mutex<Vec<CorrectiveTarget>>>,
+    }
+
+    #[async_trait]
+    impl Corrective for RecordingCorrective {
+        async fn run(&self, target: &CorrectiveTarget) -> crate::corrective::LadderOutcome {
+            self.targets.lock().unwrap().push(target.clone());
+            let mut outcome = crate::corrective::LadderOutcome::default();
+            outcome.rungs.push("health=responsive".to_string());
+            outcome.rungs.push("abort=ok".to_string());
+            outcome
+        }
+    }
+
     #[derive(Debug, Default)]
     struct RecordingNotifier {
         messages: Arc<Mutex<Vec<String>>>,
@@ -745,27 +823,39 @@ mod tests {
                 "reconnect_max_attempts": {max_attempts},
                 "reconnect_backoff": "1s",
                 "default_buffer": "{default_buffer_secs}s",
-                "message_template": "{{operation}}/{{operation_id}} {{reason}} after {{elapsed}}",
+                "message_template": "{{operation}}/{{operation_id}} {{reason}} after {{elapsed}}{{action}}",
                 "operations": {{ "slew": {{ "buffer": "0s" }} }}
             }}"#
         );
         serde_json::from_str(&json).unwrap()
     }
 
-    /// Build a monitor over the mock source; returns it plus the shared
-    /// message log.
+    /// Build a monitor over the mock source; returns it, the shared message
+    /// log, and the recording corrective ladder (to assert what it was asked
+    /// to act on).
     fn build_monitor(
         source: Arc<MockSource>,
         config: OperationWatchdogConfig,
-    ) -> (OperationDeadlineMonitor, Arc<Mutex<Vec<String>>>) {
+    ) -> (
+        OperationDeadlineMonitor,
+        Arc<Mutex<Vec<String>>>,
+        Arc<RecordingCorrective>,
+    ) {
         let messages = Arc::new(Mutex::new(Vec::new()));
         let notifier = Arc::new(RecordingNotifier {
             messages: Arc::clone(&messages),
         });
+        let corrective = Arc::new(RecordingCorrective::default());
         let state = new_state_handle(vec![], 100);
-        let monitor =
-            OperationDeadlineMonitor::new("Test Watchdog", source, vec![notifier], state, config);
-        (monitor, messages)
+        let monitor = OperationDeadlineMonitor::new(
+            "Test Watchdog",
+            source,
+            vec![notifier],
+            state,
+            config,
+            Arc::clone(&corrective) as Arc<dyn Corrective>,
+        );
+        (monitor, messages, corrective)
     }
 
     /// Yield repeatedly so spawned tasks make progress under paused time.
@@ -781,7 +871,7 @@ mod tests {
             frame(1, "slew_started", Some("op-1"), Some(5000)),
             frame(2, "slew_complete", Some("op-1"), None),
         ])]);
-        let (monitor, messages) = build_monitor(source, test_config(10, 5));
+        let (monitor, messages, _corrective) = build_monitor(source, test_config(10, 5));
         let cancel = CancellationToken::new();
         let cancel2 = cancel.clone();
         let handle = tokio::spawn(async move { monitor.run(cancel2).await });
@@ -807,7 +897,7 @@ mod tests {
             Some("op-1"),
             Some(5000), // 5 s + slew buffer 0 s => 5 s deadline
         )])]);
-        let (monitor, messages) = build_monitor(source, test_config(10, 5));
+        let (monitor, messages, _corrective) = build_monitor(source, test_config(10, 5));
         let cancel = CancellationToken::new();
         let cancel2 = cancel.clone();
         let handle = tokio::spawn(async move { monitor.run(cancel2).await });
@@ -832,7 +922,7 @@ mod tests {
             Some("op-1"),
             None, // no max_duration_ms -> no timer
         )])]);
-        let (monitor, messages) = build_monitor(source, test_config(10, 5));
+        let (monitor, messages, _corrective) = build_monitor(source, test_config(10, 5));
         let cancel = CancellationToken::new();
         let cancel2 = cancel.clone();
         let handle = tokio::spawn(async move { monitor.run(cancel2).await });
@@ -861,7 +951,7 @@ mod tests {
             frame(2, "park_started", Some("op-2"), Some(600_000)),
             gap,
         ])]);
-        let (monitor, messages) = build_monitor(source, test_config(10, 5));
+        let (monitor, messages, _corrective) = build_monitor(source, test_config(10, 5));
         let cancel = CancellationToken::new();
         let cancel2 = cancel.clone();
         let handle = tokio::spawn(async move { monitor.run(cancel2).await });
@@ -887,7 +977,8 @@ mod tests {
             // Reconnect replays the completion that arrived during the gap.
             Script::FramesOpen(vec![frame(2, "slew_complete", Some("op-1"), None)]),
         ]);
-        let (monitor, messages) = build_monitor(Arc::clone(&source), test_config(10, 5));
+        let (monitor, messages, _corrective) =
+            build_monitor(Arc::clone(&source), test_config(10, 5));
         let cancel = CancellationToken::new();
         let cancel2 = cancel.clone();
         let handle = tokio::spawn(async move { monitor.run(cancel2).await });
@@ -917,7 +1008,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn exhausting_reconnects_escalates_rp_unresponsive() {
         let source = MockSource::new(vec![Script::Fail, Script::Fail]);
-        let (monitor, messages) = build_monitor(source, test_config(10, 2));
+        let (monitor, messages, _corrective) = build_monitor(source, test_config(10, 2));
         let cancel = CancellationToken::new();
         let cancel2 = cancel.clone();
         let handle = tokio::spawn(async move { monitor.run(cancel2).await });
@@ -933,6 +1024,99 @@ mod tests {
         assert!(
             msgs.iter().any(|m| m.contains("unresponsive")),
             "rp unresponsive escalation expected: {msgs:?}"
+        );
+        cancel.cancel();
+        handle.await.unwrap();
+    }
+
+    // ---- corrective-ladder branching -----------------------------------
+
+    /// A config whose `slew` family runs the corrective ladder against a
+    /// `mount` service on expiry.
+    fn ladder_config() -> OperationWatchdogConfig {
+        let json = r#"{
+            "rp_url": "http://unused",
+            "reconnect_max_attempts": 5,
+            "reconnect_backoff": "1s",
+            "default_buffer": "0s",
+            "message_template": "{operation}/{operation_id} {reason} after {elapsed}{action}",
+            "operations": {
+                "slew": { "buffer": "0s", "on_expiry": "abort_then_restart", "service": "mount" }
+            },
+            "services": {
+                "mount": { "base_url": "http://mount/api/v1", "restart_command": null }
+            }
+        }"#;
+        serde_json::from_str(json).unwrap()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn expiry_with_abort_then_restart_runs_corrective_ladder() {
+        let source = MockSource::new(vec![Script::FramesOpen(vec![frame(
+            1,
+            "slew_started",
+            Some("op-1"),
+            Some(5000),
+        )])]);
+        let (monitor, messages, corrective) = build_monitor(source, ladder_config());
+        let cancel = CancellationToken::new();
+        let cancel2 = cancel.clone();
+        let handle = tokio::spawn(async move { monitor.run(cancel2).await });
+
+        settle().await;
+        tokio::time::advance(Duration::from_secs(6)).await;
+        settle().await;
+
+        let targets = corrective.targets.lock().unwrap().clone();
+        assert_eq!(targets.len(), 1, "the ladder must run once on expiry");
+        assert_eq!(targets[0].service_name, "mount");
+        assert_eq!(
+            targets[0].binding.unwrap().device_type,
+            "telescope",
+            "slew resolves to the telescope device"
+        );
+
+        let msgs = messages.lock().unwrap().clone();
+        assert_eq!(msgs.len(), 1, "{msgs:?}");
+        assert!(
+            msgs[0].contains("corrective action: health=responsive, abort=ok"),
+            "escalation must report the ladder outcome: {}",
+            msgs[0]
+        );
+        cancel.cancel();
+        handle.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn abort_then_restart_without_resolvable_service_degrades_to_notify() {
+        // `slew` is abort_then_restart but names no `service` -> notify only.
+        let mut config = ladder_config();
+        config.operations.get_mut("slew").unwrap().service = None;
+        let source = MockSource::new(vec![Script::FramesOpen(vec![frame(
+            1,
+            "slew_started",
+            Some("op-1"),
+            Some(5000),
+        )])]);
+        let (monitor, messages, corrective) = build_monitor(source, config);
+        let cancel = CancellationToken::new();
+        let cancel2 = cancel.clone();
+        let handle = tokio::spawn(async move { monitor.run(cancel2).await });
+
+        settle().await;
+        tokio::time::advance(Duration::from_secs(6)).await;
+        settle().await;
+
+        assert!(
+            corrective.targets.lock().unwrap().is_empty(),
+            "an unresolvable service must not invoke the ladder"
+        );
+        let msgs = messages.lock().unwrap().clone();
+        assert_eq!(msgs.len(), 1, "still notifies: {msgs:?}");
+        assert!(
+            !msgs[0].contains("corrective action"),
+            "no corrective action ran: {}",
+            msgs[0]
         );
         cancel.cancel();
         handle.await.unwrap();
