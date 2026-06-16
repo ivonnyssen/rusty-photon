@@ -44,12 +44,16 @@ jobs:
           since: ${{ github.event.pull_request.base.sha || github.event.before }}
       # cargo-rail-action@v4 no longer emits the `crates` / `cargo-args` step
       # outputs the affected-package narrowing below relies on. Reconstruct
-      # them from the planner's `scope-json` contract: `.crates` is the
-      # impacted set (the union of impact.direct_crates + transitive_crates),
-      # and cargo-args is the matching `-p` flag list. An empty list means
-      # "nothing crate-specific changed" and the build/test commands fall back
-      # to the whole workspace (cargo's default with no -p and no
-      # default-members), which the SDK gates account for.
+      # them from the planner's `scope-json` contract, whose top-level `.crates`
+      # array IS the affected set the jq below reads (cargo-rail pre-unions the
+      # directly- and transitively-impacted crates into it; the richer `-f json`
+      # surfaces those separately as `.impact.direct_crates` /
+      # `.impact.transitive_crates`, but `scope-json` flattens them into
+      # `.crates`). cargo-args is the matching `-p` flag list. The `// []`
+      # fallback means a missing/empty `.crates` — nothing crate-specific
+      # changed, OR a future schema that drops the field — yields an empty list,
+      # so the build/test commands fall back to the whole workspace (cargo's
+      # default with no -p and no default-members); the SDK gates account for that.
       - name: Derive affected crates from scope-json
         id: scope
         env:

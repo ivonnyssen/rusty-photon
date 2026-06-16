@@ -250,7 +250,9 @@ impl FilterWheelHandle for QhyFilterWheelHandle {
 /// A configurable in-memory [`CameraHandle`] / [`FilterWheelHandle`] used by the
 /// crate's unit tests, so the device logic — including paths the `qhyccd-rs`
 /// simulation cannot easily force, like a mid-exposure SDK error (contract E9) —
-/// is exercised without hardware or the SDK link.
+/// is exercised without hardware and without any *real* SDK calls. (The static
+/// `qhyccd` lib is still linked into the test binary — it is an unconditional
+/// link dependency of `libqhyccd-sys`; the mock only replaces the runtime seam.)
 #[cfg(test)]
 pub(crate) mod mock {
     use super::*;
@@ -518,6 +520,9 @@ pub(crate) mod mock {
         open: AtomicBool,
         filters: u32,
         position: Mutex<u32>,
+        /// Make the post-open handshake (`get_number_of_filters`) fail, so the
+        /// `connect` cleanup path (close-on-failed-handshake) can be tested.
+        pub fail_handshake: AtomicBool,
     }
 
     impl MockFilterWheelHandle {
@@ -527,6 +532,7 @@ pub(crate) mod mock {
                 open: AtomicBool::new(false),
                 filters,
                 position: Mutex::new(0),
+                fail_handshake: AtomicBool::new(false),
             }
         }
     }
@@ -547,6 +553,9 @@ pub(crate) mod mock {
             Ok(self.open.load(Ordering::SeqCst))
         }
         fn get_number_of_filters(&self) -> BackendResult<u32> {
+            if self.fail_handshake.load(Ordering::SeqCst) {
+                return Err(BackendError("simulated handshake failure".to_string()));
+            }
             Ok(self.filters)
         }
         fn get_position(&self) -> BackendResult<u32> {

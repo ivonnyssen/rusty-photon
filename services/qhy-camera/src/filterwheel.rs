@@ -71,6 +71,19 @@ impl QhyFilterWheelDevice {
 
     fn connect(&self) -> ASCOMResult<()> {
         self.handle.open().map_err(|_| ASCOMError::NOT_CONNECTED)?;
+        // If any step of the post-open handshake fails, close the handle before
+        // propagating so a failed connect leaves Connected == false rather than
+        // an opened-but-unusable wheel (mirrors the camera's connect path).
+        if let Err(e) = self.open_handshake() {
+            if let Err(close_err) = self.handle.close() {
+                debug!(error = %close_err, "close after a failed filter-wheel connect handshake also failed");
+            }
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    fn open_handshake(&self) -> ASCOMResult<()> {
         let count = self
             .handle
             .get_number_of_filters()
@@ -198,12 +211,29 @@ mod tests {
     use super::*;
     use crate::backend::mock::MockFilterWheelHandle;
     use ascom_alpaca::ASCOMErrorCode;
+    use std::sync::atomic::Ordering;
 
     fn connected(filter_names: Option<Vec<String>>) -> QhyFilterWheelDevice {
         let handle = Arc::new(MockFilterWheelHandle::new("SIM-QHY178M", 7));
         let device = QhyFilterWheelDevice::new(handle, filter_names, None);
         device.connect().unwrap();
         device
+    }
+
+    #[tokio::test]
+    async fn failed_handshake_closes_the_handle() {
+        // open() succeeds but the post-open handshake fails: a failed connect
+        // must leave the wheel cleanly disconnected, not opened-but-unusable.
+        let handle = Arc::new(MockFilterWheelHandle::new("SIM-QHY178M", 7));
+        handle.fail_handshake.store(true, Ordering::SeqCst);
+        let device = QhyFilterWheelDevice::new(handle.clone(), None, None);
+
+        let err = device.connect().unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
+        assert!(
+            !handle.is_open().unwrap(),
+            "handle must be closed after a failed connect handshake"
+        );
     }
 
     #[tokio::test]

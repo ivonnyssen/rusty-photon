@@ -574,7 +574,9 @@ the "how" decisions made while building.
   `qhyccd-rs` handles and collapses its `eyre::Report` into one typed error. A
   production wrapper drives the real SDK; a test mock lets the unit tests — incl.
   the E9 `Error`-state path and colour/shutter models the mono sim can't show —
-  run with neither hardware nor the SDK runtime.
+  run with no hardware and no *real* SDK calls. (The static `qhyccd` lib is still
+  linked into the test binary — that link is unconditional, see above; only the
+  runtime seam is mocked.)
 - **MaxADU.** `2^bits − 1` where `bits` is `OutputDataActualBits`, **falling back
   to the cached `ccd_info.bits_per_pixel`** when that control is unavailable
   (both give 16 ⇒ 65535 on the sim).

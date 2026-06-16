@@ -326,14 +326,17 @@ fn check_geometry(roi: CCDChipArea, ccd_w: u32, ccd_h: u32, bin: u32) -> ASCOMRe
     Ok(())
 }
 
-/// Rescale a ROI (binned coords) by the `old/new` bin ratio (B3).
+/// Rescale a ROI (binned coords) by the `old/new` bin ratio (B3). Width/height
+/// are clamped to a minimum of 1: rescaling a 1-pixel ROI to a larger bin would
+/// otherwise truncate to 0, then the next `StartExposure` would fail geometry
+/// validation with a confusing "NumX/NumY must be > 0" (which the user never set).
 fn rescale_roi(roi: CCDChipArea, old: u8, new: u8) -> CCDChipArea {
     let factor = f64::from(old) / f64::from(new);
     CCDChipArea {
         start_x: (f64::from(roi.start_x) * factor) as u32,
         start_y: (f64::from(roi.start_y) * factor) as u32,
-        width: (f64::from(roi.width) * factor) as u32,
-        height: (f64::from(roi.height) * factor) as u32,
+        width: ((f64::from(roi.width) * factor) as u32).max(1),
+        height: ((f64::from(roi.height) * factor) as u32).max(1),
     }
 }
 
@@ -1206,6 +1209,15 @@ mod tests {
     fn rescale_roi_scales_by_bin_ratio() {
         let scaled = rescale_roi(area(100, 200, 800, 600), 1, 2);
         assert_eq!(scaled, area(50, 100, 400, 300));
+    }
+
+    #[test]
+    fn rescale_roi_clamps_tiny_dimensions_to_one() {
+        // A 1×1 ROI binned 1→2 would truncate to 0×0 and make the next
+        // StartExposure fail geometry validation; clamp keeps it at 1×1.
+        let scaled = rescale_roi(area(0, 0, 1, 1), 1, 2);
+        assert_eq!(scaled, area(0, 0, 1, 1));
+        assert!(scaled.width >= 1 && scaled.height >= 1);
     }
 
     #[test]
