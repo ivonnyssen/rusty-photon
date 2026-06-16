@@ -4,13 +4,13 @@
 //! Alpaca server on a fixed port that enumerates every connected ASI camera via
 //! [`zwo_rs`] and registers each as a minimal [`ZwoCamera`] device (identity +
 //! cached geometry). Its purpose is to prove the build/link chain
-//! `zwo-camera → zwo-rs → libzwo-sys → ` the native ZWO SDK, and the CI / Bazel
+//! `zwo-camera → zwo-rs → libzwo-sys` → the native ZWO SDK, and the CI / Bazel
 //! gating around that native dependency, *before* the full device-trait work
 //! (Phase E: exposure state machine, ROI/bin, gain/offset, cooling, pulse
 //! guiding) and the EFW `FilterWheel` (Phase F).
 //!
-//! See [`docs/services/zwo-camera.md`](https://github.com/ivonnyssen/rusty_photon)
-//! for the full design and [`docs/plans/zwo-driver.md`] for the decision record.
+//! See `docs/services/zwo-camera.md` for the full design and
+//! `docs/plans/zwo-driver.md` for the decision record.
 //!
 //! ## Native dependency
 //!
@@ -98,6 +98,11 @@ impl ServerBuilder {
             })?;
 
         let app = axum::Router::new().fallback_service(server.into_service());
+        // Stdout is reserved for the machine-readable `bound_addr=<host>:<port>`
+        // handshake that `bdd-infra::parse_bound_port` waits on for port
+        // discovery (see rusty-photon-service-lifecycle's logging docs); every
+        // peer service emits it. Logs go to stderr, so this stays parseable.
+        println!("Bound Alpaca server bound_addr={local_addr}");
         info!(address = %local_addr, "Service started successfully");
         Ok(BoundServer {
             listener,

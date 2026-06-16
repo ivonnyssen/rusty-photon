@@ -215,7 +215,7 @@ jobs:
       # native-SDK zwo-camera when it isn't in scope (so the SDK step above can
       # be skipped) and include it when it is.
       - name: cargo build
-        run: cargo build --locked --workspace ${{ (needs.plan.outputs.infra == 'true' || contains(needs.plan.outputs.cargo-args, 'zwo-camera')) && '' || '--exclude zwo-camera' }} --all-features --all-targets
+        run: cargo build --locked ${{ (needs.plan.outputs.infra == 'true' || contains(needs.plan.outputs.cargo-args, 'zwo-camera')) && '--workspace' || '--workspace --exclude zwo-camera' }} --all-features --all-targets
       - name: cargo nextest run
         run: cargo nextest run --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --all-targets
   windows-bdd:
