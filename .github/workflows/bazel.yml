@@ -96,6 +96,26 @@ jobs:
       - name: Install ASCOM OmniSim
         uses: ./.github/actions/install-omnisim
 
+      # qhy-camera links the proprietary QHYCCD SDK + libusb; the shadow
+      # `bazel build //...` compiles libqhyccd-sys on every OS, so provision both.
+      # Linux: install.sh → /usr/local/lib (build.rs's env-free search path) +
+      # apt libusb. macOS: SDK extracts into $GITHUB_WORKSPACE (build.rs reads it
+      # via the GITHUB_WORKSPACE forwarded in .bazelrc) + brew libusb. Windows:
+      # SDK into $GITHUB_WORKSPACE/pkg_win (the WinMix SDK bundles libusb).
+      - name: Install libusb (qhy-camera, Linux)
+        if: runner.os == 'Linux'
+        uses: awalsh128/cache-apt-pkgs-action@v1
+        with:
+          packages: libusb-1.0-0-dev
+          version: 1.0
+      - name: Install libusb (qhy-camera, macOS)
+        if: runner.os == 'macOS'
+        run: brew install libusb
+      - name: Install QHYCCD SDK (qhy-camera)
+        uses: ivonnyssen/qhyccd-sdk-install@v2
+        with:
+          version: "25.09.29"
+
       - name: bazel build
         run: |
           REMOTE_FLAGS=(--config=remote-cache)
@@ -140,6 +160,9 @@ jobs:
           else
             REMOTE_FLAGS+=(--remote_upload_local_results=false)
           fi
-          bazel test --config=ci "${REMOTE_FLAGS[@]}" --test_tag_filters=bdd \
+          # `-requires-cargo` excludes //services/qhy-camera:bdd — the QHYCCD
+          # SDK's InitQHYCCDResource hangs under Bazel's test runner (USB
+          # enumeration), so that suite is Cargo-only. See services/qhy-camera/BUILD.bazel.
+          bazel test --config=ci "${REMOTE_FLAGS[@]}" --test_tag_filters=bdd,-requires-cargo \
             --test_output=all \
             //...

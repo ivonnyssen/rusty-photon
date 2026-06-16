@@ -70,6 +70,18 @@ build --@rules_rust//rust/settings:extra_rustc_flags=-Cdebuginfo=0
 # own host linkers, so this flag is scoped to Linux only.
 build:linux --@rules_rust//rust/settings:extra_rustc_flag=-Clink-arg=-fuse-ld=lld
 
+# Forward GITHUB_WORKSPACE to build actions on macOS/Windows so qhy-camera's
+# `libqhyccd-sys` build.rs can locate the QHYCCD SDK that the
+# `ivonnyssen/qhyccd-sdk-install@v2` action extracts INTO the workspace there
+# (`$GITHUB_WORKSPACE/sdk_mac_arm_*/usr/local/lib` on macOS,
+# `$GITHUB_WORKSPACE/pkg_win` on Windows). With `--incompatible_strict_action_env`
+# the var is otherwise stripped from action envs. NOT needed on Linux — the SDK
+# installs to `/usr/local/lib` (the build.rs's hard-coded, env-free search path),
+# so the Linux cache is left untouched. On hosted runners GITHUB_WORKSPACE is a
+# fixed per-OS path, so the action keys stay cache-stable across CI runs.
+build:macos --action_env=GITHUB_WORKSPACE
+build:windows --action_env=GITHUB_WORKSPACE
+
 # Promote MSVC C4013 (implicit function declaration) to an error.
 # aws-lc-sys's cc-crate feature check for __builtin_bswap* wrongly passes
 # on MSVC: cl.exe in C89 mode treats the GCC built-ins as implicit

@@ -80,6 +80,21 @@ jobs:
       - name: Install ASCOM OmniSim
         uses: ./.github/actions/install-omnisim
 
+      # `bazel coverage //...` instruments + compiles libqhyccd-sys (qhy-camera),
+      # so provision the proprietary QHYCCD SDK + libusb. Linux only: install.sh
+      # → /usr/local/lib (build.rs's env-free search path). The qhy-camera bdd +
+      # conformu suites are excluded from coverage by `--test_tag_filters=-requires-cargo`
+      # (they only BUILD here), so the SDK init hang under the test runner is moot.
+      - name: Install libusb (qhy-camera)
+        uses: awalsh128/cache-apt-pkgs-action@v1
+        with:
+          packages: libusb-1.0-0-dev
+          version: 1.0
+      - name: Install QHYCCD SDK (qhy-camera)
+        uses: ivonnyssen/qhyccd-sdk-install@v2
+        with:
+          version: "25.09.29"
+
       - name: bazel coverage
         run: |
           set -uo pipefail
