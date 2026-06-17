@@ -102,11 +102,17 @@ runs:
           # path before they will link (INDI automates this).
           sudo install_name_tool -id "$PREFIX/lib/libASICamera2.dylib" "$PREFIX/lib/libASICamera2.dylib"
           sudo install_name_tool -id "$PREFIX/lib/libEFWFilter.dylib" "$PREFIX/lib/libEFWFilter.dylib"
-          # libASICamera2 references `@rpath/libusb-1.0.0.dylib`. The test
-          # binary's @rpath includes this SDK prefix (a link-search dir) but not
-          # Homebrew's libdir, so stage libusb alongside the SDK where the dynamic
-          # loader will find it at runtime (otherwise: dyld "Library not loaded").
+          # libASICamera2/libEFWFilter reference `@rpath/libusb-1.0.0.dylib`.
+          # Stage libusb alongside the SDK, then rewrite that reference to the
+          # absolute path so it resolves regardless of the consuming binary's
+          # @rpath: Cargo binaries get this SDK prefix on their rpath (a
+          # link-search dir), but Bazel's rust_test binaries do not — without the
+          # rewrite they fail at runtime with dyld "Library not loaded".
           sudo cp "$(brew --prefix libusb)/lib/libusb-1.0.0.dylib" "$PREFIX/lib/"
+          for lib in libASICamera2 libEFWFilter; do
+            sudo install_name_tool -change @rpath/libusb-1.0.0.dylib \
+              "$PREFIX/lib/libusb-1.0.0.dylib" "$PREFIX/lib/$lib.dylib" 2>/dev/null || true
+          done
         elif command -v ldconfig >/dev/null 2>&1; then
           sudo ldconfig
         fi
