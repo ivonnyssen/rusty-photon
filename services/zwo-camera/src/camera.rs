@@ -290,6 +290,21 @@ impl ZwoCamera {
     fn offset_available(&self) -> bool {
         self.state.offset_min_max.lock().is_some()
     }
+
+    /// Run a blocking SDK-seam call off the async executor. The ASI FFI calls
+    /// (`control_value`, `set_control_value`, `temperature_celsius`, …) do USB
+    /// I/O, so running them directly on a Tokio worker could stall other Alpaca
+    /// requests; offload them like the capture, connect and pulse-guide paths.
+    async fn on_handle<T, F>(&self, f: F) -> ASCOMResult<T>
+    where
+        F: FnOnce(&dyn CameraHandle) -> ASCOMResult<T> + Send + 'static,
+        T: Send + 'static,
+    {
+        let handle = Arc::clone(&self.handle);
+        tokio::task::spawn_blocking(move || f(handle.as_ref()))
+            .await
+            .map_err(|e| ASCOMError::invalid_operation(format!("SDK task failed: {e}")))?
+    }
 }
 
 /// Geometry validation (R2/R3). Rejects a zero, misaligned, or out-of-bounds
@@ -480,11 +495,19 @@ impl Device for ZwoCamera {
         if self.handle.is_open() == connected {
             return Ok(());
         }
-        if connected {
-            self.connect()
-        } else {
-            self.disconnect()
-        }
+        // `connect`/`disconnect` do blocking SDK I/O — `ASIOpenCamera` enumerates
+        // over USB and the handshake reads `control_caps` — so offload them off
+        // the executor (ZwoCamera is cheap to clone: it is `Arc`-backed).
+        let this = self.clone();
+        tokio::task::spawn_blocking(move || {
+            if connected {
+                this.connect()
+            } else {
+                this.disconnect()
+            }
+        })
+        .await
+        .map_err(|e| ASCOMError::invalid_operation(format!("connect task failed: {e}")))?
     }
 
     async fn description(&self) -> ASCOMResult<String> {
@@ -714,10 +737,12 @@ impl Camera for ZwoCamera {
         if !self.gain_available() {
             return Err(ASCOMError::NOT_IMPLEMENTED);
         }
-        self.handle
-            .control_value(ControlType::Gain)
-            .map(|g| g as i32)
-            .map_err(|_| ASCOMError::INVALID_OPERATION)
+        self.on_handle(|h| {
+            h.control_value(ControlType::Gain)
+                .map(|g| g as i32)
+                .map_err(|_| ASCOMError::INVALID_OPERATION)
+        })
+        .await
     }
 
     async fn gain_min(&self) -> ASCOMResult<i32> {
@@ -742,9 +767,11 @@ impl Camera for ZwoCamera {
                 "gain {gain} outside [{min}, {max}]"
             )));
         }
-        self.handle
-            .set_control_value(ControlType::Gain, i64::from(gain))
-            .map_err(|_| ASCOMError::INVALID_OPERATION)
+        self.on_handle(move |h| {
+            h.set_control_value(ControlType::Gain, i64::from(gain))
+                .map_err(|_| ASCOMError::INVALID_OPERATION)
+        })
+        .await
     }
 
     async fn offset(&self) -> ASCOMResult<i32> {
@@ -752,10 +779,12 @@ impl Camera for ZwoCamera {
         if !self.offset_available() {
             return Err(ASCOMError::NOT_IMPLEMENTED);
         }
-        self.handle
-            .control_value(ControlType::Offset)
-            .map(|o| o as i32)
-            .map_err(|_| ASCOMError::INVALID_OPERATION)
+        self.on_handle(|h| {
+            h.control_value(ControlType::Offset)
+                .map(|o| o as i32)
+                .map_err(|_| ASCOMError::INVALID_OPERATION)
+        })
+        .await
     }
 
     async fn offset_min(&self) -> ASCOMResult<i32> {
@@ -780,9 +809,11 @@ impl Camera for ZwoCamera {
                 "offset {offset} outside [{min}, {max}]"
             )));
         }
-        self.handle
-            .set_control_value(ControlType::Offset, i64::from(offset))
-            .map_err(|_| ASCOMError::INVALID_OPERATION)
+        self.on_handle(move |h| {
+            h.set_control_value(ControlType::Offset, i64::from(offset))
+                .map_err(|_| ASCOMError::INVALID_OPERATION)
+        })
+        .await
     }
 
     // --- readout modes ----------------------------------------------------------
@@ -853,9 +884,11 @@ impl Camera for ZwoCamera {
         if !self.info.is_cooler_cam {
             return Err(ASCOMError::NOT_IMPLEMENTED);
         }
-        self.handle
-            .temperature_celsius()
-            .map_err(|_| ASCOMError::INVALID_VALUE)
+        self.on_handle(|h| {
+            h.temperature_celsius()
+                .map_err(|_| ASCOMError::INVALID_VALUE)
+        })
+        .await
     }
 
     async fn set_ccd_temperature(&self) -> ASCOMResult<f64> {
@@ -866,10 +899,12 @@ impl Camera for ZwoCamera {
         if let Some(target) = *self.state.target_temperature.lock() {
             return Ok(target);
         }
-        self.handle
-            .control_value(ControlType::TargetTemp)
-            .map(|t| t as f64)
-            .map_err(|_| ASCOMError::INVALID_VALUE)
+        self.on_handle(|h| {
+            h.control_value(ControlType::TargetTemp)
+                .map(|t| t as f64)
+                .map_err(|_| ASCOMError::INVALID_VALUE)
+        })
+        .await
     }
 
     async fn set_set_ccd_temperature(&self, set_ccd_temperature: f64) -> ASCOMResult<()> {
@@ -882,9 +917,12 @@ impl Camera for ZwoCamera {
                 "target temperature {set_ccd_temperature} outside [-273.15, 80]"
             )));
         }
-        self.handle
-            .set_control_value(ControlType::TargetTemp, set_ccd_temperature.round() as i64)
-            .map_err(|_| ASCOMError::invalid_operation("failed to set target temperature"))?;
+        let raw = set_ccd_temperature.round() as i64;
+        self.on_handle(move |h| {
+            h.set_control_value(ControlType::TargetTemp, raw)
+                .map_err(|_| ASCOMError::invalid_operation("failed to set target temperature"))
+        })
+        .await?;
         *self.state.target_temperature.lock() = Some(set_ccd_temperature);
         Ok(())
     }
@@ -894,10 +932,12 @@ impl Camera for ZwoCamera {
         if !self.info.is_cooler_cam {
             return Err(ASCOMError::NOT_IMPLEMENTED);
         }
-        self.handle
-            .control_value(ControlType::CoolerOn)
-            .map(|v| v != 0)
-            .map_err(|_| ASCOMError::INVALID_VALUE)
+        self.on_handle(|h| {
+            h.control_value(ControlType::CoolerOn)
+                .map(|v| v != 0)
+                .map_err(|_| ASCOMError::INVALID_VALUE)
+        })
+        .await
     }
 
     async fn set_cooler_on(&self, cooler_on: bool) -> ASCOMResult<()> {
@@ -905,9 +945,11 @@ impl Camera for ZwoCamera {
         if !self.info.is_cooler_cam {
             return Err(ASCOMError::NOT_IMPLEMENTED);
         }
-        self.handle
-            .set_control_value(ControlType::CoolerOn, i64::from(cooler_on))
-            .map_err(|_| ASCOMError::invalid_operation("failed to set cooler state"))
+        self.on_handle(move |h| {
+            h.set_control_value(ControlType::CoolerOn, i64::from(cooler_on))
+                .map_err(|_| ASCOMError::invalid_operation("failed to set cooler state"))
+        })
+        .await
     }
 
     async fn cooler_power(&self) -> ASCOMResult<f64> {
@@ -915,10 +957,12 @@ impl Camera for ZwoCamera {
         if !self.info.is_cooler_cam {
             return Err(ASCOMError::NOT_IMPLEMENTED);
         }
-        self.handle
-            .control_value(ControlType::CoolerPowerPerc)
-            .map(|p| p as f64)
-            .map_err(|_| ASCOMError::INVALID_VALUE)
+        self.on_handle(|h| {
+            h.control_value(ControlType::CoolerPowerPerc)
+                .map(|p| p as f64)
+                .map_err(|_| ASCOMError::INVALID_VALUE)
+        })
+        .await
     }
 
     // --- shutter / capability flags ---------------------------------------------

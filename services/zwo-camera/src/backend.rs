@@ -341,6 +341,64 @@ impl CameraHandle for ZwoCameraHandle {
 
 // --- test mock -----------------------------------------------------------------
 
+/// Exercise the *production* [`ZwoCameraHandle`] against the `zwo-rs` simulation
+/// backend (the mock seam below covers the device logic; this covers the real
+/// SDK wrapper that the BDD suite otherwise reaches only via the spawned binary).
+#[cfg(all(test, feature = "simulation"))]
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod handle_tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn sim_handle() -> ZwoCameraHandle {
+        let sdk = zwo_rs::Sdk::new().expect("simulation SDK");
+        let info = sdk.cameras().expect("enumerate")[0].clone();
+        ZwoCameraHandle::new(sdk, 0, info, "ZWO:Sim:0a1b2c3d4e5f6071".to_string())
+    }
+
+    #[test]
+    fn production_handle_round_trips_against_the_sim_sdk() {
+        let handle = sim_handle();
+        assert_eq!(handle.unique_id(), "ZWO:Sim:0a1b2c3d4e5f6071");
+        assert!(handle.info().is_cooler_cam);
+        // Open/close lifecycle.
+        assert!(!handle.is_open());
+        handle.open().unwrap();
+        assert!(handle.is_open());
+        // Controls enumerate and round-trip; temperature decodes to °C.
+        let caps = handle.control_caps().unwrap();
+        assert!(caps.iter().any(|c| c.control_type == ControlType::Gain));
+        handle.set_control_value(ControlType::Gain, 222).unwrap();
+        assert_eq!(handle.control_value(ControlType::Gain).unwrap(), 222);
+        let _ = handle.temperature_celsius().unwrap();
+        // ST4 pulse guide is accepted on the (simulated) ST4-capable model.
+        handle.pulse_guide_on(GuideDirection::North).unwrap();
+        handle.pulse_guide_off(GuideDirection::North).unwrap();
+        handle.close().unwrap();
+        assert!(!handle.is_open());
+    }
+
+    #[test]
+    fn production_handle_capture_produces_a_frame() {
+        let handle = sim_handle();
+        handle.open().unwrap();
+        let request = CaptureRequest {
+            width: 64,
+            height: 64,
+            bin: 1,
+            start_x: 0,
+            start_y: 0,
+            exposure_us: 1_000,
+            duration: Duration::from_millis(10),
+            is_dark: false,
+        };
+        let frame = handle.capture(request).unwrap().expect("a completed frame");
+        assert_eq!(frame.len(), 64 * 64 * 2);
+        handle.close().unwrap();
+    }
+}
+
 /// A configurable in-memory [`CameraHandle`] for the crate's unit tests, so the
 /// device logic — including the paths the `zwo-rs` simulation cannot force, like
 /// a mid-exposure SDK error (E9) or a model without an ST4 port (PG2) — is

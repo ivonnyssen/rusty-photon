@@ -129,11 +129,14 @@ impl CameraWorld {
     /// honours the requested duration as the integration time).
     pub async fn start_in_flight(&mut self) {
         let camera = self.camera();
-        let _ = camera.set_bin_x(1).await;
-        let _ = camera.set_num_x(64).await;
-        let _ = camera.set_num_y(64).await;
-        let _ = camera.set_start_x(0).await;
-        let _ = camera.set_start_y(0).await;
+        // Unwrap the setters: a failure here means stale state, which would
+        // otherwise surface much later as a misleading exposure timeout.
+        camera.set_bin_x(1).await.unwrap();
+        camera.set_bin_y(1).await.unwrap();
+        camera.set_num_x(64).await.unwrap();
+        camera.set_num_y(64).await.unwrap();
+        camera.set_start_x(0).await.unwrap();
+        camera.set_start_y(0).await.unwrap();
         camera
             .start_exposure(Duration::from_secs(30), true)
             .await
@@ -144,7 +147,10 @@ impl CameraWorld {
 
     pub async fn wait_image_ready(&self) {
         for _ in 0..240 {
-            if self.camera().image_ready().await.unwrap_or(false) {
+            // Unwrap rather than `unwrap_or(false)`: a real Alpaca error (e.g. a
+            // transient NOT_CONNECTED) should fail loudly here, not masquerade as
+            // a generic 6s timeout below.
+            if self.camera().image_ready().await.unwrap() {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
