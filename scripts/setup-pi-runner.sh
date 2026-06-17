@@ -120,9 +120,12 @@ else
     fi
     log "QHYCCD SDK installed into /usr/local/lib."
   else
-    log "Could not download $QHY_SDK_FILE from qhyccd.com; set QHY_SDK_FILE to the"
-    log "  correct aarch64 archive (or install the SDK by hand). qhy-camera will not"
-    log "  link on this runner until the SDK is present in /usr/local/lib."
+    # Fail fast: a silent skip leaves the runner partially provisioned and
+    # qhy-camera silently un-linkable on the next nightly. The operator opts out
+    # of the SDK explicitly with QHY_SDK_SKIP=1; an *unexpected* download failure
+    # must stop setup so it is noticed and fixed now.
+    rm -rf "$TMP"
+    die "Could not download $QHY_SDK_FILE from ${QHY_SDK_BASE%/}/${QHY_SDK_VERSION}/. Set QHY_SDK_FILE to the correct aarch64 archive (or install the SDK by hand), or re-run with QHY_SDK_SKIP=1 to provision the rest of the runner without it. qhy-camera will not link on this runner until the SDK is in /usr/local/lib."
   fi
   rm -rf "$TMP"
 fi

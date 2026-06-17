@@ -564,7 +564,9 @@ impl Camera for QhyCameraDevice {
         }
         self.handle
             .set_bin_mode(u32::from(bin_x), u32::from(bin_x))
-            .map_err(|_| ASCOMError::VALUE_NOT_SET)?;
+            .map_err(|e| {
+                ASCOMError::invalid_operation(format!("failed to set binning mode: {e}"))
+            })?;
         {
             let mut roi = self.state.intended_roi.lock();
             if let Some(area) = *roi {
@@ -838,9 +840,9 @@ impl Camera for QhyCameraDevice {
             .handle
             .get_readout_mode_resolution(mode)
             .map_err(|_| ASCOMError::INVALID_VALUE)?;
-        self.handle
-            .set_readout_mode(mode)
-            .map_err(|_| ASCOMError::VALUE_NOT_SET)?;
+        self.handle.set_readout_mode(mode).map_err(|e| {
+            ASCOMError::invalid_operation(format!("failed to set readout mode: {e}"))
+        })?;
         if let Some(info) = self.state.ccd_info.lock().as_mut() {
             info.image_width = width;
             info.image_height = height;
