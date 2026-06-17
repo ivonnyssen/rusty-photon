@@ -2,14 +2,28 @@
 
 ## Status
 
-**Draft — design.** This plan describes how to close the implementation
-gap behind two long-standing sections of the rp design doc:
+**Complete — all five phases shipped.** Every phase below carries an
+"As-built note" recording what landed and the decisions taken; the
+authoritative contracts now live in the design docs
+([`docs/services/rp.md` §Real-Time Stream](../services/rp.md#real-time-stream)
+and [`docs/services/sentinel.md` §Operation Watchdog](../services/sentinel.md#operation-watchdog)).
+Remaining housekeeping: archive the per-phase execution plans
+(`predictive-deadlines-phase1-event-surface.md` is already in `archive/`;
+`predictive-deadlines-phase3-sse.md` archives when this branch merges to
+`main`). Two design items were **deliberately deferred** (documented in
+the relevant phase notes): the rp-side recovery callbacks
+(`POST /api/internal/operation-aborted` / `service-restarted`, Phase 5
+§5.3–5.4) wait for rp-side abort-recovery/reconnect machinery to consume
+them, and the upstream rmcp transport fix is tracked separately.
+
+This plan describes how it closed the implementation gap behind two
+long-standing sections of the rp design doc:
 
 - [`docs/services/rp.md` §Sentinel Watchdog Integration](../services/rp.md#sentinel-watchdog-integration)
 - [`docs/services/rp.md` §Real-Time Stream](../services/rp.md#real-time-stream)
 
-Both have lived in the design doc since rp was first sketched; neither
-has any code behind them today. The catalyst for picking this up was
+Both had lived in the design doc since rp was first sketched with no code
+behind them. The catalyst for picking this up was
 the macOS BDD hang investigated on PR #267: a tiny corrective slew in
 OmniSim stalled past the hardcoded 300 s `poll_slewing_until_idle`
 deadline, which by accident is also rmcp's default session
@@ -904,20 +918,23 @@ upstream filing is appropriate. Tracked separately.
 
 ## Rollout
 
-| Phase | PR count | Depends on | Lands when |
-|---|---|---|---|
-| 1: Event surface complete           | 1   | —         | First |
-| 2: Predictive deadlines             | 2–3 | Phase 1   | Per operation family, can interleave with Phase 3 |
-| 3: `/api/events/subscribe` SSE      | 1   | Phase 1   | After or parallel with Phase 2 |
-| 4: `OperationDeadlineMonitor`       | 1–2 | Phase 3   | After Phase 3 |
-| 5.1 Notify-only rung                | 0   | Phase 4   | Implicit |
-| 5.2 Health-check rung               | 1   | Phase 4   | After Phase 4 |
-| 5.3 Abort rung                      | 1   | Phase 5.2 | After Phase 5.2 |
-| 5.4 Restart rung                    | 1   | Phase 5.3 | After Phase 5.3 |
+| Phase | Status | Depends on |
+|---|---|---|
+| 1: Event surface complete           | ✅ shipped | —         |
+| 2: Predictive deadlines             | ✅ shipped | Phase 1   |
+| 3: `/api/events/subscribe` SSE      | ✅ shipped | Phase 1   |
+| 4: `OperationDeadlineMonitor`       | ✅ shipped | Phase 3   |
+| 5.1 Notify-only rung                | ✅ shipped (implicit, Phase 4) | Phase 4   |
+| 5.2 Health-check rung               | ✅ shipped (Phase 5, one PR) | Phase 4   |
+| 5.3 Abort rung                      | ✅ shipped (Phase 5, one PR) | Phase 5.2 |
+| 5.4 Restart rung                    | ✅ shipped (Phase 5, one PR) | Phase 5.3 |
 
-Total: 7–10 PRs across rp and sentinel, no Cargo.toml dep churn
-beyond `tokio::sync::broadcast` (already in tree) and an SSE
-library (axum already has `sse` support).
+All five phases landed across rp and sentinel. Dep churn was limited to
+`async-stream` (Phase 3 — axum's `Sse` consumes a `Stream` but doesn't
+make one from a `broadcast::Receiver`); `tokio::sync::broadcast` and
+`tokio`'s `process` feature were already in tree. The Phase 5 ladder
+rungs (5.2–5.4) were combined into one PR rather than three (the rungs
+share `CorrectiveTarget` resolution + the `Corrective` seam).
 
 ## Open questions
 
