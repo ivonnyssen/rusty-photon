@@ -23,8 +23,9 @@ tests** (against the in-crate mock seam) and **54 BDD scenarios**. Roadmap:
 
 - **Phase F** — EFW `FilterWheel` (gated on `filterwheel.enabled`).
 - **Phase G** — wire ConformU into `conformu.yml` (the `conformu_integration.rs`
-  harness exists; blocked on a `zwo-rs` sim full-frame-fill speedup, see the
-  design doc); `rp` `CameraConfig` consumer.
+  harness exists; the `zwo-rs` sim full-frame-fill speedup + writable `Exposure`
+  control that previously tripped ConformU's timeout landed in rev `3c32e59`, so
+  this is now just the CI wiring); `rp` `CameraConfig` consumer.
 
 The six camera BDD feature files under `tests/features/` are live;
 `filter_wheel.feature` stays `@wip` for Phase F.

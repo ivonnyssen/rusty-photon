@@ -22,14 +22,13 @@
 > repinned). The **EFW `FilterWheel` is Phase F**.
 >
 > **ConformU.** The `tests/conformu_integration.rs` harness is wired (gated on the
-> `conformu` feature; skipped without `CONFORMU_PATH`). Running it locally against
-> the *default full-frame* ROI currently exceeds ConformU's 10 s `StartExposure`
-> timeout — not a conformance defect but a **`zwo-rs` simulation** limitation: its
-> `sim_download_exposure` fills the 52 MB full frame one byte at a time via the
-> RNG (≈11 s), where `qhyccd-rs` returns a zeroed buffer. Speeding that up (a
-> `zwo-rs` Phase-B fix) is the prerequisite to wiring `zwo-camera` into
-> `conformu.yml` (Phase G); the driver itself is conformant, as the 54 BDD
-> scenarios exercise the full exposure surface with small ROIs. See *Testing* and
+> `conformu` feature; skipped without `CONFORMU_PATH`). The two `zwo-rs`
+> simulation gaps that previously blocked it are **fixed** (rev `3c32e59`): the
+> simulated camera now models the writable `Exposure` control, and
+> `sim_download_exposure` fills the frame in parallel (rayon + bulk
+> `RngCore::fill_bytes`) — a full-frame 52 MB download dropped from ≈11 s to
+> ≈0.01 s, well inside ConformU's 10 s `StartExposure` timeout. All that remains
+> for Phase G is wiring `zwo-camera` into `conformu.yml`. See *Testing* and
 > *Delivery phasing* Phase G.
 >
 > **CI provisioning landed (full cross-platform).** The
@@ -37,8 +36,9 @@
 > Linux + macOS (INDI mirror) and Windows (ZWO's developer-SDK CDN zips), and is
 > wired into `test.yml`'s build/test jobs (Linux/macOS/Windows + coverage), gated
 > so only `infra`- or zwo-camera-affected PRs pay the cost. `conformu.yml` still
-> excludes `zwo-camera` (the `conformu_integration.rs` harness exists but waits on
-> the `zwo-rs` sim full-frame-fill speedup above — Phase G); `safety.yml` excludes
+> excludes `zwo-camera` (the `conformu_integration.rs` harness exists and is now
+> unblocked — the `zwo-rs` sim fix above landed in rev `3c32e59`; the remaining
+> step is the `conformu.yml` wiring itself — Phase G); `safety.yml` excludes
 > it (no sanitizer value yet). The aarch64 Pi-nightly runner is provisioned via
 > `scripts/setup-pi-runner.sh`.
 > The **Bazel** shadow workflows (`bazel.yml`, `bazel-coverage.yml`) also run
@@ -590,12 +590,15 @@ and **54 BDD scenarios** (all green).
 - **ConformU** (`tests/conformu_integration.rs`, gated by the `conformu` feature)
   — launches the production binary with `--features simulation` and runs
   `bdd_infra::run_conformu("camera", …)` (the EFW is Phase F). Skipped when
-  `CONFORMU_PATH` is unset. **Not yet wired into `conformu.yml`:** a full-frame
-  exposure exceeds ConformU's 10 s `StartExposure` timeout because the `zwo-rs`
-  sim fills the 52 MB frame one byte at a time via the RNG (≈11 s) — a `zwo-rs`
-  Phase-B fix (a fast/zeroed fill, as `qhyccd-rs` does) is the prerequisite to
-  Phase G CI wiring. The driver is conformant; the small-ROI BDD scenarios
-  exercise the same exposure surface.
+  `CONFORMU_PATH` is unset. **Unblocked, not yet wired into `conformu.yml`:** the
+  two `zwo-rs` simulation gaps that previously tripped ConformU are fixed in rev
+  `3c32e59` — the sim now models the writable `Exposure` control, and
+  `sim_download_exposure` fills the frame in parallel (rayon + bulk
+  `RngCore::fill_bytes`), so a full-frame 52 MB download dropped from ≈11 s to
+  ≈0.01 s (was the only thing exceeding ConformU's 10 s `StartExposure` timeout).
+  Adding `zwo-camera` to `conformu.yml` is the remaining Phase G step. The driver
+  was already conformant; the small-ROI BDD scenarios exercise the same exposure
+  surface.
 
 > **CI caveat (critical):** the `simulation` feature removes the *camera*
 > requirement, **not the SDK**. All build/test/ConformU jobs for this package
@@ -636,12 +639,13 @@ driver itself). The FFI crate is the long pole (~40–50% of effort); once
   are live (`filter_wheel.feature` stays `@wip` for Phase F).
 - **Phase F — EFW `FilterWheel`** fast-follow (position/moving/names/offsets),
   config toggle, BDD/ConformU.
-- **Phase G — test + gate + consumer.** BDD landed (Phase E). Remaining: wire
-  `zwo-camera` into `conformu.yml` once the `zwo-rs` simulation's full-frame fill
-  is fast enough for ConformU's 10 s `StartExposure` timeout (the
-  `conformu_integration.rs` harness is already in place); `rp` `CameraConfig`
-  consumer; optional hermetic Bazel `crate.annotation` (SDK as a `cc_import` dep,
-  dropping the imperative install) — cleanup, not blocking.
+- **Phase G — test + gate + consumer.** BDD landed (Phase E). The `zwo-rs`
+  simulation full-frame-fill speedup (and writable `Exposure` control) landed in
+  rev `3c32e59`, so the ConformU timeout blocker is cleared; the
+  `conformu_integration.rs` harness is in place. Remaining: wire `zwo-camera`
+  into `conformu.yml`; `rp` `CameraConfig` consumer; optional hermetic Bazel
+  `crate.annotation` (SDK as a `cc_import` dep, dropping the imperative install)
+  — cleanup, not blocking.
 
 ---
 

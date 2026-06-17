@@ -2134,7 +2134,7 @@ dependencies = [
 [[package]]
 name = "libzwo-sys"
 version = "0.1.0"
-source = "git+https://github.com/ivonnyssen/zwo-rs?rev=73770f7c4be184361f1e0adc0a60e0cdd2f0a9f2#73770f7c4be184361f1e0adc0a60e0cdd2f0a9f2"
+source = "git+https://github.com/ivonnyssen/zwo-rs?rev=3c32e59ac2a6a670ce03f84065f99a652ca9a6e5#3c32e59ac2a6a670ce03f84065f99a652ca9a6e5"
 dependencies = [
  "bindgen",
 ]
@@ -4541,7 +4541,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.2",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
@@ -5948,7 +5948,7 @@ dependencies = [
 [[package]]
 name = "zwo-rs"
 version = "0.1.0"
-source = "git+https://github.com/ivonnyssen/zwo-rs?rev=73770f7c4be184361f1e0adc0a60e0cdd2f0a9f2#73770f7c4be184361f1e0adc0a60e0cdd2f0a9f2"
+source = "git+https://github.com/ivonnyssen/zwo-rs?rev=3c32e59ac2a6a670ce03f84065f99a652ca9a6e5#3c32e59ac2a6a670ce03f84065f99a652ca9a6e5"
 dependencies = [
  "libzwo-sys",
  "rand 0.9.4",

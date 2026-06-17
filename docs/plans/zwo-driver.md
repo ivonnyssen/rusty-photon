@@ -246,7 +246,10 @@ it, leaning on the `sky-survey-camera` + `qhy-camera` scaffolding.
   names/offsets), config toggle, BDD/ConformU.
 - **Phase G — test + gate + consumer:** BDD + ConformU on the sim backend; `cargo
   rail run --profile commit` + `cargo fmt` green; `rp` `CameraConfig` consumer;
-  Bazel `crate.annotation` finish; READMEs/`docs/workspace.md`.
+  Bazel `crate.annotation` finish; READMEs/`docs/workspace.md`. The `zwo-rs`
+  simulation full-frame-fill speedup + writable `Exposure` control that gated
+  ConformU's 10 s `StartExposure` timeout landed in rev `3c32e59`, so the
+  remaining ConformU work is wiring `zwo-camera` into `conformu.yml`.
 
 ## Concurrency
 

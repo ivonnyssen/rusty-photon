@@ -14,7 +14,6 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
 
 use parking_lot::Mutex;
-use tracing::debug;
 use zwo_rs::{CameraInfo, ControlCaps, ControlType, GuideDirection, ImageType};
 
 /// A `zwo-rs` SDK call failed. Carries the underlying message; the ASCOM device
@@ -241,15 +240,13 @@ impl CameraHandle for ZwoCameraHandle {
             camera
                 .set_start_pos(request.start_x, request.start_y)
                 .map_err(BackendError::from_err)?;
-            // Best-effort: a real ASI camera accepts the writable `ASI_EXPOSURE`
-            // control, but the `zwo-rs` simulation backend does not model it (it
-            // completes after a single status poll regardless of the set exposure
-            // time), so a failure here is logged rather than failing the capture.
-            if let Err(e) =
-                camera.set_control_value(ControlType::Exposure, request.exposure_us, false)
-            {
-                debug!(error = %e, "setting the exposure-time control failed (expected on the simulation backend)");
-            }
+            // `ASI_EXPOSURE` is a writable control on every ASI camera, and the
+            // `zwo-rs` simulation models it too, so a failure here is a genuine
+            // error: fail the capture rather than silently integrate for the
+            // wrong exposure time.
+            camera
+                .set_control_value(ControlType::Exposure, request.exposure_us, false)
+                .map_err(BackendError::from_err)?;
             camera
                 .start_exposure(request.is_dark)
                 .map_err(BackendError::from_err)?;

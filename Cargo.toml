@@ -92,7 +92,7 @@ ascom-alpaca = { git = "https://github.com/ivonnyssen/ascom-alpaca-rs.git", bran
 # `zwo-camera` service. Lockstep dev pin to the author-maintained repo (the real
 # Camera/EFW handles + simulation backend; ivonnyssen/zwo-rs PR #4); swap to a
 # crates.io `= "=0.1.x"` once published (see docs/plans/zwo-driver.md).
-zwo-rs = { git = "https://github.com/ivonnyssen/zwo-rs", rev = "73770f7c4be184361f1e0adc0a60e0cdd2f0a9f2" }
+zwo-rs = { git = "https://github.com/ivonnyssen/zwo-rs", rev = "3c32e59ac2a6a670ce03f84065f99a652ca9a6e5" }
 axum = "0.8"
 tower = "0.5"
 reqwest = { version = "0.13.4", features = ["form", "json"] }
