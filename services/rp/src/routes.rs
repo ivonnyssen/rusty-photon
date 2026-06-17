@@ -176,7 +176,9 @@ fn detect_gap(
     oldest_retained_seq: Option<u64>,
 ) -> Option<GapInfo> {
     match (requested_last_seq, oldest_retained_seq) {
-        (Some(after), Some(oldest)) if oldest > after + 1 => Some(GapInfo {
+        // `saturating_add` guards against a client sending a near-`u64::MAX`
+        // `Last-Event-ID` (which would otherwise overflow-panic in debug).
+        (Some(after), Some(oldest)) if oldest > after.saturating_add(1) => Some(GapInfo {
             requested_after: after,
             oldest_available: oldest,
         }),
@@ -692,6 +694,13 @@ mod tests {
     fn detect_gap_none_when_history_empty() {
         // Nothing retained → cannot assert a gap; the client just resumes live.
         assert!(detect_gap(Some(42), None).is_none());
+    }
+
+    #[test]
+    fn detect_gap_does_not_overflow_on_max_cursor() {
+        // A near-`u64::MAX` client cursor must not overflow-panic on `after + 1`.
+        assert!(detect_gap(Some(u64::MAX), Some(10)).is_none());
+        assert!(detect_gap(Some(u64::MAX - 1), Some(u64::MAX)).is_none());
     }
 
     #[test]

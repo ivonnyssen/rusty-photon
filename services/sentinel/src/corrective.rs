@@ -16,6 +16,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use tokio::time::Instant;
 use tracing::{debug, warn};
 
 use crate::config::ServiceConfig;
@@ -330,6 +331,10 @@ impl CorrectiveLadder {
             outcome.push("restart=skipped(not restartable)");
             return;
         };
+        // `max_restart_duration` is one budget for the command *and* the
+        // recovery wait — measure what the command spends so recovery gets only
+        // the remainder (rather than a second full budget).
+        let started = Instant::now();
         match self
             .restarter
             .restart(command, self.max_restart_duration)
@@ -337,7 +342,8 @@ impl CorrectiveLadder {
         {
             Ok(()) => {
                 outcome.push("restart=ran");
-                if self.await_recovery(target).await {
+                let remaining = self.max_restart_duration.saturating_sub(started.elapsed());
+                if self.await_recovery(target, remaining).await {
                     outcome.push("recovery=responsive");
                 } else {
                     outcome.push("recovery=timeout");
@@ -351,12 +357,11 @@ impl CorrectiveLadder {
     }
 
     /// Poll health until the service is responsive again or the attempts run
-    /// out. The poll interval divides `max_restart_duration` evenly.
-    async fn await_recovery(&self, target: &CorrectiveTarget) -> bool {
-        let interval = self
-            .max_restart_duration
-            .checked_div(RECOVERY_ATTEMPTS)
-            .unwrap_or(self.max_restart_duration);
+    /// out. The poll interval divides the remaining restart `budget` evenly, so
+    /// the command and the recovery wait together stay within
+    /// `max_restart_duration`.
+    async fn await_recovery(&self, target: &CorrectiveTarget, budget: Duration) -> bool {
+        let interval = budget.checked_div(RECOVERY_ATTEMPTS).unwrap_or(budget);
         for attempt in 0..RECOVERY_ATTEMPTS {
             if self.health.check(target).await == Healthiness::Responsive {
                 return true;
