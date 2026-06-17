@@ -152,6 +152,10 @@ jobs:
           else
             REMOTE_FLAGS+=(--remote_upload_local_results=false)
           fi
-          bazel test --config=ci "${REMOTE_FLAGS[@]}" --test_tag_filters=bdd \
+          # `-requires-cargo` excludes the cargo-only BDD suites (e.g.
+          # //services/zwo-camera:bdd, which spawns a native-SDK binary and is
+          # run under Cargo in test.yml) — matching the coverage config in
+          # .bazelrc, which also excludes requires-cargo while including bdd.
+          bazel test --config=ci "${REMOTE_FLAGS[@]}" --test_tag_filters=bdd,-requires-cargo \
             --test_output=all \
             //...
