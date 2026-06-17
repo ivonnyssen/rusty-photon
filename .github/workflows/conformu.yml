@@ -105,8 +105,10 @@ jobs:
         run: cargo generate-lockfile
 
       - name: Pre-build workspace
-        # zwo-camera links the native ZWO SDK and has no ConformU test yet
-        # (Phase G); exclude it so this workflow needs no SDK provisioning.
+        # zwo-camera links the native ZWO SDK. Its ConformU integration test
+        # exists (services/zwo-camera/tests/conformu_integration.rs, `conformu`
+        # feature) but is not wired into this workflow yet (Phase G), so exclude
+        # it here — this job provisions no ZWO SDK.
         run: cargo build --locked --workspace --exclude zwo-camera --all-features --all-targets
 
       - name: Run ConformU tests (parallel)

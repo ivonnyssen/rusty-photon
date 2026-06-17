@@ -53,8 +53,9 @@ jobs:
           sed -i '/^\s*\[profile.dev\]/,/^\s*\[/ {/^\s*opt-level/d}' Cargo.toml
           sed -i '/^\s*\[profile.dev\]/a opt-level = 1' Cargo.toml
       - name: cargo build
-        # Exclude zwo-camera: it links the native ZWO SDK and a bare scaffold
-        # has no sanitizer value yet (revisit when the device traits land).
+        # Exclude zwo-camera: it links the native ZWO SDK — an opaque third-party
+        # blob with no sanitizer value (like qhy-camera) — and this job provisions
+        # no SDK to link against.
         run: cargo build --workspace --exclude zwo-camera --all-features --all-targets
         env:
           RUSTFLAGS: "-Z sanitizer=${{ matrix.sanitizer }}"

@@ -256,8 +256,17 @@ async fn raw_start_exposure(base_url: &str, device: u32, duration_secs: f64, lig
     ];
     match reqwest::Client::new().put(&url).form(&form).send().await {
         Ok(resp) => {
-            let json: serde_json::Value = resp.json().await.unwrap_or(serde_json::json!({}));
-            json["ErrorNumber"].as_u64().unwrap_or(0) as u16
+            // Fail loudly rather than masking a non-Alpaca response as success: a
+            // valid StartExposure reply is always JSON carrying ErrorNumber, so a
+            // decode failure or a missing field is a real test failure, not a 0.
+            let json: serde_json::Value = resp
+                .json()
+                .await
+                .expect("StartExposure response was not valid Alpaca JSON");
+            let code = json["ErrorNumber"]
+                .as_u64()
+                .expect("Alpaca response is missing ErrorNumber");
+            u16::try_from(code).expect("ErrorNumber out of u16 range")
         }
         Err(e) => panic!("raw startexposure request failed: {e}"),
     }

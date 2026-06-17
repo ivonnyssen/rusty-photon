@@ -12,9 +12,11 @@ inputs:
   ref:
     description: >-
       indi-3rdparty git ref for the vendored ZWO `.bin` shared libraries
-      (Linux/macOS). Pin to a commit SHA for reproducibility. INDI vendors ZWO's
-      upstream prebuilt blobs (MIT) under libasi/<arch>/.
-    default: master
+      (Linux/macOS). INDI vendors ZWO's upstream prebuilt blobs (MIT) under
+      libasi/<arch>/. Pinned to a commit SHA (not a moving branch) so the native
+      SDK bits are reproducible and can't change without a repo edit; bump it to
+      adopt a newer ZWO SDK.
+    default: b0802f28055b67aa6a99580d260c3bb4c27eba4b
   prefix:
     description: Install prefix for the SDK libraries and headers (Linux/macOS).
     default: /usr/local
