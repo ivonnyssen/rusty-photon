@@ -4,20 +4,23 @@ load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 exports_files(["Cargo.toml"], visibility = ["//visibility:public"])
 
 # qhy-camera links the proprietary QHYCCD SDK (libqhyccd-sys → static=qhyccd +
-# libusb-1.0 + stdc++). The SDK is now PROVISIONED into the Bazel shadow actions
+# libusb-1.0 + stdc++). The SDK is PROVISIONED into the Bazel shadow actions
 # (`ivonnyssen/qhyccd-sdk-install@v2` + per-OS libusb in .github/workflows/bazel.yml
 # and bazel-coverage.yml; on Linux build.rs finds it at /usr/local/lib, and on
 # macOS/Windows `.bazelrc` forwards `GITHUB_WORKSPACE` so build.rs finds the
-# workspace-extracted SDK). So the library, binary, and unit test are first-class
-# `//...` targets — they build and the unit test runs under Bazel.
+# workspace-extracted SDK). The library, binary, unit test, BDD, and ConformU
+# suites are ALL first-class `//...` targets — they build and run under Bazel.
 #
-# `_CARGO_ONLY` (= `requires-cargo`) stays on the two targets that SPAWN the
-# service binary at test time (bdd, conformu_integration): the proprietary SDK's
-# `InitQHYCCDResource` hangs under Bazel's test runner (it enumerates USB even in
-# the simulation backend), so those suites run under Cargo only. They still BUILD
-# under `bazel build //...` to catch compile/link breaks. Removing the hang is
-# tracked in docs/services/qhy-camera.md "Native dependency & build gating".
-_CARGO_ONLY = ["requires-cargo"]
+# The `_sim` library/binary and the bdd/conformu tests carry `crate_features`
+# including "simulation" so the simulated `Sdk::new()` (a pure-Rust QHY178M, no
+# FFI) is used. Critically, simulation must ALSO be enabled on the `qhyccd-rs`
+# DEPENDENCY: crate_universe resolves one feature set per external crate from
+# Cargo and ignores a target's `crate_features`, so qhy-camera declares
+# `qhyccd-rs = { features = ["simulation"] }` as a dev-dep (Cargo.toml) to make
+# the resolver build the simulated SDK. Without that, these binaries would call
+# the real `InitQHYCCDResource` and enumerate USB — which hangs on a CI runner
+# with no QHY hardware. See docs/services/qhy-camera.md "Native dependency &
+# build gating".
 
 _INTRA_WORKSPACE_DEPS = [
     "//crates/rusty-photon-config:rusty-photon-config",
@@ -69,7 +72,10 @@ rust_library(
     name = "qhy-camera_lib_sim",
     srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]),
     aliases = aliases(),
-    crate_features = ["mock"],
+    crate_features = [
+        "mock",
+        "simulation",
+    ],
     crate_name = "qhy_camera",
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
@@ -80,7 +86,10 @@ rust_binary(
     name = "qhy-camera_sim",
     srcs = ["src/main.rs"],
     aliases = aliases(),
-    crate_features = ["mock"],
+    crate_features = [
+        "mock",
+        "simulation",
+    ],
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     deps = [":qhy-camera_lib_sim"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
@@ -97,6 +106,7 @@ rust_test(
     crate_features = [
         "mock",
         "conformu",
+        "simulation",
     ],
     data = [":qhy-camera_sim"],
     edition = "2021",
@@ -109,7 +119,7 @@ rust_test(
         proc_macro_dev = True,
     ),
     rustc_env = {"CARGO_PKG_NAME": "qhy-camera"},
-    tags = _CARGO_ONLY + ["conformu"],
+    tags = ["conformu"],
     deps = [
         ":qhy-camera_lib_sim",
         "//crates/bdd-infra:bdd-infra_conformu",
@@ -145,7 +155,7 @@ rust_test(
     # bdd-infra derives {PKG_UPPER_SNAKE}_BINARY from CARGO_PKG_NAME; it must be
     # the service name, not the crate name ("bdd").
     rustc_env = {"CARGO_PKG_NAME": "qhy-camera"},
-    tags = _CARGO_ONLY + ["bdd"],
+    tags = ["bdd"],
     use_libtest_harness = False,
     deps = [":qhy-camera_lib_sim", "//crates/bdd-infra:bdd-infra"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
         normal = True,

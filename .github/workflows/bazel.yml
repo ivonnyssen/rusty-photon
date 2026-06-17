@@ -160,9 +160,11 @@ jobs:
           else
             REMOTE_FLAGS+=(--remote_upload_local_results=false)
           fi
-          # `-requires-cargo` excludes //services/qhy-camera:bdd — the QHYCCD
-          # SDK's InitQHYCCDResource hangs under Bazel's test runner (USB
-          # enumeration), so that suite is Cargo-only. See services/qhy-camera/BUILD.bazel.
+          # `bdd,-requires-cargo`: run every bdd-tagged suite, minus the
+          # cargo-shelling bdd-infra unit tests (the only `requires-cargo` users
+          # left). //services/qhy-camera:bdd IS included — it spawns the
+          # simulation-backed driver (no real InitQHYCCDResource / USB
+          # enumeration; see services/qhy-camera/BUILD.bazel + Cargo.toml).
           bazel test --config=ci "${REMOTE_FLAGS[@]}" --test_tag_filters=bdd,-requires-cargo \
             --test_output=all \
             //...

@@ -244,6 +244,42 @@ single-crate scope, no cross-crate consumer, no `_with_mock` variant
 needed. New crates that expose mockall mocks for downstream tests
 follow the variant pattern.
 
+### External-crate non-default features for tests (qhy-camera, 2026-06-16)
+
+`crate_universe`'s `from_cargo` resolves **one** feature set per external crate,
+computed from the workspace's default Cargo resolution. A Bazel target's
+`crate_features` sets features on *that crate's own* compile only — it does **not**
+re-resolve, or change the features of, its external dependencies. So when a test
+build needs an external crate compiled with a *non-default* feature, setting
+`crate_features` on the consuming `rust_library` is not enough; the external crate
+itself must be resolved with that feature.
+
+The case: `qhy-camera`'s `mock → simulation → qhyccd-rs/simulation` chain swaps the
+real FFI `Sdk::new()` (which calls `InitQHYCCDResource` → USB enumeration) for a
+pure-Rust simulated one. Those features are non-default, so crate_universe built
+`@cr//:qhyccd-rs` *without* `simulation`, and the Bazel BDD/conformu "sim" binaries
+fell through to the real SDK and **hung on hardware-less CI runners** (Cargo was
+unaffected because it honours per-target feature resolution). The recorded
+"`InitQHYCCDResource` hangs even in the simulation backend" was a misdiagnosis —
+the simulated `Sdk::new()` never makes that FFI call; the Bazel binary simply was
+not actually simulated.
+
+Fix (Cargo-source-of-truth, mirroring the mockall dev-dep pattern): declare the
+external crate a **second time as a test-only dependency** with the needed
+feature — `qhyccd-rs = { workspace = true, features = ["simulation"] }` under
+`[dev-dependencies]`. crate_universe includes dev-deps in its resolve, so the
+single `@cr//:qhyccd-rs` variant now carries `simulation` (its optional
+`rand`/`rayon` deps wire up automatically on repin). `resolver = "2"` keeps the
+dev-dep out of `cargo build`, so the **production binary still links the real
+SDK**; only tests + Bazel get the simulated one. The consumer's own
+`crate_features = […, "simulation"]` is still required so *its* `#[cfg(feature =
+"simulation")]` code (`--simulation-empty`, `Sdk::new_simulated()`) compiles. With
+both in place, `qhy-camera`'s `bdd` and `conformu_integration` dropped
+`requires-cargo` and now run under Bazel (`bdd` ~16 s, matching Cargo). Unlike the
+first-party mockall pattern, **no `_with_mock` Bazel variant is needed** — external
+crate_universe crates are pre-resolved to a single variant, so the dev-dep alone
+flips them.
+
 ### BDD conventions under Bazel (post Phase 3)
 
 Each service's `tests/bdd.rs` is now a Bazel `rust_test` with:
