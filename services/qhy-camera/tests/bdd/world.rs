@@ -112,9 +112,16 @@ impl CameraWorld {
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
-        if !self.empty_backend {
-            panic!("qhy-camera did not register a Camera device within 20s");
+        // Reaching here means the loop never took its success `return`: either the
+        // management API never responded (both modes) or no Camera registered
+        // (non-empty backend). Fail loudly in both cases so a scenario stops with
+        // an actionable error instead of proceeding against an unhealthy or
+        // never-started service. (An empty backend's *healthy* state is zero
+        // cameras AFTER a successful get_devices() — which returns inside the loop.)
+        if self.empty_backend {
+            panic!("qhy-camera management API did not respond within 20s (empty backend)");
         }
+        panic!("qhy-camera did not register a Camera device within 20s");
     }
 
     pub fn camera(&self) -> Arc<dyn Camera> {
@@ -260,8 +267,17 @@ async fn raw_start_exposure(base_url: &str, device: u32, duration_secs: f64, lig
     ];
     match reqwest::Client::new().put(&url).form(&form).send().await {
         Ok(resp) => {
-            let json: serde_json::Value = resp.json().await.unwrap_or(serde_json::json!({}));
-            json["ErrorNumber"].as_u64().unwrap_or(0) as u16
+            // Fail loudly on a non-Alpaca response (500/HTML body, proxy error,
+            // schema change) instead of silently reporting success (ErrorNumber 0)
+            // — otherwise the BDD assertions become unreliable.
+            let status = resp.status();
+            let body = resp.text().await.expect("read startexposure response body");
+            let json: serde_json::Value = serde_json::from_str(&body).unwrap_or_else(|e| {
+                panic!("startexposure response was not valid JSON (status {status}): {e}; body: {body}")
+            });
+            json["ErrorNumber"].as_u64().unwrap_or_else(|| {
+                panic!("startexposure response missing ErrorNumber (status {status}): {json}")
+            }) as u16
         }
         Err(e) => panic!("raw startexposure request failed: {e}"),
     }
