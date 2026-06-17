@@ -351,9 +351,11 @@ impl OperationDeadlineMonitor {
                 operation_id,
                 max_duration_ms,
             } => {
-                let deadline = max_duration_ms.map(|ms| {
-                    Instant::now() + Duration::from_millis(ms) + self.buffer_for(&family)
-                });
+                // One `now` for both the deadline and `started`, so the
+                // tracked start and its expiry are anchored to the same instant.
+                let started = Instant::now();
+                let deadline = max_duration_ms
+                    .map(|ms| started + Duration::from_millis(ms) + self.buffer_for(&family));
                 debug!(
                     "watchdog '{}' tracking {} op {} (timed={})",
                     self.name,
@@ -365,7 +367,7 @@ impl OperationDeadlineMonitor {
                     operation_id,
                     Tracked {
                         family,
-                        started: Instant::now(),
+                        started,
                         deadline,
                     },
                 );

@@ -209,32 +209,63 @@ impl Aborter for HttpAborter {
         };
         debug!("abort PUT {url}");
         let resp = self.http.put_form(&url, &[("ClientID", "1")]).await?;
-        if resp.status == 200 {
-            Ok(())
-        } else {
-            Err(crate::SentinelError::Http(format!(
+        if resp.status != 200 {
+            return Err(crate::SentinelError::Http(format!(
                 "abort {url} -> {}",
                 resp.status
-            )))
+            )));
         }
+        // Alpaca reports a rejected method via a non-zero `ErrorNumber` on an
+        // HTTP 200, so a 200 alone does not mean the abort took. A body that
+        // doesn't carry the envelope is treated leniently as success.
+        if let Ok(parsed) = serde_json::from_str::<AlpacaResponse>(&resp.body) {
+            if parsed.error_number != 0 {
+                return Err(crate::SentinelError::Http(format!(
+                    "abort {url} rejected: ASCOM error {} ({})",
+                    parsed.error_number, parsed.error_message
+                )));
+            }
+        }
+        Ok(())
     }
 }
 
-/// Shell restarter: runs the command via `sh -c`, bounded by the budget.
+/// The error fields every Alpaca method response carries (`Value`, when
+/// present, is ignored — the abort verbs return no value).
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct AlpacaResponse {
+    error_number: i32,
+    error_message: String,
+}
+
+/// Shell restarter: runs the command via the platform shell (`sh -c` on Unix,
+/// `cmd /C` on Windows), bounded by the budget.
 #[derive(Debug, Default)]
 pub struct ShellRestarter;
+
+/// Build the platform shell invocation for `command`.
+#[cfg(unix)]
+fn shell_command(command: &str) -> tokio::process::Command {
+    let mut c = tokio::process::Command::new("sh");
+    c.arg("-c").arg(command);
+    c
+}
+
+#[cfg(windows)]
+fn shell_command(command: &str) -> tokio::process::Command {
+    let mut c = tokio::process::Command::new("cmd");
+    c.arg("/C").arg(command);
+    c
+}
 
 #[async_trait]
 impl Restarter for ShellRestarter {
     async fn restart(&self, command: &str, budget: Duration) -> crate::Result<()> {
         debug!("restart: running `{command}` (budget {budget:?})");
-        let mut child = tokio::process::Command::new("sh")
-            .arg("-c")
-            .arg(command)
-            .spawn()
-            .map_err(|e| {
-                crate::SentinelError::Monitor(format!("failed to spawn restart `{command}`: {e}"))
-            })?;
+        let mut child = shell_command(command).spawn().map_err(|e| {
+            crate::SentinelError::Monitor(format!("failed to spawn restart `{command}`: {e}"))
+        })?;
         match tokio::time::timeout(budget, child.wait()).await {
             Ok(Ok(status)) if status.success() => Ok(()),
             Ok(Ok(status)) => Err(crate::SentinelError::Monitor(format!(
@@ -827,6 +858,40 @@ mod tests {
         let aborter = HttpAborter::new(Arc::new(mock));
         let err = aborter.abort(&target(None)).await.unwrap_err();
         assert!(err.to_string().contains("409"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn http_abort_200_with_ascom_error_is_rejected() {
+        // Alpaca signals a rejected abort via a non-zero ErrorNumber on a 200.
+        let mut mock = MockHttpClient::new();
+        mock.expect_put_form().returning(|_, _| {
+            Box::pin(async {
+                Ok(HttpResponse {
+                    status: 200,
+                    body: r#"{"ErrorNumber": 1025, "ErrorMessage": "Invalid while parked"}"#
+                        .to_string(),
+                })
+            })
+        });
+        let aborter = HttpAborter::new(Arc::new(mock));
+        let err = aborter.abort(&target(None)).await.unwrap_err();
+        assert!(err.to_string().contains("1025"), "{err}");
+        assert!(err.to_string().contains("Invalid while parked"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn http_abort_200_with_error_number_zero_succeeds() {
+        let mut mock = MockHttpClient::new();
+        mock.expect_put_form().returning(|_, _| {
+            Box::pin(async {
+                Ok(HttpResponse {
+                    status: 200,
+                    body: r#"{"ErrorNumber": 0, "ErrorMessage": ""}"#.to_string(),
+                })
+            })
+        });
+        let aborter = HttpAborter::new(Arc::new(mock));
+        aborter.abort(&target(None)).await.unwrap();
     }
 
     // ---- shell restarter (unix only; CI Windows lacks `sh`) -----------
