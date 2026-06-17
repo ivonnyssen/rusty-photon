@@ -54,26 +54,6 @@ impl SseFrame {
     fn json(&self) -> Value {
         serde_json::from_str(&self.data).unwrap_or(Value::Null)
     }
-
-    fn event_type(&self) -> Option<String> {
-        self.event.clone().or_else(|| {
-            self.json()
-                .get("event")
-                .and_then(|v| v.as_str())
-                .map(String::from)
-        })
-    }
-
-    fn operation_id(&self) -> Option<String> {
-        self.json()
-            .get("operation_id")
-            .and_then(|v| v.as_str())
-            .map(String::from)
-    }
-
-    fn max_duration_ms(&self) -> Option<u64> {
-        self.json().get("max_duration_ms").and_then(Value::as_u64)
-    }
 }
 
 /// What a frame means to the watchdog.
@@ -97,25 +77,39 @@ enum FrameAction {
 
 /// Classify a frame by its event type. The operation *family* is the event
 /// name with its lifecycle suffix stripped (`slew_started` → `slew`).
+///
+/// The `data` payload is parsed exactly once here (rather than per field) — the
+/// event stream can be high-volume and re-parsing on the hot path is wasteful.
 fn classify(frame: &SseFrame) -> FrameAction {
-    let Some(event) = frame.event_type() else {
+    let json = frame.json();
+    let operation_id = || {
+        json.get("operation_id")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+    };
+
+    let event = frame
+        .event
+        .clone()
+        .or_else(|| json.get("event").and_then(|v| v.as_str()).map(String::from));
+    let Some(event) = event else {
         return FrameAction::Ignore;
     };
     if event == "stream_gap" {
         return FrameAction::Gap;
     }
     if let Some(family) = event.strip_suffix("_started") {
-        return match frame.operation_id() {
+        return match operation_id() {
             Some(operation_id) => FrameAction::Started {
                 family: family.to_string(),
                 operation_id,
-                max_duration_ms: frame.max_duration_ms(),
+                max_duration_ms: json.get("max_duration_ms").and_then(Value::as_u64),
             },
             None => FrameAction::Ignore,
         };
     }
     if event.ends_with("_complete") || event.ends_with("_failed") {
-        return match frame.operation_id() {
+        return match operation_id() {
             Some(operation_id) => FrameAction::Ended { operation_id },
             None => FrameAction::Ignore,
         };
@@ -179,15 +173,28 @@ impl WatchdogEventSource for HttpWatchdogEventSource {
         tokio::spawn(async move {
             let mut resp = resp;
             let mut buffer = String::new();
-            while let Ok(Some(chunk)) = resp.chunk().await {
-                buffer.push_str(&String::from_utf8_lossy(&chunk));
-                for frame in drain_frames(&mut buffer) {
-                    if tx.send(frame).await.is_err() {
-                        return; // consumer dropped
-                    }
+            loop {
+                tokio::select! {
+                    // Receiver dropped (monitor cancelled, or reconnecting):
+                    // stop immediately and drop `resp` so the HTTP connection
+                    // closes — otherwise this task could block on `chunk()`
+                    // forever on a quiet stream, leaking the task + connection.
+                    _ = tx.closed() => return,
+                    chunk = resp.chunk() => match chunk {
+                        Ok(Some(chunk)) => {
+                            buffer.push_str(&String::from_utf8_lossy(&chunk));
+                            for frame in drain_frames(&mut buffer) {
+                                if tx.send(frame).await.is_err() {
+                                    return; // consumer dropped
+                                }
+                            }
+                        }
+                        // Stream ended (None) or transport error: dropping `tx`
+                        // makes the receiver yield `None`.
+                        _ => return,
+                    },
                 }
             }
-            // Stream ended: dropping `tx` makes the receiver yield `None`.
         });
         Ok(rx)
     }
@@ -618,7 +625,14 @@ mod tests {
         let frames = drain_frames(&mut buf);
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0].id, Some(12));
-        assert_eq!(frames[0].operation_id().as_deref(), Some("op-1"));
+        assert_eq!(
+            classify(&frames[0]),
+            FrameAction::Started {
+                family: "slew".to_string(),
+                operation_id: "op-1".to_string(),
+                max_duration_ms: None,
+            }
+        );
         assert!(buf.is_empty());
     }
 

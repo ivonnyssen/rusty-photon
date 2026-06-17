@@ -356,21 +356,28 @@ impl CorrectiveLadder {
         }
     }
 
-    /// Poll health until the service is responsive again or the attempts run
-    /// out. The poll interval divides the remaining restart `budget` evenly, so
-    /// the command and the recovery wait together stay within
-    /// `max_restart_duration`.
+    /// Poll health until the service is responsive again or the remaining
+    /// restart `budget` runs out. The whole phase — health checks (each up to
+    /// `HEALTH_TIMEOUT`) *and* the sleeps between them — is bounded by `budget`
+    /// via an outer timeout, so the command and the recovery wait together
+    /// never exceed `max_restart_duration`.
     async fn await_recovery(&self, target: &CorrectiveTarget, budget: Duration) -> bool {
-        let interval = budget.checked_div(RECOVERY_ATTEMPTS).unwrap_or(budget);
-        for attempt in 0..RECOVERY_ATTEMPTS {
-            if self.health.check(target).await == Healthiness::Responsive {
-                return true;
-            }
-            if attempt + 1 < RECOVERY_ATTEMPTS {
-                tokio::time::sleep(interval).await;
-            }
+        if budget.is_zero() {
+            return false;
         }
-        false
+        let interval = budget.checked_div(RECOVERY_ATTEMPTS).unwrap_or(budget);
+        let poll = async {
+            for attempt in 0..RECOVERY_ATTEMPTS {
+                if self.health.check(target).await == Healthiness::Responsive {
+                    return true;
+                }
+                if attempt + 1 < RECOVERY_ATTEMPTS {
+                    tokio::time::sleep(interval).await;
+                }
+            }
+            false
+        };
+        tokio::time::timeout(budget, poll).await.unwrap_or(false)
     }
 }
 
