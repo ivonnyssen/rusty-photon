@@ -1275,6 +1275,37 @@ mod tests {
         assert!(to_image_array(&image).is_err());
     }
 
+    #[test]
+    fn to_image_array_8bit_has_width_major_axes() {
+        let image = ImageData {
+            data: vec![0u8; 64 * 48],
+            width: 64,
+            height: 48,
+            bits_per_pixel: 8,
+            channels: 1,
+        };
+        let array = to_image_array(&image).unwrap();
+        assert_eq!(array.dim().0, 64);
+        assert_eq!(array.dim().1, 48);
+    }
+
+    #[test]
+    fn to_image_array_rejects_undersized_buffers() {
+        for bits in [8, 16] {
+            let image = ImageData {
+                data: vec![0u8; 10], // far too small for a 64×48 frame
+                width: 64,
+                height: 48,
+                bits_per_pixel: bits,
+                channels: 1,
+            };
+            assert!(
+                to_image_array(&image).is_err(),
+                "{bits}-bit undersized buffer must be rejected"
+            );
+        }
+    }
+
     // --- device behaviour via the mock seam -------------------------------------
 
     #[tokio::test]
@@ -1396,6 +1427,220 @@ mod tests {
                 .code,
             ASCOMErrorCode::INVALID_VALUE
         );
+    }
+
+    #[tokio::test]
+    async fn gain_min_max_reflect_cached_range() {
+        let device = connected_device(MockCameraHandle::default());
+        assert_eq!(device.gain_min().await.unwrap(), 0);
+        assert_eq!(device.gain_max().await.unwrap(), 100);
+    }
+
+    #[tokio::test]
+    async fn offset_round_trips_and_rejects_out_of_range() {
+        let device = connected_device(MockCameraHandle::default());
+        assert_eq!(device.offset_min().await.unwrap(), 0);
+        let max = device.offset_max().await.unwrap();
+        assert_eq!(max, 255);
+        device.set_offset(max).await.unwrap();
+        assert_eq!(device.offset().await.unwrap(), max);
+        assert_eq!(
+            device.set_offset(max + 1).await.unwrap_err().code,
+            ASCOMErrorCode::INVALID_VALUE
+        );
+    }
+
+    #[tokio::test]
+    async fn offset_not_implemented_without_control() {
+        let device = connected_device(MockCameraHandle::default().without_control(Control::Offset));
+        assert_eq!(
+            device.offset().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_IMPLEMENTED
+        );
+        assert_eq!(
+            device.set_offset(5).await.unwrap_err().code,
+            ASCOMErrorCode::NOT_IMPLEMENTED
+        );
+    }
+
+    #[tokio::test]
+    async fn exposure_limits_reflect_cached_range() {
+        let device = connected_device(MockCameraHandle::default());
+        assert_eq!(
+            device.exposure_min().await.unwrap(),
+            Duration::from_micros(1)
+        );
+        assert_eq!(
+            device.exposure_max().await.unwrap(),
+            Duration::from_micros(3_600_000_000)
+        );
+        assert_eq!(
+            device.exposure_resolution().await.unwrap(),
+            Duration::from_micros(1)
+        );
+    }
+
+    #[tokio::test]
+    async fn readout_modes_list_select_and_reject_out_of_range() {
+        let device = connected_device(MockCameraHandle::default());
+        assert_eq!(
+            device.readout_modes().await.unwrap(),
+            vec!["Standard".to_string()]
+        );
+        assert_eq!(device.readout_mode().await.unwrap(), 0);
+        device.set_readout_mode(0).await.unwrap();
+        // Only one mode (0); selecting 1 is out of range.
+        assert_eq!(
+            device.set_readout_mode(1).await.unwrap_err().code,
+            ASCOMErrorCode::INVALID_VALUE
+        );
+    }
+
+    #[tokio::test]
+    async fn sensor_name_is_the_serial_prefix() {
+        // unique_id "SIM-QHY178M" → "SIM".
+        let device = connected_device(MockCameraHandle::default());
+        assert_eq!(device.sensor_name().await.unwrap(), "SIM");
+    }
+
+    #[tokio::test]
+    async fn device_metadata_reports_expected_strings() {
+        let device = connected_device(MockCameraHandle::default());
+        assert_eq!(
+            device.driver_info().await.unwrap(),
+            "rusty-photon qhy-camera"
+        );
+        assert_eq!(
+            device.driver_version().await.unwrap(),
+            env!("CARGO_PKG_VERSION")
+        );
+        assert_eq!(device.description().await.unwrap(), "QHYCCD camera");
+        // Delegates to rusty_photon_driver; exercise the path (always Ok).
+        device.supported_actions().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn capability_flags_are_fixed() {
+        let device = connected_device(MockCameraHandle::default());
+        assert!(device.can_abort_exposure().await.unwrap());
+        assert!(!device.can_stop_exposure().await.unwrap());
+        assert!(!device.can_pulse_guide().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn cooling_capabilities_and_temperature_readback() {
+        let device = connected_device(MockCameraHandle::default());
+        assert!(device.can_get_cooler_power().await.unwrap());
+        // CurTemp default is 20.0 °C on the simulated mono model.
+        assert_eq!(device.ccd_temperature().await.unwrap(), 20.0);
+    }
+
+    #[tokio::test]
+    async fn cooling_is_not_implemented_without_cooler_control() {
+        let device = connected_device(MockCameraHandle::default().without_control(Control::Cooler));
+        assert!(!device.can_set_ccd_temperature().await.unwrap());
+        assert!(!device.can_get_cooler_power().await.unwrap());
+        for code in [
+            device.ccd_temperature().await.unwrap_err().code,
+            device.cooler_on().await.unwrap_err().code,
+            device.set_cooler_on(true).await.unwrap_err().code,
+            device.cooler_power().await.unwrap_err().code,
+            device
+                .set_set_ccd_temperature(-10.0)
+                .await
+                .unwrap_err()
+                .code,
+        ] {
+            assert_eq!(code, ASCOMErrorCode::NOT_IMPLEMENTED);
+        }
+    }
+
+    #[tokio::test]
+    async fn geometry_roi_and_bin_getters_report_cached_values() {
+        let device = connected_device(MockCameraHandle::default());
+        assert_eq!(device.pixel_size_x().await.unwrap(), 2.4);
+        assert_eq!(device.pixel_size_y().await.unwrap(), 2.4);
+        // The intended ROI defaults to the full effective area at connect.
+        assert_eq!(device.num_x().await.unwrap(), 3072);
+        assert_eq!(device.num_y().await.unwrap(), 2048);
+        assert_eq!(device.start_x().await.unwrap(), 0);
+        assert_eq!(device.start_y().await.unwrap(), 0);
+        assert_eq!(device.bin_x().await.unwrap(), 1);
+        assert_eq!(device.bin_y().await.unwrap(), 1);
+        assert_eq!(device.max_bin_y().await.unwrap(), 2);
+        assert!(!device.can_asymmetric_bin().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn roi_setters_round_trip() {
+        let device = connected_device(MockCameraHandle::default());
+        device.set_num_x(64).await.unwrap();
+        device.set_num_y(48).await.unwrap();
+        device.set_start_x(10).await.unwrap();
+        device.set_start_y(20).await.unwrap();
+        assert_eq!(device.num_x().await.unwrap(), 64);
+        assert_eq!(device.num_y().await.unwrap(), 48);
+        assert_eq!(device.start_x().await.unwrap(), 10);
+        assert_eq!(device.start_y().await.unwrap(), 20);
+    }
+
+    #[tokio::test]
+    async fn set_bin_y_mirrors_bin_x() {
+        let device = connected_device(MockCameraHandle::default());
+        device.set_bin_y(2).await.unwrap();
+        assert_eq!(device.bin_x().await.unwrap(), 2);
+        assert_eq!(device.bin_y().await.unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn last_exposure_metadata_is_unset_before_first_exposure() {
+        let device = connected_device(MockCameraHandle::default());
+        assert_eq!(
+            device.last_exposure_start_time().await.unwrap_err().code,
+            ASCOMErrorCode::VALUE_NOT_SET
+        );
+        assert_eq!(
+            device.last_exposure_duration().await.unwrap_err().code,
+            ASCOMErrorCode::VALUE_NOT_SET
+        );
+    }
+
+    #[tokio::test]
+    async fn set_bin_surfaces_sdk_failure_as_invalid_operation() {
+        let mock = Arc::new(MockCameraHandle::default());
+        let device = QhyCameraDevice::new(mock.clone(), None);
+        device.set_connected(true).await.unwrap();
+        mock.fail_set_controls.store(true, Ordering::SeqCst);
+        // bin 2 is valid and differs from the current 1, so it reaches the SDK.
+        assert_eq!(
+            device.set_bin_x(2).await.unwrap_err().code,
+            ASCOMErrorCode::INVALID_OPERATION
+        );
+    }
+
+    #[tokio::test]
+    async fn set_readout_mode_surfaces_sdk_failure_as_invalid_operation() {
+        let mock = Arc::new(MockCameraHandle::default());
+        let device = QhyCameraDevice::new(mock.clone(), None);
+        device.set_connected(true).await.unwrap();
+        mock.fail_set_controls.store(true, Ordering::SeqCst);
+        assert_eq!(
+            device.set_readout_mode(0).await.unwrap_err().code,
+            ASCOMErrorCode::INVALID_OPERATION
+        );
+    }
+
+    #[tokio::test]
+    async fn handshake_rejects_camera_without_single_frame_mode() {
+        // open() succeeds, but a camera that doesn't advertise single-frame mode
+        // can't be driven — connect must fail and leave it disconnected.
+        let handle = MockCameraHandle::default().without_control(Control::CamSingleFrameMode);
+        let device = QhyCameraDevice::new(Arc::new(handle), None);
+        assert_eq!(
+            device.set_connected(true).await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert!(!device.connected().await.unwrap());
     }
 
     #[tokio::test]

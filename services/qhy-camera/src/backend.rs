@@ -255,6 +255,13 @@ impl FilterWheelHandle for QhyFilterWheelHandle {
 /// link dependency of `libqhyccd-sys`; the mock only replaces the runtime seam.)
 #[cfg(test)]
 pub(crate) mod mock {
+    // `#[cfg(test)]`-gated test-helper infrastructure that never links into a
+    // production binary. Excluded from coverage so the figure reflects only
+    // production-shipped code — counting these never-shipped mock lines would
+    // produce false numbers (matches the six service `mock` modules excluded in
+    // PR #370 and the `#[cfg(test)] mod tests` blocks).
+    #![cfg_attr(coverage_nightly, coverage(off))]
+
     use super::*;
     use parking_lot::Mutex;
     use std::collections::HashMap;
@@ -280,6 +287,9 @@ pub(crate) mod mock {
         pub fail_single_frame: AtomicBool,
         /// C2 injection: make the post-open handshake (`get_ccd_info`) fail.
         pub fail_handshake: AtomicBool,
+        /// Make control *writes* (`set_bin_mode` / `set_readout_mode`) fail, to
+        /// exercise the setters' SDK-failure → `INVALID_OPERATION` mapping.
+        pub fail_set_controls: AtomicBool,
         /// Optional artificial blocking of `get_single_frame` (for in-flight tests).
         single_frame_delay: Mutex<Duration>,
         aborted: AtomicBool,
@@ -343,6 +353,7 @@ pub(crate) mod mock {
                 bin: Mutex::new((1, 1)),
                 fail_single_frame: AtomicBool::new(false),
                 fail_handshake: AtomicBool::new(false),
+                fail_set_controls: AtomicBool::new(false),
                 single_frame_delay: Mutex::new(Duration::ZERO),
                 aborted: AtomicBool::new(false),
             }
@@ -389,6 +400,11 @@ pub(crate) mod mock {
             Ok(())
         }
         fn set_readout_mode(&self, mode: u32) -> BackendResult<()> {
+            if self.fail_set_controls.load(Ordering::SeqCst) {
+                return Err(BackendError(
+                    "simulated set_readout_mode failure".to_string(),
+                ));
+            }
             if (mode as usize) < self.readout_modes.len() {
                 Ok(())
             } else {
@@ -462,6 +478,9 @@ pub(crate) mod mock {
             Ok(())
         }
         fn set_bin_mode(&self, bin_x: u32, bin_y: u32) -> BackendResult<()> {
+            if self.fail_set_controls.load(Ordering::SeqCst) {
+                return Err(BackendError("simulated set_bin_mode failure".to_string()));
+            }
             *self.bin.lock() = (bin_x, bin_y);
             Ok(())
         }
