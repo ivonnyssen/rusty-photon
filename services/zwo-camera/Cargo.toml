@@ -47,6 +47,14 @@ parking_lot = { workspace = true }
 command = "cargo test -p zwo-camera --features conformu --test conformu_integration -- --nocapture"
 
 [dev-dependencies]
+# Build `zwo-rs` with its `simulation` feature for tests. Cargo's resolver v2
+# keeps this out of the production `cargo build` (which still links the real
+# SDK), but it makes Bazel's `crate_universe` — which resolves ONE feature set
+# per external crate and ignores a target's `crate_features` — build zwo-rs with
+# `simulation`. That gives the Bazel sim unit tests a simulated camera, and
+# cfg's out the real-SDK FFI paths (whose bindgen `c_long`/`c_int` widths differ
+# under Bazel's Windows toolchain). Mirrors the qhy-camera Bazel pattern.
+zwo-rs = { workspace = true, features = ["simulation"] }
 tracing-subscriber = { workspace = true }
 bdd-infra = { workspace = true, features = ["conformu"] }
 cucumber = { workspace = true }
