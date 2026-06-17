@@ -28,17 +28,20 @@ pub struct SseFrame {
     /// The SSE `data:` payload — the full `EventEnvelope` JSON (or the
     /// `stream_gap` diagnostic body).
     pub data: String,
+    /// `data` parsed once at construction (`Null` if it doesn't parse), so the
+    /// accessors below read fields without re-parsing the payload per call.
+    parsed: Value,
 }
 
 impl SseFrame {
-    /// Parse `data` as JSON (`Null` if it doesn't parse).
-    pub fn json(&self) -> Value {
-        serde_json::from_str(&self.data).unwrap_or(Value::Null)
+    /// The parsed `data` payload (`Null` if it didn't parse).
+    pub fn json(&self) -> &Value {
+        &self.parsed
     }
 
     /// The envelope `operation_id`, if present in `data`.
     pub fn operation_id(&self) -> Option<String> {
-        self.json()
+        self.parsed
             .get("operation_id")
             .and_then(|v| v.as_str())
             .map(String::from)
@@ -47,7 +50,7 @@ impl SseFrame {
     /// The `event` type, falling back to the `data` envelope's `event` field.
     pub fn event_type(&self) -> Option<String> {
         self.event.clone().or_else(|| {
-            self.json()
+            self.parsed
                 .get("event")
                 .and_then(|v| v.as_str())
                 .map(String::from)
@@ -179,10 +182,13 @@ fn parse_frame(block: &str) -> Option<SseFrame> {
     if event.is_none() && data_lines.is_empty() {
         return None;
     }
+    let data = data_lines.join("\n");
+    let parsed = serde_json::from_str(&data).unwrap_or(Value::Null);
     Some(SseFrame {
         id,
         event,
-        data: data_lines.join("\n"),
+        data,
+        parsed,
     })
 }
 
