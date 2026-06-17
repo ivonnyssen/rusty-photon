@@ -21,7 +21,13 @@ inputs:
     description: Install prefix for the SDK libraries and headers (Linux/macOS).
     default: /usr/local
   windows_camera_sdk_url:
-    description: ZWO ASI Camera developer SDK (Windows) download URL.
+    # Reproducibility note: unlike the Linux/macOS blobs (pinned by `ref` to an
+    # indi-3rdparty commit), ZWO's Windows developer SDK is only published as a
+    # rolling "latest" CDN download — there is no versioned/immutable URL to pin
+    # or checksum. Overriding these inputs is the only way to pin, if/when ZWO
+    # offers a stable artifact. Track upstream before relying on Windows CI for
+    # bit-for-bit reproducibility.
+    description: ZWO ASI Camera developer SDK (Windows) download URL (rolling "latest").
     default: https://dl.zwoastro.com/software?app=DeveloperCameraSdk&platform=windows86&region=Overseas
   windows_efw_sdk_url:
     description: ZWO EFW filter-wheel developer SDK (Windows) download URL.

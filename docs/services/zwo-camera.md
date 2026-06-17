@@ -233,8 +233,10 @@ ASI/EFW C API exposes and what `zwo-rs` will wrap.
   SDK's `SupportedBins`; ROI rescaled on bin change.
 - **ROI** — `StartX/Y`/`NumX/Y` setters accept any `u32`; geometry validated at
   `StartExposure`, **including the ASI alignment rules**: width must be a multiple
-  of 8 and height a multiple of 2 (ASI120 USB2 additionally requires
-  `width·height % 1024 == 0`).
+  of 8 and height a multiple of 2. (The legacy ASI120 USB2 models additionally
+  require `width·height % 1024 == 0`; `check_geometry` does **not** currently
+  enforce that older-model rule — such a frame would simply be rejected by the
+  SDK at `StartExposure`. Adding it is Future Work if an ASI120 USB2 is used.)
 - **Exposure** — `ExposureMin/Max/Resolution` from `ASIGetControlCaps(ASI_EXPOSURE)`
   (µs; min ~32 µs for current ASI sensors — required for bias frames, see
   [`docs/workspace.md` Duration Units](../workspace.md#duration-units)); single

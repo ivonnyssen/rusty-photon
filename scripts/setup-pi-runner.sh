@@ -88,8 +88,10 @@ sudo apt-get install -y \
 # aarch64 Pi runner needs it installed to build/test the workspace. INDI
 # vendors ZWO's upstream prebuilt blobs under indi-3rdparty/libasi; install the
 # armv8 libraries under the linker name plus the udev rule for ZWO USB devices.
-# Pin ZWO_SDK_REF to a commit SHA for reproducibility.
-ZWO_SDK_REF="${ZWO_SDK_REF:-master}"
+# Pinned to a commit SHA (not a moving branch) for reproducible native blobs,
+# matching the CI `install-zwo-sdk` action's `ref` default; bump both together to
+# adopt a newer ZWO SDK. Override via the env var only for a deliberate one-off.
+ZWO_SDK_REF="${ZWO_SDK_REF:-b0802f28055b67aa6a99580d260c3bb4c27eba4b}"
 ZWO_SDK_BASE="https://github.com/indilib/indi-3rdparty/raw/${ZWO_SDK_REF}/libasi"
 
 log "Installing ZWO ASI/EFW SDK (armv8) from indi-3rdparty@${ZWO_SDK_REF}..."
