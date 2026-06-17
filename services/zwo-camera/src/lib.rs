@@ -42,11 +42,13 @@ use zwo_rs::CameraInfo;
 
 use crate::backend::{CameraHandle, ZwoCameraHandle};
 
-/// One camera discovered at enumeration: its index, [`CameraInfo`], and the
+/// One camera discovered at enumeration: its index, [`CameraInfo`], the bare
+/// SDK `serial` (the key for `devices` config overrides), and the
 /// serial-derived ASCOM `UniqueID`.
 struct EnumeratedCamera {
     index: usize,
     info: CameraInfo,
+    serial: String,
     unique_id: String,
 }
 
@@ -128,7 +130,11 @@ impl ServerBuilder {
                 cam.info.clone(),
                 cam.unique_id.clone(),
             ));
-            let mut device = ZwoCamera::new(handle, self.config.devices.get(&cam.unique_id));
+            // `devices` overrides are keyed by the bare SDK serial (matching the
+            // config-actions `devices.{serial}` paths), NOT the prefixed
+            // `ZWO:{name}:{serial}` UniqueID — looking up by UniqueID would never
+            // match a user's serial-keyed entry.
+            let mut device = ZwoCamera::new(handle, self.config.devices.get(&cam.serial));
             if let (Some(path), Some(reload)) = (self.config_path.clone(), self.reload.clone()) {
                 device = device.with_config_actions(rusty_photon_driver::ConfigActionCtx {
                     effective: self.config.clone(),
@@ -223,6 +229,7 @@ async fn enumerate_cameras() -> Result<Vec<EnumeratedCamera>, ZwoCameraError> {
                 out.push(EnumeratedCamera {
                     index,
                     info,
+                    serial,
                     unique_id,
                 });
             }
@@ -251,6 +258,34 @@ mod simulation_tests {
             .await
             .unwrap();
         assert_ne!(bound.local_addr().port(), 0);
+    }
+
+    /// `devices` overrides are keyed by the bare SDK serial, not the prefixed
+    /// `ZWO:{name}:{serial}` UniqueID. The simulated camera's serial resolves an
+    /// override entry; the UniqueID does not.
+    #[tokio::test]
+    async fn device_overrides_are_keyed_by_serial_not_unique_id() {
+        let cam = &enumerate_cameras().await.unwrap()[0];
+        assert!(
+            cam.serial != cam.unique_id && cam.unique_id.ends_with(&cam.serial),
+            "UniqueID should be the prefixed serial, serial the bare key"
+        );
+        let mut config = Config::default();
+        config.devices.insert(
+            cam.serial.clone(),
+            DeviceOverride {
+                name: Some("Main Imaging".to_string()),
+                ..Default::default()
+            },
+        );
+        assert!(
+            config.devices.contains_key(&cam.serial),
+            "the serial must resolve the override the builder applies"
+        );
+        assert!(
+            !config.devices.contains_key(&cam.unique_id),
+            "the UniqueID must NOT resolve it (the bug Copilot flagged)"
+        );
     }
 
     /// The empty-backend path starts healthy with no Camera devices (C0).

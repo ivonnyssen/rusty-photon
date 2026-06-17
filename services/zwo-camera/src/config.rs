@@ -1,9 +1,11 @@
 //! Configuration for the zwo-camera service.
 //!
-//! Phase C (Track A) only *reads* [`ServerConfig::port`] to bind the listener.
-//! The `devices` override map and `filterwheel.enabled` toggle are carried so
-//! the on-disk shape matches `docs/services/zwo-camera.md`; they are consumed by
-//! the device-trait work (Phase E) and config-actions (Phase G).
+//! `ServerConfig::port` binds the listener; the `devices` override map (keyed by
+//! SDK serial — applied to each `ZwoCamera` at registration) is live as of
+//! Phase E, and the whole `Config` is exposed through the
+//! `config.get`/`apply`/`schema` actions (see `config_actions.rs`). The
+//! `filterwheel.enabled` toggle is carried and validated now; the EFW devices it
+//! gates are registered in Phase F.
 
 use std::collections::BTreeMap;
 use std::path::Path;

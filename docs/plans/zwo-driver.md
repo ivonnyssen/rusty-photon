@@ -2,16 +2,21 @@
 
 ## Status
 
-**Design/planning — FFI crates stood up; `zwo-camera` service pre-implementation.**
-The `zwo-rs` + `libzwo-sys` FFI crates now exist as a standalone repo
+**Implemented through Phase E — full ASCOM Camera landed; ConformU passes.**
+The `zwo-rs` + `libzwo-sys` FFI crates exist as a standalone repo
 ([github.com/ivonnyssen/zwo-rs](https://github.com/ivonnyssen/zwo-rs), MIT/Apache-2.0):
 a `bindgen` FFI skeleton that generates and links the ZWO SDK with green CI
-(`check` + `test` on Linux x86_64; built and tested locally on aarch64). The
-rusty-photon side has **no code yet** — this plan remains the agreed decision
-record that will drive `docs/services/zwo-camera.md` (the service design doc), the
-BDD scenarios, and the implementation, per the design→BDD→implementation flow in
+(`check` + `test` on Linux x86_64; built and tested locally on aarch64). On the
+rusty-photon side, `services/zwo-camera` now implements the full ASCOM
+`Device + Camera` surface over the `zwo-rs` SDK seam (Phase C scaffold → Phase E
+full Camera), with config actions, serial-derived identity, 45 unit + 57 BDD
+green, and a full **ConformU** pass on both suites. The remaining phases are
+**F** (EFW `FilterWheel`) and **G** (wire ConformU into `conformu.yml`; `rp`
+`CameraConfig` consumer). This plan remains the agreed decision record behind
+`docs/services/zwo-camera.md` (the service design doc) and the BDD scenarios, per
+the design→BDD→implementation flow in
 [`docs/skills/development-workflow.md`](../skills/development-workflow.md). The
-workspace now pins the FFI crate at the lockstep rev (see *Monorepo integration
+workspace pins the FFI crate at the lockstep rev (see *Monorepo integration
 recipe*).
 
 It is the ZWO analogue of the in-design

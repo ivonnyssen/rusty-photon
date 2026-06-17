@@ -218,10 +218,6 @@ impl CameraHandle for ZwoCameraHandle {
         // before this reset is benign: abort bumps the exposure generation (so
         // the device discards the result anyway) and a lost graceful-stop simply
         // lets the full exposure complete — exactly stop's "preserve the frame".
-        // Reset the stop signal for this capture. A stop/abort racing in just
-        // before this reset is benign: abort bumps the exposure generation (so
-        // the device discards the result anyway) and a lost graceful-stop simply
-        // lets the full exposure complete — exactly stop's "preserve the frame".
         self.stop.store(STOP_NONE, Ordering::SeqCst);
 
         // Configure and start the exposure under the lock, then RELEASE it for

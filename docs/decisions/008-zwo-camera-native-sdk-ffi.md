@@ -2,11 +2,15 @@
 
 ## Status
 
-Proposed (2026-06-14). Tracked by [`docs/plans/zwo-driver.md`](../plans/zwo-driver.md)
-and specified in [`docs/services/zwo-camera.md`](../services/zwo-camera.md). The
-FFI crates ([`zwo-rs`](https://github.com/ivonnyssen/zwo-rs) + `libzwo-sys`) are
-stood up as a standalone repo (bindgen skeleton, green CI); the `zwo-camera`
-service is pre-implementation.
+Accepted (2026-06-14); implemented through Phase E (2026-06-16). Tracked by
+[`docs/plans/zwo-driver.md`](../plans/zwo-driver.md) and specified in
+[`docs/services/zwo-camera.md`](../services/zwo-camera.md). The FFI crates
+([`zwo-rs`](https://github.com/ivonnyssen/zwo-rs) + `libzwo-sys`) are stood up as
+a standalone repo (bindgen skeleton, green CI), and `services/zwo-camera` now
+implements the full ASCOM `Device + Camera` surface over them (Phase C scaffold →
+Phase E full Camera, ConformU passing), with the native-SDK CI/Bazel provisioning
+this ADR calls for in place. Remaining: EFW `FilterWheel` (Phase F) and ConformU
+CI wiring (Phase G).
 
 ## Context
 
