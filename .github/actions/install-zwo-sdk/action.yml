@@ -41,9 +41,13 @@ runs:
       run: |
         sudo apt-get update -qq
         # libusb-1.0-0-dev: the SDK links `-lusb-1.0`.
+        # libudev-dev: libEFWFilter is USB-HID and libzwo-sys links `-ludev` on
+        #   Linux; without the -dev package the unversioned libudev.so symlink is
+        #   missing and linking fails with "unable to find library -ludev".
         # clang/libclang-dev: bindgen (in libzwo-sys' build script) needs libclang.
         sudo apt-get install -y --no-install-recommends \
           libusb-1.0-0-dev \
+          libudev-dev \
           clang \
           libclang-dev
 
@@ -98,6 +102,11 @@ runs:
           # path before they will link (INDI automates this).
           sudo install_name_tool -id "$PREFIX/lib/libASICamera2.dylib" "$PREFIX/lib/libASICamera2.dylib"
           sudo install_name_tool -id "$PREFIX/lib/libEFWFilter.dylib" "$PREFIX/lib/libEFWFilter.dylib"
+          # libASICamera2 references `@rpath/libusb-1.0.0.dylib`. The test
+          # binary's @rpath includes this SDK prefix (a link-search dir) but not
+          # Homebrew's libdir, so stage libusb alongside the SDK where the dynamic
+          # loader will find it at runtime (otherwise: dyld "Library not loaded").
+          sudo cp "$(brew --prefix libusb)/lib/libusb-1.0.0.dylib" "$PREFIX/lib/"
         elif command -v ldconfig >/dev/null 2>&1; then
           sudo ldconfig
         fi

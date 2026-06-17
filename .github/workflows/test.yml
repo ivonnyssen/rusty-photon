@@ -247,6 +247,12 @@ jobs:
         with:
           shared-key: windows-stable
           save-if: false
+      # zwo-camera links the native ZWO SDK; provision it (which also puts the
+      # ASI/EFW DLLs on PATH for the spawned-binary BDD scenarios) only for that
+      # package — the other BDD services need no native SDK.
+      - name: Install ZWO SDK
+        if: matrix.package == 'zwo-camera'
+        uses: ./.github/actions/install-zwo-sdk
       - name: cargo generate-lockfile
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
