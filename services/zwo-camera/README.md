@@ -13,13 +13,16 @@ for the native-SDK / FFI-crate decision.
 ## Status — Phase E (full Camera) landed
 
 This crate implements the full ASCOM `Device` + `Camera` surface over the
-`zwo-rs` SDK seam (`backend.rs`): connection lifecycle, sensor geometry,
-symmetric binning, ROI with the ASI `%8`/`%2` alignment rules, gain/offset,
-cooling, readout modes, ST4 pulse guiding, and the snap-mode exposure state
+`zwo-rs` SDK seam (`backend.rs`): connection lifecycle, sensor geometry (with
+`CameraXSize`/`CameraYSize` reported aligned so the binned full frame stays a
+valid ASI ROI), symmetric binning, ROI with the ASI `%8`/`%2` alignment rules,
+gain/offset, cooling, readout modes, asynchronous ST4 pulse guiding, and the
+snap-mode exposure state
 machine (start; abort *discards* / graceful stop *preserves*; `ImageArray`,
 `CameraState`, `PercentCompleted`, mid-exposure `Error`), plus serial-derived
-identity and the `config.get`/`apply`/`schema` actions. Validated by **42 unit
-tests** (against the in-crate mock seam) and **54 BDD scenarios**. Roadmap:
+identity and the `config.get`/`apply`/`schema` actions. Validated by **45 unit
+tests** (against the in-crate mock seam), **57 BDD scenarios**, and a full
+**ConformU** pass (both `alpacaprotocol` and `conformance` suites). Roadmap:
 
 - **Phase F** — EFW `FilterWheel` (gated on `filterwheel.enabled`).
 - **Phase G** — wire ConformU into `conformu.yml` (the `conformu_integration.rs`

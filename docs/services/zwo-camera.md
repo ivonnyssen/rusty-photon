@@ -12,24 +12,32 @@
 > `spawn_blocking` inside a detached task, with a generation counter +
 > `result_lock` so abort/disconnect invalidate a late-completing capture; the
 > camera lock is released during the integration so concurrent reads (and the
-> in-flight-exposure check) are not blocked. It is gate-green: **42 unit tests**
-> (against the mock seam), the **54 BDD scenarios** across the six camera feature
-> files (now live; `filter_wheel.feature` stays `@wip` for Phase F), clippy
+> in-flight-exposure check) are not blocked. It is gate-green: **45 unit tests**
+> (against the mock seam), the **57 BDD scenarios** across the six camera feature
+> files (now live; `filter_wheel.feature` stays `@wip` for Phase F), a full
+> **ConformU** pass (both suites), clippy
 > `--all-features`, `cargo rail --profile commit`, and **Bazel** (`lib`/`binary`/
 > `unit_test` are first-class `//...` targets verified on Linux; the `bdd` /
 > `conformu_integration` suites build under `bazel build //...` but are tagged
 > `requires-cargo` and run under Cargo, mirroring qhy-camera; `MODULE.bazel.lock`
 > repinned). The **EFW `FilterWheel` is Phase F**.
 >
-> **ConformU.** The `tests/conformu_integration.rs` harness is wired (gated on the
-> `conformu` feature; skipped without `CONFORMU_PATH`). The two `zwo-rs`
-> simulation gaps that previously blocked it are **fixed** (rev `3c32e59`): the
-> simulated camera now models the writable `Exposure` control, and
-> `sim_download_exposure` fills the frame in parallel (rayon + bulk
-> `RngCore::fill_bytes`) — a full-frame 52 MB download dropped from ≈11 s to
-> ≈0.01 s, well inside ConformU's 10 s `StartExposure` timeout. All that remains
-> for Phase G is wiring `zwo-camera` into `conformu.yml`. See *Testing* and
-> *Delivery phasing* Phase G.
+> **ConformU — passes.** The `tests/conformu_integration.rs` harness is wired
+> (gated on the `conformu` feature; skipped without `CONFORMU_PATH`). Both ConformU
+> suites now pass cleanly against the simulation backend — *"no errors, warnings
+> or issues found"* and *"all members returned within their target response
+> times"*. Getting there took three fixes: (1) the `zwo-rs` sim now models the
+> writable `Exposure` control and (2) fills the 52 MB full frame in parallel
+> (rayon + bulk `RngCore::fill_bytes`, ≈11 s → ≈0.01 s, clearing the `StartExposure`
+> timeout) — both in rev `3c32e59`; and two **driver** fixes surfaced once ConformU
+> could finally run: (3a) `CameraXSize`/`CameraYSize` are reported *aligned* so the
+> full frame at every bin (`NumX = CameraXSize/bin`) is a valid ASI ROI — the
+> ASI2600's 6248 is reported as **6240** (R4), since ConformU exposes the binned
+> full frame at each bin and 6248/2 = 3124 is not a multiple of 8; and (3b)
+> `PulseGuide` is now **asynchronous** (returns immediately, `IsPulseGuiding`
+> tracks the pulse to its deadline) instead of blocking for the pulse duration,
+> which exceeded ConformU's 1 s response target. All that remains for Phase G is
+> wiring `zwo-camera` into `conformu.yml`. See *Testing* and *Delivery phasing*.
 >
 > **CI provisioning landed (full cross-platform).** The
 > `.github/actions/install-zwo-sdk` composite action provisions the SDK on
@@ -411,6 +419,16 @@ backend presents one **ASI2600MM-Pro-Simulated** camera (6248×4176, monochrome,
 
 - **G1.** `CameraXSize`/`CameraYSize`/`PixelSizeX`/`PixelSizeY` reflect the cached
   `ASI_CAMERA_INFO`; `PixelSizeX == PixelSizeY` (single SDK `PixelSize`).
+- **R4.** `CameraXSize`/`CameraYSize` are reported *aligned down* so the full
+  frame at every supported bin — `NumX = CameraXSize / bin`, the ROI conformance
+  tools and clients expose at each bin — is a valid ASI ROI (binned width a
+  multiple of 8, binned height a multiple of 2). The reported extent is the
+  largest multiple of `lcm(unit · bin)` (unit = 8 for X, 2 for Y) not exceeding
+  the raw sensor; for the ASI2600 (6248×4176, bins 1–4) that is **6240×4176**
+  (the raw 6248/2 = 3124 is not a multiple of 8, so the raw width would make the
+  bin-2/3/4 full frames unachievable). The cost is a few edge columns at full
+  resolution; the bonus is that the bin-ratio ROI rescale (B3) round-trips
+  exactly. Bounds checks (R2) use the *reported* extent.
 - **B1.** `set_bin_x`/`set_bin_y` validate against the SDK's `SupportedBins` and
   set symmetric binning; an unsupported bin returns `INVALID_VALUE`.
 - **B2.** `CanAsymmetricBin = false`; `MaxBinX`/`MaxBinY` come from
@@ -482,9 +500,14 @@ backend presents one **ASI2600MM-Pro-Simulated** camera (6248×4176, monochrome,
 
 - **PG1.** `CanPulseGuide` is `true` iff the camera reports an ST4 port; the
   simulated camera reports ST4 present.
-- **PG2.** `PulseGuide(direction, duration)` while disconnected returns
-  `NOT_CONNECTED`; a model without ST4 returns `NOT_IMPLEMENTED`. *(The
-  disconnected branch is a BDD scenario; the no-ST4 `NOT_IMPLEMENTED` branch is
+- **PG2.** `PulseGuide(direction, duration)` is **asynchronous**: it starts the
+  ST4 pulse (`ASIPulseGuideOn`) and returns immediately, with `IsPulseGuiding`
+  reporting `true` until the pulse's deadline (`now + duration`); a detached task
+  ends it (`ASIPulseGuideOff`) when the deadline passes. Blocking for the whole
+  pulse would exceed ConformU's 1 s response target and stall an autoguider's
+  cadence. While disconnected it returns `NOT_CONNECTED`; a model without ST4
+  returns `NOT_IMPLEMENTED`. *(The disconnected branch is a BDD scenario; the
+  no-ST4 `NOT_IMPLEMENTED` branch and the async `IsPulseGuiding` timing are
   covered by unit tests, since the `simulation` backend always reports ST4
   present.)*
 
@@ -506,7 +529,7 @@ backend presents one **ASI2600MM-Pro-Simulated** camera (6248×4176, monochrome,
 
 | Property / Method | v0 behaviour (backed by `zwo-rs`) |
 |---|---|
-| `CameraXSize` / `CameraYSize` | Cached `ASI_CAMERA_INFO` MaxWidth/MaxHeight |
+| `CameraXSize` / `CameraYSize` | Cached `ASI_CAMERA_INFO` MaxWidth/MaxHeight, aligned down so the full frame at every bin is a valid ASI ROI (R4; e.g. 6248→6240) |
 | `PixelSizeX` / `PixelSizeY` | Cached `ASI_CAMERA_INFO.PixelSize` (X == Y) |
 | `BinX` / `BinY` / `MaxBinX` / `MaxBinY` | Symmetric; max from `SupportedBins` |
 | `CanAsymmetricBin` | `false` |
@@ -526,7 +549,7 @@ backend presents one **ASI2600MM-Pro-Simulated** camera (6248×4176, monochrome,
 | `PercentCompleted` | From remaining-exposure µs, clamped ≤ 100 |
 | `CanAbortExposure` / `CanStopExposure` | `true` / `true` (both via `ASIStopExposure`) |
 | `CanPulseGuide` | `true` iff ST4 port present |
-| `PulseGuide` | `ASIPulseGuideOn/Off` (ST4) |
+| `PulseGuide` / `IsPulseGuiding` | Asynchronous `ASIPulseGuideOn/Off` (ST4): returns immediately, `IsPulseGuiding` true until `now + duration` (PG2) |
 | `StartExposure` (`Light=false`) | Accepted; captured normally (no shutter) |
 | `StartExposure` / `AbortExposure` / `StopExposure` / `ImageReady` / `ImageArray` / `ImageArrayVariant` | Per *Exposure* contracts; `ImageArray` axes `[X, Y]` |
 
@@ -570,8 +593,8 @@ else is `debug!` (CLAUDE.md Rule 9).
 
 ## Testing
 
-Layered per [`testing.md`](../skills/testing.md). Phase E landed **42 unit tests**
-and **54 BDD scenarios** (all green).
+Layered per [`testing.md`](../skills/testing.md). Phase E landed **45 unit tests**
+and **57 BDD scenarios** (all green), plus a full **ConformU** pass.
 
 - **Unit** (`src/*.rs` `#[cfg(test)]`) — config parse/newtype validation, ROI/
   binning geometry math (including the %8 / %2 alignment rules), the `Camera`
@@ -590,15 +613,15 @@ and **54 BDD scenarios** (all green).
 - **ConformU** (`tests/conformu_integration.rs`, gated by the `conformu` feature)
   — launches the production binary with `--features simulation` and runs
   `bdd_infra::run_conformu("camera", …)` (the EFW is Phase F). Skipped when
-  `CONFORMU_PATH` is unset. **Unblocked, not yet wired into `conformu.yml`:** the
-  two `zwo-rs` simulation gaps that previously tripped ConformU are fixed in rev
-  `3c32e59` — the sim now models the writable `Exposure` control, and
-  `sim_download_exposure` fills the frame in parallel (rayon + bulk
-  `RngCore::fill_bytes`), so a full-frame 52 MB download dropped from ≈11 s to
-  ≈0.01 s (was the only thing exceeding ConformU's 10 s `StartExposure` timeout).
-  Adding `zwo-camera` to `conformu.yml` is the remaining Phase G step. The driver
-  was already conformant; the small-ROI BDD scenarios exercise the same exposure
-  surface.
+  `CONFORMU_PATH` is unset. **Passes both suites** (`alpacaprotocol` +
+  `conformance`) against the simulation backend: *"no errors, warnings or issues
+  found"*, all members within their response-time targets. Three fixes got it
+  there — the two `zwo-rs` sim fixes in rev `3c32e59` (writable `Exposure`
+  control; parallel 52 MB frame fill, ≈11 s → ≈0.01 s, clearing the 10 s
+  `StartExposure` timeout), plus two **driver** fixes that only became reachable
+  once ConformU got past `StartExposure`: aligned reported `CameraXSize` (R4, see
+  *Geometry*) and asynchronous `PulseGuide` (see *Guiding*). Wiring `zwo-camera`
+  into `conformu.yml` is the remaining Phase G step.
 
 > **CI caveat (critical):** the `simulation` feature removes the *camera*
 > requirement, **not the SDK**. All build/test/ConformU jobs for this package
@@ -635,17 +658,17 @@ driver itself). The FFI crate is the long pole (~40–50% of effort); once
   (ROI/bin, gain/offset, cooling, readout, exposure state machine, abort +
   graceful stop, PulseGuide, sensor type), config-actions, serial identity,
   `spawn_blocking` bridge (camera lock released during integration), `backend.rs`
-  mock seam. 42 unit tests + 54 BDD scenarios green; the six camera feature files
+  mock seam. 45 unit tests + 57 BDD scenarios green (ConformU passes); the six camera feature files
   are live (`filter_wheel.feature` stays `@wip` for Phase F).
 - **Phase F — EFW `FilterWheel`** fast-follow (position/moving/names/offsets),
   config toggle, BDD/ConformU.
-- **Phase G — test + gate + consumer.** BDD landed (Phase E). The `zwo-rs`
-  simulation full-frame-fill speedup (and writable `Exposure` control) landed in
-  rev `3c32e59`, so the ConformU timeout blocker is cleared; the
-  `conformu_integration.rs` harness is in place. Remaining: wire `zwo-camera`
-  into `conformu.yml`; `rp` `CameraConfig` consumer; optional hermetic Bazel
-  `crate.annotation` (SDK as a `cc_import` dep, dropping the imperative install)
-  — cleanup, not blocking.
+- **Phase G — test + gate + consumer.** BDD landed (Phase E). **ConformU passes
+  both suites** against the simulation backend (verified locally) after the
+  `zwo-rs` rev `3c32e59` sim fixes plus the aligned-`CameraXSize` (R4) and
+  asynchronous-`PulseGuide` driver fixes; the `conformu_integration.rs` harness
+  is in place. Remaining: wire `zwo-camera` into `conformu.yml`; `rp`
+  `CameraConfig` consumer; optional hermetic Bazel `crate.annotation` (SDK as a
+  `cc_import` dep, dropping the imperative install) — cleanup, not blocking.
 
 ---
 

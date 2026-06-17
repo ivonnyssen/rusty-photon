@@ -8,8 +8,9 @@
 //! - **`StopExposure` works**: a graceful, data-preserving stop (`CanStopExposure
 //!   = true`); abort and stop both drive `ASIStopExposure`, abort discarding the
 //!   frame and stop preserving it (E7/E8).
-//! - **Native `PulseGuide`** via ST4 (`CanPulseGuide = true` when the model has an
-//!   ST4 port; PG1/PG2).
+//! - **Native asynchronous `PulseGuide`** via ST4 (`CanPulseGuide = true` when
+//!   the model has an ST4 port): the call starts the pulse and returns
+//!   immediately, with `IsPulseGuiding` true until the pulse's deadline (PG1/PG2).
 //! - **`ElectronsPerADU`** is a real native value (`ASI_CAMERA_INFO.ElecPerADU`).
 //! - **`MaxADU` = 2^BitDepth − 1** (65535 for a 16-bit sensor).
 //!
@@ -85,6 +86,9 @@ struct DeviceState {
     /// Serializes the capture task's "check generation + commit result" against
     /// `cancel_exposure`'s "bump generation + clear image_ready".
     result_lock: Mutex<()>,
+    /// Deadline of an in-flight ST4 guide pulse (asynchronous `PulseGuide`);
+    /// `None` when not guiding. `IsPulseGuiding` is `now < deadline` (PG1/PG2).
+    pulse_guide_until: Mutex<Option<SystemTime>>,
 }
 
 impl DeviceState {
@@ -105,6 +109,7 @@ impl DeviceState {
             last_image: Mutex::new(None),
             last_error: Mutex::new(None),
             result_lock: Mutex::new(()),
+            pulse_guide_until: Mutex::new(None),
         }
     }
 
@@ -120,6 +125,7 @@ impl DeviceState {
         *self.last_error.lock() = None;
         *self.last_exposure_start_time.lock() = None;
         *self.last_exposure_duration.lock() = None;
+        *self.pulse_guide_until.lock() = None;
     }
 }
 
@@ -219,8 +225,8 @@ impl ZwoCamera {
         *self.state.intended_roi.lock() = Some(Roi {
             start_x: 0,
             start_y: 0,
-            width: self.info.max_width,
-            height: self.info.max_height,
+            width: self.reported_width(),
+            height: self.reported_height(),
         });
         *self.state.target_temperature.lock() = None;
         Ok(())
@@ -256,12 +262,24 @@ impl ZwoCamera {
         self.handle.request_stop(false);
     }
 
+    /// Reported `CameraXSize`: the sensor width reduced so a full frame at every
+    /// supported bin is a valid ASI ROI (see [`aligned_sensor_extent`]).
+    fn reported_width(&self) -> u32 {
+        aligned_sensor_extent(self.info.max_width, &self.info.supported_bins, 8)
+    }
+
+    /// Reported `CameraYSize`: the sensor height aligned so the binned full frame
+    /// stays a multiple of 2 (see [`aligned_sensor_extent`]).
+    fn reported_height(&self) -> u32 {
+        aligned_sensor_extent(self.info.max_height, &self.info.supported_bins, 2)
+    }
+
     /// Validate the cached ROI against the binned sensor geometry (R2/R3),
     /// returning the [`CaptureRequest`] geometry to push to the SDK.
     fn validated_geometry(&self, bin: u32) -> ASCOMResult<Roi> {
         let roi = (*self.state.intended_roi.lock())
             .ok_or_else(|| ASCOMError::invalid_value("no ROI defined for camera"))?;
-        check_geometry(roi, self.info.max_width, self.info.max_height, bin)?;
+        check_geometry(roi, self.reported_width(), self.reported_height(), bin)?;
         Ok(roi)
     }
 
@@ -310,6 +328,48 @@ fn rescale_roi(roi: Roi, old: u8, new: u8) -> Roi {
         start_y: (f64::from(roi.start_y) * factor) as u32,
         width: (f64::from(roi.width) * factor) as u32,
         height: (f64::from(roi.height) * factor) as u32,
+    }
+}
+
+/// Greatest common divisor (Euclid).
+fn gcd(a: u32, b: u32) -> u32 {
+    if b == 0 {
+        a
+    } else {
+        gcd(b, a % b)
+    }
+}
+
+/// Least common multiple (`0` if either operand is `0`).
+fn lcm(a: u32, b: u32) -> u32 {
+    if a == 0 || b == 0 {
+        0
+    } else {
+        a / gcd(a, b) * b
+    }
+}
+
+/// The largest sensor extent (≤ `max`) the driver reports such that the full
+/// frame divided by *every* supported bin is a valid ASI ROI — i.e. the binned
+/// extent is a multiple of `unit` (8 for width, 2 for height).
+///
+/// ConformU takes a full frame at every bin via `NumX = CameraXSize / bin` (and
+/// likewise `NumY`), so reporting the raw sensor size makes those binned full
+/// frames unachievable whenever `raw / bin` is not a multiple of `unit` (e.g. an
+/// ASI2600's 6248 / 2 = 3124, not a multiple of 8). Reducing the reported extent
+/// to a multiple of `lcm(unit·bin)` guarantees every binned full frame is
+/// exactly achievable, and as a bonus makes [`rescale_roi`] round-trip cleanly.
+fn aligned_sensor_extent(max: u32, supported_bins: &[u32], unit: u32) -> u32 {
+    let step = supported_bins
+        .iter()
+        .copied()
+        .filter(|&b| b > 0)
+        .map(|b| unit.saturating_mul(b))
+        .fold(1, lcm);
+    if step == 0 || step > max {
+        max
+    } else {
+        max - max % step
     }
 }
 
@@ -454,12 +514,12 @@ impl Camera for ZwoCamera {
 
     async fn camera_x_size(&self) -> ASCOMResult<u32> {
         self.ensure_connected()?;
-        Ok(self.info.max_width)
+        Ok(self.reported_width())
     }
 
     async fn camera_y_size(&self) -> ASCOMResult<u32> {
         self.ensure_connected()?;
-        Ok(self.info.max_height)
+        Ok(self.reported_height())
     }
 
     async fn pixel_size_x(&self) -> ASCOMResult<f64> {
@@ -882,8 +942,12 @@ impl Camera for ZwoCamera {
     }
 
     async fn is_pulse_guiding(&self) -> ASCOMResult<bool> {
-        // Pulse guiding is synchronous (the call returns when the pulse ends).
-        Ok(false)
+        // Asynchronous: `pulse_guide` returns immediately and records a deadline;
+        // the pulse is in progress until that deadline passes (PG2).
+        Ok(match *self.state.pulse_guide_until.lock() {
+            Some(deadline) => SystemTime::now() < deadline,
+            None => false,
+        })
     }
 
     // --- exposure state ---------------------------------------------------------
@@ -1036,16 +1100,33 @@ impl Camera for ZwoCamera {
         if !self.info.has_st4_port {
             return Err(ASCOMError::NOT_IMPLEMENTED);
         }
-        let handle = Arc::clone(&self.handle);
         let dir = guide_direction(direction);
-        tokio::task::spawn_blocking(move || -> Result<(), crate::backend::BackendError> {
-            handle.pulse_guide_on(dir)?;
-            std::thread::sleep(duration);
-            handle.pulse_guide_off(dir)
-        })
-        .await
-        .map_err(|e| ASCOMError::invalid_operation(format!("pulse guide task failed: {e}")))?
-        .map_err(|e| ASCOMError::invalid_operation(format!("pulse guide failed: {e}")))
+
+        // ASCOM `PulseGuide` is asynchronous: start the pulse now (so a failed
+        // start is reported to the caller) and return immediately, leaving a
+        // detached task to end it after `duration`. Blocking it for the whole
+        // pulse would exceed ConformU's 1 s response target and stall an
+        // autoguider. `IsPulseGuiding` is true until the recorded deadline.
+        let on_handle = Arc::clone(&self.handle);
+        tokio::task::spawn_blocking(move || on_handle.pulse_guide_on(dir))
+            .await
+            .map_err(|e| ASCOMError::invalid_operation(format!("pulse guide task failed: {e}")))?
+            .map_err(|e| ASCOMError::invalid_operation(format!("pulse guide failed: {e}")))?;
+
+        *self.state.pulse_guide_until.lock() = Some(SystemTime::now() + duration);
+
+        let off_handle = Arc::clone(&self.handle);
+        let state = Arc::clone(&self.state);
+        tokio::spawn(async move {
+            tokio::time::sleep(duration).await;
+            match tokio::task::spawn_blocking(move || off_handle.pulse_guide_off(dir)).await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => debug!(error = %e, "ending the ST4 guide pulse failed"),
+                Err(e) => debug!(error = %e, "pulse-guide stop task failed to join"),
+            }
+            *state.pulse_guide_until.lock() = None;
+        });
+        Ok(())
     }
 }
 
@@ -1140,6 +1221,23 @@ mod tests {
     }
 
     #[test]
+    fn reports_sensor_size_aligned_for_binned_full_frames() {
+        // 6248 reduces to 6240 so 6240/{1,2,3,4} are all multiples of 8; 4176 is
+        // already aligned (4176/{1,2,3,4} are all even). This is what lets
+        // ConformU's binned full frame (NumX = CameraXSize/bin) pass geometry.
+        assert_eq!(aligned_sensor_extent(6248, &[1, 2, 3, 4], 8), 6240);
+        assert_eq!(aligned_sensor_extent(4176, &[1, 2, 3, 4], 2), 4176);
+        for bin in [1u32, 2, 3, 4] {
+            assert_eq!((6240 / bin) % 8, 0, "width / {bin} not a multiple of 8");
+            assert_eq!((4176 / bin) % 2, 0, "height / {bin} not even");
+        }
+        // Degenerate inputs are returned unchanged, never reduced to zero.
+        assert_eq!(aligned_sensor_extent(10, &[1, 2, 3, 4], 8), 10);
+        assert_eq!(aligned_sensor_extent(100, &[], 8), 100);
+        assert_eq!(aligned_sensor_extent(100, &[0], 8), 100);
+    }
+
+    #[test]
     fn to_image_array_16bit_has_width_major_axes() {
         let bytes = vec![0u8; 64 * 48 * 2];
         let array = to_image_array(&bytes, 64, 48).unwrap();
@@ -1158,7 +1256,11 @@ mod tests {
     #[tokio::test]
     async fn connect_caches_geometry_and_limits() {
         let device = connected_device(MockCameraHandle::default());
-        assert_eq!(device.camera_x_size().await.unwrap(), 6248);
+        // CameraXSize is the raw 6248 reduced to 6240 so the binned full frame
+        // (CameraXSize/bin) stays a valid ASI ROI at every bin (see
+        // `reports_sensor_size_aligned_for_binned_full_frames`); height is
+        // already aligned.
+        assert_eq!(device.camera_x_size().await.unwrap(), 6240);
         assert_eq!(device.camera_y_size().await.unwrap(), 4176);
         assert_eq!(device.max_adu().await.unwrap(), 65_535);
         assert_eq!(device.max_bin_x().await.unwrap(), 4);
@@ -1299,6 +1401,32 @@ mod tests {
             device.set_bin_x(99).await.unwrap_err().code,
             ASCOMErrorCode::INVALID_VALUE
         );
+    }
+
+    #[tokio::test]
+    async fn binned_full_frame_passes_geometry_at_high_bins() {
+        // ConformU takes the full frame at every bin via NumX = CameraXSize/bin.
+        // With the aligned reported size these are valid ASI ROIs even at the
+        // bins where the raw sensor size would not divide cleanly (this is the
+        // bug that produced the 3 ConformU StartExposure issues).
+        for bin in [2u8, 3, 4] {
+            let device = connected_device(MockCameraHandle::default());
+            let w = device.camera_x_size().await.unwrap() / u32::from(bin);
+            let h = device.camera_y_size().await.unwrap() / u32::from(bin);
+            assert_eq!(w % 8, 0);
+            assert_eq!(h % 2, 0);
+            device.set_bin_x(bin).await.unwrap();
+            device.set_start_x(0).await.unwrap();
+            device.set_start_y(0).await.unwrap();
+            device.set_num_x(w).await.unwrap();
+            device.set_num_y(h).await.unwrap();
+            device
+                .start_exposure(Duration::from_millis(10), true)
+                .await
+                .unwrap_or_else(|e| panic!("bin {bin} full frame rejected: {e:?}"));
+            wait_image_ready(&device).await;
+            assert!(device.image_ready().await.unwrap(), "bin {bin} no image");
+        }
     }
 
     #[tokio::test]
@@ -1474,6 +1602,21 @@ mod tests {
             .pulse_guide(GuideDirection::North, Duration::from_millis(1))
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn pulse_guide_is_asynchronous() {
+        // ASCOM PulseGuide returns promptly (no blocking for the pulse) and
+        // IsPulseGuiding is true until the deadline, then false (PG2).
+        let device = connected_device(MockCameraHandle::default());
+        assert!(!device.is_pulse_guiding().await.unwrap());
+        device
+            .pulse_guide(GuideDirection::North, Duration::from_millis(200))
+            .await
+            .unwrap();
+        assert!(device.is_pulse_guiding().await.unwrap());
+        tokio::time::sleep(Duration::from_millis(260)).await;
+        assert!(!device.is_pulse_guiding().await.unwrap());
     }
 
     #[tokio::test]

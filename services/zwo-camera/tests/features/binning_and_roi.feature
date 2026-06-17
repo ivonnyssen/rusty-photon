@@ -9,7 +9,8 @@ Feature: Binning and region-of-interest
   out-of-bounds sub-frame with INVALID_VALUE (R2) and a sub-frame violating
   the ASI alignment rules -- width not a multiple of 8 or height not a
   multiple of 2 -- with INVALID_VALUE (R3). The simulated ASI2600MM-Pro is
-  6248x4176.
+  6248x4176, but CameraXSize is reported as 6240 so the full frame at any
+  supported bin (CameraXSize / bin) stays a valid ASI ROI (R4).
 
   Background:
     Given the zwo-camera service running with the simulation backend
@@ -56,3 +57,15 @@ Feature: Binning and region-of-interest
       | num_x | num_y |
       | 100   | 64    |
       | 64    | 47    |
+
+  # R4: the full frame at every bin (NumX = CameraXSize/bin = 6240/bin) is a
+  # valid ASI ROI and must expose -- this is what conformance tools exercise.
+  Scenario Outline: A binned full frame is accepted at every bin
+    When I StartExposure on camera device 0 with BinX <bin> BinY <bin> NumX <num_x> NumY <num_y> StartX 0 StartY 0 Duration 0.01 Light true
+    Then the exposure on camera device 0 completes
+
+    Examples:
+      | bin | num_x | num_y |
+      | 2   | 3120  | 2088  |
+      | 3   | 2080  | 1392  |
+      | 4   | 1560  | 1044  |

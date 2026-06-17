@@ -8,7 +8,10 @@ Feature: Sensor geometry, type, and signal
   the reported Bayer pattern (ST1). ElectronsPerADU is a native value from
   ASI_CAMERA_INFO.ElecPerADU, not NOT_IMPLEMENTED (ST2). MaxADU is
   (2^BitDepth) - 1, i.e. 65535 for a 16-bit sensor (ST3). The simulated
-  ASI2600MM-Pro-Simulated camera is a 6248x4176 monochrome 16-bit sensor.
+  ASI2600MM-Pro-Simulated camera is a 6248x4176 monochrome 16-bit sensor, but
+  the reported CameraXSize is reduced to 6240 so the full frame divided by any
+  supported bin remains a valid ASI ROI (width a multiple of 8); CameraYSize
+  (4176) is already aligned.
 
   Background:
     Given the zwo-camera service running with the simulation backend
@@ -17,7 +20,7 @@ Feature: Sensor geometry, type, and signal
   Scenario: Sensor geometry reflects the simulated camera info
     Then camera device 0 reports the sensor geometry:
       | property    | value |
-      | CameraXSize | 6248  |
+      | CameraXSize | 6240  |
       | CameraYSize | 4176  |
     And camera device 0 reports a positive PixelSizeX
     And camera device 0 reports PixelSizeX equal to PixelSizeY
