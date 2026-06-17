@@ -459,6 +459,14 @@ pub(crate) mod mock {
             self
         }
 
+        /// Present a colour model with the given Bayer pattern (ST1: `SensorType`
+        /// RGGB and the `BayerOffsetX/Y` mapping, vs the mono `NOT_IMPLEMENTED`).
+        pub fn with_color(mut self, pattern: zwo_rs::BayerPattern) -> Self {
+            self.info.is_color = true;
+            self.info.bayer_pattern = pattern;
+            self
+        }
+
         pub fn set_capture_delay(&self, delay: Duration) {
             *self.capture_delay.lock() = delay;
         }

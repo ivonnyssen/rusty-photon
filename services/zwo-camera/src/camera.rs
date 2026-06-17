@@ -1273,6 +1273,112 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn connect_without_an_exposure_control_is_rejected() {
+        // The exposure control is mandatory (GO1): a camera that does not
+        // advertise it fails the post-open handshake and is left *disconnected*
+        // (C2), not opened-but-unusable.
+        let device = ZwoCamera::new(
+            Arc::new(MockCameraHandle::default().without_control(ControlType::Exposure)),
+            None,
+        );
+        assert_eq!(
+            device.set_connected(true).await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert!(!device.connected().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn roi_getters_reflect_the_connected_roi() {
+        let device = connected_device(MockCameraHandle::default());
+        // The default ROI is the aligned full frame at the origin.
+        assert_eq!(device.num_x().await.unwrap(), 6240);
+        assert_eq!(device.num_y().await.unwrap(), 4176);
+        assert_eq!(device.start_x().await.unwrap(), 0);
+        assert_eq!(device.start_y().await.unwrap(), 0);
+        // The relaxed setters round-trip through the getters (R1).
+        device.set_num_x(800).await.unwrap();
+        device.set_num_y(600).await.unwrap();
+        device.set_start_x(16).await.unwrap();
+        device.set_start_y(8).await.unwrap();
+        assert_eq!(device.num_x().await.unwrap(), 800);
+        assert_eq!(device.num_y().await.unwrap(), 600);
+        assert_eq!(device.start_x().await.unwrap(), 16);
+        assert_eq!(device.start_y().await.unwrap(), 8);
+    }
+
+    #[tokio::test]
+    async fn exposure_range_getters_reflect_the_caps() {
+        let device = connected_device(MockCameraHandle::default());
+        // From the Exposure control cap (32 µs .. 2 000 000 000 µs); the
+        // resolution is the ASI 1 µs step.
+        assert_eq!(
+            device.exposure_min().await.unwrap(),
+            Duration::from_micros(32)
+        );
+        assert_eq!(
+            device.exposure_max().await.unwrap(),
+            Duration::from_micros(2_000_000_000)
+        );
+        assert_eq!(
+            device.exposure_resolution().await.unwrap(),
+            Duration::from_micros(1)
+        );
+    }
+
+    #[tokio::test]
+    async fn cooling_round_trips_on_a_cooled_model() {
+        let device = connected_device(MockCameraHandle::default());
+        assert!(device.can_set_ccd_temperature().await.unwrap());
+        assert!(device.can_get_cooler_power().await.unwrap());
+        // Before any setpoint write, the setpoint getter reads the SDK's
+        // target-temperature control...
+        assert!((device.set_ccd_temperature().await.unwrap()).abs() < f64::EPSILON);
+        // ...and reflects the cached value after a write.
+        device.set_set_ccd_temperature(-10.0).await.unwrap();
+        assert!((device.set_ccd_temperature().await.unwrap() - (-10.0)).abs() < f64::EPSILON);
+        // The cooler toggles and drives the reported sensor temperature + power.
+        assert!(!device.cooler_on().await.unwrap());
+        device.set_cooler_on(true).await.unwrap();
+        assert!(device.cooler_on().await.unwrap());
+        assert!((device.ccd_temperature().await.unwrap() - (-10.0)).abs() < f64::EPSILON);
+        assert!(device.cooler_power().await.unwrap() > 0.0);
+    }
+
+    #[tokio::test]
+    async fn bayer_offsets_gate_on_color() {
+        // Mono: BayerOffsetX/Y are NOT_IMPLEMENTED (ST1).
+        let mono = connected_device(MockCameraHandle::default());
+        assert_eq!(mono.sensor_type().await.unwrap(), SensorType::Monochrome);
+        assert_eq!(
+            mono.bayer_offset_x().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_IMPLEMENTED
+        );
+        // Colour: the Bayer pattern maps to BayerOffsetX/Y (Gb → (0, 1)).
+        let color = connected_device(MockCameraHandle::default().with_color(BayerPattern::Gb));
+        assert_ne!(color.sensor_type().await.unwrap(), SensorType::Monochrome);
+        assert_eq!(color.bayer_offset_x().await.unwrap(), 0);
+        assert_eq!(color.bayer_offset_y().await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn pulse_guide_maps_every_direction() {
+        // Each ASCOM direction maps onto its zwo-rs counterpart (PG1).
+        let device = connected_device(MockCameraHandle::default());
+        for dir in [
+            GuideDirection::North,
+            GuideDirection::South,
+            GuideDirection::East,
+            GuideDirection::West,
+        ] {
+            device
+                .pulse_guide(dir, Duration::from_millis(1))
+                .await
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
     async fn reads_require_connection() {
         let device = ZwoCamera::new(Arc::new(MockCameraHandle::default()), None);
         assert_eq!(
