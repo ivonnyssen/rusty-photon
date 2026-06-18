@@ -280,6 +280,21 @@ first-party mockall pattern, **no `_with_mock` Bazel variant is needed** — ext
 crate_universe crates are pre-resolved to a single variant, so the dev-dep alone
 flips them.
 
+**Update (2026-06-17, ADR-009):** `qhyccd-rs` + `libqhyccd-sys` were
+[vendored first-party](vendor-qhyccd-rs.md), so qhy-camera moved to the clean
+`rp-plate-solver`-style **two-variant** build: a real `//crates/qhyccd-rs:qhyccd-rs`
+(production) and a `testonly` `:qhyccd-rs_sim` (`crate_features = ["simulation"]`),
+selected per target. The SDK variant is no longer "flipped" by the dev-dep. But the
+dev-dep is **kept with a narrower role**: crate_universe still resolves one feature
+set per crate, so the `simulation` feature's *optional* deps (`rand`/`rayon`) only
+materialize in `@cr` if the Cargo resolution reaches `qhyccd-rs/simulation` —
+dropping the dev-dep makes `:qhyccd-rs_sim` fail with `unresolved import rand`
+(verified by spike). So the dev-dep technique above remains the answer for any
+crate we **don't** vendor; vendoring just adds the real/sim split on top. (A quirk:
+because the vendored `libqhyccd-sys` path dep carries a `version` for publish,
+crate_universe still emits an *orphan* `@cr` `libqhyccd-sys` that nothing depends
+on — harmless.)
+
 ### BDD conventions under Bazel (post Phase 3)
 
 Each service's `tests/bdd.rs` is now a Bazel `rust_test` with:

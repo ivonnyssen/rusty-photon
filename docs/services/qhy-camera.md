@@ -44,22 +44,25 @@ OSes — but the SDK requirement is still the dominant design constraint. See
 This is the single most consequential fact about this service and the reason it
 is delivered in two tracks.
 
-- The imaging path is `qhy-camera → qhyccd-rs (0.1.9) → libqhyccd-sys (0.1.4,
-  git-patched — see below) →` the **proprietary QHYCCD SDK** (a closed-source
-  static lib) **+ libusb-1.0**.
+- The imaging path is `qhy-camera → qhyccd-rs (0.1.9) → libqhyccd-sys (0.1.4) →`
+  the **proprietary QHYCCD SDK** (a closed-source static lib) **+ libusb-1.0**.
+  Both `qhyccd-rs` and `libqhyccd-sys` are **vendored first-party** at
+  `crates/qhyccd-rs/` (the `libqhyccd-sys` sub-crate nested inside) per
+  [ADR-009](../decisions/009-vendor-qhyccd-rs.md) — we develop them in-tree and
+  dual-home them to crates.io.
 - `libqhyccd-sys` declares `links = "qhyccd"` and its `build.rs` emits
   `cargo:rustc-link-lib=static=qhyccd` + `dylib=usb-1.0` **unconditionally** —
   there is **no feature/cfg gate** on the link.
-- **macOS link fix (`[patch.crates-io]`):** the *published* crates.io
+- **macOS link fix (now in-tree, no patch):** the *published* crates.io
   `libqhyccd-sys 0.1.4` was cut before the macOS link fix landed — on macOS its
-  `build.rs` emits only `static=qhyccd` + `dylib=c++` and **never links
-  `libusb-1.0`**, so the workspace fails to link on macOS with
-  `Undefined symbols … _libusb_*`. The workspace `[patch.crates-io]` (root
-  `Cargo.toml`) pins `libqhyccd-sys` to the upstream **GitHub `main`** commit
-  (`d84f867…`, still crate version `0.1.4`, so it satisfies what `qhyccd-rs
-  0.1.9` requires), which adds the `/opt/homebrew/lib` search path + the
-  `dylib=usb-1.0` directive. Linux/Windows behaviour is unchanged. Drop the
-  patch once a fixed `libqhyccd-sys` is published to crates.io.
+  `build.rs` emitted only `static=qhyccd` + `dylib=c++` and **never linked
+  `libusb-1.0`**, failing with `Undefined symbols … _libusb_*`. This used to be
+  worked around with a `[patch.crates-io]` git override pinning `libqhyccd-sys`
+  to a GitHub commit. Since [ADR-009](../decisions/009-vendor-qhyccd-rs.md)
+  vendored the crate, that **patch is gone** — the fixed `build.rs` (the
+  `/opt/homebrew/lib` search path + the `dylib=usb-1.0` directive) lives in the
+  in-tree source at `crates/qhyccd-rs/libqhyccd-sys/build.rs`. Linux/Windows
+  link directives are unchanged.
 - **Consequence:** *every machine that compiles this package* — dev laptops, CI
   runners, Bazel actions — needs the QHYCCD SDK installed and discoverable, plus
   `libusb-1.0` dev headers. Not just machines with a camera attached.
@@ -87,7 +90,7 @@ does not break the SDK-less default build.
 | `cargo build --all` / local dev without SDK | The package is a normal workspace member, but **`cargo build -p qhy-camera` is expected to fail to link without the SDK**. Devs without the SDK use the rest of the workspace normally; `cargo rail`'s `merge_base=true` (affected-packages-only) means the package is only built when *its* files change. Documented in this design doc and the service README. |
 | CI | Every job that compiles qhy-camera installs the SDK via the author's published [`ivonnyssen/qhyccd-sdk-install@v2`](https://github.com/ivonnyssen/qhyccd-sdk-install) action (`version: "25.09.29"`), which provisions it on **Linux, macOS, and Windows** — exactly as the upstream `qhyccd-rs` CI does. Per-OS libusb: `libusb-1.0-0-dev` (cached apt) on Linux, `brew install libusb` on macOS, none on Windows (the WinMix SDK bundles it). `test.yml` builds + tests qhy-camera on the ubuntu / macOS / windows jobs and the windows-bdd matrix; `conformu.yml` runs its ConformU suite on all three OSes; `scheduled.yml` (nightly/beta) builds it. The SDK is publicly downloadable from qhyccd.com (no secret/auth). **Exception:** `safety.yml` (ASan/LSan) **excludes** qhy-camera (`--exclude qhy-camera`) — its proprietary static lib is built without sanitizer instrumentation and would emit unactionable leak reports. |
 | Raspberry Pi nightly runner | `scripts/setup-pi-runner.sh` installs the SDK (25.09.29) + `libusb` from qhyccd.com into `/usr/local/lib`. **aarch64 confirmed available and linking** — `qhy-camera` builds on the Pi5 arm64 nightly (the published action covers x86_64/Windows/macOS, not linux-arm64, hence the Pi-side install; the arm64 tarball name differs from `sdk_linux64_*` — set `QHY_SDK_FILE`). |
-| Bazel (shadow build) | **SDK provisioned into the shadow Bazel actions** (no `crate.annotation` needed). `bazel.yml` (3 OSes) + `bazel-coverage.yml` (Linux) install `ivonnyssen/qhyccd-sdk-install@v2` + per-OS libusb. On **Linux** `build.rs` finds the SDK at its hard-coded `/usr/local/lib` (read-only-mounted into the sandbox); on **macOS/Windows** the SDK extracts into `$GITHUB_WORKSPACE`, which `.bazelrc` forwards to build actions via `build:macos`/`build:windows --action_env=GITHUB_WORKSPACE` (`--incompatible_strict_action_env` strips it otherwise). The library, binary, unit test, **`bdd`, and `conformu_integration` are ALL first-class `//...` targets that build _and run_ under Bazel** (the `bdd` suite runs in ~16 s, matching Cargo). Getting `bdd`/`conformu` to run required making the "sim" binaries genuinely simulated: (1) the sim targets carry `crate_features = […, "simulation"]` so qhy-camera's own `#[cfg(feature = "simulation")]` paths compile (e.g. `--simulation-empty`); and (2) **`qhyccd-rs` itself must be built with its `simulation` feature** — but crate_universe resolves _one_ feature set per external crate from Cargo and ignores a target's `crate_features`, so qhy-camera declares `qhyccd-rs = { features = ["simulation"] }` as a **test-only dependency** (Cargo.toml) to make the resolver — and therefore Bazel — build the simulated SDK. Without (2), the sim binaries fell through to the real `Sdk::new()` → `InitQHYCCDResource` → USB enumeration, which **hangs on a CI runner with no QHY hardware** (the earlier "hangs even in the simulation backend" note was a misdiagnosis — the simulated `Sdk::new()` never makes that FFI call; the Bazel binary just wasn't actually simulated). `resolver = "2"` keeps the dev-dep out of `cargo build`, so the **production binary still links the real SDK**. Run `CARGO_BAZEL_REPIN=1 bazel mod tidy && bazel mod tidy` after any `Cargo.lock`/feature change (Rule 10). |
+| Bazel (shadow build) | **SDK provisioned into the shadow Bazel actions** (no `crate.annotation` needed). `bazel.yml` (3 OSes) + `bazel-coverage.yml` (Linux) install `ivonnyssen/qhyccd-sdk-install@v2` + per-OS libusb. On **Linux** `build.rs` finds the SDK at its hard-coded `/usr/local/lib` (read-only-mounted into the sandbox); on **macOS/Windows** the SDK extracts into `$GITHUB_WORKSPACE`, which `.bazelrc` forwards to build actions via `build:macos`/`build:windows --action_env=GITHUB_WORKSPACE` (`--incompatible_strict_action_env` strips it otherwise). The library, binary, unit test, **`bdd`, and `conformu_integration` are ALL first-class `//...` targets that build _and run_ under Bazel** (the `bdd` suite runs in ~16 s and the full ConformU suite in ~33 s, matching Cargo — both verified locally with 0 errors / 0 issues). **Real/sim split (ADR-009 — first-party two-variant):** since `qhyccd-rs` is now a workspace member with its own [`BUILD.bazel`](../../crates/qhyccd-rs/BUILD.bazel), the SDK variant is chosen by *which library target a rule depends on* — prod targets dep on `//crates/qhyccd-rs:qhyccd-rs` (real static SDK); the sim library/binary (both `testonly`) + `bdd`/`conformu_integration` dep on `//crates/qhyccd-rs:qhyccd-rs_sim` (the `testonly`, `simulation`-feature variant, so `Sdk::new()` fabricates a pure-Rust QHY178M and no USB is enumerated). `testonly` **build-enforces** the boundary: Bazel rejects any production binary that links the simulated SDK. The qhy-camera sim targets still carry `crate_features = […, "simulation"]` so qhy-camera's own `#[cfg(feature = "simulation")]` paths compile (e.g. `--simulation-empty`). **One retained nuance:** crate_universe resolves _one_ feature set per crate and ignores a target's `crate_features`, so the `simulation` feature's optional deps (`rand`/`rayon`) only enter `@cr` if the Cargo resolution reaches `qhyccd-rs/simulation`. qhy-camera therefore keeps a test-only `qhyccd-rs = { features = ["simulation"] }` dev-dep **solely to keep rand/rayon in `@cr`** (verified by spike: dropping it → `qhyccd-rs_sim` fails with `unresolved import rand`). `resolver = "2"` keeps that dev-dep out of `cargo build`, so the production binary links the real SDK. (Aside: crate_universe still materializes an orphan `@cr` `libqhyccd-sys` because the path dep carries a `version` for publish — nothing depends on it; `qhyccd-rs` resolves the workspace-member edge.) Run `CARGO_BAZEL_REPIN=1 bazel mod tidy && bazel mod tidy` after any `Cargo.lock`/feature change (Rule 10). |
 
 ### Resolved facts (decided)
 
@@ -557,10 +560,10 @@ driver itself).
   green.
 - **Phase 6 — consumer + Bazel finish** *(Bazel done; consumer pending)*. CI/Pi
   SDK provisioning landed. The `bdd` + `conformu_integration` Bazel targets are
-  now **first-class** (no `requires-cargo`): the sim binaries build a *simulated*
-  `qhyccd-rs` via a test-only `qhyccd-rs = { features = ["simulation"] }` dep plus
-  `simulation` in their `crate_features`, so they no longer call the real
-  `InitQHYCCDResource` (see the Gating plan's Bazel row). Still pending: the `rp`
+  now **first-class** (no `requires-cargo`): they depend on the `testonly`
+  simulated library `//crates/qhyccd-rs:qhyccd-rs_sim`, so they no longer call
+  the real `InitQHYCCDResource` (see the Gating plan's Bazel row + ADR-009's
+  first-party two-variant). Still pending: the `rp`
   `CameraConfig { alpaca_url: http://localhost:11121, device_number }` consumer.
 
 ---

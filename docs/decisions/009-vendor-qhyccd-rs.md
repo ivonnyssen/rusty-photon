@@ -2,15 +2,19 @@
 
 ## Status
 
-Accepted (2026-06-17). **Not yet implemented** — tracked by
-[`docs/plans/vendor-qhyccd-rs.md`](../plans/vendor-qhyccd-rs.md). Phase 0
-(decisions) is settled by this ADR; Phases 1–3 are the implementation.
+Accepted (2026-06-17). **Implemented** Phases 1–2 on `worktree-qhy-camera`
+(commits `81a4d42` Cargo vendoring, `0325417` Bazel two-variant); Phase 3 (docs)
+in progress; the standalone-repo archive is deferred until the first
+publish-from-subdir proves the release path. Tracked by
+[`docs/plans/vendor-qhyccd-rs.md`](../plans/vendor-qhyccd-rs.md).
 
-Supersedes the interim Bazel fix on `worktree-qhy-camera` (a test-only
-`qhyccd-rs = { features = ["simulation"] }` dev-dep + `simulation`
-`crate_features`; see
+Supersedes the **variant-selecting** role of the interim Bazel fix on
+`worktree-qhy-camera` (a test-only `qhyccd-rs = { features = ["simulation"] }`
+dev-dep + `simulation` `crate_features`; see
 [`docs/plans/bazel-migration.md`](../plans/bazel-migration.md),
-"External-crate non-default features for tests").
+"External-crate non-default features for tests"). The real/sim split is now done
+by two first-party BUILD variants; the dev-dep is **retained** only to keep
+simulation's optional deps (`rand`/`rayon`) resolved into `@cr` (Phase 2 spike).
 
 ## Context
 
@@ -86,10 +90,16 @@ any production target that accidentally links the sim variant.
 - **The `[patch.crates-io]` git override is deleted.** SDK-binding fixes are
   in-tree edits; no rev bump.
 - **Real/sim parity under Bazel:** the production `qhy-camera` Bazel binary links
-  the **real** SDK again (and compiles the real `Sdk::new()` FFI path), while BDD /
-  ConformU stay simulated. The interim `simulation` dev-dep is dropped — *unless*
-  the Phase 2 spike shows `rand`/`rayon` (simulation's optional deps) leave `@cr`
-  without it, in which case it stays with a narrowed role (dep-availability only).
+  the **real** SDK again (and compiles the real `Sdk::new()` FFI path) via
+  `//crates/qhyccd-rs:qhyccd-rs`, while BDD / ConformU use the `testonly`
+  `:qhyccd-rs_sim`. The Phase 2 spike showed `rand`/`rayon` **do** leave `@cr`
+  without the interim `simulation` dev-dep (`:qhyccd-rs_sim` then fails to compile),
+  so it is **kept with a narrowed role** — keeping simulation's optional deps in
+  `@cr`, not selecting the SDK variant.
+- **Orphan `@cr` `libqhyccd-sys`:** because the vendored path dep keeps a `version`
+  for publish, crate_universe still materializes `@cr__libqhyccd-sys-0.1.4`. It is an
+  orphan (everything resolves the workspace-member edge), so it is never fetched or
+  built — harmless dead weight, documented rather than worked around.
 - **First first-party `cargo_build_script`** in the repo. De-risked: the same
   `build.rs` already runs under Bazel via `crate_universe` today. No libclang
   needed (hand-written FFI). SDK provisioning (install action, `/usr/local/lib`,

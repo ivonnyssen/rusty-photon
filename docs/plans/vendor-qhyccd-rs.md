@@ -1,9 +1,12 @@
 # Vendor `qhyccd-rs` + `libqhyccd-sys` into the workspace
 
-**Status:** Draft (not started)
+**Status:** Phases 1 & 2 DONE (2026-06-17, `worktree-qhy-camera`); Phase 3 (docs)
+in progress; the standalone-repo archive is deferred to after the first
+publish-from-subdir.
 **Author:** drafted 2026-06-17 on `worktree-qhy-camera`
 **Depends on:** the qhy-camera Bazel simulation fix (dev-dep + `crate_features`)
-already landed on this branch — this plan supersedes that dev-dep.
+already landed on this branch — this plan supersedes the variant-flipping role of
+that dev-dep (the dev-dep itself is retained for a narrower reason; see Phase 2).
 
 ## Motivation
 
@@ -115,7 +118,7 @@ Names stay unprefixed (external-SDK bindings — per the crate-naming convention
 
 **Exit:** decisions recorded (below) + ADR-009 stub written.
 
-### Phase 1 — Vendor on the Cargo side (no Bazel yet)
+### Phase 1 — Vendor on the Cargo side (no Bazel yet) — DONE (commit 81a4d42)
 - Copy `qhyccd-rs` + `libqhyccd-sys` source into `crates/qhyccd-rs/…` (drop their
   `target/`, standalone `Cargo.lock`, and `.git` artefacts).
 - Add both to `[workspace] members`.
@@ -142,7 +145,27 @@ Names stay unprefixed (external-SDK bindings — per the crate-naming convention
 
 **Exit:** patch gone; workspace builds/tests via path deps; no behaviour change.
 
-### Phase 2 — Bazel: build scripts + two variants
+### Phase 2 — Bazel: build scripts + two variants — DONE (commit 0325417)
+
+**Outcome (2026-06-17):** implemented as designed below. Verified on Linux:
+`bazel build //...` (140 targets); the prod binary links the **real** static SDK;
+`qhy-camera_unit_test` (prod), `bdd` (sim, ~16 s, 0 USB), and the full
+`conformu_integration` (sim, ~33 s, ConformU 4.3.0 → **0 errors / 0 issues**) all
+pass; no lockfile drift. Two notes vs. the original design:
+- **rand/rayon spike → KEEP the dev-dep.** Dropping qhy-camera's
+  `qhyccd-rs = { features = ["simulation"] }` dev-dep makes `@cr` lose `rand`/`rayon`
+  and `:qhyccd-rs_sim` fails to compile (`unresolved import rand`). So the dev-dep
+  stays; its role is now *only* "keep simulation's optional deps in `@cr`" (the SDK
+  variant is chosen by the two BUILD targets, not the dev-dep). This resolves the
+  plan's one open question.
+- **Orphan `@cr` `libqhyccd-sys`.** Because the vendored path dep keeps a `version`
+  (needed for dual-home publish), crate_universe still materializes
+  `@cr__libqhyccd-sys-0.1.4`. It is an orphan — `qhyccd-rs` resolves the
+  workspace-member edge (`deps(//crates/qhyccd-rs:qhyccd-rs)` references only
+  `//crates/qhyccd-rs/libqhyccd-sys`), so nothing depends on it and it is never
+  fetched/built. Harmless dead weight; documented rather than worked around.
+
+Original design (as implemented):
 - `crates/qhyccd-rs/libqhyccd-sys/BUILD.bazel`:
   - `cargo_build_script(name = "build_script", srcs = ["build.rs"], …)` —
     rules_rust auto-provides `CARGO_CFG_TARGET_OS`/`_ARCH`; forward
@@ -189,7 +212,7 @@ Names stay unprefixed (external-SDK bindings — per the crate-naming convention
 **Exit:** real prod / sim test under Bazel; dev-dep dropped or its role
 documented.
 
-### Phase 3 — Cleanup + docs
+### Phase 3 — Cleanup + docs — IN PROGRESS
 - Update docs/services/qhy-camera.md "Native dependency & build gating": replace
   the dev-dep narrative with the first-party two-variant story; note the patch is
   gone.
@@ -246,5 +269,7 @@ Nothing here touches production release packaging (Cargo, unchanged).
    zwo-camera's native-SDK ADR on PR #369; if branch merge order flips, renumber.
 
 ## Open questions
-- **Drop the dev-dep entirely?** Resolved by the Phase 2 rand/rayon spike (keep it,
-  role-shifted, if `@cr` loses rand/rayon without it). The only genuinely-open item.
+- **Drop the dev-dep entirely?** **RESOLVED (2026-06-17): no — keep it, role-shifted.**
+  The Phase 2 spike confirmed `@cr` loses `rand`/`rayon` without it and `:qhyccd-rs_sim`
+  fails to compile. The dev-dep is retained solely to keep simulation's optional deps
+  in `@cr`; it no longer selects the SDK variant (the two BUILD targets do).
