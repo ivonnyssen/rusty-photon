@@ -15,7 +15,7 @@ use crate::ffi_util::{c_string_field, hex8};
 #[cfg(not(feature = "simulation"))]
 use crate::{asi_check, sys};
 #[cfg(not(feature = "simulation"))]
-use std::os::raw::{c_int, c_long, c_uint};
+use std::os::raw::{c_int, c_long};
 
 use crate::{AsiError, Error, Result, Sdk};
 
@@ -33,9 +33,11 @@ pub enum BayerPattern {
 }
 
 impl BayerPattern {
+    // Accept the bindgen alias (c_uint on LP64, c_int on Windows) so reading the
+    // `ASI_CAMERA_INFO.BayerPattern` field needs no platform-specific cast.
     #[cfg(not(feature = "simulation"))]
     #[must_use]
-    fn from_raw(v: u32) -> Self {
+    fn from_raw(v: sys::ASI_BAYER_PATTERN) -> Self {
         match v {
             0 => Self::Rg,
             1 => Self::Bg,
@@ -123,8 +125,12 @@ impl ControlType {
         }
     }
 
+    // Return the bindgen enum alias, not a fixed `c_uint`: bindgen types
+    // `ASI_CONTROL_TYPE` as c_uint on LP64 (Linux/macOS) but c_int on Windows
+    // (MSVC enums are `int`), so a fixed return type mismatches the FFI param on
+    // one platform. The alias is correct on both.
     #[cfg(not(feature = "simulation"))]
-    fn to_raw(self) -> c_uint {
+    fn to_raw(self) -> sys::ASI_CONTROL_TYPE {
         match self {
             Self::Gain => 0,
             Self::Exposure => 1,
@@ -134,7 +140,7 @@ impl ControlType {
             Self::CoolerPowerPerc => 15,
             Self::TargetTemp => 16,
             Self::CoolerOn => 17,
-            Self::Other(v) => v as c_uint,
+            Self::Other(v) => v as sys::ASI_CONTROL_TYPE,
         }
     }
 }
@@ -245,9 +251,11 @@ pub enum ExposureStatus {
 }
 
 impl ExposureStatus {
+    // Accept the bindgen alias (c_uint on LP64, c_int on Windows) so the
+    // `ASIGetExpStatus` out-value needs no platform-specific cast.
     #[cfg(not(feature = "simulation"))]
     #[must_use]
-    fn from_raw(v: c_uint) -> Self {
+    fn from_raw(v: sys::ASI_EXPOSURE_STATUS) -> Self {
         match v {
             0 => Self::Idle,
             1 => Self::Working,
@@ -271,8 +279,10 @@ pub enum GuideDirection {
 }
 
 impl GuideDirection {
+    // See ControlType::to_raw — `ASI_GUIDE_DIRECTION` is c_uint on LP64 but c_int
+    // on Windows; return the alias so the FFI param type matches on both.
     #[cfg(not(feature = "simulation"))]
-    fn to_raw(self) -> c_uint {
+    fn to_raw(self) -> sys::ASI_GUIDE_DIRECTION {
         match self {
             Self::North => 0,
             Self::South => 1,
