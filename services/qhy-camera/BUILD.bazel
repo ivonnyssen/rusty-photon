@@ -11,22 +11,27 @@ exports_files(["Cargo.toml"], visibility = ["//visibility:public"])
 # workspace-extracted SDK). The library, binary, unit test, BDD, and ConformU
 # suites are ALL first-class `//...` targets — they build and run under Bazel.
 #
-# The `_sim` library/binary and the bdd/conformu tests carry `crate_features`
-# including "simulation" so the simulated `Sdk::new()` (a pure-Rust QHY178M, no
-# FFI) is used. Critically, simulation must ALSO be enabled on the `qhyccd-rs`
-# DEPENDENCY: crate_universe resolves one feature set per external crate from
-# Cargo and ignores a target's `crate_features`, so qhy-camera declares
-# `qhyccd-rs = { features = ["simulation"] }` as a dev-dep (Cargo.toml) to make
-# the resolver build the simulated SDK. Without that, these binaries would call
-# the real `InitQHYCCDResource` and enumerate USB — which hangs on a CI runner
-# with no QHY hardware. See docs/services/qhy-camera.md "Native dependency &
-# build gating".
+# The prod library/binary/unit-test link the REAL SDK via the first-party
+# //crates/qhyccd-rs:qhyccd-rs library; the `_sim` library/binary and the
+# bdd/conformu tests link //crates/qhyccd-rs:qhyccd-rs_sim (the `testonly`
+# `simulation`-feature variant) so the simulated `Sdk::new()` (a pure-Rust
+# QHY178M, no FFI) is used and no USB is enumerated on a hardware-less CI
+# runner. Since qhyccd-rs is now a workspace member with its own real/sim
+# two-variant BUILD (ADR-009), the variant is selected by which target each
+# rule depends on — not by a crate_universe feature nudge. See
+# docs/services/qhy-camera.md "Native dependency & build gating".
 
 _INTRA_WORKSPACE_DEPS = [
     "//crates/rusty-photon-config:rusty-photon-config",
     "//crates/rusty-photon-driver:rusty-photon-driver",
     "//crates/rusty-photon-service-lifecycle:rusty-photon-service-lifecycle",
 ]
+
+# The real-SDK qhyccd-rs library (prod targets) and its simulated counterpart
+# (BDD / ConformU targets).
+_QHYCCD_REAL = "//crates/qhyccd-rs:qhyccd-rs"
+
+_QHYCCD_SIM = "//crates/qhyccd-rs:qhyccd-rs_sim"
 
 rust_library(
     name = "qhy-camera_lib",
@@ -36,7 +41,7 @@ rust_library(
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = ["//visibility:public"],
-    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+    deps = [_QHYCCD_REAL] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
 
 rust_binary(
@@ -46,7 +51,7 @@ rust_binary(
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = ["//visibility:public"],
-    deps = [":qhy-camera_lib"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+    deps = [":qhy-camera_lib", _QHYCCD_REAL] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
 
 rust_test(
@@ -61,7 +66,7 @@ rust_test(
         proc_macro = True,
         proc_macro_dev = True,
     ),
-    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(
+    deps = [_QHYCCD_REAL] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
         normal = True,
         normal_dev = True,
     ),
@@ -79,7 +84,10 @@ rust_library(
     crate_name = "qhy_camera",
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
-    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+    # Test-only: links the `testonly` qhyccd-rs_sim (simulated SDK). Bazel
+    # therefore forbids any production target from depending on it.
+    testonly = True,
+    deps = [_QHYCCD_SIM] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
 
 rust_binary(
@@ -92,7 +100,8 @@ rust_binary(
     ],
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
-    deps = [":qhy-camera_lib_sim"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+    testonly = True,
+    deps = [":qhy-camera_lib_sim", _QHYCCD_SIM] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
 
 rust_test(
@@ -122,6 +131,7 @@ rust_test(
     tags = ["conformu"],
     deps = [
         ":qhy-camera_lib_sim",
+        _QHYCCD_SIM,
         "//crates/bdd-infra:bdd-infra_conformu",
     ] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
         normal = True,
@@ -157,7 +167,7 @@ rust_test(
     rustc_env = {"CARGO_PKG_NAME": "qhy-camera"},
     tags = ["bdd"],
     use_libtest_harness = False,
-    deps = [":qhy-camera_lib_sim", "//crates/bdd-infra:bdd-infra"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
+    deps = [":qhy-camera_lib_sim", _QHYCCD_SIM, "//crates/bdd-infra:bdd-infra"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
         normal = True,
         normal_dev = True,
     ),

@@ -59,17 +59,19 @@ tokio-test = { workspace = true }
 # StartExposure with a negative Duration (rejected by the server before the
 # typed client can carry it — `std::time::Duration` is unsigned).
 reqwest = { workspace = true }
-# Bazel-only resolution nudge. crate_universe (`from_cargo`) resolves a SINGLE
-# feature set for `qhyccd-rs` from this manifest — it does NOT honour a Bazel
-# target's `crate_features`. Our `mock`/`simulation` features are non-default, so
-# without this the resolver builds `qhyccd-rs` WITHOUT `simulation`, and the Bazel
-# BDD/conformu "sim" binaries fall through to the real `Sdk::new()` →
-# `InitQHYCCDResource` → USB enumeration (hangs on CI runners with no QHY camera;
-# the simulated `Sdk::new()` never makes that FFI call). Declaring the simulation
-# feature as a test-only dep makes the Cargo resolution — and therefore Bazel —
-# build the simulated SDK. resolver = "2" keeps this out of the release binary
-# (`cargo build` ignores dev-deps), so production still links the real SDK. See
-# docs/services/qhy-camera.md "Native dependency & build gating".
+# Bazel-only resolution nudge — keeps `simulation`'s OPTIONAL deps (rand, rayon)
+# materialized in the `@cr` crate_universe repo. Since ADR-009 vendored qhyccd-rs
+# first-party, the real/sim SDK split is done by depending on the two BUILD
+# variants (`//crates/qhyccd-rs:qhyccd-rs` vs `:qhyccd-rs_sim`), NOT by this
+# dev-dep. But crate_universe (`from_cargo`) still resolves ONE feature set per
+# crate and ignores a Bazel target's `crate_features`: `qhyccd-rs/simulation` is
+# non-default, so without something enabling it in the Cargo resolution, `rand`/
+# `rayon` never enter `@cr` and `qhyccd-rs_sim` fails to compile (`unresolved
+# import rand`). This dev-dep is that "something". resolver = "2" keeps it out of
+# the release binary (`cargo build` ignores dev-deps) so production links the
+# real SDK. (Verified by spike 2026-06-17: dropping it → rand/rayon leave `@cr` →
+# sim build breaks.) See docs/services/qhy-camera.md "Native dependency & build
+# gating".
 qhyccd-rs = { workspace = true, features = ["simulation"] }
 
 [[test]]

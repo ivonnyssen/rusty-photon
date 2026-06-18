@@ -1,0 +1,33 @@
+load("@rules_rust//cargo:defs.bzl", "cargo_build_script")
+load("@rules_rust//rust:defs.bzl", "rust_library")
+
+exports_files(["Cargo.toml"], visibility = ["//visibility:public"])
+
+# Hand-written QHYCCD SDK FFI bindings (no bindgen — `lib.rs` is a hand-written
+# `extern "C"` block). First first-party `cargo_build_script` in the workspace.
+#
+# `build.rs` emits the per-OS native link directives (Linux: search
+# /usr/local/lib + static=qhyccd + dylib=usb-1.0 + dylib=stdc++; macOS adds the
+# Homebrew/`$GITHUB_WORKSPACE` search paths + dylib=c++ + dylib=usb-1.0; Windows
+# searches `$GITHUB_WORKSPACE/pkg_win`). The SDK itself is PROVISIONED into the
+# Bazel build actions (see services/qhy-camera/BUILD.bazel + .bazelrc, which
+# forward GITHUB_WORKSPACE on macOS/Windows); on Linux build.rs finds it at
+# /usr/local/lib. `links = "qhyccd"` lets Bazel coordinate the native link the
+# same way the Cargo `links` key does.
+cargo_build_script(
+    name = "build_script",
+    srcs = ["build.rs"],
+    edition = "2021",
+    links = "qhyccd",
+    visibility = ["//visibility:private"],
+)
+
+rust_library(
+    name = "libqhyccd-sys",
+    srcs = ["lib.rs"],
+    crate_name = "libqhyccd_sys",
+    crate_root = "lib.rs",
+    edition = "2021",
+    visibility = ["//visibility:public"],
+    deps = [":build_script"],
+)

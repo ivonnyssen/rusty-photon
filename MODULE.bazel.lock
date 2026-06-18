@@ -518,7 +518,7 @@
           "FILE:@@//services/pa-falcon-rotator/Cargo.toml ccf865e949975bfca6434b28a61591d20b188e968be015191a2539084f83c1df",
           "FILE:@@//services/phd2-guider/Cargo.toml b1dcd452e5ffb793caafdca6c2d5cc85cc552877af0814e1a01aafeb854ee6e8",
           "FILE:@@//services/ppba-driver/Cargo.toml fe74dc8954a136613cff7f14b8b03013ffd537d4497a285c14997140130f99b3",
-          "FILE:@@//services/qhy-camera/Cargo.toml ce2bbff17b07d444d6638aedb1d672a89428cc226c785d9c3e54b85e34ff5da7",
+          "FILE:@@//services/qhy-camera/Cargo.toml 8d917203ca9b7ea827d5bfd47185230450de4bee7f0c68fcb1bbbb1db5e77a35",
           "FILE:@@//services/qhy-focuser/Cargo.toml fc23375fef74f04afcb857da28338437312e6b40bc8cc3f5f75d398ec2e2af55",
           "FILE:@@//services/calibrator-flats/Cargo.toml 54de4e36e277e9598276c361a85e4502fbc7e78c50337919bb7feefd42a8dc94",
           "FILE:@@//services/dsd-fp2/Cargo.toml e67c0b8d3d3cc5ecd7c1919c14874755d9c6909767fc012871b42a2d2753daa2",
