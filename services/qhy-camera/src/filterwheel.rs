@@ -119,7 +119,10 @@ impl Device for QhyFilterWheelDevice {
     }
 
     async fn set_connected(&self, connected: bool) -> ASCOMResult<()> {
-        let current = self.handle.is_open().unwrap_or(false);
+        let current = self
+            .handle
+            .is_open()
+            .map_err(|_| ASCOMError::NOT_CONNECTED)?;
         if current == connected {
             return Ok(());
         }

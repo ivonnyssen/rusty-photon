@@ -8,8 +8,8 @@
 //!
 //! **Native dependency:** `qhyccd-rs → libqhyccd-sys` links the proprietary QHYCCD
 //! SDK (`static=qhyccd`) + `libusb-1.0`, so this package does not build without
-//! the SDK installed. The `simulation` feature makes the backend camera-free
-//! (`Sdk::new()` fabricates a QHY178M-Simulated) but still links the SDK.
+//! the SDK installed. The `simulation` feature makes the backend hardware-free
+//! (`Sdk::new()` fabricates a QHY178M-Simulated camera) but still links the SDK.
 
 pub mod backend;
 pub mod camera;

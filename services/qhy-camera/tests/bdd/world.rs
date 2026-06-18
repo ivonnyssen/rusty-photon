@@ -275,9 +275,14 @@ async fn raw_start_exposure(base_url: &str, device: u32, duration_secs: f64, lig
             let json: serde_json::Value = serde_json::from_str(&body).unwrap_or_else(|e| {
                 panic!("startexposure response was not valid JSON (status {status}): {e}; body: {body}")
             });
-            json["ErrorNumber"].as_u64().unwrap_or_else(|| {
+            let error_number = json["ErrorNumber"].as_u64().unwrap_or_else(|| {
                 panic!("startexposure response missing ErrorNumber (status {status}): {json}")
-            }) as u16
+            });
+            // Fail loudly on an out-of-range code rather than silently truncating
+            // with `as u16` — this helper exists to make BDD failures actionable.
+            u16::try_from(error_number).unwrap_or_else(|_| {
+                panic!("startexposure ErrorNumber {error_number} exceeds u16 (status {status}): {json}")
+            })
         }
         Err(e) => panic!("raw startexposure request failed: {e}"),
     }

@@ -12,8 +12,9 @@ description = "ASCOM Alpaca Camera (+ FilterWheel) driver for QHYCCD hardware"
 default = []
 # `simulation` forwards qhyccd-rs's simulation backend so `Sdk::new()` yields a
 # QHY178M-Simulated camera + 7-position CFW instead of scanning USB. It is
-# camera-free but NOT SDK-free — the static `qhyccd` lib is still required at
-# link time (see docs/services/qhy-camera.md "Native dependency & build gating").
+# hardware-free (no physical camera/USB) but NOT SDK-free — the static `qhyccd`
+# lib is still required at link time (see docs/services/qhy-camera.md "Native
+# dependency & build gating").
 simulation = ["qhyccd-rs/simulation"]
 # `mock` is the project-wide convention name BDD/CI build with (`--features mock`
 # / `--all-features`); for this SDK-backed service it is just an alias that
