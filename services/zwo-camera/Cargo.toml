@@ -47,13 +47,14 @@ parking_lot = { workspace = true }
 command = "cargo test -p zwo-camera --features conformu --test conformu_integration -- --nocapture"
 
 [dev-dependencies]
-# Build `zwo-rs` with its `simulation` feature for tests. Cargo's resolver v2
-# keeps this out of the production `cargo build` (which still links the real
-# SDK), but it makes Bazel's `crate_universe` — which resolves ONE feature set
-# per external crate and ignores a target's `crate_features` — build zwo-rs with
-# `simulation`. That gives the Bazel sim unit tests a simulated camera, and
-# cfg's out the real-SDK FFI paths (whose bindgen `c_long`/`c_int` widths differ
-# under Bazel's Windows toolchain). Mirrors the qhy-camera Bazel pattern.
+# zwo-rs is now a first-party member with explicit Bazel real
+# (`//crates/zwo-rs:zwo-rs`) and simulation (`:zwo-rs_sim`) variants, so this
+# dev-dep no longer flips a single `@cr` variant. Its remaining (narrowed) role:
+# `crate_universe` only resolves an optional dep into `@cr` if some member enables
+# the gating feature, so this keeps `zwo-rs/simulation`'s optional deps (rand,
+# rayon) present in `@cr` — which the `:zwo-rs_sim` target pulls via
+# `all_crate_deps`. Resolver v2 still keeps it out of the production `cargo build`.
+# See docs/plans/vendor-zwo-rs.md (Phase 2 spike).
 zwo-rs = { workspace = true, features = ["simulation"] }
 tracing-subscriber = { workspace = true }
 bdd-infra = { workspace = true, features = ["conformu"] }

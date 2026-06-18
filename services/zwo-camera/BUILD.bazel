@@ -40,7 +40,9 @@ rust_library(
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = ["//visibility:public"],
-    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+    # zwo-rs is first-party (crates/zwo-rs), so it is NOT an `@cr` crate and must
+    # be named explicitly. The production lib links the REAL SDK variant.
+    deps = _INTRA_WORKSPACE_DEPS + ["//crates/zwo-rs:zwo-rs"] + all_crate_deps(normal = True),
 )
 
 rust_binary(
@@ -56,9 +58,12 @@ rust_binary(
     deps = [":zwo-camera_lib"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
 
-# Unit tests compile the lib with `crate_features = ["simulation"]` so the
+# Unit tests run against the simulation lib (mock → simulation) so the
 # `#[cfg(all(test, feature = "simulation"))]` end-to-end build/bind tests compile
-# and run, matching the Cargo `--all-features` coverage job.
+# and run, matching the Cargo `--all-features` coverage job. The test inherits
+# the sim lib's `crate_features` and deps — crucially `//crates/zwo-rs:zwo-rs_sim`,
+# the simulated FFI variant the sim code paths require — rather than the real
+# variant the production lib links.
 rust_test(
     name = "zwo-camera_unit_test",
     size = "small",
@@ -66,8 +71,7 @@ rust_test(
         normal_dev = True,
         proc_macro_dev = True,
     ),
-    crate = ":zwo-camera_lib",
-    crate_features = ["simulation"],
+    crate = ":zwo-camera_lib_sim",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,
@@ -88,7 +92,13 @@ rust_library(
     crate_name = "zwo_camera",
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
-    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+    # `testonly` because it links the `testonly` `:zwo-rs_sim` variant; Bazel
+    # propagates the constraint, which is exactly right — the sim lib is only ever
+    # built by the unit-test / BDD / ConformU targets.
+    testonly = True,
+    # The simulation lib links the SIM SDK variant; the binary, BDD, ConformU, and
+    # unit-test targets that build on it inherit it transitively.
+    deps = _INTRA_WORKSPACE_DEPS + ["//crates/zwo-rs:zwo-rs_sim"] + all_crate_deps(normal = True),
 )
 
 rust_binary(
@@ -99,6 +109,9 @@ rust_binary(
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     rustc_env = {"CARGO_PKG_NAME": "zwo-camera"},
+    # Spawned only as test `data` by the BDD / ConformU suites; `testonly`
+    # follows from linking the sim lib.
+    testonly = True,
     deps = [":zwo-camera_lib_sim"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
 
