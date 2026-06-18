@@ -2123,7 +2123,6 @@ checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
 [[package]]
 name = "libqhyccd-sys"
 version = "0.1.4"
-source = "git+https://github.com/ivonnyssen/qhyccd-rs?rev=d84f86732686be253dc59086c061e9d4d4c75ec1#d84f86732686be253dc59086c061e9d4d4c75ec1"
 
 [[package]]
 name = "libredox"
@@ -3087,14 +3086,13 @@ dependencies = [
 [[package]]
 name = "qhyccd-rs"
 version = "0.1.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bbd707f620d5a1a4e00f05210c09ace3cc076c809025c89eda46ddae25180ec3"
 dependencies = [
  "educe",
  "enum-ordinalize-derive",
  "eyre",
  "lazy_static",
  "libqhyccd-sys",
+ "mockall",
  "rand 0.9.4",
  "rayon",
  "thiserror 2.0.18",
