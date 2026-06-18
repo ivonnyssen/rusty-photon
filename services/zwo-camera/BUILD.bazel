@@ -23,11 +23,17 @@ exports_files(
 # forward `LIBCLANG_PATH` / `ZWO_SDK_LIB_DIR` to the build-script action via
 # `.bazelrc` (Linux finds both on the default paths).
 #
-# `_CARGO_ONLY` (= `requires-cargo`) stays on the two suites that SPAWN the
-# service binary and bind a port at test time (bdd, conformu_integration):
-# following the qhy-camera precedent they BUILD under `bazel build //...` (to
-# catch compile/link breaks) but RUN under Cargo only.
-_CARGO_ONLY = ["requires-cargo"]
+# The BDD + ConformU suites RUN under Bazel (no `requires-cargo`): `bdd` via the
+# `bazel.yml` BDD step (`--test_tag_filters=bdd,-requires-cargo`) spawning the sim
+# binary like every other service, and `conformu_integration` via
+# `bazel test --config=conformu` (CI runs ConformU through the Cargo `conformu.yml`,
+# matching the other services). Only `//crates/bdd-infra:bdd-infra_unit_test`
+# stays `requires-cargo` — it genuinely exercises Cargo itself.
+#
+# NOTE on features: Bazel `crate_features` is LITERAL — it does NOT expand Cargo's
+# `mock = ["simulation"]`. zwo-camera gates its sim backend on
+# `feature = "simulation"`, so every sim target must list `simulation` explicitly
+# (listing `mock` too keeps parity with `cargo --features mock`).
 
 _INTRA_WORKSPACE_DEPS = [
     "//crates/rusty-photon-config:rusty-photon-config",
@@ -78,6 +84,17 @@ rust_test(
         proc_macro_dev = True,
     ),
     crate = ":zwo-camera_lib_sim",
+    # Set explicitly for TWO reasons: (1) rust_test does NOT inherit
+    # `crate_features` from the `crate` it wraps; (2) Bazel `crate_features` is
+    # literal — it does NOT expand Cargo's `mock = ["simulation"]`, so
+    # `simulation` must be listed alongside `mock` for the
+    # `#[cfg(feature = "simulation")]` tests to compile. `conformu` matches the
+    # Cargo `--all-features` lib set.
+    crate_features = [
+        "mock",
+        "simulation",
+        "conformu",
+    ],
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,
@@ -101,7 +118,10 @@ rust_library(
         exclude = ["src/main.rs"],
     ),
     aliases = aliases(),
-    crate_features = ["mock"],
+    crate_features = [
+        "mock",
+        "simulation",
+    ],
     crate_name = "zwo_camera",
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
@@ -117,7 +137,10 @@ rust_binary(
     testonly = True,
     srcs = ["src/main.rs"],
     aliases = aliases(),
-    crate_features = ["mock"],
+    crate_features = [
+        "mock",
+        "simulation",
+    ],
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     rustc_env = {"CARGO_PKG_NAME": "zwo-camera"},
@@ -134,6 +157,7 @@ rust_test(
     ),
     crate_features = [
         "mock",
+        "simulation",
         "conformu",
     ],
     data = [":zwo-camera_sim"],
@@ -147,7 +171,7 @@ rust_test(
         proc_macro_dev = True,
     ),
     rustc_env = {"CARGO_PKG_NAME": "zwo-camera"},
-    tags = _CARGO_ONLY + ["conformu"],
+    tags = ["conformu"],
     deps = [
         ":zwo-camera_lib_sim",
         "//crates/bdd-infra:bdd-infra_conformu",
@@ -183,7 +207,7 @@ rust_test(
     # bdd-infra derives {PKG_UPPER_SNAKE}_BINARY from CARGO_PKG_NAME; it must be
     # the service name, not the crate name ("bdd").
     rustc_env = {"CARGO_PKG_NAME": "zwo-camera"},
-    tags = _CARGO_ONLY + ["bdd"],
+    tags = ["bdd"],
     use_libtest_harness = False,
     deps = [
         ":zwo-camera_lib_sim",

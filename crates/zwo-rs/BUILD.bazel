@@ -1,5 +1,5 @@
-load("@cr//:defs.bzl", "all_crate_deps")
-load("@rules_rust//rust:defs.bzl", "rust_library")
+load("@cr//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 exports_files(
     ["Cargo.toml"],
@@ -42,4 +42,31 @@ rust_library(
     edition = "2021",
     visibility = ["//visibility:public"],
     deps = [_LIBZWO_SYS] + all_crate_deps(normal = True),
+)
+
+# The crate's own unit tests, run under Bazel against the sim variant (the
+# `#[cfg(feature = "simulation")]` camera/EFW tests need it; the un-gated tests —
+# error mapping, SDK version — run regardless). Mirrors
+# `crates/rp-plate-solver:rp-plate-solver_unit_test` building on the `_with_mock`
+# variant. `mockall` arrives via the dev-deps.
+rust_test(
+    name = "zwo-rs_unit_test",
+    size = "small",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate = ":zwo-rs_sim",
+    # Set explicitly: rust_test does NOT inherit `crate_features` from the `crate`
+    # it wraps, so without this the `#[cfg(feature = "simulation")]` tests (the
+    # bulk — camera/EFW behaviour) compile out and only the un-gated handful run.
+    crate_features = ["simulation"],
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
 )
