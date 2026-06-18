@@ -5,7 +5,7 @@ use crate::Control;
 #[derive(Error, Debug)]
 /// Errors that can occur when interacting with the QHYCCD SDK
 /// most functions from the SDK return `u32::MAX` on error
-/// where it is different, is is noted in the documentation
+/// where it is different, it is noted in the documentation
 #[allow(missing_docs)]
 pub enum QHYError {
     #[error("Error initializing QHYCCD SDK, error code {}", error_code)]
