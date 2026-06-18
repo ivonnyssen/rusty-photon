@@ -7,7 +7,9 @@ links = "qhyccd"
 repository = "https://github.com/ivonnyssen/qhyccd-rs"
 license = "MIT OR Apache-2.0"
 description = "Rust bindings for QHY CCD SDK"
-rust-version = "1.68.0" # for proc-macro2 v1.0.104
+# Inherits the workspace MSRV (1.94.1) — see the note in ../Cargo.toml. Flattens
+# to the concrete version on `cargo publish`.
+rust-version.workspace = true
 exclude = ["qhyccd-sdk/*"]
 
 [lib]

@@ -204,6 +204,18 @@ jobs:
         uses: ivonnyssen/qhyccd-sdk-install@v2
         with:
           version: "25.09.29"
+      # The macOS SDK ships libqhyccd as a dylib extracted under $GITHUB_WORKSPACE;
+      # the SDK-linked test binaries (qhy-camera, plus the qhyccd-rs/libqhyccd-sys
+      # workspace members since ADR-009) load it via @rpath, which dyld can't
+      # resolve from that non-standard dir at test runtime. Point the fallback
+      # loader path at it (+ Homebrew for libusb). Linux links static=qhyccd, so
+      # this is macOS-only.
+      - name: Help the loader find the QHYCCD dylib (macOS)
+        if: needs.plan.outputs.infra == 'true' || needs.plan.outputs.cargo-args == '' || contains(needs.plan.outputs.cargo-args, 'qhy-camera')
+        run: |
+          DYLIB="$(find "$GITHUB_WORKSPACE" /usr/local/lib /opt/homebrew/lib -name 'libqhyccd*.dylib' -print -quit 2>/dev/null || true)"
+          if [ -z "$DYLIB" ]; then echo "::error::libqhyccd dylib not found after SDK install"; exit 1; fi
+          echo "DYLD_FALLBACK_LIBRARY_PATH=$(dirname "$DYLIB"):/opt/homebrew/lib:/usr/local/lib:/usr/lib" >> "$GITHUB_ENV"
       - name: Install stable
         uses: dtolnay/rust-toolchain@stable
       - name: Install cargo-nextest

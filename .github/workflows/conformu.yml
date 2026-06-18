@@ -121,6 +121,15 @@ jobs:
         uses: ivonnyssen/qhyccd-sdk-install@v2
         with:
           version: "25.09.29"
+      # On macOS the SDK-linked binaries load libqhyccd's dylib via @rpath from a
+      # non-standard $GITHUB_WORKSPACE dir; point the fallback loader path at it so
+      # ConformU can launch the qhy-camera binary. Linux links static=qhyccd.
+      - name: Help the loader find the QHYCCD dylib (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          DYLIB="$(find "$GITHUB_WORKSPACE" /usr/local/lib /opt/homebrew/lib -name 'libqhyccd*.dylib' -print -quit 2>/dev/null || true)"
+          if [ -z "$DYLIB" ]; then echo "::error::libqhyccd dylib not found after SDK install"; exit 1; fi
+          echo "DYLD_FALLBACK_LIBRARY_PATH=$(dirname "$DYLIB"):/opt/homebrew/lib:/usr/local/lib:/usr/lib" >> "$GITHUB_ENV"
 
       - name: Pre-build workspace
         run: cargo build --locked --workspace --all-features --all-targets
