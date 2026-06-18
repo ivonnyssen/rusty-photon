@@ -328,8 +328,12 @@ bazel coverage --config=coverage //...
 ```
 
 It mirrors the Cargo `coverage` job (nightly + `coverage_nightly`, so the
-`#[cfg(test)] mod tests` blocks stay out of the numbers) but uploads under
-distinct `bazel-<pkg>` Codecov flags. It **includes the BDD suite**
+`#[cfg(test)] mod tests` blocks stay out of the numbers — as do the
+feature-gated `mock` transport/client modules, which carry a module-level
+`#![cfg_attr(coverage_nightly, coverage(off))]` because they never ship in a
+production binary and counting them would inflate the coverage figure with
+code that never runs at the telescope) but uploads under distinct
+`bazel-<pkg>` Codecov flags. It **includes the BDD suite**
 (`--config=coverage` drops only the `requires-cargo` tag), so locally it needs
 OmniSim installed and `OMNISIM_PATH` set, the same as a
 `bazel test --test_tag_filters=bdd` run. Whether the BDD-spawned service

@@ -15,8 +15,12 @@
 // `pub mod mock` in lib.rs is `#[cfg(feature = "mock")]`-gated, so this
 // module is test-helper infrastructure that never ships in production
 // builds. Treat it like the BDD harness code rather than production
-// source for the workspace's panic-deny lints.
+// source for both the workspace's panic-deny lints AND coverage: the
+// coverage number must reflect only production-shipped code, so counting
+// these never-shipped helpers would inflate it with lines that never run
+// at the telescope.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+#![cfg_attr(coverage_nightly, coverage(off))]
 
 use crate::survey::{SurveyClient, SurveyError, SurveyRequest};
 
@@ -168,7 +172,6 @@ fn build_synthetic_fits(width: u32, height: u32, wcs: Option<WcsHeader>) -> Vec<
 }
 
 #[cfg(test)]
-#[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;

@@ -1,7 +1,18 @@
 # Phase 2 §2.2 + §2.3 — Predictive park & move_focuser deadlines (implementation plan)
 
+**Status: COMPLETE (archived 2026-06-14).** Delivered in PR #352. The
+`FocuserStepsPerSec` config newtype, `compute_park_deadline` /
+`compute_focuser_deadline`, the `deadline` parameters threaded through the
+two inner poll helpers, and the `park_started` / `move_focuser_started`
+deadline stamps all shipped to `main` and are verified there
+(`services/rp/src/config/focuser.rs`, `services/rp/src/mcp/internals.rs`).
+Park keeps its no-auto-abort contract; the hardcoded 300 s / 120 s ceilings
+are gone (now the named `PARK_DEADLINE_FALLBACK` / `FOCUSER_DEADLINE_FALLBACK`).
+Parent plan (still active):
+[`predictive-deadlines-and-watchdog.md`](../predictive-deadlines-and-watchdog.md).
+
 Execution plan for **§2.2 (park)** and **§2.3 (move_focuser)** of
-[`predictive-deadlines-and-watchdog.md`](predictive-deadlines-and-watchdog.md):
+[`predictive-deadlines-and-watchdog.md`](../predictive-deadlines-and-watchdog.md):
 replace the two remaining hardcoded blocking-poll ceilings — `park`'s 300 s
 and `move_focuser`'s 120 s — with deadlines sized per call, and populate the
 `predicted_duration_ms` / `max_duration_ms` envelope fields that Phase 1

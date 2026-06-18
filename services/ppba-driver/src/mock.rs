@@ -6,6 +6,13 @@
 //! prior writes (matches the behaviour of real hardware that doesn't
 //! lose its settings when an ASCOM client cycles `Connected`).
 
+// `#[cfg(any(feature = "mock", test))]`-gated test-helper infrastructure
+// that never ships in production builds. Excluded from coverage so the
+// workspace coverage number reflects only production-shipped code —
+// counting these never-shipped mock lines would produce false coverage
+// figures.
+#![cfg_attr(coverage_nightly, coverage(off))]
+
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
@@ -207,7 +214,6 @@ impl TransportFactory for MockPpbaTransportFactory {
 }
 
 #[cfg(test)]
-#[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;

@@ -5,3 +5,4 @@ pub mod dashboard_steps;
 pub mod lifecycle_steps;
 pub mod monitoring_steps;
 pub mod tls_steps;
+pub mod watchdog_steps;

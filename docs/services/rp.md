@@ -409,7 +409,7 @@ and absent optional fields are omitted from the JSON.
 | `timestamp` | ISO-8601 emission time. Unchanged historical format. |
 | `started_at` / `ended_at` | RFC-3339 (millisecond) operation start / end. `started_at` is on the `*_started`/`*_complete`/`*_failed` triple; `ended_at` only on `*_complete`/`*_failed`. |
 | `elapsed_ms` | Wall-clock operation duration, on `*_complete`/`*_failed`. |
-| `predicted_duration_ms` / `max_duration_ms` | The operation's expected duration and hard-ceiling deadline, in integer milliseconds (a boundary serialization of an internal `Duration`). Populated (Phase 2) on: `slew_started` — `predicted = great-circle distance / mount.slew_rate_arcsec_per_sec + settle`, `max = max(predicted × 3, MIN_SLEW_DEADLINE = 30 s)`; `park_started` — `predicted = 180° / mount.slew_rate_arcsec_per_sec + settle` (worst-case traverse; rp can't read the park position via Alpaca), `max = max(predicted × 2, MIN_PARK_DEADLINE = 60 s)`; `move_focuser_started` — `predicted = \|target − current\| / focuser.steps_per_sec`, `max = max(predicted × 2, MIN_FOCUSER_DEADLINE = 5 s)`. Omitted for operations not yet converted to predictive deadlines. |
+| `predicted_duration_ms` / `max_duration_ms` | The operation's expected duration and hard-ceiling deadline, in integer milliseconds (a boundary serialization of an internal `Duration`). Populated (Phase 2) on: `slew_started` — `predicted = great-circle distance / mount.slew_rate_arcsec_per_sec + settle`, `max = max(predicted × 3, MIN_SLEW_DEADLINE = 30 s)`; `park_started` — `predicted = 180° / mount.slew_rate_arcsec_per_sec + settle` (worst-case traverse; rp can't read the park position via Alpaca), `max = max(predicted × 2, MIN_PARK_DEADLINE = 60 s)`; `move_focuser_started` — `predicted = \|target − current\| / focuser.steps_per_sec`, `max = max(predicted × 2, MIN_FOCUSER_DEADLINE = 5 s)`; `exposure_started` — `predicted = duration + camera.readout_time_estimate` (default 15 s when unset), `max = predicted + 30 s` readout headroom (advisory only — rp does not enforce it; the camera driver owns the exposure, and rp keeps a separate, more generous internal readout backstop); `centering_started` — outer-loop only (advisory; per-iteration slews/captures carry their own deadlines): `per_iter = duration + centering.solve_time_estimate (default 30 s) + centering.slew_overhead_estimate (default 10 s)`, `predicted = per_iter` (single-pass convergence), `max = max_attempts × per_iter`. Omitted for operations not yet converted to predictive deadlines. |
 | `payload` | Operation detail. For `*_started`, the inputs; for `*_complete`/`*_failed`, the outcome (or `{"error": "..."}` on failure). |
 
 A blocking operation emits a **triple** — a `*_started` envelope at the
@@ -737,7 +737,7 @@ the exact parameter types and return structure.
 
 | Action | Parameters | Returns | Description |
 |--------|-----------|---------|-------------|
-| `capture` | camera_id, duration, binning | image_path, document_id | Take an exposure, download `image_array`, save FITS file, create exposure document |
+| `capture` | camera_id, duration, binning | image_path, document_id | Take an exposure, download `image_array`, save FITS file, create exposure document. Carries an **advisory predicted deadline** on `exposure_started`: `predicted = duration + camera.readout_time_estimate` (default 15 s when unset), `max = predicted + 30 s` readout headroom. rp does **not** enforce this (the camera driver owns the exposure); it rides the envelope as `predicted_duration_ms`/`max_duration_ms` for the Sentinel watchdog. rp's own readout backstop (a separate, more generous `duration + 120 s` ceiling) is unchanged |
 | `get_camera_info` | camera_id | max_adu, exposure_min, exposure_max, sensor_x, sensor_y, bin_x, bin_y | Read camera capabilities and current settings |
 | `move_focuser` | focuser_id, position | actual_position | Move focuser to absolute position (blocks polling `is_moving` until idle). Bounded by a **predicted deadline**: `predicted = \|target − current\| / focuser.steps_per_sec` (current position read before the move); `max = max(predicted × 2, MIN_FOCUSER_DEADLINE = 5 s)`. If the pre-move read fails it falls back to a 120 s ceiling; `predicted`/`max` ride the `move_focuser_started` envelope as `predicted_duration_ms`/`max_duration_ms` |
 | `get_focuser_position` | focuser_id | position | Read current focuser position |
@@ -800,7 +800,7 @@ boundary — but expose the same MCP tool surface as any other tool.
 | Action | Parameters | Returns | Description |
 |--------|-----------|---------|-------------|
 | `auto_focus` | camera_id, focuser_id, duration, step_size, half_width, min_area, max_area, threshold_sigma (optional), min_fit_points (optional) | best_position, best_hfr, final_position, samples_used, curve_points, temperature_c | Parabolic-fit V-curve auto-focus driving `move_focuser` + `capture` + `measure_basic` internally. See [`auto_focus` Contract](#auto_focus-contract). Implemented. |
-| `center_on_target` | camera_id, ra, dec, duration, tolerance_arcsec, max_attempts | final_error_arcsec, attempts, final_ra, final_dec, iterations | Iterative `capture` + `plate_solve` + `sync_mount` + `slew` loop until residual ≤ `tolerance_arcsec`. See [`center_on_target` Contract](#center_on_target-contract). Implemented. |
+| `center_on_target` | camera_id, ra, dec, duration, tolerance_arcsec, max_attempts | final_error_arcsec, attempts, final_ra, final_dec, iterations | Iterative `capture` + `plate_solve` + `sync_mount` + `slew` loop until residual ≤ `tolerance_arcsec`. Carries an **advisory outer-loop deadline** on `centering_started`: `per_iter = duration + centering.solve_time_estimate + centering.slew_overhead_estimate`, `predicted = per_iter`, `max = max_attempts × per_iter`. The watchdog tracks only this outer loop; each inner `slew`/`capture` carries its own deadline. See [`center_on_target` Contract](#center_on_target-contract). Implemented. |
 
 **Planner — Ephemeris primitives**
 
@@ -2309,7 +2309,14 @@ exactly one mount.
 **Algorithm**:
 1. Resolve `camera_id` and the singular mount. Emit
    `centering_started` carrying `{camera_id, ra, dec,
-   tolerance_arcsec, max_attempts}`.
+   tolerance_arcsec, max_attempts}` plus an **advisory outer-loop
+   deadline** (§2.5): `per_iter = duration +
+   centering.solve_time_estimate + centering.slew_overhead_estimate`,
+   `predicted_duration_ms = per_iter`, `max_duration_ms = max_attempts
+   × per_iter`. rp does not enforce this (each inner `capture`/`slew`
+   carries its own deadline, and the watchdog tracks only this outer
+   loop); the two estimates come from the `centering` config block
+   (defaults 30 s / 10 s).
 2. For `iter = 0..max_attempts`:
    1. `capture(camera_id, duration)` → `document_id`. Cache
       populated as a side effect.
@@ -2853,13 +2860,13 @@ the disconnection is an immediate trigger for Sentinel to attempt recovery.
 
 | Operation | Starts on event | Expected completion | Timeout = |
 |-----------|----------------|--------------------|----|
-| Exposure | `exposure_started` | `exposure_complete` | duration + configurable buffer |
+| Exposure | `exposure_started` | `exposure_complete` | `max_duration_ms` from the `exposure_started` envelope (rp-computed advisory: `duration + camera.readout_time_estimate + 30 s` readout headroom; rp does not itself enforce it) |
 | Slew | `slew_started` | `slew_complete` | `max_duration_ms` from the `slew_started` envelope (rp-computed: `(distance / rate + settle) × 3`, floored at `MIN_SLEW_DEADLINE`) |
 | Park | `park_started` | `park_complete` | `max_duration_ms` from the `park_started` envelope (rp-computed worst-case traverse: `(180° / rate + settle) × 2`, floored at `MIN_PARK_DEADLINE`) |
 | Move focuser | `move_focuser_started` | `move_focuser_complete` | `max_duration_ms` from the `move_focuser_started` envelope (rp-computed: `(\|target − current\| / steps_per_sec) × 2`, floored at `MIN_FOCUSER_DEADLINE`) |
 | Focus | `focus_started` | `focus_complete` | configurable max focus time |
 | Guide settle | `guide_started` | `guide_settled` | configurable settle timeout |
-| Centering | `centering_started` | `centering_complete` | configurable max attempts * solve time |
+| Centering | `centering_started` | `centering_complete` | `max_duration_ms` from the `centering_started` envelope (rp-computed advisory outer-loop deadline: `max_attempts × (duration + centering.solve_time_estimate + centering.slew_overhead_estimate)`; per-iteration ops carry their own deadlines) |
 
 #### Corrective Actions
 
@@ -2956,19 +2963,58 @@ application logic.
 
 #### System
 - `GET /health` — health check
-- `GET /api/events/subscribe` — WebSocket or SSE stream of real-time events
+- `GET /api/events/subscribe` — SSE (Server-Sent Events) stream of real-time events
 
 ### Real-Time Stream
 
-The `/api/events/subscribe` endpoint provides a WebSocket (or SSE) connection
-that streams all events in real time. Any consumer that needs live events
-connects here — UIs for rendering state, and monitoring services like
-Sentinel for tracking operation deadlines. The stream includes the same
-events that are delivered to plugin webhooks.
+`GET /api/events/subscribe` is a [Server-Sent Events](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events)
+stream (`Content-Type: text/event-stream`) carrying every event the
+[Event System](#event-system) emits — the same envelopes delivered to plugin
+webhooks, plus stream-control frames. Any consumer that needs live events
+connects here: UIs for rendering state, and the Sentinel operation watchdog
+for tracking deadlines and rp liveness. It is the primary mechanism for
+passive consumers — push updates without the webhook ack/completion protocol.
 
-This is the primary mechanism for passive consumers. Clients receive push
-updates over the stream without the overhead of the webhook
-ack/completion protocol.
+**Frame format.** Each event is one SSE frame:
+
+- `id:` — the envelope's `event_seq` (the monotonic total order; doubles as
+  the `Last-Event-ID` replay cursor).
+- `event:` — the event type (e.g. `slew_started`).
+- `data:` — the full [Event Envelope](#event-envelope) as JSON.
+
+A `:keep-alive` comment is sent every 15 s so idle connections survive
+middleboxes.
+
+**Reconnect & replay.** rp retains the most recent 512 events in memory. A
+reconnecting client sends its last seen `event_seq` — via the standard
+`Last-Event-ID` header (the browser `EventSource` API sets this automatically)
+or the explicit `?last_event_id=<seq>` query parameter (the header wins if
+both are present). The server replays every retained event after that cursor,
+oldest first, then resumes the live tail. The replay→live handoff is
+exactly-once: an event is delivered via replay or live, never both, never
+neither.
+
+**Gaps.** If the cursor predates the retained window (the client was gone long
+enough that its next expected event was evicted), the stream leads with a
+`stream_gap` event — `event: stream_gap`, no `id`,
+`data: {"event":"stream_gap","requested_after":<cursor>,"oldest_available":<seq>}`
+— so the consumer knows it lost history. Sentinel treats a `stream_gap` as a
+trigger to escalate any operation it was tracking when the gap occurred.
+
+**Slow consumers.** A consumer that falls more than the broadcast buffer
+(256 events) behind the live tail is sent a final `stream_gap`
+(`{"event":"stream_gap","lagged":<n>}`) and disconnected, rather than being
+allowed to back up the in-process channel. It recovers by reconnecting with
+its `Last-Event-ID` (replayed from the 512-event history, or told of the gap
+if it fell too far behind).
+
+**Liveness.** When rp shuts down it ends all in-flight subscribe streams, so a
+dropped stream is itself a signal: Sentinel treats the disconnection as an
+immediate trigger to attempt recovery (see
+[Sentinel Watchdog Integration](#sentinel-watchdog-integration)).
+
+Authentication and TLS, when configured, apply to this endpoint exactly as to
+every other route.
 
 ## Configuration
 
@@ -3020,6 +3066,7 @@ return a structured "site not configured" error.
         "gain": 100,
         "offset": 50,
         "focal_length_mm": 1000.0,
+        "readout_time_estimate": "8s",
         "auth": {
           "username": "observatory",
           "password": "secret"
@@ -3103,6 +3150,10 @@ return a structured "site not configured" error.
   "imaging": {
     "cache_max_mib": 1024,
     "cache_max_images": 8
+  },
+  "centering": {
+    "solve_time_estimate": "30s",
+    "slew_overhead_estimate": "10s"
   },
   "plugins": [
     {
