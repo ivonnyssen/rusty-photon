@@ -18,11 +18,9 @@
 //!
 //! ## Enabling Simulation
 //!
-//! Add the feature to your `Cargo.toml`:
-//!
 //! ```toml
 //! [dependencies]
-//! qhyccd-rs = { version = "0.1.7", features = ["simulation"] }
+//! qhyccd-rs = { version = "0.1.9", features = ["simulation"] }
 //! ```
 //!
 //! ## Transparent Usage
