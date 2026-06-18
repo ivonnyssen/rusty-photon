@@ -36,6 +36,66 @@ use super::progress::{ProgressEmitter, PROGRESS_INTERVAL};
 /// readout/download latency on top of the exposure itself.
 const CAPTURE_READOUT_GRACE: Duration = Duration::from_secs(120);
 
+/// Default per-camera readout + download estimate used to size the
+/// predictive exposure deadline (§2.4) when `camera.readout_time_estimate`
+/// is omitted. Conservative (slow side) so the advertised `predicted`
+/// over-estimates rather than under-estimates — the Sentinel watchdog must
+/// not flag a healthy-but-slow readout. A fast USB-3 CMOS reads out in well
+/// under a second; this 15 s default is sized for an unconfigured slow
+/// USB-2 CCD, and a real rig sets a tighter value per camera.
+const DEFAULT_READOUT_TIME_ESTIMATE: Duration = Duration::from_secs(15);
+
+/// Additive slack over the exposure `predicted` for the advertised
+/// hard-ceiling `max` (§2.4): `max = duration + readout_time_estimate +
+/// EXPOSURE_READOUT_HEADROOM`. Covers a slow USB-2 download tail beyond the
+/// per-camera estimate. This sizes only the deadline carried on the
+/// `exposure_started` envelope (which the Sentinel watchdog tracks) — rp's
+/// own readout backstop is the separate, deliberately more generous
+/// [`CAPTURE_READOUT_GRACE`]; the camera driver owns enforcement.
+const EXPOSURE_READOUT_HEADROOM: Duration = Duration::from_secs(30);
+
+/// Size the predictive exposure deadline (§2.4) for the `exposure_started`
+/// envelope: `predicted = duration + readout_estimate`, `max = predicted +
+/// EXPOSURE_READOUT_HEADROOM`. Pure millisecond math returning the
+/// `(predicted_ms, max_ms)` envelope pair. Unlike the slew/park/focuser
+/// helpers it takes no `&self` and never fails: the camera is already
+/// resolved at the `do_capture` call site, there is no pre-op device read,
+/// and rp does not enforce this deadline (so it returns no poll `Duration`).
+/// Saturating arithmetic keeps an absurd operator-supplied `duration` from
+/// overflowing rather than panicking.
+pub(crate) fn exposure_deadlines(duration: Duration, readout_estimate: Duration) -> (u64, u64) {
+    let predicted = duration.saturating_add(readout_estimate);
+    let max = predicted.saturating_add(EXPOSURE_READOUT_HEADROOM);
+    (
+        u64::try_from(predicted.as_millis()).unwrap_or(u64::MAX),
+        u64::try_from(max.as_millis()).unwrap_or(u64::MAX),
+    )
+}
+
+/// Size the predictive `center_on_target` deadline (§2.5) for the
+/// `centering_started` envelope. The Sentinel watchdog tracks only the
+/// outer loop (each per-iteration `slew`/`capture` carries its own
+/// deadline), so: `per_iter = capture_duration + solve_time_estimate +
+/// slew_overhead_estimate`, `predicted = per_iter` (optimistic single-pass
+/// convergence), `max = max_attempts × per_iter` (every attempt used).
+/// Pure millisecond math returning the `(predicted_ms, max_ms)` envelope
+/// pair; saturating arithmetic guards against overflow from an absurd
+/// `duration` or `max_attempts`. Like [`exposure_deadlines`], this is
+/// advisory only — rp does not enforce it (the inner ops do).
+pub(crate) fn centering_deadlines(
+    max_attempts: usize,
+    capture_duration: Duration,
+    solve_time_estimate: Duration,
+    slew_overhead_estimate: Duration,
+) -> (u64, u64) {
+    let per_iter = capture_duration
+        .saturating_add(solve_time_estimate)
+        .saturating_add(slew_overhead_estimate);
+    let predicted_ms = u64::try_from(per_iter.as_millis()).unwrap_or(u64::MAX);
+    let max_ms = predicted_ms.saturating_mul(max_attempts as u64);
+    (predicted_ms, max_ms)
+}
+
 /// Floor on the predictive slew deadline (§2.1 of the predictive-deadlines
 /// plan). A short slew still gets at least this long before it's considered
 /// overrun, covering fixed overheads that `distance / rate` ignores:
@@ -520,6 +580,15 @@ impl McpHandler {
         // lets `do_capture` avoid the 5 Alpaca round-trips per exposure
         // it used to pay for these properties (see `CameraEntry` docs).
         let focal_length_mm = cam_entry.config.focal_length_mm;
+        // Per-camera readout estimate sizes the predictive exposure deadline
+        // (§2.4). Omitted in config → the conservative built-in default. rp
+        // does not enforce this; it rides the `exposure_started` envelope for
+        // the Sentinel watchdog (the camera driver owns the exposure, and
+        // `CAPTURE_READOUT_GRACE` below remains rp's own readout backstop).
+        let readout_time_estimate = cam_entry
+            .config
+            .readout_time_estimate
+            .unwrap_or(DEFAULT_READOUT_TIME_ESTIMATE);
         let cached_max_adu = cam_entry.max_adu;
         let cached_pixel_size_x_um = cam_entry.pixel_size_x_um;
         let cached_pixel_size_y_um = cam_entry.pixel_size_y_um;
@@ -538,15 +607,19 @@ impl McpHandler {
 
         let operation_id = Uuid::new_v4().to_string();
         let started_at = chrono::Utc::now();
-        self.event_bus.emit_operation(EventEnvelope::started(
-            "exposure",
-            &operation_id,
-            started_at,
-            serde_json::json!({
-                "camera_id": camera_id,
-                "duration": humantime::format_duration(duration).to_string(),
-            }),
-        ));
+        let (predicted_ms, max_ms) = exposure_deadlines(duration, readout_time_estimate);
+        self.event_bus.emit_operation(
+            EventEnvelope::started(
+                "exposure",
+                &operation_id,
+                started_at,
+                serde_json::json!({
+                    "camera_id": camera_id,
+                    "duration": humantime::format_duration(duration).to_string(),
+                }),
+            )
+            .with_deadlines(predicted_ms, max_ms),
+        );
 
         // Run the exposure body (start → poll → download → write FITS →
         // persist) inside one future so the public method emits exactly

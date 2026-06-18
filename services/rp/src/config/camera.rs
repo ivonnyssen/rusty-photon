@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use serde::Deserialize;
 
 use crate::error::{Result, RpError};
@@ -29,6 +31,20 @@ pub struct CameraConfig {
     /// and failure modes.
     #[serde(default)]
     pub focal_length_mm: Option<f64>,
+    /// Estimated sensor readout + download time for this camera, feeding
+    /// the predictive exposure deadline (§2.4 of the predictive-deadlines
+    /// plan): `predicted = exposure duration + readout_time_estimate`. There
+    /// is no ASCOM Alpaca property for readout time — even where a driver
+    /// knows it, it is not exposed — so this config value is the estimate
+    /// source. Set it per-rig (a slow USB-2 CCD reads out far slower than a
+    /// USB-3 CMOS); omitted → a conservative built-in default. rp does
+    /// **not** enforce this deadline (the camera driver owns the exposure
+    /// and rp keeps a separate, more generous readout backstop); it rides
+    /// the `exposure_started` envelope for the Sentinel watchdog to track.
+    /// Accepts a humantime string (e.g. `"8s"`). See `docs/services/rp.md`
+    /// §"Event Envelope".
+    #[serde(default, with = "humantime_serde")]
+    pub readout_time_estimate: Option<Duration>,
     /// Optional HTTP Basic Auth credentials for connecting to auth-enabled Alpaca services
     #[serde(default)]
     pub auth: Option<rp_auth::config::ClientAuthConfig>,
@@ -111,6 +127,65 @@ mod tests {
         assert!(
             config.equipment.cameras[0].focal_length_mm.is_none(),
             "omitted focal_length_mm must deserialize to None"
+        );
+    }
+
+    #[test]
+    fn camera_config_readout_time_estimate_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "session": {"data_directory": "/tmp/rp-test"},
+                "equipment": {
+                    "cameras": [
+                        {
+                            "id": "main-cam",
+                            "alpaca_url": "http://localhost:11120",
+                            "readout_time_estimate": "8s"
+                        }
+                    ]
+                },
+                "server": {}
+            }"#,
+        )
+        .unwrap();
+
+        let config = load_config(&path).unwrap();
+        assert_eq!(
+            config.equipment.cameras[0].readout_time_estimate,
+            Some(std::time::Duration::from_secs(8))
+        );
+    }
+
+    #[test]
+    fn camera_config_readout_time_estimate_defaults_to_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "session": {"data_directory": "/tmp/rp-test"},
+                "equipment": {
+                    "cameras": [
+                        {
+                            "id": "main-cam",
+                            "alpaca_url": "http://localhost:11120"
+                        }
+                    ]
+                },
+                "server": {}
+            }"#,
+        )
+        .unwrap();
+
+        let config = load_config(&path).unwrap();
+        assert!(
+            config.equipment.cameras[0]
+                .readout_time_estimate
+                .is_none(),
+            "omitted readout_time_estimate must deserialize to None (the do_capture default applies)"
         );
     }
 

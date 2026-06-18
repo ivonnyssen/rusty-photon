@@ -6,6 +6,9 @@ use std::time::Duration;
 use bdd_infra::ServiceHandle;
 use cucumber::World;
 use tempfile::TempDir;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
+use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Default, World)]
 pub struct SentinelWorld {
@@ -40,6 +43,17 @@ pub struct SentinelWorld {
     // api.pushover.net (slow, non-hermetic, rejects test credentials).
     pub pushover_stub: Option<tokio::task::JoinHandle<()>>,
     pub pushover_stub_url: Option<String>,
+
+    // Operation watchdog: a controllable stub standing in for rp's SSE
+    // stream, plus the URL sentinel's watchdog should subscribe to.
+    pub rp_event_stub: Option<RpEventStub>,
+    pub watchdog_rp_url: Option<String>,
+
+    // Corrective ladder: a stub Alpaca service the watchdog can health-check
+    // and abort, plus the Alpaca base URL baked into the watchdog `services`
+    // config. Present only for the abort scenario.
+    pub mount_stub: Option<MountServiceStub>,
+    pub mount_service_url: Option<String>,
 }
 
 impl SentinelWorld {
@@ -127,6 +141,35 @@ impl SentinelWorld {
             for m in monitors.iter_mut() {
                 m["polling_interval"] = serde_json::json!(format!("{polling}s"));
             }
+        }
+
+        // Wire the operation watchdog when a watched rp URL is set. Buffers are
+        // zeroed so the tracked deadline equals the operation's
+        // `max_duration_ms` exactly, keeping the BDD fast and deterministic;
+        // reconnect is tight so the "unresponsive" path resolves quickly.
+        if let Some(rp_url) = &self.watchdog_rp_url {
+            let mut watchdog = serde_json::json!({
+                "rp_url": rp_url,
+                "reconnect_max_attempts": 2,
+                "reconnect_backoff": "1s",
+                "default_buffer": "0s",
+                "max_restart_duration": "2s",
+                "notifiers": ["pushover"],
+                "operations": { "slew": { "buffer": "0s" } }
+            });
+            // When a corrective service stub is configured, make `slew` run the
+            // abort ladder against it (responsive service + abort verb => the
+            // ladder stops at a clean abort, so `restart_command` stays null and
+            // the BDD never shells out).
+            if let Some(svc_url) = &self.mount_service_url {
+                watchdog["operations"]["slew"]["on_expiry"] =
+                    serde_json::json!("abort_then_restart");
+                watchdog["operations"]["slew"]["service"] = serde_json::json!("mount");
+                watchdog["services"] = serde_json::json!({
+                    "mount": { "base_url": svc_url, "restart_command": null }
+                });
+            }
+            config["operation_watchdog"] = watchdog;
         }
 
         config
@@ -324,5 +367,163 @@ impl SentinelWorld {
             .await
             .expect("failed to GET /api/history");
         resp.json().await.expect("failed to parse history JSON")
+    }
+
+    /// Start the controllable rp SSE stub with the given pre-formatted SSE
+    /// frames and point the watchdog at it.
+    pub async fn start_rp_event_stub(&mut self, frames: Vec<String>) {
+        let stub = RpEventStub::start(frames).await;
+        self.watchdog_rp_url = Some(stub.base_url().to_string());
+        self.rp_event_stub = Some(stub);
+    }
+
+    /// Start a stub Alpaca telescope service the corrective ladder can probe
+    /// (reports connected) and abort (records the call), and wire the watchdog
+    /// `services` config at its URL.
+    pub async fn start_mount_service_stub(&mut self) {
+        let stub = MountServiceStub::start().await;
+        self.mount_service_url = Some(format!("{}/api/v1", stub.base_url()));
+        self.mount_stub = Some(stub);
+    }
+}
+
+/// A stub Alpaca telescope service for the corrective-ladder BDD: it answers
+/// `GET .../telescope/0/connected` as responsive and records every
+/// `PUT .../telescope/0/abortslew` so the test can assert the watchdog aborted
+/// the right device.
+#[derive(Debug)]
+pub struct MountServiceStub {
+    base_url: String,
+    abort_count: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    handle: tokio::task::JoinHandle<()>,
+}
+
+impl MountServiceStub {
+    pub async fn start() -> Self {
+        use axum::routing::{get, put};
+        use axum::{Json, Router};
+        use std::sync::atomic::Ordering;
+
+        let abort_count = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let count = std::sync::Arc::clone(&abort_count);
+        let app = Router::new()
+            .route(
+                "/api/v1/telescope/0/connected",
+                get(|| async {
+                    Json(serde_json::json!({
+                        "Value": true, "ErrorNumber": 0, "ErrorMessage": ""
+                    }))
+                }),
+            )
+            .route(
+                "/api/v1/telescope/0/abortslew",
+                put(move || {
+                    let count = std::sync::Arc::clone(&count);
+                    async move {
+                        count.fetch_add(1, Ordering::SeqCst);
+                        Json(serde_json::json!({ "ErrorNumber": 0, "ErrorMessage": "" }))
+                    }
+                }),
+            );
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("failed to bind mount service stub");
+        let addr = listener
+            .local_addr()
+            .expect("mount service stub has no addr");
+        let handle = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        Self {
+            base_url: format!("http://{addr}"),
+            abort_count,
+            handle,
+        }
+    }
+
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
+    /// Number of `abortslew` calls received so far.
+    pub fn abort_count(&self) -> u32 {
+        self.abort_count.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl Drop for MountServiceStub {
+    fn drop(&mut self) {
+        self.handle.abort();
+    }
+}
+
+/// A minimal, controllable Server-Sent-Events server standing in for rp's
+/// `GET /api/events/subscribe`. Every accepted connection receives the
+/// pre-scripted frames (as one chunked-transfer body) and is then held open —
+/// no disconnect — so the sentinel watchdog tracks exactly the operations the
+/// script describes. Built on raw tokio TCP so it pulls in no new dependency.
+#[derive(Debug)]
+pub struct RpEventStub {
+    base_url: String,
+    cancel: CancellationToken,
+}
+
+impl RpEventStub {
+    /// Bind on an ephemeral loopback port and serve `frames` (each an SSE
+    /// block without its trailing blank line) to every connection.
+    pub async fn start(frames: Vec<String>) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("failed to bind rp event stub");
+        let addr = listener.local_addr().expect("rp event stub has no addr");
+        let cancel = CancellationToken::new();
+        let body: String = frames.iter().map(|f| format!("{f}\n\n")).collect();
+        let server_cancel = cancel.clone();
+
+        tokio::spawn(async move {
+            loop {
+                let accepted = tokio::select! {
+                    _ = server_cancel.cancelled() => break,
+                    res = listener.accept() => res,
+                };
+                let Ok((mut sock, _)) = accepted else { break };
+                let body = body.clone();
+                let conn_cancel = server_cancel.clone();
+                tokio::spawn(async move {
+                    // Drain the request so the client's write completes.
+                    let mut buf = [0u8; 2048];
+                    let _ = sock.read(&mut buf).await;
+                    let chunk = format!("{:x}\r\n{}\r\n", body.len(), body);
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\n\
+                         Content-Type: text/event-stream\r\n\
+                         Cache-Control: no-cache\r\n\
+                         Transfer-Encoding: chunked\r\n\r\n{chunk}"
+                    );
+                    if sock.write_all(response.as_bytes()).await.is_err() {
+                        return;
+                    }
+                    let _ = sock.flush().await;
+                    // Hold the connection open until the stub is shut down.
+                    conn_cancel.cancelled().await;
+                });
+            }
+        });
+
+        Self {
+            base_url: format!("http://{addr}"),
+            cancel,
+        }
+    }
+
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+}
+
+impl Drop for RpEventStub {
+    fn drop(&mut self) {
+        self.cancel.cancel();
     }
 }

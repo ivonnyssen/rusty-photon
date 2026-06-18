@@ -24,7 +24,9 @@
 //! entry point and a `*_complete` or `*_failed` envelope at the end, all
 //! sharing one `operation_id` so a consumer can correlate them.
 
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde::Serialize;
@@ -38,6 +40,15 @@ use uuid::Uuid;
 /// [`broadcast::error::RecvError::Lagged`] and resumes from the channel's
 /// current tail; the channel itself keeps running.
 const BROADCAST_CAPACITY: usize = 256;
+
+/// Capacity of the in-memory event-history ring that backs `Last-Event-ID`
+/// replay on the SSE stream ([`EventBus::subscribe_with_history`], Phase 3).
+/// Larger than [`BROADCAST_CAPACITY`] so a consumer that lagged out of the
+/// live channel (256) can still recover its missed window on reconnect.
+/// Events older than the most recent `HISTORY_CAPACITY` are evicted; a
+/// reconnecting client whose cursor predates the ring learns it lost events
+/// via [`Subscription::oldest_retained_seq`].
+const HISTORY_CAPACITY: usize = 512;
 
 /// A webhook subscriber: a plugin that receives matching events via HTTP POST.
 pub struct EventPlugin {
@@ -189,12 +200,39 @@ impl EventEnvelope {
     }
 }
 
+/// The result of subscribing to the event stream with a replay cursor,
+/// returned by [`EventBus::subscribe_with_history`].
+pub struct Subscription {
+    /// Buffered envelopes with `event_seq` greater than the requested cursor,
+    /// oldest first — replayed to the client before the live tail. Empty when
+    /// no cursor was supplied.
+    pub replay: Vec<EventEnvelope>,
+    /// The live tail. Delivers every envelope dispatched after this
+    /// subscription was created, exactly once and with no overlap with
+    /// `replay` (the handoff is performed under one lock — see
+    /// [`EventBus::subscribe_with_history`]).
+    pub receiver: broadcast::Receiver<EventEnvelope>,
+    /// The lowest `event_seq` still retained in the history ring at subscribe
+    /// time, or `None` if no events have been emitted. The SSE handler
+    /// compares this to the requested cursor: if the cursor is below
+    /// `oldest_retained_seq - 1`, history was evicted past it and the handler
+    /// emits a `stream_gap` so the client knows it lost events.
+    pub oldest_retained_seq: Option<u64>,
+}
+
 /// Fans an emitted event out to webhook subscribers and to in-process
-/// broadcast consumers.
+/// broadcast consumers, and retains a bounded history for SSE replay.
 pub struct EventBus {
     plugins: Vec<EventPlugin>,
     broadcast: broadcast::Sender<EventEnvelope>,
     next_seq: AtomicU64,
+    /// Bounded ring of recently emitted envelopes (newest at the back),
+    /// capped at [`HISTORY_CAPACITY`]. Guards the broadcast handoff: the seq
+    /// assignment, history append, and broadcast send all happen under this
+    /// lock so a concurrent [`EventBus::subscribe_with_history`] sees each
+    /// event in `replay` XOR on the live `receiver`, never both, never
+    /// neither.
+    history: Mutex<VecDeque<EventEnvelope>>,
 }
 
 impl EventBus {
@@ -226,6 +264,7 @@ impl EventBus {
             broadcast,
             // Start at 1 so the first event has event_seq == 1.
             next_seq: AtomicU64::new(1),
+            history: Mutex::new(VecDeque::with_capacity(HISTORY_CAPACITY)),
         }
     }
 
@@ -234,6 +273,37 @@ impl EventBus {
     /// (Phase 3) and by tests.
     pub fn subscribe(&self) -> broadcast::Receiver<EventEnvelope> {
         self.broadcast.subscribe()
+    }
+
+    /// Subscribe with `Last-Event-ID` replay. Returns the buffered envelopes
+    /// after `last_seq` (oldest first) together with a live receiver, with a
+    /// race-free handoff: the history snapshot and `broadcast.subscribe()` are
+    /// taken under the same lock that [`EventBus::dispatch`] holds across its
+    /// history-append + broadcast-send, so every event is delivered via
+    /// `replay` or the live `receiver` exactly once — never duplicated at the
+    /// boundary, never dropped. `last_seq == None` requests no replay (a fresh
+    /// subscriber that only wants the live tail).
+    pub fn subscribe_with_history(&self, last_seq: Option<u64>) -> Subscription {
+        let history = self.history.lock().unwrap_or_else(|e| e.into_inner());
+        let oldest_retained_seq = history.front().map(|e| e.event_seq);
+        let replay = match last_seq {
+            Some(cursor) => history
+                .iter()
+                .filter(|e| e.event_seq > cursor)
+                .cloned()
+                .collect(),
+            None => Vec::new(),
+        };
+        // subscribe() under the lock: it only delivers sends that happen after
+        // this point, and dispatch's send is under the same lock, so nothing
+        // emitted before now reaches the live receiver (it is in `replay`
+        // instead) and nothing emitted after now is missed.
+        let receiver = self.broadcast.subscribe();
+        Subscription {
+            replay,
+            receiver,
+            oldest_retained_seq,
+        }
     }
 
     /// Emit a historical point event (no operation lifecycle). Keeps the
@@ -261,19 +331,33 @@ impl EventBus {
         self.dispatch(envelope);
     }
 
-    /// Assign identity fields, then fan out to webhooks and the broadcast
-    /// channel.
+    /// Assign identity fields, retain the envelope in the history ring, then
+    /// fan out to webhooks and the broadcast channel.
     fn dispatch(&self, mut envelope: EventEnvelope) {
         envelope.event_id = Uuid::new_v4().to_string();
-        envelope.event_seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
         envelope.timestamp = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
-        self.deliver_to_plugins(&envelope);
+        // Seq assignment, the history append, and the broadcast send happen
+        // under one lock so that (a) history stays in event_seq order even
+        // under concurrent emitters, and (b) the replay→live handoff in
+        // subscribe_with_history is race-free (each event is replayed XOR
+        // delivered live). The webhook fan-out is an independent path and runs
+        // after the lock is released.
+        {
+            let mut history = self.history.lock().unwrap_or_else(|e| e.into_inner());
+            envelope.event_seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
+            if history.len() >= HISTORY_CAPACITY {
+                history.pop_front();
+            }
+            history.push_back(envelope.clone());
 
-        // Broadcast for in-process consumers. An error means there are no
-        // active subscribers (or all have lagged out); that is expected and
-        // harmless — the webhook path above is independent.
-        let _ = self.broadcast.send(envelope);
+            // Broadcast for in-process consumers. An error means there are no
+            // active subscribers (or all have lagged out); that is expected
+            // and harmless — the webhook path below is independent.
+            let _ = self.broadcast.send(envelope.clone());
+        }
+
+        self.deliver_to_plugins(&envelope);
     }
 
     fn deliver_to_plugins(&self, envelope: &EventEnvelope) {
@@ -449,5 +533,89 @@ mod tests {
         assert!(!obj.contains_key("operation_id"));
         assert!(!obj.contains_key("started_at"));
         assert!(!obj.contains_key("predicted_duration_ms"));
+    }
+
+    #[test]
+    fn subscribe_with_history_replays_events_after_cursor() {
+        let bus = bus();
+        bus.emit("tick", serde_json::json!({ "n": 1 }));
+        bus.emit("tick", serde_json::json!({ "n": 2 }));
+        bus.emit("tick", serde_json::json!({ "n": 3 }));
+
+        // A reconnecting client that last saw event_seq 1 is replayed 2 and 3.
+        let sub = bus.subscribe_with_history(Some(1));
+        let seqs: Vec<u64> = sub.replay.iter().map(|e| e.event_seq).collect();
+        assert_eq!(seqs, vec![2, 3]);
+        assert_eq!(sub.oldest_retained_seq, Some(1));
+    }
+
+    #[test]
+    fn subscribe_with_history_none_replays_nothing() {
+        let bus = bus();
+        bus.emit("tick", serde_json::json!({ "n": 1 }));
+        bus.emit("tick", serde_json::json!({ "n": 2 }));
+
+        // No cursor → a fresh subscriber that only wants the live tail.
+        let sub = bus.subscribe_with_history(None);
+        assert!(sub.replay.is_empty());
+        // History is retained regardless of whether replay was requested.
+        assert_eq!(sub.oldest_retained_seq, Some(1));
+    }
+
+    #[test]
+    fn history_evicts_oldest_beyond_capacity() {
+        let bus = bus();
+        let total = (HISTORY_CAPACITY + 5) as u64;
+        for n in 1..=total {
+            bus.emit("tick", serde_json::json!({ "n": n }));
+        }
+
+        let sub = bus.subscribe_with_history(Some(0));
+        // Only the most recent HISTORY_CAPACITY events are retained.
+        assert_eq!(sub.replay.len(), HISTORY_CAPACITY);
+        // The first five (seq 1..=5) were evicted; the oldest retained is 6.
+        assert_eq!(sub.oldest_retained_seq, Some(6));
+        assert_eq!(sub.replay.first().unwrap().event_seq, 6);
+        assert_eq!(sub.replay.last().unwrap().event_seq, total);
+    }
+
+    #[tokio::test]
+    async fn replay_then_live_handoff_delivers_each_event_once() {
+        let bus = bus();
+        // Two events before subscribing → land in replay.
+        bus.emit("tick", serde_json::json!({ "n": 1 }));
+        bus.emit("tick", serde_json::json!({ "n": 2 }));
+
+        let mut sub = bus.subscribe_with_history(Some(0));
+        let replay_seqs: Vec<u64> = sub.replay.iter().map(|e| e.event_seq).collect();
+        assert_eq!(replay_seqs, vec![1, 2]);
+
+        // Two events after subscribing → arrive live, exactly once, in order,
+        // and are NOT also duplicated into the replay snapshot above.
+        bus.emit("tick", serde_json::json!({ "n": 3 }));
+        bus.emit("tick", serde_json::json!({ "n": 4 }));
+
+        let live1 = sub.receiver.recv().await.unwrap();
+        let live2 = sub.receiver.recv().await.unwrap();
+        assert_eq!(live1.event_seq, 3);
+        assert_eq!(live2.event_seq, 4);
+    }
+
+    #[test]
+    fn oldest_retained_seq_exposes_unreplayable_gap() {
+        let bus = bus();
+        let total = (HISTORY_CAPACITY + 5) as u64;
+        for n in 1..=total {
+            bus.emit("tick", serde_json::json!({ "n": n }));
+        }
+
+        // A client reconnecting from seq 2 cannot be fully replayed: seq 3..=5
+        // were evicted. The subscription replays what remains, and
+        // oldest_retained_seq (6) lets the handler detect the gap because the
+        // requested cursor + 1 (3) is below it.
+        let sub = bus.subscribe_with_history(Some(2));
+        assert_eq!(sub.oldest_retained_seq, Some(6));
+        assert_eq!(sub.replay.first().unwrap().event_seq, 6);
+        assert!(sub.oldest_retained_seq.unwrap() > 2 + 1);
     }
 }

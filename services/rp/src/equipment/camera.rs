@@ -218,6 +218,7 @@ mod tests {
             gain: None,
             offset: None,
             focal_length_mm: None,
+            readout_time_estimate: None,
             auth: None,
         }
     }

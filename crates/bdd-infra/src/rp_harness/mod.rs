@@ -28,6 +28,7 @@ mod mcp_client;
 mod omnisim;
 mod orchestrator;
 mod plate_solver_stub;
+mod sse;
 mod webhook;
 
 pub use config::{
@@ -39,4 +40,5 @@ pub use mcp_client::McpTestClient;
 pub use omnisim::OmniSimHandle;
 pub use orchestrator::{OrchestratorBehavior, OrchestratorInvocation, TestOrchestrator};
 pub use plate_solver_stub::{CannedWcs, PlateSolverStub, StubBehavior};
+pub use sse::{SseClient, SseFrame};
 pub use webhook::{ReceivedEvent, WebhookReceiver};

@@ -5,6 +5,7 @@
 
 pub mod alpaca_client;
 pub mod config;
+pub mod corrective;
 pub mod dashboard;
 pub mod engine;
 pub mod error;
@@ -13,6 +14,7 @@ pub mod monitor;
 pub mod notifier;
 pub mod pushover;
 pub mod state;
+pub mod watchdog;
 
 pub use config::{load_config, Config};
 pub use error::{Result, SentinelError};
@@ -23,11 +25,16 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 use crate::alpaca_client::AlpacaSafetyMonitor;
+use crate::corrective::{Corrective, CorrectiveLadder};
 use crate::engine::Engine;
 use crate::io::ReqwestHttpClient;
 use crate::monitor::Monitor;
 use crate::notifier::Notifier;
 use crate::pushover::PushoverNotifier;
+use crate::state::StateHandle;
+use crate::watchdog::{
+    EventMonitor, HttpWatchdogEventSource, OperationDeadlineMonitor, WatchdogEventSource,
+};
 
 /// Factory methods for building monitors and notifiers from config.
 ///
@@ -83,6 +90,38 @@ impl Config {
             })
             .collect()
     }
+
+    /// Build the push-based event monitors from config. Today this is the
+    /// optional `operation_watchdog`; an absent block yields no event
+    /// monitors (safety-polling-only behavior). The watchdog's corrective
+    /// ladder shares the same `http` client used for polling.
+    pub fn build_event_monitors(
+        &self,
+        notifiers: &[Arc<dyn Notifier>],
+        state: &StateHandle,
+        http: &Arc<dyn io::HttpClient>,
+    ) -> Vec<Arc<dyn EventMonitor>> {
+        match &self.operation_watchdog {
+            Some(watchdog) => {
+                let source: Arc<dyn WatchdogEventSource> =
+                    Arc::new(HttpWatchdogEventSource::new(&watchdog.rp_url));
+                let corrective: Arc<dyn Corrective> = Arc::new(CorrectiveLadder::http(
+                    Arc::clone(http),
+                    watchdog.max_restart_duration,
+                ));
+                let monitor = OperationDeadlineMonitor::new(
+                    "Operation Watchdog",
+                    source,
+                    notifiers.to_vec(),
+                    Arc::clone(state),
+                    watchdog.clone(),
+                    corrective,
+                );
+                vec![Arc::new(monitor)]
+            }
+            None => Vec::new(),
+        }
+    }
 }
 
 /// Builder for the sentinel service with injectable dependencies
@@ -91,6 +130,7 @@ pub struct SentinelBuilder {
     http: Arc<dyn io::HttpClient>,
     cancel: CancellationToken,
     monitors: Option<Vec<Arc<dyn Monitor>>>,
+    event_monitors: Option<Vec<Arc<dyn EventMonitor>>>,
     notifiers: Option<Vec<Arc<dyn Notifier>>>,
 }
 
@@ -113,6 +153,7 @@ impl SentinelBuilder {
             http,
             cancel: CancellationToken::new(),
             monitors: None,
+            event_monitors: None,
             notifiers: None,
         }
     }
@@ -132,6 +173,13 @@ impl SentinelBuilder {
     /// Inject pre-built monitors instead of constructing them from config
     pub fn with_monitors(mut self, monitors: Vec<Arc<dyn Monitor>>) -> Self {
         self.monitors = Some(monitors);
+        self
+    }
+
+    /// Inject pre-built event monitors (e.g. a watchdog over a mock event
+    /// source) instead of constructing them from config
+    pub fn with_event_monitors(mut self, event_monitors: Vec<Arc<dyn EventMonitor>>) -> Self {
+        self.event_monitors = Some(event_monitors);
         self
     }
 
@@ -164,9 +212,16 @@ impl SentinelBuilder {
             .collect();
         let state = state::new_state_handle(monitors_with_intervals, config.dashboard.history_size);
 
+        // Build event monitors (the operation watchdog) — they escalate
+        // through the notifier chain and record into shared state.
+        let event_monitors = self
+            .event_monitors
+            .unwrap_or_else(|| config.build_event_monitors(&notifiers, &state, &http));
+
         // Build engine
         let engine = Engine::new(
             monitors,
+            event_monitors,
             notifiers,
             config.transitions.clone(),
             Arc::clone(&state),

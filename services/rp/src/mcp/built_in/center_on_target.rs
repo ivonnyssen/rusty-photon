@@ -101,8 +101,17 @@ impl McpHandler {
 
         let operation_id = uuid::Uuid::new_v4().to_string();
         let started_at = chrono::Utc::now();
-        self.event_bus
-            .emit_operation(crate::events::EventEnvelope::started(
+        // Advisory outer-loop deadline (§2.5): per-iteration slews/captures
+        // carry their own deadlines; this sizes the whole loop for the
+        // Sentinel watchdog. rp does not enforce it.
+        let (predicted_ms, max_ms) = super::super::internals::centering_deadlines(
+            max_attempts,
+            duration,
+            self.centering.solve_time_estimate,
+            self.centering.slew_overhead_estimate,
+        );
+        self.event_bus.emit_operation(
+            crate::events::EventEnvelope::started(
                 "centering",
                 &operation_id,
                 started_at,
@@ -113,7 +122,9 @@ impl McpHandler {
                     "tolerance_arcsec": tolerance_arcsec,
                     "max_attempts": max_attempts,
                 }),
-            ));
+            )
+            .with_deadlines(predicted_ms, max_ms),
+        );
 
         let cot_params = imaging::tools::center_on_target::CenterOnTargetParams {
             ra,
