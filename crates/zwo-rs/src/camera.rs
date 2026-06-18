@@ -548,6 +548,8 @@ impl Camera {
     ///
     /// # Errors
     /// Returns [`Error::Asi`] if the control type is invalid for this camera.
+    // `as i64` on the c_long value: needed on Windows (LLP64), no-op on LP64.
+    #[allow(clippy::unnecessary_cast)]
     pub fn control_value(&self, control: ControlType) -> Result<ControlValue> {
         #[cfg(feature = "simulation")]
         let value = self.sim_control_value(control)?;
@@ -560,7 +562,10 @@ impl Camera {
                 sys::ASIGetControlValue(self.info.id, control.to_raw(), &mut v, &mut auto)
             } as i32)?;
             ControlValue {
-                value: v,
+                // `as i64` (not `i64::from`): `c_long` is i64 on LP64 (Linux/macOS)
+                // but i32 on Windows (LLP64). The cast is a no-op on the former and
+                // a widening on the latter; `i64::from` would not compile on LP64.
+                value: v as i64,
                 is_auto: auto != 0,
             }
         };
@@ -575,6 +580,8 @@ impl Camera {
     /// # Errors
     /// Returns [`Error::Asi`] if the control type is invalid or the value is
     /// rejected by the camera.
+    // `value as c_long`: needed on Windows (LLP64, c_long = i32), no-op on LP64.
+    #[allow(clippy::unnecessary_cast)]
     pub fn set_control_value(&self, control: ControlType, value: i64, auto: bool) -> Result<()> {
         #[cfg(feature = "simulation")]
         self.sim_set_control_value(control, value, auto)?;
@@ -583,7 +590,11 @@ impl Camera {
             let auto_flag: sys::ASI_BOOL = if auto { 1 } else { 0 };
             // SAFETY: open camera id; the SDK validates control/value.
             asi_check(unsafe {
-                sys::ASISetControlValue(self.info.id, control.to_raw(), value, auto_flag)
+                // `value as c_long`: c_long is i64 on LP64 (no-op) and i32 on
+                // Windows (LLP64); ASI control values are small so the narrowing
+                // is safe. Without the cast this is an i64-vs-c_long type error
+                // on Windows.
+                sys::ASISetControlValue(self.info.id, control.to_raw(), value as c_long, auto_flag)
             } as i32)?;
         }
         Ok(())
@@ -750,13 +761,17 @@ fn camera_info_from_raw(raw: &sys::ASI_CAMERA_INFO) -> CameraInfo {
 }
 
 #[cfg(not(feature = "simulation"))]
+// `as i64` on the `long` (c_long) caps fields: necessary on Windows (LLP64,
+// c_long = i32) but a no-op on LP64 (Linux/macOS), where clippy would otherwise
+// flag it as an unnecessary cast.
+#[allow(clippy::unnecessary_cast)]
 fn control_caps_from_raw(raw: &sys::ASI_CONTROL_CAPS) -> ControlCaps {
     ControlCaps {
         name: c_string_field(&raw.Name),
         control_type: ControlType::from_raw(raw.ControlType as i32),
-        min: raw.MinValue,
-        max: raw.MaxValue,
-        default: raw.DefaultValue,
+        min: raw.MinValue as i64,
+        max: raw.MaxValue as i64,
+        default: raw.DefaultValue as i64,
         is_writable: raw.IsWritable != 0,
         is_auto_supported: raw.IsAutoSupported != 0,
     }

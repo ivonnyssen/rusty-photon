@@ -101,7 +101,9 @@ jobs:
       # zwo-camera links the native ZWO SDK; provision it only when that package
       # is in scope (an infra change rebuilds the whole workspace).
       - name: Install ZWO SDK
-        if: needs.plan.outputs.infra == 'true' || contains(needs.plan.outputs.cargo-args, 'zwo-camera')
+        # Match any zwo crate — zwo-camera AND the vendored zwo-rs/libzwo-sys all
+        # link the native ZWO SDK. ("zwo" has no other crate as a substring.)
+        if: needs.plan.outputs.infra == 'true' || contains(needs.plan.outputs.cargo-args, 'zwo')
         uses: ./.github/actions/install-zwo-sdk
       - name: cargo generate-lockfile
         if: hashFiles('Cargo.lock') == ''
@@ -158,7 +160,9 @@ jobs:
         with:
           shared-key: macos-stable
       - name: Install ZWO SDK
-        if: needs.plan.outputs.infra == 'true' || contains(needs.plan.outputs.cargo-args, 'zwo-camera')
+        # Match any zwo crate — zwo-camera AND the vendored zwo-rs/libzwo-sys all
+        # link the native ZWO SDK. ("zwo" has no other crate as a substring.)
+        if: needs.plan.outputs.infra == 'true' || contains(needs.plan.outputs.cargo-args, 'zwo')
         uses: ./.github/actions/install-zwo-sdk
       - name: cargo generate-lockfile
         if: hashFiles('Cargo.lock') == ''
@@ -209,13 +213,16 @@ jobs:
       # Build full workspace so the cache saved by this job includes all
       # binaries needed by the per-service BDD jobs
       - name: Install ZWO SDK
-        if: needs.plan.outputs.infra == 'true' || contains(needs.plan.outputs.cargo-args, 'zwo-camera')
+        # Match any zwo crate — zwo-camera AND the vendored zwo-rs/libzwo-sys all
+        # link the native ZWO SDK. ("zwo" has no other crate as a substring.)
+        if: needs.plan.outputs.infra == 'true' || contains(needs.plan.outputs.cargo-args, 'zwo')
         uses: ./.github/actions/install-zwo-sdk
-      # This job always builds --workspace for a warm cache; exclude the
-      # native-SDK zwo-camera when it isn't in scope (so the SDK step above can
-      # be skipped) and include it when it is.
+      # This job always builds --workspace for a warm cache; exclude ALL the
+      # native-SDK crates (zwo-camera + the vendored zwo-rs/libzwo-sys) when none
+      # is in scope (so the SDK step above can be skipped) and include them when
+      # any is.
       - name: cargo build
-        run: cargo build --locked ${{ (needs.plan.outputs.infra == 'true' || contains(needs.plan.outputs.cargo-args, 'zwo-camera')) && '--workspace' || '--workspace --exclude zwo-camera' }} --all-features --all-targets
+        run: cargo build --locked ${{ (needs.plan.outputs.infra == 'true' || contains(needs.plan.outputs.cargo-args, 'zwo')) && '--workspace' || '--workspace --exclude zwo-camera --exclude zwo-rs --exclude libzwo-sys' }} --all-features --all-targets
       - name: cargo nextest run
         run: cargo nextest run --locked ${{ needs.plan.outputs.infra == 'true' && '--workspace' || needs.plan.outputs.cargo-args }} --all-features --all-targets
   windows-bdd:
@@ -307,7 +314,9 @@ jobs:
         with:
           shared-key: linux-nightly
       - name: Install ZWO SDK
-        if: needs.plan.outputs.infra == 'true' || contains(needs.plan.outputs.cargo-args, 'zwo-camera')
+        # Match any zwo crate — zwo-camera AND the vendored zwo-rs/libzwo-sys all
+        # link the native ZWO SDK. ("zwo" has no other crate as a substring.)
+        if: needs.plan.outputs.infra == 'true' || contains(needs.plan.outputs.cargo-args, 'zwo')
         uses: ./.github/actions/install-zwo-sdk
       - name: cargo generate-lockfile
         if: hashFiles('Cargo.lock') == ''

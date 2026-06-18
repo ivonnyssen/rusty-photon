@@ -167,8 +167,7 @@ pub mod simulation {
     //! via [`crate::SIM_CAMERA_COUNT`] / [`crate::SIM_FILTER_WHEEL_COUNT`].
     //! Simulated frames and EFW motion land with the Camera and filter-wheel
     //! device handles.
-    use rand::{Rng, RngCore};
-    use rayon::prelude::*;
+    use rand::Rng;
 
     /// One 16-bit noise sample — a placeholder for simulated sensor frames.
     #[must_use]
@@ -178,18 +177,24 @@ pub mod simulation {
 
     /// Fill `buf` with simulated sensor noise as fast as possible.
     ///
-    /// A full-frame ASI2600 frame is ~52 MiB. Filling it one byte at a time —
-    /// the original approach, a fresh [`rand::rng()`] lookup per byte — took
-    /// over 10 s and tripped ConformU's 10 s `StartExposure` timeout. This
-    /// splits the buffer into chunks filled in parallel across rayon's pool,
-    /// each by a thread-local RNG via the bulk [`RngCore::fill_bytes`] path,
-    /// turning a full-frame download into a few milliseconds.
+    /// A full-frame ASI2600 frame is ~52 MiB and this runs in unoptimised test/CI
+    /// builds. Two earlier approaches both tripped ConformU's 10 s `StartExposure`
+    /// timeout: a per-byte `rand::rng()` lookup (the original, >10 s), and a bulk
+    /// [`rand::RngCore::fill_bytes`] (ChaCha is ~seconds for 52 MiB in debug). A
+    /// rayon parallel fill is fast in isolation but grabs every core, so when
+    /// several ConformU camera suites run in one job (conformu.yml) it starves the
+    /// siblings *and* itself and re-trips the timeout on constrained (e.g. macOS)
+    /// runners. Instead: a seeded xorshift64 — a few integer ops per 8 bytes, fast
+    /// even in debug, single-core, no extra deps. Quality is irrelevant; this is
+    /// placeholder sensor noise, seeded per frame so frames differ run-to-run.
     pub fn fill_noise(buf: &mut [u8]) {
-        // 64 KiB keeps per-chunk RNG acquisition negligible while still giving
-        // rayon plenty of chunks to balance across cores.
-        const CHUNK: usize = 64 * 1024;
-        buf.par_chunks_mut(CHUNK)
-            .for_each(|chunk| rand::rng().fill_bytes(chunk));
+        let mut state = rand::rng().random::<u64>() | 1;
+        for chunk in buf.chunks_mut(8) {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            chunk.copy_from_slice(&state.to_le_bytes()[..chunk.len()]);
+        }
     }
 }
 

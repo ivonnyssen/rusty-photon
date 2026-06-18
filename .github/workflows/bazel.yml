@@ -152,10 +152,11 @@ jobs:
           else
             REMOTE_FLAGS+=(--remote_upload_local_results=false)
           fi
-          # `-requires-cargo` excludes the cargo-only BDD suites (e.g.
-          # //services/zwo-camera:bdd, which spawns a native-SDK binary and is
-          # run under Cargo in test.yml) — matching the coverage config in
-          # .bazelrc, which also excludes requires-cargo while including bdd.
+          # Select the `bdd`-tagged suites, excluding any also tagged
+          # `requires-cargo`. //services/zwo-camera:bdd RUNS here — it is
+          # `bdd`-tagged (not `requires-cargo`) and spawns the native-SDK sim
+          # binary the "Install ZWO SDK" step above provisioned. Matches the
+          # coverage config in .bazelrc (excludes requires-cargo, includes bdd).
           bazel test --config=ci "${REMOTE_FLAGS[@]}" --test_tag_filters=bdd,-requires-cargo \
             --test_output=all \
             //...
