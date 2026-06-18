@@ -191,7 +191,14 @@ graph TD;
   UniqueID. Because `ASIGetSerialNumber` requires an *open* camera (see *Device
   identity*), enumeration opens each camera briefly to mint its identity, then
   closes it; the eager per-device connect handshake happens on
-  `set_connected(true)`. Returns a `BoundServer`.
+  `set_connected(true)`. **Identity fallback (`mint_identity`):** older ASI models
+  (e.g. the ASI1600) expose *neither* a hardware serial (`ASIGetSerialNumber`) nor
+  a programmed flash ID (`ASIGetID`) — that read returns a general SDK error.
+  Rather than fail the whole service, the camera falls back to a stable
+  position-based identity (`noserial-{index}`, UniqueID
+  `ZWO:{name}:noserial-{index}`), so a serial-less camera is still usable; it is
+  unique per enumeration slot and stable across reconnects for the common
+  single-camera case. Returns a `BoundServer`.
 - **`camera.rs`** — `ZwoCameraDevice` (one instance per discovered camera)
   implementing `Device` + `Camera` against `zwo-rs`. **Every blocking SDK call
   runs inside `tokio::task::spawn_blocking`** so the async runtime is never

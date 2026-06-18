@@ -221,11 +221,17 @@ async fn enumerate_cameras() -> Result<Vec<EnumeratedCamera>, ZwoCameraError> {
             for (index, info) in infos.into_iter().enumerate() {
                 // Open briefly to read the stable serial, then close (the camera
                 // drops at the end of the block → `ASICloseCamera`).
-                let serial = {
+                let serial_result = {
                     let camera = sdk.open_camera(index)?;
-                    camera.serial()?
+                    camera.serial()
                 };
-                let unique_id = format!("ZWO:{}:{}", info.name.replace(' ', "-"), serial);
+                if let Err(ref e) = serial_result {
+                    warn!(
+                        camera = %info.name, error = %e,
+                        "camera exposes no hardware serial or flash ID; using a position-based identity"
+                    );
+                }
+                let (serial, unique_id) = mint_identity(serial_result, &info.name, index);
                 out.push(EnumeratedCamera {
                     index,
                     info,
@@ -238,6 +244,48 @@ async fn enumerate_cameras() -> Result<Vec<EnumeratedCamera>, ZwoCameraError> {
         .await??;
     debug!(count = cameras.len(), "enumerated ASI cameras");
     Ok(cameras)
+}
+
+/// Mint the `(serial, UniqueID)` pair for an enumerated camera.
+///
+/// The serial is the camera's hardware serial (`ASIGetSerialNumber`) or, failing
+/// that, its programmed flash ID (`ASIGetID`). Older ASI models (e.g. the
+/// ASI1600) expose **neither** and fail the read. Rather than make the whole
+/// service unstartable for such a camera, fall back to a stable position-based
+/// identity (`noserial-{index}`): unique per enumeration slot and stable across
+/// reconnects for the common single-camera case. The only ambiguity is two
+/// serial-less cameras of the same model reordered on the bus, which could swap
+/// identities — an acceptable trade for the camera working at all.
+fn mint_identity(
+    serial: Result<String, zwo_rs::Error>,
+    name: &str,
+    index: usize,
+) -> (String, String) {
+    let serial = serial.unwrap_or_else(|_| format!("noserial-{index}"));
+    let unique_id = format!("ZWO:{}:{}", name.replace(' ', "-"), serial);
+    (serial, unique_id)
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::mint_identity;
+
+    #[test]
+    fn mint_identity_uses_hardware_serial_when_present() {
+        let (serial, unique_id) =
+            mint_identity(Ok("1915d5081b090900".to_owned()), "ZWO ASI178MM", 0);
+        assert_eq!(serial, "1915d5081b090900");
+        assert_eq!(unique_id, "ZWO:ZWO-ASI178MM:1915d5081b090900");
+    }
+
+    #[test]
+    fn mint_identity_falls_back_to_position_when_no_serial() {
+        // Older models (e.g. the ASI1600) report neither a serial nor a flash ID.
+        let err = Err(zwo_rs::Error::Asi(zwo_rs::AsiError::GeneralError));
+        let (serial, unique_id) = mint_identity(err, "ZWO ASI1600MM-Cool", 0);
+        assert_eq!(serial, "noserial-0");
+        assert_eq!(unique_id, "ZWO:ZWO-ASI1600MM-Cool:noserial-0");
+    }
 }
 
 #[cfg(all(test, feature = "simulation"))]
