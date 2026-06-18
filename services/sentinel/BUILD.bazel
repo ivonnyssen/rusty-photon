@@ -1,7 +1,10 @@
 load("@cr//:defs.bzl", "aliases", "all_crate_deps")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 
-exports_files(["Cargo.toml"], visibility = ["//visibility:public"])
+exports_files(
+    ["Cargo.toml"],
+    visibility = ["//visibility:public"],
+)
 
 _INTRA_WORKSPACE_DEPS = [
     "//crates/rp-auth:rp-auth",
@@ -11,7 +14,10 @@ _INTRA_WORKSPACE_DEPS = [
 
 rust_library(
     name = "sentinel_lib",
-    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]),
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = ["src/main.rs"],
+    ),
     aliases = aliases(),
     crate_name = "sentinel",
     edition = "2021",
@@ -32,11 +38,11 @@ rust_binary(
 
 rust_test(
     name = "sentinel_unit_test",
+    size = "small",
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,
     ),
-    size = "small",
     crate = ":sentinel_lib",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
@@ -50,18 +56,18 @@ rust_test(
 
 rust_test(
     name = "bdd",
-    srcs = ["tests/bdd.rs"] + glob(["tests/bdd/**/*.rs"]),
     # ~15 s locally; cross-spawns filemonitor. "small" gives 60 s headroom.
     size = "small",
+    srcs = ["tests/bdd.rs"] + glob(["tests/bdd/**/*.rs"]),
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,
     ),
     crate_root = "tests/bdd.rs",
     data = [
-        ":sentinel",
         "Cargo.toml",
-        "//services/filemonitor:filemonitor",
+        ":sentinel",
+        "//services/filemonitor",
     ] + glob(["tests/features/**"]),
     edition = "2021",
     env = {
@@ -80,7 +86,10 @@ rust_test(
     rustc_env = {"CARGO_PKG_NAME": "sentinel"},
     tags = ["bdd"],
     use_libtest_harness = False,
-    deps = [":sentinel_lib", "//crates/bdd-infra:bdd-infra"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
+    deps = [
+        ":sentinel_lib",
+        "//crates/bdd-infra",
+    ] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
         normal = True,
         normal_dev = True,
     ),

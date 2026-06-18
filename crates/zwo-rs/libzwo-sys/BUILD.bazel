@@ -2,7 +2,10 @@ load("@cr//:defs.bzl", "all_crate_deps")
 load("@rules_rust//cargo:defs.bzl", "cargo_build_script", "cargo_toml_env_vars")
 load("@rules_rust//rust:defs.bzl", "rust_library")
 
-exports_files(["Cargo.toml"], visibility = ["//visibility:public"])
+exports_files(
+    ["Cargo.toml"],
+    visibility = ["//visibility:public"],
+)
 
 # First first-party `cargo_build_script` in the repo, and the first to run
 # bindgen under Bazel from a hand-written rule (ADR-010 / docs/plans/vendor-zwo-rs.md).
@@ -27,11 +30,9 @@ cargo_build_script(
     srcs = ["build.rs"],
     # The vendored MIT SDK headers + the bindgen aggregate header are read by
     # build.rs at action time (via CARGO_MANIFEST_DIR), so they must be in the
-    # build script's sandbox.
-    data = glob([
-        "sdk/include/**",
-        "wrapper.h",
-    ]),
+    # build script's sandbox. wrapper.h is named explicitly (a constant has no
+    # business in a glob — buildifier's `constant-glob` lint).
+    data = ["wrapper.h"] + glob(["sdk/include/**"]),
     edition = "2021",
     # `links = "zwo"` marks this build script as the single provider of the
     # native ZWO SDK linkage (libASICamera2 / libEFWFilter + libusb/udev/c++),

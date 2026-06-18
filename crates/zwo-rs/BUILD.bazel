@@ -1,7 +1,10 @@
 load("@cr//:defs.bzl", "all_crate_deps")
 load("@rules_rust//rust:defs.bzl", "rust_library")
 
-exports_files(["Cargo.toml"], visibility = ["//visibility:public"])
+exports_files(
+    ["Cargo.toml"],
+    visibility = ["//visibility:public"],
+)
 
 # Two-variant build (the real/sim parity win of ADR-010 / docs/plans/vendor-zwo-rs.md),
 # applying the first-party variant pattern used by crates/rp-plate-solver
@@ -32,11 +35,11 @@ rust_library(
 # on this. (The SDK is still linked — simulation removes the camera, not the link.)
 rust_library(
     name = "zwo-rs_sim",
+    testonly = True,
     srcs = glob(["src/**/*.rs"]),
     crate_features = ["simulation"],
     crate_name = "zwo_rs",
     edition = "2021",
-    testonly = True,
     visibility = ["//visibility:public"],
     deps = [_LIBZWO_SYS] + all_crate_deps(normal = True),
 )

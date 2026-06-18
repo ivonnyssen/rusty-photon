@@ -1,7 +1,10 @@
 load("@cr//:defs.bzl", "aliases", "all_crate_deps")
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
-exports_files(["Cargo.toml"], visibility = ["//visibility:public"])
+exports_files(
+    ["Cargo.toml"],
+    visibility = ["//visibility:public"],
+)
 
 rust_library(
     name = "rusty-photon-shared-transport",
@@ -16,11 +19,11 @@ rust_library(
 
 rust_test(
     name = "rusty-photon-shared-transport_unit_test",
+    size = "small",
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,
     ),
-    size = "small",
     crate = ":rusty-photon-shared-transport",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
@@ -38,8 +41,8 @@ _COMMON_SRCS = ["tests/common/mod.rs"]
 
 rust_test(
     name = "race",
-    srcs = ["tests/race.rs"] + _COMMON_SRCS,
     size = "small",
+    srcs = ["tests/race.rs"] + _COMMON_SRCS,
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,
@@ -58,8 +61,8 @@ rust_test(
 
 rust_test(
     name = "rollback",
-    srcs = ["tests/rollback.rs"] + _COMMON_SRCS,
     size = "small",
+    srcs = ["tests/rollback.rs"] + _COMMON_SRCS,
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,
@@ -78,8 +81,8 @@ rust_test(
 
 rust_test(
     name = "while_open",
-    srcs = ["tests/while_open.rs"] + _COMMON_SRCS,
     size = "small",
+    srcs = ["tests/while_open.rs"] + _COMMON_SRCS,
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,
@@ -98,8 +101,8 @@ rust_test(
 
 rust_test(
     name = "idempotent",
-    srcs = ["tests/idempotent.rs"] + _COMMON_SRCS,
     size = "small",
+    srcs = ["tests/idempotent.rs"] + _COMMON_SRCS,
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,
@@ -118,8 +121,8 @@ rust_test(
 
 rust_test(
     name = "lifecycle",
-    srcs = ["tests/lifecycle.rs"] + _COMMON_SRCS,
     size = "small",
+    srcs = ["tests/lifecycle.rs"] + _COMMON_SRCS,
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,
@@ -138,8 +141,8 @@ rust_test(
 
 rust_test(
     name = "reconnect",
-    srcs = ["tests/reconnect.rs"] + _COMMON_SRCS,
     size = "small",
+    srcs = ["tests/reconnect.rs"] + _COMMON_SRCS,
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,

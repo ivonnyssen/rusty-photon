@@ -1,7 +1,10 @@
 load("@cr//:defs.bzl", "aliases", "all_crate_deps")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 
-exports_files(["Cargo.toml"], visibility = ["//visibility:public"])
+exports_files(
+    ["Cargo.toml"],
+    visibility = ["//visibility:public"],
+)
 
 # zwo-camera links the native ZWO ASI/EFW SDK transitively via
 # zwo-rs → libzwo-sys (see docs/services/zwo-camera.md "Native dependency & build
@@ -34,7 +37,10 @@ _INTRA_WORKSPACE_DEPS = [
 
 rust_library(
     name = "zwo-camera_lib",
-    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]),
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = ["src/main.rs"],
+    ),
     aliases = aliases(),
     crate_name = "zwo_camera",
     edition = "2021",
@@ -42,7 +48,7 @@ rust_library(
     visibility = ["//visibility:public"],
     # zwo-rs is first-party (crates/zwo-rs), so it is NOT an `@cr` crate and must
     # be named explicitly. The production lib links the REAL SDK variant.
-    deps = _INTRA_WORKSPACE_DEPS + ["//crates/zwo-rs:zwo-rs"] + all_crate_deps(normal = True),
+    deps = _INTRA_WORKSPACE_DEPS + ["//crates/zwo-rs"] + all_crate_deps(normal = True),
 )
 
 rust_binary(
@@ -86,16 +92,19 @@ rust_test(
 # spawn.
 rust_library(
     name = "zwo-camera_lib_sim",
-    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]),
+    # `testonly` because it links the `testonly` `:zwo-rs_sim` variant; Bazel
+    # propagates the constraint, which is exactly right — the sim lib is only ever
+    # built by the unit-test / BDD / ConformU targets.
+    testonly = True,
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = ["src/main.rs"],
+    ),
     aliases = aliases(),
     crate_features = ["mock"],
     crate_name = "zwo_camera",
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
-    # `testonly` because it links the `testonly` `:zwo-rs_sim` variant; Bazel
-    # propagates the constraint, which is exactly right — the sim lib is only ever
-    # built by the unit-test / BDD / ConformU targets.
-    testonly = True,
     # The simulation lib links the SIM SDK variant; the binary, BDD, ConformU, and
     # unit-test targets that build on it inherit it transitively.
     deps = _INTRA_WORKSPACE_DEPS + ["//crates/zwo-rs:zwo-rs_sim"] + all_crate_deps(normal = True),
@@ -103,22 +112,22 @@ rust_library(
 
 rust_binary(
     name = "zwo-camera_sim",
+    # Spawned only as test `data` by the BDD / ConformU suites; `testonly`
+    # follows from linking the sim lib.
+    testonly = True,
     srcs = ["src/main.rs"],
     aliases = aliases(),
     crate_features = ["mock"],
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     rustc_env = {"CARGO_PKG_NAME": "zwo-camera"},
-    # Spawned only as test `data` by the BDD / ConformU suites; `testonly`
-    # follows from linking the sim lib.
-    testonly = True,
     deps = [":zwo-camera_lib_sim"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
 
 rust_test(
     name = "conformu_integration",
-    srcs = ["tests/conformu_integration.rs"],
     size = "large",
+    srcs = ["tests/conformu_integration.rs"],
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,
@@ -150,16 +159,16 @@ rust_test(
 
 rust_test(
     name = "bdd",
-    srcs = ["tests/bdd.rs"] + glob(["tests/bdd/**/*.rs"]),
     size = "small",
+    srcs = ["tests/bdd.rs"] + glob(["tests/bdd/**/*.rs"]),
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,
     ),
     crate_root = "tests/bdd.rs",
     data = [
-        ":zwo-camera_sim",
         "Cargo.toml",
+        ":zwo-camera_sim",
     ] + glob(["tests/features/**"]),
     edition = "2021",
     env = {
@@ -178,7 +187,7 @@ rust_test(
     use_libtest_harness = False,
     deps = [
         ":zwo-camera_lib_sim",
-        "//crates/bdd-infra:bdd-infra",
+        "//crates/bdd-infra",
     ] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
         normal = True,
         normal_dev = True,
