@@ -114,6 +114,19 @@ build:windows --action_env=AWS_LC_SYS_NO_JITTER_ENTROPY=1
 # registry key) and the short output base (C:/b) to stay within limits.
 build:windows --enable_runfiles
 
+# Windows links the QHYCCD SDK as a runtime DLL: `qhyccd-sdk-install` extracts
+# qhyccd.dll to `$GITHUB_WORKSPACE\pkg_win\x64` and prepends that to the runner
+# PATH. Bazel test actions run with a controlled environment that does NOT inherit
+# the runner PATH, so qhy-camera's BDD/ConformU-spawned simulation binary — which
+# still links qhyccd at load time even in the simulation backend — cannot find
+# qhyccd.dll and exits before binding (every scenario then fails with "failed to
+# parse bound port"). Forward PATH (by name) into Windows test actions so the
+# loader finds the DLL. On `build:windows` (not the BDD step) so the --test_env SET
+# is identical across every Windows CI Bazel invocation — a changing --test_env
+# discards the analysis cache (see the OMNISIM_PATH note below). Linux/macOS link
+# qhyccd statically (no runtime lib), so this is Windows-only.
+build:windows --test_env=PATH
+
 # --- Disk cache ------------------------------------------------------------
 
 # Keep a local disk cache so repeated `bazel build` across branches reuses
