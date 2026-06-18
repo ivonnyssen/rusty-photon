@@ -6,9 +6,11 @@ rust-version = "1.94.1"
 authors = ["Igor von Nyssen <igor@vonnyssen.com>"]
 license = "MIT OR Apache-2.0"
 readme = "README.md"
-repository = "https://github.com/ivonnyssen/zwo-rs"
+# Canonical development home is the rusty-photon monorepo (ADR-010); the crate is
+# still published to crates.io from crates/zwo-rs (dual-home).
+repository = "https://github.com/ivonnyssen/rusty-photon"
 documentation = "https://docs.rs/zwo-rs"
-homepage = "https://github.com/ivonnyssen/zwo-rs"
+homepage = "https://github.com/ivonnyssen/rusty-photon"
 description = "Safe Rust bindings for the ZWO ASI camera and EFW filter wheel SDK"
 keywords = ["zwo", "asi", "astronomy", "camera", "filter-wheel"]
 categories = ["api-bindings", "hardware-support"]

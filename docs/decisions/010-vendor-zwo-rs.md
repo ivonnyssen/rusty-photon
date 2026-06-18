@@ -2,9 +2,13 @@
 
 ## Status
 
-Accepted (2026-06-17). **Not yet implemented** — tracked by
-[`docs/plans/vendor-zwo-rs.md`](../plans/vendor-zwo-rs.md). Phase 0 (decisions) is
-settled by this ADR; Phases 1–3 are the implementation.
+Accepted (2026-06-17); **implemented** on `worktree-zwo-driver` / PR #369 —
+tracked by [`docs/plans/vendor-zwo-rs.md`](../plans/vendor-zwo-rs.md). Phase 0
+(decisions) is settled by this ADR; Phase 1 (Cargo vendor → path dep), Phase 2
+(Bazel real/sim two-variant), and Phase 3 docs are landed and verified on Linux.
+**Pending:** the first crates.io publish (`libzwo-sys` then `zwo-rs` 0.1.0) and the
+standalone-repo archival — both forward-only, owner-run (see the Release runbook
+below) — plus macOS/Windows CI confirmation.
 
 Amends [ADR-008](008-zwo-camera-native-sdk-ffi.md)'s "canonical home" posture (the
 FFI crates as standalone, separately-published repos, consumed by the driver as a
@@ -21,10 +25,11 @@ non-default features for tests").
 ## Context
 
 `zwo-rs` (`0.1.0`) and its FFI sub-crate `libzwo-sys` (`0.1.0`) are authored by us
-(`ivonnyssen/zwo-rs`) but consumed as an **external git dependency** — the root
-`Cargo.toml` pins
-`zwo-rs = { git = "https://github.com/ivonnyssen/zwo-rs", rev = "3c32e59…" }`. They
-are **unpublished** (no crates.io release yet). The `zwo-camera` service links the
+(`ivonnyssen/zwo-rs`). *Before this change* they were consumed as an **external
+git dependency** — the root `Cargo.toml` pinned
+`zwo-rs = { git = "https://github.com/ivonnyssen/zwo-rs", rev = "3c32e59…" }` — and
+were **unpublished** (no crates.io release). This ADR replaces that pin with a path
+dep to the vendored `crates/zwo-rs`. The `zwo-camera` service links the
 native ZWO ASI/EFW SDK through them: `libzwo-sys` declares `links = "zwo"`, runs
 **bindgen** over vendored MIT headers (`sdk/include/{ASICamera2,EFW_filter,
 EAF_focuser}.h`, parsed as C++ for the bare `bool`) in its `build.rs`, and emits
