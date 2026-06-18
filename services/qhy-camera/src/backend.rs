@@ -717,11 +717,15 @@ pub(crate) mod mock {
 
 /// Tests for [`SharedCameraConnection`] — the refcount that makes the Camera and
 /// FilterWheel devices share ONE physical handle so disconnecting one does not
-/// tear down the other (the real-hardware bug fixed 2026-06-18). These run
-/// against the `qhyccd-rs` simulation backend (enabled in the test build via the
-/// `qhyccd-rs` dev-dep `simulation` feature), so they need no camera and make no
-/// real SDK calls — `Sdk::new()` fabricates a QHY178M-Simulated camera + CFW.
-#[cfg(test)]
+/// tear down the other (the real-hardware bug fixed 2026-06-18). They exercise
+/// the refcount against the `qhyccd-rs` simulation backend (`Sdk::new()`
+/// fabricates a QHY178M-Simulated camera + CFW), so they need no hardware.
+///
+/// Gated on `feature = "simulation"`: `cargo --all-features` / `cargo rail` turn
+/// it on and run these, but the Bazel `qhy-camera_unit_test` target links the
+/// REAL SDK (no `simulation`), where `Sdk::new()` would scan USB and find no
+/// camera — so they are correctly compiled out there.
+#[cfg(all(test, feature = "simulation"))]
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod conn_tests {
