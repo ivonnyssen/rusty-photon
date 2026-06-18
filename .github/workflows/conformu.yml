@@ -53,12 +53,13 @@ jobs:
           # service unconditionally; there is no PR base to diff against
           # and the whole point of the run is to catch drift across the
           # full surface.
-          # zwo-camera carries [package.metadata.conformu] but its ConformU is
-          # not wired into this workflow yet (Phase G): these jobs provision no
-          # ZWO SDK, so building/running it here would fail to link. Exclude it
-          # until Phase G adds SDK provisioning to the conformu jobs.
+          # Phase G (2026-06-18): zwo-camera is a full ConformU citizen now. The
+          # conformu jobs provision the native ZWO SDK via
+          # ./.github/actions/install-zwo-sdk (the "provision, don't exclude"
+          # principle — ADR-008 / docs/plans/bazel-migration.md), so it builds and
+          # runs here like every other service. No `select(.name != ...)` filter.
           SERVICES=$(cargo metadata --format-version 1 --no-deps 2>/dev/null | \
-            jq -c '[.packages[] | select(.metadata.conformu.command) | select(.name != "zwo-camera") | {name: .name, command: .metadata.conformu.command}]')
+            jq -c '[.packages[] | select(.metadata.conformu.command) | {name: .name, command: .metadata.conformu.command}]')
 
           COUNT=$(echo "$SERVICES" | jq 'length')
           echo "services=$SERVICES" >> $GITHUB_OUTPUT
@@ -108,12 +109,13 @@ jobs:
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
 
+      # zwo-camera (and the vendored zwo-rs/libzwo-sys members) link the native
+      # ZWO SDK; provision it so the full-workspace pre-build links — no exclusion.
+      - name: Install ZWO SDK
+        uses: ./.github/actions/install-zwo-sdk
+
       - name: Pre-build workspace
-        # zwo-camera links the native ZWO SDK. Its ConformU integration test
-        # exists (services/zwo-camera/tests/conformu_integration.rs, `conformu`
-        # feature) but is not wired into this workflow yet (Phase G), so exclude
-        # it here — this job provisions no ZWO SDK.
-        run: cargo build --locked --workspace --exclude zwo-camera --all-features --all-targets
+        run: cargo build --locked --workspace --all-features --all-targets
 
       - name: Run ConformU tests (parallel)
         shell: bash
@@ -189,6 +191,11 @@ jobs:
       - name: cargo generate-lockfile
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
+
+      # Per-service matrix, so only zwo-camera needs the native ZWO SDK on Windows.
+      - name: Install ZWO SDK
+        if: matrix.service.name == 'zwo-camera'
+        uses: ./.github/actions/install-zwo-sdk
 
       - name: Pre-build
         run: cargo build --locked --package ${{ matrix.service.name }} --all-features --all-targets

@@ -625,8 +625,9 @@ and **57 BDD scenarios** (all green), plus a full **ConformU** pass.
   control; parallel 52 MB frame fill, ≈11 s → ≈0.01 s, clearing the 10 s
   `StartExposure` timeout), plus two **driver** fixes that only became reachable
   once ConformU got past `StartExposure`: aligned reported `CameraXSize` (R4, see
-  *Geometry*) and asynchronous `PulseGuide` (see *Guiding*). Wiring `zwo-camera`
-  into `conformu.yml` is the remaining Phase G step.
+  *Geometry*) and asynchronous `PulseGuide` (see *Guiding*). `zwo-camera` is now
+  wired into `conformu.yml` (Phase G, 2026-06-18): the conformu jobs provision the
+  ZWO SDK and run its ConformU on ubuntu/macOS/Windows.
 
 > **CI caveat (critical):** the `simulation` feature removes the *camera*
 > requirement, **not the SDK**. All build/test/ConformU jobs for this package

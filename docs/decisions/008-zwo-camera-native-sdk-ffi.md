@@ -9,8 +9,10 @@ Accepted (2026-06-14); implemented through Phase E (2026-06-16). Tracked by
 a standalone repo (bindgen skeleton, green CI), and `services/zwo-camera` now
 implements the full ASCOM `Device + Camera` surface over them (Phase C scaffold →
 Phase E full Camera, ConformU passing), with the native-SDK CI/Bazel provisioning
-this ADR calls for in place. Remaining: EFW `FilterWheel` (Phase F) and ConformU
-CI wiring (Phase G).
+this ADR calls for in place. **Phase G (ConformU CI wiring) landed 2026-06-18** —
+`conformu.yml` provisions the ZWO SDK and runs zwo-camera's ConformU on
+ubuntu/macOS/Windows like every other service. Remaining: EFW `FilterWheel`
+(Phase F).
 
 **Amended by [ADR-010](010-vendor-zwo-rs.md) (2026-06-17):** the "standalone repo,
 consumed as an external git-rev dependency" canonical-home decision here is

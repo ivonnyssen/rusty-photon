@@ -53,10 +53,12 @@ jobs:
           sed -i '/^\s*\[profile.dev\]/,/^\s*\[/ {/^\s*opt-level/d}' Cargo.toml
           sed -i '/^\s*\[profile.dev\]/a opt-level = 1' Cargo.toml
       - name: cargo build
-        # Exclude zwo-camera: it links the native ZWO SDK — an opaque third-party
-        # blob with no sanitizer value (like qhy-camera) — and this job provisions
-        # no SDK to link against.
-        run: cargo build --workspace --exclude zwo-camera --all-features --all-targets
+        # Exclude zwo-camera and the vendored zwo-rs/libzwo-sys: they link the
+        # native ZWO SDK — an opaque third-party blob with no sanitizer value (like
+        # qhy-camera) — and this job provisions no SDK to link against. (Unlike
+        # conformu.yml, this stays an EXCLUSION on purpose: ASan/LSan cannot
+        # instrument the prebuilt blob, so provisioning it would only add noise.)
+        run: cargo build --workspace --exclude zwo-camera --exclude zwo-rs --exclude libzwo-sys --all-features --all-targets
         env:
           RUSTFLAGS: "-Z sanitizer=${{ matrix.sanitizer }}"
       - name: cargo test
@@ -65,9 +67,9 @@ jobs:
         # which doesn't exist when CARGO_BUILD_TARGET is set
         run: |
           if [ "${{ matrix.sanitizer }}" = "address" ]; then
-            cargo test --workspace --exclude bdd-infra --exclude zwo-camera --lib --tests --all-features
+            cargo test --workspace --exclude bdd-infra --exclude zwo-camera --exclude zwo-rs --exclude libzwo-sys --lib --tests --all-features
           else
-            cargo test --workspace --exclude bdd-infra --exclude zwo-camera --all-features --all-targets
+            cargo test --workspace --exclude bdd-infra --exclude zwo-camera --exclude zwo-rs --exclude libzwo-sys --all-features --all-targets
           fi
         env:
           ASAN_OPTIONS: "detect_odr_violation=0:detect_leaks=0"
