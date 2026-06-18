@@ -81,7 +81,7 @@ impl TryFrom<u32> for BayerMode {
 #[derive(Debug, PartialEq)]
 /// used to store readout mode numbers and their descriptions coming from `get_readout_mode_name`
 pub struct ReadoutMode {
-    /// the number of the mode staring with 0
+    /// the number of the mode starting with 0
     pub id: u32,
     /// the name of the mode e.g., `"STANDARD MODE"`
     pub name: String,
