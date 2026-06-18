@@ -2,14 +2,28 @@
 
 ## Status
 
-**Draft — design.** This plan describes how to close the implementation
-gap behind two long-standing sections of the rp design doc:
+**Complete — all five phases shipped.** Every phase below carries an
+"As-built note" recording what landed and the decisions taken; the
+authoritative contracts now live in the design docs
+([`docs/services/rp.md` §Real-Time Stream](../services/rp.md#real-time-stream)
+and [`docs/services/sentinel.md` §Operation Watchdog](../services/sentinel.md#operation-watchdog)).
+Remaining housekeeping: archive the per-phase execution plans
+(`predictive-deadlines-phase1-event-surface.md` is already in `archive/`;
+`predictive-deadlines-phase3-sse.md` archives when this branch merges to
+`main`). Two design items were **deliberately deferred** (documented in
+the relevant phase notes): the rp-side recovery callbacks
+(`POST /api/internal/operation-aborted` / `service-restarted`, Phase 5
+§5.3–5.4) wait for rp-side abort-recovery/reconnect machinery to consume
+them, and the upstream rmcp transport fix is tracked separately.
+
+This plan describes how it closed the implementation gap behind two
+long-standing sections of the rp design doc:
 
 - [`docs/services/rp.md` §Sentinel Watchdog Integration](../services/rp.md#sentinel-watchdog-integration)
 - [`docs/services/rp.md` §Real-Time Stream](../services/rp.md#real-time-stream)
 
-Both have lived in the design doc since rp was first sketched; neither
-has any code behind them today. The catalyst for picking this up was
+Both had lived in the design doc since rp was first sketched with no code
+behind them. The catalyst for picking this up was
 the macOS BDD hang investigated on PR #267: a tiny corrective slew in
 OmniSim stalled past the hardcoded 300 s `poll_slewing_until_idle`
 deadline, which by accident is also rmcp's default session
@@ -209,7 +223,7 @@ note).
 > schema** is [`docs/services/rp.md` §Event Envelope](../services/rp.md#event-envelope).
 > Three compat-driven refinements over the sketch below, all following
 > from Decision A (preserve the historical webhook keys; see the phase-1
-> implementation plan, [`predictive-deadlines-phase1-event-surface.md`](predictive-deadlines-phase1-event-surface.md)):
+> implementation plan, [`predictive-deadlines-phase1-event-surface.md`](archive/predictive-deadlines-phase1-event-surface.md)):
 > (1) the envelope keeps the historical **`event`** field (e.g.
 > `"slew_started"`) — there is no separate `operation` field; the
 > operation family is the event-name prefix. (2) Both the `*_started`
@@ -393,6 +407,25 @@ The focuser driver knows its step rate; expose it via the Alpaca
 
 ### 2.4 Exposure deadline
 
+> **As-built note (§2.4 shipped).** Landed in
+> `services/rp/src/config/camera.rs` (`readout_time_estimate: Option<Duration>`,
+> humantime, per-camera) + `services/rp/src/mcp/internals.rs`
+> (`exposure_deadlines()` + `DEFAULT_READOUT_TIME_ESTIMATE = 15 s`,
+> `EXPOSURE_READOUT_HEADROOM = 30 s`), wired onto `exposure_started` in
+> `do_capture` via `.with_deadlines()`. Two decisions over the sketch
+> below: (1) the deadline is **advisory** — rp does **not** enforce it.
+> The plan said "rp itself does not need to enforce it (the camera driver
+> does)", so `do_capture`'s existing internal readout backstop
+> (`CAPTURE_READOUT_GRACE`, a separate and deliberately more-generous
+> `duration + 120 s` ceiling) is unchanged; the new `predicted`/`max`
+> ride the envelope purely for the Sentinel watchdog. (2) a single
+> conservative `DEFAULT_READOUT_TIME_ESTIMATE` (15 s) replaces the
+> per-detector-family default table — over-estimating `predicted` for fast
+> CMOS is harmless (it only relaxes the watchdog), and a real rig sets the
+> per-camera value. The authoritative contract is
+> [`docs/services/rp.md` §Event Envelope](../services/rp.md#event-envelope)
+> and the `capture` catalog row.
+
 ```text
 predicted = exposure_duration + camera.readout_time_estimate
 max       = predicted + READOUT_HEADROOM   // e.g. + 30 s for slow USB 2 cameras
@@ -407,6 +440,24 @@ camera driver does), but Sentinel's view is "we expected 300 s,
 it's been 330 s, what's going on?"
 
 ### 2.5 Centering deadline
+
+> **As-built note (§2.5 shipped — completes Phase 2).** Landed in a new
+> `services/rp/src/config/centering.rs` (`CenteringConfig {
+> solve_time_estimate (default 30 s), slew_overhead_estimate (default
+> 10 s) }`, humantime, `#[serde(default)]` on `Config.centering`) +
+> `centering_deadlines()` in `services/rp/src/mcp/internals.rs`, threaded
+> onto `McpHandler` via `with_centering_config` and stamped on
+> `centering_started` in `center_on_target_inner`. Decisions: (1) **outer
+> loop only**, per the design's open-question resolution — the watchdog
+> tracks overall convergence; each per-iteration `slew`/`capture` already
+> carries its own predictive deadline, so the centering envelope does not
+> double-count them. (2) `predicted` is one iteration (optimistic
+> single-pass convergence) and `max` is `max_attempts × per_iter`, giving
+> the envelope's two fields distinct, useful meanings. (3) advisory only —
+> rp does not enforce it (same posture as §2.4 exposure). The
+> authoritative contract is
+> [`docs/services/rp.md` §Event Envelope](../services/rp.md#event-envelope)
+> and the [`center_on_target` Contract](../services/rp.md#center_on_target-contract).
 
 `max = max_attempts * (capture_duration + solve_time_estimate +
 slew_overhead_estimate)`. `capture_duration` is the operator's
@@ -427,6 +478,33 @@ defaults.
   becomes parameterised over the new deadline.
 
 ## Phase 3 — `/api/events/subscribe` SSE endpoint
+
+> **As-built note (Phase 3 shipped).** The endpoint streams every
+> `EventBus` event as SSE — `id` = `event_seq`, `event` = type, `data` =
+> the full `EventEnvelope` JSON. Landed in `services/rp/src/events.rs` (a
+> bounded 512-event history ring + `subscribe_with_history`, which snapshots
+> history and subscribes under one lock for a race-free replay→live handoff),
+> `services/rp/src/routes.rs` (`GET /api/events/subscribe` via a hand-rolled
+> `async-stream` body: replay-after-`Last-Event-ID` → live tail → end), and
+> the shutdown seam in `lib.rs` (a `CancellationToken` in `AppState`,
+> cancelled by `start()` so in-flight streams end and graceful shutdown
+> drains — no `main.rs` change). `Last-Event-ID` is read from the header or
+> `?last_event_id=`; a reconnect whose cursor predates the ring gets a leading
+> `stream_gap`; a consumer that lags `BROADCAST_CAPACITY` (256) gets a final
+> `stream_gap` and is disconnected (it reconnects and replays from history).
+> One new dep: **`async-stream`** (the parent's "no dep churn" note was
+> optimistic — axum's `Sse` consumes a `Stream` but doesn't make one from a
+> `broadcast::Receiver`). Verified by unit tests (ring/handoff, gap detection,
+> `Last-Event-ID` parsing, lag→`stream_gap` via a deterministic
+> broadcast-overrun integration test) and BDD `event_subscribe.feature`
+> (subscribe→live and reconnect→replay over real HTTP, driven by a new
+> `bdd_infra::rp_harness::SseClient` that reads the body with
+> `reqwest::Response::chunk` — no `stream` feature needed). The
+> authoritative contract is
+> [`docs/services/rp.md` §Real-Time Stream](../services/rp.md#real-time-stream);
+> the execution plan is
+> [`predictive-deadlines-phase3-sse.md`](predictive-deadlines-phase3-sse.md)
+> (archive on merge). **Sentinel's consumer (Phase 4) is the next gate.**
 
 **One PR.** Wires the broadcast channel from Phase 1.3 to an HTTP
 endpoint.
@@ -503,6 +581,46 @@ unresponsive" anyway.
   disconnected rather than backing up the broadcast channel.
 
 ## Phase 4 — Sentinel `OperationDeadlineMonitor`
+
+> **As-built note (Phase 4 shipped).** Landed in a new
+> `services/sentinel/src/watchdog.rs` plus config + engine + builder wiring.
+> The authoritative contract is
+> [`docs/services/sentinel.md` §Operation Watchdog](../services/sentinel.md#operation-watchdog).
+> Decisions over the sketch below:
+> (1) **New `EventMonitor` trait, not a widened `Monitor`** — the plan's
+> conservative option (§4.1). It is push-based (`name()` + `run(cancel)`);
+> the `Engine` spawns one task per `EventMonitor` alongside the per-`Monitor`
+> poll loops. `OperationDeadlineMonitor` is the first impl.
+> (2) **Injectable event source.** A `WatchdogEventSource` seam separates the
+> SSE transport from the deadline-tracking logic: `HttpWatchdogEventSource`
+> reads the stream with `reqwest::Response::chunk` (no `stream` cargo feature,
+> matching Phase 3's `SseClient`), and a mock source feeds scripted frames to
+> the unit tests under `start_paused` virtual time.
+> (3) **Notify-only rung only** (§5.1 lands implicitly here). `on_expiry` is
+> an enum (`notify_only` | `abort_then_restart`) that is parsed and stored,
+> but both values notify-only this release; the abort/restart rungs and their
+> `services` config block (abort_url/restart_command) are Phase 5 — left out
+> now to avoid dead config. Escalation reuses the existing `Notifier` chain +
+> dashboard history.
+> (4) **Arrival-anchored deadlines.** The timer is armed for
+> `max_duration_ms + buffer` from when the `*_started` frame is *received*
+> (no host clock-sync needed; a replayed-overdue start fires immediately). A
+> `*_started` with no `max_duration_ms` (e.g. `plate_solve`) is tracked open
+> with no timer.
+> (5) **Liveness.** Disconnect → reconnect with `Last-Event-ID` (fixed
+> backoff, up to `reconnect_max_attempts`); a `stream_gap` escalates every
+> open operation (completions may have been lost); reconnect exhaustion
+> escalates "rp unresponsive". The whole `operation_watchdog` block is
+> optional — absent means today's safety-polling-only behavior.
+> (6) **Tests.** Six `start_paused` unit tests cover all four §4.4 behaviors
+> deterministically (complete-in-time, overrun, stream-gap, reconnect-replay,
+> rp-unresponsive) plus SSE parsing/classification. BDD
+> `operation_watchdog.feature` (complete→no alert, overrun→escalate,
+> unreachable→unresponsive) drives the **real sentinel binary** over real
+> HTTP against a controllable raw-tokio chunked SSE stub (no new dependency);
+> the reconnect/replay case is unit-covered rather than via a flaky
+> real-timeout BDD. **No Cargo.toml dep churn.** Phase 5 (health → abort →
+> restart) is the next gate.
 
 **One or two PRs.** Adds the second `Monitor` impl alongside
 `AlpacaSafetyMonitor`.
@@ -603,6 +721,51 @@ policy (Phase 5).
   monitor coexists with the old, no breaking change.
 
 ## Phase 5 — Corrective-action ladder
+
+> **As-built note (Phase 5 shipped — all rungs, one PR).** Landed in a new
+> `services/sentinel/src/corrective.rs` plus config + watchdog + factory
+> wiring. The authoritative contract is
+> [`docs/services/sentinel.md` §Operation Watchdog → Escalation](../services/sentinel.md#escalation-corrective-action-ladder).
+> Decisions over the sketch below:
+> (1) **All rungs in one PR, not one-per-rung.** The user opted into a single
+> PR; the rungs are tightly coupled (they share the `CorrectiveTarget`
+> resolution + the `Corrective` seam), so splitting bought nothing.
+> (2) **`Corrective` seam + three rung traits.** `CorrectiveLadder` composes
+> `HealthChecker` / `Aborter` / `Restarter` (HTTP + shell default impls)
+> behind one `Corrective::run(target)` the watchdog calls — so the watchdog's
+> policy branching is unit-tested against a recording mock, the ladder's
+> orchestration against mock rungs, and each default impl against a mock
+> `HttpClient` / `sh`.
+> (3) **Escalating ladder, not literal abort-then-restart.** Health → abort →
+> restart, taking the *least-invasive* action that resolves the stall: a
+> responsive service is aborted (ladder stops on a clean abort); an
+> unresponsive one — or a failed abort, or a family with no abort verb
+> (compound `centering`, `plate_solve`) — falls through to restart. Restart is
+> bounded by `max_restart_duration` and followed by a health re-poll to
+> confirm recovery. `restart_command: null` = not restartable (ladder stops at
+> abort).
+> (4) **Family → service is explicit config.** `operations.<family>.service`
+> names the owning service (resolved against a new `services` map of
+> `{base_url, device_number, restart_command}`); a static family→Alpaca table
+> supplies the device type + abort verb. An `abort_then_restart` family with
+> no resolvable `service` **degrades to notify_only** with a warning — a
+> config mistake never aborts the wrong device (tenet #2).
+> (5) **rp-side callbacks deferred.** §5.3/§5.4's `POST /api/internal/
+> operation-aborted` and `/api/internal/service-restarted` are **not** built:
+> rp has no abort-recovery / reconnect-after-restart machinery to consume
+> them today, so the endpoints would be dead no-ops (against the no-dead-code
+> tenet). They land with that rp-side recovery work.
+> (6) **Tests.** Corrective orchestration + default impls are unit-tested
+> (responsive→abort-stops, unresponsive→restart→recovery, abort-fail→restart,
+> compound-skips-abort, not-restartable-stops, restart-fail; HTTP health/abort
+> mapping; shell restarter exit-0 / nonzero / timeout, `#[cfg(unix)]`). The
+> watchdog's policy branch is unit-tested (abort_then_restart runs the ladder;
+> unresolvable service degrades to notify). BDD `operation_watchdog.feature`
+> adds one end-to-end scenario: a stuck `abort_then_restart` slew aborts a stub
+> Alpaca service through the **real sentinel binary** (health-check responsive
+> → `abortslew` PUT recorded), proving the wiring; the restart rung is
+> unit-covered rather than shelled out in BDD. **No Cargo.toml dep churn**
+> (`tokio` already has the `process` feature). **This completes the plan.**
 
 **One PR per ladder rung, three or four PRs total.** Each rung is
 independently useful; ship them in order.
@@ -755,20 +918,23 @@ upstream filing is appropriate. Tracked separately.
 
 ## Rollout
 
-| Phase | PR count | Depends on | Lands when |
-|---|---|---|---|
-| 1: Event surface complete           | 1   | —         | First |
-| 2: Predictive deadlines             | 2–3 | Phase 1   | Per operation family, can interleave with Phase 3 |
-| 3: `/api/events/subscribe` SSE      | 1   | Phase 1   | After or parallel with Phase 2 |
-| 4: `OperationDeadlineMonitor`       | 1–2 | Phase 3   | After Phase 3 |
-| 5.1 Notify-only rung                | 0   | Phase 4   | Implicit |
-| 5.2 Health-check rung               | 1   | Phase 4   | After Phase 4 |
-| 5.3 Abort rung                      | 1   | Phase 5.2 | After Phase 5.2 |
-| 5.4 Restart rung                    | 1   | Phase 5.3 | After Phase 5.3 |
+| Phase | Status | Depends on |
+|---|---|---|
+| 1: Event surface complete           | ✅ shipped | —         |
+| 2: Predictive deadlines             | ✅ shipped | Phase 1   |
+| 3: `/api/events/subscribe` SSE      | ✅ shipped | Phase 1   |
+| 4: `OperationDeadlineMonitor`       | ✅ shipped | Phase 3   |
+| 5.1 Notify-only rung                | ✅ shipped (implicit, Phase 4) | Phase 4   |
+| 5.2 Health-check rung               | ✅ shipped (Phase 5, one PR) | Phase 4   |
+| 5.3 Abort rung                      | ✅ shipped (Phase 5, one PR) | Phase 5.2 |
+| 5.4 Restart rung                    | ✅ shipped (Phase 5, one PR) | Phase 5.3 |
 
-Total: 7–10 PRs across rp and sentinel, no Cargo.toml dep churn
-beyond `tokio::sync::broadcast` (already in tree) and an SSE
-library (axum already has `sse` support).
+All five phases landed across rp and sentinel. Dep churn was limited to
+`async-stream` (Phase 3 — axum's `Sse` consumes a `Stream` but doesn't
+make one from a `broadcast::Receiver`); `tokio::sync::broadcast` and
+`tokio`'s `process` feature were already in tree. The Phase 5 ladder
+rungs (5.2–5.4) were combined into one PR rather than three (the rungs
+share `CorrectiveTarget` resolution + the `Corrective` seam).
 
 ## Open questions
 

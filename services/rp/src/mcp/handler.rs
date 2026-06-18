@@ -44,6 +44,11 @@ pub struct McpHandler {
     /// `search_radius_deg` parameter is omitted. Mirrors
     /// `PlateSolverConfig::default_search_radius_deg`.
     pub plate_solver_default_search_radius_deg: Option<f64>,
+    /// Per-rig estimates sizing the advisory `center_on_target` deadline
+    /// (§2.5) carried on `centering_started`. Wired by
+    /// `with_centering_config` from the `centering` block in rp config;
+    /// tests use `CenteringConfig::default()`.
+    pub centering: crate::config::CenteringConfig,
     /// Merged tool catalog. Built by summing per-category routers
     /// in [`McpHandler::new`]; consumed by the
     /// `#[tool_handler(router = self.tool_router)]` ServerHandler
@@ -69,6 +74,7 @@ impl McpHandler {
             default_min_altitude_degrees: 20.0,
             plate_solver: None,
             plate_solver_default_search_radius_deg: None,
+            centering: crate::config::CenteringConfig::default(),
             // Pattern (c) merge: each `built_in/<category>.rs`
             // declares a `#[tool_router(router = tool_router_<name>,
             // vis = "pub")]` block whose generated associated function
@@ -115,6 +121,14 @@ impl McpHandler {
     ) -> Self {
         self.plate_solver = client;
         self.plate_solver_default_search_radius_deg = default_search_radius_deg;
+        self
+    }
+
+    /// Wire the per-rig centering estimates (§2.5) from the `centering`
+    /// config block. The lib.rs build path calls this with
+    /// `config.centering`; tests leave the default.
+    pub fn with_centering_config(mut self, centering: crate::config::CenteringConfig) -> Self {
+        self.centering = centering;
         self
     }
 }

@@ -1,7 +1,9 @@
 use std::sync::Arc;
+use std::time::Duration;
 
-use axum::extract::{Path, State};
-use axum::http::{header, StatusCode};
+use axum::extract::{Path, Query, State};
+use axum::http::{header, HeaderMap, StatusCode};
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -9,9 +11,11 @@ use rmcp::transport::streamable_http_server::session::local::LocalSessionManager
 use rmcp::transport::streamable_http_server::StreamableHttpServerConfig;
 use rmcp::transport::streamable_http_server::StreamableHttpService;
 use serde_json::Value;
+use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
 use crate::equipment::EquipmentRegistry;
+use crate::events::{EventEnvelope, Subscription};
 use crate::mcp::McpHandler;
 use crate::persistence::{CachedPixels, ImageCache};
 use crate::session::SessionManager;
@@ -31,6 +35,10 @@ pub struct AppState {
     pub mcp: McpHandler,
     pub session: Arc<SessionManager>,
     pub image_cache: ImageCache,
+    /// Cancelled when rp begins graceful shutdown; the SSE handler selects on
+    /// it to end in-flight `/api/events/subscribe` streams. See
+    /// `BoundServer::start`.
+    pub sse_shutdown: CancellationToken,
 }
 
 pub fn build_router(state: AppState) -> Router {
@@ -57,6 +65,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/documents/{document_id}", get(get_document))
         .route("/api/images/{document_id}", get(get_image_metadata))
         .route("/api/images/{document_id}/pixels", get(get_image_pixels))
+        .route("/api/events/subscribe", get(subscribe_events))
         .with_state(state)
 }
 
@@ -67,6 +76,152 @@ async fn health() -> &'static str {
 async fn get_equipment(State(state): State<AppState>) -> Json<Value> {
     let status = state.equipment.status();
     Json(serde_json::to_value(status).unwrap_or_default())
+}
+
+/// Interval between SSE `:keep-alive` comment lines, to keep middleboxes from
+/// closing an idle stream.
+const SSE_KEEP_ALIVE: Duration = Duration::from_secs(15);
+
+/// Query parameters for [`subscribe_events`]. `last_event_id` is the explicit,
+/// testable form of the `Last-Event-ID` reconnect cursor (the header takes
+/// precedence — see [`parse_last_event_id`]).
+#[derive(serde::Deserialize)]
+struct SubscribeParams {
+    last_event_id: Option<u64>,
+}
+
+/// `GET /api/events/subscribe` — stream every emitted event as Server-Sent
+/// Events. Each frame's SSE `id` is the envelope's `event_seq`, the SSE
+/// `event` is the event type, and `data` is the full [`EventEnvelope`] JSON.
+///
+/// On reconnect the client sends its last seen `event_seq` (the `Last-Event-ID`
+/// header, or `?last_event_id=`); buffered events after it are replayed
+/// oldest-first before the live tail. If history was evicted past the cursor a
+/// leading `stream_gap` event signals the loss. A consumer that lags the live
+/// channel is sent a final `stream_gap` and disconnected so it reconnects and
+/// replays from history. The stream ends when the client goes away or rp shuts
+/// down (cancelling `state.sse_shutdown`).
+async fn subscribe_events(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<SubscribeParams>,
+) -> impl IntoResponse {
+    let last_seq = parse_last_event_id(&headers, &params);
+    let subscription = state.mcp.event_bus.subscribe_with_history(last_seq);
+    let gap = detect_gap(last_seq, subscription.oldest_retained_seq);
+    let Subscription {
+        replay,
+        mut receiver,
+        ..
+    } = subscription;
+    let shutdown = state.sse_shutdown.clone();
+
+    let stream = async_stream::stream! {
+        // Lead with a stream_gap if the reconnect cursor predates retained
+        // history, so the client knows it lost events.
+        if let Some(gap) = gap {
+            yield Ok::<Event, std::convert::Infallible>(gap_event(&gap));
+        }
+        // Replay buffered events after the cursor, oldest first.
+        for envelope in replay {
+            yield Ok(envelope_event(&envelope));
+        }
+        // Then the live tail until the client disconnects or rp shuts down.
+        loop {
+            tokio::select! {
+                biased;
+                () = shutdown.cancelled() => break,
+                received = receiver.recv() => match received {
+                    Ok(envelope) => yield Ok(envelope_event(&envelope)),
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => {
+                        debug!(missed, "SSE consumer lagged the broadcast channel; closing stream for reconnect");
+                        yield Ok(lag_gap_event(missed));
+                        break;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                },
+            }
+        }
+    };
+
+    Sse::new(stream).keep_alive(KeepAlive::new().interval(SSE_KEEP_ALIVE))
+}
+
+/// The `Last-Event-ID` reconnect cursor: the header (set automatically by the
+/// browser `EventSource` API and by Sentinel) wins, with `?last_event_id=` as
+/// an explicit fallback. `None` means "start from the live tail".
+fn parse_last_event_id(headers: &HeaderMap, params: &SubscribeParams) -> Option<u64> {
+    headers
+        .get("last-event-id")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .or(params.last_event_id)
+}
+
+/// The events a reconnecting client missed that history can no longer replay.
+struct GapInfo {
+    /// The client's reconnect cursor (`Last-Event-ID`).
+    requested_after: u64,
+    /// The oldest `event_seq` still retained; everything in
+    /// `(requested_after, oldest_available)` was evicted.
+    oldest_available: u64,
+}
+
+/// Decide whether a reconnecting client missed events that the history ring no
+/// longer holds. A gap exists when the client's cursor is below the oldest
+/// retained seq minus one — i.e. the very next event it expected was already
+/// evicted.
+fn detect_gap(
+    requested_last_seq: Option<u64>,
+    oldest_retained_seq: Option<u64>,
+) -> Option<GapInfo> {
+    match (requested_last_seq, oldest_retained_seq) {
+        // `saturating_add` guards against a client sending a near-`u64::MAX`
+        // `Last-Event-ID` (which would otherwise overflow-panic in debug).
+        (Some(after), Some(oldest)) if oldest > after.saturating_add(1) => Some(GapInfo {
+            requested_after: after,
+            oldest_available: oldest,
+        }),
+        _ => None,
+    }
+}
+
+/// Map an event envelope to an SSE frame: `id` = `event_seq`, `event` = type,
+/// `data` = the envelope JSON.
+fn envelope_event(envelope: &EventEnvelope) -> Event {
+    match Event::default().json_data(envelope) {
+        Ok(event) => event
+            .id(envelope.event_seq.to_string())
+            .event(envelope.event.clone()),
+        // EventEnvelope always serializes; degrade without panicking just in case.
+        Err(_) => Event::default().event("stream_error"),
+    }
+}
+
+/// A `stream_gap` frame telling a reconnecting client that events between its
+/// cursor and the oldest retained event were evicted. Carries no `id` (it is
+/// informational and must not become a reconnect cursor itself).
+fn gap_event(gap: &GapInfo) -> Event {
+    let data = serde_json::json!({
+        "event": "stream_gap",
+        "requested_after": gap.requested_after,
+        "oldest_available": gap.oldest_available,
+    });
+    gap_frame(&data)
+}
+
+/// A `stream_gap` frame emitted when a live consumer lagged the broadcast
+/// channel by `missed` events and is about to be disconnected.
+fn lag_gap_event(missed: u64) -> Event {
+    let data = serde_json::json!({ "event": "stream_gap", "lagged": missed });
+    gap_frame(&data)
+}
+
+fn gap_frame(data: &Value) -> Event {
+    match Event::default().json_data(data) {
+        Ok(event) => event.event("stream_gap"),
+        Err(_) => Event::default().event("stream_gap"),
+    }
 }
 
 async fn session_start(State(state): State<AppState>) -> (StatusCode, Json<Value>) {
@@ -273,6 +428,7 @@ mod tests {
             mcp,
             session,
             image_cache,
+            sse_shutdown: CancellationToken::new(),
         }
     }
 
@@ -507,5 +663,127 @@ mod tests {
         let body = imagebytes(2, 2, TRANSMISSION_I32, |_| {});
         assert_eq!(body.len(), IMAGEBYTES_HEADER_LEN);
         assert_eq!(&body[24..28], &2i32.to_le_bytes());
+    }
+
+    #[test]
+    fn detect_gap_none_without_cursor() {
+        // A fresh subscriber (no Last-Event-ID) never has a gap.
+        assert!(detect_gap(None, Some(5)).is_none());
+        assert!(detect_gap(None, None).is_none());
+    }
+
+    #[test]
+    fn detect_gap_none_when_next_expected_event_retained() {
+        // Cursor 5, oldest retained 6 → the next event (6) is still buffered.
+        assert!(detect_gap(Some(5), Some(6)).is_none());
+        // Cursor 0, oldest retained 1 → event 1 still buffered.
+        assert!(detect_gap(Some(0), Some(1)).is_none());
+    }
+
+    #[test]
+    fn detect_gap_some_when_history_evicted_past_cursor() {
+        // Cursor 5, oldest retained 10 → events 6..=9 were evicted.
+        let gap = detect_gap(Some(5), Some(10)).unwrap();
+        assert_eq!(gap.requested_after, 5);
+        assert_eq!(gap.oldest_available, 10);
+        // Boundary: cursor 5, oldest 7 → event 6 evicted, still a gap.
+        assert!(detect_gap(Some(5), Some(7)).is_some());
+    }
+
+    #[test]
+    fn detect_gap_none_when_history_empty() {
+        // Nothing retained → cannot assert a gap; the client just resumes live.
+        assert!(detect_gap(Some(42), None).is_none());
+    }
+
+    #[test]
+    fn detect_gap_does_not_overflow_on_max_cursor() {
+        // A near-`u64::MAX` client cursor must not overflow-panic on `after + 1`.
+        assert!(detect_gap(Some(u64::MAX), Some(10)).is_none());
+        assert!(detect_gap(Some(u64::MAX - 1), Some(u64::MAX)).is_none());
+    }
+
+    #[test]
+    fn last_event_id_from_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert("last-event-id", "1247".parse().unwrap());
+        let params = SubscribeParams {
+            last_event_id: None,
+        };
+        assert_eq!(parse_last_event_id(&headers, &params), Some(1247));
+    }
+
+    #[test]
+    fn last_event_id_header_wins_over_query() {
+        let mut headers = HeaderMap::new();
+        headers.insert("last-event-id", "1247".parse().unwrap());
+        let params = SubscribeParams {
+            last_event_id: Some(99),
+        };
+        assert_eq!(parse_last_event_id(&headers, &params), Some(1247));
+    }
+
+    #[test]
+    fn last_event_id_falls_back_to_query() {
+        let headers = HeaderMap::new();
+        let params = SubscribeParams {
+            last_event_id: Some(99),
+        };
+        assert_eq!(parse_last_event_id(&headers, &params), Some(99));
+    }
+
+    #[test]
+    fn last_event_id_none_when_absent_or_unparseable() {
+        let params = SubscribeParams {
+            last_event_id: None,
+        };
+        assert_eq!(parse_last_event_id(&HeaderMap::new(), &params), None);
+        // A non-numeric header is ignored (falls back to the absent query).
+        let mut headers = HeaderMap::new();
+        headers.insert("last-event-id", "not-a-number".parse().unwrap());
+        assert_eq!(parse_last_event_id(&headers, &params), None);
+    }
+
+    /// Acceptance §3.3(3): a consumer that lags the broadcast channel is
+    /// disconnected (server-initiated end-of-body) rather than backing it up.
+    /// We subscribe, then overrun `BROADCAST_CAPACITY` (256) *before* the
+    /// response body is polled, so the subscriber's first `recv()` returns
+    /// `Lagged`; the handler must emit a final `stream_gap` (carrying the
+    /// `lagged` count) and end the stream. `to_bytes` completing at all proves
+    /// the body ended — a backed-up stream would hang here.
+    #[tokio::test]
+    async fn lagged_consumer_gets_stream_gap_then_disconnect() {
+        use axum::response::IntoResponse;
+
+        let state = test_app_state(ImageCache::new(64, 4, PathBuf::from("/tmp")));
+        let bus = state.mcp.event_bus.clone();
+        let response = subscribe_events(
+            State(state),
+            HeaderMap::new(),
+            Query(SubscribeParams {
+                last_event_id: None,
+            }),
+        )
+        .await
+        .into_response();
+
+        // The receiver was created inside `subscribe_events`; flooding it now
+        // (before the body is read) overruns the channel deterministically.
+        for i in 0..400 {
+            bus.emit("stress_event", serde_json::json!({ "i": i }));
+        }
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8(body.to_vec()).unwrap();
+        assert!(
+            text.contains("event: stream_gap"),
+            "a lagged consumer must receive a stream_gap frame; body was: {text:?}"
+        );
+        assert!(
+            text.contains("\"lagged\""),
+            "the lag stream_gap must carry the lagged count; body was: {text:?}"
+        );
     }
 }

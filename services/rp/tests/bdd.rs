@@ -76,11 +76,13 @@ bdd_infra::bdd_main! {
             let scenario_name = scenario.name.clone();
             Box::pin(async move {
                 if let Some(world) = maybe_world {
-                    // Drop the MCP client first — its streaming HTTP
-                    // connection would otherwise keep axum's graceful
-                    // shutdown blocked, causing rp to time out and SIGKILL,
-                    // which loses LLVM coverage profraw data.
+                    // Drop the MCP client and any SSE subscription first —
+                    // their long-lived streaming HTTP connections would
+                    // otherwise keep axum's graceful shutdown blocked, causing
+                    // rp to time out and SIGKILL, which loses LLVM coverage
+                    // profraw data (testing.md §5.4).
                     world.mcp_client = None;
+                    world.sse_client = None;
                     if let Some(rp) = world.rp.as_mut() {
                         rp.stop().await;
                     }

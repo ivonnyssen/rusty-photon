@@ -15,7 +15,7 @@ use std::time::Duration;
 use bdd_infra::rp_harness::{
     CameraConfig, CoverCalibratorConfig, FilterWheelConfig, FocuserConfig, McpTestClient,
     MountConfig, OmniSimHandle, OrchestratorInvocation, PlateSolverConfig, PlateSolverStub,
-    ReceivedEvent, RpConfigBuilder, TestOrchestrator, WebhookReceiver,
+    ReceivedEvent, RpConfigBuilder, SseClient, TestOrchestrator, WebhookReceiver,
 };
 use bdd_infra::sky_survey_camera_harness::SkyViewStub;
 use bdd_infra::ServiceHandle;
@@ -37,6 +37,15 @@ pub struct RpWorld {
     pub orchestrator: Option<TestOrchestrator>,
     /// Persistent MCP client for the current scenario
     pub mcp_client: Option<McpTestClient>,
+    /// Active SSE subscription to rp's `/api/events/subscribe` stream
+    /// (`event_subscribe.feature`). Dropping it aborts the reader task and
+    /// closes the connection; the `bdd.rs` `after` hook clears it before
+    /// stopping rp (testing.md §5.4).
+    pub sse_client: Option<SseClient>,
+    /// The highest SSE `id` (`event_seq`) the SSE client had seen at
+    /// disconnect, resent as `Last-Event-ID` on reconnect to replay events
+    /// missed while disconnected.
+    pub sse_reconnect_cursor: Option<u64>,
 
     // --- Configuration building ---
     /// Camera configs accumulated via Given steps

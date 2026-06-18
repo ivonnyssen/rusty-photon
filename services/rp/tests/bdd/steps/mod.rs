@@ -24,5 +24,6 @@ pub mod operation_event_steps;
 pub mod plate_solve_steps;
 pub mod session_steps;
 pub mod sky_survey_camera_steps;
+pub mod sse_steps;
 pub mod tls_steps;
 pub mod tool_steps;

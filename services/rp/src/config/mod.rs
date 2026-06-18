@@ -9,6 +9,7 @@
 //! `crate::config::CameraConfig` callsites keep working unchanged.
 
 pub mod camera;
+pub mod centering;
 pub mod cover_calibrator;
 pub mod equipment;
 pub mod filter_wheel;
@@ -21,6 +22,7 @@ pub mod session;
 pub mod site;
 
 pub use camera::CameraConfig;
+pub use centering::CenteringConfig;
 pub use cover_calibrator::CoverCalibratorConfig;
 pub use equipment::EquipmentConfig;
 pub use filter_wheel::FilterWheelConfig;
@@ -61,6 +63,11 @@ pub struct Config {
     pub safety: Value,
     #[serde(default)]
     pub imaging: ImagingConfig,
+    /// Per-rig estimates that size the advisory `center_on_target`
+    /// deadline carried on `centering_started` (§2.5). Always present;
+    /// an omitted block uses [`CenteringConfig`]'s defaults.
+    #[serde(default)]
+    pub centering: CenteringConfig,
     /// Optional plate-solver service. When `None`, the `plate_solve`
     /// MCP tool returns `plate solver not configured`. Mirrors the
     /// `Option<MountConfig>` pattern — the service is optional

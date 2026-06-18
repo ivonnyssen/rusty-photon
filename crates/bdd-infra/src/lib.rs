@@ -75,7 +75,15 @@
 ///
 /// Under Miri the macro expands to an empty `fn main() {}`, because Miri does
 /// not support `pidfd_spawnp` and other process-spawning FFI. Under normal
-/// compilation it expands to `#[tokio::main] async fn main() { ... }`.
+/// compilation it builds a multi-threaded tokio runtime and drives the body on
+/// a dedicated thread with a large stack.
+///
+/// The large stack matters on Windows: `#[tokio::main]` `block_on`s the body on
+/// the *main* thread, whose MSVC default stack is ~1 MB, and cucumber drives
+/// each scenario's whole step future tree there. The biggest suite (rp) tips
+/// that 1 MB over and the test binary aborts with `STATUS_STACK_OVERFLOW`.
+/// Driving from a 16 MB thread (and giving tokio workers the same) removes the
+/// cliff without changing behavior on any platform.
 ///
 /// If `BDD_PACKAGE_DIR` is set in the environment, the macro chdirs there
 /// before running the body. This lets Bazel run BDD tests where the cwd is
@@ -91,10 +99,26 @@ macro_rules! bdd_main {
         fn main() {}
 
         #[cfg(not(miri))]
-        #[tokio::main]
-        async fn main() {
+        fn main() {
             $crate::__bdd_bazel_chdir();
-            $($body)*
+            // 16 MB driver + worker stacks: see the macro docs — the rp suite
+            // overflows Windows' ~1 MB main-thread stack otherwise.
+            const BDD_STACK_SIZE: usize = 16 * 1024 * 1024;
+            let driver = ::std::thread::Builder::new()
+                .name("bdd-main".to_string())
+                .stack_size(BDD_STACK_SIZE)
+                .spawn(|| {
+                    let runtime = ::tokio::runtime::Builder::new_multi_thread()
+                        .enable_all()
+                        .thread_stack_size(BDD_STACK_SIZE)
+                        .build()
+                        .expect("bdd_main: build tokio runtime");
+                    runtime.block_on(async {
+                        $($body)*
+                    });
+                })
+                .expect("bdd_main: spawn driver thread");
+            driver.join().expect("bdd_main: driver thread panicked");
         }
     };
 }

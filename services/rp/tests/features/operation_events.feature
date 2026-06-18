@@ -5,12 +5,16 @@ Feature: Operation event envelopes
   event at exit, all sharing one `operation_id` so a consumer can
   correlate the triple. Each emission carries its own `event_id` and a
   monotonic `event_seq`; the start carries `started_at` and the end adds
-  `ended_at` plus `elapsed_ms`. The `slew_started`, `park_started`, and
-  `move_focuser_started` events carry the `predicted_duration_ms` /
-  `max_duration_ms` deadline fields (Phase 2) when the deadline can be
-  predicted, and omit them on the fallback path (e.g. a pre-read failure, or
-  no mount configured for park); operations not yet converted to predictive
-  deadlines always omit them.
+  `ended_at` plus `elapsed_ms`. The `slew_started`, `park_started`,
+  `move_focuser_started`, and `exposure_started` events carry the
+  `predicted_duration_ms` / `max_duration_ms` deadline fields (Phase 2) when
+  the deadline can be predicted, and omit them on the fallback path (e.g. a
+  pre-read failure, or no mount configured for park); operations not yet
+  converted to predictive deadlines always omit them. The exposure deadline
+  is sized from the exposure duration plus the camera's
+  `readout_time_estimate` (a built-in default when unset) and a readout
+  headroom; rp does not enforce it (the camera driver does), so it always
+  rides `exposure_started`.
 
   The envelope is additive over the historical webhook body: the
   `event_id`, `event`, `timestamp`, and `payload` keys keep their exact
@@ -96,6 +100,7 @@ Feature: Operation event envelopes
     Then the webhook delivers the "exposure_started" event
     And the webhook delivers the "exposure_complete" event
     And the "exposure_started" and "exposure_complete" events share one operation_id
+    And the "exposure_started" event carries the deadline fields
     And the "exposure_started" event payload includes "camera_id"
     And the "exposure_complete" event payload includes "document_id"
     And the "exposure_complete" event payload includes "file_path"
