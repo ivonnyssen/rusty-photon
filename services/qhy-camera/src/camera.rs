@@ -171,6 +171,12 @@ impl QhyCameraDevice {
     }
 
     fn connect(&self) -> ASCOMResult<()> {
+        // `handle.open()` refcounts the shared physical connection
+        // (`backend::SharedCameraConnection`): the open + refcount transition is
+        // atomic. The post-open handshake below is not serialized against a racing
+        // connect on the same device, but it is idempotent (re-applies stream mode
+        // / readout / cached geometry on the shared handle), so a redundant run
+        // from a concurrent connect is harmless.
         self.handle.open().map_err(|_| ASCOMError::NOT_CONNECTED)?;
         // If any step of the post-open handshake fails, close the handle before
         // propagating so a failed connect leaves Connected == false (C2) rather
@@ -241,6 +247,10 @@ impl QhyCameraDevice {
     fn disconnect(&self) -> ASCOMResult<()> {
         // An in-flight exposure is cancelled (C3) before the handle closes.
         self.cancel_exposure();
+        // Refcounted close (`backend::SharedCameraConnection`): when a CFW device
+        // shares this camera's SDK id, the physical handle is closed only once
+        // both devices have disconnected, so disconnecting the camera no longer
+        // breaks a concurrently-connected filter wheel. See the design doc.
         self.handle.close().map_err(|_| ASCOMError::NOT_CONNECTED)?;
         debug!(camera = %self.unique_id, "camera disconnected");
         Ok(())

@@ -34,7 +34,9 @@ use ascom_alpaca::Server;
 use rusty_photon_service_lifecycle::ReloadSignal;
 use tracing::{debug, info, warn};
 
-use crate::backend::{CameraHandle, FilterWheelHandle, QhyCameraHandle, QhyFilterWheelHandle};
+use crate::backend::{
+    CameraHandle, FilterWheelHandle, QhyCameraHandle, QhyFilterWheelHandle, SharedCameraConnection,
+};
 
 /// Builder for the qhy-camera ASCOM Alpaca server.
 ///
@@ -102,11 +104,26 @@ impl ServerBuilder {
 
         // Clone the camera/CFW handles out so the `sdk` borrow ends before `sdk`
         // is moved into the BoundServer (the cloned handles share its backend).
+        // Ids of cameras that report a filter wheel (each CFW wraps a Camera with
+        // the same SDK id). Used to pair a camera with its CFW so both ASCOM
+        // devices share ONE physical connection — disconnecting either device
+        // must not tear down the other's handle (see SharedCameraConnection).
+        let cfw_ids: std::collections::HashSet<String> = if self.config.filterwheel.enabled {
+            sdk.filter_wheels().map(|w| w.id().to_string()).collect()
+        } else {
+            std::collections::HashSet::new()
+        };
+
         let cameras: Vec<qhyccd_rs::Camera> = sdk.cameras().cloned().collect();
         let mut camera_count = 0usize;
+        let mut fw_count = 0usize;
         for camera in cameras {
             let id = camera.id().to_string();
-            let handle: Arc<dyn CameraHandle> = Arc::new(QhyCameraHandle::new(camera));
+            // One shared physical connection per camera; the Camera device and (if
+            // present) the CFW device both hold it and refcount open/close.
+            let conn = SharedCameraConnection::new(camera);
+
+            let handle: Arc<dyn CameraHandle> = Arc::new(QhyCameraHandle::new(conn.clone()));
             let mut device = QhyCameraDevice::new(handle, self.config.devices.get(&id));
             if let (Some(path), Some(reload)) = (self.config_path.clone(), self.reload.clone()) {
                 device = device.with_config_actions(rusty_photon_driver::ConfigActionCtx {
@@ -119,17 +136,10 @@ impl ServerBuilder {
             server.devices.register(device);
             camera_count += 1;
             debug!(camera = %id, "registered Camera device");
-        }
-        if camera_count == 0 {
-            warn!("no QHY cameras discovered; starting with no Camera devices");
-        }
 
-        let mut fw_count = 0usize;
-        if self.config.filterwheel.enabled {
-            let wheels: Vec<qhyccd_rs::FilterWheel> = sdk.filter_wheels().cloned().collect();
-            for wheel in wheels {
-                let id = wheel.id().to_string();
-                let handle: Arc<dyn FilterWheelHandle> = Arc::new(QhyFilterWheelHandle::new(wheel));
+            if cfw_ids.contains(&id) {
+                let handle: Arc<dyn FilterWheelHandle> =
+                    Arc::new(QhyFilterWheelHandle::new(conn.clone()));
                 let override_ = self.config.devices.get(&id);
                 // The CFW shares the camera's SDK id, so the per-serial override's
                 // `name`/`description` belong to the camera, not the wheel — only
@@ -143,6 +153,9 @@ impl ServerBuilder {
                 fw_count += 1;
                 debug!(filter_wheel = %id, "registered FilterWheel device");
             }
+        }
+        if camera_count == 0 {
+            warn!("no QHY cameras discovered; starting with no Camera devices");
         }
 
         let router = axum::Router::new().fallback_service(server.into_service());

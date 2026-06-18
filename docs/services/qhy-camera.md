@@ -605,14 +605,28 @@ the "how" decisions made while building.
   `result_lock` makes the task's "check generation + commit result" atomic
   against an abort, so a just-completing capture can never resurrect an aborted
   frame.
-- **Camera + CFW share one physical handle (known real-hardware consideration).**
+- **Camera + CFW share one physical handle — refcounted shared connection.**
   `qhyccd-rs` derives the CFW from the *same* camera id as the enumerated camera
-  (a QHY CFW is driven over the camera's USB, not a separate device), so the
-  Camera and FilterWheel ASCOM devices open/close the same physical camera
-  through independent SDK handles — as the reference `qhyccd-alpaca` does. The
-  simulation gives each an independent in-memory `is_open`, so this is untested
-  here; ref-counting the open/close across both devices is Future Work once real
-  hardware is available to validate.
+  (a QHY CFW is driven over the camera's USB, not a separate device). The SDK
+  keys the open device by id, so opening that id as two independent handles and
+  closing either one tears down the shared physical device and breaks the other.
+  This was **confirmed on real hardware (QHY178M + 7-slot CFW, 2026-06-18):**
+  disconnecting the CFW made the next camera `StartExposure` fail with
+  `SetRoiError` (QHYCCD_ERROR), and disconnecting the camera made CFW `Position`
+  fail with `INVALID_OPERATION` — and in both cases the still-"connected" device's
+  `is_open()` kept (mis)reporting `true`. The Camera and FilterWheel devices
+  therefore share ONE
+  [`SharedCameraConnection`](../../services/qhy-camera/src/backend.rs): one
+  `qhyccd-rs::Camera` (the CFW operates a clone that shares the same internal
+  handle `Arc`) behind a refcount of logical connections — the physical
+  `OpenQHYCCD` runs on the first device's connect and `CloseQHYCCD` only on the
+  last device's disconnect, while each device keeps its own logical `connected`
+  flag so its ASCOM `Connected` reflects that device, not the shared handle.
+  Validated end-to-end on hardware (disconnect-CFW-then-expose and
+  disconnect-camera-then-move-CFW both succeed) plus unit tests over the
+  simulation backend (`backend::conn_tests`). *This supersedes the v0 plan, which
+  used independent handles "as the reference `qhyccd-alpaca` does" and deferred
+  the refcount as Future Work pending hardware.*
 - **Cooling model.** `set_cooler_on(true)` engages a nominal 1% *manual* PWM
   (matching the reference), which on real hardware is distinct from the automatic
   target-temperature regulation `SetCCDTemperature` drives. Unifying the two

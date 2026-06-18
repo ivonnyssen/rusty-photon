@@ -9,6 +9,10 @@
 //! vocabulary in one place. Production impls wrap the real `qhyccd-rs` handles
 //! (which are `Clone` over an internal `Arc`, so cloning shares the open camera).
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 use qhyccd_rs::{CCDChipArea, CCDChipInfo, Control, ImageData, StreamMode};
 
 /// A QHYCCD SDK call failed. Carries the underlying (eyre) message; the ASCOM
@@ -88,158 +92,280 @@ pub trait FilterWheelHandle: std::fmt::Debug + Send + Sync {
 
 // --- production wrappers over qhyccd-rs ----------------------------------------
 
-/// Production [`CameraHandle`] over a real (or `qhyccd-rs`-simulated) `Camera`.
+/// One physical QHYCCD connection shared by the Camera and (when present) the
+/// FilterWheel ASCOM devices that map to the same SDK id. A QHY CFW is wired to
+/// the camera's USB and driven through the camera handle (`Control::CfwPort`), so
+/// both ASCOM devices must talk to ONE physical `OpenQHYCCD` handle. We refcount
+/// logical connects and only `CloseQHYCCD` on the LAST disconnect: opening the
+/// same camera id as two handles and closing either one tears down the shared
+/// physical device and breaks the other (confirmed on real hardware 2026-06-18 —
+/// see `docs/services/qhy-camera.md` "Camera + CFW share one physical handle").
 #[derive(Debug)]
-pub struct QhyCameraHandle(qhyccd_rs::Camera);
+pub struct SharedCameraConnection {
+    camera: qhyccd_rs::Camera,
+    /// Count of logically-connected ASCOM devices (camera + CFW) holding the
+    /// physical handle open. Opens once on 0 → 1 and closes on 1 → 0.
+    refs: Mutex<u32>,
+}
+
+impl SharedCameraConnection {
+    pub fn new(camera: qhyccd_rs::Camera) -> Arc<Self> {
+        Arc::new(Self {
+            camera,
+            refs: Mutex::new(0),
+        })
+    }
+
+    /// The shared `qhyccd-rs` camera both ASCOM devices operate through. The CFW
+    /// device clones it (the clone shares the same internal handle `Arc`) so a
+    /// single `OpenQHYCCD` serves both imaging and filter-wheel control.
+    pub fn camera(&self) -> &qhyccd_rs::Camera {
+        &self.camera
+    }
+
+    /// Register a logical connect for `connected` (the calling device's own flag).
+    /// The flag read/set AND the refcount mutation happen in ONE critical section
+    /// (under `refs`), so they can never desync under concurrent connect/disconnect
+    /// of the same device — otherwise a `connect`'s flag-set and a racing
+    /// `disconnect`'s ref-drop could interleave, leaking the physical handle and
+    /// corrupting the refcount. Physically `open` on the 0 → 1 transition; a no-op
+    /// if this device was already connected.
+    fn connect(&self, connected: &AtomicBool) -> BackendResult<()> {
+        let mut refs = self.refs.lock();
+        if connected.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+        if *refs == 0 {
+            self.camera.open().map_err(BackendError::from_err)?;
+        }
+        *refs += 1;
+        connected.store(true, Ordering::SeqCst);
+        Ok(())
+    }
+
+    /// Register a logical disconnect for `connected`. Symmetric to
+    /// [`Self::connect`]: physically `close` on the 1 → 0 transition; a no-op if
+    /// this device was not connected. The flag is cleared and the ref dropped even
+    /// if the physical `close` errors, so logical state never desyncs.
+    fn disconnect(&self, connected: &AtomicBool) -> BackendResult<()> {
+        let mut refs = self.refs.lock();
+        if !connected.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+        connected.store(false, Ordering::SeqCst);
+        *refs -= 1; // > 0 here: this device held a ref while `connected` was true
+        if *refs == 0 {
+            self.camera.close().map_err(BackendError::from_err)?;
+        }
+        Ok(())
+    }
+}
+
+/// Production [`CameraHandle`] over a [`SharedCameraConnection`]. Holds its own
+/// logical-`connected` flag so `is_open()` reflects THIS device's ASCOM
+/// connection state, independent of the shared physical handle (and the CFW).
+#[derive(Debug)]
+pub struct QhyCameraHandle {
+    conn: Arc<SharedCameraConnection>,
+    connected: AtomicBool,
+}
 
 impl QhyCameraHandle {
-    pub fn new(camera: qhyccd_rs::Camera) -> Self {
-        Self(camera)
+    pub fn new(conn: Arc<SharedCameraConnection>) -> Self {
+        Self {
+            conn,
+            connected: AtomicBool::new(false),
+        }
     }
 }
 
 impl CameraHandle for QhyCameraHandle {
     fn id(&self) -> String {
-        self.0.id().to_string()
+        self.conn.camera().id().to_string()
     }
     fn open(&self) -> BackendResult<()> {
-        self.0.open().map_err(BackendError::from_err)
+        self.conn.connect(&self.connected)
     }
     fn close(&self) -> BackendResult<()> {
-        self.0.close().map_err(BackendError::from_err)
+        self.conn.disconnect(&self.connected)
     }
     fn is_open(&self) -> BackendResult<bool> {
-        self.0.is_open().map_err(BackendError::from_err)
+        Ok(self.connected.load(Ordering::SeqCst))
     }
     fn init(&self) -> BackendResult<()> {
-        self.0.init().map_err(BackendError::from_err)
+        self.conn.camera().init().map_err(BackendError::from_err)
     }
     fn set_stream_mode_single(&self) -> BackendResult<()> {
-        self.0
+        self.conn
+            .camera()
             .set_stream_mode(StreamMode::SingleFrameMode)
             .map_err(BackendError::from_err)
     }
     fn set_readout_mode(&self, mode: u32) -> BackendResult<()> {
-        self.0
+        self.conn
+            .camera()
             .set_readout_mode(mode)
             .map_err(BackendError::from_err)
     }
     fn get_readout_mode(&self) -> BackendResult<u32> {
-        self.0.get_readout_mode().map_err(BackendError::from_err)
+        self.conn
+            .camera()
+            .get_readout_mode()
+            .map_err(BackendError::from_err)
     }
     fn get_number_of_readout_modes(&self) -> BackendResult<u32> {
-        self.0
+        self.conn
+            .camera()
             .get_number_of_readout_modes()
             .map_err(BackendError::from_err)
     }
     fn get_readout_mode_name(&self, index: u32) -> BackendResult<String> {
-        self.0
+        self.conn
+            .camera()
             .get_readout_mode_name(index)
             .map_err(BackendError::from_err)
     }
     fn get_readout_mode_resolution(&self, index: u32) -> BackendResult<(u32, u32)> {
-        self.0
+        self.conn
+            .camera()
             .get_readout_mode_resolution(index)
             .map_err(BackendError::from_err)
     }
     fn set_transfer_bit_16(&self) -> BackendResult<()> {
-        self.0
+        self.conn
+            .camera()
             .set_if_available(Control::TransferBit, 16.0)
             .map_err(BackendError::from_err)
     }
     fn get_model(&self) -> BackendResult<String> {
-        self.0.get_model().map_err(BackendError::from_err)
+        self.conn
+            .camera()
+            .get_model()
+            .map_err(BackendError::from_err)
     }
     fn get_ccd_info(&self) -> BackendResult<CCDChipInfo> {
-        self.0.get_ccd_info().map_err(BackendError::from_err)
+        self.conn
+            .camera()
+            .get_ccd_info()
+            .map_err(BackendError::from_err)
     }
     fn get_effective_area(&self) -> BackendResult<CCDChipArea> {
-        self.0.get_effective_area().map_err(BackendError::from_err)
+        self.conn
+            .camera()
+            .get_effective_area()
+            .map_err(BackendError::from_err)
     }
     fn is_control_available(&self, control: Control) -> Option<u32> {
-        self.0.is_control_available(control)
+        self.conn.camera().is_control_available(control)
     }
     fn get_parameter(&self, control: Control) -> BackendResult<f64> {
-        self.0
+        self.conn
+            .camera()
             .get_parameter(control)
             .map_err(BackendError::from_err)
     }
     fn get_parameter_min_max_step(&self, control: Control) -> BackendResult<(f64, f64, f64)> {
-        self.0
+        self.conn
+            .camera()
             .get_parameter_min_max_step(control)
             .map_err(BackendError::from_err)
     }
     fn set_parameter(&self, control: Control, value: f64) -> BackendResult<()> {
-        self.0
+        self.conn
+            .camera()
             .set_parameter(control, value)
             .map_err(BackendError::from_err)
     }
     fn set_bin_mode(&self, bin_x: u32, bin_y: u32) -> BackendResult<()> {
-        self.0
+        self.conn
+            .camera()
             .set_bin_mode(bin_x, bin_y)
             .map_err(BackendError::from_err)
     }
     fn set_roi(&self, area: CCDChipArea) -> BackendResult<()> {
-        self.0.set_roi(area).map_err(BackendError::from_err)
+        self.conn
+            .camera()
+            .set_roi(area)
+            .map_err(BackendError::from_err)
     }
     fn start_single_frame_exposure(&self) -> BackendResult<()> {
-        self.0
+        self.conn
+            .camera()
             .start_single_frame_exposure()
             .map_err(BackendError::from_err)
     }
     fn get_image_size(&self) -> BackendResult<usize> {
-        self.0.get_image_size().map_err(BackendError::from_err)
+        self.conn
+            .camera()
+            .get_image_size()
+            .map_err(BackendError::from_err)
     }
     fn get_single_frame(&self, buffer_size: usize) -> BackendResult<ImageData> {
-        self.0
+        self.conn
+            .camera()
             .get_single_frame(buffer_size)
             .map_err(BackendError::from_err)
     }
     fn get_remaining_exposure_us(&self) -> BackendResult<u32> {
-        self.0
+        self.conn
+            .camera()
             .get_remaining_exposure_us()
             .map_err(BackendError::from_err)
     }
     fn abort_exposure_and_readout(&self) -> BackendResult<()> {
-        self.0
+        self.conn
+            .camera()
             .abort_exposure_and_readout()
             .map_err(BackendError::from_err)
     }
 }
 
-/// Production [`FilterWheelHandle`] over a real (or simulated) `FilterWheel`.
+/// Production [`FilterWheelHandle`] over a [`SharedCameraConnection`] (a QHY CFW
+/// is driven through the camera handle). Shares the physical connection with the
+/// Camera device via the refcount, and keeps its own logical-`connected` flag.
 #[derive(Debug)]
-pub struct QhyFilterWheelHandle(qhyccd_rs::FilterWheel);
+pub struct QhyFilterWheelHandle {
+    conn: Arc<SharedCameraConnection>,
+    /// CFW view over a clone of the shared camera (the clone shares the same
+    /// internal handle `Arc`); used only for the filter data calls below.
+    wheel: qhyccd_rs::FilterWheel,
+    connected: AtomicBool,
+}
 
 impl QhyFilterWheelHandle {
-    pub fn new(filter_wheel: qhyccd_rs::FilterWheel) -> Self {
-        Self(filter_wheel)
+    pub fn new(conn: Arc<SharedCameraConnection>) -> Self {
+        let wheel = qhyccd_rs::FilterWheel::new(conn.camera().clone());
+        Self {
+            conn,
+            wheel,
+            connected: AtomicBool::new(false),
+        }
     }
 }
 
 impl FilterWheelHandle for QhyFilterWheelHandle {
     fn id(&self) -> String {
-        self.0.id().to_string()
+        self.conn.camera().id().to_string()
     }
     fn open(&self) -> BackendResult<()> {
-        self.0.open().map_err(BackendError::from_err)
+        self.conn.connect(&self.connected)
     }
     fn close(&self) -> BackendResult<()> {
-        self.0.close().map_err(BackendError::from_err)
+        self.conn.disconnect(&self.connected)
     }
     fn is_open(&self) -> BackendResult<bool> {
-        self.0.is_open().map_err(BackendError::from_err)
+        Ok(self.connected.load(Ordering::SeqCst))
     }
     fn get_number_of_filters(&self) -> BackendResult<u32> {
-        self.0
+        self.wheel
             .get_number_of_filters()
             .map_err(BackendError::from_err)
     }
     fn get_position(&self) -> BackendResult<u32> {
-        self.0.get_fw_position().map_err(BackendError::from_err)
+        self.wheel.get_fw_position().map_err(BackendError::from_err)
     }
     fn set_position(&self, position: u32) -> BackendResult<()> {
-        self.0
+        self.wheel
             .set_fw_position(position)
             .map_err(BackendError::from_err)
     }
@@ -584,5 +710,126 @@ pub(crate) mod mock {
             *self.position.lock() = position;
             Ok(())
         }
+    }
+}
+
+// --- shared-connection refcount tests ------------------------------------------
+
+/// Tests for [`SharedCameraConnection`] — the refcount that makes the Camera and
+/// FilterWheel devices share ONE physical handle so disconnecting one does not
+/// tear down the other (the real-hardware bug fixed 2026-06-18). These run
+/// against the `qhyccd-rs` simulation backend (enabled in the test build via the
+/// `qhyccd-rs` dev-dep `simulation` feature), so they need no camera and make no
+/// real SDK calls — `Sdk::new()` fabricates a QHY178M-Simulated camera + CFW.
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod conn_tests {
+    use super::*;
+
+    fn sim_camera() -> qhyccd_rs::Camera {
+        let sdk = qhyccd_rs::Sdk::new().expect("simulated SDK");
+        let camera = sdk.cameras().next().expect("simulated camera").clone();
+        camera
+    }
+
+    #[test]
+    fn cfw_disconnect_keeps_camera_physically_open() {
+        let conn = SharedCameraConnection::new(sim_camera());
+        let cam = QhyCameraHandle::new(conn.clone());
+        let fw = QhyFilterWheelHandle::new(conn.clone());
+
+        // Nothing connected yet → physically closed.
+        assert!(!conn.camera().is_open().unwrap());
+        cam.open().unwrap();
+        fw.open().unwrap();
+        assert!(cam.is_open().unwrap() && fw.is_open().unwrap());
+        assert!(conn.camera().is_open().unwrap(), "physical handle open");
+
+        // Disconnecting the CFW must NOT close the shared physical handle while
+        // the camera is still connected — the bug this fixes.
+        fw.close().unwrap();
+        assert!(!fw.is_open().unwrap());
+        assert!(cam.is_open().unwrap());
+        assert!(
+            conn.camera().is_open().unwrap(),
+            "camera must stay physically open after CFW disconnect"
+        );
+
+        // The last disconnect drops the refcount to 0 and closes physically.
+        cam.close().unwrap();
+        assert!(!cam.is_open().unwrap());
+        assert!(
+            !conn.camera().is_open().unwrap(),
+            "physical handle closed on last disconnect"
+        );
+    }
+
+    #[test]
+    fn camera_disconnect_keeps_cfw_physically_open() {
+        let conn = SharedCameraConnection::new(sim_camera());
+        let cam = QhyCameraHandle::new(conn.clone());
+        let fw = QhyFilterWheelHandle::new(conn.clone());
+        cam.open().unwrap();
+        fw.open().unwrap();
+
+        // Symmetric direction: disconnecting the camera leaves the CFW usable.
+        cam.close().unwrap();
+        assert!(!cam.is_open().unwrap());
+        assert!(fw.is_open().unwrap());
+        assert!(
+            conn.camera().is_open().unwrap(),
+            "CFW keeps the handle open"
+        );
+        // CFW data calls still work through the shared handle.
+        fw.get_number_of_filters().unwrap();
+
+        fw.close().unwrap();
+        assert!(!conn.camera().is_open().unwrap());
+    }
+
+    #[test]
+    fn redundant_open_does_not_double_count_the_refcount() {
+        let conn = SharedCameraConnection::new(sim_camera());
+        let cam = QhyCameraHandle::new(conn.clone());
+        cam.open().unwrap();
+        cam.open().unwrap(); // idempotent: must not push the refcount to 2
+        cam.close().unwrap();
+        assert!(
+            !conn.camera().is_open().unwrap(),
+            "a single close after redundant opens must fully close the device"
+        );
+    }
+
+    #[test]
+    fn concurrent_connect_disconnect_keeps_refcount_consistent() {
+        // Regression guard for the flag/refcount desync: the per-device flag and
+        // the shared refcount must move together under one lock. Hammer open/close
+        // on both devices from many threads; since every open is immediately
+        // matched by a close, both devices end disconnected and the shared handle
+        // MUST be physically closed (refs back to 0). A desync (flag set without
+        // the matching ref bump, or vice-versa) would leak it open.
+        let conn = SharedCameraConnection::new(sim_camera());
+        let cam = QhyCameraHandle::new(conn.clone());
+        let fw = QhyFilterWheelHandle::new(conn.clone());
+        std::thread::scope(|s| {
+            for _ in 0..4 {
+                s.spawn(|| {
+                    for _ in 0..3_000 {
+                        let _ = cam.open();
+                        let _ = cam.close();
+                        let _ = fw.open();
+                        let _ = fw.close();
+                    }
+                });
+            }
+        });
+        assert!(!cam.is_open().unwrap());
+        assert!(!fw.is_open().unwrap());
+        assert!(
+            !conn.camera().is_open().unwrap(),
+            "physical handle must be closed once both devices are disconnected — \
+             a flag/refcount desync would leak it open"
+        );
     }
 }

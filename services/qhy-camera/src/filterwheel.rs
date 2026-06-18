@@ -70,10 +70,15 @@ impl QhyFilterWheelDevice {
     }
 
     fn connect(&self) -> ASCOMResult<()> {
+        // `handle.open()` is refcounted across the shared physical connection
+        // (`backend::SharedCameraConnection`): a QHY CFW is driven through the
+        // camera's USB handle, so the Camera and FilterWheel devices on the same
+        // SDK id share ONE `OpenQHYCCD`. Opening the wheel just bumps that
+        // refcount (physically opening only if it is the first connect).
         self.handle.open().map_err(|_| ASCOMError::NOT_CONNECTED)?;
-        // If any step of the post-open handshake fails, close the handle before
-        // propagating so a failed connect leaves Connected == false rather than
-        // an opened-but-unusable wheel (mirrors the camera's connect path).
+        // If any step of the post-open handshake fails, close the handle (drop our
+        // refcount) before propagating so a failed connect leaves Connected ==
+        // false rather than an opened-but-unusable wheel (mirrors the camera).
         if let Err(e) = self.open_handshake() {
             if let Err(close_err) = self.handle.close() {
                 debug!(error = %close_err, "close after a failed filter-wheel connect handshake also failed");
@@ -100,6 +105,11 @@ impl QhyFilterWheelDevice {
     }
 
     fn disconnect(&self) -> ASCOMResult<()> {
+        // Refcounted close (`backend::SharedCameraConnection`): the underlying
+        // camera is physically closed only when the LAST device sharing this SDK
+        // id disconnects. Disconnecting the wheel therefore no longer tears down a
+        // concurrently-connected camera — the real-hardware failure mode flagged
+        // in review and confirmed before this fix. See docs/services/qhy-camera.md.
         self.handle.close().map_err(|_| ASCOMError::NOT_CONNECTED)
     }
 }
