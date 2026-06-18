@@ -25,7 +25,7 @@ reqwest = { workspace = true }
 tokio-util = { workspace = true }
 axum = { workspace = true }
 tower = { workspace = true }
-tower-http = { version = "0.6", features = ["cors"] }
+tower-http = { version = "0.7", features = ["cors"] }
 rp-auth = { workspace = true }
 rp-tls = { workspace = true }
 rusty-photon-service-lifecycle = { workspace = true }
