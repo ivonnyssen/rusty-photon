@@ -249,9 +249,23 @@ impl CameraHandle for ZwoCameraHandle {
         }
 
         // Integrate for the requested duration without holding the lock, checking
-        // the stop signal so an abort/stop returns promptly.
+        // the stop signal every `step` so an abort/stop returns promptly.
+        //
+        // Track a real-clock DEADLINE, not accumulated *intended* sleep time.
+        // Under blocking-pool oversubscription — ConformU fires a storm of
+        // concurrent property reads, each a `spawn_blocking`, so the pool holds far
+        // more threads than the runner has cores — an individual
+        // `std::thread::sleep(20ms)` routinely overshoots its requested nap
+        // several-fold. The earlier loop summed *intended* naps
+        // (`elapsed += nap`), so it always ran the full step count regardless of
+        // how long each nap actually took: a 2 s exposure ballooned to ~10 s of
+        // wall-clock on a contended runner (observed on the macOS CI runner — a
+        // scheduling artifact, not a slow CPU), tripping ConformU's 10 s
+        // async-operation timeout. A deadline bounds the integration to the
+        // requested duration plus at most one overshooting nap, whatever the
+        // scheduler does.
+        let deadline = std::time::Instant::now() + request.duration;
         let step = Duration::from_millis(20);
-        let mut elapsed = Duration::ZERO;
         let mut preserve = false;
         loop {
             match self.stop.load(Ordering::SeqCst) {
@@ -266,12 +280,11 @@ impl CameraHandle for ZwoCameraHandle {
                 }
                 _ => {}
             }
-            if elapsed >= request.duration {
+            let now = std::time::Instant::now();
+            if now >= deadline {
                 break;
             }
-            let nap = step.min(request.duration - elapsed);
-            std::thread::sleep(nap);
-            elapsed += nap;
+            std::thread::sleep(step.min(deadline - now));
         }
 
         // Poll to completion (unless gracefully stopped) and download, under the

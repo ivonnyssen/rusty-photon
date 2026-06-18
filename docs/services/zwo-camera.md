@@ -195,7 +195,10 @@ graph TD;
 - **`camera.rs`** — `ZwoCameraDevice` (one instance per discovered camera)
   implementing `Device` + `Camera` against `zwo-rs`. **Every blocking SDK call
   runs inside `tokio::task::spawn_blocking`** so the async runtime is never
-  stalled.
+  stalled — *including* the CPU-heavy `to_image_array` frame transform (a
+  ~26-megapixel `u16`→`i32` widen+transpose), which runs in the same
+  `spawn_blocking` closure as the SDK download, never on a Tokio worker and never
+  while holding `result_lock` (held only for the cheap commit).
 - **`filterwheel.rs`** — `ZwoFilterWheelDevice` (one per discovered EFW)
   implementing `Device` + `FilterWheel` (registered when `filterwheel.enabled`).
 - **`config.rs`** — typed `Config` with parse-don't-validate newtypes.
@@ -211,6 +214,16 @@ ROI, binning, gain, offset, target temp, exposure state machine, filter position
 is held under `parking_lot::RwLock`; all SDK calls funnel through
 `spawn_blocking` and a single logical owner per device. EFW enumeration
 (`EFWGetNum`) is serialized for the macOS thread-safety caveat.
+
+The capture's integration wait (`backend.rs`) sleeps against a **real-clock
+deadline** (`Instant::now() + duration`), not accumulated intended sleep time.
+Under blocking-pool oversubscription — e.g. ConformU firing a storm of concurrent
+property reads, each a `spawn_blocking` — individual `thread::sleep` calls
+overshoot, and a loop that summed *intended* naps would run the full step count
+regardless of real time, ballooning a 2 s exposure to ~10 s of wall-clock on a
+contended runner (this tripped ConformU's 10 s async-operation timeout on the
+macOS CI runner — a scheduling artifact, not a slow CPU). The deadline bounds the
+integration to the requested duration plus at most one overshooting nap.
 
 ---
 

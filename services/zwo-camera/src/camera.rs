@@ -429,9 +429,19 @@ fn to_image_array(bytes: &[u8], width: u32, height: u32) -> Result<ImageArray, S
     Ok(ImageArray::from(arr.reversed_axes()))
 }
 
-/// The detached capture task: runs the blocking single-frame SDK chain on
-/// `spawn_blocking`, then stores the image (or records a failure as the `Error`
-/// state) — unless a newer generation has superseded it.
+/// The detached capture task: runs the blocking single-frame SDK chain *and* the
+/// CPU-heavy frame transform on `spawn_blocking`, then stores the image (or
+/// records a failure as the `Error` state) — unless a newer generation has
+/// superseded it.
+///
+/// Both the SDK download and [`to_image_array`] run inside the one
+/// `spawn_blocking` closure on purpose. A full-frame transform is a ~26-megapixel
+/// `u16`→`i32` widen+transpose; in an unoptimised (debug/CI) build that is several
+/// hundred milliseconds. Running it inline on a Tokio worker — and worse, while
+/// holding `result_lock` — pins a worker thread (and contends `cancel_exposure`,
+/// which also takes `result_lock`). Offloading it — exactly as the SDK seam calls
+/// are (see [`ZwoCamera::on_handle`]) — keeps every Tokio worker free for HTTP,
+/// and `result_lock` is then held only for the cheap commit below.
 async fn run_exposure(
     handle: Arc<dyn CameraHandle>,
     state: Arc<DeviceState>,
@@ -439,27 +449,30 @@ async fn run_exposure(
     request: CaptureRequest,
 ) {
     let blocking_handle = Arc::clone(&handle);
-    let result = tokio::task::spawn_blocking(move || blocking_handle.capture(request)).await;
+    let (width, height) = (request.width, request.height);
+    let result = tokio::task::spawn_blocking(move || {
+        blocking_handle
+            .capture(request)
+            .map(|frame| frame.map(|bytes| to_image_array(&bytes, width, height)))
+    })
+    .await;
 
     {
         // No await is held across the lock (the blocking await is above), so this
-        // "check generation + record" is atomic against cancel_exposure.
+        // "check generation + record" is atomic against cancel_exposure. Only the
+        // cheap commit runs here — the transform already happened off-thread.
         let _guard = state.result_lock.lock();
         if state.exposure_generation.load(Ordering::Acquire) == generation {
             match result {
-                Ok(Ok(Some(bytes))) => {
-                    match to_image_array(&bytes, request.width, request.height) {
-                        Ok(array) => {
-                            *state.last_image.lock() = Some(array);
-                            *state.last_error.lock() = None;
-                            state.image_ready.store(true, Ordering::Release);
-                        }
-                        Err(e) => {
-                            warn!(error = %e, "failed to transform captured image");
-                            *state.last_image.lock() = None;
-                            *state.last_error.lock() = Some(format!("image transform failed: {e}"));
-                        }
-                    }
+                Ok(Ok(Some(Ok(array)))) => {
+                    *state.last_image.lock() = Some(array);
+                    *state.last_error.lock() = None;
+                    state.image_ready.store(true, Ordering::Release);
+                }
+                Ok(Ok(Some(Err(e)))) => {
+                    warn!(error = %e, "failed to transform captured image");
+                    *state.last_image.lock() = None;
+                    *state.last_error.lock() = Some(format!("image transform failed: {e}"));
                 }
                 // Aborted: discard the frame, leave no Error state (E7).
                 Ok(Ok(None)) => {}
