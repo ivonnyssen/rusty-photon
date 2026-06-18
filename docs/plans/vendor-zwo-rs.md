@@ -1,6 +1,10 @@
 # Vendor `zwo-rs` + `libzwo-sys` into the workspace
 
-**Status:** Draft (not started)
+**Status:** In progress — Phase 0 (ADR-010), Phase 1 (Cargo vendor) and Phase 2
+(Bazel two-variant) **done** and verified on Linux; Phase 3 docs **done**. Pending:
+the first crates.io publish + standalone-repo archival (forward-only, owner-run —
+see Release runbook in ADR-010), and macOS/Windows CI confirmation (incl. the
+Windows real-variant bindgen-width spike).
 **Author:** drafted 2026-06-17 on `worktree-zwo-driver`
 **Sibling plan:** [`docs/plans/vendor-qhyccd-rs.md`](vendor-qhyccd-rs.md) — same
 intention for the QHY FFI crates. This plan is the "Phase 4 (future)" that plan

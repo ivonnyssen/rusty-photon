@@ -12,6 +12,13 @@ Phase E full Camera, ConformU passing), with the native-SDK CI/Bazel provisionin
 this ADR calls for in place. Remaining: EFW `FilterWheel` (Phase F) and ConformU
 CI wiring (Phase G).
 
+**Amended by [ADR-010](010-vendor-zwo-rs.md) (2026-06-17):** the "standalone repo,
+consumed as an external git-rev dependency" canonical-home decision here is
+reversed — `zwo-rs` + `libzwo-sys` are vendored first-party (nested, dual-homed)
+at `crates/zwo-rs/`, with an explicit Bazel real/sim two-variant build. The
+native-SDK provisioning, MIT public-cache, and link-model decisions in this ADR
+are unchanged.
+
 ## Context
 
 rusty-photon needs a first-class ASCOM Alpaca driver for ZWO ASI cameras and EFW

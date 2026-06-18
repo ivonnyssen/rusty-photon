@@ -135,3 +135,24 @@ production target that accidentally links the sim variant.
 - **`zwo-rs` is the second user of the vendoring template** (after `qhyccd-rs`),
   and the first to exercise the bindgen-in-`cargo_build_script` path — making it
   the reference for any future bindgen-based `*-sys` crate.
+
+## Release runbook (dual-home publish to crates.io)
+
+The crates publish from their vendored subdirs; `cargo publish` rewrites the
+inter-crate `path` dep to its `version`. Publish the sys-crate first so the
+wrapper's dependency resolves on crates.io.
+
+1. Bump `version` in `crates/zwo-rs/libzwo-sys/Cargo.toml` and/or
+   `crates/zwo-rs/Cargo.toml` as needed; update each crate's `CHANGELOG.md`.
+2. If the wrapper's `version` changed, bump the `libzwo-sys = { version = "…" }`
+   requirement in `crates/zwo-rs/Cargo.toml` to match.
+3. `cargo publish -p libzwo-sys` (needs the ZWO SDK + libclang locally — the
+   build script links + runs bindgen). Wait for it to land on crates.io.
+4. `cargo publish -p zwo-rs`.
+5. Verify on docs.rs / crates.io; tag the release.
+
+`MODULE.bazel` is unchanged across a publish (members are auto-discovered). A
+`CARGO_BAZEL_REPIN=1 bazel mod tidy && bazel mod tidy` is needed only when the
+vendored crates' **external** deps change (not on a version bump alone). The
+standalone `ivonnyssen/zwo-rs` repo is archived once the first publish-from-monorepo
+is verified; thereafter the monorepo is the sole source of truth.

@@ -171,7 +171,26 @@ EFW → `IFilterWheelV2`: `EFWGetNum → EFWGetID → EFWOpen → EFWGetProperty
 | **Sequencing** | Standalone in this track; **Camera → EFW → EAF**. |
 | **Branch discipline** | All work on a feature branch (never `main`). |
 
+> **Superseded (2026-06-17, [ADR-010](../decisions/010-vendor-zwo-rs.md)).** The
+> **Canonical home**, **Dev model**, **Bazel wiring**, and "Monorepo integration
+> recipe" decisions below were reversed: `zwo-rs` + `libzwo-sys` are now
+> **vendored first-party** at `crates/zwo-rs/` (nested, dual-homed). The lockstep
+> git-rev pin is gone (edits are in-tree); the crates are still published to
+> crates.io from the vendored subdirs for outside consumers. Bazel ships an
+> explicit real/sim two-variant build (own `BUILD.bazel`, the repo's first
+> first-party `cargo_build_script`) instead of the `requires-cargo` + dev-dep
+> workaround. The remaining rows (FFI surface, `simulation` semantics, SDK
+> delivery/link, service shape, identity) still hold. See
+> [vendor-zwo-rs.md](vendor-zwo-rs.md).
+
 ## Monorepo integration recipe
+
+> The reasoning in this section is **historical** — it argued for consuming the
+> FFI crates as external deps. [ADR-010](../decisions/010-vendor-zwo-rs.md)
+> overrode it: the crates are vendored as members, and their BUILD files are
+> hand-written + `@cr`-coupled like any first-party crate (the "BUILD files leak
+> into the published repo" concern is resolved by dual-homing — the standalone
+> repo is retired, the monorepo is the source of truth).
 
 `external/` is **not** a Bazel build input (no BUILD files, no references) and
 first-party crate BUILDs are `@cr`-coupled (`load("@cr//:defs.bzl", …)`), so an
