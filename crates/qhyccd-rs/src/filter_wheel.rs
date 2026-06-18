@@ -13,7 +13,7 @@ pub struct FilterWheel {
 #[allow(unused_unsafe)]
 impl FilterWheel {
     /// Creates a new instance of the filter wheel. The Sdk automatically finds all filter wheels and provides them in it's `filter_wheels()` iterator. Creating
-    /// a filter wheek manually should only be needed for rare cases.
+    /// a filter wheel manually should only be needed for rare cases.
     /// # Example
     /// ```no_run
     /// use qhyccd_rs::{Sdk, Camera, FilterWheel};
