@@ -28,6 +28,11 @@ members = [
   "services/star-adventurer-gti",
   "services/ui-htmx",
   "services/zwo-camera",
+  # First-party, dual-homed ZWO FFI crates — vendored from ivonnyssen/zwo-rs
+  # (ADR-010 / docs/plans/vendor-zwo-rs.md). libzwo-sys is nested under zwo-rs to
+  # preserve its upstream `path = "libzwo-sys"` dep verbatim.
+  "crates/zwo-rs",
+  "crates/zwo-rs/libzwo-sys",
 ]
 resolver = "2"
 
@@ -89,10 +94,11 @@ parking_lot = "0.12.5"
 tokio-serial = "5.4.5"
 ascom-alpaca = { git = "https://github.com/ivonnyssen/ascom-alpaca-rs.git", branch = "integration", default-features = false }
 # ZWO ASI camera + EFW filter-wheel FFI (safe wrapper over `libzwo-sys`), for the
-# `zwo-camera` service. Lockstep dev pin to the author-maintained repo (the real
-# Camera/EFW handles + simulation backend; ivonnyssen/zwo-rs PR #4); swap to a
-# crates.io `= "=0.1.x"` once published (see docs/plans/zwo-driver.md).
-zwo-rs = { git = "https://github.com/ivonnyssen/zwo-rs", rev = "3c32e59ac2a6a670ce03f84065f99a652ca9a6e5" }
+# `zwo-camera` service. Vendored first-party + dual-homed at crates/zwo-rs
+# (ADR-010 / docs/plans/vendor-zwo-rs.md) — the monorepo is now the canonical
+# development home; edits are in-tree (no git-rev bump). Still published to
+# crates.io from the vendored subdir for outside consumers.
+zwo-rs = { path = "crates/zwo-rs" }
 axum = "0.8"
 tower = "0.5"
 reqwest = { version = "0.13.4", features = ["form", "json"] }

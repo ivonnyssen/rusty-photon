@@ -1,0 +1,22 @@
+[package]
+name = "libzwo-sys"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.94.1"
+authors = ["Igor von Nyssen <igor@vonnyssen.com>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/ivonnyssen/zwo-rs"
+description = "Raw FFI bindings (bindgen) for the ZWO ASI / EFW / EAF SDK"
+keywords = ["zwo", "asi", "efw", "ffi", "astronomy"]
+categories = ["external-ffi-bindings", "hardware-support"]
+# `links` is a uniqueness marker for the native ZWO SDK libraries this crate
+# links (libASICamera2 + libEFWFilter, +libEAFFocuser later). Requires build.rs.
+links = "zwo"
+# Vendored MIT ZWO SDK headers live under sdk/include/ (ZWO's own MIT notice is
+# in sdk/include/license.txt). bindgen reads them at build time. The SDK *binary*
+# is NOT vendored — it must be installed on the system (see the workspace README).
+
+[dependencies]
+
+[build-dependencies]
+bindgen = "0.72"

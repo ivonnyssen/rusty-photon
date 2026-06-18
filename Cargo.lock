@@ -2134,7 +2134,6 @@ dependencies = [
 [[package]]
 name = "libzwo-sys"
 version = "0.1.0"
-source = "git+https://github.com/ivonnyssen/zwo-rs?rev=3c32e59ac2a6a670ce03f84065f99a652ca9a6e5#3c32e59ac2a6a670ce03f84065f99a652ca9a6e5"
 dependencies = [
  "bindgen",
 ]
@@ -5948,9 +5947,9 @@ dependencies = [
 [[package]]
 name = "zwo-rs"
 version = "0.1.0"
-source = "git+https://github.com/ivonnyssen/zwo-rs?rev=3c32e59ac2a6a670ce03f84065f99a652ca9a6e5#3c32e59ac2a6a670ce03f84065f99a652ca9a6e5"
 dependencies = [
  "libzwo-sys",
+ "mockall",
  "rand 0.9.4",
  "rayon",
  "thiserror 2.0.18",
