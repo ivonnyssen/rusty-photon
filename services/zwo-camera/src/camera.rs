@@ -71,6 +71,12 @@ struct DeviceState {
     exposure_range_us: Mutex<Option<(i64, i64)>>,
     gain_min_max: Mutex<Option<(i64, i64)>>,
     offset_min_max: Mutex<Option<(i64, i64)>>,
+    /// Whether the camera advertises an `ASI_TEMPERATURE` control (cached at the
+    /// open handshake). Decoupled from cooling: most ASI cameras — cooled or not —
+    /// expose a readable sensor temperature, so `CCDTemperature` is reported
+    /// whenever this is set, while the cooler-setpoint members stay gated on
+    /// [`CameraInfo::is_cooler_cam`].
+    temperature_available: Mutex<bool>,
     target_temperature: Mutex<Option<f64>>,
 
     exposure_in_flight: AtomicBool,
@@ -100,6 +106,7 @@ impl DeviceState {
             exposure_range_us: Mutex::new(None),
             gain_min_max: Mutex::new(None),
             offset_min_max: Mutex::new(None),
+            temperature_available: Mutex::new(false),
             target_temperature: Mutex::new(None),
             exposure_in_flight: AtomicBool::new(false),
             image_ready: AtomicBool::new(false),
@@ -219,6 +226,10 @@ impl ZwoCamera {
             find(ControlType::Gain).map(|c: &ControlCaps| (c.min, c.max));
         *self.state.offset_min_max.lock() =
             find(ControlType::Offset).map(|c: &ControlCaps| (c.min, c.max));
+        // `CCDTemperature` is reported whenever the sensor-temperature control is
+        // present — independent of cooling (an uncooled ASI still reads its sensor
+        // temperature). The cooler-setpoint members remain gated on `is_cooler_cam`.
+        *self.state.temperature_available.lock() = find(ControlType::Temperature).is_some();
 
         self.state.bin.store(1, Ordering::Release);
         self.state.readout_mode.store(0, Ordering::Release);
@@ -894,12 +905,17 @@ impl Camera for ZwoCamera {
 
     async fn ccd_temperature(&self) -> ASCOMResult<f64> {
         self.ensure_connected()?;
-        if !self.info.is_cooler_cam {
+        // Decoupled from cooling: report the sensor temperature whenever the
+        // camera advertises the `ASI_TEMPERATURE` control (cached at the open
+        // handshake), cooled or not. A camera without it is genuinely
+        // `NOT_IMPLEMENTED`.
+        if !*self.state.temperature_available.lock() {
             return Err(ASCOMError::NOT_IMPLEMENTED);
         }
         self.on_handle(|h| {
-            h.temperature_celsius()
-                .map_err(|_| ASCOMError::INVALID_VALUE)
+            h.temperature_celsius().map_err(|_| {
+                ASCOMError::new(UNSPECIFIED_ERROR, "failed to read sensor temperature")
+            })
         })
         .await
     }
@@ -1541,9 +1557,36 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cooling_not_implemented_on_uncooled_model() {
+    async fn cooling_setpoint_members_not_implemented_on_uncooled_model() {
+        // The cooler-setpoint members stay gated on `is_cooler_cam`...
         let device = connected_device(MockCameraHandle::default().without_cooler());
         assert!(!device.can_set_ccd_temperature().await.unwrap());
+        assert!(!device.can_get_cooler_power().await.unwrap());
+        assert_eq!(
+            device.set_ccd_temperature().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_IMPLEMENTED
+        );
+        assert_eq!(
+            device.cooler_power().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_IMPLEMENTED
+        );
+    }
+
+    #[tokio::test]
+    async fn ccd_temperature_reported_on_uncooled_model_with_sensor() {
+        // ...but `CCDTemperature` is decoupled: an uncooled camera that still
+        // advertises the sensor-temperature control reports a reading (the ASI178
+        // hardware behaviour), rather than the old `NOT_IMPLEMENTED` placeholder.
+        let device = connected_device(MockCameraHandle::default().without_cooler());
+        assert!(device.ccd_temperature().await.unwrap().is_finite());
+    }
+
+    #[tokio::test]
+    async fn ccd_temperature_not_implemented_without_sensor_control() {
+        // A camera that does not advertise `ASI_TEMPERATURE` genuinely has no
+        // reading, so `CCDTemperature` is `NOT_IMPLEMENTED`.
+        let device =
+            connected_device(MockCameraHandle::default().without_control(ControlType::Temperature));
         assert_eq!(
             device.ccd_temperature().await.unwrap_err().code,
             ASCOMErrorCode::NOT_IMPLEMENTED

@@ -271,9 +271,15 @@ ASI/EFW C API exposes and what `zwo-rs` will wrap.
 - **Readout modes** — `ReadoutMode(s)` from the ASI speed/bit-depth combinations
   the driver exposes (e.g. "Normal", "High Speed"); switching updates cached
   state.
-- **Cooling** — `CoolerOn`, `CCDTemperature`, `SetCCDTemperature`, `CoolerPower`,
-  `CanSetCCDTemperature`, `CanGetCoolerPower` — all gated on
-  `ASI_CAMERA_INFO.IsCoolerCam`.
+- **Cooling** — `CoolerOn`, `SetCCDTemperature`, `CoolerPower`,
+  `CanSetCCDTemperature`, `CanGetCoolerPower` are gated on
+  `ASI_CAMERA_INFO.IsCoolerCam` (these need an actual TEC).
+  **`CCDTemperature` is decoupled from cooling**: it reports the sensor
+  temperature whenever the camera advertises the `ASI_TEMPERATURE` control
+  (cached at the open handshake), cooled or not — most ASI cameras, including
+  uncooled ones like the ASI178, expose a readable sensor temperature, and
+  throwing it away as `NOT_IMPLEMENTED` would discard a genuinely useful reading.
+  A camera without the control reports `NOT_IMPLEMENTED`.
 - **Sensor type** — `Monochrome` vs `RGGB` (+ `BayerOffsetX/Y`) from
   `IsColorCam` / `BayerPattern`.
 - **`MaxADU`** = `(2^BitDepth) - 1` from `ASI_CAMERA_INFO.BitDepth` (e.g. 65535
