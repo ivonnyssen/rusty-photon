@@ -25,7 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     name: bazel/cargo target parity
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install stable
         uses: dtolnay/rust-toolchain@stable
       - name: Setup bazelisk
