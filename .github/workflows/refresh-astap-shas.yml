@@ -70,7 +70,7 @@ jobs:
           - { os: macos-latest,     arch_key: macOS-ARM64,  archive: astap_command-line_version_macOS_M1.zip,       subdir: macOS%20installer,   bin: astap_cli }
           - { os: windows-latest,   arch_key: Windows-X64,  archive: astap_command-line_version_win64.zip,          subdir: windows_installer,   bin: astap_cli.exe }
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           # workflow_run defaults to the trigger workflow's head_sha
           # (could be a PR commit if install-astap was failing on a PR).
@@ -343,7 +343,7 @@ jobs:
     name: cross-mirror / Windows-ARM64
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           ref: main
 
@@ -406,7 +406,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'failure'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           # Always base the auto-refresh off main, regardless of how this
           # workflow was triggered. workflow_run defaults to the trigger
@@ -508,7 +508,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          # actions/checkout@v5 with `ref: main` leaves origin's refspec
+          # actions/checkout@v7 with `ref: main` leaves origin's refspec
           # as `+refs/heads/main:refs/remotes/origin/main` (single-branch
           # fetch). A plain `git fetch origin $BRANCH` under that refspec
           # only populates FETCH_HEAD; the remote-tracking ref

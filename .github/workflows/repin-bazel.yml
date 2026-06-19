@@ -39,7 +39,7 @@ jobs:
     steps:
       # Check out the actual PR head branch (not the detached merge ref) with
       # persisted credentials so the repin commit can be pushed back to it.
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.head_ref }}
 

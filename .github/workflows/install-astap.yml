@@ -55,7 +55,7 @@ jobs:
         # currently supported target).
         os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install ASTAP
         uses: ./.github/actions/install-astap
         # Skip the cache entirely: this workflow exists to catch

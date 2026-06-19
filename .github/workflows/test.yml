@@ -35,7 +35,7 @@ jobs:
       bdd-packages: ${{ steps.bdd.outputs.packages }}
       has-bdd: ${{ steps.bdd.outputs.has_bdd }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: loadingalias/cargo-rail-action@v4
@@ -88,7 +88,7 @@ jobs:
     timeout-minutes: 30
     name: ubuntu / stable
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install ASCOM OmniSim
         uses: ./.github/actions/install-omnisim
       - name: Install stable
@@ -142,7 +142,7 @@ jobs:
     timeout-minutes: 30
     name: macos-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install ASCOM OmniSim
         uses: ./.github/actions/install-omnisim
       - name: Install stable
@@ -183,7 +183,7 @@ jobs:
     timeout-minutes: 30
     name: windows / nextest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install ASCOM OmniSim
         uses: ./.github/actions/install-omnisim
       - name: Install stable
@@ -224,7 +224,7 @@ jobs:
       matrix:
         package: ${{ fromJson(needs.plan.outputs.bdd-packages) }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install ASCOM OmniSim
         uses: ./.github/actions/install-omnisim
       - name: Install stable
@@ -274,7 +274,7 @@ jobs:
     timeout-minutes: 30
     name: coverage
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install ASCOM OmniSim
         uses: ./.github/actions/install-omnisim
       - name: Install nightly (for coverage instrumentation)
