@@ -64,3 +64,5 @@ needs the SDK installed locally
 ## [0.1.6] - Previous Release
 
 - Previous functionality with vendored SDK support
+
+[Unreleased]: https://github.com/ivonnyssen/rusty-photon/commits/main/crates/qhyccd-rs

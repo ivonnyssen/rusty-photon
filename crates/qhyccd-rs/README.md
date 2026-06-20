@@ -98,9 +98,9 @@ Download and install the QHYCCD SDK from the [official website](https://www.qhyc
 
 ## Usage Examples
 
-[src/bin/LiveFrameMode.rs](https://github.com/ivonnyssen/qhyccd-rs/blob/main/src/bin/LiveFrameMode.rs)
+[src/bin/LiveFrameMode.rs](https://github.com/ivonnyssen/rusty-photon/blob/main/crates/qhyccd-rs/src/bin/LiveFrameMode.rs)
 
-[src/bin/SingleFrameMode.rs](https://github.com/ivonnyssen/qhyccd-rs/blob/main/src/bin/SingleFrameMode.rs)
+[src/bin/SingleFrameMode.rs](https://github.com/ivonnyssen/rusty-photon/blob/main/crates/qhyccd-rs/src/bin/SingleFrameMode.rs)
 
 ## Simulation Feature
 
