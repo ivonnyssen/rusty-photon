@@ -28,7 +28,7 @@ conformu = ["mock"]
 workspace = true
 
 [dependencies]
-ascom-alpaca = { workspace = true, features = ["server", "camera", "filter_wheel", "client"] }
+ascom-alpaca = { workspace = true, features = ["server", "camera", "filter_wheel"] }
 qhyccd-rs = { workspace = true }
 rusty-photon-config = { workspace = true }
 rusty-photon-driver = { workspace = true }
@@ -51,6 +51,12 @@ parking_lot = { workspace = true }
 command = "cargo test -p qhy-camera --features conformu --test conformu_integration -- --nocapture"
 
 [dev-dependencies]
+# ascom-alpaca's `client` feature is used only by the BDD harness
+# (tests/bdd/world.rs), so keep it out of the production server binary — it
+# independently pulls reqwest/rand/mime/async-fn-stream/tracing-futures. Dev-dep
+# features union with the prod features for test/--all-features builds. The prod
+# [dependencies] entry keeps `filter_wheel` (production-used: real CFW devices).
+ascom-alpaca = { workspace = true, features = ["client"] }
 tracing-subscriber = { workspace = true }
 bdd-infra = { workspace = true, features = ["conformu"] }
 cucumber = { workspace = true }
