@@ -15,16 +15,30 @@ exports_files(
 # `bazel run //:buildifier` formats every BUILD / *.bzl / MODULE.bazel file in the
 # workspace in place. Pinned via MODULE.bazel (buildifier_prebuilt) so every dev
 # machine and CI run the identical formatter with no system install.
+# `exclude_patterns` keeps the formatter out of nested agent git worktrees under
+# `.claude/` (see `buildifier_check` below for the full rationale).
 buildifier(
     name = "buildifier",
+    exclude_patterns = ["./.claude/*"],
     mode = "fix",
 )
 
 # `bazel test //:buildifier_check` fails if any BUILD / *.bzl file is unformatted.
 # Runs non-sandboxed over the real tree (rooted at MODULE.bazel) so it covers every
 # package, not just this one. Wire into the Bazel shadow CI as the format gate.
+#
+# `exclude_patterns` prunes `.claude/` from the walk. In `no_sandbox` + `workspace`
+# mode this rule's generated runner does a literal `cd <repo-root> && find . -name
+# '*.bazel' ... | xargs buildifier`. Agent git worktrees are nested *inside* the
+# checkout at `.claude/worktrees/<name>/`, each a full repo copy with its own BUILD
+# files, so the bare `find .` descends into them and lints their (often stale, e.g.
+# pre-buildifier-adoption) BUILD files — failing the check and blocking every commit
+# via the pre-commit hook. `.bazelignore` does NOT help: it only governs Bazel's
+# loading phase (`//...`, `glob()`), not a non-sandboxed test that shells out to
+# `find`, which honors neither `.bazelignore` nor git-worktree boundaries.
 buildifier_test(
     name = "buildifier_check",
+    exclude_patterns = ["./.claude/*"],
     lint_mode = "warn",
     mode = "diff",
     no_sandbox = True,
