@@ -23,12 +23,16 @@ use zwo_rs::{CameraInfo, ControlCaps, ControlType, GuideDirection, ImageType};
 #[error("{0}")]
 pub struct BackendError(pub String);
 
-impl BackendError {
-    /// Collapse any `Display` error (a [`zwo_rs::Error`]) into the typed seam error.
-    pub(crate) fn from_err(err: impl std::fmt::Display) -> Self {
-        Self(format!("{err}"))
+/// Collapse a [`zwo_rs::Error`] into the typed seam error. The seam keeps only the
+/// message string (each call site picks the right `ASCOMError` code); this `From`
+/// impl lets `?` convert SDK errors automatically.
+impl From<zwo_rs::Error> for BackendError {
+    fn from(err: zwo_rs::Error) -> Self {
+        Self(err.to_string())
     }
+}
 
+impl BackendError {
     fn closed() -> Self {
         Self("camera not open".to_string())
     }
@@ -161,11 +165,7 @@ impl CameraHandle for ZwoCameraHandle {
     fn open(&self) -> BackendResult<()> {
         let mut guard = self.camera.lock();
         if guard.is_none() {
-            let camera = self
-                .sdk
-                .open_camera(self.index)
-                .map_err(BackendError::from_err)?;
-            *guard = Some(camera);
+            *guard = Some(self.sdk.open_camera(self.index)?);
         }
         Ok(())
     }
@@ -178,39 +178,26 @@ impl CameraHandle for ZwoCameraHandle {
 
     fn control_caps(&self) -> BackendResult<Vec<ControlCaps>> {
         let guard = self.camera.lock();
-        guard
-            .as_ref()
-            .ok_or_else(BackendError::closed)?
-            .control_caps()
-            .map_err(BackendError::from_err)
+        let camera = guard.as_ref().ok_or_else(BackendError::closed)?;
+        Ok(camera.control_caps()?)
     }
 
     fn control_value(&self, control: ControlType) -> BackendResult<i64> {
         let guard = self.camera.lock();
-        guard
-            .as_ref()
-            .ok_or_else(BackendError::closed)?
-            .control_value(control)
-            .map(|v| v.value)
-            .map_err(BackendError::from_err)
+        let camera = guard.as_ref().ok_or_else(BackendError::closed)?;
+        Ok(camera.control_value(control)?.value)
     }
 
     fn set_control_value(&self, control: ControlType, value: i64) -> BackendResult<()> {
         let guard = self.camera.lock();
-        guard
-            .as_ref()
-            .ok_or_else(BackendError::closed)?
-            .set_control_value(control, value, false)
-            .map_err(BackendError::from_err)
+        let camera = guard.as_ref().ok_or_else(BackendError::closed)?;
+        Ok(camera.set_control_value(control, value, false)?)
     }
 
     fn temperature_celsius(&self) -> BackendResult<f64> {
         let guard = self.camera.lock();
-        guard
-            .as_ref()
-            .ok_or_else(BackendError::closed)?
-            .temperature_celsius()
-            .map_err(BackendError::from_err)
+        let camera = guard.as_ref().ok_or_else(BackendError::closed)?;
+        Ok(camera.temperature_celsius()?)
     }
 
     fn capture(&self, request: CaptureRequest) -> BackendResult<Option<Vec<u8>>> {
@@ -230,22 +217,14 @@ impl CameraHandle for ZwoCameraHandle {
         {
             let guard = self.camera.lock();
             let camera = guard.as_ref().ok_or_else(BackendError::closed)?;
-            camera
-                .set_roi_format(request.width, request.height, request.bin, ImageType::Raw16)
-                .map_err(BackendError::from_err)?;
-            camera
-                .set_start_pos(request.start_x, request.start_y)
-                .map_err(BackendError::from_err)?;
+            camera.set_roi_format(request.width, request.height, request.bin, ImageType::Raw16)?;
+            camera.set_start_pos(request.start_x, request.start_y)?;
             // `ASI_EXPOSURE` is a writable control on every ASI camera, and the
             // `zwo-rs` simulation models it too, so a failure here is a genuine
             // error: fail the capture rather than silently integrate for the
             // wrong exposure time.
-            camera
-                .set_control_value(ControlType::Exposure, request.exposure_us, false)
-                .map_err(BackendError::from_err)?;
-            camera
-                .start_exposure(request.is_dark)
-                .map_err(BackendError::from_err)?;
+            camera.set_control_value(ControlType::Exposure, request.exposure_us, false)?;
+            camera.start_exposure(request.is_dark)?;
         }
 
         // Integrate for the requested duration without holding the lock, checking
@@ -307,7 +286,7 @@ impl CameraHandle for ZwoCameraHandle {
                     }
                     _ => {}
                 }
-                match camera.exposure_status().map_err(BackendError::from_err)? {
+                match camera.exposure_status()? {
                     zwo_rs::ExposureStatus::Success | zwo_rs::ExposureStatus::Idle => break,
                     zwo_rs::ExposureStatus::Working => {
                         std::thread::sleep(Duration::from_millis(10))
@@ -320,9 +299,7 @@ impl CameraHandle for ZwoCameraHandle {
         }
 
         let mut buf = vec![0u8; request.width as usize * request.height as usize * 2];
-        camera
-            .download_exposure(&mut buf)
-            .map_err(BackendError::from_err)?;
+        camera.download_exposure(&mut buf)?;
         Ok(Some(buf))
     }
 
@@ -335,20 +312,14 @@ impl CameraHandle for ZwoCameraHandle {
 
     fn pulse_guide_on(&self, direction: GuideDirection) -> BackendResult<()> {
         let guard = self.camera.lock();
-        guard
-            .as_ref()
-            .ok_or_else(BackendError::closed)?
-            .pulse_guide_on(direction)
-            .map_err(BackendError::from_err)
+        let camera = guard.as_ref().ok_or_else(BackendError::closed)?;
+        Ok(camera.pulse_guide_on(direction)?)
     }
 
     fn pulse_guide_off(&self, direction: GuideDirection) -> BackendResult<()> {
         let guard = self.camera.lock();
-        guard
-            .as_ref()
-            .ok_or_else(BackendError::closed)?
-            .pulse_guide_off(direction)
-            .map_err(BackendError::from_err)
+        let camera = guard.as_ref().ok_or_else(BackendError::closed)?;
+        Ok(camera.pulse_guide_off(direction)?)
     }
 }
 
