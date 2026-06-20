@@ -1,13 +1,13 @@
 [package]
 name = "qhyccd-rs"
 version = "0.1.9"
-edition ="2021"
+edition = "2021"
 # Inherits the workspace MSRV (1.94.1): in-tree this crate is built within the
 # workspace, whose root manifest uses `profile.dev.debug = "line-tables-only"`
 # (Rust >= 1.71), so a lower standalone floor (was 1.68.0) can't be verified
 # here. Flattens to the concrete version on `cargo publish`. See ADR-009.
 rust-version.workspace = true
-authors = ["Igor von Nyssen<igor@vonnyssen.com>"]
+authors = ["Igor von Nyssen <igor@vonnyssen.com>"]
 license = "MIT OR Apache-2.0"
 readme = "README.md"
 keywords = ["qhyccd", "astronomy", "camera"]

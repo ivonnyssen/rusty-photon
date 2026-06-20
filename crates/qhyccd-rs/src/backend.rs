@@ -12,11 +12,17 @@ pub(crate) struct QHYCCDHandle {
 // `!Send + !Sync` by default — so these impls are REQUIRED for `Camera`
 // (`CameraBackend::Real { handle: Arc<RwLock<Option<QHYCCDHandle>>> }`) to be
 // `Send + Sync`, which it must be to move across the async runtime / blocking
-// threads. The pointer is an opaque QHYCCD SDK handle that we never dereference
-// in Rust; all access to the underlying device goes through the SDK's C calls,
-// serialized behind the `Arc<RwLock<…>>` above (and the driver funnels SDK calls
-// for one handle through a single owner), so sharing the handle across threads is
-// sound.
+// threads. The pointer is an opaque QHYCCD SDK handle that is never dereferenced
+// in Rust.
+//
+// This type does NOT itself serialize concurrent SDK calls on one handle: the
+// `RwLock` above only guards the `Option<handle>` (open/close), and `read_lock!`
+// copies the pointer out and releases the guard *before* the FFI call. So
+// soundness of concurrent calls on a shared `Camera` relies on synchronization
+// provided by the caller and/or the QHYCCD SDK being thread-safe per handle. The
+// qhy-camera driver provides it: every SDK call runs on `spawn_blocking` with a
+// single logical owner per device, so calls on one handle are not made
+// concurrently.
 unsafe impl Send for QHYCCDHandle {}
 unsafe impl Sync for QHYCCDHandle {}
 

@@ -1,6 +1,20 @@
 use std::{env, path::PathBuf};
 
 fn main() {
+    // Re-run when any env var that influences the emitted link-search paths
+    // changes. Cargo only tracks env vars that are explicitly declared here;
+    // emitting any `rerun-if-*` also disables the default "re-run on any package
+    // file change" (fine — this script reads no files, only env). Declared at the
+    // top so they apply on every target, not just the arm that reads them.
+    for var in [
+        "QHYCCD_SDK_DIR",
+        "GITHUB_WORKSPACE",
+        "CARGO_CFG_TARGET_OS",
+        "CARGO_CFG_TARGET_ARCH",
+    ] {
+        println!("cargo:rerun-if-env-changed={var}");
+    }
+
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap();
 
     match target_os.as_str() {
@@ -50,7 +64,6 @@ fn main() {
             // Explicit override for local/system installs: point QHYCCD_SDK_DIR at
             // the directory containing qhyccd.lib (e.g. ...\pkg_win\x64). Checked
             // first so a developer can build off-CI against an installed SDK.
-            println!("cargo:rerun-if-env-changed=QHYCCD_SDK_DIR");
             let mut found = false;
             if let Ok(dir) = env::var("QHYCCD_SDK_DIR") {
                 println!("cargo:rustc-link-search=native={}", dir);
