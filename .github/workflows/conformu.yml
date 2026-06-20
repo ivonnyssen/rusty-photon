@@ -117,33 +117,40 @@ jobs:
       - name: Pre-build workspace
         run: cargo build --locked --workspace --all-features --all-targets
 
-      - name: Run ConformU tests (sequential)
+      - name: Run ConformU tests (parallel)
         shell: bash
         timeout-minutes: 30
         run: |
-          # Run the suites ONE AT A TIME, not concurrently. Six parallel ConformU
-          # runs (each a Rust service + a .NET ConformU process) over-subscribe a
-          # constrained runner's CPU; on macOS that starves the heavier camera
-          # drivers' async runtimes enough to trip ConformU's 10 s StartExposure
-          # timeout (zwo-camera — verified passing locally and when run alone).
-          # Sequential is slower but reliable, and the 30 min budget is ample.
+          # All suites run concurrently. (This was briefly serialized on a
+          # mistaken "macOS runner CPU starvation" theory; the real cause of the
+          # zwo-camera macOS StartExposure timeout was a driver bug — the exposure
+          # integration loop summed intended sleep time instead of honouring a
+          # real-clock deadline — fixed in services/zwo-camera/src/backend.rs.)
           SERVICES='${{ needs.plan.outputs.services }}'
           COUNT=$(echo "$SERVICES" | jq 'length')
 
-          echo "Running $COUNT ConformU services sequentially"
-          failed=0
+          echo "Running $COUNT ConformU services"
+          pids=()
+          cmds=()
           for i in $(seq 0 $((COUNT - 1))); do
             name=$(echo "$SERVICES" | jq -r ".[$i].name")
             cmd=$(echo "$SERVICES" | jq -r ".[$i].command")
-            echo "::group::ConformU: $name"
+            echo "::group::Starting $name"
             echo "Command: $cmd"
-            if eval "$cmd" 2>&1 | sed "s/^/[$name] /"; then
-              echo "$name passed"
-            else
-              echo "::error::$name failed"
-              failed=1
-            fi
             echo "::endgroup::"
+            eval "$cmd" 2>&1 | sed "s/^/[$name] /" &
+            pids+=($!)
+            cmds+=("$name")
+          done
+
+          failed=0
+          for i in "${!pids[@]}"; do
+            if ! wait "${pids[$i]}"; then
+              echo "::error::${cmds[$i]} failed"
+              failed=1
+            else
+              echo "${cmds[$i]} passed"
+            fi
           done
           exit $failed
 
