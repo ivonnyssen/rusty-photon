@@ -465,8 +465,9 @@ pub(crate) mod mock {
                 params: Mutex::new(params),
                 ranges: Mutex::new(ranges),
                 ccd_info: CCDChipInfo {
-                    chip_width: 7.4,
-                    chip_height: 5.0,
+                    // um, matching the real SDK (chip dims ≈ image_dim × pixel_size).
+                    chip_width: 7372.8,  // um (3072 × 2.4)
+                    chip_height: 4915.2, // um (2048 × 2.4)
                     image_width: 3072,
                     image_height: 2048,
                     pixel_width: 2.4,

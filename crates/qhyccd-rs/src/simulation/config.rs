@@ -70,8 +70,10 @@ impl Default for SimulatedCameraConfig {
             id: "SIM-001".to_string(),
             model: "QHY-SIMULATED".to_string(),
             chip_info: CCDChipInfo {
-                chip_width: 7.4,  // mm
-                chip_height: 5.0, // mm
+                // um, like the real SDK (verified on a QHY178M: GetQHYCCDChipInfo
+                // returns chip dims in micrometers ≈ image_dim × pixel_size, not mm).
+                chip_width: 7372.8,  // um (3072 × 2.4)
+                chip_height: 4915.2, // um (2048 × 2.4)
                 image_width: 3072,
                 image_height: 2048,
                 pixel_width: 2.4,  // um

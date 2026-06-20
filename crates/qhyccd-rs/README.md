@@ -132,15 +132,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Same code for both real and simulated cameras
     let sdk = Sdk::new()?;
 
-    let cameras = sdk.cameras();
-    println!("Found {} camera(s)", cameras.count());
+    // `cameras()` / `filter_wheels()` return iterators; collect (or use `.next()`).
+    let cameras: Vec<_> = sdk.cameras().collect();
+    println!("Found {} camera(s)", cameras.len());
 
     if let Some(camera) = cameras.first() {
-        println!("Camera: {}", camera.id()?);
+        // `id()` returns `&str`, not a `Result`.
+        println!("Camera: {}", camera.id());
 
         // Check for filter wheel
-        let filter_wheels = sdk.filter_wheels();
-        if let Some(fw) = filter_wheels.first() {
+        if let Some(fw) = sdk.filter_wheels().next() {
             fw.open()?;
             println!("Filter wheel with {} positions", fw.get_number_of_filters()?);
             fw.close()?;

@@ -8,7 +8,15 @@ pub(crate) struct QHYCCDHandle {
     pub ptr: *const std::ffi::c_void,
 }
 
-//Safety: QHYCCDHandle is only used in Camera and Camera is Send and Sync
+// SAFETY: the struct holds a raw pointer (`*const c_void`), which makes it
+// `!Send + !Sync` by default — so these impls are REQUIRED for `Camera`
+// (`CameraBackend::Real { handle: Arc<RwLock<Option<QHYCCDHandle>>> }`) to be
+// `Send + Sync`, which it must be to move across the async runtime / blocking
+// threads. The pointer is an opaque QHYCCD SDK handle that we never dereference
+// in Rust; all access to the underlying device goes through the SDK's C calls,
+// serialized behind the `Arc<RwLock<…>>` above (and the driver funnels SDK calls
+// for one handle through a single owner), so sharing the handle across threads is
+// sound.
 unsafe impl Send for QHYCCDHandle {}
 unsafe impl Sync for QHYCCDHandle {}
 

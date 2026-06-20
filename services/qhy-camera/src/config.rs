@@ -173,7 +173,11 @@ mod tests {
 
     #[test]
     fn load_effective_config_missing_file_uses_defaults() {
-        let path = std::path::PathBuf::from("/tmp/qhy_camera_nonexistent_24680.json");
+        // A fresh temp dir guarantees the path does not exist (a fixed /tmp path
+        // could be left over from a prior run and make the test assert against
+        // real contents).
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing.json");
         let c = load_effective_config(&path, &CliOverrides::default()).unwrap();
         assert_eq!(c.server.port, 11121);
     }

@@ -47,22 +47,45 @@ fn main() {
                 }
             };
 
+            // Explicit override for local/system installs: point QHYCCD_SDK_DIR at
+            // the directory containing qhyccd.lib (e.g. ...\pkg_win\x64). Checked
+            // first so a developer can build off-CI against an installed SDK.
+            println!("cargo:rerun-if-env-changed=QHYCCD_SDK_DIR");
+            let mut found = false;
+            if let Ok(dir) = env::var("QHYCCD_SDK_DIR") {
+                println!("cargo:rustc-link-search=native={}", dir);
+                found = true;
+            }
+            // CI: the qhyccd-sdk-install action extracts the SDK to pkg_win/ at the
+            // workspace root.
             if let Ok(workspace) = env::var("GITHUB_WORKSPACE") {
-                // SDK is extracted to pkg_win/ at workspace root by qhyccd-sdk-install action
                 let ws_sdk = PathBuf::from(&workspace).join("pkg_win");
                 println!("cargo:rustc-link-search=native={}", ws_sdk.display());
                 println!(
                     "cargo:rustc-link-search=native={}",
                     ws_sdk.join(arch_dir).display()
                 );
+                found = true;
             }
-
+            // Optional in-tree vendored SDK — only add the path when it actually
+            // exists. It is not committed to this repo, so emitting it
+            // unconditionally was just noise and masked the "SDK not found" case.
             let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
             let sdk_dir = manifest_dir
                 .join("qhyccd-sdk")
                 .join("pkg_win")
                 .join(arch_dir);
-            println!("cargo:rustc-link-search=native={}", sdk_dir.display());
+            if sdk_dir.is_dir() {
+                println!("cargo:rustc-link-search=native={}", sdk_dir.display());
+                found = true;
+            }
+            if !found {
+                println!(
+                    "cargo:warning=QHYCCD SDK not found for Windows: set QHYCCD_SDK_DIR to the \
+                     directory containing qhyccd.lib (or set GITHUB_WORKSPACE on CI). Linking \
+                     will fail until a search path is provided."
+                );
+            }
             println!("cargo:rustc-link-lib=static=qhyccd");
             // Windows SDK likely includes all dependencies
         }

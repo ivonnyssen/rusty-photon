@@ -12,7 +12,7 @@ pub struct FilterWheel {
 /// Filter wheels are directly connected to the QHY camera and can be controlled through the camera
 #[allow(unused_unsafe)]
 impl FilterWheel {
-    /// Creates a new instance of the filter wheel. The Sdk automatically finds all filter wheels and provides them in it's `filter_wheels()` iterator. Creating
+    /// Creates a new instance of the filter wheel. The Sdk automatically finds all filter wheels and provides them in its `filter_wheels()` iterator. Creating
     /// a filter wheel manually should only be needed for rare cases.
     /// # Example
     /// ```no_run
