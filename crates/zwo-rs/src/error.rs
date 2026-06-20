@@ -14,9 +14,6 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 #[non_exhaustive]
 pub enum Error {
-    /// The requested operation is not yet implemented in this build-out.
-    #[error("operation not yet implemented")]
-    NotImplemented,
     /// An ASI camera SDK call returned a non-success code.
     #[error("ASI camera SDK error: {0}")]
     Asi(#[from] AsiError),
