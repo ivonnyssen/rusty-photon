@@ -21,7 +21,7 @@ qhyccd-rs works with stable Rust. The minimum required Rust version is 1.94.1
 
 ## Version of libqhyccd
 
-Currently the library works with  [QHYCCD SDK 25.09.29](https://www.qhyccd.com/html/prepub/log_en.html#!log_en.md#25.09.29). The library supports Linux, Windows, and macOS (experimental).
+Currently the library works with [QHYCCD SDK 26.06.04](https://www.qhyccd.com/html/prepub/log_en.html#!log_en.md#26.06.04). The library supports Linux, Windows, and macOS (experimental).
 
 ## Platform Support
 
@@ -70,31 +70,39 @@ sudo dnf install libusb1-devel
 
 #### Install QHYCCD SDK
 
+The 26.x packaging ships a staged tree (`usr/ lib/ etc/ sbin/`) with **no**
+`install.sh`, so copy each tree's contents into `/` and refresh `ldconfig`. The
+`dir/.` form (rather than `dir`) follows the `/lib` and `/sbin` symlinks on
+usrmerge systems (Ubuntu 24.04+) instead of trying to replace them, while `cp -a`
+preserves the `libqhyccd.so -> .so.20 -> .so.<ver>` symlink chain.
+
 ##### ARM
 
 ```sh
-wget https://www.qhyccd.com/file/repository/publish/SDK/25.09.29/sdk_Arm64_25.09.29.tgz
-tar xzvf sdk_Arm64_25.09.29.tgz 
-cd sdk_Arm64_25.09.29/
-sudo sh install.sh 
+wget https://www.qhyccd.com/file/repository/publish/SDK/260604/sdk_linux_arm64_26.06.04.tar.gz
+tar xzvf sdk_linux_arm64_26.06.04.tar.gz
+cd sdk_linux_arm64_26.06.04/
+for d in usr lib etc sbin; do [ -d "$d" ] && sudo cp -a "$d/." "/$d/"; done
+sudo ldconfig
 ```
 
 ##### Linux_64
 
 ```sh
-wget https://www.qhyccd.com/file/repository/publish/SDK/25.09.29/sdk_linux64_25.09.29.tgz
-tar xzvf sdk_linux64_25.09.29.tgz
-cd sdk_linux64_25.09.29/
-sudo sh install.sh 
+wget https://www.qhyccd.com/file/repository/publish/SDK/260604/sdk_linux64_26.06.04.tar.gz
+tar xzvf sdk_linux64_26.06.04.tar.gz
+cd sdk_linux64_26.06.04/
+for d in usr lib etc sbin; do [ -d "$d" ] && sudo cp -a "$d/." "/$d/"; done
+sudo ldconfig
 ```
 
 ### Windows
 
-Download and install the QHYCCD SDK from the [official website](https://www.qhyccd.com/html/prepub/log_en.html#!log_en.md#25.09.29).
+Download and install the QHYCCD SDK from the [official website](https://www.qhyccd.com/html/prepub/log_en.html#!log_en.md#26.06.04).
 
 ### macOS (Experimental)
 
-Download and install the QHYCCD SDK from the [official website](https://www.qhyccd.com/html/prepub/log_en.html#!log_en.md#25.09.29).
+Download and install the QHYCCD SDK from the [official website](https://www.qhyccd.com/html/prepub/log_en.html#!log_en.md#26.06.04).
 
 ## Usage Examples
 

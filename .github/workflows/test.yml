@@ -134,9 +134,9 @@ jobs:
           version: 1.0
       - name: Install QHYCCD SDK (qhy-camera)
         if: needs.plan.outputs.infra == 'true' || needs.plan.outputs.cargo-args == '' || contains(needs.plan.outputs.cargo-args, 'qhy-camera')
-        uses: ivonnyssen/qhyccd-sdk-install@v2
+        uses: ivonnyssen/qhyccd-sdk-install@v3
         with:
-          version: "25.09.29"
+          version: "26.06.04"
       - name: Install stable
         uses: dtolnay/rust-toolchain@stable
       - name: Install cargo-nextest
@@ -201,9 +201,9 @@ jobs:
         run: brew install libusb
       - name: Install QHYCCD SDK (qhy-camera)
         if: needs.plan.outputs.infra == 'true' || needs.plan.outputs.cargo-args == '' || contains(needs.plan.outputs.cargo-args, 'qhy-camera')
-        uses: ivonnyssen/qhyccd-sdk-install@v2
+        uses: ivonnyssen/qhyccd-sdk-install@v3
         with:
-          version: "25.09.29"
+          version: "26.06.04"
       # The macOS SDK ships libqhyccd as a dylib extracted under $GITHUB_WORKSPACE;
       # the SDK-linked test binaries (qhy-camera, plus the qhyccd-rs/libqhyccd-sys
       # workspace members since ADR-009) load it via @rpath, which dyld can't
@@ -264,9 +264,9 @@ jobs:
       # extracts the WinMix SDK into the workspace where libqhyccd-sys's
       # build.rs looks and adds pkg_win\x64 to PATH for runtime DLL loading.
       - name: Install QHYCCD SDK (qhy-camera)
-        uses: ivonnyssen/qhyccd-sdk-install@v2
+        uses: ivonnyssen/qhyccd-sdk-install@v3
         with:
-          version: "25.09.29"
+          version: "26.06.04"
       - name: Install stable
         uses: dtolnay/rust-toolchain@stable
       - name: Install cargo-nextest
@@ -312,9 +312,9 @@ jobs:
       # matrix leg so its BDD binary builds and loads on Windows.
       - name: Install QHYCCD SDK (qhy-camera)
         if: matrix.package == 'qhy-camera'
-        uses: ivonnyssen/qhyccd-sdk-install@v2
+        uses: ivonnyssen/qhyccd-sdk-install@v3
         with:
-          version: "25.09.29"
+          version: "26.06.04"
       - name: Install stable
         uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -379,9 +379,9 @@ jobs:
           version: 1.0
       - name: Install QHYCCD SDK (qhy-camera)
         if: needs.plan.outputs.infra == 'true' || needs.plan.outputs.cargo-args == '' || contains(needs.plan.outputs.cargo-args, 'qhy-camera')
-        uses: ivonnyssen/qhyccd-sdk-install@v2
+        uses: ivonnyssen/qhyccd-sdk-install@v3
         with:
-          version: "25.09.29"
+          version: "26.06.04"
       - name: Install nightly (for coverage instrumentation)
         uses: dtolnay/rust-toolchain@nightly
         with:

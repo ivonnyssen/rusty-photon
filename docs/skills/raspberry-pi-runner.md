@@ -92,15 +92,17 @@ that `qhy-camera` links (next paragraph).
 
 `qhy-camera` links the proprietary QHYCCD SDK (`libqhyccd-sys` →
 `static=qhyccd` + `libusb-1.0` + `stdc++`). The Pi5 arm64 nightly builds the
-full workspace, so the SDK (pinned **25.09.29**, aarch64) must be installed —
+full workspace, so the SDK (pinned **26.06.04**, aarch64) must be installed —
 the `setup-pi-runner.sh` `=== 1b. QHYCCD SDK ===` section downloads it from
-**qhyccd.com** (publicly, no auth) and runs the SDK's `install.sh`, landing the
-libs in `/usr/local/lib` (where `libqhyccd-sys`'s `build.rs` hard-codes the
-linker search path). The published `ivonnyssen/qhyccd-sdk-install@v2` action used
-by the GitHub-hosted jobs covers x86_64-linux, macOS, and Windows but **not**
-linux-arm64, hence the Pi-side install; the arm64 archive name on qhyccd.com
-differs from the x86_64 `sdk_linux64_*` one, so set `QHY_SDK_FILE` to the correct
-aarch64 archive (or `QHY_SDK_SKIP=1` if the SDK is already installed by hand).
+**qhyccd.com** (publicly, no auth) and copies the staged lib/include tree into
+`/usr/local/lib` (the 26.x packaging ships no `install.sh`; that is where
+`libqhyccd-sys`'s `build.rs` hard-codes the linker search path). The published
+`ivonnyssen/qhyccd-sdk-install@v3` action used by the GitHub-hosted jobs now
+covers linux-arm64 as well, but the Pi runner is intentionally **sudo-less**
+(public-repo safety) and the action's install needs root for `/usr/local`, so the
+Pi pre-provisions instead. The 26.x arm64 archive is `sdk_linux_arm64_<ver>.tar.gz`
+under the dot-stripped dir `260604`; override `QHY_SDK_DIR` / `QHY_SDK_FILE` for
+other releases (or `QHY_SDK_SKIP=1` if the SDK is already installed by hand).
 The GitHub-hosted **ubuntu, macOS, and Windows** jobs all build qhy-camera with
 the SDK installed via the action; only the sanitizer job (`safety.yml`) excludes
 it. The Pi covers linux-arm64.

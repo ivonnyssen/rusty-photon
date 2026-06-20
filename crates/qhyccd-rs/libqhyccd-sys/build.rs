@@ -22,10 +22,15 @@ fn main() {
             // Check for SDK in workspace first (CI environment)
             if let Ok(workspace) = env::var("GITHUB_WORKSPACE") {
                 let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap();
+                // The qhyccd-sdk-install action extracts the macOS SDK under the
+                // workspace root using the upstream archive's top dir. The 26.x
+                // packaging renamed the Intel variant `macMix` -> `mac_x64` (Apple
+                // Silicon stays `mac_arm`). Keep these in lockstep with the pinned
+                // `version:` in the CI workflows.
                 let sdk_path = if arch == "aarch64" {
-                    format!("{}/sdk_mac_arm_25.09.29/usr/local/lib", workspace)
+                    format!("{}/sdk_mac_arm_26.06.04/usr/local/lib", workspace)
                 } else {
-                    format!("{}/sdk_macMix_25.09.29/usr/local/lib", workspace)
+                    format!("{}/sdk_mac_x64_26.06.04/usr/local/lib", workspace)
                 };
                 println!("cargo:rustc-link-search=native={}", sdk_path);
             } else {
@@ -69,15 +74,20 @@ fn main() {
                 println!("cargo:rustc-link-search=native={}", dir);
                 found = true;
             }
-            // CI: the qhyccd-sdk-install action extracts the SDK to pkg_win/ at the
-            // workspace root.
+            // CI: the qhyccd-sdk-install action extracts the SDK under the
+            // workspace root — `pkg_win/` for the legacy (<= 25.x) packaging and
+            // `sdk_win64_<version>/` for the new (>= 26.06.04) packaging. Emit both
+            // roots' arch subdirs; a non-existent search path is harmless to the
+            // linker, which uses whichever actually holds `qhyccd.lib`.
             if let Ok(workspace) = env::var("GITHUB_WORKSPACE") {
-                let ws_sdk = PathBuf::from(&workspace).join("pkg_win");
-                println!("cargo:rustc-link-search=native={}", ws_sdk.display());
-                println!(
-                    "cargo:rustc-link-search=native={}",
-                    ws_sdk.join(arch_dir).display()
-                );
+                for root in ["pkg_win", "sdk_win64_26.06.04"] {
+                    let ws_sdk = PathBuf::from(&workspace).join(root);
+                    println!("cargo:rustc-link-search=native={}", ws_sdk.display());
+                    println!(
+                        "cargo:rustc-link-search=native={}",
+                        ws_sdk.join(arch_dir).display()
+                    );
+                }
                 found = true;
             }
             // Optional in-tree vendored SDK — only add the path when it actually

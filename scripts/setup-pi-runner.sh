@@ -79,24 +79,31 @@ sudo apt-get install -y \
   unzip \
   ca-certificates
 
-# === 1b. QHYCCD SDK (proprietary, pinned 25.09.29) ===
+# === 1b. QHYCCD SDK (proprietary, pinned 26.06.04) ===
 #
 # qhy-camera links libqhyccd-sys (links = "qhyccd") + libusb-1.0 + stdc++. The
 # Pi5 arm64 nightly builds the full workspace, so the SDK must be present and
 # discoverable or qhy-camera fails to link. On Linux libqhyccd-sys hard-codes the
-# linker search path `/usr/local/lib`, so the SDK's own install.sh (which copies
-# into /usr/local) is what we run. The SDK is publicly downloadable from
-# qhyccd.com (the `ivonnyssen/qhyccd-sdk-install@v2` action does the same for the
-# x86_64-linux/macOS/Windows GitHub runners; it does NOT cover linux-arm64,
-# hence this Pi-side install).
+# linker search path `/usr/local/lib`; the 26.x packaging ships no install.sh, so
+# we copy the staged lib/include tree into /usr/local (the fallback below). The
+# SDK is publicly downloadable from qhyccd.com. The
+# `ivonnyssen/qhyccd-sdk-install@v3` action installs it on the GitHub runners
+# (x86_64 Linux/macOS/Windows AND, as of v3, linux-arm64). We still provision it
+# here at setup time rather than per-run via the action because this self-hosted
+# runner is intentionally sudo-less (see the runner user below) and the action's
+# install needs root to write /usr/local — pre-provisioning keeps the runner
+# unprivileged.
 #
-# The arm64 tarball name on qhyccd.com differs from the x86_64 `sdk_linux64_*`
-# one — set QHY_SDK_FILE to the correct aarch64 archive for this release (the
-# default is a best guess; confirm it on qhyccd.com's SDK page). Set
-# QHY_SDK_SKIP=1 to skip (e.g. when the SDK is already installed by hand).
-QHY_SDK_VERSION="${QHY_SDK_VERSION:-25.09.29}"
+# The 26.x scheme publishes under a dot-stripped directory (260604) with archive
+# `sdk_linux_arm64_<version>.tar.gz` (the arm64 name differs from the x86_64
+# `sdk_linux64_*`). Override QHY_SDK_DIR / QHY_SDK_FILE for other releases (the
+# legacy <=25.x scheme used a dotted dir + `sdk_Arm64_*.tgz`); confirm names on
+# qhyccd.com's SDK page. Set QHY_SDK_SKIP=1 to skip (SDK already installed).
+QHY_SDK_VERSION="${QHY_SDK_VERSION:-26.06.04}"
 QHY_SDK_BASE="${QHY_SDK_BASE:-https://www.qhyccd.com/file/repository/publish/SDK}"
-QHY_SDK_FILE="${QHY_SDK_FILE:-sdk_Arm64_${QHY_SDK_VERSION}.tgz}"
+# 26.x repository dir is the version with dots stripped (26.06.04 -> 260604).
+QHY_SDK_DIR="${QHY_SDK_DIR:-${QHY_SDK_VERSION//./}}"
+QHY_SDK_FILE="${QHY_SDK_FILE:-sdk_linux_arm64_${QHY_SDK_VERSION}.tar.gz}"
 if [[ "${QHY_SDK_SKIP:-0}" == "1" ]]; then
   log "QHY_SDK_SKIP=1; skipping QHYCCD SDK install."
 elif [[ -f /usr/local/lib/libqhyccd.a ]]; then

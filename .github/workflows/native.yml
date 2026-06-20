@@ -84,9 +84,9 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install libusb
       - name: Install QHYCCD SDK
-        uses: ivonnyssen/qhyccd-sdk-install@v2
+        uses: ivonnyssen/qhyccd-sdk-install@v3
         with:
-          version: "25.09.29"
+          version: "26.06.04"
       - name: cargo generate-lockfile
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Target QHYCCD SDK **26.06.04**. The 26.x distribution changed packaging
+  (dot-stripped repo dir `260604`, `.tar.gz` archives, no `install.sh`, and the
+  per-OS archives renamed `macMix`→`mac_x64` / `WinMix`→`win64` /
+  `Arm64`→`linux_arm64`). `libqhyccd-sys`'s `build.rs` now resolves the macOS
+  extract dirs (`sdk_mac_arm_<ver>` / `sdk_mac_x64_<ver>`) and the Windows
+  `sdk_win64_<ver>` layout accordingly; the Linux `/usr/local/lib` link path is
+  unchanged. Validated on real hardware (QHY178M + 7-slot CFW, ConformU 0 errors).
+
 ## [0.1.9] - 2026-01-19
 
 ### Fixed
