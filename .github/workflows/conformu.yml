@@ -150,7 +150,12 @@ jobs:
             echo "::group::Starting $name"
             echo "Command: $cmd"
             echo "::endgroup::"
-            eval "$cmd" 2>&1 | sed "s/^/[$name] /" &
+            # Run in a subshell that exits with the ConformU command's status,
+            # NOT sed's. A bare `cmd | sed &` makes `$!` the sed PID, so the
+            # `wait` loop below would see sed's (always-0) exit and mask a
+            # failing ConformU run. `exit ${PIPESTATUS[0]}` propagates the real
+            # status to the subshell, which `$!` now captures.
+            ( eval "$cmd" 2>&1 | sed "s/^/[$name] /"; exit "${PIPESTATUS[0]}" ) &
             pids+=($!)
             cmds+=("$name")
           done
