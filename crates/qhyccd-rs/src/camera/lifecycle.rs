@@ -6,11 +6,7 @@ use crate::QHYError::*;
 #[cfg(feature = "simulation")]
 use crate::CCDChipArea;
 
-#[cfg(not(test))]
-use libqhyccd_sys::{CloseQHYCCD, InitQHYCCD, OpenQHYCCD, QHYCCD_SUCCESS};
-
-#[cfg(test)]
-use crate::mocks::mock_libqhyccd_sys::{CloseQHYCCD, InitQHYCCD, OpenQHYCCD, QHYCCD_SUCCESS};
+use crate::ffi::{CloseQHYCCD, InitQHYCCD, OpenQHYCCD, QHYCCD_SUCCESS};
 
 use super::Camera;
 

@@ -11,6 +11,9 @@
 //This file duplicates the libqhyccd-sys bindings, but with mockable functions.
 //These bindings are activated by the import config for the test target.
 
+// Only the `test` build applies `automock` (and thus needs the mockall dev-dep);
+// the `simulation` build uses the plain `unimplemented!()` stubs below.
+#[cfg(test)]
 use mockall::automock;
 
 pub const QHYCCD_PCIE: u32 = 9;

@@ -5,14 +5,7 @@ use eyre::{eyre, Result};
 use crate::backend::{read_lock, CameraBackend};
 use crate::QHYError::*;
 
-#[cfg(not(test))]
-use libqhyccd_sys::{
-    GetQHYCCDNumberOfReadModes, GetQHYCCDReadMode, GetQHYCCDReadModeName,
-    GetQHYCCDReadModeResolution, QHYCCD_ERROR, QHYCCD_SUCCESS,
-};
-
-#[cfg(test)]
-use crate::mocks::mock_libqhyccd_sys::{
+use crate::ffi::{
     GetQHYCCDNumberOfReadModes, GetQHYCCDReadMode, GetQHYCCDReadModeName,
     GetQHYCCDReadModeResolution, QHYCCD_ERROR, QHYCCD_SUCCESS,
 };

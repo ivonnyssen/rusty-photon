@@ -1,6 +1,12 @@
-use eyre::{eyre, Result};
+use eyre::Result;
+// `eyre!` and the `QHYError` variants are only used on the real-SDK paths
+// (`Sdk::new`, `version`, `Drop`), which are `#[cfg]`'d out under `simulation`.
+#[cfg(not(feature = "simulation"))]
+use eyre::eyre;
 
-use crate::{Camera, FilterWheel, QHYError::*, SDKVersion};
+#[cfg(not(feature = "simulation"))]
+use crate::QHYError::*;
+use crate::{Camera, FilterWheel, SDKVersion};
 
 #[cfg(not(feature = "simulation"))]
 use std::ffi::{c_char, CStr};
@@ -12,13 +18,13 @@ use crate::simulation;
 #[cfg(all(not(test), not(feature = "simulation")))]
 use libqhyccd_sys::{GetQHYCCDId, InitQHYCCDResource, ScanQHYCCD, QHYCCD_ERROR};
 
-#[cfg(not(test))]
+#[cfg(all(not(test), not(feature = "simulation")))]
 use libqhyccd_sys::{GetQHYCCDSDKVersion, ReleaseQHYCCDResource, QHYCCD_SUCCESS};
 
 #[cfg(all(test, not(feature = "simulation")))]
 use crate::mocks::mock_libqhyccd_sys::{GetQHYCCDId, InitQHYCCDResource, ScanQHYCCD, QHYCCD_ERROR};
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "simulation")))]
 use crate::mocks::mock_libqhyccd_sys::{
     GetQHYCCDSDKVersion, ReleaseQHYCCDResource, QHYCCD_SUCCESS,
 };
@@ -43,8 +49,6 @@ use crate::mocks::mock_libqhyccd_sys::{
 pub struct Sdk {
     cameras: Vec<Camera>,
     filter_wheels: Vec<FilterWheel>,
-    #[cfg(feature = "simulation")]
-    is_simulated: bool,
 }
 
 #[allow(unused_unsafe)]
@@ -130,8 +134,6 @@ impl Sdk {
                 Ok(Sdk {
                     cameras,
                     filter_wheels,
-                    #[cfg(feature = "simulation")]
-                    is_simulated: false,
                 })
             }
             error_code => {
@@ -198,7 +200,6 @@ impl Sdk {
         Self {
             cameras: Vec::new(),
             filter_wheels: Vec::new(),
-            is_simulated: true,
         }
     }
 
@@ -274,6 +275,7 @@ impl Sdk {
     /// let sdk_version = sdk.version().expect("get_sdk_version failed");
     /// println!("SDK version: {:?}", sdk_version);
     /// ```
+    #[cfg(not(feature = "simulation"))]
     pub fn version(&self) -> Result<SDKVersion> {
         let mut year: u32 = 0;
         let mut month: u32 = 0;
@@ -293,17 +295,27 @@ impl Sdk {
             }
         }
     }
+
+    /// Synthetic version for the simulated SDK — mirrors the SDK release this crate
+    /// targets (see `libqhyccd-sys/build.rs`). No FFI is linked under `simulation`.
+    #[cfg(feature = "simulation")]
+    pub fn version(&self) -> Result<SDKVersion> {
+        Ok(SDKVersion {
+            year: 26,
+            month: 6,
+            day: 4,
+            subday: 0,
+        })
+    }
 }
 
 #[allow(unused_unsafe)]
 impl Drop for Sdk {
     fn drop(&mut self) {
-        // Skip FFI cleanup for simulated SDKs
-        #[cfg(feature = "simulation")]
-        if self.is_simulated {
-            return;
-        }
-
+        // Real-SDK cleanup only. Under `simulation` no QHYCCD SDK is linked (every
+        // such SDK is simulated), so the release call is compiled out entirely and
+        // `drop` is a no-op.
+        #[cfg(not(feature = "simulation"))]
         match unsafe { ReleaseQHYCCDResource() } {
             QHYCCD_SUCCESS => (),
             error_code => {

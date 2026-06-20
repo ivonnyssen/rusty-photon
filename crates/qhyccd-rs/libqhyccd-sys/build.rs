@@ -7,12 +7,35 @@ fn main() {
     // file change" (fine — this script reads no files, only env). Declared at the
     // top so they apply on every target, not just the arm that reads them.
     for var in [
+        "QHYCCD_SKIP_NATIVE_LINK",
         "QHYCCD_SDK_DIR",
         "GITHUB_WORKSPACE",
         "CARGO_CFG_TARGET_OS",
         "CARGO_CFG_TARGET_ARCH",
     ] {
         println!("cargo:rerun-if-env-changed={var}");
+    }
+
+    // Declare the cfg the skip branch may set, so `#[cfg_attr(qhyccd_skip_link,
+    // ...)]` in lib.rs does not trip the `unexpected_cfgs` lint.
+    println!("cargo:rustc-check-cfg=cfg(qhyccd_skip_link)");
+
+    // Simulation-only escape hatch (mirrors zwo-rs's ZWO_SKIP_NATIVE_LINK): when
+    // set, emit NO link directives, so a `--features simulation` build of
+    // qhyccd-rs — whose real FFI is `cfg`'d out (see the `not(feature =
+    // "simulation")` gates in src/) — links with no QHYCCD SDK installed. Used by
+    // SDK-less dev builds and the sim-only CI jobs (test/conformu/safety). A real
+    // (non-simulation) build leaves it unset and links `static=qhyccd`.
+    if env::var_os("QHYCCD_SKIP_NATIVE_LINK").is_some() {
+        // Also drop lib.rs's `#[link(name = "qhyccd", kind = "static")]`: that
+        // compile-time attribute forces the link independently of these build-script
+        // directives, so the cfg must gate it off too.
+        println!("cargo:rustc-cfg=qhyccd_skip_link");
+        println!(
+            "cargo:warning=QHYCCD_SKIP_NATIVE_LINK set — omitting QHYCCD SDK link \
+             directives; this is a simulation-only build that links no native SDK"
+        );
+        return;
     }
 
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap();

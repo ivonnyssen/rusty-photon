@@ -6,15 +6,7 @@ use crate::{ImageData, QHYError::*};
 #[cfg(feature = "simulation")]
 use crate::simulation;
 
-#[cfg(not(test))]
-use libqhyccd_sys::{
-    BeginQHYCCDLive, CancelQHYCCDExposing, CancelQHYCCDExposingAndReadout, ExpQHYCCDSingleFrame,
-    GetQHYCCDExposureRemaining, GetQHYCCDLiveFrame, GetQHYCCDMemLength, GetQHYCCDSingleFrame,
-    StopQHYCCDLive, QHYCCD_ERROR, QHYCCD_SUCCESS,
-};
-
-#[cfg(test)]
-use crate::mocks::mock_libqhyccd_sys::{
+use crate::ffi::{
     BeginQHYCCDLive, CancelQHYCCDExposing, CancelQHYCCDExposingAndReadout, ExpQHYCCDSingleFrame,
     GetQHYCCDExposureRemaining, GetQHYCCDLiveFrame, GetQHYCCDMemLength, GetQHYCCDSingleFrame,
     StopQHYCCDLive, QHYCCD_ERROR, QHYCCD_SUCCESS,

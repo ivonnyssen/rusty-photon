@@ -3,14 +3,7 @@ use eyre::{eyre, Result};
 use crate::backend::{read_lock, CameraBackend};
 use crate::{Control, QHYError::*};
 
-#[cfg(not(test))]
-use libqhyccd_sys::{
-    GetQHYCCDParam, GetQHYCCDParamMinMaxStep, IsQHYCCDCFWPlugged, IsQHYCCDControlAvailable,
-    SetQHYCCDParam, QHYCCD_ERROR, QHYCCD_ERROR_F64, QHYCCD_SUCCESS,
-};
-
-#[cfg(test)]
-use crate::mocks::mock_libqhyccd_sys::{
+use crate::ffi::{
     GetQHYCCDParam, GetQHYCCDParamMinMaxStep, IsQHYCCDCFWPlugged, IsQHYCCDControlAvailable,
     SetQHYCCDParam, QHYCCD_ERROR, QHYCCD_ERROR_F64, QHYCCD_SUCCESS,
 };

@@ -15,7 +15,12 @@ pub const QHYCCD_ERROR_F64: f64 = u32::MAX as f64;
 
 pub type QhyccdHandle = *const core::ffi::c_void;
 
-#[link(name = "qhyccd", kind = "static")]
+// `qhyccd_skip_link` is set by build.rs when QHYCCD_SKIP_NATIVE_LINK is in the
+// environment (simulation-only builds). The `#[link]` attribute forces the static
+// link at compile time, independently of the build script's directives, so it must
+// be gated off too — otherwise an SDK-less simulation build fails with "could not
+// find native static library `qhyccd`".
+#[cfg_attr(not(qhyccd_skip_link), link(name = "qhyccd", kind = "static"))]
 extern "C" {
 
     pub fn InitQHYCCDResource() -> u32;

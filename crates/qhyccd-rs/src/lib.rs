@@ -81,8 +81,27 @@ mod filter_wheel;
 mod sdk;
 mod types;
 
-#[cfg(test)]
+// Available under `test` (mockall-generated FFI mocks for unit tests) and under
+// `simulation` (the plain `unimplemented!()` stubs let the unreachable real-backend
+// arms compile + link with no QHYCCD SDK present — see libqhyccd-sys/build.rs's
+// QHYCCD_SKIP_NATIVE_LINK gate). Never part of a real (non-simulation) release.
+#[cfg(any(test, feature = "simulation"))]
 pub mod mocks;
+
+// Single cfg-resolved alias for the camera/filter-wheel FFI surface: the real
+// `libqhyccd-sys` for production, the mockall mock for unit tests, and the plain
+// `unimplemented!()` stubs under `simulation`. Under `simulation` the real-backend
+// match arms are never reached (every camera is a `Simulated` backend), so the
+// stubs are compiled-but-unreachable and let those arms link with no QHYCCD SDK
+// present (see libqhyccd-sys/build.rs's QHYCCD_SKIP_NATIVE_LINK gate). `sdk.rs`
+// does NOT use this alias — its FFI is called directly (not behind a backend
+// match), so it is `#[cfg]`'d out under `simulation` instead.
+#[cfg(all(not(test), feature = "simulation"))]
+pub(crate) use crate::mocks::libqhyccd_sys as ffi;
+#[cfg(test)]
+pub(crate) use crate::mocks::mock_libqhyccd_sys as ffi;
+#[cfg(all(not(test), not(feature = "simulation")))]
+pub(crate) use libqhyccd_sys as ffi;
 
 #[cfg(feature = "simulation")]
 pub mod simulation;

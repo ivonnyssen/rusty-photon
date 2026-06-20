@@ -3,23 +3,16 @@ use eyre::{eyre, Result};
 use crate::backend::{read_lock, CameraBackend};
 use crate::{CCDChipArea, QHYError::*, StreamMode};
 
-#[cfg(not(test))]
-use libqhyccd_sys::{
+use crate::ffi::{
     SetQHYCCDBinMode, SetQHYCCDBitsMode, SetQHYCCDDebayerOnOff, SetQHYCCDReadMode,
     SetQHYCCDResolution, SetQHYCCDStreamMode, QHYCCD_SUCCESS,
 };
 
-#[cfg(test)]
-use crate::mocks::mock_libqhyccd_sys::{
-    SetQHYCCDBinMode, SetQHYCCDBitsMode, SetQHYCCDDebayerOnOff, SetQHYCCDReadMode,
-    SetQHYCCDResolution, SetQHYCCDStreamMode, QHYCCD_SUCCESS,
-};
-
-#[cfg(all(feature = "simulation", not(test)))]
-use libqhyccd_sys::QHYCCD_ERROR;
-
-#[cfg(all(feature = "simulation", test))]
-use crate::mocks::mock_libqhyccd_sys::QHYCCD_ERROR;
+// QHYCCD_ERROR is used only by the simulation match arms here (the real arms use
+// QHYCCD_SUCCESS), so keep it `simulation`-gated to avoid an unused import on the
+// real/test build.
+#[cfg(feature = "simulation")]
+use crate::ffi::QHYCCD_ERROR;
 
 use super::Camera;
 

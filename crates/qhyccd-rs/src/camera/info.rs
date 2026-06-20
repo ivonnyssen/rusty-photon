@@ -5,14 +5,7 @@ use eyre::{eyre, Result};
 use crate::backend::{read_lock, CameraBackend};
 use crate::{CCDChipArea, CCDChipInfo, QHYError::*};
 
-#[cfg(not(test))]
-use libqhyccd_sys::{
-    GetQHYCCDChipInfo, GetQHYCCDEffectiveArea, GetQHYCCDFWVersion, GetQHYCCDModel,
-    GetQHYCCDOverScanArea, GetQHYCCDType, QHYCCD_ERROR, QHYCCD_SUCCESS,
-};
-
-#[cfg(test)]
-use crate::mocks::mock_libqhyccd_sys::{
+use crate::ffi::{
     GetQHYCCDChipInfo, GetQHYCCDEffectiveArea, GetQHYCCDFWVersion, GetQHYCCDModel,
     GetQHYCCDOverScanArea, GetQHYCCDType, QHYCCD_ERROR, QHYCCD_SUCCESS,
 };
