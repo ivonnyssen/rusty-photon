@@ -188,8 +188,13 @@ impl ImageType {
         }
     }
 
+    // `ASI_IMG_TYPE` is a signed `c_int` on every platform (the enum has a
+    // negative `ASI_IMG_END` variant), so unlike the `c_uint`-on-LP64 enums it
+    // never needed the Windows width fix — but use the bindgen alias anyway, to
+    // stay consistent with the other enum mappings (`ControlType` etc.) and track
+    // any future re-typing without touching the call sites.
     #[cfg(not(feature = "simulation"))]
-    fn to_raw(self) -> c_int {
+    fn to_raw(self) -> sys::ASI_IMG_TYPE {
         match self {
             Self::Raw8 => 0,
             Self::Rgb24 => 1,
@@ -199,7 +204,7 @@ impl ImageType {
     }
 
     #[cfg(not(feature = "simulation"))]
-    fn from_raw(v: c_int) -> Option<Self> {
+    fn from_raw(v: sys::ASI_IMG_TYPE) -> Option<Self> {
         match v {
             0 => Some(Self::Raw8),
             1 => Some(Self::Rgb24),
