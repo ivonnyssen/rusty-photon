@@ -46,9 +46,13 @@
 > so only `infra`- or zwo-camera-affected PRs pay the cost. `conformu.yml` still
 > excludes `zwo-camera` (the `conformu_integration.rs` harness exists and is now
 > unblocked — the `zwo-rs` sim fix above landed in rev `3c32e59`; the remaining
-> step is the `conformu.yml` wiring itself — Phase G); `safety.yml` excludes
-> it (no sanitizer value yet). The aarch64 Pi-nightly runner is provisioned via
-> `scripts/setup-pi-runner.sh`.
+> step is the `conformu.yml` wiring itself — Phase G). `safety.yml` (ASan/LSan)
+> **no longer excludes** the zwo crates: it sets `ZWO_SKIP_NATIVE_LINK=1` so
+> `libzwo-sys/build.rs` omits the link directives and the `--all-features`
+> (`simulation`) build links no native SDK, letting the pure-Rust simulation path
+> be sanitized with no SDK to provision. (The real unsafe FFI is not compiled
+> there and is inherently un-sanitizable, so nothing is lost.) The aarch64
+> Pi-nightly runner is provisioned via `scripts/setup-pi-runner.sh`.
 > The **Bazel** shadow workflows (`bazel.yml`, `bazel-coverage.yml`) also run
 > `install-zwo-sdk` — `zwo-camera` is a normal `//...` target there, honoring the
 > migration plan's "all workspace crates build and test under Bazel" contract

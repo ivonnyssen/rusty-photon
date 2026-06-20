@@ -35,6 +35,10 @@ jobs:
         sanitizer: [address, leak]
     env:
       CARGO_BUILD_TARGET: x86_64-unknown-linux-gnu
+      # Build the zwo crates' pure-Rust `simulation` path with no native ZWO SDK
+      # link, so they can be sanitized without provisioning the SDK (see the
+      # cargo build step and crates/zwo-rs/libzwo-sys/build.rs).
+      ZWO_SKIP_NATIVE_LINK: "1"
     steps:
       - uses: actions/checkout@v5
       - name: Install ASCOM OmniSim
@@ -53,12 +57,14 @@ jobs:
           sed -i '/^\s*\[profile.dev\]/,/^\s*\[/ {/^\s*opt-level/d}' Cargo.toml
           sed -i '/^\s*\[profile.dev\]/a opt-level = 1' Cargo.toml
       - name: cargo build
-        # Exclude zwo-camera and the vendored zwo-rs/libzwo-sys: they link the
-        # native ZWO SDK — an opaque third-party blob with no sanitizer value (like
-        # qhy-camera) — and this job provisions no SDK to link against. (Unlike
-        # conformu.yml, this stays an EXCLUSION on purpose: ASan/LSan cannot
-        # instrument the prebuilt blob, so provisioning it would only add noise.)
-        run: cargo build --workspace --exclude zwo-camera --exclude zwo-rs --exclude libzwo-sys --all-features --all-targets
+        # zwo-camera / zwo-rs / libzwo-sys link the native ZWO SDK only on their
+        # real (non-`simulation`) path. With `--all-features` the `simulation`
+        # path is built (real FFI is `cfg`'d out) and ZWO_SKIP_NATIVE_LINK=1 omits
+        # the link directives, so the whole workspace builds with no SDK to
+        # provision — and the pure-Rust simulation code gets sanitized like any
+        # other crate. (The real unsafe FFI is inherently un-sanitizable, but it
+        # is not compiled here, so nothing is lost.)
+        run: cargo build --workspace --all-features --all-targets
         env:
           RUSTFLAGS: "-Z sanitizer=${{ matrix.sanitizer }}"
       - name: cargo test
@@ -67,9 +73,9 @@ jobs:
         # which doesn't exist when CARGO_BUILD_TARGET is set
         run: |
           if [ "${{ matrix.sanitizer }}" = "address" ]; then
-            cargo test --workspace --exclude bdd-infra --exclude zwo-camera --exclude zwo-rs --exclude libzwo-sys --lib --tests --all-features
+            cargo test --workspace --exclude bdd-infra --lib --tests --all-features
           else
-            cargo test --workspace --exclude bdd-infra --exclude zwo-camera --exclude zwo-rs --exclude libzwo-sys --all-features --all-targets
+            cargo test --workspace --exclude bdd-infra --all-features --all-targets
           fi
         env:
           ASAN_OPTIONS: "detect_odr_violation=0:detect_leaks=0"

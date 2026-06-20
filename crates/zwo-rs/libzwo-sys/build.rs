@@ -5,12 +5,16 @@
 //! 2. Emits the link directives for the system-installed ZWO SDK
 //!    (`libASICamera2`, `libEFWFilter`) + `libusb-1.0` + the C++ runtime.
 //!
-//! Mirrors `libqhyccd-sys`'s system-installed-SDK model: the link is
-//! unconditional, so building/linking (`cargo build`/`test`) requires the SDK on
-//! the link path — even with the `simulation` feature. `cargo check`/`clippy`
-//! (no link step) only need libclang for bindgen.
+//! Mirrors `libqhyccd-sys`'s system-installed-SDK model: by default the link is
+//! emitted, so building/linking (`cargo build`/`test`) requires the SDK on the
+//! link path — even with the `simulation` feature. `cargo check`/`clippy` (no
+//! link step) only need libclang for bindgen.
 //!
-//! Override the SDK search path with `ZWO_SDK_LIB_DIR=/path/to/lib`.
+//! Two env overrides:
+//! - `ZWO_SDK_LIB_DIR=/path/to/lib` — add an SDK search path.
+//! - `ZWO_SKIP_NATIVE_LINK=1` — omit the native link directives entirely, for
+//!   builds that exercise only the pure-Rust `simulation` path and provision no
+//!   SDK (sanitizer CI). See [`emit_link_directives`].
 
 use std::{env, path::PathBuf};
 
@@ -48,6 +52,24 @@ fn main() {
 }
 
 fn emit_link_directives() {
+    // Allow the native link to be suppressed entirely. A `simulation` build
+    // references no ASI/EFW symbols — the real FFI calls are
+    // `#[cfg(not(feature = "simulation"))]`, and bare `extern` declarations do
+    // not force the linker to resolve a library — so with these directives
+    // omitted the crate links with no native SDK present. Used by the sanitizer
+    // CI job, which exercises only the pure-Rust simulation path and provisions
+    // no SDK. Env-gated, *not* feature-gated: a Cargo feature would be turned on
+    // by `--all-features` everywhere and silently stop every such build from
+    // linking the real SDK.
+    println!("cargo:rerun-if-env-changed=ZWO_SKIP_NATIVE_LINK");
+    if env::var_os("ZWO_SKIP_NATIVE_LINK").is_some() {
+        println!(
+            "cargo:warning=ZWO_SKIP_NATIVE_LINK set — omitting ZWO SDK link directives; \
+             this is a simulation-only build that links no native SDK"
+        );
+        return;
+    }
+
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
 
     // Allow an explicit override of the SDK lib directory.
