@@ -1,8 +1,11 @@
 # Vendor `qhyccd-rs` + `libqhyccd-sys` into the workspace
 
-**Status:** Phases 1 & 2 DONE (2026-06-17, `worktree-qhy-camera`); Phase 3 (docs)
-in progress; the standalone-repo archive is deferred to after the first
-publish-from-subdir.
+**Status:** Phases 1 & 2 DONE (2026-06-17, `worktree-qhy-camera`); Phase 3
+**docs done** (qhy-camera.md, bazel-migration.md, memory, fmt). The only
+remaining Phase 3 work is the **first `cargo publish` from the vendored
+subdirs** and the subsequent **standalone-repo archive**, both deferred by
+design until the publish proves the release path — see the runbook at
+[`crates/qhyccd-rs/RELEASING.md`](../../crates/qhyccd-rs/RELEASING.md).
 **Author:** drafted 2026-06-17 on `worktree-qhy-camera`
 **Depends on:** the qhy-camera Bazel simulation fix (dev-dep + `crate_features`)
 already landed on this branch — this plan supersedes the variant-flipping role of
@@ -212,24 +215,29 @@ Original design (as implemented):
 **Exit:** real prod / sim test under Bazel; dev-dep dropped or its role
 documented.
 
-### Phase 3 — Cleanup + docs — IN PROGRESS
-- Update docs/services/qhy-camera.md "Native dependency & build gating": replace
-  the dev-dep narrative with the first-party two-variant story; note the patch is
-  gone.
-- Update docs/plans/bazel-migration.md "External-crate non-default features"
-  subsection: add a closing note that qhy-camera moved to the first-party
+### Phase 3 — Cleanup + docs — DOCS DONE; publish/archive PENDING
+- ✅ Update docs/services/qhy-camera.md "Native dependency & build gating":
+  replaced the dev-dep narrative with the first-party two-variant story; noted the
+  patch is gone.
+- ✅ Update docs/plans/bazel-migration.md "External-crate non-default features"
+  subsection: added a closing note that qhy-camera moved to the first-party
   two-variant pattern (and that the dev-dep technique remains the answer for
   crates we *don't* vendor, e.g. until zwo-rs is vendored).
-- Update the memory note ([[qhy-camera-implementation]] / MEMORY.md Build Notes):
-  qhyccd-rs is now first-party; no `[patch.crates-io]`; real/sim split.
-- `cargo fmt`; buildifier the new BUILD files if available (none on PATH today —
-  match surrounding style by hand).
-- **Hard-archive the standalone `ivonnyssen/qhyccd-rs` repo** — but only *after*
-  the first `cargo publish` from the vendored subdirs confirms the monorepo release
-  path works (so we never archive before the new publish source is proven). Point
+- ✅ Update the memory note ([[qhy-camera-implementation]] / MEMORY.md Build
+  Notes): qhyccd-rs is now first-party; no `[patch.crates-io]`; real/sim split.
+- ✅ `cargo fmt`. buildifier still not on PATH — BUILD files matched to
+  surrounding style by hand.
+- ✅ Release runbook written: [`crates/qhyccd-rs/RELEASING.md`](../../crates/qhyccd-rs/RELEASING.md)
+  (publish order, version-bump rules, the post-publish archive trigger).
+- ⏳ **First `cargo publish` from the vendored subdirs** — not yet done. Follow
+  RELEASING.md (`libqhyccd-sys` must bump past `0.1.4` to carry the in-tree macOS
+  fix; publish it first, then `qhyccd-rs`).
+- ⏳ **Hard-archive the standalone `ivonnyssen/qhyccd-rs` repo** — only *after*
+  the first publish-from-subdir confirms the monorepo release path works. Point
   its README at the monorepo, then GitHub → Settings → Archive (read-only).
 
-**Exit:** docs/memory consistent; `cargo rail` + Bazel shadow jobs green.
+**Exit:** docs/memory consistent (✅); first publish-from-subdir + standalone
+archive done; `cargo rail` + Bazel shadow jobs green (✅).
 
 ### Phase 4 — (future, not this plan) zwo-rs
 Apply the same vendoring to `zwo-rs`/`libzwo-sys`, reusing the `cargo_build_script`

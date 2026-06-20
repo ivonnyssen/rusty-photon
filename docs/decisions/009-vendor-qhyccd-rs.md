@@ -3,10 +3,12 @@
 ## Status
 
 Accepted (2026-06-17). **Implemented** Phases 1–2 on `worktree-qhy-camera`
-(commits `81a4d42` Cargo vendoring, `0325417` Bazel two-variant); Phase 3 (docs)
-in progress; the standalone-repo archive is deferred until the first
-publish-from-subdir proves the release path. Tracked by
-[`docs/plans/vendor-qhyccd-rs.md`](../plans/vendor-qhyccd-rs.md).
+(commits `81a4d42` Cargo vendoring, `0325417` Bazel two-variant). Phase 3
+**docs are done** (service doc, bazel-migration note, memory, fmt, and the
+release runbook at [`crates/qhyccd-rs/RELEASING.md`](../../crates/qhyccd-rs/RELEASING.md));
+the **first publish-from-subdir** and the subsequent **standalone-repo archive**
+remain — both deferred by design until the publish proves the release path.
+Tracked by [`docs/plans/vendor-qhyccd-rs.md`](../plans/vendor-qhyccd-rs.md).
 
 Supersedes the **variant-selecting** role of the interim Bazel fix on
 `worktree-qhy-camera` (a test-only `qhyccd-rs = { features = ["simulation"] }`
@@ -107,8 +109,11 @@ any production target that accidentally links the sim variant.
 - **A small convention deviation:** these two members keep explicit, independent
   versions/metadata rather than `*.workspace = true`, because they are
   independently published. Documented here and in the plan.
-- **A release runbook** is added: bump + `cargo publish` `libqhyccd-sys` first,
-  then `qhyccd-rs`. `MODULE.bazel` is unchanged (members auto-discovered); a
+- **A release runbook** is added at
+  [`crates/qhyccd-rs/RELEASING.md`](../../crates/qhyccd-rs/RELEASING.md): bump +
+  `cargo publish` `libqhyccd-sys` first (it must move past `0.1.4` to carry the
+  in-tree macOS fix), then `qhyccd-rs` (with its `libqhyccd-sys` dep `version`
+  bumped to match). `MODULE.bazel` is unchanged (members auto-discovered); a
   `CARGO_BAZEL_REPIN` is still needed when the vendored crates' *external* deps
-  change.
+  change, but **not** for a publish.
 - **`zwo-rs` is the template's next user** — same vendoring, plus a bindgen step.

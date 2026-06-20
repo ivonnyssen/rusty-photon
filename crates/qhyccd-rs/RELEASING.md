@@ -1,0 +1,73 @@
+# Releasing `qhyccd-rs` and `libqhyccd-sys`
+
+These two crates are **dual-homed** (ADR-009): the workspace is the canonical
+development home, but both are still published to crates.io for outside
+consumers. The inter-crate dependency carries **both** a `version` and a `path`
+(`libqhyccd-sys = { version = "0.1.4", path = "libqhyccd-sys" }`) — local and
+Bazel builds use the `path`; `cargo publish` rewrites it to the `version`. That
+mechanic dictates the publish **order** and the version-bump rules below.
+
+## Publish order (always)
+
+1. **`libqhyccd-sys` first** — `qhyccd-rs` depends on it, and `cargo publish`
+   verifies `qhyccd-rs` by building it against the **crates.io** copy of
+   `libqhyccd-sys`. That copy must exist and be indexed before step 2.
+2. **`qhyccd-rs` second.**
+
+## Version-bump rules
+
+- **`libqhyccd-sys` must bump past `0.1.4` before its next publish.** crates.io
+  `0.1.4` was cut *before* the macOS link fix, which is why the deleted
+  `[patch.crates-io]` git override existed (ADR-009, motivation #1). The fix now
+  lives in the in-tree `build.rs`, so the first publish from the monorepo carries
+  it — that is a real change and needs `>= 0.1.5`.
+- **Bump `qhyccd-rs`** to cover its `[Unreleased]` `CHANGELOG.md` entries.
+- **If `libqhyccd-sys` is bumped, bump the `version` of the dep in
+  `crates/qhyccd-rs/Cargo.toml` to match** — otherwise the published `qhyccd-rs`
+  will request a `libqhyccd-sys` version that doesn't exist on crates.io. The
+  `path` is unaffected (in-tree builds keep working).
+
+## Steps
+
+Do this on a release branch (never `main`), with a clean working tree and CI
+green. The QHYCCD SDK must be installed at `/usr/local/lib` — `cargo publish`'s
+verification build **links the real static SDK**.
+
+```bash
+# 0. Preflight
+git status                      # must be clean
+cargo rail run --profile commit -q
+
+# 1. Bump versions + changelogs
+#    - crates/qhyccd-rs/libqhyccd-sys/Cargo.toml : version = "0.1.5" (etc.)
+#    - crates/qhyccd-rs/Cargo.toml               : version bump  AND
+#                                                  libqhyccd-sys dep version -> "0.1.5"
+#    - crates/qhyccd-rs/CHANGELOG.md             : move [Unreleased] -> [x.y.z] - <date>
+#      (libqhyccd-sys has no CHANGELOG; note its change under qhyccd-rs or add one)
+
+# 2. Publish libqhyccd-sys FIRST, then wait for the index
+cargo publish -p libqhyccd-sys --dry-run
+cargo publish -p libqhyccd-sys
+#    wait until `cargo search libqhyccd-sys` shows the new version
+
+# 3. Publish qhyccd-rs
+cargo publish -p qhyccd-rs --dry-run        # builds against the just-published sys crate
+cargo publish -p qhyccd-rs
+
+# 4. Tag
+git tag qhyccd-rs-vX.Y.Z && git push --tags
+```
+
+## After the *first* successful publish-from-subdir
+
+This is the trigger for the last deferred ADR-009 step: **hard-archive the
+standalone `ivonnyssen/qhyccd-rs` repo** (point its README at the monorepo, then
+GitHub → Settings → Archive). Do not archive before a publish-from-monorepo has
+succeeded — that is what proves the release path.
+
+## Bazel
+
+Publishing changes **no** external dependencies, so **no `CARGO_BAZEL_REPIN` is
+needed** for a release. A repin is only required when the vendored crates'
+*external* deps change (per Rule 10). `MODULE.bazel` is unchanged — workspace
+members are auto-discovered.
