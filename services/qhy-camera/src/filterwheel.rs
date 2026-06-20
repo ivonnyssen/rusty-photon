@@ -1,7 +1,8 @@
 //! `QhyFilterWheelDevice` — the ASCOM `Device` + `FilterWheel` implementation
 //! over the [`FilterWheelHandle`](crate::backend::FilterWheelHandle) seam.
 //!
-//! Registered (one per discovered CFW) only when `filterwheel.enabled`. `Names`
+//! Registered automatically, one per discovered CFW (detection is the source of
+//! truth — there is no opt-in toggle). `Names`
 //! are the configured `filter_names` or generated `Filter0..N`; `Position`
 //! returns `None` while the commanded target differs from the actual slot (ASCOM
 //! "moving" sentinel); `FocusOffsets` is zero per filter in v0.

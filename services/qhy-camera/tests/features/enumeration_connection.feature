@@ -1,7 +1,7 @@
 @serial
 Feature: Camera enumeration and connection lifecycle
-  qhy-camera enumerates every connected QHY camera (and CFW when
-  filterwheel.enabled) at startup and registers each as an ASCOM device,
+  qhy-camera enumerates every connected QHY camera (and any CFW discovered
+  on it) at startup and registers each as an ASCOM device,
   index 0, 1, 2, ..., on one port (C0). Each device's UniqueID is derived
   from its SDK serial, so two identical-model cameras are distinguished by
   serial. Connect is per-device (C4): connecting or disconnecting one camera

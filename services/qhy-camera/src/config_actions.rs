@@ -6,8 +6,7 @@
 //! - **Locked (identity):** none. ASCOM `UniqueID`s are derived from the
 //!   camera/CFW SDK serial (see `docs/services/qhy-camera.md` "Device identity"),
 //!   not minted into config, so there is no identity field to lock.
-//! - **Hard read-only:** `server.port` (a BFF could not follow the rebind) and
-//!   `filterwheel.enabled` (toggling adds/removes endpoints → restart-required).
+//! - **Hard read-only:** `server.port` (a BFF could not follow the rebind).
 //! - **Editable:** the per-serial `devices` map (`name` / `description` /
 //!   `filter_names`).
 
@@ -60,7 +59,7 @@ impl ConfigurableDriver for QhyCameraDriver {
     // hardware-derived UniqueID means there is no locked identity field.
 
     fn read_only_paths() -> &'static [&'static str] {
-        &["server.port", "filterwheel.enabled"]
+        &["server.port"]
     }
 }
 
@@ -106,10 +105,9 @@ mod tests {
     }
 
     #[test]
-    fn port_and_filterwheel_toggle_are_read_only() {
+    fn port_is_read_only() {
         let read_only = QhyCameraDriver::read_only_paths();
         assert!(read_only.contains(&"server.port"));
-        assert!(read_only.contains(&"filterwheel.enabled"));
     }
 
     #[test]

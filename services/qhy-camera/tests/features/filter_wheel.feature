@@ -1,7 +1,7 @@
 @serial
 Feature: Filter wheel
-  When filterwheel.enabled is set, qhy-camera registers each discovered CFW
-  as an ASCOM FilterWheel device alongside the cameras. Names lists the
+  qhy-camera registers each discovered CFW as an ASCOM FilterWheel device
+  alongside the cameras (detection is the source of truth). Names lists the
   configured filter_names or generated Filter0..FilterN when none are given
   (FW1). Position returns the current slot, or the ASCOM moving sentinel
   while the target slot differs from the actual slot. set_position validates
@@ -10,7 +10,7 @@ Feature: Filter wheel
   in v0 (FW3). The simulated CFW has 7 positions.
 
   Background:
-    Given the qhy-camera service running with the simulation backend and the filter wheel enabled
+    Given the qhy-camera service running with the simulation backend
     And filterwheel device 0 is connected
 
   Scenario: The filter wheel exposes seven generated filter names
@@ -35,6 +35,6 @@ Feature: Filter wheel
     Then filterwheel device 0 reports FocusOffsets of 7 zeros
 
   Scenario: Custom filter names from config are reported
-    Given the qhy-camera service running with the filter wheel enabled and filter names L, R, G, B, Ha, OIII, SII
+    Given the qhy-camera service running with the simulation backend and filter names L, R, G, B, Ha, OIII, SII
     And filterwheel device 0 is connected
     Then filterwheel device 0 reports the filter names L, R, G, B, Ha, OIII, SII

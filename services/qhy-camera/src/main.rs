@@ -64,8 +64,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             loop {
                 let config = load_effective_config(&config_path, &overrides)?;
                 debug!(
-                    "Loaded effective configuration: server.port={}, filterwheel.enabled={}",
-                    config.server.port, config.filterwheel.enabled
+                    "Loaded effective configuration: server.port={}",
+                    config.server.port
                 );
 
                 let builder = ServerBuilder::new()

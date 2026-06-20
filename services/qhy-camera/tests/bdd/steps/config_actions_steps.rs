@@ -30,13 +30,13 @@ async fn call_config_schema(world: &mut CameraWorld) {
     world.call_action("config.schema", "").await;
 }
 
-#[then("the schema should describe the devices, filterwheel, and server sections")]
+#[then("the schema should describe the devices and server sections")]
 async fn schema_describes_sections(world: &mut CameraWorld) {
     let response = world.last_response.as_ref().expect("no response stashed");
     let props = response["schema"]["properties"]
         .as_object()
         .expect("schema.properties is an object");
-    for section in ["devices", "filterwheel", "server"] {
+    for section in ["devices", "server"] {
         assert!(
             props.contains_key(section),
             "schema missing section {section}"

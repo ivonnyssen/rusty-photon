@@ -28,7 +28,6 @@ pub struct CameraWorld {
     pub temp_dir: Option<TempDir>,
 
     // Config knobs set by Given steps before the service starts.
-    pub filterwheel_enabled: bool,
     pub filter_names: Option<Vec<String>>,
     pub empty_backend: bool,
 
@@ -49,7 +48,6 @@ impl CameraWorld {
         }
         let config = serde_json::json!({
             "devices": devices,
-            "filterwheel": { "enabled": self.filterwheel_enabled },
             // Port 0 → OS-assigned; the real port is read from the `bound_addr=`
             // line on stdout by ServiceHandle.
             "server": { "port": 0 },

@@ -1,10 +1,10 @@
 //! Configuration types for the qhy-camera service.
 //!
 //! The hardware is the source of truth: the service enumerates every connected
-//! QHY camera (and CFW when `filterwheel.enabled`) at startup and registers each
+//! QHY camera (and any CFW discovered on it) at startup and registers each
 //! as an ASCOM device. Config therefore carries no per-camera *binding* — only
-//! optional per-serial display overrides (`devices`), the CFW toggle
-//! (`filterwheel.enabled`), and the listening port (`server.port`). Each device's
+//! optional per-serial display overrides (`devices`) and the listening port
+//! (`server.port`). Each device's
 //! ASCOM `UniqueID` is derived from its SDK serial (see `docs/services/qhy-camera.md`
 //! "Device identity"), so there is no `unique_id` field and no `materialize_identity`.
 
@@ -21,9 +21,6 @@ pub struct Config {
     /// avoid colliding with the `config.get` response's own `overrides[]` field.
     #[serde(default)]
     pub devices: BTreeMap<String, DeviceOverride>,
-    /// Global FilterWheel toggle.
-    #[serde(default)]
-    pub filterwheel: FilterWheelConfig,
     /// HTTP server settings.
     #[serde(default)]
     pub server: ServerConfig,
@@ -41,16 +38,6 @@ pub struct DeviceOverride {
     /// Human filter names for a CFW (overrides the generated `Filter0..N`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filter_names: Option<Vec<String>>,
-}
-
-/// FilterWheel registration toggle. Defaults to disabled.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct FilterWheelConfig {
-    /// When `true`, discovered CFWs are registered as ASCOM FilterWheel devices
-    /// alongside the cameras. Hard read-only: toggling adds/removes endpoints, so
-    /// it is restart-required, not a live apply.
-    #[serde(default)]
-    pub enabled: bool,
 }
 
 /// HTTP server configuration.
@@ -122,7 +109,6 @@ mod tests {
     fn defaults_match_spec() {
         let c = Config::default();
         assert!(c.devices.is_empty());
-        assert!(!c.filterwheel.enabled);
         assert_eq!(c.server.port, 11121);
     }
 
@@ -130,7 +116,6 @@ mod tests {
     fn empty_object_deserialises_to_defaults() {
         let c: Config = serde_json::from_str("{}").unwrap();
         assert_eq!(c.server.port, 11121);
-        assert!(!c.filterwheel.enabled);
         assert!(c.devices.is_empty());
     }
 
@@ -141,12 +126,10 @@ mod tests {
                 "QHY600M-0123456789": { "name": "Main Imaging", "description": "QHY600M @ 1000mm" },
                 "CFW3L-SR-9876543210": { "filter_names": ["L", "R", "G", "B"] }
             },
-            "filterwheel": { "enabled": true },
             "server": { "port": 12000 }
         }"#;
         let c: Config = serde_json::from_str(json).unwrap();
         assert_eq!(c.server.port, 12000);
-        assert!(c.filterwheel.enabled);
         assert_eq!(
             c.devices["QHY600M-0123456789"].name.as_deref(),
             Some("Main Imaging")

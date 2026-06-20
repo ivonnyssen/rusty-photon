@@ -19,17 +19,10 @@ async fn service_running_empty(world: &mut CameraWorld) {
     world.start().await;
 }
 
-#[given("the qhy-camera service running with the simulation backend and the filter wheel enabled")]
-async fn service_running_with_fw(world: &mut CameraWorld) {
-    world.filterwheel_enabled = true;
-    world.start().await;
-}
-
 #[given(
-    regex = r"^the qhy-camera service running with the filter wheel enabled and filter names (.+)$"
+    regex = r"^the qhy-camera service running with the simulation backend and filter names (.+)$"
 )]
 async fn service_running_with_filter_names(world: &mut CameraWorld, names: String) {
-    world.filterwheel_enabled = true;
     world.filter_names = Some(names.split(", ").map(str::to_string).collect());
     world.start().await;
 }

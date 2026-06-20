@@ -2,9 +2,9 @@
 //! qhy-camera — ASCOM Alpaca **Camera** (+ optional **FilterWheel**) driver for
 //! real QHYCCD hardware, built natively on the published `qhyccd-rs` crate.
 //!
-//! The service enumerates every connected QHY camera (and CFW when
-//! `filterwheel.enabled`) at startup and registers each as an ASCOM device on one
-//! port, with a serial-derived `UniqueID`. See `docs/services/qhy-camera.md`.
+//! The service enumerates every connected QHY camera (and any CFW discovered on
+//! it) at startup and registers each as an ASCOM device on one port, with a
+//! serial-derived `UniqueID`. See `docs/services/qhy-camera.md`.
 //!
 //! **Native dependency:** `qhyccd-rs → libqhyccd-sys` links the proprietary QHYCCD
 //! SDK (`static=qhyccd`) + `libusb-1.0`, so this package does not build without
@@ -105,14 +105,13 @@ impl ServerBuilder {
         // Clone the camera/CFW handles out so the `sdk` borrow ends before `sdk`
         // is moved into the BoundServer (the cloned handles share its backend).
         // Ids of cameras that report a filter wheel (each CFW wraps a Camera with
-        // the same SDK id). Used to pair a camera with its CFW so both ASCOM
-        // devices share ONE physical connection — disconnecting either device
-        // must not tear down the other's handle (see SharedCameraConnection).
-        let cfw_ids: std::collections::HashSet<String> = if self.config.filterwheel.enabled {
-            sdk.filter_wheels().map(|w| w.id().to_string()).collect()
-        } else {
-            std::collections::HashSet::new()
-        };
+        // the same SDK id). Every discovered CFW is registered — detection is the
+        // source of truth, exactly as for cameras (no opt-in toggle). Used to pair
+        // a camera with its CFW so both ASCOM devices share ONE physical
+        // connection — disconnecting either device must not tear down the other's
+        // handle (see SharedCameraConnection).
+        let cfw_ids: std::collections::HashSet<String> =
+            sdk.filter_wheels().map(|w| w.id().to_string()).collect();
 
         let cameras: Vec<qhyccd_rs::Camera> = sdk.cameras().cloned().collect();
         let mut camera_count = 0usize;

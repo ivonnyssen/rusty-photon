@@ -27,11 +27,11 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
 
     let temp_dir = TempDir::new()?;
     let config_path = temp_dir.path().join("qhy-camera.json");
-    // Register both the camera and the CFW (filterwheel.enabled) on one port so
-    // a single run exercises both device kinds. Port 0 → OS-assigned.
+    // Both the camera and the discovered CFW register on one port (detection is
+    // the source of truth), so a single run exercises both device kinds. Port 0
+    // → OS-assigned.
     let config = serde_json::json!({
         "devices": {},
-        "filterwheel": { "enabled": true },
         "server": { "port": 0 },
     });
     std::fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;

@@ -146,7 +146,7 @@ graph TD;
   [`service-lifecycle.md`](../skills/service-lifecycle.md). No hand-rolled signal
   handling, no `materialize_identity` (identities are hardware-derived).
 - **`lib.rs`** — `ServerBuilder` that, on `build()`, opens the SDK and
-  **enumerates every connected camera** (and CFW when `filterwheel.enabled`),
+  **enumerates every connected camera** (and any CFW discovered on it),
   registering each as an ASCOM device (index 0, 1, 2, …) with its serial-derived
   UniqueID. The eager per-device connect handshake (cache CCD info, valid binning
   modes, exposure/gain/offset min-max-step) happens on `set_connected(true)`.
@@ -156,7 +156,8 @@ graph TD;
   runs inside `tokio::task::spawn_blocking`** (the same blocking-bridge discipline
   the legacy serial drivers use) so the async runtime is never stalled.
 - **`filterwheel.rs`** — `QhyFilterWheelDevice` (one per discovered CFW)
-  implementing `Device` + `FilterWheel` (registered when `filterwheel.enabled`).
+  implementing `Device` + `FilterWheel` (registered automatically on detection —
+  no opt-in toggle, the same rule as cameras).
 - **`config.rs`** — typed `Config` with parse-don't-validate newtypes.
 - **`config_actions.rs`** — `ConfigurableDriver` impl + the `dispatch` the devices
   delegate to (`config.get`/`config.apply`/`config.schema`).
@@ -255,9 +256,6 @@ toggle and the port.
       "filter_names": ["L", "R", "G", "B", "Ha", "OIII", "SII"]
     }
   },
-  "filterwheel": {
-    "enabled": true                  // register discovered CFWs as FilterWheel devices
-  },
   "server": {
     "port": 11121
   }
@@ -273,9 +271,10 @@ Sections:
   **not** carry per-camera connect-time tuning (gain/offset/target temperature) —
   with heterogeneous cameras those are per-serial concerns and clients set them
   over ASCOM; per-serial defaults are deferred (see *Future Work*).
-- **filterwheel.enabled** — Global toggle: when `true`, discovered CFWs are
-  registered as FilterWheel devices alongside the cameras. Hard read-only
-  (toggling adds/removes endpoints → restart-required, not a live apply).
+- **(no CFW toggle)** — discovered CFWs are registered as FilterWheel devices
+  automatically, the same way cameras are enumerated; detection (`sdk.filter_wheels()`)
+  is the source of truth. Verified on hardware: unplugging the wheel drops
+  `filter_wheels` from 1 → 0 with no phantom device, so no opt-in flag is needed.
 - **server.port** — Listening port (**11121**, next free in the 1112x family;
   11111–11120 and 11131 are taken). One port hosts all enumerated devices. Hard
   read-only (self-lockout: a port change would make the BFF lose the devices).
@@ -291,9 +290,8 @@ supplies `ConfigurableDriver for QhyCameraDriver`:
 - **Locked (identity) fields:** none — UniqueIDs are hardware-derived and not
   stored in config, so there is no identity field to lock (a deliberate
   divergence from the `materialize_identity` convention; see *Device identity*).
-- **Hard read-only fields:** `/server/port`, `/filterwheel/enabled` (enabling
-  /disabling adds/removes registered endpoints → restart-required, not a live
-  apply).
+- **Hard read-only fields:** `/server/port` (a port change would make the BFF
+  lose the devices → restart-required, not a live apply).
 - **Editable fields:** the `devices` map (per-serial `name` / `description` /
   `filter_names`).
 - **Validation** at load (parse-don't-validate): `filter_names` entries are
@@ -335,8 +333,8 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
 
 ### Enumeration & connection lifecycle
 
-- **C0.** At startup `build()` enumerates all connected QHY cameras (and CFWs when
-  `filterwheel.enabled`) and registers each as an ASCOM device with its
+- **C0.** At startup `build()` enumerates all connected QHY cameras (and any CFWs
+  discovered on them) and registers each as an ASCOM device with its
   serial-derived UniqueID. Zero discovered cameras is **not** a hard failure — the
   service starts with no Camera devices, logged at `warn!`; a later reload
   re-enumerates.
@@ -418,7 +416,7 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
 - **ST1.** `SensorType` is `RGGB` (colour) when the colour control is present,
   else `Monochrome`; `BayerOffsetX/Y` follow the SDK's reported Bayer pattern.
 
-### FilterWheel (when `filterwheel.enabled = true`)
+### FilterWheel (when a CFW is detected)
 
 - **FW1.** `Names` lists `filter_names` (or generated `Filter0..N`); `Position`
   returns the current slot, or the "moving" sentinel (`-1`/`None` → ASCOM moving)
