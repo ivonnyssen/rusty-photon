@@ -1,11 +1,17 @@
 load("@cr//:defs.bzl", "aliases", "all_crate_deps")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 
-exports_files(["Cargo.toml"], visibility = ["//visibility:public"])
+exports_files(
+    ["Cargo.toml"],
+    visibility = ["//visibility:public"],
+)
 
 rust_library(
     name = "bdd-infra",
-    srcs = glob(["src/**/*.rs"], exclude = ["src/bin/**"]),
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = ["src/bin/**"],
+    ),
     aliases = aliases(),
     crate_name = "bdd_infra",
     edition = "2021",
@@ -23,14 +29,17 @@ rust_library(
 # SkyView stub's WCS-bearing FITS minting.
 rust_library(
     name = "bdd-infra_rp_harness",
-    srcs = glob(["src/**/*.rs"], exclude = ["src/bin/**"]),
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = ["src/bin/**"],
+    ),
     aliases = aliases(),
     crate_features = ["rp-harness"],
     crate_name = "bdd_infra",
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = ["//visibility:public"],
-    deps = ["//crates/rp-fits:rp-fits"] + all_crate_deps(normal = True),
+    deps = ["//crates/rp-fits"] + all_crate_deps(normal = True),
 )
 
 # Variant with the conformu feature enabled. Services' conformu_integration
@@ -40,7 +49,10 @@ rust_library(
 # resolve). No extra deps.
 rust_library(
     name = "bdd-infra_conformu",
-    srcs = glob(["src/**/*.rs"], exclude = ["src/bin/**"]),
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = ["src/bin/**"],
+    ),
     aliases = aliases(),
     crate_features = ["conformu"],
     crate_name = "bdd_infra",
@@ -62,19 +74,19 @@ rust_binary(
 
 rust_test(
     name = "bdd-infra_unit_test",
+    size = "small",
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,
     ),
-    size = "small",
-    # 3 of the run_once_* tests shell out to `cargo build` when RP_BINARY
-    # isn't pre-set. See docs/plans/bazel-migration.md "Known test gaps".
-    tags = ["requires-cargo"],
     crate = ":bdd-infra",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,
     ),
+    # 3 of the run_once_* tests shell out to `cargo build` when RP_BINARY
+    # isn't pre-set. See docs/plans/bazel-migration.md "Known test gaps".
+    tags = ["requires-cargo"],
     deps = all_crate_deps(
         normal = True,
         normal_dev = True,
@@ -83,8 +95,8 @@ rust_test(
 
 rust_test(
     name = "service_handle",
-    srcs = ["tests/service_handle.rs"],
     size = "small",
+    srcs = ["tests/service_handle.rs"],
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,

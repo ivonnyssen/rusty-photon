@@ -1,7 +1,10 @@
 load("@cr//:defs.bzl", "aliases", "all_crate_deps")
 load("@rules_rust//rust:defs.bzl", "rust_library")
 
-exports_files(["Cargo.toml"], visibility = ["//visibility:public"])
+exports_files(
+    ["Cargo.toml"],
+    visibility = ["//visibility:public"],
+)
 
 # Vendored first-party QHYCCD SDK binding (ADR-009). Two library variants — the
 # same real/sim split `crates/rp-plate-solver` uses for its mock:
@@ -34,13 +37,13 @@ rust_library(
 
 rust_library(
     name = "qhyccd-rs_sim",
+    testonly = True,
     srcs = glob(["src/**/*.rs"]),
     aliases = aliases(),
     crate_features = ["simulation"],
     crate_name = "qhyccd_rs",
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
-    testonly = True,
     visibility = ["//visibility:public"],
     deps = [_LIBQHYCCD_SYS] + all_crate_deps(normal = True),
 )

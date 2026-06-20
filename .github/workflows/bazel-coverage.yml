@@ -61,7 +61,7 @@ jobs:
       # which get no secrets at all) read anonymously and never write.
       CACHE_WRITE_TOKEN: ${{ github.event_name == 'push' && secrets.BAZEL_CACHE_WRITE_TOKEN || '' }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       # .bazelrc build:linux uses the lld linker.
       - name: Install lld
@@ -81,10 +81,11 @@ jobs:
         uses: ./.github/actions/install-omnisim
 
       # `bazel coverage //...` instruments + compiles libqhyccd-sys (qhy-camera),
-      # so provision the proprietary QHYCCD SDK + libusb. Linux only: install.sh
-      # → /usr/local/lib (build.rs's env-free search path). The qhy-camera bdd +
-      # conformu suites are excluded from coverage by `--test_tag_filters=-requires-cargo`
-      # (they only BUILD here), so the SDK init hang under the test runner is moot.
+      # so provision the proprietary QHYCCD SDK + libusb. Linux only: the action
+      # stages the libs into /usr/local/lib (build.rs's env-free search path). The
+      # qhy-camera bdd + conformu suites are excluded from coverage by
+      # `--test_tag_filters=-requires-cargo` (they only BUILD here), so the SDK
+      # init hang under the test runner is moot.
       - name: Install libusb (qhy-camera)
         uses: awalsh128/cache-apt-pkgs-action@v1
         with:
@@ -94,6 +95,12 @@ jobs:
         uses: ivonnyssen/qhyccd-sdk-install@v3
         with:
           version: "26.06.04"
+      # zwo-camera links the native ZWO ASI/EFW SDK (zwo-rs -> libzwo-sys); the
+      # coverage run is over the whole `//...` graph, so the SDK must be present
+      # for Bazel to build/link/instrument zwo-camera. Linux-only runner here, so
+      # this is the cheap INDI-mirror path. See services/zwo-camera/BUILD.bazel.
+      - name: Install ZWO SDK
+        uses: ./.github/actions/install-zwo-sdk
 
       - name: bazel coverage
         run: |

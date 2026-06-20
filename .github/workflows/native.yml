@@ -1,34 +1,29 @@
-# Verifies the REAL (non-`simulation`) native-SDK build of the qhy crates: the
-# `libqhyccd-sys` build.rs link directives (`static=qhyccd` + libusb) and the
-# `#[cfg(not(feature = "simulation"))]` FFI code (the real `Sdk::new()` /
-# `InitQHYCCDResource` path and the `src/bin` probe programs) all compile and
-# link against the actual QHYCCD SDK, on every x86 OS.
+# Verifies the REAL (non-`simulation`) native-SDK build of BOTH native-camera
+# services against their actual proprietary/native SDKs, on every supported OS.
+# One workflow covers both because they exercise the same risk (real link + FFI)
+# the rest of CI does not — but for opposite reasons:
 #
-# Why this workflow exists: the rest of qhy CI (test.yml, conformu.yml) builds
-# with `--all-features` (or `--features conformu`), which enables qhy-camera's
-# `simulation` feature and therefore compiles the SIMULATED `Sdk::new()`, never
-# the real FFI init path. Those jobs still LINK the real SDK (build.rs links it
-# unconditionally), but they never COMPILE the non-`simulation` init code. This
-# job builds with DEFAULT features (no `simulation`) and WITHOUT `--all-targets`
-# so neither a `--all-features` flag nor the test-only `qhyccd-rs` simulation
-# dev-dep can feature-unify the simulated backend back onto the production
-# binary — it is the one workflow that compiles + links the real init path.
-# (Bazel's real qhyccd-rs variant build-enforces the lib half; the Pi nightly
-# covers linux-arm64, which the SDK-install action does not.)
+# - **qhy-camera / qhyccd-rs / libqhyccd-sys** link `static=qhyccd`
+#   UNCONDITIONALLY (no cfg/env gate). The rest of qhy CI builds with
+#   `--all-features` (or `--features conformu`), which enables the `simulation`
+#   feature and compiles the SIMULATED `Sdk::new()` — those jobs LINK the real
+#   SDK but never COMPILE the non-`simulation` init path. This job builds with
+#   DEFAULT features (no `simulation`, no `--all-targets` so the test-only
+#   `simulation` dev-dep can't feature-unify back on) to compile + link the real
+#   `InitQHYCCDResource` path. No `cargo test` smoke: qhyccd-rs swaps a mockall
+#   mock for the FFI under `#[cfg(test)]`, so `cargo test` would exercise the mock.
 #
-# NOTE: unlike zwo's native.yml there is no `cargo test` runtime smoke here —
-# qhyccd-rs substitutes a mockall mock for the FFI under `#[cfg(test)]`, so
-# `cargo test -p qhyccd-rs` exercises the mock, not the real SDK. Compile+link
-# of the real path (the `cargo build` steps below, including the `src/bin` real
-# FFI probes via `--all-targets` on the binding crates) is the validation.
+# - **zwo-camera / zwo-rs / libzwo-sys** take the opposite approach: the rest of
+#   CI (test/conformu/safety) builds the `simulation` path with
+#   ZWO_SKIP_NATIVE_LINK=1 and never links the SDK at all. So this is the ONLY
+#   job that links + loads the real ZWO SDK, and it adds a Linux runtime smoke.
 #
-# MERGE NOTE: zwo-camera's PR #369 adds its own `native.yml` for the ZWO SDK.
-# When both land, union them into one shared `native` workflow (one `build`
-# matrix with both services' install + build steps, one `notify-on-failure`).
+# (Bazel's real qhyccd-rs/zwo-rs variants build-enforce the lib halves; the Pi
+# nightly covers linux-arm64.)
 #
 # Cadence: nightly cron + workflow_dispatch, plus paths-filtered PR/push so a
-# real-link regression in the qhy native code, this workflow, or the SDK-install
-# action is caught at PR time rather than only at the next cron fire.
+# real-link regression in either service's native code, this workflow, or an
+# SDK-install action is caught at PR time rather than only at the next cron fire.
 permissions:
   contents: read
 on:
@@ -42,11 +37,17 @@ on:
     paths:
       - "crates/qhyccd-rs/**"
       - "services/qhy-camera/**"
+      - "crates/zwo-rs/**"
+      - "services/zwo-camera/**"
+      - ".github/actions/install-zwo-sdk/**"
       - ".github/workflows/native.yml"
   pull_request:
     paths:
       - "crates/qhyccd-rs/**"
       - "services/qhy-camera/**"
+      - "crates/zwo-rs/**"
+      - "services/zwo-camera/**"
+      - ".github/actions/install-zwo-sdk/**"
       - ".github/workflows/native.yml"
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
@@ -62,52 +63,69 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
           # Own cache keys, separate from test.yml's `--all-features` sim builds.
           shared-key: native-${{ matrix.os }}
-      # The QHYCCD SDK links `static=qhyccd`; on Linux the static lib also pulls
-      # libusb-1.0 + stdc++, on macOS libusb via Homebrew. The published action
-      # installs the SDK on Linux (install.sh -> /usr/local/lib), macOS, and
-      # Windows (extracts into $GITHUB_WORKSPACE where build.rs looks). It does
-      # not cover linux-arm64 — the Pi nightly does.
-      - name: Install libusb (Linux)
+
+      # --- QHYCCD SDK (qhy-camera) -------------------------------------------
+      # static=qhyccd; on Linux the static lib pulls libusb-1.0 + stdc++, on
+      # macOS libusb via Homebrew. The published action stages the SDK into
+      # /usr/local/lib on Linux and into $GITHUB_WORKSPACE on macOS/Windows.
+      - name: Install libusb (qhy-camera, Linux)
         if: runner.os == 'Linux'
         uses: awalsh128/cache-apt-pkgs-action@v1
         with:
           packages: libusb-1.0-0-dev
           version: 1.0
-      - name: Install libusb (macOS)
+      - name: Install libusb (qhy-camera, macOS)
         if: runner.os == 'macOS'
         run: brew install libusb
       - name: Install QHYCCD SDK
         uses: ivonnyssen/qhyccd-sdk-install@v3
         with:
           version: "26.06.04"
+
+      # --- ZWO ASI/EFW SDK (zwo-camera) --------------------------------------
+      # The composite action installs the MIT ZWO SDK on every OS (and libclang
+      # for bindgen; forwards LIBCLANG_PATH / ZWO_SDK_LIB_DIR where needed).
+      - name: Install ZWO SDK
+        uses: ./.github/actions/install-zwo-sdk
+
       - name: cargo generate-lockfile
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
-      # Build the REAL FFI path — NO `simulation` feature (default features) so
-      # qhyccd-rs's `#[cfg(not(feature = "simulation"))]` `Sdk::new()` /
-      # `InitQHYCCDResource` code compiles and links against the installed SDK.
-      #
-      # qhy-camera is built WITHOUT `--all-targets`: it carries a `simulation`
-      # dev-dependency on qhyccd-rs, so `--all-targets` would build its test
-      # targets and feature-unify `qhyccd-rs/simulation` onto the production
-      # binary — silently swapping in the simulated backend and hiding the real
-      # init path this workflow exists to validate. The lib+bin build pulls no
-      # dev-deps, so it links the real qhyccd-rs.
-      #
-      # qhyccd-rs / libqhyccd-sys have no sim-forcing dev-dep, so they keep
-      # `--all-targets` to also compile their real `src/bin` FFI probe programs
-      # (LiveFrameMode / SingleFrameMode / test) — extra real-FFI compile cover.
-      - name: cargo build (real, no simulation)
+
+      # qhy: DEFAULT features (no simulation) + no --all-targets on the service
+      # so the test-only `simulation` dev-dep can't feature-unify the simulated
+      # backend onto the prod binary. The binding crates keep --all-targets to
+      # also compile their real `src/bin` FFI probes (no sim-forcing dev-dep).
+      - name: cargo build (qhy, real, no simulation)
         run: |
           cargo build --locked -p qhy-camera
           cargo build --locked -p qhyccd-rs -p libqhyccd-sys --all-targets
+
+      # zwo: same shape — no simulation, no ZWO_SKIP_NATIVE_LINK, service without
+      # --all-targets, binding crates with it.
+      - name: cargo build (zwo, real, no simulation)
+        run: |
+          cargo build --locked -p zwo-camera
+          cargo build --locked -p zwo-rs -p libzwo-sys --all-targets
+
+      # Linux runtime smoke (zwo only): zwo-rs's non-`simulation` tests call the
+      # real SDK (init, version strings, a 0-camera enumeration with no hardware),
+      # confirming it *loads* and basic FFI works — not just that it links. Linux
+      # only: the SDK is on the default loader path (/usr/local/lib); macOS/Windows
+      # would need DYLD/PATH wiring this job does not set, and the link check above
+      # already covers them. (qhy has no equivalent — its FFI is mocked under test.)
+      - name: cargo test (real zwo-rs FFI smoke)
+        if: runner.os == 'Linux'
+        run: cargo test --locked -p zwo-rs --all-targets
+        env:
+          LD_LIBRARY_PATH: /usr/local/lib
 
   notify-on-failure:
     # Open or update a tracking issue when the nightly run fails so a real-link
@@ -125,18 +143,17 @@ jobs:
         uses: actions/github-script@v9
         with:
           script: |
-            const title = `nightly: native QHYCCD SDK build failing`;
+            const title = `nightly: native SDK build failing`;
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const body = [
               `The nightly \`native\` workflow failed on at least one OS.`,
               ``,
-              `This is the only CI job that compiles + links the qhy crates' REAL`,
-              `(non-\`simulation\`) path against the installed QHYCCD SDK. A failure`,
-              `means the \`libqhyccd-sys\` link directives or the`,
-              `\`#[cfg(not(feature = "simulation"))]\` FFI code no longer compile or`,
-              `link against the SDK — the rest of CI builds with \`--all-features\``,
-              `(the simulation path) and would not catch this. Inspect the failed`,
-              `job in the linked run.`,
+              `This is the only CI job that compiles + links the qhy AND zwo crates'`,
+              `REAL (non-\`simulation\`) paths against their installed SDKs. A failure`,
+              `means a native-SDK link directive, a bindgen binding, or some`,
+              `\`#[cfg(not(feature = "simulation"))]\` FFI code no longer compiles,`,
+              `links, or loads against the SDK — the rest of CI builds the simulation`,
+              `path and would not catch this. Inspect the failed job in the linked run.`,
               ``,
               `Run: ${runUrl}`,
               ``,

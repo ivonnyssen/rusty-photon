@@ -1,7 +1,10 @@
 load("@cr//:defs.bzl", "aliases", "all_crate_deps")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 
-exports_files(["Cargo.toml"], visibility = ["//visibility:public"])
+exports_files(
+    ["Cargo.toml"],
+    visibility = ["//visibility:public"],
+)
 
 _INTRA_WORKSPACE_DEPS = [
     "//crates/rp-fits:rp-fits",
@@ -10,7 +13,13 @@ _INTRA_WORKSPACE_DEPS = [
 
 rust_library(
     name = "phd2-guider_lib",
-    srcs = glob(["src/**/*.rs"], exclude = ["src/bin/**", "src/main.rs"]),
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = [
+            "src/bin/**",
+            "src/main.rs",
+        ],
+    ),
     aliases = aliases(),
     crate_name = "phd2_guider",
     edition = "2021",
@@ -41,16 +50,16 @@ rust_binary(
 
 rust_test(
     name = "phd2-guider_unit_test",
-    aliases = aliases(
-        normal_dev = True,
-        proc_macro_dev = True,
-    ),
     # 213 in-crate unit tests. The 8 test_start_phd2_* tests use a mock process
     # spawner (they never exec a real binary); dummy_executable_path() now points
     # at current_exe(), so they pass in the Bazel sandbox without a cargo-built
     # target/debug layout. Previously the whole target was tagged requires-cargo,
     # which hid all 213 from `bazel test`.
     size = "small",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
     crate = ":phd2-guider_lib",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
@@ -66,12 +75,12 @@ rust_test(
 # the client against it, entirely in-process (no child binaries). Pure rust_test.
 rust_test(
     name = "test_mock_server",
+    size = "small",
     srcs = ["tests/test_mock_server.rs"],
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,
     ),
-    size = "small",
     edition = "2021",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
@@ -89,17 +98,17 @@ rust_test(
 # cargo's CARGO_BIN_EXE_* under Cargo).
 rust_test(
     name = "test_integration",
+    size = "small",
     srcs = ["tests/test_integration.rs"],
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,
     ),
-    size = "small",
     data = [
-        ":mock_phd2",
-        ":phd2-guider",
         "tests/config.json",
         "tests/config_minimal.json",
+        ":mock_phd2",
+        ":phd2-guider",
     ],
     edition = "2021",
     env = {

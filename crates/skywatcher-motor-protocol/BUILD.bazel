@@ -1,7 +1,10 @@
 load("@cr//:defs.bzl", "aliases", "all_crate_deps")
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
-exports_files(["Cargo.toml"], visibility = ["//visibility:public"])
+exports_files(
+    ["Cargo.toml"],
+    visibility = ["//visibility:public"],
+)
 
 rust_library(
     name = "skywatcher-motor-protocol",
@@ -35,8 +38,8 @@ rust_test(
 # tests/property_tests.rs — proptest-based wire-protocol round-trip checks.
 rust_test(
     name = "property_tests",
-    srcs = ["tests/property_tests.rs"],
     size = "small",
+    srcs = ["tests/property_tests.rs"],
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,

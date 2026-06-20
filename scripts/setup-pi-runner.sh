@@ -76,6 +76,8 @@ sudo apt-get install -y \
   libssl-dev \
   libcfitsio-dev \
   libusb-1.0-0-dev \
+  clang \
+  libclang-dev \
   unzip \
   ca-certificates
 
@@ -136,6 +138,41 @@ else
   fi
   rm -rf "$TMP"
 fi
+
+# === 1.5. ZWO ASI/EFW SDK (for the zwo-camera service) ===
+#
+# zwo-camera links the MIT-licensed ZWO SDK unconditionally via
+# zwo-rs -> libzwo-sys (required even for `--features simulation`), so the
+# aarch64 Pi runner needs it installed to build/test the workspace. INDI
+# vendors ZWO's upstream prebuilt blobs under indi-3rdparty/libasi; install the
+# armv8 libraries under the linker name plus the udev rule for ZWO USB devices.
+# Pinned to a commit SHA (not a moving branch) for reproducible native blobs,
+# matching the CI `install-zwo-sdk` action's `ref` default; bump both together to
+# adopt a newer ZWO SDK. Override via the env var only for a deliberate one-off.
+ZWO_SDK_REF="${ZWO_SDK_REF:-b0802f28055b67aa6a99580d260c3bb4c27eba4b}"
+ZWO_SDK_BASE="https://github.com/indilib/indi-3rdparty/raw/${ZWO_SDK_REF}/libasi"
+
+log "Installing ZWO ASI/EFW SDK (armv8) from indi-3rdparty@${ZWO_SDK_REF}..."
+sudo install -d /usr/local/lib /usr/local/include
+for header in ASICamera2.h EFW_filter.h EAF_focuser.h license.txt; do
+  sudo curl -fsSL "${ZWO_SDK_BASE}/${header}" -o "/usr/local/include/${header}"
+done
+sudo curl -fsSL "${ZWO_SDK_BASE}/armv8/libASICamera2.bin" -o /usr/local/lib/libASICamera2.so
+sudo curl -fsSL "${ZWO_SDK_BASE}/armv8/libEFWFilter.bin" -o /usr/local/lib/libEFWFilter.so
+# EAF focuser is not linked yet (Future Work), but install it so the runner is
+# ready when focuser support lands — mirrors zwo-rs/ci/install-zwo-sdk.sh.
+sudo curl -fsSL "${ZWO_SDK_BASE}/armv8/libEAFFocuser.bin" -o /usr/local/lib/libEAFFocuser.so || true
+sudo ldconfig
+
+log "Installing ZWO udev rule (/etc/udev/rules.d/99-asi.rules)..."
+sudo tee /etc/udev/rules.d/99-asi.rules >/dev/null <<'EOF'
+# ZWO ASI cameras + EFW filter wheels (VID 0x03c3). MODE=0666 so the runner user
+# can claim the device; raise the USB buffer for USB3 throughput.
+SUBSYSTEMS=="usb", ATTR{idVendor}=="03c3", MODE="0666"
+ACTION=="add", SUBSYSTEMS=="usb", ATTR{idVendor}=="03c3", RUN+="/bin/sh -c 'echo 200 > /sys/module/usbcore/parameters/usbfs_memory_mb'"
+EOF
+sudo udevadm control --reload-rules
+sudo udevadm trigger || true
 
 # === 2. Dedicated unprivileged user ===
 

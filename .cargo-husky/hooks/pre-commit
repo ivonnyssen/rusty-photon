@@ -5,3 +5,14 @@ echo '+cargo clippy --all --all-targets --all-features -- -D warnings'
 cargo clippy --all --all-targets --all-features -- -D warnings
 echo '+cargo fmt --all -- --check'
 cargo fmt --all -- --check
+
+# Buildifier (BUILD/*.bzl/MODULE.bazel formatting + lint) — the same gate CI runs
+# via `bazel test //...`. Guarded on bazel being installed so the hook stays
+# usable for devs who build only with Cargo (Bazel is still shadow-mode). Run
+# `bazel run //:buildifier` to auto-fix.
+if command -v bazel >/dev/null 2>&1; then
+  echo '+bazel test //:buildifier_check'
+  bazel test //:buildifier_check
+else
+  echo '! bazel not found — skipping buildifier_check (CI still enforces it)'
+fi

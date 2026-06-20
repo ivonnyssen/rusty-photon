@@ -1,0 +1,100 @@
+//! zwo-camera ASCOM Alpaca driver — CLI entry point.
+
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
+use clap::Parser;
+use rusty_photon_service_lifecycle::ServiceRunner;
+use tracing::{debug, Level};
+use zwo_camera::{load_effective_config, CliOverrides, ServerBuilder};
+
+#[derive(Parser)]
+#[command(name = "zwo-camera")]
+#[command(about = "ASCOM Alpaca driver for ZWO ASI cameras (and EFW filter wheels)")]
+#[command(version)]
+struct Args {
+    /// Path to the JSON config file. When omitted, resolves to the per-user
+    /// platform config path (e.g. `~/.config/rusty-photon/zwo-camera.json` on
+    /// Linux) via `rusty_photon_config::resolve_config_path`.
+    #[arg(short, long)]
+    config: Option<PathBuf>,
+
+    /// Server port (overrides the config file).
+    #[arg(long)]
+    port: Option<u16>,
+
+    /// Log level: trace, debug, info, warn, error.
+    #[arg(short, long, default_value = "info", value_parser = parse_log_level)]
+    log_level: Level,
+
+    /// Test-only: start with an *empty* simulation backend (no cameras), to
+    /// exercise the zero-camera startup path (contract C0). Only meaningful when
+    /// built with `--features simulation`.
+    #[cfg(feature = "simulation")]
+    #[arg(long, hide = true)]
+    simulation_empty: bool,
+}
+
+fn parse_log_level(s: &str) -> Result<Level, String> {
+    s.parse()
+        .map_err(|_| format!("invalid log level: {s} (use trace, debug, info, warn, error)"))
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args = Args::parse();
+
+    rusty_photon_service_lifecycle::init_tracing(args.log_level);
+
+    // A config path is always resolvable (explicit --config or the XDG default),
+    // so config editing is never disabled for lack of one.
+    let config_path = rusty_photon_config::resolve_config_path("zwo-camera", args.config)?;
+    let overrides = CliOverrides { port: args.port };
+    #[cfg(feature = "simulation")]
+    let simulation_empty = args.simulation_empty;
+    debug!(config = ?config_path, "starting zwo-camera");
+
+    // No materialize_identity: ASCOM UniqueIDs are derived from the camera/EFW
+    // SDK serials at enumeration, not minted into config (see the design doc
+    // "Device identity").
+
+    // `config.apply` triggers an in-process reload: each loop iteration re-reads
+    // the effective config, re-enumerates, and rebuilds the server.
+    ServiceRunner::new("zwo-camera")
+        .with_reload()
+        .run_with_reload(move |shutdown, reload| async move {
+            loop {
+                let config = load_effective_config(&config_path, &overrides)?;
+
+                let builder = ServerBuilder::new()
+                    .with_config(config)
+                    .with_config_source(config_path.clone(), overrides.clone())
+                    .with_reload_signal(reload.clone());
+
+                #[cfg(feature = "simulation")]
+                let builder = builder.with_empty(simulation_empty);
+
+                let bound = builder.build().await?;
+
+                let reloaded = Arc::new(AtomicBool::new(false));
+                let stop = {
+                    let reloaded = Arc::clone(&reloaded);
+                    let shutdown = shutdown.cancelled();
+                    let reload = reload.clone();
+                    async move {
+                        tokio::select! {
+                            () = shutdown => {}
+                            () = reload.recv() => reloaded.store(true, Ordering::SeqCst),
+                        }
+                    }
+                };
+                bound.start(stop).await?;
+
+                if reloaded.load(Ordering::SeqCst) {
+                    debug!("reload signalled; rebuilding zwo-camera from the new configuration");
+                    continue;
+                }
+                return Ok(());
+            }
+        })
+}

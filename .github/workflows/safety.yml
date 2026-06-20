@@ -35,8 +35,12 @@ jobs:
         sanitizer: [address, leak]
     env:
       CARGO_BUILD_TARGET: x86_64-unknown-linux-gnu
+      # Build the zwo crates' pure-Rust `simulation` path with no native ZWO SDK
+      # link, so they can be sanitized without provisioning the SDK (see the
+      # cargo build step and crates/zwo-rs/libzwo-sys/build.rs).
+      ZWO_SKIP_NATIVE_LINK: "1"
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install ASCOM OmniSim
         uses: ./.github/actions/install-omnisim
       - name: Install nightly
@@ -58,6 +62,13 @@ jobs:
       # The SDK is not installed on this runner either, so qhy-camera must be
       # excluded. Its memory safety is exercised by the normal test jobs / Pi.
       - name: cargo build
+        # zwo-camera / zwo-rs / libzwo-sys link the native ZWO SDK only on their
+        # real (non-`simulation`) path. With `--all-features` the `simulation`
+        # path is built (real FFI is `cfg`'d out) and ZWO_SKIP_NATIVE_LINK=1 omits
+        # the link directives, so they build with no SDK to provision and the
+        # pure-Rust simulation code gets sanitized like any other crate. qhy-camera
+        # (above) is the exception: its `static=qhyccd` link is unconditional even
+        # under `simulation`, so it stays excluded.
         run: cargo build --workspace --exclude qhy-camera --all-features --all-targets
         env:
           RUSTFLAGS: "-Z sanitizer=${{ matrix.sanitizer }}"

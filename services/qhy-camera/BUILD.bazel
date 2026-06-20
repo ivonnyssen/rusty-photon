@@ -1,7 +1,10 @@
 load("@cr//:defs.bzl", "aliases", "all_crate_deps")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 
-exports_files(["Cargo.toml"], visibility = ["//visibility:public"])
+exports_files(
+    ["Cargo.toml"],
+    visibility = ["//visibility:public"],
+)
 
 # qhy-camera links the proprietary QHYCCD SDK (libqhyccd-sys → static=qhyccd +
 # libusb-1.0 + stdc++). The SDK is PROVISIONED into the Bazel shadow actions
@@ -36,7 +39,10 @@ _QHYCCD_SIM = "//crates/qhyccd-rs:qhyccd-rs_sim"
 
 rust_library(
     name = "qhy-camera_lib",
-    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]),
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = ["src/main.rs"],
+    ),
     aliases = aliases(),
     crate_name = "qhy_camera",
     edition = "2021",
@@ -52,7 +58,10 @@ rust_binary(
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = ["//visibility:public"],
-    deps = [":qhy-camera_lib", _QHYCCD_REAL] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+    deps = [
+        ":qhy-camera_lib",
+        _QHYCCD_REAL,
+    ] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
 
 rust_test(
@@ -76,7 +85,13 @@ rust_test(
 # The `simulation`-backed (mock alias) library + binary for BDD / ConformU.
 rust_library(
     name = "qhy-camera_lib_sim",
-    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]),
+    # Test-only: links the `testonly` qhyccd-rs_sim (simulated SDK). Bazel
+    # therefore forbids any production target from depending on it.
+    testonly = True,
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = ["src/main.rs"],
+    ),
     aliases = aliases(),
     crate_features = [
         "mock",
@@ -85,14 +100,12 @@ rust_library(
     crate_name = "qhy_camera",
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
-    # Test-only: links the `testonly` qhyccd-rs_sim (simulated SDK). Bazel
-    # therefore forbids any production target from depending on it.
-    testonly = True,
     deps = [_QHYCCD_SIM] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
 
 rust_binary(
     name = "qhy-camera_sim",
+    testonly = True,
     srcs = ["src/main.rs"],
     aliases = aliases(),
     crate_features = [
@@ -101,14 +114,16 @@ rust_binary(
     ],
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
-    testonly = True,
-    deps = [":qhy-camera_lib_sim", _QHYCCD_SIM] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+    deps = [
+        ":qhy-camera_lib_sim",
+        _QHYCCD_SIM,
+    ] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
 
 rust_test(
     name = "conformu_integration",
-    srcs = ["tests/conformu_integration.rs"],
     size = "large",
+    srcs = ["tests/conformu_integration.rs"],
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,
@@ -142,16 +157,16 @@ rust_test(
 
 rust_test(
     name = "bdd",
-    srcs = ["tests/bdd.rs"] + glob(["tests/bdd/**/*.rs"]),
     size = "small",
+    srcs = ["tests/bdd.rs"] + glob(["tests/bdd/**/*.rs"]),
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,
     ),
     crate_root = "tests/bdd.rs",
     data = [
-        ":qhy-camera_sim",
         "Cargo.toml",
+        ":qhy-camera_sim",
     ] + glob(["tests/features/**"]),
     edition = "2021",
     env = {
@@ -168,7 +183,11 @@ rust_test(
     rustc_env = {"CARGO_PKG_NAME": "qhy-camera"},
     tags = ["bdd"],
     use_libtest_harness = False,
-    deps = [":qhy-camera_lib_sim", _QHYCCD_SIM, "//crates/bdd-infra:bdd-infra"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
+    deps = [
+        ":qhy-camera_lib_sim",
+        _QHYCCD_SIM,
+        "//crates/bdd-infra",
+    ] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
         normal = True,
         normal_dev = True,
     ),

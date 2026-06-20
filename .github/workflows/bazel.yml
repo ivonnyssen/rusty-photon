@@ -54,7 +54,7 @@ jobs:
       # CACHE_WRITE_TOKEN is non-empty.
       CACHE_WRITE_TOKEN: ${{ (github.event_name == 'push' || github.event_name == 'schedule') && secrets.BAZEL_CACHE_WRITE_TOKEN || '' }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       # MSVC cl.exe (VS 2022 17.7+) respects the LongPathsEnabled
       # registry key, removing the 260-char MAX_PATH ceiling for include
@@ -98,10 +98,10 @@ jobs:
 
       # qhy-camera links the proprietary QHYCCD SDK + libusb; the shadow
       # `bazel build //...` compiles libqhyccd-sys on every OS, so provision both.
-      # Linux: install.sh → /usr/local/lib (build.rs's env-free search path) +
-      # apt libusb. macOS: SDK extracts into $GITHUB_WORKSPACE (build.rs reads it
-      # via the GITHUB_WORKSPACE forwarded in .bazelrc) + brew libusb. Windows:
-      # SDK into $GITHUB_WORKSPACE/pkg_win (the WinMix SDK bundles libusb).
+      # Linux: the action stages the libs into /usr/local/lib (build.rs's env-free
+      # search path) + apt libusb. macOS: SDK extracts into $GITHUB_WORKSPACE
+      # (build.rs reads it via the GITHUB_WORKSPACE forwarded in .bazelrc) + brew
+      # libusb. Windows: SDK into $GITHUB_WORKSPACE/sdk_win64_<ver> (bundles libusb).
       - name: Install libusb (qhy-camera, Linux)
         if: runner.os == 'Linux'
         uses: awalsh128/cache-apt-pkgs-action@v1
@@ -115,6 +115,17 @@ jobs:
         uses: ivonnyssen/qhyccd-sdk-install@v3
         with:
           version: "26.06.04"
+      # zwo-camera links the native ZWO ASI/EFW SDK (zwo-rs -> libzwo-sys), so
+      # //... cannot build, link, or run it without the SDK on the link path.
+      # Provision it on every OS, exactly like OmniSim above: this shadow build
+      # always covers the whole graph (no plan/narrowing job), and an unrelated
+      # change can still invalidate zwo-camera's cached link action, so the SDK
+      # must always be present. The composite action also installs libclang for
+      # bindgen and forwards LIBCLANG_PATH / ZWO_SDK_LIB_DIR (consumed under
+      # .bazelrc's strict_action_env on macOS / Windows). See
+      # services/zwo-camera/BUILD.bazel and docs/services/zwo-camera.md.
+      - name: Install ZWO SDK
+        uses: ./.github/actions/install-zwo-sdk
 
       - name: bazel build
         run: |
@@ -165,6 +176,9 @@ jobs:
           # left). //services/qhy-camera:bdd IS included — it spawns the
           # simulation-backed driver (no real InitQHYCCDResource / USB
           # enumeration; see services/qhy-camera/BUILD.bazel + Cargo.toml).
+          # //services/zwo-camera:bdd RUNS here too — `bdd`-tagged (not
+          # `requires-cargo`), spawning the native-SDK sim binary the "Install ZWO
+          # SDK" step above provisioned. Matches the coverage config in .bazelrc.
           bazel test --config=ci "${REMOTE_FLAGS[@]}" --test_tag_filters=bdd,-requires-cargo \
             --test_output=all \
             //...

@@ -1,7 +1,10 @@
 load("@cr//:defs.bzl", "aliases", "all_crate_deps")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 
-exports_files(["Cargo.toml"], visibility = ["//visibility:public"])
+exports_files(
+    ["Cargo.toml"],
+    visibility = ["//visibility:public"],
+)
 
 _INTRA_WORKSPACE_DEPS = [
     "//crates/rusty-photon-config:rusty-photon-config",
@@ -15,7 +18,10 @@ _INTRA_WORKSPACE_DEPS = [
 
 rust_library(
     name = "star-adventurer-gti_lib",
-    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]),
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = ["src/main.rs"],
+    ),
     aliases = aliases(),
     crate_name = "star_adventurer_gti",
     edition = "2021",
@@ -74,8 +80,8 @@ rust_test(
 # the mock-feature lib variant.
 rust_test(
     name = "test_lib",
-    srcs = ["tests/test_lib.rs"],
     size = "medium",
+    srcs = ["tests/test_lib.rs"],
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,
@@ -95,8 +101,8 @@ rust_test(
 
 rust_test(
     name = "conformu_integration",
-    srcs = ["tests/conformu_integration.rs"],
     size = "large",
+    srcs = ["tests/conformu_integration.rs"],
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,
@@ -131,7 +137,10 @@ rust_test(
 # with crate_features = ["mock"] (features are compile-time, not per-target).
 rust_library(
     name = "star-adventurer-gti_lib_mock",
-    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]),
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = ["src/main.rs"],
+    ),
     aliases = aliases(),
     crate_features = ["mock"],
     crate_name = "star_adventurer_gti",
@@ -153,17 +162,17 @@ rust_binary(
 
 rust_test(
     name = "bdd",
-    srcs = ["tests/bdd.rs"] + glob(["tests/bdd/**/*.rs"]),
     # 130+ scenarios, each spawning a service process; generous timeout.
     size = "large",
+    srcs = ["tests/bdd.rs"] + glob(["tests/bdd/**/*.rs"]),
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,
     ),
     crate_root = "tests/bdd.rs",
     data = [
-        ":star-adventurer-gti_mock",
         "Cargo.toml",
+        ":star-adventurer-gti_mock",
     ] + glob(["tests/features/**"]),
     edition = "2021",
     env = {
@@ -181,7 +190,7 @@ rust_test(
     use_libtest_harness = False,
     deps = [
         ":star-adventurer-gti_lib",
-        "//crates/bdd-infra:bdd-infra",
+        "//crates/bdd-infra",
     ] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
         normal = True,
         normal_dev = True,

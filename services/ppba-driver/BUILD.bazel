@@ -1,7 +1,10 @@
 load("@cr//:defs.bzl", "aliases", "all_crate_deps")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 
-exports_files(["Cargo.toml"], visibility = ["//visibility:public"])
+exports_files(
+    ["Cargo.toml"],
+    visibility = ["//visibility:public"],
+)
 
 _INTRA_WORKSPACE_DEPS = [
     "//crates/rusty-photon-config:rusty-photon-config",
@@ -17,11 +20,17 @@ _INTRA_WORKSPACE_DEPS = [
 # Cargo.toml at proc-macro expand time to locate the consumer crate's package
 # name and i18n.toml. Bazel sandboxes everything not listed here, so all three
 # files have to be in compile_data for the macros to see them.
-_I18N_ASSETS = glob(["i18n/**/*.ftl"]) + ["i18n.toml", "Cargo.toml"]
+_I18N_ASSETS = glob(["i18n/**/*.ftl"]) + [
+    "i18n.toml",
+    "Cargo.toml",
+]
 
 rust_library(
     name = "ppba-driver_lib",
-    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]),
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = ["src/main.rs"],
+    ),
     aliases = aliases(),
     crate_name = "ppba_driver",
     edition = "2021",
@@ -48,11 +57,11 @@ rust_binary(
 
 rust_test(
     name = "ppba-driver_unit_test",
+    size = "small",
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,
     ),
-    size = "small",
     crate = ":ppba-driver_lib",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
@@ -71,8 +80,8 @@ rust_test(
 # `cargo test -p ppba-driver --test translations`.
 rust_test(
     name = "translations",
-    srcs = ["tests/translations.rs"],
     size = "small",
+    srcs = ["tests/translations.rs"],
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,
@@ -83,14 +92,14 @@ rust_test(
     # proc-macro contexts, so the verifier intentionally avoids it.
     data = glob(["i18n/**/*.ftl"]),
     edition = "2021",
-    # rules_rust sets CARGO_MANIFEST_DIR to the runfiles location at runtime,
-    # but the test computes its own path via env!("CARGO_MANIFEST_DIR")
-    # which is fixed at compile time to the package source dir.
-    rustc_env = {"CARGO_PKG_NAME": "ppba-driver"},
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,
     ),
+    # rules_rust sets CARGO_MANIFEST_DIR to the runfiles location at runtime,
+    # but the test computes its own path via env!("CARGO_MANIFEST_DIR")
+    # which is fixed at compile time to the package source dir.
+    rustc_env = {"CARGO_PKG_NAME": "ppba-driver"},
     deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(
         normal = True,
         normal_dev = True,
@@ -103,15 +112,18 @@ rust_test(
 # binary embeds its i18n/*.ftl via compile_data, so no runtime i18n data here.
 rust_test(
     name = "cli_help",
-    srcs = ["tests/cli_help.rs"],
     size = "small",
+    srcs = ["tests/cli_help.rs"],
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,
     ),
     data = [":ppba-driver"],
     edition = "2021",
-    env = {"PPBA_DRIVER_BINARY": "$(rootpath :ppba-driver)", "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :ppba-driver)"},
+    env = {
+        "PPBA_DRIVER_BINARY": "$(rootpath :ppba-driver)",
+        "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :ppba-driver)",
+    },
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,
@@ -124,8 +136,8 @@ rust_test(
 
 rust_test(
     name = "conformu_integration",
-    srcs = ["tests/conformu_integration.rs"],
     size = "large",
+    srcs = ["tests/conformu_integration.rs"],
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,
@@ -136,7 +148,10 @@ rust_test(
     ],
     data = [":ppba-driver_mock"],
     edition = "2021",
-    env = {"PPBA_DRIVER_BINARY": "$(rootpath :ppba-driver_mock)", "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :ppba-driver_mock)"},
+    env = {
+        "PPBA_DRIVER_BINARY": "$(rootpath :ppba-driver_mock)",
+        "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :ppba-driver_mock)",
+    },
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,
@@ -158,7 +173,10 @@ rust_test(
 # attribute on dependencies.
 rust_library(
     name = "ppba-driver_lib_mock",
-    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]),
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = ["src/main.rs"],
+    ),
     aliases = aliases(),
     crate_features = ["mock"],
     crate_name = "ppba_driver",
@@ -184,16 +202,16 @@ rust_binary(
 
 rust_test(
     name = "bdd",
-    srcs = ["tests/bdd.rs"] + glob(["tests/bdd/**/*.rs"]),
     size = "small",
+    srcs = ["tests/bdd.rs"] + glob(["tests/bdd/**/*.rs"]),
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,
     ),
     crate_root = "tests/bdd.rs",
     data = [
-        ":ppba-driver_mock",
         "Cargo.toml",
+        ":ppba-driver_mock",
     ] + glob(["tests/features/**"]),
     edition = "2021",
     env = {
@@ -211,7 +229,10 @@ rust_test(
     rustc_env = {"CARGO_PKG_NAME": "ppba-driver"},
     tags = ["bdd"],
     use_libtest_harness = False,
-    deps = [":ppba-driver_lib", "//crates/bdd-infra:bdd-infra"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
+    deps = [
+        ":ppba-driver_lib",
+        "//crates/bdd-infra",
+    ] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
         normal = True,
         normal_dev = True,
     ),

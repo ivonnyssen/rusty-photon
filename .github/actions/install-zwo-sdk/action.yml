@@ -1,0 +1,199 @@
+name: Install ZWO ASI/EFW SDK
+description: >-
+  Install the MIT-licensed ZWO ASI camera + EFW filter-wheel SDK (and the
+  libusb-1.0 / libclang prerequisites) so the `zwo-camera` service can link.
+  The SDK links unconditionally via libzwo-sys, so this is required even for
+  `--features simulation` builds (it removes the camera, not the link). See
+  docs/services/zwo-camera.md "Native dependency & build gating" and ADR-008.
+  Linux/macOS pull ZWO's prebuilt blobs from the INDI mirror; Windows pulls the
+  official per-SDK developer zips from ZWO's download CDN.
+
+inputs:
+  ref:
+    description: >-
+      indi-3rdparty git ref for the vendored ZWO `.bin` shared libraries
+      (Linux/macOS). INDI vendors ZWO's upstream prebuilt blobs (MIT) under
+      libasi/<arch>/. Pinned to a commit SHA (not a moving branch) so the native
+      SDK bits are reproducible and can't change without a repo edit; bump it to
+      adopt a newer ZWO SDK.
+    default: b0802f28055b67aa6a99580d260c3bb4c27eba4b
+  prefix:
+    description: Install prefix for the SDK libraries and headers (Linux/macOS).
+    default: /usr/local
+  windows_camera_sdk_url:
+    # Reproducibility note: unlike the Linux/macOS blobs (pinned by `ref` to an
+    # indi-3rdparty commit), ZWO's Windows developer SDK is only published as a
+    # rolling "latest" CDN download — there is no versioned/immutable URL to pin
+    # or checksum. Overriding these inputs is the only way to pin, if/when ZWO
+    # offers a stable artifact. Track upstream before relying on Windows CI for
+    # bit-for-bit reproducibility.
+    description: ZWO ASI Camera developer SDK (Windows) download URL (rolling "latest").
+    default: https://dl.zwoastro.com/software?app=DeveloperCameraSdk&platform=windows86&region=Overseas
+  windows_efw_sdk_url:
+    description: ZWO EFW filter-wheel developer SDK (Windows) download URL.
+    default: https://dl.zwoastro.com/software?app=DeveloperEfwSdk&platform=windows86&region=Overseas
+  windows_eaf_sdk_url:
+    description: >-
+      ZWO EAF focuser developer SDK (Windows) download URL. Staged best-effort
+      for future focuser work; not linked by zwo-camera today.
+    default: https://dl.zwoastro.com/software?app=DeveloperEafSdk&platform=windows86&region=Overseas
+
+runs:
+  using: composite
+  steps:
+    - name: Install libusb + clang (Linux)
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo apt-get update -qq
+        # libusb-1.0-0-dev: the SDK links `-lusb-1.0`.
+        # libudev-dev: libEFWFilter is USB-HID and libzwo-sys links `-ludev` on
+        #   Linux; without the -dev package the unversioned libudev.so symlink is
+        #   missing and linking fails with "unable to find library -ludev".
+        # clang/libclang-dev: bindgen (in libzwo-sys' build script) needs libclang.
+        sudo apt-get install -y --no-install-recommends \
+          libusb-1.0-0-dev \
+          libudev-dev \
+          clang \
+          libclang-dev
+
+    - name: Install libusb + llvm (macOS)
+      if: runner.os == 'macOS'
+      shell: bash
+      run: |
+        brew install libusb llvm
+        # bindgen needs libclang; surface Homebrew's llvm to subsequent steps.
+        echo "LIBCLANG_PATH=$(brew --prefix llvm)/lib" >> "$GITHUB_ENV"
+
+    - name: Download + install the ZWO SDK (Linux/macOS)
+      if: runner.os != 'Windows'
+      shell: bash
+      env:
+        PREFIX: ${{ inputs.prefix }}
+        REF: ${{ inputs.ref }}
+      run: |
+        set -euo pipefail
+        BASE="https://github.com/indilib/indi-3rdparty/raw/${REF}/libasi"
+        case "${{ runner.os }}-${{ runner.arch }}" in
+          Linux-X64)    ARCH=x64 ;;
+          Linux-ARM64)  ARCH=armv8 ;;
+          macOS-ARM64)  ARCH=mac_arm64 ;;
+          macOS-X64)    ARCH=mac_x64 ;;
+          *) echo "::error::unsupported ZWO SDK arch: ${{ runner.os }}-${{ runner.arch }}"; exit 1 ;;
+        esac
+        echo "install-zwo-sdk: arch=$ARCH prefix=$PREFIX ref=$REF"
+        sudo install -d "$PREFIX/lib" "$PREFIX/include"
+
+        # Headers (MIT) — bindgen reads the copies vendored inside libzwo-sys, so
+        # these are for completeness; the license notice must travel with the blob.
+        for h in ASICamera2.h EFW_filter.h EAF_focuser.h license.txt; do
+          sudo curl -fsSL "$BASE/$h" -o "$PREFIX/include/$h"
+        done
+
+        # Shared libraries. INDI's `.bin` is ZWO's upstream `.so`/`.dylib`;
+        # install under the linker name so `-lASICamera2` / `-lEFWFilter` resolve.
+        if [[ "${{ runner.os }}" == "macOS" ]]; then
+          EXT=dylib
+        else
+          EXT=so
+        fi
+        sudo curl -fsSL "$BASE/$ARCH/libASICamera2.bin" -o "$PREFIX/lib/libASICamera2.$EXT"
+        sudo curl -fsSL "$BASE/$ARCH/libEFWFilter.bin"  -o "$PREFIX/lib/libEFWFilter.$EXT"
+        # EAF focuser is not linked yet (Future Work); install it so the runner is
+        # ready when focuser support lands — mirrors zwo-rs/ci/install-zwo-sdk.sh.
+        sudo curl -fsSL "$BASE/$ARCH/libEAFFocuser.bin" -o "$PREFIX/lib/libEAFFocuser.$EXT" || true
+
+        if [[ "${{ runner.os }}" == "macOS" ]]; then
+          # macOS dylibs ship with an install_name that must match the on-disk
+          # path before they will link (INDI automates this).
+          sudo install_name_tool -id "$PREFIX/lib/libASICamera2.dylib" "$PREFIX/lib/libASICamera2.dylib"
+          sudo install_name_tool -id "$PREFIX/lib/libEFWFilter.dylib" "$PREFIX/lib/libEFWFilter.dylib"
+          # libASICamera2/libEFWFilter reference `@rpath/libusb-1.0.0.dylib`.
+          # Stage libusb alongside the SDK, then rewrite that reference to the
+          # absolute path so it resolves regardless of the consuming binary's
+          # @rpath: Cargo binaries get this SDK prefix on their rpath (a
+          # link-search dir), but Bazel's rust_test binaries do not — without the
+          # rewrite they fail at runtime with dyld "Library not loaded".
+          sudo cp "$(brew --prefix libusb)/lib/libusb-1.0.0.dylib" "$PREFIX/lib/"
+          for lib in libASICamera2 libEFWFilter; do
+            sudo install_name_tool -change @rpath/libusb-1.0.0.dylib \
+              "$PREFIX/lib/libusb-1.0.0.dylib" "$PREFIX/lib/$lib.dylib" 2>/dev/null || true
+          done
+        elif command -v ldconfig >/dev/null 2>&1; then
+          sudo ldconfig
+        fi
+        echo "install-zwo-sdk: installed libASICamera2 + libEFWFilter under $PREFIX/lib"
+
+    - name: Install the ZWO SDK (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      env:
+        CAMERA_URL: ${{ inputs.windows_camera_sdk_url }}
+        EFW_URL: ${{ inputs.windows_efw_sdk_url }}
+        EAF_URL: ${{ inputs.windows_eaf_sdk_url }}
+      run: |
+        $ErrorActionPreference = "Stop"
+
+        # bindgen needs libclang. The windows runner image ships LLVM; surface it,
+        # installing it only if missing.
+        $llvm = "C:\Program Files\LLVM\bin"
+        if (-not (Test-Path "$llvm\libclang.dll")) {
+          choco install llvm --no-progress -y
+        }
+        "LIBCLANG_PATH=$llvm" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+        $work    = Join-Path $env:RUNNER_TEMP "zwo-sdk"
+        $extract = Join-Path $work "extract"
+        $libdir  = Join-Path $work "lib"
+        New-Item -ItemType Directory -Force -Path $extract, $libdir | Out-Null
+
+        function Get-Sdk($url, $name, $required) {
+          try {
+            $zip = Join-Path $env:RUNNER_TEMP "$name.zip"
+            Write-Host "install-zwo-sdk: downloading $name SDK"
+            Invoke-WebRequest -Uri $url -OutFile $zip
+            Expand-Archive -Path $zip -DestinationPath (Join-Path $extract $name) -Force
+          } catch {
+            if ($required) { throw } else { Write-Host "install-zwo-sdk: $name SDK skipped ($_)" }
+          }
+        }
+        Get-Sdk $env:CAMERA_URL "asi" $true
+        Get-Sdk $env:EFW_URL    "efw" $true
+        Get-Sdk $env:EAF_URL    "eaf" $false
+
+        # The per-arch import libs/DLLs live inside nested *Windows*SDK*.zip
+        # archives; extract those too before staging.
+        Get-ChildItem -Path $extract -Recurse -Filter "*Windows*SDK*.zip" | ForEach-Object {
+          Expand-Archive -Path $_.FullName -DestinationPath (Join-Path $extract "nested-$($_.BaseName)") -Force
+        }
+
+        # Stage the x64 lib/DLL under the linker name libzwo-sys expects, picking
+        # the x64 build (not Win32/x86, not the static lib, not the demo opencv libs).
+        function Stage($pattern, $target, $required) {
+          $hit = Get-ChildItem -Path $extract -Recurse -Filter $pattern -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -notmatch '(?i)win32|\\x86\\|opencv|demo' } |
+            Sort-Object { $_.FullName -notmatch '(?i)\\x64\\|amd64' } |
+            Select-Object -First 1
+          if (-not $hit) {
+            if ($required) { throw "install-zwo-sdk: $pattern not found in the Windows SDK" }
+            Write-Host "install-zwo-sdk: $pattern not found (optional); skipping"
+            return
+          }
+          Copy-Item $hit.FullName (Join-Path $libdir $target) -Force
+          Write-Host "install-zwo-sdk: staged $($hit.FullName) -> $target"
+        }
+        Stage "ASICamera2.lib" "ASICamera2.lib" $true
+        Stage "ASICamera2.dll" "ASICamera2.dll" $true
+        # ZWO's EFW lib/DLL is named EFW_filter; libzwo-sys links `-lEFWFilter`,
+        # so normalise the name.
+        Stage "EFW_filter.lib" "EFWFilter.lib" $true
+        Stage "EFW_filter.dll" "EFWFilter.dll" $true
+        # EAF is not linked yet (Future Work); stage it best-effort for parity.
+        Stage "EAF_focuser.lib" "EAFFocuser.lib" $false
+        Stage "EAF_focuser.dll" "EAFFocuser.dll" $false
+
+        # libzwo-sys' Windows branch links by name and relies on ZWO_SDK_LIB_DIR
+        # for the search path; the DLLs must be on PATH at test runtime.
+        "ZWO_SDK_LIB_DIR=$libdir" | Out-File -FilePath $env:GITHUB_ENV -Append
+        $libdir | Out-File -FilePath $env:GITHUB_PATH -Append
+        Write-Host "install-zwo-sdk: ZWO_SDK_LIB_DIR=$libdir (also on PATH for the DLLs)"

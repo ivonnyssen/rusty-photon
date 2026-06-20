@@ -1,0 +1,72 @@
+load("@cr//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+exports_files(
+    ["Cargo.toml"],
+    visibility = ["//visibility:public"],
+)
+
+# Two-variant build (the real/sim parity win of ADR-010 / docs/plans/vendor-zwo-rs.md),
+# applying the first-party variant pattern used by crates/rp-plate-solver
+# (`rp-plate-solver` ↔ `rp-plate-solver_with_mock`). crate_universe resolves a
+# single feature set per crate and ignores a target's `crate_features`, so an
+# external `zwo-rs` cannot be both real and simulated; owning the BUILD lets us
+# express both. `libzwo-sys` is first-party (not in `@cr`), so it is named
+# explicitly; the remaining deps (thiserror/tracing, +rand/rayon under
+# simulation) come from `all_crate_deps`.
+_LIBZWO_SYS = "//crates/zwo-rs/libzwo-sys:libzwo-sys"
+
+# Real SDK variant: `crate_features = []` cfg's out the simulation module
+# (rand/rayon) so the real FFI path compiles and links the native ZWO SDK via
+# libzwo-sys. zwo-camera's production targets depend on this.
+rust_library(
+    name = "zwo-rs",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "zwo_rs",
+    edition = "2021",
+    visibility = ["//visibility:public"],
+    deps = [_LIBZWO_SYS] + all_crate_deps(normal = True),
+)
+
+# Simulation variant: `crate_features = ["simulation"]` enables the hardware-free
+# in-Rust simulated camera/EFW. `testonly = True` makes Bazel reject any
+# production rust_binary/rust_library that links it, so the convention is enforced
+# at build time, not only by review. zwo-camera's sim/BDD/ConformU targets depend
+# on this. (The SDK is still linked — simulation removes the camera, not the link.)
+rust_library(
+    name = "zwo-rs_sim",
+    testonly = True,
+    srcs = glob(["src/**/*.rs"]),
+    crate_features = ["simulation"],
+    crate_name = "zwo_rs",
+    edition = "2021",
+    visibility = ["//visibility:public"],
+    deps = [_LIBZWO_SYS] + all_crate_deps(normal = True),
+)
+
+# The crate's own unit tests, run under Bazel against the sim variant (the
+# `#[cfg(feature = "simulation")]` camera/EFW tests need it; the un-gated tests —
+# error mapping, SDK version — run regardless). Mirrors
+# `crates/rp-plate-solver:rp-plate-solver_unit_test` building on the `_with_mock`
+# variant. `mockall` arrives via the dev-deps.
+rust_test(
+    name = "zwo-rs_unit_test",
+    size = "small",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate = ":zwo-rs_sim",
+    # Set explicitly: rust_test does NOT inherit `crate_features` from the `crate`
+    # it wraps, so without this the `#[cfg(feature = "simulation")]` tests (the
+    # bulk — camera/EFW behaviour) compile out and only the un-gated handful run.
+    crate_features = ["simulation"],
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)

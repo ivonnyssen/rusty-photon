@@ -1,7 +1,10 @@
 load("@rules_rust//cargo:defs.bzl", "cargo_build_script")
 load("@rules_rust//rust:defs.bzl", "rust_library")
 
-exports_files(["Cargo.toml"], visibility = ["//visibility:public"])
+exports_files(
+    ["Cargo.toml"],
+    visibility = ["//visibility:public"],
+)
 
 # Hand-written QHYCCD SDK FFI bindings (no bindgen — `lib.rs` is a hand-written
 # `extern "C"` block). First first-party `cargo_build_script` in the workspace.

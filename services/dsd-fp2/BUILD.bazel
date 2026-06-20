@@ -1,7 +1,10 @@
 load("@cr//:defs.bzl", "aliases", "all_crate_deps")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 
-exports_files(["Cargo.toml"], visibility = ["//visibility:public"])
+exports_files(
+    ["Cargo.toml"],
+    visibility = ["//visibility:public"],
+)
 
 _INTRA_WORKSPACE_DEPS = [
     "//crates/rusty-photon-config:rusty-photon-config",
@@ -14,7 +17,10 @@ _INTRA_WORKSPACE_DEPS = [
 
 rust_library(
     name = "dsd-fp2_lib",
-    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]),
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = ["src/main.rs"],
+    ),
     aliases = aliases(),
     crate_name = "dsd_fp2",
     edition = "2021",
@@ -67,8 +73,8 @@ rust_test(
 
 rust_test(
     name = "conformu_integration",
-    srcs = ["tests/conformu_integration.rs"],
     size = "large",
+    srcs = ["tests/conformu_integration.rs"],
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,
@@ -103,7 +109,10 @@ rust_test(
 # crate_features = ["mock"].
 rust_library(
     name = "dsd-fp2_lib_mock",
-    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]),
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = ["src/main.rs"],
+    ),
     aliases = aliases(),
     crate_features = ["mock"],
     crate_name = "dsd_fp2",
@@ -128,17 +137,17 @@ rust_binary(
 
 rust_test(
     name = "bdd",
-    srcs = ["tests/bdd.rs"] + glob(["tests/bdd/**/*.rs"]),
     # BDD spawns a service process per scenario; give it a generous timeout.
     size = "large",
+    srcs = ["tests/bdd.rs"] + glob(["tests/bdd/**/*.rs"]),
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,
     ),
     crate_root = "tests/bdd.rs",
     data = [
-        ":dsd-fp2_mock",
         "Cargo.toml",
+        ":dsd-fp2_mock",
     ] + glob(["tests/features/**"]),
     edition = "2021",
     env = {
@@ -157,7 +166,7 @@ rust_test(
     use_libtest_harness = False,
     deps = [
         ":dsd-fp2_lib",
-        "//crates/bdd-infra:bdd-infra",
+        "//crates/bdd-infra",
     ] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
         normal = True,
         normal_dev = True,

@@ -26,9 +26,14 @@ jobs:
     timeout-minutes: 30
     name: scheduled / ubuntu / nightly
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install ASCOM OmniSim
         uses: ./.github/actions/install-omnisim
+      # zwo-camera + the vendored zwo-rs/libzwo-sys link the native ZWO SDK; the
+      # full-workspace build below needs it on the link path (provision, don't
+      # exclude).
+      - name: Install ZWO SDK
+        uses: ./.github/actions/install-zwo-sdk
       - name: Install nightly
         uses: dtolnay/rust-toolchain@nightly
       - name: Install cargo-nextest
@@ -67,7 +72,7 @@ jobs:
       services: ${{ steps.find.outputs.services }}
       has_services: ${{ steps.find.outputs.has_services }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Find Miri services
         id: find
@@ -100,7 +105,7 @@ jobs:
       matrix:
         service: ${{ fromJson(needs.discover-miri.outputs.services) }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - run: |
           echo "NIGHTLY=nightly-$(curl -s https://rust-lang.github.io/rustup-components-history/x86_64-unknown-linux-gnu/miri)" >> "$GITHUB_ENV"
       - name: Install ${{ env.NIGHTLY }}
@@ -129,9 +134,14 @@ jobs:
     # just redo what happened in the regular test job. Unfortunately, hashFiles only works in if on
     # steps, so we repeat it.
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install ASCOM OmniSim
         uses: ./.github/actions/install-omnisim
+      # zwo-camera + the vendored zwo-rs/libzwo-sys link the native ZWO SDK; the
+      # full-workspace build below needs it on the link path (provision, don't
+      # exclude).
+      - name: Install ZWO SDK
+        uses: ./.github/actions/install-zwo-sdk
       - name: Install beta
         if: hashFiles('Cargo.lock') != ''
         uses: dtolnay/rust-toolchain@beta
@@ -178,9 +188,14 @@ jobs:
     timeout-minutes: 30
     name: scheduled / ubuntu / beta
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install ASCOM OmniSim
         uses: ./.github/actions/install-omnisim
+      # zwo-camera + the vendored zwo-rs/libzwo-sys link the native ZWO SDK; the
+      # full-workspace build below needs it on the link path (provision, don't
+      # exclude).
+      - name: Install ZWO SDK
+        uses: ./.github/actions/install-zwo-sdk
       - name: Install beta
         uses: dtolnay/rust-toolchain@beta
       - name: Install cargo-nextest

@@ -1,0 +1,41 @@
+[package]
+name = "zwo-rs"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.94.1"
+authors = ["Igor von Nyssen <igor@vonnyssen.com>"]
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+# Canonical development home is the rusty-photon monorepo (ADR-010); the crate is
+# still published to crates.io from crates/zwo-rs (dual-home).
+repository = "https://github.com/ivonnyssen/rusty-photon"
+documentation = "https://docs.rs/zwo-rs"
+homepage = "https://github.com/ivonnyssen/rusty-photon"
+description = "Safe Rust bindings for the ZWO ASI camera and EFW filter wheel SDK"
+keywords = ["zwo", "asi", "astronomy", "camera", "filter-wheel"]
+categories = ["api-bindings", "hardware-support"]
+# Vendored into the rusty-photon workspace as a first-party, dual-homed member
+# (ADR-010 / docs/plans/vendor-zwo-rs.md): the monorepo is the canonical
+# development home, and this crate is still published to crates.io from here. The
+# package metadata above stays explicit (NOT `*.workspace = true`) so the crate
+# releases on its own cadence; shared *dependencies* inherit from the workspace
+# per AGENTS.md Rule 10 (`cargo publish` inlines their concrete versions).
+
+[features]
+default = []
+# Mirrors qhyccd-rs: a hardware-free, in-Rust simulated environment for
+# development and tests. NOTE: like qhyccd-rs, this removes the *camera*, not the
+# SDK *link* — the native SDK is still linked when this feature is enabled.
+simulation = ["rand", "rayon"]
+
+[dependencies]
+libzwo-sys = { version = "0.1.0", path = "libzwo-sys" }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+# rand/rayon are simulation-only and have a single consumer in the workspace, so
+# they stay crate-local rather than promoted to workspace deps (Rule 10).
+rand = { version = "0.9", optional = true }
+rayon = { version = "1.10", optional = true }
+
+[dev-dependencies]
+mockall = { workspace = true }

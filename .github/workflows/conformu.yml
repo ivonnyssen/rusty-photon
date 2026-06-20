@@ -45,7 +45,7 @@ jobs:
       services: ${{ steps.discover.outputs.services }}
       has_services: ${{ steps.discover.outputs.has_services }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Discover ConformU services
         id: discover
         run: |
@@ -53,6 +53,11 @@ jobs:
           # service unconditionally; there is no PR base to diff against
           # and the whole point of the run is to catch drift across the
           # full surface.
+          # Phase G (2026-06-18): zwo-camera is a full ConformU citizen now. The
+          # conformu jobs provision the native ZWO SDK via
+          # ./.github/actions/install-zwo-sdk (the "provision, don't exclude"
+          # principle — ADR-008 / docs/plans/bazel-migration.md), so it builds and
+          # runs here like every other service. No `select(.name != ...)` filter.
           SERVICES=$(cargo metadata --format-version 1 --no-deps 2>/dev/null | \
             jq -c '[.packages[] | select(.metadata.conformu.command) | {name: .name, command: .metadata.conformu.command}]')
 
@@ -73,7 +78,7 @@ jobs:
         os: [ubuntu-latest, macos-latest]
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -130,6 +135,10 @@ jobs:
           DYLIB="$(find "$GITHUB_WORKSPACE" /usr/local/lib /opt/homebrew/lib -name 'libqhyccd*.dylib' -print -quit 2>/dev/null || true)"
           if [ -z "$DYLIB" ]; then echo "::error::libqhyccd dylib not found after SDK install"; exit 1; fi
           echo "DYLD_FALLBACK_LIBRARY_PATH=$(dirname "$DYLIB"):/opt/homebrew/lib:/usr/local/lib:/usr/lib" >> "$GITHUB_ENV"
+      # zwo-camera (and the vendored zwo-rs/libzwo-sys members) link the native
+      # ZWO SDK; provision it so the full-workspace pre-build links — no exclusion.
+      - name: Install ZWO SDK
+        uses: ./.github/actions/install-zwo-sdk
 
       - name: Pre-build workspace
         run: cargo build --locked --workspace --all-features --all-targets
@@ -138,6 +147,11 @@ jobs:
         shell: bash
         timeout-minutes: 30
         run: |
+          # All suites run concurrently. (This was briefly serialized on a
+          # mistaken "macOS runner CPU starvation" theory; the real cause of the
+          # zwo-camera macOS StartExposure timeout was a driver bug — the exposure
+          # integration loop summed intended sleep time instead of honouring a
+          # real-clock deadline — fixed in services/zwo-camera/src/backend.rs.)
           SERVICES='${{ needs.plan.outputs.services }}'
           COUNT=$(echo "$SERVICES" | jq 'length')
 
@@ -183,7 +197,7 @@ jobs:
         service: ${{ fromJson(needs.plan.outputs.services) }}
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -221,6 +235,10 @@ jobs:
         uses: ivonnyssen/qhyccd-sdk-install@v3
         with:
           version: "26.06.04"
+      # Per-service matrix, so only zwo-camera needs the native ZWO SDK on Windows.
+      - name: Install ZWO SDK
+        if: matrix.service.name == 'zwo-camera'
+        uses: ./.github/actions/install-zwo-sdk
 
       - name: Pre-build
         run: cargo build --locked --package ${{ matrix.service.name }} --all-features --all-targets

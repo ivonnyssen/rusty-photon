@@ -1,7 +1,10 @@
 load("@cr//:defs.bzl", "aliases", "all_crate_deps")
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
-exports_files(["Cargo.toml"], visibility = ["//visibility:public"])
+exports_files(
+    ["Cargo.toml"],
+    visibility = ["//visibility:public"],
+)
 
 rust_library(
     name = "rusty-photon-config",
@@ -16,11 +19,11 @@ rust_library(
 
 rust_test(
     name = "rusty-photon-config_unit_test",
+    size = "small",
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,
     ),
-    size = "small",
     crate = ":rusty-photon-config",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,

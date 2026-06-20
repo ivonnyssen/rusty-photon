@@ -30,6 +30,12 @@ members = [
   "services/sky-survey-camera",
   "services/star-adventurer-gti",
   "services/ui-htmx",
+  "services/zwo-camera",
+  # First-party, dual-homed ZWO FFI crates — vendored from ivonnyssen/zwo-rs
+  # (ADR-010 / docs/plans/vendor-zwo-rs.md). libzwo-sys is nested under zwo-rs to
+  # preserve its upstream `path = "libzwo-sys"` dep verbatim.
+  "crates/zwo-rs",
+  "crates/zwo-rs/libzwo-sys",
 ]
 resolver = "2"
 
@@ -99,6 +105,12 @@ tokio-serial = "5.4.5"
 # native-link policy rationale lives in one place.
 qhyccd-rs = { path = "crates/qhyccd-rs" }
 ascom-alpaca = { git = "https://github.com/ivonnyssen/ascom-alpaca-rs.git", branch = "integration", default-features = false }
+# ZWO ASI camera + EFW filter-wheel FFI (safe wrapper over `libzwo-sys`), for the
+# `zwo-camera` service. Vendored first-party + dual-homed at crates/zwo-rs
+# (ADR-010 / docs/plans/vendor-zwo-rs.md) — the monorepo is now the canonical
+# development home; edits are in-tree (no git-rev bump). Still published to
+# crates.io from the vendored subdir for outside consumers.
+zwo-rs = { path = "crates/zwo-rs" }
 axum = "0.8"
 tower = "0.5"
 reqwest = { version = "0.13.4", features = ["form", "json"] }
