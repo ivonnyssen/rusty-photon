@@ -623,7 +623,13 @@ the "how" decisions made while building.
   blocking FFI/libusb call would free the handle under a live USB transfer (a
   use-after-free that trips libusb's `usbi_mutex_lock` assertion and can corrupt
   the SDK's shared libusb context). `abort_exposure_and_readout` makes the drain
-  near-instant in practice.
+  near-instant in practice. The drain is **event-driven on a deadline, not a
+  polling sleep**: the capture task fires a `tokio::sync::Notify`
+  (`exposure_drained`) the instant it clears the flag, and `disconnect` awaits it
+  under a single `tokio::time::timeout` (canonical `Notified` `enable()`-before-
+  check pattern, so a drain landing between the check and the await is never
+  lost). Earlier this was a `loop { sleep(5 ms) }` busy-wait, replaced because
+  repeated short sleeps can stall under scheduler pressure.
 - **Camera + CFW share one physical handle — refcounted shared connection.**
   `qhyccd-rs` derives the CFW from the *same* camera id as the enumerated camera
   (a QHY CFW is driven over the camera's USB, not a separate device). The SDK

@@ -69,6 +69,11 @@ struct DeviceState {
     /// `cancel_exposure`'s "bump generation + clear image_ready", so an abort
     /// landing at the wrong instant can't leave a stale `ImageReady = true`.
     result_lock: Mutex<()>,
+    /// Notified the instant the detached capture task clears
+    /// `exposure_in_flight`. Lets `disconnect` (and tests) await the drain on a
+    /// deadline via `tokio::time::timeout` instead of a polling sleep loop —
+    /// busy-waits have bitten us with scheduler stalls under load.
+    exposure_drained: tokio::sync::Notify,
 }
 
 /// Cached sensor geometry. `image_width`/`image_height` track the active readout
@@ -102,6 +107,7 @@ impl DeviceState {
             last_image: Mutex::new(None),
             last_error: Mutex::new(None),
             result_lock: Mutex::new(()),
+            exposure_drained: tokio::sync::Notify::new(),
         }
     }
 
@@ -244,6 +250,31 @@ impl QhyCameraDevice {
         Ok(())
     }
 
+    /// Wait until no capture task is in flight, bounded by `timeout`. Returns
+    /// `true` once `exposure_in_flight` is observed clear, `false` on timeout.
+    ///
+    /// Event-driven, not a polling sleep loop: the detached `run_exposure` task
+    /// fires `exposure_drained` the instant it clears the flag, and we await that
+    /// against a single `tokio::time::timeout` deadline. Uses the canonical tokio
+    /// `Notify` pattern — pin the `Notified` future and `enable()` it *before*
+    /// re-checking the flag — so a drain landing between the check and the await
+    /// can never be lost, and a spurious/stale wakeup just re-checks the flag.
+    async fn wait_until_drained(&self, timeout: Duration) -> bool {
+        let drained = async {
+            let notified = self.state.exposure_drained.notified();
+            tokio::pin!(notified);
+            loop {
+                notified.as_mut().enable();
+                if !self.state.exposure_in_flight.load(Ordering::Acquire) {
+                    return;
+                }
+                notified.as_mut().await;
+                notified.set(self.state.exposure_drained.notified());
+            }
+        };
+        tokio::time::timeout(timeout, drained).await.is_ok()
+    }
+
     async fn disconnect(&self) -> ASCOMResult<()> {
         // An in-flight exposure is cancelled (C3) before the handle closes.
         self.cancel_exposure();
@@ -253,17 +284,9 @@ impl QhyCameraDevice {
         // the task clears `exposure_in_flight`. Closing while that task is still
         // inside an FFI/libusb call would free the handle out from under a live USB
         // transfer — a use-after-free that trips libusb's `usbi_mutex_lock`
-        // assertion and can corrupt the SDK's shared libusb context. Bounded so a
-        // wedged SDK call cannot hang disconnect forever.
-        let mut drained = !self.state.exposure_in_flight.load(Ordering::Acquire);
-        for _ in 0..600 {
-            if drained {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-            drained = !self.state.exposure_in_flight.load(Ordering::Acquire);
-        }
-        if !drained {
+        // assertion and can corrupt the SDK's shared libusb context. Bounded by a
+        // deadline so a wedged SDK call cannot hang disconnect forever.
+        if !self.wait_until_drained(Duration::from_secs(3)).await {
             warn!(camera = %self.unique_id, "in-flight exposure did not drain within 3s of disconnect; closing anyway");
         }
         // Refcounted close (`backend::SharedCameraConnection`): when a CFW device
@@ -466,6 +489,9 @@ async fn run_exposure(handle: Arc<dyn CameraHandle>, state: Arc<DeviceState>, ge
     // so this task owns clearing the flag once its SDK chain has fully drained —
     // even when superseded. Until it does, a new start_exposure is rejected.
     state.exposure_in_flight.store(false, Ordering::Release);
+    // Wake any deadline-bounded waiter (disconnect drain, tests) now that the
+    // blocking SDK chain has fully returned and the handle is safe to close.
+    state.exposure_drained.notify_waiters();
 }
 
 #[async_trait::async_trait]
@@ -1376,12 +1402,10 @@ mod tests {
             .start_exposure(Duration::from_millis(10), true)
             .await
             .unwrap();
-        for _ in 0..200 {
-            if device.camera_state().await.unwrap() == CameraState::Error {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
+        assert!(
+            device.wait_until_drained(Duration::from_secs(2)).await,
+            "capture task did not drain in time"
+        );
         assert_eq!(device.camera_state().await.unwrap(), CameraState::Error);
 
         device.set_connected(false).await.unwrap();
@@ -1721,13 +1745,11 @@ mod tests {
             .start_exposure(Duration::from_millis(10), true)
             .await
             .unwrap();
-        // Wait for the detached capture task.
-        for _ in 0..200 {
-            if device.image_ready().await.unwrap() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
+        // Wait (on a deadline, not a polling sleep) for the detached capture task.
+        assert!(
+            device.wait_until_drained(Duration::from_secs(2)).await,
+            "capture task did not drain in time"
+        );
         assert!(device.image_ready().await.unwrap());
         assert_eq!(device.camera_state().await.unwrap(), CameraState::Idle);
         assert_eq!(device.percent_completed().await.unwrap(), 100);
@@ -1745,12 +1767,10 @@ mod tests {
             .start_exposure(Duration::from_millis(10), true)
             .await
             .unwrap();
-        for _ in 0..200 {
-            if device.camera_state().await.unwrap() == CameraState::Error {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
+        assert!(
+            device.wait_until_drained(Duration::from_secs(2)).await,
+            "capture task did not drain in time"
+        );
         assert_eq!(device.camera_state().await.unwrap(), CameraState::Error);
         assert!(!device.image_ready().await.unwrap());
         assert_eq!(
