@@ -199,9 +199,8 @@ impl SimulatedCameraState {
 
     /// Stops the current exposure but keeps the image data
     /// (for CancelQHYCCDExposing - image stays in camera)
-    pub fn stop_exposure(&mut self) {
-        // Mark exposure as complete by setting start time far in the past
-        // This preserves the captured image for later retrieval
+pub fn stop_exposure(&mut self) {
+        // Mark exposure as complete while preserving the captured image for later retrieval.
         self.exposure_start = None;
     }
 
