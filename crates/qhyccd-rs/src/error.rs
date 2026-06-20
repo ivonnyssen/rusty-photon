@@ -38,7 +38,7 @@ pub enum QHYError {
     SetBinModeError { error_code: u32 },
     #[error("Error setting camera sub frame, error code {:?}", error_code)]
     SetRoiError { error_code: u32 },
-    #[error("Error getting camera parameter, error code {:?}", control)]
+    #[error("Error getting camera parameter for control {:?}", control)]
     GetParameterError {
         /// here the control field has the `Control` enum variant we tried to get the value for
         control: Control,
@@ -87,10 +87,7 @@ pub enum QHYError {
     IsCfwPluggedInError,
     #[error("Error camera is not open")]
     CameraNotOpenError,
-    #[error(
-        "Error getting camera min, max, step for parameter, error code {:?}",
-        control
-    )]
+    #[error("Error getting camera min, max, step for control {:?}", control)]
     GetMinMaxStepError {
         /// here the control field has the `Control` enum variant we tried to get the value for
         control: Control,
