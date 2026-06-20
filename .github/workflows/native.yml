@@ -1,0 +1,175 @@
+# Verifies the REAL (non-`simulation`) native-SDK build of the qhy crates: the
+# `libqhyccd-sys` build.rs link directives (`static=qhyccd` + libusb) and the
+# `#[cfg(not(feature = "simulation"))]` FFI code (the real `Sdk::new()` /
+# `InitQHYCCDResource` path and the `src/bin` probe programs) all compile and
+# link against the actual QHYCCD SDK, on every x86 OS.
+#
+# Why this workflow exists: the rest of qhy CI (test.yml, conformu.yml) builds
+# with `--all-features` (or `--features conformu`), which enables qhy-camera's
+# `simulation` feature and therefore compiles the SIMULATED `Sdk::new()`, never
+# the real FFI init path. Those jobs still LINK the real SDK (build.rs links it
+# unconditionally), but they never COMPILE the non-`simulation` init code. This
+# job builds with DEFAULT features (no `simulation`) and WITHOUT `--all-targets`
+# so neither a `--all-features` flag nor the test-only `qhyccd-rs` simulation
+# dev-dep can feature-unify the simulated backend back onto the production
+# binary — it is the one workflow that compiles + links the real init path.
+# (Bazel's real qhyccd-rs variant build-enforces the lib half; the Pi nightly
+# covers linux-arm64, which the SDK-install action does not.)
+#
+# NOTE: unlike zwo's native.yml there is no `cargo test` runtime smoke here —
+# qhyccd-rs substitutes a mockall mock for the FFI under `#[cfg(test)]`, so
+# `cargo test -p qhyccd-rs` exercises the mock, not the real SDK. Compile+link
+# of the real path (the `cargo build` steps below, including the `src/bin` real
+# FFI probes via `--all-targets` on the binding crates) is the validation.
+#
+# MERGE NOTE: zwo-camera's PR #369 adds its own `native.yml` for the ZWO SDK.
+# When both land, union them into one shared `native` workflow (one `build`
+# matrix with both services' install + build steps, one `notify-on-failure`).
+#
+# Cadence: nightly cron + workflow_dispatch, plus paths-filtered PR/push so a
+# real-link regression in the qhy native code, this workflow, or the SDK-install
+# action is caught at PR time rather than only at the next cron fire.
+permissions:
+  contents: read
+on:
+  schedule:
+    # 06:47 UTC. Offset from the other nightlies (conformu 05:30, bazel 07:07,
+    # safety 07:17) so they do not contend for the hosted-runner pool minute.
+    - cron: "47 6 * * *"
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "crates/qhyccd-rs/**"
+      - "services/qhy-camera/**"
+      - ".github/workflows/native.yml"
+  pull_request:
+    paths:
+      - "crates/qhyccd-rs/**"
+      - "services/qhy-camera/**"
+      - ".github/workflows/native.yml"
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+name: native
+jobs:
+  build:
+    name: native link / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Own cache keys, separate from test.yml's `--all-features` sim builds.
+          shared-key: native-${{ matrix.os }}
+      # The QHYCCD SDK links `static=qhyccd`; on Linux the static lib also pulls
+      # libusb-1.0 + stdc++, on macOS libusb via Homebrew. The published action
+      # installs the SDK on Linux (install.sh -> /usr/local/lib), macOS, and
+      # Windows (extracts into $GITHUB_WORKSPACE where build.rs looks). It does
+      # not cover linux-arm64 — the Pi nightly does.
+      - name: Install libusb (Linux)
+        if: runner.os == 'Linux'
+        uses: awalsh128/cache-apt-pkgs-action@v1
+        with:
+          packages: libusb-1.0-0-dev
+          version: 1.0
+      - name: Install libusb (macOS)
+        if: runner.os == 'macOS'
+        run: brew install libusb
+      - name: Install QHYCCD SDK
+        uses: ivonnyssen/qhyccd-sdk-install@v2
+        with:
+          version: "25.09.29"
+      - name: cargo generate-lockfile
+        if: hashFiles('Cargo.lock') == ''
+        run: cargo generate-lockfile
+      # Build the REAL FFI path — NO `simulation` feature (default features) so
+      # qhyccd-rs's `#[cfg(not(feature = "simulation"))]` `Sdk::new()` /
+      # `InitQHYCCDResource` code compiles and links against the installed SDK.
+      #
+      # qhy-camera is built WITHOUT `--all-targets`: it carries a `simulation`
+      # dev-dependency on qhyccd-rs, so `--all-targets` would build its test
+      # targets and feature-unify `qhyccd-rs/simulation` onto the production
+      # binary — silently swapping in the simulated backend and hiding the real
+      # init path this workflow exists to validate. The lib+bin build pulls no
+      # dev-deps, so it links the real qhyccd-rs.
+      #
+      # qhyccd-rs / libqhyccd-sys have no sim-forcing dev-dep, so they keep
+      # `--all-targets` to also compile their real `src/bin` FFI probe programs
+      # (LiveFrameMode / SingleFrameMode / test) — extra real-FFI compile cover.
+      - name: cargo build (real, no simulation)
+        run: |
+          cargo build --locked -p qhy-camera
+          cargo build --locked -p qhyccd-rs -p libqhyccd-sys --all-targets
+
+  notify-on-failure:
+    # Open or update a tracking issue when the nightly run fails so a real-link
+    # regression surfaces without depending on someone reading scheduled-workflow
+    # logs. Skipped on push, pull_request, and workflow_dispatch so manual /
+    # PR-time runs do not churn the issue.
+    needs: build
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      issues: write
+    steps:
+      - name: Open or update tracking issue
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const title = `nightly: native QHYCCD SDK build failing`;
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = [
+              `The nightly \`native\` workflow failed on at least one OS.`,
+              ``,
+              `This is the only CI job that compiles + links the qhy crates' REAL`,
+              `(non-\`simulation\`) path against the installed QHYCCD SDK. A failure`,
+              `means the \`libqhyccd-sys\` link directives or the`,
+              `\`#[cfg(not(feature = "simulation"))]\` FFI code no longer compile or`,
+              `link against the SDK — the rest of CI builds with \`--all-features\``,
+              `(the simulation path) and would not catch this. Inspect the failed`,
+              `job in the linked run.`,
+              ``,
+              `Run: ${runUrl}`,
+              ``,
+              `This issue was opened automatically by a scheduled run that`,
+              `failed. While it stays open, each subsequent scheduled failure`,
+              `is appended here as a comment linking its own run. Closing it`,
+              `marks the failure handled — it is never re-opened; the next`,
+              `scheduled failure opens a fresh issue instead.`,
+            ].join("\n");
+            // Search only OPEN issues. While a tracking issue is open each
+            // failure appends a comment; once it is closed the failure is
+            // considered handled, so the next scheduled failure opens a fresh
+            // issue rather than resurrecting the closed one.
+            const existing = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: "open",
+              labels: "native-nightly",
+            });
+            const match = existing.find(i => i.title === title);
+            if (match) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: match.number,
+                body: `Failed again — run: ${runUrl}`,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ["native-nightly", "ci-flake"],
+              });
+            }
