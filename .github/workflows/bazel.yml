@@ -96,6 +96,18 @@ jobs:
       - name: Install ASCOM OmniSim
         uses: ./.github/actions/install-omnisim
 
+      # zwo-camera links the native ZWO ASI/EFW SDK (zwo-rs -> libzwo-sys), so
+      # //... cannot build, link, or run it without the SDK on the link path.
+      # Provision it on every OS, exactly like OmniSim above: this shadow build
+      # always covers the whole graph (no plan/narrowing job), and an unrelated
+      # change can still invalidate zwo-camera's cached link action, so the SDK
+      # must always be present. The composite action also installs libclang for
+      # bindgen and forwards LIBCLANG_PATH / ZWO_SDK_LIB_DIR (consumed under
+      # .bazelrc's strict_action_env on macOS / Windows). See
+      # services/zwo-camera/BUILD.bazel and docs/services/zwo-camera.md.
+      - name: Install ZWO SDK
+        uses: ./.github/actions/install-zwo-sdk
+
       - name: bazel build
         run: |
           REMOTE_FLAGS=(--config=remote-cache)
@@ -140,6 +152,11 @@ jobs:
           else
             REMOTE_FLAGS+=(--remote_upload_local_results=false)
           fi
-          bazel test --config=ci "${REMOTE_FLAGS[@]}" --test_tag_filters=bdd \
+          # Select the `bdd`-tagged suites, excluding any also tagged
+          # `requires-cargo`. //services/zwo-camera:bdd RUNS here — it is
+          # `bdd`-tagged (not `requires-cargo`) and spawns the native-SDK sim
+          # binary the "Install ZWO SDK" step above provisioned. Matches the
+          # coverage config in .bazelrc (excludes requires-cargo, includes bdd).
+          bazel test --config=ci "${REMOTE_FLAGS[@]}" --test_tag_filters=bdd,-requires-cargo \
             --test_output=all \
             //...

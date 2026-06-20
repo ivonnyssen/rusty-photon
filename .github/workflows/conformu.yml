@@ -53,6 +53,11 @@ jobs:
           # service unconditionally; there is no PR base to diff against
           # and the whole point of the run is to catch drift across the
           # full surface.
+          # Phase G (2026-06-18): zwo-camera is a full ConformU citizen now. The
+          # conformu jobs provision the native ZWO SDK via
+          # ./.github/actions/install-zwo-sdk (the "provision, don't exclude"
+          # principle — ADR-008 / docs/plans/bazel-migration.md), so it builds and
+          # runs here like every other service. No `select(.name != ...)` filter.
           SERVICES=$(cargo metadata --format-version 1 --no-deps 2>/dev/null | \
             jq -c '[.packages[] | select(.metadata.conformu.command) | {name: .name, command: .metadata.conformu.command}]')
 
@@ -104,6 +109,11 @@ jobs:
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
 
+      # zwo-camera (and the vendored zwo-rs/libzwo-sys members) link the native
+      # ZWO SDK; provision it so the full-workspace pre-build links — no exclusion.
+      - name: Install ZWO SDK
+        uses: ./.github/actions/install-zwo-sdk
+
       - name: Pre-build workspace
         run: cargo build --locked --workspace --all-features --all-targets
 
@@ -111,6 +121,11 @@ jobs:
         shell: bash
         timeout-minutes: 30
         run: |
+          # All suites run concurrently. (This was briefly serialized on a
+          # mistaken "macOS runner CPU starvation" theory; the real cause of the
+          # zwo-camera macOS StartExposure timeout was a driver bug — the exposure
+          # integration loop summed intended sleep time instead of honouring a
+          # real-clock deadline — fixed in services/zwo-camera/src/backend.rs.)
           SERVICES='${{ needs.plan.outputs.services }}'
           COUNT=$(echo "$SERVICES" | jq 'length')
 
@@ -123,7 +138,11 @@ jobs:
             echo "::group::Starting $name"
             echo "Command: $cmd"
             echo "::endgroup::"
-            eval "$cmd" 2>&1 | sed "s/^/[$name] /" &
+            # Run in a subshell that exits with the ConformU command's status,
+            # NOT sed's. A bare `cmd | sed &` makes `$!` the sed PID, so the
+            # later `wait` would see sed's (always-0) exit and mask a failing
+            # ConformU run. `exit ${PIPESTATUS[0]}` propagates the real status.
+            ( eval "$cmd" 2>&1 | sed "s/^/[$name] /"; exit "${PIPESTATUS[0]}" ) &
             pids+=($!)
             cmds+=("$name")
           done
@@ -181,6 +200,11 @@ jobs:
       - name: cargo generate-lockfile
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
+
+      # Per-service matrix, so only zwo-camera needs the native ZWO SDK on Windows.
+      - name: Install ZWO SDK
+        if: matrix.service.name == 'zwo-camera'
+        uses: ./.github/actions/install-zwo-sdk
 
       - name: Pre-build
         run: cargo build --locked --package ${{ matrix.service.name }} --all-features --all-targets

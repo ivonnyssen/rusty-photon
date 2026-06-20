@@ -16,6 +16,14 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
 name: test
+env:
+  # Every job builds the zwo crates on their `--all-features` (simulation) path,
+  # which `cfg`s out the real FFI and references no SDK symbols. This tells
+  # libzwo-sys/build.rs to omit the native link directives, so the whole
+  # workspace builds with no ZWO SDK to provision (the link would otherwise be
+  # forced unconditionally). The REAL native link + FFI is verified separately by
+  # the `native` workflow (nightly + on zwo changes), plus Bazel and the Pi nightly.
+  ZWO_SKIP_NATIVE_LINK: "1"
 jobs:
   plan:
     runs-on: ubuntu-latest

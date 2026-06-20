@@ -1,7 +1,10 @@
 load("@cr//:defs.bzl", "aliases", "all_crate_deps")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 
-exports_files(["Cargo.toml"], visibility = ["//visibility:public"])
+exports_files(
+    ["Cargo.toml"],
+    visibility = ["//visibility:public"],
+)
 
 _INTRA_WORKSPACE_DEPS = [
     "//crates/rusty-photon-config:rusty-photon-config",
@@ -14,7 +17,10 @@ _INTRA_WORKSPACE_DEPS = [
 
 rust_library(
     name = "qhy-focuser_lib",
-    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]),
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = ["src/main.rs"],
+    ),
     aliases = aliases(),
     crate_name = "qhy_focuser",
     edition = "2021",
@@ -35,11 +41,11 @@ rust_binary(
 
 rust_test(
     name = "qhy-focuser_unit_test",
+    size = "small",
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,
     ),
-    size = "small",
     crate = ":qhy-focuser_lib",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
@@ -53,8 +59,8 @@ rust_test(
 
 rust_test(
     name = "test_lib",
-    srcs = ["tests/test_lib.rs"],
     size = "small",
+    srcs = ["tests/test_lib.rs"],
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,
@@ -73,8 +79,8 @@ rust_test(
 
 rust_test(
     name = "conformu_integration",
-    srcs = ["tests/conformu_integration.rs"],
     size = "large",
+    srcs = ["tests/conformu_integration.rs"],
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,
@@ -108,7 +114,10 @@ rust_test(
 # for the same pattern).
 rust_library(
     name = "qhy-focuser_lib_mock",
-    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]),
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = ["src/main.rs"],
+    ),
     aliases = aliases(),
     crate_features = ["mock"],
     crate_name = "qhy_focuser",
@@ -129,16 +138,16 @@ rust_binary(
 
 rust_test(
     name = "bdd",
-    srcs = ["tests/bdd.rs"] + glob(["tests/bdd/**/*.rs"]),
     size = "small",
+    srcs = ["tests/bdd.rs"] + glob(["tests/bdd/**/*.rs"]),
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,
     ),
     crate_root = "tests/bdd.rs",
     data = [
-        ":qhy-focuser_mock",
         "Cargo.toml",
+        ":qhy-focuser_mock",
     ] + glob(["tests/features/**"]),
     edition = "2021",
     env = {
@@ -156,7 +165,10 @@ rust_test(
     rustc_env = {"CARGO_PKG_NAME": "qhy-focuser"},
     tags = ["bdd"],
     use_libtest_harness = False,
-    deps = [":qhy-focuser_lib", "//crates/bdd-infra:bdd-infra"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
+    deps = [
+        ":qhy-focuser_lib",
+        "//crates/bdd-infra",
+    ] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
         normal = True,
         normal_dev = True,
     ),

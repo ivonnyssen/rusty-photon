@@ -1,7 +1,10 @@
 load("@cr//:defs.bzl", "aliases", "all_crate_deps")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 
-exports_files(["Cargo.toml"], visibility = ["//visibility:public"])
+exports_files(
+    ["Cargo.toml"],
+    visibility = ["//visibility:public"],
+)
 
 _INTRA_WORKSPACE_DEPS = [
     "//crates/rp-tls:rp-tls",
@@ -15,7 +18,10 @@ _EMBEDDED_ASSETS = glob(["assets/**"])
 
 rust_library(
     name = "ui-htmx_lib",
-    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]),
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = ["src/main.rs"],
+    ),
     aliases = aliases(),
     compile_data = _EMBEDDED_ASSETS,
     crate_name = "ui_htmx",
@@ -64,19 +70,19 @@ rust_test(
 # paths (`tests/features`, `./Cargo.toml`) behave as under `cargo test`.
 rust_test(
     name = "bdd",
-    srcs = ["tests/bdd.rs"] + glob(["tests/bdd/**/*.rs"]),
     # Spawns two processes per scenario plus a reload-reconnect poll; large gives
     # the most timeout headroom.
     size = "large",
+    srcs = ["tests/bdd.rs"] + glob(["tests/bdd/**/*.rs"]),
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,
     ),
     crate_root = "tests/bdd.rs",
     data = [
+        "Cargo.toml",
         ":ui-htmx",
         "//services/dsd-fp2:dsd-fp2_mock",
-        "Cargo.toml",
     ] + glob(["tests/features/**"]),
     edition = "2021",
     env = {
@@ -96,7 +102,7 @@ rust_test(
     use_libtest_harness = False,
     deps = [
         ":ui-htmx_lib",
-        "//crates/bdd-infra:bdd-infra",
+        "//crates/bdd-infra",
     ] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
         normal = True,
         normal_dev = True,

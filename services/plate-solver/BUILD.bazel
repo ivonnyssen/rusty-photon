@@ -1,7 +1,10 @@
 load("@cr//:defs.bzl", "aliases", "all_crate_deps")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 
-exports_files(["Cargo.toml"], visibility = ["//visibility:public"])
+exports_files(
+    ["Cargo.toml"],
+    visibility = ["//visibility:public"],
+)
 
 _INTRA_WORKSPACE_DEPS = [
     "//crates/rusty-photon-service-lifecycle:rusty-photon-service-lifecycle",
@@ -11,7 +14,13 @@ rust_library(
     name = "plate-solver_lib",
     # Exclude src/main.rs (the service binary's crate root, built by the
     # `plate-solver` rust_binary below) and src/bin/** (mock_astap).
-    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs", "src/bin/**"]),
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = [
+            "src/main.rs",
+            "src/bin/**",
+        ],
+    ),
     aliases = aliases(),
     crate_name = "plate_solver",
     edition = "2021",
@@ -45,11 +54,11 @@ rust_binary(
 
 rust_test(
     name = "plate-solver_unit_test",
+    size = "small",
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,
     ),
-    size = "small",
     crate = ":plate-solver_lib",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
@@ -63,20 +72,20 @@ rust_test(
 
 rust_test(
     name = "supervision_integration",
+    size = "small",
     srcs = ["tests/supervision_integration.rs"],
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,
     ),
-    size = "small",
+    data = [":mock_astap"],
+    edition = "2021",
     # Spawns mock_astap; bazel sets MOCK_ASTAP_BINARY via env so the test
     # discovers the binary. See tests/supervision_integration.rs.
     env = {
         "MOCK_ASTAP_BINARY": "$(rootpath :mock_astap)",
         "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :mock_astap)",
     },
-    data = [":mock_astap"],
-    edition = "2021",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,
@@ -92,18 +101,18 @@ rust_test(
 # discovery as supervision_integration: MOCK_ASTAP_BINARY points at the binary.
 rust_test(
     name = "runner_integration",
+    size = "small",
     srcs = ["tests/runner_integration.rs"],
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,
     ),
-    size = "small",
+    data = [":mock_astap"],
+    edition = "2021",
     env = {
         "MOCK_ASTAP_BINARY": "$(rootpath :mock_astap)",
         "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :mock_astap)",
     },
-    data = [":mock_astap"],
-    edition = "2021",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,
@@ -120,18 +129,18 @@ rust_test(
 # var (unset here, so they're skipped); @unix scenarios self-gate on cfg(unix).
 rust_test(
     name = "bdd",
-    srcs = ["tests/bdd.rs"] + glob(["tests/bdd/**/*.rs"]),
     # Spawns a service process per scenario (26 scenarios); generous timeout.
     size = "large",
+    srcs = ["tests/bdd.rs"] + glob(["tests/bdd/**/*.rs"]),
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,
     ),
     crate_root = "tests/bdd.rs",
     data = [
+        "Cargo.toml",
         ":mock_astap",
         ":plate-solver",
-        "Cargo.toml",
     ] + glob([
         "tests/features/**",
         "tests/fixtures/**",
@@ -154,7 +163,7 @@ rust_test(
     use_libtest_harness = False,
     deps = [
         ":plate-solver_lib",
-        "//crates/bdd-infra:bdd-infra",
+        "//crates/bdd-infra",
     ] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
         normal = True,
         normal_dev = True,

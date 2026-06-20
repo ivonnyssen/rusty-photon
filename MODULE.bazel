@@ -21,6 +21,12 @@ module(
 bazel_dep(name = "rules_rust", version = "0.70.0")
 bazel_dep(name = "platforms", version = "1.0.0")
 
+# BUILD/.bzl formatter + linter, vendored so every dev machine (and CI) runs the
+# same pinned version with no system install: `bazel run //:buildifier` formats,
+# `bazel test //:buildifier_check` verifies. `dev_dependency` because rusty_photon
+# is always the root module — this never needs to resolve for a downstream consumer.
+bazel_dep(name = "buildifier_prebuilt", version = "8.5.1.2", dev_dependency = True)
+
 # Two pinned patches to rules_rust, both serving spawned-service-binary coverage
 # (the two halves of getting a BDD/integration child binary's src/ — including
 # src/main.rs — into the report). See docs/plans/bazel-migration.md.

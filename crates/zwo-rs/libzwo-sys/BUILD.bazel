@@ -1,0 +1,55 @@
+load("@cr//:defs.bzl", "all_crate_deps")
+load("@rules_rust//cargo:defs.bzl", "cargo_build_script", "cargo_toml_env_vars")
+load("@rules_rust//rust:defs.bzl", "rust_library")
+
+exports_files(
+    ["Cargo.toml"],
+    visibility = ["//visibility:public"],
+)
+
+# First first-party `cargo_build_script` in the repo, and the first to run
+# bindgen under Bazel from a hand-written rule (ADR-010 / docs/plans/vendor-zwo-rs.md).
+# It is a faithful re-expression of the target crate_universe auto-generated for
+# `@cr__libzwo-sys-0.1.0` while this crate was an external git dep — so the
+# `/usr/local/lib` + `static`/`dylib` link and the bindgen step are a proven
+# build, not a new one. The shadow workflows (`bazel.yml`, `bazel-coverage.yml`)
+# run `.github/actions/install-zwo-sdk` first, which installs both the SDK (so
+# `build.rs`'s link directives resolve) and libclang (so bindgen runs); `.bazelrc`
+# forwards `LIBCLANG_PATH` (macOS) / `ZWO_SDK_LIB_DIR` (Windows) that
+# `--incompatible_strict_action_env` strips. See ADR-008 + bazel-migration.md.
+
+# Surfaces CARGO_PKG_* (and friends) from Cargo.toml to the build script + lib,
+# matching what crate_universe generated; cheap and avoids env-var surprises.
+cargo_toml_env_vars(
+    name = "cargo_toml_env_vars",
+    src = "Cargo.toml",
+)
+
+cargo_build_script(
+    name = "build_script",
+    srcs = ["build.rs"],
+    # The vendored MIT SDK headers + the bindgen aggregate header are read by
+    # build.rs at action time (via CARGO_MANIFEST_DIR), so they must be in the
+    # build script's sandbox. wrapper.h is named explicitly (a constant has no
+    # business in a glob — buildifier's `constant-glob` lint).
+    data = ["wrapper.h"] + glob(["sdk/include/**"]),
+    edition = "2021",
+    # `links = "zwo"` marks this build script as the single provider of the
+    # native ZWO SDK linkage (libASICamera2 / libEFWFilter + libusb/udev/c++),
+    # mirroring the crate's `links = "zwo"` manifest key.
+    links = "zwo",
+    rustc_env_files = [":cargo_toml_env_vars"],
+    visibility = ["//visibility:private"],
+    # bindgen (the only build-dependency).
+    deps = all_crate_deps(build = True),
+)
+
+rust_library(
+    name = "libzwo-sys",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "libzwo_sys",
+    edition = "2021",
+    rustc_env_files = [":cargo_toml_env_vars"],
+    visibility = ["//visibility:public"],
+    deps = [":build_script"],
+)

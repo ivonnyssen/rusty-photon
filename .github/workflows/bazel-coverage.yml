@@ -80,6 +80,13 @@ jobs:
       - name: Install ASCOM OmniSim
         uses: ./.github/actions/install-omnisim
 
+      # zwo-camera links the native ZWO ASI/EFW SDK (zwo-rs -> libzwo-sys); the
+      # coverage run is over the whole `//...` graph, so the SDK must be present
+      # for Bazel to build/link/instrument zwo-camera. Linux-only runner here, so
+      # this is the cheap INDI-mirror path. See services/zwo-camera/BUILD.bazel.
+      - name: Install ZWO SDK
+        uses: ./.github/actions/install-zwo-sdk
+
       - name: bazel coverage
         run: |
           set -uo pipefail

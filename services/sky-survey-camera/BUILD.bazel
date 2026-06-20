@@ -1,7 +1,10 @@
 load("@cr//:defs.bzl", "aliases", "all_crate_deps")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 
-exports_files(["Cargo.toml"], visibility = ["//visibility:public"])
+exports_files(
+    ["Cargo.toml"],
+    visibility = ["//visibility:public"],
+)
 
 # sky-survey-camera depends on rp-fits for the workspace's shared FITS
 # reader/writer surface, and on rp-auth for the `ClientAuthConfig`
@@ -20,7 +23,10 @@ _INTRA_WORKSPACE_DEPS = [
 
 rust_library(
     name = "sky-survey-camera_lib",
-    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]),
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = ["src/main.rs"],
+    ),
     aliases = aliases(),
     crate_name = "sky_survey_camera",
     edition = "2021",
@@ -41,11 +47,11 @@ rust_binary(
 
 rust_test(
     name = "sky-survey-camera_unit_test",
+    size = "small",
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,
     ),
-    size = "small",
     crate = ":sky-survey-camera_lib",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
@@ -64,7 +70,10 @@ rust_test(
 # exercise the real HTTP error paths against a stub server.
 rust_library(
     name = "sky-survey-camera_lib_mock",
-    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]),
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = ["src/main.rs"],
+    ),
     aliases = aliases(),
     crate_features = ["mock"],
     crate_name = "sky_survey_camera",
@@ -80,16 +89,16 @@ rust_library(
 # behave the same way they do under `cargo test`.
 rust_test(
     name = "bdd",
-    srcs = ["tests/bdd.rs"] + glob(["tests/bdd/**/*.rs"]),
     size = "small",
+    srcs = ["tests/bdd.rs"] + glob(["tests/bdd/**/*.rs"]),
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,
     ),
     crate_root = "tests/bdd.rs",
     data = [
-        ":sky-survey-camera",
         "Cargo.toml",
+        ":sky-survey-camera",
     ] + glob(["tests/features/**"]),
     edition = "2021",
     env = {
@@ -107,7 +116,10 @@ rust_test(
     rustc_env = {"CARGO_PKG_NAME": "sky-survey-camera"},
     tags = ["bdd"],
     use_libtest_harness = False,
-    deps = [":sky-survey-camera_lib", "//crates/bdd-infra:bdd-infra"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
+    deps = [
+        ":sky-survey-camera_lib",
+        "//crates/bdd-infra",
+    ] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
         normal = True,
         normal_dev = True,
     ),
@@ -119,13 +131,16 @@ rust_test(
 # when CONFORMU_PATH is unset (returns ConformuRun::Skipped).
 rust_test(
     name = "conformu_integration",
-    srcs = ["tests/conformu_integration.rs"],
     size = "large",
+    srcs = ["tests/conformu_integration.rs"],
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,
     ),
-    crate_features = ["mock", "conformu"],
+    crate_features = [
+        "mock",
+        "conformu",
+    ],
     data = [":sky-survey-camera_mock"],
     edition = "2021",
     env = {
@@ -138,7 +153,10 @@ rust_test(
     ),
     rustc_env = {"CARGO_PKG_NAME": "sky-survey-camera"},
     tags = ["conformu"],
-    deps = [":sky-survey-camera_lib_mock", "//crates/bdd-infra:bdd-infra_conformu"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
+    deps = [
+        ":sky-survey-camera_lib_mock",
+        "//crates/bdd-infra:bdd-infra_conformu",
+    ] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
         normal = True,
         normal_dev = True,
     ),

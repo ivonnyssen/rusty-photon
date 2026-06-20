@@ -1,0 +1,75 @@
+[package]
+name = "zwo-camera"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "ASCOM Alpaca Camera (+ EFW FilterWheel) driver for ZWO ASI hardware"
+
+[features]
+default = []
+# Forwards to `zwo-rs/simulation`: a hardware-free, in-Rust simulated camera/EFW
+# for development and tests. As in qhyccd-rs this removes the *camera*, NOT the
+# SDK *link* — the native ZWO SDK is still linked. See the README and
+# docs/services/zwo-camera.md "Native dependency & build gating".
+simulation = ["zwo-rs/simulation"]
+# Cross-driver alias for `simulation` (the workspace-wide test-backend name).
+mock = ["simulation"]
+# `conformu` enables `mock` so a single `--features conformu` flag builds and
+# runs the compliance test against the simulation backend.
+conformu = ["mock"]
+
+[lints]
+workspace = true
+
+[dependencies]
+# `client` is NOT enabled here — the production server never builds an Alpaca
+# client; only the BDD harness does, so it lives in [dev-dependencies] below.
+ascom-alpaca = { workspace = true, features = ["server", "camera"] }
+zwo-rs = { workspace = true }
+rp-tls = { workspace = true }
+rusty-photon-config = { workspace = true }
+rusty-photon-driver = { workspace = true }
+rusty-photon-service-lifecycle = { workspace = true }
+tokio = { workspace = true }
+axum = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+derive_more = { workspace = true }
+ndarray = { workspace = true }
+parking_lot = { workspace = true }
+
+[package.metadata.conformu]
+command = "cargo test -p zwo-camera --features conformu --test conformu_integration -- --nocapture"
+
+[dev-dependencies]
+# zwo-rs is now a first-party member with explicit Bazel real
+# (`//crates/zwo-rs:zwo-rs`) and simulation (`:zwo-rs_sim`) variants, so this
+# dev-dep no longer flips a single `@cr` variant. Its remaining (narrowed) role:
+# `crate_universe` only resolves an optional dep into `@cr` if some member enables
+# the gating feature, so this keeps `zwo-rs/simulation`'s optional deps (rand,
+# rayon) present in `@cr` — which the `:zwo-rs_sim` target pulls via
+# `all_crate_deps`. Resolver v2 still keeps it out of the production `cargo build`.
+# See docs/plans/vendor-zwo-rs.md (Phase 2 spike).
+zwo-rs = { workspace = true, features = ["simulation"] }
+# Client API for the BDD harness (tests/bdd/world.rs); kept out of the prod build.
+ascom-alpaca = { workspace = true, features = ["client"] }
+tracing-subscriber = { workspace = true }
+bdd-infra = { workspace = true, features = ["conformu"] }
+cucumber = { workspace = true }
+tempfile = { workspace = true }
+tokio-test = { workspace = true }
+# Raw HTTP for the one BDD path the typed Alpaca client cannot express: a
+# StartExposure with a negative Duration (`std::time::Duration` is unsigned).
+reqwest = { workspace = true }
+
+[[test]]
+name = "bdd"
+harness = false

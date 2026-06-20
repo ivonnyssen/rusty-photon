@@ -1,0 +1,220 @@
+load("@cr//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+
+exports_files(
+    ["Cargo.toml"],
+    visibility = ["//visibility:public"],
+)
+
+# zwo-camera links the native ZWO ASI/EFW SDK transitively via
+# zwo-rs → libzwo-sys (see docs/services/zwo-camera.md "Native dependency & build
+# gating" and ADR-008). Unlike a pure-Rust crate it cannot link without the SDK
+# present, so every Bazel runner that builds `//...` must provision it first:
+# `.github/workflows/bazel.yml` and `bazel-coverage.yml` run the
+# `./.github/actions/install-zwo-sdk` composite action exactly like they install
+# OmniSim. With the SDK on the link path the library, binary, and unit test are
+# first-class `//...` targets — verified on Linux via
+# `bazel test //services/zwo-camera:zwo-camera_unit_test` — so they carry NO
+# `manual` gating. The migration plan's "all workspace crates build and test under
+# Bazel" contract (docs/plans/bazel-migration.md) applies here too: at the Phase 7
+# cutover the Bazel job becomes the required gate, and a `manual`-excluded target
+# would silently carry zero CI. Build locally with the SDK ldconfig'd on the link
+# path (`/usr/local/lib`). bindgen needs libclang; macOS/Windows additionally
+# forward `LIBCLANG_PATH` / `ZWO_SDK_LIB_DIR` to the build-script action via
+# `.bazelrc` (Linux finds both on the default paths).
+#
+# The BDD + ConformU suites RUN under Bazel (no `requires-cargo`): `bdd` via the
+# `bazel.yml` BDD step (`--test_tag_filters=bdd,-requires-cargo`) spawning the sim
+# binary like every other service, and `conformu_integration` via
+# `bazel test --config=conformu` (CI runs ConformU through the Cargo `conformu.yml`,
+# matching the other services). Only `//crates/bdd-infra:bdd-infra_unit_test`
+# stays `requires-cargo` — it genuinely exercises Cargo itself.
+#
+# NOTE on features: Bazel `crate_features` is LITERAL — it does NOT expand Cargo's
+# `mock = ["simulation"]`. zwo-camera gates its sim backend on
+# `feature = "simulation"`, so every sim target must list `simulation` explicitly
+# (listing `mock` too keeps parity with `cargo --features mock`).
+
+_INTRA_WORKSPACE_DEPS = [
+    "//crates/rp-tls:rp-tls",
+    "//crates/rusty-photon-config:rusty-photon-config",
+    "//crates/rusty-photon-driver:rusty-photon-driver",
+    "//crates/rusty-photon-service-lifecycle:rusty-photon-service-lifecycle",
+]
+
+rust_library(
+    name = "zwo-camera_lib",
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = ["src/main.rs"],
+    ),
+    aliases = aliases(),
+    crate_name = "zwo_camera",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//visibility:public"],
+    # zwo-rs is first-party (crates/zwo-rs), so it is NOT an `@cr` crate and must
+    # be named explicitly. The production lib links the REAL SDK variant.
+    deps = _INTRA_WORKSPACE_DEPS + ["//crates/zwo-rs"] + all_crate_deps(normal = True),
+)
+
+rust_binary(
+    name = "zwo-camera",
+    srcs = ["src/main.rs"],
+    aliases = aliases(),
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    # Pin CARGO_PKG_NAME to the Cargo package name (rules_rust defaults it to the
+    # Bazel target name), matching the other services.
+    rustc_env = {"CARGO_PKG_NAME": "zwo-camera"},
+    visibility = ["//visibility:public"],
+    deps = [":zwo-camera_lib"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+)
+
+# Unit tests run against the simulation lib (mock → simulation) so the
+# `#[cfg(all(test, feature = "simulation"))]` end-to-end build/bind tests compile
+# and run, matching the Cargo `--all-features` coverage job. The test inherits
+# the sim lib's `crate_features` and deps — crucially `//crates/zwo-rs:zwo-rs_sim`,
+# the simulated FFI variant the sim code paths require — rather than the real
+# variant the production lib links.
+rust_test(
+    name = "zwo-camera_unit_test",
+    size = "small",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate = ":zwo-camera_lib_sim",
+    # Set explicitly for TWO reasons: (1) rust_test does NOT inherit
+    # `crate_features` from the `crate` it wraps; (2) Bazel `crate_features` is
+    # literal — it does NOT expand Cargo's `mock = ["simulation"]`, so
+    # `simulation` must be listed alongside `mock` for the
+    # `#[cfg(feature = "simulation")]` tests to compile. `conformu` matches the
+    # Cargo `--all-features` lib set.
+    crate_features = [
+        "mock",
+        "simulation",
+        "conformu",
+    ],
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+# The `simulation`-backed (mock alias) library + binary the BDD / ConformU suites
+# spawn.
+rust_library(
+    name = "zwo-camera_lib_sim",
+    # `testonly` because it links the `testonly` `:zwo-rs_sim` variant; Bazel
+    # propagates the constraint, which is exactly right — the sim lib is only ever
+    # built by the unit-test / BDD / ConformU targets.
+    testonly = True,
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = ["src/main.rs"],
+    ),
+    aliases = aliases(),
+    crate_features = [
+        "mock",
+        "simulation",
+    ],
+    crate_name = "zwo_camera",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    # The simulation lib links the SIM SDK variant; the binary, BDD, ConformU, and
+    # unit-test targets that build on it inherit it transitively.
+    deps = _INTRA_WORKSPACE_DEPS + ["//crates/zwo-rs:zwo-rs_sim"] + all_crate_deps(normal = True),
+)
+
+rust_binary(
+    name = "zwo-camera_sim",
+    # Spawned only as test `data` by the BDD / ConformU suites; `testonly`
+    # follows from linking the sim lib.
+    testonly = True,
+    srcs = ["src/main.rs"],
+    aliases = aliases(),
+    crate_features = [
+        "mock",
+        "simulation",
+    ],
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    rustc_env = {"CARGO_PKG_NAME": "zwo-camera"},
+    deps = [":zwo-camera_lib_sim"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "conformu_integration",
+    size = "large",
+    srcs = ["tests/conformu_integration.rs"],
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate_features = [
+        "mock",
+        "simulation",
+        "conformu",
+    ],
+    data = [":zwo-camera_sim"],
+    edition = "2021",
+    env = {
+        "ZWO_CAMERA_BINARY": "$(rootpath :zwo-camera_sim)",
+        "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :zwo-camera_sim)",
+    },
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    rustc_env = {"CARGO_PKG_NAME": "zwo-camera"},
+    tags = ["conformu"],
+    deps = [
+        ":zwo-camera_lib_sim",
+        "//crates/bdd-infra:bdd-infra_conformu",
+    ] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+rust_test(
+    name = "bdd",
+    size = "small",
+    srcs = ["tests/bdd.rs"] + glob(["tests/bdd/**/*.rs"]),
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate_root = "tests/bdd.rs",
+    data = [
+        "Cargo.toml",
+        ":zwo-camera_sim",
+    ] + glob(["tests/features/**"]),
+    edition = "2021",
+    env = {
+        "BDD_PACKAGE_DIR": "services/zwo-camera",
+        "ZWO_CAMERA_BINARY": "$(rootpath :zwo-camera_sim)",
+        "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :zwo-camera_sim)",
+    },
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    # bdd-infra derives {PKG_UPPER_SNAKE}_BINARY from CARGO_PKG_NAME; it must be
+    # the service name, not the crate name ("bdd").
+    rustc_env = {"CARGO_PKG_NAME": "zwo-camera"},
+    tags = ["bdd"],
+    use_libtest_harness = False,
+    deps = [
+        ":zwo-camera_lib_sim",
+        "//crates/bdd-infra",
+    ] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
