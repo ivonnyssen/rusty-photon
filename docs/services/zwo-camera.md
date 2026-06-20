@@ -39,19 +39,20 @@
 > which exceeded ConformU's 1 s response target. All that remains for Phase G is
 > wiring `zwo-camera` into `conformu.yml`. See *Testing* and *Delivery phasing*.
 >
-> **CI provisioning landed (full cross-platform).** The
+> **CI provisioning (simulation by default; real link verified nightly).** The
 > `.github/actions/install-zwo-sdk` composite action provisions the SDK on
-> Linux + macOS (INDI mirror) and Windows (ZWO's developer-SDK CDN zips), and is
-> wired into `test.yml`'s build/test jobs (Linux/macOS/Windows + coverage), gated
-> so only `infra`- or zwo-camera-affected PRs pay the cost. `conformu.yml` still
-> excludes `zwo-camera` (the `conformu_integration.rs` harness exists and is now
-> unblocked — the `zwo-rs` sim fix above landed in rev `3c32e59`; the remaining
-> step is the `conformu.yml` wiring itself — Phase G). `safety.yml` (ASan/LSan)
-> **no longer excludes** the zwo crates: it sets `ZWO_SKIP_NATIVE_LINK=1` so
-> `libzwo-sys/build.rs` omits the link directives and the `--all-features`
-> (`simulation`) build links no native SDK, letting the pure-Rust simulation path
-> be sanitized with no SDK to provision. (The real unsafe FFI is not compiled
-> there and is inherently un-sanitizable, so nothing is lost.) The aarch64
+> Linux + macOS (INDI mirror) and Windows (ZWO's developer-SDK CDN zips). Because
+> the cross-platform CI (`test.yml`, `conformu.yml`, `safety.yml`) all build the
+> `--all-features`/`conformu` (`simulation`) path — which `cfg`s out the real FFI
+> and references no SDK symbols — they set **`ZWO_SKIP_NATIVE_LINK=1`** so
+> `libzwo-sys/build.rs` omits the link directives and the workspace builds with
+> **no SDK to provision** (no install step, no Windows ~112 MB download). This
+> also lets `safety.yml` (ASan/LSan) sanitize the simulation path instead of
+> excluding the zwo crates. The **REAL** native link + FFI (`build.rs` directives,
+> bindgen bindings, and the `#[cfg(not(feature = "simulation"))]` code) is built
+> and link-checked on Linux/macOS/Windows — plus a Linux runtime FFI smoke — by
+> the dedicated **`native.yml`** workflow (nightly + on any zwo-crate change),
+> and additionally by the Bazel real variant and the Pi nightly. The aarch64
 > Pi-nightly runner is provisioned via `scripts/setup-pi-runner.sh`.
 > The **Bazel** shadow workflows (`bazel.yml`, `bazel-coverage.yml`) also run
 > `install-zwo-sdk` — `zwo-camera` is a normal `//...` target there, honoring the

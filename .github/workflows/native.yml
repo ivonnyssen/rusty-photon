@@ -1,0 +1,144 @@
+# Verifies the REAL (non-`simulation`) native-SDK build of the zwo crates: the
+# bindgen bindings, the `libzwo-sys` build.rs link directives, and the
+# `#[cfg(not(feature = "simulation"))]` FFI code all compile and link against the
+# actual ZWO ASI/EFW SDK, on every supported OS.
+#
+# The rest of CI (test.yml, conformu.yml, safety.yml) builds the `simulation`
+# path with ZWO_SKIP_NATIVE_LINK=1 and never links the SDK, so this is the one
+# workflow that exercises the real native link + FFI. (Bazel's real zwo variant
+# and the Pi nightly also cover it.)
+#
+# Cadence: nightly cron + workflow_dispatch, plus paths-filtered PR/push so a
+# real-link regression in the zwo native code, this workflow, or the SDK-install
+# action is caught at PR time rather than only at the next cron fire.
+permissions:
+  contents: read
+on:
+  schedule:
+    # 06:47 UTC. Offset from the other nightlies (conformu 05:30, bazel 07:07,
+    # safety 07:17) so they do not contend for the hosted-runner pool minute.
+    - cron: "47 6 * * *"
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "crates/zwo-rs/**"
+      - "services/zwo-camera/**"
+      - ".github/workflows/native.yml"
+      - ".github/actions/install-zwo-sdk/**"
+  pull_request:
+    paths:
+      - "crates/zwo-rs/**"
+      - "services/zwo-camera/**"
+      - ".github/workflows/native.yml"
+      - ".github/actions/install-zwo-sdk/**"
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+name: native
+jobs:
+  build:
+    name: native link / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Own cache keys, separate from test.yml's `simulation`/no-link builds.
+          shared-key: native-${{ matrix.os }}
+      - name: Install ZWO SDK
+        uses: ./.github/actions/install-zwo-sdk
+      - name: cargo generate-lockfile
+        if: hashFiles('Cargo.lock') == ''
+        run: cargo generate-lockfile
+      # Build the REAL FFI path — NO `simulation` feature and NO
+      # ZWO_SKIP_NATIVE_LINK — so the bindgen bindings, the build.rs link
+      # directives, and the `#[cfg(not(feature = "simulation"))]` code all compile
+      # and link against the installed SDK. `--all-targets` covers lib, bin, and
+      # test targets.
+      - name: cargo build (real, no simulation)
+        run: cargo build --locked -p zwo-camera -p zwo-rs -p libzwo-sys --all-targets
+      # Linux runtime smoke: zwo-rs's non-`simulation` tests call the real SDK
+      # (init, SDK version strings, and a connected-camera enumeration that
+      # returns 0 with no hardware attached), confirming the SDK actually *loads*
+      # and basic FFI works — not just that it links. Linux only: install.sh puts
+      # the SDK on the default loader path (/usr/local/lib); macOS/Windows would
+      # need DYLD/PATH wiring this job does not set, and the link check above
+      # already covers them.
+      - name: cargo test (real zwo-rs FFI smoke)
+        if: runner.os == 'Linux'
+        run: cargo test --locked -p zwo-rs --all-targets
+        env:
+          LD_LIBRARY_PATH: /usr/local/lib
+
+  notify-on-failure:
+    # Open or update a tracking issue when the nightly run fails so a real-link
+    # regression surfaces without depending on someone reading scheduled-workflow
+    # logs. Skipped on push, pull_request, and workflow_dispatch so manual /
+    # PR-time runs do not churn the issue.
+    needs: build
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      issues: write
+    steps:
+      - name: Open or update tracking issue
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const title = `nightly: native ZWO SDK build failing`;
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = [
+              `The nightly \`native\` workflow failed on at least one OS.`,
+              ``,
+              `This is the only CI job that builds the zwo crates' REAL`,
+              `(non-\`simulation\`) path against the installed ZWO SDK. A failure`,
+              `means the bindgen bindings, the \`libzwo-sys\` link directives, or the`,
+              `\`#[cfg(not(feature = "simulation"))]\` FFI code no longer compile,`,
+              `link, or load against the SDK — the rest of CI builds the simulation`,
+              `path and would not catch this. Inspect the failed job in the linked`,
+              `run.`,
+              ``,
+              `Run: ${runUrl}`,
+              ``,
+              `This issue was opened automatically by a scheduled run that`,
+              `failed. While it stays open, each subsequent scheduled failure`,
+              `is appended here as a comment linking its own run. Closing it`,
+              `marks the failure handled — it is never re-opened; the next`,
+              `scheduled failure opens a fresh issue instead.`,
+            ].join("\n");
+            // Search only OPEN issues. While a tracking issue is open each
+            // failure appends a comment; once it is closed the failure is
+            // considered handled, so the next scheduled failure opens a fresh
+            // issue rather than resurrecting the closed one.
+            const existing = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: "open",
+              labels: "native-nightly",
+            });
+            const match = existing.find(i => i.title === title);
+            if (match) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: match.number,
+                body: `Failed again — run: ${runUrl}`,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ["native-nightly", "ci-flake"],
+              });
+            }
