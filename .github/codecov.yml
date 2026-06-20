@@ -24,12 +24,6 @@ ignore:
   - "**/bin/mock_*.rs"
   - "**/bin/test_*.rs"
   - "**/examples/**"
-  # Vendored qhyccd-rs crate: `mocks.rs` is a `#[cfg(test)]`-only FFI mock helper
-  # (never shipped), and `src/bin/*` are manual hardware-probe binaries that
-  # require a physical camera, so they are built-but-never-run by tests (same as
-  # examples above). Both would otherwise sit at 0% and drag qhyccd-rs coverage.
-  - "**/qhyccd-rs/src/mocks.rs"
-  - "**/qhyccd-rs/src/bin/*.rs"
 
 # Make comments less noisy
 comment:

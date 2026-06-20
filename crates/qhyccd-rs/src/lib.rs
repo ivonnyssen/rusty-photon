@@ -66,6 +66,7 @@
 //! sdk.add_simulated_camera(config);
 //! # }
 //! ```
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 #![warn(missing_debug_implementations, rust_2018_idioms, missing_docs)]
 
 #[macro_use]

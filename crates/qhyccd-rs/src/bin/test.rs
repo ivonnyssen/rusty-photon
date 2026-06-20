@@ -1,3 +1,6 @@
+// Manual hardware-probe binary (requires a physical camera) — excluded from coverage.
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+#![cfg_attr(coverage_nightly, coverage(off))]
 use qhyccd_rs::Sdk;
 use tracing::trace;
 use tracing_subscriber::FmtSubscriber;

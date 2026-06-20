@@ -1,3 +1,5 @@
+// `#[cfg(test)]`-only FFI mock helper — never shipped, so exclude it from coverage.
+#![cfg_attr(coverage_nightly, coverage(off))]
 #![allow(
     unused,
     non_snake_case,
