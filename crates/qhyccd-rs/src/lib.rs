@@ -100,4 +100,5 @@ pub use types::{
 // Unit tests requiring FFI mocking are in src/tests/
 // Simulation integration tests are in tests/simulation/
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))] // test code: don't count toward coverage
 mod tests;

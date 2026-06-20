@@ -26,6 +26,7 @@ mod state;
 // Note: config and image_generator tests are now in tests/simulation/
 // state_tests remain here because SimulatedCameraState is pub(crate)
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))] // test code: don't count toward coverage
 mod test_state;
 
 pub use config::SimulatedCameraConfig;
