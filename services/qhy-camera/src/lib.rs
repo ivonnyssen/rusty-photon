@@ -160,16 +160,20 @@ impl ServerBuilder {
 
         let router = axum::Router::new().fallback_service(server.into_service());
 
+        // Shared dual-stack helper (IPv6 + IPv4) with SO_REUSEADDR, like every
+        // other Alpaca service. SO_REUSEADDR matters here because the in-process
+        // `with_reload` loop rebinds the same port; a raw bind could fail to
+        // rebind while a prior listener's TIME_WAIT lingers.
         let bind_addr = SocketAddr::from(([0, 0, 0, 0], self.config.server.port));
-        let listener = tokio::net::TcpListener::bind(bind_addr)
+        let listener = rp_tls::server::bind_dual_stack_tokio(bind_addr)
             .await
-            .map_err(|e| QhyCameraError::Bind {
+            .map_err(|source| QhyCameraError::Bind {
                 port: self.config.server.port,
-                source: e,
+                source,
             })?;
         let local_addr = listener.local_addr().map_err(|e| QhyCameraError::Bind {
             port: self.config.server.port,
-            source: e,
+            source: rp_tls::error::TlsError::Io(e),
         })?;
 
         // Load-bearing: `bdd_infra::ServiceHandle` greps stdout for `bound_addr=`.

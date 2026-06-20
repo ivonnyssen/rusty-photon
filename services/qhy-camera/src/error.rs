@@ -17,7 +17,10 @@ pub enum QhyCameraError {
 
     /// Binding the Alpaca HTTP listener failed.
     #[error("server bind on port {port}: {source}")]
-    Bind { port: u16, source: std::io::Error },
+    Bind {
+        port: u16,
+        source: rp_tls::error::TlsError,
+    },
 
     /// The HTTP server returned an error while serving.
     #[error("server error: {0}")]

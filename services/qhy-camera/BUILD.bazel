@@ -25,6 +25,7 @@ _INTRA_WORKSPACE_DEPS = [
     "//crates/rusty-photon-config:rusty-photon-config",
     "//crates/rusty-photon-driver:rusty-photon-driver",
     "//crates/rusty-photon-service-lifecycle:rusty-photon-service-lifecycle",
+    "//crates/rp-tls:rp-tls",
 ]
 
 # The real-SDK qhyccd-rs library (prod targets) and its simulated counterpart

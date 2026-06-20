@@ -3034,6 +3034,7 @@ dependencies = [
  "parking_lot",
  "qhyccd-rs",
  "reqwest 0.13.4",
+ "rp-tls",
  "rusty-photon-config",
  "rusty-photon-driver",
  "rusty-photon-service-lifecycle",

@@ -593,9 +593,13 @@ the "how" decisions made while building.
 - **Empty simulation backend** (the C0 zero-camera scenario) is selected by a
   hidden, `simulation`-feature-gated `--simulation-empty` CLI flag that makes
   `build()` use `Sdk::new_simulated()` (empty) instead of `Sdk::new()`.
-- **Transport.** v0 binds with plain `axum::serve` on `server.port` (config
+- **Transport.** v0 serves with plain `axum::serve` on `server.port` (config
   carries only the port; `discovery_port` is disabled), like `sky-survey-camera`.
-  TLS / Basic Auth (`rp-tls` / `rp-auth`) are Future Work.
+  The listener is created via the shared `rp_tls::server::bind_dual_stack_tokio`
+  helper (IPv6 + IPv4, `SO_REUSEADDR`) like every other Alpaca service, so the
+  in-process `with_reload` rebind survives a prior listener's lingering
+  `TIME_WAIT`. TLS termination / Basic Auth (the rest of `rp-tls` / `rp-auth`)
+  are still Future Work.
 - **SDK call serialization.** The single in-flight capture is the one logical
   owner of the device's blocking SDK calls: `start_exposure` claims an
   `exposure_in_flight` slot via CAS, and `cancel_exposure` (abort/disconnect)

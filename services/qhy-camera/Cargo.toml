@@ -33,6 +33,7 @@ qhyccd-rs = { workspace = true }
 rusty-photon-config = { workspace = true }
 rusty-photon-driver = { workspace = true }
 rusty-photon-service-lifecycle = { workspace = true }
+rp-tls = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
