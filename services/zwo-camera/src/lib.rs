@@ -147,17 +147,22 @@ impl ServerBuilder {
             server.devices.register(device);
         }
 
-        let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, port))
+        // Use the shared dual-stack helper (IPv6 + IPv4) with SO_REUSEADDR, like
+        // every other Alpaca service. SO_REUSEADDR matters here because the
+        // in-process `with_reload` loop rebinds the same port; a raw bind could
+        // fail to rebind while a prior listener's TIME_WAIT lingers.
+        let bind_addr = SocketAddr::from((Ipv4Addr::UNSPECIFIED, port));
+        let listener = rp_tls::server::bind_dual_stack_tokio(bind_addr)
             .await
             .map_err(|source| ZwoCameraError::Bind {
-                addr: format!("0.0.0.0:{port}"),
+                addr: bind_addr.to_string(),
                 source,
             })?;
         let local_addr = listener
             .local_addr()
             .map_err(|source| ZwoCameraError::Bind {
-                addr: format!("0.0.0.0:{port}"),
-                source,
+                addr: bind_addr.to_string(),
+                source: rp_tls::error::TlsError::Io(source),
             })?;
 
         let app = axum::Router::new().fallback_service(server.into_service());

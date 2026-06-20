@@ -73,6 +73,7 @@ fn emit_link_directives() {
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
 
     // Allow an explicit override of the SDK lib directory.
+    println!("cargo:rerun-if-env-changed=ZWO_SDK_LIB_DIR");
     if let Ok(dir) = env::var("ZWO_SDK_LIB_DIR") {
         println!("cargo:rustc-link-search=native={dir}");
     }

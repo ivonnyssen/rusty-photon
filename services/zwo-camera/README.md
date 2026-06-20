@@ -25,10 +25,10 @@ tests** (against the in-crate mock seam), **57 BDD scenarios**, and a full
 **ConformU** pass (both `alpacaprotocol` and `conformance` suites). Roadmap:
 
 - **Phase F** — EFW `FilterWheel` (gated on `filterwheel.enabled`).
-- **Phase G** — wire ConformU into `conformu.yml` (the `conformu_integration.rs`
-  harness exists; the `zwo-rs` sim full-frame-fill speedup + writable `Exposure`
-  control that previously tripped ConformU's timeout landed in rev `3c32e59`, so
-  this is now just the CI wiring); `rp` `CameraConfig` consumer.
+- **Phase G** — mostly done: ConformU is wired into `conformu.yml` (per-service
+  matrix, native ZWO SDK provisioned via `install-zwo-sdk`), and the nightly
+  `native.yml` builds the real linked path on Linux/macOS/Windows. Remaining
+  tail: the `rp` `CameraConfig` consumer.
 
 The six camera BDD feature files under `tests/features/` are live;
 `filter_wheel.feature` stays `@wip` for Phase F.
@@ -53,7 +53,9 @@ The six camera BDD feature files under `tests/features/` are live;
 #    macOS arm64 = mac_arm64). Mirrors .github/actions/install-zwo-sdk — pulls
 #    ZWO's prebuilt blobs from the INDI mirror.
 #    (Linux) also: sudo apt-get install libusb-1.0-0-dev clang libclang-dev
-BASE=https://github.com/indilib/indi-3rdparty/raw/master/libasi
+# Pinned to a commit SHA (not `master`) so the blobs match CI and the Pi runner;
+# bump it in lockstep with .github/actions/install-zwo-sdk to adopt a newer SDK.
+BASE=https://github.com/indilib/indi-3rdparty/raw/b0802f2/libasi
 sudo install -d /usr/local/lib /usr/local/include
 # Headers + license. bindgen actually reads the copies vendored inside
 # libzwo-sys, so these are for completeness (and to keep the MIT notice with

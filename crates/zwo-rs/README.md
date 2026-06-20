@@ -42,10 +42,18 @@ SDK **binary** is *not* vendored — it is installed on the system (below).
 | **ZWO ASI SDK** (`libASICamera2`, `libEFWFilter`) + **libusb-1.0** | *linking* (`build`/`test`) | Required even with `--features simulation`. `cargo check`/`clippy` do **not** link. |
 | udev `99-asi.rules` | running against real hardware (Linux) | VID `03c3`, `MODE=0666`, `usbfs_memory_mb=200`. |
 
-Install the SDK from the INDI mirror (MIT) on Linux x86_64 / aarch64:
+Install the SDK from the INDI mirror (MIT) — Linux x86_64 = `x64`, aarch64 =
+`armv8`, macOS arm64 = `mac_arm64`. The ref is pinned to a commit SHA (not
+`master`) for reproducibility; bump it to adopt a newer SDK:
 
 ```sh
-./ci/install-zwo-sdk.sh        # installs libASICamera2 + libEFWFilter + headers to /usr/local
+ARCH=x64   # aarch64 → armv8, macOS arm64 → mac_arm64
+BASE=https://github.com/indilib/indi-3rdparty/raw/b0802f2/libasi
+sudo install -d /usr/local/lib
+# INDI's `.bin` == ZWO's upstream `.so`; install under the linker name.
+sudo curl -fsSL "$BASE/$ARCH/libASICamera2.bin" -o /usr/local/lib/libASICamera2.so
+sudo curl -fsSL "$BASE/$ARCH/libEFWFilter.bin"  -o /usr/local/lib/libEFWFilter.so
+sudo ldconfig
 ```
 
 Override the SDK lib directory with `ZWO_SDK_LIB_DIR=/path/to/lib`.

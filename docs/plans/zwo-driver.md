@@ -2,22 +2,26 @@
 
 ## Status
 
-**Implemented through Phase E — full ASCOM Camera landed; ConformU passes.**
-The `zwo-rs` + `libzwo-sys` FFI crates exist as a standalone repo
-([github.com/ivonnyssen/zwo-rs](https://github.com/ivonnyssen/zwo-rs), MIT/Apache-2.0):
-a `bindgen` FFI skeleton that generates and links the ZWO SDK with green CI
-(`check` + `test` on Linux x86_64; built and tested locally on aarch64). On the
-rusty-photon side, `services/zwo-camera` now implements the full ASCOM
+**Implemented through Phase G — full ASCOM Camera landed; ConformU passes and is
+wired into CI. Only Phase F (EFW `FilterWheel`) remains.**
+The `zwo-rs` + `libzwo-sys` FFI crates are now **vendored first-party** at
+`crates/zwo-rs/` (ADR-010 / [vendor-zwo-rs.md](vendor-zwo-rs.md); the standalone
+[github.com/ivonnyssen/zwo-rs](https://github.com/ivonnyssen/zwo-rs) repo,
+MIT/Apache-2.0, is retired pending the first crates.io publish): a `bindgen` FFI
+layer that generates and links the ZWO SDK, with green CI on Linux/macOS/Windows
+x86_64 (`native.yml` builds the real linked variant nightly) and aarch64. On the
+rusty-photon side, `services/zwo-camera` implements the full ASCOM
 `Device + Camera` surface over the `zwo-rs` SDK seam (Phase C scaffold → Phase E
-full Camera), with config actions, serial-derived identity, 45 unit + 57 BDD
-green, and a full **ConformU** pass on both suites. The remaining phases are
-**F** (EFW `FilterWheel`) and **G** (wire ConformU into `conformu.yml`; `rp`
-`CameraConfig` consumer). This plan remains the agreed decision record behind
-`docs/services/zwo-camera.md` (the service design doc) and the BDD scenarios, per
-the design→BDD→implementation flow in
-[`docs/skills/development-workflow.md`](../skills/development-workflow.md). The
-workspace pins the FFI crate at the lockstep rev (see *Monorepo integration
-recipe*).
+full Camera), with config actions, serial-derived identity, decoupled
+`CCDTemperature` reporting (independent of cooling), 45 unit + 57 BDD green, and a
+full **ConformU** pass on both suites — now run in CI via `conformu.yml` (Phase G,
+2026-06-18). The simulation path links **no** native SDK
+(`ZWO_SKIP_NATIVE_LINK=1`), so `test.yml`/`safety.yml` exercise the service with
+zero SDK provisioning. The **one remaining phase is F** (EFW `FilterWheel`); the
+`rp` `CameraConfig` consumer is the only Phase-G tail item left. This plan remains
+the agreed decision record behind `docs/services/zwo-camera.md` (the service
+design doc) and the BDD scenarios, per the design→BDD→implementation flow in
+[`docs/skills/development-workflow.md`](../skills/development-workflow.md).
 
 It is the ZWO analogue of the in-design
 [`qhy-camera`](../services/qhy-camera.md) service. Where `qhy-camera` consumes the
@@ -226,10 +230,14 @@ consuming service rebuilds under the `commit` profile — no special handling.
 
 ## Provisioning
 
-- **CI:** an explicit pre-build step pulling the pinned SDK from the cache + `apt
-  install libusb-1.0-0-dev`, mirroring `test.yml`'s existing cross-spawn
-  pre-build pattern. The SDK is required even for the `simulation`/ConformU jobs
-  (only `cargo check`/clippy jobs that don't invoke the linker can skip it).
+- **CI:** the SDK is provisioned by the `./.github/actions/install-zwo-sdk`
+  composite action only where the **real** link is exercised — `conformu.yml`
+  (per-service matrix) and `native.yml` (the nightly real-variant build). The
+  simulation path links **no** native SDK: `libzwo-sys`'s `build.rs` honours
+  `ZWO_SKIP_NATIVE_LINK=1` and emits no link directives, so `test.yml` and
+  `safety.yml` build/test `zwo-camera` (and run ASan/LSan) with **zero** SDK
+  provisioning — the original "SDK required even for simulation jobs" constraint
+  no longer holds.
 - **Pi nightly runner** (`scripts/setup-pi-runner.sh`): SDK + `libusb-1.0-0-dev`
   + udev `99-asi.rules`. aarch64 must be confirmed linking and added to the
   matrix.
@@ -268,12 +276,16 @@ it, leaning on the `sky-survey-camera` + `qhy-camera` scaffolding.
   green; six camera feature files live (`filter_wheel.feature` `@wip` for Phase F).
 - **Phase F — EFW `FilterWheel`** fast-follow (4-method trait, position/moving/
   names/offsets), config toggle, BDD/ConformU.
-- **Phase G — test + gate + consumer:** BDD + ConformU on the sim backend; `cargo
-  rail run --profile commit` + `cargo fmt` green; `rp` `CameraConfig` consumer;
-  Bazel `crate.annotation` finish; READMEs/`docs/workspace.md`. The `zwo-rs`
-  simulation full-frame-fill speedup + writable `Exposure` control that gated
-  ConformU's 10 s `StartExposure` timeout landed in rev `3c32e59`, so the
-  remaining ConformU work is wiring `zwo-camera` into `conformu.yml`.
+- **Phase G — test + gate + consumer:** ✅ *mostly landed.* BDD + ConformU on the
+  sim backend; `cargo rail run --profile commit` + `cargo fmt` green; ConformU
+  **wired into `conformu.yml`** (per-service matrix with `install-zwo-sdk`
+  provisioning, 2026-06-18); the `native.yml` nightly real-link build covers
+  Linux/macOS/Windows. The `zwo-rs` simulation full-frame-fill speedup + writable
+  `Exposure` control that gated ConformU's 10 s `StartExposure` timeout landed in
+  rev `3c32e59`; the macOS `StartExposure` timeout was then traced to a driver
+  real-clock-deadline bug (fixed in `backend.rs`). The Bazel real/sim two-variant
+  build superseded the `crate.annotation` plan (ADR-010). *Remaining tail:* the
+  `rp` `CameraConfig` consumer.
 
 ## Concurrency
 

@@ -18,9 +18,9 @@ pub enum ZwoCameraError {
     Bind {
         /// The address we tried to bind.
         addr: String,
-        /// The underlying I/O error.
+        /// The underlying error from the dual-stack bind helper.
         #[source]
-        source: std::io::Error,
+        source: rp_tls::error::TlsError,
     },
 
     /// The blocking enumeration task panicked or was cancelled.

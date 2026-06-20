@@ -61,10 +61,20 @@ jobs:
       # Build the REAL FFI path — NO `simulation` feature and NO
       # ZWO_SKIP_NATIVE_LINK — so the bindgen bindings, the build.rs link
       # directives, and the `#[cfg(not(feature = "simulation"))]` code all compile
-      # and link against the installed SDK. `--all-targets` covers lib, bin, and
-      # test targets.
+      # and link against the installed SDK.
+      #
+      # zwo-camera is built WITHOUT `--all-targets`: it carries a `simulation`
+      # dev-dependency on zwo-rs, so `--all-targets` would build its test targets
+      # and feature-unify `zwo-rs/simulation` onto the production binary —
+      # silently swapping in the simulated backend and hiding the very real-FFI
+      # path this workflow exists to validate. The lib+bin build pulls no
+      # dev-deps, so it links the real zwo-rs. zwo-rs / libzwo-sys have no
+      # sim-forcing dev-dep, so they keep `--all-targets` to also compile their
+      # real test/example targets.
       - name: cargo build (real, no simulation)
-        run: cargo build --locked -p zwo-camera -p zwo-rs -p libzwo-sys --all-targets
+        run: |
+          cargo build --locked -p zwo-camera
+          cargo build --locked -p zwo-rs -p libzwo-sys --all-targets
       # Linux runtime smoke: zwo-rs's non-`simulation` tests call the real SDK
       # (init, SDK version strings, and a connected-camera enumeration that
       # returns 0 with no hardware attached), confirming the SDK actually *loads*

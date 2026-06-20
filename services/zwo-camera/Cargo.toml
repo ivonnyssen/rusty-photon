@@ -25,8 +25,11 @@ conformu = ["mock"]
 workspace = true
 
 [dependencies]
-ascom-alpaca = { workspace = true, features = ["server", "camera", "client"] }
+# `client` is NOT enabled here — the production server never builds an Alpaca
+# client; only the BDD harness does, so it lives in [dev-dependencies] below.
+ascom-alpaca = { workspace = true, features = ["server", "camera"] }
 zwo-rs = { workspace = true }
+rp-tls = { workspace = true }
 rusty-photon-config = { workspace = true }
 rusty-photon-driver = { workspace = true }
 rusty-photon-service-lifecycle = { workspace = true }
@@ -56,6 +59,8 @@ command = "cargo test -p zwo-camera --features conformu --test conformu_integrat
 # `all_crate_deps`. Resolver v2 still keeps it out of the production `cargo build`.
 # See docs/plans/vendor-zwo-rs.md (Phase 2 spike).
 zwo-rs = { workspace = true, features = ["simulation"] }
+# Client API for the BDD harness (tests/bdd/world.rs); kept out of the prod build.
+ascom-alpaca = { workspace = true, features = ["client"] }
 tracing-subscriber = { workspace = true }
 bdd-infra = { workspace = true, features = ["conformu"] }
 cucumber = { workspace = true }

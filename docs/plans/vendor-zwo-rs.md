@@ -1,10 +1,15 @@
 # Vendor `zwo-rs` + `libzwo-sys` into the workspace
 
 **Status:** In progress — Phase 0 (ADR-010), Phase 1 (Cargo vendor) and Phase 2
-(Bazel two-variant) **done** and verified on Linux; Phase 3 docs **done**. Pending:
-the first crates.io publish + standalone-repo archival (forward-only, owner-run —
-see Release runbook in ADR-010), and macOS/Windows CI confirmation (incl. the
-Windows real-variant bindgen-width spike).
+(Bazel two-variant) **done** and verified on Linux; Phase 3 docs **done**.
+macOS/Windows CI confirmation is **done**: the `native.yml` nightly workflow builds
+the **real** (no-sim) `zwo-rs`/`libzwo-sys`/`zwo-camera` variant green via **Cargo**
+(the MSVC source-of-truth path) on Linux/macOS/Windows, and `bazel.yml`'s
+Windows/macOS matrix exercises the **Bazel** real variant — together retiring the
+Windows real-variant bindgen-width risk on both toolchains. The **only remaining
+work is owner-run and forward-only**: the first
+crates.io publish (`libzwo-sys` then `zwo-rs`, `0.1.0`) + standalone-repo archival
+— see the Release runbook in ADR-010.
 **Author:** drafted 2026-06-17 on `worktree-zwo-driver`
 **Sibling plan:** [`docs/plans/vendor-qhyccd-rs.md`](vendor-qhyccd-rs.md) — same
 intention for the QHY FFI crates. This plan is the "Phase 4 (future)" that plan
@@ -285,7 +290,7 @@ documented.
 | Risk | Likelihood | Mitigation |
 |---|---|---|
 | **bindgen in the Bazel sandbox** (libclang discovery, header `data`, C++14 parse) misbehaves in a hand-written `cargo_build_script` | Low–Med | `crate_universe` already runs this exact `build.rs` (bindgen included) under Bazel on all three OSes today; copy its generated target as the reference. `LIBCLANG_PATH`/`ZWO_SDK_LIB_DIR` already forwarded in `.bazelrc`. |
-| **Windows real-variant bindgen integer widths** — building the *real* `zwo-rs` under Bazel's Windows toolchain may surface the `c_long`/`c_int` width difference that forcing `simulation` currently `cfg`s out | Medium | Spike the real variant on the Bazel Windows job before flipping prod targets. If it mismatches, keep the prod-real target non-Windows (or pin bindgen's int handling) and document — the Cargo prod build (MSVC) is the source of truth regardless. |
+| **Windows real-variant bindgen integer widths** — building the *real* `zwo-rs` under Bazel's Windows toolchain may surface the `c_long`/`c_int` width difference that forcing `simulation` currently `cfg`s out | ~~Medium~~ **Resolved** | Both toolchains now build the real variant green on Windows: `native.yml` (Cargo MSVC, the source of truth) and `bazel.yml`'s Windows matrix (Bazel). The width difference did not materialise; no `cfg` workaround was needed. |
 | `rand`/`rayon` not in `@cr` after dropping the dev-dep | Medium | Spike (`bazel query @cr//:rayon`) before dropping; keep the dev-dep (role-shifted) or add a `crate.annotation`. Wiring choice, not a blocker. |
 | Vendored SDK headers / `license.txt` dropped on copy → bindgen can't find them | Low | Phase 1 explicitly copies `sdk/include/**` + `wrapper.h`; `cargo build -p zwo-rs` in Phase 1 fails fast if missing. |
 | `cargo-husky` dev-dep installs git hooks into the monorepo | Low | Dropped in Phase 1. |
@@ -303,8 +308,9 @@ reversible. Nothing here changes production release packaging (Cargo, unchanged)
 ## Open questions
 - **Drop the dev-dep entirely?** Resolved by the Phase 2 rand/rayon spike (keep it,
   role-shifted, if `@cr` loses rand/rayon without it).
-- **Windows real-variant under Bazel** — resolved by the Phase 2 Windows bindgen
-  spike (flip prod targets to real everywhere, or keep prod-real non-Windows).
+- **Windows real-variant under Bazel** — **resolved**: prod targets build the real
+  variant everywhere; `native.yml` (Cargo) and `bazel.yml`'s Windows matrix both
+  link the real SDK green, so no non-Windows carve-out was needed.
 - **EAF headers** travel in `sdk/include/` but `libEAFFocuser` is unlinked until
   focuser work — no action now; noted so the bindings aren't mistaken for dead
   code during the vendor copy.

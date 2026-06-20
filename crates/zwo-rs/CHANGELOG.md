@@ -18,4 +18,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - CI (`check`, `test`), Claude Code workflows, pre-commit hook (clippy + fmt),
   dual MIT/Apache-2.0 licensing.
 
-[Unreleased]: https://github.com/ivonnyssen/zwo-rs/commits/main
+[Unreleased]: https://github.com/ivonnyssen/rusty-photon/commits/main/crates/zwo-rs
