@@ -36,8 +36,14 @@
 > full frame at each bin and 6248/2 = 3124 is not a multiple of 8; and (3b)
 > `PulseGuide` is now **asynchronous** (returns immediately, `IsPulseGuiding`
 > tracks the pulse to its deadline) instead of blocking for the pulse duration,
-> which exceeded ConformU's 1 s response target. All that remains for Phase G is
-> wiring `zwo-camera` into `conformu.yml`. See *Testing* and *Delivery phasing*.
+> which exceeded ConformU's 1 s response target. **Now also verified against real
+> hardware (2026-06-20):** both suites pass on a Linux x86_64 dev box, driven
+> against the production **non-`simulation`** binary (real FFI path), for two
+> physical cameras — a cooled **ASI1600MM-Cool** (12-bit, `MaxADU` 4095,
+> `noserial` identity fallback) and an uncooled **ASI178MM** (14-bit, `MaxADU`
+> 16383, real `ASIGetSerialNumber` identity) — exercising both the cooled/uncooled
+> cooler-gating split and both UniqueID paths. See *Testing* and *Delivery
+> phasing*.
 >
 > **CI provisioning (simulation by default; real link verified nightly).** The
 > `.github/actions/install-zwo-sdk` composite action provisions the SDK on
@@ -659,6 +665,37 @@ and **57 BDD scenarios** (all green), plus a full **ConformU** pass.
   *Geometry*) and asynchronous `PulseGuide` (see *Guiding*). `zwo-camera` is now
   wired into `conformu.yml` (Phase G, 2026-06-18): the conformu jobs provision the
   ZWO SDK and run its ConformU on ubuntu/macOS/Windows.
+
+**Real-hardware validation (2026-06-20).** Beyond the simulation backend, both
+ConformU 4.3.0 suites (`alpacaprotocol` + `conformance`) pass against **real ZWO
+hardware** on a Linux x86_64 dev box (SDK in `/usr/local/lib`, `99-asi.rules`
+udev rule, world-RW USB node), driven against the production **non-`simulation`**
+binary so the genuine FFI path — `zwo-camera → zwo-rs → libzwo-sys → libASICamera2.so`
+— is exercised end to end, not just the fabricated simulator. Two physical
+cameras were validated, each *"no errors, warnings or issues found"* with all
+members within their response targets:
+
+- **ASI1600MM-Cool** (cooled, mono): `MaxADU` 4095 (12-bit), `ElectronsPerADU`
+  0.00496, sensor 4656×3520 reported as **4608×3504** (R4 align — largest
+  multiples of `lcm(8·bin)`=96 / `lcm(2·bin)`=24 for bins 1–4), gain 0–600 /
+  offset 0–100, ST4 `CanPulseGuide`, both stop+abort. The cooler path was
+  separately exercised live (`CoolerPower` ramped from a −10 °C target). This
+  model exposes neither a serial nor a flash ID, so it used the `noserial-0`
+  identity fallback (`mint_identity`) — the documented older-model path.
+- **ASI178MM** (uncooled, mono): `MaxADU` 16383 (14-bit), `ElectronsPerADU`
+  0.00258, sensor 3096×2080 reported as **3072×2064** (R4 align), gain 0–510 /
+  offset 0–600. The uncooled cooler-gating contract (K1) is confirmed on
+  hardware — `CanSetCCDTemperature`/`CanGetCoolerPower` are `false` and the cooler
+  getters return `NotImplemented` — while `CCDTemperature` still reads the live
+  sensor value (25.6 °C), exactly the decoupled-temperature decision (K2). It
+  reports a real `ASIGetSerialNumber`, exercising the canonical UniqueID path.
+
+> One benign observation: the very first `CCDTemperature` read immediately after
+> connect can return a stale `0.0 °C`, then immediately reflects the sensor
+> (~15.7 °C ambient on the bench). The driver reads the value live with no caching
+> (`camera.rs` `ccd_temperature`), so this is the ASI SDK's `ASI_TEMPERATURE`
+> register not yet populated until its first internal measurement cycle (~1 s) —
+> an SDK warm-up artifact, not a driver caching defect or a conformance failure.
 
 > **CI caveat (critical):** the `simulation` feature removes the *camera*
 > requirement, **not the SDK**. All build/test/ConformU jobs for this package
