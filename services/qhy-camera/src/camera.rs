@@ -244,9 +244,28 @@ impl QhyCameraDevice {
         Ok(())
     }
 
-    fn disconnect(&self) -> ASCOMResult<()> {
+    async fn disconnect(&self) -> ASCOMResult<()> {
         // An in-flight exposure is cancelled (C3) before the handle closes.
         self.cancel_exposure();
+        // CRITICAL: wait for the detached `run_exposure` capture task to finish its
+        // blocking SDK chain before closing the handle. `cancel_exposure` issues
+        // `abort_exposure_and_readout`, so `get_single_frame` returns promptly and
+        // the task clears `exposure_in_flight`. Closing while that task is still
+        // inside an FFI/libusb call would free the handle out from under a live USB
+        // transfer — a use-after-free that trips libusb's `usbi_mutex_lock`
+        // assertion and can corrupt the SDK's shared libusb context. Bounded so a
+        // wedged SDK call cannot hang disconnect forever.
+        let mut drained = !self.state.exposure_in_flight.load(Ordering::Acquire);
+        for _ in 0..600 {
+            if drained {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            drained = !self.state.exposure_in_flight.load(Ordering::Acquire);
+        }
+        if !drained {
+            warn!(camera = %self.unique_id, "in-flight exposure did not drain within 3s of disconnect; closing anyway");
+        }
         // Refcounted close (`backend::SharedCameraConnection`): when a CFW device
         // shares this camera's SDK id, the physical handle is closed only once
         // both devices have disconnected, so disconnecting the camera no longer
@@ -474,7 +493,7 @@ impl Device for QhyCameraDevice {
         if connected {
             self.connect()
         } else {
-            self.disconnect()
+            self.disconnect().await
         }
     }
 

@@ -617,7 +617,13 @@ the "how" decisions made while building.
   a new exposure cannot start and race the still-running SDK calls. A short
   `result_lock` makes the task's "check generation + commit result" atomic
   against an abort, so a just-completing capture can never resurrect an aborted
-  frame.
+  frame. **`disconnect` additionally waits (bounded, ~3 s) for `exposure_in_flight`
+  to clear after aborting, before closing the handle** — the capture task is
+  detached (`tokio::spawn`), so closing the handle while it is still inside a
+  blocking FFI/libusb call would free the handle under a live USB transfer (a
+  use-after-free that trips libusb's `usbi_mutex_lock` assertion and can corrupt
+  the SDK's shared libusb context). `abort_exposure_and_readout` makes the drain
+  near-instant in practice.
 - **Camera + CFW share one physical handle — refcounted shared connection.**
   `qhyccd-rs` derives the CFW from the *same* camera id as the enumerated camera
   (a QHY CFW is driven over the camera's USB, not a separate device). The SDK
