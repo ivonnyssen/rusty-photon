@@ -250,6 +250,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn set_connected_toggles_and_is_idempotent() {
+        // Drives `set_connected` (both branches) + `disconnect()` end to end —
+        // the connect/disconnect lifecycle the other tests skip by calling
+        // `connect()` directly.
+        let handle = Arc::new(MockFilterWheelHandle::new("SIM-QHY178M", 7));
+        let device = QhyFilterWheelDevice::new(handle, None, None);
+        assert!(!device.connected().await.unwrap());
+
+        // connect via set_connected (connect branch + handshake)
+        device.set_connected(true).await.unwrap();
+        assert!(device.connected().await.unwrap());
+        assert_eq!(device.names().await.unwrap().len(), 7);
+
+        // already connected → no-op (the current == connected early return)
+        device.set_connected(true).await.unwrap();
+        assert!(device.connected().await.unwrap());
+
+        // disconnect via set_connected (disconnect branch)
+        device.set_connected(false).await.unwrap();
+        assert!(!device.connected().await.unwrap());
+        // operations after disconnect report NOT_CONNECTED (ensure_connected)
+        assert_eq!(
+            device.names().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert_eq!(
+            device.position().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+
+        // already disconnected → no-op
+        device.set_connected(false).await.unwrap();
+        assert!(!device.connected().await.unwrap());
+    }
+
+    #[tokio::test]
     async fn generated_names_when_no_config() {
         let device = connected(None);
         let names = device.names().await.unwrap();
