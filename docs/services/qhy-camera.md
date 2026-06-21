@@ -547,6 +547,9 @@ driver itself).
 
 ## References
 
+- [`qhyccd-sdk-manual.md`](../references/qhyccd-sdk-manual.md) — full English translation of the
+  official QHYCCD SDK manual (V2.1): function reference, feature-configuration guide, C examples, and
+  data structures that `qhyccd-rs` / `libqhyccd-sys` wrap
 - Upstream driver (behavioural spec): https://github.com/ivonnyssen/qhyccd-alpaca
 - FFI crate: https://crates.io/crates/qhyccd-rs · https://github.com/ivonnyssen/qhyccd-rs
 - [`sky-survey-camera.md`](sky-survey-camera.md) — Camera scaffolding template
