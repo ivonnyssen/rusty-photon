@@ -76,6 +76,7 @@ sudo apt-get install -y \
   jq \
   libssl-dev \
   libcfitsio-dev \
+  libusb-1.0-0-dev \
   unzip \
   ca-certificates
 ```
@@ -84,7 +85,27 @@ sudo apt-get install -y \
 the `rp-fits`, `filemonitor`, and `sky-survey-camera` packages fail to
 compile (this is the "use `-p <package>`" caveat that the user-level
 `MEMORY.md` references). `libssl-dev` is required by transitive C-FFI
-crates in the workspace.
+crates in the workspace. `libusb-1.0-0-dev` is required by the QHYCCD SDK
+that `qhy-camera` links (next paragraph).
+
+#### QHYCCD SDK (for `qhy-camera`)
+
+`qhy-camera` links the proprietary QHYCCD SDK (`libqhyccd-sys` →
+`static=qhyccd` + `libusb-1.0` + `stdc++`). The Pi5 arm64 nightly builds the
+full workspace, so the SDK (pinned **26.06.04**, aarch64) must be installed —
+the `setup-pi-runner.sh` `=== 1b. QHYCCD SDK ===` section downloads it from
+**qhyccd.com** (publicly, no auth) and copies the staged lib/include tree into
+`/usr/local/lib` (the 26.x packaging ships no `install.sh`; that is where
+`libqhyccd-sys`'s `build.rs` hard-codes the linker search path). The published
+`ivonnyssen/qhyccd-sdk-install@v3` action used by the GitHub-hosted jobs now
+covers linux-arm64 as well, but the Pi runner is intentionally **sudo-less**
+(public-repo safety) and the action's install needs root for `/usr/local`, so the
+Pi pre-provisions instead. The 26.x arm64 archive is `sdk_linux_arm64_<ver>.tar.gz`
+under the dot-stripped dir `260604`; override `QHY_SDK_DIR` / `QHY_SDK_FILE` for
+other releases (or `QHY_SDK_SKIP=1` if the SDK is already installed by hand).
+The GitHub-hosted **ubuntu, macOS, and Windows** jobs all build qhy-camera with
+the SDK installed via the action; only the sanitizer job (`safety.yml`) excludes
+it. The Pi covers linux-arm64.
 
 ### 2. Dedicated unprivileged user
 

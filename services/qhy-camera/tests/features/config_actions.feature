@@ -1,11 +1,11 @@
-@wip
+@serial
 Feature: Configuration actions
   The driver exposes its own configuration over HTTP as the vendor ASCOM
   actions `config.get`, `config.apply`, and `config.schema`, mirroring the
   cross-driver protocol in `docs/services/config-actions.md`. `config.get`
   returns the effective configuration plus the CLI-override-pinned field
   paths. `config.schema` returns a JSON Schema plus the editability tiers:
-  server.port and filterwheel.enabled are read-only, and there is NO locked
+  server.port is read-only, and there is NO locked
   identity field because UniqueIDs are derived from the camera/CFW SDK serial
   rather than minted into config. `config.apply` parses and validates a full
   configuration blob: invalid input returns `status:"invalid"` with
@@ -23,9 +23,8 @@ Feature: Configuration actions
 
   Scenario: The configuration schema is served with its editability tiers
     When config.schema is called
-    Then the schema should describe the devices, filterwheel, and server sections
+    Then the schema should describe the devices and server sections
     And the schema should mark server.port as a read-only field
-    And the schema should mark filterwheel.enabled as a read-only field
     And the schema should report no locked identity fields
 
   Scenario: Read the current configuration

@@ -70,6 +70,18 @@ build --@rules_rust//rust/settings:extra_rustc_flags=-Cdebuginfo=0
 # own host linkers, so this flag is scoped to Linux only.
 build:linux --@rules_rust//rust/settings:extra_rustc_flag=-Clink-arg=-fuse-ld=lld
 
+# Forward GITHUB_WORKSPACE to build actions on macOS/Windows so qhy-camera's
+# `libqhyccd-sys` build.rs can locate the QHYCCD SDK that the
+# `ivonnyssen/qhyccd-sdk-install@v3` action extracts INTO the workspace there
+# (`$GITHUB_WORKSPACE/sdk_mac_arm_*/usr/local/lib` on macOS,
+# `$GITHUB_WORKSPACE/sdk_win64_*` on Windows). With `--incompatible_strict_action_env`
+# the var is otherwise stripped from action envs. NOT needed on Linux — the SDK
+# installs to `/usr/local/lib` (the build.rs's hard-coded, env-free search path),
+# so the Linux cache is left untouched. On hosted runners GITHUB_WORKSPACE is a
+# fixed per-OS path, so the action keys stay cache-stable across CI runs.
+build:macos --action_env=GITHUB_WORKSPACE
+build:windows --action_env=GITHUB_WORKSPACE
+
 # Promote MSVC C4013 (implicit function declaration) to an error.
 # aws-lc-sys's cc-crate feature check for __builtin_bswap* wrongly passes
 # on MSVC: cl.exe in C89 mode treats the GCC built-ins as implicit
@@ -101,6 +113,19 @@ build:windows --action_env=AWS_LC_SYS_NO_JITTER_ENTROPY=1
 # Requires long-path support (enabled in bazel.yml via the Windows
 # registry key) and the short output base (C:/b) to stay within limits.
 build:windows --enable_runfiles
+
+# Windows links the QHYCCD SDK as a runtime DLL: `qhyccd-sdk-install` extracts
+# qhyccd.dll to `$GITHUB_WORKSPACE\sdk_win64_<ver>\x64` and prepends that to the
+# runner PATH. Bazel test actions run with a controlled environment that does NOT
+# inherit the runner PATH, so qhy-camera's BDD/ConformU-spawned simulation binary
+# — which still links qhyccd at load time even in the simulation backend — cannot
+# find qhyccd.dll and exits before binding (every scenario then fails with "failed
+# to parse bound port"). Forward PATH (by name) into Windows test actions so the
+# loader finds the DLL. On `build:windows` (not the BDD step) so the --test_env SET
+# is identical across every Windows CI Bazel invocation — a changing --test_env
+# discards the analysis cache (see the OMNISIM_PATH note below). Linux/macOS link
+# qhyccd statically (no runtime lib), so this is Windows-only.
+build:windows --test_env=PATH
 
 # zwo-camera's `libzwo-sys` build script (bindgen) + link step need native ZWO
 # SDK toolchain env that `--incompatible_strict_action_env` (above) otherwise

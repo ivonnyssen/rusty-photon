@@ -1,0 +1,78 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+### Changed
+
+- Target QHYCCD SDK **26.06.04**. The 26.x distribution changed packaging
+  (dot-stripped repo dir `260604`, `.tar.gz` archives, no `install.sh`, and the
+  per-OS archives renamed `macMix`→`mac_x64` / `WinMix`→`win64` /
+  `Arm64`→`linux_arm64`). `libqhyccd-sys`'s `build.rs` now resolves the macOS
+  extract dirs (`sdk_mac_arm_<ver>` / `sdk_mac_x64_<ver>`) and the Windows
+  `sdk_win64_<ver>` layout accordingly; the Linux `/usr/local/lib` link path is
+  unchanged. Validated on real hardware (QHY178M + 7-slot CFW, ConformU 0 errors).
+
+## [0.1.9] - 2026-01-19
+
+### Fixed
+
+- Fixed simulation exposure cancellation bug: `stop_exposure()` now correctly preserves image data while `abort_exposure_and_readout()` discards it, matching QHYCCD SDK behavior
+- Fixed double-binning bug in simulation where ROI dimensions were incorrectly divided by binning factor, causing images to be half the expected size
+- Updated `get_current_image_dimensions()` to return ROI dimensions directly as they are already in binned coordinates when set via ASCOM Alpaca
+
+### Changed
+
+- Split simulation exposure cancellation into two distinct methods: `stop_exposure()` (preserves image) and `abort_exposure()` (discards image)
+- Updated design documentation to reflect exposure cancellation behavior and ROI/binning coordinate system
+
+## [0.1.8] - 2026-01-18
+
+### Added
+
+- Comprehensive design documentation for the library architecture
+- Automatic default simulated camera when using `Sdk::new()` with simulation feature enabled
+
+### Changed
+
+- Improved simulation performance with rayon parallelization and smart waiting for exposure completion
+- Refactored lib.rs into modular structure for better code organization
+- Simulation feature is now transparent - `Sdk::new()` automatically provides simulated devices when simulation feature is enabled
+- Updated rand dependency to 0.9.2
+- Marked mock FFI functions as unsafe for better type safety
+
+### Fixed
+
+- Resolved simulation conformity issues with more robust testing
+- Fixed cooler parameter handling bugs in simulation mode
+- Removed unused imports and addressed clippy warnings
+
+## [0.1.7] - 2025-01-01
+
+### Changed
+
+- **BREAKING**: Removed vendored feature from libqhyccd-sys - this change should
+only affect the CI builds, as any real-world use of the library
+needs the SDK installed locally
+- Updated SDK version references from 24.12.26 to 25.09.29 in README
+- CI/CD now uses system-installed SDK via [qhyccd-sdk-install](https://github.com/ivonnyssen/qhyccd-sdk-install) GitHub action
+- Simplified build.rs to only link system libraries
+
+### Removed
+
+- Vendored SDK files no longer bundled with the crate
+- All `--features libqhyccd-sys/vendored` flags from CI workflows
+
+### Fixed
+
+- Updated installation instructions in README to use correct SDK version
+
+## [0.1.6] - Previous Release
+
+- Previous functionality with vendored SDK support
+
+[Unreleased]: https://github.com/ivonnyssen/rusty-photon/commits/main/crates/qhyccd-rs

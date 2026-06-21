@@ -96,6 +96,25 @@ jobs:
       - name: Install ASCOM OmniSim
         uses: ./.github/actions/install-omnisim
 
+      # qhy-camera links the proprietary QHYCCD SDK + libusb; the shadow
+      # `bazel build //...` compiles libqhyccd-sys on every OS, so provision both.
+      # Linux: the action stages the libs into /usr/local/lib (build.rs's env-free
+      # search path) + apt libusb. macOS: SDK extracts into $GITHUB_WORKSPACE
+      # (build.rs reads it via the GITHUB_WORKSPACE forwarded in .bazelrc) + brew
+      # libusb. Windows: SDK into $GITHUB_WORKSPACE/sdk_win64_<ver> (bundles libusb).
+      - name: Install libusb (qhy-camera, Linux)
+        if: runner.os == 'Linux'
+        uses: awalsh128/cache-apt-pkgs-action@v1
+        with:
+          packages: libusb-1.0-0-dev
+          version: 1.0
+      - name: Install libusb (qhy-camera, macOS)
+        if: runner.os == 'macOS'
+        run: brew install libusb
+      - name: Install QHYCCD SDK (qhy-camera)
+        uses: ivonnyssen/qhyccd-sdk-install@v3
+        with:
+          version: "26.06.04"
       # zwo-camera links the native ZWO ASI/EFW SDK (zwo-rs -> libzwo-sys), so
       # //... cannot build, link, or run it without the SDK on the link path.
       # Provision it on every OS, exactly like OmniSim above: this shadow build
@@ -152,11 +171,14 @@ jobs:
           else
             REMOTE_FLAGS+=(--remote_upload_local_results=false)
           fi
-          # Select the `bdd`-tagged suites, excluding any also tagged
-          # `requires-cargo`. //services/zwo-camera:bdd RUNS here — it is
-          # `bdd`-tagged (not `requires-cargo`) and spawns the native-SDK sim
-          # binary the "Install ZWO SDK" step above provisioned. Matches the
-          # coverage config in .bazelrc (excludes requires-cargo, includes bdd).
+          # `bdd,-requires-cargo`: run every bdd-tagged suite, minus the
+          # cargo-shelling bdd-infra unit tests (the only `requires-cargo` users
+          # left). //services/qhy-camera:bdd IS included — it spawns the
+          # simulation-backed driver (no real InitQHYCCDResource / USB
+          # enumeration; see services/qhy-camera/BUILD.bazel + Cargo.toml).
+          # //services/zwo-camera:bdd RUNS here too — `bdd`-tagged (not
+          # `requires-cargo`), spawning the native-SDK sim binary the "Install ZWO
+          # SDK" step above provisioned. Matches the coverage config in .bazelrc.
           bazel test --config=ci "${REMOTE_FLAGS[@]}" --test_tag_filters=bdd,-requires-cargo \
             --test_output=all \
             //...

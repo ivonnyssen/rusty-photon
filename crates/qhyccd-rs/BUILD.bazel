@@ -1,0 +1,49 @@
+load("@cr//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library")
+
+exports_files(
+    ["Cargo.toml"],
+    visibility = ["//visibility:public"],
+)
+
+# Vendored first-party QHYCCD SDK binding (ADR-009). Two library variants — the
+# same real/sim split `crates/rp-plate-solver` uses for its mock:
+#   * `qhyccd-rs`      links the REAL static SDK (production).
+#   * `qhyccd-rs_sim`  (testonly) enables the `simulation` feature so
+#     `Sdk::new()` fabricates a pure-Rust QHY178M (no FFI, no USB) for the
+#     qhy-camera BDD + ConformU suites.
+# `testonly = True` makes Bazel reject any production rust_binary that links the
+# simulated SDK, so the real/sim boundary is build-enforced, not review-enforced.
+#
+# crate_universe resolves ONE feature set per crate, so the real variant
+# harmlessly carries the simulation-only optional deps (rand/rayon) as unused —
+# exactly as rp-plate-solver's production variant carries mockall. The
+# `libqhyccd-sys` FFI sub-crate is a workspace member depended on explicitly
+# (it is NOT an `all_crate_deps` entry). See docs/services/qhy-camera.md
+# "Native dependency & build gating".
+
+_LIBQHYCCD_SYS = "//crates/qhyccd-rs/libqhyccd-sys:libqhyccd-sys"
+
+rust_library(
+    name = "qhyccd-rs",
+    srcs = glob(["src/**/*.rs"]),
+    aliases = aliases(),
+    crate_name = "qhyccd_rs",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//visibility:public"],
+    deps = [_LIBQHYCCD_SYS] + all_crate_deps(normal = True),
+)
+
+rust_library(
+    name = "qhyccd-rs_sim",
+    testonly = True,
+    srcs = glob(["src/**/*.rs"]),
+    aliases = aliases(),
+    crate_features = ["simulation"],
+    crate_name = "qhyccd_rs",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//visibility:public"],
+    deps = [_LIBQHYCCD_SYS] + all_crate_deps(normal = True),
+)

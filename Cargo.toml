@@ -1,6 +1,8 @@
 [workspace]
 members = [
   "crates/bdd-infra",
+  "crates/qhyccd-rs",
+  "crates/qhyccd-rs/libqhyccd-sys",
   "crates/rp-auth",
   "crates/rp-catalog",
   "crates/rp-ephemeris",
@@ -18,6 +20,7 @@ members = [
   "services/pa-falcon-rotator",
   "services/phd2-guider",
   "services/ppba-driver",
+  "services/qhy-camera",
   "services/qhy-focuser",
   "services/calibrator-flats",
   "services/dsd-fp2",
@@ -93,6 +96,14 @@ base64 = "0.22.1"
 mockall = "0.14.0"
 parking_lot = "0.12.5"
 tokio-serial = "5.4.5"
+# QHYCCD camera SDK FFI. Vendored first-party at `crates/qhyccd-rs` (with its
+# `libqhyccd-sys` sub-crate nested inside) per ADR-009 — the crate is authored by
+# us, so we develop it in-tree and dual-home it to crates.io. `libqhyccd-sys`
+# (transitively) links the proprietary static `qhyccd` lib + `libusb-1.0` — see
+# `docs/services/qhy-camera.md` "Native dependency & build gating". Only
+# `qhy-camera` depends on it today; declared at workspace level so the
+# native-link policy rationale lives in one place.
+qhyccd-rs = { path = "crates/qhyccd-rs" }
 ascom-alpaca = { git = "https://github.com/ivonnyssen/ascom-alpaca-rs.git", branch = "integration", default-features = false }
 # ZWO ASI camera + EFW filter-wheel FFI (safe wrapper over `libzwo-sys`), for the
 # `zwo-camera` service. Vendored first-party + dual-homed at crates/zwo-rs

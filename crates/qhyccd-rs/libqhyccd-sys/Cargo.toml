@@ -1,0 +1,22 @@
+[package]
+name = "libqhyccd-sys"
+version = "0.1.4"
+edition = "2021"
+authors = ["Igor von Nyssen <igor@vonnyssen.com>"]
+links = "qhyccd"
+repository = "https://github.com/ivonnyssen/qhyccd-rs"
+license = "MIT OR Apache-2.0"
+description = "Rust bindings for QHY CCD SDK"
+# Inherits the workspace MSRV (1.94.1) — see the note in ../Cargo.toml. Flattens
+# to the concrete version on `cargo publish`.
+rust-version.workspace = true
+exclude = ["qhyccd-sdk/*"]
+
+[lib]
+name = "libqhyccd_sys"
+path = "lib.rs"
+
+[dependencies]
+
+[features]
+# Removed vendored feature - now uses system-installed SDK

@@ -1,4 +1,4 @@
-@wip @serial
+@serial
 Feature: Binning and region-of-interest
   Binning is symmetric only: CanAsymmetricBin is false (B2) and MaxBinX /
   MaxBinY come from the SDK's valid binning modes. Setting a bin validates

@@ -37,6 +37,15 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
 
+env:
+  # The qhy-camera ConformU run builds with `--features conformu`
+  # (-> mock -> simulation), which `cfg`s out the real FFI and references no SDK
+  # symbols, so QHYCCD_SKIP_NATIVE_LINK omits the SDK link directives: no QHYCCD
+  # SDK or libusb is provisioned here. (zwo-camera still links the real ZWO SDK,
+  # provisioned below.) The real QHYCCD native link is covered by the `native`
+  # workflow + the Pi nightly.
+  QHYCCD_SKIP_NATIVE_LINK: "1"
+
 jobs:
   plan:
     runs-on: ubuntu-latest
@@ -109,7 +118,10 @@ jobs:
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
 
-      # zwo-camera (and the vendored zwo-rs/libzwo-sys members) link the native
+      # qhy-camera's ConformU build uses `--features conformu` (-> simulation), and
+      # the --workspace pre-build runs with QHYCCD_SKIP_NATIVE_LINK (workflow env),
+      # so the QHYCCD SDK link is omitted — no SDK / libusb / dylib-loader setup.
+      # zwo-camera (and the vendored zwo-rs/libzwo-sys members) DO link the native
       # ZWO SDK; provision it so the full-workspace pre-build links — no exclusion.
       - name: Install ZWO SDK
         uses: ./.github/actions/install-zwo-sdk
@@ -140,8 +152,9 @@ jobs:
             echo "::endgroup::"
             # Run in a subshell that exits with the ConformU command's status,
             # NOT sed's. A bare `cmd | sed &` makes `$!` the sed PID, so the
-            # later `wait` would see sed's (always-0) exit and mask a failing
-            # ConformU run. `exit ${PIPESTATUS[0]}` propagates the real status.
+            # `wait` loop below would see sed's (always-0) exit and mask a
+            # failing ConformU run. `exit ${PIPESTATUS[0]}` propagates the real
+            # status to the subshell, which `$!` now captures.
             ( eval "$cmd" 2>&1 | sed "s/^/[$name] /"; exit "${PIPESTATUS[0]}" ) &
             pids+=($!)
             cmds+=("$name")
@@ -201,6 +214,8 @@ jobs:
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
 
+      # qhy-camera's ConformU build uses `--features conformu` (-> simulation) with
+      # QHYCCD_SKIP_NATIVE_LINK (workflow env), so no QHYCCD SDK is provisioned.
       # Per-service matrix, so only zwo-camera needs the native ZWO SDK on Windows.
       - name: Install ZWO SDK
         if: matrix.service.name == 'zwo-camera'
