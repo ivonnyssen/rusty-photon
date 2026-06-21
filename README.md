@@ -227,8 +227,8 @@ rusty-photon/
     pa-falcon-rotator/     ASCOM Rotator + Switch — Pegasus Falcon (serial)
     star-adventurer-gti/   ASCOM Telescope — Sky-Watcher GTi (USB + WiFi/UDP)
     sky-survey-camera/     ASCOM Camera simulator backed by NASA SkyView
-    qhy-camera/            ASCOM Camera + FilterWheel — QHYCCD hardware (implemented v0; vendored SDK)
-    zwo-camera/            ASCOM Camera — ZWO ASI hardware (implemented; vendored MIT SDK)
+    qhy-camera/            ASCOM Camera + FilterWheel — QHYCCD hardware (implemented v0; vendored qhyccd-rs bindings)
+    zwo-camera/            ASCOM Camera — ZWO ASI hardware (implemented; vendored zwo-rs bindings, MIT SDK)
     phd2-guider/           PHD2 client library (TCP/JSON RPC)
     sentinel/              Monitoring service (HTTP consumer)
     calibrator-flats/      Flat-field calibration orchestrator plugin (CoverCalibrator)
