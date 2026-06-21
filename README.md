@@ -20,6 +20,7 @@ Coverage comes from the `bazel coverage` job (`.github/workflows/bazel-coverage.
 | [sky-survey-camera](services/sky-survey-camera) | ASCOM Camera (simulator) | 11116 | [![coverage][cov-sky-survey-camera]][cov-sky-survey-camera-link] | Camera simulator that returns NASA SkyView cutouts for the configured optics |
 | [star-adventurer-gti](services/star-adventurer-gti) | ASCOM Telescope | 11117 | [![coverage][cov-star-adventurer-gti]][cov-star-adventurer-gti-link] | Driver for Sky-Watcher Star Adventurer GTi (USB and WiFi/UDP) |
 | [pa-falcon-rotator](services/pa-falcon-rotator) | ASCOM Rotator + Switch (status) | 11118 | [![coverage][cov-pa-falcon-rotator]][cov-pa-falcon-rotator-link] | Driver for Pegasus Astro Falcon Rotator (firmware ≥ 1.3) |
+| [pa-scops-oag](services/pa-scops-oag) | ASCOM Focuser | 11123 | [![coverage][cov-pa-scops-oag]][cov-pa-scops-oag-link] | Driver for Pegasus Astro Scops OAG (motorized off-axis guider focuser) |
 | [dsd-fp2](services/dsd-fp2) | ASCOM CoverCalibrator | 11119 | [![coverage][cov-dsd-fp2]][cov-dsd-fp2-link] | Driver for Deep Sky Dad Flat Panel 2 (motorised flat field panel) |
 | [ui-htmx](services/ui-htmx) | Web config UI (BFF) | 11120 | [![coverage][cov-ui-htmx]][cov-ui-htmx-link] | Server-rendered configuration UI (axum + Maud + HTMX); edits any driver's config via its `config.get`/`config.apply` actions |
 | [plate-solver](services/plate-solver) | rp-managed HTTP service | 11131 | [![coverage][cov-plate-solver]][cov-plate-solver-link] | Wraps the ASTAP CLI for plate solving in a supervised, crash-isolated process |
@@ -223,6 +224,7 @@ rusty-photon/
     qhy-focuser/           ASCOM Focuser (serial)
     dsd-fp2/               ASCOM CoverCalibrator — Deep Sky Dad FP2 (serial)
     pa-falcon-rotator/     ASCOM Rotator + Switch — Pegasus Falcon (serial)
+    pa-scops-oag/          ASCOM Focuser — Pegasus Scops OAG (serial)
     star-adventurer-gti/   ASCOM Telescope — Sky-Watcher GTi (USB + WiFi/UDP)
     sky-survey-camera/     ASCOM Camera simulator backed by NASA SkyView
     qhy-camera/            ASCOM Camera + FilterWheel — QHYCCD hardware (implemented v0; vendored qhyccd-rs bindings)
@@ -285,6 +287,8 @@ Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT L
 [cov-dsd-fp2-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=dsd-fp2
 [cov-pa-falcon-rotator]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=pa-falcon-rotator
 [cov-pa-falcon-rotator-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=pa-falcon-rotator
+[cov-pa-scops-oag]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=pa-scops-oag
+[cov-pa-scops-oag-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=pa-scops-oag
 [cov-ui-htmx]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=ui-htmx
 [cov-ui-htmx-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=ui-htmx
 [cov-plate-solver]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=plate-solver

@@ -1,0 +1,18 @@
+{
+  "serial": {
+    "port": "/dev/ttyUSB0",
+    "baud_rate": 19200,
+    "polling_interval": "1s",
+    "timeout": "2s"
+  },
+  "server": {
+    "port": 11123
+  },
+  "focuser": {
+    "name": "Pegasus Scops OAG",
+    "unique_id": "",
+    "description": "Pegasus Astro Scops OAG motorized off-axis guider focuser",
+    "enabled": true,
+    "max_step": 100000
+  }
+}

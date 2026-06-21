@@ -3055,6 +3055,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "pa-scops-oag"
+version = "0.1.0"
+dependencies = [
+ "ascom-alpaca",
+ "async-trait",
+ "axum",
+ "bdd-infra",
+ "cargo-husky",
+ "clap",
+ "cucumber",
+ "derive_more",
+ "humantime-serde",
+ "mockall",
+ "proptest",
+ "reqwest 0.13.4",
+ "rp-auth",
+ "rp-tls",
+ "rusty-photon-config",
+ "rusty-photon-driver",
+ "rusty-photon-service-lifecycle",
+ "rusty-photon-shared-transport",
+ "schemars 1.2.1",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-serial",
+ "tokio-test",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "parking_lot"
 version = "0.12.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
