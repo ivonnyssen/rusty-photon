@@ -277,7 +277,7 @@ block:
       "move_focuser": { "buffer": "5s",  "on_expiry": "abort_then_restart", "service": "qhy-focuser"     }
     },
     "services": {
-      "star-adventurer": { "base_url": "http://localhost:11112/api/v1", "restart_command": null },
+      "star-adventurer": { "base_url": "http://localhost:11117/api/v1", "restart_command": null },
       "qhyccd-alpaca":   { "base_url": "http://localhost:11111/api/v1", "device_number": 0, "restart_command": "systemctl --user restart qhyccd-alpaca" },
       "qhy-focuser":     { "base_url": "http://localhost:11113/api/v1", "restart_command": "systemctl --user restart qhy-focuser" }
     }
