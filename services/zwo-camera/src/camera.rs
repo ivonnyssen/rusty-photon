@@ -1225,24 +1225,27 @@ mod tests {
         device
     }
 
+    // Deadline-bounded polls (no fixed nap count): `tokio::time::timeout` caps
+    // the wait in real time, so a contended runtime can't turn a fixed iteration
+    // count into an unbounded wall-clock wait.
     async fn wait_image_ready(device: &ZwoCamera) {
-        for _ in 0..400 {
-            if device.image_ready().await.unwrap() {
-                return;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !device.image_ready().await.unwrap() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
             }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-        panic!("exposure did not complete");
+        })
+        .await
+        .expect("exposure did not complete");
     }
 
     async fn wait_camera_state(device: &ZwoCamera, want: CameraState) {
-        for _ in 0..400 {
-            if device.camera_state().await.unwrap() == want {
-                return;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while device.camera_state().await.unwrap() != want {
+                tokio::time::sleep(Duration::from_millis(5)).await;
             }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-        panic!("camera did not reach {want:?}");
+        })
+        .await
+        .unwrap_or_else(|_| panic!("camera did not reach {want:?}"));
     }
 
     // --- pure helpers -----------------------------------------------------------
@@ -1766,13 +1769,14 @@ mod tests {
             .unwrap();
         tokio::time::sleep(Duration::from_millis(30)).await;
         device.abort_exposure().await.unwrap();
-        // No fresh frame is ready after an abort.
-        for _ in 0..200 {
-            if !device.state.exposure_in_flight.load(Ordering::Acquire) {
-                break;
+        // No fresh frame is ready after an abort. Best-effort, deadline-bounded
+        // wait (not a fixed nap count) for the in-flight flag to clear.
+        let _ = tokio::time::timeout(Duration::from_secs(1), async {
+            while device.state.exposure_in_flight.load(Ordering::Acquire) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
             }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
+        })
+        .await;
         assert!(!device.image_ready().await.unwrap());
         assert_eq!(
             device.image_array().await.unwrap_err().code,

@@ -67,6 +67,12 @@ const STOP_NONE: u8 = 0;
 const STOP_ABORT: u8 = 1;
 const STOP_PRESERVE: u8 = 2;
 
+/// Real-clock budget for the post-integration readout-completion poll. Only a
+/// safety bound on the stop-responsive courtesy poll — `download_exposure` still
+/// blocks until the frame is actually ready — but expressed as a deadline (not a
+/// fixed nap count) so it cannot drift under blocking-pool oversubscription.
+const READOUT_TIMEOUT: Duration = Duration::from_millis(2500);
+
 /// The blocking camera operations the ASCOM `Camera` device drives. Every method
 /// is synchronous (the SDK is blocking C FFI); the device offloads the long
 /// [`capture`](CameraHandle::capture) onto `spawn_blocking`.
@@ -274,7 +280,12 @@ impl CameraHandle for ZwoCameraHandle {
             return Ok(None);
         };
         if !preserve {
-            for _ in 0..250 {
+            // Poll the SDK to readout completion against a real-clock DEADLINE,
+            // for the same reason as the integration wait above: a fixed nap
+            // count drifts unpredictably under blocking-pool oversubscription.
+            let readout_deadline = std::time::Instant::now() + READOUT_TIMEOUT;
+            let step = Duration::from_millis(10);
+            loop {
                 match self.stop.load(Ordering::SeqCst) {
                     STOP_ABORT => {
                         let _ = camera.stop_exposure();
@@ -288,11 +299,15 @@ impl CameraHandle for ZwoCameraHandle {
                 }
                 match camera.exposure_status()? {
                     zwo_rs::ExposureStatus::Success | zwo_rs::ExposureStatus::Idle => break,
-                    zwo_rs::ExposureStatus::Working => {
-                        std::thread::sleep(Duration::from_millis(10))
-                    }
                     zwo_rs::ExposureStatus::Failed => {
                         return Err(BackendError("exposure failed".to_string()))
+                    }
+                    zwo_rs::ExposureStatus::Working => {
+                        let now = std::time::Instant::now();
+                        if now >= readout_deadline {
+                            break;
+                        }
+                        std::thread::sleep(step.min(readout_deadline - now));
                     }
                 }
             }
@@ -586,17 +601,22 @@ pub(crate) mod mock {
         fn capture(&self, request: CaptureRequest) -> BackendResult<Option<Vec<u8>>> {
             self.stop.store(STOP_NONE, Ordering::SeqCst);
             let delay = *self.capture_delay.lock();
-            let mut slept = Duration::ZERO;
+            // Mirror the production handle: sleep against a real-clock DEADLINE,
+            // not accumulated *intended* nap time, so the simulated capture can't
+            // drift under a contended runtime.
+            let deadline = std::time::Instant::now() + delay;
             let step = Duration::from_millis(10);
-            while slept < delay {
+            loop {
                 match self.stop.load(Ordering::SeqCst) {
                     STOP_ABORT => return Ok(None),
                     STOP_PRESERVE => break,
                     _ => {}
                 }
-                let nap = step.min(delay - slept);
-                std::thread::sleep(nap);
-                slept += nap;
+                let now = std::time::Instant::now();
+                if now >= deadline {
+                    break;
+                }
+                std::thread::sleep(step.min(deadline - now));
             }
             if self.stop.load(Ordering::SeqCst) == STOP_ABORT {
                 return Ok(None);
