@@ -18,6 +18,7 @@ members = [
   "crates/skywatcher-motor-protocol",
   "services/filemonitor",
   "services/pa-falcon-rotator",
+  "services/pa-scops-oag",
   "services/phd2-guider",
   "services/ppba-driver",
   "services/qhy-camera",

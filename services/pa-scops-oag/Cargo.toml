@@ -1,0 +1,63 @@
+[package]
+name = "pa-scops-oag"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "ASCOM Alpaca driver for the Pegasus Astro Scops OAG focuser"
+
+[features]
+default = []
+mock = []  # Enables mock hardware for testing without real serial port
+# `conformu` enables `mock` because the integration test launches the binary
+# with a mock serial port (`/dev/mock`) driven from the test config. Keeping
+# them coupled means a single `--features conformu` flag is enough to build
+# and run the test.
+conformu = ["mock"]
+
+[lints]
+workspace = true
+
+[dependencies]
+ascom-alpaca = { workspace = true, features = ["server", "focuser", "client"] }
+rusty-photon-config = { workspace = true }
+rusty-photon-driver = { workspace = true }
+rusty-photon-service-lifecycle = { workspace = true }
+rusty-photon-shared-transport = { workspace = true }
+tokio = { workspace = true }
+tokio-serial = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+humantime-serde = { workspace = true }
+clap = { workspace = true }
+async-trait = { workspace = true }
+derive_more = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+rp-tls = { workspace = true }
+rp-auth = { workspace = true }
+axum = { workspace = true }
+
+[package.metadata.conformu]
+command = "cargo test -p pa-scops-oag --features conformu --test conformu_integration -- --nocapture"
+
+[package.metadata.miri]
+command = "cargo miri test -p pa-scops-oag"
+
+[dev-dependencies]
+tracing-subscriber = { workspace = true }
+bdd-infra = { workspace = true, features = ["conformu"] }
+tokio-test = { workspace = true }
+mockall = { workspace = true }
+proptest = { workspace = true }
+reqwest = { workspace = true }
+cucumber = { workspace = true }
+tempfile = { workspace = true }
+cargo-husky = { workspace = true }
+
+[[test]]
+name = "bdd"
+harness = false
