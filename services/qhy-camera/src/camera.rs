@@ -510,7 +510,17 @@ impl Device for QhyCameraDevice {
     }
 
     async fn connected(&self) -> ASCOMResult<bool> {
-        self.handle.is_open().map_err(|_| ASCOMError::NOT_CONNECTED)
+        // A `Connected` GET must be a safe boolean so health/management polling
+        // never throws (matches every sibling driver, e.g. zwo-camera /
+        // sky-survey-camera / pa-falcon-rotator). Report `false` if the seam ever
+        // fails rather than erroring. `is_open()` is infallible in every current
+        // backend (it reads an atomic), so the fallback is purely defensive — the
+        // *mutating* `set_connected` below intentionally still propagates the error,
+        // since a misread there would drive a wrong open/close.
+        Ok(self.handle.is_open().unwrap_or_else(|e| {
+            debug!(camera = %self.unique_id, error = %e, "is_open() failed; reporting disconnected");
+            false
+        }))
     }
 
     async fn set_connected(&self, connected: bool) -> ASCOMResult<()> {
