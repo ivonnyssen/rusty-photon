@@ -746,9 +746,13 @@ async fn test_focuser_position_not_connected() {
 
 Hand-written mocks (`MockSerialReader`, `MockSerialWriter`, `MockSerialPortFactory`) are defined in the test files that use them. They are NOT feature-gated. The `#[cfg(feature = "mock")]` flag is reserved for the feature-gated `MockSerialPortFactory` in `src/` used by ConformU and server tests.
 
-#### 6.6 Serialize Server Tests
+#### 6.6 Serialize Tests That Share Process-Global State
 
-Server integration tests that bind to ports must use a static `Mutex<()>` to prevent parallel execution conflicts with the discovery service:
+Tests that touch process-global state cannot run concurrently in the same
+process. Guard each one with a shared static `Mutex<()>` held for the whole
+test body. Two cases occur in this repo:
+
+**Server tests that bind to ports** conflict with the discovery service:
 
 ```rust
 static SERVER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -759,6 +763,38 @@ async fn test_server_starts() {
     // ... start server on port 0 ...
 }
 ```
+
+**mockall static-function / `#[automock]`-on-a-module mocks** (e.g. the FFI
+mocks in `qhyccd-rs`, where `OpenQHYCCD_context()` and friends are generated
+from `#[cfg_attr(test, automock)] mod libqhyccd_sys`). mockall stores every
+`*_context()` expectation in **process-global** state, so two such tests
+running on different threads in one process corrupt each other's
+expectations — surfacing as `fragile` "destructor ran on wrong thread"
+panics and `called 0 time(s) which is fewer than expected 1` failures that
+abort the test binary (SIGABRT). Every such test must hold a shared guard as
+its first line:
+
+```rust
+static MOCK_FFI_MTX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+// Tolerate poisoning: these tests `assert!`/panic on failure, which would
+// otherwise poison the mutex and cascade into spurious later-test failures.
+fn mock_guard() -> std::sync::MutexGuard<'static, ()> {
+    MOCK_FFI_MTX.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+#[test]
+fn open_succeeds() {
+    let _mock = mock_guard(); // FIRST line, before any *_context() call
+    // ... program OpenQHYCCD_context() etc. ...
+}
+```
+
+`cargo nextest` (the project's standard runner, used by `cargo rail`)
+isolates each test in its own process and hides this — but plain
+`cargo test` runs them as threads. That includes the nightly **safety**
+sanitizer workflow and a developer running `cargo test -p qhyccd-rs`, both
+of which abort without the guard. See issue #384 for the original failure.
 
 #### 6.7 Mock Strategy: Hand-Written vs mockall vs axum stub
 
