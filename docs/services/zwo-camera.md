@@ -241,7 +241,12 @@ overshoot, and a loop that summed *intended* naps would run the full step count
 regardless of real time, ballooning a 2 s exposure to ~10 s of wall-clock on a
 contended runner (this tripped ConformU's 10 s async-operation timeout on the
 macOS CI runner — a scheduling artifact, not a slow CPU). The deadline bounds the
-integration to the requested duration plus at most one overshooting nap.
+integration to the requested duration plus at most one overshooting nap. The same
+real-clock-deadline discipline is applied to every wait loop in the capture path
+(integration, readout-completion poll, and the test backends), so no loop counts
+fixed naps or sums *intended* sleep time. Validated under genuine concurrency:
+three cameras driven by simultaneous ConformU `conformance` suites all stayed
+within their response-time targets (see *Testing*).
 
 ---
 
@@ -696,6 +701,27 @@ members within their response targets:
 > (`camera.rs` `ccd_temperature`), so this is the ASI SDK's `ASI_TEMPERATURE`
 > register not yet populated until its first internal measurement cycle (~1 s) —
 > an SDK warm-up artifact, not a driver caching defect or a conformance failure.
+
+**Concurrent multi-camera validation (2026-06-21).** A single service instance
+enumerates every connected ASI camera on the one port, so concurrency *across*
+devices is a first-class case. With **three** cameras attached at once —
+**ASI178MM** (`camera/0`), **ASI120MC-S** (`camera/1`, a colour USB2 planetary
+model) and **ASI1600MM-Cool** (`camera/2`) — a full ConformU run
+(`alpacaprotocol` + `conformance`) was fired at all three **simultaneously**
+(three independent processes, isolated `$HOME`). **All three passed**, each *"no
+errors, warnings or issues found"* and — critically — *"all members returned
+within their target response times"* **under 3× concurrent load**, the very
+scenario the deadline-based integration wait (see *Concurrency*) was hardened
+for. The three suites overlapped throughout a ~46 s window with no driver-level
+errors, mid-exposure `Error` transitions, late-capture invalidations, or
+lock-contention symptoms; the service enumerated all three (`cameras=3`), shut
+down cleanly, and left every camera released on USB. New coverage from this run:
+the **ASI120MC-S colour path** (`SensorType RGGB`, `BayerOffsetX/Y`) and
+per-device independence (contract C4) under genuine concurrency. One operational
+note surfaced: the serial-less ASI1600 came up as `noserial-2` here (it is
+`noserial-0` when attached alone), so the position-based `mint_identity` UniqueID
+is **enumeration-order-dependent** in multi-camera setups — cameras that report a
+real SDK serial (ASI178MM, ASI120MC-S) are order-independent.
 
 > **CI caveat (critical):** the `simulation` feature removes the *camera*
 > requirement, **not the SDK**. All build/test/ConformU jobs for this package
