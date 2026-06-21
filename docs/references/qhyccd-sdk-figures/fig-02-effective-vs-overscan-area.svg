@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 780 492" font-size="11" font-family="DejaVu Sans, Verdana, Arial, sans-serif">
+<rect width="780" height="492" fill="white"/>
+<text x="40" y="34" font-size="15" font-weight="bold" fill="#1a1a1a">Effective area vs. overscan area</text>
+<defs><marker id="ah" markerWidth="10" markerHeight="10" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#333"/></marker></defs>
+<rect x="92" y="80" width="400" height="300" fill="#5bb98b" stroke="#2f8f63" stroke-width="1.6"/>
+<rect x="492" y="80" width="92" height="300" fill="#dcdcdc" stroke="#8a8a8a" stroke-width="1.6"/>
+<text x="292.0" y="230.0" text-anchor="middle" font-weight="bold" fill="#1a1a1a">Effective area</text>
+<text x="538.0" y="224.0" text-anchor="middle" font-size="9" fill="#1a1a1a">Over-</text>
+<text x="538.0" y="236.0" text-anchor="middle" font-size="9" fill="#1a1a1a">scan</text>
+<line x1="92" y1="80" x2="614" y2="80" stroke="#333" stroke-width="1.4" marker-end="url(#ah)"/>
+<line x1="92" y1="80" x2="92" y2="410" stroke="#333" stroke-width="1.4" marker-end="url(#ah)"/>
+<circle cx="92" cy="80" r="3.2" fill="#333"/>
+<text x="85" y="73" text-anchor="end" font-size="10" fill="#1a1a1a">datum (0, 0)</text>
+<text x="614" y="71" text-anchor="end" fill="#333">X (pixels) &#8594;</text>
+<text x="34" y="230.0" text-anchor="middle" fill="#333" transform="rotate(-90 34 230.0)">Y (pixels) &#8595;</text>
+<line x1="92" y1="50" x2="492" y2="50" stroke="#9a9a9a" stroke-width="0.9"/>
+<line x1="92" y1="46" x2="92" y2="54" stroke="#9a9a9a"/><line x1="492" y1="46" x2="492" y2="54" stroke="#9a9a9a"/>
+<text x="292.0" y="46" text-anchor="middle" font-size="9.5" fill="#1a1a1a">effective area sizeX</text>
+<line x1="492" y1="50" x2="584" y2="50" stroke="#9a9a9a" stroke-width="0.9"/>
+<line x1="492" y1="46" x2="492" y2="54" stroke="#9a9a9a"/><line x1="584" y1="46" x2="584" y2="54" stroke="#9a9a9a"/>
+<text x="538.0" y="46" text-anchor="middle" font-size="9.5" fill="#1a1a1a">overscan sizeX</text>
+<line x1="62" y1="80" x2="62" y2="380" stroke="#9a9a9a" stroke-width="0.9"/>
+<line x1="58" y1="80" x2="66" y2="80" stroke="#9a9a9a"/><line x1="58" y1="380" x2="66" y2="380" stroke="#9a9a9a"/>
+<text x="56" y="230.0" text-anchor="middle" font-size="9.5" fill="#1a1a1a" transform="rotate(-90 56 230.0)">effective area sizeY</text>
+<line x1="602" y1="80" x2="602" y2="380" stroke="#9a9a9a" stroke-width="0.9"/>
+<line x1="598" y1="80" x2="606" y2="80" stroke="#9a9a9a"/><line x1="598" y1="380" x2="606" y2="380" stroke="#9a9a9a"/>
+<text x="608" y="230.0" text-anchor="middle" font-size="9.5" fill="#1a1a1a" transform="rotate(90 608 230.0)">overscan area sizeY</text>
+<text x="40" y="424" font-size="10" fill="#1a1a1a">GetQHYCCDEffectiveArea(handle, &amp;startX, &amp;startY, &amp;sizeX, &amp;sizeY)  -&gt;  the light-sensitive (effective) region</text>
+<text x="40" y="440" font-size="10" fill="#1a1a1a">GetQHYCCDOverScanArea (handle, &amp;startX, &amp;startY, &amp;sizeX, &amp;sizeY)  -&gt;  the optically-black overscan region</text>
+<text x="40" y="456" font-size="10" fill="#1a1a1a">Both rectangles are returned in sensor pixels, measured from the same top-left datum (X right, Y down).</text>
+</svg>
