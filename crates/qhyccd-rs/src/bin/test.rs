@@ -37,5 +37,8 @@ fn main() {
             .get_fw_position()
             .expect("get_cfw_status failed");
         trace!(get_cfw_status = ?res);
+        // Poll, don't busy-spin: this is a manual diagnostic, so a slow cadence
+        // keeps it from pegging a core / flooding logs.
+        std::thread::sleep(std::time::Duration::from_millis(500));
     }
 }

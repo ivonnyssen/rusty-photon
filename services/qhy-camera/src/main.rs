@@ -7,7 +7,7 @@ use std::sync::Arc;
 use clap::Parser;
 use qhy_camera::{load_effective_config, CliOverrides, ServerBuilder};
 use rusty_photon_service_lifecycle::ServiceRunner;
-use tracing::{debug, info, Level};
+use tracing::{debug, Level};
 
 #[derive(Parser)]
 #[command(name = "qhy-camera")]
@@ -51,10 +51,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "simulation")]
     let simulation_empty = args.simulation_empty;
 
-    info!("Starting QHY camera driver");
+    // Startup chatter stays at debug! per CLAUDE.md Rule 9; the user-facing
+    // "Service started successfully on <addr>" info! lives in lib.rs.
+    debug!("Starting QHY camera driver");
     #[cfg(feature = "simulation")]
-    info!("Using the qhyccd-rs SIMULATION backend");
-    info!("Configuration path: {}", config_path.display());
+    debug!("Using the qhyccd-rs SIMULATION backend");
+    debug!("Configuration path: {}", config_path.display());
     // No `materialize_identity`: ASCOM UniqueIDs are derived from the camera/CFW
     // SDK serials at enumeration (see docs/services/qhy-camera.md), not minted.
 

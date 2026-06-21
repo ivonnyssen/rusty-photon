@@ -42,6 +42,10 @@ pub struct DeviceOverride {
 
 /// HTTP server configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+// `#[serde(default)]` so a partial `{"server": {}}` keeps the default port
+// (missing fields fall back to `ServerConfig::default()`), consistent with the
+// top-level `Config`'s tolerance of an absent `server` key and with zwo-camera.
+#[serde(default)]
 pub struct ServerConfig {
     /// Listening port. One port hosts all enumerated devices. Hard read-only
     /// (a port change would make the BFF lose the devices).
@@ -117,6 +121,14 @@ mod tests {
         let c: Config = serde_json::from_str("{}").unwrap();
         assert_eq!(c.server.port, 11121);
         assert!(c.devices.is_empty());
+    }
+
+    #[test]
+    fn server_object_without_a_port_keeps_the_default() {
+        // A present-but-partial `server` object must not fail to deserialize on a
+        // missing `port` — `#[serde(default)]` on ServerConfig fills it in.
+        let c: Config = serde_json::from_str(r#"{ "server": {} }"#).unwrap();
+        assert_eq!(c.server.port, 11121);
     }
 
     #[test]

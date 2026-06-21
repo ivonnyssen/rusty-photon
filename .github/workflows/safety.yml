@@ -70,13 +70,14 @@ jobs:
       - name: cargo test
         # only --lib --tests for asan b/c of https://github.com/rust-lang/rust/issues/53945
         # exclude bdd-infra: its unit tests look for binaries in target/debug/
-        # which doesn't exist when CARGO_BUILD_TARGET is set
-        # exclude qhy-camera: proprietary SDK, see the build step above
+        # which doesn't exist when CARGO_BUILD_TARGET is set.
+        # qhy-camera is NOT excluded: QHYCCD_SKIP_NATIVE_LINK=1 (above) builds its
+        # pure-Rust simulation path SDK-free, so it sanitizes like zwo-camera.
         run: |
           if [ "${{ matrix.sanitizer }}" = "address" ]; then
-            cargo test --workspace --exclude bdd-infra --exclude qhy-camera --lib --tests --all-features
+            cargo test --workspace --exclude bdd-infra --lib --tests --all-features
           else
-            cargo test --workspace --exclude bdd-infra --exclude qhy-camera --all-features --all-targets
+            cargo test --workspace --exclude bdd-infra --all-features --all-targets
           fi
         env:
           ASAN_OPTIONS: "detect_odr_violation=0:detect_leaks=0"

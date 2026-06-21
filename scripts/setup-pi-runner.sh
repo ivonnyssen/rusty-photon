@@ -114,7 +114,7 @@ else
   log "Installing QHYCCD SDK $QHY_SDK_VERSION (aarch64) from qhyccd.com into /usr/local..."
   TMP=$(mktemp -d)
   if curl -fsSL --retry 3 --retry-delay 2 -o "$TMP/qhy-sdk.tgz" \
-       "${QHY_SDK_BASE%/}/${QHY_SDK_VERSION}/${QHY_SDK_FILE}"; then
+       "${QHY_SDK_BASE%/}/${QHY_SDK_DIR}/${QHY_SDK_FILE}"; then
     tar xzf "$TMP/qhy-sdk.tgz" -C "$TMP"
     SDK_DIR=$(find "$TMP" -maxdepth 1 -type d -name 'sdk_*' | head -n1)
     if [[ -n "$SDK_DIR" && -f "$SDK_DIR/install.sh" ]]; then
@@ -134,7 +134,7 @@ else
     # of the SDK explicitly with QHY_SDK_SKIP=1; an *unexpected* download failure
     # must stop setup so it is noticed and fixed now.
     rm -rf "$TMP"
-    die "Could not download $QHY_SDK_FILE from ${QHY_SDK_BASE%/}/${QHY_SDK_VERSION}/. Set QHY_SDK_FILE to the correct aarch64 archive (or install the SDK by hand), or re-run with QHY_SDK_SKIP=1 to provision the rest of the runner without it. qhy-camera will not link on this runner until the SDK is in /usr/local/lib."
+    die "Could not download $QHY_SDK_FILE from ${QHY_SDK_BASE%/}/${QHY_SDK_DIR}/. Set QHY_SDK_FILE to the correct aarch64 archive (or install the SDK by hand), or re-run with QHY_SDK_SKIP=1 to provision the rest of the runner without it. qhy-camera will not link on this runner until the SDK is in /usr/local/lib."
   fi
   rm -rf "$TMP"
 fi
