@@ -17,13 +17,16 @@ concurrency:
   cancel-in-progress: true
 name: test
 env:
-  # Every job builds the zwo crates on their `--all-features` (simulation) path,
-  # which `cfg`s out the real FFI and references no SDK symbols. This tells
-  # libzwo-sys/build.rs to omit the native link directives, so the whole
-  # workspace builds with no ZWO SDK to provision (the link would otherwise be
-  # forced unconditionally). The REAL native link + FFI is verified separately by
-  # the `native` workflow (nightly + on zwo changes), plus Bazel and the Pi nightly.
+  # Every job builds the zwo + qhy camera crates on their `--all-features`
+  # (simulation) path, which `cfg`s out the real FFI and references no SDK
+  # symbols. These tell libzwo-sys / libqhyccd-sys build.rs to omit the native
+  # link directives, so the whole workspace builds with NO ZWO or QHYCCD SDK to
+  # provision (the links would otherwise be forced unconditionally) — and no
+  # libusb either, since the QHYCCD static lib that pulls it in is never linked.
+  # The REAL native link + FFI is verified separately by the `native` workflow
+  # (nightly + on camera-crate changes), plus Bazel and the Pi nightly.
   ZWO_SKIP_NATIVE_LINK: "1"
+  QHYCCD_SKIP_NATIVE_LINK: "1"
 jobs:
   plan:
     runs-on: ubuntu-latest
@@ -122,29 +125,9 @@ jobs:
       - uses: actions/checkout@v7
       - name: Install ASCOM OmniSim
         uses: ./.github/actions/install-omnisim
-      # qhy-camera links the proprietary QHYCCD SDK (libqhyccd-sys →
-      # static=qhyccd) + libusb-1.0. The SDK is publicly downloadable from
-      # qhyccd.com; the published action installs it on Linux/macOS/Windows
-      # (on Linux its install.sh puts the libs in /usr/local/lib, where
-      # libqhyccd-sys's build.rs looks). qhy-camera is built/tested on all
-      # three GitHub-hosted OSes; the Pi nightly covers linux-arm64 (which the
-      # action does not).
-      #
-      # Install when this job actually compiles qhy-camera, i.e. when the build
-      # selector below includes it: infra (=> --workspace), an EMPTY cargo-args
-      # (=> cargo's default whole-workspace build), or cargo-args naming
-      # qhy-camera. Narrowed builds that exclude it skip the SDK.
-      - name: Install libusb (qhy-camera)
-        if: needs.plan.outputs.infra == 'true' || needs.plan.outputs.cargo-args == '' || contains(needs.plan.outputs.cargo-args, 'qhy-camera')
-        uses: awalsh128/cache-apt-pkgs-action@v1
-        with:
-          packages: libusb-1.0-0-dev
-          version: 1.0
-      - name: Install QHYCCD SDK (qhy-camera)
-        if: needs.plan.outputs.infra == 'true' || needs.plan.outputs.cargo-args == '' || contains(needs.plan.outputs.cargo-args, 'qhy-camera')
-        uses: ivonnyssen/qhyccd-sdk-install@v3
-        with:
-          version: "26.06.04"
+      # qhy-camera builds on its `--all-features` (simulation) path here, so
+      # QHYCCD_SKIP_NATIVE_LINK (workflow env) omits the SDK link — no QHYCCD SDK
+      # or libusb to provision. The real native link is covered by `native` + Pi.
       - name: Install stable
         uses: dtolnay/rust-toolchain@stable
       - name: Install cargo-nextest
@@ -199,31 +182,8 @@ jobs:
       - uses: actions/checkout@v7
       - name: Install ASCOM OmniSim
         uses: ./.github/actions/install-omnisim
-      # qhy-camera links the proprietary QHYCCD SDK on macOS too (static=qhyccd
-      # + libc++). The static lib references libusb, so install it via brew
-      # exactly as the upstream qhyccd-rs macOS CI does, then provision the SDK
-      # via the published action (covers x86_64-linux/macOS/Windows). Gated on
-      # the same "build includes qhy-camera" condition as the ubuntu job.
-      - name: Install libusb (qhy-camera, macOS)
-        if: needs.plan.outputs.infra == 'true' || needs.plan.outputs.cargo-args == '' || contains(needs.plan.outputs.cargo-args, 'qhy-camera')
-        run: brew install libusb
-      - name: Install QHYCCD SDK (qhy-camera)
-        if: needs.plan.outputs.infra == 'true' || needs.plan.outputs.cargo-args == '' || contains(needs.plan.outputs.cargo-args, 'qhy-camera')
-        uses: ivonnyssen/qhyccd-sdk-install@v3
-        with:
-          version: "26.06.04"
-      # The macOS SDK ships libqhyccd as a dylib extracted under $GITHUB_WORKSPACE;
-      # the SDK-linked test binaries (qhy-camera, plus the qhyccd-rs/libqhyccd-sys
-      # workspace members since ADR-009) load it via @rpath, which dyld can't
-      # resolve from that non-standard dir at test runtime. Point the fallback
-      # loader path at it (+ Homebrew for libusb). Linux links static=qhyccd, so
-      # this is macOS-only.
-      - name: Help the loader find the QHYCCD dylib (macOS)
-        if: needs.plan.outputs.infra == 'true' || needs.plan.outputs.cargo-args == '' || contains(needs.plan.outputs.cargo-args, 'qhy-camera')
-        run: |
-          DYLIB="$(find "$GITHUB_WORKSPACE" /usr/local/lib /opt/homebrew/lib -name 'libqhyccd*.dylib' -print -quit 2>/dev/null || true)"
-          if [ -z "$DYLIB" ]; then echo "::error::libqhyccd dylib not found after SDK install"; exit 1; fi
-          echo "DYLD_FALLBACK_LIBRARY_PATH=$(dirname "$DYLIB"):/opt/homebrew/lib:/usr/local/lib:/usr/lib" >> "$GITHUB_ENV"
+      # qhy-camera builds on its simulation path (QHYCCD_SKIP_NATIVE_LINK, workflow
+      # env), so no QHYCCD SDK / libusb / dylib-loader setup is needed on macOS.
       - name: Install stable
         uses: dtolnay/rust-toolchain@stable
       - name: Install cargo-nextest
@@ -265,16 +225,10 @@ jobs:
       - uses: actions/checkout@v7
       - name: Install ASCOM OmniSim
         uses: ./.github/actions/install-omnisim
-      # qhy-camera links the proprietary QHYCCD SDK on Windows (static=qhyccd
-      # from pkg_win\x64; no separate libusb needed). This job always builds
-      # the full --workspace to warm the cache for the per-service windows-bdd
-      # jobs, so the SDK must be present unconditionally. The published action
-      # extracts the WinMix SDK into the workspace where libqhyccd-sys's
-      # build.rs looks and adds pkg_win\x64 to PATH for runtime DLL loading.
-      - name: Install QHYCCD SDK (qhy-camera)
-        uses: ivonnyssen/qhyccd-sdk-install@v3
-        with:
-          version: "26.06.04"
+      # qhy-camera builds on its `--all-features` simulation path here (the full
+      # --workspace warms the cache for the per-service windows-bdd jobs), so
+      # QHYCCD_SKIP_NATIVE_LINK (workflow env) omits the SDK link — nothing to
+      # provision on Windows either.
       - name: Install stable
         uses: dtolnay/rust-toolchain@stable
       - name: Install cargo-nextest
@@ -316,13 +270,8 @@ jobs:
       - uses: actions/checkout@v7
       - name: Install ASCOM OmniSim
         uses: ./.github/actions/install-omnisim
-      # Only qhy-camera links the proprietary QHYCCD SDK; provision it for that
-      # matrix leg so its BDD binary builds and loads on Windows.
-      - name: Install QHYCCD SDK (qhy-camera)
-        if: matrix.package == 'qhy-camera'
-        uses: ivonnyssen/qhyccd-sdk-install@v3
-        with:
-          version: "26.06.04"
+      # qhy-camera's BDD binary builds on the simulation path
+      # (QHYCCD_SKIP_NATIVE_LINK, workflow env) — no QHYCCD SDK to provision.
       - name: Install stable
         uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -373,23 +322,10 @@ jobs:
       - uses: actions/checkout@v7
       - name: Install ASCOM OmniSim
         uses: ./.github/actions/install-omnisim
-      # qhy-camera links the proprietary QHYCCD SDK (libqhyccd-sys →
-      # static=qhyccd) + libusb-1.0. The SDK is publicly downloadable from
-      # qhyccd.com; the published action installs it into /usr/local/lib on
-      # Linux (where libqhyccd-sys's build.rs looks). Coverage runs on Linux
-      # only; the SDK action also covers macOS/Windows for the test jobs. Gated
-      # on the same "build includes qhy-camera" condition as the ubuntu job.
-      - name: Install libusb (qhy-camera)
-        if: needs.plan.outputs.infra == 'true' || needs.plan.outputs.cargo-args == '' || contains(needs.plan.outputs.cargo-args, 'qhy-camera')
-        uses: awalsh128/cache-apt-pkgs-action@v1
-        with:
-          packages: libusb-1.0-0-dev
-          version: 1.0
-      - name: Install QHYCCD SDK (qhy-camera)
-        if: needs.plan.outputs.infra == 'true' || needs.plan.outputs.cargo-args == '' || contains(needs.plan.outputs.cargo-args, 'qhy-camera')
-        uses: ivonnyssen/qhyccd-sdk-install@v3
-        with:
-          version: "26.06.04"
+      # qhy-camera builds on its `--all-features` simulation path here, so
+      # QHYCCD_SKIP_NATIVE_LINK (workflow env) omits the SDK link — coverage needs
+      # no QHYCCD SDK or libusb. (Coverage already only measured the simulation
+      # path, since `--all-features` `cfg`s out the real FFI; nothing changes.)
       - name: Install nightly (for coverage instrumentation)
         uses: dtolnay/rust-toolchain@nightly
         with:

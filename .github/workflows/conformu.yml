@@ -37,6 +37,15 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
 
+env:
+  # The qhy-camera ConformU run builds with `--features conformu`
+  # (-> mock -> simulation), which `cfg`s out the real FFI and references no SDK
+  # symbols, so QHYCCD_SKIP_NATIVE_LINK omits the SDK link directives: no QHYCCD
+  # SDK or libusb is provisioned here. (zwo-camera still links the real ZWO SDK,
+  # provisioned below.) The real QHYCCD native link is covered by the `native`
+  # workflow + the Pi nightly.
+  QHYCCD_SKIP_NATIVE_LINK: "1"
+
 jobs:
   plan:
     runs-on: ubuntu-latest
@@ -109,33 +118,10 @@ jobs:
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
 
-      # qhy-camera opts into ConformU and links the proprietary QHYCCD SDK
-      # unconditionally (static=qhyccd, even under the simulation feature), so
-      # the --workspace pre-build needs the SDK + libusb on both Linux and
-      # macOS. The published action provisions the SDK on all three OSes.
-      - name: Install libusb (qhy-camera, Linux)
-        if: runner.os == 'Linux'
-        uses: awalsh128/cache-apt-pkgs-action@v1
-        with:
-          packages: libusb-1.0-0-dev
-          version: 1.0
-      - name: Install libusb (qhy-camera, macOS)
-        if: runner.os == 'macOS'
-        run: brew install libusb
-      - name: Install QHYCCD SDK (qhy-camera)
-        uses: ivonnyssen/qhyccd-sdk-install@v3
-        with:
-          version: "26.06.04"
-      # On macOS the SDK-linked binaries load libqhyccd's dylib via @rpath from a
-      # non-standard $GITHUB_WORKSPACE dir; point the fallback loader path at it so
-      # ConformU can launch the qhy-camera binary. Linux links static=qhyccd.
-      - name: Help the loader find the QHYCCD dylib (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          DYLIB="$(find "$GITHUB_WORKSPACE" /usr/local/lib /opt/homebrew/lib -name 'libqhyccd*.dylib' -print -quit 2>/dev/null || true)"
-          if [ -z "$DYLIB" ]; then echo "::error::libqhyccd dylib not found after SDK install"; exit 1; fi
-          echo "DYLD_FALLBACK_LIBRARY_PATH=$(dirname "$DYLIB"):/opt/homebrew/lib:/usr/local/lib:/usr/lib" >> "$GITHUB_ENV"
-      # zwo-camera (and the vendored zwo-rs/libzwo-sys members) link the native
+      # qhy-camera's ConformU build uses `--features conformu` (-> simulation), and
+      # the --workspace pre-build runs with QHYCCD_SKIP_NATIVE_LINK (workflow env),
+      # so the QHYCCD SDK link is omitted — no SDK / libusb / dylib-loader setup.
+      # zwo-camera (and the vendored zwo-rs/libzwo-sys members) DO link the native
       # ZWO SDK; provision it so the full-workspace pre-build links — no exclusion.
       - name: Install ZWO SDK
         uses: ./.github/actions/install-zwo-sdk
@@ -228,13 +214,8 @@ jobs:
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
 
-      # Only qhy-camera links the proprietary QHYCCD SDK; provision it for that
-      # service's per-package build/run on Windows (no separate libusb needed).
-      - name: Install QHYCCD SDK (qhy-camera)
-        if: matrix.service.name == 'qhy-camera'
-        uses: ivonnyssen/qhyccd-sdk-install@v3
-        with:
-          version: "26.06.04"
+      # qhy-camera's ConformU build uses `--features conformu` (-> simulation) with
+      # QHYCCD_SKIP_NATIVE_LINK (workflow env), so no QHYCCD SDK is provisioned.
       # Per-service matrix, so only zwo-camera needs the native ZWO SDK on Windows.
       - name: Install ZWO SDK
         if: matrix.service.name == 'zwo-camera'
