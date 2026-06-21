@@ -17,10 +17,12 @@ belong in any single service design doc.
 | [plate-solver](services/plate-solver.md) | — (rp-managed service wrapping ASTAP) | 11131 | `docs/services/plate-solver.md` |
 | [calibrator-flats](services/calibrator-flats.md) | — (orchestrator plugin) | 11170 | `docs/services/calibrator-flats.md` |
 | [sky-survey-camera](services/sky-survey-camera.md) | Camera (simulator) | 11116 | `docs/services/sky-survey-camera.md` |
-| [qhy-camera](services/qhy-camera.md) | Camera (+ FilterWheel) — QHYCCD hardware | 11121 | `docs/services/qhy-camera.md` (implemented v0; native QHYCCD SDK dep — links `static=qhyccd` + `libusb-1.0`; **built + tested on GitHub-hosted Linux/macOS/Windows** via the `qhyccd-sdk-install@v3` action, plus the Pi nightly for linux-arm64. Only `safety.yml` ASan/LSan excludes it) |
+| [qhy-camera](services/qhy-camera.md) | Camera (+ FilterWheel) — QHYCCD hardware | 11121 | `docs/services/qhy-camera.md` (implemented v0; native QHYCCD SDK dep — links `static=qhyccd` + `libusb-1.0`; **built + tested on GitHub-hosted Linux/macOS/Windows** via the `qhyccd-sdk-install@v3` action, plus the Pi nightly for linux-arm64. Vendored first-party (ADR-009); sanitized under `safety.yml` via the SDK-free `simulation` path (`QHYCCD_SKIP_NATIVE_LINK=1`) — only `bdd-infra` is excluded there) |
 | [zwo-camera](services/zwo-camera.md) | Camera (+ FilterWheel) — ZWO ASI/EFW hardware | 11122 | Phase E (full Camera) landed: full `Device + Camera` over `zwo-rs` (exposure state machine, ROI/bin, gain/offset, cooling, readout, ST4 pulse-guiding), serial identity, config actions; 45 unit + 57 BDD green, ConformU passes. Bazel first-class (`lib`/`binary`/`unit_test`; `bdd`/`conformu` build under Bazel, run under Cargo). EFW FilterWheel is Phase F. ConformU is wired into `conformu.yml` (per-service matrix + `install-zwo-sdk`), and the nightly `native.yml` builds the real linked path on Linux/macOS/Windows; the `rp` `CameraConfig` consumer is the only Phase-G tail item left. Native ZWO SDK dep, gated out of the default build. See `docs/services/zwo-camera.md` + ADR-008. |
-| [star-adventurer-gti](services/star-adventurer-gti.md) | Telescope | 11117 | `docs/services/star-adventurer-gti.md` (Phase 2 — BDD scaffold landed; all scenarios `@wip` pending Phase 3 implementation) |
+| [star-adventurer-gti](services/star-adventurer-gti.md) | Telescope | 11117 | `docs/services/star-adventurer-gti.md` (implemented — `ITelescopeV3` subset: async slew, sync, sidereal tracking, software park, pulse guiding; all BDD scenarios green) |
 | [pa-falcon-rotator](services/falcon-rotator.md) | Rotator + Switch (status) | 11118 | `docs/services/falcon-rotator.md` |
+| [dsd-fp2](services/dsd-fp2.md) | CoverCalibrator | 11119 | `docs/services/dsd-fp2.md` (first adopter of `rusty-photon-shared-transport`) |
+| [ui-htmx](services/ui-htmx.md) | — (web config UI / BFF, not an ASCOM device) | 11120 | `docs/services/ui-htmx.md` |
 
 ## Documentation Index
 
@@ -32,12 +34,19 @@ belong in any single service design doc.
 | [docs/skills/development-workflow.md](skills/development-workflow.md) | Skill: design-first, test-first development workflow |
 | [docs/skills/testing.md](skills/testing.md) | Skill: writing and organizing tests (test pyramid, BDD, unit tests) |
 | [docs/skills/pre-push.md](skills/pre-push.md) | Skill: running CI quality gates before pushing |
+| [docs/skills/service-lifecycle.md](skills/service-lifecycle.md) | Skill: scaffolding a long-running service binary (`main.rs`, runtime + shutdown handling) |
+| [docs/skills/archiving-plans.md](skills/archiving-plans.md) | Skill: archiving a completed plan into `docs/plans/archive/` |
+| [docs/skills/bazel-remote-cache.md](skills/bazel-remote-cache.md) | Skill: using the self-hosted Bazel remote cache |
+| [docs/skills/raspberry-pi-runner.md](skills/raspberry-pi-runner.md) | Skill: the Pi 5 self-hosted ARM64 nightly runner |
 | **Crate design docs** (substantial workspace libraries — see [docs/crates/](crates/)) | |
 | [docs/crates/rp-ephemeris.md](crates/rp-ephemeris.md) | `rp-ephemeris` — `Ephemeris` trait, ERFA wrapping, panic-safety + NaN-degradation, derived helpers, time-scale treatment |
 | [docs/crates/rp-targets.md](crates/rp-targets.md) | `rp-targets` — `redb`-backed imaging-plan store: targets, acquisition goals, per-target grading-threshold + scheduling-constraint overrides; `TargetStore` trait. Design stage; crate not yet built. |
+| [docs/crates/rusty-photon-service-lifecycle.md](crates/rusty-photon-service-lifecycle.md) | `rusty-photon-service-lifecycle` — unified tokio runtime + signal handlers + optional Windows SCM, exposing a single `Shutdown` handle across the workspace |
 | **References** | |
 | [docs/references/ascom-alpaca.md](references/ascom-alpaca.md) | ASCOM Alpaca protocol reference |
 | [docs/references/skywatcher-motor-controller-command-set.md](references/skywatcher-motor-controller-command-set.md) | Sky-Watcher motor-controller wire protocol (USB + UDP/11880) — used by `star-adventurer-gti` |
+| [docs/references/omnisim.md](references/omnisim.md) | OmniSim (ASCOM Alpaca Simulators) reference — used by BDD/integration tests |
+| [docs/services/config-actions.md](services/config-actions.md) | Cross-driver configuration protocol: the `config.get` / `config.apply` / `config.schema` ASCOM actions shared by every driver and consumed by `ui-htmx` |
 | **Decisions** (Architecture Decision Records — see [docs/decisions/](decisions/)) | |
 | [ADR-001](decisions/001-fits-file-support.md) | FITS file support |
 | [ADR-002](decisions/002-tls-for-inter-service-communication.md) | TLS for inter-service communication |
@@ -47,6 +56,8 @@ belong in any single service design doc.
 | [ADR-006](decisions/006-typed-physical-quantities-for-mount-pointing.md) | Typed physical quantities (newtypes) for mount pointing |
 | [ADR-007](decisions/007-rusty-photon-driver-shared-crate.md) | Extract `rusty-photon-driver` — the shared ASCOM-driver adapter |
 | [ADR-008](decisions/008-zwo-camera-native-sdk-ffi.md) | `zwo-camera` native ZWO SDK: author-maintained `zwo-rs`/`libzwo-sys` FFI + MIT-SDK public caching |
+| [ADR-009](decisions/009-vendor-qhyccd-rs.md) | Vendor `qhyccd-rs` + `libqhyccd-sys` into the workspace (dual-homed) |
+| [ADR-010](decisions/010-vendor-zwo-rs.md) | Vendor `zwo-rs` + `libzwo-sys` into the workspace (dual-homed) |
 | **Plans** (in-flight initiatives — see [docs/plans/](plans/)) | |
 | [predictive-deadlines-and-watchdog.md](plans/predictive-deadlines-and-watchdog.md) | Predictive operation deadlines in `rp` + Sentinel operation watchdog (5 phases). **Complete** — all phases shipped: Phase 1 event surface (#346), Phase 2 §2.1 slew (#348) + §2.2/§2.3 park+focuser (#352) + §2.4/§2.5 exposure+centering, Phase 3 SSE endpoint, Phase 4 Sentinel watchdog, Phase 5 corrective-action ladder (#373). Authoritative contracts now live in [rp.md §Real-Time Stream](services/rp.md#real-time-stream) and [sentinel.md §Operation Watchdog](services/sentinel.md#operation-watchdog). Archived sub-plans: [phase-1 event surface](plans/archive/predictive-deadlines-phase1-event-surface.md), [phase-2 §2.1 slew](plans/archive/predictive-deadlines-phase2-slew.md), [phase-2 §2.2/§2.3 park+focuser](plans/archive/predictive-deadlines-phase2-park-focuser.md); [phase-3 SSE endpoint](plans/predictive-deadlines-phase3-sse.md) archives on merge. |
 | [bazel-migration.md](plans/bazel-migration.md) | Bazel build alongside Cargo (shadow mode) |
@@ -63,7 +74,7 @@ belong in any single service design doc.
 
 | Crate | Location | Purpose |
 |-------|----------|---------|
-| [bdd-infra](../crates/bdd-infra/) | `crates/bdd-infra` | Shared BDD test infrastructure: `ServiceHandle` for spawning, managing, and stopping service binaries. Config read from each service's `[package.metadata.bdd]` in Cargo.toml. See [testing.md](skills/testing.md) Section 5.1. |
+| [bdd-infra](../crates/bdd-infra/) | `crates/bdd-infra` | Shared BDD test infrastructure: `ServiceHandle` for spawning, managing, and stopping service binaries. The binary is located from the caller's package name (`env!("CARGO_PKG_NAME")`) via the conventional `{PACKAGE_UPPER_SNAKE}_BINARY` env override, else `$CARGO_TARGET_DIR/debug/<pkg>`, else by walking up for `target/debug/<pkg>`. See [testing.md](skills/testing.md) Section 5.1. |
 | [rp-tls](../crates/rp-tls/) | `crates/rp-tls` | Opt-in TLS for inter-service communication: certificate generation, dual-stack TCP binding, TLS/plain serving, and client CA trust. See [ADR-002](decisions/002-tls-for-inter-service-communication.md). |
 | [rp-auth](../crates/rp-auth/) | `crates/rp-auth` | Opt-in HTTP Basic Auth: Argon2id credential hashing/verification, axum tower middleware, and config types. See [ADR-003](decisions/003-authentication-for-device-access.md). |
 | [rp-ephemeris](../crates/rp-ephemeris/) | `crates/rp-ephemeris` | Astronomical math: `Ephemeris` trait + `ErfarsEphemeris` impl wrapping the `erfars` ERFA bindings (BSD-licensed clean-room derivative of IAU SOFA). Pure functions for sidereal time, alt/az, transit, rise/set, twilight, sun + moon position. See [`docs/crates/rp-ephemeris.md`](crates/rp-ephemeris.md) for the crate design (panic safety, NaN-degradation, time scales); [`rp-planning-tools.md`](plans/archive/rp-planning-tools.md) for the original implementation plan. |
@@ -71,6 +82,14 @@ belong in any single service design doc.
 | [skywatcher-motor-protocol](../crates/skywatcher-motor-protocol/) | `crates/skywatcher-motor-protocol` | Pure codec for the Sky-Watcher motor-controller wire protocol (USB + UDP/11880). Transport-agnostic; isolates the 24-bit low-byte-first hex encoding and the `+0x800000` position bias. Used by `star-adventurer-gti`. See [`docs/references/skywatcher-motor-controller-command-set.md`](references/skywatcher-motor-controller-command-set.md). |
 | [rusty-photon-i18n](../crates/rusty-photon-i18n/) | `crates/rusty-photon-i18n` | Fluent loader + locale resolver shared across services. Reads `RP_LOCALE` / `LC_ALL` / `LC_MESSAGES` / `LANG` / OS, negotiates against the locales each consumer embeds, falls back to `en`. Owns `LocalizedParser` trait, `init` lifecycle, and an `ACTIVE_LOADER` thread-local for `value_parser` callbacks. First consumer: `ppba-driver` (CLI help + errors). See [`i18n.md`](plans/i18n.md) and [`i18n-cli-spike.md`](plans/archive/i18n-cli-spike.md). |
 | [rusty-photon-i18n-derive](../crates/rusty-photon-i18n-derive/) | `crates/rusty-photon-i18n-derive` | Companion proc-macro crate. `#[derive(LocalizedParser)]` reads `#[localized(about = "key")]` / `#[localized(help = "key")]` attributes alongside `#[derive(Parser)]` and emits a `parse_localized(loader)` impl that mutates the clap `Command` before parse. Re-exported via `rusty_photon_i18n::LocalizedParser`. |
+| [rusty-photon-shared-transport](../crates/rusty-photon-shared-transport/) | `crates/rusty-photon-shared-transport` | Refcounted multi-client lifecycle scaffolding for duplex transports (serial + UDP): `SharedTransport<Codec>`, the `TransportFactory` trait, and background polling. Basis of the shared-transport driver pattern (first adopter: `dsd-fp2`). |
+| [rusty-photon-driver](../crates/rusty-photon-driver/) | `crates/rusty-photon-driver` | Shared ASCOM-driver runtime layer: the common `DriverError` model, its ASCOM error-code mapping, and the generic `config.get`/`apply`/`schema` action dispatch. See [ADR-007](decisions/007-rusty-photon-driver-shared-crate.md). |
+| [rusty-photon-config](../crates/rusty-photon-config/) | `crates/rusty-photon-config` | Shared config-path resolution, first-run `UniqueID` materialization, and the `config.get`/`apply`/`schema` action protocol for rusty-photon drivers. See [config-actions.md](services/config-actions.md). |
+| [rusty-photon-service-lifecycle](../crates/rusty-photon-service-lifecycle/) | `crates/rusty-photon-service-lifecycle` | Unified service lifecycle: tokio runtime + signal handlers + optional Windows SCM, exposing a single `Shutdown` handle across the workspace. See [`docs/crates/rusty-photon-service-lifecycle.md`](crates/rusty-photon-service-lifecycle.md). |
+| [rp-fits](../crates/rp-fits/) | `crates/rp-fits` | FITS reader/writer wrapper (pure-Rust `fitsrs`) for Rusty Photon services. See [ADR-001](decisions/001-fits-file-support.md). |
+| [rp-plate-solver](../crates/rp-plate-solver/) | `crates/rp-plate-solver` | HTTP client for the `plate-solver` rp-managed service, used by `rp`'s `plate_solve` MCP tool. See [ADR-005](decisions/005-plate-solver.md). |
+| [qhyccd-rs](../crates/qhyccd-rs/) | `crates/qhyccd-rs` (+ nested `libqhyccd-sys`) | Vendored first-party safe bindings for the proprietary QHYCCD SDK; `libqhyccd-sys` holds the raw FFI. Used by `qhy-camera`. See [ADR-009](decisions/009-vendor-qhyccd-rs.md). |
+| [zwo-rs](../crates/zwo-rs/) | `crates/zwo-rs` (+ nested `libzwo-sys`) | Vendored first-party safe bindings for the ZWO ASI camera + EFW filter-wheel SDK (MIT); `libzwo-sys` holds the raw FFI. Used by `zwo-camera`. See [ADR-008](decisions/008-zwo-camera-native-sdk-ffi.md) + [ADR-010](decisions/010-vendor-zwo-rs.md). |
 
 ## Inter-Service Communication: MCP via `rmcp`
 
@@ -95,7 +114,7 @@ SDK from the modelcontextprotocol org). Key reasons for choosing `rmcp`:
 
 Workspace dependency (in root `Cargo.toml`):
 ```toml
-rmcp = { version = "1.4", default-features = false }
+rmcp = { version = "1.7", default-features = false }
 ```
 
 Service feature selections:
@@ -110,32 +129,42 @@ generates JSON Schema from parameter structs via `schemars::JsonSchema`.
 ### Serial-based services (ppba-driver, qhy-focuser)
 
 ```
-config.rs      — Configuration types and JSON loading
-error.rs       — Service-specific error enum (thiserror)
-io.rs          — Traits (SerialReader, SerialWriter, SerialPortFactory)
-serial.rs      — tokio-serial implementation of the traits
-mock.rs        — In-memory mock factory (cfg(feature = "mock"))
-protocol.rs    — Wire-format encode/decode for the device's serial protocol
-serial_manager.rs — Ref-counted connection + background polling
-*_device.rs    — ASCOM trait implementation
-lib.rs         — ServerBuilder (CLI args → server)
-main.rs        — Entry point
+config.rs         — Configuration types and JSON loading
+config_actions.rs — `config.get` / `config.apply` / `config.schema` action handlers
+error.rs          — Service-specific error enum (thiserror)
+serial.rs         — tokio-serial-backed `TransportFactory` (wraps the port in a `SerialFrameTransport`)
+codec.rs          — `Codec` adapter: device wire frames ⇄ `SharedTransport`
+mock.rs           — In-memory mock `TransportFactory` (cfg(feature = "mock"))
+protocol.rs       — Wire-format encode/decode for the device's serial protocol
+manager.rs        — Thin wrapper over `rusty_photon_shared_transport::SharedTransport` (refcounted connect + background polling + cached state)
+*_device.rs       — ASCOM trait implementation
+lib.rs            — ServerBuilder (CLI args → server)
+main.rs           — Entry point
 ```
 
+The legacy per-service `io.rs` traits and `serial_manager.rs` are gone — the
+refcounted connection lifecycle and the `TransportFactory` / `Codec` traits now
+live in the
+[`rusty-photon-shared-transport`](../crates/rusty-photon-shared-transport/)
+crate; each service keeps only its handshake, poll body, and cached state.
+
 ppba-driver additionally has `switches.rs` (Switch device wiring) and
-`mean.rs` (running-mean smoothing for ObservingConditions readings).
+`mean.rs` (running-mean smoothing for ObservingConditions readings); its device
+files are `observingconditions_device.rs` + `switch_device.rs`.
 
 ### HTTP gateway services (rp)
 
 ```
-config.rs            — Configuration types and loading
+config/              — Configuration types + loading (camera/mount/focuser/site/… submodules)
 error.rs             — RpError enum + Result alias (thiserror)
-equipment.rs         — EquipmentRegistry, ASCOM Alpaca client
-events.rs            — EventBus, webhook delivery
-imaging.rs           — FITS read/write and pixel statistics
-mcp.rs               — rmcp tool_router: #[tool] methods, ServerHandler impl
+equipment/           — EquipmentRegistry + ASCOM Alpaca client (per-device submodules)
+events.rs            — EventBus, webhook + SSE delivery
+imaging/             — FITS read/write, pixel statistics, analysis + tools
+mcp/                 — rmcp tool_router: #[tool] methods, ServerHandler impl
+persistence/         — redb document store + FITS cache (cache/document/fits)
+planner/             — Observation planning (catalog/decision/primitives/convenience)
 session.rs           — SessionManager, orchestrator invocation
-routes.rs            — Axum router (REST + MCP endpoints)
+routes.rs            — Axum router (REST + MCP + SSE endpoints)
 hash_password_cmd.rs — `rp hash-password` subcommand (Argon2id hashing)
 tls_cmd.rs           — `rp init-tls` subcommand (CA + per-service certs)
 lib.rs               — ServerBuilder (two-phase: build → start)
@@ -175,6 +204,8 @@ sentinel/src/
   notifier.rs      — Notifier trait
   state.rs         — Shared monitor status + notification history
   engine.rs        — Orchestrates monitors, transitions, notifiers
+  watchdog.rs      — Operation watchdog (predictive-deadlines Phase 4)
+  corrective.rs    — Corrective-action ladder (predictive-deadlines Phase 5)
   dashboard.rs     — Axum routes for JSON API + dashboard HTML
   lib.rs / main.rs — Server bootstrap and entry point
 ```
@@ -188,10 +219,8 @@ sentinel/src/
 ## MSRV
 
 The minimum supported Rust version is pinned in `[workspace.package]` of the
-root `Cargo.toml` (`rust-version = "1.94.1"`). All workspace members —
-services (`filemonitor`, `phd2-guider`, `ppba-driver`, `qhy-focuser`,
-`calibrator-flats`, `rp`, `sentinel`, `sky-survey-camera`)
-and shared crates (`bdd-infra`, `rp-auth`, `rp-tls`) — inherit it via
+root `Cargo.toml` (`rust-version = "1.94.1"`). Every member listed in
+`[workspace].members` — all services and shared crates — inherits it via
 `rust-version.workspace = true`.
 
 ## Workspace Dependencies
@@ -211,6 +240,9 @@ install a custom hook script kept in the repo at
 ```sh
 cargo clippy --all --all-targets --all-features -- -D warnings
 cargo fmt --all -- --check
+# Buildifier (BUILD / *.bzl / MODULE.bazel formatting + lint) — the same gate CI
+# runs. Guarded on bazel being installed, so Cargo-only devs aren't blocked:
+bazel test //:buildifier_check
 ```
 
 The hook is installed automatically the first time any test build pulls
@@ -294,9 +326,14 @@ worked example.
 
 ## Feature Flags
 
-- **`mock`** — Enables `MockSerialPortFactory` with persistent state for
-  integration testing (ConformU, server tests). Used by ppba-driver and
-  qhy-focuser. Not used for unit tests — those define inline mocks.
+- **`mock`** — Enables an in-memory mock factory with persistent device state
+  for integration testing (ConformU, server tests); not used for unit tests,
+  which define inline mocks. The serial drivers expose a per-service mock
+  `TransportFactory` (`ppba-driver` → `MockPpbaTransportFactory`, `qhy-focuser`
+  → `MockQhyTransportFactory`). Declared by `ppba-driver`, `qhy-focuser`,
+  `pa-falcon-rotator`, `dsd-fp2`, `star-adventurer-gti`, `sky-survey-camera`
+  (`mock = []`), the camera drivers `qhy-camera` / `zwo-camera`
+  (`mock = ["simulation"]`), and `rp-plate-solver` (`mock = ["dep:mockall"]`).
 
 ## Build Notes
 
@@ -313,7 +350,7 @@ are the single source of truth for dependency versions, and Bazel's
 `crate_universe` reads them. The repo root holds `MODULE.bazel` and
 `BUILD.bazel`; `bazel test //...` runs all non-`requires-cargo`, non-BDD
 targets. Bazel is **not** a required pre-push gate yet — the canonical
-pre-push command is still `cargo rail run --merge-base` (see
+pre-push command is still `cargo rail run --profile commit -q` (see
 [docs/skills/pre-push.md](skills/pre-push.md)).
 
 After adding a crates.io dependency to the workspace, run

@@ -23,8 +23,8 @@ Coverage has two columns: **Cargo** is the canonical, required coverage; **Bazel
 | [dsd-fp2](services/dsd-fp2) | ASCOM CoverCalibrator | 11119 | [![coverage][cov-dsd-fp2]][cov-dsd-fp2-link] | [![coverage][cov-bazel-dsd-fp2]][cov-bazel-dsd-fp2-link] | Driver for Deep Sky Dad Flat Panel 2 (motorised flat field panel) |
 | [ui-htmx](services/ui-htmx) | Web config UI (BFF) | 11120 | [![coverage][cov-ui-htmx]][cov-ui-htmx-link] | [![coverage][cov-bazel-ui-htmx]][cov-bazel-ui-htmx-link] | Server-rendered configuration UI (axum + Maud + HTMX); edits any driver's config via its `config.get`/`config.apply` actions |
 | [plate-solver](services/plate-solver) | rp-managed HTTP service | 11131 | [![coverage][cov-plate-solver]][cov-plate-solver-link] | [![coverage][cov-bazel-plate-solver]][cov-bazel-plate-solver-link] | Wraps the ASTAP CLI for plate solving in a supervised, crash-isolated process |
-
-> 🚧 **In development:** [qhy-camera](services/qhy-camera) — ASCOM Camera (+ FilterWheel) driver for QHYCCD hardware (port 11121; design + BDD scaffold landed). Links a proprietary vendor SDK, so it is gated out of the default build. See [docs/services/qhy-camera.md](docs/services/qhy-camera.md).
+| [qhy-camera](services/qhy-camera) | ASCOM Camera (+ FilterWheel) | 11121 | [![coverage][cov-qhy-camera]][cov-qhy-camera-link] | [![coverage][cov-bazel-qhy-camera]][cov-bazel-qhy-camera-link] | Driver for QHYCCD cameras + filter wheels (vendored QHYCCD SDK; build links it unless `--features simulation`) |
+| [zwo-camera](services/zwo-camera) | ASCOM Camera | 11122 | [![coverage][cov-zwo-camera]][cov-zwo-camera-link] | [![coverage][cov-bazel-zwo-camera]][cov-bazel-zwo-camera-link] | Driver for ZWO ASI cameras (vendored MIT ZWO SDK); EFW filter-wheel support in progress |
 
 ### RP (Main Application)
 
@@ -76,7 +76,7 @@ See [docs/services/sky-survey-camera.md](docs/services/sky-survey-camera.md) for
 
 ### Star Adventurer GTi
 
-ASCOM Alpaca Telescope driver for the Sky-Watcher Star Adventurer GTi, an entry-level GoTo equatorial mount. Speaks the Sky-Watcher motor-controller protocol over USB-CDC serial (115200 baud) and UDP (192.168.4.1:11880 in mount-AP mode). Implements the MVP slice — connect/disconnect, RA/Dec reads, sync, async slew, sidereal tracking, software park, abort — leaving guiding, custom rates, and Alt/Az slew for follow-up. The shared codec lives in the `skywatcher-motor-protocol` workspace crate so other Sky-Watcher mounts can reuse it.
+ASCOM Alpaca Telescope driver for the Sky-Watcher Star Adventurer GTi, an entry-level GoTo equatorial mount. Speaks the Sky-Watcher motor-controller protocol over USB-CDC serial (115200 baud) and UDP (192.168.4.1:11880 in mount-AP mode). Implements connect/disconnect, RA/Dec reads, sync, async slew, sidereal tracking, software park, abort, and pulse guiding — leaving custom tracking rates and Alt/Az slew for follow-up. The shared codec lives in the `skywatcher-motor-protocol` workspace crate so other Sky-Watcher mounts can reuse it.
 
 See [docs/services/star-adventurer-gti.md](docs/services/star-adventurer-gti.md) for design documentation.
 
@@ -104,9 +104,13 @@ An **rp-managed** HTTP service that wraps an operator-supplied [ASTAP](https://w
 
 See [docs/services/plate-solver.md](docs/services/plate-solver.md) for design documentation.
 
-### QHY Camera 🚧
+### QHY Camera
 
-ASCOM Alpaca **Camera (+ FilterWheel)** driver for real QHYCCD hardware, built natively on the published `qhyccd-rs` crate. It enumerates every connected QHY camera and CFW and exposes each as an ASCOM device on one port. **In development** — the design doc and BDD scaffold have landed; implementation is gated behind the proprietary QHYCCD SDK, so the service is excluded from the default build. See [docs/services/qhy-camera.md](docs/services/qhy-camera.md) for design documentation.
+ASCOM Alpaca **Camera (+ FilterWheel)** driver for real QHYCCD hardware, built natively on the vendored first-party `qhyccd-rs` crate (ADR-009). It enumerates every connected QHY camera and CFW and exposes each as an ASCOM device on one port. Implemented (v0). The build links the proprietary QHYCCD SDK; use `--features simulation` for an SDK-free build (the path CI and the sanitizer jobs use). See [docs/services/qhy-camera.md](docs/services/qhy-camera.md) for design documentation.
+
+### ZWO Camera
+
+ASCOM Alpaca **Camera** driver for ZWO ASI hardware, built natively on the vendored first-party `zwo-rs` crate (ADR-008 / ADR-010, MIT SDK). Exposes the full `Device + Camera` surface — exposure state machine, ROI/binning, gain/offset, cooling, readout modes, and ST4 pulse guiding — and passes ConformU. EFW filter-wheel support is the next phase. See [docs/services/zwo-camera.md](docs/services/zwo-camera.md) for design documentation.
 
 ## Getting Started
 
@@ -165,8 +169,10 @@ ASCOM Alpaca compliance testing is integrated via [ConformU](https://github.com/
 # Install ConformU (first time only)
 ./scripts/test-conformance.sh --install-conformu
 
-# Run ConformU compliance tests
-cargo test --test conformu_integration -- --ignored
+# Run a service's ConformU suite. The tests are feature-gated behind `conformu`
+# (a no-op without it). The canonical per-service command lives in each
+# Cargo.toml's [package.metadata.conformu], e.g. for filemonitor:
+cargo test -p filemonitor --features conformu --test conformu_integration -- --nocapture
 ```
 
 ### Local CI
@@ -210,6 +216,8 @@ rusty-photon/
     rusty-photon-service-lifecycle/  Unified lifecycle: runtime + signals + optional Windows SCM
     rusty-photon-shared-transport/   Refcounted multi-client transport scaffolding (serial + UDP)
     skywatcher-motor-protocol/       Sky-Watcher motor-controller wire protocol codec (USB + UDP)
+    qhyccd-rs/                       Vendored QHYCCD SDK bindings + nested libqhyccd-sys FFI (ADR-009)
+    zwo-rs/                          Vendored ZWO ASI/EFW SDK bindings + nested libzwo-sys FFI (ADR-008/010)
   services/
     rp/                    Main application: equipment gateway, event bus, safety enforcer
     filemonitor/           ASCOM SafetyMonitor (file-based)
@@ -219,7 +227,8 @@ rusty-photon/
     pa-falcon-rotator/     ASCOM Rotator + Switch — Pegasus Falcon (serial)
     star-adventurer-gti/   ASCOM Telescope — Sky-Watcher GTi (USB + WiFi/UDP)
     sky-survey-camera/     ASCOM Camera simulator backed by NASA SkyView
-    qhy-camera/            ASCOM Camera + FilterWheel — QHYCCD hardware (design + BDD scaffold; SDK-gated)
+    qhy-camera/            ASCOM Camera + FilterWheel — QHYCCD hardware (implemented v0; vendored SDK)
+    zwo-camera/            ASCOM Camera — ZWO ASI hardware (implemented; vendored MIT SDK)
     phd2-guider/           PHD2 client library (TCP/JSON RPC)
     sentinel/              Monitoring service (HTTP consumer)
     calibrator-flats/      Flat-field calibration orchestrator plugin (CoverCalibrator)
@@ -227,6 +236,7 @@ rusty-photon/
     ui-htmx/               Server-rendered web configuration UI (BFF)
   docs/
     services/              Per-service design documentation
+    crates/                Per-crate design documentation
     skills/                How-to playbooks for agents and operators
     references/            Protocol and standards reference
     decisions/             Architecture Decision Records (ADRs)
@@ -281,6 +291,10 @@ Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT L
 [cov-ui-htmx-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=ui-htmx
 [cov-plate-solver]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=plate-solver
 [cov-plate-solver-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=plate-solver
+[cov-qhy-camera]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=qhy-camera
+[cov-qhy-camera-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=qhy-camera
+[cov-zwo-camera]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=zwo-camera
+[cov-zwo-camera-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=zwo-camera
 
 <!-- per-service coverage badges (Bazel shadow build, flag=bazel-<pkg>; read "unknown" until .github/workflows/bazel-coverage.yml has run on main) -->
 [cov-bazel-rp]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=bazel-rp
@@ -309,3 +323,7 @@ Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT L
 [cov-bazel-ui-htmx-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=bazel-ui-htmx
 [cov-bazel-plate-solver]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=bazel-plate-solver
 [cov-bazel-plate-solver-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=bazel-plate-solver
+[cov-bazel-qhy-camera]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=bazel-qhy-camera
+[cov-bazel-qhy-camera-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=bazel-qhy-camera
+[cov-bazel-zwo-camera]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=bazel-zwo-camera
+[cov-bazel-zwo-camera-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=bazel-zwo-camera
