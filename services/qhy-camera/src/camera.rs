@@ -4,7 +4,12 @@
 //! Behaviour is ported from the author's standalone `qhyccd-alpaca` driver and
 //! re-expressed against rusty-photon conventions, with these deliberate
 //! divergences (see `docs/services/qhy-camera.md`):
-//! - **MaxADU** = `2^OutputDataActualBits - 1` (65535 for 16-bit), not `2^bits`.
+//! - **MaxADU** = `2^transfer_bits - 1` (65535 for the 16-bit container we set at
+//!   connect), from `GetQHYCCDChipInfo`'s reported bit depth — *not*
+//!   `2^OutputDataActualBits - 1`. The SDK left-shifts each raw sensor reading to
+//!   fill the container (12-bit IMX290 → values up to 0xFFF0, 14-bit IMX178 →
+//!   0xFFFC; SDK manual §14), so the container max is what a client receives;
+//!   `OutputDataActualBits` is the sensor ADC depth (and is 0 on the QHY5III715C).
 //! - **ROI validation** rejects a zero or out-of-bounds sub-frame via
 //!   `StartX + NumX > CameraXSize / BinX` (contract R2), not the reference's
 //!   `StartX > NumX`.
@@ -578,13 +583,24 @@ impl Camera for QhyCameraDevice {
 
     async fn max_adu(&self) -> ASCOMResult<u32> {
         self.ensure_connected()?;
-        let bits = match self.handle.get_parameter(Control::OutputDataActualBits) {
-            Ok(b) => b as u32,
-            Err(_) => (*self.state.ccd_info.lock())
-                .map(|c| c.bits_per_pixel)
-                .ok_or(ASCOMError::VALUE_NOT_SET)?,
-        };
-        Ok(max_adu_from_bits(bits))
+        // MaxADU is the largest value a client can actually receive in `ImageArray`
+        // — which is governed by the *transfer container* depth, not the sensor's
+        // ADC depth. The driver forces a 16-bit container at connect
+        // (`set_transfer_bit_16`), and the SDK left-shifts each sensor reading to
+        // fill it: on hardware the 12-bit IMX290 returns values up to 0xFFF0 and
+        // the 14-bit IMX178 up to 0xFFFC, both quantised in steps of
+        // 2^(16 - sensor_bits). So the container max (65535 for 16-bit) is correct.
+        //
+        // `OutputDataActualBits` is therefore the *wrong* source: it reports the
+        // sensor ADC depth (which would give 4095 on the IMX290 — 16x too small —
+        // and 0 on the QHY5III715C, whose firmware reports actual-bits = 0). Use
+        // the container depth cached from `GetQHYCCDChipInfo` (8-bit if a model
+        // ever rejects the 16-bit transfer), defaulting to 16 so MaxADU is never 0.
+        let container_bits = (*self.state.ccd_info.lock())
+            .map(|c| c.bits_per_pixel)
+            .filter(|&b| b > 0)
+            .unwrap_or(16);
+        Ok(max_adu_from_bits(container_bits))
     }
 
     async fn sensor_name(&self) -> ASCOMResult<String> {
@@ -1376,6 +1392,25 @@ mod tests {
         assert!(!device.can_asymmetric_bin().await.unwrap());
         assert_eq!(device.sensor_type().await.unwrap(), SensorType::Monochrome);
         assert!(!device.has_shutter().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn max_adu_is_container_depth_independent_of_actual_bits() {
+        // MaxADU must track the 16-bit *transfer container* (GetQHYCCDChipInfo bpp,
+        // 16 in the mock), never the sensor's OutputDataActualBits: the SDK
+        // left-shifts raw data to fill the container (SDK manual §14). So whether
+        // the sensor reports a real depth (14) or the QHY5III715C's bogus 0, MaxADU
+        // is 65535 — and is never the 2^0 - 1 = 0 that ConformU flagged.
+        for actual_bits in [0.0, 12.0, 14.0] {
+            let handle =
+                MockCameraHandle::default().with_param(Control::OutputDataActualBits, actual_bits);
+            let device = connected_device(handle);
+            assert_eq!(
+                device.max_adu().await.unwrap(),
+                65535,
+                "actual_bits={actual_bits} must not change the 16-bit container MaxADU"
+            );
+        }
     }
 
     #[tokio::test]

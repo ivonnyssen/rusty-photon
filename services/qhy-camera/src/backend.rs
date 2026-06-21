@@ -500,6 +500,12 @@ pub(crate) mod mock {
             self.controls.lock().insert(control, value);
             self
         }
+        /// Override a numeric parameter returned by `get_parameter` (e.g. set
+        /// `OutputDataActualBits` to 0 to mimic the QHY5III715C's SDK quirk).
+        pub fn with_param(self, control: Control, value: f64) -> Self {
+            self.params.lock().insert(control, value);
+            self
+        }
         pub fn set_single_frame_delay(&self, delay: Duration) {
             *self.single_frame_delay.lock() = delay;
         }

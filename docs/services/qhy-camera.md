@@ -213,8 +213,10 @@ The MVP boundary drives BDD scenario selection (Phase 2). Grounded in what
 - **Cooling** — `CoolerOn`, `CCDTemperature`, `SetCCDTemperature`, `CoolerPower`,
   `CanSetCCDTemperature`, `CanGetCoolerPower` — all gated on the `Cooler` control.
 - **Sensor type** — `Monochrome` vs `RGGB`/colour + `BayerOffsetX/Y`.
-- **`MaxADU`** = `(2^OutputDataActualBits) - 1` (e.g. 65535 for a 16-bit
-  sensor); `SensorName` from the device id.
+- **`MaxADU`** = `(2^transfer_bits) - 1` (65535 for the 16-bit container set at
+  connect), from `GetQHYCCDChipInfo`'s reported bit depth — **not**
+  `OutputDataActualBits` (see the MaxADU note under "Deliberate divergences");
+  `SensorName` from the device id.
 - **FilterWheel** as a second ASCOM device on the same port (when present):
   `Names`, `Position` (with moving state), `set_position`, `FocusOffsets`.
 - **Dark frames** — `Light = false` returns `NOT_IMPLEMENTED` on all models in
@@ -447,7 +449,7 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
 | `BinX` / `BinY` / `MaxBinX` / `MaxBinY` | Symmetric; max from valid binning modes |
 | `CanAsymmetricBin` | `false` |
 | `NumX` / `NumY` / `StartX` / `StartY` | Setters relaxed; validated at `StartExposure` |
-| `MaxADU` | `(2^OutputDataActualBits) - 1` (65535 for 16-bit) |
+| `MaxADU` | `(2^transfer_bits) - 1` (65535) from `GetQHYCCDChipInfo` bpp, not `OutputDataActualBits` |
 | `ElectronsPerADU` / `FullWellCapacity` | `NOT_IMPLEMENTED` (placeholder only if ConformU demands) |
 | `ExposureMin` / `Max` / `Resolution` | From SDK `get_parameter_min_max_step(Exposure)` |
 | `Gain` / `GainMin` / `GainMax` | SDK `Gain` control; `NOT_IMPLEMENTED` if absent |
@@ -591,9 +593,17 @@ the "how" decisions made while building.
   run with no hardware and no *real* SDK calls. (The static `qhyccd` lib is still
   linked into the test binary — that link is unconditional, see above; only the
   runtime seam is mocked.)
-- **MaxADU.** `2^bits − 1` where `bits` is `OutputDataActualBits`, **falling back
-  to the cached `ccd_info.bits_per_pixel`** when that control is unavailable
-  (both give 16 ⇒ 65535 on the sim).
+- **MaxADU.** `2^bits − 1` where `bits` is the **transfer-container depth** from
+  the cached `ccd_info.bits_per_pixel` (16 ⇒ 65535), defaulting to 16 if unset.
+  It is **not** `OutputDataActualBits`: the driver sets a 16-bit container at
+  connect (`set_transfer_bit_16`) and the SDK left-shifts each raw sensor reading
+  to fill it (zero-padding the low bits — SDK manual §14), so a client receives
+  values up to the container max regardless of the sensor's native ADC depth.
+  Confirmed on hardware: the 12-bit IMX290 returns values quantised in steps of 16
+  up to 0xFFF0, and `OutputDataActualBits` reads 14 (IMX178) / 12 (IMX290) / **0**
+  (QHY5III715C) — the last of which made the old `2^OutputDataActualBits − 1`
+  formula yield `MaxADU = 0` (ConformU: "below minimum"). The container-depth
+  formula is uniform across all models and never 0.
 - **Dark frames** → `NOT_IMPLEMENTED` on all models (E4) — no shutter actuation
   in `qhyccd-rs` 0.1.9.
 - **FilterWheel `UniqueID`** is `CFW-<sdk-id>` (prefixed), because a `qhyccd-rs`
