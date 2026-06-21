@@ -36,8 +36,14 @@
 > full frame at each bin and 6248/2 = 3124 is not a multiple of 8; and (3b)
 > `PulseGuide` is now **asynchronous** (returns immediately, `IsPulseGuiding`
 > tracks the pulse to its deadline) instead of blocking for the pulse duration,
-> which exceeded ConformU's 1 s response target. All that remains for Phase G is
-> wiring `zwo-camera` into `conformu.yml`. See *Testing* and *Delivery phasing*.
+> which exceeded ConformU's 1 s response target. **Now also verified against real
+> hardware (2026-06-20):** both suites pass on a Linux x86_64 dev box, driven
+> against the production **non-`simulation`** binary (real FFI path), for two
+> physical cameras — a cooled **ASI1600MM-Cool** (12-bit, `MaxADU` 4095,
+> `noserial` identity fallback) and an uncooled **ASI178MM** (14-bit, `MaxADU`
+> 16383, real `ASIGetSerialNumber` identity) — exercising both the cooled/uncooled
+> cooler-gating split and both UniqueID paths. See *Testing* and *Delivery
+> phasing*.
 >
 > **CI provisioning (simulation by default; real link verified nightly).** The
 > `.github/actions/install-zwo-sdk` composite action provisions the SDK on
@@ -235,7 +241,12 @@ overshoot, and a loop that summed *intended* naps would run the full step count
 regardless of real time, ballooning a 2 s exposure to ~10 s of wall-clock on a
 contended runner (this tripped ConformU's 10 s async-operation timeout on the
 macOS CI runner — a scheduling artifact, not a slow CPU). The deadline bounds the
-integration to the requested duration plus at most one overshooting nap.
+integration to the requested duration plus at most one overshooting nap. The same
+real-clock-deadline discipline is applied to every wait loop in the capture path
+(integration, readout-completion poll, and the test backends), so no loop counts
+fixed naps or sums *intended* sleep time. Validated under genuine concurrency:
+three cameras driven by simultaneous ConformU `conformance` suites all stayed
+within their response-time targets (see *Testing*).
 
 ---
 
@@ -659,6 +670,58 @@ and **57 BDD scenarios** (all green), plus a full **ConformU** pass.
   *Geometry*) and asynchronous `PulseGuide` (see *Guiding*). `zwo-camera` is now
   wired into `conformu.yml` (Phase G, 2026-06-18): the conformu jobs provision the
   ZWO SDK and run its ConformU on ubuntu/macOS/Windows.
+
+**Real-hardware validation (2026-06-20).** Beyond the simulation backend, both
+ConformU 4.3.0 suites (`alpacaprotocol` + `conformance`) pass against **real ZWO
+hardware** on a Linux x86_64 dev box (SDK in `/usr/local/lib`, `99-asi.rules`
+udev rule, world-RW USB node), driven against the production **non-`simulation`**
+binary so the genuine FFI path — `zwo-camera → zwo-rs → libzwo-sys → libASICamera2.so`
+— is exercised end to end, not just the fabricated simulator. Two physical
+cameras were validated, each *"no errors, warnings or issues found"* with all
+members within their response targets:
+
+- **ASI1600MM-Cool** (cooled, mono): `MaxADU` 4095 (12-bit), `ElectronsPerADU`
+  0.00496, sensor 4656×3520 reported as **4608×3504** (R4 align — largest
+  multiples of `lcm(8·bin)`=96 / `lcm(2·bin)`=24 for bins 1–4), gain 0–600 /
+  offset 0–100, ST4 `CanPulseGuide`, both stop+abort. The cooler path was
+  separately exercised live (`CoolerPower` ramped from a −10 °C target). This
+  model exposes neither a serial nor a flash ID, so it used the `noserial-0`
+  identity fallback (`mint_identity`) — the documented older-model path.
+- **ASI178MM** (uncooled, mono): `MaxADU` 16383 (14-bit), `ElectronsPerADU`
+  0.00258, sensor 3096×2080 reported as **3072×2064** (R4 align), gain 0–510 /
+  offset 0–600. The uncooled cooler-gating contract (K1) is confirmed on
+  hardware — `CanSetCCDTemperature`/`CanGetCoolerPower` are `false` and the cooler
+  getters return `NotImplemented` — while `CCDTemperature` still reads the live
+  sensor value (25.6 °C), exactly the decoupled-temperature decision (K2). It
+  reports a real `ASIGetSerialNumber`, exercising the canonical UniqueID path.
+
+> One benign observation: the very first `CCDTemperature` read immediately after
+> connect can return a stale `0.0 °C`, then immediately reflects the sensor
+> (~15.7 °C ambient on the bench). The driver reads the value live with no caching
+> (`camera.rs` `ccd_temperature`), so this is the ASI SDK's `ASI_TEMPERATURE`
+> register not yet populated until its first internal measurement cycle (~1 s) —
+> an SDK warm-up artifact, not a driver caching defect or a conformance failure.
+
+**Concurrent multi-camera validation (2026-06-21).** A single service instance
+enumerates every connected ASI camera on the one port, so concurrency *across*
+devices is a first-class case. With **three** cameras attached at once —
+**ASI178MM** (`camera/0`), **ASI120MC-S** (`camera/1`, a colour USB2 planetary
+model) and **ASI1600MM-Cool** (`camera/2`) — a full ConformU run
+(`alpacaprotocol` + `conformance`) was fired at all three **simultaneously**
+(three independent processes, isolated `$HOME`). **All three passed**, each *"no
+errors, warnings or issues found"* and — critically — *"all members returned
+within their target response times"* **under 3× concurrent load**, the very
+scenario the deadline-based integration wait (see *Concurrency*) was hardened
+for. The three suites overlapped throughout a ~46 s window with no driver-level
+errors, mid-exposure `Error` transitions, late-capture invalidations, or
+lock-contention symptoms; the service enumerated all three (`cameras=3`), shut
+down cleanly, and left every camera released on USB. New coverage from this run:
+the **ASI120MC-S colour path** (`SensorType RGGB`, `BayerOffsetX/Y`) and
+per-device independence (contract C4) under genuine concurrency. One operational
+note surfaced: the serial-less ASI1600 came up as `noserial-2` here (it is
+`noserial-0` when attached alone), so the position-based `mint_identity` UniqueID
+is **enumeration-order-dependent** in multi-camera setups — cameras that report a
+real SDK serial (ASI178MM, ASI120MC-S) are order-independent.
 
 > **CI caveat (critical):** the `simulation` feature removes the *camera*
 > requirement, **not the SDK**. All build/test/ConformU jobs for this package
