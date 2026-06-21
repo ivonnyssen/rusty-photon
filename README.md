@@ -23,8 +23,8 @@ Coverage has two columns: **Cargo** is the canonical, required coverage; **Bazel
 | [dsd-fp2](services/dsd-fp2) | ASCOM CoverCalibrator | 11119 | [![coverage][cov-dsd-fp2]][cov-dsd-fp2-link] | [![coverage][cov-bazel-dsd-fp2]][cov-bazel-dsd-fp2-link] | Driver for Deep Sky Dad Flat Panel 2 (motorised flat field panel) |
 | [ui-htmx](services/ui-htmx) | Web config UI (BFF) | 11120 | [![coverage][cov-ui-htmx]][cov-ui-htmx-link] | [![coverage][cov-bazel-ui-htmx]][cov-bazel-ui-htmx-link] | Server-rendered configuration UI (axum + Maud + HTMX); edits any driver's config via its `config.get`/`config.apply` actions |
 | [plate-solver](services/plate-solver) | rp-managed HTTP service | 11131 | [![coverage][cov-plate-solver]][cov-plate-solver-link] | [![coverage][cov-bazel-plate-solver]][cov-bazel-plate-solver-link] | Wraps the ASTAP CLI for plate solving in a supervised, crash-isolated process |
-| [qhy-camera](services/qhy-camera) | ASCOM Camera (+ FilterWheel) | 11121 | [![coverage][cov-qhy-camera]][cov-qhy-camera-link] | [![coverage][cov-bazel-qhy-camera]][cov-bazel-qhy-camera-link] | Driver for QHYCCD cameras + filter wheels (vendored QHYCCD SDK; build links it unless `--features simulation`) |
-| [zwo-camera](services/zwo-camera) | ASCOM Camera | 11122 | [![coverage][cov-zwo-camera]][cov-zwo-camera-link] | [![coverage][cov-bazel-zwo-camera]][cov-bazel-zwo-camera-link] | Driver for ZWO ASI cameras (vendored MIT ZWO SDK); EFW filter-wheel support in progress |
+| [qhy-camera](services/qhy-camera) | ASCOM Camera (+ FilterWheel) | 11121 | [![coverage][cov-qhy-camera]][cov-qhy-camera-link] | [![coverage][cov-bazel-qhy-camera]][cov-bazel-qhy-camera-link] | Driver for QHYCCD cameras + filter wheels (vendored `qhyccd-rs` bindings; links the proprietary SDK unless `QHYCCD_SKIP_NATIVE_LINK=1`) |
+| [zwo-camera](services/zwo-camera) | ASCOM Camera | 11122 | [![coverage][cov-zwo-camera]][cov-zwo-camera-link] | [![coverage][cov-bazel-zwo-camera]][cov-bazel-zwo-camera-link] | Driver for ZWO ASI cameras (vendored `zwo-rs` bindings, MIT SDK; links the SDK unless `ZWO_SKIP_NATIVE_LINK=1`); EFW filter-wheel support in progress |
 
 ### RP (Main Application)
 
@@ -106,11 +106,11 @@ See [docs/services/plate-solver.md](docs/services/plate-solver.md) for design do
 
 ### QHY Camera
 
-ASCOM Alpaca **Camera (+ FilterWheel)** driver for real QHYCCD hardware, built natively on the vendored first-party `qhyccd-rs` crate (ADR-009). It enumerates every connected QHY camera and CFW and exposes each as an ASCOM device on one port. Implemented (v0). The build links the proprietary QHYCCD SDK; use `--features simulation` for an SDK-free build (the path CI and the sanitizer jobs use). See [docs/services/qhy-camera.md](docs/services/qhy-camera.md) for design documentation.
+ASCOM Alpaca **Camera (+ FilterWheel)** driver for real QHYCCD hardware, built natively on the vendored first-party `qhyccd-rs` bindings crate (ADR-009). It enumerates every connected QHY camera and CFW and exposes each as an ASCOM device on one port. Implemented (v0). By default the build links the proprietary QHYCCD SDK; for an SDK-free build set `QHYCCD_SKIP_NATIVE_LINK=1` together with `--features simulation` (which `cfg`s out the native FFI) — the path CI and the sanitizer jobs use. See [docs/services/qhy-camera.md](docs/services/qhy-camera.md) for design documentation.
 
 ### ZWO Camera
 
-ASCOM Alpaca **Camera** driver for ZWO ASI hardware, built natively on the vendored first-party `zwo-rs` crate (ADR-008 / ADR-010, MIT SDK). Exposes the full `Device + Camera` surface — exposure state machine, ROI/binning, gain/offset, cooling, readout modes, and ST4 pulse guiding — and passes ConformU. EFW filter-wheel support is the next phase. See [docs/services/zwo-camera.md](docs/services/zwo-camera.md) for design documentation.
+ASCOM Alpaca **Camera** driver for ZWO ASI hardware, built natively on the vendored first-party `zwo-rs` bindings crate (ADR-008 / ADR-010). The MIT ZWO SDK itself is not vendored — it is provisioned at build time and linked unless `ZWO_SKIP_NATIVE_LINK=1` is set (the simulation-only path CI uses). Exposes the full `Device + Camera` surface — exposure state machine, ROI/binning, gain/offset, cooling, readout modes, and ST4 pulse guiding — and passes ConformU. EFW filter-wheel support is the next phase. See [docs/services/zwo-camera.md](docs/services/zwo-camera.md) for design documentation.
 
 ## Getting Started
 
