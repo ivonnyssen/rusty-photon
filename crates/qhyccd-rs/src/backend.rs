@@ -1,4 +1,5 @@
-use std::sync::{Arc, RwLock};
+use parking_lot::RwLock;
+use std::sync::Arc;
 
 #[cfg(feature = "simulation")]
 use crate::simulation::SimulatedCameraState;
@@ -16,8 +17,9 @@ pub(crate) struct QHYCCDHandle {
 // in Rust.
 //
 // This type does NOT itself serialize concurrent SDK calls on one handle: the
-// `RwLock` above only guards the `Option<handle>` (open/close), and `read_lock!`
-// copies the pointer out and releases the guard *before* the FFI call. So
+// `parking_lot::RwLock` above only guards the `Option<handle>` (open/close), and
+// `read_lock!` copies the pointer out and releases the guard *before* the FFI
+// call. So
 // soundness of concurrent calls on a shared `Camera` relies on synchronization
 // provided by the caller and/or the QHYCCD SDK being thread-safe per handle. The
 // qhy-camera driver provides it: every SDK call runs on `spawn_blocking` with a
@@ -68,21 +70,15 @@ impl PartialEq for CameraBackend {
 
 macro_rules! read_lock {
     ($var:expr, $wrap:expr) => {{
-        $var.read()
-            .map_err(|err| {
-                tracing::error!(error = ?err);
-                $crate::QHYError::LockPoisoned("Could not acquire read lock on camera handle")
-            })
-            .and_then(|lock| match *lock {
-                Some(handle) => Ok(handle.ptr),
-                None => {
-                    tracing::error!(error = ?$crate::QHYError::CameraNotOpenError);
-                    Err($crate::QHYError::CameraNotOpenError)
-                }
-            })
-            // On failure return the caller's high-level `QHYError` ($wrap); the
-            // low-level cause (poisoned lock / camera-not-open) is logged above.
-            .map_err(|_: $crate::QHYError| $wrap)
+        // `parking_lot::RwLock` cannot be poisoned, so the only failure is an
+        // unopened handle; map it to the caller's high-level `QHYError` ($wrap).
+        match *$var.read() {
+            Some(handle) => Ok::<*const std::ffi::c_void, $crate::QHYError>(handle.ptr),
+            None => {
+                tracing::error!(error = ?$crate::QHYError::CameraNotOpenError);
+                Err($wrap)
+            }
+        }
     }};
 }
 

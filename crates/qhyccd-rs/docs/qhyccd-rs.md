@@ -465,7 +465,7 @@ Error handling flow:
 3. Error is logged via `tracing::error!`
 4. The `QHYError` propagates to the caller via `?`
 
-The library does not panic during normal operation. A poisoned `RwLock` (which indicates a panic in another thread while the lock was held — a serious bug) is surfaced as a typed `QHYError::LockPoisoned`, or mapped to a higher-level `QHYError` by the `read_lock!` macro, and propagated via `?` rather than re-panicking.
+The library does not panic during normal operation. Internal state is guarded by `parking_lot::RwLock`, which cannot be poisoned, so lock acquisition is infallible and there is no poison error to model or propagate.
 
 ### FFI Layer (libqhyccd-sys)
 
@@ -972,27 +972,24 @@ graph TB
 
 **Thread Safety Implementation:**
 
-The camera backend uses `Arc<RwLock<T>>` for shared state:
+The camera backend uses `Arc<parking_lot::RwLock<T>>` for shared state:
 - `CameraBackend::Real`: Contains `Arc<RwLock<Option<QHYCCDHandle>>>`
 - `CameraBackend::Simulated`: Contains `Arc<RwLock<SimulatedCameraState>>`
+
+`parking_lot::RwLock` is used (not `std::sync::RwLock`) because it cannot be poisoned: `read()`/`write()` return the guard directly, so lock acquisition is infallible and no panic in another thread can wedge later lock users. This matches the consuming camera services, which already use `parking_lot`.
 
 `Camera::clone()` is cheap - it clones the backend which clones the `Arc`, incrementing the reference count. Multiple clones share the same underlying state.
 
 **Locking Strategy:**
 
-The `read_lock!` macro centralizes read lock acquisition:
+The `read_lock!` macro centralizes read lock acquisition. Because the lock is infallible, its only failure mode is an unopened handle (`None`), which it maps to the caller's high-level `QHYError` (`$wrap`):
 ```rust
 macro_rules! read_lock {
     ($var:expr, $wrap:expr) => {
-        $var.read()
-            .map_err(|err| QHYError::LockPoisoned("Could not acquire read lock on camera handle"))
-            .and_then(|lock| match *lock {
-                Some(handle) => Ok(handle.ptr),
-                None => Err(QHYError::CameraNotOpenError)
-            })
-            // On failure, return the caller's high-level QHYError ($wrap);
-            // the low-level cause is logged above.
-            .map_err(|_| $wrap)
+        match *$var.read() {
+            Some(handle) => Ok(handle.ptr),
+            None => Err($wrap),
+        }
     }
 }
 ```

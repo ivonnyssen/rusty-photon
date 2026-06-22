@@ -43,6 +43,10 @@ libqhyccd-sys = { version = "0.1.4", path = "libqhyccd-sys" }
 # a dev-dependency below — library consumers don't pull it.)
 thiserror = { workspace = true }
 tracing = { workspace = true }
+# Non-poisoning locks (guard the camera handle / simulated state). `parking_lot`
+# is the workspace standard, already used by the consuming camera services; its
+# `RwLock` returns the guard directly, so there is no poison error to model.
+parking_lot = { workspace = true }
 # `eq` feature = derive_more::PartialEq, used with `#[partial_eq(skip)]` so Camera
 # equality ignores its backend handle.
 derive_more = { workspace = true, features = ["eq"] }

@@ -102,8 +102,6 @@ pub enum QHYError {
     CloseFilterWheelError { error_code: u32 },
     #[error("Error getting the number of filters")]
     GetNumberOfFiltersError,
-    #[error("{0}")]
-    LockPoisoned(&'static str),
     #[error("No image available")]
     NoImageAvailable,
     #[error("No image metadata available")]

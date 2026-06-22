@@ -3134,6 +3134,7 @@ dependencies = [
  "lazy_static",
  "libqhyccd-sys",
  "mockall",
+ "parking_lot",
  "rand 0.10.1",
  "rayon",
  "thiserror 2.0.18",

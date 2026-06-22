@@ -12,9 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **BREAKING:** error handling is now fully typed. Fallible `Sdk` / `Camera` /
   `FilterWheel` methods return `qhyccd_rs::Result<T>` (`Result<T, QHYError>`)
   instead of `eyre::Result<T>`, and a public `Result<T>` alias is exported.
-  `QHYError` gains `LockPoisoned`, `NoImageAvailable`, `NoImageMetadataAvailable`,
-  `InvalidUtf8`, and `InvalidCameraId` variants. Code that matched on
-  `eyre::Report` must match `QHYError` instead.
+  `QHYError` gains `NoImageAvailable`, `NoImageMetadataAvailable`, `InvalidUtf8`,
+  and `InvalidCameraId` variants. Code that matched on `eyre::Report` must match
+  `QHYError` instead.
 - Target QHYCCD SDK **26.06.04**. The 26.x distribution changed packaging
   (dot-stripped repo dir `260604`, `.tar.gz` archives, no `install.sh`, and the
   per-OS archives renamed `macMix`→`mac_x64` / `WinMix`→`win64` /
@@ -30,6 +30,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Internal
 
+- Switched internal locks from `std::sync::RwLock` to the non-poisoning
+  `parking_lot::RwLock` (the workspace standard, already used by the consuming
+  camera services). Lock acquisition is now infallible, so the poison-handling
+  paths and the `LockPoisoned` error variant are gone. Adds a `parking_lot`
+  dependency.
 - Upgraded `rand` to 0.10 (the `Rng`/`RngExt` trait split). `rand`, `rayon`,
   `thiserror`, and `tracing` now inherit the workspace dependency pins.
 - Moved the demo programs from `src/bin/` to `examples/` and made

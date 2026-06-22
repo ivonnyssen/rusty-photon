@@ -28,10 +28,7 @@ impl Camera {
         match &self.backend {
             CameraBackend::Real { handle } => {
                 // read and see if the handle is already Some(_)
-                let mut lock = handle.write().map_err(|err| {
-                    tracing::error!(error=?err);
-                    LockPoisoned("Could not acquire write lock on camera handle")
-                })?;
+                let mut lock = handle.write();
                 unsafe {
                     match std::ffi::CString::new(self.id.clone()) {
                         Ok(c_id) => {
@@ -53,10 +50,7 @@ impl Camera {
             }
             #[cfg(feature = "simulation")]
             CameraBackend::Simulated { state } => {
-                let mut state = state.write().map_err(|err| {
-                    tracing::error!(error=?err);
-                    LockPoisoned("Could not acquire write lock on simulated camera state")
-                })?;
+                let mut state = state.write();
                 state.is_open = true;
                 Ok(())
             }
@@ -79,10 +73,7 @@ impl Camera {
         }
         match &self.backend {
             CameraBackend::Real { handle } => {
-                let mut lock = handle.write().map_err(|err| {
-                    tracing::error!(error=?err);
-                    LockPoisoned("Could not acquire write lock on camera handle")
-                })?;
+                let mut lock = handle.write();
 
                 match *lock {
                     Some(handle) => match unsafe { CloseQHYCCD(handle.ptr) } {
@@ -101,10 +92,7 @@ impl Camera {
             }
             #[cfg(feature = "simulation")]
             CameraBackend::Simulated { state } => {
-                let mut state = state.write().map_err(|err| {
-                    tracing::error!(error=?err);
-                    LockPoisoned("Could not acquire write lock on simulated camera state")
-                })?;
+                let mut state = state.write();
                 state.is_open = false;
                 state.is_initialized = false;
                 Ok(())
@@ -138,10 +126,7 @@ impl Camera {
             }
             #[cfg(feature = "simulation")]
             CameraBackend::Simulated { state } => {
-                let mut state = state.write().map_err(|err| {
-                    tracing::error!(error=?err);
-                    LockPoisoned("Could not acquire write lock on simulated camera state")
-                })?;
+                let mut state = state.write();
                 if !state.is_open {
                     return Err(CameraNotOpenError);
                 }
@@ -180,18 +165,12 @@ impl Camera {
     pub fn is_open(&self) -> Result<bool> {
         match &self.backend {
             CameraBackend::Real { handle } => {
-                let lock = handle.read().map_err(|err| {
-                    tracing::error!(error=?err);
-                    LockPoisoned("Could not acquire read lock on camera handle")
-                })?;
+                let lock = handle.read();
                 Ok((*lock).is_some())
             }
             #[cfg(feature = "simulation")]
             CameraBackend::Simulated { state } => {
-                let state = state.read().map_err(|err| {
-                    tracing::error!(error=?err);
-                    LockPoisoned("Could not acquire read lock on simulated camera state")
-                })?;
+                let state = state.read();
                 Ok(state.is_open)
             }
         }

@@ -41,10 +41,7 @@ impl Camera {
             }
             #[cfg(feature = "simulation")]
             CameraBackend::Simulated { state } => {
-                let mut state = state.write().map_err(|err| {
-                    tracing::error!(error=?err);
-                    LockPoisoned("Could not acquire write lock on simulated camera state")
-                })?;
+                let mut state = state.write();
                 if !state.is_open {
                     return Err(CameraNotOpenError);
                 }
@@ -81,10 +78,7 @@ impl Camera {
             }
             #[cfg(feature = "simulation")]
             CameraBackend::Simulated { state } => {
-                let mut state = state.write().map_err(|err| {
-                    tracing::error!(error=?err);
-                    LockPoisoned("Could not acquire write lock on simulated camera state")
-                })?;
+                let mut state = state.write();
                 if !state.is_open {
                     return Err(CameraNotOpenError);
                 }
@@ -119,10 +113,7 @@ impl Camera {
             }
             #[cfg(feature = "simulation")]
             CameraBackend::Simulated { state } => {
-                let state = state.read().map_err(|err| {
-                    tracing::error!(error=?err);
-                    LockPoisoned("Could not acquire read lock on simulated camera state")
-                })?;
+                let state = state.read();
                 if !state.is_open {
                     return Err(CameraNotOpenError);
                 }
@@ -182,10 +173,7 @@ impl Camera {
             }
             #[cfg(feature = "simulation")]
             CameraBackend::Simulated { state } => {
-                let state = state.read().map_err(|err| {
-                    tracing::error!(error=?err);
-                    LockPoisoned("Could not acquire read lock on simulated camera state")
-                })?;
+                let state = state.read();
                 if !state.is_open {
                     return Err(CameraNotOpenError);
                 }
@@ -268,10 +256,7 @@ impl Camera {
             }
             #[cfg(feature = "simulation")]
             CameraBackend::Simulated { state } => {
-                let mut state = state.write().map_err(|err| {
-                    tracing::error!(error=?err);
-                    LockPoisoned("Could not acquire write lock on simulated camera state")
-                })?;
+                let mut state = state.write();
                 if !state.is_open {
                     return Err(CameraNotOpenError);
                 }
@@ -285,12 +270,7 @@ impl Camera {
                         std::thread::sleep(std::time::Duration::from_micros(remaining_us as u64));
                         // Reacquire lock
                         state = match &self.backend {
-                            CameraBackend::Simulated { state } => state.write().map_err(|err| {
-                                tracing::error!(error=?err);
-                                LockPoisoned(
-                                    "Could not reacquire write lock on simulated camera state",
-                                )
-                            })?,
+                            CameraBackend::Simulated { state } => state.write(),
                             _ => unreachable!(),
                         };
                     } else {
@@ -347,10 +327,7 @@ impl Camera {
             }
             #[cfg(feature = "simulation")]
             CameraBackend::Simulated { state } => {
-                let mut state = state.write().map_err(|err| {
-                    tracing::error!(error=?err);
-                    LockPoisoned("Could not acquire write lock on simulated camera state")
-                })?;
+                let mut state = state.write();
                 if !state.is_open {
                     return Err(CameraNotOpenError);
                 }
@@ -391,10 +368,7 @@ impl Camera {
             }
             #[cfg(feature = "simulation")]
             CameraBackend::Simulated { state } => {
-                let state = state.read().map_err(|err| {
-                    tracing::error!(error=?err);
-                    LockPoisoned("Could not acquire read lock on simulated camera state")
-                })?;
+                let state = state.read();
                 if !state.is_open {
                     return Err(CameraNotOpenError);
                 }
@@ -432,10 +406,7 @@ impl Camera {
             }
             #[cfg(feature = "simulation")]
             CameraBackend::Simulated { state } => {
-                let mut state = state.write().map_err(|err| {
-                    tracing::error!(error=?err);
-                    LockPoisoned("Could not acquire write lock on simulated camera state")
-                })?;
+                let mut state = state.write();
                 if !state.is_open {
                     return Err(CameraNotOpenError);
                 }
@@ -473,10 +444,7 @@ impl Camera {
             }
             #[cfg(feature = "simulation")]
             CameraBackend::Simulated { state } => {
-                let mut state = state.write().map_err(|err| {
-                    tracing::error!(error=?err);
-                    LockPoisoned("Could not acquire write lock on simulated camera state")
-                })?;
+                let mut state = state.write();
                 if !state.is_open {
                     return Err(CameraNotOpenError);
                 }
