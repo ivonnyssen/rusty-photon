@@ -4,6 +4,9 @@
 //! skipped under Miri). Both binaries must be pre-built with `--all-features`.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 
+#[path = "bdd/dom.rs"]
+mod dom;
+
 #[path = "bdd/world.rs"]
 mod world;
 

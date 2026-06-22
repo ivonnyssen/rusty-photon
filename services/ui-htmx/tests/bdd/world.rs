@@ -19,6 +19,8 @@ use cucumber::World;
 use serde_json::{json, Value};
 use tempfile::TempDir;
 
+use crate::dom;
+
 /// The dsd-fp2 CoverCalibrator action endpoint the BFF (and these helpers) call.
 const DRIVER_ACTION_PATH: &str = "/api/v1/covercalibrator/0/action";
 
@@ -39,8 +41,15 @@ pub struct UiWorld {
     /// the driver's config (see [`UiWorld::pin_driver_port`]) so an in-process
     /// reload rebinds the *same* port and the BFF can reconnect.
     driver_port: u16,
-    /// The rendered HTML of the last BFF response.
+    /// The rendered HTML of the last BFF response. Kept as a `String` (never a
+    /// parsed DOM): the `!Send` `scraper::Html` is built, queried, and dropped
+    /// inside the synchronous [`crate::dom`] helpers, so it never crosses an
+    /// `.await` (see [`crate::dom`] and the UI-testing plan §4).
     pub last_body: String,
+    /// The URL of the last top-level page navigation, reported as `HX-Current-URL`
+    /// on subsequent htmx requests so the captured fragments match what a browser
+    /// would send.
+    current_url: String,
 }
 
 impl UiWorld {
@@ -263,88 +272,119 @@ impl UiWorld {
         format!("{}{}", ui.base_url, path)
     }
 
-    /// GET a BFF page and capture the rendered HTML.
+    /// The `HX-*` request headers htmx attaches to a swap request, so a captured
+    /// fragment is what a browser would actually receive. The unlock/lock/retry
+    /// affordances and the reconnect poller all declare `hx-target="#config-card"`;
+    /// htmx sends the resolved element id (no leading `#`).
+    fn hx_headers(&self) -> reqwest::header::HeaderMap {
+        use reqwest::header::{HeaderMap, HeaderValue};
+        let mut headers = HeaderMap::new();
+        headers.insert("HX-Request", HeaderValue::from_static("true"));
+        headers.insert("HX-Target", HeaderValue::from_static("config-card"));
+        if let Ok(value) = HeaderValue::from_str(&self.current_url) {
+            headers.insert("HX-Current-URL", value);
+        }
+        headers
+    }
+
+    /// GET a BFF page as a top-level browser navigation: no `HX-*` headers, so
+    /// the server returns the full styled page. Captures the rendered HTML and
+    /// records the URL for `HX-Current-URL` on any follow-up htmx request.
     pub async fn get(&mut self, path: &str) {
+        let url = self.ui_url(path);
         let resp = reqwest::Client::new()
-            .get(self.ui_url(path))
+            .get(&url)
             .send()
             .await
             .expect("BFF GET failed");
+        self.current_url = url;
         self.last_body = resp.text().await.unwrap_or_default();
     }
 
-    /// Submit the config form the way the rendered page would, with the given
-    /// editable fields overridden. The body starts from the driver's current
-    /// `config.get` (the same blob the page embeds in its hidden field), so any
-    /// field not listed round-trips unchanged through the BFF's overlay.
-    pub async fn submit_form(&mut self, changes: &[(&str, &str)]) {
-        let (config, overrides) = self.driver_config().await;
-
-        let mut pairs: Vec<(String, String)> = vec![
-            (
-                "__config".to_string(),
-                serde_json::to_string(&config).expect("serialize config blob"),
-            ),
-            (
-                "__overrides".to_string(),
-                serde_json::to_string(&overrides).expect("serialize overrides"),
-            ),
-        ];
-        // `enabled` is read-only in the form (the BFF never overlays it), so a
-        // browser submits nothing for it and it round-trips from the hidden blob
-        // unchanged — no need to re-assert it here.
-        for (name, value) in changes {
-            pairs.push(((*name).to_string(), (*value).to_string()));
-        }
-
-        let body = serde_urlencoded::to_string(&pairs).expect("encode form body");
+    /// Issue the GET that htmx would for an `hx-get` affordance: the full `HX-*`
+    /// header set a browser's htmx sends, so the server returns the `#config-card`
+    /// fragment. `path` is the affordance's own rendered URL.
+    async fn hx_get(&mut self, path: &str) {
         let resp = reqwest::Client::new()
-            .post(self.ui_url("/config/dsd-fp2"))
-            .header("HX-Request", "true")
-            .header("content-type", "application/x-www-form-urlencoded")
-            .body(body)
+            .get(self.ui_url(path))
+            .headers(self.hx_headers())
+            .send()
+            .await
+            .expect("BFF htmx GET failed");
+        self.last_body = resp.text().await.unwrap_or_default();
+    }
+
+    /// Submit the config form the way a browser+htmx would: render the page, read
+    /// the hidden blobs and enabled controls **straight from the rendered HTML**,
+    /// apply the operator's edits, and POST to the form's own `hx-post` URL with
+    /// htmx's headers. Disabled fields are omitted exactly as a browser omits
+    /// them, so read-only/locked fields round-trip from the hidden blob — no
+    /// side-channel `config.get` is consulted.
+    pub async fn submit_form(&mut self, changes: &[(&str, &str)]) {
+        // Render the form first so the submission is built from real page output.
+        self.get("/config/dsd-fp2").await;
+        let action =
+            dom::form_post_url(&self.last_body).expect("rendered page has no <form hx-post>");
+        let mut pairs = dom::successful_controls(&self.last_body);
+        // The operator edits one or more enabled fields before submitting:
+        // replace the rendered value with the typed one (or add it if absent).
+        for &(name, value) in changes {
+            pairs.retain(|(n, _)| n.as_str() != name);
+            pairs.push((name.to_string(), value.to_string()));
+        }
+        let resp = reqwest::Client::new()
+            .post(self.ui_url(&action))
+            .headers(self.hx_headers())
+            .form(&pairs)
             .send()
             .await
             .expect("BFF POST failed");
         self.last_body = resp.text().await.unwrap_or_default();
     }
 
-    /// Poll the BFF reconnect endpoint until the *reloaded* driver serves the
-    /// given value — matched as the refreshed form's `value="..."` attribute.
-    ///
-    /// Waiting only for the form to reappear is not enough: until the old
-    /// server tears down, it keeps answering `config.get` with the pre-reload
-    /// configuration, so the page would briefly re-render with the stale value.
-    /// The new value appears only once the rebuilt server is serving.
-    pub async fn poll_status_until_value(&mut self, expected: &str) {
-        let needle = format!(r#"value="{expected}""#);
-        for _ in 0..80 {
-            self.get("/config/dsd-fp2/status").await;
-            if self.last_body.contains(&needle) {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
-        panic!(
-            "driver did not serve {needle} within 20s; last body:\n{}",
-            self.last_body
-        );
+    /// Follow the page's "Unlock to edit" affordance for `field` the way htmx
+    /// would: render the page, read the affordance's own `hx-get` URL from the
+    /// rendered HTML, then issue that htmx GET — instead of fabricating the
+    /// `?unlock=` URL out of band.
+    pub async fn open_with_unlock(&mut self, field: &str) {
+        self.get("/config/dsd-fp2").await;
+        let url = dom::unlock_url(&self.last_body, field).unwrap_or_else(|| {
+            panic!("no unlock affordance for {field:?} in:\n{}", self.last_body)
+        });
+        self.hx_get(&url).await;
     }
 
-    /// The `<input ...>` tag whose `name` attribute is `name`.
-    pub fn input_tag(&self, name: &str) -> String {
-        let needle = format!("name=\"{name}\"");
-        let pos = self
-            .last_body
-            .find(&needle)
-            .unwrap_or_else(|| panic!("no input named {name:?} in:\n{}", self.last_body));
-        let start = self.last_body[..pos]
-            .rfind("<input")
-            .expect("no <input before name attribute");
-        let end = self.last_body[start..]
-            .find('>')
-            .expect("unterminated input tag")
-            + start;
-        self.last_body[start..=end].to_string()
+    /// Poll the htmx reconnect endpoint the way the `hx-trigger="every 1s"`
+    /// poller would, until the refreshed form serves `expected` as `field`'s
+    /// input value — matched against the rendered input's `value` attribute (DOM,
+    /// not substring).
+    ///
+    /// Waiting only for the form to reappear is not enough: until the old server
+    /// tears down it keeps answering `config.get` with the pre-reload config, so
+    /// the page would briefly re-render with the stale value. The new value
+    /// appears only once the rebuilt server is serving. The poll is bounded by a
+    /// wall-clock budget because a *real* driver subprocess takes time to tear
+    /// down and rebind during its in-process reload — the literal no-sleep poll
+    /// in the plan's §9 is the browser layer's job, where htmx's own poller drives
+    /// the live DOM.
+    pub async fn poll_status_until_value(&mut self, field: &str, expected: &str) {
+        const MAX_POLLS: usize = 80;
+        const POLL_INTERVAL: Duration = Duration::from_millis(250);
+        for _ in 0..MAX_POLLS {
+            self.hx_get("/config/dsd-fp2/status").await;
+            if dom::input(&self.last_body, field)
+                .map(|i| i.value)
+                .as_deref()
+                == Some(expected)
+            {
+                return;
+            }
+            tokio::time::sleep(POLL_INTERVAL).await;
+        }
+        panic!(
+            "driver did not serve {field}={expected:?} within {}s; last body:\n{}",
+            MAX_POLLS * POLL_INTERVAL.as_millis() as usize / 1000,
+            self.last_body
+        );
     }
 }

@@ -430,6 +430,23 @@ cargo build --all-features --all-targets
 cargo test  --all-features --test bdd -p ui-htmx
 ```
 
+**Assertions are DOM-based, and the helpers follow the htmx contract.** The
+Then-steps parse each response with [`scraper`] (the Servo html5ever/selectors
+stack browsers ship) and assert with CSS selectors — `input[name="…"]`
+editability, the `div.banner.applying` reload state, the `#config-card`
+`hx-get`/`hx-trigger` poll wiring — rather than `String::contains` substrings
+(which mishandle attribute order, boolean attributes, and the value buried in the
+hidden `__config` blob). The request helpers drive the BFF the way htmx would:
+`submit_form` reads the hidden blobs and enabled controls from the **rendered**
+form and POSTs them with the `HX-*` header set (disabled fields are omitted, just
+as a browser omits them); the unlock step follows the page's own rendered
+`hx-get` link; and the reconnect poll matches the refreshed input's `value`. This
+is Layer A of the [UI-testing plan](../plans/ui-testing.md), proving the page's
+markup and `hx-*` wiring are correct (obligation P1) without a browser; `scraper`
+is a test-only dev-dependency and is never compiled into the shipped binary.
+
+[`scraper`]: https://docs.rs/scraper/
+
 The driver binds port 0, so the OS assigns a free port atomically (no racy
 preselection); the test discovers it from the driver's `bound_addr=` stdout line.
 The one scenario that reloads and reconnects first pins that bound port into the

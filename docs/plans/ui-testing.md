@@ -103,6 +103,16 @@ can't go green quickly, the browser layer stays cargo-only/system-dep (like the 
 
 ## 4. Layer A — server-contract (P1 `scraper` + §A thin request helpers)
 
+> **Status (2026-06-21): implemented.** `scraper` 0.27 is a `ui-htmx` dev-dep;
+> the BDD suite's Then-steps assert via CSS selectors ([`tests/bdd/dom.rs`]) and
+> the request helpers ([`tests/bdd/world.rs`]) submit the rendered form, follow
+> the rendered unlock link, and poll the reconnect endpoint by DOM — all with the
+> `HX-*` header set. `input_tag()` and the `String::contains` assertions are
+> gone. All 9 scenarios pass under Cargo. Layers B (§5) and C (§6) remain.
+
+[`tests/bdd/dom.rs`]: ../../services/ui-htmx/tests/bdd/dom.rs
+[`tests/bdd/world.rs`]: ../../services/ui-htmx/tests/bdd/world.rs
+
 The everyday suite. Runs on every OS leg via the BDD suite, deterministically, no
 browser.
 
