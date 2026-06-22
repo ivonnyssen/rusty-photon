@@ -1,4 +1,4 @@
-use eyre::{eyre, Result};
+use crate::Result;
 
 use crate::backend::{read_lock, CameraBackend};
 use crate::{CCDChipArea, QHYError::*, StreamMode};
@@ -35,7 +35,7 @@ impl Camera {
                     error_code => {
                         let error = SetStreamModeError { error_code };
                         tracing::error!(error = ?error);
-                        Err(eyre!(error))
+                        Err(error)
                     }
                 }
             }
@@ -43,10 +43,10 @@ impl Camera {
             CameraBackend::Simulated { state } => {
                 let mut state = state.write().map_err(|err| {
                     tracing::error!(error=?err);
-                    eyre!("Could not acquire write lock on simulated camera state")
+                    LockPoisoned("Could not acquire write lock on simulated camera state")
                 })?;
                 if !state.is_open {
-                    return Err(eyre!(CameraNotOpenError));
+                    return Err(CameraNotOpenError);
                 }
                 state.stream_mode = Some(mode);
                 Ok(())
@@ -73,7 +73,7 @@ impl Camera {
                     error_code => {
                         let error = SetReadoutModeError { error_code };
                         tracing::error!(error = ?error);
-                        Err(eyre!(error))
+                        Err(error)
                     }
                 }
             }
@@ -81,15 +81,15 @@ impl Camera {
             CameraBackend::Simulated { state } => {
                 let mut state = state.write().map_err(|err| {
                     tracing::error!(error=?err);
-                    eyre!("Could not acquire write lock on simulated camera state")
+                    LockPoisoned("Could not acquire write lock on simulated camera state")
                 })?;
                 if !state.is_open {
-                    return Err(eyre!(CameraNotOpenError));
+                    return Err(CameraNotOpenError);
                 }
                 if mode as usize >= state.config.readout_modes.len() {
-                    return Err(eyre!(SetReadoutModeError {
-                        error_code: QHYCCD_ERROR
-                    }));
+                    return Err(SetReadoutModeError {
+                        error_code: QHYCCD_ERROR,
+                    });
                 }
                 state.readout_mode = mode;
                 Ok(())
@@ -116,7 +116,7 @@ impl Camera {
                     error_code => {
                         let error = SetBinModeError { error_code };
                         tracing::error!(error = ?error);
-                        Err(eyre!(error))
+                        Err(error)
                     }
                 }
             }
@@ -124,10 +124,10 @@ impl Camera {
             CameraBackend::Simulated { state } => {
                 let mut state = state.write().map_err(|err| {
                     tracing::error!(error=?err);
-                    eyre!("Could not acquire write lock on simulated camera state")
+                    LockPoisoned("Could not acquire write lock on simulated camera state")
                 })?;
                 if !state.is_open {
-                    return Err(eyre!(CameraNotOpenError));
+                    return Err(CameraNotOpenError);
                 }
                 state.binning = (bin_x, bin_y);
                 Ok(())
@@ -153,7 +153,7 @@ impl Camera {
                     error_code => {
                         let error = SetDebayerError { error_code };
                         tracing::error!(error = ?error);
-                        Err(eyre!(error))
+                        Err(error)
                     }
                 }
             }
@@ -161,10 +161,10 @@ impl Camera {
             CameraBackend::Simulated { state } => {
                 let mut state = state.write().map_err(|err| {
                     tracing::error!(error=?err);
-                    eyre!("Could not acquire write lock on simulated camera state")
+                    LockPoisoned("Could not acquire write lock on simulated camera state")
                 })?;
                 if !state.is_open {
-                    return Err(eyre!(CameraNotOpenError));
+                    return Err(CameraNotOpenError);
                 }
                 state.debayer_enabled = on;
                 Ok(())
@@ -198,7 +198,7 @@ impl Camera {
                     error_code => {
                         let error = SetRoiError { error_code };
                         tracing::error!(error = ?error);
-                        Err(eyre!(error))
+                        Err(error)
                     }
                 }
             }
@@ -206,10 +206,10 @@ impl Camera {
             CameraBackend::Simulated { state } => {
                 let mut state = state.write().map_err(|err| {
                     tracing::error!(error=?err);
-                    eyre!("Could not acquire write lock on simulated camera state")
+                    LockPoisoned("Could not acquire write lock on simulated camera state")
                 })?;
                 if !state.is_open {
-                    return Err(eyre!(CameraNotOpenError));
+                    return Err(CameraNotOpenError);
                 }
                 state.roi = roi;
                 Ok(())
@@ -236,7 +236,7 @@ impl Camera {
                     error_code => {
                         let error = SetBitModeError { error_code };
                         tracing::error!(error = ?error);
-                        Err(eyre!(error))
+                        Err(error)
                     }
                 }
             }
@@ -244,10 +244,10 @@ impl Camera {
             CameraBackend::Simulated { state } => {
                 let mut state = state.write().map_err(|err| {
                     tracing::error!(error=?err);
-                    eyre!("Could not acquire write lock on simulated camera state")
+                    LockPoisoned("Could not acquire write lock on simulated camera state")
                 })?;
                 if !state.is_open {
-                    return Err(eyre!(CameraNotOpenError));
+                    return Err(CameraNotOpenError);
                 }
                 state.bit_depth = mode;
                 Ok(())

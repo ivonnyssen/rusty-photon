@@ -16,7 +16,7 @@ documentation = "https://docs.rs/qhyccd-rs"
 description = """
 Rust bindings for the QHYCCD SDK.
 This crate provides a safe interface to the QHYCCD SDK for controlling QHYCCD cameras and filter wheels.
-The libqhyccd-sys crate provides the raw FFI bindings. It uses tracing for logging and eyre for error handling.
+The libqhyccd-sys crate provides the raw FFI bindings. It uses tracing for logging and typed QHYError values (via thiserror) for error handling.
 """
 categories = ["aerospace", "api-bindings"]
 homepage = "https://github.com/ivonnyssen/qhyccd-rs/wiki"
@@ -35,16 +35,17 @@ simulation = ["rand", "rayon"]
 
 [dependencies]
 libqhyccd-sys = { version = "0.1.4", path = "libqhyccd-sys" }
-eyre = "0.6.12"
 # Shared third-party deps inherit the single workspace pin (Rule 10); identity
 # metadata (version/edition/license/...) stays explicit for the dual-home release
 # cadence (ADR-009). `cargo publish` flattens inherited versions to concrete ones,
-# so standalone publishing is unaffected. Deps unique to this crate (eyre, educe)
-# stay crate-local. (tracing-subscriber is only used by the examples/ demos, so it
-# is a dev-dependency below — library consumers no longer pull it.)
+# so standalone publishing is unaffected. Errors are typed via thiserror
+# (`QHYError`). (tracing-subscriber is only used by the examples/ demos, so it is
+# a dev-dependency below — library consumers don't pull it.)
 thiserror = { workspace = true }
 tracing = { workspace = true }
-educe = "0.6.0"
+# `eq` feature = derive_more::PartialEq, used with `#[partial_eq(skip)]` so Camera
+# equality ignores its backend handle.
+derive_more = { workspace = true, features = ["eq"] }
 rand = { workspace = true, optional = true }
 rayon = { workspace = true, optional = true }
 

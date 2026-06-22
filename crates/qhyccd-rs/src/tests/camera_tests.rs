@@ -148,7 +148,7 @@ fn get_model_utf8_error() {
     assert!(res.is_err());
     assert_eq!(
         res.err().unwrap().to_string(),
-        "invalid utf-8 sequence of 1 bytes from index 0"
+        "Invalid UTF-8 in a string returned by the SDK: invalid utf-8 sequence of 1 bytes from index 0"
     );
 }
 
@@ -355,7 +355,7 @@ fn get_readout_mode_name_utf8_error() {
     assert!(res.is_err());
     assert_eq!(
         res.err().unwrap().to_string(),
-        "invalid utf-8 sequence of 1 bytes from index 0"
+        "Invalid UTF-8 in a string returned by the SDK: invalid utf-8 sequence of 1 bytes from index 0"
     );
 }
 
@@ -1552,7 +1552,7 @@ fn open_nulerror() {
     assert!(res.is_err());
     assert_eq!(
         res.err().unwrap().to_string(),
-        "nul byte found in provided data at position: 5"
+        "Camera id contains an interior NUL byte: nul byte found in provided data at position: 5"
     );
 }
 

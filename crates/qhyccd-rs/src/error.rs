@@ -102,4 +102,17 @@ pub enum QHYError {
     CloseFilterWheelError { error_code: u32 },
     #[error("Error getting the number of filters")]
     GetNumberOfFiltersError,
+    #[error("{0}")]
+    LockPoisoned(&'static str),
+    #[error("No image available")]
+    NoImageAvailable,
+    #[error("No image metadata available")]
+    NoImageMetadataAvailable,
+    #[error("Invalid UTF-8 in a string returned by the SDK: {0}")]
+    InvalidUtf8(#[from] std::str::Utf8Error),
+    #[error("Camera id contains an interior NUL byte: {0}")]
+    InvalidCameraId(#[from] std::ffi::NulError),
 }
+
+/// Convenience alias for fallible QHYCCD SDK operations: `Result<T, QHYError>`.
+pub type Result<T> = core::result::Result<T, QHYError>;

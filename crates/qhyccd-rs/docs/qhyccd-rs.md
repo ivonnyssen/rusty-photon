@@ -22,7 +22,7 @@ graph TD
 
 1. **qhyccd-rs** (main crate)
    - Safe, high-level Rust API
-   - Error handling with `eyre` and `thiserror`
+   - Typed error handling with `thiserror` (`QHYError`)
    - Logging with `tracing`
    - Optional simulation feature
 
@@ -452,19 +452,18 @@ classDiagram
         +39 more variants...
     }
 
-    note for QHYError "Uses thiserror for error definitions\nIntegrates with eyre for error context"
+    note for QHYError "Uses thiserror for typed error definitions"
 ```
 
 **Error Design:**
 
-The `QHYError` enum uses `thiserror` to derive the `Error` trait with 44 variants. Each variant includes an `error_code` field when applicable, and some include the `Control` that failed. The library uses `eyre::Result<T>` as the return type for all fallible operations.
+The `QHYError` enum uses `thiserror` to derive the `Error` trait. Each variant includes an `error_code` field when applicable, and some include the `Control` that failed; foreign errors are captured via `#[from]` (`InvalidUtf8`, `InvalidCameraId`). The library exports a `Result<T>` alias (`Result<T, QHYError>`) and uses it as the return type for all fallible operations.
 
 Error handling flow:
 1. FFI call returns error code (typically `QHYCCD_ERROR` = `u32::MAX`)
-2. Rust wrapper creates appropriate `QHYError` variant
+2. Rust wrapper creates the appropriate `QHYError` variant
 3. Error is logged via `tracing::error!`
-4. Error is wrapped with `eyre!()` for context
-5. Result propagates to caller
+4. The `QHYError` propagates to the caller via `?`
 
 The library never panics during normal operation (only on lock poisoning, which indicates a serious bug).
 
@@ -986,12 +985,14 @@ The `read_lock!` macro centralizes read lock acquisition:
 macro_rules! read_lock {
     ($var:expr, $wrap:expr) => {
         $var.read()
-            .map_err(|err| eyre!("Could not acquire read lock"))
+            .map_err(|err| QHYError::LockPoisoned("Could not acquire read lock on camera handle"))
             .and_then(|lock| match *lock {
                 Some(handle) => Ok(handle.ptr),
-                None => Err(eyre!(CameraNotOpenError))
+                None => Err(QHYError::CameraNotOpenError)
             })
-            .wrap_err($wrap)
+            // On failure, return the caller's high-level QHYError ($wrap);
+            // the low-level cause is logged above.
+            .map_err(|_| $wrap)
     }
 }
 ```
@@ -1182,8 +1183,8 @@ graph TD
     B -->|Yes| C[Return Ok T ]
     B -->|No| D[Create QHYError]
     D --> E[Log with tracing]
-    E --> F[Wrap with eyre context]
-    F --> G[Return Err]
+    E --> F[Propagate with ?]
+    F --> G[Return Err QHYError]
 
     style C fill:#e8f5e9
     style G fill:#ffebee
@@ -1195,9 +1196,7 @@ graph TD
 2. Check against `QHYCCD_SUCCESS` or `QHYCCD_ERROR`
 3. Create typed `QHYError` variant with error code
 4. Log error with `tracing::error!(?error)`
-5. Convert to `eyre::Report` with `eyre!(error)`
-6. Add context with `.wrap_err()` if needed
-7. Propagate with `?` operator
+5. Propagate with the `?` operator (foreign errors convert via `#[from]`)
 
 **Error Types:**
 
@@ -1315,18 +1314,20 @@ From `Cargo.toml`:
 
 **Required:**
 - `libqhyccd-sys` (0.1.4, path): Internal FFI crate
-- `eyre` (0.6.12): Error handling and reporting
-- `thiserror` (2.0.17): Error trait derivation
-- `tracing` (0.1.44): Structured logging
-- `tracing-subscriber` (0.3.22): Logging implementation
-- `educe` (0.6.0): Custom derive macros
+- `thiserror` (workspace): Typed error enum (`QHYError`)
+- `tracing` (workspace): Structured logging
+- `derive_more` (workspace, `eq` feature): `PartialEq` derive with `#[partial_eq(skip)]`
 - `lazy_static` (1.0.2): Static initialization
 - `tracing-attributes` (0.1.28): Tracing support
 - `enum-ordinalize-derive` (4.3.1): Enum utilities
 
+**Dev-dependencies:**
+- `tracing-subscriber` (workspace): Logging setup for the `examples/` demos
+- `mockall` (0.14.0): FFI mocking for unit tests
+
 **Optional (simulation feature only):**
-- `rand` (0.9.2): Random number generation for image noise
-- `rayon` (1.10): Parallel processing for improved simulation performance
+- `rand` (workspace): Random number generation for image noise
+- `rayon` (workspace): Parallel processing for improved simulation performance
 
 ### Development Dependencies
 

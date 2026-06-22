@@ -1,4 +1,4 @@
-use eyre::{eyre, Result};
+use crate::Result;
 
 use crate::backend::{read_lock, CameraBackend, QHYCCDHandle};
 use crate::QHYError::*;
@@ -30,7 +30,7 @@ impl Camera {
                 // read and see if the handle is already Some(_)
                 let mut lock = handle.write().map_err(|err| {
                     tracing::error!(error=?err);
-                    eyre!("Could not acquire write lock on camera handle")
+                    LockPoisoned("Could not acquire write lock on camera handle")
                 })?;
                 unsafe {
                     match std::ffi::CString::new(self.id.clone()) {
@@ -39,14 +39,14 @@ impl Camera {
                             if handle.is_null() {
                                 let error = OpenCameraError;
                                 tracing::error!(error = ?error);
-                                return Err(eyre!(error));
+                                return Err(error);
                             }
                             *lock = Some(QHYCCDHandle { ptr: handle });
                             Ok(())
                         }
                         Err(error) => {
                             tracing::error!(error = ?error);
-                            Err(eyre!(error))
+                            Err(error.into())
                         }
                     }
                 }
@@ -55,7 +55,7 @@ impl Camera {
             CameraBackend::Simulated { state } => {
                 let mut state = state.write().map_err(|err| {
                     tracing::error!(error=?err);
-                    eyre!("Could not acquire write lock on simulated camera state")
+                    LockPoisoned("Could not acquire write lock on simulated camera state")
                 })?;
                 state.is_open = true;
                 Ok(())
@@ -81,7 +81,7 @@ impl Camera {
             CameraBackend::Real { handle } => {
                 let mut lock = handle.write().map_err(|err| {
                     tracing::error!(error=?err);
-                    eyre!("Could not acquire write lock on camera handle")
+                    LockPoisoned("Could not acquire write lock on camera handle")
                 })?;
 
                 match *lock {
@@ -93,7 +93,7 @@ impl Camera {
                         error_code => {
                             let error = CloseCameraError { error_code };
                             tracing::error!(error = ?error);
-                            Err(eyre!(error))
+                            Err(error)
                         }
                     },
                     None => Ok(()),
@@ -103,7 +103,7 @@ impl Camera {
             CameraBackend::Simulated { state } => {
                 let mut state = state.write().map_err(|err| {
                     tracing::error!(error=?err);
-                    eyre!("Could not acquire write lock on simulated camera state")
+                    LockPoisoned("Could not acquire write lock on simulated camera state")
                 })?;
                 state.is_open = false;
                 state.is_initialized = false;
@@ -132,7 +132,7 @@ impl Camera {
                     error_code => {
                         let error = InitCameraError { error_code };
                         tracing::error!(error = ?error);
-                        Err(eyre!(error))
+                        Err(error)
                     }
                 }
             }
@@ -140,10 +140,10 @@ impl Camera {
             CameraBackend::Simulated { state } => {
                 let mut state = state.write().map_err(|err| {
                     tracing::error!(error=?err);
-                    eyre!("Could not acquire write lock on simulated camera state")
+                    LockPoisoned("Could not acquire write lock on simulated camera state")
                 })?;
                 if !state.is_open {
-                    return Err(eyre!(CameraNotOpenError));
+                    return Err(CameraNotOpenError);
                 }
                 state.is_initialized = true;
                 // Reset ROI to full frame based on current readout mode
@@ -182,7 +182,7 @@ impl Camera {
             CameraBackend::Real { handle } => {
                 let lock = handle.read().map_err(|err| {
                     tracing::error!(error=?err);
-                    eyre!("Could not acquire read lock on camera handle")
+                    LockPoisoned("Could not acquire read lock on camera handle")
                 })?;
                 Ok((*lock).is_some())
             }
@@ -190,7 +190,7 @@ impl Camera {
             CameraBackend::Simulated { state } => {
                 let state = state.read().map_err(|err| {
                     tracing::error!(error=?err);
-                    eyre!("Could not acquire read lock on simulated camera state")
+                    LockPoisoned("Could not acquire read lock on simulated camera state")
                 })?;
                 Ok(state.is_open)
             }

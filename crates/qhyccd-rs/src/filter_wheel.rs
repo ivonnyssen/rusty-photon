@@ -1,4 +1,4 @@
-use eyre::{eyre, Result};
+use crate::Result;
 use tracing::error;
 
 use crate::{Camera, Control, QHYError::*};
@@ -110,7 +110,7 @@ impl FilterWheel {
             ),
             None => {
                 tracing::debug!("I'm a filter wheel without filters. :(");
-                Err(eyre!(GetNumberOfFiltersError))
+                Err(GetNumberOfFiltersError)
             }
         }
     }
@@ -132,12 +132,12 @@ impl FilterWheel {
                 Ok(position) => Ok((position - 48_f64) as u32), //removing ASCII offset
                 Err(error) => {
                     tracing::error!(error = ?error);
-                    Err(eyre!(error))
+                    Err(error)
                 }
             },
             None => {
                 tracing::debug!("No filter wheel plugged in.");
-                Err(eyre!(GetCfwPositionError))
+                Err(GetCfwPositionError)
             }
         }
     }
@@ -160,11 +160,11 @@ impl FilterWheel {
                 .map_err(|_| {
                     let error = SetCfwPositionError;
                     tracing::error!(error = ?error);
-                    eyre!(error)
+                    error
                 }),
             None => {
                 tracing::debug!("No filter wheel plugged in.");
-                Err(eyre!(SetCfwPositionError))
+                Err(SetCfwPositionError)
             }
         }
     }

@@ -68,20 +68,21 @@ impl PartialEq for CameraBackend {
 
 macro_rules! read_lock {
     ($var:expr, $wrap:expr) => {{
-        use eyre::WrapErr as _;
         $var.read()
             .map_err(|err| {
                 tracing::error!(error = ?err);
-                eyre!("Could not acquire read lock on camera handle")
+                $crate::QHYError::LockPoisoned("Could not acquire read lock on camera handle")
             })
             .and_then(|lock| match *lock {
                 Some(handle) => Ok(handle.ptr),
                 None => {
-                    tracing::error!(error = ?CameraNotOpenError);
-                    Err(eyre!(CameraNotOpenError))
+                    tracing::error!(error = ?$crate::QHYError::CameraNotOpenError);
+                    Err($crate::QHYError::CameraNotOpenError)
                 }
             })
-            .wrap_err($wrap)
+            // On failure return the caller's high-level `QHYError` ($wrap); the
+            // low-level cause (poisoned lock / camera-not-open) is logged above.
+            .map_err(|_: $crate::QHYError| $wrap)
     }};
 }
 

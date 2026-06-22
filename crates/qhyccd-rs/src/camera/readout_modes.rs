@@ -1,6 +1,6 @@
 use std::ffi::{c_char, CStr};
 
-use eyre::{eyre, Result};
+use crate::Result;
 
 use crate::backend::{read_lock, CameraBackend};
 use crate::QHYError::*;
@@ -33,7 +33,7 @@ impl Camera {
                     QHYCCD_ERROR => {
                         let error = GetNumberOfReadoutModesError;
                         tracing::error!(error = ?error);
-                        Err(eyre!(error))
+                        Err(error)
                     }
                     _ => Ok(num),
                 }
@@ -42,10 +42,10 @@ impl Camera {
             CameraBackend::Simulated { state } => {
                 let state = state.read().map_err(|err| {
                     tracing::error!(error=?err);
-                    eyre!("Could not acquire read lock on simulated camera state")
+                    LockPoisoned("Could not acquire read lock on simulated camera state")
                 })?;
                 if !state.is_open {
-                    return Err(eyre!(CameraNotOpenError));
+                    return Err(CameraNotOpenError);
                 }
                 Ok(state.config.readout_modes.len() as u32)
             }
@@ -71,16 +71,12 @@ impl Camera {
                     QHYCCD_ERROR => {
                         let error = GetReadoutModeNameError;
                         tracing::error!(error = ?error);
-                        Err(eyre!(error))
+                        Err(error)
                     }
                     _ => {
-                        let name = match unsafe { CStr::from_ptr(name.as_ptr()) }.to_str() {
-                            Ok(name) => name,
-                            Err(error) => {
-                                tracing::error!(error = ?error);
-                                return Err(eyre!(error));
-                            }
-                        };
+                        let name = unsafe { CStr::from_ptr(name.as_ptr()) }
+                            .to_str()
+                            .inspect_err(|error| tracing::error!(error = ?error))?;
                         Ok(name.to_string())
                     }
                 }
@@ -89,17 +85,17 @@ impl Camera {
             CameraBackend::Simulated { state } => {
                 let state = state.read().map_err(|err| {
                     tracing::error!(error=?err);
-                    eyre!("Could not acquire read lock on simulated camera state")
+                    LockPoisoned("Could not acquire read lock on simulated camera state")
                 })?;
                 if !state.is_open {
-                    return Err(eyre!(CameraNotOpenError));
+                    return Err(CameraNotOpenError);
                 }
                 state
                     .config
                     .readout_modes
                     .get(index as usize)
                     .map(|(name, _)| name.clone())
-                    .ok_or_else(|| eyre!(GetReadoutModeNameError))
+                    .ok_or(GetReadoutModeNameError)
             }
         }
     }
@@ -133,7 +129,7 @@ impl Camera {
                     _ => {
                         let error = GetReadoutModeResolutionError;
                         tracing::error!(error = ?error);
-                        Err(eyre!(error))
+                        Err(error)
                     }
                 }
             }
@@ -141,17 +137,17 @@ impl Camera {
             CameraBackend::Simulated { state } => {
                 let state = state.read().map_err(|err| {
                     tracing::error!(error=?err);
-                    eyre!("Could not acquire read lock on simulated camera state")
+                    LockPoisoned("Could not acquire read lock on simulated camera state")
                 })?;
                 if !state.is_open {
-                    return Err(eyre!(CameraNotOpenError));
+                    return Err(CameraNotOpenError);
                 }
                 state
                     .config
                     .readout_modes
                     .get(index as usize)
                     .map(|(_, res)| *res)
-                    .ok_or_else(|| eyre!(GetReadoutModeResolutionError))
+                    .ok_or(GetReadoutModeResolutionError)
             }
         }
     }
@@ -176,7 +172,7 @@ impl Camera {
                     _ => {
                         let error = GetReadoutModeError;
                         tracing::error!(error = ?error);
-                        Err(eyre!(error))
+                        Err(error)
                     }
                 }
             }
@@ -184,10 +180,10 @@ impl Camera {
             CameraBackend::Simulated { state } => {
                 let state = state.read().map_err(|err| {
                     tracing::error!(error=?err);
-                    eyre!("Could not acquire read lock on simulated camera state")
+                    LockPoisoned("Could not acquire read lock on simulated camera state")
                 })?;
                 if !state.is_open {
-                    return Err(eyre!(CameraNotOpenError));
+                    return Err(CameraNotOpenError);
                 }
                 Ok(state.readout_mode)
             }
