@@ -91,9 +91,11 @@ fn main() {
 
             // Explicit override for local/system installs: point QHYCCD_SDK_DIR at
             // the directory containing qhyccd.lib (e.g. ...\pkg_win\x64). Checked
-            // first so a developer can build off-CI against an installed SDK.
+            // first so a developer can build off-CI against an installed SDK. A
+            // set-but-empty value is treated as unset (an empty `-L` path would be
+            // a confusing no-op rather than the intended override).
             let mut found = false;
-            if let Ok(dir) = env::var("QHYCCD_SDK_DIR") {
+            if let Some(dir) = env::var("QHYCCD_SDK_DIR").ok().filter(|d| !d.is_empty()) {
                 println!("cargo:rustc-link-search=native={}", dir);
                 found = true;
             }
@@ -147,7 +149,10 @@ fn main() {
             // `ivonnyssen/qhyccd-sdk-install`'s `install: env` mode). A static
             // link needs only that `-L` path; x86 jobs that system-install leave
             // the var unset and keep using /usr/local/lib unchanged.
-            if let Ok(dir) = env::var("QHYCCD_SDK_DIR") {
+            // A set-but-empty value is treated as unset, so the /usr/local/lib
+            // fallback still applies (an empty `-L` path would otherwise produce a
+            // confusing link failure instead of falling back).
+            if let Some(dir) = env::var("QHYCCD_SDK_DIR").ok().filter(|d| !d.is_empty()) {
                 println!("cargo:rustc-link-search=native={dir}");
             } else {
                 println!("cargo:rustc-link-search=native=/usr/local/lib");
