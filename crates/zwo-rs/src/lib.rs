@@ -167,7 +167,7 @@ pub mod simulation {
     //! via [`crate::SIM_CAMERA_COUNT`] / [`crate::SIM_FILTER_WHEEL_COUNT`].
     //! Simulated frames and EFW motion land with the Camera and filter-wheel
     //! device handles.
-    use rand::Rng;
+    use rand::RngExt;
 
     /// One 16-bit noise sample — a placeholder for simulated sensor frames.
     #[must_use]

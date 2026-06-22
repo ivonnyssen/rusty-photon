@@ -36,12 +36,17 @@ simulation = ["rand", "rayon"]
 [dependencies]
 libqhyccd-sys = { version = "0.1.4", path = "libqhyccd-sys" }
 eyre = "0.6.12"
-thiserror = "2.0.17"
-tracing = "0.1.44"
-tracing-subscriber = "0.3.22"
+# Shared third-party deps inherit the single workspace pin (Rule 10); identity
+# metadata (version/edition/license/...) stays explicit for the dual-home release
+# cadence (ADR-009). `cargo publish` flattens inherited versions to concrete ones,
+# so standalone publishing is unaffected. Deps unique to this crate (eyre, educe)
+# stay crate-local. (tracing-subscriber is only used by the examples/ demos, so it
+# is a dev-dependency below — library consumers no longer pull it.)
+thiserror = { workspace = true }
+tracing = { workspace = true }
 educe = "0.6.0"
-rand = { version = "0.9.2", optional = true }
-rayon = { version = "1.10", optional = true }
+rand = { workspace = true, optional = true }
+rayon = { workspace = true, optional = true }
 
 #to make Zminimal happy
 tracing-attributes = "0.1.28"
@@ -50,3 +55,6 @@ lazy_static = "1.0.2"
 
 [dev-dependencies]
 mockall = { version = "0.14.0", features = [] }
+# Used only by the demo programs in examples/ (FmtSubscriber), not the library,
+# so consumers of qhyccd-rs no longer pull it. Inherits the workspace pin.
+tracing-subscriber = { workspace = true }

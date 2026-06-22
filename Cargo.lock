@@ -3156,7 +3156,7 @@ dependencies = [
  "lazy_static",
  "libqhyccd-sys",
  "mockall",
- "rand 0.9.4",
+ "rand 0.10.1",
  "rayon",
  "thiserror 2.0.18",
  "tracing",
@@ -6057,7 +6057,7 @@ version = "0.1.0"
 dependencies = [
  "libzwo-sys",
  "mockall",
- "rand 0.9.4",
+ "rand 0.10.1",
  "rayon",
  "thiserror 2.0.18",
  "tracing",

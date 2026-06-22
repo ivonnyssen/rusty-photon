@@ -107,8 +107,13 @@ any production target that accidentally links the sim variant.
   needed (hand-written FFI). SDK provisioning (install action, `/usr/local/lib`,
   `GITHUB_WORKSPACE` forwarding in `.bazelrc`) is unchanged.
 - **A small convention deviation:** these two members keep explicit, independent
-  versions/metadata rather than `*.workspace = true`, because they are
-  independently published. Documented here and in the plan.
+  package **identity metadata** (`version` / `edition` / `license` / `authors` /
+  `description` / …) rather than `*.workspace = true`, because they are
+  independently published on their own cadence. Their **shared dependencies**
+  still inherit the workspace pin (`dep.workspace = true`, Rule 10) — `cargo
+  publish` flattens those to concrete versions, so the standalone release is
+  unaffected (verified by dry-run). Documented here, in the plan, and in
+  [`docs/workspace.md`](../workspace.md) "Workspace Dependencies".
 - **A release runbook** is added at
   [`crates/qhyccd-rs/RELEASING.md`](../../crates/qhyccd-rs/RELEASING.md): bump +
   `cargo publish` `libqhyccd-sys` first (it must move past `0.1.4` to carry the

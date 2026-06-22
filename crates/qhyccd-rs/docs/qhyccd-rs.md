@@ -1243,7 +1243,7 @@ The simulation feature enables comprehensive integration testing:
 - Test error conditions
 - Validate parameter validation
 
-Example binaries in `src/bin/`:
+Example programs in `examples/` (run with `--features simulation`):
 - `SingleFrameMode.rs`: Demonstrates single frame capture
 - `LiveFrameMode.rs`: Demonstrates live video mode
 - `test.rs`: Development testing
@@ -1369,15 +1369,15 @@ qhyccd-rs/
 │   │   ├── state.rs        # SimulatedCameraState
 │   │   ├── image_generator.rs  # Image generation
 │   │   └── test_state.rs   # State tests
-│   ├── tests/              # Unit tests (with mocked FFI)
-│   │   ├── mod.rs
-│   │   ├── sdk_tests.rs
-│   │   ├── camera_tests.rs
-│   │   └── filter_wheel_tests.rs
-│   └── bin/                # Example programs
-│       ├── LiveFrameMode.rs
-│       ├── SingleFrameMode.rs
-│       └── test.rs
+│   └── tests/              # Unit tests (with mocked FFI)
+│       ├── mod.rs
+│       ├── sdk_tests.rs
+│       ├── camera_tests.rs
+│       └── filter_wheel_tests.rs
+├── examples/               # Demo programs (run with --features simulation)
+│   ├── LiveFrameMode.rs
+│   ├── SingleFrameMode.rs
+│   └── test.rs
 ├── tests/                  # Integration tests (simulation feature)
 │   ├── simulation_tests.rs
 │   ├── common/

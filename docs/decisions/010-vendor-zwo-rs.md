@@ -129,8 +129,13 @@ production target that accidentally links the sim variant.
   it (flip prod targets to real everywhere, or keep the prod-real target
   non-Windows). The Cargo prod build (MSVC) is the source of truth regardless.
 - **A small convention deviation:** these two members keep explicit, independent
-  versions/metadata rather than `*.workspace = true`, because they are
-  independently published. Documented here and in the plan.
+  package **identity metadata** (`version` / `edition` / `rust-version` /
+  `license` / `authors` / `description` / …) rather than `*.workspace = true`,
+  because they are independently published on their own cadence. Their **shared
+  dependencies** still inherit the workspace pin (`dep.workspace = true`,
+  Rule 10) — `cargo publish` flattens those to concrete versions, so the
+  standalone release is unaffected (verified by dry-run). Documented here, in the
+  plan, and in [`docs/workspace.md`](../workspace.md) "Workspace Dependencies".
 - **The `cargo-husky` dev-dep is dropped** on vendoring (its git-hook installation
   would fight the monorepo's pre-push gate).
 - **A release runbook** is added: bump + `cargo publish` `libzwo-sys` first, then
