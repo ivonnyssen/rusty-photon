@@ -17,6 +17,7 @@ fn new_filter_wheel() -> FilterWheel {
 
 #[test]
 fn open_success() {
+    let _mock = super::mock_guard();
     //given
     let fw = new_filter_wheel();
     //when
@@ -28,6 +29,7 @@ fn open_success() {
 
 #[test]
 fn open_fail() {
+    let _mock = super::mock_guard();
     //given
     let ctx_open = OpenQHYCCD_context();
     ctx_open.expect().times(1).return_const_st(std::ptr::null());
@@ -41,6 +43,7 @@ fn open_fail() {
 
 #[test]
 fn is_open_true() {
+    let _mock = super::mock_guard();
     //given
     let fw = new_filter_wheel();
     //when
@@ -51,6 +54,7 @@ fn is_open_true() {
 
 #[test]
 fn is_open_false() {
+    let _mock = super::mock_guard();
     //given
     let camera = Camera::new("test_camera".to_owned());
     let fw = FilterWheel::new(camera);
@@ -62,6 +66,7 @@ fn is_open_false() {
 
 #[test]
 fn close_success() {
+    let _mock = super::mock_guard();
     //given
     let ctx_open = OpenQHYCCD_context();
     ctx_open.expect().once().return_const_st(TEST_HANDLE);
@@ -80,6 +85,7 @@ fn close_success() {
 
 #[test]
 fn is_cfw_plugged_in_true() {
+    let _mock = super::mock_guard();
     //given
     let ctx_available = IsQHYCCDCFWPlugged_context();
     ctx_available
@@ -96,6 +102,7 @@ fn is_cfw_plugged_in_true() {
 
 #[test]
 fn is_cfw_plugged_in_false() {
+    let _mock = super::mock_guard();
     //given
     let ctx_available = IsQHYCCDCFWPlugged_context();
     ctx_available
@@ -112,6 +119,7 @@ fn is_cfw_plugged_in_false() {
 
 #[test]
 fn get_number_of_filters_success() {
+    let _mock = super::mock_guard();
     //given
     let ctx_available = IsQHYCCDControlAvailable_context();
     ctx_available
@@ -138,6 +146,7 @@ fn get_number_of_filters_success() {
 
 #[test]
 fn get_number_of_filters_fail_no_filter_wheel() {
+    let _mock = super::mock_guard();
     //given
     let ctx_available = IsQHYCCDControlAvailable_context();
     ctx_available
@@ -156,6 +165,7 @@ fn get_number_of_filters_fail_no_filter_wheel() {
 
 #[test]
 fn get_number_of_filters_fail_get_parameter() {
+    let _mock = super::mock_guard();
     //given
     let ctx_available = IsQHYCCDControlAvailable_context();
     ctx_available
@@ -182,6 +192,7 @@ fn get_number_of_filters_fail_get_parameter() {
 
 #[test]
 fn get_fw_position_success() {
+    let _mock = super::mock_guard();
     //given
     let ctx_available = IsQHYCCDControlAvailable_context();
     ctx_available
@@ -204,6 +215,7 @@ fn get_fw_position_success() {
 
 #[test]
 fn get_fw_position_fail_no_filter_wheel() {
+    let _mock = super::mock_guard();
     //given
     let ctx_available = IsQHYCCDControlAvailable_context();
     ctx_available
@@ -220,6 +232,7 @@ fn get_fw_position_fail_no_filter_wheel() {
 
 #[test]
 fn get_fw_position_fail_get_parameter() {
+    let _mock = super::mock_guard();
     //given
     let ctx_available = IsQHYCCDControlAvailable_context();
     ctx_available
@@ -242,6 +255,7 @@ fn get_fw_position_fail_get_parameter() {
 
 #[test]
 fn set_fw_position_success() {
+    let _mock = super::mock_guard();
     //given
     let ctx_available = IsQHYCCDControlAvailable_context();
     ctx_available
@@ -267,6 +281,7 @@ fn set_fw_position_success() {
 
 #[test]
 fn set_fw_position_fail_no_filter_wheel() {
+    let _mock = super::mock_guard();
     //given
     let ctx_available = IsQHYCCDControlAvailable_context();
     ctx_available
@@ -283,6 +298,7 @@ fn set_fw_position_fail_no_filter_wheel() {
 
 #[test]
 fn set_fw_position_fail_set_parameter() {
+    let _mock = super::mock_guard();
     //given
     let ctx_available = IsQHYCCDControlAvailable_context();
     ctx_available

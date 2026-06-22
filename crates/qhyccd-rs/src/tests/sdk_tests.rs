@@ -68,6 +68,7 @@ fn new_sdk() -> Sdk {
 #[test]
 #[cfg(not(feature = "simulation"))]
 fn new_success() {
+    let _mock = super::mock_guard();
     //given
     //when
     let ctx_release = ReleaseQHYCCDResource_context();
@@ -84,6 +85,7 @@ fn new_success() {
 #[test]
 #[cfg(not(feature = "simulation"))]
 fn version_success() {
+    let _mock = super::mock_guard();
     //given
     let ctx_version = GetQHYCCDSDKVersion_context();
     ctx_version
@@ -120,6 +122,7 @@ fn version_success() {
 #[test]
 #[cfg(not(feature = "simulation"))]
 fn version_fail() {
+    let _mock = super::mock_guard();
     //given
     let ctx_version = GetQHYCCDSDKVersion_context();
     ctx_version
@@ -148,6 +151,7 @@ fn version_fail() {
 #[test]
 #[cfg(not(feature = "simulation"))]
 fn filter_wheels_success() {
+    let _mock = super::mock_guard();
     //given
     //filter wheels context is set up in new_sdk()
     let ctx_release = ReleaseQHYCCDResource_context();
@@ -165,6 +169,7 @@ fn filter_wheels_success() {
 #[test]
 #[cfg(not(feature = "simulation"))]
 fn new_init_fail() {
+    let _mock = super::mock_guard();
     //given
     let ctx_init = InitQHYCCDResource_context();
     ctx_init.expect().times(1).return_const_st(QHYCCD_ERROR);
@@ -186,6 +191,7 @@ fn new_init_fail() {
 #[test]
 #[cfg(not(feature = "simulation"))]
 fn new_scan_fail() {
+    let _mock = super::mock_guard();
     //given
     let ctx_init = InitQHYCCDResource_context();
     ctx_init.expect().times(1).return_const_st(QHYCCD_SUCCESS);
@@ -203,6 +209,7 @@ fn new_scan_fail() {
 #[test]
 #[cfg(not(feature = "simulation"))]
 fn new_get_id_fail() {
+    let _mock = super::mock_guard();
     //given
     let ctx_init = InitQHYCCDResource_context();
     ctx_init.expect().times(1).return_const_st(QHYCCD_SUCCESS);
@@ -228,6 +235,7 @@ fn new_get_id_fail() {
 #[test]
 #[cfg(not(feature = "simulation"))]
 fn new_get_id_invalid_utf8_fail() {
+    let _mock = super::mock_guard();
     //given
     let ctx_init = InitQHYCCDResource_context();
     ctx_init.expect().times(1).return_const_st(QHYCCD_SUCCESS);
@@ -257,6 +265,7 @@ fn new_get_id_invalid_utf8_fail() {
 #[test]
 #[cfg(not(feature = "simulation"))]
 fn new_with_broken_filter_wheel() {
+    let _mock = super::mock_guard();
     let ctx_init = InitQHYCCDResource_context();
     ctx_init.expect().times(1).return_const_st(QHYCCD_SUCCESS);
     let ctx_scan = ScanQHYCCD_context();
@@ -321,6 +330,7 @@ fn new_with_broken_filter_wheel() {
 #[test]
 #[cfg(not(feature = "simulation"))]
 fn new_fail_close() {
+    let _mock = super::mock_guard();
     let ctx_init = InitQHYCCDResource_context();
     ctx_init.expect().times(1).return_const_st(QHYCCD_SUCCESS);
     let ctx_scan = ScanQHYCCD_context();

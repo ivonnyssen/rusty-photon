@@ -28,6 +28,7 @@ fn new_camera() -> Camera {
 
 #[test]
 fn set_stream_mode_success() {
+    let _mock = super::mock_guard();
     //given
     let ctx = SetQHYCCDStreamMode_context();
     ctx.expect()
@@ -43,6 +44,7 @@ fn set_stream_mode_success() {
 
 #[test]
 fn set_stream_mode_fail() {
+    let _mock = super::mock_guard();
     //given
     let ctx = SetQHYCCDStreamMode_context();
     ctx.expect().times(1).return_const_st(QHYCCD_ERROR);
@@ -62,6 +64,7 @@ fn set_stream_mode_fail() {
 
 #[test]
 fn set_readout_mode_success() {
+    let _mock = super::mock_guard();
     //given
     let ctx = SetQHYCCDReadMode_context();
     ctx.expect()
@@ -77,6 +80,7 @@ fn set_readout_mode_success() {
 
 #[test]
 fn set_readout_mode_fail() {
+    let _mock = super::mock_guard();
     //given
     let ctx = SetQHYCCDReadMode_context();
     ctx.expect().times(1).return_const_st(QHYCCD_ERROR);
@@ -96,6 +100,7 @@ fn set_readout_mode_fail() {
 
 #[test]
 fn get_model_success() {
+    let _mock = super::mock_guard();
     //given
     let ctx = GetQHYCCDModel_context();
     ctx.expect().times(1).returning_st(|_handle, model| unsafe {
@@ -114,6 +119,7 @@ fn get_model_success() {
 
 #[test]
 fn get_model_fail() {
+    let _mock = super::mock_guard();
     //given
     let ctx = GetQHYCCDModel_context();
     ctx.expect().times(1).return_const(QHYCCD_ERROR);
@@ -126,6 +132,7 @@ fn get_model_fail() {
 
 #[test]
 fn get_model_utf8_error() {
+    let _mock = super::mock_guard();
     //given
     let ctx = GetQHYCCDModel_context();
     ctx.expect().times(1).returning_st(|_handle, model| unsafe {
@@ -147,6 +154,7 @@ fn get_model_utf8_error() {
 
 #[test]
 fn init_success() {
+    let _mock = super::mock_guard();
     //given
     let ctx = InitQHYCCD_context();
     ctx.expect()
@@ -162,6 +170,7 @@ fn init_success() {
 
 #[test]
 fn init_fail() {
+    let _mock = super::mock_guard();
     //given
     let ctx = InitQHYCCD_context();
     ctx.expect()
@@ -184,6 +193,7 @@ fn init_fail() {
 
 #[test]
 fn get_firmware_version_success() {
+    let _mock = super::mock_guard();
     //given
     let ctx = GetQHYCCDFWVersion_context();
     ctx.expect()
@@ -221,6 +231,7 @@ fn get_firmware_version_success() {
 
 #[test]
 fn get_firmware_version_fail() {
+    let _mock = super::mock_guard();
     //given
     let ctx = GetQHYCCDFWVersion_context();
     ctx.expect()
@@ -243,6 +254,7 @@ fn get_firmware_version_fail() {
 
 #[test]
 fn get_number_of_readout_modes_success() {
+    let _mock = super::mock_guard();
     //given
     let ctx = GetQHYCCDNumberOfReadModes_context();
     ctx.expect()
@@ -262,6 +274,7 @@ fn get_number_of_readout_modes_success() {
 
 #[test]
 fn get_number_of_readout_modes_fail() {
+    let _mock = super::mock_guard();
     //given
     let ctx = GetQHYCCDNumberOfReadModes_context();
     ctx.expect()
@@ -281,6 +294,7 @@ fn get_number_of_readout_modes_fail() {
 
 #[test]
 fn get_readout_mode_name_success() {
+    let _mock = super::mock_guard();
     //given
     let ctx = GetQHYCCDReadModeName_context();
     ctx.expect()
@@ -302,6 +316,7 @@ fn get_readout_mode_name_success() {
 
 #[test]
 fn get_readout_mode_name_fail() {
+    let _mock = super::mock_guard();
     //given
     let ctx = GetQHYCCDReadModeName_context();
     ctx.expect()
@@ -321,6 +336,7 @@ fn get_readout_mode_name_fail() {
 
 #[test]
 fn get_readout_mode_name_utf8_error() {
+    let _mock = super::mock_guard();
     //given
     let ctx = GetQHYCCDReadModeName_context();
     ctx.expect()
@@ -345,6 +361,7 @@ fn get_readout_mode_name_utf8_error() {
 
 #[test]
 fn get_readout_mode_resolution_success() {
+    let _mock = super::mock_guard();
     //given
     let ctx = GetQHYCCDReadModeResolution_context();
     ctx.expect()
@@ -366,6 +383,7 @@ fn get_readout_mode_resolution_success() {
 
 #[test]
 fn get_readout_mode_resolution_fail() {
+    let _mock = super::mock_guard();
     //given
     let ctx = GetQHYCCDReadModeResolution_context();
     ctx.expect()
@@ -385,6 +403,7 @@ fn get_readout_mode_resolution_fail() {
 
 #[test]
 fn get_readout_mode_success() {
+    let _mock = super::mock_guard();
     //given
     let ctx = GetQHYCCDReadMode_context();
     ctx.expect()
@@ -404,6 +423,7 @@ fn get_readout_mode_success() {
 
 #[test]
 fn get_readout_mode_fail() {
+    let _mock = super::mock_guard();
     //given
     let ctx = GetQHYCCDReadMode_context();
     ctx.expect()
@@ -423,6 +443,7 @@ fn get_readout_mode_fail() {
 
 #[test]
 fn get_type_success() {
+    let _mock = super::mock_guard();
     //given
     let ctx = GetQHYCCDType_context();
     ctx.expect()
@@ -439,6 +460,7 @@ fn get_type_success() {
 
 #[test]
 fn get_type_fail() {
+    let _mock = super::mock_guard();
     //given
     let ctx = GetQHYCCDType_context();
     ctx.expect()
@@ -458,6 +480,7 @@ fn get_type_fail() {
 
 #[test]
 fn set_bin_mode_success() {
+    let _mock = super::mock_guard();
     //given
     let ctx = SetQHYCCDBinMode_context();
     ctx.expect()
@@ -475,6 +498,7 @@ fn set_bin_mode_success() {
 
 #[test]
 fn set_bin_mode_fail() {
+    let _mock = super::mock_guard();
     //given
     let ctx = SetQHYCCDBinMode_context();
     ctx.expect()
@@ -499,6 +523,7 @@ fn set_bin_mode_fail() {
 
 #[test]
 fn set_debayer_success() {
+    let _mock = super::mock_guard();
     //given
     let ctx = SetQHYCCDDebayerOnOff_context();
     ctx.expect()
@@ -514,6 +539,7 @@ fn set_debayer_success() {
 
 #[test]
 fn set_debayer_fail() {
+    let _mock = super::mock_guard();
     //given
     let ctx = SetQHYCCDDebayerOnOff_context();
     ctx.expect()
@@ -536,6 +562,7 @@ fn set_debayer_fail() {
 
 #[test]
 fn set_roi_success() {
+    let _mock = super::mock_guard();
     //given
     let ctx = SetQHYCCDResolution_context();
     ctx.expect()
@@ -562,6 +589,7 @@ fn set_roi_success() {
 
 #[test]
 fn set_roi_fail() {
+    let _mock = super::mock_guard();
     //given
     let ctx = SetQHYCCDResolution_context();
     ctx.expect()
@@ -595,6 +623,7 @@ fn set_roi_fail() {
 
 #[test]
 fn begin_live_success() {
+    let _mock = super::mock_guard();
     //given
     let ctx = BeginQHYCCDLive_context();
     ctx.expect()
@@ -610,6 +639,7 @@ fn begin_live_success() {
 
 #[test]
 fn begin_live_fail() {
+    let _mock = super::mock_guard();
     //given
     let ctx = BeginQHYCCDLive_context();
     ctx.expect()
@@ -632,6 +662,7 @@ fn begin_live_fail() {
 
 #[test]
 fn end_live_success() {
+    let _mock = super::mock_guard();
     //given
     let ctx = StopQHYCCDLive_context();
     ctx.expect()
@@ -647,6 +678,7 @@ fn end_live_success() {
 
 #[test]
 fn end_live_fail() {
+    let _mock = super::mock_guard();
     //given
     let ctx = StopQHYCCDLive_context();
     ctx.expect()
@@ -669,6 +701,7 @@ fn end_live_fail() {
 
 #[test]
 fn get_image_size_success() {
+    let _mock = super::mock_guard();
     //given
     let ctx = GetQHYCCDMemLength_context();
     ctx.expect()
@@ -685,6 +718,7 @@ fn get_image_size_success() {
 
 #[test]
 fn get_image_size_fail() {
+    let _mock = super::mock_guard();
     //given
     let ctx = GetQHYCCDMemLength_context();
     ctx.expect()
@@ -704,6 +738,7 @@ fn get_image_size_fail() {
 
 #[test]
 fn get_live_frame_success() {
+    let _mock = super::mock_guard();
     //given
     let ctx = GetQHYCCDLiveFrame_context();
     ctx.expect()
@@ -737,6 +772,7 @@ fn get_live_frame_success() {
 
 #[test]
 fn get_live_frame_fail() {
+    let _mock = super::mock_guard();
     //given
     let ctx = GetQHYCCDLiveFrame_context();
     ctx.expect()
@@ -759,6 +795,7 @@ fn get_live_frame_fail() {
 
 #[test]
 fn get_single_frame_success() {
+    let _mock = super::mock_guard();
     //given
     let ctx = GetQHYCCDSingleFrame_context();
     ctx.expect()
@@ -792,6 +829,7 @@ fn get_single_frame_success() {
 
 #[test]
 fn get_single_frame_fail() {
+    let _mock = super::mock_guard();
     //given
     let ctx = GetQHYCCDSingleFrame_context();
     ctx.expect()
@@ -814,6 +852,7 @@ fn get_single_frame_fail() {
 
 #[test]
 fn get_overscan_area_success() {
+    let _mock = super::mock_guard();
     //given
     let ctx = GetQHYCCDOverScanArea_context();
     ctx.expect()
@@ -844,6 +883,7 @@ fn get_overscan_area_success() {
 
 #[test]
 fn get_overscan_area_fail() {
+    let _mock = super::mock_guard();
     //given
     let ctx = GetQHYCCDOverScanArea_context();
     ctx.expect()
@@ -866,6 +906,7 @@ fn get_overscan_area_fail() {
 
 #[test]
 fn get_effective_area_success() {
+    let _mock = super::mock_guard();
     //given
     let ctx = GetQHYCCDEffectiveArea_context();
     ctx.expect()
@@ -896,6 +937,7 @@ fn get_effective_area_success() {
 
 #[test]
 fn get_effective_area_fail() {
+    let _mock = super::mock_guard();
     //given
     let ctx = GetQHYCCDEffectiveArea_context();
     ctx.expect()
@@ -918,6 +960,7 @@ fn get_effective_area_fail() {
 
 #[test]
 fn start_single_frame_exposure_success() {
+    let _mock = super::mock_guard();
     //given
     let ctx = ExpQHYCCDSingleFrame_context();
     ctx.expect()
@@ -933,6 +976,7 @@ fn start_single_frame_exposure_success() {
 
 #[test]
 fn start_single_frame_exposure_fail() {
+    let _mock = super::mock_guard();
     //given
     let ctx = ExpQHYCCDSingleFrame_context();
     ctx.expect()
@@ -955,6 +999,7 @@ fn start_single_frame_exposure_fail() {
 
 #[test]
 fn get_remaining_exposure_us_success() {
+    let _mock = super::mock_guard();
     //given
     let ctx = GetQHYCCDExposureRemaining_context();
     ctx.expect()
@@ -981,6 +1026,7 @@ fn get_remaining_exposure_us_success() {
 
 #[test]
 fn get_remaining_exposure_us_fail() {
+    let _mock = super::mock_guard();
     //given
     let ctx = GetQHYCCDExposureRemaining_context();
     ctx.expect()
@@ -1000,6 +1046,7 @@ fn get_remaining_exposure_us_fail() {
 
 #[test]
 fn stop_exposure_success() {
+    let _mock = super::mock_guard();
     //given
     let ctx = CancelQHYCCDExposing_context();
     ctx.expect()
@@ -1015,6 +1062,7 @@ fn stop_exposure_success() {
 
 #[test]
 fn stop_exposure_fail() {
+    let _mock = super::mock_guard();
     //given
     let ctx = CancelQHYCCDExposing_context();
     ctx.expect()
@@ -1037,6 +1085,7 @@ fn stop_exposure_fail() {
 
 #[test]
 fn abort_exposure_and_readout_success() {
+    let _mock = super::mock_guard();
     //given
     let ctx = CancelQHYCCDExposingAndReadout_context();
     ctx.expect()
@@ -1052,6 +1101,7 @@ fn abort_exposure_and_readout_success() {
 
 #[test]
 fn abort_exposure_and_readout_fail() {
+    let _mock = super::mock_guard();
     //given
     let ctx = CancelQHYCCDExposingAndReadout_context();
     ctx.expect()
@@ -1074,6 +1124,7 @@ fn abort_exposure_and_readout_fail() {
 
 #[test]
 fn is_control_available_success_some() {
+    let _mock = super::mock_guard();
     //given
     let ctx = IsQHYCCDControlAvailable_context();
     ctx.expect()
@@ -1090,6 +1141,7 @@ fn is_control_available_success_some() {
 
 #[test]
 fn is_control_available_success_none() {
+    let _mock = super::mock_guard();
     //given
     let ctx = IsQHYCCDControlAvailable_context();
     ctx.expect()
@@ -1105,6 +1157,7 @@ fn is_control_available_success_none() {
 
 #[test]
 fn get_ccd_info_success() {
+    let _mock = super::mock_guard();
     //given
     let ctx = GetQHYCCDChipInfo_context();
     ctx.expect()
@@ -1147,6 +1200,7 @@ fn get_ccd_info_success() {
 
 #[test]
 fn get_ccd_info_fail() {
+    let _mock = super::mock_guard();
     //given
     let ctx = GetQHYCCDChipInfo_context();
     ctx.expect()
@@ -1173,6 +1227,7 @@ fn get_ccd_info_fail() {
 
 #[test]
 fn set_bit_mode_success() {
+    let _mock = super::mock_guard();
     //given
     let ctx = SetQHYCCDBitsMode_context();
     ctx.expect()
@@ -1188,6 +1243,7 @@ fn set_bit_mode_success() {
 
 #[test]
 fn set_bit_mode_fail() {
+    let _mock = super::mock_guard();
     //given
     let ctx = SetQHYCCDBitsMode_context();
     ctx.expect()
@@ -1210,6 +1266,7 @@ fn set_bit_mode_fail() {
 
 #[test]
 fn get_parameter_success() {
+    let _mock = super::mock_guard();
     //given
     let ctx = GetQHYCCDParam_context();
     ctx.expect()
@@ -1228,6 +1285,7 @@ fn get_parameter_success() {
 
 #[test]
 fn get_parameter_fail() {
+    let _mock = super::mock_guard();
     //given
     let ctx = GetQHYCCDParam_context();
     ctx.expect()
@@ -1252,6 +1310,7 @@ fn get_parameter_fail() {
 
 #[test]
 fn get_parameter_min_max_step_success() {
+    let _mock = super::mock_guard();
     //given
     let ctx = GetQHYCCDParamMinMaxStep_context();
     ctx.expect()
@@ -1275,6 +1334,7 @@ fn get_parameter_min_max_step_success() {
 
 #[test]
 fn get_parameter_min_max_step_fail() {
+    let _mock = super::mock_guard();
     //given
     let ctx = GetQHYCCDParamMinMaxStep_context();
     ctx.expect()
@@ -1299,6 +1359,7 @@ fn get_parameter_min_max_step_fail() {
 
 #[test]
 fn set_parameter_success() {
+    let _mock = super::mock_guard();
     //given
     let ctx = SetQHYCCDParam_context();
     ctx.expect()
@@ -1316,6 +1377,7 @@ fn set_parameter_success() {
 
 #[test]
 fn set_parameter_fail() {
+    let _mock = super::mock_guard();
     //given
     let ctx = SetQHYCCDParam_context();
     ctx.expect()
@@ -1340,6 +1402,7 @@ fn set_parameter_fail() {
 
 #[test]
 fn set_if_available_success() {
+    let _mock = super::mock_guard();
     //given
     let ctx_get = IsQHYCCDControlAvailable_context();
     ctx_get
@@ -1367,6 +1430,7 @@ fn set_if_available_success() {
 
 #[test]
 fn set_if_available_fail() {
+    let _mock = super::mock_guard();
     //given
     let ctx_get = IsQHYCCDControlAvailable_context();
     ctx_get
@@ -1433,6 +1497,7 @@ fn set_if_available_fail() {
 
 #[test]
 fn open_success() {
+    let _mock = super::mock_guard();
     //given
     let cam = Camera::new("test_camera".to_owned());
     let ctx_open = OpenQHYCCD_context();
@@ -1446,6 +1511,7 @@ fn open_success() {
 
 #[test]
 fn open_already_open() {
+    let _mock = super::mock_guard();
     //given
     let cam = Camera::new("test_camera".to_owned());
     let ctx_open = OpenQHYCCD_context();
@@ -1459,6 +1525,7 @@ fn open_already_open() {
 
 #[test]
 fn open_fail() {
+    let _mock = super::mock_guard();
     //given
     let cam = Camera::new("test_camera".to_owned());
     let ctx = OpenQHYCCD_context();
@@ -1474,6 +1541,7 @@ fn open_fail() {
 }
 #[test]
 fn open_nulerror() {
+    let _mock = super::mock_guard();
     //given
     let cam = Camera::new("test_\0camera".to_owned());
     let ctx = OpenQHYCCD_context();
@@ -1490,6 +1558,7 @@ fn open_nulerror() {
 
 #[test]
 fn close_success() {
+    let _mock = super::mock_guard();
     //given
     let ctx = CloseQHYCCD_context();
     ctx.expect().times(1).return_const_st(QHYCCD_SUCCESS);
@@ -1502,6 +1571,7 @@ fn close_success() {
 
 #[test]
 fn close_already_closed() {
+    let _mock = super::mock_guard();
     //given
     let ctx = CloseQHYCCD_context();
     ctx.expect().times(1).return_const_st(QHYCCD_SUCCESS);
@@ -1515,6 +1585,7 @@ fn close_already_closed() {
 
 #[test]
 fn close_fail() {
+    let _mock = super::mock_guard();
     //given
     let ctx = CloseQHYCCD_context();
     ctx.expect().times(1).return_const_st(QHYCCD_ERROR);
@@ -1534,6 +1605,7 @@ fn close_fail() {
 
 #[test]
 fn bayer_mode_try_from() {
+    let _mock = super::mock_guard();
     assert_eq!(BayerMode::try_from(1).unwrap(), BayerMode::GBRG);
     assert_eq!(BayerMode::try_from(2).unwrap(), BayerMode::GRBG);
     assert_eq!(BayerMode::try_from(3).unwrap(), BayerMode::BGGR);
