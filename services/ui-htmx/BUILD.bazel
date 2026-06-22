@@ -87,7 +87,9 @@ rust_test(
     # insta goldens (UI-testing plan Layer B): the committed .snap files must
     # reach the runfiles tree so the snapshot-path resolver can read them under
     # the Bazel sandbox (see tests/bdd/snapshot.rs).
-    glob(["tests/snapshots/**"]),
+    glob([
+        "tests/snapshots/**",
+    ]),
     edition = "2021",
     env = {
         "BDD_PACKAGE_DIR": "services/ui-htmx",
