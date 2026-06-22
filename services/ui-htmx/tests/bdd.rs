@@ -7,6 +7,9 @@
 #[path = "bdd/dom.rs"]
 mod dom;
 
+#[path = "bdd/snapshot.rs"]
+mod snapshot;
+
 #[path = "bdd/world.rs"]
 mod world;
 

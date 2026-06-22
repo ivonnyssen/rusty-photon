@@ -447,6 +447,21 @@ is a test-only dev-dependency and is never compiled into the shipped binary.
 
 [`scraper`]: https://docs.rs/scraper/
 
+**Byte-equivalence snapshots ride the same scenarios** (Layer B / P2). Selected
+Then-steps also capture the response's exact bytes as committed [`insta`] goldens
+under `tests/snapshots/` — the server's output is the *cross-OS-comparable*
+artifact, since htmx swaps a fragment verbatim, so byte-identical output across
+OSes implies identical browser behavior without a browser on every OS. The
+driver's OS-assigned `:0` bound port is filtered to `<port>` (the only
+run-varying token); the driver-unreachable error card is *not* snapshotted (its
+banner carries an OS-specific connection-refused string — the case where the P1
+DOM check stands in for P2). Goldens are updated Cargo-locally (`cargo insta
+review` / `accept`, then commit) and compared read-only under Bazel
+(`INSTA_UPDATE=no`, goldens shipped via the `bdd` target's `data`); a runtime
+resolver finds them under both build systems' layouts.
+
+[`insta`]: https://insta.rs/
+
 The driver binds port 0, so the OS assigns a free port atomically (no racy
 preselection); the test discovers it from the driver's `bound_addr=` stdout line.
 The one scenario that reloads and reconnects first pins that bound port into the

@@ -7,8 +7,8 @@
 
 use cucumber::{given, then, when};
 
-use crate::dom;
 use crate::world::UiWorld;
+use crate::{dom, snapshot};
 
 // --- Given: stand up the real services --------------------------------------
 
@@ -225,4 +225,14 @@ fn shows_driver_error(world: &mut UiWorld) {
         "missing driver error banner:\n{}",
         world.last_body
     );
+}
+
+// --- Then (P2): byte-equivalence snapshot of the rendered output ------------
+
+/// Capture the last response's exact bytes as a committed golden (Layer B / P2).
+/// Rides alongside the P1 DOM assertions on the same captured output; the golden
+/// is the cross-OS-comparable artifact (see [`crate::snapshot`]).
+#[then(regex = r#"^the rendered output matches the "([\w-]+)" snapshot$"#)]
+fn matches_snapshot(world: &mut UiWorld, name: String) {
+    snapshot::assert_html(&name, &world.last_body);
 }

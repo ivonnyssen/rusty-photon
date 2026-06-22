@@ -19,3 +19,10 @@ crates/rp-catalog/src/data/*.csv -text
 # FITS fixtures are binary; be explicit so Git never tries text conversion on
 # them.
 *.fits -text
+
+# insta snapshot goldens (services/ui-htmx/tests/snapshots, the UI-testing plan
+# Layer B) are committed once and compared byte-for-byte across OSes. The
+# wildcard above already normalizes them, but be explicit: a CRLF golden checked
+# out on Windows would fail the cross-OS byte-equivalence assertion, and insta's
+# content filters do not touch line endings.
+*.snap text eol=lf

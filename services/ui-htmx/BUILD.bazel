@@ -83,13 +83,20 @@ rust_test(
         "Cargo.toml",
         ":ui-htmx",
         "//services/dsd-fp2:dsd-fp2_mock",
-    ] + glob(["tests/features/**"]),
+    ] + glob(["tests/features/**"]) +
+    # insta goldens (UI-testing plan Layer B): the committed .snap files must
+    # reach the runfiles tree so the snapshot-path resolver can read them under
+    # the Bazel sandbox (see tests/bdd/snapshot.rs).
+    glob(["tests/snapshots/**"]),
     edition = "2021",
     env = {
         "BDD_PACKAGE_DIR": "services/ui-htmx",
         "DSD_FP2_BINARY": "$(rootpath //services/dsd-fp2:dsd-fp2_mock)",
         "UI_HTMX_BINARY": "$(rootpath :ui-htmx)",
         "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath //services/dsd-fp2:dsd-fp2_mock):$(rootpath :ui-htmx)",
+        # Bazel does not propagate CI, so force insta to compare-only / fail on
+        # mismatch (the sandbox is read-only; goldens are updated Cargo-locally).
+        "INSTA_UPDATE": "no",
     },
     proc_macro_deps = all_crate_deps(
         proc_macro = True,

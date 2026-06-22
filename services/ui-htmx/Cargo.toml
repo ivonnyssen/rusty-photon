@@ -36,6 +36,10 @@ tempfile = { workspace = true }
 # html5ever/selectors stack browsers ship, used for CSS-selector DOM assertions
 # in the BDD suite. Test-only — never compiled into the shipped binary.
 scraper = "0.27"
+# Layer B (§5): byte-equivalence snapshots of the server's HTML output, the
+# cross-OS-comparable artifact (P2). `filters` scrubs run/OS-varying tokens
+# before compare; `redactions` is pulled for completeness per the plan.
+insta = { version = "1.48", features = ["filters", "redactions"] }
 
 [[test]]
 name = "bdd"

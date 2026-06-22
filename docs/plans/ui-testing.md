@@ -132,6 +132,25 @@ browser.
 
 ## 5. Layer B — cross-OS output-equivalence (P2 `insta`)
 
+> **Status (2026-06-21): implemented.** `insta` 1.48 (`filters` + `redactions`)
+> is a `ui-htmx` dev-dep; 6 external goldens live under
+> [`tests/snapshots/`] — full pages (`config_page_current_config`,
+> `config_page_override_pinned`), `HX-Request` swap fragments
+> (`config_card_unlocked`, `config_card_reloading`, `config_card_invalid`), and
+> the index (`index_page`). They ride existing scenarios via a
+> `the rendered output matches the "<name>" snapshot` step. A runtime
+> snapshot-path resolver ([`tests/bdd/snapshot.rs`]) finds the goldens under both
+> Cargo and Bazel runfiles; `BUILD.bazel` ships them via `data` and forces
+> `INSTA_UPDATE=no`; `.gitattributes` pins `*.snap` to LF. The driver's `:0`
+> bound port is the only run-varying token and is filtered to `<port>` (proven by
+> two compare-only runs with fresh ports). The driver-unreachable error card is
+> deliberately **not** snapshotted — its banner embeds an OS-specific
+> connection-refused string, the canonical case where P1's DOM check stands in
+> for P2. Layer C (§6) remains.
+
+[`tests/snapshots/`]: ../../services/ui-htmx/tests/snapshots/
+[`tests/bdd/snapshot.rs`]: ../../services/ui-htmx/tests/bdd/snapshot.rs
+
 Snapshot the **server response bytes** (full pages + `HX-Request` swap fragments)
 captured by the existing non-browser BDD path. This is the cross-OS-comparable
 artifact (the *browser DOM* is not — it only runs on one OS and a browser reserializes
