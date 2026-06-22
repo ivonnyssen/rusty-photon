@@ -230,6 +230,23 @@ Dependencies used by two or more services are declared in the workspace
 `Cargo.toml` under `[workspace.dependencies]` (CLAUDE.md Rule 10). Services
 reference them with `dep.workspace = true`.
 
+### Dual-homed crates inherit shared deps too
+
+The dual-homed members (`zwo-rs` + `libzwo-sys`, `qhyccd-rs` + `libqhyccd-sys` —
+ADR-009/010) follow the same rule: their **shared** third-party dependencies
+(e.g. `thiserror`, `tracing`, and the simulation-only `rand`/`rayon` shared
+between the two camera crates) inherit from `[workspace.dependencies]` with
+`dep.workspace = true`. This is safe for their independent crates.io releases
+because `cargo publish` **flattens** an inherited dependency into a concrete
+version in the packaged manifest (verified by dry-run). What stays explicit on
+these members is their **package identity metadata** (`version` / `edition` /
+`license` / `authors` / `description` / `keywords` / `categories`) — *not*
+`*.workspace = true` — so they release on their own cadence (the carve-out
+recorded in ADR-009/010). A dep is left crate-local only when it is genuinely
+single-consumer (e.g. `libzwo-sys`'s `bindgen` build-dep) or when the workspace
+pin would force an unwanted feature (e.g. `qhyccd-rs` keeps `tracing-subscriber`
+local to avoid the workspace's `env-filter`).
+
 ### Pre-commit hooks
 
 The workspace uses `cargo-husky` as a dev-dependency configured with

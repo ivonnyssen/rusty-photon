@@ -1,6 +1,6 @@
 use std::ffi::{c_char, CStr};
 
-use eyre::{eyre, Result};
+use crate::Result;
 
 use crate::backend::{read_lock, CameraBackend};
 use crate::{CCDChipArea, CCDChipInfo, QHYError::*};
@@ -26,34 +26,27 @@ impl Camera {
     pub fn get_model(&self) -> Result<String> {
         match &self.backend {
             CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle, GetCameraModelError { error_code: 0 })?;
+                let handle = read_lock!(handle)?;
                 let mut model: [c_char; 80] = [0; 80];
                 match unsafe { GetQHYCCDModel(handle, model.as_mut_ptr()) } {
                     QHYCCD_SUCCESS => {
-                        let model = match unsafe { CStr::from_ptr(model.as_ptr()) }.to_str() {
-                            Ok(model) => model,
-                            Err(error) => {
-                                tracing::error!(error = ?error);
-                                return Err(eyre!(error));
-                            }
-                        };
+                        let model = unsafe { CStr::from_ptr(model.as_ptr()) }
+                            .to_str()
+                            .inspect_err(|error| tracing::error!(error = ?error))?;
                         Ok(model.to_string())
                     }
                     error_code => {
                         let error = GetCameraModelError { error_code };
                         tracing::error!(error = ?error);
-                        Err(eyre!(error))
+                        Err(error)
                     }
                 }
             }
             #[cfg(feature = "simulation")]
             CameraBackend::Simulated { state } => {
-                let state = state.read().map_err(|err| {
-                    tracing::error!(error=?err);
-                    eyre!("Could not acquire read lock on simulated camera state")
-                })?;
+                let state = state.read();
                 if !state.is_open {
-                    return Err(eyre!(CameraNotOpenError));
+                    return Err(CameraNotOpenError);
                 }
                 Ok(state.config.model.clone())
             }
@@ -73,7 +66,7 @@ impl Camera {
     pub fn get_firmware_version(&self) -> Result<String> {
         match &self.backend {
             CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle, GetFirmwareVersionError { error_code: 0 })?;
+                let handle = read_lock!(handle)?;
                 let mut version = [0u8; 32];
                 match unsafe { GetQHYCCDFWVersion(handle, version.as_mut_ptr()) } {
                     QHYCCD_SUCCESS => {
@@ -96,18 +89,15 @@ impl Camera {
                     error_code => {
                         let error = GetFirmwareVersionError { error_code };
                         tracing::error!(error = ?error);
-                        Err(eyre!(error))
+                        Err(error)
                     }
                 }
             }
             #[cfg(feature = "simulation")]
             CameraBackend::Simulated { state } => {
-                let state = state.read().map_err(|err| {
-                    tracing::error!(error=?err);
-                    eyre!("Could not acquire read lock on simulated camera state")
-                })?;
+                let state = state.read();
                 if !state.is_open {
-                    return Err(eyre!(CameraNotOpenError));
+                    return Err(CameraNotOpenError);
                 }
                 Ok(state.config.firmware_version.clone())
             }
@@ -127,24 +117,21 @@ impl Camera {
     pub fn get_type(&self) -> Result<u32> {
         match &self.backend {
             CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle, GetCameraTypeError)?;
+                let handle = read_lock!(handle)?;
                 match unsafe { GetQHYCCDType(handle) } {
                     QHYCCD_ERROR => {
                         let error = GetCameraTypeError;
                         tracing::error!(error = ?error);
-                        Err(eyre!(error))
+                        Err(error)
                     }
                     camera_type => Ok(camera_type),
                 }
             }
             #[cfg(feature = "simulation")]
             CameraBackend::Simulated { state } => {
-                let state = state.read().map_err(|err| {
-                    tracing::error!(error=?err);
-                    eyre!("Could not acquire read lock on simulated camera state")
-                })?;
+                let state = state.read();
                 if !state.is_open {
-                    return Err(eyre!(CameraNotOpenError));
+                    return Err(CameraNotOpenError);
                 }
                 Ok(state.config.camera_type)
             }
@@ -164,7 +151,7 @@ impl Camera {
     pub fn get_ccd_info(&self) -> Result<CCDChipInfo> {
         match &self.backend {
             CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle, GetCCDInfoError { error_code: 0 })?;
+                let handle = read_lock!(handle)?;
                 let mut chipw: f64 = 0.0;
                 let mut chiph: f64 = 0.0;
                 let mut imagew: u32 = 0;
@@ -196,18 +183,15 @@ impl Camera {
                     error_code => {
                         let error = GetCCDInfoError { error_code };
                         tracing::error!(error = ?error);
-                        Err(eyre!(error))
+                        Err(error)
                     }
                 }
             }
             #[cfg(feature = "simulation")]
             CameraBackend::Simulated { state } => {
-                let state = state.read().map_err(|err| {
-                    tracing::error!(error=?err);
-                    eyre!("Could not acquire read lock on simulated camera state")
-                })?;
+                let state = state.read();
                 if !state.is_open {
-                    return Err(eyre!(CameraNotOpenError));
+                    return Err(CameraNotOpenError);
                 }
                 Ok(state.config.chip_info)
             }
@@ -227,7 +211,7 @@ impl Camera {
     pub fn get_overscan_area(&self) -> Result<CCDChipArea> {
         match &self.backend {
             CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle, GetOverscanAreaError { error_code: 0 })?;
+                let handle = read_lock!(handle)?;
                 let mut start_x: u32 = 0;
                 let mut start_y: u32 = 0;
                 let mut width: u32 = 0;
@@ -250,18 +234,15 @@ impl Camera {
                     error_code => {
                         let error = GetOverscanAreaError { error_code };
                         tracing::error!(error = ?error);
-                        Err(eyre!(error))
+                        Err(error)
                     }
                 }
             }
             #[cfg(feature = "simulation")]
             CameraBackend::Simulated { state } => {
-                let state = state.read().map_err(|err| {
-                    tracing::error!(error=?err);
-                    eyre!("Could not acquire read lock on simulated camera state")
-                })?;
+                let state = state.read();
                 if !state.is_open {
-                    return Err(eyre!(CameraNotOpenError));
+                    return Err(CameraNotOpenError);
                 }
                 Ok(state.config.overscan_area)
             }
@@ -281,7 +262,7 @@ impl Camera {
     pub fn get_effective_area(&self) -> Result<CCDChipArea> {
         match &self.backend {
             CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle, GetEffectiveAreaError { error_code: 0 })?;
+                let handle = read_lock!(handle)?;
                 let mut start_x: u32 = 0;
                 let mut start_y: u32 = 0;
                 let mut width: u32 = 0;
@@ -304,18 +285,15 @@ impl Camera {
                     error_code => {
                         let error = GetEffectiveAreaError { error_code };
                         tracing::error!(error = ?error);
-                        Err(eyre!(error))
+                        Err(error)
                     }
                 }
             }
             #[cfg(feature = "simulation")]
             CameraBackend::Simulated { state } => {
-                let state = state.read().map_err(|err| {
-                    tracing::error!(error=?err);
-                    eyre!("Could not acquire read lock on simulated camera state")
-                })?;
+                let state = state.read();
                 if !state.is_open {
-                    return Err(eyre!(CameraNotOpenError));
+                    return Err(CameraNotOpenError);
                 }
                 Ok(state.config.effective_area)
             }

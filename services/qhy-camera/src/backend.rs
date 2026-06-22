@@ -1,9 +1,10 @@
 //! The SDK seam: thin traits over the blocking `qhyccd-rs` `Camera` / `FilterWheel`
 //! surface the ASCOM devices use, plus production wrappers and a test mock.
 //!
-//! Why a seam: `qhyccd-rs` returns `eyre::Result` and (for the real backend) talks
-//! FFI. Funneling every SDK call through [`CameraHandle`] / [`FilterWheelHandle`]
-//! (1) collapses `eyre` into a typed [`BackendError`] at one boundary, (2) lets the
+//! Why a seam: `qhyccd-rs` returns its own typed `qhyccd_rs::QHYError` and (for the
+//! real backend) talks FFI. Funneling every SDK call through [`CameraHandle`] /
+//! [`FilterWheelHandle`] (1) collapses that error into a typed [`BackendError`] at
+//! one boundary, (2) lets the
 //! ASCOM device hold an `Arc<dyn CameraHandle>` so unit tests can substitute a mock
 //! with neither hardware nor the simulation runtime, and (3) keeps the `Control`
 //! vocabulary in one place. Production impls wrap the real `qhyccd-rs` handles
@@ -15,7 +16,7 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use qhyccd_rs::{CCDChipArea, CCDChipInfo, Control, ImageData, StreamMode};
 
-/// A QHYCCD SDK call failed. Carries the underlying (eyre) message; the ASCOM
+/// A QHYCCD SDK call failed. Carries the underlying error message; the ASCOM
 /// device decides the `ASCOMError` per call site (the SDK error kind does not
 /// map 1:1 to an ASCOM code).
 #[derive(Debug, Clone, thiserror::Error)]
@@ -23,8 +24,8 @@ use qhyccd_rs::{CCDChipArea, CCDChipInfo, Control, ImageData, StreamMode};
 pub struct BackendError(pub String);
 
 impl BackendError {
-    /// Collapse any `Display` error (the `qhyccd-rs` `eyre::Report`) into the
-    /// typed seam error, using the alternate format so eyre prints the full chain.
+    /// Collapse any `Display` error (a `qhyccd-rs` `QHYError`) into the typed seam
+    /// error; the `{:#}` alternate format lets a chained error print full context.
     fn from_err(err: impl std::fmt::Display) -> Self {
         Self(format!("{err:#}"))
     }

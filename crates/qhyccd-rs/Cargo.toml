@@ -16,7 +16,7 @@ documentation = "https://docs.rs/qhyccd-rs"
 description = """
 Rust bindings for the QHYCCD SDK.
 This crate provides a safe interface to the QHYCCD SDK for controlling QHYCCD cameras and filter wheels.
-The libqhyccd-sys crate provides the raw FFI bindings. It uses tracing for logging and eyre for error handling.
+The libqhyccd-sys crate provides the raw FFI bindings; this crate wraps them in a safe API, using tracing for logging and returning typed QHYError values (via thiserror) for error handling.
 """
 categories = ["aerospace", "api-bindings"]
 homepage = "https://github.com/ivonnyssen/qhyccd-rs/wiki"
@@ -35,13 +35,23 @@ simulation = ["rand", "rayon"]
 
 [dependencies]
 libqhyccd-sys = { version = "0.1.4", path = "libqhyccd-sys" }
-eyre = "0.6.12"
-thiserror = "2.0.17"
-tracing = "0.1.44"
-tracing-subscriber = "0.3.22"
-educe = "0.6.0"
-rand = { version = "0.9.2", optional = true }
-rayon = { version = "1.10", optional = true }
+# Shared third-party deps inherit the single workspace pin (Rule 10); identity
+# metadata (version/edition/license/...) stays explicit for the dual-home release
+# cadence (ADR-009). `cargo publish` flattens inherited versions to concrete ones,
+# so standalone publishing is unaffected. Errors are typed via thiserror
+# (`QHYError`). (tracing-subscriber is only used by the examples/ demos, so it is
+# a dev-dependency below — library consumers don't pull it.)
+thiserror = { workspace = true }
+tracing = { workspace = true }
+# Non-poisoning locks (guard the camera handle / simulated state). `parking_lot`
+# is the workspace standard, already used by the consuming camera services; its
+# `RwLock` returns the guard directly, so there is no poison error to model.
+parking_lot = { workspace = true }
+# `eq` feature = derive_more::PartialEq, used with `#[partial_eq(skip)]` so Camera
+# equality ignores its backend handle.
+derive_more = { workspace = true, features = ["eq"] }
+rand = { workspace = true, optional = true }
+rayon = { workspace = true, optional = true }
 
 #to make Zminimal happy
 tracing-attributes = "0.1.28"
@@ -49,4 +59,7 @@ enum-ordinalize-derive = "4.3.1"
 lazy_static = "1.0.2"
 
 [dev-dependencies]
-mockall = { version = "0.14.0", features = [] }
+mockall = { workspace = true }
+# Used only by the demo programs in examples/ (FmtSubscriber), not the library,
+# so consumers of qhyccd-rs no longer pull it. Inherits the workspace pin.
+tracing-subscriber = { workspace = true }

@@ -32,10 +32,12 @@ simulation = ["rand", "rayon"]
 libzwo-sys = { version = "0.1.0", path = "libzwo-sys" }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-# rand/rayon are simulation-only and have a single consumer in the workspace, so
-# they stay crate-local rather than promoted to workspace deps (Rule 10).
-rand = { version = "0.9", optional = true }
-rayon = { version = "1.10", optional = true }
+# rand/rayon are simulation-only (behind the `simulation` feature) and shared with
+# qhyccd-rs's sim backend, so their version is pinned once in the workspace
+# (Rule 10); only the `optional` flag stays crate-local. `cargo publish` flattens
+# the inherited version, so the dual-home release is unaffected.
+rand = { workspace = true, optional = true }
+rayon = { workspace = true, optional = true }
 
 [dev-dependencies]
 mockall = { workspace = true }
