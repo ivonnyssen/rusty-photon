@@ -81,63 +81,23 @@ sudo apt-get install -y \
   unzip \
   ca-certificates
 
-# === 1b. QHYCCD SDK (proprietary, pinned 26.06.04) ===
+# === 1b. QHYCCD SDK — now provisioned per-run by the workflow, not here ===
 #
-# qhy-camera links libqhyccd-sys (links = "qhyccd") + libusb-1.0 + stdc++. The
-# Pi5 arm64 nightly builds the full workspace, so the SDK must be present and
-# discoverable or qhy-camera fails to link. On Linux libqhyccd-sys hard-codes the
-# linker search path `/usr/local/lib`; the 26.x packaging ships no install.sh, so
-# we copy the staged lib/include tree into /usr/local (the fallback below). The
-# SDK is publicly downloadable from qhyccd.com. The
-# `ivonnyssen/qhyccd-sdk-install@v3` action installs it on the GitHub runners
-# (x86_64 Linux/macOS/Windows AND, as of v3, linux-arm64). We still provision it
-# here at setup time rather than per-run via the action because this self-hosted
-# runner is intentionally sudo-less (see the runner user below) and the action's
-# install needs root to write /usr/local — pre-provisioning keeps the runner
-# unprivileged.
+# qhy-camera links libqhyccd-sys (static=qhyccd + libusb-1.0 + stdc++), so the
+# Pi5 arm64 nightly needs the SDK to build the full workspace. This used to be
+# pre-installed into /usr/local here, because the published install action wrote
+# to /usr/local with sudo and this runner is intentionally sudo-less. That is no
+# longer necessary: `pi-nightly.yml` now provisions the SDK per-run with
+# `ivonnyssen/qhyccd-sdk-install@v4` `install: env` — a sudo-free mode that
+# extracts the SDK under the workspace and exports QHYCCD_SDK_DIR, which
+# libqhyccd-sys's build.rs reads to link libqhyccd.a statically. Provisioning in
+# the workflow (rather than at setup time) makes the runner self-healing: a new
+# native-SDK service or an SDK version bump no longer requires re-running this
+# script by hand. The build.rs fallback to /usr/local/lib still works if an
+# operator has installed the SDK there manually, so nothing breaks if it is.
 #
-# The 26.x scheme publishes under a dot-stripped directory (260604) with archive
-# `sdk_linux_arm64_<version>.tar.gz` (the arm64 name differs from the x86_64
-# `sdk_linux64_*`). Override QHY_SDK_DIR / QHY_SDK_FILE for other releases (the
-# legacy <=25.x scheme used a dotted dir + `sdk_Arm64_*.tgz`); confirm names on
-# qhyccd.com's SDK page. Set QHY_SDK_SKIP=1 to skip (SDK already installed).
-QHY_SDK_VERSION="${QHY_SDK_VERSION:-26.06.04}"
-QHY_SDK_BASE="${QHY_SDK_BASE:-https://www.qhyccd.com/file/repository/publish/SDK}"
-# 26.x repository dir is the version with dots stripped (26.06.04 -> 260604).
-QHY_SDK_DIR="${QHY_SDK_DIR:-${QHY_SDK_VERSION//./}}"
-QHY_SDK_FILE="${QHY_SDK_FILE:-sdk_linux_arm64_${QHY_SDK_VERSION}.tar.gz}"
-if [[ "${QHY_SDK_SKIP:-0}" == "1" ]]; then
-  log "QHY_SDK_SKIP=1; skipping QHYCCD SDK install."
-elif [[ -f /usr/local/lib/libqhyccd.a ]]; then
-  log "QHYCCD SDK already installed at /usr/local/lib; skipping."
-else
-  log "Installing QHYCCD SDK $QHY_SDK_VERSION (aarch64) from qhyccd.com into /usr/local..."
-  TMP=$(mktemp -d)
-  if curl -fsSL --retry 3 --retry-delay 2 -o "$TMP/qhy-sdk.tgz" \
-       "${QHY_SDK_BASE%/}/${QHY_SDK_DIR}/${QHY_SDK_FILE}"; then
-    tar xzf "$TMP/qhy-sdk.tgz" -C "$TMP"
-    SDK_DIR=$(find "$TMP" -maxdepth 1 -type d -name 'sdk_*' | head -n1)
-    if [[ -n "$SDK_DIR" && -f "$SDK_DIR/install.sh" ]]; then
-      (cd "$SDK_DIR" && sudo sh install.sh)   # copies into /usr/local + ldconfig
-    else
-      # Fall back to copying the lib/include tree directly.
-      LIB_SRC=$(find "$TMP" -type f -name 'libqhyccd.a' -printf '%h\n' | head -n1)
-      INC_SRC=$(find "$TMP" -type f -name 'qhyccd.h' -printf '%h\n' | head -n1)
-      [[ -n "$LIB_SRC" ]] && sudo cp -a "$LIB_SRC"/libqhyccd.* /usr/local/lib/
-      [[ -n "$INC_SRC" ]] && sudo cp -a "$INC_SRC"/*.h /usr/local/include/
-      sudo ldconfig
-    fi
-    log "QHYCCD SDK installed into /usr/local/lib."
-  else
-    # Fail fast: a silent skip leaves the runner partially provisioned and
-    # qhy-camera silently un-linkable on the next nightly. The operator opts out
-    # of the SDK explicitly with QHY_SDK_SKIP=1; an *unexpected* download failure
-    # must stop setup so it is noticed and fixed now.
-    rm -rf "$TMP"
-    die "Could not download $QHY_SDK_FILE from ${QHY_SDK_BASE%/}/${QHY_SDK_DIR}/. Set QHY_SDK_FILE to the correct aarch64 archive (or install the SDK by hand), or re-run with QHY_SDK_SKIP=1 to provision the rest of the runner without it. qhy-camera will not link on this runner until the SDK is in /usr/local/lib."
-  fi
-  rm -rf "$TMP"
-fi
+# (ZWO is still pre-provisioned below — see §1.5 — until it gets the same
+# sudo-free, per-run treatment.)
 
 # === 1.5. ZWO ASI/EFW SDK (for the zwo-camera service) ===
 #

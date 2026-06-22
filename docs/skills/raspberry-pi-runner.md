@@ -92,20 +92,28 @@ that `qhy-camera` links (next paragraph).
 
 `qhy-camera` links the proprietary QHYCCD SDK (`libqhyccd-sys` →
 `static=qhyccd` + `libusb-1.0` + `stdc++`). The Pi5 arm64 nightly builds the
-full workspace, so the SDK (pinned **26.06.04**, aarch64) must be installed —
-the `setup-pi-runner.sh` `=== 1b. QHYCCD SDK ===` section downloads it from
-**qhyccd.com** (publicly, no auth) and copies the staged lib/include tree into
-`/usr/local/lib` (the 26.x packaging ships no `install.sh`; that is where
-`libqhyccd-sys`'s `build.rs` hard-codes the linker search path). The published
-`ivonnyssen/qhyccd-sdk-install@v3` action used by the GitHub-hosted jobs now
-covers linux-arm64 as well, but the Pi runner is intentionally **sudo-less**
-(public-repo safety) and the action's install needs root for `/usr/local`, so the
-Pi pre-provisions instead. The 26.x arm64 archive is `sdk_linux_arm64_<ver>.tar.gz`
-under the dot-stripped dir `260604`; override `QHY_SDK_DIR` / `QHY_SDK_FILE` for
-other releases (or `QHY_SDK_SKIP=1` if the SDK is already installed by hand).
-The GitHub-hosted **ubuntu, macOS, and Windows** jobs all build qhy-camera with
-the SDK installed via the action; only the sanitizer job (`safety.yml`) excludes
-it. The Pi covers linux-arm64.
+full workspace, so the SDK (pinned **26.06.04**, aarch64) must be available at
+link time. The runner does **not** pre-provision it any more — `pi-nightly.yml`
+provisions it **per run** with the `ivonnyssen/qhyccd-sdk-install@v4` action in
+its sudo-free **`install: env`** mode: the action downloads the SDK from
+**qhyccd.com** (publicly, no auth), extracts it under the workspace, and exports
+`QHYCCD_SDK_DIR` (the directory holding `libqhyccd.a`). `libqhyccd-sys`'s
+`build.rs` prefers `QHYCCD_SDK_DIR` on Linux (falling back to `/usr/local/lib`)
+and links `libqhyccd.a` **statically**, so no `.so` runtime chain, no `ldconfig`,
+and no `LD_LIBRARY_PATH` are needed and nothing is written into `/usr/local`.
+
+This is what keeps the runner **sudo-less** (public-repo safety — the job user
+has no root, so a dependency `build.rs` cannot escalate) *and* self-healing: a
+new native-SDK service or an SDK version bump no longer requires re-running
+`setup-pi-runner.sh` by hand — the workflow re-fetches the SDK every night.
+Accordingly, `setup-pi-runner.sh`'s `=== 1b. QHYCCD SDK ===` section no longer
+installs anything; it is just a pointer to this per-run flow. (ZWO is still
+pre-provisioned by `=== 1.5 ===` until it gets the same sudo-free treatment.)
+
+The GitHub-hosted **ubuntu, macOS, and Windows** jobs install the SDK via the
+same action in its default (system) mode; only the sanitizer job (`safety.yml`)
+and the per-PR sim-only legs exclude it (`QHYCCD_SKIP_NATIVE_LINK=1`). The Pi
+covers linux-arm64.
 
 ### 2. Dedicated unprivileged user
 
@@ -331,6 +339,28 @@ sudo -u gh-runner pkg-config --version
 ### `fitsio-sys` build script fails
 
 `libcfitsio-dev` missing. Install it; no rebuild flags needed.
+
+### `cargo build` fails with `could not find native static library 'qhyccd'`
+
+`libqhyccd-sys` could not find `libqhyccd.a` on the linker search path. On the
+Pi nightly the SDK is provisioned per-run by the **Install QHYCCD SDK
+(sudo-free)** step (`ivonnyssen/qhyccd-sdk-install@v4`, `install: env`), which
+exports `QHYCCD_SDK_DIR`. Check, in order:
+
+- That step ran and printed `QHYCCD_SDK_DIR=…/usr/local/lib` before
+  `cargo build`. If it failed to download, the qhyccd.com URL or pinned
+  `version:` may have moved — confirm
+  `https://www.qhyccd.com/file/repository/publish/SDK/260604/sdk_linux_arm64_26.06.04.tar.gz`
+  still resolves.
+- The `@v4` (or later) tag of `ivonnyssen/qhyccd-sdk-install` exists and supports
+  `install: env`. Older tags (`@v3` and earlier) only do the sudo system install
+  and will not export `QHYCCD_SDK_DIR`.
+- `QHYCCD_SKIP_NATIVE_LINK` is **not** set on this job (it must exercise the real
+  ARM64 static link; the skip flag is only for the sim-only x86 legs).
+
+A manual `/usr/local/lib` install (the old `setup-pi-runner.sh §1b` behaviour)
+still satisfies the link via `build.rs`'s fallback, but is no longer required or
+performed by setup.
 
 ### nextest runs but BDD hangs / OmniSim crashes
 

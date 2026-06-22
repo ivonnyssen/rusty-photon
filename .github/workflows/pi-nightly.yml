@@ -87,6 +87,22 @@ jobs:
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
 
+      # Provision the QHYCCD SDK without sudo. This runner is intentionally
+      # sudo-less (public-repo defense-in-depth — see
+      # docs/skills/raspberry-pi-runner.md), so it cannot system-install the SDK
+      # into /usr/local. `install: env` extracts the SDK under the workspace and
+      # exports QHYCCD_SDK_DIR; libqhyccd-sys's build.rs reads that var and links
+      # libqhyccd.a statically (no .so chain, no ldconfig, no LD_LIBRARY_PATH).
+      # This makes the runner self-healing: a new native-SDK service or version
+      # bump no longer requires re-running setup-pi-runner.sh by hand. Keep the
+      # version in lockstep with the x86 jobs (scheduled.yml / native.yml /
+      # bazel*.yml all pin 26.06.04).
+      - name: Install QHYCCD SDK (sudo-free)
+        uses: ivonnyssen/qhyccd-sdk-install@v4
+        with:
+          version: "26.06.04"
+          install: env
+
       # Pre-build all targets so nextest and BDD tests find cached binaries
       # without recompilation. Mirrors scheduled.yml's nightly job.
       - name: cargo build --workspace
