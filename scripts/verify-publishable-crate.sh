@@ -156,8 +156,14 @@ while IFS= read -r line; do
 done < <(awk '/^\[workspace\.dependencies\]/{f=1;next} /^\[/{f=0} f' Cargo.toml)
 
 for name in "${!WSDEP[@]}"; do
+  # Replace only the `workspace = true` token on this dep's line, preserving any
+  # sibling keys (features / optional / default-features that an inherited dep may
+  # carry, e.g. `derive_more = { workspace = true, features = ["eq"] }`):
+  #   { workspace = true }                 -> { version = "x" }
+  #   { workspace = true, features = [..] } -> { version = "x", features = [..] }
+  # Both are valid TOML and match what `cargo publish` emits for the release.
   sed_inplace "$SCRATCH/pkg/Cargo.toml" -E \
-    "s|^(${name})[[:space:]]*=[[:space:]]*\{[[:space:]]*workspace[[:space:]]*=[[:space:]]*true[[:space:]]*\}|\1 = \"${WSDEP[$name]}\"|"
+    "/^${name}[[:space:]]*=[[:space:]]*\{[^}]*workspace[[:space:]]*=[[:space:]]*true/ s|workspace[[:space:]]*=[[:space:]]*true|version = \"${WSDEP[$name]}\"|"
 done
 # Guard: a *dependency* line (key = { ... workspace = true ... }) still inheriting.
 # Anchored to a key at line start so it never matches a `#` comment that merely

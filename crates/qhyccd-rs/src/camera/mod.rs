@@ -5,20 +5,22 @@ mod lifecycle;
 mod parameters;
 mod readout_modes;
 
-use std::sync::{Arc, RwLock};
+use parking_lot::RwLock;
+use std::sync::Arc;
 
 use crate::backend::CameraBackend;
 
 #[cfg(feature = "simulation")]
 use crate::simulation::{self, SimulatedCameraState};
 
-#[derive(Educe)]
-#[educe(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, derive_more::PartialEq)]
 /// The representation of a camera. It is constructed by the SDK and can be used to
 /// interact with the camera.
 pub struct Camera {
     id: String,
-    #[educe(PartialEq(ignore))]
+    /// Excluded from `PartialEq`: two cameras are equal when they share an `id`,
+    /// regardless of the live backend handle.
+    #[partial_eq(skip)]
     backend: CameraBackend,
 }
 

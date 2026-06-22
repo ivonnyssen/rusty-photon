@@ -35,9 +35,10 @@ regression for downstream consumers — with unverified dependency floors.
 Neither property can be verified **in** the workspace:
 
 - **MSRV floor.** The root `[profile.dev] debug = "line-tables-only"` requires Rust
-  ≥ 1.71, so an in-workspace `cargo +1.68 check -p qhyccd-rs` fails at *profile
-  parsing* before the crate compiles. Profiles never travel to downstream
-  consumers, so this constraint is a workspace artifact, not a real consumer limit.
+  ≥ 1.71, so an in-workspace `cargo +1.68 check -p libqhyccd-sys` (its floor is
+  1.68) fails at *profile parsing* before the crate compiles. Profiles never travel
+  to downstream consumers, so this constraint is a workspace artifact, not a real
+  consumer limit.
 - **Minimal versions.** `cargo update -Zminimal-versions` rewrites the **whole**
   shared `Cargo.lock`; the rest of the workspace needs newest deps and won't build
   on minimums. It cannot be scoped to four crates in place.
@@ -62,8 +63,8 @@ way a crates.io consumer sees it.
 
 | Crate | MSRV | Bound by |
 |---|---|---|
-| `qhyccd-rs` | **1.68.0** | the standalone floor (proc-macro2 1.0.104 + thiserror 2.x); verified green |
-| `libqhyccd-sys` | **1.68.0** | dependency-free hand-written FFI; pinned to the wrapper for one coherent floor |
+| `qhyccd-rs` | **1.85.0** | `simulation` pulls rand 0.10 (MSRV 1.85) + its chacha20/getrandom chain; the base build is held to 1.81 by derive_more 2.1. Was 1.68.0 until #392 moved this crate onto rand 0.10 / derive_more 2.1 — the check re-floored it. |
+| `libqhyccd-sys` | **1.68.0** | dependency-free hand-written FFI; unaffected by #392, so it keeps the low 1.68.0 floor (it no longer shares qhyccd-rs's value). |
 | `libzwo-sys` | **1.70.0** | its `bindgen 0.72` build-dep (MSRV 1.70.0); verified green |
 | `zwo-rs` | **1.87.0** | `src/camera.rs` calls `u32::is_multiple_of` (stabilised in Rust 1.87.0). Replace it with `% n == 0` to drop the wrapper toward libzwo-sys's 1.70.0. |
 
@@ -115,14 +116,37 @@ needs-libclang = false                 # true for zwo (bindgen)
 
 ## Proven results (dogfood, 2026-06-22)
 
-- **qhy**: `libqhyccd-sys` + `qhyccd-rs` build on **1.68.0** with a
-  direct-minimal-versions lockfile across the feature powerset (incl. `simulation`
-  → rand/rayon). The three `#to make Zminimal happy` phantom deps were confirmed
-  unused and **removed** — they *break* direct-minimal-versions (`tracing-attributes
-  = 0.1.28`, a direct dep, conflicts with `tracing 0.1.44`'s `^0.1.31`).
+- **qhy**: `libqhyccd-sys` builds on **1.68.0**; `qhyccd-rs` builds on **1.85.0**
+  with a direct-minimal-versions lockfile across the feature powerset (incl.
+  `simulation` → rand/rayon). The three `#to make Zminimal happy` phantom deps were
+  confirmed unused and **removed** — they *break* direct-minimal-versions
+  (`tracing-attributes = 0.1.28`, a direct dep, conflicts with `tracing 0.1.44`'s
+  `^0.1.31`).
 - **zwo**: `libzwo-sys` builds on **1.70.0**; `zwo-rs` builds on **1.87.0**. The
   check **caught that the declared 1.70.0 was a lie** — `zwo-rs` uses
   `u32::is_multiple_of` (Rust 1.87.0). Exactly the class of bug this exists to find.
+
+### Re-verified after merging #392 (rand 0.10 + house-conventions), 2026-06-22
+
+Pulling #392 into the branch exercised the check against a real upstream change,
+and it caught **three** publishability regressions before they could ship:
+
+1. **qhyccd-rs MSRV re-floored 1.68 → 1.85.** #392 moved the crate onto rand 0.10
+   (MSRV 1.85, under `simulation`) and derive_more 2.1 (MSRV 1.81, base). The
+   declared 1.68.0 became a lie; `rust-version` was raised to the honest 1.85.0.
+2. **`derive_more` floor too loose.** The workspace pinned `derive_more = "2.0"`,
+   but qhyccd-rs uses the `eq` derive feature, which was added in **2.1.0** (absent
+   in 2.0.0/2.0.1). direct-minimal-versions floored it to 2.0.0 and failed to
+   resolve `eq`. Tightened the workspace pin to `2.1`.
+3. **`rand` floor too loose.** `rand = "0.10"` floors to 0.10.0, whose feature
+   table references `rand/getrandom` as a `dep:`-only dependency (no implicit
+   feature), so the minimal-versions sim build fails to resolve. Tightened to
+   `0.10.1`.
+
+Both floor fixes are zero-behaviour (the in-workspace lockfile already resolved to
+derive_more 2.1.1 / a newer rand). The inliner also gained support for inherited
+deps that carry `features`/`optional` keys (`{ workspace = true, features = [...] }`),
+which #392 introduced.
 
 ## Reconciliation with in-workspace checks
 

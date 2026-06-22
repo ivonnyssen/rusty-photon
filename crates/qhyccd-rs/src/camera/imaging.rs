@@ -1,4 +1,4 @@
-use eyre::{eyre, Result};
+use crate::Result;
 
 use crate::backend::{read_lock, CameraBackend};
 use crate::{ImageData, QHYError::*};
@@ -29,24 +29,21 @@ impl Camera {
     pub fn begin_live(&self) -> Result<()> {
         match &self.backend {
             CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle, BeginLiveError { error_code: 0 })?;
+                let handle = read_lock!(handle)?;
                 match unsafe { BeginQHYCCDLive(handle) } {
                     QHYCCD_SUCCESS => Ok(()),
                     error_code => {
                         let error = BeginLiveError { error_code };
                         tracing::error!(error = ?error);
-                        Err(eyre!(error))
+                        Err(error)
                     }
                 }
             }
             #[cfg(feature = "simulation")]
             CameraBackend::Simulated { state } => {
-                let mut state = state.write().map_err(|err| {
-                    tracing::error!(error=?err);
-                    eyre!("Could not acquire write lock on simulated camera state")
-                })?;
+                let mut state = state.write();
                 if !state.is_open {
-                    return Err(eyre!(CameraNotOpenError));
+                    return Err(CameraNotOpenError);
                 }
                 state.live_mode_active = true;
                 Ok(())
@@ -69,24 +66,21 @@ impl Camera {
     pub fn end_live(&self) -> Result<()> {
         match &self.backend {
             CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle, EndLiveError { error_code: 0 })?;
+                let handle = read_lock!(handle)?;
                 match unsafe { StopQHYCCDLive(handle) } {
                     QHYCCD_SUCCESS => Ok(()),
                     error_code => {
                         let error = EndLiveError { error_code };
                         tracing::error!(error = ?error);
-                        Err(eyre!(error))
+                        Err(error)
                     }
                 }
             }
             #[cfg(feature = "simulation")]
             CameraBackend::Simulated { state } => {
-                let mut state = state.write().map_err(|err| {
-                    tracing::error!(error=?err);
-                    eyre!("Could not acquire write lock on simulated camera state")
-                })?;
+                let mut state = state.write();
                 if !state.is_open {
-                    return Err(eyre!(CameraNotOpenError));
+                    return Err(CameraNotOpenError);
                 }
                 state.live_mode_active = false;
                 Ok(())
@@ -107,24 +101,21 @@ impl Camera {
     pub fn get_image_size(&self) -> Result<usize> {
         match &self.backend {
             CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle, GetImageSizeError)?;
+                let handle = read_lock!(handle)?;
                 match unsafe { GetQHYCCDMemLength(handle) } {
                     QHYCCD_ERROR => {
                         let error = GetImageSizeError;
                         tracing::error!(error = ?error);
-                        Err(eyre!(error))
+                        Err(error)
                     }
                     size => Ok(size as usize),
                 }
             }
             #[cfg(feature = "simulation")]
             CameraBackend::Simulated { state } => {
-                let state = state.read().map_err(|err| {
-                    tracing::error!(error=?err);
-                    eyre!("Could not acquire read lock on simulated camera state")
-                })?;
+                let state = state.read();
                 if !state.is_open {
-                    return Err(eyre!(CameraNotOpenError));
+                    return Err(CameraNotOpenError);
                 }
                 Ok(state.calculate_buffer_size())
             }
@@ -150,7 +141,7 @@ impl Camera {
     pub fn get_live_frame(&self, buffer_size: usize) -> Result<ImageData> {
         match &self.backend {
             CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle, GetLiveFrameError { error_code: 0 })?;
+                let handle = read_lock!(handle)?;
                 let mut width: u32 = 0;
                 let mut height: u32 = 0;
                 let mut bpp: u32 = 0;
@@ -176,23 +167,20 @@ impl Camera {
                     error_code => {
                         let error = GetLiveFrameError { error_code };
                         tracing::error!(error = ?error);
-                        Err(eyre!(error))
+                        Err(error)
                     }
                 }
             }
             #[cfg(feature = "simulation")]
             CameraBackend::Simulated { state } => {
-                let state = state.read().map_err(|err| {
-                    tracing::error!(error=?err);
-                    eyre!("Could not acquire read lock on simulated camera state")
-                })?;
+                let state = state.read();
                 if !state.is_open {
-                    return Err(eyre!(CameraNotOpenError));
+                    return Err(CameraNotOpenError);
                 }
                 if !state.live_mode_active {
-                    return Err(eyre!(GetLiveFrameError {
-                        error_code: QHYCCD_ERROR
-                    }));
+                    return Err(GetLiveFrameError {
+                        error_code: QHYCCD_ERROR,
+                    });
                 }
 
                 let (width, height) = state.get_current_image_dimensions();
@@ -236,7 +224,7 @@ impl Camera {
     pub fn get_single_frame(&self, buffer_size: usize) -> Result<ImageData> {
         match &self.backend {
             CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle, GetSingleFrameError { error_code: 0 })?;
+                let handle = read_lock!(handle)?;
                 let mut width: u32 = 0;
                 let mut height: u32 = 0;
                 let mut bpp: u32 = 0;
@@ -262,18 +250,15 @@ impl Camera {
                     error_code => {
                         let error = GetSingleFrameError { error_code };
                         tracing::error!(error = ?error);
-                        Err(eyre!(error))
+                        Err(error)
                     }
                 }
             }
             #[cfg(feature = "simulation")]
             CameraBackend::Simulated { state } => {
-                let mut state = state.write().map_err(|err| {
-                    tracing::error!(error=?err);
-                    eyre!("Could not acquire write lock on simulated camera state")
-                })?;
+                let mut state = state.write();
                 if !state.is_open {
-                    return Err(eyre!(CameraNotOpenError));
+                    return Err(CameraNotOpenError);
                 }
 
                 // Wait for exposure to complete if one is in progress (like real hardware)
@@ -285,10 +270,7 @@ impl Camera {
                         std::thread::sleep(std::time::Duration::from_micros(remaining_us as u64));
                         // Reacquire lock
                         state = match &self.backend {
-                            CameraBackend::Simulated { state } => state.write().map_err(|err| {
-                                tracing::error!(error=?err);
-                                eyre!("Could not reacquire write lock on simulated camera state")
-                            })?,
+                            CameraBackend::Simulated { state } => state.write(),
                             _ => unreachable!(),
                         };
                     } else {
@@ -297,14 +279,11 @@ impl Camera {
                 }
 
                 // Return the pre-generated image
-                let captured_image = state
-                    .captured_image
-                    .take()
-                    .ok_or_else(|| eyre!("No image available"))?;
+                let captured_image = state.captured_image.take().ok_or(NoImageAvailable)?;
                 let metadata = state
                     .captured_image_metadata
                     .take()
-                    .ok_or_else(|| eyre!("No image metadata available"))?;
+                    .ok_or(NoImageMetadataAvailable)?;
 
                 // Clear exposure state
                 state.exposure_start = None;
@@ -336,24 +315,21 @@ impl Camera {
     pub fn start_single_frame_exposure(&self) -> Result<()> {
         match &self.backend {
             CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle, StartSingleFrameExposureError { error_code: 0 })?;
+                let handle = read_lock!(handle)?;
                 match unsafe { ExpQHYCCDSingleFrame(handle) } {
                     QHYCCD_SUCCESS => Ok(()),
                     error_code => {
                         let error = StartSingleFrameExposureError { error_code };
                         tracing::error!(error = ?error);
-                        Err(eyre!(error))
+                        Err(error)
                     }
                 }
             }
             #[cfg(feature = "simulation")]
             CameraBackend::Simulated { state } => {
-                let mut state = state.write().map_err(|err| {
-                    tracing::error!(error=?err);
-                    eyre!("Could not acquire write lock on simulated camera state")
-                })?;
+                let mut state = state.write();
                 if !state.is_open {
-                    return Err(eyre!(CameraNotOpenError));
+                    return Err(CameraNotOpenError);
                 }
                 state.start_exposure();
                 Ok(())
@@ -379,12 +355,12 @@ impl Camera {
     pub fn get_remaining_exposure_us(&self) -> Result<u32> {
         match &self.backend {
             CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle, GetExposureRemainingError)?;
+                let handle = read_lock!(handle)?;
                 match unsafe { GetQHYCCDExposureRemaining(handle) } {
                     QHYCCD_ERROR => {
                         let error = GetExposureRemainingError;
                         tracing::error!(error = ?error);
-                        Err(eyre!(error))
+                        Err(error)
                     }
                     remaining if { remaining <= 100 } => Ok(0),
                     remaining => Ok(remaining),
@@ -392,12 +368,9 @@ impl Camera {
             }
             #[cfg(feature = "simulation")]
             CameraBackend::Simulated { state } => {
-                let state = state.read().map_err(|err| {
-                    tracing::error!(error=?err);
-                    eyre!("Could not acquire read lock on simulated camera state")
-                })?;
+                let state = state.read();
                 if !state.is_open {
-                    return Err(eyre!(CameraNotOpenError));
+                    return Err(CameraNotOpenError);
                 }
                 Ok(state.get_remaining_exposure_us())
             }
@@ -421,24 +394,21 @@ impl Camera {
     pub fn stop_exposure(&self) -> Result<()> {
         match &self.backend {
             CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle, StopExposureError { error_code: 0 })?;
+                let handle = read_lock!(handle)?;
                 match unsafe { CancelQHYCCDExposing(handle) } {
                     QHYCCD_SUCCESS => Ok(()),
                     error_code => {
                         let error = StopExposureError { error_code };
                         tracing::error!(error = ?error);
-                        Err(eyre!(error))
+                        Err(error)
                     }
                 }
             }
             #[cfg(feature = "simulation")]
             CameraBackend::Simulated { state } => {
-                let mut state = state.write().map_err(|err| {
-                    tracing::error!(error=?err);
-                    eyre!("Could not acquire write lock on simulated camera state")
-                })?;
+                let mut state = state.write();
                 if !state.is_open {
-                    return Err(eyre!(CameraNotOpenError));
+                    return Err(CameraNotOpenError);
                 }
                 state.stop_exposure();
                 Ok(())
@@ -462,24 +432,21 @@ impl Camera {
     pub fn abort_exposure_and_readout(&self) -> Result<()> {
         match &self.backend {
             CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle, AbortExposureAndReadoutError { error_code: 0 })?;
+                let handle = read_lock!(handle)?;
                 match unsafe { CancelQHYCCDExposingAndReadout(handle) } {
                     QHYCCD_SUCCESS => Ok(()),
                     error_code => {
                         let error = AbortExposureAndReadoutError { error_code };
                         tracing::error!(error = ?error);
-                        Err(eyre!(error))
+                        Err(error)
                     }
                 }
             }
             #[cfg(feature = "simulation")]
             CameraBackend::Simulated { state } => {
-                let mut state = state.write().map_err(|err| {
-                    tracing::error!(error=?err);
-                    eyre!("Could not acquire write lock on simulated camera state")
-                })?;
+                let mut state = state.write();
                 if !state.is_open {
-                    return Err(eyre!(CameraNotOpenError));
+                    return Err(CameraNotOpenError);
                 }
                 state.abort_exposure();
                 Ok(())

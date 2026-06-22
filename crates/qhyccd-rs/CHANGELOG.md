@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING:** error handling is now fully typed. Fallible `Sdk` / `Camera` /
+  `FilterWheel` methods return `qhyccd_rs::Result<T>` (`Result<T, QHYError>`)
+  instead of `eyre::Result<T>`, and a public `Result<T>` alias is exported.
+  `QHYError` gains `NoImageAvailable`, `NoImageMetadataAvailable`, `InvalidUtf8`,
+  and `InvalidCameraId` variants. Code that matched on `eyre::Report` must match
+  `QHYError` instead.
+- Real-backend `Camera` methods now return `CameraNotOpenError` (not an
+  operation-specific error such as `BeginLiveError`) when called on an unopened
+  camera, matching the simulation backend.
 - Target QHYCCD SDK **26.06.04**. The 26.x distribution changed packaging
   (dot-stripped repo dir `260604`, `.tar.gz` archives, no `install.sh`, and the
   per-OS archives renamed `macMix`→`mac_x64` / `WinMix`→`win64` /
@@ -16,6 +25,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   extract dirs (`sdk_mac_arm_<ver>` / `sdk_mac_x64_<ver>`) and the Windows
   `sdk_win64_<ver>` layout accordingly; the Linux `/usr/local/lib` link path is
   unchanged. Validated on real hardware (QHY178M + 7-slot CFW, ConformU 0 errors).
+
+### Removed
+
+- **BREAKING:** dropped the `eyre` and `educe` dependencies. `Camera`'s `PartialEq`
+  (which ignores the backend handle) now uses `derive_more`'s `#[partial_eq(skip)]`.
+
+### Internal
+
+- Switched internal locks from `std::sync::RwLock` to the non-poisoning
+  `parking_lot::RwLock` (the workspace standard, already used by the consuming
+  camera services). Lock acquisition is now infallible, so the poison-handling
+  paths and the `LockPoisoned` error variant are gone. Adds a `parking_lot`
+  dependency.
+- Upgraded `rand` to 0.10 (the `Rng`/`RngExt` trait split). `rand`, `rayon`,
+  `thiserror`, and `tracing` now inherit the workspace dependency pins.
+- Moved the demo programs from `src/bin/` to `examples/` and made
+  `tracing-subscriber` a dev-dependency, so library consumers no longer pull it.
 
 ## [0.1.9] - 2026-01-19
 

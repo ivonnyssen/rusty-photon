@@ -2,7 +2,7 @@
 //!
 //! This crate provides a safe interface to the QHYCCD SDK for controlling QHYCCD cameras and filter wheels.
 //! (Focusers are supported by the QHYCCD SDK but are not yet exposed by this crate.)
-//! The libqhyccd-sys crate provides the raw FFI bindings. It uses tracing for logging and eyre for error handling.
+//! The `libqhyccd-sys` crate provides the raw FFI bindings; this crate wraps them in a safe API, using `tracing` for logging and returning typed [`QHYError`] values (via `thiserror`) for error handling.
 //!
 //! # Example
 //! ```no_run
@@ -69,9 +69,6 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 #![warn(missing_debug_implementations, rust_2018_idioms, missing_docs)]
 
-#[macro_use]
-extern crate educe;
-
 // Module declarations
 mod backend;
 mod camera;
@@ -109,7 +106,7 @@ pub mod simulation;
 // Public re-exports
 pub use camera::Camera;
 pub use control::Control;
-pub use error::QHYError;
+pub use error::{QHYError, Result};
 pub use filter_wheel::FilterWheel;
 pub use sdk::Sdk;
 pub use types::{
