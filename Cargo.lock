@@ -3151,16 +3151,13 @@ name = "qhyccd-rs"
 version = "0.1.9"
 dependencies = [
  "educe",
- "enum-ordinalize-derive",
  "eyre",
- "lazy_static",
  "libqhyccd-sys",
  "mockall",
  "rand 0.9.4",
  "rayon",
  "thiserror 2.0.18",
  "tracing",
- "tracing-attributes",
  "tracing-subscriber",
 ]
 

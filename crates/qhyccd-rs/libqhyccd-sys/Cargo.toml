@@ -7,9 +7,12 @@ links = "qhyccd"
 repository = "https://github.com/ivonnyssen/qhyccd-rs"
 license = "MIT OR Apache-2.0"
 description = "Rust bindings for QHY CCD SDK"
-# Inherits the workspace MSRV (1.94.1) — see the note in ../Cargo.toml. Flattens
-# to the concrete version on `cargo publish`.
-rust-version.workspace = true
+# Explicit, lower-than-workspace MSRV (dual-homed to crates.io, ADR-009): a
+# dependency-free, hand-written FFI shim, so its floor is just what the bindings
+# compile on. Pinned to the wrapper's 1.68.0 for a single coherent published
+# floor; verified out-of-tree by the nightly publish-readiness check
+# (docs/plans/publish-readiness-checks.md), not in-workspace. See ../Cargo.toml.
+rust-version = "1.68.0"
 exclude = ["qhyccd-sdk/*"]
 
 [lib]

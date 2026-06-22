@@ -1,0 +1,192 @@
+#!/usr/bin/env bash
+#
+# verify-publishable-crate.sh — isolated MSRV + minimal-versions publish-readiness
+# check for one dual-homed FFI crate family (a wrapper + its nested `*-sys`).
+#
+# WHY THIS EXISTS (see docs/plans/publish-readiness-checks.md):
+#   These crates publish to crates.io independently, but neither their MSRV nor
+#   their minimal dependency versions can be verified *in* the workspace:
+#     - the root `[profile.dev] debug = "line-tables-only"` needs Rust >= 1.71, so
+#       a sub-1.71 floor fails at profile-parse before the crate even compiles;
+#     - the shared Cargo.lock pins newest deps, and `cargo update -Zminimal-versions`
+#       is a whole-lockfile operation the rest of the workspace won't tolerate.
+#   So we copy the family OUT of the workspace and verify it the way a crates.io
+#   consumer would — on its own declared MSRV, with a minimal-versions lockfile.
+#
+# THE RECIPE (proven by dogfooding, 2026-06-22):
+#   direct-minimal-versions floors only DIRECT deps; transitive deps float to
+#   newest and can demand a higher Rust than our floor (e.g. rayon -> rayon-core
+#   1.13 needs 1.80). Pairing it with the MSRV-aware resolver
+#   (CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback) caps transitive deps at
+#   MSRV-compatible versions, so direct-minimal-versions works with a low floor.
+#
+# USAGE:
+#   scripts/verify-publishable-crate.sh <wrapper-crate-name> [verify|find]
+#     verify (default) — assert each crate builds on its declared MSRV with a
+#                        direct-minimal-versions lockfile, across the feature powerset.
+#     find             — report the LOWEST MSRV each crate could declare
+#                        (`cargo msrv find`), so the declared floor can be ratcheted.
+#
+# REQUIREMENTS: rustup (nightly + each crate's MSRV toolchain — auto-installed),
+#   jq, cargo-hack (feature powerset; falls back to default/all-features if absent),
+#   cargo-msrv (find mode only). For a family with needs-libclang=true (zwo),
+#   libclang must be present for bindgen; the ZWO SDK *binary* is NOT needed —
+#   the skip-link env makes the build script emit no link directives and this is a
+#   check-only build (never links).
+#
+set -euo pipefail
+
+WRAPPER="${1:?usage: verify-publishable-crate.sh <wrapper-crate-name> [verify|find]}"
+MODE="${2:-verify}"
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+command -v jq >/dev/null || { echo "FATAL: jq is required" >&2; exit 2; }
+
+# --- discover the family from [package.metadata.publish-readiness] -------------
+META="$(cargo metadata --format-version 1 --no-deps)"
+
+pkg_field() { # <crate-name> <jq-path-from-package>
+  echo "$META" | jq -r --arg n "$1" ".packages[] | select(.name==\$n) | $2"
+}
+meta_field() { # <key under metadata.publish-readiness>
+  echo "$META" | jq -r --arg n "$WRAPPER" --arg k "$1" \
+    '.packages[] | select(.name==$n) | .metadata["publish-readiness"][$k]'
+}
+
+WRAPPER_MANIFEST="$(pkg_field "$WRAPPER" .manifest_path)"
+if [ "$WRAPPER_MANIFEST" = "null" ] || [ -z "$WRAPPER_MANIFEST" ]; then
+  echo "FATAL: '$WRAPPER' is not a workspace package" >&2; exit 2
+fi
+
+SYS="$(meta_field sys-crate)"
+SKIP_ENV="$(meta_field skip-link-env)"
+NEEDS_LIBCLANG="$(meta_field needs-libclang)"
+if [ "$SYS" = "null" ] || [ -z "$SYS" ]; then
+  echo "FATAL: '$WRAPPER' has no [package.metadata.publish-readiness] (not a publishable FFI family)" >&2
+  exit 2
+fi
+
+WRAPPER_DIR="$(dirname "$WRAPPER_MANIFEST")"
+SYS_MANIFEST="$(pkg_field "$SYS" .manifest_path)"
+SYS_DIR="$(dirname "$SYS_MANIFEST")"
+SYS_SUBDIR="${SYS_DIR#"$WRAPPER_DIR"/}"   # e.g. libqhyccd-sys (nested under wrapper)
+
+WRAPPER_MSRV="$(pkg_field "$WRAPPER" .rust_version)"
+SYS_MSRV="$(pkg_field "$SYS" .rust_version)"
+for v in "$WRAPPER_MSRV:$WRAPPER" "$SYS_MSRV:$SYS"; do
+  [ "${v%%:*}" != "null" ] || { echo "FATAL: ${v#*:} has no rust-version (declare an explicit MSRV)" >&2; exit 2; }
+done
+
+echo "== publish-readiness: $WRAPPER (MSRV $WRAPPER_MSRV) + $SYS (MSRV $SYS_MSRV) =="
+echo "   skip-link env: $SKIP_ENV=1   needs-libclang: $NEEDS_LIBCLANG   mode: $MODE"
+
+# --- preflight: toolchains + libclang -----------------------------------------
+ensure_toolchain() { rustup toolchain list | grep -q "^$1" || rustup toolchain install "$1" --profile minimal; }
+ensure_toolchain nightly
+ensure_toolchain "$WRAPPER_MSRV"
+ensure_toolchain "$SYS_MSRV"
+
+if [ "$NEEDS_LIBCLANG" = "true" ]; then
+  # bindgen finds libclang via LIBCLANG_PATH, the ldconfig cache, common llvm lib
+  # dirs, or a `clang` on PATH. Only warn if none of those turn it up.
+  if [ -z "${LIBCLANG_PATH:-}" ] \
+     && ! ldconfig -p 2>/dev/null | grep -qi 'libclang' \
+     && ! ls /usr/lib/llvm-*/lib/libclang.so* /usr/lib/*/libclang*.so* >/dev/null 2>&1 \
+     && ! command -v clang >/dev/null 2>&1; then
+    echo "WARNING: needs-libclang=true but no libclang found (set LIBCLANG_PATH or install libclang); bindgen will fail." >&2
+  fi
+fi
+
+# --- copy the family out of the workspace -------------------------------------
+SCRATCH="$(mktemp -d)"
+trap 'rm -rf "$SCRATCH"' EXIT
+cp -R "$WRAPPER_DIR" "$SCRATCH/pkg"
+rm -rf "$SCRATCH/pkg/target" "$SCRATCH/pkg/Cargo.lock"
+
+# Inline the wrapper's `{ workspace = true }` deps with the concrete versions from
+# the root [workspace.dependencies] — outside the workspace there is no root to
+# inherit from. (`cargo publish` does the same inlining for the real release.)
+declare -A WSDEP
+while IFS= read -r line; do
+  name="$(printf '%s' "$line" | sed -nE 's/^([A-Za-z0-9_-]+)[[:space:]]*=.*/\1/p')"
+  # `|| true`: a no-match grep returns 1, which under `set -o pipefail`/`set -e`
+  # would otherwise abort the script on the first path dep (no numeric version).
+  ver="$(printf '%s' "$line" | grep -oE '"[0-9][^"]*"' | head -1 | tr -d '"' || true)"
+  # Skip path/workspace-internal deps (no concrete version, e.g. bdd-infra) — only
+  # crates.io entries (with a numeric version) are inlinable. An `if` (not a `&&`
+  # chain) so an empty version doesn't return non-zero and trip `set -e`.
+  if [ -n "$name" ] && [ -n "$ver" ]; then WSDEP["$name"]="$ver"; fi
+done < <(awk '/^\[workspace\.dependencies\]/{f=1;next} /^\[/{f=0} f' Cargo.toml)
+
+for name in "${!WSDEP[@]}"; do
+  sed -i -E \
+    "s|^(${name})[[:space:]]*=[[:space:]]*\{[[:space:]]*workspace[[:space:]]*=[[:space:]]*true[[:space:]]*\}|\1 = \"${WSDEP[$name]}\"|" \
+    "$SCRATCH/pkg/Cargo.toml"
+done
+# Guard: a *dependency* line (key = { ... workspace = true ... }) still inheriting.
+# Anchored to a key at line start so it never matches a `#` comment that merely
+# mentions "workspace = true" (qhyccd-rs's [lints] note does).
+if grep -qE '^[[:space:]]*[A-Za-z0-9_-]+[[:space:]]*=[[:space:]]*\{[^}]*workspace[[:space:]]*=[[:space:]]*true' "$SCRATCH/pkg/Cargo.toml"; then
+  echo "FATAL: could not inline a workspace-inherited dependency (has it grown features? extend the inliner):" >&2
+  grep -nE '^[[:space:]]*[A-Za-z0-9_-]+[[:space:]]*=[[:space:]]*\{[^}]*workspace[[:space:]]*=[[:space:]]*true' "$SCRATCH/pkg/Cargo.toml" >&2
+  exit 2
+fi
+
+# --- the per-crate recipe -----------------------------------------------------
+gen_minimal_lockfile() { # run in $PWD = crate dir
+  env "$SKIP_ENV=1" CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback \
+    cargo +nightly generate-lockfile -Z direct-minimal-versions
+}
+
+verify_crate() { # <dir> <msrv> <label>
+  local dir="$1" msrv="$2" label="$3"
+  ( cd "$dir"
+    echo "::group::[$label] generate direct-minimal-versions lockfile (nightly + MSRV-aware resolver)"
+    gen_minimal_lockfile
+    echo "::endgroup::"
+    echo "::group::[$label] cargo +$msrv check (feature powerset, --locked minimal versions)"
+    if command -v cargo-hack >/dev/null; then
+      env "$SKIP_ENV=1" cargo +"$msrv" hack --feature-powerset check --locked
+    else
+      echo "NOTE: cargo-hack not installed — checking default + --all-features only"
+      env "$SKIP_ENV=1" cargo +"$msrv" check --locked
+      env "$SKIP_ENV=1" cargo +"$msrv" check --locked --all-features
+    fi
+    echo "::endgroup::"
+  )
+}
+
+find_crate() { # <dir> <label>
+  local dir="$1" label="$2"
+  command -v cargo-msrv >/dev/null || { echo "FATAL: 'find' mode needs cargo-msrv" >&2; exit 2; }
+  ( cd "$dir"
+    echo "::group::[$label] generate direct-minimal-versions lockfile"
+    gen_minimal_lockfile
+    echo "::endgroup::"
+    echo "::group::[$label] cargo msrv find (lowest buildable Rust with minimal versions)"
+    # `find` bisects toolchains running the command after `--` (the full command,
+    # including `cargo`); the skip-link env keeps it SDK-free.
+    env "$SKIP_ENV=1" cargo msrv find -- cargo check --locked
+    echo "::endgroup::"
+  )
+}
+
+# Verify the sys crate standalone (so ITS direct deps — e.g. zwo's bindgen
+# build-dep — are floored honestly), then the wrapper (which pulls the nested sys
+# via its path dep).
+case "$MODE" in
+  verify)
+    verify_crate "$SCRATCH/pkg/$SYS_SUBDIR" "$SYS_MSRV" "$SYS"
+    verify_crate "$SCRATCH/pkg"             "$WRAPPER_MSRV" "$WRAPPER"
+    echo "PASS: $WRAPPER + $SYS build on their declared MSRVs with minimal direct-dep versions."
+    ;;
+  find)
+    find_crate "$SCRATCH/pkg/$SYS_SUBDIR" "$SYS"
+    find_crate "$SCRATCH/pkg"             "$WRAPPER"
+    echo "DONE: review the discovered floors above; lower the declared rust-version if a crate can go lower."
+    ;;
+  *)
+    echo "FATAL: unknown mode '$MODE' (use 'verify' or 'find')" >&2; exit 2 ;;
+esac

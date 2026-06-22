@@ -132,7 +132,13 @@ of change detection.
 
 The workspace uses a single MSRV (currently 1.94.1) declared in the root
 `Cargo.toml` via `[workspace.package]`. All members inherit it with
-`rust-version.workspace = true`.
+`rust-version.workspace = true` **except the four dual-homed FFI crates**
+(`qhyccd-rs`/`libqhyccd-sys` 1.68.0, `libzwo-sys` 1.70.0, `zwo-rs` 1.87.0), which
+declare explicit lower MSRVs because they publish to crates.io for outside
+consumers. Those lower floors cannot be verified in-workspace (the root
+`profile.dev` needs Rust ≥ 1.71 and the shared lockfile pins newest deps), so they
+are checked out-of-tree by the nightly **publish-readiness** workflow — see below
+and [docs/plans/publish-readiness-checks.md](../plans/publish-readiness-checks.md).
 
 ### test.yml
 
@@ -224,6 +230,34 @@ security model, setup steps, and decommissioning procedure.
 |--------|---------------|---------------|-----------|
 | **arm64-stable** | Same as scheduled `nightly` but on ARM64 stable: `cargo build --locked --workspace --all-features --all-targets` + `cargo nextest run --locked --all-features --all-targets` + `cargo test --locked --all-features --test bdd` + `cargo test --locked --all-features --doc` | self-hosted ARM64 runner, stable, cargo-nextest | Optional |
 | **notify-on-failure** | N/A (CI-only — opens/updates a `pi-nightly` labelled issue when `arm64-stable` fails on a scheduled run) | -- | CI-only |
+
+### publish-readiness.yml (rolling)
+
+Pre-publish verification for the four **dual-homed FFI crates** (`qhyccd-rs` +
+`libqhyccd-sys`, `zwo-rs` + `libzwo-sys`) — the published-in-isolation guarantees
+the in-workspace `check`/`test` jobs cannot give. Nightly cron (02:30 UTC) +
+`workflow_dispatch` + paths-filtered PR/push on the workflow and its script;
+**non-blocking** for ordinary PRs (a minimal-versions break usually comes from an
+upstream release, not the PR under review). Families are discovered dynamically via
+`[package.metadata.publish-readiness]`. A green run is a **release prerequisite**
+(see each crate's release runbook). Full design:
+[docs/plans/publish-readiness-checks.md](../plans/publish-readiness-checks.md).
+
+| CI Job | Local Command | Prerequisites | Required? |
+|--------|---------------|---------------|-----------|
+| **plan** | `cargo metadata` + jq (discovers FFI families) | jq | -- |
+| **msrv-minimal-versions** | `scripts/verify-publishable-crate.sh <crate> verify` | nightly, cargo-hack, jq, rustup (auto-installs MSRV toolchains); libclang for zwo | Optional |
+| **semver-checks** | `cargo semver-checks --package <crate>` | cargo-semver-checks | Optional |
+| **docs** | `cargo +nightly docs-rs --package <crate>` | nightly, cargo-docs-rs | Optional |
+| **find** (advisory) | `scripts/verify-publishable-crate.sh <crate> find` | cargo-msrv | CI-only (continue-on-error) |
+| **notify-on-failure** | N/A (opens/updates a `publish-readiness` issue on scheduled red) | -- | CI-only |
+
+The script copies each crate family OUT of the workspace and builds it on its
+declared (lower) MSRV with a `-Z direct-minimal-versions` lockfile generated under
+the MSRV-aware resolver (`CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback`) — the
+two ingredients that let a low MSRV hold against minimal dependency versions. The
+`*_SKIP_NATIVE_LINK` env makes it a check-only, SDK-free build (zwo still needs
+libclang for bindgen, not the SDK binary).
 
 ### scheduled.yml (rolling)
 
