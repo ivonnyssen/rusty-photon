@@ -15,9 +15,11 @@
 //!
 //! [`docs/plans/ui-testing.md`]: ../../../../docs/plans/ui-testing.md
 
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use thirtyfour::prelude::*;
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 
 /// A live browser session: the WebDriver client plus the geckodriver child it
@@ -40,17 +42,49 @@ impl BrowserSession {
         let gecko_bin =
             std::env::var("GECKODRIVER_BINARY").unwrap_or_else(|_| "geckodriver".to_string());
         let port = free_port();
-        let geckodriver = Command::new(&gecko_bin)
+        let mut geckodriver = Command::new(&gecko_bin)
             .arg("--port")
             .arg(port.to_string())
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
             .kill_on_drop(true)
             .spawn()
             .unwrap_or_else(|e| panic!("failed to spawn geckodriver ({gecko_bin:?}): {e}"));
 
+        // Drain geckodriver's stderr into a shared buffer so (a) a startup failure
+        // (incompatible Firefox, port already bound, etc.) is reported in the
+        // readiness-timeout panic instead of being silently swallowed, and (b) a
+        // continuously-read pipe can never fill and block geckodriver mid-test.
+        // The task ends at EOF when geckodriver is killed during teardown.
+        let stderr_log = Arc::new(Mutex::new(String::new()));
+        if let Some(stderr) = geckodriver.stderr.take() {
+            let sink = Arc::clone(&stderr_log);
+            tokio::spawn(async move {
+                let mut lines = BufReader::new(stderr).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    if let Ok(mut buf) = sink.lock() {
+                        buf.push_str(&line);
+                        buf.push('\n');
+                    }
+                }
+            });
+        }
+
         let server = format!("http://127.0.0.1:{port}");
-        wait_for_geckodriver(&server).await;
+        if !wait_for_geckodriver(&server).await {
+            // Snapshot the captured stderr (drop the guard before panicking, so a
+            // poisoned lock just yields no detail rather than masking the cause).
+            let captured = stderr_log
+                .lock()
+                .map(|buf| buf.trim_end().to_string())
+                .unwrap_or_default();
+            let detail = if captured.is_empty() {
+                "(geckodriver produced no stderr)".to_string()
+            } else {
+                format!("geckodriver stderr:\n{captured}")
+            };
+            panic!("geckodriver did not become ready at {server} within 10s; {detail}");
+        }
 
         let mut caps = DesiredCapabilities::firefox();
         caps.set_headless().expect("enable Firefox headless");
@@ -146,16 +180,17 @@ fn free_port() -> u16 {
         .port()
 }
 
-/// Poll geckodriver's `/status` until it reports ready (bounded ~10s).
-async fn wait_for_geckodriver(server: &str) {
+/// Poll geckodriver's `/status` until it reports ready (bounded ~10s); returns
+/// whether it became ready. The caller surfaces captured stderr on `false`.
+async fn wait_for_geckodriver(server: &str) -> bool {
     let status_url = format!("{server}/status");
     for _ in 0..100 {
         if let Ok(resp) = reqwest::Client::new().get(&status_url).send().await {
             if resp.status().is_success() {
-                return;
+                return true;
             }
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    panic!("geckodriver did not become ready at {server} within 10s");
+    false
 }

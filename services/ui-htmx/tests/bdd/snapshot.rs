@@ -27,12 +27,13 @@ use std::path::{Path, PathBuf};
 ///
 /// Order: `$TEST_SRCDIR/$TEST_WORKSPACE/services/ui-htmx/tests/snapshots` (Bazel
 /// runfiles, defaulting `TEST_WORKSPACE` to `_main`), then
-/// `$CARGO_MANIFEST_DIR/tests/snapshots` (Cargo — also the write target for
-/// `cargo insta`), then a cwd-relative fallback (the package dir under both
-/// runners). `TEST_SRCDIR` is checked **first** and is set only by the Bazel test
-/// runner, so a stray compile-time `CARGO_MANIFEST_DIR` (which may point at an
-/// existing sandbox dir that does *not* hold the staged goldens) can never shadow
-/// the runfiles path. See the module docs.
+/// `$CARGO_MANIFEST_DIR/tests/snapshots` **when that subdir exists** (Cargo — also
+/// the write target for `cargo insta`), then a cwd-relative fallback (the package
+/// dir under both runners). `TEST_SRCDIR` is checked **first** and is set only by
+/// the Bazel test runner; the Cargo branch additionally requires the
+/// `tests/snapshots` subdir to be present (not merely the manifest dir), so a
+/// stray compile-time `CARGO_MANIFEST_DIR` that resolves to a dir *without* the
+/// staged goldens can never shadow the runfiles path. See the module docs.
 fn snapshot_dir() -> PathBuf {
     if let Ok(srcdir) = std::env::var("TEST_SRCDIR") {
         let workspace = std::env::var("TEST_WORKSPACE").unwrap_or_else(|_| "_main".into());
@@ -41,11 +42,17 @@ fn snapshot_dir() -> PathBuf {
             .join("services/ui-htmx/tests/snapshots");
     }
     // Cargo: CARGO_MANIFEST_DIR is the package source dir at runtime; the goldens
-    // live (and `cargo insta` creates/writes them) under tests/snapshots.
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    if manifest.is_dir() {
-        return manifest.join("tests/snapshots");
+    // live (and `cargo insta` creates/writes them) under tests/snapshots. Gate on
+    // the snapshots subdir itself — not just the manifest dir — so a stale
+    // CARGO_MANIFEST_DIR pointing at a dir without the staged goldens falls through
+    // (mirrors services/ppba-driver/tests/translations.rs, which checks i18n/).
+    let snapshots = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots");
+    if snapshots.is_dir() {
+        return snapshots;
     }
+    // First-time `cargo insta` generation (dir not yet created): under Cargo the
+    // test cwd is the package root, so this resolves to the same tests/snapshots
+    // that insta creates on accept.
     PathBuf::from("tests/snapshots")
 }
 
