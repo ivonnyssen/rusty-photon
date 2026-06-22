@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `QHYError` gains `NoImageAvailable`, `NoImageMetadataAvailable`, `InvalidUtf8`,
   and `InvalidCameraId` variants. Code that matched on `eyre::Report` must match
   `QHYError` instead.
+- Real-backend `Camera` methods now return `CameraNotOpenError` (not an
+  operation-specific error such as `BeginLiveError`) when called on an unopened
+  camera, matching the simulation backend.
 - Target QHYCCD SDK **26.06.04**. The 26.x distribution changed packaging
   (dot-stripped repo dir `260604`, `.tar.gz` archives, no `install.sh`, and the
   per-OS archives renamed `macMix`→`mac_x64` / `WinMix`→`win64` /

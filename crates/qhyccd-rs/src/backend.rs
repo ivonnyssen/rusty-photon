@@ -69,14 +69,16 @@ impl PartialEq for CameraBackend {
 }
 
 macro_rules! read_lock {
-    ($var:expr, $wrap:expr) => {{
+    ($var:expr) => {{
         // `parking_lot::RwLock` cannot be poisoned, so the only failure is an
-        // unopened handle; map it to the caller's high-level `QHYError` ($wrap).
+        // unopened handle (`None`) — reported as `CameraNotOpenError`, the accurate
+        // cause, matching the simulation backend (which returns it when the camera
+        // is closed) instead of a misleading operation-specific error.
         match *$var.read() {
             Some(handle) => Ok::<*const std::ffi::c_void, $crate::QHYError>(handle.ptr),
             None => {
                 tracing::error!(error = ?$crate::QHYError::CameraNotOpenError);
-                Err($wrap)
+                Err($crate::QHYError::CameraNotOpenError)
             }
         }
     }};

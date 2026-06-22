@@ -29,7 +29,7 @@ impl Camera {
     pub fn set_stream_mode(&self, mode: StreamMode) -> Result<()> {
         match &self.backend {
             CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle, SetStreamModeError { error_code: 0 })?;
+                let handle = read_lock!(handle)?;
                 match unsafe { SetQHYCCDStreamMode(handle, mode as u8) } {
                     QHYCCD_SUCCESS => Ok(()),
                     error_code => {
@@ -64,7 +64,7 @@ impl Camera {
     pub fn set_readout_mode(&self, mode: u32) -> Result<()> {
         match &self.backend {
             CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle, SetReadoutModeError { error_code: 0 })?;
+                let handle = read_lock!(handle)?;
                 match unsafe { SetQHYCCDReadMode(handle, mode) } {
                     QHYCCD_SUCCESS => Ok(()),
                     error_code => {
@@ -104,7 +104,7 @@ impl Camera {
     pub fn set_bin_mode(&self, bin_x: u32, bin_y: u32) -> Result<()> {
         match &self.backend {
             CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle, SetBinModeError { error_code: 0 })?;
+                let handle = read_lock!(handle)?;
                 match unsafe { SetQHYCCDBinMode(handle, bin_x, bin_y) } {
                     QHYCCD_SUCCESS => Ok(()),
                     error_code => {
@@ -138,7 +138,7 @@ impl Camera {
     pub fn set_debayer(&self, on: bool) -> Result<()> {
         match &self.backend {
             CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle, SetDebayerError { error_code: 0 })?;
+                let handle = read_lock!(handle)?;
                 match unsafe { SetQHYCCDDebayerOnOff(handle, on) } {
                     QHYCCD_SUCCESS => Ok(()),
                     error_code => {
@@ -178,7 +178,7 @@ impl Camera {
     pub fn set_roi(&self, roi: CCDChipArea) -> Result<()> {
         match &self.backend {
             CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle, SetRoiError { error_code: 0 })?;
+                let handle = read_lock!(handle)?;
                 match unsafe {
                     SetQHYCCDResolution(handle, roi.start_x, roi.start_y, roi.width, roi.height)
                 } {
@@ -215,7 +215,7 @@ impl Camera {
     pub fn set_bit_mode(&self, mode: u32) -> Result<()> {
         match &self.backend {
             CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle, SetBitModeError { error_code: 0 })?;
+                let handle = read_lock!(handle)?;
                 match unsafe { SetQHYCCDBitsMode(handle, mode) } {
                     QHYCCD_SUCCESS => Ok(()),
                     error_code => {

@@ -2,7 +2,7 @@
 //!
 //! This crate provides a safe interface to the QHYCCD SDK for controlling QHYCCD cameras and filter wheels.
 //! (Focusers are supported by the QHYCCD SDK but are not yet exposed by this crate.)
-//! The libqhyccd-sys crate provides the raw FFI bindings. It uses tracing for logging and typed [`QHYError`] values (via thiserror) for error handling.
+//! The `libqhyccd-sys` crate provides the raw FFI bindings; this crate wraps them in a safe API, using `tracing` for logging and returning typed [`QHYError`] values (via `thiserror`) for error handling.
 //!
 //! # Example
 //! ```no_run

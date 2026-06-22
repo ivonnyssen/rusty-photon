@@ -26,7 +26,7 @@ impl Camera {
     pub fn get_number_of_readout_modes(&self) -> Result<u32> {
         match &self.backend {
             CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle, GetNumberOfReadoutModesError)?;
+                let handle = read_lock!(handle)?;
 
                 let mut num: u32 = 0;
                 match unsafe { GetQHYCCDNumberOfReadModes(handle, &mut num as *mut u32) } {
@@ -62,7 +62,7 @@ impl Camera {
     pub fn get_readout_mode_name(&self, index: u32) -> Result<String> {
         match &self.backend {
             CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle, GetReadoutModeNameError)?;
+                let handle = read_lock!(handle)?;
                 let mut name: [c_char; 80] = [0; 80];
                 match unsafe { GetQHYCCDReadModeName(handle, index, name.as_mut_ptr()) } {
                     QHYCCD_ERROR => {
@@ -107,7 +107,7 @@ impl Camera {
     pub fn get_readout_mode_resolution(&self, index: u32) -> Result<(u32, u32)> {
         match &self.backend {
             CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle, GetReadoutModeResolutionError)?;
+                let handle = read_lock!(handle)?;
 
                 let mut width: u32 = 0;
                 let mut height: u32 = 0;
@@ -156,7 +156,7 @@ impl Camera {
     pub fn get_readout_mode(&self) -> Result<u32> {
         match &self.backend {
             CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle, GetReadoutModeError)?;
+                let handle = read_lock!(handle)?;
                 let mut mode: u32 = 0;
                 match unsafe { GetQHYCCDReadMode(handle, &mut mode as *mut u32) } {
                     QHYCCD_SUCCESS => Ok(mode),

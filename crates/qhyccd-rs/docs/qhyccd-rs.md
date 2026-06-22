@@ -982,13 +982,13 @@ The camera backend uses `Arc<parking_lot::RwLock<T>>` for shared state:
 
 **Locking Strategy:**
 
-The `read_lock!` macro centralizes read lock acquisition. Because the lock is infallible, its only failure mode is an unopened handle (`None`), which it maps to the caller's high-level `QHYError` (`$wrap`):
+The `read_lock!` macro centralizes read lock acquisition. Because the lock is infallible, its only failure mode is an unopened handle (`None`), which it reports as `CameraNotOpenError` — the accurate cause, matching the simulation backend (rather than a misleading operation-specific error):
 ```rust
 macro_rules! read_lock {
-    ($var:expr, $wrap:expr) => {
+    ($var:expr) => {
         match *$var.read() {
             Some(handle) => Ok(handle.ptr),
-            None => Err($wrap),
+            None => Err(QHYError::CameraNotOpenError),
         }
     }
 }

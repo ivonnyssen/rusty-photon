@@ -113,7 +113,7 @@ impl Camera {
     pub fn init(&self) -> Result<()> {
         match &self.backend {
             CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle, InitCameraError { error_code: 0 })?;
+                let handle = read_lock!(handle)?;
 
                 match unsafe { InitQHYCCD(handle) } {
                     QHYCCD_SUCCESS => Ok(()),

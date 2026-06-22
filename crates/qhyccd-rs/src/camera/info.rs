@@ -26,7 +26,7 @@ impl Camera {
     pub fn get_model(&self) -> Result<String> {
         match &self.backend {
             CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle, GetCameraModelError { error_code: 0 })?;
+                let handle = read_lock!(handle)?;
                 let mut model: [c_char; 80] = [0; 80];
                 match unsafe { GetQHYCCDModel(handle, model.as_mut_ptr()) } {
                     QHYCCD_SUCCESS => {
@@ -66,7 +66,7 @@ impl Camera {
     pub fn get_firmware_version(&self) -> Result<String> {
         match &self.backend {
             CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle, GetFirmwareVersionError { error_code: 0 })?;
+                let handle = read_lock!(handle)?;
                 let mut version = [0u8; 32];
                 match unsafe { GetQHYCCDFWVersion(handle, version.as_mut_ptr()) } {
                     QHYCCD_SUCCESS => {
@@ -117,7 +117,7 @@ impl Camera {
     pub fn get_type(&self) -> Result<u32> {
         match &self.backend {
             CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle, GetCameraTypeError)?;
+                let handle = read_lock!(handle)?;
                 match unsafe { GetQHYCCDType(handle) } {
                     QHYCCD_ERROR => {
                         let error = GetCameraTypeError;
@@ -151,7 +151,7 @@ impl Camera {
     pub fn get_ccd_info(&self) -> Result<CCDChipInfo> {
         match &self.backend {
             CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle, GetCCDInfoError { error_code: 0 })?;
+                let handle = read_lock!(handle)?;
                 let mut chipw: f64 = 0.0;
                 let mut chiph: f64 = 0.0;
                 let mut imagew: u32 = 0;
@@ -211,7 +211,7 @@ impl Camera {
     pub fn get_overscan_area(&self) -> Result<CCDChipArea> {
         match &self.backend {
             CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle, GetOverscanAreaError { error_code: 0 })?;
+                let handle = read_lock!(handle)?;
                 let mut start_x: u32 = 0;
                 let mut start_y: u32 = 0;
                 let mut width: u32 = 0;
@@ -262,7 +262,7 @@ impl Camera {
     pub fn get_effective_area(&self) -> Result<CCDChipArea> {
         match &self.backend {
             CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle, GetEffectiveAreaError { error_code: 0 })?;
+                let handle = read_lock!(handle)?;
                 let mut start_x: u32 = 0;
                 let mut start_y: u32 = 0;
                 let mut width: u32 = 0;

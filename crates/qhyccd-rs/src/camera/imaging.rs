@@ -29,7 +29,7 @@ impl Camera {
     pub fn begin_live(&self) -> Result<()> {
         match &self.backend {
             CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle, BeginLiveError { error_code: 0 })?;
+                let handle = read_lock!(handle)?;
                 match unsafe { BeginQHYCCDLive(handle) } {
                     QHYCCD_SUCCESS => Ok(()),
                     error_code => {
@@ -66,7 +66,7 @@ impl Camera {
     pub fn end_live(&self) -> Result<()> {
         match &self.backend {
             CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle, EndLiveError { error_code: 0 })?;
+                let handle = read_lock!(handle)?;
                 match unsafe { StopQHYCCDLive(handle) } {
                     QHYCCD_SUCCESS => Ok(()),
                     error_code => {
@@ -101,7 +101,7 @@ impl Camera {
     pub fn get_image_size(&self) -> Result<usize> {
         match &self.backend {
             CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle, GetImageSizeError)?;
+                let handle = read_lock!(handle)?;
                 match unsafe { GetQHYCCDMemLength(handle) } {
                     QHYCCD_ERROR => {
                         let error = GetImageSizeError;
@@ -141,7 +141,7 @@ impl Camera {
     pub fn get_live_frame(&self, buffer_size: usize) -> Result<ImageData> {
         match &self.backend {
             CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle, GetLiveFrameError { error_code: 0 })?;
+                let handle = read_lock!(handle)?;
                 let mut width: u32 = 0;
                 let mut height: u32 = 0;
                 let mut bpp: u32 = 0;
@@ -224,7 +224,7 @@ impl Camera {
     pub fn get_single_frame(&self, buffer_size: usize) -> Result<ImageData> {
         match &self.backend {
             CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle, GetSingleFrameError { error_code: 0 })?;
+                let handle = read_lock!(handle)?;
                 let mut width: u32 = 0;
                 let mut height: u32 = 0;
                 let mut bpp: u32 = 0;
@@ -315,7 +315,7 @@ impl Camera {
     pub fn start_single_frame_exposure(&self) -> Result<()> {
         match &self.backend {
             CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle, StartSingleFrameExposureError { error_code: 0 })?;
+                let handle = read_lock!(handle)?;
                 match unsafe { ExpQHYCCDSingleFrame(handle) } {
                     QHYCCD_SUCCESS => Ok(()),
                     error_code => {
@@ -355,7 +355,7 @@ impl Camera {
     pub fn get_remaining_exposure_us(&self) -> Result<u32> {
         match &self.backend {
             CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle, GetExposureRemainingError)?;
+                let handle = read_lock!(handle)?;
                 match unsafe { GetQHYCCDExposureRemaining(handle) } {
                     QHYCCD_ERROR => {
                         let error = GetExposureRemainingError;
@@ -394,7 +394,7 @@ impl Camera {
     pub fn stop_exposure(&self) -> Result<()> {
         match &self.backend {
             CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle, StopExposureError { error_code: 0 })?;
+                let handle = read_lock!(handle)?;
                 match unsafe { CancelQHYCCDExposing(handle) } {
                     QHYCCD_SUCCESS => Ok(()),
                     error_code => {
@@ -432,7 +432,7 @@ impl Camera {
     pub fn abort_exposure_and_readout(&self) -> Result<()> {
         match &self.backend {
             CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle, AbortExposureAndReadoutError { error_code: 0 })?;
+                let handle = read_lock!(handle)?;
                 match unsafe { CancelQHYCCDExposingAndReadout(handle) } {
                     QHYCCD_SUCCESS => Ok(()),
                     error_code => {
