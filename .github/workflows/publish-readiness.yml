@@ -146,8 +146,10 @@ jobs:
       - uses: actions/checkout@v7
       - name: Install nightly
         uses: dtolnay/rust-toolchain@nightly
+      # cargo-docs-rs has no taiki-e/install-action manifest (unlike cargo-hack /
+      # cargo-semver-checks above), so install it from source.
       - name: Install cargo-docs-rs
-        uses: taiki-e/install-action@cargo-docs-rs
+        run: cargo install cargo-docs-rs --locked
       - name: Install libclang (bindgen families)
         if: matrix.crate.needs_libclang
         run: sudo apt-get update && sudo apt-get install -y llvm-dev libclang-dev clang

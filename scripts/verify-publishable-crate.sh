@@ -36,6 +36,24 @@
 #
 set -euo pipefail
 
+# Associative arrays (`declare -A`, below) need Bash >= 4. Stock macOS /bin/bash is
+# 3.2; `#!/usr/bin/env bash` picks up a Homebrew bash when one is on PATH, but guard
+# explicitly so an old bash fails with a clear message rather than the opaque
+# `declare: -A: invalid option`.
+if [ "${BASH_VERSINFO:-0}" -lt 4 ]; then
+  echo "FATAL: this script needs Bash >= 4 (found ${BASH_VERSION:-unknown}). On macOS: 'brew install bash', then re-run with that bash." >&2
+  exit 2
+fi
+
+# Portable in-place sed: BSD/macOS `sed -i` requires a (possibly empty) backup-suffix
+# argument, so `sed -i -E …` is GNU-only — BSD sed reads `-E` as the suffix. Write
+# through a temp file instead; `-E` itself is fine on both GNU (>= 4.2) and BSD.
+sed_inplace() { # <file> <sed-args...>
+  local file="$1"; shift
+  local tmp; tmp="$(mktemp "${TMPDIR:-/tmp}/verify-pub.XXXXXX")"
+  sed "$@" "$file" >"$tmp" && mv "$tmp" "$file"
+}
+
 WRAPPER="${1:?usage: verify-publishable-crate.sh <wrapper-crate-name> [verify|find]}"
 MODE="${2:-verify}"
 
@@ -67,9 +85,26 @@ if [ "$SYS" = "null" ] || [ -z "$SYS" ]; then
   echo "FATAL: '$WRAPPER' has no [package.metadata.publish-readiness] (not a publishable FFI family)" >&2
   exit 2
 fi
+# `skip-link-env` is load-bearing: it names the build-script var that suppresses
+# native linking. A missing/misspelled key would silently degrade to `env "null=1"
+# cargo …` (a junk var, real skip-link var unset → the build script tries to link
+# the SDK and fails confusingly), so require it explicitly.
+if [ "$SKIP_ENV" = "null" ] || [ -z "$SKIP_ENV" ]; then
+  echo "FATAL: '$WRAPPER' [package.metadata.publish-readiness] is missing 'skip-link-env' (the build-script var that suppresses native linking — e.g. QHYCCD_SKIP_NATIVE_LINK)" >&2
+  exit 2
+fi
+# `needs-libclang` is optional (absent ⇒ the family does not run bindgen). Normalize
+# anything that is not the literal "true" to "false" so the later `= "true"` test is exact.
+[ "$NEEDS_LIBCLANG" = "true" ] || NEEDS_LIBCLANG="false"
 
 WRAPPER_DIR="$(dirname "$WRAPPER_MANIFEST")"
 SYS_MANIFEST="$(pkg_field "$SYS" .manifest_path)"
+# A misspelled `sys-crate` resolves to no package; guard so we fail clearly instead
+# of running `dirname "null"` (→ ".") and copying the wrong tree.
+if [ "$SYS_MANIFEST" = "null" ] || [ -z "$SYS_MANIFEST" ]; then
+  echo "FATAL: sys-crate '$SYS' (from $WRAPPER's publish-readiness metadata) is not a workspace package — check the name" >&2
+  exit 2
+fi
 SYS_DIR="$(dirname "$SYS_MANIFEST")"
 SYS_SUBDIR="${SYS_DIR#"$WRAPPER_DIR"/}"   # e.g. libqhyccd-sys (nested under wrapper)
 
@@ -100,7 +135,7 @@ if [ "$NEEDS_LIBCLANG" = "true" ]; then
 fi
 
 # --- copy the family out of the workspace -------------------------------------
-SCRATCH="$(mktemp -d)"
+SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/verify-pub.XXXXXX")"
 trap 'rm -rf "$SCRATCH"' EXIT
 cp -R "$WRAPPER_DIR" "$SCRATCH/pkg"
 rm -rf "$SCRATCH/pkg/target" "$SCRATCH/pkg/Cargo.lock"
@@ -121,9 +156,8 @@ while IFS= read -r line; do
 done < <(awk '/^\[workspace\.dependencies\]/{f=1;next} /^\[/{f=0} f' Cargo.toml)
 
 for name in "${!WSDEP[@]}"; do
-  sed -i -E \
-    "s|^(${name})[[:space:]]*=[[:space:]]*\{[[:space:]]*workspace[[:space:]]*=[[:space:]]*true[[:space:]]*\}|\1 = \"${WSDEP[$name]}\"|" \
-    "$SCRATCH/pkg/Cargo.toml"
+  sed_inplace "$SCRATCH/pkg/Cargo.toml" -E \
+    "s|^(${name})[[:space:]]*=[[:space:]]*\{[[:space:]]*workspace[[:space:]]*=[[:space:]]*true[[:space:]]*\}|\1 = \"${WSDEP[$name]}\"|"
 done
 # Guard: a *dependency* line (key = { ... workspace = true ... }) still inheriting.
 # Anchored to a key at line start so it never matches a `#` comment that merely

@@ -124,10 +124,24 @@ needs-libclang = false                 # true for zwo (bindgen)
   check **caught that the declared 1.70.0 was a lie** — `zwo-rs` uses
   `u32::is_multiple_of` (Rust 1.87.0). Exactly the class of bug this exists to find.
 
-## rail reconciliation
+## Reconciliation with in-workspace checks
 
-`.config/rail.toml`: `enforce_msrv_inheritance = false` (the four crates diverge by
-design; every other member still inherits voluntarily).
+The lower, divergent MSRVs would otherwise trip checks that assume one uniform
+workspace MSRV — both are reconciled here:
+
+- **rail.** `.config/rail.toml`: `enforce_msrv_inheritance = false` (the four crates
+  diverge by design; every other member still inherits voluntarily).
+- **`check.yml` `ubuntu / msrv` job.** It runs `cargo msrv verify` per member
+  in-workspace, which CANNOT pass for these four (the very `profile.dev` ≥ 1.71 /
+  shared-lockfile problem this plan exists to dodge). The job now **skips** them —
+  the wrapper plus its `sys-crate`, discovered from
+  `[package.metadata.publish-readiness]` (the same marker the nightly workflow keys
+  on) — and logs which crates it skipped. Their floors are verified out-of-tree
+  here instead.
+
+One CI nuance worth recording: `cargo-docs-rs` has no `taiki-e/install-action`
+manifest (unlike `cargo-hack` / `cargo-semver-checks`), so the **docs** job installs
+it with `cargo install cargo-docs-rs --locked` rather than the action shorthand.
 
 ## Publish gating
 

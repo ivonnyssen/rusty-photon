@@ -136,9 +136,12 @@ The workspace uses a single MSRV (currently 1.94.1) declared in the root
 (`qhyccd-rs`/`libqhyccd-sys` 1.68.0, `libzwo-sys` 1.70.0, `zwo-rs` 1.87.0), which
 declare explicit lower MSRVs because they publish to crates.io for outside
 consumers. Those lower floors cannot be verified in-workspace (the root
-`profile.dev` needs Rust ≥ 1.71 and the shared lockfile pins newest deps), so they
-are checked out-of-tree by the nightly **publish-readiness** workflow — see below
-and [docs/plans/publish-readiness-checks.md](../plans/publish-readiness-checks.md).
+`profile.dev` needs Rust ≥ 1.71 and the shared lockfile pins newest deps), so the
+in-workspace **msrv** job (`check.yml`) **skips** those four (the wrapper plus its
+`sys-crate`, discovered from `[package.metadata.publish-readiness]`) and verifies
+only the workspace-MSRV members. The four are instead checked out-of-tree by the
+nightly **publish-readiness** workflow — see below and
+[docs/plans/publish-readiness-checks.md](../plans/publish-readiness-checks.md).
 
 ### test.yml
 
