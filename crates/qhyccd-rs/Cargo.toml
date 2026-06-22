@@ -55,7 +55,7 @@ enum-ordinalize-derive = "4.3.1"
 lazy_static = "1.0.2"
 
 [dev-dependencies]
-mockall = { version = "0.14.0", features = [] }
+mockall = { workspace = true }
 # Used only by the demo programs in examples/ (FmtSubscriber), not the library,
 # so consumers of qhyccd-rs no longer pull it. Inherits the workspace pin.
 tracing-subscriber = { workspace = true }

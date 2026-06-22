@@ -465,7 +465,7 @@ Error handling flow:
 3. Error is logged via `tracing::error!`
 4. The `QHYError` propagates to the caller via `?`
 
-The library never panics during normal operation (only on lock poisoning, which indicates a serious bug).
+The library does not panic during normal operation. A poisoned `RwLock` (which indicates a panic in another thread while the lock was held — a serious bug) is surfaced as a typed `QHYError::LockPoisoned`, or mapped to a higher-level `QHYError` by the `read_lock!` macro, and propagated via `?` rather than re-panicking.
 
 ### FFI Layer (libqhyccd-sys)
 
