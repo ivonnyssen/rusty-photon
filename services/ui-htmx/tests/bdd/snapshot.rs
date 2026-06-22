@@ -25,21 +25,26 @@ use std::path::{Path, PathBuf};
 
 /// Resolve the directory holding the committed `.snap` goldens at runtime.
 ///
-/// Order: `$CARGO_MANIFEST_DIR/tests/snapshots` (Cargo — also the write target
-/// for `cargo insta`, so it's returned whenever that base dir exists),
-/// `$TEST_SRCDIR/$TEST_WORKSPACE/services/ui-htmx/tests/snapshots` (Bazel
-/// runfiles, defaulting `TEST_WORKSPACE` to `_main`), then a cwd-relative
-/// fallback (the package dir under both runners). See the module docs.
+/// Order: `$TEST_SRCDIR/$TEST_WORKSPACE/services/ui-htmx/tests/snapshots` (Bazel
+/// runfiles, defaulting `TEST_WORKSPACE` to `_main`), then
+/// `$CARGO_MANIFEST_DIR/tests/snapshots` (Cargo — also the write target for
+/// `cargo insta`), then a cwd-relative fallback (the package dir under both
+/// runners). `TEST_SRCDIR` is checked **first** and is set only by the Bazel test
+/// runner, so a stray compile-time `CARGO_MANIFEST_DIR` (which may point at an
+/// existing sandbox dir that does *not* hold the staged goldens) can never shadow
+/// the runfiles path. See the module docs.
 fn snapshot_dir() -> PathBuf {
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    if manifest.is_dir() {
-        return manifest.join("tests/snapshots");
-    }
     if let Ok(srcdir) = std::env::var("TEST_SRCDIR") {
         let workspace = std::env::var("TEST_WORKSPACE").unwrap_or_else(|_| "_main".into());
         return Path::new(&srcdir)
             .join(workspace)
             .join("services/ui-htmx/tests/snapshots");
+    }
+    // Cargo: CARGO_MANIFEST_DIR is the package source dir at runtime; the goldens
+    // live (and `cargo insta` creates/writes them) under tests/snapshots.
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    if manifest.is_dir() {
+        return manifest.join("tests/snapshots");
     }
     PathBuf::from("tests/snapshots")
 }
