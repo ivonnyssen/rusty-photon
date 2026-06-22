@@ -247,8 +247,15 @@ fn walk_schema(node: &Value, root: &Value, prefix: &str, out: &mut Vec<FieldSpec
     match classify(resolved) {
         Shape::Object => {
             if let Some(props) = resolved.get("properties").and_then(Value::as_object) {
-                // serde_json maps are ordered (sorted keys without preserve_order),
-                // so the field order is deterministic.
+                // Walk properties in sorted key order so the rendered field order
+                // is deterministic *regardless* of serde_json's `preserve_order`
+                // feature. `serde_json::Map` iterates sorted only when
+                // `preserve_order` is off (BTreeMap) and in insertion order when
+                // it is on (IndexMap) — and a dev-dependency (thirtyfour) unifies
+                // that feature on under `--all-features`. Sorting here keeps the
+                // output identical across that feature, build systems, and OSes.
+                let mut props: Vec<_> = props.iter().collect();
+                props.sort_by_key(|(name, _)| *name);
                 for (name, child) in props {
                     let child_prefix = if prefix.is_empty() {
                         name.clone()
@@ -319,7 +326,11 @@ pub fn config_card(
     errors: &[FieldError],
     banner: Option<Banner>,
 ) -> Markup {
-    let config_blob = serde_json::to_string(config).unwrap_or_default();
+    // Sorted-key serialization so the hidden blob's bytes are deterministic
+    // regardless of serde_json's `preserve_order` feature (see `canonical_json`
+    // and the note in `walk_schema`). Key order is semantically irrelevant to the
+    // round-trip, but it must be stable for the cross-OS byte snapshots (P2).
+    let config_blob = canonical_json(config);
     let overrides_blob = serde_json::to_string(overrides).unwrap_or_default();
     // The unlocked set round-trips on POST so an invalid submission re-renders
     // with the identity field still unlocked (rather than snapping shut and
@@ -674,6 +685,30 @@ pub fn unlocked_from_query(model: &FieldModel, unlock: Option<&str>) -> Vec<Stri
 
 // --- small JSON helpers --------------------------------------------------------
 
+/// Serialize `value` to JSON with object keys sorted recursively, so the bytes
+/// are deterministic regardless of serde_json's `preserve_order` feature (which
+/// changes `Value` map ordering and is unified on by a dev-dependency under
+/// `--all-features`). Inserting keys in sorted order is stable under both the
+/// `IndexMap` (preserve_order) and `BTreeMap` (default) `Map` backends.
+fn canonical_json(value: &Value) -> String {
+    fn sort_keys(value: &Value) -> Value {
+        match value {
+            Value::Object(map) => {
+                let mut keys: Vec<&String> = map.keys().collect();
+                keys.sort();
+                let mut sorted = serde_json::Map::new();
+                for key in keys {
+                    sorted.insert(key.clone(), sort_keys(&map[key]));
+                }
+                Value::Object(sorted)
+            }
+            Value::Array(items) => Value::Array(items.iter().map(sort_keys).collect()),
+            other => other.clone(),
+        }
+    }
+    serde_json::to_string(&sort_keys(value)).unwrap_or_default()
+}
+
 fn str_at(config: &Value, pointer: &str) -> String {
     match config.pointer(pointer) {
         Some(Value::String(s)) => s.clone(),
@@ -909,6 +944,19 @@ mod tests {
         assert!(markup.contains(r#"name="__unlocked""#), "{markup}");
         // Form posts to the service-scoped route.
         assert!(markup.contains(r#"hx-post="/config/dsd-fp2""#), "{markup}");
+    }
+
+    #[test]
+    fn canonical_json_sorts_keys_recursively() {
+        // Under the test build serde_json's `preserve_order` is unified on (a
+        // dev-dependency requires it), so a Value built in this order would
+        // otherwise serialize unsorted. canonical_json must still sort — at every
+        // depth, including inside arrays — so the hidden blob's bytes are stable.
+        let value = json!({ "b": 1, "a": { "y": 2, "x": 3 }, "c": [ { "n": 1, "m": 2 } ] });
+        assert_eq!(
+            canonical_json(&value),
+            r#"{"a":{"x":3,"y":2},"b":1,"c":[{"m":2,"n":1}]}"#
+        );
     }
 
     #[test]
