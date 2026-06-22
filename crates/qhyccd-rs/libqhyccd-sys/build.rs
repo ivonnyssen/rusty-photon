@@ -136,8 +136,22 @@ fn main() {
             // Windows SDK likely includes all dependencies
         }
         _ => {
-            // Linux and other Unix-like systems
-            println!("cargo:rustc-link-search=native=/usr/local/lib");
+            // Linux and other Unix-like systems.
+            //
+            // Prefer an explicit QHYCCD_SDK_DIR override (mirrors the Windows
+            // branch above), falling back to the system install path. The
+            // override lets a sudo-less CI runner — e.g. the linux-arm64 Pi
+            // nightly, whose job user has no root to write /usr/local — provision
+            // the SDK per-run by extracting it under the workspace and pointing
+            // QHYCCD_SDK_DIR at the directory holding libqhyccd.a (see
+            // `ivonnyssen/qhyccd-sdk-install`'s `install: env` mode). A static
+            // link needs only that `-L` path; x86 jobs that system-install leave
+            // the var unset and keep using /usr/local/lib unchanged.
+            if let Ok(dir) = env::var("QHYCCD_SDK_DIR") {
+                println!("cargo:rustc-link-search=native={dir}");
+            } else {
+                println!("cargo:rustc-link-search=native=/usr/local/lib");
+            }
             println!("cargo:rustc-link-lib=static=qhyccd");
             println!("cargo:rustc-link-lib=dylib=usb-1.0");
             println!("cargo:rustc-link-lib=dylib=stdc++");
