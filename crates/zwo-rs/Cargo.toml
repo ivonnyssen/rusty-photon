@@ -34,7 +34,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 # rand/rayon are simulation-only and have a single consumer in the workspace, so
 # they stay crate-local rather than promoted to workspace deps (Rule 10).
-rand = { version = "0.9", optional = true }
+rand = { version = "0.10", optional = true }
 rayon = { version = "1.10", optional = true }
 
 [dev-dependencies]
