@@ -19,6 +19,7 @@ use cucumber::World;
 use serde_json::{json, Value};
 use tempfile::TempDir;
 
+use crate::browser::BrowserSession;
 use crate::dom;
 
 /// The dsd-fp2 CoverCalibrator action endpoint the BFF (and these helpers) call.
@@ -50,6 +51,9 @@ pub struct UiWorld {
     /// on subsequent htmx requests so the captured fragments match what a browser
     /// would send.
     current_url: String,
+    /// The real headless-browser session, lazily started by the first
+    /// `@browser` step (Layer C / P3). Absent for the default, browser-free suite.
+    pub browser: Option<BrowserSession>,
 }
 
 impl UiWorld {
@@ -386,5 +390,30 @@ impl UiWorld {
             MAX_POLLS * POLL_INTERVAL.as_millis() as usize / 1000,
             self.last_body
         );
+    }
+
+    // --- driving a real browser (@browser scenarios, Layer C) -------------
+
+    /// Lazily start the headless browser session (geckodriver + Firefox) the
+    /// first time an `@browser` step needs it.
+    pub async fn ensure_browser(&mut self) {
+        if self.browser.is_none() {
+            self.browser = Some(BrowserSession::start().await);
+        }
+    }
+
+    /// The live browser session (panics if no `@browser` step started one).
+    pub fn browser(&self) -> &BrowserSession {
+        self.browser
+            .as_ref()
+            .expect("browser session not started — is this an @browser scenario?")
+    }
+
+    /// Navigate the real browser to a BFF page as a top-level navigation, so
+    /// `htmx.min.js` is fetched and executed.
+    pub async fn browser_goto(&mut self, path: &str) {
+        self.ensure_browser().await;
+        let url = self.ui_url(path);
+        self.browser().goto(&url).await;
     }
 }

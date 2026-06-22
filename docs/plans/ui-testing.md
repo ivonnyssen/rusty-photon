@@ -184,6 +184,33 @@ header swaps/morph) the fragment bytes are byte-identical to what htmx swaps.
 
 ## 6. Layer C — real browser (P3 `thirtyfour`)
 
+> **Status (2026-06-22): Tier 0 implemented (Cargo-verified).** `thirtyfour` 0.37
+> is a `ui-htmx` dev-dep; `tests/features/browser.feature` is tagged `@browser`
+> and gated behind `UI_BROWSER_TESTS=1` via the `filter_run_and_exit` closure in
+> [`tests/bdd.rs`] (which also adds the `@wip` seam ui-htmx lacked). A geckodriver
+> system-tool handle ([`tests/bdd/browser.rs`]) spawns geckodriver on an ephemeral
+> port (`kill_on_drop`) and connects headless Firefox; the after-hook teardown is
+> reordered to **quit browser → stop BFF → stop driver** (§10). Two scenarios pass
+> against real Firefox 140 ESR + geckodriver 0.36: a smoke render (proves
+> htmx.min.js loads) and an unlock-click `outerHTML` swap (proves htmx executes
+> it); the default suite stays green with `@browser` filtered out, and teardown
+> leaves no geckodriver/Firefox orphans. The `.bazelrc` `--config=browser` seam
+> (system-tool `--test_env` passthrough + `--spawn_strategy=local`) is in place but
+> **not yet exercised under Bazel** — cargo-only escape hatch per §3.
+>
+> **Feature-unification note:** `thirtyfour` hard-requires
+> `serde_json/preserve_order`, which unifies workspace-wide under `--all-features`
+> and flipped `ui-htmx`'s `Value`-map render order (breaking Layer B). Fixed at the
+> source: the schema walk and the hidden blob now sort keys explicitly
+> (`canonical_json`), so output is identical regardless of the feature.
+>
+> **NOT yet done:** §9 Tier 0 steps 3–4 (coverage invariant + deliberate-panic
+> orphan-reaper scenario), Tier 1 (`/fixtures/*` OOB/retarget), Tier 2 (SSE), the
+> nightly `@browser` recording job (§8), and the 3-OS Bazel browser matrix.
+
+[`tests/bdd.rs`]: ../../services/ui-htmx/tests/bdd.rs
+[`tests/bdd/browser.rs`]: ../../services/ui-htmx/tests/bdd/browser.rs
+
 A **small** set (≈3–5 scenarios, plus the spike scenarios in §9) for behaviors only a
 browser can prove.
 

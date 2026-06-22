@@ -233,6 +233,31 @@ build:remote-cache --remote_cache=https://cache.rustyphoton.space
 test:conformu --test_tag_filters=conformu
 test:conformu --test_env=CONFORMU_PATH
 
+# --- Browser BDD config (UI-testing plan Layer C) --------------------------
+
+# Run the advisory @browser scenarios (real Firefox via WebDriver) under Bazel:
+#   FIREFOX_BINARY=/path GECKODRIVER_BINARY=/path \
+#     bazel test --config=browser //services/ui-htmx:bdd
+# Firefox + geckodriver are external system tools, exactly like OmniSim/ConformU
+# — there is no maintained hermetic-browser path for Rust (rules_webtesting was
+# archived and never supported Rust). The @browser scenarios are themselves gated
+# inside the suite by UI_BROWSER_TESTS=1 (set below), so the default `bdd` run is
+# unaffected. This config is STANDALONE: unlike conformu it does not pigg-back on
+# --config=ci, so it must set --spawn_strategy=local itself (the sandbox blocks
+# the localhost WebDriver connection and hides the system browser) or it "works
+# in CI, fails locally".
+#
+# NOTE: verified under Cargo (UI_BROWSER_TESTS=1 + GECKODRIVER_BINARY); the Bazel
+# browser path is the documented seam but not yet exercised green on the 3-OS
+# matrix. Per the plan §3, the cargo-only escape hatch stands if it can't.
+test:browser --test_tag_filters=bdd
+test:browser --spawn_strategy=local
+test:browser --test_env=UI_BROWSER_TESTS=1
+# Forwarded by name (not =value) so the --test_env set is stable across
+# invocations sharing one server — the OMNISIM_PATH/CONFORMU_PATH pattern.
+build:browser --test_env=FIREFOX_BINARY
+build:browser --test_env=GECKODRIVER_BINARY
+
 # --- Coverage config -------------------------------------------------------
 
 # Activate with: bazel coverage --config=coverage //...

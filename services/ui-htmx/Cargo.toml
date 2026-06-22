@@ -40,6 +40,11 @@ scraper = "0.27"
 # cross-OS-comparable artifact (P2). `filters` scrubs run/OS-varying tokens
 # before compare; `redactions` is pulled for completeness per the plan.
 insta = { version = "1.48", features = ["filters", "redactions"] }
+# Layer C (§6): a real WebDriver browser for behaviors only a browser can prove
+# (P3 — htmx actually executes the swap/poll). Pure Rust, no Node. The @browser
+# scenarios it drives are gated behind UI_BROWSER_TESTS=1 (see tests/bdd.rs), so
+# this always-compiled dev-dep never drags a browser into the default gate.
+thirtyfour = "0.37"
 
 [[test]]
 name = "bdd"
