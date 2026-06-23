@@ -18,3 +18,27 @@ Feature: Real-browser behavior
     When I load the dsd-fp2 config page in a browser
     And I click the unlock link for cover_calibrator.unique_id
     Then the browser shows cover_calibrator.unique_id editable
+
+  # Tier 0 step 3 (plan §9): quitting the browser before stopping the BFF lets the
+  # BFF shut down gracefully, so it runs its atexit handler and flushes coverage.
+  # Reversing the order would block the BFF on the browser's held connection until
+  # the 5s SIGKILL grace and silently zero its BDD coverage (testing.md §5.4).
+  Scenario: The BFF flushes coverage on graceful shutdown with a browser attached
+    Given a dsd-fp2 driver running with serial.port "/dev/ttyACM0" and max_brightness 4096
+    When I load the dsd-fp2 config page in a browser
+    And I quit the browser and then stop the BFF
+    Then the BFF shuts down gracefully before the 5s SIGKILL grace elapses
+
+  # Tier 0 step 4 (plan §9): the worst case — geckodriver dies without telling
+  # Firefox to quit (a panic/timeout, or the Firefox<152 SIGTERM bug). The
+  # kill-the-tree reaper (killpg of geckodriver's process group) must still leave
+  # zero orphans, and failure-triage artifacts must land at an absolute path first.
+  # Linux-only: the orphan scan reads /proc. Like the rest of @browser it runs on
+  # Linux CI + dev; macOS/Windows browser support is plan §9 step 5 (deferred), and
+  # forcing UI_BROWSER_TESTS=1 there fails loud rather than silently passing.
+  Scenario: A crashed browser session is reaped with no orphaned processes
+    Given a dsd-fp2 driver running with serial.port "/dev/ttyACM0" and max_brightness 4096
+    When I load the dsd-fp2 config page in a browser
+    And the geckodriver process is killed and the session is reaped
+    Then the reaper leaves no orphaned browser processes
+    And the failure artifacts were captured at an absolute path before the reap

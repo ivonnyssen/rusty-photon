@@ -184,17 +184,31 @@ header swaps/morph) the fragment bytes are byte-identical to what htmx swaps.
 
 ## 6. Layer C — real browser (P3 `thirtyfour`)
 
-> **Status (2026-06-22): Tier 0 implemented (Cargo-verified).** `thirtyfour` 0.37
-> is a `ui-htmx` dev-dep; `tests/features/browser.feature` is tagged `@browser`
-> and gated behind `UI_BROWSER_TESTS=1` via the `filter_run_and_exit` closure in
-> [`tests/bdd.rs`] (which also adds the `@wip` seam ui-htmx lacked). A geckodriver
-> system-tool handle ([`tests/bdd/browser.rs`]) spawns geckodriver on an ephemeral
-> port (`kill_on_drop`) and connects headless Firefox; the after-hook teardown is
-> reordered to **quit browser → stop BFF → stop driver** (§10). Two scenarios pass
-> against real Firefox 140 ESR + geckodriver 0.36: a smoke render (proves
-> htmx.min.js loads) and an unlock-click `outerHTML` swap (proves htmx executes
-> it); the default suite stays green with `@browser` filtered out, and teardown
-> leaves no geckodriver/Firefox orphans. The `.bazelrc` `--config=browser` seam
+> **Status (2026-06-23): Tier 0 steps 1–4 implemented (Cargo-verified).**
+> `thirtyfour` 0.37 is a `ui-htmx` dev-dep; `tests/features/browser.feature` is
+> tagged `@browser` and gated behind `UI_BROWSER_TESTS=1` via the
+> `filter_run_and_exit` closure in [`tests/bdd.rs`] (which also adds the `@wip`
+> seam ui-htmx lacked). A geckodriver system-tool handle
+> ([`tests/bdd/browser.rs`]) spawns geckodriver on an ephemeral port
+> (`kill_on_drop`), in **its own process group** (`process_group(0)`), and
+> connects headless Firefox; the after-hook teardown is reordered to **quit
+> browser → stop BFF → stop driver** (§10). Four scenarios pass against real
+> Firefox + geckodriver:
+> 1. a smoke render (proves htmx.min.js loads);
+> 2. an unlock-click `outerHTML` swap (proves htmx executes it);
+> 3. **coverage invariant** (step 3) — quitting the browser *before* stopping the
+>    BFF lets the BFF shut down gracefully and flush its `.profraw`; asserts the
+>    stop returns well under the 5s SIGKILL grace, plus a `COVERAGE_DIR`-gated
+>    non-empty `ui-htmx-*.profraw` check;
+> 4. **worst-case orphan reaper** (step 4) — a *simulated* geckodriver crash
+>    (SIGKILL geckodriver only) orphans Firefox, then a kill-the-tree reaper
+>    (`killpg` of geckodriver's process group) sweeps it; asserts zero survivors
+>    in that group (a `/proc` scan scoped to the group, so it can never match a
+>    developer's own Firefox) and that a screenshot + page-source landed at an
+>    absolute, chdir-safe path before the reap.
+>
+> The default suite stays green with `@browser` filtered out, and teardown leaves
+> no geckodriver/Firefox orphans. The `.bazelrc` `--config=browser` seam
 > (system-tool `--test_env` passthrough + `--spawn_strategy=local`) is in place but
 > **not yet exercised under Bazel** — cargo-only escape hatch per §3.
 >
@@ -204,9 +218,18 @@ header swaps/morph) the fragment bytes are byte-identical to what htmx swaps.
 > source: the schema walk and the hidden blob now sort keys explicitly
 > (`canonical_json`), so output is identical regardless of the feature.
 >
-> **NOT yet done:** §9 Tier 0 steps 3–4 (coverage invariant + deliberate-panic
-> orphan-reaper scenario), Tier 1 (`/fixtures/*` OOB/retarget), Tier 2 (SSE), the
-> nightly `@browser` recording job (§8), and the 3-OS Bazel browser matrix.
+> **Step 4 design note:** the plan text says *deliberately panic*, but a
+> panicking scenario reddens the green suite — cucumber-rs catches a step panic and
+> marks the scenario failed, and `filter_run_and_exit` then exits non-zero. So step
+> 4 is implemented as a **simulated** non-graceful crash (SIGKILL geckodriver,
+> orphaning Firefox) that the reaper cleans up: the same gotchas (orphan cleanup,
+> kill-the-tree reaping, no-async-Drop, artifact-before-quit, chdir-safe paths) are
+> exercised while the suite stays green.
+>
+> **NOT yet done:** §9 Tier 0 step 5 (go/no-go on the **3-OS Bazel browser
+> matrix** — the `--config=browser` seam is still unexercised under Bazel),
+> Tier 1 (`/fixtures/*` OOB/retarget), Tier 2 (SSE), and the nightly `@browser`
+> recording job (§8).
 
 [`tests/bdd.rs`]: ../../services/ui-htmx/tests/bdd.rs
 [`tests/bdd/browser.rs`]: ../../services/ui-htmx/tests/bdd/browser.rs

@@ -54,6 +54,20 @@ pub struct UiWorld {
     /// The real headless-browser session, lazily started by the first
     /// `@browser` step (Layer C / P3). Absent for the default, browser-free suite.
     pub browser: Option<BrowserSession>,
+    /// How long `ServiceHandle::stop()` took to bring the BFF down after the
+    /// browser was quit. The coverage-invariant scenario (plan §9 Tier 0 step 3)
+    /// asserts this is well under the 5s SIGKILL grace — a graceful exit ran the
+    /// BFF's `atexit`, so its `.profraw` coverage was flushed (testing.md §5.4).
+    pub bff_stop_elapsed: Option<Duration>,
+    /// Live PIDs in the browser process group recorded just before the simulated
+    /// geckodriver crash (≥ geckodriver + Firefox) — non-empty proves the reaper
+    /// had real work to do (plan §9 Tier 0 step 4).
+    pub session_pids_before: Vec<u32>,
+    /// Live PIDs left in the browser process group after the reaper ran — must be
+    /// empty (no orphaned geckodriver/Firefox/content processes survive).
+    pub orphan_survivors: Vec<u32>,
+    /// The absolute screenshot + page-source paths captured before the reap.
+    pub artifacts: Option<(PathBuf, PathBuf)>,
 }
 
 impl UiWorld {
@@ -415,5 +429,58 @@ impl UiWorld {
         self.ensure_browser().await;
         let url = self.ui_url(path);
         self.browser().goto(&url).await;
+    }
+
+    /// Tear down in the **correct** order — browser first, then the BFF — and time
+    /// the BFF stop (plan §9 Tier 0 step 3). Quitting the browser first closes its
+    /// WebDriver session (and so Firefox's held connections to the BFF), so the
+    /// BFF's graceful shutdown completes promptly instead of blocking until the
+    /// 5s SIGKILL grace and losing its `.profraw` coverage flush (testing.md
+    /// §5.4). Both handles are taken, so the `after`-hook teardown skips them.
+    pub async fn quit_browser_then_stop_bff(&mut self) {
+        if let Some(browser) = self.browser.take() {
+            browser.quit().await;
+        }
+        let mut ui = self.ui.take().expect("BFF not started");
+        let start = std::time::Instant::now();
+        ui.stop().await;
+        self.bff_stop_elapsed = Some(start.elapsed());
+    }
+
+    /// Worst-case browser teardown (plan §9 Tier 0 step 4): capture failure
+    /// artifacts while the session is live, simulate a geckodriver crash that
+    /// orphans Firefox, then reap the whole process group — recording the group's
+    /// membership before the crash and the survivors after the reap. The browser
+    /// handle is taken (reaped, not gracefully quit), so the `after`-hook skips it.
+    pub async fn crash_and_reap_browser(&mut self) {
+        let mut session = self
+            .browser
+            .take()
+            .expect("no browser session — is this an @browser scenario?");
+        let pgid = session.geckodriver_pid();
+        // Artifact-before-quit: capture the screenshot + page source while the
+        // session is still live, at an absolute (chdir-safe) path. Keep the Result
+        // — do NOT unwrap here, so a capture failure can't panic *before* the reap
+        // and orphan the tree; the Then-step asserts the artifacts landed.
+        let dir = crate::browser::artifact_dir();
+        let artifacts = session
+            .save_failure_artifacts(&dir, "ui-htmx-panic-recovery")
+            .await;
+        // Record our whole tree (geckodriver + Firefox + content) while it is live
+        // and still in the group.
+        let before = crate::browser::live_pids_in_group(pgid);
+        session.simulate_geckodriver_crash(); // SIGKILL geckodriver → Firefox orphaned
+                                              // Kill the tree: the group (killpg) plus every captured pid (covers a child
+                                              // that escaped the group). geckodriver is left a zombie holding the pgid, so
+                                              // the drain scan below can't race a recycled pgid; it is reaped by
+                                              // kill_on_drop when `session` drops at the end of this method.
+        session.reap_tree(&before);
+        // ~10s bounded: SIGKILLed processes take a moment to become reaped zombies,
+        // and a loaded CI host is slower (the scan skips zombies, so a drained
+        // group reads empty). Recycle-safe: geckodriver's zombie still holds pgid.
+        let survivors = crate::browser::wait_until_group_drains(pgid, 100).await;
+        self.artifacts = artifacts.ok();
+        self.session_pids_before = before;
+        self.orphan_survivors = survivors;
     }
 }
