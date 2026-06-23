@@ -497,6 +497,13 @@ a benign `cargo metadata failed … will use manifest directory as fallback` —
 insta golden-path resolver's expected fallback in the sandboxed build layout; all
 snapshot steps still pass.)
 
+An advisory **nightly** workflow ([`ui-browser-nightly.yml`]) runs this suite
+against `main` on ubuntu (non-snap Firefox + geckodriver, `UI_BROWSER_TESTS=1`)
+and opens-or-updates a tracking issue on failure. It is **not** a required gate —
+browser flake never reddens a PR; the per-PR P1/P2 layers carry correctness.
+
+[`ui-browser-nightly.yml`]: ../../.github/workflows/ui-browser-nightly.yml
+
 `browser.feature` carries four scenarios. Two prove htmx executes — a smoke render
 (proves `htmx.min.js` loads) and an unlock-click `outerHTML` swap. Two are Tier 0
 robustness checks from the [UI-testing plan](../plans/ui-testing.md) §9 that harden

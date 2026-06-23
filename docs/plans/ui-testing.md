@@ -242,9 +242,13 @@ header swaps/morph) the fragment bytes are byte-identical to what htmx swaps.
 > kill-the-tree reaping, no-async-Drop, artifact-before-quit, chdir-safe paths) are
 > exercised while the suite stays green.
 >
-> **NOT yet done:** Tier 1 (`/fixtures/*` OOB/retarget), Tier 2 (SSE), and the
-> nightly `@browser` recording job (§8 — now unblocked: the `@browser` scenarios
-> exist and the Linux Bazel/Cargo path is green; it is the natural next step).
+> The nightly `@browser` recording job (§8) is now **implemented**
+> ([`.github/workflows/ui-browser-nightly.yml`]) — advisory, ubuntu-only,
+> schedule + `workflow_dispatch`, with the open-or-update tracking-issue
+> notify-on-failure. **NOT yet done:** Tier 1 (`/fixtures/*` OOB/retarget) and
+> Tier 2 (SSE).
+
+[`.github/workflows/ui-browser-nightly.yml`]: ../../.github/workflows/ui-browser-nightly.yml
 
 [`tests/bdd.rs`]: ../../services/ui-htmx/tests/bdd.rs
 [`tests/bdd/browser.rs`]: ../../services/ui-htmx/tests/bdd/browser.rs
@@ -297,6 +301,17 @@ So:
   == 'schedule'`) that **opens-or-updates a labeled tracking issue** — append-comment
   while open, never reopen once closed (the `#356` pattern). Lands in Phase 3 *with*
   the `@browser` scenarios (creating it earlier = a spurious failing issue).
+  > **Implemented (2026-06-23):** [`.github/workflows/ui-browser-nightly.yml`].
+  > Cargo-based (the scheduled.yml Miri precedent): installs a non-snap Firefox
+  > (`browser-actions/setup-firefox`, §10) + geckodriver, pins `FIREFOX_BINARY` /
+  > `GECKODRIVER_BINARY`, pre-builds `ui-htmx` + `dsd-fp2` (the spawned binaries),
+  > then `cargo test -p ui-htmx --all-features --test bdd` with `UI_BROWSER_TESTS=1`
+  > `UI_TEST_BROWSER=firefox`. `timeout-minutes: 30` backstops a hung session; the
+  > §9 step-4 screenshot + page-source artifacts upload on failure. The
+  > notify-on-failure job (`browser-nightly` label) only fires on `schedule`, so it
+  > never churns an issue on `workflow_dispatch`. Bazel is **not** used here — the
+  > `--config=browser` seam is proven (§9 step 5) and the default shadow bazel.yml
+  > already compiles the layer per-PR, so a Cargo nightly is the leaner recorder.
 - **Promotion:** `@browser` stays **advisory** initially. Promote to required only
   after a defined sustained-green window — and note the bytes≠DOM rule (§9): for
   behaviors only the browser can prove (OOB, response-header swaps, morph, SSE), the
