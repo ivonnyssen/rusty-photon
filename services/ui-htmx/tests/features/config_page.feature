@@ -17,12 +17,14 @@ Feature: driver configuration page
     When I open the dsd-fp2 config page
     Then the page shows the value "/dev/ttyACM0"
     And the page shows the value "4096"
+    And the rendered output matches the "config_page_current_config" snapshot
 
   Scenario: A serial-port override is shown read-only
     Given a dsd-fp2 driver running with the serial port pinned to "/dev/ttyACM9" by a command-line override
     When I open the dsd-fp2 config page
     Then the serial.port field is disabled
     And the page explains the field is pinned by a command-line override
+    And the rendered output matches the "config_page_override_pinned" snapshot
 
   Scenario: Unique ID is read-only until unlocked, then editable
     Given a dsd-fp2 driver running with serial.port "/dev/ttyACM0" and max_brightness 4096
@@ -31,12 +33,14 @@ Feature: driver configuration page
     And the page offers to unlock cover_calibrator.unique_id to edit it
     When I open the dsd-fp2 config page with cover_calibrator.unique_id unlocked
     Then the cover_calibrator.unique_id field is editable
+    And the rendered output matches the "config_card_unlocked" snapshot
 
   Scenario: A valid change is applied and the page reports the driver is reloading
     Given a dsd-fp2 driver running with serial.port "/dev/ttyACM0" and max_brightness 4096
     When I submit the config form setting max_brightness to 2048
     Then the page reports the driver is reloading
     And the page polls /config/dsd-fp2/status every 1s for reconnection
+    And the rendered output matches the "config_card_reloading" snapshot
 
   Scenario: The reloaded driver's new configuration is served back through the page
     Given a dsd-fp2 driver running with serial.port "/dev/ttyACM0" and max_brightness 4096
@@ -56,6 +60,7 @@ Feature: driver configuration page
     When I submit the config form setting baud_rate to 0
     Then the form shows the validation error "must be greater than 0" on serial.baud_rate
     And the submitted baud_rate value 0 is preserved
+    And the rendered output matches the "config_card_invalid" snapshot
 
   Scenario: An unreachable driver surfaces an error
     Given the BFF is pointed at a dsd-fp2 driver that is not running
@@ -67,5 +72,6 @@ Feature: driver configuration page
     When I open the configuration index
     Then the index links to "dsd-fp2"
     And the index links to "dsd-fp2-alt"
+    And the rendered output matches the "index_page" snapshot
     When I open the config page for "dsd-fp2-alt"
     Then the page shows the value "/dev/ttyACM0"

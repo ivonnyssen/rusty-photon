@@ -12,8 +12,23 @@
 pub mod assets;
 pub mod config;
 pub mod driver_client;
+/// Test-only `/fixtures/*` routes (UI-testing plan §9 Tier 1) — compiled ONLY
+/// under the `test-fixtures` cargo feature, so they ship nothing in the real
+/// binary. `#[coverage(off)]` keeps this test-only code out of the coverage
+/// numbers even when the feature is on (e.g. the `--all-features` coverage build).
+#[cfg(feature = "test-fixtures")]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub mod fixtures;
 pub mod io;
 pub mod pages;
+/// Test-only Server-Sent-Events fixture routes (UI-testing plan §9 Tier 2) —
+/// compiled ONLY under the `test-sse` cargo feature, so they ship nothing in the
+/// real binary. `#[coverage(off)]` keeps this test-only code (and the streaming
+/// `async-stream` machinery it uses) out of the coverage numbers even when the
+/// feature is on.
+#[cfg(feature = "test-sse")]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub mod sse_fixtures;
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -131,14 +146,22 @@ impl AppState {
 
 /// Build the BFF axum router.
 pub fn build_router(state: AppState) -> Router {
-    Router::new()
+    let router = Router::new()
         .route("/", get(index))
         .route("/config/{service}", get(config_get).post(config_post))
         .route("/config/{service}/status", get(config_status))
         .route("/health", get(health))
         .route("/assets/app.css", get(assets::app_css))
-        .route("/assets/htmx.min.js", get(assets::htmx_js))
-        .with_state(state)
+        .route("/assets/htmx.min.js", get(assets::htmx_js));
+    // Test-only `/fixtures/*` routes, present only when the `test-fixtures`
+    // feature is on (the BDD suite's binary). This `let` shadow is the standard
+    // cfg-gated router-extend; the merge runs at startup so it stays covered.
+    #[cfg(feature = "test-fixtures")]
+    let router = router.merge(fixtures::routes());
+    // Test-only SSE fixture routes (plan §9 Tier 2), present only with `test-sse`.
+    #[cfg(feature = "test-sse")]
+    let router = router.merge(sse_fixtures::routes());
+    router.with_state(state)
 }
 
 async fn index(State(state): State<AppState>) -> Markup {

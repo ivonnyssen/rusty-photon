@@ -1,0 +1,177 @@
+# Advisory nightly run of the ui-htmx @browser BDD scenarios — Layer C / P3 of the
+# UI-testing plan (docs/plans/ui-testing.md §6/§8/§9). These drive a REAL headless
+# Firefox via geckodriver to prove the vendored htmx.min.js loads and executes the
+# declared swaps — the one thing the server-bytes layers (P1/P2) cannot. They are
+# gated behind UI_BROWSER_TESTS=1 and kept OUT of the per-PR required gate (browser
+# flake must never redden a PR); this scheduled job is where they run. Linux-only
+# by design (plan §9 step 5 go/no-go is resolved): the cross-OS guarantee rides the
+# P1/P2 server bytes that DO run per-PR on every OS, so one browser environment
+# suffices. Modeled on scheduled.yml's Miri job + notify-on-failure pattern.
+permissions:
+  contents: read
+on:
+  schedule:
+    - cron: "30 4 * * *"
+  workflow_dispatch:
+concurrency:
+  # Schedule + workflow_dispatch only, so github.head_ref is always empty — use a
+  # stable per-workflow group (not the push/PR `…-${{ head_ref || run_id }}` form,
+  # which would give every run a unique group and never coalesce). This way a
+  # manual dispatch supersedes an in-flight nightly instead of racing it.
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+name: ui-htmx browser nightly
+jobs:
+  browser-bdd:
+    # Schedule/dispatch only — never on push/PR (that is the whole point: keep
+    # browser flake off the required gate). On a schedule the default branch
+    # (main) is checked out, so this records main's @browser health.
+    runs-on: ubuntu-latest
+    # A warm run is a few minutes; the COLD first run (empty rust-cache) compiles
+    # ui-htmx + dsd-fp2 and their dep tree (axum/reqwest/thirtyfour/cucumber) plus
+    # the Firefox download, so the cap sits at 30 — scheduled.yml's cold-Rust
+    # budget. It only bites a hung WebDriver session, backstopping GitHub's
+    # 360-min default (plan §8).
+    timeout-minutes: 30
+    name: nightly / ubuntu / ui-htmx @browser
+    steps:
+      - uses: actions/checkout@v7
+      # Install a non-snap Firefox: the runner's pre-installed Firefox is a snap,
+      # which breaks geckodriver's /tmp profile (UI-testing plan §10). The action
+      # exposes the binary path as an output we forward as FIREFOX_BINARY.
+      - name: Install Firefox (non-snap)
+        id: firefox
+        uses: browser-actions/setup-firefox@v1
+      # geckodriver as a system tool, added to PATH. `token` avoids anonymous
+      # GitHub-API rate limits when the action fetches the release. The action
+      # publishes only a moving `latest` branch (its sole tag is a stale 2021
+      # placeholder v0.0.0), so pin the immutable commit SHA that `latest`
+      # currently resolves to for reproducible nightly runs — a regression should
+      # reflect repo changes, not action drift. (The action still resolves the
+      # newest geckodriver release at run time; only the action code is pinned.)
+      # Bump the SHA deliberately when adopting a newer action revision.
+      - name: Install geckodriver
+        uses: browser-actions/setup-geckodriver@fac5b0424c584257f32cf12c5eb4ba86014c34f8 # latest @ 2026-04-29
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Export browser env
+        run: |
+          # The BDD harness reads FIREFOX_BINARY / GECKODRIVER_BINARY (else PATH).
+          # Pin both to the action-installed (non-snap) binaries explicitly.
+          echo "FIREFOX_BINARY=${{ steps.firefox.outputs.firefox-path }}" >> "$GITHUB_ENV"
+          echo "GECKODRIVER_BINARY=$(command -v geckodriver)" >> "$GITHUB_ENV"
+          firefox --version
+          geckodriver --version
+      - name: Install stable
+        uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ui-htmx-browser
+      - name: cargo generate-lockfile
+        if: hashFiles('Cargo.lock') == ''
+        run: cargo generate-lockfile
+      # Pre-build the BFF and the driver it spawns: bdd-infra discovers the
+      # binaries in target/ and no longer compiles them on the fly (test.yml's
+      # windows-bdd pattern). ui-htmx's BDD spawns dsd-fp2 (mock hardware) only —
+      # no OmniSim or native SDKs are involved, so nothing else to provision.
+      - name: cargo build (ui-htmx + dsd-fp2)
+        run: |
+          cargo build --locked --package ui-htmx --all-features --all-targets
+          cargo build --locked --package dsd-fp2 --all-features --all-targets
+      # Run the BDD suite with the browser layer enabled. UI_BROWSER_TESTS=1
+      # un-filters the @browser scenarios (tests/bdd.rs); the 9 server-bytes
+      # scenarios run too, so the whole suite is exercised with Firefox attached.
+      # UI_TEST_BROWSER records the intended engine — Firefox is currently the only
+      # implemented engine, so this is documentary (a future chrome branch reads
+      # it). TMPDIR pins the failure-artifact location (artifact_dir() falls back
+      # to the temp dir under Cargo) so the upload step below finds them.
+      - name: cargo test --test bdd (@browser)
+        run: cargo test --locked --package ui-htmx --all-features --test bdd
+        env:
+          UI_BROWSER_TESTS: "1"
+          UI_TEST_BROWSER: firefox
+          RUST_BACKTRACE: "1"
+          TMPDIR: ${{ runner.temp }}
+      # The crash/orphan scenario captures a screenshot + page source before
+      # reaping (plan §9 step 4). Upload them on failure so an intermittent
+      # browser regression can be inspected rather than re-guessed (test.yml's
+      # OmniSim-logs precedent). They are written every run; if-no-files-found is
+      # ignored in case a build-stage failure aborted before they were captured.
+      - name: Upload browser failure artifacts (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ui-htmx-browser-artifacts
+          path: |
+            ${{ runner.temp }}/ui-htmx-panic-recovery.png
+            ${{ runner.temp }}/ui-htmx-panic-recovery.html
+          if-no-files-found: ignore
+          retention-days: 14
+
+  notify-on-failure:
+    # Open or update a tracking issue when the scheduled @browser run fails, so a
+    # browser/geckodriver regression or Firefox version drift surfaces without
+    # someone watching the nightly logs. Skipped on workflow_dispatch so manual
+    # debugging runs don't churn an issue. Mirrors scheduled.yml's pattern: while
+    # the issue stays open each failure appends a comment; once closed it is never
+    # reopened — the next failure opens a fresh issue.
+    needs: [browser-bdd]
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      issues: write
+    steps:
+      - name: Open or update tracking issue
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const title = `nightly: ui-htmx @browser BDD failing`;
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = [
+              `The advisory ui-htmx @browser nightly (real headless Firefox via`,
+              `geckodriver) failed. This layer is NOT a required gate — the per-PR`,
+              `P1/P2 server-bytes layers carry correctness; this run proves htmx`,
+              `actually executes in a browser.`,
+              ``,
+              `Likely causes: a browser/geckodriver regression or version-pair`,
+              `incompatibility, a Firefox upgrade changing behavior or orphan`,
+              `handling (UI-testing plan §10), an htmx-contract regression, or`,
+              `genuine browser-layer flake. Inspect the failed run; failure-triage`,
+              `artifacts (screenshot + page source) are uploaded on the run.`,
+              ``,
+              `Run: ${runUrl}`,
+              ``,
+              `This issue was opened automatically by a scheduled run that failed.`,
+              `While it stays open, each subsequent scheduled failure is appended`,
+              `here as a comment linking its own run. Closing it marks the failure`,
+              `handled — it is never re-opened; the next scheduled failure opens a`,
+              `fresh issue instead.`,
+            ].join("\n");
+            // Search only OPEN issues. While a tracking issue is open each failure
+            // appends a comment; once it is closed the failure is considered
+            // handled, so the next scheduled failure opens a fresh issue rather
+            // than resurrecting the closed one.
+            const existing = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: "open",
+              labels: "browser-nightly",
+            });
+            const match = existing.find(i => i.title === title);
+            if (match) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: match.number,
+                body: `Failed again — run: ${runUrl}`,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ["browser-nightly", "ci-flake"],
+              });
+            }

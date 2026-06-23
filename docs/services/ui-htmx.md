@@ -12,6 +12,16 @@ system that holds no UI logic inside `rp` (`rp.md` tenet 7). The service renders
 HTML on the server with [axum] + [Maud] and adds interactivity with [HTMX]; there
 is no npm, no WASM, no client-side framework.
 
+**JavaScript (htmx) is required.** The UI does not carry a no-JS fallback: the
+form submits via `hx-post` (no `method`/`action`), and the unlock/lock/retry
+affordances are `<button hx-get>` (no `<a href>`), so without htmx loaded the page
+renders but is inert. This is a deliberate decision (UI-testing plan §7): the UI is
+**optional** — rusty-photon runs fully headless — and the genuine recovery path is
+ssh + editing the config file, strictly more capable than a degraded web form; a
+whole-app no-JS guarantee is also incompatible with the future real-time stream UI.
+Direct navigation/refresh still returns a full styled page (the `HX-Request`
+full-page-vs-fragment branch is core htmx, not a no-JS feature).
+
 It renders a configuration page for **any** rusty-photon driver, **generated from
 the driver's own JSON Schema** (`config.schema`) rather than a hand-built form:
 read the driver's current configuration, edit it, and apply changes — all by
@@ -241,9 +251,10 @@ locked/identity field that the user unlocked.
   *"Identity — the driver owns this. Editing is an escape hatch for a misbehaving
   driver."* and an **"Unlock to edit"** link
   (`GET /config/{service}?unlock=<field>`). Following it re-renders the same card
-  with the field **enabled**, a warning, and a **"Lock again"** link
+  with the field **enabled**, a warning, and a **"Lock again"** affordance
   (`GET /config/{service}`, no query). The unlock state is carried with **no
-  client-side JS**:
+  bespoke client-side JavaScript** (htmx performs the GET + swap; there is no
+  hand-written JS):
   - On a **GET**, the `?unlock=<field>` query (axum `Query`) names the field to
     unlock; only a name in the schema's `locked_fields` is honoured (a
     hard-read-only field, a typo, or no query unlocks nothing).
@@ -429,6 +440,147 @@ driver's mock transport is feature-gated):
 cargo build --all-features --all-targets
 cargo test  --all-features --test bdd -p ui-htmx
 ```
+
+**Assertions are DOM-based, and the helpers follow the htmx contract.** The
+Then-steps parse each response with [`scraper`] (the Servo html5ever/selectors
+stack browsers ship) and assert with CSS selectors — `input[name="…"]`
+editability, the `div.banner.applying` reload state, the `#config-card`
+`hx-get`/`hx-trigger` poll wiring — rather than `String::contains` substrings
+(which mishandle attribute order, boolean attributes, and the value buried in the
+hidden `__config` blob). The request helpers drive the BFF the way htmx would:
+`submit_form` reads the hidden blobs and enabled controls from the **rendered**
+form and POSTs them with the `HX-*` header set (disabled fields are omitted, just
+as a browser omits them); the unlock step follows the page's own rendered
+`hx-get` link; and the reconnect poll matches the refreshed input's `value`. This
+is Layer A of the [UI-testing plan](../plans/ui-testing.md), proving the page's
+markup and `hx-*` wiring are correct (obligation P1) without a browser; `scraper`
+is a test-only dev-dependency and is never compiled into the shipped binary.
+
+[`scraper`]: https://docs.rs/scraper/
+
+**Byte-equivalence snapshots ride the same scenarios** (Layer B / P2). Selected
+Then-steps also capture the response's exact bytes as committed [`insta`] goldens
+under `tests/snapshots/` — the server's output is the *cross-OS-comparable*
+artifact, since htmx swaps a fragment verbatim, so byte-identical output across
+OSes implies identical browser behavior without a browser on every OS. The
+driver's OS-assigned `:0` bound port is filtered to `<port>` (the only
+run-varying token); the driver-unreachable error card is *not* snapshotted (its
+banner carries an OS-specific connection-refused string — the case where the P1
+DOM check stands in for P2). Goldens are updated Cargo-locally (`cargo insta
+review` / `accept`, then commit) and compared read-only under Bazel
+(`INSTA_UPDATE=no`, goldens shipped via the `bdd` target's `data`); a runtime
+resolver finds them under both build systems' layouts.
+
+[`insta`]: https://insta.rs/
+
+**Real-browser scenarios are opt-in** (Layer C / P3). `tests/features/browser.feature`
+(tagged `@browser`) drives a real headless Firefox via [`thirtyfour`] + geckodriver
+to prove the one thing server-output layers cannot: that the vendored
+`htmx.min.js` actually loads and executes the declared swaps. They are **gated
+behind `UI_BROWSER_TESTS=1`** (an env var, not a cargo feature, so browser flake
+never enters the `--all-features` required gate) and run on a single environment —
+the P1/P2 server-bytes layers carry the cross-OS guarantee. geckodriver is an
+external system tool (`GECKODRIVER_BINARY`, like `OMNISIM_PATH`); teardown quits
+the browser before the BFF/driver stop. Run them with:
+
+```
+UI_BROWSER_TESTS=1 GECKODRIVER_BINARY=/path/to/geckodriver \
+  cargo test --all-features --test bdd -p ui-htmx
+```
+
+The same scenarios also run under Bazel via the standalone `--config=browser`
+(it sets `UI_BROWSER_TESTS=1` + `--spawn_strategy=local` and forwards
+`FIREFOX_BINARY`/`GECKODRIVER_BINARY` by name, like `OMNISIM_PATH`):
+
+```
+FIREFOX_BINARY=/path/to/firefox GECKODRIVER_BINARY=/path/to/geckodriver \
+  bazel test --config=browser //services/ui-htmx:bdd
+```
+
+This Bazel path is verified green **on Linux only** (plan §9 Tier 0 step 5
+go/no-go): the browser layer runs on a single environment by design, so
+macOS/Windows browser-under-Bazel is intentionally not pursued — the cross-OS
+guarantee rides the P1/P2 server-bytes layers, which do run on every OS under
+both build systems. The always-compiled `thirtyfour` dev-dep stays out of the
+required gate: with `@browser` filtered out (env unset), the default BDD suite
+is green on all three OSes under both Cargo and Bazel. (Under Bazel the run prints
+a benign `cargo metadata failed … will use manifest directory as fallback` — the
+insta golden-path resolver's expected fallback in the sandboxed build layout; all
+snapshot steps still pass.)
+
+An advisory **nightly** workflow ([`ui-browser-nightly.yml`]) runs this suite
+against `main` on ubuntu (non-snap Firefox + geckodriver, `UI_BROWSER_TESTS=1`)
+and opens-or-updates a tracking issue on failure. It is **not** a required gate —
+browser flake never reddens a PR; the per-PR P1/P2 layers carry correctness.
+
+[`ui-browser-nightly.yml`]: ../../.github/workflows/ui-browser-nightly.yml
+
+`browser.feature` carries four scenarios. Two prove htmx executes — a smoke render
+(proves `htmx.min.js` loads) and an unlock-click `outerHTML` swap. Two are Tier 0
+robustness checks from the [UI-testing plan](../plans/ui-testing.md) §9 that harden
+teardown so BDD subprocess coverage is never silently lost (the §5.4 hazard in
+[`testing.md`](../skills/testing.md)):
+
+- **Coverage invariant.** Quitting the browser *before* stopping the BFF lets the
+  BFF shut down gracefully and run its `atexit` coverage flush; the scenario
+  asserts the stop returns well under the 5s SIGKILL grace, plus a
+  `COVERAGE_DIR`-gated non-empty `ui-htmx-*.profraw` check under a coverage run.
+- **Worst-case orphan reaper.** geckodriver is spawned in **its own process
+  group**, so a *simulated* crash (SIGKILL geckodriver, orphaning Firefox) can be
+  cleaned up by a kill-the-tree reaper (`killpg` of the group); the scenario
+  asserts zero survivors (a `/proc` scan scoped to that group, so it can never
+  match a developer's own Firefox) and that a screenshot + page source landed at
+  an absolute, chdir-safe path before the reap.
+
+> **Determinism note.** `thirtyfour` hard-requires `serde_json`'s `preserve_order`
+> feature, which unifies across the workspace under `--all-features`. Because the
+> form is generated by walking a `serde_json::Value` schema and the hidden blob is
+> a serialized `Value`, that feature would otherwise reorder the rendered output
+> (map iteration order changes). `pages/mod.rs` therefore sorts schema properties
+> explicitly and serializes the blob through `canonical_json`, so the output is
+> byte-identical regardless of the feature — keeping the P2 snapshots stable across
+> Cargo (`--all-features`) and Bazel (where the binary has no dev-deps).
+
+[`thirtyfour`]: https://docs.rs/thirtyfour/
+
+**Test-only `/fixtures/*` routes (the `test-fixtures` feature).** A second
+`@browser` feature ([`fixtures.feature`]) drives a `crate::fixtures` route set that
+exists **only** when the `test-fixtures` cargo feature is on — it ships nothing in
+the real binary, and the module is `#[coverage(off)]` so it never enters the
+coverage numbers. These fixtures exercise htmx behaviors the server-bytes layers
+(P1/P2) cannot observe: an `hx-swap-oob` swap updating a *second* region (plus the
+negative — htmx silently drops an OOB element whose target is absent), an
+`HX-Retarget` header moving a **byte-identical** body to a different target (the
+body is a plain fragment; the divergence lives entirely in the response header — a
+§A tripwire asserts the header, the browser asserts the landing), and an
+`HX-Push-Url` header changing the browser location. The BDD suite spawns a binary
+built with the feature: cargo `--all-features` provides it; under Bazel the
+`:ui-htmx_fixtures` binary (the dsd-fp2 `_mock` pattern) does, so
+`bazel test --config=browser` stays green.
+
+[`fixtures.feature`]: ../../services/ui-htmx/tests/features/fixtures.feature
+
+**Test-only `/fixtures/sse*` routes (the `test-sse` feature).** A third `@browser`
+feature ([`sse.feature`]) drives a `crate::sse_fixtures` route set gated on the
+separate `test-sse` cargo feature (off by default, `#[coverage(off)]`, ships
+nothing). It is the streaming spike for the future live-telemetry UI: a fixture
+page wires the vendored htmx SSE extension (`htmx-ext-sse@2.2.3`, vendored
+byte-for-byte from upstream; the htmx project is Zero-Clause-BSD — htmx 2.0 split
+SSE out of core, so the embedded `htmx.min.js` carries none, and the extension is
+`include_str!`'d only under this feature) to **one** `sse-connect` EventSource
+feeding **two** `sse-swap` regions, and an axum `Sse` endpoint pushes two named
+events on a timer then holds the connection open. Two scenarios prove what only a
+browser can: that both regions update from the single connection (async
+server-pushed DOM updates, which have no server "bytes" for P1/P2 to assert), and
+that an open SSE stream — which never closes on the shutdown signal (axum #2673) —
+still allows a graceful, coverage-flushing BFF shutdown **when the browser is quit
+first**. The latter is the §5.4 coverage hazard with no in-process escape hatch (the
+connection is held by the out-of-process browser), so `driver.quit()` must precede
+`ServiceHandle::stop()`; the teardown order in `tests/bdd.rs` enforces it. The BDD
+binary carries both `test-fixtures` and `test-sse` (cargo `--all-features`; Bazel
+`:ui-htmx_fixtures`), the latter pulling the optional `async-stream` dependency.
+
+[`sse.feature`]: ../../services/ui-htmx/tests/features/sse.feature
 
 The driver binds port 0, so the OS assigns a free port atomically (no racy
 preselection); the test discovers it from the driver's `bound_addr=` stdout line.

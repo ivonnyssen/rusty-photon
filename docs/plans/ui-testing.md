@@ -103,6 +103,16 @@ can't go green quickly, the browser layer stays cargo-only/system-dep (like the 
 
 ## 4. Layer A — server-contract (P1 `scraper` + §A thin request helpers)
 
+> **Status (2026-06-21): implemented.** `scraper` 0.27 is a `ui-htmx` dev-dep;
+> the BDD suite's Then-steps assert via CSS selectors ([`tests/bdd/dom.rs`]) and
+> the request helpers ([`tests/bdd/world.rs`]) submit the rendered form, follow
+> the rendered unlock link, and poll the reconnect endpoint by DOM — all with the
+> `HX-*` header set. `input_tag()` and the `String::contains` assertions are
+> gone. All 9 scenarios pass under Cargo. Layers B (§5) and C (§6) remain.
+
+[`tests/bdd/dom.rs`]: ../../services/ui-htmx/tests/bdd/dom.rs
+[`tests/bdd/world.rs`]: ../../services/ui-htmx/tests/bdd/world.rs
+
 The everyday suite. Runs on every OS leg via the BDD suite, deterministically, no
 browser.
 
@@ -121,6 +131,25 @@ browser.
   the captured fragments match what the browser would receive.
 
 ## 5. Layer B — cross-OS output-equivalence (P2 `insta`)
+
+> **Status (2026-06-21): implemented.** `insta` 1.48 (`filters` + `redactions`)
+> is a `ui-htmx` dev-dep; 6 external goldens live under
+> [`tests/snapshots/`] — full pages (`config_page_current_config`,
+> `config_page_override_pinned`), `HX-Request` swap fragments
+> (`config_card_unlocked`, `config_card_reloading`, `config_card_invalid`), and
+> the index (`index_page`). They ride existing scenarios via a
+> `the rendered output matches the "<name>" snapshot` step. A runtime
+> snapshot-path resolver ([`tests/bdd/snapshot.rs`]) finds the goldens under both
+> Cargo and Bazel runfiles; `BUILD.bazel` ships them via `data` and forces
+> `INSTA_UPDATE=no`; `.gitattributes` pins `*.snap` to LF. The driver's `:0`
+> bound port is the only run-varying token and is filtered to `<port>` (proven by
+> two compare-only runs with fresh ports). The driver-unreachable error card is
+> deliberately **not** snapshotted — its banner embeds an OS-specific
+> connection-refused string, the canonical case where P1's DOM check stands in
+> for P2. Layer C (§6) remains.
+
+[`tests/snapshots/`]: ../../services/ui-htmx/tests/snapshots/
+[`tests/bdd/snapshot.rs`]: ../../services/ui-htmx/tests/bdd/snapshot.rs
 
 Snapshot the **server response bytes** (full pages + `HX-Request` swap fragments)
 captured by the existing non-browser BDD path. This is the cross-OS-comparable
@@ -155,6 +184,78 @@ header swaps/morph) the fragment bytes are byte-identical to what htmx swaps.
 
 ## 6. Layer C — real browser (P3 `thirtyfour`)
 
+> **Status (2026-06-23): Tier 0 steps 1–5 implemented (Cargo + Bazel-verified).**
+> `thirtyfour` 0.37 is a `ui-htmx` dev-dep; `tests/features/browser.feature` is
+> tagged `@browser` and gated behind `UI_BROWSER_TESTS=1` via the
+> `filter_run_and_exit` closure in [`tests/bdd.rs`] (which also adds the `@wip`
+> seam ui-htmx lacked). A geckodriver system-tool handle
+> ([`tests/bdd/browser.rs`]) spawns geckodriver on an ephemeral port
+> (`kill_on_drop`), in **its own process group** (`process_group(0)`), and
+> connects headless Firefox; the after-hook teardown is reordered to **quit
+> browser → stop BFF → stop driver** (§10). Four scenarios pass against real
+> Firefox + geckodriver:
+> 1. a smoke render (proves htmx.min.js loads);
+> 2. an unlock-click `outerHTML` swap (proves htmx executes it);
+> 3. **coverage invariant** (step 3) — quitting the browser *before* stopping the
+>    BFF lets the BFF shut down gracefully and flush its `.profraw`; asserts the
+>    stop returns well under the 5s SIGKILL grace, plus a `COVERAGE_DIR`-gated
+>    non-empty `ui-htmx-*.profraw` check;
+> 4. **worst-case orphan reaper** (step 4) — a *simulated* geckodriver crash
+>    (SIGKILL geckodriver only) orphans Firefox, then a kill-the-tree reaper
+>    (`killpg` of geckodriver's process group) sweeps it; asserts zero survivors
+>    in that group (a `/proc` scan scoped to the group, so it can never match a
+>    developer's own Firefox) and that a screenshot + page-source landed at an
+>    absolute, chdir-safe path before the reap.
+>
+> The default suite stays green with `@browser` filtered out, and teardown leaves
+> no geckodriver/Firefox orphans. **Step 5 (go/no-go on the 3-OS Bazel matrix) is
+> resolved:** the `.bazelrc` `--config=browser` seam (system-tool `--test_env`
+> passthrough + `--spawn_strategy=local`) is now **exercised GREEN under Bazel on
+> Linux** — a local `bazel test --config=browser //services/ui-htmx:bdd` (system
+> Firefox + geckodriver) runs all 13 scenarios / 62 steps, including the four
+> `@browser` ones, running local (not sandboxed) — the scenarios connect to a
+> localhost WebDriver + system Firefox, which the Bazel sandbox would block, so
+> `--spawn_strategy=local` took effect. **Decision: GO on Linux (Cargo + Bazel);
+> browser stays Linux-only — macOS/Windows browser-under-Bazel is deliberately not
+> pursued.** This is the §6/§8 single-environment **design**, *not* the §3 escape
+> hatch firing: that hatch (browser dropped off Bazel entirely) was **avoided**,
+> since Bazel-Linux is green — the outcome is strictly stronger than it. Browser
+> stays single-environment because §6/§8 specify it, the cross-OS guarantee rides
+> P1/P2 server bytes, and the reaper is unix/Linux-only per §10, so a browser on
+> every OS adds zero behavioral coverage. The always-compiled `thirtyfour` dev-dep
+> does **not** regress the
+> required gate: the default 3-OS Bazel BDD (no `UI_BROWSER_TESTS`) and the Windows
+> Cargo BDD both stay green on ubuntu/macOS/Windows (shadow `bazel.yml` legs +
+> `windows / bdd / ui-htmx`).
+>
+> **Feature-unification note:** `thirtyfour` hard-requires
+> `serde_json/preserve_order`, which unifies workspace-wide under `--all-features`
+> and flipped `ui-htmx`'s `Value`-map render order (breaking Layer B). Fixed at the
+> source: the schema walk and the hidden blob now sort keys explicitly
+> (`canonical_json`), so output is identical regardless of the feature.
+>
+> **Step 4 design note:** the plan text says *deliberately panic*, but a
+> panicking scenario reddens the green suite — cucumber-rs catches a step panic and
+> marks the scenario failed, and `filter_run_and_exit` then exits non-zero. So step
+> 4 is implemented as a **simulated** non-graceful crash (SIGKILL geckodriver,
+> orphaning Firefox) that the reaper cleans up: the same gotchas (orphan cleanup,
+> kill-the-tree reaping, no-async-Drop, artifact-before-quit, chdir-safe paths) are
+> exercised while the suite stays green.
+>
+> The nightly `@browser` recording job (§8) is now **implemented**
+> ([`.github/workflows/ui-browser-nightly.yml`]) — advisory, ubuntu-only,
+> schedule + `workflow_dispatch`, with the open-or-update tracking-issue
+> notify-on-failure. Tier 1 (`/fixtures/*` OOB/retarget/push-url) is now
+> **implemented** (see §9 Tier 1), as is Tier 2 (the SSE streaming spike, see §9
+> Tier 2) — which **completes the §9 anticipatory spike** (Tier 3 is reserve-only,
+> explicitly not built). The §7 no-JS-affordance cleanup is also **implemented**
+> (see §7), so the whole plan is realized except the reserve-only Tier 3.
+
+[`.github/workflows/ui-browser-nightly.yml`]: ../../.github/workflows/ui-browser-nightly.yml
+
+[`tests/bdd.rs`]: ../../services/ui-htmx/tests/bdd.rs
+[`tests/bdd/browser.rs`]: ../../services/ui-htmx/tests/bdd/browser.rs
+
 A **small** set (≈3–5 scenarios, plus the spike scenarios in §9) for behaviors only a
 browser can prove.
 
@@ -175,6 +276,15 @@ browser can prove.
 - **Advisory, with a nightly recording job** (§8).
 
 ## 7. The no-JS decision (resolved: abandon it)
+
+> **Status (2026-06-22): implemented.** `pages/mod.rs` dropped the `method`/`action`
+> form fallback (keeps `hx-post`) and converted the unlock/lock/retry `<a hx-get>`
+> to `<button hx-get>` (link-styled via a new `button.link` CSS rule;
+> `type="button"` so the in-form unlock/lock buttons don't submit). The UI is now
+> documented as **JavaScript-required** in [`docs/services/ui-htmx.md`](../services/ui-htmx.md);
+> the `HX-Request` full-page-vs-fragment branch is kept. The BDD DOM helper
+> (`unlock_url`) and the browser unlock selector moved from `a[hx-get]` to
+> `button[hx-get]`; the four affected P2 goldens were regenerated. All suites green.
 
 The UI is **optional** — rusty-photon runs fully headless and the genuine recovery
 path is **ssh + edit the config file**, strictly more capable than a degraded web
@@ -203,6 +313,17 @@ So:
   == 'schedule'`) that **opens-or-updates a labeled tracking issue** — append-comment
   while open, never reopen once closed (the `#356` pattern). Lands in Phase 3 *with*
   the `@browser` scenarios (creating it earlier = a spurious failing issue).
+  > **Implemented (2026-06-23):** [`.github/workflows/ui-browser-nightly.yml`].
+  > Cargo-based (the scheduled.yml Miri precedent): installs a non-snap Firefox
+  > (`browser-actions/setup-firefox`, §10) + geckodriver, pins `FIREFOX_BINARY` /
+  > `GECKODRIVER_BINARY`, pre-builds `ui-htmx` + `dsd-fp2` (the spawned binaries),
+  > then `cargo test -p ui-htmx --all-features --test bdd` with `UI_BROWSER_TESTS=1`
+  > `UI_TEST_BROWSER=firefox`. `timeout-minutes: 30` backstops a hung session; the
+  > §9 step-4 screenshot + page-source artifacts upload on failure. The
+  > notify-on-failure job (`browser-nightly` label) only fires on `schedule`, so it
+  > never churns an issue on `workflow_dispatch`. Bazel is **not** used here — the
+  > `--config=browser` seam is proven (§9 step 5) and the default shadow bazel.yml
+  > already compiles the layer per-PR, so a Cargo nightly is the leaner recorder.
 - **Promotion:** `@browser` stays **advisory** initially. Promote to required only
   after a defined sustained-green window — and note the bytes≠DOM rule (§9): for
   behaviors only the browser can prove (OOB, response-header swaps, morph, SSE), the
@@ -236,8 +357,45 @@ Firefox/geckodriver via `--test_env`, headless, geckodriver on an **ephemeral** 
    chdir-safe paths at once.
 5. **Go/no-go on the 3-OS Bazel matrix + Cargo;** cargo-only escape hatch (§3) if
    macOS/Windows can't go green fast.
+   > **Resolved (2026-06-23) — GO on Linux (Cargo + Bazel); browser stays
+   > Linux-only.** `bazel test --config=browser //services/ui-htmx:bdd` runs green
+   > on Linux (13/13 scenarios, 62/62 steps, real Firefox + geckodriver, running
+   > local/unsandboxed — the scenarios reach a localhost WebDriver + system Firefox
+   > the sandbox would block, so `--spawn_strategy=local` took effect), proving the
+   > system-tool seam works under Bazel exactly as under Cargo. Because Bazel-Linux
+   > is green, the §3 cargo-only escape hatch (browser dropped off Bazel entirely)
+   > was **avoided** — not fired. macOS/Windows browser-under-Bazel is **not**
+   > pursued — and this is the *designed* outcome: §6/§8 always specified a single
+   > browser environment, P3 behavior is OS-invariant given P2 byte-equivalence
+   > (§2), and the orphan reaper / `/proc` scan are unix/Linux-only by construction
+   > (§10). The remaining *risk* — that the always-compiled `thirtyfour` dev-dep
+   > drags browser concerns into the required 3-OS gate — is disproven: the default
+   > Bazel BDD (no `UI_BROWSER_TESTS`,
+   > `@browser` filtered) is green on ubuntu/macOS/Windows (shadow `bazel.yml`), and
+   > `windows / bdd / ui-htmx` (Cargo) is green, so `browser.rs` + `thirtyfour`
+   > compile and the default suite passes on all three OSes. Net: the browser layer
+   > is safely additive; its home is Linux (local dev + the §8 ubuntu nightly).
 
 ### Tier 1 — bytes≠DOM future-htmx edge cases (cheap fixtures)
+
+> **Status (2026-06-23): implemented (Cargo + Bazel-verified).** A `test-fixtures`
+> cargo feature gates a `crate::fixtures` module (`#[coverage(off)]`, ships nothing)
+> mounting test-only `/fixtures/*` routes; [`tests/features/fixtures.feature`]
+> (`@browser`) drives them with **4 scenarios** — OOB positive + negative, header
+> retarget, push-url — all green (17 scenarios total under `UI_BROWSER_TESTS=1` —
+> the 9 default plus the 8 `@browser`-tagged — under both Cargo and
+> `bazel test --config=browser`; default suite still 9). The BDD suite spawns a
+> fixtures-feature binary: cargo `--all-features` provides it; Bazel adds
+> `:ui-htmx_lib_fixtures` + `:ui-htmx_fixtures` (the dsd-fp2 `_mock` pattern), and
+> the `bdd` target spawns + links the fixtures variant so coverage instrumentation
+> matches and the `#[coverage(off)]` module keeps the numbers unperturbed.
+> **Empirically confirmed:** htmx 2.0.4 *silently drops* an OOB element whose target
+> is absent (no append-to-body), so the negative case asserts the toast text appears
+> nowhere. The optional `HX-Push-Url` leg is included (history observability); the
+> `HX-Redirect` leg is left for later (push-url already proves the navigation seam).
+
+[`tests/features/fixtures.feature`]: ../../services/ui-htmx/tests/features/fixtures.feature
+
 A feature-gated, test-only `/fixtures/*` route set (ships nothing) the `@browser`
 scenarios drive, each proving the harness can **observe a divergence P1/P2/§A cannot**:
 - **`hx-swap-oob`** — main fragment + a sibling OOB toast → assert a *second region*
@@ -249,6 +407,38 @@ scenarios drive, each proving the harness can **observe a divergence P1/P2/§A c
   changed (proves navigation/history observability).
 
 ### Tier 2 — the streaming spike (the #2 infra risk, made real)
+
+> **Status (2026-06-22): implemented (Cargo + Bazel-verified; hazard empirically
+> confirmed).** A `test-sse` cargo feature gates a `crate::sse_fixtures` module
+> (`#[coverage(off)]`, ships nothing) mounting test-only `/fixtures/sse*` routes: a
+> page wiring the vendored htmx SSE extension (`htmx-ext-sse@2.2.3`, 0BSD — htmx 2.0
+> split SSE out of core, so the vendored `htmx.min.js` has none) to **one**
+> `sse-connect` EventSource feeding **two** `sse-swap` regions; an axum `Sse` stream
+> (built with the workspace's `async-stream`) that pushes two named events on a timer
+> then **holds the connection open**; and a route serving the vendored extension.
+> [`tests/features/sse.feature`] (`@browser`) drives them with **2 scenarios** —
+> both regions update from the single connection; an open stream still shuts the BFF
+> down gracefully when the browser is quit first — both green (**19 scenarios** total
+> under `UI_BROWSER_TESTS=1` — the 9 default plus the 10 `@browser`-tagged — under
+> both Cargo and `bazel test --config=browser`; default suite still 9). The BDD
+> binary spawns the fixtures variant: cargo `--all-features`
+> provides it; Bazel adds `test-sse` to `:ui-htmx_fixtures` / `:ui-htmx_lib_fixtures`
+> (the optional `async-stream` is named explicitly — `all_crate_deps` omits optional
+> deps), and the `#[coverage(off)]` module keeps `sse_fixtures.rs` out of the lcov
+> (verified under `bazel coverage`). **The hazard is real** (manually measured during
+> this spike, not asserted by a committed test): with an SSE stream held open by
+> `curl`, a SIGTERM to the BFF blocked graceful shutdown past 8s, vs. ~0.1s with no
+> connection — under BDD that 8s is a 5s SIGKILL, a skipped `atexit`, and
+> silently-zeroed coverage. The **committed** teardown scenario asserts only the
+> positive path — quitting the browser first drops the connection so the BFF stops
+> well under the 4s budget (`< GRACEFUL_STOP_BUDGET`) — because a deliberately
+> wrong-order scenario would redden the suite (the same reason Tier 0 step 4 is a
+> *simulated* crash, not a real panic). The optional `sse-connect`×N connection-limit
+> probe is left for later — the teardown proof already exercises the decisive
+> streaming risk.
+
+[`tests/features/sse.feature`]: ../../services/ui-htmx/tests/features/sse.feature
+
 A **minimal test-only axum `Sse`** endpoint (e.g. `#[cfg(feature = "test-sse")]`)
 emitting ≥2 named events on a timer + a fixture page with `hx-ext=sse` and two
 `sse-swap` targets:

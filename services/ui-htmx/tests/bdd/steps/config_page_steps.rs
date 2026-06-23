@@ -1,12 +1,14 @@
 //! Step definitions for config_page.feature.
 //!
 //! Every scenario drives the real BFF over HTTP against a real dsd-fp2 driver
-//! (see [`crate::world::UiWorld`]); the steps assert on the HTML the BFF
-//! actually renders.
+//! (see [`crate::world::UiWorld`]); the Then-steps assert on the HTML the BFF
+//! actually renders using CSS-selector DOM checks (see [`crate::dom`]) — Layer A
+//! of the UI-testing plan (docs/plans/ui-testing.md §4).
 
 use cucumber::{given, then, when};
 
 use crate::world::UiWorld;
+use crate::{dom, snapshot};
 
 // --- Given: stand up the real services --------------------------------------
 
@@ -48,9 +50,9 @@ async fn open_page(world: &mut UiWorld) {
 
 #[when(regex = r"^I open the dsd-fp2 config page with ([\w.]+) unlocked$")]
 async fn open_page_with_unlock(world: &mut UiWorld, field: String) {
-    // The escape hatch is a plain `?unlock=<field>` query — the same link the
-    // "Unlock to edit" affordance points at; no client-side JS involved.
-    world.get(&format!("/config/dsd-fp2?unlock={field}")).await;
+    // Follow the page's rendered "Unlock to edit" affordance the way htmx would,
+    // rather than fabricating the `?unlock=` URL out of band.
+    world.open_with_unlock(&field).await;
 }
 
 #[when("I open the configuration index")]
@@ -82,57 +84,67 @@ async fn submit_unchanged(world: &mut UiWorld) {
 
 #[when(regex = r"^I poll the reconnect status until max_brightness (\d+) is served$")]
 async fn poll_until_served(world: &mut UiWorld, value: String) {
-    world.poll_status_until_value(&value).await;
+    world
+        .poll_status_until_value("cover_calibrator.max_brightness", &value)
+        .await;
 }
 
 // --- Then: assert on the rendered HTML --------------------------------------
 
 #[then(regex = r#"^the index links to "([\w-]+)"$"#)]
 fn index_links_to(world: &mut UiWorld, service: String) {
-    let needle = format!(r#"href="/config/{service}""#);
+    let css = format!(r#"a[href="/config/{service}"]"#);
     assert!(
-        world.last_body.contains(&needle),
-        "missing index link {needle:?}:\n{}",
+        dom::matches(&world.last_body, &css),
+        "missing index link to {service:?}:\n{}",
         world.last_body
     );
 }
 
 #[then(regex = r#"^the page shows the value "([^"]+)"$"#)]
 fn page_shows_value(world: &mut UiWorld, expected: String) {
+    // An input is *rendered* with this exact value — stricter than a substring,
+    // which would also match the value buried inside the hidden `__config` blob.
+    let css = format!(r#"input[value="{expected}"]"#);
     assert!(
-        world.last_body.contains(&expected),
-        "expected page to contain {expected:?}, body was:\n{}",
+        dom::matches(&world.last_body, &css),
+        "expected an input rendered with value {expected:?}, body was:\n{}",
         world.last_body
     );
 }
 
 #[then(regex = r"^the ([\w.]+) field is disabled$")]
 fn field_disabled(world: &mut UiWorld, field: String) {
-    let tag = world.input_tag(&field);
-    assert!(tag.contains("disabled"), "{field} not disabled: {tag}");
+    let input = dom::input(&world.last_body, &field)
+        .unwrap_or_else(|| panic!("no input named {field:?} in:\n{}", world.last_body));
+    assert!(input.disabled, "{field} should be disabled but is editable");
 }
 
 #[then(regex = r"^the ([\w.]+) field is editable$")]
 fn field_editable(world: &mut UiWorld, field: String) {
-    let tag = world.input_tag(&field);
+    let input = dom::input(&world.last_body, &field)
+        .unwrap_or_else(|| panic!("no input named {field:?} in:\n{}", world.last_body));
     assert!(
-        !tag.contains("disabled"),
-        "{field} still disabled (expected editable): {tag}"
+        !input.disabled,
+        "{field} should be editable but is disabled"
     );
 }
 
 #[then(regex = r"^the page offers to unlock ([\w.]+) to edit it$")]
 fn offers_to_unlock(world: &mut UiWorld, field: String) {
-    // The identity hint plus an HTMX unlock link to `?unlock=<field>`.
+    // The identity hint plus an htmx unlock link to `?unlock=<field>`.
     assert!(
-        world.last_body.contains("Identity — the driver owns this"),
+        dom::text_contains(
+            &world.last_body,
+            ".field .hint",
+            "Identity — the driver owns this"
+        ),
         "missing identity hint:\n{}",
         world.last_body
     );
-    let link = format!(r#"hx-get="/config/dsd-fp2?unlock={field}""#);
     assert!(
-        world.last_body.contains(&link),
-        "missing unlock link {link:?}:\n{}",
+        dom::unlock_url(&world.last_body, &field).is_some(),
+        "missing unlock affordance for {field}:\n{}",
         world.last_body
     );
 }
@@ -140,9 +152,11 @@ fn offers_to_unlock(world: &mut UiWorld, field: String) {
 #[then("the page explains the field is pinned by a command-line override")]
 fn explains_pinned(world: &mut UiWorld) {
     assert!(
-        world
-            .last_body
-            .contains("Pinned by a command-line override"),
+        dom::text_contains(
+            &world.last_body,
+            ".field .hint",
+            "Pinned by a command-line override"
+        ),
         "missing pinned explanation:\n{}",
         world.last_body
     );
@@ -151,24 +165,24 @@ fn explains_pinned(world: &mut UiWorld) {
 #[then("the page reports the driver is reloading")]
 fn reports_reloading(world: &mut UiWorld) {
     assert!(
-        world.last_body.contains("reloading") || world.last_body.contains("Reconnecting"),
-        "missing reloading state:\n{}",
+        dom::matches(&world.last_body, "div.banner.applying"),
+        "missing reloading banner:\n{}",
         world.last_body
     );
 }
 
 #[then("the page polls /config/dsd-fp2/status every 1s for reconnection")]
 fn polls_for_reconnection(world: &mut UiWorld) {
-    assert!(
-        world
-            .last_body
-            .contains(r#"hx-get="/config/dsd-fp2/status""#),
-        "missing poll target:\n{}",
+    assert_eq!(
+        dom::attr(&world.last_body, "#config-card", "hx-get").as_deref(),
+        Some("/config/dsd-fp2/status"),
+        "reconnecting card should poll the status route:\n{}",
         world.last_body
     );
-    assert!(
-        world.last_body.contains(r#"hx-trigger="every 1s""#),
-        "missing poll trigger:\n{}",
+    assert_eq!(
+        dom::attr(&world.last_body, "#config-card", "hx-trigger").as_deref(),
+        Some("every 1s"),
+        "reconnecting card should poll every 1s:\n{}",
         world.last_body
     );
 }
@@ -176,7 +190,7 @@ fn polls_for_reconnection(world: &mut UiWorld) {
 #[then("the page reports the configuration was saved without a reload")]
 fn reports_saved_no_reload(world: &mut UiWorld) {
     assert!(
-        world.last_body.contains("No reload was needed"),
+        dom::text_contains(&world.last_body, "div.banner.ok", "No reload was needed"),
         "missing saved-without-reload banner:\n{}",
         world.last_body
     );
@@ -184,33 +198,41 @@ fn reports_saved_no_reload(world: &mut UiWorld) {
 
 #[then(regex = r#"^the form shows the validation error "([^"]+)" on serial\.baud_rate$"#)]
 fn shows_validation_error(world: &mut UiWorld, message: String) {
+    // The error text appears inside the serial.baud_rate field's own wrapper,
+    // and that wrapper carries the `invalid` class — all three tied together.
     assert!(
-        world.last_body.contains(&message),
-        "missing error message {message:?}:\n{}",
-        world.last_body
-    );
-    // The field's wrapper carries the `invalid` class.
-    assert!(
-        world.last_body.contains("invalid"),
-        "baud_rate field not flagged invalid:\n{}",
+        dom::field_error(&world.last_body, "serial.baud_rate", &message),
+        "expected validation error {message:?} on an invalid serial.baud_rate field:\n{}",
         world.last_body
     );
 }
 
 #[then(regex = r"^the submitted baud_rate value (\d+) is preserved$")]
 fn baud_rate_preserved(world: &mut UiWorld, value: String) {
-    let tag = world.input_tag("serial.baud_rate");
-    assert!(
-        tag.contains(&format!("value=\"{value}\"")),
-        "submitted baud_rate not preserved: {tag}"
-    );
+    let input = dom::input(&world.last_body, "serial.baud_rate")
+        .unwrap_or_else(|| panic!("no serial.baud_rate input:\n{}", world.last_body));
+    assert_eq!(input.value, value, "submitted baud_rate not preserved");
 }
 
 #[then("the page shows a driver error")]
 fn shows_driver_error(world: &mut UiWorld) {
     assert!(
-        world.last_body.contains("could not reach the driver"),
-        "missing driver error:\n{}",
+        dom::text_contains(
+            &world.last_body,
+            "div.banner.error",
+            "could not reach the driver"
+        ),
+        "missing driver error banner:\n{}",
         world.last_body
     );
+}
+
+// --- Then (P2): byte-equivalence snapshot of the rendered output ------------
+
+/// Capture the last response's exact bytes as a committed golden (Layer B / P2).
+/// Rides alongside the P1 DOM assertions on the same captured output; the golden
+/// is the cross-OS-comparable artifact (see [`crate::snapshot`]).
+#[then(regex = r#"^the rendered output matches the "([\w-]+)" snapshot$"#)]
+fn matches_snapshot(world: &mut UiWorld, name: String) {
+    snapshot::assert_html(&name, &world.last_body);
 }

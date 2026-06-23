@@ -105,6 +105,19 @@ button.primary {
 }
 button.primary:hover { filter: brightness(1.08); }
 
+/* Inline, link-styled htmx button — the unlock/lock/retry affordances. They are
+ * <button hx-get> (JS-required; no non-JS <a href> fallback, plan §7), styled to
+ * read as the inline links they replaced (matching the `a` rule above). */
+button.link {
+  font: inherit;
+  color: var(--accent-a);
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+button.link:hover { text-decoration: underline; }
+
 .banner {
   border-radius: var(--radius);
   padding: 12px 16px;

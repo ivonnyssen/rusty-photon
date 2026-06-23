@@ -233,6 +233,46 @@ build:remote-cache --remote_cache=https://cache.rustyphoton.space
 test:conformu --test_tag_filters=conformu
 test:conformu --test_env=CONFORMU_PATH
 
+# --- Browser BDD config (UI-testing plan Layer C) --------------------------
+
+# Run the advisory @browser scenarios (real Firefox via WebDriver) under Bazel:
+#   FIREFOX_BINARY=/path GECKODRIVER_BINARY=/path \
+#     bazel test --config=browser //services/ui-htmx:bdd
+# Firefox + geckodriver are external system tools, exactly like OmniSim/ConformU
+# — there is no maintained hermetic-browser path for Rust (rules_webtesting was
+# archived and never supported Rust). The @browser scenarios are themselves gated
+# inside the suite by UI_BROWSER_TESTS=1 (set below), so the default `bdd` run is
+# unaffected. This config is STANDALONE: unlike conformu it does not pigg-back on
+# --config=ci, so it must set --spawn_strategy=local itself (the sandbox blocks
+# the localhost WebDriver connection and hides the system browser) or it "works
+# in CI, fails locally".
+#
+# STATUS (2026-06-23, plan §9 Tier 0 step 5 go/no-go): the Linux Bazel browser
+# path is exercised GREEN — a local `bazel test --config=browser
+# //services/ui-htmx:bdd` (system Firefox + geckodriver) runs all four @browser
+# scenarios. They connect to a localhost WebDriver and a system Firefox — which
+# the Bazel sandbox would block — so --spawn_strategy=local took effect as
+# intended. (The run also emits a benign `cargo metadata failed ... will use
+# manifest directory as fallback`: the insta golden-path resolver's expected
+# Bazel fallback, all snapshot steps still pass.) macOS/Windows browser-under-Bazel
+# is deliberately NOT pursued — but note this is the §6/§8 single-environment
+# DESIGN, not the §3 escape hatch firing: that escape hatch (browser dropped off
+# Bazel entirely) was AVOIDED, since Bazel-Linux is green. The @browser layer runs
+# on one environment because P3 behavior is OS-invariant given P2 byte-equivalence
+# (§2): the P1/P2 server-bytes layers carry the cross-OS guarantee on every OS, the
+# orphan reaper is unix/Linux-only (§10), so a browser on every OS buys zero
+# behavioral coverage. This config stays for local runs and the future ubuntu-only
+# nightly @browser job (§8). The always-compiled `thirtyfour` dev-dep does NOT
+# enter the required gate: the default 3-OS Bazel BDD (no UI_BROWSER_TESTS) stays
+# green on ubuntu/macOS/Windows, verified by the shadow bazel.yml legs.
+test:browser --test_tag_filters=bdd
+test:browser --spawn_strategy=local
+test:browser --test_env=UI_BROWSER_TESTS=1
+# Forwarded by name (not =value) so the --test_env set is stable across
+# invocations sharing one server — the OMNISIM_PATH/CONFORMU_PATH pattern.
+build:browser --test_env=FIREFOX_BINARY
+build:browser --test_env=GECKODRIVER_BINARY
+
 # --- Coverage config -------------------------------------------------------
 
 # Activate with: bazel coverage --config=coverage //...

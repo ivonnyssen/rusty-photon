@@ -11,6 +11,23 @@ description = "Server-rendered web configuration UI (BFF) for rusty-photon — H
 [lints]
 workspace = true
 
+[features]
+# Test-only `/fixtures/*` routes for the @browser BDD layer (UI-testing plan §9
+# Tier 1). OFF by default, so it ships nothing in the real binary; the BDD suite
+# spawns a binary built WITH it (cargo `--all-features`; Bazel `:ui-htmx_fixtures`).
+# The fixtures module is `#[coverage(off)]`, so enabling it never perturbs the
+# coverage numbers (test-only code must not count toward product coverage).
+test-fixtures = []
+# Test-only Server-Sent-Events fixture routes for the @browser SSE spike
+# (UI-testing plan §9 Tier 2). Same shape as `test-fixtures` — OFF by default,
+# `#[coverage(off)]`, spawned only by the BDD suite — but kept a *separate* gate
+# because it pulls a streaming dependency (`async-stream`) and a vendored htmx SSE
+# extension that the rest of the BFF has no need for. It proves async server-pushed
+# DOM updates are browser-observable and that an open SSE stream (which never closes
+# on the shutdown signal — axum #2673) still allows a graceful, coverage-flushing
+# shutdown when the browser is quit first.
+test-sse = ["dep:async-stream"]
+
 [dependencies]
 axum = { workspace = true }
 derive_more = { workspace = true }
@@ -26,13 +43,34 @@ clap = { workspace = true }
 rp-tls = { workspace = true }
 rusty-photon-config = { workspace = true }
 rusty-photon-service-lifecycle = { workspace = true }
+# Optional, enabled only by the `test-sse` feature: ergonomic async stream
+# construction for the test-only SSE fixture endpoint. Never compiled into the
+# real binary (the feature is off by default). Already in the workspace graph
+# (services/rp uses it), so this only adds an edge.
+async-stream = { workspace = true, optional = true }
 
 [dev-dependencies]
 bdd-infra = { workspace = true }
 mockall = { workspace = true }
 cucumber = { workspace = true }
 tempfile = { workspace = true }
-serde_urlencoded = "0.7"
+# Layer A of the UI-testing plan (docs/plans/ui-testing.md §4): the Servo
+# html5ever/selectors stack browsers ship, used for CSS-selector DOM assertions
+# in the BDD suite. Test-only — never compiled into the shipped binary.
+scraper = "0.27"
+# Layer B (§5): byte-equivalence snapshots of the server's HTML output, the
+# cross-OS-comparable artifact (P2). `filters` scrubs run/OS-varying tokens
+# before compare; `redactions` is pulled for completeness per the plan.
+insta = { version = "1.48", features = ["filters", "redactions"] }
+# Layer C (§6): a real WebDriver browser for behaviors only a browser can prove
+# (P3 — htmx actually executes the swap/poll). Pure Rust, no Node. The @browser
+# scenarios it drives are gated behind UI_BROWSER_TESTS=1 (see tests/bdd.rs), so
+# this always-compiled dev-dep never drags a browser into the default gate.
+thirtyfour = "0.37"
+# Layer C Tier 0 step 4 (§9): the kill-the-tree reaper for the @browser worst-case
+# scenario — killpg of geckodriver's process group + a /proc orphan scan, both
+# unix-only (the @browser layer runs on Linux). Test-only.
+libc = { workspace = true }
 
 [[test]]
 name = "bdd"

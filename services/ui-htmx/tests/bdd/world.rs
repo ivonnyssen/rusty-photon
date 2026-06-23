@@ -19,6 +19,9 @@ use cucumber::World;
 use serde_json::{json, Value};
 use tempfile::TempDir;
 
+use crate::browser::BrowserSession;
+use crate::dom;
+
 /// The dsd-fp2 CoverCalibrator action endpoint the BFF (and these helpers) call.
 const DRIVER_ACTION_PATH: &str = "/api/v1/covercalibrator/0/action";
 
@@ -39,8 +42,32 @@ pub struct UiWorld {
     /// the driver's config (see [`UiWorld::pin_driver_port`]) so an in-process
     /// reload rebinds the *same* port and the BFF can reconnect.
     driver_port: u16,
-    /// The rendered HTML of the last BFF response.
+    /// The rendered HTML of the last BFF response. Kept as a `String` (never a
+    /// parsed DOM): the `!Send` `scraper::Html` is built, queried, and dropped
+    /// inside the synchronous [`crate::dom`] helpers, so it never crosses an
+    /// `.await` (see [`crate::dom`] and the UI-testing plan §4).
     pub last_body: String,
+    /// The URL of the last top-level page navigation, reported as `HX-Current-URL`
+    /// on subsequent htmx requests so the captured fragments match what a browser
+    /// would send.
+    current_url: String,
+    /// The real headless-browser session, lazily started by the first
+    /// `@browser` step (Layer C / P3). Absent for the default, browser-free suite.
+    pub browser: Option<BrowserSession>,
+    /// How long `ServiceHandle::stop()` took to bring the BFF down after the
+    /// browser was quit. The coverage-invariant scenario (plan §9 Tier 0 step 3)
+    /// asserts this is well under the 5s SIGKILL grace — a graceful exit ran the
+    /// BFF's `atexit`, so its `.profraw` coverage was flushed (testing.md §5.4).
+    pub bff_stop_elapsed: Option<Duration>,
+    /// Live PIDs in the browser process group recorded just before the simulated
+    /// geckodriver crash (≥ geckodriver + Firefox) — non-empty proves the reaper
+    /// had real work to do (plan §9 Tier 0 step 4).
+    pub session_pids_before: Vec<u32>,
+    /// Live PIDs left in the browser process group after the reaper ran — must be
+    /// empty (no orphaned geckodriver/Firefox/content processes survive).
+    pub orphan_survivors: Vec<u32>,
+    /// The absolute screenshot + page-source paths captured before the reap.
+    pub artifacts: Option<(PathBuf, PathBuf)>,
 }
 
 impl UiWorld {
@@ -107,6 +134,15 @@ impl UiWorld {
     /// Spawn a BFF pointed at a driver that is not running, so `config.get` is
     /// refused.
     pub async fn start_bff_with_unreachable_driver(&mut self) {
+        self.start_bff_pointing_at(UNREACHABLE_PORT).await;
+    }
+
+    /// Spawn just the BFF — no driver process — for the `/fixtures/*` scenarios
+    /// (plan §9 Tier 1). The fixtures don't talk to a driver, so the configured
+    /// (unreachable) target is never contacted; this is the lightest setup that
+    /// brings up a fixtures-capable BFF. The spawned binary carries the
+    /// `test-fixtures` feature (cargo `--all-features`; Bazel `:ui-htmx_fixtures`).
+    pub async fn start_bff_only(&mut self) {
         self.start_bff_pointing_at(UNREACHABLE_PORT).await;
     }
 
@@ -263,88 +299,223 @@ impl UiWorld {
         format!("{}{}", ui.base_url, path)
     }
 
-    /// GET a BFF page and capture the rendered HTML.
+    /// The `HX-*` request headers htmx attaches to a swap request, so a captured
+    /// fragment is what a browser would actually receive. The unlock/lock/retry
+    /// affordances and the reconnect poller all declare `hx-target="#config-card"`;
+    /// htmx sends the resolved element id (no leading `#`).
+    fn hx_headers(&self) -> reqwest::header::HeaderMap {
+        use reqwest::header::{HeaderMap, HeaderValue};
+        let mut headers = HeaderMap::new();
+        headers.insert("HX-Request", HeaderValue::from_static("true"));
+        headers.insert("HX-Target", HeaderValue::from_static("config-card"));
+        if let Ok(value) = HeaderValue::from_str(&self.current_url) {
+            headers.insert("HX-Current-URL", value);
+        }
+        headers
+    }
+
+    /// GET a BFF page as a top-level browser navigation: no `HX-*` headers, so
+    /// the server returns the full styled page. Captures the rendered HTML and
+    /// records the URL for `HX-Current-URL` on any follow-up htmx request.
     pub async fn get(&mut self, path: &str) {
+        let url = self.ui_url(path);
         let resp = reqwest::Client::new()
-            .get(self.ui_url(path))
+            .get(&url)
             .send()
             .await
             .expect("BFF GET failed");
+        self.current_url = url;
         self.last_body = resp.text().await.unwrap_or_default();
     }
 
-    /// Submit the config form the way the rendered page would, with the given
-    /// editable fields overridden. The body starts from the driver's current
-    /// `config.get` (the same blob the page embeds in its hidden field), so any
-    /// field not listed round-trips unchanged through the BFF's overlay.
-    pub async fn submit_form(&mut self, changes: &[(&str, &str)]) {
-        let (config, overrides) = self.driver_config().await;
-
-        let mut pairs: Vec<(String, String)> = vec![
-            (
-                "__config".to_string(),
-                serde_json::to_string(&config).expect("serialize config blob"),
-            ),
-            (
-                "__overrides".to_string(),
-                serde_json::to_string(&overrides).expect("serialize overrides"),
-            ),
-        ];
-        // `enabled` is read-only in the form (the BFF never overlays it), so a
-        // browser submits nothing for it and it round-trips from the hidden blob
-        // unchanged — no need to re-assert it here.
-        for (name, value) in changes {
-            pairs.push(((*name).to_string(), (*value).to_string()));
-        }
-
-        let body = serde_urlencoded::to_string(&pairs).expect("encode form body");
+    /// Fetch a `/fixtures/*` swap endpoint as an htmx request and return its
+    /// `(HX-* response header value, body)` for the named header — the §A
+    /// "header-presence tripwire" (plan §9 Tier 1). It proves the divergence-
+    /// carrying signal (e.g. `HX-Retarget`) is observable in the *response* even
+    /// though the body bytes are a plain fragment a P2 snapshot couldn't tell apart
+    /// from a normal swap; the browser then proves it actually retargets.
+    pub async fn fixture_response_header_and_body(
+        &self,
+        path: &str,
+        header: &str,
+    ) -> (Option<String>, String) {
         let resp = reqwest::Client::new()
-            .post(self.ui_url("/config/dsd-fp2"))
+            .get(self.ui_url(path))
             .header("HX-Request", "true")
-            .header("content-type", "application/x-www-form-urlencoded")
-            .body(body)
+            .send()
+            .await
+            .expect("fixture GET failed");
+        let header_value = resp
+            .headers()
+            .get(header)
+            .and_then(|v| v.to_str().ok())
+            .map(String::from);
+        let body = resp.text().await.unwrap_or_default();
+        (header_value, body)
+    }
+
+    /// Issue the GET that htmx would for an `hx-get` affordance: the full `HX-*`
+    /// header set a browser's htmx sends, so the server returns the `#config-card`
+    /// fragment. `path` is the affordance's own rendered URL.
+    async fn hx_get(&mut self, path: &str) {
+        let resp = reqwest::Client::new()
+            .get(self.ui_url(path))
+            .headers(self.hx_headers())
+            .send()
+            .await
+            .expect("BFF htmx GET failed");
+        self.last_body = resp.text().await.unwrap_or_default();
+    }
+
+    /// Submit the config form the way a browser+htmx would: render the page, read
+    /// the hidden blobs and enabled controls **straight from the rendered HTML**,
+    /// apply the operator's edits, and POST to the form's own `hx-post` URL with
+    /// htmx's headers. Disabled fields are omitted exactly as a browser omits
+    /// them, so read-only/locked fields round-trip from the hidden blob — no
+    /// side-channel `config.get` is consulted.
+    pub async fn submit_form(&mut self, changes: &[(&str, &str)]) {
+        // Render the form first so the submission is built from real page output.
+        self.get("/config/dsd-fp2").await;
+        let action =
+            dom::form_post_url(&self.last_body).expect("rendered page has no <form hx-post>");
+        let mut pairs = dom::successful_controls(&self.last_body);
+        // The operator edits one or more enabled fields before submitting:
+        // replace the rendered value with the typed one (or add it if absent).
+        for &(name, value) in changes {
+            pairs.retain(|(n, _)| n.as_str() != name);
+            pairs.push((name.to_string(), value.to_string()));
+        }
+        let resp = reqwest::Client::new()
+            .post(self.ui_url(&action))
+            .headers(self.hx_headers())
+            .form(&pairs)
             .send()
             .await
             .expect("BFF POST failed");
         self.last_body = resp.text().await.unwrap_or_default();
     }
 
-    /// Poll the BFF reconnect endpoint until the *reloaded* driver serves the
-    /// given value — matched as the refreshed form's `value="..."` attribute.
+    /// Follow the page's "Unlock to edit" affordance for `field` the way htmx
+    /// would: render the page, read the affordance's own `hx-get` URL from the
+    /// rendered HTML, then issue that htmx GET — instead of fabricating the
+    /// `?unlock=` URL out of band.
+    pub async fn open_with_unlock(&mut self, field: &str) {
+        self.get("/config/dsd-fp2").await;
+        let url = dom::unlock_url(&self.last_body, field).unwrap_or_else(|| {
+            panic!("no unlock affordance for {field:?} in:\n{}", self.last_body)
+        });
+        self.hx_get(&url).await;
+    }
+
+    /// Poll the htmx reconnect endpoint the way the `hx-trigger="every 1s"`
+    /// poller would, until the refreshed form serves `expected` as `field`'s
+    /// input value — matched against the rendered input's `value` attribute (DOM,
+    /// not substring).
     ///
-    /// Waiting only for the form to reappear is not enough: until the old
-    /// server tears down, it keeps answering `config.get` with the pre-reload
-    /// configuration, so the page would briefly re-render with the stale value.
-    /// The new value appears only once the rebuilt server is serving.
-    pub async fn poll_status_until_value(&mut self, expected: &str) {
-        let needle = format!(r#"value="{expected}""#);
-        for _ in 0..80 {
-            self.get("/config/dsd-fp2/status").await;
-            if self.last_body.contains(&needle) {
+    /// Waiting only for the form to reappear is not enough: until the old server
+    /// tears down it keeps answering `config.get` with the pre-reload config, so
+    /// the page would briefly re-render with the stale value. The new value
+    /// appears only once the rebuilt server is serving. The poll is bounded by a
+    /// wall-clock budget because a *real* driver subprocess takes time to tear
+    /// down and rebind during its in-process reload — the literal no-sleep poll
+    /// in the plan's §9 is the browser layer's job, where htmx's own poller drives
+    /// the live DOM.
+    pub async fn poll_status_until_value(&mut self, field: &str, expected: &str) {
+        const MAX_POLLS: usize = 80;
+        const POLL_INTERVAL: Duration = Duration::from_millis(250);
+        for _ in 0..MAX_POLLS {
+            self.hx_get("/config/dsd-fp2/status").await;
+            if dom::input(&self.last_body, field)
+                .map(|i| i.value)
+                .as_deref()
+                == Some(expected)
+            {
                 return;
             }
-            tokio::time::sleep(Duration::from_millis(250)).await;
+            tokio::time::sleep(POLL_INTERVAL).await;
         }
         panic!(
-            "driver did not serve {needle} within 20s; last body:\n{}",
+            "driver did not serve {field}={expected:?} within {}s; last body:\n{}",
+            MAX_POLLS * POLL_INTERVAL.as_millis() as usize / 1000,
             self.last_body
         );
     }
 
-    /// The `<input ...>` tag whose `name` attribute is `name`.
-    pub fn input_tag(&self, name: &str) -> String {
-        let needle = format!("name=\"{name}\"");
-        let pos = self
-            .last_body
-            .find(&needle)
-            .unwrap_or_else(|| panic!("no input named {name:?} in:\n{}", self.last_body));
-        let start = self.last_body[..pos]
-            .rfind("<input")
-            .expect("no <input before name attribute");
-        let end = self.last_body[start..]
-            .find('>')
-            .expect("unterminated input tag")
-            + start;
-        self.last_body[start..=end].to_string()
+    // --- driving a real browser (@browser scenarios, Layer C) -------------
+
+    /// Lazily start the headless browser session (geckodriver + Firefox) the
+    /// first time an `@browser` step needs it.
+    pub async fn ensure_browser(&mut self) {
+        if self.browser.is_none() {
+            self.browser = Some(BrowserSession::start().await);
+        }
+    }
+
+    /// The live browser session (panics if no `@browser` step started one).
+    pub fn browser(&self) -> &BrowserSession {
+        self.browser
+            .as_ref()
+            .expect("browser session not started — is this an @browser scenario?")
+    }
+
+    /// Navigate the real browser to a BFF page as a top-level navigation, so
+    /// `htmx.min.js` is fetched and executed.
+    pub async fn browser_goto(&mut self, path: &str) {
+        self.ensure_browser().await;
+        let url = self.ui_url(path);
+        self.browser().goto(&url).await;
+    }
+
+    /// Tear down in the **correct** order — browser first, then the BFF — and time
+    /// the BFF stop (plan §9 Tier 0 step 3). Quitting the browser first closes its
+    /// WebDriver session (and so Firefox's held connections to the BFF), so the
+    /// BFF's graceful shutdown completes promptly instead of blocking until the
+    /// 5s SIGKILL grace and losing its `.profraw` coverage flush (testing.md
+    /// §5.4). Both handles are taken, so the `after`-hook teardown skips them.
+    pub async fn quit_browser_then_stop_bff(&mut self) {
+        if let Some(browser) = self.browser.take() {
+            browser.quit().await;
+        }
+        let mut ui = self.ui.take().expect("BFF not started");
+        let start = std::time::Instant::now();
+        ui.stop().await;
+        self.bff_stop_elapsed = Some(start.elapsed());
+    }
+
+    /// Worst-case browser teardown (plan §9 Tier 0 step 4): capture failure
+    /// artifacts while the session is live, simulate a geckodriver crash that
+    /// orphans Firefox, then reap the whole process group — recording the group's
+    /// membership before the crash and the survivors after the reap. The browser
+    /// handle is taken (reaped, not gracefully quit), so the `after`-hook skips it.
+    pub async fn crash_and_reap_browser(&mut self) {
+        let mut session = self
+            .browser
+            .take()
+            .expect("no browser session — is this an @browser scenario?");
+        let pgid = session.geckodriver_pid();
+        // Artifact-before-quit: capture the screenshot + page source while the
+        // session is still live, at an absolute (chdir-safe) path. Keep the Result
+        // — do NOT unwrap here, so a capture failure can't panic *before* the reap
+        // and orphan the tree; the Then-step asserts the artifacts landed.
+        let dir = crate::browser::artifact_dir();
+        let artifacts = session
+            .save_failure_artifacts(&dir, "ui-htmx-panic-recovery")
+            .await;
+        // Record our whole tree (geckodriver + Firefox + content) while it is live
+        // and still in the group.
+        let before = crate::browser::live_pids_in_group(pgid);
+        session.simulate_geckodriver_crash(); // SIGKILL geckodriver → Firefox orphaned
+                                              // Kill the tree: the group (killpg) plus every captured pid (covers a child
+                                              // that escaped the group). geckodriver is left a zombie holding the pgid, so
+                                              // the drain scan below can't race a recycled pgid; it is reaped by
+                                              // kill_on_drop when `session` drops at the end of this method.
+        session.reap_tree(&before);
+        // ~10s bounded: SIGKILLed processes take a moment to become reaped zombies,
+        // and a loaded CI host is slower (the scan skips zombies, so a drained
+        // group reads empty). Recycle-safe: geckodriver's zombie still holds pgid.
+        let survivors = crate::browser::wait_until_group_drains(pgid, 100).await;
+        self.artifacts = artifacts.ok();
+        self.session_pids_before = before;
+        self.orphan_survivors = survivors;
     }
 }
