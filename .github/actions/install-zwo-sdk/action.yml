@@ -193,13 +193,16 @@ runs:
             done
           fi
           if [ -z "$found" ]; then
-            echo "::error::install-zwo-sdk: $soname not found. The sudo-free path needs the $pkg runtime preinstalled (scripts/setup-pi-runner.sh installs it). Install once: sudo apt-get install -y $pkg"
+            echo "::error::install-zwo-sdk: required system library $soname not found. The sudo-free path symlinks against host libraries that are provisioned once at runner setup (scripts/setup-pi-runner.sh §1 / docs/skills/raspberry-pi-runner.md). Install the package that provides $soname and re-run: sudo apt-get install -y $pkg"
             exit 1
           fi
           ln -sf "$found" "$LIBDIR/$linkname"
           echo "install-zwo-sdk (sudo-free): $linkname -> $found"
         }
-        link_runtime_lib libusb-1.0.so.0 libusb-1.0.so libusb-1.0-0
+        # Suggested remedy package matches setup-pi-runner.sh §1 + the runner
+        # docs: libusb-1.0-0-dev provides libusb-1.0.so.0 (via its libusb-1.0-0
+        # runtime dep); libudev.so.1 ships with systemd (libudev1).
+        link_runtime_lib libusb-1.0.so.0 libusb-1.0.so libusb-1.0-0-dev
         link_runtime_lib libudev.so.1   libudev.so    libudev1
 
         {
