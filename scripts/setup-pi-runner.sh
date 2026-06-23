@@ -99,30 +99,27 @@ sudo apt-get install -y \
 # (ZWO is still pre-provisioned below — see §1.5 — until it gets the same
 # sudo-free, per-run treatment.)
 
-# === 1.5. ZWO ASI/EFW SDK (for the zwo-camera service) ===
+# === 1.5. ZWO ASI/EFW SDK — now provisioned sudo-free per-run by the workflow ===
 #
 # zwo-camera links the MIT-licensed ZWO SDK unconditionally via
 # zwo-rs -> libzwo-sys (required even for `--features simulation`), so the
-# aarch64 Pi runner needs it installed to build/test the workspace. INDI
-# vendors ZWO's upstream prebuilt blobs under indi-3rdparty/libasi; install the
-# armv8 libraries under the linker name plus the udev rule for ZWO USB devices.
-# Pinned to a commit SHA (not a moving branch) for reproducible native blobs,
-# matching the CI `install-zwo-sdk` action's `ref` default; bump both together to
-# adopt a newer ZWO SDK. Override via the env var only for a deliberate one-off.
-ZWO_SDK_REF="${ZWO_SDK_REF:-b0802f28055b67aa6a99580d260c3bb4c27eba4b}"
-ZWO_SDK_BASE="https://github.com/indilib/indi-3rdparty/raw/${ZWO_SDK_REF}/libasi"
-
-log "Installing ZWO ASI/EFW SDK (armv8) from indi-3rdparty@${ZWO_SDK_REF}..."
-sudo install -d /usr/local/lib /usr/local/include
-for header in ASICamera2.h EFW_filter.h EAF_focuser.h license.txt; do
-  sudo curl -fsSL "${ZWO_SDK_BASE}/${header}" -o "/usr/local/include/${header}"
-done
-sudo curl -fsSL "${ZWO_SDK_BASE}/armv8/libASICamera2.bin" -o /usr/local/lib/libASICamera2.so
-sudo curl -fsSL "${ZWO_SDK_BASE}/armv8/libEFWFilter.bin" -o /usr/local/lib/libEFWFilter.so
-# EAF focuser is not linked yet (Future Work), but install it so the runner is
-# ready when focuser support lands — mirrors zwo-rs/ci/install-zwo-sdk.sh.
-sudo curl -fsSL "${ZWO_SDK_BASE}/armv8/libEAFFocuser.bin" -o /usr/local/lib/libEAFFocuser.so || true
-sudo ldconfig
+# aarch64 Pi nightly needs it at link time to build/test the workspace. This
+# used to be pre-installed into /usr/local here (with sudo). That is no longer
+# necessary: `pi-nightly.yml` now provisions it per-run with the local
+# `./.github/actions/install-zwo-sdk` action in its sudo-free mode
+# (`sudo: "false"`) — it stages the INDI-vendored blobs under $RUNNER_TEMP,
+# symlinks the system libusb/libudev *runtime* libs to satisfy the unversioned
+# `-lusb-1.0`/`-ludev` link names (no -dev package), and exports ZWO_SDK_LIB_DIR
+# (which libzwo-sys' build.rs puts ahead of /usr/local/lib) + LD_LIBRARY_PATH.
+# Like the QHYCCD §1b move, provisioning in the workflow makes the runner
+# self-healing: a ZWO SDK bump only needs the action's `ref` updated, not a
+# manual re-run of this script. The two prerequisites the per-run step cannot
+# install without sudo are stable host packages installed once in §1 above:
+# clang/libclang-dev (bindgen) and the libusb-1.0 runtime (the symlink target,
+# and the blob's own runtime dependency); libudev.so.1 ships with systemd.
+#
+# Only the udev rule for real ZWO USB devices stays here (device *access* for
+# on-Pi hardware testing — orthogonal to CI linking, and it genuinely needs root).
 
 log "Installing ZWO udev rule (/etc/udev/rules.d/99-asi.rules)..."
 sudo tee /etc/udev/rules.d/99-asi.rules >/dev/null <<'EOF'
