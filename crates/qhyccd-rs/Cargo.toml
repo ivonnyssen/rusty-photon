@@ -6,8 +6,9 @@ edition = "2021"
 # (ADR-009), so its published floor must reflect what DOWNSTREAM consumers can
 # build on, NOT the workspace's unified 1.94.1. The floor is verified out-of-tree
 # by the nightly publish-readiness check (docs/plans/publish-readiness-checks.md),
-# which packages the crate and builds it on this toolchain with a
-# direct-minimal-versions lockfile — it cannot be verified in-workspace because
+# which copies the crate family out of the workspace and builds it on this
+# toolchain with a direct-minimal-versions lockfile — it cannot be verified
+# in-workspace because
 # the root `profile.dev.debug = "line-tables-only"` needs Rust >= 1.71 and the
 # shared Cargo.lock pins newest deps. 1.85.0 is the standalone floor: the
 # `simulation` feature pulls rand 0.10 (MSRV 1.85) + its chacha20/getrandom chain;

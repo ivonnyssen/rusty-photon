@@ -6,16 +6,7 @@
     non_snake_case,
     clippy::too_many_arguments,
     clippy::missing_safety_doc,
-    missing_docs,
-    // This module is compiled under `test` AND `feature = "simulation"` (see
-    // lib.rs), but only the `#[cfg_attr(test, automock)]`-generated code uses APIs
-    // newer than the crate's PUBLISHED MSRV (1.68.0) — and that code is test-only.
-    // The `simulation` build compiles the plain `unimplemented!()` stubs below,
-    // which stay within 1.68, so this `allow` is inert there. The MSRV governs the
-    // shipped library, not the test scaffolding (verified out-of-tree by the
-    // publish-readiness check, which builds lib+bins only), so the
-    // incompatible_msrv lint is a false positive on the test build.
-    clippy::incompatible_msrv
+    missing_docs
 )]
 
 //This file duplicates the libqhyccd-sys bindings, but with mockable functions.
