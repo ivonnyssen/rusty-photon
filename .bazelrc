@@ -247,9 +247,24 @@ test:conformu --test_env=CONFORMU_PATH
 # the localhost WebDriver connection and hides the system browser) or it "works
 # in CI, fails locally".
 #
-# NOTE: verified under Cargo (UI_BROWSER_TESTS=1 + GECKODRIVER_BINARY); the Bazel
-# browser path is the documented seam but not yet exercised green on the 3-OS
-# matrix. Per the plan §3, the cargo-only escape hatch stands if it can't.
+# STATUS (2026-06-23, plan §9 Tier 0 step 5 go/no-go): the Linux Bazel browser
+# path is exercised GREEN — a local `bazel test --config=browser
+# //services/ui-htmx:bdd` (system Firefox + geckodriver) runs all four @browser
+# scenarios. They connect to a localhost WebDriver and a system Firefox — which
+# the Bazel sandbox would block — so --spawn_strategy=local took effect as
+# intended. (The run also emits a benign `cargo metadata failed ... will use
+# manifest directory as fallback`: the insta golden-path resolver's expected
+# Bazel fallback, all snapshot steps still pass.) macOS/Windows browser-under-Bazel
+# is deliberately NOT pursued — but note this is the §6/§8 single-environment
+# DESIGN, not the §3 escape hatch firing: that escape hatch (browser dropped off
+# Bazel entirely) was AVOIDED, since Bazel-Linux is green. The @browser layer runs
+# on one environment because P3 behavior is OS-invariant given P2 byte-equivalence
+# (§2): the P1/P2 server-bytes layers carry the cross-OS guarantee on every OS, the
+# orphan reaper is unix/Linux-only (§10), so a browser on every OS buys zero
+# behavioral coverage. This config stays for local runs and the future ubuntu-only
+# nightly @browser job (§8). The always-compiled `thirtyfour` dev-dep does NOT
+# enter the required gate: the default 3-OS Bazel BDD (no UI_BROWSER_TESTS) stays
+# green on ubuntu/macOS/Windows, verified by the shadow bazel.yml legs.
 test:browser --test_tag_filters=bdd
 test:browser --spawn_strategy=local
 test:browser --test_env=UI_BROWSER_TESTS=1

@@ -184,7 +184,7 @@ header swaps/morph) the fragment bytes are byte-identical to what htmx swaps.
 
 ## 6. Layer C — real browser (P3 `thirtyfour`)
 
-> **Status (2026-06-23): Tier 0 steps 1–4 implemented (Cargo-verified).**
+> **Status (2026-06-23): Tier 0 steps 1–5 implemented (Cargo + Bazel-verified).**
 > `thirtyfour` 0.37 is a `ui-htmx` dev-dep; `tests/features/browser.feature` is
 > tagged `@browser` and gated behind `UI_BROWSER_TESTS=1` via the
 > `filter_run_and_exit` closure in [`tests/bdd.rs`] (which also adds the `@wip`
@@ -208,9 +208,25 @@ header swaps/morph) the fragment bytes are byte-identical to what htmx swaps.
 >    absolute, chdir-safe path before the reap.
 >
 > The default suite stays green with `@browser` filtered out, and teardown leaves
-> no geckodriver/Firefox orphans. The `.bazelrc` `--config=browser` seam
-> (system-tool `--test_env` passthrough + `--spawn_strategy=local`) is in place but
-> **not yet exercised under Bazel** — cargo-only escape hatch per §3.
+> no geckodriver/Firefox orphans. **Step 5 (go/no-go on the 3-OS Bazel matrix) is
+> resolved:** the `.bazelrc` `--config=browser` seam (system-tool `--test_env`
+> passthrough + `--spawn_strategy=local`) is now **exercised GREEN under Bazel on
+> Linux** — a local `bazel test --config=browser //services/ui-htmx:bdd` (system
+> Firefox + geckodriver) runs all 13 scenarios / 62 steps, including the four
+> `@browser` ones, running local (not sandboxed) — the scenarios connect to a
+> localhost WebDriver + system Firefox, which the Bazel sandbox would block, so
+> `--spawn_strategy=local` took effect. **Decision: GO on Linux (Cargo + Bazel);
+> browser stays Linux-only — macOS/Windows browser-under-Bazel is deliberately not
+> pursued.** This is the §6/§8 single-environment **design**, *not* the §3 escape
+> hatch firing: that hatch (browser dropped off Bazel entirely) was **avoided**,
+> since Bazel-Linux is green — the outcome is strictly stronger than it. Browser
+> stays single-environment because §6/§8 specify it, the cross-OS guarantee rides
+> P1/P2 server bytes, and the reaper is unix/Linux-only per §10, so a browser on
+> every OS adds zero behavioral coverage. The always-compiled `thirtyfour` dev-dep
+> does **not** regress the
+> required gate: the default 3-OS Bazel BDD (no `UI_BROWSER_TESTS`) and the Windows
+> Cargo BDD both stay green on ubuntu/macOS/Windows (shadow `bazel.yml` legs +
+> `windows / bdd / ui-htmx`).
 >
 > **Feature-unification note:** `thirtyfour` hard-requires
 > `serde_json/preserve_order`, which unifies workspace-wide under `--all-features`
@@ -226,10 +242,9 @@ header swaps/morph) the fragment bytes are byte-identical to what htmx swaps.
 > kill-the-tree reaping, no-async-Drop, artifact-before-quit, chdir-safe paths) are
 > exercised while the suite stays green.
 >
-> **NOT yet done:** §9 Tier 0 step 5 (go/no-go on the **3-OS Bazel browser
-> matrix** — the `--config=browser` seam is still unexercised under Bazel),
-> Tier 1 (`/fixtures/*` OOB/retarget), Tier 2 (SSE), and the nightly `@browser`
-> recording job (§8).
+> **NOT yet done:** Tier 1 (`/fixtures/*` OOB/retarget), Tier 2 (SSE), and the
+> nightly `@browser` recording job (§8 — now unblocked: the `@browser` scenarios
+> exist and the Linux Bazel/Cargo path is green; it is the natural next step).
 
 [`tests/bdd.rs`]: ../../services/ui-htmx/tests/bdd.rs
 [`tests/bdd/browser.rs`]: ../../services/ui-htmx/tests/bdd/browser.rs
@@ -315,6 +330,24 @@ Firefox/geckodriver via `--test_env`, headless, geckodriver on an **ephemeral** 
    chdir-safe paths at once.
 5. **Go/no-go on the 3-OS Bazel matrix + Cargo;** cargo-only escape hatch (§3) if
    macOS/Windows can't go green fast.
+   > **Resolved (2026-06-23) — GO on Linux (Cargo + Bazel); browser stays
+   > Linux-only.** `bazel test --config=browser //services/ui-htmx:bdd` runs green
+   > on Linux (13/13 scenarios, 62/62 steps, real Firefox + geckodriver, running
+   > local/unsandboxed — the scenarios reach a localhost WebDriver + system Firefox
+   > the sandbox would block, so `--spawn_strategy=local` took effect), proving the
+   > system-tool seam works under Bazel exactly as under Cargo. Because Bazel-Linux
+   > is green, the §3 cargo-only escape hatch (browser dropped off Bazel entirely)
+   > was **avoided** — not fired. macOS/Windows browser-under-Bazel is **not**
+   > pursued — and this is the *designed* outcome: §6/§8 always specified a single
+   > browser environment, P3 behavior is OS-invariant given P2 byte-equivalence
+   > (§2), and the orphan reaper / `/proc` scan are unix/Linux-only by construction
+   > (§10). The remaining *risk* — that the always-compiled `thirtyfour` dev-dep
+   > drags browser concerns into the required 3-OS gate — is disproven: the default
+   > Bazel BDD (no `UI_BROWSER_TESTS`,
+   > `@browser` filtered) is green on ubuntu/macOS/Windows (shadow `bazel.yml`), and
+   > `windows / bdd / ui-htmx` (Cargo) is green, so `browser.rs` + `thirtyfour`
+   > compile and the default suite passes on all three OSes. Net: the browser layer
+   > is safely additive; its home is Linux (local dev + the §8 ubuntu nightly).
 
 ### Tier 1 — bytes≠DOM future-htmx edge cases (cheap fixtures)
 A feature-gated, test-only `/fixtures/*` route set (ships nothing) the `@browser`

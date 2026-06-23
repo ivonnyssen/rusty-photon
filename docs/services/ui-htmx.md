@@ -477,6 +477,26 @@ UI_BROWSER_TESTS=1 GECKODRIVER_BINARY=/path/to/geckodriver \
   cargo test --all-features --test bdd -p ui-htmx
 ```
 
+The same scenarios also run under Bazel via the standalone `--config=browser`
+(it sets `UI_BROWSER_TESTS=1` + `--spawn_strategy=local` and forwards
+`FIREFOX_BINARY`/`GECKODRIVER_BINARY` by name, like `OMNISIM_PATH`):
+
+```
+FIREFOX_BINARY=/path/to/firefox GECKODRIVER_BINARY=/path/to/geckodriver \
+  bazel test --config=browser //services/ui-htmx:bdd
+```
+
+This Bazel path is verified green **on Linux only** (plan §9 Tier 0 step 5
+go/no-go): the browser layer runs on a single environment by design, so
+macOS/Windows browser-under-Bazel is intentionally not pursued — the cross-OS
+guarantee rides the P1/P2 server-bytes layers, which do run on every OS under
+both build systems. The always-compiled `thirtyfour` dev-dep stays out of the
+required gate: with `@browser` filtered out (env unset), the default BDD suite
+is green on all three OSes under both Cargo and Bazel. (Under Bazel the run prints
+a benign `cargo metadata failed … will use manifest directory as fallback` — the
+insta golden-path resolver's expected fallback in the sandboxed build layout; all
+snapshot steps still pass.)
+
 `browser.feature` carries four scenarios. Two prove htmx executes — a smoke render
 (proves `htmx.min.js` loads) and an unlock-click `outerHTML` swap. Two are Tier 0
 robustness checks from the [UI-testing plan](../plans/ui-testing.md) §9 that harden
