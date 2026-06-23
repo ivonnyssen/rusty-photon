@@ -1,4 +1,4 @@
-use eyre::{eyre, Result};
+use crate::Result;
 
 use crate::backend::{read_lock, CameraBackend};
 use crate::{Control, QHYError::*};
@@ -26,7 +26,7 @@ impl Camera {
     pub fn is_control_available(&self, control: Control) -> Option<u32> {
         match &self.backend {
             CameraBackend::Real { handle } => {
-                let handle = match read_lock!(handle, IsControlAvailableError { control }) {
+                let handle = match read_lock!(handle) {
                     Ok(handle) => handle,
                     Err(_) => return None,
                 };
@@ -41,10 +41,7 @@ impl Camera {
             }
             #[cfg(feature = "simulation")]
             CameraBackend::Simulated { state } => {
-                let state = match state.read() {
-                    Ok(state) => state,
-                    Err(_) => return None,
-                };
+                let state = state.read();
                 if !state.is_open {
                     return None;
                 }
@@ -75,24 +72,21 @@ impl Camera {
     pub fn get_parameter(&self, control: Control) -> Result<f64> {
         match &self.backend {
             CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle, GetParameterError { control })?;
+                let handle = read_lock!(handle)?;
                 let res = unsafe { GetQHYCCDParam(handle, control as u32) };
                 if (res - QHYCCD_ERROR_F64).abs() < f64::EPSILON {
                     let error = GetParameterError { control };
                     tracing::error!(error = ?error);
-                    Err(eyre!(error))
+                    Err(error)
                 } else {
                     Ok(res)
                 }
             }
             #[cfg(feature = "simulation")]
             CameraBackend::Simulated { state } => {
-                let state = state.read().map_err(|err| {
-                    tracing::error!(error=?err);
-                    eyre!("Could not acquire read lock on simulated camera state")
-                })?;
+                let state = state.read();
                 if !state.is_open {
-                    return Err(eyre!(CameraNotOpenError));
+                    return Err(CameraNotOpenError);
                 }
                 // Handle special controls
                 match control {
@@ -113,14 +107,14 @@ impl Camera {
                         } else {
                             let error = GetParameterError { control };
                             tracing::error!(error = ?error);
-                            Err(eyre!(error))
+                            Err(error)
                         }
                     }
                     Control::OutputDataActualBits => Ok(state.bit_depth as f64),
                     _ => state.parameters.get(&control).copied().ok_or_else(|| {
                         let error = GetParameterError { control };
                         tracing::error!(error = ?error);
-                        eyre!(error)
+                        error
                     }),
                 }
             }
@@ -139,7 +133,7 @@ impl Camera {
     pub fn get_parameter_min_max_step(&self, control: Control) -> Result<(f64, f64, f64)> {
         match &self.backend {
             CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle, GetMinMaxStepError { control })?;
+                let handle = read_lock!(handle)?;
                 let mut min: f64 = 0.0;
                 let mut max: f64 = 0.0;
                 let mut step: f64 = 0.0;
@@ -156,18 +150,15 @@ impl Camera {
                     _ => {
                         let error = GetMinMaxStepError { control };
                         tracing::error!(error = ?error);
-                        Err(eyre!(error))
+                        Err(error)
                     }
                 }
             }
             #[cfg(feature = "simulation")]
             CameraBackend::Simulated { state } => {
-                let state = state.read().map_err(|err| {
-                    tracing::error!(error=?err);
-                    eyre!("Could not acquire read lock on simulated camera state")
-                })?;
+                let state = state.read();
                 if !state.is_open {
-                    return Err(eyre!(CameraNotOpenError));
+                    return Err(CameraNotOpenError);
                 }
                 state
                     .config
@@ -177,7 +168,7 @@ impl Camera {
                     .ok_or_else(|| {
                         let error = GetMinMaxStepError { control };
                         tracing::error!(error = ?error);
-                        eyre!(error)
+                        error
                     })
             }
         }
@@ -195,24 +186,21 @@ impl Camera {
     pub fn set_parameter(&self, control: Control, value: f64) -> Result<()> {
         match &self.backend {
             CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle, SetParameterError { error_code: 0 })?;
+                let handle = read_lock!(handle)?;
                 match unsafe { SetQHYCCDParam(handle, control as u32, value) } {
                     QHYCCD_SUCCESS => Ok(()),
                     error_code => {
                         let error = SetParameterError { error_code };
                         tracing::error!(error = ?error);
-                        Err(eyre!(error))
+                        Err(error)
                     }
                 }
             }
             #[cfg(feature = "simulation")]
             CameraBackend::Simulated { state } => {
-                let mut state = state.write().map_err(|err| {
-                    tracing::error!(error=?err);
-                    eyre!("Could not acquire write lock on simulated camera state")
-                })?;
+                let mut state = state.write();
                 if !state.is_open {
-                    return Err(eyre!(CameraNotOpenError));
+                    return Err(CameraNotOpenError);
                 }
                 // Handle special controls
                 match control {
@@ -252,7 +240,7 @@ impl Camera {
     pub fn set_if_available(&self, control: Control, value: f64) -> Result<()> {
         match self.is_control_available(control) {
             Some(_) => self.set_parameter(control, value),
-            None => Err(eyre!(IsControlAvailableError { control })),
+            None => Err(IsControlAvailableError { control }),
         }
     }
 
@@ -270,25 +258,22 @@ impl Camera {
     pub fn is_cfw_plugged_in(&self) -> Result<bool> {
         match &self.backend {
             CameraBackend::Real { handle } => {
-                let handle = read_lock!(handle, IsCfwPluggedInError)?;
+                let handle = read_lock!(handle)?;
                 match unsafe { IsQHYCCDCFWPlugged(handle) } {
                     QHYCCD_SUCCESS => Ok(true),
                     QHYCCD_ERROR => Ok(false),
                     _ => {
                         let error = IsCfwPluggedInError;
                         tracing::error!(error = ?error);
-                        Err(eyre!(error))
+                        Err(error)
                     }
                 }
             }
             #[cfg(feature = "simulation")]
             CameraBackend::Simulated { state } => {
-                let state = state.read().map_err(|err| {
-                    tracing::error!(error=?err);
-                    eyre!("Could not acquire read lock on simulated camera state")
-                })?;
+                let state = state.read();
                 if !state.is_open {
-                    return Err(eyre!(CameraNotOpenError));
+                    return Err(CameraNotOpenError);
                 }
                 Ok(state.config.filter_wheel_slots > 0)
             }

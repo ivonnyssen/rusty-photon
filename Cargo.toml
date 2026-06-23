@@ -81,7 +81,10 @@ libc = "0.2"
 regex = "1.12.4"
 directories = "6"
 async-trait = "0.1.89"
-derive_more = { version = "2.0", features = ["debug"] }
+# Floor is 2.1, not 2.0: qhyccd-rs uses the `eq` derive feature, added in 2.1.0
+# (absent in 2.0.0/2.0.1). A looser "2.0" breaks the dual-homed crate's
+# direct-minimal-versions build (caught by the publish-readiness check).
+derive_more = { version = "2.1", features = ["debug"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 tokio-test = "0.4.5"
@@ -96,6 +99,17 @@ base64 = "0.22.1"
 mockall = "0.14.0"
 parking_lot = "0.12.5"
 tokio-serial = "5.4.5"
+# Simulation-backend deps shared by the two vendored, dual-homed camera crates
+# (`zwo-rs` + `qhyccd-rs`), each behind its own `simulation` feature. Pinned once
+# here so the shared version can't drift (Rule 10); the `optional` flag stays
+# crate-local. `cargo publish` flattens the inherited version into a concrete one,
+# so dual-home standalone releases are unaffected.
+# Floor is 0.10.1, not 0.10: rand 0.10.0's feature table references `rand/getrandom`
+# as a `dep:`-only dependency (no implicit feature), so a direct-minimal-versions
+# build of the dual-homed sim crates fails to resolve it (fixed in 0.10.1; caught
+# by the publish-readiness check).
+rand = "0.10.1"
+rayon = "1.10"
 # QHYCCD camera SDK FFI. Vendored first-party at `crates/qhyccd-rs` (with its
 # `libqhyccd-sys` sub-crate nested inside) per ADR-009 — the crate is authored by
 # us, so we develop it in-tree and dual-home it to crates.io. `libqhyccd-sys`

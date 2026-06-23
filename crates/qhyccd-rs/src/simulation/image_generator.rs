@@ -1,6 +1,6 @@
 //! Image generation utilities for simulated cameras
 
-use rand::Rng;
+use rand::{Rng, RngExt};
 use rayon::prelude::*;
 
 /// Pattern type for generated images

@@ -1,9 +1,6 @@
-use eyre::Result;
-// `eyre!` and the `QHYError` variants are only used on the real-SDK paths
-// (`Sdk::new`, `version`, `Drop`), which are `#[cfg]`'d out under `simulation`.
-#[cfg(not(feature = "simulation"))]
-use eyre::eyre;
-
+use crate::Result;
+// The `QHYError` variants are only used on the real-SDK paths (`Sdk::new`,
+// `version`, `Drop`), which are `#[cfg]`'d out under `simulation`.
 #[cfg(not(feature = "simulation"))]
 use crate::QHYError::*;
 use crate::{Camera, FilterWheel, SDKVersion};
@@ -68,7 +65,7 @@ impl Sdk {
                     QHYCCD_ERROR => {
                         let error = ScanQHYCCDError;
                         tracing::error!(error = ?error);
-                        Err(eyre!(error))
+                        Err(error)
                     }
                     num => Ok(num),
                 }?;
@@ -81,19 +78,15 @@ impl Sdk {
                         unsafe {
                             match GetQHYCCDId(index, c_id.as_mut_ptr()) {
                                 QHYCCD_SUCCESS => {
-                                    let id = match CStr::from_ptr(c_id.as_ptr()).to_str() {
-                                        Ok(id) => id,
-                                        Err(error) => {
-                                            tracing::error!(error = ?error);
-                                            return Err(eyre!(error));
-                                        }
-                                    };
+                                    let id = CStr::from_ptr(c_id.as_ptr())
+                                        .to_str()
+                                        .inspect_err(|error| tracing::error!(error = ?error))?;
                                     Ok(id.to_owned())
                                 }
                                 error_code => {
                                     let error = GetCameraIdError { error_code };
                                     tracing::error!(error = ?error);
-                                    Err(eyre!(error))
+                                    Err(error)
                                 }
                             }
                         }
@@ -139,7 +132,7 @@ impl Sdk {
             error_code => {
                 let error = InitSDKError { error_code };
                 tracing::error!(error = ?error);
-                Err(eyre!(error))
+                Err(error)
             }
         }
     }
@@ -291,7 +284,7 @@ impl Sdk {
             error_code => {
                 let error = GetSDKVersionError { error_code };
                 tracing::error!(error = ?error);
-                Err(eyre!(error))
+                Err(error)
             }
         }
     }

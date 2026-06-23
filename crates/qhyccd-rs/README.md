@@ -106,9 +106,9 @@ Download and install the QHYCCD SDK from the [official website](https://www.qhyc
 
 ## Usage Examples
 
-[src/bin/LiveFrameMode.rs](https://github.com/ivonnyssen/rusty-photon/blob/main/crates/qhyccd-rs/src/bin/LiveFrameMode.rs)
+[examples/LiveFrameMode.rs](https://github.com/ivonnyssen/rusty-photon/blob/main/crates/qhyccd-rs/examples/LiveFrameMode.rs)
 
-[src/bin/SingleFrameMode.rs](https://github.com/ivonnyssen/rusty-photon/blob/main/crates/qhyccd-rs/src/bin/SingleFrameMode.rs)
+[examples/SingleFrameMode.rs](https://github.com/ivonnyssen/rusty-photon/blob/main/crates/qhyccd-rs/examples/SingleFrameMode.rs)
 
 ## Simulation Feature
 
@@ -205,5 +205,5 @@ cargo build --features simulation
 cargo test --features simulation
 
 # Run examples with simulation
-cargo run --features simulation --bin SingleFrameMode
+cargo run --features simulation --example SingleFrameMode
 ```
