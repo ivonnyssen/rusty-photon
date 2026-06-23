@@ -1074,17 +1074,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "enum-ordinalize-derive"
-version = "4.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8ca9601fb2d62598ee17836250842873a413586e5d7ed88b356e38ddbb0ec631"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
 name = "enum_dispatch"
 version = "0.3.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3130,8 +3119,6 @@ name = "qhyccd-rs"
 version = "0.1.9"
 dependencies = [
  "derive_more",
- "enum-ordinalize-derive",
- "lazy_static",
  "libqhyccd-sys",
  "mockall",
  "parking_lot",
@@ -3139,7 +3126,6 @@ dependencies = [
  "rayon",
  "thiserror 2.0.18",
  "tracing",
- "tracing-attributes",
  "tracing-subscriber",
 ]
 

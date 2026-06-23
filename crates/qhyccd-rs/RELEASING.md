@@ -27,6 +27,19 @@ mechanic dictates the publish **order** and the version-bump rules below.
   will request a `libqhyccd-sys` version that doesn't exist on crates.io. The
   `path` is unaffected (in-tree builds keep working).
 
+## MSRV
+
+Both crates declare an **explicit, lower-than-workspace** `rust-version` (not
+`workspace = true`, which would publish the workspace's `1.94.1`), and the two now
+differ: **`qhyccd-rs` is `1.85.0`** (its `simulation` feature pulls rand 0.10, MSRV
+1.85; the base build is held to 1.81 by derive_more 2.1) while **`libqhyccd-sys` is
+`1.68.0`** (dependency-free hand-written FFI). The nightly publish-readiness check
+verifies each floor builds with minimal dependency versions, and its advisory
+`find` leg reports the true lowest. If a change raises the floor (a new std API, a
+dependency MSRV bump), **bump that crate's `rust-version`** to the value the check
+accepts; to keep it low, prefer APIs/deps available on the declared MSRV.
+See [docs/plans/publish-readiness-checks.md](../../docs/plans/publish-readiness-checks.md).
+
 ## Steps
 
 Do this on a release branch (never `main`), with a clean working tree and CI
@@ -37,6 +50,11 @@ verification build **links the real static SDK**.
 # 0. Preflight
 git status                      # must be clean
 cargo rail run --profile commit -q
+# Publish-readiness MUST be green for the crate being released — it verifies the
+# published-in-isolation guarantees (MSRV, direct-minimal-versions, semver,
+# docs.rs) that the in-workspace checks cannot. Trigger it and confirm it passes:
+#   gh workflow run publish-readiness.yml      # or rely on the last green nightly
+# A red run BLOCKS the release. See docs/plans/publish-readiness-checks.md.
 
 # 1. Bump versions + changelogs
 #    - crates/qhyccd-rs/libqhyccd-sys/Cargo.toml : version = "0.1.5" (etc.)

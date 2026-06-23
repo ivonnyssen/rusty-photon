@@ -2,11 +2,19 @@
 name = "qhyccd-rs"
 version = "0.1.9"
 edition = "2021"
-# Inherits the workspace MSRV (1.94.1): in-tree this crate is built within the
-# workspace, whose root manifest uses `profile.dev.debug = "line-tables-only"`
-# (Rust >= 1.71), so a lower standalone floor (was 1.68.0) can't be verified
-# here. Flattens to the concrete version on `cargo publish`. See ADR-009.
-rust-version.workspace = true
+# Explicit, lower-than-workspace MSRV: this crate is dual-homed to crates.io
+# (ADR-009), so its published floor must reflect what DOWNSTREAM consumers can
+# build on, NOT the workspace's unified 1.94.1. The floor is verified out-of-tree
+# by the nightly publish-readiness check (docs/plans/publish-readiness-checks.md),
+# which copies the crate family out of the workspace and builds it on this
+# toolchain with a direct-minimal-versions lockfile — it cannot be verified
+# in-workspace because
+# the root `profile.dev.debug = "line-tables-only"` needs Rust >= 1.71 and the
+# shared Cargo.lock pins newest deps. 1.85.0 is the standalone floor: the
+# `simulation` feature pulls rand 0.10 (MSRV 1.85) + its chacha20/getrandom chain;
+# the base build is held to 1.81 by derive_more 2.1. (Was 1.68 before #392 moved
+# this crate onto rand 0.10 / derive_more 2.1.) `cargo msrv find` ratchets it.
+rust-version = "1.85.0"
 authors = ["Igor von Nyssen <igor@vonnyssen.com>"]
 license = "MIT OR Apache-2.0"
 readme = "README.md"
@@ -20,6 +28,20 @@ The libqhyccd-sys crate provides the raw FFI bindings; this crate wraps them in 
 """
 categories = ["aerospace", "api-bindings"]
 homepage = "https://github.com/ivonnyssen/qhyccd-rs/wiki"
+
+# Marks this crate (+ its nested FFI sub-crate) for the nightly publish-readiness
+# check (docs/plans/publish-readiness-checks.md). Discovered via `cargo metadata`
+# just like [package.metadata.conformu]/[package.metadata.miri]. ONLY the four
+# dual-homed FFI crates carry this; the rest of the workspace is never checked.
+# - sys-crate:     the nested build-script sub-crate to co-verify standalone.
+# - skip-link-env: set =1 so the build script emits no link directives, letting
+#                  `cargo check` run with no QHYCCD SDK installed.
+# - needs-libclang: this family's build script needs libclang (bindgen). False
+#                   here (hand-written FFI); true for zwo.
+[package.metadata.publish-readiness]
+sys-crate = "libqhyccd-sys"
+skip-link-env = "QHYCCD_SKIP_NATIVE_LINK"
+needs-libclang = false
 
 # Declare the `coverage_nightly` cfg (set by the workspace coverage job) so the
 # `#[cfg_attr(coverage_nightly, coverage(off))]` exclusions don't trip the
@@ -52,11 +74,6 @@ parking_lot = { workspace = true }
 derive_more = { workspace = true, features = ["eq"] }
 rand = { workspace = true, optional = true }
 rayon = { workspace = true, optional = true }
-
-#to make Zminimal happy
-tracing-attributes = "0.1.28"
-enum-ordinalize-derive = "4.3.1"
-lazy_static = "1.0.2"
 
 [dev-dependencies]
 mockall = { workspace = true }

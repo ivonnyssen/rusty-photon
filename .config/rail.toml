@@ -17,7 +17,14 @@ major_version_conflict = "warn"  # warn = skip, bump = force highest
 
 msrv = true
 msrv_source = "max"  # deps | workspace | max
-enforce_msrv_inheritance = true  # Ensure members inherit workspace rust-version
+# The four dual-homed FFI crates (qhyccd-rs, libqhyccd-sys, zwo-rs, libzwo-sys)
+# INTENTIONALLY declare explicit, lower-than-workspace MSRVs (1.68/1.70/1.87) so
+# their published crates.io floor reflects what downstream consumers can build on,
+# not the workspace's unified 1.94.1 (ADR-009/010, docs/plans/publish-readiness-checks.md).
+# Those floors are verified out-of-tree by the nightly publish-readiness workflow.
+# So MSRV inheritance is NOT enforced workspace-wide — every other member still
+# inherits via `rust-version.workspace = true` by its own choice.
+enforce_msrv_inheritance = false
 
 detect_unused = true
 compiler_diag_cache = true  # reuse rustc diagnostics across runs

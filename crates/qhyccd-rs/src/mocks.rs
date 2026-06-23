@@ -1,4 +1,5 @@
-// `#[cfg(test)]`-only FFI mock helper — never shipped, so exclude it from coverage.
+// FFI mock/stub helper, compiled only under `test` and `feature = "simulation"`
+// (never part of a real, non-simulation release), so exclude it from coverage.
 #![cfg_attr(coverage_nightly, coverage(off))]
 #![allow(
     unused,
