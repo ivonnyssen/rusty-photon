@@ -20,6 +20,19 @@ inputs:
   prefix:
     description: Install prefix for the SDK libraries and headers (Linux/macOS).
     default: /usr/local
+  sudo:
+    description: >-
+      Whether the Linux path may use sudo (default "true"). The default
+      apt-installs the libusb/libudev/clang prerequisites and writes the SDK
+      blobs into `prefix` (/usr/local) + ldconfig — correct for GitHub-hosted
+      x86 runners. Set "false" for the sudo-LESS self-hosted Pi nightly runner:
+      the blobs are staged under $RUNNER_TEMP, `-lusb-1.0`/`-ludev` are resolved
+      by symlinking the system *runtime* libs into that dir (no -dev package),
+      and ZWO_SDK_LIB_DIR + LD_LIBRARY_PATH are exported instead of touching
+      /usr/local. In sudo-free mode the host must already provide clang/libclang
+      (bindgen) and the libusb-1.0 runtime — both installed once at runner setup
+      by scripts/setup-pi-runner.sh. Mirrors the QHYCCD per-run sudo-free model.
+    default: "true"
   windows_camera_sdk_url:
     # Reproducibility note: unlike the Linux/macOS blobs (pinned by `ref` to an
     # indi-3rdparty commit), ZWO's Windows developer SDK is only published as a
@@ -42,7 +55,7 @@ runs:
   using: composite
   steps:
     - name: Install libusb + clang (Linux)
-      if: runner.os == 'Linux'
+      if: runner.os == 'Linux' && inputs.sudo == 'true'
       shell: bash
       run: |
         sudo apt-get update -qq
@@ -66,7 +79,9 @@ runs:
         echo "LIBCLANG_PATH=$(brew --prefix llvm)/lib" >> "$GITHUB_ENV"
 
     - name: Download + install the ZWO SDK (Linux/macOS)
-      if: runner.os != 'Windows'
+      # Linux uses this sudo path only when sudo == 'true'; the sudo-free Linux
+      # path is the dedicated step below. macOS always uses this path.
+      if: runner.os == 'macOS' || (runner.os == 'Linux' && inputs.sudo == 'true')
       shell: bash
       env:
         PREFIX: ${{ inputs.prefix }}
@@ -123,6 +138,78 @@ runs:
           sudo ldconfig
         fi
         echo "install-zwo-sdk: installed libASICamera2 + libEFWFilter under $PREFIX/lib"
+
+    - name: Provision ZWO SDK (Linux, sudo-free)
+      # The sudo-LESS self-hosted Pi nightly runner cannot apt-install the -dev
+      # packages or write to /usr/local. Stage the blobs under $RUNNER_TEMP and
+      # resolve every -l from that one dir, then export ZWO_SDK_LIB_DIR (build.rs
+      # adds it to the link search ahead of /usr/local/lib) + LD_LIBRARY_PATH.
+      if: runner.os == 'Linux' && inputs.sudo != 'true'
+      shell: bash
+      env:
+        REF: ${{ inputs.ref }}
+      run: |
+        set -euo pipefail
+        BASE="https://github.com/indilib/indi-3rdparty/raw/${REF}/libasi"
+        case "${{ runner.arch }}" in
+          ARM64) ARCH=armv8 ;;
+          X64)   ARCH=x64 ;;
+          *) echo "::error::install-zwo-sdk: unsupported sudo-free arch ${{ runner.arch }}"; exit 1 ;;
+        esac
+        LIBDIR="${RUNNER_TEMP:-/tmp}/zwo-sdk/lib"
+        INCDIR="${RUNNER_TEMP:-/tmp}/zwo-sdk/include"
+        mkdir -p "$LIBDIR" "$INCDIR"
+        echo "install-zwo-sdk (sudo-free): arch=$ARCH libdir=$LIBDIR ref=$REF"
+
+        # Headers (MIT) for completeness; bindgen reads libzwo-sys' vendored copies.
+        for h in ASICamera2.h EFW_filter.h EAF_focuser.h license.txt; do
+          curl -fsSL "$BASE/$h" -o "$INCDIR/$h"
+        done
+
+        # ZWO blobs under the linker name so `-lASICamera2` / `-lEFWFilter`
+        # resolve. INDI's .bin carries no SONAME, so a consumer's NEEDED entry is
+        # the bare `libASICamera2.so` — hence the LD_LIBRARY_PATH export below so
+        # the nextest / BDD binaries load them at runtime.
+        curl -fsSL "$BASE/$ARCH/libASICamera2.bin" -o "$LIBDIR/libASICamera2.so"
+        curl -fsSL "$BASE/$ARCH/libEFWFilter.bin"  -o "$LIBDIR/libEFWFilter.so"
+        # EAF focuser is not linked yet (Future Work); best-effort for parity.
+        curl -fsSL "$BASE/$ARCH/libEAFFocuser.bin" -o "$LIBDIR/libEAFFocuser.so" || true
+
+        # `-lusb-1.0` / `-ludev` normally need the unversioned linker-name .so
+        # from libusb-1.0-0-dev / libudev-dev. Without sudo we cannot apt-install
+        # those, so symlink the linker name to the system *runtime* .so inside our
+        # own search dir. build.rs emits ZWO_SDK_LIB_DIR's -L first and a single
+        # -L resolves all -l, so this satisfies the link with no -dev package.
+        # (--as-needed then drops the unused libudev/libusb NEEDED entries.)
+        link_runtime_lib() {
+          soname="$1"; linkname="$2"; pkg="$3"; found=""
+          if command -v ldconfig >/dev/null 2>&1; then
+            found="$(ldconfig -p 2>/dev/null | awk -v s="$soname" '$1 == s { print $NF; exit }')"
+          fi
+          if [ -z "$found" ]; then
+            for d in /usr/lib/aarch64-linux-gnu /lib/aarch64-linux-gnu \
+                     /usr/lib/x86_64-linux-gnu /usr/lib /lib; do
+              if [ -e "$d/$soname" ]; then found="$d/$soname"; break; fi
+            done
+          fi
+          if [ -z "$found" ]; then
+            echo "::error::install-zwo-sdk: required system library $soname not found. The sudo-free path symlinks against host libraries that are provisioned once at runner setup (scripts/setup-pi-runner.sh §1 / docs/skills/raspberry-pi-runner.md). Install the package that provides $soname and re-run: sudo apt-get install -y $pkg"
+            exit 1
+          fi
+          ln -sf "$found" "$LIBDIR/$linkname"
+          echo "install-zwo-sdk (sudo-free): $linkname -> $found"
+        }
+        # Suggested remedy package matches setup-pi-runner.sh §1 + the runner
+        # docs: libusb-1.0-0-dev provides libusb-1.0.so.0 (via its libusb-1.0-0
+        # runtime dep); libudev.so.1 ships with systemd (libudev1).
+        link_runtime_lib libusb-1.0.so.0 libusb-1.0.so libusb-1.0-0-dev
+        link_runtime_lib libudev.so.1   libudev.so    libudev1
+
+        {
+          echo "ZWO_SDK_LIB_DIR=$LIBDIR"
+          echo "LD_LIBRARY_PATH=$LIBDIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+        } >> "$GITHUB_ENV"
+        echo "install-zwo-sdk (sudo-free): exported ZWO_SDK_LIB_DIR + LD_LIBRARY_PATH=$LIBDIR"
 
     - name: Install the ZWO SDK (Windows)
       if: runner.os == 'Windows'

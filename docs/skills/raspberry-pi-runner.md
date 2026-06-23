@@ -107,13 +107,46 @@ has no root, so a dependency `build.rs` cannot escalate) *and* self-healing: a
 new native-SDK service or an SDK version bump no longer requires re-running
 `setup-pi-runner.sh` by hand — the workflow re-fetches the SDK every night.
 Accordingly, `setup-pi-runner.sh`'s `=== 1b. QHYCCD SDK ===` section no longer
-installs anything; it is just a pointer to this per-run flow. (ZWO is still
-pre-provisioned by `=== 1.5 ===` until it gets the same sudo-free treatment.)
+installs anything; it is just a pointer to this per-run flow. The ZWO SDK now
+follows the same sudo-free per-run model (next subsection).
 
 The GitHub-hosted **ubuntu, macOS, and Windows** jobs install the SDK via the
 same action in its default (system) mode; only the sanitizer job (`safety.yml`)
 and the per-PR sim-only legs exclude it (`QHYCCD_SKIP_NATIVE_LINK=1`). The Pi
 covers linux-arm64.
+
+#### ZWO ASI/EFW SDK (for `zwo-camera`)
+
+`zwo-camera` links the MIT-licensed ZWO ASI/EFW SDK unconditionally via
+`zwo-rs → libzwo-sys`, whose `build.rs` emits `-lASICamera2 -lEFWFilter
+-lstdc++ -lusb-1.0 -ludev` on Linux **even under `--features simulation`** (the
+link is env-gated by `ZWO_SKIP_NATIVE_LINK`, not feature-gated). The full
+workspace build therefore needs the SDK at link time. Like QHYCCD, the runner
+no longer pre-provisions it — `pi-nightly.yml` runs the local
+`./.github/actions/install-zwo-sdk` action in its **sudo-free** mode
+(`sudo: "false"`), which:
+
+- downloads the INDI-vendored ZWO blobs (`libASICamera2`/`libEFWFilter`, plus
+  best-effort `libEAFFocuser`) for `armv8` into `$RUNNER_TEMP/zwo-sdk/lib`,
+  pinned by the action's `ref` (bump it to adopt a newer SDK — no manual
+  re-provision);
+- satisfies the unversioned `-lusb-1.0`/`-ludev` link names **without any -dev
+  package** by symlinking them to the system *runtime* libs
+  (`libusb-1.0.so.0`, `libudev.so.1`) inside that same dir — `build.rs` puts
+  `ZWO_SDK_LIB_DIR`'s `-L` ahead of `/usr/local/lib`, and a single `-L`
+  resolves every `-l` (then `--as-needed` drops the unused ones);
+- exports `ZWO_SDK_LIB_DIR` (link search) and `LD_LIBRARY_PATH` (the blobs ship
+  **no SONAME**, so the test binaries' `NEEDED` is the bare `libASICamera2.so`,
+  which must be on the loader path for the nextest/BDD/doctest steps).
+
+The two prerequisites the sudo-free step cannot install itself are stable host
+packages installed once by §1 of `setup-pi-runner.sh`: **clang + libclang-dev**
+(bindgen) and the **libusb-1.0 runtime** (`libusb-1.0-0-dev` pulls it; it is
+both the `libusb-1.0.so` symlink target and the blob's own runtime dependency).
+`libudev.so.1` ships with systemd. If the step ever errors with `… not found`,
+install the named package once and re-run — see Troubleshooting. This keeps the
+runner sudo-less *and* self-healing for ZWO exactly as for QHYCCD; the
+GitHub-hosted x86 jobs keep using the action in its default sudo/system mode.
 
 ### 2. Dedicated unprivileged user
 
@@ -361,6 +394,26 @@ exports `QHYCCD_SDK_DIR`. Check, in order:
 A manual `/usr/local/lib` install (the old `setup-pi-runner.sh §1b` behaviour)
 still satisfies the link via `build.rs`'s fallback, but is no longer required or
 performed by setup.
+
+### `cargo build` fails with `cannot find -lASICamera2` / `-lEFWFilter` / `-lusb-1.0` / `-ludev`
+
+`libzwo-sys` could not find the ZWO SDK (or the libusb/libudev link names) on
+the search path while linking `zwo-camera`. On the Pi nightly these are
+provided per-run by the **Install ZWO SDK (sudo-free)** step
+(`./.github/actions/install-zwo-sdk`, `sudo: "false"`). Check, in order:
+
+- That step ran and printed `exported ZWO_SDK_LIB_DIR + LD_LIBRARY_PATH=…` before
+  `cargo build`. If a blob download failed, confirm the action's pinned `ref`
+  still resolves under `https://github.com/indilib/indi-3rdparty/raw/<ref>/libasi/armv8/`.
+- The step did **not** abort with `… not found`. That message means the host is
+  missing a runtime prerequisite the sudo-free path symlinks against — install it
+  once with sudo and re-run: `sudo apt-get install -y libusb-1.0-0-dev` (provides
+  `libusb-1.0.so.0`) — `libudev.so.1` ships with systemd. `clang`/`libclang-dev`
+  (bindgen) must also be present; all three are in §1 of `setup-pi-runner.sh`, so
+  re-running it is the catch-all fix.
+- `ZWO_SKIP_NATIVE_LINK` is **not** set on this job (the Pi must exercise the real
+  ARM64 link; the skip flag is only for the sim-only x86 legs in
+  `test.yml`/`safety.yml`/`publish-readiness.yml`).
 
 ### nextest runs but BDD hangs / OmniSim crashes
 

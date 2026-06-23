@@ -103,6 +103,22 @@ jobs:
           version: "26.06.04"
           install: env
 
+      # Provision the ZWO ASI/EFW SDK without sudo, mirroring the QHYCCD step.
+      # zwo-camera links libzwo-sys, whose build.rs emits -lASICamera2 /
+      # -lEFWFilter / -lusb-1.0 / -ludev unconditionally (even under --features
+      # simulation), so the full-workspace build needs the SDK at link time.
+      # `sudo: "false"` stages the SDK blobs under $RUNNER_TEMP, symlinks the
+      # system libusb/libudev *runtime* libs to satisfy the unversioned -l names
+      # (no -dev packages), and exports ZWO_SDK_LIB_DIR + LD_LIBRARY_PATH — no
+      # /usr/local writes, no apt, no sudo. The clang/libclang (bindgen) and
+      # libusb-1.0 runtime prerequisites are installed once by
+      # scripts/setup-pi-runner.sh. Keep this runner self-healing: a ZWO SDK
+      # bump only needs the action's `ref` updated, not a manual re-provision.
+      - name: Install ZWO SDK (sudo-free)
+        uses: ./.github/actions/install-zwo-sdk
+        with:
+          sudo: "false"
+
       # Pre-build all targets so nextest and BDD tests find cached binaries
       # without recompilation. Mirrors scheduled.yml's nightly job.
       - name: cargo build --workspace
