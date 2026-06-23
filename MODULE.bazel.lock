@@ -498,7 +498,7 @@
           "REPO_MAPPING:rules_rust+,bazel_tools bazel_tools",
           "REPO_MAPPING:rules_rust+,rules_cc rules_cc+",
           "REPO_MAPPING:rules_rust+,rules_rust rules_rust+",
-          "FILE:@@//Cargo.lock a1200306dc84dc644bd949f443f6597778db8dfe949ac853edfb11fb75400058",
+          "FILE:@@//Cargo.lock 2b82bfb940c0efbb0d8bcd11fb68d18cca1d6d41550668b787805e91cf6aedb6",
           "FILE:@@//Cargo.toml 38e938b905d768a7a872b188d6cc893187d4291f19070b370e8f5b9fabb360f8",
           "FILE:@@//crates/bdd-infra/Cargo.toml 84cc9e00bd9501ef3db346f297cc98c97fae5ebbc33d58968a112753e993a462",
           "FILE:@@//crates/rp-fits/Cargo.toml fcf7285ab4a8a0844e191ddfc197aad4ee5c2fe663056d1896a22a1b96be28a5",
@@ -529,7 +529,7 @@
           "FILE:@@//services/sentinel/Cargo.toml a623a6fbb2cf5bbea3d9a236ecac903ff2c0513af08e364b0a457c94c30da221",
           "FILE:@@//services/sky-survey-camera/Cargo.toml 77dd4871c00c4deb07c4f551583d051815685a4dcf59035d90b341806c78cad7",
           "FILE:@@//services/star-adventurer-gti/Cargo.toml 9cfbc68172d9c6b298276946e5fe635b4ca58abc28549fb4523228c8010b860b",
-          "FILE:@@//services/ui-htmx/Cargo.toml 0f15fbd6c3cade5d2a63c02d31c35e479d0586618e68c45dfd81eb256164aad4",
+          "FILE:@@//services/ui-htmx/Cargo.toml 9a75027e9bd4c02c21c712a579e827224c00dd102dbc5012d28b2ba44eda8d70",
           "FILE:@@//services/zwo-camera/Cargo.toml 3ecf41bdfd58574b03b72c4e25e21d079d7bd910a48fdbc119875c7fc42704fd",
           "FILE:@@//crates/zwo-rs/Cargo.toml a4f99ac35a86cdaba4bba12510f9b4af888c8a7d9121217783da4473136ba8da",
           "FILE:@@//crates/zwo-rs/libzwo-sys/Cargo.toml d68308c71d4e93213fec5789007950c150c5e2946d2939ef9f510cb76305346f"

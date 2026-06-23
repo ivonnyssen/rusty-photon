@@ -18,6 +18,15 @@ workspace = true
 # The fixtures module is `#[coverage(off)]`, so enabling it never perturbs the
 # coverage numbers (test-only code must not count toward product coverage).
 test-fixtures = []
+# Test-only Server-Sent-Events fixture routes for the @browser SSE spike
+# (UI-testing plan §9 Tier 2). Same shape as `test-fixtures` — OFF by default,
+# `#[coverage(off)]`, spawned only by the BDD suite — but kept a *separate* gate
+# because it pulls a streaming dependency (`async-stream`) and a vendored htmx SSE
+# extension that the rest of the BFF has no need for. It proves async server-pushed
+# DOM updates are browser-observable and that an open SSE stream (which never closes
+# on the shutdown signal — axum #2673) still allows a graceful, coverage-flushing
+# shutdown when the browser is quit first.
+test-sse = ["dep:async-stream"]
 
 [dependencies]
 axum = { workspace = true }
@@ -34,6 +43,11 @@ clap = { workspace = true }
 rp-tls = { workspace = true }
 rusty-photon-config = { workspace = true }
 rusty-photon-service-lifecycle = { workspace = true }
+# Optional, enabled only by the `test-sse` feature: ergonomic async stream
+# construction for the test-only SSE fixture endpoint. Never compiled into the
+# real binary (the feature is off by default). Already in the workspace graph
+# (services/rp uses it), so this only adds an edge.
+async-stream = { workspace = true, optional = true }
 
 [dev-dependencies]
 bdd-infra = { workspace = true }

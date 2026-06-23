@@ -549,6 +549,28 @@ built with the feature: cargo `--all-features` provides it; under Bazel the
 
 [`fixtures.feature`]: ../../services/ui-htmx/tests/features/fixtures.feature
 
+**Test-only `/fixtures/sse*` routes (the `test-sse` feature).** A third `@browser`
+feature ([`sse.feature`]) drives a `crate::sse_fixtures` route set gated on the
+separate `test-sse` cargo feature (off by default, `#[coverage(off)]`, ships
+nothing). It is the streaming spike for the future live-telemetry UI: a fixture
+page wires the vendored htmx SSE extension (`htmx-ext-sse@2.2.3`, vendored
+byte-for-byte from upstream; the htmx project is Zero-Clause-BSD — htmx 2.0 split
+SSE out of core, so the embedded `htmx.min.js` carries none, and the extension is
+`include_str!`'d only under this feature) to **one** `sse-connect` EventSource
+feeding **two** `sse-swap` regions, and an axum `Sse` endpoint pushes two named
+events on a timer then holds the connection open. Two scenarios prove what only a
+browser can: that both regions update from the single connection (async
+server-pushed DOM updates, which have no server "bytes" for P1/P2 to assert), and
+that an open SSE stream — which never closes on the shutdown signal (axum #2673) —
+still allows a graceful, coverage-flushing BFF shutdown **when the browser is quit
+first**. The latter is the §5.4 coverage hazard with no in-process escape hatch (the
+connection is held by the out-of-process browser), so `driver.quit()` must precede
+`ServiceHandle::stop()`; the teardown order in `tests/bdd.rs` enforces it. The BDD
+binary carries both `test-fixtures` and `test-sse` (cargo `--all-features`; Bazel
+`:ui-htmx_fixtures`), the latter pulling the optional `async-stream` dependency.
+
+[`sse.feature`]: ../../services/ui-htmx/tests/features/sse.feature
+
 The driver binds port 0, so the OS assigns a free port atomically (no racy
 preselection); the test discovers it from the driver's `bound_addr=` stdout line.
 The one scenario that reloads and reconnects first pins that bound port into the

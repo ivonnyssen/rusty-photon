@@ -21,6 +21,14 @@ pub mod driver_client;
 pub mod fixtures;
 pub mod io;
 pub mod pages;
+/// Test-only Server-Sent-Events fixture routes (UI-testing plan §9 Tier 2) —
+/// compiled ONLY under the `test-sse` cargo feature, so they ship nothing in the
+/// real binary. `#[coverage(off)]` keeps this test-only code (and the streaming
+/// `async-stream` machinery it uses) out of the coverage numbers even when the
+/// feature is on.
+#[cfg(feature = "test-sse")]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub mod sse_fixtures;
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -150,6 +158,9 @@ pub fn build_router(state: AppState) -> Router {
     // cfg-gated router-extend; the merge runs at startup so it stays covered.
     #[cfg(feature = "test-fixtures")]
     let router = router.merge(fixtures::routes());
+    // Test-only SSE fixture routes (plan §9 Tier 2), present only with `test-sse`.
+    #[cfg(feature = "test-sse")]
+    let router = router.merge(sse_fixtures::routes());
     router.with_state(state)
 }
 

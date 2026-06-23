@@ -246,7 +246,10 @@ header swaps/morph) the fragment bytes are byte-identical to what htmx swaps.
 > ([`.github/workflows/ui-browser-nightly.yml`]) — advisory, ubuntu-only,
 > schedule + `workflow_dispatch`, with the open-or-update tracking-issue
 > notify-on-failure. Tier 1 (`/fixtures/*` OOB/retarget/push-url) is now
-> **implemented** (see §9 Tier 1). **NOT yet done:** Tier 2 (SSE).
+> **implemented** (see §9 Tier 1), as is Tier 2 (the SSE streaming spike, see §9
+> Tier 2) — which **completes the §9 anticipatory spike** (Tier 3 is reserve-only,
+> explicitly not built). The remaining UI-testing item is the §7 no-JS-affordance
+> cleanup, tracked separately.
 
 [`.github/workflows/ui-browser-nightly.yml`]: ../../.github/workflows/ui-browser-nightly.yml
 
@@ -370,7 +373,8 @@ Firefox/geckodriver via `--test_env`, headless, geckodriver on an **ephemeral** 
 > cargo feature gates a `crate::fixtures` module (`#[coverage(off)]`, ships nothing)
 > mounting test-only `/fixtures/*` routes; [`tests/features/fixtures.feature`]
 > (`@browser`) drives them with **4 scenarios** — OOB positive + negative, header
-> retarget, push-url — all green (17 `@browser` scenarios total under both Cargo and
+> retarget, push-url — all green (17 scenarios total under `UI_BROWSER_TESTS=1` —
+> the 9 default plus the 8 `@browser`-tagged — under both Cargo and
 > `bazel test --config=browser`; default suite still 9). The BDD suite spawns a
 > fixtures-feature binary: cargo `--all-features` provides it; Bazel adds
 > `:ui-htmx_lib_fixtures` + `:ui-htmx_fixtures` (the dsd-fp2 `_mock` pattern), and
@@ -394,6 +398,38 @@ scenarios drive, each proving the harness can **observe a divergence P1/P2/§A c
   changed (proves navigation/history observability).
 
 ### Tier 2 — the streaming spike (the #2 infra risk, made real)
+
+> **Status (2026-06-22): implemented (Cargo + Bazel-verified; hazard empirically
+> confirmed).** A `test-sse` cargo feature gates a `crate::sse_fixtures` module
+> (`#[coverage(off)]`, ships nothing) mounting test-only `/fixtures/sse*` routes: a
+> page wiring the vendored htmx SSE extension (`htmx-ext-sse@2.2.3`, 0BSD — htmx 2.0
+> split SSE out of core, so the vendored `htmx.min.js` has none) to **one**
+> `sse-connect` EventSource feeding **two** `sse-swap` regions; an axum `Sse` stream
+> (built with the workspace's `async-stream`) that pushes two named events on a timer
+> then **holds the connection open**; and a route serving the vendored extension.
+> [`tests/features/sse.feature`] (`@browser`) drives them with **2 scenarios** —
+> both regions update from the single connection; an open stream still shuts the BFF
+> down gracefully when the browser is quit first — both green (**19 scenarios** total
+> under `UI_BROWSER_TESTS=1` — the 9 default plus the 10 `@browser`-tagged — under
+> both Cargo and `bazel test --config=browser`; default suite still 9). The BDD
+> binary spawns the fixtures variant: cargo `--all-features`
+> provides it; Bazel adds `test-sse` to `:ui-htmx_fixtures` / `:ui-htmx_lib_fixtures`
+> (the optional `async-stream` is named explicitly — `all_crate_deps` omits optional
+> deps), and the `#[coverage(off)]` module keeps `sse_fixtures.rs` out of the lcov
+> (verified under `bazel coverage`). **The hazard is real** (manually measured during
+> this spike, not asserted by a committed test): with an SSE stream held open by
+> `curl`, a SIGTERM to the BFF blocked graceful shutdown past 8s, vs. ~0.1s with no
+> connection — under BDD that 8s is a 5s SIGKILL, a skipped `atexit`, and
+> silently-zeroed coverage. The **committed** teardown scenario asserts only the
+> positive path — quitting the browser first drops the connection so the BFF stops
+> well under the 4s budget (`< GRACEFUL_STOP_BUDGET`) — because a deliberately
+> wrong-order scenario would redden the suite (the same reason Tier 0 step 4 is a
+> *simulated* crash, not a real panic). The optional `sse-connect`×N connection-limit
+> probe is left for later — the teardown proof already exercises the decisive
+> streaming risk.
+
+[`tests/features/sse.feature`]: ../../services/ui-htmx/tests/features/sse.feature
+
 A **minimal test-only axum `Sse`** endpoint (e.g. `#[cfg(feature = "test-sse")]`)
 emitting ≥2 named events on a timer + a fixture page with `hx-ext=sse` and two
 `sse-swap` targets:
