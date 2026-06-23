@@ -187,6 +187,53 @@ impl BrowserSession {
         element.click().await.expect("click failed");
     }
 
+    /// Poll the **live** DOM until the element matching `css` has text containing
+    /// `needle`; returns whether it appeared. Used to observe an htmx swap landing
+    /// in a region (the main target or an out-of-band sibling).
+    pub async fn wait_text_contains(&self, css: &str, needle: &str, max_iters: usize) -> bool {
+        for _ in 0..max_iters {
+            if let Ok(el) = self.driver.find(By::Css(css)).await {
+                if let Ok(text) = el.text().await {
+                    if text.contains(needle) {
+                        return true;
+                    }
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        false
+    }
+
+    /// The current text of the first element matching `css` (empty string if the
+    /// element is absent). A point read — callers that need to *wait* should poll
+    /// with [`wait_text_contains`](Self::wait_text_contains) first.
+    pub async fn text_of(&self, css: &str) -> String {
+        match self.driver.find(By::Css(css)).await {
+            Ok(el) => el.text().await.unwrap_or_default(),
+            Err(_) => String::new(),
+        }
+    }
+
+    /// The live page source (the current serialized DOM, reflecting htmx swaps) —
+    /// used to assert content appears *nowhere* (the dropped-OOB negative case).
+    pub async fn page_source(&self) -> String {
+        self.driver.source().await.unwrap_or_default()
+    }
+
+    /// Poll until the browser's current URL contains `needle`; returns success.
+    /// Proves an `HX-Push-Url` history change landed (URL/history is browser-only).
+    pub async fn wait_url_contains(&self, needle: &str, max_iters: usize) -> bool {
+        for _ in 0..max_iters {
+            if let Ok(url) = self.driver.current_url().await {
+                if url.as_str().contains(needle) {
+                    return true;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        false
+    }
+
     /// Capture failure-triage artifacts — a PNG screenshot and the live page
     /// source — into `dir` as `<stem>.png` / `<stem>.html`, returning their
     /// **absolute** paths. Call **before** any reap/quit, while the session is

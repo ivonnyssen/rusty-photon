@@ -11,6 +11,14 @@ description = "Server-rendered web configuration UI (BFF) for rusty-photon — H
 [lints]
 workspace = true
 
+[features]
+# Test-only `/fixtures/*` routes for the @browser BDD layer (UI-testing plan §9
+# Tier 1). OFF by default, so it ships nothing in the real binary; the BDD suite
+# spawns a binary built WITH it (cargo `--all-features`; Bazel `:ui-htmx_fixtures`).
+# The fixtures module is `#[coverage(off)]`, so enabling it never perturbs the
+# coverage numbers (test-only code must not count toward product coverage).
+test-fixtures = []
+
 [dependencies]
 axum = { workspace = true }
 derive_more = { workspace = true }

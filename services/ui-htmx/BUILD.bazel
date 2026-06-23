@@ -41,6 +41,43 @@ rust_binary(
     deps = [":ui-htmx_lib"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
 
+# The BDD suite spawns a binary built with the `test-fixtures` feature so the
+# @browser fixture scenarios (UI-testing plan §9 Tier 1) can drive the test-only
+# /fixtures/* routes. Features are compile-time, so the fixtures binary needs its
+# own lib+bin compiled with crate_features = ["test-fixtures"] — the same pattern
+# as dsd-fp2's `:dsd-fp2_mock`. The fixtures module is `#[coverage(off)]`, so
+# spawning this (instead of `:ui-htmx`) from the `bdd` target adds the routes
+# without perturbing coverage (its covmap equals `:ui-htmx_lib`'s; the fixtures
+# code is excluded).
+rust_library(
+    name = "ui-htmx_lib_fixtures",
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = ["src/main.rs"],
+    ),
+    aliases = aliases(),
+    compile_data = _EMBEDDED_ASSETS,
+    crate_features = ["test-fixtures"],
+    crate_name = "ui_htmx",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+)
+
+rust_binary(
+    name = "ui-htmx_fixtures",
+    srcs = ["src/main.rs"],
+    aliases = aliases(),
+    crate_features = ["test-fixtures"],
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    # Keep CARGO_PKG_NAME = the service name (rules_rust would default it to the
+    # target name "ui-htmx_fixtures"), so logs/service naming match `:ui-htmx`.
+    rustc_env = {"CARGO_PKG_NAME": "ui-htmx"},
+    visibility = ["//visibility:public"],
+    deps = [":ui-htmx_lib_fixtures"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+)
+
 rust_test(
     name = "ui-htmx_unit_test",
     size = "small",
@@ -81,7 +118,10 @@ rust_test(
     crate_root = "tests/bdd.rs",
     data = [
         "Cargo.toml",
-        ":ui-htmx",
+        # The fixtures-feature binary (plan §9 Tier 1): adds the test-only
+        # /fixtures/* routes the @browser scenarios drive, without changing any
+        # existing route. Coverage is unaffected (fixtures code is #[coverage(off)]).
+        ":ui-htmx_fixtures",
         "//services/dsd-fp2:dsd-fp2_mock",
     ] + glob(["tests/features/**"]) +
     # insta goldens (UI-testing plan Layer B): the committed .snap files must
@@ -94,8 +134,8 @@ rust_test(
     env = {
         "BDD_PACKAGE_DIR": "services/ui-htmx",
         "DSD_FP2_BINARY": "$(rootpath //services/dsd-fp2:dsd-fp2_mock)",
-        "UI_HTMX_BINARY": "$(rootpath :ui-htmx)",
-        "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath //services/dsd-fp2:dsd-fp2_mock):$(rootpath :ui-htmx)",
+        "UI_HTMX_BINARY": "$(rootpath :ui-htmx_fixtures)",
+        "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath //services/dsd-fp2:dsd-fp2_mock):$(rootpath :ui-htmx_fixtures)",
         # Bazel does not propagate CI, so force insta to compare-only / fail on
         # mismatch (the sandbox is read-only; goldens are updated Cargo-locally).
         "INSTA_UPDATE": "no",
@@ -110,7 +150,12 @@ rust_test(
     tags = ["bdd"],
     use_libtest_harness = False,
     deps = [
-        ":ui-htmx_lib",
+        # Link the SAME lib variant the spawned binary uses (:ui-htmx_fixtures →
+        # :ui-htmx_lib_fixtures) so both covmaps of the ui_htmx lib are instrumented
+        # identically; otherwise build_router's two cfg variants (with/without the
+        # fixtures merge) hash-mismatch in the coverage merge. The test crate does
+        # not use the fixtures module, so the variant is otherwise transparent.
+        ":ui-htmx_lib_fixtures",
         "//crates/bdd-infra",
     ] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
         normal = True,

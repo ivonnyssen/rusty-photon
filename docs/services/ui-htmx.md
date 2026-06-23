@@ -532,6 +532,23 @@ teardown so BDD subprocess coverage is never silently lost (the §5.4 hazard in
 
 [`thirtyfour`]: https://docs.rs/thirtyfour/
 
+**Test-only `/fixtures/*` routes (the `test-fixtures` feature).** A second
+`@browser` feature ([`fixtures.feature`]) drives a `crate::fixtures` route set that
+exists **only** when the `test-fixtures` cargo feature is on — it ships nothing in
+the real binary, and the module is `#[coverage(off)]` so it never enters the
+coverage numbers. These fixtures exercise htmx behaviors the server-bytes layers
+(P1/P2) cannot observe: an `hx-swap-oob` swap updating a *second* region (plus the
+negative — htmx silently drops an OOB element whose target is absent), an
+`HX-Retarget` header moving a **byte-identical** body to a different target (the
+body is a plain fragment; the divergence lives entirely in the response header — a
+§A tripwire asserts the header, the browser asserts the landing), and an
+`HX-Push-Url` header changing the browser location. The BDD suite spawns a binary
+built with the feature: cargo `--all-features` provides it; under Bazel the
+`:ui-htmx_fixtures` binary (the dsd-fp2 `_mock` pattern) does, so
+`bazel test --config=browser` stays green.
+
+[`fixtures.feature`]: ../../services/ui-htmx/tests/features/fixtures.feature
+
 The driver binds port 0, so the OS assigns a free port atomically (no racy
 preselection); the test discovers it from the driver's `bound_addr=` stdout line.
 The one scenario that reloads and reconnects first pins that bound port into the

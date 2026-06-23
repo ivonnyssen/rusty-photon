@@ -245,8 +245,8 @@ header swaps/morph) the fragment bytes are byte-identical to what htmx swaps.
 > The nightly `@browser` recording job (§8) is now **implemented**
 > ([`.github/workflows/ui-browser-nightly.yml`]) — advisory, ubuntu-only,
 > schedule + `workflow_dispatch`, with the open-or-update tracking-issue
-> notify-on-failure. **NOT yet done:** Tier 1 (`/fixtures/*` OOB/retarget) and
-> Tier 2 (SSE).
+> notify-on-failure. Tier 1 (`/fixtures/*` OOB/retarget/push-url) is now
+> **implemented** (see §9 Tier 1). **NOT yet done:** Tier 2 (SSE).
 
 [`.github/workflows/ui-browser-nightly.yml`]: ../../.github/workflows/ui-browser-nightly.yml
 
@@ -365,6 +365,24 @@ Firefox/geckodriver via `--test_env`, headless, geckodriver on an **ephemeral** 
    > is safely additive; its home is Linux (local dev + the §8 ubuntu nightly).
 
 ### Tier 1 — bytes≠DOM future-htmx edge cases (cheap fixtures)
+
+> **Status (2026-06-23): implemented (Cargo + Bazel-verified).** A `test-fixtures`
+> cargo feature gates a `crate::fixtures` module (`#[coverage(off)]`, ships nothing)
+> mounting test-only `/fixtures/*` routes; [`tests/features/fixtures.feature`]
+> (`@browser`) drives them with **4 scenarios** — OOB positive + negative, header
+> retarget, push-url — all green (17 `@browser` scenarios total under both Cargo and
+> `bazel test --config=browser`; default suite still 9). The BDD suite spawns a
+> fixtures-feature binary: cargo `--all-features` provides it; Bazel adds
+> `:ui-htmx_lib_fixtures` + `:ui-htmx_fixtures` (the dsd-fp2 `_mock` pattern), and
+> the `bdd` target spawns + links the fixtures variant so coverage instrumentation
+> matches and the `#[coverage(off)]` module keeps the numbers unperturbed.
+> **Empirically confirmed:** htmx 2.0.4 *silently drops* an OOB element whose target
+> is absent (no append-to-body), so the negative case asserts the toast text appears
+> nowhere. The optional `HX-Push-Url` leg is included (history observability); the
+> `HX-Redirect` leg is left for later (push-url already proves the navigation seam).
+
+[`tests/features/fixtures.feature`]: ../../services/ui-htmx/tests/features/fixtures.feature
+
 A feature-gated, test-only `/fixtures/*` route set (ships nothing) the `@browser`
 scenarios drive, each proving the harness can **observe a divergence P1/P2/§A cannot**:
 - **`hx-swap-oob`** — main fragment + a sibling OOB toast → assert a *second region*

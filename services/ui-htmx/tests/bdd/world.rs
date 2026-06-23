@@ -137,6 +137,15 @@ impl UiWorld {
         self.start_bff_pointing_at(UNREACHABLE_PORT).await;
     }
 
+    /// Spawn just the BFF — no driver process — for the `/fixtures/*` scenarios
+    /// (plan §9 Tier 1). The fixtures don't talk to a driver, so the configured
+    /// (unreachable) target is never contacted; this is the lightest setup that
+    /// brings up a fixtures-capable BFF. The spawned binary carries the
+    /// `test-fixtures` feature (cargo `--all-features`; Bazel `:ui-htmx_fixtures`).
+    pub async fn start_bff_only(&mut self) {
+        self.start_bff_pointing_at(UNREACHABLE_PORT).await;
+    }
+
     async fn start_bff_pointing_at(&mut self, driver_port: u16) {
         self.start_bff_with_drivers(&[("dsd-fp2", driver_port)])
             .await;
@@ -317,6 +326,32 @@ impl UiWorld {
             .expect("BFF GET failed");
         self.current_url = url;
         self.last_body = resp.text().await.unwrap_or_default();
+    }
+
+    /// Fetch a `/fixtures/*` swap endpoint as an htmx request and return its
+    /// `(HX-* response header value, body)` for the named header — the §A
+    /// "header-presence tripwire" (plan §9 Tier 1). It proves the divergence-
+    /// carrying signal (e.g. `HX-Retarget`) is observable in the *response* even
+    /// though the body bytes are a plain fragment a P2 snapshot couldn't tell apart
+    /// from a normal swap; the browser then proves it actually retargets.
+    pub async fn fixture_response_header_and_body(
+        &self,
+        path: &str,
+        header: &str,
+    ) -> (Option<String>, String) {
+        let resp = reqwest::Client::new()
+            .get(self.ui_url(path))
+            .header("HX-Request", "true")
+            .send()
+            .await
+            .expect("fixture GET failed");
+        let header_value = resp
+            .headers()
+            .get(header)
+            .and_then(|v| v.to_str().ok())
+            .map(String::from);
+        let body = resp.text().await.unwrap_or_default();
+        (header_value, body)
     }
 
     /// Issue the GET that htmx would for an `hx-get` affordance: the full `HX-*`

@@ -12,6 +12,13 @@
 pub mod assets;
 pub mod config;
 pub mod driver_client;
+/// Test-only `/fixtures/*` routes (UI-testing plan §9 Tier 1) — compiled ONLY
+/// under the `test-fixtures` cargo feature, so they ship nothing in the real
+/// binary. `#[coverage(off)]` keeps this test-only code out of the coverage
+/// numbers even when the feature is on (e.g. the `--all-features` coverage build).
+#[cfg(feature = "test-fixtures")]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub mod fixtures;
 pub mod io;
 pub mod pages;
 
@@ -131,14 +138,19 @@ impl AppState {
 
 /// Build the BFF axum router.
 pub fn build_router(state: AppState) -> Router {
-    Router::new()
+    let router = Router::new()
         .route("/", get(index))
         .route("/config/{service}", get(config_get).post(config_post))
         .route("/config/{service}/status", get(config_status))
         .route("/health", get(health))
         .route("/assets/app.css", get(assets::app_css))
-        .route("/assets/htmx.min.js", get(assets::htmx_js))
-        .with_state(state)
+        .route("/assets/htmx.min.js", get(assets::htmx_js));
+    // Test-only `/fixtures/*` routes, present only when the `test-fixtures`
+    // feature is on (the BDD suite's binary). This `let` shadow is the standard
+    // cfg-gated router-extend; the merge runs at startup so it stays covered.
+    #[cfg(feature = "test-fixtures")]
+    let router = router.merge(fixtures::routes());
+    router.with_state(state)
 }
 
 async fn index(State(state): State<AppState>) -> Markup {
