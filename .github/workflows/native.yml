@@ -85,7 +85,7 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install libusb
       - name: Install QHYCCD SDK
-        uses: ivonnyssen/qhyccd-sdk-install@v3
+        uses: ivonnyssen/qhyccd-sdk-install@v4
         with:
           version: "26.06.04"
 

@@ -52,7 +52,7 @@ jobs:
           packages: libusb-1.0-0-dev
           version: 1.0
       - name: Install QHYCCD SDK (qhy-camera)
-        uses: ivonnyssen/qhyccd-sdk-install@v3
+        uses: ivonnyssen/qhyccd-sdk-install@v4
         with:
           version: "26.06.04"
       # Pre-build all service binaries so BDD tests find cached binaries
@@ -164,7 +164,7 @@ jobs:
           version: 1.0
       - name: Install QHYCCD SDK (qhy-camera)
         if: hashFiles('Cargo.lock') != ''
-        uses: ivonnyssen/qhyccd-sdk-install@v3
+        uses: ivonnyssen/qhyccd-sdk-install@v4
         with:
           version: "26.06.04"
       # Pre-build all service binaries so BDD tests find cached binaries
@@ -214,7 +214,7 @@ jobs:
           packages: libusb-1.0-0-dev
           version: 1.0
       - name: Install QHYCCD SDK (qhy-camera)
-        uses: ivonnyssen/qhyccd-sdk-install@v3
+        uses: ivonnyssen/qhyccd-sdk-install@v4
         with:
           version: "26.06.04"
       # Pre-build all service binaries so BDD tests find cached binaries
