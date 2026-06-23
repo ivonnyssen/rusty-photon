@@ -248,8 +248,8 @@ header swaps/morph) the fragment bytes are byte-identical to what htmx swaps.
 > notify-on-failure. Tier 1 (`/fixtures/*` OOB/retarget/push-url) is now
 > **implemented** (see §9 Tier 1), as is Tier 2 (the SSE streaming spike, see §9
 > Tier 2) — which **completes the §9 anticipatory spike** (Tier 3 is reserve-only,
-> explicitly not built). The remaining UI-testing item is the §7 no-JS-affordance
-> cleanup, tracked separately.
+> explicitly not built). The §7 no-JS-affordance cleanup is also **implemented**
+> (see §7), so the whole plan is realized except the reserve-only Tier 3.
 
 [`.github/workflows/ui-browser-nightly.yml`]: ../../.github/workflows/ui-browser-nightly.yml
 
@@ -276,6 +276,15 @@ browser can prove.
 - **Advisory, with a nightly recording job** (§8).
 
 ## 7. The no-JS decision (resolved: abandon it)
+
+> **Status (2026-06-22): implemented.** `pages/mod.rs` dropped the `method`/`action`
+> form fallback (keeps `hx-post`) and converted the unlock/lock/retry `<a hx-get>`
+> to `<button hx-get>` (link-styled via a new `button.link` CSS rule;
+> `type="button"` so the in-form unlock/lock buttons don't submit). The UI is now
+> documented as **JavaScript-required** in [`docs/services/ui-htmx.md`](../services/ui-htmx.md);
+> the `HX-Request` full-page-vs-fragment branch is kept. The BDD DOM helper
+> (`unlock_url`) and the browser unlock selector moved from `a[hx-get]` to
+> `button[hx-get]`; the four affected P2 goldens were regenerated. All suites green.
 
 The UI is **optional** — rusty-photon runs fully headless and the genuine recovery
 path is **ssh + edit the config file**, strictly more capable than a degraded web

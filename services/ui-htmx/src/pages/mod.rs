@@ -349,8 +349,10 @@ pub fn config_card(
             @if let Some(b) = banner { (banner_markup(b)) }
             h1 { (page.title) }
             p.subtitle { (page.subtitle) }
-            form method="post" action=(action)
-                hx-post=(action) hx-target="#config-card" hx-swap="outerHTML" {
+            // htmx-driven, JavaScript-required: the form submits via `hx-post`.
+            // There is no non-JS `method`/`action` fallback — the UI requires htmx
+            // (UI-testing plan §7; the genuine recovery path is ssh + edit the file).
+            form hx-post=(action) hx-target="#config-card" hx-swap="outerHTML" {
                 input type="hidden" name="__config" value=(config_blob);
                 input type="hidden" name="__overrides" value=(overrides_blob);
                 input type="hidden" name="__unlocked" value=(unlocked_blob);
@@ -434,14 +436,17 @@ fn field_hints(
             div.hint {
                 "Identity — the driver owns this. Editing is an escape hatch "
                 "for a misbehaving driver. "
-                a href=(unlock_href) hx-get=(unlock_href)
+                // A link-styled htmx button (JS-required, no `href` fallback —
+                // plan §7). `type="button"` is load-bearing: this renders inside
+                // the form, so a default-type button would submit it on click.
+                button.link type="button" hx-get=(unlock_href)
                     hx-target="#config-card" hx-swap="outerHTML" { "Unlock to edit" }
             }
         } @else if locked && is_unlocked {
             div.hint.warning {
                 "Unlocked — editing the driver's identity is an escape hatch "
                 "for a misbehaving driver. "
-                a href=(lock_href) hx-get=(lock_href)
+                button.link type="button" hx-get=(lock_href)
                     hx-target="#config-card" hx-swap="outerHTML" { "Lock again" }
             }
         }
@@ -497,7 +502,8 @@ fn error_card_with_message(service: &str, message: &str) -> Markup {
         div #config-card.card {
             div class="banner error" { span.dot {} span { (message) } }
             p {
-                a href=(retry) hx-get=(retry) hx-target="#config-card"
+                // A link-styled htmx button (JS-required, no `href` fallback — §7).
+                button.link type="button" hx-get=(retry) hx-target="#config-card"
                     hx-swap="outerHTML" { "Retry" }
             }
         }

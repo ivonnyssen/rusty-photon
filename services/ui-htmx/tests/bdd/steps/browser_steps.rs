@@ -45,9 +45,11 @@ async fn renders_form(world: &mut UiWorld) {
 
 #[when("I click the unlock link for cover_calibrator.unique_id")]
 async fn click_unlock(world: &mut UiWorld) {
+    // The unlock affordance is a `<button hx-get>` (plan §7: the no-JS `<a href>`
+    // fallback was dropped), so the selector targets the button.
     world
         .browser()
-        .click(r#"a[hx-get$="unlock=cover_calibrator.unique_id"]"#)
+        .click(r#"button[hx-get$="unlock=cover_calibrator.unique_id"]"#)
         .await;
 }
 

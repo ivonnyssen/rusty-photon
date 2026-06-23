@@ -101,12 +101,13 @@ pub fn form_post_url(html: &str) -> Option<String> {
 }
 
 /// The `hx-get` URL of the "Unlock to edit" affordance for `field`, if present —
-/// the link the page actually renders, so a follow request goes where the
-/// browser would go rather than to a hard-coded `?unlock=` URL.
+/// the affordance the page actually renders, so a follow request goes where the
+/// browser would go rather than to a hard-coded `?unlock=` URL. It is a
+/// `<button hx-get>` (plan §7: the no-JS `<a href>` fallback was dropped).
 pub fn unlock_url(html: &str, field: &str) -> Option<String> {
     let doc = Html::parse_document(html);
     let suffix = format!("unlock={field}");
-    doc.select(&selector("a[hx-get]"))
+    doc.select(&selector("button[hx-get]"))
         .filter_map(|el| el.value().attr("hx-get"))
         .find(|href| href.ends_with(&suffix))
         .map(str::to_owned)

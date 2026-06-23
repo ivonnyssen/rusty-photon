@@ -12,6 +12,16 @@ system that holds no UI logic inside `rp` (`rp.md` tenet 7). The service renders
 HTML on the server with [axum] + [Maud] and adds interactivity with [HTMX]; there
 is no npm, no WASM, no client-side framework.
 
+**JavaScript (htmx) is required.** The UI does not carry a no-JS fallback: the
+form submits via `hx-post` (no `method`/`action`), and the unlock/lock/retry
+affordances are `<button hx-get>` (no `<a href>`), so without htmx loaded the page
+renders but is inert. This is a deliberate decision (UI-testing plan §7): the UI is
+**optional** — rusty-photon runs fully headless — and the genuine recovery path is
+ssh + editing the config file, strictly more capable than a degraded web form; a
+whole-app no-JS guarantee is also incompatible with the future real-time stream UI.
+Direct navigation/refresh still returns a full styled page (the `HX-Request`
+full-page-vs-fragment branch is core htmx, not a no-JS feature).
+
 It renders a configuration page for **any** rusty-photon driver, **generated from
 the driver's own JSON Schema** (`config.schema`) rather than a hand-built form:
 read the driver's current configuration, edit it, and apply changes — all by
@@ -241,9 +251,10 @@ locked/identity field that the user unlocked.
   *"Identity — the driver owns this. Editing is an escape hatch for a misbehaving
   driver."* and an **"Unlock to edit"** link
   (`GET /config/{service}?unlock=<field>`). Following it re-renders the same card
-  with the field **enabled**, a warning, and a **"Lock again"** link
+  with the field **enabled**, a warning, and a **"Lock again"** affordance
   (`GET /config/{service}`, no query). The unlock state is carried with **no
-  client-side JS**:
+  bespoke client-side JavaScript** (htmx performs the GET + swap; there is no
+  hand-written JS):
   - On a **GET**, the `?unlock=<field>` query (axum `Query`) names the field to
     unlock; only a name in the schema's `locked_fields` is honoured (a
     hard-read-only field, a typo, or no query unlocks nothing).
