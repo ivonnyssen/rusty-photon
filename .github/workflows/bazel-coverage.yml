@@ -92,7 +92,7 @@ jobs:
           packages: libusb-1.0-0-dev
           version: 1.0
       - name: Install QHYCCD SDK (qhy-camera)
-        uses: ivonnyssen/qhyccd-sdk-install@v3
+        uses: ivonnyssen/qhyccd-sdk-install@v4
         with:
           version: "26.06.04"
       # zwo-camera links the native ZWO ASI/EFW SDK (zwo-rs -> libzwo-sys); the
