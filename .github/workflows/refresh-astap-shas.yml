@@ -169,7 +169,7 @@ jobs:
       - name: Cache D05 star database
         if: steps.rot.outputs.rotated == 'true'
         id: d05-cache
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: d05
           # Share the cache key with install-astap so an existing entry
