@@ -1,4 +1,4 @@
-# rusty_photon [![Build Status](https://github.com/ivonnyssen/rusty-photon/workflows/test/badge.svg)](https://github.com/ivonnyssen/rusty-photon/actions) [![Codecov](https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg)](https://codecov.io/gh/ivonnyssen/rusty-photon) [![Dependency status](https://deps.rs/repo/github/ivonnyssen/rusty-photon/status.svg)](https://deps.rs/repo/github/ivonnyssen/rusty-photon) [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE)
+# rusty_photon [![Build Status](https://github.com/ivonnyssen/rusty-photon/workflows/bazel/badge.svg)](https://github.com/ivonnyssen/rusty-photon/actions) [![Codecov](https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg)](https://codecov.io/gh/ivonnyssen/rusty-photon) [![Dependency status](https://deps.rs/repo/github/ivonnyssen/rusty-photon/status.svg)](https://deps.rs/repo/github/ivonnyssen/rusty-photon) [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE)
 
 Cross-platform [ASCOM Alpaca](https://ascom-standards.org/Developer/Alpaca.htm) services and tools for observatory automation. ASCOM Alpaca is an open HTTP/REST standard for controlling astronomy equipment — these services expose real hardware as network-accessible devices that any Alpaca-compatible client (NINA, SGPro, Voyager, etc.) can discover and control.
 
@@ -6,25 +6,25 @@ Cross-platform [ASCOM Alpaca](https://ascom-standards.org/Developer/Alpaca.htm) 
 
 ## Services
 
-Coverage has two columns: **Cargo** is the canonical, required coverage; **Bazel** is the shadow-mode `bazel coverage` job (`.github/workflows/bazel-coverage.yml`), uploaded under `bazel-<pkg>` Codecov flags. During shadow mode the Bazel badges reflect the most recent `main` commit whose `bazel-coverage` run completed (Codecov carries the last value forward when a run is cancelled), so they may lag the Cargo badges — and may read lower where BDD child-process coverage is still being validated. They are not gating; the goal is Cargo↔Bazel parity before cutover.
+Coverage has two columns: **Bazel** is the canonical, required coverage — the `bazel coverage` job (`.github/workflows/bazel-coverage.yml`), uploaded under the per-service `<pkg>` Codecov flags that drive these badges. **Cargo** is a nightly safety-net cross-check (`.github/workflows/test.yml` `coverage`), uploaded under `cargo-<pkg>` flags; since it runs only nightly + on push to main, Codecov carries its last value forward on PR commits, so the Cargo column can lag the Bazel one. Only the Bazel column gates merges.
 
-| Service | Type | Port | Coverage (Cargo) | Coverage (Bazel) | Description |
+| Service | Type | Port | Coverage (Bazel) | Coverage (Cargo nightly) | Description |
 |---------|------|------|------------------|------------------|-------------|
-| [rp](services/rp) | Equipment gateway | 11115 | [![coverage][cov-rp]][cov-rp-link] | [![coverage][cov-bazel-rp]][cov-bazel-rp-link] | Main application: MCP tools, event bus, safety enforcer |
-| [filemonitor](services/filemonitor) | ASCOM SafetyMonitor | 11111 | [![coverage][cov-filemonitor]][cov-filemonitor-link] | [![coverage][cov-bazel-filemonitor]][cov-bazel-filemonitor-link] | Monitors file content for observatory safety status |
-| [ppba-driver](services/ppba-driver) | ASCOM Switch + ObservingConditions | 11112 | [![coverage][cov-ppba-driver]][cov-ppba-driver-link] | [![coverage][cov-bazel-ppba-driver]][cov-bazel-ppba-driver-link] | Driver for Pegasus Astro Pocket Powerbox Advance Gen2 |
-| [qhy-focuser](services/qhy-focuser) | ASCOM Focuser | 11113 | [![coverage][cov-qhy-focuser]][cov-qhy-focuser-link] | [![coverage][cov-bazel-qhy-focuser]][cov-bazel-qhy-focuser-link] | Driver for QHY Q-Focuser (EAF) |
-| [phd2-guider](services/phd2-guider) | Client library | — | [![coverage][cov-phd2-guider]][cov-phd2-guider-link] | [![coverage][cov-bazel-phd2-guider]][cov-bazel-phd2-guider-link] | Rust client for PHD2 autoguiding via JSON RPC |
-| [sentinel](services/sentinel) | Monitoring service | 11114 | [![coverage][cov-sentinel]][cov-sentinel-link] | [![coverage][cov-bazel-sentinel]][cov-bazel-sentinel-link] | Polls devices, sends notifications, serves web dashboard |
-| [calibrator-flats](services/calibrator-flats) | Orchestrator plugin | 11170 | [![coverage][cov-calibrator-flats]][cov-calibrator-flats-link] | [![coverage][cov-bazel-calibrator-flats]][cov-bazel-calibrator-flats-link] | Flat field calibration with CoverCalibrator device |
-| [sky-survey-camera](services/sky-survey-camera) | ASCOM Camera (simulator) | 11116 | [![coverage][cov-sky-survey-camera]][cov-sky-survey-camera-link] | [![coverage][cov-bazel-sky-survey-camera]][cov-bazel-sky-survey-camera-link] | Camera simulator that returns NASA SkyView cutouts for the configured optics |
-| [star-adventurer-gti](services/star-adventurer-gti) | ASCOM Telescope | 11117 | [![coverage][cov-star-adventurer-gti]][cov-star-adventurer-gti-link] | [![coverage][cov-bazel-star-adventurer-gti]][cov-bazel-star-adventurer-gti-link] | Driver for Sky-Watcher Star Adventurer GTi (USB and WiFi/UDP) |
-| [pa-falcon-rotator](services/pa-falcon-rotator) | ASCOM Rotator + Switch (status) | 11118 | [![coverage][cov-pa-falcon-rotator]][cov-pa-falcon-rotator-link] | [![coverage][cov-bazel-pa-falcon-rotator]][cov-bazel-pa-falcon-rotator-link] | Driver for Pegasus Astro Falcon Rotator (firmware ≥ 1.3) |
-| [dsd-fp2](services/dsd-fp2) | ASCOM CoverCalibrator | 11119 | [![coverage][cov-dsd-fp2]][cov-dsd-fp2-link] | [![coverage][cov-bazel-dsd-fp2]][cov-bazel-dsd-fp2-link] | Driver for Deep Sky Dad Flat Panel 2 (motorised flat field panel) |
-| [ui-htmx](services/ui-htmx) | Web config UI (BFF) | 11120 | [![coverage][cov-ui-htmx]][cov-ui-htmx-link] | [![coverage][cov-bazel-ui-htmx]][cov-bazel-ui-htmx-link] | Server-rendered configuration UI (axum + Maud + HTMX); edits any driver's config via its `config.get`/`config.apply` actions |
-| [plate-solver](services/plate-solver) | rp-managed HTTP service | 11131 | [![coverage][cov-plate-solver]][cov-plate-solver-link] | [![coverage][cov-bazel-plate-solver]][cov-bazel-plate-solver-link] | Wraps the ASTAP CLI for plate solving in a supervised, crash-isolated process |
-| [qhy-camera](services/qhy-camera) | ASCOM Camera (+ FilterWheel) | 11121 | [![coverage][cov-qhy-camera]][cov-qhy-camera-link] | [![coverage][cov-bazel-qhy-camera]][cov-bazel-qhy-camera-link] | Driver for QHYCCD cameras + filter wheels (vendored `qhyccd-rs` bindings; links the proprietary SDK unless `QHYCCD_SKIP_NATIVE_LINK=1`) |
-| [zwo-camera](services/zwo-camera) | ASCOM Camera | 11122 | [![coverage][cov-zwo-camera]][cov-zwo-camera-link] | [![coverage][cov-bazel-zwo-camera]][cov-bazel-zwo-camera-link] | Driver for ZWO ASI cameras (vendored `zwo-rs` bindings, MIT SDK; links the SDK unless `ZWO_SKIP_NATIVE_LINK=1`); EFW filter-wheel support in progress |
+| [rp](services/rp) | Equipment gateway | 11115 | [![coverage][cov-rp]][cov-rp-link] | [![coverage][cov-cargo-rp]][cov-cargo-rp-link] | Main application: MCP tools, event bus, safety enforcer |
+| [filemonitor](services/filemonitor) | ASCOM SafetyMonitor | 11111 | [![coverage][cov-filemonitor]][cov-filemonitor-link] | [![coverage][cov-cargo-filemonitor]][cov-cargo-filemonitor-link] | Monitors file content for observatory safety status |
+| [ppba-driver](services/ppba-driver) | ASCOM Switch + ObservingConditions | 11112 | [![coverage][cov-ppba-driver]][cov-ppba-driver-link] | [![coverage][cov-cargo-ppba-driver]][cov-cargo-ppba-driver-link] | Driver for Pegasus Astro Pocket Powerbox Advance Gen2 |
+| [qhy-focuser](services/qhy-focuser) | ASCOM Focuser | 11113 | [![coverage][cov-qhy-focuser]][cov-qhy-focuser-link] | [![coverage][cov-cargo-qhy-focuser]][cov-cargo-qhy-focuser-link] | Driver for QHY Q-Focuser (EAF) |
+| [phd2-guider](services/phd2-guider) | Client library | — | [![coverage][cov-phd2-guider]][cov-phd2-guider-link] | [![coverage][cov-cargo-phd2-guider]][cov-cargo-phd2-guider-link] | Rust client for PHD2 autoguiding via JSON RPC |
+| [sentinel](services/sentinel) | Monitoring service | 11114 | [![coverage][cov-sentinel]][cov-sentinel-link] | [![coverage][cov-cargo-sentinel]][cov-cargo-sentinel-link] | Polls devices, sends notifications, serves web dashboard |
+| [calibrator-flats](services/calibrator-flats) | Orchestrator plugin | 11170 | [![coverage][cov-calibrator-flats]][cov-calibrator-flats-link] | [![coverage][cov-cargo-calibrator-flats]][cov-cargo-calibrator-flats-link] | Flat field calibration with CoverCalibrator device |
+| [sky-survey-camera](services/sky-survey-camera) | ASCOM Camera (simulator) | 11116 | [![coverage][cov-sky-survey-camera]][cov-sky-survey-camera-link] | [![coverage][cov-cargo-sky-survey-camera]][cov-cargo-sky-survey-camera-link] | Camera simulator that returns NASA SkyView cutouts for the configured optics |
+| [star-adventurer-gti](services/star-adventurer-gti) | ASCOM Telescope | 11117 | [![coverage][cov-star-adventurer-gti]][cov-star-adventurer-gti-link] | [![coverage][cov-cargo-star-adventurer-gti]][cov-cargo-star-adventurer-gti-link] | Driver for Sky-Watcher Star Adventurer GTi (USB and WiFi/UDP) |
+| [pa-falcon-rotator](services/pa-falcon-rotator) | ASCOM Rotator + Switch (status) | 11118 | [![coverage][cov-pa-falcon-rotator]][cov-pa-falcon-rotator-link] | [![coverage][cov-cargo-pa-falcon-rotator]][cov-cargo-pa-falcon-rotator-link] | Driver for Pegasus Astro Falcon Rotator (firmware ≥ 1.3) |
+| [dsd-fp2](services/dsd-fp2) | ASCOM CoverCalibrator | 11119 | [![coverage][cov-dsd-fp2]][cov-dsd-fp2-link] | [![coverage][cov-cargo-dsd-fp2]][cov-cargo-dsd-fp2-link] | Driver for Deep Sky Dad Flat Panel 2 (motorised flat field panel) |
+| [ui-htmx](services/ui-htmx) | Web config UI (BFF) | 11120 | [![coverage][cov-ui-htmx]][cov-ui-htmx-link] | [![coverage][cov-cargo-ui-htmx]][cov-cargo-ui-htmx-link] | Server-rendered configuration UI (axum + Maud + HTMX); edits any driver's config via its `config.get`/`config.apply` actions |
+| [plate-solver](services/plate-solver) | rp-managed HTTP service | 11131 | [![coverage][cov-plate-solver]][cov-plate-solver-link] | [![coverage][cov-cargo-plate-solver]][cov-cargo-plate-solver-link] | Wraps the ASTAP CLI for plate solving in a supervised, crash-isolated process |
+| [qhy-camera](services/qhy-camera) | ASCOM Camera (+ FilterWheel) | 11121 | [![coverage][cov-qhy-camera]][cov-qhy-camera-link] | [![coverage][cov-cargo-qhy-camera]][cov-cargo-qhy-camera-link] | Driver for QHYCCD cameras + filter wheels (vendored `qhyccd-rs` bindings; links the proprietary SDK unless `QHYCCD_SKIP_NATIVE_LINK=1`) |
+| [zwo-camera](services/zwo-camera) | ASCOM Camera | 11122 | [![coverage][cov-zwo-camera]][cov-zwo-camera-link] | [![coverage][cov-cargo-zwo-camera]][cov-cargo-zwo-camera-link] | Driver for ZWO ASI cameras (vendored `zwo-rs` bindings, MIT SDK; links the SDK unless `ZWO_SKIP_NATIVE_LINK=1`); EFW filter-wheel support in progress |
 
 ### RP (Main Application)
 
@@ -131,7 +131,7 @@ cargo build --all
 # Build a single service
 cargo build -p filemonitor
 
-# (Optional) exercise the Bazel shadow build
+# (Optional) exercise the Bazel build — the per-PR gate
 bazel test //...
 ```
 
@@ -264,7 +264,7 @@ rusty-photon/
 
 Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT License](LICENSE-MIT) at your option.
 
-<!-- per-service coverage badges (Cargo, flag=<pkg>) -->
+<!-- per-service coverage badges (Bazel, canonical flag=<pkg>; driven by .github/workflows/bazel-coverage.yml) -->
 [cov-rp]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=rp
 [cov-rp-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=rp
 [cov-filemonitor]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=filemonitor
@@ -296,34 +296,34 @@ Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT L
 [cov-zwo-camera]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=zwo-camera
 [cov-zwo-camera-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=zwo-camera
 
-<!-- per-service coverage badges (Bazel shadow build, flag=bazel-<pkg>; read "unknown" until .github/workflows/bazel-coverage.yml has run on main) -->
-[cov-bazel-rp]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=bazel-rp
-[cov-bazel-rp-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=bazel-rp
-[cov-bazel-filemonitor]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=bazel-filemonitor
-[cov-bazel-filemonitor-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=bazel-filemonitor
-[cov-bazel-ppba-driver]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=bazel-ppba-driver
-[cov-bazel-ppba-driver-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=bazel-ppba-driver
-[cov-bazel-qhy-focuser]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=bazel-qhy-focuser
-[cov-bazel-qhy-focuser-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=bazel-qhy-focuser
-[cov-bazel-phd2-guider]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=bazel-phd2-guider
-[cov-bazel-phd2-guider-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=bazel-phd2-guider
-[cov-bazel-sentinel]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=bazel-sentinel
-[cov-bazel-sentinel-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=bazel-sentinel
-[cov-bazel-calibrator-flats]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=bazel-calibrator-flats
-[cov-bazel-calibrator-flats-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=bazel-calibrator-flats
-[cov-bazel-sky-survey-camera]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=bazel-sky-survey-camera
-[cov-bazel-sky-survey-camera-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=bazel-sky-survey-camera
-[cov-bazel-star-adventurer-gti]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=bazel-star-adventurer-gti
-[cov-bazel-star-adventurer-gti-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=bazel-star-adventurer-gti
-[cov-bazel-dsd-fp2]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=bazel-dsd-fp2
-[cov-bazel-dsd-fp2-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=bazel-dsd-fp2
-[cov-bazel-pa-falcon-rotator]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=bazel-pa-falcon-rotator
-[cov-bazel-pa-falcon-rotator-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=bazel-pa-falcon-rotator
-[cov-bazel-ui-htmx]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=bazel-ui-htmx
-[cov-bazel-ui-htmx-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=bazel-ui-htmx
-[cov-bazel-plate-solver]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=bazel-plate-solver
-[cov-bazel-plate-solver-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=bazel-plate-solver
-[cov-bazel-qhy-camera]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=bazel-qhy-camera
-[cov-bazel-qhy-camera-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=bazel-qhy-camera
-[cov-bazel-zwo-camera]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=bazel-zwo-camera
-[cov-bazel-zwo-camera-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=bazel-zwo-camera
+<!-- per-service coverage badges (Cargo nightly cross-check, flag=cargo-<pkg>; refreshed by the nightly .github/workflows/test.yml coverage job, carried forward on PR commits) -->
+[cov-cargo-rp]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=cargo-rp
+[cov-cargo-rp-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=cargo-rp
+[cov-cargo-filemonitor]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=cargo-filemonitor
+[cov-cargo-filemonitor-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=cargo-filemonitor
+[cov-cargo-ppba-driver]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=cargo-ppba-driver
+[cov-cargo-ppba-driver-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=cargo-ppba-driver
+[cov-cargo-qhy-focuser]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=cargo-qhy-focuser
+[cov-cargo-qhy-focuser-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=cargo-qhy-focuser
+[cov-cargo-phd2-guider]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=cargo-phd2-guider
+[cov-cargo-phd2-guider-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=cargo-phd2-guider
+[cov-cargo-sentinel]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=cargo-sentinel
+[cov-cargo-sentinel-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=cargo-sentinel
+[cov-cargo-calibrator-flats]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=cargo-calibrator-flats
+[cov-cargo-calibrator-flats-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=cargo-calibrator-flats
+[cov-cargo-sky-survey-camera]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=cargo-sky-survey-camera
+[cov-cargo-sky-survey-camera-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=cargo-sky-survey-camera
+[cov-cargo-star-adventurer-gti]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=cargo-star-adventurer-gti
+[cov-cargo-star-adventurer-gti-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=cargo-star-adventurer-gti
+[cov-cargo-dsd-fp2]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=cargo-dsd-fp2
+[cov-cargo-dsd-fp2-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=cargo-dsd-fp2
+[cov-cargo-pa-falcon-rotator]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=cargo-pa-falcon-rotator
+[cov-cargo-pa-falcon-rotator-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=cargo-pa-falcon-rotator
+[cov-cargo-ui-htmx]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=cargo-ui-htmx
+[cov-cargo-ui-htmx-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=cargo-ui-htmx
+[cov-cargo-plate-solver]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=cargo-plate-solver
+[cov-cargo-plate-solver-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=cargo-plate-solver
+[cov-cargo-qhy-camera]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=cargo-qhy-camera
+[cov-cargo-qhy-camera-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=cargo-qhy-camera
+[cov-cargo-zwo-camera]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=cargo-zwo-camera
+[cov-cargo-zwo-camera-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=cargo-zwo-camera

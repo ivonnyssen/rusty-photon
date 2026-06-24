@@ -1,8 +1,10 @@
 # Bazel Migration Plan
 
-**Status:** In progress
+**Status:** In progress — Phase 7 cutover PR opened 2026-06-23
 **Started:** 2026-04-16
-**Target cutover:** TBD (dependent on shadow-mode validation)
+**Target cutover:** Phase 7 underway (cutover PR opened 2026-06-23). Bazel is the
+primary per-PR gate in the PR's workflows; the `main_protection` ruleset flip
+(`docs/plans/bazel-cutover-ruleset.md`) is the last manual step.
 
 ## Decisions (2026-05-24)
 
@@ -140,19 +142,44 @@ Cancelled: `release.yml` stays on `cargo-deb` / `cargo-generate-rpm`. Release
 cadence is far lower than merge cadence, so the Bazel-primary goal targets the
 per-PR build/test path only; packaging keeps running on Cargo indefinitely.
 
-### Phase 7 — Cutover (later)
+### Phase 7 — Cutover (IN PROGRESS, PR opened 2026-06-23)
 
-With Phase 4 (Leptos) and Phase 6 (packaging) dropped, cutover no longer waits
-on them. Remaining prerequisites: the cache live + parity logged
-(Phase 5), the Cargo-only gates (miri, sanitizers, `cargo-hack`,
-`cargo-msrv`, coverage) kept on a Cargo nightly, and the `rust-project.json`
-IDE decision (open question 4).
+With Phase 4 (Leptos) and Phase 6 (packaging) dropped, cutover no longer waits on
+them. The cutover PR makes Bazel the primary per-PR gate and moves the Cargo
+build/test/coverage jobs to a nightly safety net. Decisions taken for the cutover:
 
-- [ ] Bazel job becomes **required** on PRs.
-- [ ] Cargo CI jobs moved to a scheduled nightly (as safety net).
-- [ ] `docs/skills/pre-push.md` rewritten for `bazel test //...` as the primary pre-push command.
-- [ ] `cargo-rail` dependency removed from CI (the 50-LOC upstream PR becomes moot).
-- [ ] `.config/rail.toml` deleted.
+- **All three OS Bazel build+test are required** (`bazel / ubuntu-latest`,
+  `bazel / macos-latest`, `bazel / windows-latest`) — *stricter* than the
+  pre-cutover Cargo gate, which was ubuntu-only (the Cargo macOS/Windows jobs ran
+  on PRs but never blocked).
+- **`fmt` + stable `clippy` stay required on PRs** (`check.yml`) — Bazel runs
+  neither rustfmt nor clippy. beta-clippy, `cargo-hack`, and `cargo-msrv` moved to
+  the `check.yml` nightly schedule.
+- **Full coverage cutover:** `bazel coverage` is required and uploads the
+  canonical `<pkg>` Codecov flags (drives the per-service badges); the Cargo
+  coverage job (now nightly) uploads `cargo-<pkg>` as a cross-check.
+- **`parity.yml` (`bazel/cargo target parity`) is required** so "Bazel green"
+  keeps meaning "Bazel builds every Cargo workspace member".
+
+Cutover PR checklist:
+- [x] Cargo build/test/coverage jobs moved to a nightly schedule (`test.yml`),
+      plus `safety.yml` / `scheduled.yml` / `check.yml` trigger hygiene.
+- [x] `cargo-rail` removed from CI — the `test.yml` `plan` job is gone and the
+      nightly safety net runs `--workspace`. The 50-LOC upstream PR is moot for CI.
+- [x] `bazel.yml` / `bazel-coverage.yml` taken off the "shadow" framing; the
+      status-check contexts are now `bazel / <os>` and `bazel coverage`.
+- [x] `docs/skills/pre-push.md`, `docs/AGENTS.md` (rule 4), `docs/workspace.md`,
+      and the README rewritten for Bazel-primary.
+- [ ] **Ruleset flip (manual, post-PR):** repoint the `main_protection`
+      required-status checks — remove `ubuntu / stable`, `ubuntu / stable / features`,
+      `coverage`; keep `stable / fmt`, `stable / clippy`; add `bazel / ubuntu-latest`,
+      `bazel / macos-latest`, `bazel / windows-latest`, `bazel coverage`,
+      `bazel/cargo target parity`. Exact command:
+      [docs/plans/bazel-cutover-ruleset.md](bazel-cutover-ruleset.md).
+- [ ] `.config/rail.toml` **kept intentionally** — cargo-rail is still a fast
+      *local* pre-commit loop (CLAUDE.md rule 4); only its CI use was removed.
+      Delete later if local use stops.
+- [ ] `rust-project.json` IDE decision (open question 4) — unchanged by cutover.
 
 **Exit criteria:** 30 days of required-Bazel CI with zero reverts to Cargo jobs.
 

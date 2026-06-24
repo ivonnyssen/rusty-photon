@@ -657,7 +657,7 @@ the Raspberry Pi 5. As only `rp-targets` uses it initially, it is
 declared in `crates/rp-targets/Cargo.toml` rather than hoisted to the
 workspace (CLAUDE.md Rule 10); after adding it, run
 `CARGO_BAZEL_REPIN=1 bazel mod tidy && bazel mod tidy` to refresh
-`MODULE.bazel.lock` (Rule 10 / [bazel notes](../workspace.md#bazel-shadow-mode)).
+`MODULE.bazel.lock` (Rule 10 / [bazel notes](../workspace.md#bazel-primary-ci-gate)).
 The crate does **not** depend on `rp-catalog` or `rp-ephemeris`: catalog
 resolution and ephemeris evaluation happen in `rp`, which passes already
 -resolved coordinates into `upsert_target`, keeping the store pure.

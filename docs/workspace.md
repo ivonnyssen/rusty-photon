@@ -61,7 +61,7 @@ belong in any single service design doc.
 | [ADR-010](decisions/010-vendor-zwo-rs.md) | Vendor `zwo-rs` + `libzwo-sys` into the workspace (dual-homed) |
 | **Plans** (in-flight initiatives — see [docs/plans/](plans/)) | |
 | [predictive-deadlines-and-watchdog.md](plans/predictive-deadlines-and-watchdog.md) | Predictive operation deadlines in `rp` + Sentinel operation watchdog (5 phases). **Complete** — all phases shipped: Phase 1 event surface (#346), Phase 2 §2.1 slew (#348) + §2.2/§2.3 park+focuser (#352) + §2.4/§2.5 exposure+centering, Phase 3 SSE endpoint, Phase 4 Sentinel watchdog, Phase 5 corrective-action ladder (#373). Authoritative contracts now live in [rp.md §Real-Time Stream](services/rp.md#real-time-stream) and [sentinel.md §Operation Watchdog](services/sentinel.md#operation-watchdog). Archived sub-plans: [phase-1 event surface](plans/archive/predictive-deadlines-phase1-event-surface.md), [phase-2 §2.1 slew](plans/archive/predictive-deadlines-phase2-slew.md), [phase-2 §2.2/§2.3 park+focuser](plans/archive/predictive-deadlines-phase2-park-focuser.md); [phase-3 SSE endpoint](plans/predictive-deadlines-phase3-sse.md) archives on merge. |
-| [bazel-migration.md](plans/bazel-migration.md) | Bazel build alongside Cargo (shadow mode) |
+| [bazel-migration.md](plans/bazel-migration.md) | Bazel build alongside Cargo (now the primary per-PR CI gate; Cargo moved to a nightly safety net) |
 | [filemonitor-packaging.md](plans/filemonitor-packaging.md) | Filemonitor OS packaging |
 | [i18n.md](plans/i18n.md) | Workspace internationalization: scope, tech-stack, and translation-sourcing options |
 | [ui-testing.md](plans/ui-testing.md) | ui-htmx UI-behavior testing strategy: BDD-embedded `scraper` DOM assertions + cross-OS `insta` snapshots + an advisory `thirtyfour` browser layer, with an anticipatory spike plan; Bazel-primary aware; Gherkin stays the source of truth |
@@ -359,16 +359,19 @@ worked example.
   `ivonnyssen/ascom-alpaca-rs.git` (branch `integration`,
   `default-features = false`).
 
-### Bazel (shadow mode)
+### Bazel (primary CI gate)
 
-A Bazel build is being introduced alongside Cargo — see
-[docs/plans/bazel-migration.md](plans/bazel-migration.md). Cargo remains the
-canonical build system during the migration: `Cargo.toml` and `Cargo.lock`
-are the single source of truth for dependency versions, and Bazel's
-`crate_universe` reads them. The repo root holds `MODULE.bazel` and
-`BUILD.bazel`; `bazel test //...` runs all non-`requires-cargo`, non-BDD
-targets. Bazel is **not** a required pre-push gate yet — the canonical
-pre-push command is still `cargo rail run --profile commit -q` (see
+Bazel is the **primary per-PR build / test / coverage gate** as of the Phase 7
+cutover — see [docs/plans/bazel-migration.md](plans/bazel-migration.md).
+`Cargo.toml` and `Cargo.lock` remain the single source of truth for dependency
+versions, and Bazel's `crate_universe` reads them. The repo root holds
+`MODULE.bazel` and `BUILD.bazel`; `bazel test //...` runs all non-`requires-cargo`,
+non-BDD targets, and `bazel test --test_tag_filters=bdd //...` adds the BDD
+suites. The required PR checks are `bazel / <os>` (build + test on
+Linux/macOS/Windows), `bazel coverage`, and `bazel/cargo target parity`, plus the
+Cargo `stable / fmt` and `stable / clippy` lint jobs (Bazel does not run
+rustfmt/clippy). The Cargo build/test/coverage jobs moved to a nightly safety net;
+`cargo rail run --profile commit -q` remains a fast local pre-commit loop (see
 [docs/skills/pre-push.md](skills/pre-push.md)).
 
 After adding a crates.io dependency to the workspace, run

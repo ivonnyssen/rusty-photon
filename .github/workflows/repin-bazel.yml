@@ -9,11 +9,12 @@
 #
 # Scope: Dependabot cargo PRs only. The push uses the default GITHUB_TOKEN,
 # whose commits intentionally do NOT re-trigger workflows (GitHub loop
-# prevention). That means the non-required `bazel`/`parity` shadow jobs will
-# not re-run on the repinned commit — so this job validates the refreshed lock
-# in-place with `bazel build --nobuild //... --lockfile_mode=error` before
-# pushing. The repin only rewrites MODULE.bazel.lock (nothing Cargo builds),
-# so the required `coverage` check from the pre-repin commit stays valid.
+# prevention). That means the required `bazel` / `bazel coverage` / `parity`
+# checks will not re-run on the repinned commit — so this job validates the
+# refreshed lock in-place with `bazel build --nobuild //... --lockfile_mode=error`
+# before pushing. The repin only rewrites MODULE.bazel.lock (nothing the Bazel
+# build/test actions consume changes), so those checks from the pre-repin commit
+# stay valid.
 permissions:
   contents: write
 on:
@@ -29,7 +30,7 @@ name: repin-bazel
 jobs:
   repin:
     # Only Dependabot PRs. Other PRs that change deps are expected to repin by
-    # hand (rule 10); the `parity`/`bazel` shadow jobs surface any miss there.
+    # hand (rule 10); the required `parity` / `bazel` checks surface any miss there.
     if: github.actor == 'dependabot[bot]'
     runs-on: ubuntu-latest
     name: repin MODULE.bazel.lock

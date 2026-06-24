@@ -1,19 +1,30 @@
-# This workflow runs whenever a PR is opened or updated, or a commit is pushed to main. It runs
-# several checks:
-# - fmt: checks that the code is formatted according to rustfmt
-# - clippy: checks that the code does not contain any clippy warnings
-# - doc: checks that the code can be documented without errors
-# - hack: check combinations of feature flags
-# - msrv: check that the msrv specified in the workspace is correct
+# Lint & quality checks.
+#
+# PR-gating (every pull_request + push to main) — these stay required because the
+# per-PR Bazel build/test gate (bazel.yml) does NOT run rustfmt or clippy:
+#   - fmt:    rustfmt formatting              (required check: `stable / fmt`)
+#   - clippy: stable clippy, `-D warnings`    (required check: `stable / clippy`)
+#
+# Nightly-only (schedule + push to main + workflow_dispatch; skipped on PRs via
+# `if: github.event_name != 'pull_request'`) — moved off the per-PR path at the
+# Bazel cutover (docs/plans/bazel-migration.md, Phase 7):
+#   - clippy (beta): early warning of new beta-channel lints
+#   - hack:          cargo-hack feature-powerset (feature additivity)
+#   - msrv:          verify the declared workspace MSRV
 permissions:
   contents: read
-# This configuration allows maintainers of this repo to create a branch and pull request based on
-# the new branch. Restricting the push trigger to the main branch ensures that the PR only gets
-# built once.
+# fmt + clippy run on every PR and on push to main. The heavier nightly jobs
+# (beta clippy, hack, msrv) additionally run on a schedule + manual dispatch and
+# are guarded below so they no-op on pull_request events.
 on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    # 06:00 UTC — offset from parity (06:45) and native (06:47) so the nightly
+    # Cargo suites don't contend for the same hosted-runner pool minute.
+    - cron: "0 6 * * *"
+  workflow_dispatch:
 # If new code is pushed to a PR branch, then cancel in progress workflows for that PR. Ensures that
 # we don't waste CI time, and returns results quicker https://github.com/jonhoo/rust-ci-conf/pull/5
 concurrency:
@@ -22,6 +33,7 @@ concurrency:
 name: check
 jobs:
   fmt:
+    # Required PR gate. Bazel does not run rustfmt, so this stays on every PR.
     runs-on: ubuntu-latest
     name: stable / fmt
     steps:
@@ -38,8 +50,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Get early warning of new lints which are regularly introduced in beta channels.
-        toolchain: [stable, beta]
+        # `stable / clippy` is a required PR gate, so it runs on every event.
+        # `beta / clippy` (early warning of new beta lints) is nightly-only: on a
+        # pull_request the matrix collapses to [stable] so PRs aren't gated on
+        # beta; otherwise it expands to [stable, beta].
+        toolchain: ${{ (github.event_name == 'pull_request') && fromJSON('["stable"]') || fromJSON('["stable", "beta"]') }}
     steps:
       - uses: actions/checkout@v7
       - name: Install ${{ matrix.toolchain }}
@@ -54,8 +69,11 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
   hack:
-    # cargo-hack checks combinations of feature flags to ensure that features are all additive
-    # which is required for feature unification
+    # cargo-hack checks combinations of feature flags to ensure that features are
+    # all additive (required for feature unification). Moved to nightly at the
+    # Bazel cutover: Bazel is the per-PR build gate, so this is now a Cargo-only
+    # safety net. Skipped on PRs via the event guard.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     name: ubuntu / stable / features
     steps:
@@ -73,7 +91,9 @@ jobs:
       - name: cargo hack
         run: cargo hack --feature-powerset check
   msrv:
-    # check that we can build using the declared minimum rust version
+    # check that we can build using the declared minimum rust version.
+    # Nightly-only (never gated PRs); skipped on PRs via the event guard.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     name: ubuntu / msrv
     steps:

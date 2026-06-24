@@ -19,7 +19,7 @@
 
    If `cargo-rail` is not available, fall back to `cargo build --all --all-targets --all-features --locked --quiet --color never` and `cargo nextest run --locked --all-features --all-targets --color never`. See docs/skills/pre-push.md for the full CI quality-gate suite.
 
-   A Bazel build system is being introduced alongside Cargo (see `docs/plans/bazel-migration.md`). Cargo remains the canonical build during the migration; Bazel runs in shadow mode and is not a required pre-push step yet. If you want to exercise it, `bazel test //...` runs all non-`requires-cargo`, non-BDD targets.
+   Bazel is the **primary per-PR CI gate** as of the Phase 7 cutover (see `docs/plans/bazel-migration.md`): `bazel.yml` (build + test on Linux/macOS/Windows), `bazel-coverage.yml` (coverage), and `parity.yml` (Bazel/Cargo target parity) are the required checks, and `cargo fmt` + stable `clippy` stay required on PRs. The Cargo build/test/coverage jobs (`test.yml`) moved to a nightly safety net. So `cargo rail run --profile commit -q` + `cargo fmt` above remain the fast LOCAL inner loop, but to reproduce the actual CI gate before pushing run `bazel test //...` (and `bazel test --test_tag_filters=bdd //...` for the BDD suites). Cargo.toml / Cargo.lock are still the single source of truth for dependency versions (`crate_universe` reads them).
 
 5. You MUST NEVER commit to the main branch of the git repository. ALL work MUST happen on a branch. Before making any code changes, verify you are on a feature branch. If on main, create and switch to an appropriate feature branch first. Use appropriate naming for branches such as `feature/new_feature_name` or `chore/update_dependency_x`.
 

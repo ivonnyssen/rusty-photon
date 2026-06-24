@@ -224,9 +224,9 @@ header swaps/morph) the fragment bytes are byte-identical to what htmx swaps.
 > P1/P2 server bytes, and the reaper is unix/Linux-only per §10, so a browser on
 > every OS adds zero behavioral coverage. The always-compiled `thirtyfour` dev-dep
 > does **not** regress the
-> required gate: the default 3-OS Bazel BDD (no `UI_BROWSER_TESTS`) and the Windows
-> Cargo BDD both stay green on ubuntu/macOS/Windows (shadow `bazel.yml` legs +
-> `windows / bdd / ui-htmx`).
+> required gate: the default 3-OS Bazel BDD (no `UI_BROWSER_TESTS`) — the required
+> gate — stays green on ubuntu/macOS/Windows (`bazel.yml` legs), and the nightly
+> Windows Cargo BDD (`windows / nextest` in `test.yml`) stays green too.
 >
 > **Feature-unification note:** `thirtyfour` hard-requires
 > `serde_json/preserve_order`, which unifies workspace-wide under `--all-features`
@@ -322,7 +322,7 @@ So:
   > §9 step-4 screenshot + page-source artifacts upload on failure. The
   > notify-on-failure job (`browser-nightly` label) only fires on `schedule`, so it
   > never churns an issue on `workflow_dispatch`. Bazel is **not** used here — the
-  > `--config=browser` seam is proven (§9 step 5) and the default shadow bazel.yml
+  > `--config=browser` seam is proven (§9 step 5) and the default bazel.yml gate
   > already compiles the layer per-PR, so a Cargo nightly is the leaner recorder.
 - **Promotion:** `@browser` stays **advisory** initially. Promote to required only
   after a defined sustained-green window — and note the bytes≠DOM rule (§9): for
@@ -371,8 +371,8 @@ Firefox/geckodriver via `--test_env`, headless, geckodriver on an **ephemeral** 
    > (§10). The remaining *risk* — that the always-compiled `thirtyfour` dev-dep
    > drags browser concerns into the required 3-OS gate — is disproven: the default
    > Bazel BDD (no `UI_BROWSER_TESTS`,
-   > `@browser` filtered) is green on ubuntu/macOS/Windows (shadow `bazel.yml`), and
-   > `windows / bdd / ui-htmx` (Cargo) is green, so `browser.rs` + `thirtyfour`
+   > `@browser` filtered) is green on ubuntu/macOS/Windows (`bazel.yml`), and the
+   > nightly Windows Cargo BDD (`windows / nextest`) is green, so `browser.rs` + `thirtyfour`
    > compile and the default suite passes on all three OSes. Net: the browser layer
    > is safely additive; its home is Linux (local dev + the §8 ubuntu nightly).
 

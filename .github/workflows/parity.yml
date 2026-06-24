@@ -2,9 +2,9 @@
 #
 # Ensures every Cargo workspace member has a Bazel rust target, so that
 # "Bazel green" means Bazel builds what Cargo builds (hand-written BUILD.bazel
-# files can otherwise drift from the workspace). Runs during the Phase 7 soak
-# and after — on PRs, push-to-main, and nightly — so drift is caught the moment
-# a crate is added without a BUILD.bazel.
+# files can otherwise drift from the workspace). A required check as of the
+# Phase 7 cutover — runs on PRs, push-to-main, and nightly so drift is caught
+# the moment a crate is added without a BUILD.bazel.
 #
 # See scripts/check-bazel-cargo-parity.sh and docs/plans/bazel-migration.md.
 permissions:
