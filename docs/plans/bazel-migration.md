@@ -170,6 +170,19 @@ Cutover PR checklist:
       status-check contexts are now `bazel / <os>` and `bazel coverage`.
 - [x] `docs/skills/pre-push.md`, `docs/AGENTS.md` (rule 4), `docs/workspace.md`,
       and the README rewritten for Bazel-primary.
+- [x] **Coverage-parity gap found by the cutover + fixed:** flipping the canonical
+      `<pkg>` Codecov flags to Bazel exposed a −4.1pp project-coverage drop. ~80% of
+      it was `crates/qhyccd-rs/BUILD.bazel` **missing a `rust_test` target** (zwo-rs
+      had `zwo-rs_unit_test`; qhyccd-rs had none), so qhyccd-rs's `src/tests/*`
+      suite ran only under `cargo test` — leaving it ungated by Bazel and reading
+      ~34% under `bazel coverage` (vs Cargo's ~93%, only incidental coverage via
+      qhy-camera's sim usage). Added `qhyccd-rs_unit_test` (mirrors
+      `zwo-rs_unit_test`), restoring parity and gating the suite. 22/30 packages were
+      already bit-exact Bazel==Cargo; the small remaining residuals are expected
+      behavioural gaps — `bdd-infra` (its cargo-shelling tests stay `requires-cargo`),
+      `plate-solver` (`@requires-astap` paths self-gate off without `ASTAP_BINARY`),
+      `phd2-guider` (child-process). This is the kind of check the unbuilt "Cutover
+      gate (Option E)" was meant to catch up front.
 - [ ] **Ruleset flip (manual, post-PR):** repoint the `main_protection`
       required-status checks — remove `ubuntu / stable`, `ubuntu / stable / features`,
       `coverage`; keep `stable / fmt`, `stable / clippy`; add `bazel / ubuntu-latest`,

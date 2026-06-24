@@ -1,5 +1,5 @@
 load("@cr//:defs.bzl", "aliases", "all_crate_deps")
-load("@rules_rust//rust:defs.bzl", "rust_library")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 exports_files(
     ["Cargo.toml"],
@@ -46,4 +46,33 @@ rust_library(
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = ["//visibility:public"],
     deps = [_LIBQHYCCD_SYS] + all_crate_deps(normal = True),
+)
+
+# The crate's own unit tests (src/tests/{camera,filter_wheel,sdk}_tests.rs), run
+# under Bazel against the sim variant — mirrors crates/zwo-rs:zwo-rs_unit_test.
+# Without this the suite only ran under `cargo test`, so post-cutover it was both
+# ungated by the Bazel gate and absent from `bazel coverage` (qhyccd-rs read ~34%
+# vs Cargo's ~93%, only incidentally covered via qhy-camera's sim usage). The
+# `simulation` `crate_features` must be set explicitly — rust_test does NOT inherit
+# it from the wrapped `crate` — or the `#[cfg(feature = "simulation")]` tests (the
+# bulk) compile out. `mockall` arrives via the dev-deps. The sim variant still
+# links the SDK (simulation removes the camera, not the link), so this runs in the
+# SDK-provisioned bazel.yml / bazel-coverage.yml jobs, like zwo-rs.
+rust_test(
+    name = "qhyccd-rs_unit_test",
+    size = "medium",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate = ":qhyccd-rs_sim",
+    crate_features = ["simulation"],
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
 )
