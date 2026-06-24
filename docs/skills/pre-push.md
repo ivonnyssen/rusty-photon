@@ -335,14 +335,17 @@ Current services and their commands:
 
 ## Quick Reference
 
-Minimum pre-push checks (copy-paste) — Bazel is the gate; `fmt`/`clippy` are the
-Cargo-only required lint jobs Bazel doesn't cover:
+Pre-push checks (copy-paste) — these mirror the full required gate (`bazel / <os>`,
+`bazel coverage`, `bazel/cargo target parity`, `stable / fmt`, `stable / clippy`);
+`fmt`/`clippy` are the Cargo-only lint jobs Bazel doesn't cover:
 
 ```bash
-bazel build //... && bazel test //...
-bazel test --test_tag_filters=bdd //...   # needs OmniSim + OMNISIM_PATH
-cargo fmt --check
-cargo clippy --all-targets --all-features -- -D warnings
+bazel build //... && bazel test //...                     # bazel / <os> (build + fast tests)
+bazel test --test_tag_filters=bdd //...                   # BDD suites (needs OmniSim + OMNISIM_PATH)
+bazel coverage --config=coverage //...                    # bazel coverage (heavier; needs OmniSim)
+./scripts/check-bazel-cargo-parity.sh                     # bazel/cargo target parity
+cargo fmt --check                                         # stable / fmt
+cargo clippy --all-targets --all-features -- -D warnings  # stable / clippy
 ```
 
 ## Bazel (primary gate)
