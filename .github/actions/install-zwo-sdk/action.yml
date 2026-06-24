@@ -200,9 +200,10 @@ runs:
           echo "install-zwo-sdk (sudo-free): $linkname -> $found"
         }
         # Suggested remedy package matches setup-pi-runner.sh §1 + the runner
-        # docs: libusb-1.0-0-dev provides libusb-1.0.so.0 (via its libusb-1.0-0
-        # runtime dep); libudev.so.1 ships with systemd (libudev1).
-        link_runtime_lib libusb-1.0.so.0 libusb-1.0.so libusb-1.0-0-dev
+        # docs: libusb-1.0-0 (the runtime) provides libusb-1.0.so.0 — the
+        # symlink target shared with the QHYCCD sudo-free link path, so no -dev
+        # package is needed; libudev.so.1 ships with systemd (libudev1).
+        link_runtime_lib libusb-1.0.so.0 libusb-1.0.so libusb-1.0-0
         link_runtime_lib libudev.so.1   libudev.so    libudev1
 
         {

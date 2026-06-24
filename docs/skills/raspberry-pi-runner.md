@@ -76,7 +76,7 @@ sudo apt-get install -y \
   jq \
   libssl-dev \
   libcfitsio-dev \
-  libusb-1.0-0-dev \
+  libusb-1.0-0 \
   unzip \
   ca-certificates
 ```
@@ -85,8 +85,10 @@ sudo apt-get install -y \
 the `rp-fits`, `filemonitor`, and `sky-survey-camera` packages fail to
 compile (this is the "use `-p <package>`" caveat that the user-level
 `MEMORY.md` references). `libssl-dev` is required by transitive C-FFI
-crates in the workspace. `libusb-1.0-0-dev` is required by the QHYCCD SDK
-that `qhy-camera` links (next paragraph).
+crates in the workspace. The **libusb-1.0 runtime** (`libusb-1.0-0`) is the
+shared symlink target for both the QHYCCD and ZWO sudo-free link paths (next
+two subsections); the `-dev` package is deliberately **not** installed — the
+unversioned `libusb-1.0.so` linker name is provided per-run instead.
 
 #### QHYCCD SDK (for `qhy-camera`)
 
@@ -99,8 +101,19 @@ its sudo-free **`install: env`** mode: the action downloads the SDK from
 **qhyccd.com** (publicly, no auth), extracts it under the workspace, and exports
 `QHYCCD_SDK_DIR` (the directory holding `libqhyccd.a`). `libqhyccd-sys`'s
 `build.rs` prefers `QHYCCD_SDK_DIR` on Linux (falling back to `/usr/local/lib`)
-and links `libqhyccd.a` **statically**, so no `.so` runtime chain, no `ldconfig`,
-and no `LD_LIBRARY_PATH` are needed and nothing is written into `/usr/local`.
+and adds **only that one dir** to the link search; `libqhyccd.a` itself is
+linked **statically**, so no QHYCCD `.so` runtime chain, no `ldconfig`, and no
+`LD_LIBRARY_PATH` are needed and nothing is written into `/usr/local`.
+
+The static `libqhyccd.a` does, however, pull in a *dynamic* `-lusb-1.0`. On a
+sudo-less runner there is no `libusb-1.0-0-dev`, hence no unversioned
+`libusb-1.0.so` for the linker — so the **Symlink libusb for the QHYCCD static
+link** step in `pi-nightly.yml` drops that linker-name symlink into
+`QHYCCD_SDK_DIR` (the one dir `build.rs` searches), pointing at the libusb-1.0
+*runtime* `.so.0`. Without it the build fails with `cannot find -lusb-1.0`
+(this was [issue #402](https://github.com/ivonnyssen/rusty-photon/issues/402)).
+This mirrors the ZWO sudo-free symlink (next subsection); both share the one
+`libusb-1.0` runtime package installed in §1.
 
 This is what keeps the runner **sudo-less** (public-repo safety — the job user
 has no root, so a dependency `build.rs` cannot escalate) *and* self-healing: a
@@ -141,8 +154,9 @@ no longer pre-provisions it — `pi-nightly.yml` runs the local
 
 The two prerequisites the sudo-free step cannot install itself are stable host
 packages installed once by §1 of `setup-pi-runner.sh`: **clang + libclang-dev**
-(bindgen) and the **libusb-1.0 runtime** (`libusb-1.0-0-dev` pulls it; it is
-both the `libusb-1.0.so` symlink target and the blob's own runtime dependency).
+(bindgen) and the **libusb-1.0 runtime** (`libusb-1.0-0`; it is the
+`libusb-1.0.so` symlink target for both the ZWO and QHYCCD link paths, and the
+blob's own runtime dependency).
 `libudev.so.1` ships with systemd. If the step ever errors with `… not found`,
 install the named package once and re-run — see Troubleshooting. This keeps the
 runner sudo-less *and* self-healing for ZWO exactly as for QHYCCD; the
@@ -395,6 +409,22 @@ A manual `/usr/local/lib` install (the old `setup-pi-runner.sh §1b` behaviour)
 still satisfies the link via `build.rs`'s fallback, but is no longer required or
 performed by setup.
 
+### `cargo build` fails with `cannot find -lusb-1.0` (compiling `libqhyccd-sys`)
+
+The static `libqhyccd.a` pulls in a dynamic `-lusb-1.0`, but the sudo-less
+runner has no `libusb-1.0-0-dev` (no unversioned `libusb-1.0.so` linker name).
+This was [issue #402](https://github.com/ivonnyssen/rusty-photon/issues/402).
+The **Symlink libusb for the QHYCCD static link (sudo-free)** step in
+`pi-nightly.yml` fixes it by linking `libusb-1.0.so` → the runtime `.so.0`
+inside `QHYCCD_SDK_DIR`. Check, in order:
+
+- That step ran and printed `linked …/libusb-1.0.so -> …/libusb-1.0.so.0`
+  before `cargo build` (it runs right after the QHYCCD SDK step).
+- The step did **not** abort with `libusb-1.0 runtime … not found`. That means
+  the host lacks the libusb-1.0 runtime — install it once with sudo and re-run:
+  `sudo apt-get install -y libusb-1.0-0` (it is in §1 of `setup-pi-runner.sh`,
+  so re-running the setup script is the catch-all fix).
+
 ### `cargo build` fails with `cannot find -lASICamera2` / `-lEFWFilter` / `-lusb-1.0` / `-ludev`
 
 `libzwo-sys` could not find the ZWO SDK (or the libusb/libudev link names) on
@@ -407,7 +437,7 @@ provided per-run by the **Install ZWO SDK (sudo-free)** step
   still resolves under `https://github.com/indilib/indi-3rdparty/raw/<ref>/libasi/armv8/`.
 - The step did **not** abort with `… not found`. That message means the host is
   missing a runtime prerequisite the sudo-free path symlinks against — install it
-  once with sudo and re-run: `sudo apt-get install -y libusb-1.0-0-dev` (provides
+  once with sudo and re-run: `sudo apt-get install -y libusb-1.0-0` (provides
   `libusb-1.0.so.0`) — `libudev.so.1` ships with systemd. `clang`/`libclang-dev`
   (bindgen) must also be present; all three are in §1 of `setup-pi-runner.sh`, so
   re-running it is the catch-all fix.
