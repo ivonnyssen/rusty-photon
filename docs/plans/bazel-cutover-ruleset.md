@@ -21,7 +21,7 @@ repo — so making the cutover real is a one-time ruleset edit that an admin run
 | `stable / clippy` | required | **required (kept)** | check.yml |
 | `ubuntu / stable` | required | **removed** (→ nightly) | test.yml |
 | `ubuntu / stable / features` | required | **removed** (→ nightly) | check.yml |
-| `coverage` | required | **removed** (→ nightly, `cargo-<pkg>`) | test.yml |
+| `coverage` | required | **removed** (replaced by `bazel coverage`) | test.yml |
 | `bazel / ubuntu-latest` | — | **added** | bazel.yml |
 | `bazel / macos-latest` | — | **added** | bazel.yml |
 | `bazel / windows-latest` | — | **added** | bazel.yml |

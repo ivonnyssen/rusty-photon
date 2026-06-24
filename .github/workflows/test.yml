@@ -15,8 +15,9 @@
 #   (Windows BDD runs in one job here — on a nightly run the ~10m sequential
 #    per-scenario spawn cost is irrelevant, so the per-service matrix split the
 #    per-PR job used is collapsed back in.)
-# - coverage: cargo-llvm-cov, uploaded under `cargo-<pkg>` flags (Bazel coverage
-#   drives the canonical `<pkg>` badges after the cutover — see .github/codecov.yml)
+#
+# Coverage is NOT collected here: `bazel coverage` (bazel-coverage.yml) is the
+# sole coverage source (canonical `<pkg>` Codecov flags). See docs/plans/bazel-migration.md.
 permissions:
   contents: read
 on:
@@ -157,85 +158,3 @@ jobs:
           path: '**/bdd-infra-omnisim-logs/**'
           if-no-files-found: ignore
           retention-days: 14
-  coverage:
-    # Cargo coverage — nightly safety net and a cross-check against the
-    # now-canonical Bazel coverage. Uploads under `cargo-<pkg>` Codecov flags;
-    # the canonical `<pkg>` per-service badges are driven by `bazel coverage`
-    # after the cutover. See docs/plans/bazel-migration.md and .github/codecov.yml.
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    name: coverage
-    steps:
-      - uses: actions/checkout@v7
-      - name: Install ASCOM OmniSim
-        uses: ./.github/actions/install-omnisim
-      - name: Install nightly (for coverage instrumentation)
-        uses: dtolnay/rust-toolchain@nightly
-        with:
-          components: llvm-tools-preview
-      - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@cargo-llvm-cov
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: linux-nightly
-      - name: cargo generate-lockfile
-        if: hashFiles('Cargo.lock') == ''
-        run: cargo generate-lockfile
-      # Two-phase coverage: build all binaries with instrumentation, then run
-      # tests so spawned child processes also produce .profraw files. Uses
-      # show-env (not `cargo llvm-cov nextest`) because BDD tests spawn service
-      # binaries via find_binary(), which needs instrumented binaries in the
-      # default target/debug/ directory.
-      - name: Clean previous coverage artifacts
-        run: cargo llvm-cov clean --workspace
-      - name: Build with coverage instrumentation
-        run: |
-          source <(cargo llvm-cov show-env --sh)
-          cargo build --locked --workspace --all-features --all-targets
-      - name: Run tests with coverage
-        run: |
-          source <(cargo llvm-cov show-env --sh)
-          cargo test --locked --workspace --all-features --all-targets
-      - name: Upload OmniSim logs (on failure)
-        if: failure()
-        uses: actions/upload-artifact@v7
-        with:
-          name: omnisim-logs-coverage
-          path: '**/bdd-infra-omnisim-logs/**'
-          if-no-files-found: ignore
-          retention-days: 14
-      - name: Generate per-package coverage reports
-        run: |
-          source <(cargo llvm-cov show-env --sh)
-          PACKAGES=$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[].name')
-          for pkg in $PACKAGES; do
-            cargo llvm-cov report --locked --package "$pkg" --lcov \
-              --output-path "lcov-${pkg}.info" 2>/dev/null || true
-          done
-      - name: Upload to codecov.io
-        if: env.ACT != 'true'
-        shell: bash
-        env:
-          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
-        run: |
-          # Download the codecov CLI uploader
-          curl -Os https://cli.codecov.io/latest/linux/codecov
-          chmod +x ./codecov
-          COMMIT_SHA="${{ github.sha }}"
-          echo "Uploading coverage for commit $COMMIT_SHA"
-          # Upload per-package reports under `cargo-<pkg>` flags. Bazel coverage
-          # owns the canonical `<pkg>` flags / per-service badges post-cutover; the
-          # Cargo job keeps a parallel `cargo-<pkg>` set as a nightly cross-check.
-          for f in lcov-*.info; do
-            [ -f "$f" ] || continue
-            pkg="${f#lcov-}"
-            pkg="${pkg%.info}"
-            echo "Uploading coverage for $pkg as flag cargo-$pkg"
-            ./codecov upload-process \
-              --file "$f" \
-              --flag "cargo-$pkg" \
-              --token "$CODECOV_TOKEN" \
-              --git-service github \
-              --commit-sha "$COMMIT_SHA" \
-              || echo "Warning: upload failed for $pkg"
-          done

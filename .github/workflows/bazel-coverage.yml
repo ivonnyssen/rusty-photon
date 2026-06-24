@@ -1,9 +1,9 @@
 # Bazel-based code coverage — the primary per-PR coverage gate.
 #
 # As of the Phase 7 cutover (docs/plans/bazel-migration.md) this is a required
-# check and it drives the canonical per-service Codecov badges (flag=<pkg>). The
-# Cargo coverage job (test.yml `coverage`) moved to a nightly safety net and now
-# uploads under `cargo-<pkg>` flags as a cross-check.
+# check and it drives the canonical per-service Codecov badges (flag=<pkg>). It is
+# the SOLE coverage source — the Cargo coverage job was dropped; the Cargo nightly
+# (test.yml) now only builds + tests.
 #
 # Why a separate workflow (not a job in bazel.yml): coverage needs a different
 # toolchain (nightly) and a fully instrumented build graph -- a separate action
@@ -233,9 +233,8 @@ jobs:
           # override the SHA so Codecov maps the upload to the PR head.
           COMMIT_SHA="${{ github.event.pull_request.head.sha || github.sha }}"
           echo "Uploading Bazel coverage for commit $COMMIT_SHA"
-          # Canonical `<pkg>` flags: Bazel coverage drives the per-service badges
-          # post-cutover. The Cargo job (test.yml) uploads a parallel `cargo-<pkg>`
-          # set as a nightly cross-check. See .github/codecov.yml.
+          # Canonical `<pkg>` flags: Bazel coverage is the sole coverage source
+          # and drives the per-service badges. See .github/codecov.yml.
           for f in coverage-lcov/*.info; do
             [ -f "$f" ] || continue
             pkg="$(basename "$f")"; pkg="${pkg#lcov-}"; pkg="${pkg%.info}"

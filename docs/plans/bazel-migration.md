@@ -156,8 +156,12 @@ build/test/coverage jobs to a nightly safety net. Decisions taken for the cutove
   neither rustfmt nor clippy. beta-clippy, `cargo-hack`, and `cargo-msrv` moved to
   the `check.yml` nightly schedule.
 - **Full coverage cutover:** `bazel coverage` is required and uploads the
-  canonical `<pkg>` Codecov flags (drives the per-service badges); the Cargo
-  coverage job (now nightly) uploads `cargo-<pkg>` as a cross-check.
+  canonical `<pkg>` Codecov flags (drives the per-service badges). The Cargo
+  coverage job was **dropped** — `bazel coverage` is the sole coverage source;
+  the Cargo nightly (`test.yml`) now only builds + tests. (Initially Cargo kept a
+  `cargo-<pkg>` nightly cross-check, but it was removed once the manual parity
+  pass below validated Bazel against Cargo — keeping it only risked perturbing the
+  project-status denominator with Cargo-only lines for no ongoing benefit.)
 - **`parity.yml` (`bazel/cargo target parity`) is required** so "Bazel green"
   keeps meaning "Bazel builds every Cargo workspace member".
 
@@ -834,13 +838,18 @@ the `scm` / `hydrate` features (off on Linux/x86 both sides), `rp-plate-solver` 
 carryforward (carryforward restores the correct full value; the only quantified table,
 Run #1 / PR #340, was an `infra=true` full-vs-full diff).
 
-**Cutover gate (Option E, not yet built).** Before flipping any `bazel-<pkg>` flag to
-replace `<pkg>`, add a CI step that computes the **same-commit** `|cargo-<pkg>% −
-bazel-<pkg>%|` (both jobs already upload against the PR head SHA) and warns above a small
-threshold (≈2–3pp, **not** 0 — some paths are legitimately unreachable under Bazel's
-behavioural-only model, e.g. `transport/udp.rs` exercised by neither suite). Cutover swaps
-the flag *source*, not the gate's union math, and `bazel-*` covers a subset of cargo lines,
-so the Codecov project status cannot regress on the swap.
+**Cutover gate (Option E) — moot; Cargo coverage was dropped.** This planned
+same-commit `|cargo-<pkg>% − bazel-<pkg>%|` warn-gate can no longer be built: the
+cutover validated parity with a one-off **manual** pass (which found and fixed the
+missing `qhyccd-rs` `rust_test` target — see Phase 7), then **dropped the Cargo
+coverage job entirely**, so there is no `cargo-<pkg>` flag left to diff against. The
+sketch's assumption that *"the Codecov project status cannot regress on the swap"*
+proved **false** in practice — Bazel and Cargo instrument different line sets (the
+qhyccd-rs two-variant denominator being the clearest case), so swapping the flag
+*source* did move the project %, which is exactly why parity was validated by hand
+before Cargo coverage was removed. Some residual `bazel < cargo` deltas remain
+legitimately unreachable under Bazel's behavioural-only model (e.g. `transport/udp.rs`
+exercised by neither suite, or `bdd-infra`'s `requires-cargo` tests).
 
 ## Bazel 9 upgrade (evaluated 2026-05-31)
 

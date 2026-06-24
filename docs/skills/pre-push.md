@@ -26,7 +26,7 @@
 | Rust nightly | `rustup toolchain install nightly` | Sanitizers, miri |
 | miri component | `rustup +nightly component add miri` | Miri checks |
 | cargo-msrv | `cargo install cargo-msrv` | MSRV verification |
-| cargo-llvm-cov | `cargo install cargo-llvm-cov` | Coverage |
+| cargo-llvm-cov | `cargo install cargo-llvm-cov` | Local ad-hoc cargo coverage (CI coverage is `bazel coverage`) |
 | cargo-rail | `cargo install cargo-rail` | Change detection |
 | ConformU | [ivonnyssen/conformu-install](https://github.com/ivonnyssen/conformu-install) | Conformance tests |
 | jq | `sudo apt install jq` / `brew install jq` | ConformU & miri discovery |
@@ -176,7 +176,9 @@ no longer a `plan`/cargo-rail narrowing job, and every job runs `--workspace`.
 | **required (stable)** | `cargo nextest run --locked --workspace --all-features --all-targets` + `cargo test --locked --workspace --all-features --test bdd` | stable, cargo-nextest | Off-PR |
 | **required (stable, doc)** | `cargo test --locked --workspace --all-features --doc` | stable | Off-PR |
 | **macos / windows** | same, per host OS (Windows runs BDD in one job) | -- | Off-PR |
-| **coverage** | `cargo llvm-cov --locked --workspace --all-features --lcov` (uploads `cargo-<pkg>` flags) | cargo-llvm-cov, llvm-tools-preview | Off-PR |
+
+This workflow no longer collects coverage — `bazel coverage` (bazel-coverage.yml)
+is the sole coverage source.
 
 ### safety.yml
 
@@ -392,14 +394,14 @@ bazel coverage --config=coverage //...
 # Combined lcov: $(bazel info output_path)/_coverage/_coverage_report.dat
 ```
 
-It mirrors the Cargo `coverage` job (nightly + `coverage_nightly`, so the
+It runs on the pinned nightly toolchain with `coverage_nightly` set, so the
 `#[cfg(test)] mod tests` blocks stay out of the numbers — as do the
 feature-gated `mock` transport/client modules, which carry a module-level
 `#![cfg_attr(coverage_nightly, coverage(off))]` because they never ship in a
 production binary and counting them would inflate the coverage figure with
-code that never runs at the telescope) and uploads under the canonical
-`<pkg>` Codecov flags that drive the per-service badges (the Cargo nightly job
-uploads a parallel `cargo-<pkg>` set as a cross-check). It **includes the BDD suite**
+code that never runs at the telescope. It uploads under the canonical
+`<pkg>` Codecov flags that drive the per-service badges, and is the **sole**
+coverage source (the Cargo jobs no longer collect coverage). It **includes the BDD suite**
 (`--config=coverage` drops only the `requires-cargo` tag), so locally it needs
 OmniSim installed and `OMNISIM_PATH` set, the same as a
 `bazel test --test_tag_filters=bdd` run. Whether the BDD-spawned service

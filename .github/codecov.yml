@@ -12,13 +12,11 @@ coverage:
         threshold: 1%
 
 # Test files, mock binaries, test helper binaries, and examples aren't important
-# for coverage. Examples are built-but-never-run: `cargo build --all-targets`
-# (the Cargo coverage job) instruments services/rp/examples/*.rs but no test
-# executes them, so they would otherwise sit at 0% in the Cargo `cargo-rp`
-# denominator and drag that flag down — while the Bazel job's split_lcov routes
-# them to the canonical `rp` flag too. Ignoring `**/examples/**` drops them from
-# BOTH reports symmetrically so the cargo-vs-bazel per-package comparison is
-# apples-to-apples. See docs/plans/bazel-migration.md "Coverage under Bazel".
+# for coverage. `bazel coverage` (the sole coverage source) only instruments
+# first-party library / binary / test targets, and examples have no Bazel targets,
+# so they don't appear in the report; the `**/examples/**` ignore is kept as a
+# guard in case example targets are ever added. See docs/plans/bazel-migration.md
+# "Coverage under Bazel".
 ignore:
   - "tests"
   - "**/bin/mock_*.rs"
@@ -33,26 +31,11 @@ comment:
 # Flag carryforward (ref: https://docs.codecov.com/docs/carryforward-flags).
 # When a commit does not re-upload a given flag, Codecov backfills that flag's
 # last-known coverage so the per-service badges stay populated instead of
-# flipping to "unknown". After the Bazel cutover two jobs upload coverage:
-#   * Bazel (bazel-coverage.yml): the per-PR required gate. Uploads every
-#     canonical `<pkg>` flag each run — the source of the per-service badges.
-#   * Cargo (test.yml): a nightly safety net. Uploads every `cargo-<pkg>` flag,
-#     but it only runs on schedule / push-to-main, so PR commits never refresh
-#     those flags.
-# Declaring carryforward here makes it explicit and version-controlled for every
-# flag, so a flag a given commit doesn't upload — e.g. the `cargo-<pkg>` flags on
-# a PR commit, which only the nightly produces — inherits its last-known value
-# instead of rendering "unknown". Carryforward is applied when an upload is
-# processed, so a flag fills in on the next commit that uploads it, not
-# retroactively.
-# Note: the project status (above) has no `flags:` filter, so all flags merge
-# into its report. Codecov unions overlapping lines (a line counts as covered if
-# any flag covers it), so the `cargo-<pkg>` cross-check can only RAISE coverage on
-# lines Bazel also measures. It is NOT a guaranteed floor, though: any line/file
-# present only in the Cargo uploads (beyond the ignored examples) would also enter
-# the project denominator and could lower the overall %. To keep the gate strictly
-# Bazel-sourced, scope `status.project.default.flags` to the canonical `<pkg>`
-# flags. See docs/plans/bazel-migration.md.
+# flipping to "unknown". `bazel coverage` (bazel-coverage.yml) is the sole
+# coverage uploader — it uploads every canonical `<pkg>` flag each run — so
+# carryforward only matters when a run is cancelled or fails (e.g. it hits its
+# time cap): the badges keep their last-known value until the next successful run.
+# Declaring it here makes that explicit and version-controlled for every flag.
 flag_management:
   default_rules:
     carryforward: true
