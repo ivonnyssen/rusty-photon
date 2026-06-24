@@ -69,7 +69,6 @@ act -W .github/workflows/check.yml -j clippy &
 act -W .github/workflows/check.yml -j hack &
 act -W .github/workflows/check.yml -j msrv &
 act -W .github/workflows/test.yml -j required &
-act -W .github/workflows/test.yml -j coverage &
 act -W .github/workflows/safety.yml -j sanitizers &
 wait
 

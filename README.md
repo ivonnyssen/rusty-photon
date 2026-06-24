@@ -122,7 +122,7 @@ ASCOM Alpaca **Camera** driver for ZWO ASI hardware, built natively on the vendo
 
 ### Building
 
-Cargo is the canonical build. A Bazel build runs in shadow mode alongside it (see [docs/plans/bazel-migration.md](docs/plans/bazel-migration.md)) and is not yet a required pre-push step.
+Bazel is the primary per-PR CI gate (`bazel test //...`); the Cargo build is the canonical local inner loop and the nightly safety net (see [docs/plans/bazel-migration.md](docs/plans/bazel-migration.md)).
 
 ```bash
 # Build everything
