@@ -1,35 +1,31 @@
-# Bazel-based code coverage, shadow mode. Runs alongside the canonical Cargo
-# coverage job (.github/workflows/test.yml `coverage`) during the migration in
-# docs/plans/bazel-migration.md. NOT required for merge.
+# Bazel-based code coverage — the primary per-PR coverage gate.
+#
+# As of the Phase 7 cutover (docs/plans/bazel-migration.md) this is a required
+# check and it drives the canonical per-service Codecov badges (flag=<pkg>). It is
+# the SOLE coverage source — the Cargo coverage job was dropped; the Cargo nightly
+# (test.yml) now only builds + tests.
 #
 # Why a separate workflow (not a job in bazel.yml): coverage needs a different
 # toolchain (nightly) and a fully instrumented build graph -- a separate action
 # namespace from bazel.yml's stable build/test. Keeping it separate means its
 # (slower, nightly, instrumented) actions and its cache never perturb the
-# shadow build/test job.
+# build/test job.
 #
-# Parity with the Cargo job:
+# Properties:
 #  * nightly toolchain + --cfg=coverage_nightly (see .bazelrc --config=coverage)
 #    so #[cfg_attr(coverage_nightly, coverage(off))] on every `#[cfg(test)] mod
 #    tests` block takes effect and test code stays out of the numbers.
 #  * LLVM source-based instrumentation, first-party crates only.
-#  * per-package lcov uploaded to Codecov so the per-service flags survive.
-#
-# Differences from the Cargo job (intentional):
 #  * Runs `bazel coverage //...` over the WHOLE repo every time. Untouched
 #    targets are cache hits (local disk + remote R2 cache), so their
-#    coverage.dat is fetched, not recomputed -- every PR still gets a COMPLETE
-#    report without cargo-rail narrowing or Codecov carryforward. This is the
-#    headline win of doing coverage under Bazel.
-#  * Uploads under distinct `bazel-<pkg>` flags so it does NOT alter the
-#    canonical per-service badges while Cargo coverage still runs (shadow mode).
+#    coverage.dat is fetched, not recomputed -- every PR gets a COMPLETE report
+#    with no cargo-rail narrowing and no dependence on Codecov carryforward.
+#  * Uploads per-package lcov under the canonical `<pkg>` flags so the
+#    per-service badges are Bazel-driven.
 #  * Includes the BDD suite (--config=coverage flips the default tag filter to
 #    -requires-cargo, see .bazelrc) so the service-binary integration paths are
-#    covered. Whether coverage from the BDD-spawned service binaries is actually
-#    COLLECTED is the open risk: cargo-llvm-cov gets it via a shared
-#    LLVM_PROFILE_FILE + whole-target-dir merge; Bazel's per-test-action model
-#    may not. Validate in run #1 (bazel-<service> vs <service>); see
-#    bazel-migration.md for the contingency.
+#    covered; the spawned-binary coverage is collected via the vendored
+#    rules_rust patches (see bazel-migration.md; effectiveness guarded by parity.yml).
 permissions:
   contents: read
 on:
@@ -38,6 +34,10 @@ on:
   # warm coverage.dat for untouched targets; also gives main a coverage baseline.
   push:
     branches: [main]
+  # Nightly run from main keeps the coverage action cache warm during quiet
+  # stretches (mirrors bazel.yml) and refreshes the per-service badges.
+  schedule:
+    - cron: "33 7 * * *"
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
@@ -51,15 +51,16 @@ jobs:
     # scratch -- and the instrumented BDD suite (rp ~150s warm) runs here too.
     # Warm runs are fast.
     timeout-minutes: 60
-    name: bazel coverage (shadow)
+    name: bazel coverage
     defaults:
       run:
         shell: bash
     env:
-      # Same trust model as bazel.yml: only push-to-main holds the write token,
-      # so only trusted code populates the coverage cache; PRs (including forks,
-      # which get no secrets at all) read anonymously and never write.
-      CACHE_WRITE_TOKEN: ${{ github.event_name == 'push' && secrets.BAZEL_CACHE_WRITE_TOKEN || '' }}
+      # Same trust model as bazel.yml: only push-to-main and the nightly schedule
+      # (both default-branch events) hold the write token, so only trusted code
+      # populates the coverage cache; PRs (including forks, which get no secrets
+      # at all) read anonymously and never write.
+      CACHE_WRITE_TOKEN: ${{ (github.event_name == 'push' || github.event_name == 'schedule') && secrets.BAZEL_CACHE_WRITE_TOKEN || '' }}
     steps:
       - uses: actions/checkout@v7
 
@@ -149,7 +150,7 @@ jobs:
           # test-log capture step still runs regardless, so a failure is fully triage-able.
           # The rp:bdd post-scenario park that previously cancelled ~half of these runs at the
           # 60-min wall is fixed (3s --remote_timeout + --spawn_strategy=local, now in .bazelrc);
-          # this job can be promoted to a required gate at the Phase 7 cutover. See
+          # this job is a required gate as of the Phase 7 cutover. See
           # docs/plans/bazel-migration.md.
           if [[ $status -eq 124 || $status -eq 137 ]]; then
             echo "::error title=bazel coverage capped::Hit the 50-min observability cap (exit $status) — a test (almost certainly //services/rp:bdd) did not finish in time. Captured test logs are in the 'bazel-testlogs' artifact."
@@ -232,15 +233,15 @@ jobs:
           # override the SHA so Codecov maps the upload to the PR head.
           COMMIT_SHA="${{ github.event.pull_request.head.sha || github.sha }}"
           echo "Uploading Bazel coverage for commit $COMMIT_SHA"
-          # Distinct `bazel-<pkg>` flags keep the canonical per-service badges
-          # (flag=<pkg>) Cargo-only during shadow mode.
+          # Canonical `<pkg>` flags: Bazel coverage is the sole coverage source
+          # and drives the per-service badges. See .github/codecov.yml.
           for f in coverage-lcov/*.info; do
             [ -f "$f" ] || continue
             pkg="$(basename "$f")"; pkg="${pkg#lcov-}"; pkg="${pkg%.info}"
-            echo "Uploading coverage for $pkg as flag bazel-$pkg"
+            echo "Uploading coverage for $pkg as flag $pkg"
             ./codecov upload-process \
               --file "$f" \
-              --flag "bazel-$pkg" \
+              --flag "$pkg" \
               --token "$CODECOV_TOKEN" \
               --git-service github \
               --commit-sha "$COMMIT_SHA" \

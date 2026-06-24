@@ -12,13 +12,11 @@ coverage:
         threshold: 1%
 
 # Test files, mock binaries, test helper binaries, and examples aren't important
-# for coverage. Examples are built-but-never-run: `cargo build --all-targets`
-# (the Cargo coverage job) instruments services/rp/examples/*.rs but no test
-# executes them, so they would otherwise sit at 0% in the Cargo `rp` denominator
-# and drag that flag down — while the Bazel job's split_lcov routes them to `rp`
-# too. Ignoring `**/examples/**` drops them from BOTH reports symmetrically so
-# the cargo-vs-bazel per-package comparison is apples-to-apples. See
-# docs/plans/bazel-migration.md "Coverage under Bazel".
+# for coverage. `bazel coverage` (the sole coverage source) only instruments
+# first-party library / binary / test targets, and examples have no Bazel targets,
+# so they don't appear in the report; the `**/examples/**` ignore is kept as a
+# guard in case example targets are ever added. See docs/plans/bazel-migration.md
+# "Coverage under Bazel".
 ignore:
   - "tests"
   - "**/bin/mock_*.rs"
@@ -33,22 +31,11 @@ comment:
 # Flag carryforward (ref: https://docs.codecov.com/docs/carryforward-flags).
 # When a commit does not re-upload a given flag, Codecov backfills that flag's
 # last-known coverage so the per-service badges stay populated instead of
-# flipping to "unknown". Two jobs depend on this:
-#   * Cargo (test.yml): narrows uploads to the changed packages via cargo-rail,
-#     so most commits upload only a subset of flags.
-#   * Bazel shadow (bazel-coverage.yml): uploads every bazel-<pkg> flag each run,
-#     but a run that fails or hits its time cap uploads nothing for that commit
-#     (historically the rp:bdd post-scenario park cancelled ~half of these at the
-#     60-min wall — now fixed; see docs/plans/bazel-migration.md).
-# Declaring carryforward here makes it explicit and version-controlled for every
-# flag, and — critically — applies it to the bazel-<pkg> shadow flags, which had
-# no carried baseline and rendered "unknown" on every commit whose bazel-coverage
-# run was cancelled. Carryforward is applied when an upload is processed, so the
-# badges fill in on the next main commit that uploads, not retroactively.
-# Note: the project status (above) has no `flags:` filter, so carried-forward
-# bazel-<pkg> data now enters its merged report; this cannot regress the gate
-# (Codecov merges flags by union, and bazel-* covers a subset of the Cargo lines,
-# so the merged % only stays equal or rises). See docs/plans/bazel-migration.md.
+# flipping to "unknown". `bazel coverage` (bazel-coverage.yml) is the sole
+# coverage uploader — it uploads every canonical `<pkg>` flag each run — so
+# carryforward only matters when a run is cancelled or fails (e.g. it hits its
+# time cap): the badges keep their last-known value until the next successful run.
+# Declaring it here makes that explicit and version-controlled for every flag.
 flag_management:
   default_rules:
     carryforward: true
