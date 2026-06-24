@@ -75,7 +75,7 @@ sudo apt-get install -y \
   jq \
   libssl-dev \
   libcfitsio-dev \
-  libusb-1.0-0-dev \
+  libusb-1.0-0 \
   clang \
   libclang-dev \
   unzip \
@@ -90,14 +90,20 @@ sudo apt-get install -y \
 # longer necessary: `pi-nightly.yml` now provisions the SDK per-run with
 # `ivonnyssen/qhyccd-sdk-install@v4` `install: env` — a sudo-free mode that
 # extracts the SDK under the workspace and exports QHYCCD_SDK_DIR, which
-# libqhyccd-sys's build.rs reads to link libqhyccd.a statically. Provisioning in
-# the workflow (rather than at setup time) makes the runner self-healing: a new
-# native-SDK service or an SDK version bump no longer requires re-running this
-# script by hand. The build.rs fallback to /usr/local/lib still works if an
-# operator has installed the SDK there manually, so nothing breaks if it is.
+# libqhyccd-sys's build.rs reads to find libqhyccd.a (linked statically).
+# Provisioning in the workflow (rather than at setup time) makes the runner
+# self-healing: a new native-SDK service or an SDK version bump no longer
+# requires re-running this script by hand. The build.rs fallback to
+# /usr/local/lib still works if an operator has installed the SDK there
+# manually, so nothing breaks if it is.
 #
-# (ZWO is still pre-provisioned below — see §1.5 — until it gets the same
-# sudo-free, per-run treatment.)
+# The static libqhyccd.a still pulls in a *dynamic* `-lusb-1.0`. On a sudo-less
+# runner there is no libusb-1.0-0-dev (no unversioned `libusb-1.0.so` for the
+# linker), so `pi-nightly.yml` symlinks the linker name to the libusb-1.0
+# *runtime* `.so.0` inside QHYCCD_SDK_DIR per-run — exactly like §1.5's ZWO
+# step. That is why §1 above installs only the libusb-1.0 *runtime* package
+# (libusb-1.0-0), not the -dev package: it is just the symlink target, shared
+# by both the QHYCCD and ZWO sudo-free link paths.
 
 # === 1.5. ZWO ASI/EFW SDK — now provisioned sudo-free per-run by the workflow ===
 #

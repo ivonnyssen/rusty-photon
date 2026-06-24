@@ -184,7 +184,10 @@ runs:
         link_runtime_lib() {
           soname="$1"; linkname="$2"; pkg="$3"; found=""
           if command -v ldconfig >/dev/null 2>&1; then
-            found="$(ldconfig -p 2>/dev/null | awk -v s="$soname" '$1 == s { print $NF; exit }')"
+            # `|| true`: with pipefail, a failing `ldconfig -p` makes this
+            # assignment non-zero, which under `set -e` would abort before the
+            # directory-scan fallback below. Swallow it so the fallback runs.
+            found="$(ldconfig -p 2>/dev/null | awk -v s="$soname" '$1 == s { print $NF; exit }')" || true
           fi
           if [ -z "$found" ]; then
             for d in /usr/lib/aarch64-linux-gnu /lib/aarch64-linux-gnu \
@@ -200,9 +203,10 @@ runs:
           echo "install-zwo-sdk (sudo-free): $linkname -> $found"
         }
         # Suggested remedy package matches setup-pi-runner.sh §1 + the runner
-        # docs: libusb-1.0-0-dev provides libusb-1.0.so.0 (via its libusb-1.0-0
-        # runtime dep); libudev.so.1 ships with systemd (libudev1).
-        link_runtime_lib libusb-1.0.so.0 libusb-1.0.so libusb-1.0-0-dev
+        # docs: libusb-1.0-0 (the runtime) provides libusb-1.0.so.0 — the
+        # symlink target shared with the QHYCCD sudo-free link path, so no -dev
+        # package is needed; libudev.so.1 ships with systemd (libudev1).
+        link_runtime_lib libusb-1.0.so.0 libusb-1.0.so libusb-1.0-0
         link_runtime_lib libudev.so.1   libudev.so    libudev1
 
         {
