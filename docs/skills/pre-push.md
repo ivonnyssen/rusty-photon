@@ -44,9 +44,10 @@
 > gate PRs. So the authoritative pre-push is:
 >
 > ```bash
-> bazel build //... && bazel test //...                       # build + fast tests (the gate)
+> bazel build //... && bazel test //...                       # bazel / <os> (build + fast tests)
 > bazel test --test_tag_filters=bdd //...                     # BDD suites (needs OmniSim + OMNISIM_PATH)
-> bazel coverage --config=coverage //...                      # the bazel coverage gate (needs OmniSim)
+> bazel coverage --config=coverage //...                      # bazel coverage (needs OmniSim)
+> ./scripts/check-bazel-cargo-parity.sh                       # bazel/cargo target parity
 > cargo fmt --check                                           # `stable / fmt`
 > cargo clippy --all-targets --all-features -- -D warnings    # `stable / clippy`
 > ```

@@ -46,9 +46,13 @@ comment:
 # processed, so a flag fills in on the next commit that uploads it, not
 # retroactively.
 # Note: the project status (above) has no `flags:` filter, so all flags merge
-# into its report; Codecov merges flags by union (a line counts as covered if any
-# flag covers it), so adding the `cargo-<pkg>` cross-check cannot lower the gate.
-# See docs/plans/bazel-migration.md.
+# into its report. Codecov unions overlapping lines (a line counts as covered if
+# any flag covers it), so the `cargo-<pkg>` cross-check can only RAISE coverage on
+# lines Bazel also measures. It is NOT a guaranteed floor, though: any line/file
+# present only in the Cargo uploads (beyond the ignored examples) would also enter
+# the project denominator and could lower the overall %. To keep the gate strictly
+# Bazel-sourced, scope `status.project.default.flags` to the canonical `<pkg>`
+# flags. See docs/plans/bazel-migration.md.
 flag_management:
   default_rules:
     carryforward: true
