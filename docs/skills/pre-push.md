@@ -138,16 +138,17 @@ cargo rail plan --merge-base -f text
 
 `fmt` and stable `clippy` run on every PR + push to main (required PR gates,
 because Bazel does not run rustfmt/clippy). The beta-clippy, `hack`, and `msrv`
-jobs moved to a nightly schedule + `workflow_dispatch` at the Bazel cutover and
-are skipped on PRs (`if: github.event_name != 'pull_request'`).
+jobs moved off the per-PR path at the Bazel cutover: they run on push to main,
+the nightly schedule, and `workflow_dispatch` — skipped on PRs via
+`if: github.event_name != 'pull_request'`. ("Off-PR" below = that set.)
 
 | CI Job | Local Command | Prerequisites | Runs |
 |--------|---------------|---------------|------|
 | **fmt** | `cargo fmt --check` | stable rustfmt | **PR gate** |
 | **clippy (stable)** | `cargo clippy --all-targets --all-features -- -D warnings` | stable clippy | **PR gate** |
-| **clippy (beta)** | `cargo +beta clippy --all-targets --all-features -- -D warnings` | beta toolchain | Nightly |
-| **hack** | `cargo hack --feature-powerset check` | cargo-hack | Nightly |
-| **msrv** | `cargo msrv verify` | cargo-msrv | Nightly |
+| **clippy (beta)** | `cargo +beta clippy --all-targets --all-features -- -D warnings` | beta toolchain | Off-PR |
+| **hack** | `cargo hack --feature-powerset check` | cargo-hack | Off-PR |
+| **msrv** | `cargo msrv verify` | cargo-msrv | Off-PR |
 
 The workspace uses a single MSRV (currently 1.94.1) declared in the root
 `Cargo.toml` via `[workspace.package]`. All members inherit it with
@@ -171,10 +172,10 @@ no longer a `plan`/cargo-rail narrowing job, and every job runs `--workspace`.
 
 | CI Job | Local Command | Prerequisites | Runs |
 |--------|---------------|---------------|------|
-| **required (stable)** | `cargo nextest run --locked --workspace --all-features --all-targets` + `cargo test --locked --workspace --all-features --test bdd` | stable, cargo-nextest | Nightly |
-| **required (stable, doc)** | `cargo test --locked --workspace --all-features --doc` | stable | Nightly |
-| **macos / windows** | same, per host OS (Windows runs BDD in one job) | -- | Nightly |
-| **coverage** | `cargo llvm-cov --locked --workspace --all-features --lcov` (uploads `cargo-<pkg>` flags) | cargo-llvm-cov, llvm-tools-preview | Nightly |
+| **required (stable)** | `cargo nextest run --locked --workspace --all-features --all-targets` + `cargo test --locked --workspace --all-features --test bdd` | stable, cargo-nextest | Off-PR |
+| **required (stable, doc)** | `cargo test --locked --workspace --all-features --doc` | stable | Off-PR |
+| **macos / windows** | same, per host OS (Windows runs BDD in one job) | -- | Off-PR |
+| **coverage** | `cargo llvm-cov --locked --workspace --all-features --lcov` (uploads `cargo-<pkg>` flags) | cargo-llvm-cov, llvm-tools-preview | Off-PR |
 
 ### safety.yml
 
@@ -183,8 +184,8 @@ job — both sanitizers run at the workspace level.
 
 | CI Job | Local Command | Prerequisites | Runs |
 |--------|---------------|---------------|------|
-| **address sanitizer** | See below | nightly, llvm | Nightly |
-| **leak sanitizer** | See below | nightly | Nightly |
+| **address sanitizer** | See below | nightly, llvm | Off-PR |
+| **leak sanitizer** | See below | nightly | Off-PR |
 
 Address sanitizer:
 
