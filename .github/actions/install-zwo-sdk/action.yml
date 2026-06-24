@@ -184,7 +184,10 @@ runs:
         link_runtime_lib() {
           soname="$1"; linkname="$2"; pkg="$3"; found=""
           if command -v ldconfig >/dev/null 2>&1; then
-            found="$(ldconfig -p 2>/dev/null | awk -v s="$soname" '$1 == s { print $NF; exit }')"
+            # `|| true`: with pipefail, a failing `ldconfig -p` makes this
+            # assignment non-zero, which under `set -e` would abort before the
+            # directory-scan fallback below. Swallow it so the fallback runs.
+            found="$(ldconfig -p 2>/dev/null | awk -v s="$soname" '$1 == s { print $NF; exit }')" || true
           fi
           if [ -z "$found" ]; then
             for d in /usr/lib/aarch64-linux-gnu /lib/aarch64-linux-gnu \
