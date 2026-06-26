@@ -210,16 +210,16 @@ freshly-persisted file, rebinding the same port.
 
 ```bash
 # Run all tests
-cargo test -p qhy-focuser --quiet
+bazel test //services/qhy-focuser/...
 
 # Run BDD tests specifically
-cargo test -p qhy-focuser --test bdd
+bazel test --test_tag_filters=bdd //services/qhy-focuser/...
 
-# Run with mock feature (for server tests)
-cargo test -p qhy-focuser --features mock
+# Run server tests (mock-feature server startup)
+bazel test //services/qhy-focuser:test_lib
 
 # Run ConformU compliance tests
-cargo test -p qhy-focuser --features conformu --test conformu_integration -- --ignored
+bazel test //services/qhy-focuser:conformu_integration
 
 # Run in mock mode
 cargo run -p qhy-focuser --features mock

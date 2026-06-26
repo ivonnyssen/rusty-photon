@@ -13,7 +13,7 @@ Tracked by [`docs/plans/vendor-qhyccd-rs.md`](../plans/vendor-qhyccd-rs.md).
 Supersedes the **variant-selecting** role of the interim Bazel fix on
 `worktree-qhy-camera` (a test-only `qhyccd-rs = { features = ["simulation"] }`
 dev-dep + `simulation` `crate_features`; see
-[`docs/plans/bazel-migration.md`](../plans/bazel-migration.md),
+[`docs/plans/archive/bazel-migration.md`](../plans/archive/bazel-migration.md),
 "External-crate non-default features for tests"). The real/sim split is now done
 by two first-party BUILD variants; the dev-dep is **retained** only to keep
 simulation's optional deps (`rand`/`rayon`) resolved into `@cr` (Phase 2 spike).

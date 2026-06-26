@@ -1,10 +1,21 @@
 # Bazel Migration Plan
 
-**Status:** In progress — Phase 7 cutover PR opened 2026-06-23
+**Status: COMPLETE (archived 2026-06-25).** The Bazel migration is delivered. Bazel
+is the **required** primary per-PR CI gate on Linux/macOS/Windows (`bazel.yml`,
+`bazel-coverage.yml`, `parity.yml`); `cargo fmt` + stable `clippy` stay required; the
+Cargo build/test jobs moved to a nightly safety net (`test.yml`) and the Cargo
+coverage job was dropped (`bazel coverage` is the sole coverage source). Cutover
+landed in #399 (merged 2026-06-24) and the `main_protection` ruleset flip
+([bazel-cutover-ruleset.md](bazel-cutover-ruleset.md)) is done — the required checks
+are exactly the seven Bazel-era contexts. The Cloudflare Worker + R2 remote cache is
+deployed (`cache.rustyphoton.space`, `BAZEL_CACHE_WRITE_TOKEN` set), exercised by
+green push/schedule runs. Phases 4 (Leptos/WASM) and 6 (packaging) were deliberately
+**DROPPED** (2026-05-24), not deferred. Two items remain non-blocking and parked: the
+plan's own 30-day required-Bazel soak (Phase 7 exit criterion, ~2026-07-24; rollback
+= re-enable the Cargo required jobs from git history), and the by-design `.config/rail.toml`
+local pre-commit loop + `rust-project.json` IDE decision (open question 4).
+
 **Started:** 2026-04-16
-**Target cutover:** Phase 7 underway (cutover PR opened 2026-06-23). Bazel is the
-primary per-PR gate in the PR's workflows; the `main_protection` ruleset flip
-(`docs/plans/bazel-cutover-ruleset.md`) is the last manual step.
 
 ## Decisions (2026-05-24)
 
@@ -14,8 +25,8 @@ Three decisions taken to shorten the path to a Bazel-primary cutover (Phase 7):
    token-write), replacing the BuildBuddy free tier. Served from the edge so
    cloud CI isn't bottlenecked, ~$0 (R2 has no egress fees), retention
    controlled via an R2 lifecycle rule. Code + deploy:
-   [tools/bazel-cache-worker/](../../tools/bazel-cache-worker/README.md);
-   overview: [docs/skills/bazel-remote-cache.md](../skills/bazel-remote-cache.md).
+   [tools/bazel-cache-worker/](../../../tools/bazel-cache-worker/README.md);
+   overview: [docs/skills/bazel-remote-cache.md](../../skills/bazel-remote-cache.md).
 2. **Leptos / `sentinel-app` WASM: abandoned.** Not used today; Phase 4 is
    dropped, not deferred.
 3. **Release packaging: stays on Cargo permanently.** We release far less often
@@ -77,7 +88,7 @@ repo root/
 
 **Native-SDK crates build under Bazel too — provision the SDK, do NOT exclude (2026-06-15).** Two workspace members link a prebuilt vendor SDK at compile time via a `*-sys` crate: `zwo-camera` (`zwo-rs → libzwo-sys` → ZWO ASI/EFW SDK, MIT) and `qhy-camera` (`qhyccd-rs → libqhyccd-sys` → QHYCCD SDK, proprietary; its Bazel wiring is landing separately). The in-scope contract — *all workspace crates build and test under Bazel* — applies to them: at the Phase-7 cutover the Bazel job becomes the **required** gate while Cargo drops to a nightly, so a crate excluded from `//...` (via a `manual` tag, or simply by having no `BUILD.bazel`) would silently carry **zero** required CI. The mechanism is **imperative SDK provisioning**, identical to how `bazel.yml` already installs OmniSim: the shadow workflows (`bazel.yml`, `bazel-coverage.yml`) run the service's `install-*-sdk` composite action before `bazel build`/`coverage //...`, so `libzwo-sys`'s `build.rs` (bindgen + unconditional link) resolves against the system-installed SDK. `zwo-camera`'s targets carry **no** `manual`/`requires-cargo` tag (verified on Linux: `bazel test //services/zwo-camera:zwo-camera_unit_test` builds, links, and runs in-sandbox). `.bazelrc` forwards the toolchain env that `--incompatible_strict_action_env` strips, scoped per-OS so the Linux cache is untouched: `build:macos --action_env=LIBCLANG_PATH` (bindgen) and `build:windows --action_env=ZWO_SDK_LIB_DIR` (link search). A future *hermetic* alternative — a `crate.annotation` turning the SDK into a Bazel-managed `cc_import`/`http_archive` dep, dropping the imperative install and making the SDK cacheable in the action graph — is optional cleanup, **not** a prerequisite for parity. **Do not** reach for the `manual` tag to keep a native-SDK crate out of the shadow build; provision the SDK instead.
 
-**Real/sim parity for vendored `*-sys` crates — the first-party two-variant pattern (2026-06-17).** `crate_universe` resolves **one** feature set per external crate and ignores a Bazel target's `crate_features`, so an *external* `zwo-rs`/`qhyccd-rs` cannot be built both real (production) and `simulation` (tests) from `@cr`; the interim workaround was a test-only `… = { features = ["simulation"] }` dev-dep that flips the single resolved variant to `simulation` — which also simulates the (never-deployed) Bazel production binary. **`zwo-rs` + `libzwo-sys` are now vendored first-party** ([ADR-010](../decisions/010-vendor-zwo-rs.md) / [vendor-zwo-rs.md](vendor-zwo-rs.md)), so the repo owns their `BUILD.bazel` and expresses **two variants** — `//crates/zwo-rs:zwo-rs` (real SDK) and `//crates/zwo-rs:zwo-rs_sim` (`testonly`, `simulation`) — exactly like `crates/rp-plate-solver` ↔ `rp-plate-solver_with_mock`. zwo-camera's production targets link the real variant (the prod binary `NEEDs libASICamera2.so`); its unit/BDD/ConformU targets link `zwo-rs_sim`. The `simulation` dev-dep stays with a **narrowed** role: it just keeps `simulation`'s optional deps (`rand`/`rayon`) resolved into `@cr` for the `zwo-rs_sim` target. The dev-dep technique remains the answer for native-feature crates we do **not** vendor (until `qhyccd-rs` is vendored too — [vendor-qhyccd-rs.md](vendor-qhyccd-rs.md)). `libzwo-sys` is also the repo's first first-party `cargo_build_script`, and the first to run **bindgen** under Bazel from a hand-written rule.
+**Real/sim parity for vendored `*-sys` crates — the first-party two-variant pattern (2026-06-17).** `crate_universe` resolves **one** feature set per external crate and ignores a Bazel target's `crate_features`, so an *external* `zwo-rs`/`qhyccd-rs` cannot be built both real (production) and `simulation` (tests) from `@cr`; the interim workaround was a test-only `… = { features = ["simulation"] }` dev-dep that flips the single resolved variant to `simulation` — which also simulates the (never-deployed) Bazel production binary. **`zwo-rs` + `libzwo-sys` are now vendored first-party** ([ADR-010](../../decisions/010-vendor-zwo-rs.md) / [vendor-zwo-rs.md](../vendor-zwo-rs.md)), so the repo owns their `BUILD.bazel` and expresses **two variants** — `//crates/zwo-rs:zwo-rs` (real SDK) and `//crates/zwo-rs:zwo-rs_sim` (`testonly`, `simulation`) — exactly like `crates/rp-plate-solver` ↔ `rp-plate-solver_with_mock`. zwo-camera's production targets link the real variant (the prod binary `NEEDs libASICamera2.so`); its unit/BDD/ConformU targets link `zwo-rs_sim`. The `simulation` dev-dep stays with a **narrowed** role: it just keeps `simulation`'s optional deps (`rand`/`rayon`) resolved into `@cr` for the `zwo-rs_sim` target. The dev-dep technique remains the answer for native-feature crates we do **not** vendor (until `qhyccd-rs` is vendored too — [vendor-qhyccd-rs.md](../vendor-qhyccd-rs.md)). `libzwo-sys` is also the repo's first first-party `cargo_build_script`, and the first to run **bindgen** under Bazel from a hand-written rule.
 
 ## Phases
 
@@ -120,7 +131,7 @@ repo root/
 
 Cancelled: Leptos is not used today, so `sentinel-app` stayed out of the Bazel
 graph. The crate was removed entirely in 2026-06 (see
-[archive/sentinel-app-leptos-dashboard.md](archive/sentinel-app-leptos-dashboard.md)).
+[sentinel-app-leptos-dashboard.md](sentinel-app-leptos-dashboard.md)).
 If a WASM UI returns, re-open this phase — the `wasm_bindgen` /
 `@platforms//cpu:wasm32` / hydrate+ssr approach noted in earlier revisions is
 the starting point.
@@ -129,10 +140,10 @@ the starting point.
 - [x] `.github/workflows/bazel.yml` — triggers on PR, push to main, and a nightly schedule (07:07 UTC), runs `bazel test //...` with remote cache.
 - [x] Bootstrap backend: BuildBuddy free tier (read+write token on push/schedule, read-only token on PRs).
 - [x] Shadow mode: job is **not required** for merges; runs alongside Cargo jobs for 2+ weeks of parity validation.
-- [x] **Cache backend swapped to a Cloudflare Worker + R2 edge cache** (public-read / token-write). `.bazelrc` `--config=remote-cache` points at the Cloudflare hostname; `bazel.yml` attaches `Authorization: Bearer` only on push/schedule and sets `--remote_upload_local_results=false` on PRs. Reads are anonymous, so fork PRs get a warm cache too. Served from the edge (no origin uplink in the path), retention via an R2 lifecycle rule — replacing the BuildBuddy LRU cold-cache outliers. Code + deploy: [tools/bazel-cache-worker/](../../tools/bazel-cache-worker/README.md).
+- [x] **Cache backend swapped to a Cloudflare Worker + R2 edge cache** (public-read / token-write). `.bazelrc` `--config=remote-cache` points at the Cloudflare hostname; `bazel.yml` attaches `Authorization: Bearer` only on push/schedule and sets `--remote_upload_local_results=false` on PRs. Reads are anonymous, so fork PRs get a warm cache too. Served from the edge (no origin uplink in the path), retention via an R2 lifecycle rule — replacing the BuildBuddy LRU cold-cache outliers. Code + deploy: [tools/bazel-cache-worker/](../../../tools/bazel-cache-worker/README.md).
 - [x] `.bazelrc` hostname set to `cache.rustyphoton.space` (zone `rustyphoton.space` verified on Cloudflare 2026-05-24).
-- [ ] Add the `BAZEL_CACHE_WRITE_TOKEN` GHA secret and deploy the Worker + R2 ([tools/bazel-cache-worker/](../../tools/bazel-cache-worker/README.md)).
-- [ ] Compare wall-clock and correctness against Cargo jobs weekly (≥1 week on the new cache).
+- [x] **Done.** The `BAZEL_CACHE_WRITE_TOKEN` GHA secret is set and the Worker + R2 are deployed ([tools/bazel-cache-worker/](../../../tools/bazel-cache-worker/README.md)); `cache.rustyphoton.space` serves (HTTP 200) and green push/schedule runs exercise the write path.
+- [x] **Done (superseded by cutover).** Wall-clock/correctness were validated against Cargo through shadow mode; Bazel is now the required gate (#399).
 
 **Exit criteria:** Bazel CI job green for 2 consecutive weeks with no flakes; wall-clock within ±20 % of Cargo or better.
 
@@ -187,12 +198,12 @@ Cutover PR checklist:
       `plate-solver` (`@requires-astap` paths self-gate off without `ASTAP_BINARY`),
       `phd2-guider` (child-process). This is the kind of check the unbuilt "Cutover
       gate (Option E)" was meant to catch up front.
-- [ ] **Ruleset flip (manual, post-PR):** repoint the `main_protection`
-      required-status checks — remove `ubuntu / stable`, `ubuntu / stable / features`,
-      `coverage`; keep `stable / fmt`, `stable / clippy`; add `bazel / ubuntu-latest`,
-      `bazel / macos-latest`, `bazel / windows-latest`, `bazel coverage`,
-      `bazel/cargo target parity`. Exact command:
-      [docs/plans/bazel-cutover-ruleset.md](bazel-cutover-ruleset.md).
+- [x] **Ruleset flip (DONE):** the `main_protection` required-status checks are now
+      exactly the seven Bazel-era contexts — `stable / fmt`, `stable / clippy`,
+      `bazel / ubuntu-latest`, `bazel / macos-latest`, `bazel / windows-latest`,
+      `bazel coverage`, `bazel/cargo target parity` (the old `ubuntu / stable`,
+      `ubuntu / stable / features`, `coverage` are removed). Command:
+      [bazel-cutover-ruleset.md](bazel-cutover-ruleset.md).
 - [ ] `.config/rail.toml` **kept intentionally** — cargo-rail is still a fast
       *local* pre-commit loop (CLAUDE.md rule 4); only its CI use was removed.
       Delete later if local use stops.
@@ -329,7 +340,7 @@ crate_universe crates are pre-resolved to a single variant, so the dev-dep alone
 flips them.
 
 **Update (2026-06-17, ADR-009):** `qhyccd-rs` + `libqhyccd-sys` were
-[vendored first-party](vendor-qhyccd-rs.md), so qhy-camera moved to the clean
+[vendored first-party](../vendor-qhyccd-rs.md), so qhy-camera moved to the clean
 `rp-plate-solver`-style **two-variant** build: a real `//crates/qhyccd-rs:qhyccd-rs`
 (production) and a `testonly` `:qhyccd-rs_sim` (`crate_features = ["simulation"]`),
 selected per target. The SDK variant is no longer "flipped" by the dev-dep. But the
@@ -915,6 +926,6 @@ Bazel-8-era features to adopt independent of the version.
 ## Open questions
 
 1. **bzlmod vs WORKSPACE.** RESOLVED by the move to Bazel 9 (see "Bazel 9 upgrade" above): bzlmod is the *only* dependency system in Bazel 9 — all WORKSPACE code was removed from the binary (#26131), so the original "fallback to WORKSPACE mode if `crate_universe` bzlmod issues block progress" escape hatch no longer exists. bzlmod + `crate_universe`/`from_cargo` has carried the whole migration through Phase 5 without needing it.
-2. **Remote cache vendor.** RESOLVED (2026-05-24): a Cloudflare Worker + R2 edge cache, public-read / token-write. See Decisions and [tools/bazel-cache-worker/](../../tools/bazel-cache-worker/README.md).
+2. **Remote cache vendor.** RESOLVED (2026-05-24): a Cloudflare Worker + R2 edge cache, public-read / token-write. See Decisions and [tools/bazel-cache-worker/](../../../tools/bazel-cache-worker/README.md).
 3. **TypeScript addition.** Deferred until UI work actually starts. `rules_js` and `aspect_rules_ts` are bzlmod-first — will integrate cleanly then.
 4. **rust-analyzer.** Does the team use cargo directly for IDE, or do we need `rust-project.json` generation from rules_rust? Decide after Phase 2.

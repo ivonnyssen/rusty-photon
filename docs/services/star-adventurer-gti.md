@@ -1710,8 +1710,7 @@ To reproduce locally, run the in-tree integration test — same
 binary, same config, same ConformU invocation the workflow used:
 
 ```bash
-cargo test -p star-adventurer-gti --features conformu \
-    --test conformu_integration -- --ignored --nocapture
+bazel test //services/star-adventurer-gti:conformu_integration
 ```
 
 The test config (`tests/conformu_integration.rs`) sets

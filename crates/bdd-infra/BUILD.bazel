@@ -85,7 +85,7 @@ rust_test(
         proc_macro_dev = True,
     ),
     # 3 of the run_once_* tests shell out to `cargo build` when RP_BINARY
-    # isn't pre-set. See docs/plans/bazel-migration.md "Known test gaps".
+    # isn't pre-set. See docs/plans/archive/bazel-migration.md "Known test gaps".
     tags = ["requires-cargo"],
     deps = all_crate_deps(
         normal = True,

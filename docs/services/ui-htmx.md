@@ -433,12 +433,11 @@ in-process router and no stubbed `ConfigClient`: the production
 `ReqwestHttpClient` → `AlpacaConfigClient` path and the driver's real
 `config.get` / `config.apply` / in-process reload all run for real. The entry
 point therefore uses `bdd_infra::bdd_main!` (child-process spawning, skipped
-under Miri), and **both binaries must be pre-built with `--all-features`** (the
-driver's mock transport is feature-gated):
+under Miri), and both binaries are built with the driver's mock transport (it is
+feature-gated):
 
 ```
-cargo build --all-features --all-targets
-cargo test  --all-features --test bdd -p ui-htmx
+bazel test //services/ui-htmx:bdd
 ```
 
 **Assertions are DOM-based, and the helpers follow the htmx contract.** The
@@ -481,16 +480,9 @@ behind `UI_BROWSER_TESTS=1`** (an env var, not a cargo feature, so browser flake
 never enters the `--all-features` required gate) and run on a single environment —
 the P1/P2 server-bytes layers carry the cross-OS guarantee. geckodriver is an
 external system tool (`GECKODRIVER_BINARY`, like `OMNISIM_PATH`); teardown quits
-the browser before the BFF/driver stop. Run them with:
-
-```
-UI_BROWSER_TESTS=1 GECKODRIVER_BINARY=/path/to/geckodriver \
-  cargo test --all-features --test bdd -p ui-htmx
-```
-
-The same scenarios also run under Bazel via the standalone `--config=browser`
-(it sets `UI_BROWSER_TESTS=1` + `--spawn_strategy=local` and forwards
-`FIREFOX_BINARY`/`GECKODRIVER_BINARY` by name, like `OMNISIM_PATH`):
+the browser before the BFF/driver stop. Run them under Bazel via the standalone
+`--config=browser` (it sets `UI_BROWSER_TESTS=1` + `--spawn_strategy=local` and
+forwards `FIREFOX_BINARY`/`GECKODRIVER_BINARY` by name, like `OMNISIM_PATH`):
 
 ```
 FIREFOX_BINARY=/path/to/firefox GECKODRIVER_BINARY=/path/to/geckodriver \

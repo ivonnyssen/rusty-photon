@@ -49,7 +49,7 @@ verification build **links the real static SDK**.
 ```bash
 # 0. Preflight
 git status                      # must be clean
-cargo rail run --profile commit -q
+bazel test //...                # build + test gate
 # Publish-readiness MUST be green for the crate being released — it verifies the
 # published-in-isolation guarantees (MSRV, direct-minimal-versions, semver,
 # docs.rs) that the in-workspace checks cannot. Trigger it and confirm it passes:

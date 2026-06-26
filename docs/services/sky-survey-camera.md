@@ -667,8 +667,7 @@ feature) drives ConformU against the simulator with a stub HTTP
 backend so CI doesn't depend on real SkyView availability:
 
 ```bash
-cargo test -p sky-survey-camera --features mock,conformu \
-    --test conformu_integration -- --ignored --nocapture
+bazel test //services/sky-survey-camera:conformu_integration
 ```
 
 The stub serves a synthetic FITS payload via

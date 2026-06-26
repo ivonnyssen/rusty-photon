@@ -19,7 +19,7 @@ the QHY FFI crates), and the "Phase 4" that
 
 Supersedes the interim Bazel fix on `worktree-zwo-driver` (a test-only
 `zwo-rs = { features = ["simulation"] }` dev-dep + `simulation` `crate_features`;
-see [`docs/plans/bazel-migration.md`](../plans/bazel-migration.md), "External-crate
+see [`docs/plans/archive/bazel-migration.md`](../plans/archive/bazel-migration.md), "External-crate
 non-default features for tests").
 
 ## Context

@@ -47,7 +47,7 @@ rust_binary(
 # job's `cargo test --all-features`. The default non-mock compile cfg-excluded
 # those suites entirely, which was the dominant bazel<cargo coverage gap
 # (manager.rs/slew.rs/actions.rs etc. only got BDD coverage; see
-# docs/plans/bazel-migration.md "Coverage under Bazel"). `crate_features` must be
+# docs/plans/archive/bazel-migration.md "Coverage under Bazel"). `crate_features` must be
 # set on the rust_test itself — `crate = ":..._lib_mock"` does NOT inherit the
 # library target's features (verified: it still cfg-excluded the mock tests). The
 # `mock` module is additive (real transport stays compiled) and every

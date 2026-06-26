@@ -27,7 +27,6 @@
 | miri component | `rustup +nightly component add miri` | Miri checks |
 | cargo-msrv | `cargo install cargo-msrv` | MSRV verification |
 | cargo-llvm-cov | `cargo install cargo-llvm-cov` | Local ad-hoc cargo coverage (CI coverage is `bazel coverage`) |
-| cargo-rail | `cargo install cargo-rail` | Change detection |
 | ConformU | [ivonnyssen/conformu-install](https://github.com/ivonnyssen/conformu-install) | Conformance tests |
 | jq | `sudo apt install jq` / `brew install jq` | ConformU & miri discovery |
 | llvm | `sudo apt install llvm` | Address sanitizer symbolization |
@@ -36,25 +35,25 @@
 
 ## Procedure
 
-> **Since the Bazel cutover, Bazel is the per-PR gate.** The required checks are
-> `bazel / {ubuntu,macos,windows}-latest` (build + test), `bazel coverage`,
-> `bazel/cargo target parity`, and the Cargo `stable / fmt` + `stable / clippy`
-> lint jobs (Bazel does not run rustfmt/clippy). The Cargo build / test /
-> coverage / hack / msrv jobs moved to a **nightly safety net** and no longer
-> gate PRs. So the authoritative pre-push is:
+> **Bazel is the per-PR gate.** The required checks are
+> `bazel / {ubuntu,macos,windows}-latest` (build + test), `bazel coverage`, and
+> the Cargo `stable / fmt` + `stable / clippy` lint jobs (Bazel does not run
+> rustfmt/clippy). `bazel/cargo target parity`, plus the Cargo build / test /
+> coverage / hack / msrv jobs, run nightly and do not gate PRs. So the
+> authoritative pre-push is:
 >
 > ```bash
 > bazel build //... && bazel test //...                       # bazel / <os> (build + fast tests)
 > bazel test --test_tag_filters=bdd //...                     # BDD suites (needs OmniSim + OMNISIM_PATH)
 > bazel coverage --config=coverage //...                      # bazel coverage (needs OmniSim)
-> ./scripts/check-bazel-cargo-parity.sh                       # bazel/cargo target parity
 > cargo fmt --check                                           # `stable / fmt`
 > cargo clippy --all-targets --all-features -- -D warnings    # `stable / clippy`
 > ```
 >
-> `cargo rail run --profile commit -q` remains the fastest local inner loop while
-> iterating (it is no longer a CI job — see "Change Detection" below). The `act` /
-> raw-cargo steps below reproduce the **nightly** Cargo safety net when you need it.
+> The first two commands ARE the fast local inner loop: Bazel rebuilds/retests only
+> the targets your change affects, backed by the local `--disk_cache` (see "Change
+> detection" below). cargo-rail is **retired**. The `act` / raw-cargo steps
+> below reproduce the **nightly** Cargo safety net when you need it.
 
 ### Step 1: Run the full CI suite via `act`
 
@@ -114,21 +113,23 @@ cargo test --locked --all-features --doc
 
 ---
 
-## Change Detection: cargo-rail (local) + Bazel (CI)
+## Change detection: Bazel's action graph
 
-**CI no longer uses cargo-rail.** The per-PR Bazel gate gets change detection for
-free from Bazel's content-addressed action graph (only changed targets rebuild;
-everything else is a remote-cache hit), and the nightly Cargo safety net always
-runs the full `--workspace`.
-
-[cargo-rail](https://github.com/loadingalias/cargo-rail) remains a fast **local**
-inner loop. `cargo rail run --profile commit -q` checks `cargo check` +
-`cargo nextest` against only the packages your branch touches vs. the merge base.
-To preview which packages would be affected:
+Change detection is automatic. Bazel's content-addressed action graph rebuilds and
+retests only the targets your change affects; everything else is a cache hit — the
+local `--disk_cache` (`~/.cache/bazel-disk-cache`) plus the output base locally, the
+remote cache in CI. So the local inner loop is simply:
 
 ```bash
-cargo rail plan --merge-base -f text
+bazel build //... && bazel test //...
 ```
+
+There is no separate narrowing step to run. The nightly Cargo safety net always runs
+the full `--workspace`. cargo-rail (the former local affected-package narrowing tool)
+is **retired**; we accept losing its dep-hygiene (workspace feature unification,
+unused-dep / dead-feature pruning, MSRV preview) because feature-unification breakage
+still surfaces in the nightly `--workspace --all-features` build and the off-PR
+`cargo hack --feature-powerset` job, and MSRV in the `msrv` / `publish-readiness` jobs.
 
 ---
 
@@ -138,7 +139,7 @@ cargo rail plan --merge-base -f text
 
 `fmt` and stable `clippy` run on every PR + push to main (required PR gates,
 because Bazel does not run rustfmt/clippy). The beta-clippy, `hack`, and `msrv`
-jobs moved off the per-PR path at the Bazel cutover: they run on push to main,
+jobs run on push to main,
 the nightly schedule, and `workflow_dispatch` — skipped on PRs via
 `if: github.event_name != 'pull_request'`. ("Off-PR" below = that set.)
 
@@ -165,10 +166,10 @@ nightly **publish-readiness** workflow — see below and
 
 ### test.yml
 
-`test.yml` moved to a nightly schedule (+ push to main + `workflow_dispatch`) at
-the Bazel cutover. Bazel (`bazel.yml` + `bazel-coverage.yml`) is the per-PR
-build/test/coverage gate, so this is a full-workspace Cargo safety net — there is
-no longer a `plan`/cargo-rail narrowing job, and every job runs `--workspace`.
+`test.yml` runs on a nightly schedule (+ push to main + `workflow_dispatch`).
+Bazel (`bazel.yml` + `bazel-coverage.yml`) is the per-PR
+build/test/coverage gate, so this is a full-workspace Cargo safety net — every job
+runs `--workspace` (no narrowing job).
 
 | CI Job | Local Command | Prerequisites | Runs |
 |--------|---------------|---------------|------|
@@ -176,13 +177,13 @@ no longer a `plan`/cargo-rail narrowing job, and every job runs `--workspace`.
 | **required (stable, doc)** | `cargo test --locked --workspace --all-features --doc` | stable | Off-PR |
 | **macos / windows** | same, per host OS (Windows runs BDD in one job) | -- | Off-PR |
 
-This workflow no longer collects coverage — `bazel coverage` (bazel-coverage.yml)
+This workflow does not collect coverage — `bazel coverage` (bazel-coverage.yml)
 is the sole coverage source.
 
 ### safety.yml
 
-Nightly + push-to-main + `workflow_dispatch` (never on PRs). No `plan`/cargo-rail
-job — both sanitizers run at the workspace level.
+Nightly + push-to-main + `workflow_dispatch` (never on PRs). Both sanitizers run at
+the workspace level.
 
 | CI Job | Local Command | Prerequisites | Runs |
 |--------|---------------|---------------|------|
@@ -225,8 +226,8 @@ a scheduled run fails.
 | **plan** | `cargo metadata` + jq (see below) | jq | -- |
 | **conformu** | Per-service command (see below) | ConformU | Optional |
 
-The `plan` job no longer uses `cargo rail` filtering: nightly + on-demand
-runs always exercise every conformu-tagged service. ConformU services are
+The `plan` job exercises every conformu-tagged service (nightly + on-demand).
+ConformU services are
 discovered dynamically via `[package.metadata.conformu]` in each service's
 `Cargo.toml`. To list them:
 
@@ -339,23 +340,22 @@ Current services and their commands:
 ## Quick Reference
 
 Pre-push checks (copy-paste) — these mirror the full required gate (`bazel / <os>`,
-`bazel coverage`, `bazel/cargo target parity`, `stable / fmt`, `stable / clippy`);
-`fmt`/`clippy` are the Cargo-only lint jobs Bazel doesn't cover:
+`bazel coverage`, `stable / fmt`, `stable / clippy`); `fmt`/`clippy` are the
+Cargo-only lint jobs Bazel doesn't cover:
 
 ```bash
 bazel build //... && bazel test //...                     # bazel / <os> (build + fast tests)
 bazel test --test_tag_filters=bdd //...                   # BDD suites (needs OmniSim + OMNISIM_PATH)
 bazel coverage --config=coverage //...                    # bazel coverage (heavier; needs OmniSim)
-./scripts/check-bazel-cargo-parity.sh                     # bazel/cargo target parity
 cargo fmt --check                                         # stable / fmt
 cargo clippy --all-targets --all-features -- -D warnings  # stable / clippy
 ```
 
-## Bazel (primary gate)
+## Bazel
 
 Bazel is the per-PR build / test / coverage gate (`.github/workflows/bazel.yml`,
-`bazel-coverage.yml`, `parity.yml`) per `docs/plans/bazel-migration.md`. The
-Cargo build/test jobs moved to a nightly safety net; `Cargo.toml` / `Cargo.lock`
+`bazel-coverage.yml`). `parity.yml` (Bazel/Cargo target parity) and the
+Cargo build/test jobs run nightly as a safety net; `Cargo.toml` / `Cargo.lock`
 remain the single source of truth for dependency versions.
 
 Pre-push commands (these ARE the gate — run them before pushing):
@@ -374,8 +374,8 @@ CARGO_BAZEL_REPIN=1 bazel mod tidy && bazel mod tidy
 git add MODULE.bazel.lock
 ```
 
-BDD cucumber tests now build and run under Bazel (Phase 3 complete) but
-are still tagged `bdd` and excluded from the default test filter because
+BDD cucumber tests build and run under Bazel but
+are tagged `bdd` and excluded from the default test filter because
 the full suite takes ~150 s. Run them explicitly:
 
 ```bash
@@ -400,14 +400,13 @@ feature-gated `mock` transport/client modules, which carry a module-level
 production binary and counting them would inflate the coverage figure with
 code that never runs at the telescope. It uploads under the canonical
 `<pkg>` Codecov flags that drive the per-service badges, and is the **sole**
-coverage source (the Cargo jobs no longer collect coverage). It **includes the BDD suite**
+coverage source (the Cargo jobs do not collect coverage). It **includes the BDD suite**
 (`--config=coverage` drops only the `requires-cargo` tag), so locally it needs
 OmniSim installed and `OMNISIM_PATH` set, the same as a
 `bazel test --test_tag_filters=bdd` run. Whether the BDD-spawned service
-binaries' coverage is collected is validated in CI — see
-[docs/plans/bazel-migration.md](../plans/bazel-migration.md).
+binaries' coverage is collected is validated in CI.
 
-Known limitations during migration:
+Known limitations:
 - A few tests in `bdd-infra`, `phd2-guider`, and `filemonitor:test_cli`
   shell out to `cargo` or assume `target/debug` paths; they are tagged
   `requires-cargo` and skipped under Bazel.
@@ -473,8 +472,7 @@ sudo mv ./bin/act /usr/local/bin/
 
 ## References
 
-- [AGENTS.md](../AGENTS.md) -- Rule 4 (build, test, fmt before committing)
+- [AGENTS.md](../AGENTS.md) -- Rule 4 (bazel build/test, fmt, clippy before committing)
 - [Testing skill](testing.md) -- Writing and organizing tests
 - `.github/workflows/` -- Workflow YAML files
 - [GitHub Actions act](https://github.com/nektos/act) -- Local CI runner
-- [cargo-rail](https://github.com/loadingalias/cargo-rail) -- Change detection for CI

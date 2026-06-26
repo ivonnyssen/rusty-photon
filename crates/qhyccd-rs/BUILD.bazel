@@ -50,7 +50,7 @@ rust_library(
 
 # The crate's own unit tests (src/tests/{camera,filter_wheel,sdk}_tests.rs), run
 # under Bazel against the sim variant — mirrors crates/zwo-rs:zwo-rs_unit_test.
-# Without this the suite only ran under `cargo test`, so post-cutover it was both
+# Without this the suite only ran under `cargo test`, so it was both
 # ungated by the Bazel gate and absent from `bazel coverage` (qhyccd-rs read ~34%
 # vs Cargo's ~93%, only incidentally covered via qhy-camera's sim usage). The
 # `simulation` `crate_features` must be set explicitly — rust_test does NOT inherit

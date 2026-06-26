@@ -6,8 +6,7 @@
 #   - clippy: stable clippy, `-D warnings`    (required check: `stable / clippy`)
 #
 # Nightly-only (schedule + push to main + workflow_dispatch; skipped on PRs via
-# `if: github.event_name != 'pull_request'`) — moved off the per-PR path at the
-# Bazel cutover (docs/plans/bazel-migration.md, Phase 7):
+# `if: github.event_name != 'pull_request'`):
 #   - clippy (beta): early warning of new beta-channel lints
 #   - hack:          cargo-hack feature-powerset (feature additivity)
 #   - msrv:          verify the declared workspace MSRV
@@ -70,9 +69,9 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
   hack:
     # cargo-hack checks combinations of feature flags to ensure that features are
-    # all additive (required for feature unification). Moved to nightly at the
-    # Bazel cutover: Bazel is the per-PR build gate, so this is now a Cargo-only
-    # safety net. Skipped on PRs via the event guard.
+    # all additive (required for feature unification). Bazel is the per-PR build
+    # gate, so this runs nightly as a Cargo-only safety net. Skipped on PRs via
+    # the event guard.
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     name: ubuntu / stable / features

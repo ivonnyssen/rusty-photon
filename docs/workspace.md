@@ -18,7 +18,7 @@ belong in any single service design doc.
 | [calibrator-flats](services/calibrator-flats.md) | — (orchestrator plugin) | 11170 | `docs/services/calibrator-flats.md` |
 | [sky-survey-camera](services/sky-survey-camera.md) | Camera (simulator) | 11116 | `docs/services/sky-survey-camera.md` |
 | [qhy-camera](services/qhy-camera.md) | Camera (+ FilterWheel) — QHYCCD hardware | 11121 | `docs/services/qhy-camera.md` (implemented v0; native QHYCCD SDK dep — links `static=qhyccd` + `libusb-1.0`; **built + tested on GitHub-hosted Linux/macOS/Windows** via the `qhyccd-sdk-install@v3` action, plus the Pi nightly for linux-arm64. Vendored first-party (ADR-009); sanitized under `safety.yml` via the SDK-free `simulation` path (`QHYCCD_SKIP_NATIVE_LINK=1`) — only `bdd-infra` is excluded there) |
-| [zwo-camera](services/zwo-camera.md) | Camera (+ FilterWheel) — ZWO ASI/EFW hardware | 11122 | Phase E (full Camera) landed: full `Device + Camera` over `zwo-rs` (exposure state machine, ROI/bin, gain/offset, cooling, readout, ST4 pulse-guiding), serial identity, config actions; 45 unit + 57 BDD green, ConformU passes. Bazel first-class (`lib`/`binary`/`unit_test`; `bdd`/`conformu` build under Bazel, run under Cargo). EFW FilterWheel is Phase F. ConformU is wired into `conformu.yml` (per-service matrix + `install-zwo-sdk`), and the nightly `native.yml` builds the real linked path on Linux/macOS/Windows; the `rp` `CameraConfig` consumer is the only Phase-G tail item left. Native ZWO SDK dep, gated out of the default build. See `docs/services/zwo-camera.md` + ADR-008. |
+| [zwo-camera](services/zwo-camera.md) | Camera (+ FilterWheel) — ZWO ASI/EFW hardware | 11122 | Phase E (full Camera) landed: full `Device + Camera` over `zwo-rs` (exposure state machine, ROI/bin, gain/offset, cooling, readout, ST4 pulse-guiding), serial identity, config actions; 45 unit + 57 BDD green, ConformU passes. Bazel first-class (`lib`/`binary`/`unit_test`; `bdd`/`conformu` run under Bazel). EFW FilterWheel is Phase F. ConformU is wired into `conformu.yml` (per-service matrix + `install-zwo-sdk`), and the nightly `native.yml` builds the real linked path on Linux/macOS/Windows; the `rp` `CameraConfig` consumer is the only Phase-G tail item left. Native ZWO SDK dep, gated out of the default build. See `docs/services/zwo-camera.md` + ADR-008. |
 | [star-adventurer-gti](services/star-adventurer-gti.md) | Telescope | 11117 | `docs/services/star-adventurer-gti.md` (implemented — `ITelescopeV3` subset: async slew, sync, sidereal tracking, software park, pulse guiding; all BDD scenarios green) |
 | [pa-falcon-rotator](services/falcon-rotator.md) | Rotator + Switch (status) | 11118 | `docs/services/falcon-rotator.md` |
 | [dsd-fp2](services/dsd-fp2.md) | CoverCalibrator | 11119 | `docs/services/dsd-fp2.md` (first adopter of `rusty-photon-shared-transport`) |
@@ -60,16 +60,13 @@ belong in any single service design doc.
 | [ADR-009](decisions/009-vendor-qhyccd-rs.md) | Vendor `qhyccd-rs` + `libqhyccd-sys` into the workspace (dual-homed) |
 | [ADR-010](decisions/010-vendor-zwo-rs.md) | Vendor `zwo-rs` + `libzwo-sys` into the workspace (dual-homed) |
 | **Plans** (in-flight initiatives — see [docs/plans/](plans/)) | |
-| [bazel-migration.md](plans/bazel-migration.md) | Bazel build alongside Cargo (now the primary per-PR CI gate; Cargo moved to a nightly safety net) |
 | [filemonitor-packaging.md](plans/filemonitor-packaging.md) | Filemonitor OS packaging |
 | [i18n.md](plans/i18n.md) | Workspace internationalization: scope, tech-stack, and translation-sourcing options |
 | [ui-testing.md](plans/ui-testing.md) | ui-htmx UI-behavior testing strategy: BDD-embedded `scraper` DOM assertions + cross-OS `insta` snapshots + an advisory `thirtyfour` browser layer, with an anticipatory spike plan; Bazel-primary aware; Gherkin stays the source of truth |
 | [zwo-driver.md](plans/zwo-driver.md) | ZWO ASI camera + EFW filter-wheel Alpaca driver (`zwo-camera`, port 11122) + author-maintained `zwo-rs`/`libzwo-sys` FFI; the ZWO analogue of `qhy-camera` (MIT SDK → public cache, but no pre-existing Rust FFI). See [`docs/services/zwo-camera.md`](services/zwo-camera.md) + [ADR-008](decisions/008-zwo-camera-native-sdk-ffi.md) |
-| [i18n-cli-spike.md](plans/archive/i18n-cli-spike.md) | Tech spike landing Fluent + `i18n-embed` behind `ppba-driver`'s clap CLI (en + de, archived 2026-05-24) |
-| [plate-solver.md](plans/archive/plate-solver.md) | plate-solver rp-managed service implementation (ADR-005 sequencing, archived 2026-05-15) |
-| [pa-falcon-rotator-implementation.md](plans/archive/pa-falcon-rotator-implementation.md) | pa-falcon-rotator Phase 2 (BDD scaffold) + Phase 3 (Rotator + Status Switch implementation, archived 2026-05-18) |
-| [sentinel-app-leptos-dashboard.md](plans/archive/sentinel-app-leptos-dashboard.md) | Abandoned Leptos/WASM sentinel dashboard frontend; design intent + why removed (crate removed, archived 2026-06-14) |
-| [predictive-deadlines-and-watchdog.md](plans/archive/predictive-deadlines-and-watchdog.md) | Predictive operation deadlines in `rp` + Sentinel operation watchdog (5 phases). **Complete** — all phases shipped: Phase 1 event surface (#346), Phase 2 §2.1 slew (#348) + §2.2/§2.3 park+focuser (#352) + §2.4/§2.5 exposure+centering, Phase 3 SSE endpoint, Phase 4 Sentinel watchdog, Phase 5 corrective-action ladder (#373). Authoritative contracts now live in [rp.md §Real-Time Stream](services/rp.md#real-time-stream) and [sentinel.md §Operation Watchdog](services/sentinel.md#operation-watchdog). Archived sub-plans: [phase-1 event surface](plans/archive/predictive-deadlines-phase1-event-surface.md), [phase-2 §2.1 slew](plans/archive/predictive-deadlines-phase2-slew.md), [phase-2 §2.2/§2.3 park+focuser](plans/archive/predictive-deadlines-phase2-park-focuser.md), [phase-3 SSE endpoint](plans/archive/predictive-deadlines-phase3-sse.md) (archived 2026-06-25). |
+
+Completed plans move to [`docs/plans/archive/`](plans/archive/) and are no longer
+listed here.
 
 ## Shared Crates
 
@@ -359,20 +356,18 @@ worked example.
   `ivonnyssen/ascom-alpaca-rs.git` (branch `integration`,
   `default-features = false`).
 
-### Bazel (primary CI gate)
+### Bazel
 
-Bazel is the **primary per-PR build / test / coverage gate** as of the Phase 7
-cutover — see [docs/plans/bazel-migration.md](plans/bazel-migration.md).
-`Cargo.toml` and `Cargo.lock` remain the single source of truth for dependency
-versions, and Bazel's `crate_universe` reads them. The repo root holds
-`MODULE.bazel` and `BUILD.bazel`; `bazel test //...` runs all non-`requires-cargo`,
-non-BDD targets, and `bazel test --test_tag_filters=bdd //...` adds the BDD
-suites. The required PR checks are `bazel / <os>` (build + test on
-Linux/macOS/Windows), `bazel coverage`, and `bazel/cargo target parity`, plus the
-Cargo `stable / fmt` and `stable / clippy` lint jobs (Bazel does not run
-rustfmt/clippy). The Cargo build/test/coverage jobs moved to a nightly safety net;
-`cargo rail run --profile commit -q` remains a fast local pre-commit loop (see
-[docs/skills/pre-push.md](skills/pre-push.md)).
+Bazel is the per-PR build / test / coverage gate. `Cargo.toml` and `Cargo.lock`
+remain the single source of truth for dependency versions, and Bazel's
+`crate_universe` reads them. The repo root holds `MODULE.bazel` and `BUILD.bazel`;
+`bazel test //...` runs all non-`requires-cargo`, non-BDD targets, and
+`bazel test --test_tag_filters=bdd //...` adds the BDD suites. The required PR
+checks are `bazel / <os>` (build + test on Linux/macOS/Windows), `bazel coverage`,
+plus the Cargo `stable / fmt` and `stable / clippy` lint jobs (Bazel does not run
+rustfmt/clippy). `bazel/cargo target parity` and the Cargo build/test jobs run
+nightly as a safety net (coverage is Bazel-only). `bazel build //... && bazel test //...` is
+the local pre-commit loop (see [docs/skills/pre-push.md](skills/pre-push.md)).
 
 After adding a crates.io dependency to the workspace, run
 `CARGO_BAZEL_REPIN=1 bazel mod tidy && bazel mod tidy` to refresh
