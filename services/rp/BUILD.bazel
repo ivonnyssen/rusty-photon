@@ -17,7 +17,7 @@ _INTRA_WORKSPACE_DEPS = [
 
 # rp-plate-solver ships two Bazel variants — production-clean for
 # library/binary targets and `_with_mock` for tests that need
-# MockPlateSolveClient. See docs/plans/bazel-migration.md
+# MockPlateSolveClient. See docs/plans/archive/bazel-migration.md
 # ("Mockall mock variants") for the pattern.
 _RP_PLATE_SOLVER = "//crates/rp-plate-solver:rp-plate-solver"
 

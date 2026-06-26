@@ -11,7 +11,7 @@ exports_files(
 # Cargo gets the same shape via `[dev-dependencies] rp-plate-solver
 # = { features = ["mock"] }`; Bazel needs an explicit second target
 # because crate_features is a compile-time attribute of the library
-# output (see docs/plans/bazel-migration.md "Mockall mock variants").
+# output (see docs/plans/archive/bazel-migration.md "Mockall mock variants").
 rust_library(
     name = "rp-plate-solver",
     srcs = glob(["src/**/*.rs"]),

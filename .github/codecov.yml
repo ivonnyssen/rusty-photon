@@ -15,7 +15,7 @@ coverage:
 # for coverage. `bazel coverage` (the sole coverage source) only instruments
 # first-party library / binary / test targets, and examples have no Bazel targets,
 # so they don't appear in the report; the `**/examples/**` ignore is kept as a
-# guard in case example targets are ever added. See docs/plans/bazel-migration.md
+# guard in case example targets are ever added. See docs/plans/archive/bazel-migration.md
 # "Coverage under Bazel".
 ignore:
   - "tests"

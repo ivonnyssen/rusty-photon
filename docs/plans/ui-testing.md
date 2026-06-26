@@ -2,7 +2,7 @@
 
 **Date:** 2026-06-14
 **Branch:** `worktree-research-ui-testing`
-**Parent design docs:** [`docs/workspace.md`](../workspace.md), [`docs/services/ui-htmx.md`](../services/ui-htmx.md), [`docs/skills/testing.md`](../skills/testing.md), [`docs/skills/pre-push.md`](../skills/pre-push.md), [`docs/plans/bazel-migration.md`](bazel-migration.md)
+**Parent design docs:** [`docs/workspace.md`](../workspace.md), [`docs/services/ui-htmx.md`](../services/ui-htmx.md), [`docs/skills/testing.md`](../skills/testing.md), [`docs/skills/pre-push.md`](../skills/pre-push.md), [`docs/plans/archive/bazel-migration.md`](archive/bazel-migration.md)
 **Closest precedent:** [ADR-004 — Testing strategy for HTTP-client error paths](../decisions/004-testing-strategy-for-http-client-error-paths.md)
 
 > **Status:** research-backed recommendation with a phased, **anticipatory** spike
@@ -564,7 +564,7 @@ emitting ≥2 named events on a timer + a fixture page with `hx-ext=sse` and two
 
 - [`docs/services/ui-htmx.md`](../services/ui-htmx.md) — service design + config-action wire contract.
 - [`docs/skills/testing.md`](../skills/testing.md) — test pyramid, BDD conventions, §5.4 (drop streaming clients before stop), §6.7 (mock strategy).
-- [`docs/plans/bazel-migration.md`](bazel-migration.md) — migration phases, cutover criteria, BDD-under-Bazel, runfiles/test-data handling.
+- [`docs/plans/archive/bazel-migration.md`](archive/bazel-migration.md) — migration phases, cutover criteria, BDD-under-Bazel, runfiles/test-data handling.
 - [`docs/skills/pre-push.md`](../skills/pre-push.md) — CI quality gates.
 - [ADR-004](../decisions/004-testing-strategy-for-http-client-error-paths.md) — testing-strategy precedent.
 - External (verified 2026-06-14): `scraper` 0.27, `insta` 1.48 (+`INSTA_PENDING_DIR` ≥1.46), `thirtyfour` 0.37.1, axum #2673 (SSE blocks graceful shutdown), Firefox 152 / bugzilla 1430064 (geckodriver SIGTERM quit), `rules_webtesting` archived (no Rust), Playwright `padamson/playwright-rust` pre-1.0 + MS #34213 (Node-free unimplemented).

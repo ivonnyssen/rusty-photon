@@ -7,7 +7,7 @@
 # as a Cargo safety net. It no longer uses cargo-rail change detection — a
 # nightly safety net always exercises the whole workspace, so the narrowing
 # `plan` job (and the only remaining cargo-rail use in CI) is gone. See
-# docs/plans/bazel-migration.md (Phase 7).
+# docs/plans/archive/bazel-migration.md (Phase 7).
 #
 # Jobs:
 # - required: workspace build + nextest + BDD + doctests on ubuntu/stable
@@ -17,7 +17,7 @@
 #    per-PR job used is collapsed back in.)
 #
 # Coverage is NOT collected here: `bazel coverage` (bazel-coverage.yml) is the
-# sole coverage source (canonical `<pkg>` Codecov flags). See docs/plans/bazel-migration.md.
+# sole coverage source (canonical `<pkg>` Codecov flags). See docs/plans/archive/bazel-migration.md.
 permissions:
   contents: read
 on:

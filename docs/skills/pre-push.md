@@ -354,7 +354,7 @@ cargo clippy --all-targets --all-features -- -D warnings  # stable / clippy
 ## Bazel (primary gate)
 
 Bazel is the per-PR build / test / coverage gate (`.github/workflows/bazel.yml`,
-`bazel-coverage.yml`, `parity.yml`) per `docs/plans/bazel-migration.md`. The
+`bazel-coverage.yml`, `parity.yml`) per `docs/plans/archive/bazel-migration.md`. The
 Cargo build/test jobs moved to a nightly safety net; `Cargo.toml` / `Cargo.lock`
 remain the single source of truth for dependency versions.
 
@@ -405,7 +405,7 @@ coverage source (the Cargo jobs no longer collect coverage). It **includes the B
 OmniSim installed and `OMNISIM_PATH` set, the same as a
 `bazel test --test_tag_filters=bdd` run. Whether the BDD-spawned service
 binaries' coverage is collected is validated in CI — see
-[docs/plans/bazel-migration.md](../plans/bazel-migration.md).
+[docs/plans/archive/bazel-migration.md](../plans/archive/bazel-migration.md).
 
 Known limitations during migration:
 - A few tests in `bdd-infra`, `phd2-guider`, and `filemonitor:test_cli`

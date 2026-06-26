@@ -65,7 +65,7 @@ jobs:
           # Phase G (2026-06-18): zwo-camera is a full ConformU citizen now. The
           # conformu jobs provision the native ZWO SDK via
           # ./.github/actions/install-zwo-sdk (the "provision, don't exclude"
-          # principle — ADR-008 / docs/plans/bazel-migration.md), so it builds and
+          # principle — ADR-008 / docs/plans/archive/bazel-migration.md), so it builds and
           # runs here like every other service. No `select(.name != ...)` filter.
           SERVICES=$(cargo metadata --format-version 1 --no-deps 2>/dev/null | \
             jq -c '[.packages[] | select(.metadata.conformu.command) | {name: .name, command: .metadata.conformu.command}]')

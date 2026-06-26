@@ -68,7 +68,7 @@
 > The **Bazel** workflows (`bazel.yml`, `bazel-coverage.yml`) also run
 > `install-zwo-sdk` — `zwo-camera` is a normal `//...` target there, honoring the
 > migration plan's "all workspace crates build and test under Bazel" contract
-> (`docs/plans/bazel-migration.md`); on the Bazel build the install is
+> (`docs/plans/archive/bazel-migration.md`); on the Bazel build the install is
 > unconditional (no narrowing job). **Remaining Track-A validation** (can't be
 > exercised from a Linux dev box): confirm the macOS arm64 + Windows x64 link on
 > real runners (both the Cargo *and* Bazel legs — under Bazel, the Windows

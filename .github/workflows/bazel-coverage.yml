@@ -1,6 +1,6 @@
 # Bazel-based code coverage — the primary per-PR coverage gate.
 #
-# As of the Phase 7 cutover (docs/plans/bazel-migration.md) this is a required
+# As of the Phase 7 cutover (docs/plans/archive/bazel-migration.md) this is a required
 # check and it drives the canonical per-service Codecov badges (flag=<pkg>). It is
 # the SOLE coverage source — the Cargo coverage job was dropped; the Cargo nightly
 # (test.yml) now only builds + tests.
@@ -151,7 +151,7 @@ jobs:
           # The rp:bdd post-scenario park that previously cancelled ~half of these runs at the
           # 60-min wall is fixed (3s --remote_timeout + --spawn_strategy=local, now in .bazelrc);
           # this job is a required gate as of the Phase 7 cutover. See
-          # docs/plans/bazel-migration.md.
+          # docs/plans/archive/bazel-migration.md.
           if [[ $status -eq 124 || $status -eq 137 ]]; then
             echo "::error title=bazel coverage capped::Hit the 50-min observability cap (exit $status) — a test (almost certainly //services/rp:bdd) did not finish in time. Captured test logs are in the 'bazel-testlogs' artifact."
             exit 1

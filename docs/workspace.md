@@ -61,15 +61,13 @@ belong in any single service design doc.
 | [ADR-010](decisions/010-vendor-zwo-rs.md) | Vendor `zwo-rs` + `libzwo-sys` into the workspace (dual-homed) |
 | **Plans** (in-flight initiatives — see [docs/plans/](plans/)) | |
 | [predictive-deadlines-and-watchdog.md](plans/predictive-deadlines-and-watchdog.md) | Predictive operation deadlines in `rp` + Sentinel operation watchdog (5 phases). **Complete** — all phases shipped: Phase 1 event surface (#346), Phase 2 §2.1 slew (#348) + §2.2/§2.3 park+focuser (#352) + §2.4/§2.5 exposure+centering, Phase 3 SSE endpoint, Phase 4 Sentinel watchdog, Phase 5 corrective-action ladder (#373). Authoritative contracts now live in [rp.md §Real-Time Stream](services/rp.md#real-time-stream) and [sentinel.md §Operation Watchdog](services/sentinel.md#operation-watchdog). Archived sub-plans: [phase-1 event surface](plans/archive/predictive-deadlines-phase1-event-surface.md), [phase-2 §2.1 slew](plans/archive/predictive-deadlines-phase2-slew.md), [phase-2 §2.2/§2.3 park+focuser](plans/archive/predictive-deadlines-phase2-park-focuser.md); [phase-3 SSE endpoint](plans/predictive-deadlines-phase3-sse.md) archives on merge. |
-| [bazel-migration.md](plans/bazel-migration.md) | Bazel build alongside Cargo (now the primary per-PR CI gate; Cargo moved to a nightly safety net) |
 | [filemonitor-packaging.md](plans/filemonitor-packaging.md) | Filemonitor OS packaging |
 | [i18n.md](plans/i18n.md) | Workspace internationalization: scope, tech-stack, and translation-sourcing options |
 | [ui-testing.md](plans/ui-testing.md) | ui-htmx UI-behavior testing strategy: BDD-embedded `scraper` DOM assertions + cross-OS `insta` snapshots + an advisory `thirtyfour` browser layer, with an anticipatory spike plan; Bazel-primary aware; Gherkin stays the source of truth |
 | [zwo-driver.md](plans/zwo-driver.md) | ZWO ASI camera + EFW filter-wheel Alpaca driver (`zwo-camera`, port 11122) + author-maintained `zwo-rs`/`libzwo-sys` FFI; the ZWO analogue of `qhy-camera` (MIT SDK → public cache, but no pre-existing Rust FFI). See [`docs/services/zwo-camera.md`](services/zwo-camera.md) + [ADR-008](decisions/008-zwo-camera-native-sdk-ffi.md) |
-| [i18n-cli-spike.md](plans/archive/i18n-cli-spike.md) | Tech spike landing Fluent + `i18n-embed` behind `ppba-driver`'s clap CLI (en + de, archived 2026-05-24) |
-| [plate-solver.md](plans/archive/plate-solver.md) | plate-solver rp-managed service implementation (ADR-005 sequencing, archived 2026-05-15) |
-| [pa-falcon-rotator-implementation.md](plans/archive/pa-falcon-rotator-implementation.md) | pa-falcon-rotator Phase 2 (BDD scaffold) + Phase 3 (Rotator + Status Switch implementation, archived 2026-05-18) |
-| [sentinel-app-leptos-dashboard.md](plans/archive/sentinel-app-leptos-dashboard.md) | Abandoned Leptos/WASM sentinel dashboard frontend; design intent + why removed (crate removed, archived 2026-06-14) |
+
+Completed plans move to [`docs/plans/archive/`](plans/archive/) and are no longer
+listed here.
 
 ## Shared Crates
 
@@ -362,7 +360,7 @@ worked example.
 ### Bazel (primary CI gate)
 
 Bazel is the **primary per-PR build / test / coverage gate** as of the Phase 7
-cutover — see [docs/plans/bazel-migration.md](plans/bazel-migration.md).
+cutover — see [docs/plans/archive/bazel-migration.md](plans/archive/bazel-migration.md).
 `Cargo.toml` and `Cargo.lock` remain the single source of truth for dependency
 versions, and Bazel's `crate_universe` reads them. The repo root holds
 `MODULE.bazel` and `BUILD.bazel`; `bazel test //...` runs all non-`requires-cargo`,

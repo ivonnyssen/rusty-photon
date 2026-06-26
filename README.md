@@ -122,7 +122,7 @@ ASCOM Alpaca **Camera** driver for ZWO ASI hardware, built natively on the vendo
 
 ### Building
 
-Bazel is the primary per-PR CI gate (`bazel test //...`); the Cargo build is the canonical local inner loop and the nightly safety net (see [docs/plans/bazel-migration.md](docs/plans/bazel-migration.md)).
+Bazel is the primary per-PR CI gate (`bazel test //...`); the Cargo build is the canonical local inner loop and the nightly safety net (see [docs/plans/archive/bazel-migration.md](docs/plans/archive/bazel-migration.md)).
 
 ```bash
 # Build everything
@@ -199,7 +199,7 @@ cargo fmt
 ```
 rusty-photon/
   Cargo.toml              Workspace root with shared dependencies
-  MODULE.bazel            Bazel module (shadow build, see docs/plans/bazel-migration.md)
+  MODULE.bazel            Bazel module (shadow build, see docs/plans/archive/bazel-migration.md)
   CLAUDE.md / AGENTS.md   Operating rules for AI agents and human contributors
   crates/
     bdd-infra/                       Shared BDD test infrastructure (ServiceHandle + rp-harness)

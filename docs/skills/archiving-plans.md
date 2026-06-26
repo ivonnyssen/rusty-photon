@@ -47,9 +47,13 @@ not block archiving — record them in the status header instead.
 
 5. **Update inbound references.** Re-point anything that linked to the old
    `docs/plans/<plan>.md`:
-   - The plans index in [`docs/workspace.md`](../workspace.md) — keep the row
-     but switch it to the `archive/` path and append "(archived YYYY-MM-DD)",
-     matching the existing archived rows.
+   - The plans index in [`docs/workspace.md`](../workspace.md) lists **in-flight
+     initiatives only** — **remove** the plan's row entirely. Do *not* relist it
+     under the `archive/` path; archived plans live in
+     [`docs/plans/archive/`](../plans/archive/) and are not indexed in
+     `workspace.md`. (Rationale / "see the plan" cross-links elsewhere in
+     `workspace.md` — e.g. a workspace-concern section — or in design docs may
+     stay; see the next bullet.)
    - Rationale / "see the plan" links in design docs, skill docs, crate docs,
      and source doc-comments (`//!` / `///`). A completed plan does not *need*
      inbound references, so a stale pointer may instead simply be dropped —

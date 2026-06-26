@@ -6,7 +6,7 @@
 # Phase 7 cutover — runs on PRs, push-to-main, and nightly so drift is caught
 # the moment a crate is added without a BUILD.bazel.
 #
-# See scripts/check-bazel-cargo-parity.sh and docs/plans/bazel-migration.md.
+# See scripts/check-bazel-cargo-parity.sh and docs/plans/archive/bazel-migration.md.
 permissions:
   contents: read
 on:

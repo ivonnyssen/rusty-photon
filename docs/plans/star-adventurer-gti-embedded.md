@@ -367,7 +367,7 @@ portable.
    may hit cipher-suite gaps.
 5. **Bazel migration interaction.** Firmware crates won't have Bazel
    targets initially. The migration plan
-   ([`docs/plans/bazel-migration.md`](bazel-migration.md)) treats
+   ([`docs/plans/archive/bazel-migration.md`](archive/bazel-migration.md)) treats
    non-Bazel crates as a known interim state, so this is fine — but
    document it as a follow-up.
 6. **Cert provisioning UX.** Users have to import a CA cert into their
@@ -394,7 +394,7 @@ portable.
 - [`docs/references/skywatcher-motor-controller-command-set.md`](../references/skywatcher-motor-controller-command-set.md)
   — wire-protocol reference + empirical findings from Phase 4 hardware
   bring-up.
-- [`docs/plans/bazel-migration.md`](bazel-migration.md) — interaction
+- [`docs/plans/archive/bazel-migration.md`](archive/bazel-migration.md) — interaction
   with the in-flight Bazel work.
 - [Embassy book](https://embassy.dev/book/) — async embedded Rust framework.
 - [esp-rs book](https://esp-rs.github.io/book/) — Espressif Rust toolchain.

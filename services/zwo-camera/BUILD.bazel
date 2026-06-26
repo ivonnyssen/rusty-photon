@@ -16,7 +16,7 @@ exports_files(
 # first-class `//...` targets — verified on Linux via
 # `bazel test //services/zwo-camera:zwo-camera_unit_test` — so they carry NO
 # `manual` gating. The migration plan's "all workspace crates build and test under
-# Bazel" contract (docs/plans/bazel-migration.md) applies here too: at the Phase 7
+# Bazel" contract (docs/plans/archive/bazel-migration.md) applies here too: at the Phase 7
 # cutover the Bazel job becomes the required gate, and a `manual`-excluded target
 # would silently carry zero CI. Build locally with the SDK ldconfig'd on the link
 # path (`/usr/local/lib`). bindgen needs libclang; macOS/Windows additionally

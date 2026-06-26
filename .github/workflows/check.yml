@@ -7,7 +7,7 @@
 #
 # Nightly-only (schedule + push to main + workflow_dispatch; skipped on PRs via
 # `if: github.event_name != 'pull_request'`) — moved off the per-PR path at the
-# Bazel cutover (docs/plans/bazel-migration.md, Phase 7):
+# Bazel cutover (docs/plans/archive/bazel-migration.md, Phase 7):
 #   - clippy (beta): early warning of new beta-channel lints
 #   - hack:          cargo-hack feature-powerset (feature additivity)
 #   - msrv:          verify the declared workspace MSRV
