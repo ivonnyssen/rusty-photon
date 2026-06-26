@@ -36,6 +36,11 @@ members = [
   # preserve its upstream `path = "libzwo-sys"` dep verbatim.
   "crates/zwo-rs",
   "crates/zwo-rs/libzwo-sys",
+  # First-party ToupTek FFI crates (docs/plans/touptek-driver.md). libtoupcam-sys
+  # is nested under touptek-rs to preserve its `path = "libtoupcam-sys"` dep
+  # verbatim, mirroring the zwo-rs / libzwo-sys layout (ADR-010).
+  "crates/touptek-rs",
+  "crates/touptek-rs/libtoupcam-sys",
 ]
 resolver = "2"
 
