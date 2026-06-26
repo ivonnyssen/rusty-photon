@@ -3,8 +3,10 @@
 # Ensures every Cargo workspace member has a Bazel rust target, so that
 # "Bazel green" means Bazel builds what Cargo builds (hand-written BUILD.bazel
 # files can otherwise drift from the workspace). Runs nightly + on push to main
-# (not on PRs): Bazel is the local loop, so a missing BUILD.bazel already blocks
-# local work — this is a backstop that also guards the rules_rust coverage patches.
+# (not on PRs): `bazel build //...` does NOT flag a Cargo member with no Bazel
+# target (it is silently absent), so this CI check is the backstop. Per-PR risk is
+# low — Bazel is the local dev loop, so you cannot build or test a new member
+# without writing its BUILD.bazel. Also guards the rules_rust coverage patches.
 #
 # See scripts/check-bazel-cargo-parity.sh.
 permissions:

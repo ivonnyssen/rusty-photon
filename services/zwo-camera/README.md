@@ -72,7 +72,7 @@ sudo ldconfig
 #    (e.g. /usr/lib64 on Fedora, /usr/lib/$(uname -m)-linux-gnu on Debian).
 export LIBCLANG_PATH=/usr/lib64
 
-bazel build //services/zwo-camera:...
+bazel build //services/zwo-camera/...
 cargo run  -p zwo-camera --features simulation -- --port 11122
 ```
 
