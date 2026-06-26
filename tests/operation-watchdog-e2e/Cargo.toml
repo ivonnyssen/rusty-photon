@@ -18,7 +18,6 @@ cucumber = { workspace = true }
 tokio = { workspace = true }
 serde_json = { workspace = true }
 reqwest = { workspace = true }
-tempfile = { workspace = true }
 axum = { workspace = true }
 cargo-husky = { workspace = true }
 
