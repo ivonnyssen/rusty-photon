@@ -1,0 +1,56 @@
+[package]
+name = "touptek-camera"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "ASCOM Alpaca Camera driver for ToupTek (and OEM-rebrand) hardware"
+
+[features]
+default = []
+# Forwards to `touptek-rs/simulation`: a hardware-free, in-Rust simulated camera
+# for development and tests. As in zwo-camera this removes the *camera*, not the
+# *link* — but the Bazel `_sim` chain additionally skip-links the SDK
+# (`TOUPCAM_SKIP_NATIVE_LINK`) so `bazel test //...` needs no SDK provisioned. See
+# the README and docs/services/touptek-camera.md "Native dependency & build gating".
+simulation = ["touptek-rs/simulation"]
+# Cross-driver alias for `simulation` (the workspace-wide test-backend name).
+mock = ["simulation"]
+# `conformu` enables `mock` so a single `--features conformu` flag builds and runs
+# the compliance test against the simulation backend (the test itself lands in
+# Phase F; the feature chain is wired now to match the other camera services).
+conformu = ["mock"]
+
+[lints]
+workspace = true
+
+[dependencies]
+# `client` is NOT enabled here — the production server never builds an Alpaca
+# client; only the (later) BDD harness does, so it will live in [dev-dependencies].
+ascom-alpaca = { workspace = true, features = ["server", "camera"] }
+touptek-rs = { workspace = true }
+rp-tls = { workspace = true }
+rusty-photon-config = { workspace = true }
+rusty-photon-driver = { workspace = true }
+rusty-photon-service-lifecycle = { workspace = true }
+tokio = { workspace = true }
+axum = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+derive_more = { workspace = true }
+parking_lot = { workspace = true }
+
+[dev-dependencies]
+# The `crate_universe` nudge (Rule 10 / docs/plans/touptek-driver.md risk #6):
+# `touptek-rs/simulation`'s optional deps (rand, rayon) only resolve into `@cr`
+# because some member enables the feature. This dev-dep is that member, so the
+# `:touptek-rs_sim` / `:touptek-camera_lib_sim` Bazel targets can pull rand/rayon
+# via `all_crate_deps`. Resolver v2 keeps it out of the production `cargo build`.
+touptek-rs = { workspace = true, features = ["simulation"] }

@@ -1,20 +1,19 @@
-load("@cr//:defs.bzl", "all_crate_deps")
-load("@rules_rust//rust:defs.bzl", "rust_library")
+load("@cr//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 exports_files(
     ["Cargo.toml"],
     visibility = ["//visibility:public"],
 )
 
-# Mirrors crates/zwo-rs's two-variant build (ADR-010), but only the REAL variant
-# is wired today. The `simulation` variant (`touptek-rs_sim`) and the crate's
-# `rust_test` need `rand`/`rayon` in `@cr`, which crate_universe only resolves
-# once a workspace member enables `touptek-rs/simulation` — the
-# `[dev-dependencies] touptek-rs = { features = ["simulation"] }` nudge (Rule 10 /
-# docs/plans/touptek-driver.md risk #6). That consumer is the `touptek-camera`
-# service, so the `touptek-rs_sim` + `touptek-rs_unit_test` targets land with it
-# (adding them before the nudge would break `bazel build //...`). Parity is
-# directory-level, so this real `rust_library` already covers the crate.
+# Two-variant build mirroring crates/zwo-rs (ADR-010): a REAL `touptek-rs` and a
+# `simulation` `touptek-rs_sim`. crate_universe resolves a single feature set per
+# crate and ignores a target's `crate_features`, so the `simulation` optional deps
+# (`rand`/`rayon`) only resolve into `@cr` because a workspace member enables
+# `touptek-rs/simulation` — the `[dev-dependencies] touptek-rs = { features =
+# ["simulation"] }` nudge on the `touptek-camera` service (Rule 10 /
+# docs/plans/touptek-driver.md risk #6). With that nudge in place,
+# `all_crate_deps(normal = True)` now carries rand/rayon for the sim variant.
 _LIBTOUPCAM_SYS = "//crates/touptek-rs/libtoupcam-sys:libtoupcam-sys"
 
 # Real SDK variant: `crate_features = []` cfg's out the simulation module
@@ -28,4 +27,49 @@ rust_library(
     edition = "2021",
     visibility = ["//visibility:public"],
     deps = [_LIBTOUPCAM_SYS] + all_crate_deps(normal = True),
+)
+
+# Simulation variant: `crate_features = ["simulation"]` enables the hardware-free
+# in-Rust simulated camera. `testonly = True` makes Bazel reject any production
+# rust_binary/rust_library that links it, enforcing the convention at build time.
+# It links the SKIP-LINK sys variant (`libtoupcam-sys_sim`), so the simulated code
+# — which references no `Toupcam_*` symbols — links with no ToupTek SDK present.
+# touptek-camera's sim / BDD / ConformU targets depend on this.
+rust_library(
+    name = "touptek-rs_sim",
+    testonly = True,
+    srcs = glob(["src/**/*.rs"]),
+    crate_features = ["simulation"],
+    crate_name = "touptek_rs",
+    edition = "2021",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//crates/touptek-rs/libtoupcam-sys:libtoupcam-sys_sim",
+    ] + all_crate_deps(normal = True),
+)
+
+# The crate's own unit tests, run under Bazel against the sim variant (the
+# `#[cfg(feature = "simulation")]` camera/bridge tests need it; the un-gated
+# tests — HRESULT mapping, SDK init — run regardless). It builds on the skip-link
+# sim chain, so it links with no SDK.
+rust_test(
+    name = "touptek-rs_unit_test",
+    size = "small",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate = ":touptek-rs_sim",
+    # Set explicitly: rust_test does NOT inherit `crate_features` from the `crate`
+    # it wraps, so without this the `#[cfg(feature = "simulation")]` tests (the
+    # bulk — camera/bridge behaviour) compile out and only the un-gated handful run.
+    crate_features = ["simulation"],
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
 )

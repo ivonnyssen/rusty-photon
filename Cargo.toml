@@ -31,6 +31,7 @@ members = [
   "services/star-adventurer-gti",
   "services/ui-htmx",
   "services/zwo-camera",
+  "services/touptek-camera",
   # First-party, dual-homed ZWO FFI crates — vendored from ivonnyssen/zwo-rs
   # (ADR-010 / docs/plans/vendor-zwo-rs.md). libzwo-sys is nested under zwo-rs to
   # preserve its upstream `path = "libzwo-sys"` dep verbatim.
@@ -130,6 +131,13 @@ ascom-alpaca = { git = "https://github.com/ivonnyssen/ascom-alpaca-rs.git", bran
 # development home; edits are in-tree (no git-rev bump). Still published to
 # crates.io from the vendored subdir for outside consumers.
 zwo-rs = { path = "crates/zwo-rs" }
+# ToupTek ToupCam camera FFI (safe wrapper over `libtoupcam-sys`), for the
+# `touptek-camera` service. First-party + dual-homed at crates/touptek-rs
+# (docs/plans/touptek-driver.md) — the monorepo is the canonical development home,
+# edits are in-tree (no git-rev bump). `libtoupcam-sys` (transitively) links the
+# proprietary `libtoupcam` blob + libusb/udev — see
+# `docs/services/touptek-camera.md` "Native dependency & build gating".
+touptek-rs = { path = "crates/touptek-rs" }
 axum = "0.8"
 tower = "0.5"
 reqwest = { version = "0.13.4", features = ["form", "json"] }

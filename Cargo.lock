@@ -5315,6 +5315,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "touptek-camera"
+version = "0.1.0"
+dependencies = [
+ "ascom-alpaca",
+ "async-trait",
+ "axum",
+ "clap",
+ "derive_more",
+ "parking_lot",
+ "rp-tls",
+ "rusty-photon-config",
+ "rusty-photon-driver",
+ "rusty-photon-service-lifecycle",
+ "schemars 1.2.1",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "touptek-rs",
+ "tracing",
+]
+
+[[package]]
 name = "touptek-rs"
 version = "0.1.0"
 dependencies = [

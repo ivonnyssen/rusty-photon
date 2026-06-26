@@ -2,7 +2,9 @@
 
 ## Status
 
-**Phases A + B landed; crate-level Bazel wiring green (2026-06-25).**
+**Phases A + B + C landed; the bare `touptek-camera` service builds, serves on
+`:11123`, and the whole simulation Bazel chain is green with no SDK present
+(2026-06-26).**
 
 - **Phase A — `crates/touptek-rs/libtoupcam-sys`:** vendored `toupcam.h`
   (v60.31631) + `bindgen` `build.rs` (parsed as plain C) + the
@@ -19,19 +21,28 @@
   signals an `mpsc` channel; `PullImage`/`Stop`/`Close` run off the callback
   thread). `simulation` feature fabricates frames; 9 unit tests pass. `cargo
   clippy -D warnings` + `fmt` clean on both feature paths.
-- **Bazel:** `libtoupcam-sys` (`cargo_build_script` bindgen + `rust_library`) and
-  the **real** `touptek-rs` `rust_library` are wired and build under Bazel
-  (`crate_universe` repinned); **buildifier** + **parity** green. The `_sim`
-  variant + the crate `rust_test` are intentionally deferred to the
-  `touptek-camera` service: they need `rand`/`rayon` in `@cr`, which appears only
-  once a member enables `touptek-rs/simulation` (the service's dev-dep nudge —
-  Rule 10 / risk #6); wiring them before that consumer would break `bazel build
-  //...`.
+- **Phase C — `services/touptek-camera`:** the bare ASCOM service — enumerates
+  (real or simulated), registers a minimal `Device` + `Camera` (connection
+  lifecycle, id-derived identity, sensor pixel size, cached sub-frame origin — the
+  19 trait-required members), and binds `:11123`. The service's
+  `touptek-rs = { features = ["simulation"] }` dev-dep nudge unblocked the deferred
+  `touptek-rs_sim` + `touptek-rs_unit_test` Bazel targets. 19 unit tests pass;
+  clippy/fmt clean on both feature paths.
+- **Bazel:** the **full simulation chain** is wired and green **with no ToupTek SDK
+  present**. `libtoupcam-sys` gained a skip-link `_sim` build-script variant
+  (`TOUPCAM_SKIP_NATIVE_LINK=1` via `build_script_env`), so `libtoupcam-sys_sim` →
+  `touptek-rs_sim` → `touptek-camera_lib_sim` / `_sim` binary / unit tests **link
+  with no SDK** — the default `bazel test //...` needs nothing provisioned. The
+  real `touptek-camera_lib` is an `rlib` (defers linking → builds without the SDK);
+  the only SDK-linking target, the real `touptek-camera` `rust_binary`, is
+  deliberately **not defined yet** (it lands with `install-toupcam-sdk` in Phase
+  F). `crate_universe` repinned; **buildifier** + **parity** (36/36) green.
 
-Remaining: the **real native link** against a provisioned SDK on each platform,
-the `install-toupcam-sdk` CI action, and the **`touptek-camera` service** (Phase
-C–G — which also brings the `_sim`/unit-test Bazel targets). Everything below the
-fold remains **planned**.
+Remaining: the **real native link** against a provisioned SDK on each platform
+(incl. the real `touptek-camera` binary) and the `install-toupcam-sdk` CI action,
+then the device-trait work — the design doc + BDD (Phase D), the full `Camera`
+(Phase E), test+ConformU (Phase F), and the `rp` consumer + cross-platform
+sign-off (Phase G). Everything below the fold remains **planned**.
 
 This is the agreed decision record that will precede
 `docs/services/touptek-camera.md` (the service design doc) and the BDD scenarios,
@@ -286,9 +297,12 @@ cross-platform link (incl. Pi aarch64 + Apple-Silicon-universal). Once
   (fold into the service phases):* finalize RAW pixel-format buffer sizing + the
   ASCOM-complete option mapping (cooler control, sensor type, ST4) against real
   hardware.
-- **Phase C — bare service:** `touptek-camera` serving an empty/sim Camera on
-  `:11123`; prove build/link, the new CI SDK provisioning, Pi5 aarch64, the Bazel
-  two-variant + `parity`, repin-twice — *before* device-trait work.
+- **Phase C — bare service:** ✅ *landed* — `touptek-camera` enumerates and serves
+  a minimal sim Camera on `:11123`; the skip-link Bazel sim chain
+  (`libtoupcam-sys_sim` → `touptek-rs_sim` → service `_sim` targets) builds/tests
+  with **no SDK**; `parity` (36/36), buildifier, repin-twice all green. *Remaining
+  (Phase F):* the real `touptek-camera` binary + the `install-toupcam-sdk` CI
+  provisioning and the Pi5 aarch64 real link.
 - **Phase D — design doc + workspace row + BDD feature files**
   (`docs/services/touptek-camera.md` with the "Native dependency & build gating"
   crux section, then ~7 `.feature` files via the typed `ascom-alpaca` client):

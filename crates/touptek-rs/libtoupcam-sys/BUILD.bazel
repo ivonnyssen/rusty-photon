@@ -52,3 +52,41 @@ rust_library(
     visibility = ["//visibility:public"],
     deps = [":build_script"],
 )
+
+# Skip-link variant for the simulation chain. Identical to `build_script` except
+# it runs bindgen with `TOUPCAM_SKIP_NATIVE_LINK=1`, so `build.rs` emits NO native
+# link directives. The simulation code (`touptek-rs --features simulation`)
+# references no `Toupcam_*` symbols, so anything built on this — the sim library,
+# binary, and unit tests — LINKS with no ToupTek SDK present. This is what lets the
+# default `bazel test //...` run the simulated camera services with zero SDK
+# provisioning (docs/plans/touptek-driver.md "Provisioning"). bindgen still runs,
+# so libclang is still required (it is on every runner; the SDK is not).
+#
+# `build_script_env` sets the var in the action env directly, so
+# `--incompatible_strict_action_env` cannot strip it. The shared `links = "toupcam"`
+# marker is harmless: this variant and the real one never appear in the same final
+# link (separate real/sim binaries), so there is no duplicate-`links` conflict.
+cargo_build_script(
+    name = "build_script_sim",
+    srcs = ["build.rs"],
+    build_script_env = {"TOUPCAM_SKIP_NATIVE_LINK": "1"},
+    data = ["wrapper.h"] + glob(["sdk/include/**"]),
+    edition = "2021",
+    links = "toupcam",
+    rustc_env_files = [":cargo_toml_env_vars"],
+    visibility = ["//visibility:private"],
+    deps = all_crate_deps(build = True),
+)
+
+rust_library(
+    name = "libtoupcam-sys_sim",
+    # `testonly` because it is only ever built by the simulation chain (sim
+    # library / binary / unit tests), which Bazel propagates from here.
+    testonly = True,
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "libtoupcam_sys",
+    edition = "2021",
+    rustc_env_files = [":cargo_toml_env_vars"],
+    visibility = ["//visibility:public"],
+    deps = [":build_script_sim"],
+)
