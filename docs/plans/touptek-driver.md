@@ -2,19 +2,36 @@
 
 ## Status
 
-**Phase A FFI binding spiked & proven (2026-06-25).** `crates/touptek-rs/libtoupcam-sys`
-exists: vendored `toupcam.h` (v60.31631) + `bindgen` `build.rs` (parsed as plain C)
-+ the `TOUPCAM_SKIP_NATIVE_LINK` env gate. `bindgen` generates **compiling**
-bindings on **aarch64 Linux** (the Raspberry Pi target) — 225 `Toupcam_*`
-functions, 17 structs, 498 constants, with every needed API/type/flag present
-(`EnumV2`, `StartPullModeWithCallback`, `PullImageV4`, `Trigger`, `put_Roi`,
-`put_ExpoTime`/`put_ExpoAGain`, `get_Temperature`, `ST4PlusGuide`,
-`OPTION_BINNING/TEC/RAW/BITDEPTH/TRIGGER`, `FLAG_TEC/RAW16/ST4`,
-`PIXELFORMAT_RAW16`, `ToupcamDeviceV2/ModelV2/FrameInfoV3`). `cargo clippy` + `cargo
-fmt` clean. The **real native link** (each platform) and **Bazel wiring**
-(`BUILD.bazel` two-variant + `crate_universe` repin + `parity.yml`) are the
-remaining Phase A work; the safe `touptek-rs` wrapper is Phase B. Everything else
-below remains **planned**.
+**Phases A + B landed; crate-level Bazel wiring green (2026-06-25).**
+
+- **Phase A — `crates/touptek-rs/libtoupcam-sys`:** vendored `toupcam.h`
+  (v60.31631) + `bindgen` `build.rs` (parsed as plain C) + the
+  `TOUPCAM_SKIP_NATIVE_LINK` env gate. `bindgen` generates **compiling** bindings
+  on **aarch64 Linux** (the Raspberry Pi target) — 225 `Toupcam_*` functions, 17
+  structs, 498 constants, all needed API/type/flags present (`EnumV2`,
+  `StartPullModeWithCallback`, `PullImageV4`, `Trigger`, `put_Roi`,
+  `put_ExpoTime`/`put_ExpoAGain`, `get_Temperature`, `ST4PlusGuide`,
+  `OPTION_BINNING/TEC/RAW/BITDEPTH/TRIGGER`, `FLAG_TEC/RAW16/ST4`,
+  `PIXELFORMAT_RAW16`, `ToupcamDeviceV2/ModelV2/FrameInfoV3`).
+- **Phase B — `crates/touptek-rs`:** safe wrapper — `Sdk` enumeration, `HRESULT`→
+  typed `SdkError` mapping (success is `hr >= 0`), RAII `Camera`, and the
+  **callback → blocking pull/trigger bridge** (`extern "C"` trampoline only
+  signals an `mpsc` channel; `PullImage`/`Stop`/`Close` run off the callback
+  thread). `simulation` feature fabricates frames; 9 unit tests pass. `cargo
+  clippy -D warnings` + `fmt` clean on both feature paths.
+- **Bazel:** `libtoupcam-sys` (`cargo_build_script` bindgen + `rust_library`) and
+  the **real** `touptek-rs` `rust_library` are wired and build under Bazel
+  (`crate_universe` repinned); **buildifier** + **parity** green. The `_sim`
+  variant + the crate `rust_test` are intentionally deferred to the
+  `touptek-camera` service: they need `rand`/`rayon` in `@cr`, which appears only
+  once a member enables `touptek-rs/simulation` (the service's dev-dep nudge —
+  Rule 10 / risk #6); wiring them before that consumer would break `bazel build
+  //...`.
+
+Remaining: the **real native link** against a provisioned SDK on each platform,
+the `install-toupcam-sdk` CI action, and the **`touptek-camera` service** (Phase
+C–G — which also brings the `_sim`/unit-test Bazel targets). Everything below the
+fold remains **planned**.
 
 This is the agreed decision record that will precede
 `docs/services/touptek-camera.md` (the service design doc) and the BDD scenarios,
@@ -255,18 +272,20 @@ cross-platform link (incl. Pi aarch64 + Apple-Silicon-universal). Once
 `simulation` works, the driver builds entirely against it, leaning on the
 `sky-survey-camera` + `zwo-camera` scaffolding.
 
-- **Phase A — `libtoupcam-sys`:** ✅ *bindgen spiked & proven* — `bindgen` over
-  `toupcam.h` parsed as **plain C** (no bare `bool`; `windows.h` is `_WIN32`-guarded;
-  `HRESULT`→`int` on non-Windows), `build.rs` per-OS link of `toupcam` (+ `usb-1.0`,
-  `udev` / IOKit+CoreFoundation), `TOUPCAM_SKIP_NATIVE_LINK` gate. Compiling
-  bindings generated on **aarch64 Linux** via cargo (link-skipped); clippy/fmt
-  clean. *Remaining:* the **real native link** against a provisioned SDK on each
-  platform — Pi5 aarch64, macOS arm64 (`install_name`), Windows x64
-  (`HRESULT`/`c_long` widths — bit ZWO) — and the **Bazel wiring** (`BUILD.bazel`
-  two-variant + `crate_universe` repin + `parity.yml`).
-- **Phase B — `touptek-rs`:** safe `Sdk`/`Camera`/`Error` surface + the
-  **callback/PullMode → blocking bridge** + the `simulation` backend (fabricated
-  frames; ConformU-safe fill). The genuinely net-new design work.
+- **Phase A — `libtoupcam-sys`:** ✅ *bindgen proven + Bazel-wired* — `bindgen`
+  over `toupcam.h` parsed as **plain C** (no bare `bool`; `windows.h` is
+  `_WIN32`-guarded; `HRESULT`→`int` on non-Windows), `build.rs` per-OS link of
+  `toupcam` (+ `usb-1.0`, `udev` / IOKit+CoreFoundation), `TOUPCAM_SKIP_NATIVE_LINK`
+  gate. Compiling bindings on **aarch64 Linux** (cargo + Bazel `cargo_build_script`,
+  link-skipped); clippy/fmt/buildifier/parity clean. *Remaining:* the **real
+  native link** against a provisioned SDK on each platform — Pi5 aarch64, macOS
+  arm64 (`install_name`), Windows x64 (`HRESULT`/`c_long` widths — bit ZWO).
+- **Phase B — `touptek-rs`:** ✅ *skeleton landed* — safe `Sdk`/`Camera`/`Error`
+  surface + the **callback/PullMode → blocking bridge** + the `simulation` backend
+  (fabricated frames; ConformU-safe xorshift fill). 9 unit tests pass. *Remaining
+  (fold into the service phases):* finalize RAW pixel-format buffer sizing + the
+  ASCOM-complete option mapping (cooler control, sensor type, ST4) against real
+  hardware.
 - **Phase C — bare service:** `touptek-camera` serving an empty/sim Camera on
   `:11123`; prove build/link, the new CI SDK provisioning, Pi5 aarch64, the Bazel
   two-variant + `parity`, repin-twice — *before* device-trait work.

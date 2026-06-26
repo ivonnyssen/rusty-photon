@@ -1,0 +1,54 @@
+load("@cr//:defs.bzl", "all_crate_deps")
+load("@rules_rust//cargo:defs.bzl", "cargo_build_script", "cargo_toml_env_vars")
+load("@rules_rust//rust:defs.bzl", "rust_library")
+
+exports_files(
+    ["Cargo.toml"],
+    visibility = ["//visibility:public"],
+)
+
+# Mirrors crates/zwo-rs/libzwo-sys (the reference first-party bindgen
+# cargo_build_script, ADR-010): a build script runs bindgen over the vendored
+# header and emits the native-SDK link directives. The `bazel.yml` /
+# `bazel-coverage.yml` workflows run `.github/actions/install-toupcam-sdk` first,
+# which installs the SDK (so `build.rs`'s link directives resolve when a binary
+# links) and libclang (so bindgen runs). On Linux both are found on default paths
+# with no env; macOS needs LIBCLANG_PATH and Windows needs TOUPCAM_SDK_LIB_DIR,
+# forwarded in `.bazelrc` (to be added with the install action). A rust_library
+# (rlib) build does not link, so it needs only libclang — not the SDK.
+
+# Surfaces CARGO_PKG_* (and friends) from Cargo.toml to the build script + lib,
+# matching what crate_universe generates; cheap and avoids env-var surprises.
+cargo_toml_env_vars(
+    name = "cargo_toml_env_vars",
+    src = "Cargo.toml",
+)
+
+cargo_build_script(
+    name = "build_script",
+    srcs = ["build.rs"],
+    # The vendored SDK header + the bindgen aggregate header are read by build.rs
+    # at action time (via CARGO_MANIFEST_DIR), so they must be in the build
+    # script's sandbox. wrapper.h is named explicitly (a constant has no business
+    # in a glob — buildifier's `constant-glob` lint).
+    data = ["wrapper.h"] + glob(["sdk/include/**"]),
+    edition = "2021",
+    # `links = "toupcam"` marks this build script as the single provider of the
+    # native ToupTek SDK linkage (libtoupcam + libusb/udev / IOKit), mirroring the
+    # crate's `links = "toupcam"` manifest key.
+    links = "toupcam",
+    rustc_env_files = [":cargo_toml_env_vars"],
+    visibility = ["//visibility:private"],
+    # bindgen (the only build-dependency).
+    deps = all_crate_deps(build = True),
+)
+
+rust_library(
+    name = "libtoupcam-sys",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "libtoupcam_sys",
+    edition = "2021",
+    rustc_env_files = [":cargo_toml_env_vars"],
+    visibility = ["//visibility:public"],
+    deps = [":build_script"],
+)

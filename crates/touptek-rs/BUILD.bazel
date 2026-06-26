@@ -1,0 +1,31 @@
+load("@cr//:defs.bzl", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library")
+
+exports_files(
+    ["Cargo.toml"],
+    visibility = ["//visibility:public"],
+)
+
+# Mirrors crates/zwo-rs's two-variant build (ADR-010), but only the REAL variant
+# is wired today. The `simulation` variant (`touptek-rs_sim`) and the crate's
+# `rust_test` need `rand`/`rayon` in `@cr`, which crate_universe only resolves
+# once a workspace member enables `touptek-rs/simulation` — the
+# `[dev-dependencies] touptek-rs = { features = ["simulation"] }` nudge (Rule 10 /
+# docs/plans/touptek-driver.md risk #6). That consumer is the `touptek-camera`
+# service, so the `touptek-rs_sim` + `touptek-rs_unit_test` targets land with it
+# (adding them before the nudge would break `bazel build //...`). Parity is
+# directory-level, so this real `rust_library` already covers the crate.
+_LIBTOUPCAM_SYS = "//crates/touptek-rs/libtoupcam-sys:libtoupcam-sys"
+
+# Real SDK variant: `crate_features = []` cfg's out the simulation module
+# (rand/rayon) so the real FFI path compiles and links the native ToupTek SDK via
+# libtoupcam-sys. An rlib build does not link, so it needs only libclang (for the
+# sys crate's bindgen), not the SDK itself.
+rust_library(
+    name = "touptek-rs",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "touptek_rs",
+    edition = "2021",
+    visibility = ["//visibility:public"],
+    deps = [_LIBTOUPCAM_SYS] + all_crate_deps(normal = True),
+)
