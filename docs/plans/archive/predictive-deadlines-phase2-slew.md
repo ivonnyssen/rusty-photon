@@ -7,11 +7,11 @@ the `deadline` parameter on `poll_slewing_until_idle`, and the
 `MIN_SLEW_DEADLINE` (30 s) floor all shipped to `main` and are verified there
 (`services/rp/src/config/mount.rs`, `services/rp/src/mcp/internals.rs`). The
 slew path's hardcoded 300 s ceiling is gone (now the named
-`SLEW_DEADLINE_FALLBACK`). Parent plan (still active):
-[`predictive-deadlines-and-watchdog.md`](../predictive-deadlines-and-watchdog.md).
+`SLEW_DEADLINE_FALLBACK`). Parent plan:
+[`predictive-deadlines-and-watchdog.md`](predictive-deadlines-and-watchdog.md).
 
 Execution plan for **§2.1** of
-[`predictive-deadlines-and-watchdog.md`](../predictive-deadlines-and-watchdog.md):
+[`predictive-deadlines-and-watchdog.md`](predictive-deadlines-and-watchdog.md):
 replace the slew path's hardcoded 300 s ceiling with a deadline computed
 per call from the slew's actual workload, and populate the
 `predicted_duration_ms` / `max_duration_ms` envelope fields that Phase 1

@@ -138,7 +138,7 @@ The operation watchdog is sentinel's second monitoring loop. Where
 It is the Sentinel half of the two-loop supervision design described in
 [`docs/services/rp.md` §Sentinel Watchdog Integration](rp.md#sentinel-watchdog-integration)
 and the
-[predictive-deadlines plan](../plans/predictive-deadlines-and-watchdog.md);
+[predictive-deadlines plan](../plans/archive/predictive-deadlines-and-watchdog.md);
 rp is the inner loop (every blocking operation emits a `*_started` event
 carrying a predicted and a maximum duration, then a `*_complete` /
 `*_failed`), and the watchdog is the outer loop that tracks those
@@ -245,8 +245,23 @@ resolved (no `service` set, or a name absent from `services`) **degrades
 safely to `notify_only`** with a logged warning — a config mistake never
 aborts the wrong device or wedges the watchdog (tenet #2, robustness).
 
+> **End-to-end coverage.** The ladder's rungs are unit-tested
+> (`services/sentinel/src/corrective.rs`) and the watchdog's policy branching +
+> SSE/liveness handling are unit- and BDD-tested against stubs
+> (`services/sentinel/tests/features/operation_watchdog.feature`). The full
+> two-process loop — a **real rp** emitting over `/api/events/subscribe` and a
+> **real sentinel** subscribing, escalating, and shelling out the restart
+> command — runs in the dedicated harness
+> [`tests/operation-watchdog-e2e/`](../../tests/operation-watchdog-e2e). It
+> drives the watchdog via `center_on_target`: rp advertises a centering
+> deadline but does **not** enforce it (advisory, §2.5), so the watchdog timer
+> is the only thing that fires, and because `centering` has no Alpaca binding
+> the ladder skips abort and exercises the **restart rung** end-to-end (the
+> rung otherwise only unit-tested). Its three scenarios cover wedge → restart,
+> a converging op that is *not* escalated, and rp going away → "unresponsive".
+
 > **Deferred — rp-side recovery callbacks.** The plan
-> (`docs/plans/predictive-deadlines-and-watchdog.md` §5.3–5.4) sketches two
+> (`docs/plans/archive/predictive-deadlines-and-watchdog.md` §5.3–5.4) sketches two
 > follow-up POSTs from sentinel to rp — `/api/internal/operation-aborted`
 > (clear sticky state, re-plan) and `/api/internal/service-restarted`
 > (reconnect the driver). They are **not** implemented: rp has no

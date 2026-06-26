@@ -239,7 +239,7 @@ already-designed supervisor:
 > `rp.md:2759-2767`
 
 Implementation: expose the planned `Restarter` trait (see the watchdog plan,
-[`../predictive-deadlines-and-watchdog.md`](../predictive-deadlines-and-watchdog.md))
+[`../archive/predictive-deadlines-and-watchdog.md`](../archive/predictive-deadlines-and-watchdog.md))
 as a REST endpoint on Sentinel's
 existing dashboard router (e.g. `POST /api/services/{name}/restart`), driven by a
 per-service `restart_command` config entry. Sentinel does **not** spawn or own the

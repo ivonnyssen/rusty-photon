@@ -416,7 +416,7 @@ A blocking operation emits a **triple** — a `*_started` envelope at the
 entry point and a `*_complete` or `*_failed` envelope at the end, all
 sharing one `operation_id`. (`sync_mount`, being instant per ASCOM, emits
 only `*_complete` / `*_failed`.) See
-[`docs/plans/predictive-deadlines-and-watchdog.md`](../plans/predictive-deadlines-and-watchdog.md)
+[`docs/plans/archive/predictive-deadlines-and-watchdog.md`](../plans/archive/predictive-deadlines-and-watchdog.md)
 for the deadline-monitoring design this envelope feeds.
 
 ### Delivery: Webhooks

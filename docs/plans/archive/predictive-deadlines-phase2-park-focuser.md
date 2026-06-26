@@ -8,11 +8,11 @@ deadline stamps all shipped to `main` and are verified there
 (`services/rp/src/config/focuser.rs`, `services/rp/src/mcp/internals.rs`).
 Park keeps its no-auto-abort contract; the hardcoded 300 s / 120 s ceilings
 are gone (now the named `PARK_DEADLINE_FALLBACK` / `FOCUSER_DEADLINE_FALLBACK`).
-Parent plan (still active):
-[`predictive-deadlines-and-watchdog.md`](../predictive-deadlines-and-watchdog.md).
+Parent plan:
+[`predictive-deadlines-and-watchdog.md`](predictive-deadlines-and-watchdog.md).
 
 Execution plan for **§2.2 (park)** and **§2.3 (move_focuser)** of
-[`predictive-deadlines-and-watchdog.md`](../predictive-deadlines-and-watchdog.md):
+[`predictive-deadlines-and-watchdog.md`](predictive-deadlines-and-watchdog.md):
 replace the two remaining hardcoded blocking-poll ceilings — `park`'s 300 s
 and `move_focuser`'s 120 s — with deadlines sized per call, and populate the
 `predicted_duration_ms` / `max_duration_ms` envelope fields that Phase 1
