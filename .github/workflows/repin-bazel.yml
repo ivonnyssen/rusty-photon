@@ -31,7 +31,8 @@ name: repin-bazel
 jobs:
   repin:
     # Only Dependabot PRs. Other PRs that change deps are expected to repin by
-    # hand (rule 10); the required `bazel / <os>` + `bazel/cargo target parity` checks surface any miss there.
+    # hand (rule 10); the required `bazel / <os>` checks surface any miss there
+    # (and the nightly `bazel/cargo target parity` catches target drift).
     if: github.actor == 'dependabot[bot]'
     runs-on: ubuntu-latest
     name: repin MODULE.bazel.lock

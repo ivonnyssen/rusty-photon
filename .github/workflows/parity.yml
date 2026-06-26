@@ -2,9 +2,9 @@
 #
 # Ensures every Cargo workspace member has a Bazel rust target, so that
 # "Bazel green" means Bazel builds what Cargo builds (hand-written BUILD.bazel
-# files can otherwise drift from the workspace). A required check — runs on PRs,
-# push-to-main, and nightly so drift is caught the moment a crate is added
-# without a BUILD.bazel.
+# files can otherwise drift from the workspace). Runs nightly + on push to main
+# (not on PRs): Bazel is the local loop, so a missing BUILD.bazel already blocks
+# local work — this is a backstop that also guards the rules_rust coverage patches.
 #
 # See scripts/check-bazel-cargo-parity.sh.
 permissions:
@@ -12,7 +12,6 @@ permissions:
 on:
   push:
     branches: [main]
-  pull_request:
   schedule:
     - cron: "45 6 * * *"
   workflow_dispatch:

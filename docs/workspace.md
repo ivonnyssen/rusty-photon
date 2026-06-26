@@ -365,9 +365,9 @@ remain the single source of truth for dependency versions, and Bazel's
 `bazel test //...` runs all non-`requires-cargo`, non-BDD targets, and
 `bazel test --test_tag_filters=bdd //...` adds the BDD suites. The required PR
 checks are `bazel / <os>` (build + test on Linux/macOS/Windows), `bazel coverage`,
-and `bazel/cargo target parity`, plus the Cargo `stable / fmt` and `stable / clippy`
-lint jobs (Bazel does not run rustfmt/clippy). The Cargo build/test jobs run nightly
-as a safety net (coverage is Bazel-only). `bazel build //... && bazel test //...` is
+plus the Cargo `stable / fmt` and `stable / clippy` lint jobs (Bazel does not run
+rustfmt/clippy). `bazel/cargo target parity` and the Cargo build/test jobs run
+nightly as a safety net (coverage is Bazel-only). `bazel build //... && bazel test //...` is
 the local pre-commit loop (see [docs/skills/pre-push.md](skills/pre-push.md)).
 
 After adding a crates.io dependency to the workspace, run

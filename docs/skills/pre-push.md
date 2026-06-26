@@ -36,17 +36,16 @@
 ## Procedure
 
 > **Bazel is the per-PR gate.** The required checks are
-> `bazel / {ubuntu,macos,windows}-latest` (build + test), `bazel coverage`,
-> `bazel/cargo target parity`, and the Cargo `stable / fmt` + `stable / clippy`
-> lint jobs (Bazel does not run rustfmt/clippy). The Cargo build / test /
-> coverage / hack / msrv jobs run nightly and do not gate PRs. So the
+> `bazel / {ubuntu,macos,windows}-latest` (build + test), `bazel coverage`, and
+> the Cargo `stable / fmt` + `stable / clippy` lint jobs (Bazel does not run
+> rustfmt/clippy). `bazel/cargo target parity`, plus the Cargo build / test /
+> coverage / hack / msrv jobs, run nightly and do not gate PRs. So the
 > authoritative pre-push is:
 >
 > ```bash
 > bazel build //... && bazel test //...                       # bazel / <os> (build + fast tests)
 > bazel test --test_tag_filters=bdd //...                     # BDD suites (needs OmniSim + OMNISIM_PATH)
 > bazel coverage --config=coverage //...                      # bazel coverage (needs OmniSim)
-> ./scripts/check-bazel-cargo-parity.sh                       # bazel/cargo target parity
 > cargo fmt --check                                           # `stable / fmt`
 > cargo clippy --all-targets --all-features -- -D warnings    # `stable / clippy`
 > ```
@@ -341,14 +340,13 @@ Current services and their commands:
 ## Quick Reference
 
 Pre-push checks (copy-paste) — these mirror the full required gate (`bazel / <os>`,
-`bazel coverage`, `bazel/cargo target parity`, `stable / fmt`, `stable / clippy`);
-`fmt`/`clippy` are the Cargo-only lint jobs Bazel doesn't cover:
+`bazel coverage`, `stable / fmt`, `stable / clippy`); `fmt`/`clippy` are the
+Cargo-only lint jobs Bazel doesn't cover:
 
 ```bash
 bazel build //... && bazel test //...                     # bazel / <os> (build + fast tests)
 bazel test --test_tag_filters=bdd //...                   # BDD suites (needs OmniSim + OMNISIM_PATH)
 bazel coverage --config=coverage //...                    # bazel coverage (heavier; needs OmniSim)
-./scripts/check-bazel-cargo-parity.sh                     # bazel/cargo target parity
 cargo fmt --check                                         # stable / fmt
 cargo clippy --all-targets --all-features -- -D warnings  # stable / clippy
 ```
@@ -356,7 +354,7 @@ cargo clippy --all-targets --all-features -- -D warnings  # stable / clippy
 ## Bazel
 
 Bazel is the per-PR build / test / coverage gate (`.github/workflows/bazel.yml`,
-`bazel-coverage.yml`, `parity.yml`). The
+`bazel-coverage.yml`). `parity.yml` (Bazel/Cargo target parity) and the
 Cargo build/test jobs run nightly as a safety net; `Cargo.toml` / `Cargo.lock`
 remain the single source of truth for dependency versions.
 
