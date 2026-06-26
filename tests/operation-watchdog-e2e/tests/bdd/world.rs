@@ -331,11 +331,22 @@ impl WatchdogE2eWorld {
         }
     }
 
-    /// GET sentinel's `/api/history` as a JSON array.
+    /// GET sentinel's `/api/history` as a JSON array. Bounded by a short
+    /// request timeout so a stalled dashboard fails this poll fast rather than
+    /// hanging the whole suite until the bazel test timeout.
     pub async fn get_history(&self) -> Vec<Value> {
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .expect("build history http client");
         let url = self.sentinel_dashboard_url("/api/history");
         let resp = client.get(&url).send().await.expect("GET /api/history");
+        assert_eq!(
+            resp.status().as_u16(),
+            200,
+            "GET /api/history returned {}",
+            resp.status()
+        );
         resp.json().await.expect("parse history JSON")
     }
 
