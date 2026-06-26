@@ -3,7 +3,7 @@
 # Dependabot bumps Cargo.toml + Cargo.lock but never touches
 # MODULE.bazel.lock, so the Bazel crate_universe index (which reads
 # Cargo.lock via `crate.from_cargo`) drifts stale on every cargo update
-# (see CLAUDE.md rule 10 + docs/plans/archive/bazel-migration.md). This job runs the
+# (see CLAUDE.md rule 10). This job runs the
 # repin on the PR branch and pushes the refreshed lock back, so the author
 # never has to remember the manual `CARGO_BAZEL_REPIN=1 bazel mod tidy` dance.
 #
@@ -56,7 +56,7 @@ jobs:
       # CARGO_BAZEL_REPIN=1 forces crate_universe to re-resolve against the
       # current Cargo.lock; the second un-forced run resets the lock's recorded
       # CARGO_BAZEL_REPIN fingerprint back to null so the committed lock stays
-      # stable on later plain `bazel` runs (see docs/plans/archive/bazel-migration.md).
+      # stable on later plain `bazel` runs.
       - name: Repin crate index
         run: |
           CARGO_BAZEL_REPIN=1 bazel mod tidy

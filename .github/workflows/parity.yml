@@ -2,11 +2,11 @@
 #
 # Ensures every Cargo workspace member has a Bazel rust target, so that
 # "Bazel green" means Bazel builds what Cargo builds (hand-written BUILD.bazel
-# files can otherwise drift from the workspace). A required check as of the
-# Phase 7 cutover — runs on PRs, push-to-main, and nightly so drift is caught
-# the moment a crate is added without a BUILD.bazel.
+# files can otherwise drift from the workspace). A required check — runs on PRs,
+# push-to-main, and nightly so drift is caught the moment a crate is added
+# without a BUILD.bazel.
 #
-# See scripts/check-bazel-cargo-parity.sh and docs/plans/archive/bazel-migration.md.
+# See scripts/check-bazel-cargo-parity.sh.
 permissions:
   contents: read
 on:
@@ -46,8 +46,8 @@ jobs:
       # applied-but-ineffective patch is caught too, by requiring both the env-var
       # marker AND the structural anchor (the find_extra_object helper) to survive.
       # --nobuild forces the fetch+patch without compiling the collector; the
-      # behavioural backstop is the bazel-coverage shadow job, which compiles and
-      # runs the patched collector on every PR.
+      # behavioural backstop is the bazel-coverage job, which compiles and runs
+      # the patched collector on every PR.
       - name: Guard - rules_rust coverage patch applied & effective
         run: |
           bazel build --nobuild @rules_rust//util/collect_coverage:collect_coverage

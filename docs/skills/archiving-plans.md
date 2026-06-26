@@ -60,8 +60,8 @@ not block archiving — record them in the status header instead.
      use judgment, but never leave a link dangling at the old path.
 
 6. **Run the pre-push gate** if steps 4–5 touched any Rust source
-   (`cargo rail run --profile commit -q` and `cargo fmt`); a docs-only archive
-   needs neither. See [pre-push.md](pre-push.md).
+   (`bazel build //... && bazel test //...`, `cargo fmt`, and `cargo clippy`); a
+   docs-only archive needs none of them. See [pre-push.md](pre-push.md).
 
 7. **Commit** on a feature branch (never `main` — see [AGENTS.md](../AGENTS.md)
    rule 5) with the configured author (rule 6).

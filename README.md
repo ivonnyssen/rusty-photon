@@ -6,7 +6,7 @@ Cross-platform [ASCOM Alpaca](https://ascom-standards.org/Developer/Alpaca.htm) 
 
 ## Services
 
-Coverage comes from the `bazel coverage` job (`.github/workflows/bazel-coverage.yml`), uploaded under the per-service `<pkg>` Codecov flags that drive these badges. It is the sole coverage source and a required per-PR gate; the nightly Cargo build/test jobs no longer collect coverage.
+Coverage comes from the `bazel coverage` job (`.github/workflows/bazel-coverage.yml`), uploaded under the per-service `<pkg>` Codecov flags that drive these badges. It is the sole coverage source and a required per-PR gate; the nightly Cargo jobs do not collect coverage.
 
 | Service | Type | Port | Coverage | Description |
 |---------|------|------|------------------|-------------|
@@ -117,22 +117,20 @@ ASCOM Alpaca **Camera** driver for ZWO ASI hardware, built natively on the vendo
 ### Prerequisites
 
 - **Rust** (edition 2021, MSRV 1.94.1 — inherited by all workspace members)
-- **[cargo-nextest](https://nexte.st/)** (`cargo install cargo-nextest --locked`) — required by the pre-push profile
-- **[cargo-rail](https://github.com/loadingalias/cargo-rail)** (optional, recommended) — runs the affected-package pre-push profile
+- **[Bazel](https://bazel.build/)** via bazelisk (version pinned by `.bazelversion`) — the local build/test loop and the per-PR CI gate
+- **[cargo-nextest](https://nexte.st/)** (`cargo install cargo-nextest --locked`) — optional; used by the nightly Cargo safety net (`act` / raw-cargo fallback)
+- **Vendor camera SDKs** (ZWO ASI/EFW + QHYCCD) — **required**: `bazel build //...` includes the `zwo-camera` / `qhy-camera` packages, which link the native SDKs. Install them per [`services/zwo-camera/README.md`](services/zwo-camera/README.md) and [`services/qhy-camera`](services/qhy-camera/) (the same SDKs CI provisions).
 
 ### Building
 
-Bazel is the primary per-PR CI gate (`bazel test //...`); the Cargo build is the canonical local inner loop and the nightly safety net (see [docs/plans/archive/bazel-migration.md](docs/plans/archive/bazel-migration.md)).
+Bazel builds and fast-tests the workspace and is the per-PR CI gate; the Cargo build is the nightly safety net and still drives dependency versions.
 
 ```bash
-# Build everything
-cargo build --all
+# Build + fast-test everything (the local loop and the per-PR gate)
+bazel build //... && bazel test //...
 
-# Build a single service
-cargo build -p filemonitor
-
-# (Optional) exercise the Bazel build — the per-PR gate
-bazel test //...
+# A single package
+bazel build //services/filemonitor/...
 ```
 
 ### Running
@@ -150,15 +148,14 @@ cargo run -p sentinel -- -c services/sentinel/examples/config.json
 The project uses a layered test strategy. See [docs/skills/testing.md](docs/skills/testing.md) for the full testing guide.
 
 ```bash
-# Run all unit and BDD tests
-cargo test --all
+# Run the fast tests (unit; BDD/conformu excluded by default)
+bazel test //...
 
-# Run tests for a single service
-cargo test -p filemonitor
+# A single service's tests
+bazel test //services/filemonitor/...
 
-# Run tests requiring mock hardware
-cargo test -p ppba-driver --features mock
-cargo test -p qhy-focuser --features mock
+# The BDD suites (need OmniSim + OMNISIM_PATH)
+bazel test --test_tag_filters=bdd //...
 ```
 
 ### ConformU (ASCOM Compliance)
@@ -175,31 +172,24 @@ ASCOM Alpaca compliance testing is integrated via [ConformU](https://github.com/
 cargo test -p filemonitor --features conformu --test conformu_integration -- --nocapture
 ```
 
-### Local CI
+### Local CI / pre-push
 
-CI workflows can be run locally using [act](https://github.com/nektos/act). See [docs/skills/pre-push.md](docs/skills/pre-push.md) for the full guide, or run the minimum pre-push checks. Use **either** the preferred path **or** the fallback — not both.
-
-**Preferred** — cargo-rail's `commit` profile (affected packages only, with `--locked --all-features --all-targets` baked in; defined in `.config/rail.toml`):
+The local pre-commit gate is Bazel plus Cargo's linters (Bazel runs neither rustfmt nor clippy) — see [docs/skills/pre-push.md](docs/skills/pre-push.md):
 
 ```bash
-cargo rail run --profile commit -q
+bazel build //... && bazel test //...                     # build + fast tests (BDD/conformu auto-excluded)
 cargo fmt
+cargo clippy --all-targets --all-features -- -D warnings
 ```
 
-**Fallback** — if cargo-rail is not installed:
-
-```bash
-cargo build --all --all-targets --all-features --locked --quiet --color never
-cargo nextest run --locked --all-features --all-targets --color never
-cargo fmt
-```
+The full CI workflows (including the nightly Cargo safety net) can be run locally with [act](https://github.com/nektos/act) — see [docs/skills/pre-push.md](docs/skills/pre-push.md).
 
 ## Project Structure
 
 ```
 rusty-photon/
   Cargo.toml              Workspace root with shared dependencies
-  MODULE.bazel            Bazel module (shadow build, see docs/plans/archive/bazel-migration.md)
+  MODULE.bazel            Bazel module (deps resolved from Cargo.toml via crate_universe)
   CLAUDE.md / AGENTS.md   Operating rules for AI agents and human contributors
   crates/
     bdd-infra/                       Shared BDD test infrastructure (ServiceHandle + rp-harness)

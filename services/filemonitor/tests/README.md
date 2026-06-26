@@ -10,11 +10,13 @@ The ConformU tests are integrated into the Rust test suite but require ConformU 
 # Install ConformU first (if not already installed)
 ./test-conformance.sh --install-conformu
 
-# Run ConformU integration tests
-cargo test --test conformu_integration -- --ignored
+# Run the ConformU integration tests. The default test filter excludes the
+# `conformu` tag, so select it with --config=conformu (needs ConformU
+# installed; point CONFORMU_PATH at it).
+CONFORMU_PATH=/path/to/conformu bazel test --config=conformu //...
 
-# Or run all tests including ConformU
-cargo test -- --ignored
+# Or just the filemonitor ConformU test
+CONFORMU_PATH=/path/to/conformu bazel test --config=conformu //services/filemonitor:conformu_integration
 ```
 
 ## Test Structure

@@ -1,11 +1,9 @@
-# Bazel build + test — the primary per-PR build/test gate.
+# Bazel build + test — the per-PR build/test gate.
 #
-# As of the Phase 7 cutover (docs/plans/archive/bazel-migration.md), Bazel is the
-# required build/test gate on PRs; the Cargo build/test jobs (test.yml) moved to
-# a nightly safety net. This 3-OS matrix produces the `bazel / <os>` required
-# checks. Coverage is gated separately by bazel-coverage.yml and Bazel/Cargo
-# target parity by parity.yml. Rollback is repointing the main_protection ruleset
-# back at the Cargo checks — Cargo is unchanged and still runs nightly.
+# Bazel is the required build/test gate on PRs; the Cargo build/test jobs
+# (test.yml) run as a nightly safety net. This 3-OS matrix produces the
+# `bazel / <os>` required checks. Coverage is gated separately by
+# bazel-coverage.yml and Bazel/Cargo target parity by parity.yml.
 permissions:
   contents: read
 on:
@@ -29,16 +27,15 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     name: bazel / ${{ matrix.os }}
-    # Action-graph change detection replaces cargo-rail. Bazel figures out
-    # which targets actually changed and only rebuilds those; everything
-    # else is a cache hit.
+    # Bazel's action-graph change detection figures out which targets actually
+    # changed and only rebuilds those; everything else is a cache hit.
     #
-    # 40 (not 30): with the OmniSim race fixed (see services/rp/BUILD.bazel),
-    # rp:bdd now runs to full completion (~12 min on Windows) instead of failing
-    # fast partway through, which lengthens the BDD step on the slower Windows
-    # runner. The `omnisim` resource pool serializes rp:bdd only against
-    # calibrator-flats:bdd — both stay parallel to the other ~10 BDD targets — so
-    # the increase is modest; 40 leaves headroom for a cold-cache first run.
+    # 40-min timeout: with the OmniSim race fixed (see services/rp/BUILD.bazel),
+    # rp:bdd runs to full completion (~12 min on Windows), which lengthens the
+    # BDD step on the slower Windows runner. The `omnisim` resource pool
+    # serializes rp:bdd only against calibrator-flats:bdd — both stay parallel to
+    # the other ~10 BDD targets — so the increase is modest; 40 leaves headroom
+    # for a cold-cache first run.
     timeout-minutes: 40
     defaults:
       run:
@@ -97,8 +94,8 @@ jobs:
       - name: Install ASCOM OmniSim
         uses: ./.github/actions/install-omnisim
 
-      # qhy-camera links the proprietary QHYCCD SDK + libusb; the shadow
-      # `bazel build //...` compiles libqhyccd-sys on every OS, so provision both.
+      # qhy-camera links the proprietary QHYCCD SDK + libusb; `bazel build //...`
+      # compiles libqhyccd-sys on every OS, so provision both.
       # Linux: the action stages the libs into /usr/local/lib (build.rs's env-free
       # search path) + apt libusb. macOS: SDK extracts into $GITHUB_WORKSPACE
       # (build.rs reads it via the GITHUB_WORKSPACE forwarded in .bazelrc) + brew
@@ -118,10 +115,9 @@ jobs:
           version: "26.06.04"
       # zwo-camera links the native ZWO ASI/EFW SDK (zwo-rs -> libzwo-sys), so
       # //... cannot build, link, or run it without the SDK on the link path.
-      # Provision it on every OS, exactly like OmniSim above: this shadow build
-      # always covers the whole graph (no plan/narrowing job), and an unrelated
-      # change can still invalidate zwo-camera's cached link action, so the SDK
-      # must always be present. The composite action also installs libclang for
+      # Provision it on every OS, exactly like OmniSim above: this build always
+      # covers the whole graph, and an unrelated change can still invalidate
+      # zwo-camera's cached link action, so the SDK must always be present. The composite action also installs libclang for
       # bindgen and forwards LIBCLANG_PATH / ZWO_SDK_LIB_DIR (consumed under
       # .bazelrc's strict_action_env on macOS / Windows). See
       # services/zwo-camera/BUILD.bazel and docs/services/zwo-camera.md.
@@ -161,9 +157,8 @@ jobs:
         # --test_env discards Bazel's analysis cache; see .bazelrc for the why).
         # --spawn_strategy=local (bypasses the sandbox so the BDD-spawned OmniSim
         # can bind ports; also the confirmed fix for the rp:bdd post-scenario
-        # park) and --remote_timeout=3 both live in `.bazelrc` now — see
-        # docs/plans/archive/bazel-migration.md. --test_output=all surfaces rp:bdd's
-        # BDD-TRACE per-scenario breadcrumbs even on a passing run
+        # park) and --remote_timeout=3 both live in `.bazelrc`. --test_output=all
+        # surfaces rp:bdd's BDD-TRACE per-scenario breadcrumbs even on a passing run
         # (services/rp/tests/bdd.rs).
         run: |
           REMOTE_FLAGS=(--config=remote-cache)

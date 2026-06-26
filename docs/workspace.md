@@ -357,20 +357,18 @@ worked example.
   `ivonnyssen/ascom-alpaca-rs.git` (branch `integration`,
   `default-features = false`).
 
-### Bazel (primary CI gate)
+### Bazel
 
-Bazel is the **primary per-PR build / test / coverage gate** as of the Phase 7
-cutover — see [docs/plans/archive/bazel-migration.md](plans/archive/bazel-migration.md).
-`Cargo.toml` and `Cargo.lock` remain the single source of truth for dependency
-versions, and Bazel's `crate_universe` reads them. The repo root holds
-`MODULE.bazel` and `BUILD.bazel`; `bazel test //...` runs all non-`requires-cargo`,
-non-BDD targets, and `bazel test --test_tag_filters=bdd //...` adds the BDD
-suites. The required PR checks are `bazel / <os>` (build + test on
-Linux/macOS/Windows), `bazel coverage`, and `bazel/cargo target parity`, plus the
-Cargo `stable / fmt` and `stable / clippy` lint jobs (Bazel does not run
-rustfmt/clippy). The Cargo build/test/coverage jobs moved to a nightly safety net;
-`cargo rail run --profile commit -q` remains a fast local pre-commit loop (see
-[docs/skills/pre-push.md](skills/pre-push.md)).
+Bazel is the per-PR build / test / coverage gate. `Cargo.toml` and `Cargo.lock`
+remain the single source of truth for dependency versions, and Bazel's
+`crate_universe` reads them. The repo root holds `MODULE.bazel` and `BUILD.bazel`;
+`bazel test //...` runs all non-`requires-cargo`, non-BDD targets, and
+`bazel test --test_tag_filters=bdd //...` adds the BDD suites. The required PR
+checks are `bazel / <os>` (build + test on Linux/macOS/Windows), `bazel coverage`,
+and `bazel/cargo target parity`, plus the Cargo `stable / fmt` and `stable / clippy`
+lint jobs (Bazel does not run rustfmt/clippy). The Cargo build/test jobs run nightly
+as a safety net (coverage is Bazel-only). `bazel build //... && bazel test //...` is
+the local pre-commit loop (see [docs/skills/pre-push.md](skills/pre-push.md)).
 
 After adding a crates.io dependency to the workspace, run
 `CARGO_BAZEL_REPIN=1 bazel mod tidy && bazel mod tidy` to refresh

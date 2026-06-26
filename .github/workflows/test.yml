@@ -1,23 +1,17 @@
 # Cargo build + test — nightly safety net.
 #
-# Until the Bazel cutover this ran on every PR and produced the required
-# `ubuntu / stable` and `coverage` checks. Bazel (bazel.yml + bazel-coverage.yml)
-# is now the per-PR build / test / coverage gate, so this workflow moved to a
-# nightly schedule (+ push to main + manual dispatch) and runs the FULL workspace
-# as a Cargo safety net. It no longer uses cargo-rail change detection — a
-# nightly safety net always exercises the whole workspace, so the narrowing
-# `plan` job (and the only remaining cargo-rail use in CI) is gone. See
-# docs/plans/archive/bazel-migration.md (Phase 7).
+# Bazel (bazel.yml + bazel-coverage.yml) is the per-PR build / test / coverage
+# gate. This workflow runs on a nightly schedule (+ push to main + manual
+# dispatch) and exercises the FULL workspace as a Cargo safety net.
 #
 # Jobs:
 # - required: workspace build + nextest + BDD + doctests on ubuntu/stable
 # - macos / windows: the same on the other two host OSes
 #   (Windows BDD runs in one job here — on a nightly run the ~10m sequential
-#    per-scenario spawn cost is irrelevant, so the per-service matrix split the
-#    per-PR job used is collapsed back in.)
+#    per-scenario spawn cost is irrelevant, so it is not split per-service.)
 #
 # Coverage is NOT collected here: `bazel coverage` (bazel-coverage.yml) is the
-# sole coverage source (canonical `<pkg>` Codecov flags). See docs/plans/archive/bazel-migration.md.
+# sole coverage source (canonical `<pkg>` Codecov flags).
 permissions:
   contents: read
 on:
@@ -51,7 +45,7 @@ jobs:
     # hang in `cargo test --test bdd` could silently burn a full 6 h. The root
     # cause (rp's `do_capture` looping forever on a failed exposure) is fixed at
     # the source; this cap is defense-in-depth. Generous because the nightly run
-    # exercises the FULL workspace BDD suite (no cargo-rail narrowing).
+    # exercises the FULL workspace BDD suite.
     timeout-minutes: 45
     name: ubuntu / stable
     steps:
@@ -125,8 +119,7 @@ jobs:
   windows:
     # Windows nextest + BDD in one job. On a nightly safety net the ~10m
     # sequential BDD wall-clock (Windows spawns a process per scenario) is
-    # irrelevant, so the per-service windows-bdd matrix split the per-PR job used
-    # is collapsed back into a single full-workspace `cargo test --test bdd`.
+    # irrelevant, so BDD runs as a single full-workspace `cargo test --test bdd`.
     runs-on: windows-latest
     timeout-minutes: 60
     name: windows / nextest

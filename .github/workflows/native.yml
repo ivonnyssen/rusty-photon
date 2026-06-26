@@ -21,9 +21,9 @@
 # (Bazel's real qhyccd-rs/zwo-rs variants build-enforce the lib halves; the Pi
 # nightly covers linux-arm64.)
 #
-# Cadence: nightly cron + workflow_dispatch, plus paths-filtered PR/push so a
+# Cadence: nightly cron + workflow_dispatch, plus a paths-filtered push to main so a
 # real-link regression in either service's native code, this workflow, or an
-# SDK-install action is caught at PR time rather than only at the next cron fire.
+# SDK-install action is caught when it lands on main rather than only at the next cron fire.
 permissions:
   contents: read
 on:
@@ -34,14 +34,6 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths:
-      - "crates/qhyccd-rs/**"
-      - "services/qhy-camera/**"
-      - "crates/zwo-rs/**"
-      - "services/zwo-camera/**"
-      - ".github/actions/install-zwo-sdk/**"
-      - ".github/workflows/native.yml"
-  pull_request:
     paths:
       - "crates/qhyccd-rs/**"
       - "services/qhy-camera/**"
@@ -130,8 +122,8 @@ jobs:
   notify-on-failure:
     # Open or update a tracking issue when the nightly run fails so a real-link
     # regression surfaces without depending on someone reading scheduled-workflow
-    # logs. Skipped on push, pull_request, and workflow_dispatch so manual /
-    # PR-time runs do not churn the issue.
+    # logs. Skipped on push and workflow_dispatch so manual runs do not
+    # churn the issue.
     needs: build
     if: failure() && github.event_name == 'schedule'
     runs-on: ubuntu-latest

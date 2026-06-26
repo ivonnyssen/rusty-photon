@@ -42,9 +42,9 @@ The six camera BDD feature files under `tests/features/` are live;
   laptops, CI runners, Bazel actions — not just machines with a camera attached.
 - The `simulation` feature makes the build **camera-free, not SDK-free**: it
   fabricates frames/EFW state at runtime, but the native SDK is still linked.
-- `cargo build -p zwo-camera` is **expected to fail to link without the SDK**.
-  Devs without it use the rest of the workspace normally; `cargo rail`'s
-  affected-packages-only mode builds this crate only when its files change.
+- The build **fails to link without the SDK**, so **install it before building**
+  (see below). `bazel build //...` includes this package, so the SDK is a required
+  local-dev prerequisite — CI and the Bazel actions install it the same way.
 
 ## Building locally
 
@@ -72,7 +72,7 @@ sudo ldconfig
 #    (e.g. /usr/lib64 on Fedora, /usr/lib/$(uname -m)-linux-gnu on Debian).
 export LIBCLANG_PATH=/usr/lib64
 
-cargo build -p zwo-camera
+bazel build //services/zwo-camera:...
 cargo run  -p zwo-camera --features simulation -- --port 11122
 ```
 

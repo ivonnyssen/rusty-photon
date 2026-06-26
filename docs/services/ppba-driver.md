@@ -401,19 +401,19 @@ When running ASCOM ConformU compliance tests against real hardware, auto-dew mus
 
 ```bash
 # Run unit tests only
-cargo test -p ppba-driver --quiet
+bazel test //services/ppba-driver:ppba-driver_unit_test
 
-# Run BDD tests (requires mock feature — spawns the binary with MockSerialPortFactory)
-cargo test -p ppba-driver --features mock --test bdd --quiet
+# Run BDD tests (spawns the mock binary with MockSerialPortFactory)
+bazel test --test_tag_filters=bdd //services/ppba-driver/...
 
 # Run all tests (unit + BDD)
-cargo test -p ppba-driver --features mock --quiet
+bazel test //services/ppba-driver/...
 
-# Run specific unit test module (now inline in src/)
-cargo test -p ppba-driver protocol::tests
+# Run a specific unit test module (inline in src/)
+bazel test //services/ppba-driver:ppba-driver_unit_test --test_arg=protocol::tests
 
 # Run ConformU compliance test (requires ConformU installed)
-cargo test -p ppba-driver --features conformu --test conformu_integration -- --ignored --nocapture
+bazel test //services/ppba-driver:conformu_integration
 ```
 
 BDD tests use cucumber-rs with feature files in `tests/features/`. Tests spawn the actual ppba-driver binary as a subprocess (with `--features mock` for the mock serial port) and communicate via ASCOM Alpaca HTTP REST API, testing the full stack from config loading through HTTP routing to device logic.
