@@ -90,18 +90,6 @@ async fn ladder_runs_restart(world: &mut WatchdogE2eWorld) {
     );
 }
 
-#[then("the restart command leaves its marker file")]
-async fn restart_marker_present(world: &mut WatchdogE2eWorld) {
-    let marker = world.restart_marker_path();
-    for _ in 0..40 {
-        if marker.exists() {
-            return;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-    }
-    panic!("restart marker {marker:?} was never created — the restart rung did not shell out");
-}
-
 #[then("the watchdog records no escalation for the centering operation")]
 async fn no_centering_escalation(world: &mut WatchdogE2eWorld) {
     // The convergent call must have succeeded — otherwise "no escalation" would

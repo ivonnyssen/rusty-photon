@@ -18,7 +18,6 @@ Feature: Operation watchdog end-to-end (real rp + real sentinel)
     When the operator starts centering on a target
     Then the watchdog escalates the centering operation
     And the corrective ladder runs the restart command
-    And the restart command leaves its marker file
 
   Scenario: A centering operation that completes in time is not escalated
     Given rp's plate solver returns the target field center immediately

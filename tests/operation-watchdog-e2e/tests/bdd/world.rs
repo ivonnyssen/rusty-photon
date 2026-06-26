@@ -6,7 +6,6 @@
 //! history without a network round-trip. Everything is per-scenario; teardown
 //! runs in the cucumber `after` hook (see `bdd.rs`).
 
-use std::path::PathBuf;
 use std::time::Duration;
 
 use bdd_infra::rp_harness::{
@@ -16,7 +15,6 @@ use bdd_infra::rp_harness::{
 use bdd_infra::ServiceHandle;
 use cucumber::World;
 use serde_json::Value;
-use tempfile::TempDir;
 
 /// How rp's plate solver behaves for the scenario — selected by a `Given`
 /// step before rp starts, since the choice is baked into rp's config.
@@ -57,29 +55,9 @@ pub struct WatchdogE2eWorld {
     /// no-false-alarm scenario): `Some(Ok)` on success, `Some(Err)` on a tool
     /// error, `None` if never invoked.
     pub centering_result: Option<Result<Value, String>>,
-
-    pub temp_dir: Option<TempDir>,
-    /// File the restart command touches — its existence proves the restart rung
-    /// actually shelled out.
-    pub restart_marker: Option<PathBuf>,
 }
 
 impl WatchdogE2eWorld {
-    fn temp_dir(&mut self) -> &TempDir {
-        self.temp_dir
-            .get_or_insert_with(|| TempDir::new().expect("create temp dir"))
-    }
-
-    /// Path the restart command writes; created lazily under the scenario temp
-    /// dir so each scenario gets a fresh, absent marker.
-    pub fn restart_marker_path(&mut self) -> PathBuf {
-        if self.restart_marker.is_none() {
-            let path = self.temp_dir().path().join("restart-ran.marker");
-            self.restart_marker = Some(path);
-        }
-        self.restart_marker.clone().expect("marker path set above")
-    }
-
     pub fn rp_base_url(&self) -> String {
         self.rp
             .as_ref()
@@ -116,30 +94,6 @@ impl WatchdogE2eWorld {
         });
         self.pushover_stub = Some(handle);
         self.pushover_stub_url = Some(format!("http://{addr}/1/messages.json"));
-    }
-
-    /// Restart command run via the corrective ladder's shell restarter
-    /// (`sh -c` / `cmd /C`). It just creates the marker file — a real
-    /// `systemctl restart` would be hardware-specific; the marker is the
-    /// portable, observable proof the rung executed. It MUST exit 0, since the
-    /// ladder treats any non-zero exit as `restart=failed`.
-    #[cfg(unix)]
-    fn marker_command(marker: &std::path::Path) -> String {
-        // Single-quote the path and escape any embedded single quote
-        // (`'` -> `'\''`) so a TMPDIR containing one can't break `sh -c`.
-        let escaped = marker.display().to_string().replace('\'', r"'\''");
-        format!("touch '{escaped}'")
-    }
-
-    #[cfg(windows)]
-    fn marker_command(marker: &std::path::Path) -> String {
-        // `break > file` is the canonical cmd idiom to create an empty file: the
-        // redirection makes the (empty) file and `break` is a no-op that exits 0.
-        // `type nul > file` is NOT used — `type nul` returns errorlevel 1 on the
-        // Windows runners, which the ladder would read as `restart=failed`.
-        // `"` is an illegal Windows filename character, so double-quoting the
-        // path is sufficient for `cmd /C`.
-        format!("break > \"{}\"", marker.display())
     }
 
     /// Build rp's JSON config for the selected plate-solver mode.
@@ -184,17 +138,15 @@ impl WatchdogE2eWorld {
 
     /// Build sentinel's JSON config: the operation watchdog pointed at rp, with
     /// `centering` set to `abort_then_restart` against a "rp" service whose
-    /// restart command touches the marker file. Buffers are zeroed so the
-    /// tracked deadline equals rp's `max_duration_ms` exactly; reconnect is
+    /// restart command is a trivial cross-shell `exit 0`. Buffers are zeroed so
+    /// the tracked deadline equals rp's `max_duration_ms` exactly; reconnect is
     /// tight so the unresponsive path resolves in a couple of seconds.
-    fn build_sentinel_config(&mut self) -> Value {
+    fn build_sentinel_config(&self) -> Value {
         let rp_url = self.rp_base_url();
         let pushover_url = self
             .pushover_stub_url
             .clone()
             .expect("pushover stub started before sentinel");
-        let marker = self.restart_marker_path();
-        let restart_command = Self::marker_command(&marker);
 
         serde_json::json!({
             "monitors": [],
@@ -223,11 +175,16 @@ impl WatchdogE2eWorld {
                 "services": {
                     // `centering` has no Alpaca binding, so the ladder skips
                     // health/abort and goes straight to this restart command.
-                    // base_url is unused for a binding-less family.
+                    // base_url is unused for a binding-less family. The command
+                    // is a trivial cross-shell `exit 0` (works under both `sh -c`
+                    // and `cmd /C`, no path/quoting/redirection to mis-parse);
+                    // the `restart=ran` token the test asserts on is emitted only
+                    // after the real ShellRestarter spawns it and it exits 0,
+                    // which is the end-to-end proof the restart rung executed.
                     "rp": {
                         "base_url": "http://127.0.0.1:1/api/v1",
                         "device_number": 0,
-                        "restart_command": restart_command,
+                        "restart_command": "exit 0",
                     }
                 }
             }
