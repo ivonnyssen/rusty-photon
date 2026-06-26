@@ -43,7 +43,7 @@ link directives). Three frictions follow from the external status:
    Bazel **production** binary is also simulated, and the real-SDK FFI path is
    never compiled under Bazel. (It also conveniently `cfg`s out the real FFI whose
    bindgen `c_long`/`c_int` widths the Bazel Windows toolchain handles differently
-   — see Risks.) See [`docs/plans/bazel-migration.md`](bazel-migration.md),
+   — see Risks.) See [`docs/plans/archive/bazel-migration.md`](archive/bazel-migration.md),
    "External-crate non-default features for tests".
 3. **Velocity tax.** Any binding change is a round-trip through a second repo
    rather than an in-tree edit, even though the two repos are developed in
@@ -266,7 +266,7 @@ documented.
 - Update `docs/services/zwo-camera.md` "Native dependency & build gating": replace
   the git-rev + dev-dep narrative with the first-party two-variant story; note the
   pin is gone and bindgen now runs in-tree.
-- Update `docs/plans/bazel-migration.md` "External-crate non-default features"
+- Update `docs/plans/archive/bazel-migration.md` "External-crate non-default features"
   subsection: note zwo-camera moved to the first-party two-variant pattern (and
   that the dev-dep technique remains the answer for crates we *don't* vendor).
 - Update ADR-008 status (or add an amendment) pointing at ADR-010 for the

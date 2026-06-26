@@ -448,7 +448,7 @@ in `services/rp/tests/`. Each plugin owns a small world type that embeds the
 handles it needs and calls `rp_harness::start_rp(&config)` — the helper
 derives `RP_BINARY` from the package name, so nothing needs to know where
 `services/rp/` lives on disk. This keeps rp's test run time bounded as more
-plugins land — `cargo-rail` only re-runs the plugin whose code changed.
+plugins land — Bazel only re-runs the plugin test whose code (or deps) changed.
 
 **Usage in test code:**
 
@@ -479,17 +479,17 @@ it: `rp` → `RP_BINARY`, `ppba-driver` → `PPBA_DRIVER_BINARY`, etc.
 If none match, the call panics with a diagnostic pointing at the fix.
 
 **Pre-build requirement.** BDD tests do not compile the service binary
-themselves — that's the job of `cargo build`. Always build with
-`--all-features` (matching CI), so feature-gated paths like `ppba-driver`'s
-`mock` hardware compile in:
+themselves. Under `bazel test` the binary is built automatically as a BDD-target
+dependency, with the right features (e.g. `ppba-driver`'s `mock` hardware) wired via
+its deps:
 
 ```
-cargo build --all-features --all-targets -p <pkg>
-cargo test  --all-features --test bdd      -p <pkg>
+bazel test //services/<pkg>:bdd          # builds the binary as a dep
+bazel test --test_tag_filters=bdd //...   # or all BDD suites
 ```
 
-`cargo rail run --merge-base` pre-builds the affected packages, as does
-`.github/workflows/test.yml`.
+A local `bazel build //...` pre-builds the affected packages; the nightly
+`.github/workflows/test.yml` builds the full workspace.
 
 **Port discovery:** All services print `bound_addr=<host>:<port>` to stdout when
 they bind. The parser looks for `bound_addr=` in any line (the human-readable
@@ -790,7 +790,7 @@ fn open_succeeds() {
 }
 ```
 
-`cargo nextest` (the project's standard runner, used by `cargo rail`)
+`cargo nextest` (the project's standard Cargo test runner)
 isolates each test in its own process and hides this — but plain
 `cargo test` runs them as threads. That includes the nightly **safety**
 sanitizer workflow and a developer running `cargo test -p qhyccd-rs`, both

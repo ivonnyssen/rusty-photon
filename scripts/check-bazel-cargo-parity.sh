@@ -5,7 +5,7 @@
 # that "Bazel green" actually means Bazel builds what Cargo builds. Hand-written
 # BUILD.bazel files can silently drift from the Cargo workspace — a crate added
 # to Cargo.toml can go without a BUILD.bazel and escape the Bazel gate entirely.
-# This guards against that. See docs/plans/bazel-migration.md.
+# This guards against that. See docs/plans/archive/bazel-migration.md.
 #
 # A Cargo member is "covered" if its directory contains any rust_* Bazel rule
 # (rust_library / rust_binary / rust_proc_macro / rust_shared_library / ...).
@@ -20,7 +20,7 @@ cd "$(git rev-parse --show-toplevel)"
 
 # --- Cargo members deliberately not (yet) in the Bazel graph ----------------
 # Each line is a crate the Bazel gate does NOT cover. Remove an entry the
-# moment its BUILD.bazel lands; the cutover (docs/plans/bazel-migration.md
+# moment its BUILD.bazel lands; the cutover (docs/plans/archive/bazel-migration.md
 # Phase 7) should not flip until this list is empty. Inline "# reason"
 # comments are allowed and stripped before comparison.
 #

@@ -181,7 +181,7 @@ fn binary_env_var(package_name: &str) -> String {
 /// Bazel's lcov merger — which globs that directory — folds the child's coverage
 /// into the combined report, while the `%Nm` pool keeps the raw-profile count
 /// (and the bytes Bazel must stage after the test) bounded. This is the
-/// child-process-coverage contingency from `docs/plans/bazel-migration.md`.
+/// child-process-coverage contingency from `docs/plans/archive/bazel-migration.md`.
 ///
 /// Returns `None` when `COVERAGE_DIR` is unset: under plain `bazel test`, and
 /// under `cargo`/`cargo-llvm-cov` (which sets `LLVM_PROFILE_FILE`, not

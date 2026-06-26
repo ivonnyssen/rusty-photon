@@ -12,11 +12,11 @@ exports_files(
 # It is a faithful re-expression of the target crate_universe auto-generated for
 # `@cr__libzwo-sys-0.1.0` while this crate was an external git dep — so the
 # `/usr/local/lib` + `static`/`dylib` link and the bindgen step are a proven
-# build, not a new one. The shadow workflows (`bazel.yml`, `bazel-coverage.yml`)
+# build, not a new one. The `bazel.yml` / `bazel-coverage.yml` workflows
 # run `.github/actions/install-zwo-sdk` first, which installs both the SDK (so
 # `build.rs`'s link directives resolve) and libclang (so bindgen runs); `.bazelrc`
 # forwards `LIBCLANG_PATH` (macOS) / `ZWO_SDK_LIB_DIR` (Windows) that
-# `--incompatible_strict_action_env` strips. See ADR-008 + bazel-migration.md.
+# `--incompatible_strict_action_env` strips. See ADR-008 + docs/plans/archive/bazel-migration.md.
 
 # Surfaces CARGO_PKG_* (and friends) from Cargo.toml to the build script + lib,
 # matching what crate_universe generated; cheap and avoids env-var surprises.

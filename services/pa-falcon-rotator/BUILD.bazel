@@ -43,7 +43,7 @@ rust_binary(
 # `#[cfg(all(test, feature = "mock"))]` suites in manager.rs / rotator_device.rs
 # / switch_device.rs compile and run, matching the Cargo coverage job's
 # `cargo test --all-features`. The default non-mock compile cfg-excluded them —
-# the dominant bazel<cargo coverage gap (see docs/plans/bazel-migration.md
+# the dominant bazel<cargo coverage gap (see docs/plans/archive/bazel-migration.md
 # "Coverage under Bazel"). `crate_features` must be on the rust_test itself —
 # `crate = ":..._lib_mock"` does NOT inherit the library's features. The `mock`
 # module is additive and every `not(feature = "mock")` block lives in main.rs

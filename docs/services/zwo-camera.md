@@ -16,10 +16,10 @@
 > (against the mock seam), the **57 BDD scenarios** across the six camera feature
 > files (now live; `filter_wheel.feature` stays `@wip` for Phase F), a full
 > **ConformU** pass (both suites), clippy
-> `--all-features`, `cargo rail --profile commit`, and **Bazel** (`lib`/`binary`/
+> `--all-features`, and **Bazel** (`lib`/`binary`/
 > `unit_test` are first-class `//...` targets verified on Linux; the `bdd` /
-> `conformu_integration` suites build under `bazel build //...` but are tagged
-> `requires-cargo` and run under Cargo, mirroring qhy-camera; `MODULE.bazel.lock`
+> `conformu_integration` suites run under Bazel (tagged `bdd` / `conformu`),
+> mirroring qhy-camera; `MODULE.bazel.lock`
 > repinned). The **EFW `FilterWheel` is Phase F**.
 >
 > **ConformU — passes.** The `tests/conformu_integration.rs` harness is wired
@@ -66,10 +66,9 @@
 > only installs the stable host prerequisites (clang/libclang, libusb-1.0
 > runtime) and the udev device rule.
 > The **Bazel** workflows (`bazel.yml`, `bazel-coverage.yml`) also run
-> `install-zwo-sdk` — `zwo-camera` is a normal `//...` target there, honoring the
-> migration plan's "all workspace crates build and test under Bazel" contract
-> (`docs/plans/bazel-migration.md`); on the Bazel build the install is
-> unconditional (no narrowing job). **Remaining Track-A validation** (can't be
+> `install-zwo-sdk` — `zwo-camera` is a normal `//...` target there, like every
+> workspace crate; on the Bazel build the install is unconditional (no narrowing
+> job). **Remaining Track-A validation** (can't be
 > exercised from a Linux dev box): confirm the macOS arm64 + Windows x64 link on
 > real runners (both the Cargo *and* Bazel legs — under Bazel, the Windows
 > test-runtime DLL discovery is the one unproven piece), re-run the updated
@@ -152,10 +151,10 @@ the cached blob. See [ADR-008](../decisions/008-zwo-camera-native-sdk-ffi.md).
 
 | Concern | Mechanism |
 |---|---|
-| `cargo build --all` / local dev without SDK | Normal workspace member, but **`cargo build -p zwo-camera` is expected to fail to link without the SDK**. Devs without the SDK use the rest of the workspace normally; `cargo rail`'s `merge_base=true` (affected-packages-only) builds the package only when *its* files change. Documented here and in the service README. |
+| local dev (SDK required) | `zwo-camera` is a normal workspace member but **fails to link without the SDK**. The SDK is a required local-dev prerequisite — install it (CI installs it before building); `bazel build //...` then builds the package like any other. Documented here and in the service README. |
 | CI | An explicit SDK-provisioning step **pulls the pinned ASI/EFW SDK from the public cache** + installs `libusb-1.0-0-dev`, before building/testing this package, as `bazel.yml` / `native.yml` / `scheduled.yml` do before their builds. Required wherever the real link path is exercised; the simulation-only `test.yml` / ConformU legs build SDK-free via `ZWO_SKIP_NATIVE_LINK=1`, and `cargo check`/clippy jobs (no linker) skip it too. |
 | Raspberry Pi nightly runner | **Sudo-free per-run** (the runner is sudo-less for public-repo safety): `pi-nightly.yml` runs `./.github/actions/install-zwo-sdk` with `sudo: "false"` — stages the `armv8` blobs under `$RUNNER_TEMP`, symlinks the system libusb/libudev *runtime* libs to satisfy `-lusb-1.0`/`-ludev` (no -dev package), and exports `ZWO_SDK_LIB_DIR` + `LD_LIBRARY_PATH` (the blobs carry no SONAME). `scripts/setup-pi-runner.sh` installs only the stable host prerequisites (clang/libclang-dev, libusb-1.0 runtime) + the udev `99-asi.rules` device rule. Mirrors the QHYCCD per-run model → self-healing for SDK bumps. **aarch64 (Pi 5) confirmed linking.** |
-| Bazel | **First-class `//...` targets — no `manual` gating.** `zwo-rs` / `libzwo-sys` are **vendored first-party** ([ADR-010](../decisions/010-vendor-zwo-rs.md)), so the repo owns their `BUILD.bazel`: `libzwo-sys` is the repo's first first-party `cargo_build_script` (runs bindgen in-sandbox; its `data` carries the vendored MIT headers + `wrapper.h`), and `zwo-rs` ships **two variants** — `//crates/zwo-rs:zwo-rs` (real SDK) and `//crates/zwo-rs:zwo-rs_sim` (`testonly`, `simulation`). zwo-camera's production `lib`/`binary` link the **real** variant (the prod binary `NEEDs libASICamera2.so` — the real/sim parity win an external `@cr` crate could not give, since `crate_universe` resolves one feature set per crate); the `unit_test` / `bdd` / `conformu_integration` targets link `zwo-rs_sim`. The migration plan requires every workspace crate to build and test under Bazel — it is the *required* gate as of the Phase-7 cutover, where a `manual`-excluded crate would silently carry zero CI. The `bdd` / `conformu_integration` suites — which spawn the service binary and bind a port — are tagged `requires-cargo` (mirroring qhy-camera): they BUILD under `bazel build //...` to catch compile/link breaks but RUN under Cargo. The `bazel.yml` / `bazel-coverage.yml` workflows run the `install-zwo-sdk` composite action (like they install OmniSim), so `libzwo-sys` links against the system SDK; `.bazelrc` forwards `LIBCLANG_PATH` (macOS bindgen) / `ZWO_SDK_LIB_DIR` (Windows link) per-OS under `strict_action_env`. zwo-camera keeps a `simulation` dev-dep with a **narrowed** role — it no longer flips a single `@cr` variant; it just keeps `simulation`'s optional deps (`rand`/`rayon`) resolved into `@cr` for the `zwo-rs_sim` target. Verified on Linux: `bazel build //crates/zwo-rs/... + //services/zwo-camera/...` and `bazel test //services/zwo-camera:zwo-camera_unit_test` (PASSED). A future hermetic `crate.annotation` (turning the SDK into a Bazel-managed `cc_import` dep, removing the imperative install) is optional cleanup, not a prerequisite. After changing the vendored crates' **external** deps, run `CARGO_BAZEL_REPIN=1 bazel mod tidy && bazel mod tidy` (Rule 10). |
+| Bazel | **First-class `//...` targets — no `manual` gating.** `zwo-rs` / `libzwo-sys` are **vendored first-party** ([ADR-010](../decisions/010-vendor-zwo-rs.md)), so the repo owns their `BUILD.bazel`: `libzwo-sys` is the repo's first first-party `cargo_build_script` (runs bindgen in-sandbox; its `data` carries the vendored MIT headers + `wrapper.h`), and `zwo-rs` ships **two variants** — `//crates/zwo-rs:zwo-rs` (real SDK) and `//crates/zwo-rs:zwo-rs_sim` (`testonly`, `simulation`). zwo-camera's production `lib`/`binary` link the **real** variant (the prod binary `NEEDs libASICamera2.so` — the real/sim parity win an external `@cr` crate could not give, since `crate_universe` resolves one feature set per crate); the `unit_test` / `bdd` / `conformu_integration` targets link `zwo-rs_sim`. Every workspace crate builds and tests under Bazel, so a `manual`-excluded crate would silently carry zero CI. The `bdd` / `conformu_integration` suites — which spawn the service binary (linked against `zwo-rs_sim`) and bind a port — run under Bazel, tagged `bdd` / `conformu` (mirroring qhy-camera). The `bazel.yml` / `bazel-coverage.yml` workflows run the `install-zwo-sdk` composite action (like they install OmniSim), so `libzwo-sys` links against the system SDK; `.bazelrc` forwards `LIBCLANG_PATH` (macOS bindgen) / `ZWO_SDK_LIB_DIR` (Windows link) per-OS under `strict_action_env`. zwo-camera keeps a `simulation` dev-dep with a **narrowed** role — it no longer flips a single `@cr` variant; it just keeps `simulation`'s optional deps (`rand`/`rayon`) resolved into `@cr` for the `zwo-rs_sim` target. Verified on Linux: `bazel build //crates/zwo-rs/... + //services/zwo-camera/...` and `bazel test //services/zwo-camera:zwo-camera_unit_test` (PASSED). A future hermetic `crate.annotation` (turning the SDK into a Bazel-managed `cc_import` dep, removing the imperative install) is optional cleanup, not a prerequisite. After changing the vendored crates' **external** deps, run `CARGO_BAZEL_REPIN=1 bazel mod tidy && bazel mod tidy` (Rule 10). |
 
 ### udev / USB
 

@@ -1,5 +1,11 @@
 # Bazel cutover — `main_protection` ruleset flip (manual step)
 
+**Status: COMPLETE (archived 2026-06-25).** The flip was run after #399 merged
+(2026-06-24): the `main_protection` ruleset (id `3342975`) now requires exactly the
+seven Bazel-era contexts listed below, and the old Cargo contexts are removed.
+Retained as the record of the exact command and the rollback recipe. Parent plan:
+[bazel-migration.md](bazel-migration.md).
+
 The Bazel-cutover PR (see [bazel-migration.md](bazel-migration.md), Phase 7)
 changes the CI **workflows** so Bazel is the primary per-PR gate and the Cargo
 build/test/coverage jobs run nightly. But which checks are *required* lives in the

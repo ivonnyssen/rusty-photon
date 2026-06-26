@@ -3533,13 +3533,12 @@ captured from the child process, two conditions must be met:
    waits for the process to actually exit (up to 5 seconds) before the
    `ServiceHandle` is dropped.
 
-The CI coverage job uses `cargo llvm-cov show-env` to set up an
-instrumented build environment, then builds all workspace binaries with
-`cargo build --workspace`. The BDD test discovers the instrumented `rp`
-binary via `CARGO_LLVM_COV_TARGET_DIR`. The child process inherits
-`LLVM_PROFILE_FILE` (with `%p`/`%7m` placeholders to avoid file
-conflicts), and `cargo llvm-cov report` merges all `.profraw` files from
-both test binaries and spawned child processes.
+Coverage is collected by `bazel coverage` (the sole coverage source). The BDD
+target instruments both the test binary and the spawned `rp` binary; `bdd-infra`
+sets `LLVM_PROFILE_FILE=$COVERAGE_DIR/<pkg>-%8m.profraw` on each spawned child so
+its `.profraw` lands in `COVERAGE_DIR`, and a vendored `rules_rust` patch adds the
+spawned binaries as extra `-object`s to `llvm-cov export` so their coverage is
+emitted. See `.bazelrc` (`--config=coverage`) and `crates/bdd-infra/src/lib.rs`.
 
 ### Integration Tests
 

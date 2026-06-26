@@ -27,7 +27,7 @@ Three frictions follow from that:
    current workaround is a test-only `qhyccd-rs = { features = ["simulation"] }`
    dev-dep that flips the **single** resolved variant to simulation — which means
    the (never-deployed) Bazel production binary is also simulated. See
-   docs/plans/bazel-migration.md, "External-crate non-default features for tests".
+   docs/plans/archive/bazel-migration.md, "External-crate non-default features for tests".
 3. **Repin churn.** Any binding change needs a crates.io publish (or rev bump) +
    `CARGO_BAZEL_REPIN`, rather than an in-tree edit.
 
@@ -219,7 +219,7 @@ documented.
 - ✅ Update docs/services/qhy-camera.md "Native dependency & build gating":
   replaced the dev-dep narrative with the first-party two-variant story; noted the
   patch is gone.
-- ✅ Update docs/plans/bazel-migration.md "External-crate non-default features"
+- ✅ Update docs/plans/archive/bazel-migration.md "External-crate non-default features"
   subsection: added a closing note that qhy-camera moved to the first-party
   two-variant pattern (and that the dev-dep technique remains the answer for
   crates we *don't* vendor, e.g. until zwo-rs is vendored).

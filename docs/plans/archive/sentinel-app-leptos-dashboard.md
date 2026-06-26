@@ -54,7 +54,7 @@ The intended wiring lived only in the workspace-root
   [`docs/services/sentinel.md`](../../services/sentinel.md).
 - **Formally dropped.** The Bazel migration recorded "Leptos /
   `sentinel-app` WASM: abandoned … Phase 4 is dropped, not deferred"
-  (2026-05-24). See [`bazel-migration.md`](../bazel-migration.md).
+  (2026-05-24). See [`bazel-migration.md`](bazel-migration.md).
 - **The UI direction moved.** Server-rendered HTML (the `ui-*` family,
   starting with [`ui-htmx`](../../services/ui-htmx.md)) is the chosen
   approach for browser UIs; a Leptos/WASM `ui-leptos` remains only a
@@ -88,4 +88,4 @@ To resurrect a WASM dashboard, restore the crate from that history, re-add
 the workspace member and a `cargo-leptos` target (on a non-colliding
 port), re-pin Cargo and Bazel, and re-open Phase 4 of the Bazel migration.
 The `wasm_bindgen` / `@platforms//cpu:wasm32` / hydrate+ssr Bazel approach
-is sketched in [`bazel-migration.md`](../bazel-migration.md).
+is sketched in [`bazel-migration.md`](bazel-migration.md).

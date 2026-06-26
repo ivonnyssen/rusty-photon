@@ -7,7 +7,7 @@ exports_files(
 )
 
 # qhy-camera links the proprietary QHYCCD SDK (libqhyccd-sys → static=qhyccd +
-# libusb-1.0 + stdc++). The SDK is PROVISIONED into the Bazel shadow actions
+# libusb-1.0 + stdc++). The SDK is PROVISIONED into the Bazel actions
 # (`ivonnyssen/qhyccd-sdk-install@v3` + per-OS libusb in .github/workflows/bazel.yml
 # and bazel-coverage.yml; on Linux build.rs finds it at /usr/local/lib, and on
 # macOS/Windows `.bazelrc` forwards `GITHUB_WORKSPACE` so build.rs finds the

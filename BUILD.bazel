@@ -25,7 +25,7 @@ buildifier(
 
 # `bazel test //:buildifier_check` fails if any BUILD / *.bzl file is unformatted.
 # Runs non-sandboxed over the real tree (rooted at MODULE.bazel) so it covers every
-# package, not just this one. Wire into the Bazel shadow CI as the format gate.
+# package, not just this one. Wire into Bazel CI as the format gate.
 #
 # `exclude_patterns` prunes `.claude/` from the walk. In `no_sandbox` + `workspace`
 # mode this rule's generated runner does a literal `cd <repo-root> && find . -name

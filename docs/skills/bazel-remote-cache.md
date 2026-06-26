@@ -68,4 +68,4 @@ See `docs/services/qhy-camera.md` "Native dependency & build gating".
 ## References
 
 - [tools/bazel-cache-worker/](../../tools/bazel-cache-worker/README.md) — Worker code + deploy runbook.
-- [docs/plans/bazel-migration.md](../plans/bazel-migration.md) — migration status.
+- [docs/plans/archive/bazel-migration.md](../plans/archive/bazel-migration.md) — migration status.
