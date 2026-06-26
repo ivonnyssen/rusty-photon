@@ -2,9 +2,9 @@
 
 ## Status
 
-**Phases A + B + C landed; the bare `touptek-camera` service builds, serves on
-`:11123`, and the whole simulation Bazel chain is green with no SDK present
-(2026-06-26).**
+**Phases A + B + C + D landed; the bare `touptek-camera` service builds, serves on
+`:11123`, the whole simulation Bazel chain is green with no SDK present, and the
+service design doc + the `@wip` BDD/ConformU contract are committed (2026-06-26).**
 
 - **Phase A — `crates/touptek-rs/libtoupcam-sys`:** vendored `toupcam.h`
   (v60.31631) + `bindgen` `build.rs` (parsed as plain C) + the
@@ -28,6 +28,14 @@
   `touptek-rs = { features = ["simulation"] }` dev-dep nudge unblocked the deferred
   `touptek-rs_sim` + `touptek-rs_unit_test` Bazel targets. 19 unit tests pass;
   clippy/fmt clean on both feature paths.
+- **Phase D — design doc + BDD contract:** `docs/services/touptek-camera.md` (the
+  full spec — the build-gating crux, the callback→blocking exposure bridge, and the
+  C/G/R/B/E/GO/K/ST/PG behavioural contracts), the eight `tests/features/*.feature`
+  files (committed `@wip`, so the runner skips them until Phase E), the BDD harness
+  (typed `ascom-alpaca` Camera client) + the ConformU integration test, the
+  `docs/workspace.md` service/crate/plan rows, and the `[[test]] bdd` /
+  `bdd` + `conformu_integration` Bazel targets. The harness compiles and the BDD
+  suite is trivially green (all scenarios `@wip`).
 - **Bazel:** the **full simulation chain** is wired and green **with no ToupTek SDK
   present**. `libtoupcam-sys` gained a skip-link `_sim` build-script variant
   (`TOUPCAM_SKIP_NATIVE_LINK=1` via `build_script_env`), so `libtoupcam-sys_sim` →
@@ -38,11 +46,12 @@
   deliberately **not defined yet** (it lands with `install-toupcam-sdk` in Phase
   F). `crate_universe` repinned; **buildifier** + **parity** (36/36) green.
 
-Remaining: the **real native link** against a provisioned SDK on each platform
-(incl. the real `touptek-camera` binary) and the `install-toupcam-sdk` CI action,
-then the device-trait work — the design doc + BDD (Phase D), the full `Camera`
-(Phase E), test+ConformU (Phase F), and the `rp` consumer + cross-platform
-sign-off (Phase G). Everything below the fold remains **planned**.
+Remaining: the device-trait work — the full `Camera` over `touptek-rs` driven by
+the now-committed BDD contract (Phase E) — then the **real native link** against a
+provisioned SDK on each platform (incl. the real `touptek-camera` binary) and the
+`install-toupcam-sdk` CI action + ConformU to 0 issues (Phase F), and the `rp`
+consumer + cross-platform sign-off (Phase G). Everything below the fold from Phase E
+on remains **planned**.
 
 This is the agreed decision record that will precede
 `docs/services/touptek-camera.md` (the service design doc) and the BDD scenarios,
@@ -303,11 +312,14 @@ cross-platform link (incl. Pi aarch64 + Apple-Silicon-universal). Once
   with **no SDK**; `parity` (36/36), buildifier, repin-twice all green. *Remaining
   (Phase F):* the real `touptek-camera` binary + the `install-toupcam-sdk` CI
   provisioning and the Pi5 aarch64 real link.
-- **Phase D — design doc + workspace row + BDD feature files**
-  (`docs/services/touptek-camera.md` with the "Native dependency & build gating"
-  crux section, then ~7 `.feature` files via the typed `ascom-alpaca` client):
-  enumeration/connection, exposure (incl. trigger + abort/stop), binning_and_roi,
-  gain_offset_readout, cooling, sensor_properties, pulse_guide, config_actions.
+- **Phase D — design doc + workspace row + BDD feature files** ✅ *landed* —
+  `docs/services/touptek-camera.md` (with the "Native dependency & build gating"
+  crux section), the `docs/workspace.md` rows, and **eight** `@wip` `.feature`
+  files via the typed `ascom-alpaca` client: `enumeration_connection`, `exposure`
+  (trigger + abort; `CanStopExposure = false`), `binning_and_roi`,
+  `gain_offset_readout`, `cooling`, `sensor_properties`, `pulse_guide`,
+  `config_actions` — plus the BDD harness + ConformU integration test and their
+  Bazel targets.
 - **Phase E — full Camera:** `Device + Camera` over `touptek-rs` (ROI/bin,
   gain/offset, cooling, RAW readout + transpose, exposure state machine driven by
   the frame-ready event, abort + stop, ST4 `PulseGuide`, sensor type),

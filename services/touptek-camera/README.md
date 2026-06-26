@@ -7,21 +7,26 @@ Tscam), served on port **11123**. It is the ToupTek analogue of `zwo-camera` /
 [`touptek-rs`](../../crates/touptek-rs) FFI crate.
 
 See [`docs/plans/touptek-driver.md`](../../docs/plans/touptek-driver.md) for the
-decision record. The service design doc
-(`docs/services/touptek-camera.md`) and BDD feature files land in Phase D.
+decision record and [`docs/services/touptek-camera.md`](../../docs/services/touptek-camera.md)
+for the full service design (the build-gating crux, the callback→blocking exposure
+bridge, and the behavioural contracts the BDD suite encodes).
 
-## Status — Phase C (bare service)
+## Status — Phase D (design doc + BDD contract)
 
-This crate is the **bare scaffold**: it builds, enumerates (real or simulated),
-registers a minimal ASCOM `Device` + `Camera` (connection lifecycle, id-derived
-identity, sensor pixel size, cached sub-frame origin), and binds `:11123`. The
-full `Camera` surface — exposure state machine (trigger mode + the `touptek-rs`
-callback→pull bridge), ROI/binning, gain/offset, cooling, RAW readout + transpose,
-sensor type, and ST4 `PulseGuide` — is **Phase E**; those members fall back to the
-trait's `NotImplemented` defaults until then. Roadmap (see the plan):
+The bare service is live and the **design + test contract is committed**: the
+design doc, the eight `tests/features/*.feature` files (committed `@wip`, so the
+runner skips them until Phase E), the BDD harness driving the typed `ascom-alpaca`
+Camera client, and the ConformU integration test. The Phase-C scaffold builds,
+enumerates (real or simulated), registers a minimal ASCOM `Device` + `Camera`
+(connection lifecycle, id-derived identity, sensor pixel size, cached sub-frame
+origin), and binds `:11123`. The full `Camera` surface — exposure state machine
+(trigger mode + the `touptek-rs` callback→pull bridge), digital binning, ROI,
+gain/offset, cooling, RAW16 readout + transpose, sensor type, and ST4 `PulseGuide`
+— is **Phase E**; those members fall back to the trait's `NotImplemented` defaults
+until then. Roadmap (see the plan):
 
-- **Phase D** — design doc + BDD feature files.
-- **Phase E** — full `Camera` over `touptek-rs`.
+- **Phase D** — design doc + BDD feature files. ✅ landed.
+- **Phase E** — full `Camera` over `touptek-rs` (remove the `@wip` tags as each feature turns green).
 - **Phase F** — BDD + ConformU to 0 errors / 0 issues on the sim backend; wire the
   real-link `native.yml` / `conformu.yml` jobs.
 - **Phase G** — the `rp` `CameraConfig` consumer + real-hardware ConformU on each

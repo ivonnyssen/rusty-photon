@@ -5321,9 +5321,12 @@ dependencies = [
  "ascom-alpaca",
  "async-trait",
  "axum",
+ "bdd-infra",
  "clap",
+ "cucumber",
  "derive_more",
  "parking_lot",
+ "reqwest 0.13.4",
  "rp-tls",
  "rusty-photon-config",
  "rusty-photon-driver",
@@ -5331,10 +5334,13 @@ dependencies = [
  "schemars 1.2.1",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-test",
  "touptek-rs",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

@@ -19,6 +19,7 @@ belong in any single service design doc.
 | [sky-survey-camera](services/sky-survey-camera.md) | Camera (simulator) | 11116 | `docs/services/sky-survey-camera.md` |
 | [qhy-camera](services/qhy-camera.md) | Camera (+ FilterWheel) — QHYCCD hardware | 11121 | `docs/services/qhy-camera.md` (implemented v0; native QHYCCD SDK dep — links `static=qhyccd` + `libusb-1.0`; **built + tested on GitHub-hosted Linux/macOS/Windows** via the `qhyccd-sdk-install@v3` action, plus the Pi nightly for linux-arm64. Vendored first-party (ADR-009); sanitized under `safety.yml` via the SDK-free `simulation` path (`QHYCCD_SKIP_NATIVE_LINK=1`) — only `bdd-infra` is excluded there) |
 | [zwo-camera](services/zwo-camera.md) | Camera (+ FilterWheel) — ZWO ASI/EFW hardware | 11122 | Phase E (full Camera) landed: full `Device + Camera` over `zwo-rs` (exposure state machine, ROI/bin, gain/offset, cooling, readout, ST4 pulse-guiding), serial identity, config actions; 45 unit + 57 BDD green, ConformU passes. Bazel first-class (`lib`/`binary`/`unit_test`; `bdd`/`conformu` run under Bazel). EFW FilterWheel is Phase F. ConformU is wired into `conformu.yml` (per-service matrix + `install-zwo-sdk`), and the nightly `native.yml` builds the real linked path on Linux/macOS/Windows; the `rp` `CameraConfig` consumer is the only Phase-G tail item left. Native ZWO SDK dep, gated out of the default build. See `docs/services/zwo-camera.md` + ADR-008. |
+| [touptek-camera](services/touptek-camera.md) | Camera — ToupTek (+ OEM-rebrand) hardware | 11123 | Phases A–D landed: `touptek-rs`/`libtoupcam-sys` FFI + callback→blocking bridge, the bare service enumerating + serving on `:11123`, the design doc, and the eight `@wip` BDD feature files + ConformU harness. **Build-gating win:** `libtoupcam` is a **dylib** (defers linking) and the `_sim` chain skip-links the SDK (`TOUPCAM_SKIP_NATIVE_LINK`), so the whole simulation `bazel test //...` is green **with no SDK provisioned** — unlike zwo/qhy. The full `Camera` (trigger-mode exposure, digital binning, gain/offset, cooling, RAW16, ST4 PulseGuide) is Phase E; the real SDK-linking binary + `install-toupcam-sdk` is Phase F. No filter wheel/focuser (ToupTek ships none). One driver covers ~11 OEM rebrands (shared ABI). Licensing deferred. See `docs/services/touptek-camera.md` + `docs/plans/touptek-driver.md`. |
 | [star-adventurer-gti](services/star-adventurer-gti.md) | Telescope | 11117 | `docs/services/star-adventurer-gti.md` (implemented — `ITelescopeV3` subset: async slew, sync, sidereal tracking, software park, pulse guiding; all BDD scenarios green) |
 | [pa-falcon-rotator](services/falcon-rotator.md) | Rotator + Switch (status) | 11118 | `docs/services/falcon-rotator.md` |
 | [dsd-fp2](services/dsd-fp2.md) | CoverCalibrator | 11119 | `docs/services/dsd-fp2.md` (first adopter of `rusty-photon-shared-transport`) |
@@ -65,6 +66,7 @@ belong in any single service design doc.
 | [i18n.md](plans/i18n.md) | Workspace internationalization: scope, tech-stack, and translation-sourcing options |
 | [ui-testing.md](plans/ui-testing.md) | ui-htmx UI-behavior testing strategy: BDD-embedded `scraper` DOM assertions + cross-OS `insta` snapshots + an advisory `thirtyfour` browser layer, with an anticipatory spike plan; Bazel-primary aware; Gherkin stays the source of truth |
 | [zwo-driver.md](plans/zwo-driver.md) | ZWO ASI camera + EFW filter-wheel Alpaca driver (`zwo-camera`, port 11122) + author-maintained `zwo-rs`/`libzwo-sys` FFI; the ZWO analogue of `qhy-camera` (MIT SDK → public cache, but no pre-existing Rust FFI). See [`docs/services/zwo-camera.md`](services/zwo-camera.md) + [ADR-008](decisions/008-zwo-camera-native-sdk-ffi.md) |
+| [touptek-driver.md](plans/touptek-driver.md) | ToupTek camera Alpaca driver (`touptek-camera`, port 11123) + author-maintained `touptek-rs`/`libtoupcam-sys` FFI; the third camera driver, covering ~11 OEM rebrands on one shared ABI. The new design poles vs zwo/qhy: a callback/PullMode→blocking exposure bridge, and a **dylib** SDK + skip-link sim chain so the default build needs no SDK. Licensing deferred. See [`docs/services/touptek-camera.md`](services/touptek-camera.md) |
 
 Completed plans move to [`docs/plans/archive/`](plans/archive/) and are no longer
 listed here.
@@ -89,6 +91,7 @@ listed here.
 | [rp-plate-solver](../crates/rp-plate-solver/) | `crates/rp-plate-solver` | HTTP client for the `plate-solver` rp-managed service, used by `rp`'s `plate_solve` MCP tool. See [ADR-005](decisions/005-plate-solver.md). |
 | [qhyccd-rs](../crates/qhyccd-rs/) | `crates/qhyccd-rs` (+ nested `libqhyccd-sys`) | Vendored first-party safe bindings for the proprietary QHYCCD SDK; `libqhyccd-sys` holds the raw FFI. Used by `qhy-camera`. See [ADR-009](decisions/009-vendor-qhyccd-rs.md). |
 | [zwo-rs](../crates/zwo-rs/) | `crates/zwo-rs` (+ nested `libzwo-sys`) | Vendored first-party safe bindings for the ZWO ASI camera + EFW filter-wheel SDK (MIT); `libzwo-sys` holds the raw FFI. Used by `zwo-camera`. See [ADR-008](decisions/008-zwo-camera-native-sdk-ffi.md) + [ADR-010](decisions/010-vendor-zwo-rs.md). |
+| [touptek-rs](../crates/touptek-rs/) | `crates/touptek-rs` (+ nested `libtoupcam-sys`) | First-party safe bindings for the ToupTek ToupCam SDK; `libtoupcam-sys` holds the raw `bindgen` FFI over the vendored `toupcam.h`. Carries the callback/PullMode→blocking exposure bridge and a skip-link sim variant (`TOUPCAM_SKIP_NATIVE_LINK`). The `libtoupcam` **dylib** link defers to the final binary, so rlibs/sim build with no SDK. Used by `touptek-camera`. See [`docs/plans/touptek-driver.md`](plans/touptek-driver.md). |
 
 ## Inter-Service Communication: MCP via `rmcp`
 
@@ -348,8 +351,9 @@ worked example.
   `TransportFactory` (`ppba-driver` → `MockPpbaTransportFactory`, `qhy-focuser`
   → `MockQhyTransportFactory`). Declared by `ppba-driver`, `qhy-focuser`,
   `pa-falcon-rotator`, `dsd-fp2`, `star-adventurer-gti`, `sky-survey-camera`
-  (`mock = []`), the camera drivers `qhy-camera` / `zwo-camera`
-  (`mock = ["simulation"]`), and `rp-plate-solver` (`mock = ["dep:mockall"]`).
+  (`mock = []`), the camera drivers `qhy-camera` / `zwo-camera` /
+  `touptek-camera` (`mock = ["simulation"]`), and `rp-plate-solver`
+  (`mock = ["dep:mockall"]`).
 
 ## Build Notes
 

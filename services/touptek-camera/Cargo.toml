@@ -47,6 +47,9 @@ thiserror = { workspace = true }
 derive_more = { workspace = true }
 parking_lot = { workspace = true }
 
+[package.metadata.conformu]
+command = "cargo test -p touptek-camera --features conformu --test conformu_integration -- --nocapture"
+
 [dev-dependencies]
 # The `crate_universe` nudge (Rule 10 / docs/plans/touptek-driver.md risk #6):
 # `touptek-rs/simulation`'s optional deps (rand, rayon) only resolve into `@cr`
@@ -54,3 +57,17 @@ parking_lot = { workspace = true }
 # `:touptek-rs_sim` / `:touptek-camera_lib_sim` Bazel targets can pull rand/rayon
 # via `all_crate_deps`. Resolver v2 keeps it out of the production `cargo build`.
 touptek-rs = { workspace = true, features = ["simulation"] }
+# Client API for the BDD harness (tests/bdd/world.rs); kept out of the prod build.
+ascom-alpaca = { workspace = true, features = ["client"] }
+tracing-subscriber = { workspace = true }
+bdd-infra = { workspace = true, features = ["conformu"] }
+cucumber = { workspace = true }
+tempfile = { workspace = true }
+tokio-test = { workspace = true }
+# Raw HTTP for the one BDD path the typed Alpaca client cannot express: a
+# StartExposure with a negative Duration (`std::time::Duration` is unsigned).
+reqwest = { workspace = true }
+
+[[test]]
+name = "bdd"
+harness = false
