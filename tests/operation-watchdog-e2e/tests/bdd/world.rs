@@ -121,7 +121,8 @@ impl WatchdogE2eWorld {
     /// Restart command run via the corrective ladder's shell restarter
     /// (`sh -c` / `cmd /C`). It just creates the marker file — a real
     /// `systemctl restart` would be hardware-specific; the marker is the
-    /// portable, observable proof the rung executed.
+    /// portable, observable proof the rung executed. It MUST exit 0, since the
+    /// ladder treats any non-zero exit as `restart=failed`.
     #[cfg(unix)]
     fn marker_command(marker: &std::path::Path) -> String {
         // Single-quote the path and escape any embedded single quote
@@ -132,9 +133,13 @@ impl WatchdogE2eWorld {
 
     #[cfg(windows)]
     fn marker_command(marker: &std::path::Path) -> String {
-        // `"` is an illegal Windows filename character, so it can never appear
-        // in `marker`; double-quoting the path is sufficient for `cmd /C`.
-        format!("type nul > \"{}\"", marker.display())
+        // `break > file` is the canonical cmd idiom to create an empty file: the
+        // redirection makes the (empty) file and `break` is a no-op that exits 0.
+        // `type nul > file` is NOT used — `type nul` returns errorlevel 1 on the
+        // Windows runners, which the ladder would read as `restart=failed`.
+        // `"` is an illegal Windows filename character, so double-quoting the
+        // path is sufficient for `cmd /C`.
+        format!("break > \"{}\"", marker.display())
     }
 
     /// Build rp's JSON config for the selected plate-solver mode.
