@@ -124,11 +124,16 @@ impl WatchdogE2eWorld {
     /// portable, observable proof the rung executed.
     #[cfg(unix)]
     fn marker_command(marker: &std::path::Path) -> String {
-        format!("touch '{}'", marker.display())
+        // Single-quote the path and escape any embedded single quote
+        // (`'` -> `'\''`) so a TMPDIR containing one can't break `sh -c`.
+        let escaped = marker.display().to_string().replace('\'', r"'\''");
+        format!("touch '{escaped}'")
     }
 
     #[cfg(windows)]
     fn marker_command(marker: &std::path::Path) -> String {
+        // `"` is an illegal Windows filename character, so it can never appear
+        // in `marker`; double-quoting the path is sufficient for `cmd /C`.
         format!("type nul > \"{}\"", marker.display())
     }
 
