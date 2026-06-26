@@ -1,0 +1,27 @@
+[package]
+name = "operation-watchdog-e2e"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "End-to-end harness: a real rp + a real sentinel exercising the operation watchdog and corrective-action ladder over rp's live SSE event stream"
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+bdd-infra = { workspace = true, features = ["rp-harness"] }
+cucumber = { workspace = true }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+tempfile = { workspace = true }
+axum = { workspace = true }
+cargo-husky = { workspace = true }
+
+[[test]]
+name = "bdd"
+harness = false

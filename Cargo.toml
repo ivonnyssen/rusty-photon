@@ -36,6 +36,9 @@ members = [
   # preserve its upstream `path = "libzwo-sys"` dep verbatim.
   "crates/zwo-rs",
   "crates/zwo-rs/libzwo-sys",
+  # End-to-end harness (tests only): real rp + real sentinel exercising the
+  # operation watchdog + corrective ladder. See docs/services/sentinel.md.
+  "tests/operation-watchdog-e2e",
 ]
 resolver = "2"
 

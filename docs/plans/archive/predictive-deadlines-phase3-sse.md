@@ -15,7 +15,11 @@ broadcast channel over the wire — `EventBus::subscribe()` exists
 
 ## Status
 
-**All steps delivered on `worktree-predictive-deadlines`; archive on merge.**
+**Status: COMPLETE (archived 2026-06-25).** Phase 3 of the predictive-deadlines
+plan — the `/api/events/subscribe` SSE endpoint and its replay buffer — shipped
+in #373. The authoritative contract lives in
+[`docs/services/rp.md` §Real-Time Stream](../../services/rp.md#real-time-stream).
+All steps below delivered (commits noted per row).
 
 | Step | What | State |
 |---|---|---|

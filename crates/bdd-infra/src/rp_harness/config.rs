@@ -116,6 +116,14 @@ pub struct RpConfigBuilder {
     /// Override `imaging.cache_max_mib` / `cache_max_images`. When `None`,
     /// rp's defaults apply (1024 MiB / 8 images).
     pub imaging_overrides: Option<(usize, usize)>,
+    /// Override the `centering` block's `(solve_time_estimate,
+    /// slew_overhead_estimate)`. When `None`, the block is omitted and
+    /// rp's defaults apply (30 s / 10 s). Shrinking these lets a test
+    /// drive a sub-second `centering_started` `max_duration_ms` for the
+    /// operation watchdog (the advisory outer-loop deadline is
+    /// `max_attempts × (duration + solve_time_estimate +
+    /// slew_overhead_estimate)`).
+    pub centering: Option<(std::time::Duration, std::time::Duration)>,
 }
 
 impl RpConfigBuilder {
@@ -185,6 +193,20 @@ impl RpConfigBuilder {
     /// the first).
     pub fn with_imaging(&mut self, cache_max_mib: usize, cache_max_images: usize) -> &mut Self {
         self.imaging_overrides = Some((cache_max_mib, cache_max_images));
+        self
+    }
+
+    /// Override the `centering` deadline estimates (`solve_time_estimate`,
+    /// `slew_overhead_estimate`). Used by the operation-watchdog e2e to
+    /// shrink the advisory `centering_started` `max_duration_ms` so the
+    /// Sentinel watchdog's per-operation timer fires in a couple of
+    /// seconds instead of the ~40 s the defaults imply.
+    pub fn with_centering(
+        &mut self,
+        solve_time_estimate: std::time::Duration,
+        slew_overhead_estimate: std::time::Duration,
+    ) -> &mut Self {
+        self.centering = Some((solve_time_estimate, slew_overhead_estimate));
         self
     }
 
@@ -348,6 +370,13 @@ impl RpConfigBuilder {
                 block["default_search_radius_deg"] = serde_json::json!(r);
             }
             config["plate_solver"] = block;
+        }
+
+        if let Some((solve, slew_overhead)) = self.centering {
+            config["centering"] = serde_json::json!({
+                "solve_time_estimate": format!("{}ms", solve.as_millis()),
+                "slew_overhead_estimate": format!("{}ms", slew_overhead.as_millis()),
+            });
         }
 
         config
@@ -547,6 +576,29 @@ mod tests {
         assert_eq!(ps["url"], "http://127.0.0.1:11131");
         assert_eq!(ps["timeout"], "30000ms");
         assert_eq!(ps["default_search_radius_deg"], 3.5);
+    }
+
+    #[test]
+    fn centering_block_omitted_by_default() {
+        let cfg = RpConfigBuilder::new().build();
+        assert!(
+            cfg.get("centering").is_none(),
+            "expected centering key absent when not set, got: {:?}",
+            cfg.get("centering")
+        );
+    }
+
+    #[test]
+    fn with_centering_emits_humantime_block() {
+        let mut b = RpConfigBuilder::new();
+        b.with_centering(
+            std::time::Duration::from_secs(1),
+            std::time::Duration::from_millis(500),
+        );
+        let cfg = b.build();
+        let c = &cfg["centering"];
+        assert_eq!(c["solve_time_estimate"], "1000ms");
+        assert_eq!(c["slew_overhead_estimate"], "500ms");
     }
 
     #[test]
