@@ -5325,6 +5325,7 @@ dependencies = [
  "clap",
  "cucumber",
  "derive_more",
+ "ndarray",
  "parking_lot",
  "reqwest 0.13.4",
  "rp-tls",

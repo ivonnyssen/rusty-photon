@@ -12,13 +12,16 @@
 //!
 //! ## Status
 //!
-//! **Phase B skeleton.** Enumeration ([`Sdk::enumerate`]), the [`Camera`] handle
-//! (open, config setters, temperature read), and — the centrepiece — the
-//! **callback → blocking bridge** for pull-mode/trigger exposures
+//! **Phase E.** Enumeration ([`Sdk::enumerate`]), the [`Camera`] handle, and — the
+//! centrepiece — the **callback → blocking bridge** for pull-mode/trigger exposures
 //! ([`Camera::start_pull_mode`] / [`Camera::trigger_single`] /
-//! [`Camera::wait_for_event`] / [`Camera::pull_image`]) are wired. The full ASCOM
-//! surface (cooling control, RAW readout pixel formats, ST4 guiding, sensor type)
-//! is filled in by the driver in later phases.
+//! [`Camera::wait_for_event`] / [`Camera::pull_image`]) are wired, plus the
+//! ASCOM-driving control surface this crate now owns: gain range/value, black
+//! level, exposure range, cooling control ([`Camera::set_cooler`] /
+//! [`Camera::cooler_power_percent`] / [`Camera::set_target_temperature_tenths`]),
+//! ST4 guiding ([`Camera::st4_pulse_guide`] + [`GuideDirection`]), and the
+//! capability flags + sensor geometry on [`CameraInfo`]. The real RAW-pixel-format
+//! buffer sizing and per-platform link are finalised against hardware in Phase F.
 //!
 //! ## `simulation` feature
 //!
@@ -44,7 +47,7 @@ mod error;
 #[cfg(not(feature = "simulation"))]
 mod ffi_util;
 
-pub use camera::{Camera, CameraInfo, Event, Frame};
+pub use camera::{Camera, CameraInfo, Event, Frame, GuideDirection};
 pub use error::{hr_check, Error, Result, SdkError};
 
 /// Number of simulated cameras presented when the `simulation` feature is on.
@@ -93,13 +96,24 @@ impl Sdk {
     pub fn enumerate(&self) -> Result<Vec<CameraInfo>> {
         #[cfg(feature = "simulation")]
         {
+            // A 6248×4176 monochrome 16-bit sensor with a cooler and an ST4 port —
+            // chosen so the BDD suite exercises the full ASCOM surface from one
+            // device (see `docs/services/touptek-camera.md`).
             Ok(vec![CameraInfo {
                 id: "sim-0".to_owned(),
                 display_name: "Simulated ToupTek Camera".to_owned(),
                 model_name: "ToupTek Simulator".to_owned(),
-                flag: u64::from(sys::TOUPCAM_FLAG_TEC),
+                flag: u64::from(sys::TOUPCAM_FLAG_TEC)
+                    | u64::from(sys::TOUPCAM_FLAG_ST4)
+                    | u64::from(sys::TOUPCAM_FLAG_MONO)
+                    | u64::from(sys::TOUPCAM_FLAG_BLACKLEVEL),
                 pixel_size_x: 3.76,
                 pixel_size_y: 3.76,
+                max_width: 6248,
+                max_height: 4176,
+                bit_depth: 16,
+                is_color: false,
+                supported_bins: vec![1, 2, 3, 4],
             }])
         }
         #[cfg(not(feature = "simulation"))]
@@ -137,30 +151,66 @@ fn device_info(dev: &sys::ToupcamDeviceV2) -> CameraInfo {
 
     let id = c_string_field(&dev.id);
     let display_name = c_string_field(&dev.displayname);
-    let (model_name, flag, pixel_size_x, pixel_size_y) = if dev.model.is_null() {
-        (String::new(), 0, 0.0, 0.0)
-    } else {
-        // SAFETY: `model` points to a static `ToupcamModelV2` owned by the SDK for
-        // the lifetime of enumeration; we only read it.
-        let model = unsafe { &*dev.model };
-        let name = if model.name.is_null() {
-            String::new()
+    let (model_name, flag, pixel_size_x, pixel_size_y, max_width, max_height) =
+        if dev.model.is_null() {
+            (String::new(), 0, 0.0, 0.0, 0, 0)
         } else {
-            // SAFETY: `name` is a static, NUL-terminated SDK-owned string.
-            unsafe { std::ffi::CStr::from_ptr(model.name) }
-                .to_string_lossy()
-                .into_owned()
+            // SAFETY: `model` points to a static `ToupcamModelV2` owned by the SDK
+            // for the lifetime of enumeration; we only read it.
+            let model = unsafe { &*dev.model };
+            let name = if model.name.is_null() {
+                String::new()
+            } else {
+                // SAFETY: `name` is a static, NUL-terminated SDK-owned string.
+                unsafe { std::ffi::CStr::from_ptr(model.name) }
+                    .to_string_lossy()
+                    .into_owned()
+            };
+            // `res[0]` is the full-frame (maximum) resolution.
+            let res = model.res[0];
+            (
+                name,
+                model.flag,
+                model.xpixsz,
+                model.ypixsz,
+                res.width,
+                res.height,
+            )
         };
-        (name, model.flag, model.xpixsz, model.ypixsz)
-    };
 
     CameraInfo {
         id,
         display_name,
         model_name,
+        bit_depth: bit_depth_from_flag(flag),
+        is_color: flag & u64::from(sys::TOUPCAM_FLAG_MONO) == 0,
+        // ToupTek does not enumerate the supported digital-binning factors; the
+        // common 1–4 set is assumed here and refined against real hardware in
+        // Phase F (see `docs/plans/touptek-driver.md`).
+        supported_bins: vec![1, 2, 3, 4],
         flag,
         pixel_size_x,
         pixel_size_y,
+        max_width,
+        max_height,
+    }
+}
+
+/// The RAW bit depth a model reads, from its `TOUPCAM_FLAG_RAW*` pixel-format
+/// flags (the astro path prefers the deepest available, falling back to 8-bit).
+#[cfg(not(feature = "simulation"))]
+fn bit_depth_from_flag(flag: u64) -> u32 {
+    let has = |f: u32| flag & u64::from(f) != 0;
+    if has(sys::TOUPCAM_FLAG_RAW16) {
+        16
+    } else if has(sys::TOUPCAM_FLAG_RAW14) {
+        14
+    } else if has(sys::TOUPCAM_FLAG_RAW12) {
+        12
+    } else if has(sys::TOUPCAM_FLAG_RAW10) {
+        10
+    } else {
+        8
     }
 }
 

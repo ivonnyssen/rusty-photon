@@ -1,4 +1,4 @@
-@serial @wip
+@serial
 Feature: Sensor geometry, type, and signal
   Once connected, a camera reports its sensor geometry from the cached model
   info (G1): CameraXSize / CameraYSize in pixels and PixelSizeX / PixelSizeY

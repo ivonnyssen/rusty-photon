@@ -1,4 +1,4 @@
-@serial @wip
+@serial
 Feature: Configuration actions
   The driver exposes its own configuration over HTTP as the vendor ASCOM
   actions `config.get`, `config.apply`, and `config.schema`, mirroring the

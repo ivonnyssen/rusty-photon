@@ -1,18 +1,19 @@
 # Touptek-Camera Service Design
 
-> **Status:** **Phase D (design doc + BDD feature files) landed.** This document
-> is the spec; the eight `tests/features/*.feature` files are the executable
-> contract, committed `@wip` (the default suite skips them) until the Phase E
-> implementation turns them on. The **Phase C bare service is live**:
-> `services/touptek-camera` enumerates (real or simulated), registers a minimal
-> `Device` + `Camera` (the 19 trait-required members), and binds **`:11123`**;
-> the whole simulation Bazel chain is green **with no ToupTek SDK present** (the
-> build-gating win below). The **full `Camera` surface** — the exposure state
-> machine over trigger mode + the callback→pull bridge, digital binning, ROI,
-> gain/offset, cooling, RAW16 readout, sensor type, and ST4 `PulseGuide` — is
-> **Phase E** (it currently falls back to `NotImplemented`). ConformU and the real
-> native link land in **Phase F**. See [`docs/plans/touptek-driver.md`](../plans/touptek-driver.md)
-> for the decision record and *Delivery phasing* below.
+> **Status:** **Phase E (full `Camera` implementation) landed.** This document is
+> the spec; the eight `tests/features/*.feature` files are the executable contract
+> and now run green (the `@wip` tags are removed). The full `Camera` surface — the
+> exposure state machine over trigger mode + the callback→pull bridge, digital
+> binning, ROI, gain/offset, cooling, RAW16 readout + transpose, sensor type, and
+> the asynchronous ST4 `PulseGuide` — is implemented over the `backend.rs`
+> `CameraHandle` seam (a production `TouptekCameraHandle` over `touptek-rs` plus a
+> unit-test mock that forces the paths the simulation cannot: C2/C4/E9/GO1/K1/PG2).
+> `services/touptek-camera` enumerates (real or simulated), registers a `Device` +
+> `Camera`, and binds **`:11123`**; the whole simulation Bazel chain is green
+> **with no ToupTek SDK present** (the build-gating win below). ConformU to 0
+> issues and the real native link land in **Phase F**. See
+> [`docs/plans/touptek-driver.md`](../plans/touptek-driver.md) for the decision
+> record and *Delivery phasing* below.
 
 ## Overview
 
@@ -158,9 +159,10 @@ graph TD;
   runs inside `tokio::task::spawn_blocking`**, including the exposure capture and
   the CPU-heavy `u16`→`i32` widen+transpose on readout.
 - **`backend.rs`** — the SDK seam: `trait CameraHandle` over the blocking
-  `touptek-rs` surface, a production `TouptekCameraHandle`, and (Phase E) a
-  unit-test mock that forces paths the simulation cannot (a model without ST4, a
-  model without TEC, a mid-exposure SDK error).
+  `touptek-rs` surface, a production `TouptekCameraHandle` (the trigger-mode
+  capture against a real-clock deadline), and a unit-test mock that forces paths
+  the simulation cannot (an open failure, a model without gain/offset, without
+  ST4, without a cooler/temperature, a mid-exposure SDK error).
 - **`config.rs`** — typed `Config` (`devices` override map + `server.port`); no
   `filterwheel` (ToupTek has no wheel).
 - **`config_actions.rs`** — `ConfigurableDriver` impl backing `config.get` /
@@ -177,11 +179,12 @@ an `mpsc` channel and **never re-enters the SDK**. The owning thread wakes on th
 channel (`wait_for_event`) and does the real work (`pull_image`, `stop`,
 teardown). Discrete ASCOM exposures use **trigger mode** (`enable_trigger_mode` +
 `trigger_single`) rather than the free-running video stream. The exposure state
-machine (Phase E) drives this on `spawn_blocking`: trigger → wait for the
-frame-ready event against a **real-clock deadline** → pull → widen+transpose.
+machine drives this on `spawn_blocking` (in `backend.rs`'s `capture`): trigger →
+integrate against a **real-clock deadline** → wait for the frame-ready event →
+pull → widen+transpose.
 
-**Concurrency.** Device state (ROI, binning, gain, offset, target temp, exposure
-state machine) is held under `parking_lot::RwLock`; every SDK call funnels through
+**Concurrency.** Device state (ROI, binning, target temp, exposure state machine)
+is held under atomics + `parking_lot::Mutex`; every SDK call funnels through
 `spawn_blocking` and a single logical owner per device; the camera lock is
 released during the integration so concurrent property reads (and the
 in-flight-exposure check) are not blocked. Every wait loop sleeps against an
@@ -352,14 +355,16 @@ except where a contract notes a unit-tested branch. ASCOM error names per
 `simulation` backend presents **one** camera — a **Simulated ToupTek Camera**
 (id `sim-0`, model `ToupTek Simulator`): **6248×4176, monochrome, 16-bit RAW**
 (`MaxADU` 65535), **3.76 µm** square pixels, **cooled** (`FLAG_TEC`), **ST4
-present**.
+present** (`FLAG_ST4`), **black level present** (`FLAG_BLACKLEVEL`, so the `Offset`
+control resolves).
 
 > The simulator's capability set (cooler + ST4 + 16-bit) is chosen so the BDD
 > suite exercises the **full** ASCOM surface from a single device. The `touptek-rs`
-> simulator (no SDK simulation mode exists) fabricates frames in-Rust; Phase E
-> extends its `CameraInfo` to carry the sensor `maxres`, bit depth, ST4/RAW
-> capability flags, and gain/offset ranges the contracts below reference (Phase C
-> carries only id/name/flag/pixel-size).
+> simulator (no SDK simulation mode exists) fabricates frames in-Rust; its
+> `CameraInfo` carries the sensor `max_width`/`max_height`, bit depth, the
+> ST4/MONO/TEC capability flags, and the supported binning factors the contracts
+> below reference, and the simulated `Camera` tracks gain/black-level/cooler state
+> so the gain/offset/cooling round-trips and ranges resolve.
 
 ### Enumeration & connection lifecycle (`enumeration_connection.feature`)
 
@@ -550,19 +555,18 @@ Layered per [`testing.md`](../skills/testing.md).
   failure (C2), per-device independence beyond the single simulated camera (C4),
   a mid-exposure SDK error (E9), a model without a gain/offset control (GO1), a
   model without ST4 (PG2), and an uncooled model (K1) — against the `backend.rs`
-  mock seam. Phase C already lands 19 unit tests; Phase E adds the device-trait
-  tests.
+  mock seam. Phase C landed 19 unit tests; Phase E adds the device-trait tests
+  (the `camera.rs` state machine + the mock-seam paths above), for ~55 in total.
 - **BDD** (`bdd-infra::ServiceHandle`, the eight camera feature files) —
   enumeration/connection (C0–C3; C2 and C4 are unit-tested/deferred per above),
   ROI/bin validation (R1–R4, B1–B2; B3 is unit-tested), exposure happy-path +
   error paths (E1–E8; E9 is unit-tested), gain/offset/readout (GO1–RM1, with GO1's
   control-absent branch unit-tested), cooling (K1–K4), sensor type & signal (G1,
   ST1–ST3), pulse-guiding (PG1–PG2), and config actions, driven against the
-  `touptek-rs` `simulation` backend through the typed `ascom-alpaca` Camera client. **The feature files are
-  committed `@wip` in Phase D** (the default suite skips them via the
-  `filter_run_and_exit` runner); Phase E removes the `@wip` tags as the
-  implementation turns each green. Run explicitly with
-  `bazel test --test_tag_filters=bdd //...`.
+  `touptek-rs` `simulation` backend through the typed `ascom-alpaca` Camera
+  client. The `@wip` tags were removed in Phase E — all 60 scenarios run green.
+  Run explicitly with `bazel test --test_tag_filters=bdd //...` (no OmniSim or SDK
+  needed; the `_sim` chain skip-links).
 - **ConformU** (`tests/conformu_integration.rs`, gated by the `conformu` feature) —
   launches the production binary with `--features conformu` (which pulls in
   `simulation`) and runs `bdd_infra::run_conformu("camera", …)`. Skipped when
@@ -592,11 +596,12 @@ Tracks A–G mirror [`docs/plans/touptek-driver.md`](../plans/touptek-driver.md)
 - **Phase D — design doc + workspace row + BDD feature files** *(this document, the
   `docs/workspace.md` rows, and the eight `@wip` feature files + BDD/ConformU
   harness)*.
-- **Phase E — full Camera.** `Device + Camera` over `touptek-rs` (ROI/digital-bin,
-  gain/offset, cooling, RAW16 readout + transpose, the trigger-mode exposure state
-  machine driven by the frame-ready event, abort, ST4 `PulseGuide`, sensor type),
-  config-actions wiring, the `backend.rs` mock seam; remove the `@wip` tags as each
-  feature turns green.
+- **Phase E — full Camera** *(landed)*. `Device + Camera` over `touptek-rs`
+  (ROI/digital-bin, gain/offset, cooling, RAW16 readout + transpose, the
+  trigger-mode exposure state machine driven by the frame-ready event, abort, ST4
+  `PulseGuide`, sensor type), config-actions wiring, the `backend.rs` mock seam.
+  The `@wip` tags are removed; all 60 BDD scenarios + ~55 unit tests run green on
+  the simulation backend with no SDK.
 - **Phase F — test + gate + ConformU + real link.** BDD + ConformU on the sim
   backend to 0 errors / 0 issues; the real `touptek-camera` `rust_binary` +
   `.github/actions/install-toupcam-sdk`; Pi5 aarch64 / macOS arm64 / Windows x64

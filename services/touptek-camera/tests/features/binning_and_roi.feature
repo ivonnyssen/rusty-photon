@@ -1,4 +1,4 @@
-@serial @wip
+@serial
 Feature: Binning and region-of-interest
   Binning is digital (OPTION_BINNING, sum or average) and symmetric only:
   CanAsymmetricBin is false (B2) and MaxBinX / MaxBinY come from the supported

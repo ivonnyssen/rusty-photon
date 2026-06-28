@@ -1,4 +1,4 @@
-@serial @wip
+@serial
 Feature: Camera enumeration and connection lifecycle
   touptek-camera enumerates every connected ToupTek camera at startup and
   registers each as an ASCOM device, index 0, 1, 2, ..., on one port (C0).

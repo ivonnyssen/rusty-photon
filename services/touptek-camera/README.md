@@ -11,24 +11,23 @@ decision record and [`docs/services/touptek-camera.md`](../../docs/services/toup
 for the full service design (the build-gating crux, the callback→blocking exposure
 bridge, and the behavioural contracts the BDD suite encodes).
 
-## Status — Phase D (design doc + BDD contract)
+## Status — Phase E (full `Camera` implementation)
 
-The bare service is live and the **design + test contract is committed**: the
-design doc, the eight `tests/features/*.feature` files (committed `@wip`, so the
-runner skips them until Phase E), the BDD harness driving the typed `ascom-alpaca`
-Camera client, and the ConformU integration test. The Phase-C scaffold builds,
-enumerates (real or simulated), registers a minimal ASCOM `Device` + `Camera`
-(connection lifecycle, id-derived identity, sensor pixel size, cached sub-frame
-origin), and binds `:11123`. The full `Camera` surface — exposure state machine
-(trigger mode + the `touptek-rs` callback→pull bridge), digital binning, ROI,
-gain/offset, cooling, RAW16 readout + transpose, sensor type, and ST4 `PulseGuide`
-— is **Phase E**; those members fall back to the trait's `NotImplemented` defaults
-until then. Roadmap (see the plan):
+The full driver is live against the simulation backend. The service enumerates
+(real or simulated), registers an ASCOM `Device` + `Camera`, and binds `:11123`,
+implementing the whole `Camera` surface over the `backend.rs` `CameraHandle` seam:
+the trigger-mode exposure state machine (the `touptek-rs` callback→pull bridge,
+abort, cancel-on-disconnect), digital binning, ROI (even + ≥ 8 validation),
+gain/offset, cooling, RAW16 readout + `[x][y]` transpose, sensor type, and the
+asynchronous ST4 `PulseGuide`. All **60 BDD scenarios** and ~55 unit tests run
+green with **no SDK** — the unit-test mock seam forces the paths the simulation
+cannot (C2/C4/E9/GO1/K1/PG2). Roadmap (see the plan):
 
 - **Phase D** — design doc + BDD feature files. ✅ landed.
-- **Phase E** — full `Camera` over `touptek-rs` (remove the `@wip` tags as each feature turns green).
-- **Phase F** — BDD + ConformU to 0 errors / 0 issues on the sim backend; wire the
-  real-link `native.yml` / `conformu.yml` jobs.
+- **Phase E** — full `Camera` over `touptek-rs`; `@wip` tags removed. ✅ landed.
+- **Phase F** — ConformU to 0 errors / 0 issues on the sim backend; the real
+  `rust_binary` + `install-toupcam-sdk`; wire the `native.yml` / `conformu.yml`
+  real-link jobs.
 - **Phase G** — the `rp` `CameraConfig` consumer + real-hardware ConformU on each
   target platform.
 

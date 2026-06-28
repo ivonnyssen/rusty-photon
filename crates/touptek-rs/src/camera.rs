@@ -37,6 +37,16 @@ pub struct CameraInfo {
     pub pixel_size_x: f32,
     /// Pixel size in microns.
     pub pixel_size_y: f32,
+    /// Full-frame sensor width in pixels (`ToupcamModelV2.res[0].width`).
+    pub max_width: u32,
+    /// Full-frame sensor height in pixels (`ToupcamModelV2.res[0].height`).
+    pub max_height: u32,
+    /// RAW bit depth the astro path reads (16 for the `PIXELFORMAT_RAW16` path).
+    pub bit_depth: u32,
+    /// Whether the sensor is colour (Bayer) — the inverse of `TOUPCAM_FLAG_MONO`.
+    pub is_color: bool,
+    /// Supported symmetric digital-binning factors (`OPTION_BINNING`).
+    pub supported_bins: Vec<u32>,
 }
 
 impl CameraInfo {
@@ -45,10 +55,48 @@ impl CameraInfo {
     pub fn has_tec(&self) -> bool {
         self.flag & u64::from(sys::TOUPCAM_FLAG_TEC) != 0
     }
+
+    /// Whether the model reports an ST4 guide port (`TOUPCAM_FLAG_ST4`).
+    #[must_use]
+    pub fn has_st4(&self) -> bool {
+        self.flag & u64::from(sys::TOUPCAM_FLAG_ST4) != 0
+    }
 }
 
-/// A pulled sensor frame. `data` is the raw little-endian pixel buffer; its
-/// layout depends on the configured pixel format / bit depth.
+/// An ST4 guide-pulse direction. The numeric codes are the ones
+/// `Toupcam_ST4PlusGuide` expects (`0 = North`, `1 = South`, `2 = East`,
+/// `3 = West`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GuideDirection {
+    /// +Declination.
+    North,
+    /// −Declination.
+    South,
+    /// +RA.
+    East,
+    /// −RA.
+    West,
+}
+
+impl GuideDirection {
+    /// The `nDirect` code `Toupcam_ST4PlusGuide` expects.
+    ///
+    /// Only the real FFI path consumes this; the simulation backend ignores the
+    /// direction, so it is dead code there.
+    #[must_use]
+    #[cfg_attr(feature = "simulation", allow(dead_code))]
+    fn code(self) -> u32 {
+        match self {
+            Self::North => 0,
+            Self::South => 1,
+            Self::East => 2,
+            Self::West => 3,
+        }
+    }
+}
+
+/// A pulled sensor frame. `data` is the raw pixel buffer in host (native) byte
+/// order; its layout depends on the configured pixel format / bit depth.
 #[derive(Debug, Clone)]
 pub struct Frame {
     /// Frame width in pixels.
@@ -210,6 +258,95 @@ impl Camera {
         Ok(tenths)
     }
 
+    /// Read a `TOUPCAM_OPTION_*` option (`Toupcam_get_Option`).
+    pub fn get_option(&self, option: u32) -> Result<i32> {
+        let mut value: std::os::raw::c_int = 0;
+        // SAFETY: `handle` is valid; `value` is a live `c_int` the SDK writes.
+        hr_check(unsafe { sys::Toupcam_get_Option(self.handle, option, &mut value) })?;
+        Ok(value)
+    }
+
+    /// The current analog gain in percent (`Toupcam_get_ExpoAGain`; 100 = 1.0×).
+    pub fn gain_percent(&self) -> Result<u16> {
+        let mut gain: std::os::raw::c_ushort = 0;
+        // SAFETY: `handle` is valid; `gain` is a live `c_ushort` the SDK writes.
+        hr_check(unsafe { sys::Toupcam_get_ExpoAGain(self.handle, &mut gain) })?;
+        Ok(gain)
+    }
+
+    /// The supported analog-gain range in percent (`Toupcam_get_ExpoAGainRange`).
+    pub fn gain_range(&self) -> Result<(u16, u16)> {
+        let (mut min, mut max, mut def): (
+            std::os::raw::c_ushort,
+            std::os::raw::c_ushort,
+            std::os::raw::c_ushort,
+        ) = (0, 0, 0);
+        // SAFETY: `handle` is valid; the three out-params are live `c_ushort`s.
+        hr_check(unsafe {
+            sys::Toupcam_get_ExpoAGainRange(self.handle, &mut min, &mut max, &mut def)
+        })?;
+        Ok((min, max))
+    }
+
+    /// The supported exposure-time range in microseconds
+    /// (`Toupcam_get_ExpTimeRange`).
+    pub fn exposure_range_us(&self) -> Result<(u32, u32)> {
+        let (mut min, mut max, mut def): (
+            std::os::raw::c_uint,
+            std::os::raw::c_uint,
+            std::os::raw::c_uint,
+        ) = (0, 0, 0);
+        // SAFETY: `handle` is valid; the three out-params are live `c_uint`s.
+        hr_check(unsafe {
+            sys::Toupcam_get_ExpTimeRange(self.handle, &mut min, &mut max, &mut def)
+        })?;
+        Ok((min, max))
+    }
+
+    /// The current black level (`OPTION_BLACKLEVEL`) — the ASCOM `Offset`.
+    pub fn black_level(&self) -> Result<i32> {
+        self.get_option(sys::TOUPCAM_OPTION_BLACKLEVEL)
+    }
+
+    /// Set the black level (`OPTION_BLACKLEVEL`) — the ASCOM `Offset`.
+    pub fn set_black_level(&self, value: i32) -> Result<()> {
+        self.set_option(sys::TOUPCAM_OPTION_BLACKLEVEL, value)
+    }
+
+    /// Turn the thermo-electric cooler on/off (`OPTION_TEC`).
+    pub fn set_cooler(&self, on: bool) -> Result<()> {
+        self.set_option(sys::TOUPCAM_OPTION_TEC, i32::from(on))
+    }
+
+    /// Whether the cooler is currently on (`OPTION_TEC`).
+    pub fn cooler_on(&self) -> Result<bool> {
+        Ok(self.get_option(sys::TOUPCAM_OPTION_TEC)? != 0)
+    }
+
+    /// The current cooler power as a 0–100 % of the model's maximum TEC voltage
+    /// (`OPTION_TEC_VOLTAGE` over `OPTION_TEC_VOLTAGE_MAX`).
+    pub fn cooler_power_percent(&self) -> Result<u32> {
+        let voltage = self.get_option(sys::TOUPCAM_OPTION_TEC_VOLTAGE)?;
+        let max = self.get_option(sys::TOUPCAM_OPTION_TEC_VOLTAGE_MAX)?;
+        if max <= 0 {
+            return Ok(0);
+        }
+        let pct = i64::from(voltage.max(0)) * 100 / i64::from(max);
+        Ok(pct.clamp(0, 100) as u32)
+    }
+
+    /// Set the cooler target temperature in 0.1 °C units (`OPTION_TECTARGET`).
+    pub fn set_target_temperature_tenths(&self, tenths: i16) -> Result<()> {
+        self.set_option(sys::TOUPCAM_OPTION_TECTARGET, i32::from(tenths))
+    }
+
+    /// Issue an ST4 guide pulse in `direction` for `duration_ms` milliseconds
+    /// (`Toupcam_ST4PlusGuide`). Returns immediately; the SDK times the pulse.
+    pub fn st4_pulse_guide(&self, direction: GuideDirection, duration_ms: u32) -> Result<()> {
+        // SAFETY: `handle` is valid; the call only starts a guide pulse.
+        hr_check(unsafe { sys::Toupcam_ST4PlusGuide(self.handle, direction.code(), duration_ms) })
+    }
+
     /// Switch the camera into software-trigger mode (`OPTION_TRIGGER = 1`) so
     /// frames are produced one per [`trigger_single`](Self::trigger_single)
     /// instead of free-running.
@@ -341,6 +478,18 @@ fn bytes_per_pixel(bits: u32) -> usize {
 // Simulation implementation (no SDK calls).
 // ---------------------------------------------------------------------------
 
+/// Simulated analog-gain bounds in percent (100 = 1.0× … 1000 = 10×).
+#[cfg(feature = "simulation")]
+const SIM_GAIN_DEFAULT: u16 = 100;
+#[cfg(feature = "simulation")]
+const SIM_GAIN_MAX: u16 = 1000;
+/// Simulated exposure-time bounds in microseconds (100 µs … 3600 s). The upper
+/// bound is below 100 000 s so the out-of-range exposure scenario (E3) is rejected.
+#[cfg(feature = "simulation")]
+const SIM_EXPOSURE_MIN_US: u32 = 100;
+#[cfg(feature = "simulation")]
+const SIM_EXPOSURE_MAX_US: u32 = 3_600_000_000;
+
 /// In-Rust state backing a simulated camera.
 #[cfg(feature = "simulation")]
 struct SimState {
@@ -349,6 +498,14 @@ struct SimState {
     events: std::sync::Mutex<std::collections::VecDeque<u32>>,
     /// Whether a pull session is active.
     started: std::sync::atomic::AtomicBool,
+    /// Current analog gain in percent (mirrors `put/get_ExpoAGain`).
+    gain: std::sync::Mutex<u16>,
+    /// Current black level (mirrors `OPTION_BLACKLEVEL`).
+    black_level: std::sync::Mutex<i32>,
+    /// Whether the cooler is on (mirrors `OPTION_TEC`).
+    cooler_on: std::sync::atomic::AtomicBool,
+    /// Cooler target temperature in 0.1 °C (mirrors `OPTION_TECTARGET`).
+    target_temp_tenths: std::sync::Mutex<i16>,
 }
 
 #[cfg(feature = "simulation")]
@@ -359,6 +516,10 @@ impl Camera {
             sim: SimState {
                 events: std::sync::Mutex::new(std::collections::VecDeque::new()),
                 started: std::sync::atomic::AtomicBool::new(false),
+                gain: std::sync::Mutex::new(SIM_GAIN_DEFAULT),
+                black_level: std::sync::Mutex::new(0),
+                cooler_on: std::sync::atomic::AtomicBool::new(false),
+                target_temp_tenths: std::sync::Mutex::new(0),
             },
         })
     }
@@ -368,8 +529,97 @@ impl Camera {
         Ok(())
     }
 
-    /// No-op in simulation; succeeds.
-    pub fn set_gain_percent(&self, _percent: u16) -> Result<()> {
+    /// Records the simulated analog gain (read back by [`gain_percent`]).
+    pub fn set_gain_percent(&self, percent: u16) -> Result<()> {
+        *self
+            .sim
+            .gain
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = percent;
+        Ok(())
+    }
+
+    /// The current simulated analog gain in percent.
+    pub fn gain_percent(&self) -> Result<u16> {
+        Ok(*self
+            .sim
+            .gain
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner))
+    }
+
+    /// The simulated analog-gain range in percent (100 = 1.0× … 1000 = 10×).
+    pub fn gain_range(&self) -> Result<(u16, u16)> {
+        Ok((SIM_GAIN_DEFAULT, SIM_GAIN_MAX))
+    }
+
+    /// The simulated exposure-time range in microseconds (100 µs … 3600 s).
+    pub fn exposure_range_us(&self) -> Result<(u32, u32)> {
+        Ok((SIM_EXPOSURE_MIN_US, SIM_EXPOSURE_MAX_US))
+    }
+
+    /// The current simulated black level.
+    pub fn black_level(&self) -> Result<i32> {
+        Ok(*self
+            .sim
+            .black_level
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner))
+    }
+
+    /// Records the simulated black level.
+    pub fn set_black_level(&self, value: i32) -> Result<()> {
+        *self
+            .sim
+            .black_level
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = value;
+        Ok(())
+    }
+
+    /// Records the simulated cooler on/off state.
+    pub fn set_cooler(&self, on: bool) -> Result<()> {
+        self.sim
+            .cooler_on
+            .store(on, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Whether the simulated cooler is on.
+    pub fn cooler_on(&self) -> Result<bool> {
+        Ok(self
+            .sim
+            .cooler_on
+            .load(std::sync::atomic::Ordering::Relaxed))
+    }
+
+    /// Simulated cooler power: a clean 60 % when on, 0 % when off.
+    pub fn cooler_power_percent(&self) -> Result<u32> {
+        Ok(
+            if self
+                .sim
+                .cooler_on
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
+                60
+            } else {
+                0
+            },
+        )
+    }
+
+    /// Records the simulated cooler target temperature in 0.1 °C units.
+    pub fn set_target_temperature_tenths(&self, tenths: i16) -> Result<()> {
+        *self
+            .sim
+            .target_temp_tenths
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = tenths;
+        Ok(())
+    }
+
+    /// No-op in simulation; succeeds (the SDK would time the ST4 pulse).
+    pub fn st4_pulse_guide(&self, _direction: GuideDirection, _duration_ms: u32) -> Result<()> {
         Ok(())
     }
 
@@ -467,15 +717,43 @@ mod tests {
             id: "sim-0".to_owned(),
             display_name: "Simulated ToupTek Camera".to_owned(),
             model_name: "ToupTek Simulator".to_owned(),
-            flag: u64::from(sys::TOUPCAM_FLAG_TEC),
+            flag: u64::from(sys::TOUPCAM_FLAG_TEC)
+                | u64::from(sys::TOUPCAM_FLAG_ST4)
+                | u64::from(sys::TOUPCAM_FLAG_MONO)
+                | u64::from(sys::TOUPCAM_FLAG_BLACKLEVEL),
             pixel_size_x: 3.76,
             pixel_size_y: 3.76,
+            max_width: 6248,
+            max_height: 4176,
+            bit_depth: 16,
+            is_color: false,
+            supported_bins: vec![1, 2, 3, 4],
         }
     }
 
     #[test]
-    fn has_tec_reads_the_flag() {
-        assert!(sim_info().has_tec());
+    fn has_tec_and_st4_read_the_flags() {
+        let info = sim_info();
+        assert!(info.has_tec());
+        assert!(info.has_st4());
+    }
+
+    #[test]
+    fn gain_and_black_level_round_trip_in_simulation() {
+        let cam = Camera::open_by_index(0, sim_info()).unwrap();
+        let (min, max) = cam.gain_range().unwrap();
+        assert!(min <= max);
+        cam.set_gain_percent(max).unwrap();
+        assert_eq!(cam.gain_percent().unwrap(), max);
+        cam.set_black_level(123).unwrap();
+        assert_eq!(cam.black_level().unwrap(), 123);
+        // Cooler + exposure-range simulation.
+        assert!(!cam.cooler_on().unwrap());
+        cam.set_cooler(true).unwrap();
+        assert!(cam.cooler_on().unwrap());
+        assert!((0..=100).contains(&cam.cooler_power_percent().unwrap()));
+        let (emin, emax) = cam.exposure_range_us().unwrap();
+        assert!(emin < emax);
     }
 
     #[test]

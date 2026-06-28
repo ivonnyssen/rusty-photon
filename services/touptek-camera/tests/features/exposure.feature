@@ -1,4 +1,4 @@
-@serial @wip
+@serial
 Feature: Exposure lifecycle
   Discrete exposures are taken in trigger mode (OPTION_TRIGGER=1 plus
   Toupcam_Trigger(h,1)); the frame-ready callback drives the state machine

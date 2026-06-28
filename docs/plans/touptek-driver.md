@@ -2,9 +2,10 @@
 
 ## Status
 
-**Phases A + B + C + D landed; the bare `touptek-camera` service builds, serves on
-`:11123`, the whole simulation Bazel chain is green with no SDK present, and the
-service design doc + the `@wip` BDD/ConformU contract are committed (2026-06-26).**
+**Phases A + B + C + D + E landed; the `touptek-camera` service implements the full
+ASCOM `Camera` over `touptek-rs`, serves on `:11123`, and the whole simulation
+Bazel chain — 172-target build, 54-test default suite, and all 60 BDD scenarios —
+is green with no SDK present (2026-06-28).**
 
 - **Phase A — `crates/touptek-rs/libtoupcam-sys`:** vendored `toupcam.h`
   (v60.31631) + `bindgen` `build.rs` (parsed as plain C) + the
@@ -46,12 +47,10 @@ service design doc + the `@wip` BDD/ConformU contract are committed (2026-06-26)
   deliberately **not defined yet** (it lands with `install-toupcam-sdk` in Phase
   F). `crate_universe` repinned; **buildifier** + **parity** (36/36) green.
 
-Remaining: the device-trait work — the full `Camera` over `touptek-rs` driven by
-the now-committed BDD contract (Phase E) — then the **real native link** against a
-provisioned SDK on each platform (incl. the real `touptek-camera` binary) and the
-`install-toupcam-sdk` CI action + ConformU to 0 issues (Phase F), and the `rp`
-consumer + cross-platform sign-off (Phase G). Everything below the fold from Phase E
-on remains **planned**.
+Remaining: the **real native link** against a provisioned SDK on each platform
+(incl. the real `touptek-camera` binary) and the `install-toupcam-sdk` CI action +
+ConformU to 0 issues (Phase F), then the `rp` consumer + cross-platform sign-off
+(Phase G). Everything below the fold from Phase F on remains **planned**.
 
 This is the agreed decision record that will precede
 `docs/services/touptek-camera.md` (the service design doc) and the BDD scenarios,
@@ -320,10 +319,15 @@ cross-platform link (incl. Pi aarch64 + Apple-Silicon-universal). Once
   `gain_offset_readout`, `cooling`, `sensor_properties`, `pulse_guide`,
   `config_actions` — plus the BDD harness + ConformU integration test and their
   Bazel targets.
-- **Phase E — full Camera:** `Device + Camera` over `touptek-rs` (ROI/bin,
-  gain/offset, cooling, RAW readout + transpose, exposure state machine driven by
-  the frame-ready event, abort + stop, ST4 `PulseGuide`, sensor type),
-  config-actions, serial identity, `spawn_blocking` bridge, `backend.rs` mock seam.
+- **Phase E — full Camera:** ✅ *landed* — `Device + Camera` over `touptek-rs`
+  (ROI/digital-bin, gain/offset, cooling, RAW16 readout + transpose, the
+  trigger-mode exposure state machine driven by the frame-ready event, abort +
+  cancel-on-disconnect, asynchronous ST4 `PulseGuide`, sensor type), config-actions,
+  id-derived identity, the `spawn_blocking` bridge, and the `backend.rs` mock seam
+  (C2/C4/E9/GO1/K1/PG2). `@wip` tags removed; 60 BDD scenarios + ~55 unit tests
+  green with no SDK. `CanStopExposure = false` (trigger mode has no partial
+  readout). *Remaining (Phase F):* the real `rust_binary` + `install-toupcam-sdk`
+  and the real-hardware ROI/binning + `CoolerPower` validation.
 - **Phase F — test + gate + ConformU:** BDD + ConformU on the sim backend to
   **0 errors / 0 issues** (like zwo/qhy); wire ConformU into `conformu.yml` +
   the `native.yml` nightly real-link build (Linux/macOS/Windows); the Bazel

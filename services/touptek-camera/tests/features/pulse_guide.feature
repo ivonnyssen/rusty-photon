@@ -1,4 +1,4 @@
-@serial @wip
+@serial
 Feature: ST4 pulse guiding
   ToupTek exposes ST4 pulse-guiding natively (Toupcam_ST4PlusGuide), gated on
   the ST4 capability flag, so CanPulseGuide is true when the model reports ST4

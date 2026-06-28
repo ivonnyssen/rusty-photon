@@ -1,4 +1,4 @@
-@serial @wip
+@serial
 Feature: Gain, offset, and readout modes
   Gain is the ExpoAGain analog gain in percent (100 = 1.0x), exposed as the
   integer with no named Gains list; Offset is the OPTION_BLACKLEVEL value.

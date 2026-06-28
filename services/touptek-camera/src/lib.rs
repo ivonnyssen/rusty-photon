@@ -283,6 +283,11 @@ mod identity_tests {
             flag: 0,
             pixel_size_x: 3.76,
             pixel_size_y: 3.76,
+            max_width: 6248,
+            max_height: 4176,
+            bit_depth: 16,
+            is_color: false,
+            supported_bins: vec![1, 2, 3, 4],
         }
     }
 

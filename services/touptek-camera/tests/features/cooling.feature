@@ -1,4 +1,4 @@
-@serial @wip
+@serial
 Feature: Cooling
   Cooling is gated on the FLAG_TEC capability: CanSetCCDTemperature and
   CanGetCoolerPower are true only when the model has a thermo-electric cooler,
