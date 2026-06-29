@@ -242,7 +242,7 @@ impl McpHandler {
     }
 
     #[tool(
-        description = "Park the mount: invoke ASCOM Park, poll Slewing until idle (300 s deadline), and verify AtPark == true. Per ASCOM, a successful park clears Tracking. Unlike slew, park does NOT auto-abort on timeout — call abort_slew explicitly to interrupt a stuck park."
+        description = "Park the mount: invoke ASCOM Park, then poll AtPark every 100 ms until it reports parked, bounded by a predicted worst-case-traverse deadline (not a flat ceiling). Per ASCOM, a successful park clears Tracking. Unlike slew, park does NOT auto-abort on timeout — call abort_slew explicitly to interrupt a stuck park."
     )]
     pub(crate) async fn park(
         &self,

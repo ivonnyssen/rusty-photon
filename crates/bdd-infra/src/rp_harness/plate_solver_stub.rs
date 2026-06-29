@@ -76,6 +76,17 @@ pub enum StubBehavior {
     /// `solve_failed`, `solve_timeout`, `internal`); the appropriate
     /// HTTP status is selected per the wrapper's mapping.
     Error { code: String, message: String },
+    /// Hold every `POST /api/v1/solve` open — never responding — until
+    /// the stub is stopped (`stop`/`Drop`), then fail it. This wedges
+    /// rp's in-flight plate solve so a `center_on_target` call stays
+    /// mid-solve and never emits `centering_complete` / `centering_failed`,
+    /// which is exactly the stall the operation-watchdog e2e drives: the
+    /// advisory outer `centering` deadline fires (Sentinel's watchdog
+    /// escalates) while rp is still blocked here. On stop the parked
+    /// handlers wake and return an `internal` error so rp's solve errors
+    /// out and the call unwinds cleanly during teardown (rather than the
+    /// stub's graceful shutdown blocking on an in-flight request).
+    Hang,
 }
 
 impl StubBehavior {
@@ -100,6 +111,11 @@ pub struct PlateSolverStub {
     pub port: u16,
     requests: Arc<RwLock<Vec<Value>>>,
     shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
+    /// Sticky release signal for `StubBehavior::Hang` handlers. `stop`
+    /// sets it `true` so any parked handler returns at once (a `watch`
+    /// receiver's `wait_for` sees the current value, so even a handler
+    /// that parks *after* `stop` returns immediately).
+    hang_release: tokio::sync::watch::Sender<bool>,
 }
 
 #[derive(Clone)]
@@ -111,6 +127,9 @@ struct StubState {
     /// the other variants. `Arc<...>` so cloning the State (axum does
     /// it once per request) shares the cursor across handlers.
     sequence_cursor: Arc<std::sync::atomic::AtomicUsize>,
+    /// Receiver half of the `Hang` release signal (see
+    /// [`PlateSolverStub::hang_release`]).
+    hang_release: tokio::sync::watch::Receiver<bool>,
 }
 
 impl PlateSolverStub {
@@ -124,10 +143,12 @@ impl PlateSolverStub {
             );
         }
         let requests: Arc<RwLock<Vec<Value>>> = Arc::new(RwLock::new(Vec::new()));
+        let (hang_release, hang_release_rx) = tokio::sync::watch::channel(false);
         let state = StubState {
             behavior,
             requests: requests.clone(),
             sequence_cursor: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            hang_release: hang_release_rx,
         };
 
         let app = Router::new()
@@ -156,6 +177,7 @@ impl PlateSolverStub {
             port,
             requests,
             shutdown_tx: Some(shutdown_tx),
+            hang_release,
         }
     }
 
@@ -166,6 +188,9 @@ impl PlateSolverStub {
 
     /// Stop the stub server.
     pub fn stop(&mut self) {
+        // Release any `Hang` handler first so the server's graceful
+        // shutdown isn't blocked waiting on an in-flight request.
+        let _ = self.hang_release.send(true);
         if let Some(tx) = self.shutdown_tx.take() {
             let _ = tx.send(());
         }
@@ -240,6 +265,19 @@ async fn solve_handler(
                 "message": message,
             }));
             (status, body).into_response()
+        }
+        StubBehavior::Hang => {
+            // Park until `stop` flips the release flag, then fail. A
+            // `watch` receiver's `wait_for` checks the current value
+            // first, so a handler that parks after `stop` still returns
+            // immediately — no lost-wakeup race against teardown.
+            let mut release = state.hang_release.clone();
+            let _ = release.wait_for(|released| *released).await;
+            let body = Json(serde_json::json!({
+                "error": "internal",
+                "message": "plate solver stub stopped while holding the request (test teardown)",
+            }));
+            (StatusCode::INTERNAL_SERVER_ERROR, body).into_response()
         }
     }
 }
@@ -387,5 +425,38 @@ mod tests {
         let body: Value = resp.json().await.unwrap();
         assert_eq!(body["error"], "solve_failed");
         assert!(body["message"].as_str().unwrap().contains("CRVAL"));
+    }
+
+    #[tokio::test]
+    async fn hang_holds_the_request_until_stopped_then_fails() {
+        use std::time::Duration;
+        let mut stub = PlateSolverStub::start(StubBehavior::Hang).await;
+        let url = format!("{}/api/v1/solve", stub.url);
+
+        // The solve request must NOT resolve while the stub is up.
+        let request = tokio::spawn(async move {
+            reqwest::Client::new()
+                .post(&url)
+                .json(&serde_json::json!({ "fits_path": "/tmp/x.fits" }))
+                .send()
+                .await
+        });
+        // Give the handler time to park inside the Hang branch.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(
+            !request.is_finished(),
+            "Hang must hold the request open while the stub is running"
+        );
+
+        // Stopping the stub releases the parked handler with a 500.
+        stub.stop();
+        let resp = tokio::time::timeout(Duration::from_secs(2), request)
+            .await
+            .expect("hung request did not resolve within 2s of stop")
+            .expect("request task panicked")
+            .expect("request transport error");
+        assert_eq!(resp.status().as_u16(), 500);
+        let body: Value = resp.json().await.unwrap();
+        assert_eq!(body["error"], "internal");
     }
 }

@@ -2,25 +2,26 @@
 
 ## Status
 
-**Complete — all five phases shipped.** Every phase below carries an
-"As-built note" recording what landed and the decisions taken; the
-authoritative contracts now live in the design docs
-([`docs/services/rp.md` §Real-Time Stream](../services/rp.md#real-time-stream)
-and [`docs/services/sentinel.md` §Operation Watchdog](../services/sentinel.md#operation-watchdog)).
-Remaining housekeeping: archive the per-phase execution plans
-(`predictive-deadlines-phase1-event-surface.md` is already in `archive/`;
-`predictive-deadlines-phase3-sse.md` archives when this branch merges to
-`main`). Two design items were **deliberately deferred** (documented in
-the relevant phase notes): the rp-side recovery callbacks
+**Status: COMPLETE (archived 2026-06-25).** All five phases shipped across
+`rp` and `sentinel`: Phase 1 event surface (#346), Phase 2 deadlines
+(§2.1 slew #348, §2.2/§2.3 park+focuser #352, §2.4/§2.5 exposure+centering),
+Phase 3 SSE endpoint, Phase 4 Sentinel watchdog, and Phase 5 corrective-action
+ladder (all in #373). The authoritative contracts now live in the design docs
+([`docs/services/rp.md` §Real-Time Stream](../../services/rp.md#real-time-stream)
+and [`docs/services/sentinel.md` §Operation Watchdog](../../services/sentinel.md#operation-watchdog)).
+Two design items were **deliberately deferred** (documented in the relevant
+phase notes): the rp-side recovery callbacks
 (`POST /api/internal/operation-aborted` / `service-restarted`, Phase 5
 §5.3–5.4) wait for rp-side abort-recovery/reconnect machinery to consume
-them, and the upstream rmcp transport fix is tracked separately.
+them, and the upstream rmcp transport fix is tracked separately (no issue
+filed yet). Every phase below carries an "As-built note" recording what
+landed and the decisions taken.
 
 This plan describes how it closed the implementation gap behind two
 long-standing sections of the rp design doc:
 
-- [`docs/services/rp.md` §Sentinel Watchdog Integration](../services/rp.md#sentinel-watchdog-integration)
-- [`docs/services/rp.md` §Real-Time Stream](../services/rp.md#real-time-stream)
+- [`docs/services/rp.md` §Sentinel Watchdog Integration](../../services/rp.md#sentinel-watchdog-integration)
+- [`docs/services/rp.md` §Real-Time Stream](../../services/rp.md#real-time-stream)
 
 Both had lived in the design doc since rp was first sketched with no code
 behind them. The catalyst for picking this up was
@@ -220,10 +221,10 @@ note).
 
 > **As-built note (Phase 1.1 shipped).** The envelope landed in
 > `services/rp/src/events.rs` as `EventEnvelope`. The **authoritative
-> schema** is [`docs/services/rp.md` §Event Envelope](../services/rp.md#event-envelope).
+> schema** is [`docs/services/rp.md` §Event Envelope](../../services/rp.md#event-envelope).
 > Three compat-driven refinements over the sketch below, all following
 > from Decision A (preserve the historical webhook keys; see the phase-1
-> implementation plan, [`predictive-deadlines-phase1-event-surface.md`](archive/predictive-deadlines-phase1-event-surface.md)):
+> implementation plan, [`predictive-deadlines-phase1-event-surface.md`](predictive-deadlines-phase1-event-surface.md)):
 > (1) the envelope keeps the historical **`event`** field (e.g.
 > `"slew_started"`) — there is no separate `operation` field; the
 > operation family is the event-name prefix. (2) Both the `*_started`
@@ -423,7 +424,7 @@ The focuser driver knows its step rate; expose it via the Alpaca
 > per-detector-family default table — over-estimating `predicted` for fast
 > CMOS is harmless (it only relaxes the watchdog), and a real rig sets the
 > per-camera value. The authoritative contract is
-> [`docs/services/rp.md` §Event Envelope](../services/rp.md#event-envelope)
+> [`docs/services/rp.md` §Event Envelope](../../services/rp.md#event-envelope)
 > and the `capture` catalog row.
 
 ```text
@@ -456,8 +457,8 @@ it's been 330 s, what's going on?"
 > the envelope's two fields distinct, useful meanings. (3) advisory only —
 > rp does not enforce it (same posture as §2.4 exposure). The
 > authoritative contract is
-> [`docs/services/rp.md` §Event Envelope](../services/rp.md#event-envelope)
-> and the [`center_on_target` Contract](../services/rp.md#center_on_target-contract).
+> [`docs/services/rp.md` §Event Envelope](../../services/rp.md#event-envelope)
+> and the [`center_on_target` Contract](../../services/rp.md#center_on_target-contract).
 
 `max = max_attempts * (capture_duration + solve_time_estimate +
 slew_overhead_estimate)`. `capture_duration` is the operator's
@@ -501,7 +502,7 @@ defaults.
 > `bdd_infra::rp_harness::SseClient` that reads the body with
 > `reqwest::Response::chunk` — no `stream` feature needed). The
 > authoritative contract is
-> [`docs/services/rp.md` §Real-Time Stream](../services/rp.md#real-time-stream);
+> [`docs/services/rp.md` §Real-Time Stream](../../services/rp.md#real-time-stream);
 > the execution plan is
 > [`predictive-deadlines-phase3-sse.md`](predictive-deadlines-phase3-sse.md)
 > (archive on merge). **Sentinel's consumer (Phase 4) is the next gate.**
@@ -585,7 +586,7 @@ unresponsive" anyway.
 > **As-built note (Phase 4 shipped).** Landed in a new
 > `services/sentinel/src/watchdog.rs` plus config + engine + builder wiring.
 > The authoritative contract is
-> [`docs/services/sentinel.md` §Operation Watchdog](../services/sentinel.md#operation-watchdog).
+> [`docs/services/sentinel.md` §Operation Watchdog](../../services/sentinel.md#operation-watchdog).
 > Decisions over the sketch below:
 > (1) **New `EventMonitor` trait, not a widened `Monitor`** — the plan's
 > conservative option (§4.1). It is push-based (`name()` + `run(cancel)`);
@@ -725,7 +726,7 @@ policy (Phase 5).
 > **As-built note (Phase 5 shipped — all rungs, one PR).** Landed in a new
 > `services/sentinel/src/corrective.rs` plus config + watchdog + factory
 > wiring. The authoritative contract is
-> [`docs/services/sentinel.md` §Operation Watchdog → Escalation](../services/sentinel.md#escalation-corrective-action-ladder).
+> [`docs/services/sentinel.md` §Operation Watchdog → Escalation](../../services/sentinel.md#escalation-corrective-action-ladder).
 > Decisions over the sketch below:
 > (1) **All rungs in one PR, not one-per-rung.** The user opted into a single
 > PR; the rungs are tightly coupled (they share the `CorrectiveTarget`
@@ -873,7 +874,7 @@ notifier surface.
   a unique id per emission, which is the routing key for the
   plugin webhook ack/completion contract
   (`POST /api/plugins/{event_id}/complete`, see
-  [`docs/services/rp.md` §Step 2: Completion](../services/rp.md#step-2-completion-callback-post-to-rp)).
+  [`docs/services/rp.md` §Step 2: Completion](../../services/rp.md#step-2-completion-callback-post-to-rp)).
   The new `operation_id` is *additional*: a correlation id shared
   across an operation's `*_started`, `*_complete`, and `*_failed`
   events for the same call. The new `event_seq` is the SSE replay
@@ -963,11 +964,11 @@ share `CorrectiveTarget` resolution + the `Corrective` seam).
 
 ## References
 
-- [`docs/services/rp.md` §Safety / §Sentinel Watchdog Integration](../services/rp.md#safety) — design intent.
-- [`docs/services/rp.md` §Real-Time Stream](../services/rp.md#real-time-stream) — SSE event-stream contract.
-- [`docs/services/sentinel.md`](../services/sentinel.md) — current sentinel scope (SafetyMonitor only).
-- [`docs/decisions/002-tls-for-inter-service-communication.md`](../decisions/002-tls-for-inter-service-communication.md) — TLS primitives Sentinel→rp can reuse.
-- [`docs/decisions/003-authentication-for-device-access.md`](../decisions/003-authentication-for-device-access.md) — auth header pattern.
+- [`docs/services/rp.md` §Safety / §Sentinel Watchdog Integration](../../services/rp.md#safety) — design intent.
+- [`docs/services/rp.md` §Real-Time Stream](../../services/rp.md#real-time-stream) — SSE event-stream contract.
+- [`docs/services/sentinel.md`](../../services/sentinel.md) — current sentinel scope (SafetyMonitor only).
+- [`docs/decisions/002-tls-for-inter-service-communication.md`](../../decisions/002-tls-for-inter-service-communication.md) — TLS primitives Sentinel→rp can reuse.
+- [`docs/decisions/003-authentication-for-device-access.md`](../../decisions/003-authentication-for-device-access.md) — auth header pattern.
 - `services/rp/src/mcp/internals.rs::poll_slewing_until_idle` — current hardcoded 300 s.
 - `services/rp/src/events.rs::EventBus` — current webhook-only delivery path.
 - `services/sentinel/src/{engine,monitor,alpaca_client}.rs` — current sentinel architecture.
