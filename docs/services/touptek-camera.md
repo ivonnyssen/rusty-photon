@@ -118,6 +118,23 @@ ToupTek devices need a udev rule for the ToupTek USB VID (INDI ships
 need an `install_name_tool` fixup before linking (INDI automates it). All of this
 is **Phase F** (`install-toupcam-sdk`), not the default build.
 
+### Windows wide strings (UTF-16)
+
+The ToupTek SDK is **not type-uniform across platforms**: on Windows it uses
+UNICODE `wchar_t` (UTF-16) strings, while on Linux/macOS it uses plain `char`
+(UTF-8). The `#if defined(_WIN32)` blocks in `toupcam.h` switch the enumeration
+fields `ToupcamDeviceV2.id` / `.displayname` and `ToupcamModelV2.name` between
+`wchar_t[]` / `const wchar_t*` and `char[]` / `const char*`, so `bindgen`
+generates them as `u16` on Windows and `c_char` elsewhere. Code that reads them
+must therefore be **cfg-split** — `crates/touptek-rs/src/ffi_util.rs` provides
+`#[cfg(windows)]` (UTF-16, `String::from_utf16_lossy`) and `#[cfg(not(windows))]`
+(UTF-8) readers behind one signature so `device_info` stays platform-agnostic.
+This was caught by the Windows `bazel build` leg (the rlib type-checks the real
+FFI on every OS even though only Linux/macOS link it today); the sim chain
+compiles `ffi_util` out entirely, so it never sees the divergence. Camera opening
+is unaffected — `Toupcam_OpenByIndex(unsigned)` takes an index, not a
+`wchar_t*` camId.
+
 ### Open questions still to resolve before the real link lands (Phase F)
 
 1. **`CoolerPower` 0–100 % mapping** — `OPTION_TEC_VOLTAGE` / `_VOLTAGE_MAX` may

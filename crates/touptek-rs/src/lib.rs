@@ -148,7 +148,7 @@ impl Sdk {
 /// Convert a raw enumerated `ToupcamDeviceV2` (+ its model) into [`CameraInfo`].
 #[cfg(not(feature = "simulation"))]
 fn device_info(dev: &sys::ToupcamDeviceV2) -> CameraInfo {
-    use crate::ffi_util::c_string_field;
+    use crate::ffi_util::{c_string_field, c_string_from_ptr};
 
     let id = c_string_field(&dev.id);
     let display_name = c_string_field(&dev.displayname);
@@ -162,10 +162,9 @@ fn device_info(dev: &sys::ToupcamDeviceV2) -> CameraInfo {
             let name = if model.name.is_null() {
                 String::new()
             } else {
-                // SAFETY: `name` is a static, NUL-terminated SDK-owned string.
-                unsafe { std::ffi::CStr::from_ptr(model.name) }
-                    .to_string_lossy()
-                    .into_owned()
+                // SAFETY: `name` is a static, NUL-terminated SDK-owned string
+                // (`char*` off-Windows, `wchar_t*` on Windows — see `ffi_util`).
+                unsafe { c_string_from_ptr(model.name) }
             };
             // `res[0]` is the full-frame (maximum) resolution.
             let res = model.res[0];
