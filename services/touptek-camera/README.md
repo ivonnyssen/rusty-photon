@@ -29,8 +29,11 @@ nightly `conformu.yml` (skip-link, no SDK provisioned). Roadmap (see the plan):
 - **Phase E** — full `Camera` over `touptek-rs`; `@wip` tags removed. ✅ landed.
 - **Phase F (gate)** — ConformU to 0 errors / 0 issues on the sim backend +
   `conformu.yml` wiring. ✅ landed.
-- **Phase F (real link)** — the real `rust_binary` + `install-toupcam-sdk`; wire
-  the `native.yml` real-link job. ⏳ needs a provisioned SDK.
+- **Phase F (real link)** — `install-toupcam-sdk` is **drafted** (INDI-mirror
+  blobs for Linux/macOS + a parameterized ToupTek vendor URL for Windows; a real
+  aarch64 link of `touptek-camera` against the INDI blob is verified). The real
+  `rust_binary` (Bazel) + wiring the action into the `native.yml` real-link job
+  remain. ⏳ needs a provisioned SDK.
 - **Phase G** — the `rp` `CameraConfig` consumer + real-hardware ConformU on each
   target platform. ⏳ needs hardware.
 
@@ -50,7 +53,10 @@ simulated path needs **no SDK**:
 - The **real `touptek-camera_lib`** is an `rlib`, which defers linking, so it too
   builds without the SDK (it just compiles the real FFI code). The real
   **`rust_binary`** — the only target that actually links the SDK — is deferred
-  until the `install-toupcam-sdk` CI action lands (Phase F provisioning).
+  until the (now-drafted) `.github/actions/install-toupcam-sdk` is wired into a
+  real-link workflow (Phase F provisioning). That action installs `libtoupcam`
+  from the INDI mirror (Linux/macOS) under the linker name `-ltoupcam` resolves;
+  with it staged, `cargo build -p touptek-camera` real-links (verified on aarch64).
 
 ## Building locally
 

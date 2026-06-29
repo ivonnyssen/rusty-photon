@@ -20,8 +20,9 @@ exports_files(
 #   * The real `touptek-camera_lib` is an `rlib`: it compiles the real FFI code but
 #     DEFERS linking, so it builds without the SDK too. The real `rust_binary` (the
 #     only target that actually links libtoupcam) is intentionally NOT defined yet
-#     — it lands with `.github/actions/install-toupcam-sdk` in Phase F. Defining it
-#     now would make `bazel build //...` fail to link locally with no SDK.
+#     — it lands once the (now-drafted) `.github/actions/install-toupcam-sdk` is
+#     wired into a real-link workflow (Phase F). Defining it now would make
+#     `bazel build //...` fail to link locally with no SDK.
 #
 # Parity is directory-level, so the real `rust_library` already covers the crate.
 # The BDD + ConformU targets (Phase D) spawn the `touptek-camera_sim` binary, which
