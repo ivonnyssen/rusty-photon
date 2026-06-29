@@ -45,6 +45,15 @@ concurrency:
 
 name: pi-nightly
 
+# Real-links the zwo + qhy SDKs (installed sudo-free per-job below) but
+# skip-links touptek: the `native` workflow is the designated real-link gate for
+# ToupTek, so provisioning its SDK on the Pi runner too would be redundant.
+# `simulation` removes the camera, not the link, so this env omits
+# libtoupcam-sys's link directives, keeping the full-workspace build SDK-free for
+# touptek (crates/touptek-rs/libtoupcam-sys/build.rs).
+env:
+  TOUPCAM_SKIP_NATIVE_LINK: "1"
+
 jobs:
   arm64-stable:
     # Hard gate against accidental non-main execution. `schedule` already

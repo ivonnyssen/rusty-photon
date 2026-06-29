@@ -34,11 +34,14 @@ jobs:
         sanitizer: [address, leak]
     env:
       CARGO_BUILD_TARGET: x86_64-unknown-linux-gnu
-      # Build the zwo + qhy crates' pure-Rust `simulation` path with no native SDK
-      # link, so they can be sanitized without provisioning either SDK (see the
-      # cargo build step + crates/{zwo-rs/libzwo-sys,qhyccd-rs/libqhyccd-sys}/build.rs).
+      # Build the zwo + qhy + touptek crates' pure-Rust `simulation` path with no
+      # native SDK link, so they can be sanitized without provisioning any SDK (see
+      # the cargo build step + crates/{zwo-rs/libzwo-sys,qhyccd-rs/libqhyccd-sys,
+      # touptek-rs/libtoupcam-sys}/build.rs). `simulation` removes the camera, not
+      # the link, so the skip-link env is what actually drops the directives.
       ZWO_SKIP_NATIVE_LINK: "1"
       QHYCCD_SKIP_NATIVE_LINK: "1"
+      TOUPCAM_SKIP_NATIVE_LINK: "1"
     steps:
       - uses: actions/checkout@v7
       - name: Install ASCOM OmniSim
