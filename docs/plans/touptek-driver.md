@@ -2,10 +2,13 @@
 
 ## Status
 
-**Phases A + B + C + D + E landed; the `touptek-camera` service implements the full
-ASCOM `Camera` over `touptek-rs`, serves on `:11123`, and the whole simulation
-Bazel chain — 172-target build, 54-test default suite, and all 60 BDD scenarios —
-is green with no SDK present (2026-06-28).**
+**Phases A + B + C + D + E landed + Phase F gate landed; the `touptek-camera`
+service implements the full ASCOM `Camera` over `touptek-rs`, serves on `:11123`,
+the whole simulation Bazel chain — 172-target build, 54-test default suite, and all
+60 BDD scenarios — is green with no SDK present, and ConformU (`alpacaprotocol` +
+`conformance`) validates the simulated driver to 0 errors / 0 issues and is wired
+into `conformu.yml` (2026-06-29). The real native link + real-hardware ConformU
+remain (need a provisioned SDK + hardware).**
 
 - **Phase A — `crates/touptek-rs/libtoupcam-sys`:** vendored `toupcam.h`
   (v60.31631) + `bindgen` `build.rs` (parsed as plain C) + the
@@ -48,9 +51,11 @@ is green with no SDK present (2026-06-28).**
   F). `crate_universe` repinned; **buildifier** + **parity** (36/36) green.
 
 Remaining: the **real native link** against a provisioned SDK on each platform
-(incl. the real `touptek-camera` binary) and the `install-toupcam-sdk` CI action +
-ConformU to 0 issues (Phase F), then the `rp` consumer + cross-platform sign-off
-(Phase G). Everything below the fold from Phase F on remains **planned**.
+(incl. the real `touptek-camera` binary), the `install-toupcam-sdk` CI action, and
+the `native.yml` real-link nightly (Phase F real-link), then the `rp` consumer +
+cross-platform real-hardware sign-off (Phase G). The Phase F **gate** (ConformU to
+0 issues on the sim backend + `conformu.yml` wiring) is done; the real-link half of
+Phase F and all of Phase G need a provisioned SDK + hardware.
 
 This is the agreed decision record that will precede
 `docs/services/touptek-camera.md` (the service design doc) and the BDD scenarios,
@@ -328,10 +333,17 @@ cross-platform link (incl. Pi aarch64 + Apple-Silicon-universal). Once
   green with no SDK. `CanStopExposure = false` (trigger mode has no partial
   readout). *Remaining (Phase F):* the real `rust_binary` + `install-toupcam-sdk`
   and the real-hardware ROI/binning + `CoolerPower` validation.
-- **Phase F — test + gate + ConformU:** BDD + ConformU on the sim backend to
-  **0 errors / 0 issues** (like zwo/qhy); wire ConformU into `conformu.yml` +
-  the `native.yml` nightly real-link build (Linux/macOS/Windows); the Bazel
-  real/sim two-variant build is the coverage source.
+- **Phase F — test + gate + ConformU:** ✅ *gate landed* — BDD (60 scenarios) +
+  ConformU (`alpacaprotocol` + `conformance`) on the sim backend pass to **0 errors
+  / 0 issues** (like zwo/qhy); ConformU wired into `conformu.yml` via
+  `TOUPCAM_SKIP_NATIVE_LINK=1` (the `[package.metadata.conformu]` command is
+  discovered + now linkable with no SDK). The single ConformU issue found — a
+  `VALUE_NOT_SET` read of `SetCCDTemperature` before any setpoint — was fixed by
+  falling back to the model's `OPTION_TECTARGET` power-on default (mirrors
+  `zwo-camera`). *Remaining (needs a provisioned SDK / hardware):* the real
+  `touptek-camera` `rust_binary` + `install-toupcam-sdk`, the `native.yml` nightly
+  real-link build (Linux/macOS/Windows + Pi5 aarch64); the Bazel real/sim
+  two-variant build is the coverage source.
 - **Phase G — consumer + cross-platform sign-off:** the `rp` `CameraConfig`
   consumer (`alpaca_url: http://localhost:11123`); confirm a real-hardware
   ConformU pass on **each** target platform (the working-driver goal).

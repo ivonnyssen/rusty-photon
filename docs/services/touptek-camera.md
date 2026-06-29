@@ -10,8 +10,14 @@
 > unit-test mock that forces the paths the simulation cannot: C2/C4/E9/GO1/K1/PG2).
 > `services/touptek-camera` enumerates (real or simulated), registers a `Device` +
 > `Camera`, and binds **`:11123`**; the whole simulation Bazel chain is green
-> **with no ToupTek SDK present** (the build-gating win below). ConformU to 0
-> issues and the real native link land in **Phase F**. See
+> **with no ToupTek SDK present** (the build-gating win below). **Phase F (gate)
+> landed:** ConformU (`alpacaprotocol` + `conformance`) validates the simulated
+> driver with **0 errors / 0 issues** and is wired into `conformu.yml` (skip-link,
+> no SDK provisioned — mirroring qhy-camera). The **real native link** — the
+> production `touptek-camera` `rust_binary`, `.github/actions/install-toupcam-sdk`,
+> the `native.yml` real-link nightly, and the real-hardware ConformU +
+> ROI/binning/CoolerPower validation — remains in **Phase F/G** and needs a
+> provisioned SDK + hardware. See
 > [`docs/plans/touptek-driver.md`](../plans/touptek-driver.md) for the decision
 > record and *Delivery phasing* below.
 
@@ -469,7 +475,12 @@ control resolves).
 - **K2.** `CCDTemperature` returns the current sensor temperature
   (`get_Temperature`, 0.1 °C units) when the model exposes a temperature read.
 - **K3.** `set_set_ccd_temperature` validates `[-273.15, 80]` and sets the target
-  (`OPTION_TECTARGET`/`put_Temperature`); `SetCCDTemperature` reads it back.
+  (`OPTION_TECTARGET`/`put_Temperature`); `SetCCDTemperature` reads back the last
+  setpoint written this session, or — **before any write** — falls back to the
+  model's current `OPTION_TECTARGET` (which has a power-on default) so the getter
+  never returns `VALUE_NOT_SET`. *(ConformU flags a `VALUE_NOT_SET` read of a
+  writable, supported property as an issue; this fallback is what took the sim
+  ConformU run to 0 issues. Mirrors `zwo-camera`.)*
 - **K4.** `CoolerOn`/`set_cooler_on` map to `OPTION_TEC`; `CoolerPower` is the
   normalized `OPTION_TEC_VOLTAGE` percent. *(The simulator reports a clean
   `0..100`; on real hardware `CoolerPower` may be `NotImplemented` or
@@ -602,10 +613,14 @@ Tracks A–G mirror [`docs/plans/touptek-driver.md`](../plans/touptek-driver.md)
   `PulseGuide`, sensor type), config-actions wiring, the `backend.rs` mock seam.
   The `@wip` tags are removed; all 60 BDD scenarios + ~55 unit tests run green on
   the simulation backend with no SDK.
-- **Phase F — test + gate + ConformU + real link.** BDD + ConformU on the sim
-  backend to 0 errors / 0 issues; the real `touptek-camera` `rust_binary` +
-  `.github/actions/install-toupcam-sdk`; Pi5 aarch64 / macOS arm64 / Windows x64
-  real links; wire ConformU into `conformu.yml`.
+- **Phase F — test + gate + ConformU + real link.** *Gate landed:* BDD (60
+  scenarios) + ConformU (`alpacaprotocol` + `conformance`) on the sim backend pass
+  to **0 errors / 0 issues**, and ConformU is wired into `conformu.yml`
+  (`TOUPCAM_SKIP_NATIVE_LINK=1`, no SDK provisioned — the already-present
+  `[package.metadata.conformu]` command is now linkable in the nightly). *Remaining
+  (needs a provisioned SDK / hardware):* the real `touptek-camera` `rust_binary` +
+  `.github/actions/install-toupcam-sdk`, the `native.yml` real-link nightly, and
+  Pi5 aarch64 / macOS arm64 / Windows x64 real links.
 - **Phase G — consumer + cross-platform sign-off.** The `rp` `CameraConfig`
   consumer (`alpaca_url: http://localhost:11123`); a real-hardware ConformU pass on
   each target platform (the working-driver goal).

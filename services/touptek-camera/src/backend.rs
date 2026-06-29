@@ -136,6 +136,10 @@ pub trait CameraHandle: std::fmt::Debug + Send + Sync {
     fn cooler_power_percent(&self) -> BackendResult<u32>;
     /// Set the cooler target temperature in 0.1 °C units (`OPTION_TECTARGET`).
     fn set_target_temperature_tenths(&self, tenths: i16) -> BackendResult<()>;
+    /// The current cooler target temperature in 0.1 °C units (`OPTION_TECTARGET`).
+    /// Has a power-on default on real hardware, so the `SetCCDTemperature` getter
+    /// can report a value before any setpoint is written.
+    fn target_temperature_tenths(&self) -> BackendResult<i16>;
 
     /// Run a single-frame trigger-mode capture: configure, trigger, integrate
     /// (honouring an abort signal), wait for the frame-ready event, pull. Returns
@@ -299,6 +303,12 @@ impl CameraHandle for TouptekCameraHandle {
         let guard = self.camera.lock();
         let camera = guard.as_ref().ok_or_else(BackendError::closed)?;
         Ok(camera.set_target_temperature_tenths(tenths)?)
+    }
+
+    fn target_temperature_tenths(&self) -> BackendResult<i16> {
+        let guard = self.camera.lock();
+        let camera = guard.as_ref().ok_or_else(BackendError::closed)?;
+        Ok(camera.target_temperature_tenths()?)
     }
 
     fn capture(&self, request: CaptureRequest) -> BackendResult<Option<Vec<u8>>> {
@@ -652,6 +662,10 @@ pub(crate) mod mock {
         fn set_target_temperature_tenths(&self, tenths: i16) -> BackendResult<()> {
             *self.target_temp_tenths.lock() = tenths;
             Ok(())
+        }
+
+        fn target_temperature_tenths(&self) -> BackendResult<i16> {
+            Ok(*self.target_temp_tenths.lock())
         }
 
         fn capture(&self, request: CaptureRequest) -> BackendResult<Option<Vec<u8>>> {

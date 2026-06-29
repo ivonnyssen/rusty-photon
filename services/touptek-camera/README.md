@@ -11,7 +11,7 @@ decision record and [`docs/services/touptek-camera.md`](../../docs/services/toup
 for the full service design (the build-gating crux, the callback→blocking exposure
 bridge, and the behavioural contracts the BDD suite encodes).
 
-## Status — Phase E (full `Camera` implementation)
+## Status — Phase E (full `Camera`) + Phase F gate (ConformU clean)
 
 The full driver is live against the simulation backend. The service enumerates
 (real or simulated), registers an ASCOM `Device` + `Camera`, and binds `:11123`,
@@ -21,15 +21,18 @@ abort, cancel-on-disconnect), digital binning, ROI (even + ≥ 8 validation),
 gain/offset, cooling, RAW16 readout + `[x][y]` transpose, sensor type, and the
 asynchronous ST4 `PulseGuide`. All **60 BDD scenarios** and ~55 unit tests run
 green with **no SDK** — the unit-test mock seam forces the paths the simulation
-cannot (C2/C4/E9/GO1/K1/PG2). Roadmap (see the plan):
+cannot (C2/C4/E9/GO1/K1/PG2). **ConformU** (`alpacaprotocol` + `conformance`)
+validates the simulated driver to **0 errors / 0 issues**, and is wired into the
+nightly `conformu.yml` (skip-link, no SDK provisioned). Roadmap (see the plan):
 
 - **Phase D** — design doc + BDD feature files. ✅ landed.
 - **Phase E** — full `Camera` over `touptek-rs`; `@wip` tags removed. ✅ landed.
-- **Phase F** — ConformU to 0 errors / 0 issues on the sim backend; the real
-  `rust_binary` + `install-toupcam-sdk`; wire the `native.yml` / `conformu.yml`
-  real-link jobs.
+- **Phase F (gate)** — ConformU to 0 errors / 0 issues on the sim backend +
+  `conformu.yml` wiring. ✅ landed.
+- **Phase F (real link)** — the real `rust_binary` + `install-toupcam-sdk`; wire
+  the `native.yml` real-link job. ⏳ needs a provisioned SDK.
 - **Phase G** — the `rp` `CameraConfig` consumer + real-hardware ConformU on each
-  target platform.
+  target platform. ⏳ needs hardware.
 
 ## Native dependency & build gating (the crux)
 
@@ -87,4 +90,4 @@ cargo run -p touptek-camera --features simulation -- --port 11123
 |---|---|
 | `simulation` | Forwards to `touptek-rs/simulation`: a fabricated `Simulated ToupTek Camera`. Removes the camera; the Bazel `_sim` chain also skip-links the SDK. |
 | `mock` | Alias for `simulation` (the cross-driver test-backend name). |
-| `conformu` | Enables `mock`; builds + runs the ConformU compliance test (wired in Phase F). |
+| `conformu` | Enables `mock`; builds + runs the ConformU compliance test (0 errors / 0 issues on the sim backend; wired into `conformu.yml`). |

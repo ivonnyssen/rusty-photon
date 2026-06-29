@@ -45,6 +45,14 @@ env:
   # provisioned below.) The real QHYCCD native link is covered by the `native`
   # workflow + the Pi nightly.
   QHYCCD_SKIP_NATIVE_LINK: "1"
+  # touptek-camera follows the same gating as qhy-camera: its ConformU command
+  # builds `--features conformu` (-> mock -> simulation), referencing no `Toupcam_*`
+  # symbols, so TOUPCAM_SKIP_NATIVE_LINK omits the ToupTek SDK link directives — no
+  # ToupTek SDK or libusb is provisioned here, and the `--workspace --all-features`
+  # pre-build (which would otherwise link the real touptek-camera binary) links
+  # clean. The real ToupTek native link is covered by the `native` workflow + the
+  # Pi nightly (Phase F).
+  TOUPCAM_SKIP_NATIVE_LINK: "1"
 
 jobs:
   plan:
@@ -117,9 +125,10 @@ jobs:
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
 
-      # qhy-camera's ConformU build uses `--features conformu` (-> simulation), and
-      # the --workspace pre-build runs with QHYCCD_SKIP_NATIVE_LINK (workflow env),
-      # so the QHYCCD SDK link is omitted — no SDK / libusb / dylib-loader setup.
+      # qhy-camera and touptek-camera build their ConformU command with
+      # `--features conformu` (-> simulation), and the --workspace pre-build runs
+      # with QHYCCD_SKIP_NATIVE_LINK + TOUPCAM_SKIP_NATIVE_LINK (workflow env), so
+      # both SDK links are omitted — no SDK / libusb / dylib-loader setup for either.
       # zwo-camera (and the vendored zwo-rs/libzwo-sys members) DO link the native
       # ZWO SDK; provision it so the full-workspace pre-build links — no exclusion.
       - name: Install ZWO SDK
@@ -213,8 +222,9 @@ jobs:
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
 
-      # qhy-camera's ConformU build uses `--features conformu` (-> simulation) with
-      # QHYCCD_SKIP_NATIVE_LINK (workflow env), so no QHYCCD SDK is provisioned.
+      # qhy-camera and touptek-camera build their ConformU command with
+      # `--features conformu` (-> simulation) under QHYCCD_SKIP_NATIVE_LINK +
+      # TOUPCAM_SKIP_NATIVE_LINK (workflow env), so neither SDK is provisioned.
       # Per-service matrix, so only zwo-camera needs the native ZWO SDK on Windows.
       - name: Install ZWO SDK
         if: matrix.service.name == 'zwo-camera'

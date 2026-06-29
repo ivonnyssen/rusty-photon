@@ -18,7 +18,8 @@
 //! [`Camera::wait_for_event`] / [`Camera::pull_image`]) are wired, plus the
 //! ASCOM-driving control surface this crate now owns: gain range/value, black
 //! level, exposure range, cooling control ([`Camera::set_cooler`] /
-//! [`Camera::cooler_power_percent`] / [`Camera::set_target_temperature_tenths`]),
+//! [`Camera::cooler_power_percent`] / [`Camera::set_target_temperature_tenths`] /
+//! [`Camera::target_temperature_tenths`]),
 //! ST4 guiding ([`Camera::st4_pulse_guide`] + [`GuideDirection`]), and the
 //! capability flags + sensor geometry on [`CameraInfo`]. The real RAW-pixel-format
 //! buffer sizing and per-platform link are finalised against hardware in Phase F.

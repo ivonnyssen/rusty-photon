@@ -912,7 +912,24 @@ impl Camera for TouptekCamera {
         if !self.info.has_tec() {
             return Err(ASCOMError::NOT_IMPLEMENTED);
         }
-        (*self.state.target_temperature.lock()).ok_or(ASCOMError::VALUE_NOT_SET)
+        // Report the last setpoint written this session; before any write, fall
+        // back to the model's current `OPTION_TECTARGET` (which has a power-on
+        // default) so the getter never returns `VALUE_NOT_SET` — ConformU flags
+        // that as an issue for a writable, supported property.
+        if let Some(target) = *self.state.target_temperature.lock() {
+            return Ok(target);
+        }
+        self.on_handle(|h| {
+            h.target_temperature_tenths()
+                .map(|tenths| f64::from(tenths) / 10.0)
+                .map_err(|_| {
+                    ASCOMError::new(
+                        UNSPECIFIED_ERROR,
+                        "failed to read cooler target temperature",
+                    )
+                })
+        })
+        .await
     }
 
     async fn set_set_ccd_temperature(&self, set_ccd_temperature: f64) -> ASCOMResult<()> {
@@ -1404,11 +1421,10 @@ mod tests {
         let device = connected_device(MockCameraHandle::default());
         assert!(device.can_set_ccd_temperature().await.unwrap());
         assert!(device.can_get_cooler_power().await.unwrap());
-        // Before any setpoint write, the setpoint getter has no value...
-        assert_eq!(
-            device.set_ccd_temperature().await.unwrap_err().code,
-            ASCOMErrorCode::VALUE_NOT_SET
-        );
+        // Before any setpoint write, the setpoint getter falls back to the
+        // model's power-on `OPTION_TECTARGET` default (0 °C in the mock) rather
+        // than erroring — ConformU flags a `VALUE_NOT_SET` read as an issue.
+        assert_eq!(device.set_ccd_temperature().await.unwrap(), 0.0);
         // ...and reflects the cached value after a write.
         device.set_set_ccd_temperature(-10.0).await.unwrap();
         assert!((device.set_ccd_temperature().await.unwrap() - (-10.0)).abs() < f64::EPSILON);

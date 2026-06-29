@@ -340,6 +340,14 @@ impl Camera {
         self.set_option(sys::TOUPCAM_OPTION_TECTARGET, i32::from(tenths))
     }
 
+    /// The current cooler target temperature in 0.1 °C units (`OPTION_TECTARGET`).
+    ///
+    /// On real hardware this has a power-on default even before a setpoint is
+    /// written, so the ASCOM `SetCCDTemperature` getter can always report a value.
+    pub fn target_temperature_tenths(&self) -> Result<i16> {
+        Ok(self.get_option(sys::TOUPCAM_OPTION_TECTARGET)? as i16)
+    }
+
     /// Issue an ST4 guide pulse in `direction` for `duration_ms` milliseconds
     /// (`Toupcam_ST4PlusGuide`). Returns immediately; the SDK times the pulse.
     pub fn st4_pulse_guide(&self, direction: GuideDirection, duration_ms: u32) -> Result<()> {
@@ -616,6 +624,16 @@ impl Camera {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = tenths;
         Ok(())
+    }
+
+    /// The simulated cooler target temperature in 0.1 °C units (defaults to 0 °C
+    /// before any setpoint is written, mirroring a real model's power-on default).
+    pub fn target_temperature_tenths(&self) -> Result<i16> {
+        Ok(*self
+            .sim
+            .target_temp_tenths
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner))
     }
 
     /// No-op in simulation; succeeds (the SDK would time the ST4 pulse).
