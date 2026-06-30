@@ -20,9 +20,8 @@ conformu = ["mock"]
 [lints]
 workspace = true
 
-# NOTE: no `[package.metadata.conformu]` entry — see `docs/services/dsd-fp2.md`
-# "Known limitations" for why dsd-fp2 is excluded from the rolling ConformU
-# matrix until the upstream `HaltCover` issue is resolved.
+[package.metadata.conformu]
+command = "cargo test -p dsd-fp2 --features conformu --test conformu_integration -- --nocapture"
 
 [dependencies]
 ascom-alpaca = { workspace = true, features = ["server", "cover_calibrator", "client"] }
