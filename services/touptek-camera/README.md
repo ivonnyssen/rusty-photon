@@ -29,11 +29,11 @@ nightly `conformu.yml` (skip-link, no SDK provisioned). Roadmap (see the plan):
 - **Phase E** — full `Camera` over `touptek-rs`; `@wip` tags removed. ✅ landed.
 - **Phase F (gate)** — ConformU to 0 errors / 0 issues on the sim backend +
   `conformu.yml` wiring. ✅ landed.
-- **Phase F (real link)** — `install-toupcam-sdk` is **drafted** (INDI-mirror
-  blobs for Linux/macOS + a parameterized ToupTek vendor URL for Windows; a real
-  aarch64 link of `touptek-camera` against the INDI blob is verified). The real
-  `rust_binary` (Bazel) + wiring the action into the `native.yml` real-link job
-  remain. ⏳ needs a provisioned SDK.
+- **Phase F (real link)** — `install-toupcam-sdk` is **wired into `native.yml`**
+  on all three OSes: Linux/macOS link the INDI-mirror blob, Windows links
+  ToupTek's own vendor SDK (the action's default rolling `download.php?soft=toupcamsdk`
+  URL → `win/x64/toupcam.{lib,dll}`). The Linux + macOS legs are CI-green; the
+  Windows leg is the newest addition. The real Bazel `rust_binary` still remains. ⏳
 - **Phase G** — the `rp` `CameraConfig` consumer + real-hardware ConformU on each
   target platform. ⏳ needs hardware.
 

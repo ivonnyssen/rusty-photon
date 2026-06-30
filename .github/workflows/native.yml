@@ -20,10 +20,11 @@
 #
 # - **touptek-camera / touptek-rs / libtoupcam-sys** are like zwo (the rest of CI
 #   skip-links via TOUPCAM_SKIP_NATIVE_LINK=1), but run in a SEPARATE `touptek` job
-#   on Linux + macOS only: their SDK comes from the INDI mirror, which ships no
-#   Windows blob (install-toupcam-sdk self-skips Windows). That job is the bring-up
-#   gate for the real ToupTek link and ALSO runs at PR time (the qhy/zwo `build`
-#   job stays nightly/push-only) so the action can be exercised on a PR. See
+#   on all three OSes: Linux/macOS pull the SDK from the INDI mirror, while Windows
+#   pulls ToupTek's own vendor SDK (install-toupcam-sdk's default rolling URL —
+#   INDI/INDIGO ship no Windows blob). That job is the bring-up gate for the real
+#   ToupTek link and ALSO runs at PR time (the qhy/zwo `build` job stays
+#   nightly/push-only) so the action can be exercised on a PR. See
 #   docs/plans/touptek-driver.md Phase F.
 #
 # (Bazel's real qhyccd-rs/zwo-rs variants build-enforce the lib halves; the Pi
@@ -155,11 +156,10 @@ jobs:
     timeout-minutes: 30
     strategy:
       fail-fast: false
-      # No windows-latest: INDI/INDIGO ship no Windows ToupTek blob, so
-      # install-toupcam-sdk self-skips there and a real Windows link is not yet
-      # possible (it needs a ToupTek vendor-SDK URL — see the action + Phase F).
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # All three OSes: Linux/macOS link the INDI-mirror blob; Windows links
+        # ToupTek's vendor SDK (install-toupcam-sdk's default rolling URL).
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v7
       - name: Install Rust
@@ -168,11 +168,13 @@ jobs:
         with:
           shared-key: native-touptek-${{ matrix.os }}
 
-      # libtoupcam comes from the INDI mirror (the deferred-licensing footing — see
-      # docs/plans/touptek-driver.md "Licensing (deferred)"). The action installs
-      # libclang for bindgen and libtoupcam under the linker name `-ltoupcam`
-      # resolves (+ libusb/libudev on Linux); macOS gets the universal `mac/` dylib
-      # + an install_name fixup.
+      # Linux/macOS pull libtoupcam from the INDI mirror (the deferred-licensing
+      # footing — see docs/plans/touptek-driver.md "Licensing (deferred)"); Windows
+      # pulls ToupTek's own vendor SDK zip (the action's default rolling URL). The
+      # action installs libclang for bindgen and stages libtoupcam under the linker
+      # name `-ltoupcam` resolves (+ libusb/libudev on Linux); macOS gets the
+      # universal `mac/` dylib + an install_name fixup; Windows stages
+      # toupcam.lib/.dll and puts the DLL dir on PATH.
       - name: Install ToupTek SDK
         uses: ./.github/actions/install-toupcam-sdk
 
@@ -186,6 +188,11 @@ jobs:
       # as qhy/zwo). The binding crates keep --all-targets to compile their real
       # (non-simulation) tests.
       - name: cargo build (touptek, real, no simulation)
+        # bash on every OS (Git Bash on Windows) so `set -e` fails the step on the
+        # FIRST failing command — otherwise pwsh may surface only the last line's
+        # exit code and mask a touptek-camera link failure, which is the whole point
+        # of the Windows leg.
+        shell: bash
         run: |
           cargo build --locked -p touptek-camera
           cargo build --locked -p touptek-rs -p libtoupcam-sys --all-targets

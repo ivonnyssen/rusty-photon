@@ -13,7 +13,8 @@ description: >-
   INDIGO already rely on (the SDK ships no written redistribution grant;
   licensing is DEFERRED in this plan — see the plan's "Licensing (deferred)").
   INDI/INDIGO ship NO Windows blob, so the Windows path pulls ToupTek's vendor
-  SDK zip from `windows_sdk_url` (best-effort; unset by default → Windows skips).
+  SDK zip from `windows_sdk_url` (defaults to ToupTek's stable rolling "latest"
+  download; set "" to self-skip Windows).
 
   Modeled on `.github/actions/install-zwo-sdk` (ADR-010's "reference for any
   future bindgen-based *-sys crate"); the two pin the same indi-3rdparty `ref`.
@@ -45,16 +46,19 @@ inputs:
       Pi path.
     default: "true"
   windows_sdk_url:
-    # Availability/reproducibility note: INDI and INDIGO vendor only Linux/macOS
-    # ToupTek blobs — neither ships a Windows DLL. ToupTek publishes the Windows
-    # SDK only from its own download centre (touptek-astro.com /
-    # touptekphotonics.com) as a rolling zip with no versioned/immutable URL to
-    # pin or checksum. Supply this input (pointing at the ToupTek Windows SDK zip)
-    # to enable the Windows real-link leg; left empty the Windows step self-skips
-    # with a warning. Track upstream before relying on Windows CI for
-    # reproducibility (same caveat install-zwo-sdk carries for ZWO's CDN).
-    description: ToupTek Windows ToupCam SDK zip download URL (unset → Windows skipped).
-    default: ""
+    # Reproducibility note: INDI and INDIGO vendor only Linux/macOS ToupTek blobs —
+    # neither ships a Windows DLL. ToupTek publishes the Windows SDK from its own
+    # download centre via a STABLE rolling redirect (download.php?soft=toupcamsdk)
+    # that always serves the latest dated zip (e.g. toupcamsdk.20250722.zip,
+    # content-type application/zip, no login/form). Like ZWO's "latest" CDN link
+    # there is no versioned/immutable URL to pin or checksum, so the default below
+    # is that rolling URL — the Windows real-link leg works out of the box, exactly
+    # as install-zwo-sdk does. Override it to pin a mirror if/when ToupTek offers a
+    # stable artifact; set it to "" to self-skip Windows (e.g. to avoid
+    # auto-fetching the SDK). Track upstream before relying on Windows CI for
+    # bit-for-bit reproducibility (the same caveat install-zwo-sdk carries).
+    description: ToupTek Windows ToupCam SDK zip URL (rolling "latest"; "" → Windows skipped).
+    default: https://www.touptekphotonics.com/downloads/software/download.php?soft=toupcamsdk
 
 runs:
   using: composite
@@ -246,11 +250,16 @@ runs:
         Expand-Archive -Path $zip -DestinationPath $extract -Force
 
         # Stage the x64 import lib + DLL under the linker name libtoupcam-sys expects
-        # (`-ltoupcam` -> toupcam.lib / toupcam.dll), picking the x64 build (not
-        # Win32/x86, not arm64).
+        # (`-ltoupcam` -> toupcam.lib / toupcam.dll). ToupTek's zip is flat (the libs
+        # live directly under win\<arch>\, no nested SDK zip to extract unlike ZWO),
+        # but it ships several x64 variants. Pick the classic Win32 DESKTOP x64 build
+        # (win\x64\) by excluding win32/x86, every arm* variant, AND the WinRT/UWP
+        # builds (win\winrt\* — a different ABI not for a desktop .exe; win\winrt\x64
+        # would otherwise sort/enumerate ahead of win\x64 and be picked). Then prefer
+        # an \x64\ path among whatever survives.
         function Stage($pattern, $target) {
           $hit = Get-ChildItem -Path $extract -Recurse -Filter $pattern -ErrorAction SilentlyContinue |
-            Where-Object { $_.FullName -notmatch '(?i)win32|\\x86\\|\\arm' } |
+            Where-Object { $_.FullName -notmatch '(?i)win32|\\x86\\|\\arm|winrt' } |
             Sort-Object { $_.FullName -notmatch '(?i)\\x64\\|amd64' } |
             Select-Object -First 1
           if (-not $hit) { throw "install-toupcam-sdk: $pattern not found in the Windows SDK zip" }

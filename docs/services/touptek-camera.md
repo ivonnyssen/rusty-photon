@@ -118,6 +118,20 @@ ToupTek devices need a udev rule for the ToupTek USB VID (INDI ships
 need an `install_name_tool` fixup before linking (INDI automates it). All of this
 is **Phase F** (`install-toupcam-sdk`), not the default build.
 
+### Windows SDK source
+
+INDI/INDIGO vendor only Linux/macOS ToupTek blobs, so the Windows real link can't
+use the INDI mirror. Instead `install-toupcam-sdk` pulls ToupTek's **own vendor
+SDK** from a stable rolling redirect — `download.php?soft=toupcamsdk`, which always
+serves the latest dated zip (e.g. `toupcamsdk.20250722.zip`) — mirroring how
+`install-zwo-sdk` sources ZWO's "latest" CDN download. The action stages the
+classic **Win32 desktop** `win/x64/toupcam.{lib,dll}` (explicitly excluding the
+`win/x86`, `win/arm*`, and `win/winrt` UWP variants the same zip also ships) under
+`-ltoupcam`'s linker name and puts the DLL dir on `PATH`. As with ZWO this is a
+rolling URL with no immutable/checksummed artifact to pin, and — unlike ZWO's MIT
+SDK — ToupTek's ships no written redistribution grant, so it is fetched at CI time
+(not vendored), on the same deferred-licensing footing as the INDI-mirror path.
+
 ### Windows wide strings (UTF-16)
 
 The ToupTek SDK is **not type-uniform across platforms**: on Windows it uses
@@ -141,9 +155,11 @@ is unaffected — `Toupcam_OpenByIndex(unsigned)` takes an index, not a
    not yield a clean percent on every model. The simulator reports a clean
    `0..100`; real hardware may force `NotImplemented` or model-specific scaling
    (K4).
-2. **Pi 5 aarch64 + macOS arm64 + Windows x64 real link.** The `libtoupcam-sys`
-   bindings compile on aarch64 Linux; CI-green real links on each platform are the
-   Phase-F long pole (the same shape ZWO/QHY worked through).
+2. **Per-platform real link.** `native.yml` links the real SDK on x86_64 Linux,
+   macOS, and Windows x64 (Linux/macOS from the INDI mirror, Windows from ToupTek's
+   vendor SDK); the Linux + macOS legs are CI-green and the Windows leg is the
+   newest addition. Remaining: a Pi 5 **aarch64** real link — `pi-nightly` currently
+   skip-links touptek, since `native.yml` is the designated real-link gate.
 3. **Even-ROI vs digital-bin interaction** — confirm the SDK accepts every
    binned full frame (`NumX = CameraXSize / bin`) on real hardware (R4).
 
