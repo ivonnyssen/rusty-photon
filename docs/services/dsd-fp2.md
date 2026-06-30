@@ -110,8 +110,7 @@ What is **not** in this crate (because the shared-transport crate owns it):
   The driver therefore returns `MethodNotImplementedException`
   (Alpaca error code 0x400) from `HaltCover` — which is what the
   [ASCOM ICoverCalibratorV2 spec][cc-spec] explicitly mandates "if cover
-  movement cannot be interrupted". (See [Known limitations](#known-limitations)
-  for the ConformU divergence on this point.)
+  movement cannot be interrupted".
 
   [cc-spec]: https://ascom-standards.org/newdocs/covercalibrator.html
 - **Heater**: optional dew-heater channel with a thermistor. Present if
@@ -622,28 +621,15 @@ and points ConformU at it. The same approach `qhy-focuser` uses.
 
 ## Known Limitations
 
-### ConformU 4.3 flags spec-compliant `HaltCover` as an issue
-
-The driver returns `MethodNotImplementedException` from `HaltCover`,
-exactly as the [ASCOM ICoverCalibratorV2 spec][cc-spec] mandates "if
-cover movement cannot be interrupted". The FP2 firmware exposes no
-halt-motion opcode, so this is the spec-correct response.
-
-ConformU 4.3's `CoverCalibratorTester.TestHaltCover` (file
-`ConformU/Conform/CoverCalibratorTester.cs`) flags this as an issue
-anyway, because in its async-cover branch every exception type — including
-the spec-mandated `MethodNotImplementedException` — is treated as
-`Required.MustBeImplemented`. A ConformU run against this driver
-reports:
-
-> HaltCover  ISSUE  CoverStatus indicates that the device has cover capability and a NotImplementedException error was returned, this method must function per the ASCOM specification.
-
-The driver is intentionally not changed to silence this — the upstream
-divergence is filed at
-<https://github.com/ASCOMInitiative/ConformU/issues/30>. For that
-reason this service does **not** declare a `[package.metadata.conformu]`
-entry, so the rolling ConformU workflow does not include it. Re-enable
-once the upstream issue lands and the test passes cleanly.
+The driver returns `MethodNotImplementedException` from `HaltCover`
+(the FP2 firmware exposes no halt-motion opcode), exactly as the
+[ASCOM ICoverCalibratorV2 spec][cc-spec] mandates "if cover movement
+cannot be interrupted". ConformU 4.3 incorrectly flagged this
+spec-compliant response as an issue
+([ASCOMInitiative/ConformU#30](https://github.com/ASCOMInitiative/ConformU/issues/30));
+the fix shipped in **ConformU 4.4.0**, which now logs `HaltCover` as OK.
+The service therefore declares a `[package.metadata.conformu]` entry and
+is included in the rolling ConformU workflow.
 
 [cc-spec]: https://ascom-standards.org/newdocs/covercalibrator.html
 
