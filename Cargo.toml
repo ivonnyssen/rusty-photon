@@ -105,7 +105,7 @@ ndarray-ndimage = "0.6.0"
 rmpfit = "1.0"
 thiserror = "2.0.18"
 base64 = "0.22.1"
-mockall = "0.14.0"
+mockall = "0.15.0"
 parking_lot = "0.12.5"
 tokio-serial = "5.4.5"
 # Simulation-backend deps shared by the two vendored, dual-homed camera crates
