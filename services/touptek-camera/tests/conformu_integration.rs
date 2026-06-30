@@ -5,9 +5,9 @@
 //! and runs the official ASCOM ConformU validator against it.
 //!
 //! Gated behind the `conformu` feature. When `CONFORMU_PATH` is unset the run is
-//! `Skipped` (so the test passes without ConformU installed); CI sets it. A full
-//! 0-errors/0-issues pass is the Phase F target — until the Phase E `Camera`
-//! surface lands, this exercises the harness and the (currently minimal) device.
+//! `Skipped` (so the test passes without ConformU installed); CI sets it. The full
+//! `Camera` surface is implemented, and this validates it to **0 errors / 0 issues**
+//! on the simulation backend (the Phase F gate; wired into `conformu.yml`).
 #![cfg(feature = "conformu")]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 // The serialization mutex is intentionally held across the ConformU awaits.

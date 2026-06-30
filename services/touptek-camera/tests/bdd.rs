@@ -3,9 +3,9 @@
 //! client. The binary must be pre-built with `--features simulation` (or
 //! `--all-features`).
 //!
-//! Phase D commits the feature files `@wip`: the full `Camera` surface is Phase E,
-//! so every scenario is skipped by the `filter_run_and_exit` runner until the
-//! implementation lands and the tags are removed (see
+//! The full `Camera` surface is implemented (Phase E), so the feature files run
+//! for real. The `filter_run_and_exit` runner still honours `@wip` as an opt-in
+//! skip for any not-yet-implemented scenario added later (see
 //! `docs/skills/testing.md` §2.7 and `docs/services/touptek-camera.md` "Testing").
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
@@ -30,10 +30,10 @@ bdd_infra::bdd_main! {
                 }
             })
         })
-        // Skip `@wip` scenarios so the Phase-D feature files can ride the branch
-        // before the Phase-E implementation exists, without breaking the
-        // green-suite invariant; `_and_exit` makes a scenario failure a non-zero
-        // exit (testing.md §2.7).
+        // Skip any scenario explicitly tagged `@wip` (an opt-in escape hatch for
+        // work-in-progress scenarios), so they can land before their implementation
+        // without breaking the green-suite invariant; `_and_exit` makes a scenario
+        // failure a non-zero exit (testing.md §2.7).
         .filter_run_and_exit("tests/features", |feature, _rule, scenario| {
             let is_wip = feature.tags.iter().any(|t| t == "wip" || t == "@wip")
                 || scenario.tags.iter().any(|t| t == "wip" || t == "@wip");

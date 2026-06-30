@@ -239,9 +239,26 @@ impl CameraHandle for TouptekCameraHandle {
     fn capabilities(&self) -> BackendResult<Capabilities> {
         let guard = self.camera.lock();
         let camera = guard.as_ref().ok_or_else(BackendError::closed)?;
+        // `gain_range` is `Option` for a reason: a model with no analog-gain
+        // control answers `Toupcam_get_ExpoAGainRange` with `E_NOTIMPL`. Map only
+        // that to `None` so the driver exposes Gain* as NOT_IMPLEMENTED (GO1)
+        // instead of failing the whole connect handshake (which would surface as
+        // NOT_CONNECTED). Any other SDK error is a genuine fault and propagates.
+        // (Reachable only on such hardware — the sim's `gain_range` always
+        // succeeds; the GO1 unit test drives the mock backend's own path.)
+        let gain_range = match camera.gain_range() {
+            Ok(range) => Some(range),
+            Err(touptek_rs::Error::Sdk(touptek_rs::SdkError::NotImplemented)) => {
+                tracing::debug!(
+                    "gain range not implemented on this model; reporting Gain as NOT_IMPLEMENTED"
+                );
+                None
+            }
+            Err(e) => return Err(e.into()),
+        };
         Ok(Capabilities {
             exposure_range_us: camera.exposure_range_us()?,
-            gain_range: Some(camera.gain_range()?),
+            gain_range,
             // Black level (`Offset`) is model-specific: gate on the SDK's
             // `FLAG_BLACKLEVEL` so a model without it reports `NOT_IMPLEMENTED`
             // (GO1), the same flag INDI gates on.

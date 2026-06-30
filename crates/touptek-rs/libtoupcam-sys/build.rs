@@ -101,11 +101,22 @@ fn emit_link_directives() {
             println!("cargo:rustc-link-lib=dylib=toupcam");
         }
         _ => {
-            // Linux and other Unix-like systems. INDI installs the SDK under
-            // /opt/toupcamsdk and /usr/local/lib; the udev rule + libusb/libudev
-            // cover USB enumeration.
+            // Linux and other Unix-like systems. The install action puts the blob
+            // in /usr/local/lib; a manual ToupTek-SDK unzip keeps per-arch blobs
+            // under /opt/toupcamsdk/linux/<arch>. Map the *target* arch to ToupTek's
+            // subdir name (x64 / arm64 / armhf) so a default /opt install links on
+            // ARM too, not just x86_64; TOUPCAM_SDK_LIB_DIR still overrides for any
+            // non-standard layout. The udev rule + libusb/libudev cover USB enum.
+            let sdk_subdir = match env::var("CARGO_CFG_TARGET_ARCH")
+                .unwrap_or_default()
+                .as_str()
+            {
+                "aarch64" => "arm64",
+                "arm" => "armhf",
+                _ => "x64",
+            };
             println!("cargo:rustc-link-search=native=/usr/local/lib");
-            println!("cargo:rustc-link-search=native=/opt/toupcamsdk/linux/x64");
+            println!("cargo:rustc-link-search=native=/opt/toupcamsdk/linux/{sdk_subdir}");
             println!("cargo:rustc-link-lib=dylib=toupcam");
             println!("cargo:rustc-link-lib=dylib=usb-1.0");
             println!("cargo:rustc-link-lib=dylib=udev");

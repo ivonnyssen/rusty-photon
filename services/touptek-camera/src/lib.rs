@@ -10,12 +10,13 @@
 //! See `docs/plans/touptek-driver.md` for the decision record and (from Phase D)
 //! `docs/services/touptek-camera.md` for the full design.
 //!
-//! ## Phase C scaffold
+//! ## Status
 //!
-//! This is the bare service: it builds, enumerates (real or simulated), registers
-//! a minimal Camera, and binds `:11123`. The full `Camera` surface (exposure,
-//! ROI/binning, gain/offset, cooling, RAW readout, ST4 pulse-guiding) is Phase E —
-//! see [`camera`].
+//! The full `Camera` surface is implemented (Phase E) and ConformU-clean on the
+//! simulation backend (Phase F gate): the service enumerates (real or simulated),
+//! registers each camera, binds `:11123`, and serves the whole control surface —
+//! the trigger-mode exposure state machine, ROI/binning, gain/offset, cooling,
+//! RAW16 readout, and ST4 pulse-guiding. See [`camera`].
 //!
 //! ## Native dependency
 //!

@@ -3,8 +3,9 @@
 //! Each scenario spawns the touptek-camera binary (built with the `simulation`
 //! backend so the SDK yields one `Simulated ToupTek Camera`) and drives it
 //! through the typed `ascom-alpaca` Camera client over real HTTP — mirroring the
-//! zwo-camera / qhy-camera pattern. The full `Camera` surface is Phase E, so the
-//! feature files are committed `@wip` (see `bdd.rs`).
+//! zwo-camera / qhy-camera pattern. The full `Camera` surface is implemented, so
+//! the feature files run for real (`@wip` is an opt-in per-scenario skip; see
+//! `bdd.rs`).
 
 use std::net::SocketAddr;
 use std::sync::Arc;

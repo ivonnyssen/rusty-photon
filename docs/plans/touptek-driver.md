@@ -284,12 +284,14 @@ engineering work. For the record, so it is not forgotten:
   `LD_LIBRARY_PATH`). **Source:** Linux/macOS blobs from the INDI mirror
   (`indi-3rdparty/libtoupcam/<arch>/libtoupcam.bin`, pinned to the same commit
   `install-zwo-sdk` uses); INDI/INDIGO ship **no Windows blob**, so the Windows leg
-  takes a parameterized ToupTek vendor-SDK zip URL (`windows_sdk_url`, unset →
-  skips). *Validated 2026-06-29:* on this aarch64 host the action's staging logic
-  produced a clean **real link** of the `touptek-camera` binary against the INDI
-  arm64 blob (`NEEDED: libtoupcam.so`; `-lusb-1.0`/`-ludev` resolve then drop under
-  `--as-needed`). Still **unwired** into any workflow and the real Bazel
-  `rust_binary` is still undefined — those + the macOS/Windows real legs are the
+  pulls ToupTek's own vendor-SDK zip via `windows_sdk_url`, which now defaults to
+  ToupTek's stable rolling `download.php?soft=toupcamsdk` link (set `""` to skip).
+  *Validated 2026-06-29:* on this aarch64 host the action's staging logic produced a
+  clean **real link** of the `touptek-camera` binary against the INDI arm64 blob
+  (`NEEDED: libtoupcam.so`; `-lusb-1.0`/`-ludev` resolve then drop under
+  `--as-needed`). **Now wired into `native.yml`** (the `touptek` job, all three
+  OSes — Linux/macOS green, Windows newly added). The real Bazel `rust_binary` is
+  still undefined and Pi-aarch64 real-link is still pending — those are the
   remaining long pole.
 - **Simulation path links no SDK:** `libtoupcam-sys`'s `build.rs` honours
   `TOUPCAM_SKIP_NATIVE_LINK=1` and emits no link directives, so the default
@@ -351,13 +353,13 @@ cross-platform link (incl. Pi aarch64 + Apple-Silicon-universal). Once
   discovered + now linkable with no SDK). The single ConformU issue found — a
   `VALUE_NOT_SET` read of `SetCCDTemperature` before any setpoint — was fixed by
   falling back to the model's `OPTION_TECTARGET` power-on default (mirrors
-  `zwo-camera`). `.github/actions/install-toupcam-sdk` is **drafted** against the
-  INDI mirror (Linux/macOS) + a parameterized ToupTek vendor-SDK URL for Windows,
-  and **validated** by a real `touptek-camera` link on aarch64. *Remaining (needs a
-  provisioned SDK / hardware):* the real `touptek-camera` `rust_binary` (Bazel),
-  wiring `install-toupcam-sdk` into the `native.yml` nightly real-link build
-  (Linux/macOS/Windows + Pi5 aarch64), and the macOS/Windows real legs; the Bazel
-  real/sim two-variant build is the coverage source.
+  `zwo-camera`). `.github/actions/install-toupcam-sdk` (INDI mirror for Linux/macOS
+  + ToupTek's vendor-SDK rolling URL for Windows) is **wired into `native.yml`** —
+  the `touptek` job real-links on all three OSes (Linux + macOS green, Windows
+  newly added) and runs at PR time. *Remaining (needs a provisioned SDK /
+  hardware):* the real `touptek-camera` `rust_binary` (Bazel), a Pi5-aarch64
+  real-link leg (pi-nightly currently skip-links touptek), and real-hardware
+  sign-off; the Bazel real/sim two-variant build is the coverage source.
 - **Phase G — consumer + cross-platform sign-off:** the `rp` `CameraConfig`
   consumer (`alpaca_url: http://localhost:11123`); confirm a real-hardware
   ConformU pass on **each** target platform (the working-driver goal).

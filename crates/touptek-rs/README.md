@@ -9,9 +9,12 @@ Sibling to [`zwo-rs`](https://crates.io/crates/zwo-rs) and
 rebrands (Altair, Omegon, Meade, Bresser, Mallincam, RisingCam/Ogma, SVBony,
 StarShootG, Nncam, Tscam) with only the `Toupcam_` symbol prefix swapped.
 
-> **Status: Phase B skeleton.** Enumeration, the `Camera` handle, and the
-> callback → blocking pull/trigger bridge are wired. See
-> [`docs/plans/touptek-driver.md`](../../docs/plans/touptek-driver.md) for the
+> **Status: Phase E/F.** The full control surface is implemented: enumeration,
+> the `Camera` handle, the callback → blocking pull/trigger bridge, gain range +
+> value, black level, exposure range, cooling, and ST4 guiding. The
+> `touptek-camera` driver built on this passes ConformU 0 errors / 0 issues on the
+> simulation backend; the real per-platform SDK link is exercised by `native.yml`.
+> See [`docs/plans/touptek-driver.md`](../../docs/plans/touptek-driver.md) for the
 > roadmap.
 
 ## Features
