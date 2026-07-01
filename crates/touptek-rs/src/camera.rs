@@ -734,17 +734,16 @@ mod tests {
         CameraInfo {
             id: "sim-0".to_owned(),
             display_name: "Simulated ToupTek Camera".to_owned(),
-            model_name: "ToupTek Simulator".to_owned(),
+            model_name: "ToupTek ATR533C (simulated)".to_owned(),
             flag: u64::from(sys::TOUPCAM_FLAG_TEC)
                 | u64::from(sys::TOUPCAM_FLAG_ST4)
-                | u64::from(sys::TOUPCAM_FLAG_MONO)
                 | u64::from(sys::TOUPCAM_FLAG_BLACKLEVEL),
             pixel_size_x: 3.76,
             pixel_size_y: 3.76,
-            max_width: 6248,
-            max_height: 4176,
+            max_width: 3008,
+            max_height: 3008,
             bit_depth: 16,
-            is_color: false,
+            is_color: true,
             supported_bins: vec![1, 2, 3, 4],
         }
     }

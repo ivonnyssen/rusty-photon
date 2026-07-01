@@ -97,23 +97,27 @@ impl Sdk {
     pub fn enumerate(&self) -> Result<Vec<CameraInfo>> {
         #[cfg(feature = "simulation")]
         {
-            // A 6248×4176 monochrome 16-bit sensor with a cooler and an ST4 port —
-            // chosen so the BDD suite exercises the full ASCOM surface from one
-            // device (see `docs/services/touptek-camera.md`).
+            // Models the ToupTek ATR533C (Sony IMX533): a 3008×3008 colour 16-bit
+            // sensor with 3.76 µm pixels, a cooler, and an ST4 port. Real ATR533C
+            // hardware has no ST4 port, but the simulator keeps one so the BDD /
+            // ConformU suites exercise PulseGuide alongside cooling and the colour
+            // (RGGB) path from one device (see `docs/services/touptek-camera.md`).
+            // The 3008² frame (vs the ASI2600-sized 6248×4176 it replaced) keeps
+            // ConformU's full-frame ImageArrayVariant serialisation well under its
+            // response-timeout watchdog even under parallel-suite load on macOS.
             Ok(vec![CameraInfo {
                 id: "sim-0".to_owned(),
                 display_name: "Simulated ToupTek Camera".to_owned(),
-                model_name: "ToupTek Simulator".to_owned(),
+                model_name: "ToupTek ATR533C (simulated)".to_owned(),
                 flag: u64::from(sys::TOUPCAM_FLAG_TEC)
                     | u64::from(sys::TOUPCAM_FLAG_ST4)
-                    | u64::from(sys::TOUPCAM_FLAG_MONO)
                     | u64::from(sys::TOUPCAM_FLAG_BLACKLEVEL),
                 pixel_size_x: 3.76,
                 pixel_size_y: 3.76,
-                max_width: 6248,
-                max_height: 4176,
+                max_width: 3008,
+                max_height: 3008,
                 bit_depth: 16,
-                is_color: false,
+                is_color: true,
                 supported_bins: vec![1, 2, 3, 4],
             }])
         }

@@ -374,7 +374,7 @@ fn rescale_roi(roi: Roi, old: u8, new: u8) -> Roi {
 ///
 /// ConformU takes a full frame at every bin via `NumX = CameraXSize / bin` (and
 /// likewise `NumY`); reporting an extent whose floored binned frame is odd at some
-/// bin would make that frame an invalid ROI. For the simulated 6248×4176 sensor
+/// bin would make that frame an invalid ROI. For the simulated 3008×3008 sensor
 /// every floored binned full frame is already even, so this is a no-op (a
 /// simplification over `zwo-camera`, where `NumX` must be a multiple of 8).
 fn aligned_sensor_extent(max: u32, supported_bins: &[u32]) -> u32 {
@@ -1263,37 +1263,35 @@ mod tests {
     #[test]
     fn check_geometry_rejects_zero_misaligned_and_out_of_bounds() {
         // zero
-        assert!(check_geometry(roi(0, 0, 0, 64), 6248, 4176, 1).is_err());
-        assert!(check_geometry(roi(0, 0, 64, 0), 6248, 4176, 1).is_err());
+        assert!(check_geometry(roi(0, 0, 0, 64), 3008, 3008, 1).is_err());
+        assert!(check_geometry(roi(0, 0, 64, 0), 3008, 3008, 1).is_err());
         // misaligned (odd offset or size)
-        assert!(check_geometry(roi(0, 0, 65, 64), 6248, 4176, 1).is_err());
-        assert!(check_geometry(roi(0, 0, 64, 47), 6248, 4176, 1).is_err());
-        assert!(check_geometry(roi(9, 0, 64, 64), 6248, 4176, 1).is_err());
+        assert!(check_geometry(roi(0, 0, 65, 64), 3008, 3008, 1).is_err());
+        assert!(check_geometry(roi(0, 0, 64, 47), 3008, 3008, 1).is_err());
+        assert!(check_geometry(roi(9, 0, 64, 64), 3008, 3008, 1).is_err());
         // too small (even but < 8)
-        assert!(check_geometry(roi(0, 0, 4, 64), 6248, 4176, 1).is_err());
+        assert!(check_geometry(roi(0, 0, 4, 64), 3008, 3008, 1).is_err());
         // out of bounds in x and y
-        assert!(check_geometry(roi(0, 0, 8000, 64), 6248, 4176, 1).is_err());
-        assert!(check_geometry(roi(0, 0, 64, 6000), 6248, 4176, 1).is_err());
-        assert!(check_geometry(roi(6248, 0, 64, 64), 6248, 4176, 1).is_err());
-        assert!(check_geometry(roi(0, 4176, 64, 64), 6248, 4176, 1).is_err());
+        assert!(check_geometry(roi(0, 0, 8000, 64), 3008, 3008, 1).is_err());
+        assert!(check_geometry(roi(0, 0, 64, 6000), 3008, 3008, 1).is_err());
+        assert!(check_geometry(roi(3008, 0, 64, 64), 3008, 3008, 1).is_err());
+        assert!(check_geometry(roi(0, 3008, 64, 64), 3008, 3008, 1).is_err());
         // valid full + sub frames
-        assert!(check_geometry(roi(0, 0, 6248, 4176), 6248, 4176, 1).is_ok());
-        assert!(check_geometry(roi(0, 0, 64, 48), 6248, 4176, 1).is_ok());
+        assert!(check_geometry(roi(0, 0, 3008, 3008), 3008, 3008, 1).is_ok());
+        assert!(check_geometry(roi(0, 0, 64, 48), 3008, 3008, 1).is_ok());
         // binned full frames at every supported bin
-        assert!(check_geometry(roi(0, 0, 3124, 2088), 6248, 4176, 2).is_ok());
-        assert!(check_geometry(roi(0, 0, 2082, 1392), 6248, 4176, 3).is_ok());
-        assert!(check_geometry(roi(0, 0, 1562, 1044), 6248, 4176, 4).is_ok());
+        assert!(check_geometry(roi(0, 0, 1504, 1504), 3008, 3008, 2).is_ok());
+        assert!(check_geometry(roi(0, 0, 1002, 1002), 3008, 3008, 3).is_ok());
+        assert!(check_geometry(roi(0, 0, 752, 752), 3008, 3008, 4).is_ok());
     }
 
     #[test]
     fn aligned_extent_is_a_no_op_for_the_simulated_sensor() {
-        // 6248 / {1,2,3,4} and 4176 / {1,2,3,4} are all even, so the reported
+        // 3008 / {1,2,3,4} = {3008,1504,1002,752} are all even, so the reported
         // extent is the raw sensor size (the simplification over zwo-camera).
-        assert_eq!(aligned_sensor_extent(6248, &[1, 2, 3, 4]), 6248);
-        assert_eq!(aligned_sensor_extent(4176, &[1, 2, 3, 4]), 4176);
+        assert_eq!(aligned_sensor_extent(3008, &[1, 2, 3, 4]), 3008);
         for bin in [1u32, 2, 3, 4] {
-            assert_eq!((6248 / bin) % 2, 0, "width / {bin} not even");
-            assert_eq!((4176 / bin) % 2, 0, "height / {bin} not even");
+            assert_eq!((3008 / bin) % 2, 0, "3008 / {bin} not even");
         }
         // A model whose floored binned full frame would be odd at some bin is
         // reduced: 6250 / 4 = 1562 (even), but 6254 / 4 = 1563 (odd) → reduce.
@@ -1343,12 +1341,12 @@ mod tests {
     #[tokio::test]
     async fn connect_caches_geometry_and_limits() {
         let device = connected_device(MockCameraHandle::default());
-        assert_eq!(device.camera_x_size().await.unwrap(), 6248);
-        assert_eq!(device.camera_y_size().await.unwrap(), 4176);
+        assert_eq!(device.camera_x_size().await.unwrap(), 3008);
+        assert_eq!(device.camera_y_size().await.unwrap(), 3008);
         assert_eq!(device.max_adu().await.unwrap(), 65_535);
         assert_eq!(device.max_bin_x().await.unwrap(), 4);
         assert!(!device.can_asymmetric_bin().await.unwrap());
-        assert_eq!(device.sensor_type().await.unwrap(), SensorType::Monochrome);
+        assert_eq!(device.sensor_type().await.unwrap(), SensorType::RGGB);
         assert!(!device.has_shutter().await.unwrap());
         assert_eq!(device.gain_min().await.unwrap(), 100);
         assert_eq!(device.gain_max().await.unwrap(), 1000);
@@ -1384,8 +1382,8 @@ mod tests {
     async fn roi_getters_reflect_the_connected_roi() {
         let device = connected_device(MockCameraHandle::default());
         // The default ROI is the full frame at the origin.
-        assert_eq!(device.num_x().await.unwrap(), 6248);
-        assert_eq!(device.num_y().await.unwrap(), 4176);
+        assert_eq!(device.num_x().await.unwrap(), 3008);
+        assert_eq!(device.num_y().await.unwrap(), 3008);
         assert_eq!(device.start_x().await.unwrap(), 0);
         assert_eq!(device.start_y().await.unwrap(), 0);
         // The relaxed setters round-trip through the getters (R1).
@@ -1486,14 +1484,14 @@ mod tests {
     #[tokio::test]
     async fn sensor_type_and_bayer_gate_on_color() {
         // Mono: BayerOffsetX/Y are NOT_IMPLEMENTED (ST1).
-        let mono = connected_device(MockCameraHandle::default());
+        let mono = connected_device(MockCameraHandle::default().monochrome());
         assert_eq!(mono.sensor_type().await.unwrap(), SensorType::Monochrome);
         assert_eq!(
             mono.bayer_offset_x().await.unwrap_err().code,
             ASCOMErrorCode::NOT_IMPLEMENTED
         );
-        // Colour: SensorType is RGGB and BayerOffsetX/Y answer.
-        let color = connected_device(MockCameraHandle::default().with_color());
+        // Colour (the default ATR533C): SensorType is RGGB and BayerOffsetX/Y answer.
+        let color = connected_device(MockCameraHandle::default());
         assert_eq!(color.sensor_type().await.unwrap(), SensorType::RGGB);
         assert_eq!(color.bayer_offset_x().await.unwrap(), 0);
         assert_eq!(color.bayer_offset_y().await.unwrap(), 0);

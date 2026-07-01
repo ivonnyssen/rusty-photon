@@ -11,9 +11,9 @@ Feature: Binning and region-of-interest
   out-of-bounds sub-frame with INVALID_VALUE (R2) and a sub-frame violating
   the ToupTek alignment rules -- any of StartX, StartY, NumX, NumY odd, or
   NumX / NumY below 8 -- with INVALID_VALUE (R3). The simulated camera is
-  6248x4176, and the floored full frame at every supported bin
-  (floor(CameraXSize / bin) by floor(CameraYSize / bin)) is even and in-bounds,
-  so it stays a valid ROI (R4) -- including bin 3, where 6248 / 3 floors to 2082.
+  3008x3008 (the ATR533C / IMX533), and the floored full frame at every supported
+  bin (floor(CameraXSize / bin) by floor(CameraYSize / bin)) is even and in-bounds,
+  so it stays a valid ROI (R4) -- including bin 3, where 3008 / 3 floors to 1002.
 
   Background:
     Given the touptek-camera service running with the simulation backend
@@ -50,8 +50,8 @@ Feature: Binning and region-of-interest
       | 64    | 0     | 0       | 0       |
       | 8000  | 64    | 0       | 0       |
       | 64    | 6000  | 0       | 0       |
-      | 64    | 64    | 6248    | 0       |
-      | 64    | 64    | 0       | 4176    |
+      | 64    | 64    | 3008    | 0       |
+      | 64    | 64    | 0       | 3008    |
 
   Scenario Outline: A misaligned sub-frame is rejected at StartExposure
     When I StartExposure on camera device 0 with BinX 1 BinY 1 NumX <num_x> NumY <num_y> StartX <start_x> StartY <start_y> Duration 0.01 Light true
@@ -66,13 +66,13 @@ Feature: Binning and region-of-interest
 
   # R4: the floored full frame at every supported bin
   # (NumX = floor(CameraXSize/bin), NumY = floor(CameraYSize/bin)) is even,
-  # in-bounds, and must expose. Bin 3 is the case that floors: 6248/3 -> 2082.
+  # in-bounds, and must expose. Bin 3 is the case that floors: 3008/3 -> 1002.
   Scenario Outline: A binned full frame is accepted at every bin
     When I StartExposure on camera device 0 with BinX <bin> BinY <bin> NumX <num_x> NumY <num_y> StartX 0 StartY 0 Duration 0.01 Light true
     Then the exposure on camera device 0 completes
 
     Examples:
       | bin | num_x | num_y |
-      | 2   | 3124  | 2088  |
-      | 3   | 2082  | 1392  |
-      | 4   | 1562  | 1044  |
+      | 2   | 1504  | 1504  |
+      | 3   | 1002  | 1002  |
+      | 4   | 752   | 752   |

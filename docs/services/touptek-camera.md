@@ -392,9 +392,11 @@ Named, testable behaviours, each mapping to a BDD scenario in `tests/features/`
 except where a contract notes a unit-tested branch. ASCOM error names per
 [`docs/references/ascom-alpaca.md`](../references/ascom-alpaca.md). The
 `simulation` backend presents **one** camera — a **Simulated ToupTek Camera**
-(id `sim-0`, model `ToupTek Simulator`): **6248×4176, monochrome, 16-bit RAW**
-(`MaxADU` 65535), **3.76 µm** square pixels, **cooled** (`FLAG_TEC`), **ST4
-present** (`FLAG_ST4`), **black level present** (`FLAG_BLACKLEVEL`, so the `Offset`
+(id `sim-0`, model `ToupTek ATR533C (simulated)` — the Sony IMX533): **3008×3008,
+colour (RGGB), 16-bit RAW** (`MaxADU` 65535), **3.76 µm** square pixels, **cooled**
+(`FLAG_TEC`), **ST4 present** (`FLAG_ST4` — the real ATR533C has no ST4 port, but
+the simulator keeps one so PulseGuide stays exercised), **black level present**
+(`FLAG_BLACKLEVEL`, so the `Offset`
 control resolves).
 
 > The simulator's capability set (cooler + ST4 + 16-bit) is chosen so the BDD
@@ -449,10 +451,10 @@ control resolves).
   in-bounds ROI and must expose: `NumX = floor(CameraXSize / bin)`,
   `NumY = floor(CameraYSize / bin)` (integer division, so a sensor extent that is
   not a clean multiple of the bin simply drops the remainder columns/rows). For the
-  simulated sensor (6248×4176) the floored binned full frame is even at every
-  supported bin — bin 1 6248×4176, bin 2 3124×2088, **bin 3 2082×1392** (6248/3
-  floors to 2082; 4176/3 = 1392), bin 4 1562×1044 — so its **reported** extent is
-  left at 6248×4176 (no alignment-down is needed here, a simplification over ZWO's
+  simulated sensor (3008×3008) the floored binned full frame is even at every
+  supported bin — bin 1 3008×3008, bin 2 1504×1504, **bin 3 1002×1002** (3008/3
+  floors to 1002), bin 4 752×752 — so its **reported** extent is
+  left at 3008×3008 (no alignment-down is needed here, a simplification over ZWO's
   R4). A model whose floored binned full frame would be *odd* at some bin would have
   its reported extent aligned down to keep every binned full frame even.
 
@@ -522,8 +524,9 @@ control resolves).
 ### Sensor type & signal (`sensor_properties.feature`)
 
 - **ST1.** `SensorType` is `RGGB` (colour) when `get_MonoMode` reports colour, else
-  `Monochrome`; `BayerOffsetX/Y` follow `get_RawFormat`. The simulated camera is
-  `Monochrome`.
+  `Monochrome`; `BayerOffsetX/Y` follow `get_RawFormat`. The simulated ATR533C is
+  `RGGB` with `BayerOffsetX/Y` = 0; the mono path (`Monochrome` +
+  `BayerOffsetX/Y` NOT_IMPLEMENTED) is covered by the unit-test mock seam.
 - **ST2.** `ElectronsPerADU` returns **`NOT_IMPLEMENTED`** — the ToupCam SDK
   exposes no native electrons-per-ADU field (the QHY-like divergence from ZWO).
   `FullWellCapacity` is likewise `NOT_IMPLEMENTED`.
@@ -549,7 +552,7 @@ control resolves).
 
 | Property / Method | v0 behaviour (backed by `touptek-rs`) |
 |---|---|
-| `CameraXSize` / `CameraYSize` | Cached model `maxres` (simulated 6248×4176) |
+| `CameraXSize` / `CameraYSize` | Cached model `maxres` (simulated 3008×3008) |
 | `PixelSizeX` / `PixelSizeY` | Cached `xpixsz`/`ypixsz` (simulated 3.76 µm, X == Y) |
 | `BinX` / `BinY` / `MaxBinX` / `MaxBinY` | Symmetric **digital** binning; max from supported factors (simulated 4) |
 | `CanAsymmetricBin` | `false` |

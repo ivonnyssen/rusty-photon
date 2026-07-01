@@ -14,8 +14,8 @@ Feature: Camera enumeration and connection lifecycle
   exposure (C3). With zero cameras discovered the service still starts,
   registering no Camera devices and logging a warning. Against the touptek-rs
   simulation backend exactly one camera is present: a Simulated ToupTek Camera
-  (id sim-0, 6248x4176, monochrome, 16-bit). ToupTek ships no filter wheel or
-  focuser in this SDK, so the service registers Camera devices only.
+  (the ATR533C / IMX533 — id sim-0, 3008x3008, colour, 16-bit). ToupTek ships no
+  filter wheel or focuser in this SDK, so the service registers Camera devices only.
 
   Background:
     Given the touptek-camera service running with the simulation backend

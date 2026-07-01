@@ -8,9 +8,9 @@ Feature: Sensor geometry, type, and signal
   Unlike zwo-camera, the ToupCam SDK exposes no native electrons-per-ADU
   field, so ElectronsPerADU is NOT_IMPLEMENTED (ST2). MaxADU is
   (2^BitDepth) - 1, i.e. 65535 for the 16-bit RAW path (ST3). The simulated
-  ToupTek camera is a 6248x4176 monochrome 16-bit sensor with 3.76 micron
-  square pixels; the floored full frame at every supported bin stays even, so
-  CameraXSize and CameraYSize are reported as-is (no alignment-down needed).
+  ToupTek camera is a 3008x3008 colour 16-bit sensor (the ATR533C / IMX533) with
+  3.76 micron square pixels; the floored full frame at every supported bin stays
+  even, so CameraXSize and CameraYSize are reported as-is (no alignment-down needed).
 
   Background:
     Given the touptek-camera service running with the simulation backend
@@ -19,13 +19,13 @@ Feature: Sensor geometry, type, and signal
   Scenario: Sensor geometry reflects the simulated camera info
     Then camera device 0 reports the sensor geometry:
       | property    | value |
-      | CameraXSize | 6248  |
-      | CameraYSize | 4176  |
+      | CameraXSize | 3008  |
+      | CameraYSize | 3008  |
     And camera device 0 reports a positive PixelSizeX
     And camera device 0 reports PixelSizeX equal to PixelSizeY
 
-  Scenario: A monochrome sensor reports SensorType Monochrome
-    Then camera device 0 reports SensorType as Monochrome
+  Scenario: A colour sensor reports SensorType RGGB
+    Then camera device 0 reports SensorType as RGGB
 
   Scenario: A 16-bit sensor reports MaxADU 65535
     Then camera device 0 reports MaxADU as 65535

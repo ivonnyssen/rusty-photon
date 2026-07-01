@@ -490,23 +490,22 @@ mod handle_tests {
 pub(crate) mod mock {
     use super::*;
 
-    /// Build the simulated ToupTek model info (6248×4176 mono 16-bit, cooler +
-    /// ST4), mirroring `touptek-rs`'s simulated `CameraInfo`.
+    /// Build the simulated ToupTek model info (the 3008×3008 colour 16-bit
+    /// ATR533C, cooler + ST4), mirroring `touptek-rs`'s simulated `CameraInfo`.
     fn default_info() -> CameraInfo {
         CameraInfo {
             id: "sim-0".to_string(),
             display_name: "Simulated ToupTek Camera".to_string(),
-            model_name: "ToupTek Simulator".to_string(),
+            model_name: "ToupTek ATR533C (simulated)".to_string(),
             flag: u64::from(touptek_rs::sys::TOUPCAM_FLAG_TEC)
                 | u64::from(touptek_rs::sys::TOUPCAM_FLAG_ST4)
-                | u64::from(touptek_rs::sys::TOUPCAM_FLAG_MONO)
                 | u64::from(touptek_rs::sys::TOUPCAM_FLAG_BLACKLEVEL),
             pixel_size_x: 3.76,
             pixel_size_y: 3.76,
-            max_width: 6248,
-            max_height: 4176,
+            max_width: 3008,
+            max_height: 3008,
             bit_depth: 16,
-            is_color: false,
+            is_color: true,
             supported_bins: vec![1, 2, 3, 4],
         }
     }
@@ -583,10 +582,12 @@ pub(crate) mod mock {
             self
         }
 
-        /// Present a colour model (ST1: `SensorType` RGGB + `BayerOffsetX/Y`).
-        pub fn with_color(mut self) -> Self {
-            self.info.is_color = true;
-            self.info.flag &= !u64::from(touptek_rs::sys::TOUPCAM_FLAG_MONO);
+        /// Present a monochrome model (ST1: `SensorType` Monochrome +
+        /// `BayerOffsetX/Y` NOT_IMPLEMENTED). The default mock is the colour
+        /// ATR533C, so this flips it back to mono for the mono-path assertions.
+        pub fn monochrome(mut self) -> Self {
+            self.info.is_color = false;
+            self.info.flag |= u64::from(touptek_rs::sys::TOUPCAM_FLAG_MONO);
             self
         }
 
