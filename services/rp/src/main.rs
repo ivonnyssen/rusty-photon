@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
-use rusty_photon_service_lifecycle::{init_tracing, ServiceRunner, Shutdown};
+use rusty_photon_service_lifecycle::{
+    init_tracing, report_from_boxed, ServiceResult, ServiceRunner, Shutdown,
+};
 use tracing::{debug, Level};
 
 #[derive(Parser)]
@@ -85,7 +87,7 @@ enum Commands {
     },
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> ServiceResult {
     let cli = Cli::parse();
 
     match cli.command {
@@ -95,7 +97,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Some(Commands::HashPassword { log_level, stdin }) => {
             init_tracing(log_level);
-            rp::hash_password_cmd::run(stdin)
+            rp::hash_password_cmd::run(stdin).map_err(report_from_boxed)
         }
         Some(Commands::InitTls {
             output_dir,
@@ -122,26 +124,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     email.as_deref(),
                     staging,
                 ))
+                .map_err(report_from_boxed)
             } else {
                 rp::tls_cmd::run(
                     output_dir.as_deref(),
                     services.as_deref(),
                     &extra_san.unwrap_or_default(),
                 )
+                .map_err(report_from_boxed)
             }
         }
         None => {
             // Backward compat: `rp --config <path>` works without a subcommand
-            let config = cli.config.ok_or(
-                "no subcommand given. Use `rp serve --config <path>` or `rp --config <path>`",
-            )?;
+            let config = cli.config.ok_or_else(|| {
+                report_from_boxed(
+                    "no subcommand given. Use `rp serve --config <path>` or `rp --config <path>`"
+                        .into(),
+                )
+            })?;
             init_tracing(cli.log_level);
             run_serve(config)
         }
     }
 }
 
-fn run_serve(config_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+fn run_serve(config_path: PathBuf) -> ServiceResult {
     ServiceRunner::new("rp").run(move |shutdown: Shutdown| async move {
         debug!(config_path = %config_path.display(), "loading configuration");
         let config = rp::config::load_config(&config_path)?;

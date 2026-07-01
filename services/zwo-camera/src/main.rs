@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use clap::Parser;
-use rusty_photon_service_lifecycle::ServiceRunner;
+use rusty_photon_service_lifecycle::{ServiceResult, ServiceRunner};
 use tracing::{debug, Level};
 use zwo_camera::{load_effective_config, CliOverrides, ServerBuilder};
 
@@ -41,7 +41,7 @@ fn parse_log_level(s: &str) -> Result<Level, String> {
         .map_err(|_| format!("invalid log level: {s} (use trace, debug, info, warn, error)"))
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> ServiceResult {
     let args = Args::parse();
 
     rusty_photon_service_lifecycle::init_tracing(args.log_level);

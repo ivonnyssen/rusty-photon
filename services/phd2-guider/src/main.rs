@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 use phd2_guider::{load_config, Phd2Client, Phd2Config, Phd2Event, Rect, SettleParams};
-use rusty_photon_service_lifecycle::{ServiceRunner, Shutdown};
+use rusty_photon_service_lifecycle::{ServiceResult, ServiceRunner, Shutdown};
 use std::path::PathBuf;
 use std::time::Duration;
 use tracing::{debug, info, Level};
@@ -119,7 +119,7 @@ enum Commands {
     },
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> ServiceResult {
     let args = Args::parse();
 
     rusty_photon_service_lifecycle::init_tracing(args.log_level);
@@ -197,7 +197,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     })
 }
 
-async fn run_status(client: &Phd2Client) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_status(client: &Phd2Client) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     info!("Connecting to PHD2...");
     client.connect().await?;
 
@@ -226,7 +226,7 @@ async fn run_status(client: &Phd2Client) -> Result<(), Box<dyn std::error::Error
 async fn run_monitor(
     client: &Phd2Client,
     shutdown: Shutdown,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     info!("Connecting to PHD2...");
     client.connect().await?;
 
@@ -341,7 +341,7 @@ fn print_event(event: &Phd2Event) {
     }
 }
 
-async fn run_connect(client: &Phd2Client) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_connect(client: &Phd2Client) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     info!("Connecting to PHD2...");
     client.connect().await?;
 
@@ -353,7 +353,9 @@ async fn run_connect(client: &Phd2Client) -> Result<(), Box<dyn std::error::Erro
     Ok(())
 }
 
-async fn run_disconnect(client: &Phd2Client) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_disconnect(
+    client: &Phd2Client,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     info!("Connecting to PHD2...");
     client.connect().await?;
 
@@ -365,7 +367,7 @@ async fn run_disconnect(client: &Phd2Client) -> Result<(), Box<dyn std::error::E
     Ok(())
 }
 
-async fn run_profiles(client: &Phd2Client) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_profiles(client: &Phd2Client) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     info!("Connecting to PHD2...");
     client.connect().await?;
 
@@ -386,7 +388,7 @@ async fn run_profiles(client: &Phd2Client) -> Result<(), Box<dyn std::error::Err
 // Guiding Control Commands
 // ============================================================================
 
-fn parse_roi(roi_str: &str) -> Result<Rect, Box<dyn std::error::Error>> {
+fn parse_roi(roi_str: &str) -> Result<Rect, Box<dyn std::error::Error + Send + Sync>> {
     let parts: Vec<&str> = roi_str.split(',').collect();
     if parts.len() != 4 {
         return Err("ROI must be in format: x,y,width,height".into());
@@ -406,7 +408,7 @@ async fn run_guide(
     settle_time: Option<Duration>,
     settle_timeout: Option<Duration>,
     roi: Option<String>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     info!("Connecting to PHD2...");
     client.connect().await?;
 
@@ -433,7 +435,9 @@ async fn run_guide(
     Ok(())
 }
 
-async fn run_stop_guiding(client: &Phd2Client) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_stop_guiding(
+    client: &Phd2Client,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     info!("Connecting to PHD2...");
     client.connect().await?;
 
@@ -445,7 +449,9 @@ async fn run_stop_guiding(client: &Phd2Client) -> Result<(), Box<dyn std::error:
     Ok(())
 }
 
-async fn run_stop_capture(client: &Phd2Client) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_stop_capture(
+    client: &Phd2Client,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     info!("Connecting to PHD2...");
     client.connect().await?;
 
@@ -457,7 +463,7 @@ async fn run_stop_capture(client: &Phd2Client) -> Result<(), Box<dyn std::error:
     Ok(())
 }
 
-async fn run_loop(client: &Phd2Client) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_loop(client: &Phd2Client) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     info!("Connecting to PHD2...");
     client.connect().await?;
 
@@ -469,7 +475,10 @@ async fn run_loop(client: &Phd2Client) -> Result<(), Box<dyn std::error::Error>>
     Ok(())
 }
 
-async fn run_pause(client: &Phd2Client, full: bool) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_pause(
+    client: &Phd2Client,
+    full: bool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     info!("Connecting to PHD2...");
     client.connect().await?;
 
@@ -481,7 +490,7 @@ async fn run_pause(client: &Phd2Client, full: bool) -> Result<(), Box<dyn std::e
     Ok(())
 }
 
-async fn run_resume(client: &Phd2Client) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_resume(client: &Phd2Client) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     info!("Connecting to PHD2...");
     client.connect().await?;
 
@@ -493,7 +502,9 @@ async fn run_resume(client: &Phd2Client) -> Result<(), Box<dyn std::error::Error
     Ok(())
 }
 
-async fn run_is_paused(client: &Phd2Client) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_is_paused(
+    client: &Phd2Client,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     info!("Connecting to PHD2...");
     client.connect().await?;
 
@@ -511,7 +522,7 @@ async fn run_dither(
     settle_pixels: Option<f64>,
     settle_time: Option<Duration>,
     settle_timeout: Option<Duration>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     info!("Connecting to PHD2...");
     client.connect().await?;
 

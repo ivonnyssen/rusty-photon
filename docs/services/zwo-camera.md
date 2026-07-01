@@ -611,9 +611,11 @@ backend presents one **ASI2600MM-Pro-Simulated** camera (6248×4176, monochrome,
 Standard shape per [`service-lifecycle.md`](../skills/service-lifecycle.md):
 
 ```rust
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+use rusty_photon_service_lifecycle::{ServiceResult, ServiceRunner};
+
+fn main() -> ServiceResult {
     let args = Args::parse();
-    tracing_subscriber::fmt().with_max_level(args.log_level).init();
+    rusty_photon_service_lifecycle::init_tracing(args.log_level);
 
     let config_path = rusty_photon_config::resolve_config_path("zwo-camera", args.config);
     // No materialize_identity: ASCOM UniqueIDs are derived from the camera/EFW

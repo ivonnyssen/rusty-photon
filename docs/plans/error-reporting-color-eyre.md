@@ -1,7 +1,13 @@
 # Adopt `color-eyre` for top-level error & panic reporting
 
-**Status:** Proposed — not yet implemented. This document is the plan and the
-reasoning; it commits no code.
+**Status:** Implemented on `feature/color-eyre-error-reporting` (2026-07-01);
+decision recorded in
+[ADR-011](../decisions/011-error-reporting-layers.md). The §4 spike selected
+**mechanism (b)** (closures keep returning a boxed `Send + Sync` error; the
+runner converts to `Report` at its boundary) because `eyre::Report` has no
+`From` impl for boxed trait objects, so mechanism (a) would have broken every
+`?` on the services' boxed-error helpers. Archive this plan after the PR
+merges to `main` (see docs/skills/archiving-plans.md).
 **Author:** drafted 2026-06-27 on `docs/plan-color-eyre-error-reporting`.
 **Scope:** the binary boundary only — `main()` return formatting and the process
 panic hook. `thiserror` remains the workspace's error-*definition* mechanism

@@ -2,7 +2,95 @@ use std::future::Future;
 
 use crate::{ReloadSignal, Shutdown};
 
-type ServiceResult = Result<(), Box<dyn std::error::Error>>;
+/// Result type every service binary's `main` returns.
+///
+/// The error side is [`color_eyre::Report`], so a startup failure or fatal
+/// exit escaping `main` prints a readable multi-line report with the full
+/// `source()` chain instead of a single-line `Debug` dump.
+///
+/// Per ADR-011, this crate is the *only* place `color-eyre` enters the
+/// workspace: services name this alias (and [`Report`](color_eyre::Report))
+/// but never construct ad-hoc `eyre!` errors — errors stay `thiserror`-typed
+/// everywhere below the binary boundary.
+pub type ServiceResult = Result<(), color_eyre::Report>;
+
+/// Boxed error the closures passed to [`ServiceRunner::run`] /
+/// [`ServiceRunner::run_with_reload`] return.
+///
+/// Any typed `thiserror` error converts into it via `?`, as do plain string
+/// errors (`"...".into()`). The runner converts it into the
+/// [`color_eyre::Report`] that `main` returns, preserving the full `source()`
+/// chain (see [`report_from_boxed`]). `Send + Sync` is required for that
+/// conversion — `Report` only wraps thread-safe errors.
+pub type RunError = Box<dyn std::error::Error + Send + Sync + 'static>;
+
+/// Result type the run closures return. Converted to [`ServiceResult`] at
+/// the runner's boundary.
+pub type RunResult = Result<(), RunError>;
+
+/// Adapter that gives an already-boxed [`RunError`] the Sized
+/// `std::error::Error` impl [`color_eyre::Report::new`] needs, delegating
+/// `Display`/`Debug`/`source()` to the inner error so the report renders the
+/// original message and chain unchanged.
+struct BoxedRunError(RunError);
+
+impl std::fmt::Display for BoxedRunError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl std::fmt::Debug for BoxedRunError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&self.0, f)
+    }
+}
+
+impl std::error::Error for BoxedRunError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.0.source()
+    }
+}
+
+/// Convert a boxed [`RunError`] into the [`color_eyre::Report`] that `main`
+/// returns, preserving the `source()` chain.
+///
+/// The runner applies this at its own boundary; `?` cannot do it implicitly
+/// because `Report` has no `From` impl for boxed trait objects. Public for
+/// the rare fallible step that must run *before* [`ServiceRunner::run`]
+/// (config-path resolution, identity minting) when the helper returns a
+/// boxed error. It only converts an error that already exists — it is not a
+/// substitute for `eyre!`-style ad-hoc error construction, which stays out
+/// of service code per ADR-011.
+///
+/// `#[track_caller]` so the report's `Location:` section names the call
+/// site (the service's `main`, or the runner boundary) rather than this
+/// function.
+#[track_caller]
+pub fn report_from_boxed(e: RunError) -> color_eyre::Report {
+    color_eyre::Report::new(BoxedRunError(e))
+}
+
+/// Install the `color-eyre` error/panic hooks exactly once per process.
+///
+/// `color_eyre::install()` is process-global and errors on a second call;
+/// the `Once` guard makes repeated [`ServiceRunner`] invocations (the crate's
+/// own tests run many per process) safe. An install failure is logged rather
+/// than propagated — the service must still start even if another component
+/// already claimed the hooks.
+///
+/// Called from both [`init_tracing`](crate::init_tracing) (so failures and
+/// panics *before* the runner — config load, identity minting — render the
+/// same formatted report) and the runner (so a service skipping
+/// `init_tracing` still gets the hooks).
+pub(crate) fn install_error_reporting() {
+    static INSTALL: std::sync::Once = std::sync::Once::new();
+    INSTALL.call_once(|| {
+        if let Err(e) = color_eyre::install() {
+            tracing::warn!("failed to install color-eyre error/panic hooks: {e}");
+        }
+    });
+}
 
 /// Builder for a Rusty Photon service binary's lifecycle.
 ///
@@ -13,9 +101,9 @@ type ServiceResult = Result<(), Box<dyn std::error::Error>>;
 /// ## Usage
 ///
 /// ```no_run
-/// use rusty_photon_service_lifecycle::ServiceRunner;
+/// use rusty_photon_service_lifecycle::{ServiceResult, ServiceRunner};
 ///
-/// fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// fn main() -> ServiceResult {
 ///     ServiceRunner::new("my-service").run(|shutdown| async move {
 ///         // build server, race against shutdown.cancelled()
 ///         let _ = shutdown;
@@ -28,9 +116,9 @@ type ServiceResult = Result<(), Box<dyn std::error::Error>>;
 /// [`Self::with_reload`] and call [`Self::run_with_reload`]:
 ///
 /// ```no_run
-/// use rusty_photon_service_lifecycle::ServiceRunner;
+/// use rusty_photon_service_lifecycle::{ServiceResult, ServiceRunner};
 ///
-/// fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// fn main() -> ServiceResult {
 ///     ServiceRunner::new("my-service")
 ///         .with_reload()
 ///         .run_with_reload(|shutdown, reload| async move {
@@ -87,13 +175,20 @@ impl ServiceRunner {
     /// dispatch SCM), and invoke `run_fn` with a [`Shutdown`] handle.
     /// Blocks until `run_fn`'s future resolves.
     ///
+    /// Also installs the process-global `color-eyre` error/panic hooks
+    /// (once per process), so every service gets formatted panic reports —
+    /// with span context when [`init_tracing`](crate::init_tracing) is in
+    /// use — without any per-service wiring.
+    ///
     /// Returns the error from `run_fn`, if any. Signal-install failures are
     /// logged via `tracing::warn!` rather than returned.
     pub fn run<F, Fut>(self, run_fn: F) -> ServiceResult
     where
         F: FnOnce(Shutdown) -> Fut + Send + 'static,
-        Fut: Future<Output = ServiceResult> + 'static,
+        Fut: Future<Output = RunResult> + 'static,
     {
+        install_error_reporting();
+
         #[cfg(all(windows, feature = "scm"))]
         if self.scm_mode {
             return scm::dispatch(
@@ -110,12 +205,14 @@ impl ServiceRunner {
     pub fn run_with_reload<F, Fut>(self, run_fn: F) -> ServiceResult
     where
         F: FnOnce(Shutdown, ReloadSignal) -> Fut + Send + 'static,
-        Fut: Future<Output = ServiceResult> + 'static,
+        Fut: Future<Output = RunResult> + 'static,
     {
+        install_error_reporting();
+
         if !self.reload {
-            return Err(
-                "ServiceRunner::run_with_reload requires .with_reload() on the builder".into(),
-            );
+            return Err(color_eyre::eyre::eyre!(
+                "ServiceRunner::run_with_reload requires .with_reload() on the builder"
+            ));
         }
 
         #[cfg(all(windows, feature = "scm"))]
@@ -139,18 +236,19 @@ fn build_runtime() -> Result<tokio::runtime::Runtime, std::io::Error> {
 fn run_console_plain<F, Fut>(name: &'static str, run_fn: F) -> ServiceResult
 where
     F: FnOnce(Shutdown) -> Fut + Send + 'static,
-    Fut: Future<Output = ServiceResult>,
+    Fut: Future<Output = RunResult>,
 {
     let rt = build_runtime()?;
     let token = tokio_util::sync::CancellationToken::new();
     rt.spawn(watch_shutdown_signals(name, token.clone()));
     rt.block_on(run_fn(Shutdown::from_token(token)))
+        .map_err(report_from_boxed)
 }
 
 fn run_console_with_reload<F, Fut>(name: &'static str, run_fn: F) -> ServiceResult
 where
     F: FnOnce(Shutdown, ReloadSignal) -> Fut + Send + 'static,
-    Fut: Future<Output = ServiceResult>,
+    Fut: Future<Output = RunResult>,
 {
     let rt = build_runtime()?;
     let token = tokio_util::sync::CancellationToken::new();
@@ -159,6 +257,7 @@ where
     #[cfg(unix)]
     rt.spawn(watch_reload_signal(reload.clone()));
     rt.block_on(run_fn(Shutdown::from_token(token), reload))
+        .map_err(report_from_boxed)
 }
 
 async fn watch_shutdown_signals(name: &'static str, token: tokio_util::sync::CancellationToken) {
@@ -226,10 +325,9 @@ mod scm {
     };
     use windows_service::service_control_handler::{self, ServiceControlHandlerResult};
 
-    type PlainFn = Box<dyn FnOnce(Shutdown) -> Pin<Box<dyn Future<Output = ServiceResult>>> + Send>;
-    type WithReloadFn = Box<
-        dyn FnOnce(Shutdown, ReloadSignal) -> Pin<Box<dyn Future<Output = ServiceResult>>> + Send,
-    >;
+    type PlainFn = Box<dyn FnOnce(Shutdown) -> Pin<Box<dyn Future<Output = RunResult>>> + Send>;
+    type WithReloadFn =
+        Box<dyn FnOnce(Shutdown, ReloadSignal) -> Pin<Box<dyn Future<Output = RunResult>>> + Send>;
 
     pub(super) enum BoxedRunFn {
         Plain(PlainFn),
@@ -249,7 +347,7 @@ mod scm {
                 name,
                 run_fn: Mutex::new(Some(run_fn)),
             })
-            .map_err(|_| "ServiceRunner SCM config already initialised")?;
+            .map_err(|_| color_eyre::eyre::eyre!("ServiceRunner SCM config already initialised"))?;
 
         windows_service::service_dispatcher::start(name, ffi_service_main)?;
         Ok(())
@@ -264,16 +362,20 @@ mod scm {
     }
 
     fn run_service() -> ServiceResult {
-        let cfg = SCM_CONFIG
-            .get()
-            .ok_or("ServiceRunner SCM config missing; dispatch() must run first")?;
+        let cfg = SCM_CONFIG.get().ok_or_else(|| {
+            color_eyre::eyre::eyre!("ServiceRunner SCM config missing; dispatch() must run first")
+        })?;
 
         let run_fn = cfg
             .run_fn
             .lock()
-            .map_err(|_| "ServiceRunner SCM run_fn mutex poisoned")?
+            .map_err(|_| color_eyre::eyre::eyre!("ServiceRunner SCM run_fn mutex poisoned"))?
             .take()
-            .ok_or("ServiceRunner SCM run_fn already taken (re-entrant dispatch?)")?;
+            .ok_or_else(|| {
+                color_eyre::eyre::eyre!(
+                    "ServiceRunner SCM run_fn already taken (re-entrant dispatch?)"
+                )
+            })?;
 
         let with_reload = matches!(run_fn, BoxedRunFn::WithReload(_));
         let token = tokio_util::sync::CancellationToken::new();
@@ -343,7 +445,7 @@ mod scm {
             process_id: None,
         })?;
 
-        result
+        result.map_err(report_from_boxed)
     }
 }
 
@@ -387,6 +489,68 @@ mod tests {
 
         let err = result.unwrap_err();
         assert_eq!(err.to_string(), "closure failed");
+    }
+
+    #[test]
+    fn repeated_runs_install_error_reporting_without_error() {
+        // `color_eyre::install()` errors on a second call; the Once guard in
+        // `install_error_reporting` must make back-to-back runs clean.
+        let _guard = SIGNAL_TEST_LOCK.lock().unwrap();
+        for _ in 0..2 {
+            ServiceRunner::new("test-install-once")
+                .run(|_shutdown| async move { Ok(()) })
+                .unwrap();
+        }
+    }
+
+    #[derive(Debug)]
+    struct RootCause;
+
+    impl std::fmt::Display for RootCause {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "port 11119 already in use")
+        }
+    }
+
+    impl std::error::Error for RootCause {}
+
+    #[derive(Debug)]
+    struct StartupError(RootCause);
+
+    impl std::fmt::Display for StartupError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "server startup failed")
+        }
+    }
+
+    impl std::error::Error for StartupError {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            Some(&self.0)
+        }
+    }
+
+    #[test]
+    fn run_error_renders_as_multi_line_report_with_source_chain() {
+        // The whole point of returning `Report` from `main`: a typed error's
+        // full `source()` chain must render over multiple lines, not as a
+        // single `Debug` line.
+        let _guard = SIGNAL_TEST_LOCK.lock().unwrap();
+        let result = ServiceRunner::new("test-report")
+            .run(|_shutdown| async move { Err(Box::new(StartupError(RootCause)) as RunError) });
+
+        let rendered = format!("{:?}", result.unwrap_err());
+        assert!(
+            rendered.contains("server startup failed"),
+            "report should contain the outer error, got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("port 11119 already in use"),
+            "report should contain the root cause, got:\n{rendered}"
+        );
+        assert!(
+            rendered.lines().count() > 1,
+            "report should span multiple lines, got:\n{rendered}"
+        );
     }
 
     #[test]

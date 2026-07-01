@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use rusty_photon_service_lifecycle::ServiceRunner;
+use rusty_photon_service_lifecycle::{report_from_boxed, ServiceResult, ServiceRunner};
 use tracing::{debug, info, Level};
 use ui_htmx::{build_router, load_config, AppState, Config};
 
@@ -31,7 +31,7 @@ fn parse_log_level(s: &str) -> Result<Level, String> {
         .map_err(|_| format!("Invalid log level: {s}. Use: trace, debug, info, warn, error"))
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> ServiceResult {
     let args = Args::parse();
 
     rusty_photon_service_lifecycle::init_tracing(args.log_level);
@@ -39,7 +39,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut config = match &args.config {
         Some(path) => {
             debug!("Loading configuration from {path:?}");
-            load_config(path)?
+            load_config(path).map_err(report_from_boxed)?
         }
         None => {
             debug!("Using default configuration");

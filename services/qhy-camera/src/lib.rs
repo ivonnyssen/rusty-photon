@@ -88,7 +88,9 @@ impl ServerBuilder {
         self
     }
 
-    pub async fn build(self) -> std::result::Result<BoundServer, Box<dyn std::error::Error>> {
+    pub async fn build(
+        self,
+    ) -> std::result::Result<BoundServer, Box<dyn std::error::Error + Send + Sync>> {
         // Eager SDK open + enumerate: a discovered camera's per-device connect
         // handshake happens later on `set_connected(true)`, but the device list is
         // fixed at build (so a reload re-enumerates). Zero cameras is not a hard
@@ -210,7 +212,7 @@ impl BoundServer {
     pub async fn start(
         self,
         shutdown: impl Future<Output = ()> + Send + 'static,
-    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let result = axum::serve(self.listener, self.router)
             .with_graceful_shutdown(shutdown)
             .await
