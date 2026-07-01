@@ -1014,11 +1014,19 @@ impl Camera for TouptekCamera {
 
     async fn is_pulse_guiding(&self) -> ASCOMResult<bool> {
         // Asynchronous: `pulse_guide` returns immediately and records a deadline;
-        // the pulse is in progress until that deadline passes (PG2).
-        Ok(match *self.state.pulse_guide_until.lock() {
-            Some(deadline) => SystemTime::now() < deadline,
-            None => false,
-        })
+        // the pulse is in progress until that deadline passes (PG2). Expiry is
+        // handled lazily here — an expired deadline is cleared on read — so there is
+        // no background timer that could race overlapping pulses into wiping a newer
+        // pulse's deadline early.
+        let mut guard = self.state.pulse_guide_until.lock();
+        match *guard {
+            Some(deadline) if SystemTime::now() < deadline => Ok(true),
+            Some(_) => {
+                *guard = None;
+                Ok(false)
+            }
+            None => Ok(false),
+        }
     }
 
     // --- exposure state ---------------------------------------------------------
@@ -1177,13 +1185,11 @@ impl Camera for TouptekCamera {
             .map_err(|e| ASCOMError::invalid_operation(format!("pulse guide task failed: {e}")))?
             .map_err(|e| ASCOMError::invalid_operation(format!("pulse guide failed: {e}")))?;
 
+        // Record the deadline only; `is_pulse_guiding` compares against it and
+        // clears it lazily once it expires. Deliberately no background clear task —
+        // that could race an earlier pulse's timer into wiping a *newer* pulse's
+        // deadline, making `IsPulseGuiding` report false too early (PG2).
         *self.state.pulse_guide_until.lock() = Some(SystemTime::now() + duration);
-
-        let state = Arc::clone(&self.state);
-        tokio::spawn(async move {
-            tokio::time::sleep(duration).await;
-            *state.pulse_guide_until.lock() = None;
-        });
         Ok(())
     }
 }

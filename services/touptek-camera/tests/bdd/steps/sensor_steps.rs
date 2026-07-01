@@ -35,10 +35,9 @@ async fn pixel_size_x_eq_y(world: &mut CameraWorld, _device: u32) {
     let camera = world.camera();
     let x = camera.pixel_size_x().await.unwrap();
     let y = camera.pixel_size_y().await.unwrap();
-    assert!(
-        (x - y).abs() < f64::EPSILON,
-        "PixelSizeX {x} != PixelSizeY {y}"
-    );
+    // A small absolute tolerance rather than `f64::EPSILON` (~2e-16): robust if the
+    // values ever come from real-hardware SDK floats instead of identical constants.
+    assert!((x - y).abs() < 1e-6, "PixelSizeX {x} != PixelSizeY {y}");
 }
 
 #[then(regex = r"^camera device (\d+) reports SensorType as (\w+)$")]
