@@ -2304,6 +2304,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "libtoupcam-sys"
+version = "0.1.0"
+dependencies = [
+ "bindgen",
+]
+
+[[package]]
 name = "libzwo-sys"
 version = "0.1.0"
 dependencies = [
@@ -5318,6 +5325,47 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2abe9b86193656635d2411dc43050282ca48aa31c2451210f4202550afb7526"
 dependencies = [
  "winnow",
+]
+
+[[package]]
+name = "touptek-camera"
+version = "0.1.0"
+dependencies = [
+ "ascom-alpaca",
+ "async-trait",
+ "axum",
+ "bdd-infra",
+ "clap",
+ "cucumber",
+ "derive_more",
+ "ndarray",
+ "parking_lot",
+ "reqwest 0.13.4",
+ "rp-tls",
+ "rusty-photon-config",
+ "rusty-photon-driver",
+ "rusty-photon-service-lifecycle",
+ "schemars 1.2.1",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-test",
+ "touptek-rs",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "touptek-rs"
+version = "0.1.0"
+dependencies = [
+ "libtoupcam-sys",
+ "rand 0.10.1",
+ "rayon",
+ "thiserror 2.0.18",
+ "tracing",
 ]
 
 [[package]]

@@ -1,0 +1,32 @@
+[package]
+name = "libtoupcam-sys"
+version = "0.1.0"
+edition = "2021"
+# Explicit, lower-than-workspace MSRV (dual-homed to crates.io, mirrors
+# libzwo-sys / ADR-010): the floor is set by the `bindgen 0.72` build-dependency
+# (its own MSRV is 1.70.0), which the build script runs to generate the FFI
+# bindings. The ToupTek SDK *binary* is NOT needed for a check-only build (set
+# TOUPCAM_SKIP_NATIVE_LINK=1); only libclang (for bindgen) is required.
+rust-version = "1.70.0"
+authors = ["Igor von Nyssen <igor@vonnyssen.com>"]
+license = "MIT OR Apache-2.0"
+# Canonical development home is the rusty-photon monorepo (mirrors ADR-010);
+# dual-homed to crates.io from crates/touptek-rs/libtoupcam-sys later.
+repository = "https://github.com/ivonnyssen/rusty-photon"
+description = "Raw FFI bindings (bindgen) for the ToupTek ToupCam camera SDK"
+keywords = ["touptek", "toupcam", "ffi", "astronomy", "camera"]
+categories = ["external-ffi-bindings", "hardware-support"]
+# `links` is a uniqueness marker for the native ToupTek SDK library this crate
+# links (libtoupcam / toupcam.dll). Coordinates the native link across Cargo AND
+# Bazel; requires build.rs.
+links = "toupcam"
+# Vendored SDK header lives under sdk/include/toupcam.h. bindgen reads it at
+# build time. The SDK *binary* is NOT vendored — it must be installed on the
+# system / provisioned in CI (see docs/plans/touptek-driver.md "Provisioning").
+# NOTE: licensing of the header/binary is deferred (see the plan) — vendoring
+# here follows INDI/INDIGO precedent for local dev only.
+
+[dependencies]
+
+[build-dependencies]
+bindgen = "0.72"

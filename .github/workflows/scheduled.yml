@@ -13,6 +13,15 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
 name: rolling
+# These jobs real-link the zwo + qhy SDKs (installed per-job below) but
+# skip-link touptek: its REAL native link is already verified by the `native`
+# workflow (the designated real-link gate, which covers the only platforms with a
+# blob), so provisioning the ToupTek SDK here too would be redundant. `simulation`
+# removes the camera, not the link, so this env is what omits libtoupcam-sys's
+# link directives — keeping the full-workspace Cargo build SDK-free for touptek
+# (crates/touptek-rs/libtoupcam-sys/build.rs).
+env:
+  TOUPCAM_SKIP_NATIVE_LINK: "1"
 jobs:
   # https://twitter.com/mycoliza/status/1571295690063753218
   nightly:

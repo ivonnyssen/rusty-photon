@@ -1,0 +1,211 @@
+load("@cr//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+
+exports_files(
+    ["Cargo.toml"],
+    visibility = ["//visibility:public"],
+)
+
+# touptek-camera links the native ToupTek SDK transitively via
+# touptek-rs → libtoupcam-sys, but the build is gated so the simulated path needs
+# NO SDK provisioned (see the README "Native dependency & build gating" and
+# docs/plans/touptek-driver.md). This is where touptek-camera DIVERGES from
+# zwo-camera, which links the SDK in every variant and relies on CI provisioning:
+#
+#   * The `_sim` chain links `//crates/touptek-rs:touptek-rs_sim`, whose sys crate
+#     (`libtoupcam-sys_sim`) runs bindgen with `TOUPCAM_SKIP_NATIVE_LINK=1` and so
+#     emits no link directives. The simulated code references no `Toupcam_*`
+#     symbols, so the sim library / binary / unit test LINK with no SDK present —
+#     `bazel test //...` (the default sim path) needs nothing provisioned.
+#   * The real `touptek-camera_lib` is an `rlib`: it compiles the real FFI code but
+#     DEFERS linking, so it builds without the SDK too. The real `rust_binary` (the
+#     only target that actually links libtoupcam) is intentionally NOT defined yet —
+#     defining it would make `bazel build //...` fail to link locally (and in the
+#     default CI Bazel suite) with no SDK provisioned, forfeiting the SDK-free build.
+#     The real Cargo link is already exercised by the `native.yml` `touptek` job
+#     (Linux/macOS/Windows); a Bazel SDK-linking `rust_binary` behind a provisioned
+#     SDK is the remaining Bazel-side follow-up.
+#
+# Parity is directory-level, so the real `rust_library` already covers the crate.
+# The BDD + ConformU targets spawn the `touptek-camera_sim` binary, which skip-links
+# the SDK via the `_sim` chain, so they RUN under Bazel with no SDK. The full `Camera`
+# surface is implemented, so the `bdd` scenarios run for real (the runner skips only
+# scenarios explicitly tagged `@wip`).
+#
+# NOTE on features: Bazel `crate_features` is LITERAL — it does NOT expand Cargo's
+# `mock = ["simulation"]`. touptek-camera gates its sim backend on
+# `feature = "simulation"`, so every sim target lists `simulation` explicitly
+# (listing `mock` too keeps parity with `cargo --features mock`).
+
+_INTRA_WORKSPACE_DEPS = [
+    "//crates/rp-tls:rp-tls",
+    "//crates/rusty-photon-config:rusty-photon-config",
+    "//crates/rusty-photon-driver:rusty-photon-driver",
+    "//crates/rusty-photon-service-lifecycle:rusty-photon-service-lifecycle",
+]
+
+# Real SDK variant (rlib): compiles the real touptek-rs FFI paths via the real
+# `//crates/touptek-rs` library. An rlib does not link, so it builds with libclang
+# alone (no SDK). touptek-rs is first-party (not `@cr`), so it is named explicitly.
+rust_library(
+    name = "touptek-camera_lib",
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = ["src/main.rs"],
+    ),
+    aliases = aliases(),
+    crate_name = "touptek_camera",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//visibility:public"],
+    deps = _INTRA_WORKSPACE_DEPS + ["//crates/touptek-rs"] + all_crate_deps(normal = True),
+)
+
+# The `simulation`-backed (mock alias) library the unit-test / BDD / ConformU
+# targets build on. `testonly` because it links the `testonly` skip-link sys
+# variant via `:touptek-rs_sim`; Bazel propagates the constraint.
+rust_library(
+    name = "touptek-camera_lib_sim",
+    testonly = True,
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = ["src/main.rs"],
+    ),
+    aliases = aliases(),
+    crate_features = [
+        "mock",
+        "simulation",
+    ],
+    crate_name = "touptek_camera",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    deps = _INTRA_WORKSPACE_DEPS + ["//crates/touptek-rs:touptek-rs_sim"] + all_crate_deps(normal = True),
+)
+
+# The simulated binary: `cargo run -p touptek-camera --features simulation` and
+# (from Phase D) the binary the BDD / ConformU suites spawn. Skip-links the SDK
+# via the sim chain, so it builds with no SDK.
+rust_binary(
+    name = "touptek-camera_sim",
+    testonly = True,
+    srcs = ["src/main.rs"],
+    aliases = aliases(),
+    crate_features = [
+        "mock",
+        "simulation",
+    ],
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    # Pin CARGO_PKG_NAME to the Cargo package name (rules_rust defaults it to the
+    # Bazel target name), matching the other services.
+    rustc_env = {"CARGO_PKG_NAME": "touptek-camera"},
+    deps = [":touptek-camera_lib_sim"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+)
+
+# The crate's own unit tests, run under Bazel against the sim variant (the
+# `#[cfg(all(test, feature = "simulation"))]` end-to-end tests need it; the
+# un-gated tests — config defaults, identity minting — run regardless). It links
+# the skip-link sim chain, so it needs no SDK.
+rust_test(
+    name = "touptek-camera_unit_test",
+    size = "small",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate = ":touptek-camera_lib_sim",
+    # Set explicitly for TWO reasons: (1) rust_test does NOT inherit
+    # `crate_features` from the `crate` it wraps; (2) Bazel `crate_features` is
+    # literal — it does NOT expand Cargo's `mock = ["simulation"]`.
+    crate_features = [
+        "mock",
+        "simulation",
+    ],
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+# ConformU compliance test: launches the sim binary and runs the ConformU CLI
+# against it. Skipped without `CONFORMU_PATH`; tagged `conformu`. Skip-links the
+# SDK via `:touptek-camera_sim`, so it needs no SDK. A 0-issues pass is the Phase F
+# target; the harness is wired now to match the other camera services.
+rust_test(
+    name = "conformu_integration",
+    size = "large",
+    srcs = ["tests/conformu_integration.rs"],
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate_features = [
+        "mock",
+        "simulation",
+        "conformu",
+    ],
+    data = [":touptek-camera_sim"],
+    edition = "2021",
+    env = {
+        "TOUPTEK_CAMERA_BINARY": "$(rootpath :touptek-camera_sim)",
+        "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :touptek-camera_sim)",
+    },
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    rustc_env = {"CARGO_PKG_NAME": "touptek-camera"},
+    tags = ["conformu"],
+    deps = [
+        ":touptek-camera_lib_sim",
+        "//crates/bdd-infra:bdd-infra_conformu",
+    ] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+# BDD suite: spawns the sim binary and drives it through the typed ascom-alpaca
+# Camera client. Tagged `bdd`. The full `Camera` surface is implemented, so the
+# `filter_run_and_exit` runner runs the scenarios for real, skipping only any
+# scenario explicitly tagged `@wip` (an opt-in escape hatch for future WIP work).
+rust_test(
+    name = "bdd",
+    size = "small",
+    srcs = ["tests/bdd.rs"] + glob(["tests/bdd/**/*.rs"]),
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate_root = "tests/bdd.rs",
+    data = [
+        "Cargo.toml",
+        ":touptek-camera_sim",
+    ] + glob(["tests/features/**"]),
+    edition = "2021",
+    env = {
+        "BDD_PACKAGE_DIR": "services/touptek-camera",
+        "TOUPTEK_CAMERA_BINARY": "$(rootpath :touptek-camera_sim)",
+        "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :touptek-camera_sim)",
+    },
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    # bdd-infra derives {PKG_UPPER_SNAKE}_BINARY from CARGO_PKG_NAME; it must be
+    # the service name, not the crate name ("bdd").
+    rustc_env = {"CARGO_PKG_NAME": "touptek-camera"},
+    tags = ["bdd"],
+    use_libtest_harness = False,
+    deps = [
+        ":touptek-camera_lib_sim",
+        "//crates/bdd-infra",
+    ] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)

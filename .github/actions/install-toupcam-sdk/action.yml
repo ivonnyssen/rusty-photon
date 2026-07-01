@@ -1,0 +1,276 @@
+name: Install ToupTek ToupCam SDK
+description: >-
+  Install the ToupTek ToupCam camera SDK (libtoupcam) plus the
+  libusb-1.0 / libudev / libclang prerequisites so the `touptek-camera` service
+  can link the REAL (non-simulation) FFI path. The simulation path links nothing
+  (`TOUPCAM_SKIP_NATIVE_LINK=1`) and needs NO SDK, so this action is only for the
+  real-link legs (the `native.yml` nightly, the Pi nightly, a real-hardware
+  ConformU run). See docs/services/touptek-camera.md "Native dependency & build
+  gating" and docs/plans/touptek-driver.md.
+
+  SOURCE: Linux/macOS pull ToupTek's prebuilt blobs from the INDI mirror
+  (indi-3rdparty/libtoupcam) — the same de-facto-permitted footing INDI and
+  INDIGO already rely on (the SDK ships no written redistribution grant;
+  licensing is DEFERRED in this plan — see the plan's "Licensing (deferred)").
+  INDI/INDIGO ship NO Windows blob, so the Windows path pulls ToupTek's vendor
+  SDK zip from `windows_sdk_url` (defaults to ToupTek's stable rolling "latest"
+  download; set "" to self-skip Windows).
+
+  Modeled on `.github/actions/install-zwo-sdk` (ADR-010's "reference for any
+  future bindgen-based *-sys crate"); the two pin the same indi-3rdparty `ref`.
+
+inputs:
+  ref:
+    description: >-
+      indi-3rdparty git ref for the vendored ToupTek `.bin` shared libraries
+      (Linux/macOS). INDI vendors ToupTek's upstream prebuilt blobs under
+      libtoupcam/<arch>/libtoupcam.bin. Pinned to a commit SHA (not a moving
+      branch) so the native SDK bits are reproducible and can't change without a
+      repo edit; bump it to adopt a newer ToupTek SDK. (The same repo + commit
+      the install-zwo-sdk action pins, so the two stay in lockstep.)
+    default: b0802f28055b67aa6a99580d260c3bb4c27eba4b
+  prefix:
+    description: Install prefix for the SDK library + header (Linux/macOS).
+    default: /usr/local
+  sudo:
+    description: >-
+      Whether the Linux path may use sudo (default "true"). The default
+      apt-installs the libusb/libudev/clang prerequisites and writes the SDK blob
+      into `prefix` (/usr/local) + ldconfig — correct for GitHub-hosted x86
+      runners. Set "false" for the sudo-LESS self-hosted Pi nightly runner: the
+      blob is staged under $RUNNER_TEMP, `-lusb-1.0`/`-ludev` are resolved by
+      symlinking the system *runtime* libs into that dir (no -dev package), and
+      TOUPCAM_SDK_LIB_DIR + LD_LIBRARY_PATH are exported instead of touching
+      /usr/local. In sudo-free mode the host must already provide clang/libclang
+      (bindgen) and the libusb-1.0 runtime. Mirrors install-zwo-sdk's sudo-free
+      Pi path.
+    default: "true"
+  windows_sdk_url:
+    # Reproducibility note: INDI and INDIGO vendor only Linux/macOS ToupTek blobs —
+    # neither ships a Windows DLL. ToupTek publishes the Windows SDK from its own
+    # download centre via a STABLE rolling redirect (download.php?soft=toupcamsdk)
+    # that always serves the latest dated zip (e.g. toupcamsdk.20250722.zip,
+    # content-type application/zip, no login/form). Like ZWO's "latest" CDN link
+    # there is no versioned/immutable URL to pin or checksum, so the default below
+    # is that rolling URL — the Windows real-link leg works out of the box, exactly
+    # as install-zwo-sdk does. Override it to pin a mirror if/when ToupTek offers a
+    # stable artifact; set it to "" to self-skip Windows (e.g. to avoid
+    # auto-fetching the SDK). Track upstream before relying on Windows CI for
+    # bit-for-bit reproducibility (the same caveat install-zwo-sdk carries).
+    description: ToupTek Windows ToupCam SDK zip URL (rolling "latest"; "" → Windows skipped).
+    default: https://www.touptekphotonics.com/downloads/software/download.php?soft=toupcamsdk
+
+runs:
+  using: composite
+  steps:
+    - name: Install libusb + clang (Linux)
+      if: runner.os == 'Linux' && inputs.sudo == 'true'
+      shell: bash
+      run: |
+        sudo apt-get update -qq
+        # libusb-1.0-0-dev: libtoupcam-sys links `-lusb-1.0` on Linux.
+        # libudev-dev: libtoupcam-sys links `-ludev`; without the -dev package the
+        #   unversioned libudev.so symlink is missing and linking fails with
+        #   "unable to find library -ludev".
+        # clang/libclang-dev: bindgen (in libtoupcam-sys' build script) needs libclang.
+        sudo apt-get install -y --no-install-recommends \
+          libusb-1.0-0-dev \
+          libudev-dev \
+          clang \
+          libclang-dev
+
+    - name: Install llvm (macOS)
+      if: runner.os == 'macOS'
+      shell: bash
+      run: |
+        # bindgen needs libclang; surface Homebrew's llvm to subsequent steps.
+        # libtoupcam talks USB via IOKit/CoreFoundation on macOS (NOT libusb — see
+        # libtoupcam-sys/build.rs), so there is no libusb dependency to install.
+        brew install llvm
+        echo "LIBCLANG_PATH=$(brew --prefix llvm)/lib" >> "$GITHUB_ENV"
+
+    - name: Download + install the ToupTek SDK (Linux/macOS)
+      # Linux uses this sudo path only when sudo == 'true'; the sudo-free Linux
+      # path is the dedicated step below. macOS always uses this path.
+      if: runner.os == 'macOS' || (runner.os == 'Linux' && inputs.sudo == 'true')
+      shell: bash
+      env:
+        PREFIX: ${{ inputs.prefix }}
+        REF: ${{ inputs.ref }}
+      run: |
+        set -euo pipefail
+        BASE="https://github.com/indilib/indi-3rdparty/raw/${REF}/libtoupcam"
+        # INDI keeps ONE universal dylib for macOS (Apple-Silicon + Intel) under
+        # mac/, and per-arch Linux blobs under x64/ and arm64/.
+        case "${{ runner.os }}-${{ runner.arch }}" in
+          Linux-X64)    ARCH=x64 ;;
+          Linux-ARM64)  ARCH=arm64 ;;
+          macOS-ARM64)  ARCH=mac ;;
+          macOS-X64)    ARCH=mac ;;
+          *) echo "::error::install-toupcam-sdk: unsupported arch ${{ runner.os }}-${{ runner.arch }}"; exit 1 ;;
+        esac
+        echo "install-toupcam-sdk: arch=$ARCH prefix=$PREFIX ref=$REF"
+        sudo install -d "$PREFIX/lib" "$PREFIX/include"
+
+        # Header + LGPL packaging notice. bindgen reads the copy vendored inside
+        # libtoupcam-sys, so the header is for completeness; the COPYING.LGPL notice
+        # (INDI's packaging glue, not the ToupTek blob's license) travels with it.
+        sudo curl -fsSL "$BASE/toupcam.h"    -o "$PREFIX/include/toupcam.h"
+        sudo curl -fsSL "$BASE/COPYING.LGPL" -o "$PREFIX/include/toupcam.COPYING.LGPL" || true
+
+        # Shared library. INDI's `.bin` is ToupTek's upstream `.so`/`.dylib`;
+        # install under the linker name so `-ltoupcam` resolves.
+        if [[ "${{ runner.os }}" == "macOS" ]]; then
+          EXT=dylib
+        else
+          EXT=so
+        fi
+        sudo curl -fsSL "$BASE/$ARCH/libtoupcam.bin" -o "$PREFIX/lib/libtoupcam.$EXT"
+
+        if [[ "${{ runner.os }}" == "macOS" ]]; then
+          # macOS dylibs ship with an install_name that must match the on-disk path
+          # before they will link (INDI automates this). libtoupcam uses
+          # IOKit/CoreFoundation, not libusb, so there is NO @rpath/libusb reference
+          # to rewrite (unlike libASICamera2).
+          sudo install_name_tool -id "$PREFIX/lib/libtoupcam.dylib" "$PREFIX/lib/libtoupcam.dylib"
+        else
+          # udev rule for the ToupTek USB VID (+ OEM rebrands) so a real camera
+          # enumerates without root. Harmless on a runner with no device; needed on
+          # a real-hardware runner. Best-effort — hosted runners may lack a
+          # controllable udevd.
+          sudo curl -fsSL "$BASE/99-toupcam.rules" -o /etc/udev/rules.d/99-toupcam.rules || true
+          sudo udevadm control --reload-rules 2>/dev/null || true
+          command -v ldconfig >/dev/null 2>&1 && sudo ldconfig || true
+        fi
+        echo "install-toupcam-sdk: installed libtoupcam under $PREFIX/lib"
+
+    - name: Provision ToupTek SDK (Linux, sudo-free)
+      # The sudo-LESS self-hosted Pi nightly runner cannot apt-install the -dev
+      # packages or write to /usr/local. Stage the blob under $RUNNER_TEMP and
+      # resolve every -l from that one dir, then export TOUPCAM_SDK_LIB_DIR (build.rs
+      # adds it to the link search ahead of /usr/local/lib) + LD_LIBRARY_PATH.
+      if: runner.os == 'Linux' && inputs.sudo != 'true'
+      shell: bash
+      env:
+        REF: ${{ inputs.ref }}
+      run: |
+        set -euo pipefail
+        BASE="https://github.com/indilib/indi-3rdparty/raw/${REF}/libtoupcam"
+        case "${{ runner.arch }}" in
+          ARM64) ARCH=arm64 ;;
+          X64)   ARCH=x64 ;;
+          *) echo "::error::install-toupcam-sdk: unsupported sudo-free arch ${{ runner.arch }}"; exit 1 ;;
+        esac
+        LIBDIR="${RUNNER_TEMP:-/tmp}/toupcam-sdk/lib"
+        INCDIR="${RUNNER_TEMP:-/tmp}/toupcam-sdk/include"
+        mkdir -p "$LIBDIR" "$INCDIR"
+        echo "install-toupcam-sdk (sudo-free): arch=$ARCH libdir=$LIBDIR ref=$REF"
+
+        # Header for completeness; bindgen reads libtoupcam-sys' vendored copy.
+        curl -fsSL "$BASE/toupcam.h" -o "$INCDIR/toupcam.h"
+
+        # ToupTek's libtoupcam.so carries SONAME `libtoupcam.so` (unversioned), so a
+        # consumer's NEEDED entry is the bare name — hence the LD_LIBRARY_PATH export
+        # below so the nextest / BDD binaries load it at runtime.
+        curl -fsSL "$BASE/$ARCH/libtoupcam.bin" -o "$LIBDIR/libtoupcam.so"
+
+        # `-lusb-1.0` / `-ludev` normally need the unversioned linker-name .so from
+        # libusb-1.0-0-dev / libudev-dev. Without sudo we cannot apt-install those,
+        # so symlink the linker name to the system *runtime* .so inside our own
+        # search dir. build.rs emits TOUPCAM_SDK_LIB_DIR's -L first and a single -L
+        # resolves all -l, so this satisfies the link with no -dev package.
+        # (--as-needed then drops the unused libudev/libusb NEEDED entries.)
+        link_runtime_lib() {
+          soname="$1"; linkname="$2"; pkg="$3"; found=""
+          if command -v ldconfig >/dev/null 2>&1; then
+            # `|| true`: with pipefail a failing `ldconfig -p` makes this assignment
+            # non-zero, which under `set -e` would abort before the directory-scan
+            # fallback below. Swallow it so the fallback runs.
+            found="$(ldconfig -p 2>/dev/null | awk -v s="$soname" '$1 == s { print $NF; exit }')" || true
+          fi
+          if [ -z "$found" ]; then
+            for d in /usr/lib/aarch64-linux-gnu /lib/aarch64-linux-gnu \
+                     /usr/lib/x86_64-linux-gnu /usr/lib /lib; do
+              if [ -e "$d/$soname" ]; then found="$d/$soname"; break; fi
+            done
+          fi
+          if [ -z "$found" ]; then
+            echo "::error::install-toupcam-sdk: required system library $soname not found. The sudo-free path symlinks against host libraries provisioned once at runner setup (scripts/setup-pi-runner.sh §1 / docs/skills/raspberry-pi-runner.md). Install the package that provides $soname and re-run: sudo apt-get install -y $pkg"
+            exit 1
+          fi
+          ln -sf "$found" "$LIBDIR/$linkname"
+          echo "install-toupcam-sdk (sudo-free): $linkname -> $found"
+        }
+        # libusb-1.0-0 (runtime) provides libusb-1.0.so.0 — shared with the QHYCCD/ZWO
+        # sudo-free link path, so no -dev package is needed; libudev.so.1 ships with
+        # systemd (libudev1).
+        link_runtime_lib libusb-1.0.so.0 libusb-1.0.so libusb-1.0-0
+        link_runtime_lib libudev.so.1   libudev.so    libudev1
+
+        {
+          echo "TOUPCAM_SDK_LIB_DIR=$LIBDIR"
+          echo "LD_LIBRARY_PATH=$LIBDIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+        } >> "$GITHUB_ENV"
+        echo "install-toupcam-sdk (sudo-free): exported TOUPCAM_SDK_LIB_DIR + LD_LIBRARY_PATH=$LIBDIR"
+
+    - name: Install the ToupTek SDK (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      env:
+        SDK_URL: ${{ inputs.windows_sdk_url }}
+      run: |
+        $ErrorActionPreference = "Stop"
+
+        # INDI/INDIGO ship no Windows ToupTek blob; the Windows SDK comes from
+        # ToupTek's own download centre via `windows_sdk_url`. Without it there is
+        # nothing to install, so self-skip with a clear warning rather than fail
+        # (the later cargo link step will surface a missing-toupcam.lib error if a
+        # real Windows link is actually attempted without provisioning).
+        if ([string]::IsNullOrWhiteSpace($env:SDK_URL)) {
+          Write-Host "::warning::install-toupcam-sdk: windows_sdk_url is unset and INDI/INDIGO ship no Windows ToupTek blob - skipping. Supply the ToupTek Windows SDK zip URL to enable the Windows real-link leg."
+          exit 0
+        }
+
+        # bindgen needs libclang. The windows runner image ships LLVM; surface it,
+        # installing it only if missing.
+        $llvm = "C:\Program Files\LLVM\bin"
+        if (-not (Test-Path "$llvm\libclang.dll")) {
+          choco install llvm --no-progress -y
+        }
+        "LIBCLANG_PATH=$llvm" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+        $work    = Join-Path $env:RUNNER_TEMP "toupcam-sdk"
+        $extract = Join-Path $work "extract"
+        $libdir  = Join-Path $work "lib"
+        New-Item -ItemType Directory -Force -Path $extract, $libdir | Out-Null
+
+        $zip = Join-Path $env:RUNNER_TEMP "toupcam-sdk.zip"
+        Write-Host "install-toupcam-sdk: downloading ToupTek Windows SDK"
+        Invoke-WebRequest -Uri $env:SDK_URL -OutFile $zip
+        Expand-Archive -Path $zip -DestinationPath $extract -Force
+
+        # Stage the x64 import lib + DLL under the linker name libtoupcam-sys expects
+        # (`-ltoupcam` -> toupcam.lib / toupcam.dll). ToupTek's zip is flat (the libs
+        # live directly under win\<arch>\, no nested SDK zip to extract unlike ZWO),
+        # but it ships several x64 variants. Pick the classic Win32 DESKTOP x64 build
+        # (win\x64\) by excluding win32/x86, every arm* variant, AND the WinRT/UWP
+        # builds (win\winrt\* — a different ABI not for a desktop .exe; win\winrt\x64
+        # would otherwise sort/enumerate ahead of win\x64 and be picked). Then prefer
+        # an \x64\ path among whatever survives.
+        function Stage($pattern, $target) {
+          $hit = Get-ChildItem -Path $extract -Recurse -Filter $pattern -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -notmatch '(?i)win32|\\x86\\|\\arm|winrt' } |
+            Sort-Object { $_.FullName -notmatch '(?i)\\x64\\|amd64' } |
+            Select-Object -First 1
+          if (-not $hit) { throw "install-toupcam-sdk: $pattern not found in the Windows SDK zip" }
+          Copy-Item $hit.FullName (Join-Path $libdir $target) -Force
+          Write-Host "install-toupcam-sdk: staged $($hit.FullName) -> $target"
+        }
+        Stage "toupcam.lib" "toupcam.lib"
+        Stage "toupcam.dll" "toupcam.dll"
+
+        # libtoupcam-sys' Windows branch links by name and relies on
+        # TOUPCAM_SDK_LIB_DIR for the search path; the DLL must be on PATH at runtime.
+        "TOUPCAM_SDK_LIB_DIR=$libdir" | Out-File -FilePath $env:GITHUB_ENV -Append
+        $libdir | Out-File -FilePath $env:GITHUB_PATH -Append
+        Write-Host "install-toupcam-sdk: TOUPCAM_SDK_LIB_DIR=$libdir (also on PATH for the DLL)"

@@ -1,0 +1,43 @@
+[package]
+name = "touptek-rs"
+version = "0.1.0"
+edition = "2021"
+# Lower-than-workspace MSRV (dual-homed to crates.io, mirrors zwo-rs / ADR-010).
+# The build chain bottoms out at libtoupcam-sys's `bindgen 0.72` (MSRV 1.70.0);
+# this wrapper's honest floor is 1.73.0 (it calls `usize::div_ceil`). The nightly
+# publish-readiness check reports the true minimum via `cargo msrv find`.
+rust-version = "1.73.0"
+authors = ["Igor von Nyssen <igor@vonnyssen.com>"]
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+# Canonical development home is the rusty-photon monorepo (mirrors ADR-010); the
+# crate is still published to crates.io from crates/touptek-rs (dual-home).
+repository = "https://github.com/ivonnyssen/rusty-photon"
+description = "Safe Rust bindings for the ToupTek ToupCam camera SDK"
+keywords = ["touptek", "toupcam", "astronomy", "camera", "ffi"]
+categories = ["api-bindings", "hardware-support"]
+# Package metadata stays explicit (NOT `*.workspace = true`) so the crate releases
+# on its own cadence; shared *dependencies* inherit from the workspace (Rule 10).
+
+# Marks this crate (+ its nested FFI sub-crate) for the nightly publish-readiness
+# check. needs-libclang = true: libtoupcam-sys's build script runs bindgen.
+[package.metadata.publish-readiness]
+sys-crate = "libtoupcam-sys"
+skip-link-env = "TOUPCAM_SKIP_NATIVE_LINK"
+needs-libclang = true
+
+[features]
+default = []
+# Mirrors zwo-rs/qhyccd-rs: a hardware-free, in-Rust simulated camera for
+# development and tests. Like those, this removes the *camera*, not the SDK
+# *link* — the native SDK still links when the feature is enabled (build with
+# TOUPCAM_SKIP_NATIVE_LINK=1 to link nothing). rayon is carried for parity with
+# the workspace sim backends / the Bazel `@cr` feature-unification nudge (Rule 10).
+simulation = ["rand", "rayon"]
+
+[dependencies]
+libtoupcam-sys = { version = "0.1.0", path = "libtoupcam-sys" }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+rand = { workspace = true, optional = true }
+rayon = { workspace = true, optional = true }

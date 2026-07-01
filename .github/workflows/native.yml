@@ -18,6 +18,15 @@
 #   ZWO_SKIP_NATIVE_LINK=1 and never links the SDK at all. So this is the ONLY
 #   job that links + loads the real ZWO SDK, and it adds a Linux runtime smoke.
 #
+# - **touptek-camera / touptek-rs / libtoupcam-sys** are like zwo (the rest of CI
+#   skip-links via TOUPCAM_SKIP_NATIVE_LINK=1), but run in a SEPARATE `touptek` job
+#   on all three OSes: Linux/macOS pull the SDK from the INDI mirror, while Windows
+#   pulls ToupTek's own vendor SDK (install-toupcam-sdk's default rolling URL —
+#   INDI/INDIGO ship no Windows blob). That job is the bring-up gate for the real
+#   ToupTek link and ALSO runs at PR time (the qhy/zwo `build` job stays
+#   nightly/push-only) so the action can be exercised on a PR. See
+#   docs/plans/touptek-driver.md Phase F.
+#
 # (Bazel's real qhyccd-rs/zwo-rs variants build-enforce the lib halves; the Pi
 # nightly covers linux-arm64.)
 #
@@ -39,7 +48,20 @@ on:
       - "services/qhy-camera/**"
       - "crates/zwo-rs/**"
       - "services/zwo-camera/**"
+      - "crates/touptek-rs/**"
+      - "services/touptek-camera/**"
       - ".github/actions/install-zwo-sdk/**"
+      - ".github/actions/install-toupcam-sdk/**"
+      - ".github/workflows/native.yml"
+  # PR-time real-link check for the ToupTek bring-up only (runs the `touptek` job;
+  # the qhy/zwo `build` job is gated off pull_request below). Scoped to the touptek
+  # crates, the install-toupcam-sdk action, and this workflow so unrelated PRs are
+  # unaffected and the expensive qhy/zwo legs stay nightly/push-only.
+  pull_request:
+    paths:
+      - "crates/touptek-rs/**"
+      - "services/touptek-camera/**"
+      - ".github/actions/install-toupcam-sdk/**"
       - ".github/workflows/native.yml"
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
@@ -48,6 +70,11 @@ name: native
 jobs:
   build:
     name: native link / ${{ matrix.os }}
+    # qhy + zwo real link: nightly / dispatch / push-to-main only. PRs do not run
+    # this job (the touptek bring-up job below is the only PR-time native leg), so
+    # qhy/zwo stay covered exactly as before — the cron + push-to-main paths — and
+    # a touptek PR does not pay the full 3-OS qhy+zwo matrix.
+    if: github.event_name != 'pull_request'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -119,12 +146,74 @@ jobs:
         env:
           LD_LIBRARY_PATH: /usr/local/lib
 
+  # touptek-camera real link — its own job because the SDK comes from the INDI
+  # mirror (Linux/macOS only; INDI/INDIGO ship no Windows blob) and because it is
+  # the one native leg that runs at PR time. Isolated from the qhy/zwo `build` job
+  # so a ToupTek bring-up PR runs ONLY this (no qhy/zwo SDK installs to flake on).
+  touptek:
+    name: native link (touptek) / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # All three OSes: Linux/macOS link the INDI-mirror blob; Windows links
+        # ToupTek's vendor SDK (install-toupcam-sdk's default rolling URL).
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: native-touptek-${{ matrix.os }}
+
+      # Linux/macOS pull libtoupcam from the INDI mirror (the deferred-licensing
+      # footing — see docs/plans/touptek-driver.md "Licensing (deferred)"); Windows
+      # pulls ToupTek's own vendor SDK zip (the action's default rolling URL). The
+      # action installs libclang for bindgen and stages libtoupcam under the linker
+      # name `-ltoupcam` resolves (+ libusb/libudev on Linux); macOS gets the
+      # universal `mac/` dylib + an install_name fixup; Windows stages
+      # toupcam.lib/.dll and puts the DLL dir on PATH.
+      - name: Install ToupTek SDK
+        uses: ./.github/actions/install-toupcam-sdk
+
+      - name: cargo generate-lockfile
+        if: hashFiles('Cargo.lock') == ''
+        run: cargo generate-lockfile
+
+      # Real (non-simulation) link: DEFAULT features (no simulation), and the
+      # service WITHOUT --all-targets so its test-only `simulation` dev-dep can't
+      # feature-unify the simulated backend back onto the prod binary (same shape
+      # as qhy/zwo). The binding crates keep --all-targets to compile their real
+      # (non-simulation) tests.
+      - name: cargo build (touptek, real, no simulation)
+        # bash on every OS (Git Bash on Windows) so `set -e` fails the step on the
+        # FIRST failing command — otherwise pwsh may surface only the last line's
+        # exit code and mask a touptek-camera link failure, which is the whole point
+        # of the Windows leg.
+        shell: bash
+        run: |
+          cargo build --locked -p touptek-camera
+          cargo build --locked -p touptek-rs -p libtoupcam-sys --all-targets
+
+      # Linux runtime smoke: touptek-rs's non-`simulation` tests call the real SDK
+      # (Sdk::new, a 0-camera Toupcam_EnumV2 with no hardware), confirming it LOADS
+      # and basic FFI works — not just that it links. Linux only: the SDK is on the
+      # default loader path (/usr/local/lib via the sudo install); macOS would need
+      # DYLD wiring this job does not set, and the link check above already covers it.
+      - name: cargo test (real touptek-rs FFI smoke)
+        if: runner.os == 'Linux'
+        run: cargo test --locked -p touptek-rs --all-targets
+        env:
+          LD_LIBRARY_PATH: /usr/local/lib
+
   notify-on-failure:
     # Open or update a tracking issue when the nightly run fails so a real-link
     # regression surfaces without depending on someone reading scheduled-workflow
     # logs. Skipped on push and workflow_dispatch so manual runs do not
     # churn the issue.
-    needs: build
+    needs: [build, touptek]
     if: failure() && github.event_name == 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -140,8 +229,9 @@ jobs:
             const body = [
               `The nightly \`native\` workflow failed on at least one OS.`,
               ``,
-              `This is the only CI job that compiles + links the qhy AND zwo crates'`,
-              `REAL (non-\`simulation\`) paths against their installed SDKs. A failure`,
+              `This is the only CI workflow that compiles + links the qhy, zwo, AND`,
+              `touptek crates' REAL (non-\`simulation\`) paths against their installed`,
+              `SDKs. A failure`,
               `means a native-SDK link directive, a bindgen binding, or some`,
               `\`#[cfg(not(feature = "simulation"))]\` FFI code no longer compiles,`,
               `links, or loads against the SDK — the rest of CI builds the simulation`,
