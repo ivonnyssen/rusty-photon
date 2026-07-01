@@ -19,16 +19,18 @@ exports_files(
 #     `bazel test //...` (the default sim path) needs nothing provisioned.
 #   * The real `touptek-camera_lib` is an `rlib`: it compiles the real FFI code but
 #     DEFERS linking, so it builds without the SDK too. The real `rust_binary` (the
-#     only target that actually links libtoupcam) is intentionally NOT defined yet
-#     — it lands once the (now-drafted) `.github/actions/install-toupcam-sdk` is
-#     wired into a real-link workflow (Phase F). Defining it now would make
-#     `bazel build //...` fail to link locally with no SDK.
+#     only target that actually links libtoupcam) is intentionally NOT defined yet —
+#     defining it would make `bazel build //...` fail to link locally (and in the
+#     default CI Bazel suite) with no SDK provisioned, forfeiting the SDK-free build.
+#     The real Cargo link is already exercised by the `native.yml` `touptek` job
+#     (Linux/macOS/Windows); a Bazel SDK-linking `rust_binary` behind a provisioned
+#     SDK is the remaining Bazel-side follow-up.
 #
 # Parity is directory-level, so the real `rust_library` already covers the crate.
-# The BDD + ConformU targets (Phase D) spawn the `touptek-camera_sim` binary, which
-# skip-links the SDK via the `_sim` chain, so they RUN under Bazel with no SDK — the
-# `bdd` scenarios are committed `@wip` (the runner skips them) until Phase E. The
-# real `touptek-camera` `rust_binary` (the only SDK-linking target) is still Phase F.
+# The BDD + ConformU targets spawn the `touptek-camera_sim` binary, which skip-links
+# the SDK via the `_sim` chain, so they RUN under Bazel with no SDK. The full `Camera`
+# surface is implemented, so the `bdd` scenarios run for real (the runner skips only
+# scenarios explicitly tagged `@wip`).
 #
 # NOTE on features: Bazel `crate_features` is LITERAL — it does NOT expand Cargo's
 # `mock = ["simulation"]`. touptek-camera gates its sim backend on
@@ -168,9 +170,9 @@ rust_test(
 )
 
 # BDD suite: spawns the sim binary and drives it through the typed ascom-alpaca
-# Camera client. Tagged `bdd`. Phase D commits every scenario `@wip`, so the
-# `filter_run_and_exit` runner skips them and the suite passes trivially until
-# Phase E removes the tags.
+# Camera client. Tagged `bdd`. The full `Camera` surface is implemented, so the
+# `filter_run_and_exit` runner runs the scenarios for real, skipping only any
+# scenario explicitly tagged `@wip` (an opt-in escape hatch for future WIP work).
 rust_test(
     name = "bdd",
     size = "small",
