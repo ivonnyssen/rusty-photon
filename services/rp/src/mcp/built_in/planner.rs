@@ -1,5 +1,5 @@
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{CallToolResult, Content};
+use rmcp::model::{CallToolResult, ContentBlock};
 use rmcp::{tool, tool_router};
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -131,7 +131,7 @@ impl McpHandler {
                 // CallToolResult::error carries text content; we embed
                 // a small JSON payload so a planner plugin can pick out
                 // suggestions without string parsing.
-                Ok(CallToolResult::error(vec![Content::text(
+                Ok(CallToolResult::error(vec![ContentBlock::text(
                     serde_json::json!({
                         "error": "target_not_found",
                         "name": params.name,
@@ -173,7 +173,9 @@ impl McpHandler {
             Err(e) => return Ok(tool_error!("{}", e)),
         };
         match crate::planner::primitives::compute_alt_az(site, target, time) {
-            Ok(v) => Ok(CallToolResult::success(vec![Content::text(v.to_string())])),
+            Ok(v) => Ok(CallToolResult::success(vec![ContentBlock::text(
+                v.to_string(),
+            )])),
             Err(e) => Ok(tool_error!("{}", e)),
         }
     }
@@ -201,7 +203,9 @@ impl McpHandler {
             Err(e) => return Ok(tool_error!("{}", e)),
         };
         let v = crate::planner::primitives::compute_transit(site, target, date);
-        Ok(CallToolResult::success(vec![Content::text(v.to_string())]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(
+            v.to_string(),
+        )]))
     }
 
     #[tool(
@@ -242,7 +246,9 @@ impl McpHandler {
             date,
             params.min_alt_degrees,
         );
-        Ok(CallToolResult::success(vec![Content::text(v.to_string())]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(
+            v.to_string(),
+        )]))
     }
 
     #[tool(
@@ -276,7 +282,9 @@ impl McpHandler {
             Err(e) => return Ok(tool_error!("{}", e)),
         };
         let v = crate::planner::primitives::compute_meridian_flip(site, target, time, side);
-        Ok(CallToolResult::success(vec![Content::text(v.to_string())]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(
+            v.to_string(),
+        )]))
     }
 
     #[tool(
@@ -300,7 +308,9 @@ impl McpHandler {
             Err(e) => return Ok(tool_error!("{}", e)),
         };
         let v = crate::planner::primitives::get_sun_position(site, time);
-        Ok(CallToolResult::success(vec![Content::text(v.to_string())]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(
+            v.to_string(),
+        )]))
     }
 
     #[tool(
@@ -330,7 +340,9 @@ impl McpHandler {
             Err(e) => return Ok(tool_error!("{}", e)),
         };
         let v = crate::planner::primitives::get_twilight(site, date, kind);
-        Ok(CallToolResult::success(vec![Content::text(v.to_string())]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(
+            v.to_string(),
+        )]))
     }
 
     #[tool(
@@ -355,7 +367,9 @@ impl McpHandler {
             Err(e) => return Ok(tool_error!("{}", e)),
         };
         let v = crate::planner::primitives::get_moon_position(site, time);
-        Ok(CallToolResult::success(vec![Content::text(v.to_string())]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(
+            v.to_string(),
+        )]))
     }
 
     #[tool(
@@ -375,7 +389,9 @@ impl McpHandler {
             Err(e) => return Ok(tool_error!("{}", e)),
         };
         let v = crate::planner::primitives::compute_moon_separation(target, time);
-        Ok(CallToolResult::success(vec![Content::text(v.to_string())]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(
+            v.to_string(),
+        )]))
     }
 
     #[tool(description = "Local apparent sidereal time at the configured site. Requires `site`.")]
@@ -397,7 +413,9 @@ impl McpHandler {
             Err(e) => return Ok(tool_error!("{}", e)),
         };
         let v = crate::planner::primitives::get_local_sidereal_time(site, time);
-        Ok(CallToolResult::success(vec![Content::text(v.to_string())]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(
+            v.to_string(),
+        )]))
     }
 
     // -------------------------------------------------------------------
@@ -437,7 +455,7 @@ impl McpHandler {
                     view.name,
                 ),
                 crate::planner::catalog::ResolveOutcome::NotFound { suggestions } => {
-                    return Ok(CallToolResult::error(vec![Content::text(
+                    return Ok(CallToolResult::error(vec![ContentBlock::text(
                         serde_json::json!({
                             "error": "target_not_found",
                             "name": name,
@@ -466,7 +484,9 @@ impl McpHandler {
             time,
             self.default_min_altitude_degrees,
         ) {
-            Ok(v) => Ok(CallToolResult::success(vec![Content::text(v.to_string())])),
+            Ok(v) => Ok(CallToolResult::success(vec![ContentBlock::text(
+                v.to_string(),
+            )])),
             Err(e) => Ok(tool_error!("{}", e)),
         }
     }
@@ -505,7 +525,9 @@ impl McpHandler {
             self.default_min_altitude_degrees,
         );
         let v = crate::planner::convenience::next_target_view(rec);
-        Ok(CallToolResult::success(vec![Content::text(v.to_string())]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(
+            v.to_string(),
+        )]))
     }
 
     #[tool(
@@ -559,6 +581,8 @@ impl McpHandler {
             Err(e) => return Ok(tool_error!("failed to read mount side_of_pier: {}", e)),
         };
         let v = crate::planner::convenience::meridian_status_view(site, ra, dec, time, side);
-        Ok(CallToolResult::success(vec![Content::text(v.to_string())]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(
+            v.to_string(),
+        )]))
     }
 }

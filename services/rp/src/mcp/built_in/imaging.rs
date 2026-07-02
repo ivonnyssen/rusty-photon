@@ -1,5 +1,5 @@
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{CallToolResult, Content};
+use rmcp::model::{CallToolResult, ContentBlock};
 use rmcp::{tool, tool_router};
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -242,7 +242,7 @@ impl McpHandler {
             }
         }
 
-        Ok(CallToolResult::success(vec![Content::text(
+        Ok(CallToolResult::success(vec![ContentBlock::text(
             payload.to_string(),
         )]))
     }
@@ -364,7 +364,7 @@ impl McpHandler {
             }
         }
 
-        Ok(CallToolResult::success(vec![Content::text(
+        Ok(CallToolResult::success(vec![ContentBlock::text(
             payload.to_string(),
         )]))
     }
@@ -439,7 +439,7 @@ impl McpHandler {
             }
         }
 
-        Ok(CallToolResult::success(vec![Content::text(
+        Ok(CallToolResult::success(vec![ContentBlock::text(
             payload.to_string(),
         )]))
     }
@@ -506,7 +506,7 @@ impl McpHandler {
             }
         }
 
-        Ok(CallToolResult::success(vec![Content::text(
+        Ok(CallToolResult::success(vec![ContentBlock::text(
             payload.to_string(),
         )]))
     }
@@ -565,7 +565,7 @@ impl McpHandler {
             }
         }
 
-        Ok(CallToolResult::success(vec![Content::text(
+        Ok(CallToolResult::success(vec![ContentBlock::text(
             payload.to_string(),
         )]))
     }
