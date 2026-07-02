@@ -1,6 +1,6 @@
 use clap::Parser;
 use filemonitor::run_server_loop;
-use rusty_photon_service_lifecycle::ServiceRunner;
+use rusty_photon_service_lifecycle::{ServiceResult, ServiceRunner};
 use std::path::PathBuf;
 use tracing::{debug, Level};
 
@@ -22,7 +22,7 @@ struct Args {
     service: bool,
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> ServiceResult {
     let args = Args::parse();
 
     rusty_photon_service_lifecycle::init_tracing(args.log_level);

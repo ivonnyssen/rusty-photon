@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use rusty_photon_service_lifecycle::ServiceRunner;
+use rusty_photon_service_lifecycle::{ServiceResult, ServiceRunner};
 use sentinel::{load_config, Config, SentinelBuilder};
 use tracing::Level;
 
@@ -27,7 +27,7 @@ struct Args {
     log_level: Level,
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> ServiceResult {
     let args = Args::parse();
 
     rusty_photon_service_lifecycle::init_tracing(args.log_level);

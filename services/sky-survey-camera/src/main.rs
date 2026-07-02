@@ -1,5 +1,5 @@
 use clap::Parser;
-use rusty_photon_service_lifecycle::ServiceRunner;
+use rusty_photon_service_lifecycle::{ServiceResult, ServiceRunner};
 use sky_survey_camera::run_reloadable;
 use std::path::PathBuf;
 use tracing::{debug, Level};
@@ -19,7 +19,7 @@ struct Args {
     log_level: Level,
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> ServiceResult {
     let args = Args::parse();
 
     rusty_photon_service_lifecycle::init_tracing(args.log_level);
@@ -32,6 +32,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .run_with_reload(move |shutdown, reload| async move {
             run_reloadable(&config_path, shutdown, reload)
                 .await
-                .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })
+                .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })
         })
 }

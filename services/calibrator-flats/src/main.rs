@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use rusty_photon_service_lifecycle::ServiceRunner;
+use rusty_photon_service_lifecycle::{ServiceResult, ServiceRunner};
 use tracing::{debug, Level};
 
 #[derive(Parser)]
@@ -27,7 +27,7 @@ struct Cli {
     log_level: Level,
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> ServiceResult {
     let cli = Cli::parse();
 
     rusty_photon_service_lifecycle::init_tracing(cli.log_level);

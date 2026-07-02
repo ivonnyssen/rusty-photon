@@ -4,7 +4,7 @@ use tracing::debug;
 ///
 /// In interactive mode, prompts for the password twice for confirmation.
 /// With `--stdin`, reads a single line from stdin (for scripting and BDD tests).
-pub fn run(stdin_mode: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub fn run(stdin_mode: bool) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let password = if stdin_mode {
         debug!("reading password from stdin");
         let mut line = String::new();

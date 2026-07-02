@@ -77,7 +77,7 @@ pub struct AppState {
 impl AppState {
     /// Build the production state: an `AlpacaConfigClient` over a `reqwest`-backed
     /// `HttpClient` (CA trust + optional Basic auth) for every configured driver.
-    pub fn from_config(config: &Config) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn from_config(config: &Config) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let mut drivers = BTreeMap::new();
         for (service, target) in &config.drivers.0 {
             // Reject credentials embedded in the URL (`http://user:pass@host`).

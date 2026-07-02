@@ -125,7 +125,9 @@ impl Default for FocuserConfig {
 }
 
 /// Load configuration from a JSON file
-pub fn load_config(path: &Path) -> std::result::Result<Config, Box<dyn std::error::Error>> {
+pub fn load_config(
+    path: &Path,
+) -> std::result::Result<Config, Box<dyn std::error::Error + Send + Sync>> {
     let content = std::fs::read_to_string(path)?;
     let config: Config = serde_json::from_str(&content)?;
     Ok(config)
@@ -174,7 +176,7 @@ impl CliOverrides {
 pub fn load_effective_config(
     path: &Path,
     overrides: &CliOverrides,
-) -> std::result::Result<Config, Box<dyn std::error::Error>> {
+) -> std::result::Result<Config, Box<dyn std::error::Error + Send + Sync>> {
     let mut config = match std::fs::read_to_string(path) {
         Ok(content) => serde_json::from_str(&content)
             .map_err(|e| format!("config file {} is not valid JSON: {e}", path.display()))?,

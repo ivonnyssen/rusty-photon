@@ -22,7 +22,7 @@
 //! use phd2_guider::{Phd2Client, Phd2Config, SettleParams};
 //!
 //! #[tokio::main]
-//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 //!     let config = Phd2Config::default();
 //!     let client = Phd2Client::new(config);
 //!
