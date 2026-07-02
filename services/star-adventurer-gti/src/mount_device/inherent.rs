@@ -263,7 +263,7 @@ impl MountDevice {
                 ASCOMErrorCode::INVALID_VALUE,
                 format!(
                     "target altitude {target_alt:.3}° is below the configured \
-                     minimum altitude {floor}°"
+                     minimum altitude {floor:.3}°"
                 ),
             ));
         }

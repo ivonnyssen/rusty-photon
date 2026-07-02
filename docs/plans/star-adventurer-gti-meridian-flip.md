@@ -41,9 +41,10 @@
   `072cc72`. `flip_policy.enabled` still defaults `false` — operators
   opt in once they've replayed the validation locally.
 - **Phase 3 — altitude-based safety floor: IMPLEMENTED (2026-07-01,
-  branch `worktree-issue223`; PR pending).** Replaces the rectangular Dec envelope (now the
-  `MountConfig::dec_limits: DecLimits` struct — the field names in
-  §§3.3–3.5 below predate that refactor) with a single
+  branch `worktree-issue223`; PR #421).** Replaces the rectangular Dec
+  envelope (the former `MountConfig::dec_limits: DecLimits` struct,
+  removed by this phase — the `dec_min_degrees` / `dec_max_degrees`
+  field names in §§3.3–3.5 below predate even that struct) with a single
   `min_altitude_degrees` floor computed from HA + dec + site latitude.
   The rectangular envelope doesn't follow the tilted local-horizon
   circle on the celestial sphere; the altitude floor does. Independent

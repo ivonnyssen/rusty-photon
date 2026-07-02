@@ -711,7 +711,7 @@ async fn slew_async_refuses_ra_target_in_binding_zone() {
 }
 
 #[tokio::test]
-async fn sync_refuses_target_outside_safe_envelope() {
+async fn sync_refuses_target_below_altitude_floor() {
     // Sync runs the same envelope gates as slew: a below-floor
     // target (HA = −3 h, Dec = −40° at LAT 45°N → alt −4.1°) is
     // rejected before the encoder is touched.
