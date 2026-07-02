@@ -1,0 +1,734 @@
+# session-runner — Generic Workflow Orchestrator Design
+
+## Overview
+
+`session-runner` is an orchestrator plugin that executes **workflow
+documents** — declarative JSON descriptions of an imaging session — against
+`rp`'s MCP tool catalog. One generic engine replaces the need for a
+hand-written Rust orchestrator per session type: the deep-sky night, the
+flat-calibration run, and the twilight sky-flat session become documents,
+not binaries. Rust orchestrators (such as today's `calibrator-flats`)
+remain first-class citizens of the unchanged plugin protocol; the DSL is an
+addition, not a replacement.
+
+Decision record and phase plan:
+[`docs/plans/workflow-dsl.md`](../plans/workflow-dsl.md).
+
+### Tenets
+
+1. **Documents describe procedure and reaction, never choice or safety.**
+   Target/filter selection is delegated to `rp`'s planner tools; safety
+   enforcement belongs exclusively to `rp` and cannot be expressed, delayed,
+   or overridden by a document.
+2. **Position is derived, not stored.** The engine never persists "where it
+   is" in the tree. Resume re-executes the document from the root against
+   the persisted blackboard and live device state; documents are written
+   re-entrant (see [Re-entrancy Contract](#re-entrancy-contract)).
+3. **Everything validates before anything moves.** A document is checked
+   against the workflow schema, and every tool call in it is checked against
+   `rp`'s live tool catalog, before the first instruction runs. Authoring
+   errors surface at load, at the `/validate` endpoint, or at session start
+   — never mid-night.
+4. **Expressions are pure.** The bounded expression language reads document
+   state and computes values. It cannot perform I/O, call tools, loop, or
+   observe wall-clock time. Anything effectful is an instruction.
+5. **The document format is the API.** The published JSON Schema is the
+   contract for hand-authors, the future `ui-htmx` editor, and LLM
+   generation alike. The engine's internals may change; the format versions
+   deliberately.
+
+## Architecture
+
+`session-runner` is a standalone HTTP service following the orchestrator
+plugin protocol defined in [`rp.md`](rp.md): `rp` POSTs `/invoke` when a
+session starts, the plugin connects back to `rp`'s MCP server and drives the
+session with tool calls, and posts a completion when it finishes. In
+addition, `session-runner` subscribes to `rp`'s SSE event stream to feed
+trigger evaluation.
+
+```
+  rp (equipment gateway)              session-runner (generic orchestrator)
+  ┌─────────────────────┐             ┌──────────────────────────────┐
+  │                     │ POST /invoke│  load document               │
+  │  session start ─────┼────────────►│  validate vs schema + tools  │
+  │                     │             │  load/restore blackboard     │
+  │  MCP server    ◄────┼─────────────┤  execute procedure tree      │
+  │  /mcp               │  tool calls │   ├─ instructions            │
+  │                     │             │   └─ trigger actions         │
+  │  SSE            ────┼────────────►│  evaluate triggers           │
+  │  /api/events/       │   events    │                              │
+  │  subscribe          │             │                              │
+  │                     │             │                              │
+  │  REST API      ◄────┼─────────────┤  post completion             │
+  │  /api/plugins/      │  completion │                              │
+  │  {wf_id}/complete   │             │                              │
+  └─────────────────────┘             └──────────────────────────────┘
+```
+
+### Port
+
+11171 (configurable) — in the orchestrator-plugin range next to
+`calibrator-flats` (11170).
+
+## Workflow Documents
+
+A workflow document is a single JSON file. Top-level structure:
+
+```jsonc
+{
+  "version": 1,
+  "name": "deep-sky",
+  "description": "Classic multi-target deep-sky imaging session",
+  "parameters": {
+    "camera_id":   { "type": "string", "required": true },
+    "focuser_id":  { "type": "string", "required": true },
+    "dither_every": { "type": "integer", "default": 3 }
+  },
+  "estimated_duration": "8h",
+  "max_duration": "12h",
+  "triggers": [ /* trigger objects — see Triggers */ ],
+  "root": { "sequence": [ /* instructions — see Instructions */ ] }
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `version` | Format version. The engine rejects documents whose version it does not implement, naming the supported version(s) in the error. |
+| `name` / `description` | Identification for logs, events, and the completion payload. |
+| `parameters` | Declared invocation parameters. Each has a `type` (`string`, `integer`, `number`, `boolean`, `duration`), and either `required: true` or a `default`. Values supplied at invocation are type-checked against the declaration; missing required parameters fail validation before anything runs. Available to expressions as `params.*`. |
+| `estimated_duration` / `max_duration` | The acknowledgment durations returned to `rp` from `/invoke` (humantime strings). Optional; engine defaults apply when absent (see [Invocation](#invocation)). |
+| `triggers` | Document-global reactive rules, evaluated alongside the procedure tree. |
+| `root` | The procedure tree — a single container instruction. |
+
+### Instructions
+
+The v1 instruction vocabulary. Every instruction is a JSON object with
+exactly one *discriminant* key (`tool`, `sequence`, `repeat`, `if`, `set`,
+`try`, `wait`, `log`) plus the optional common keys `id` (a string used in
+logs and error messages) and `once` (see
+[Re-entrancy Contract](#re-entrancy-contract)). Unknown keys are a
+validation error — misspellings must not silently no-op.
+
+#### `tool` — call an MCP tool
+
+```jsonc
+{ "tool": "capture",
+  "args": { "camera_id": { "$expr": "params.camera_id" },
+            "duration": "300s" },
+  "retry": { "max_attempts": 3, "backoff": "10s" } }
+```
+
+- `args` values are **literal JSON by default**. A value that must be
+  computed is wrapped as `{ "$expr": "<expression>" }`. This keeps literal
+  strings (humantime durations, filter names) unambiguous and lets static
+  validation type-check every literal argument against the tool's JSON
+  Schema.
+- The tool's structured result becomes `result` for the **next** instruction
+  in the same block (see [Expressions](#expressions)).
+- Optional `retry`: on tool error, retry up to `max_attempts` total attempts
+  with a fixed `backoff` delay between attempts. Default: no retry.
+- A tool error (after retries) raises a workflow error that propagates
+  outward through enclosing `try` instructions (see `try`), ultimately
+  failing the workflow.
+- If the tool result carries a **correction** (`rp` returns
+  `pending_correction` on natural completion or `status: "aborted"` +
+  `correction` on an immediate correction, per `rp.md` § Corrections), the
+  engine fires the synthetic `correction_requested` trigger source (see
+  [Triggers](#triggers)) with the correction as the event payload, then
+  continues. An `aborted` tool result is **not** a workflow error — the
+  document decides how to react via a trigger.
+
+#### `sequence` — ordered container
+
+```jsonc
+{ "sequence": [ /* instructions, executed in order */ ] }
+```
+
+There is deliberately no parallel container in v1 (research finding:
+marginal value; device-level concurrency already lives inside `rp` tools
+such as `capture`-while-guiding).
+
+#### `repeat` — loop
+
+```jsonc
+{ "repeat": { "until": "abs(result.median_adu - session.target_adu) / session.target_adu <= 0.05",
+              "max_iterations": 10 },
+  "body": [ /* instructions */ ] }
+```
+
+- Exactly one of `until` (expression, checked **after** each pass), `while`
+  (expression, checked **before** each pass), or `count` (integer or
+  `$expr`) is required.
+- `max_iterations` is **required** alongside `until`/`while` — unbounded
+  loops are a validation error. When `max_iterations` is exhausted without
+  the condition being met, the loop *completes* and sets
+  `result.converged = false` (plus `result.iterations`); the document
+  decides whether that is fatal (an `if` + `fail` pattern) or a warning
+  (`log`). This mirrors `calibrator-flats`' non-converged-exposure warning
+  behavior.
+
+#### `if` — conditional
+
+```jsonc
+{ "if": "event.hfr > session.last_focus_hfr * 1.2",
+  "then": [ /* instructions */ ],
+  "else": [ /* optional */ ] }
+```
+
+#### `set` — write the blackboard
+
+```jsonc
+{ "set": { "session.last_focus_hfr": "result.best_hfr",
+           "session.target_adu": "result.max_adu * params.target_fraction" } }
+```
+
+- Keys must be `session.*` paths; values are always expressions.
+- `set` is the **only** way state crosses instruction boundaries or survives
+  a crash. `result` is transient by design — anything worth keeping is
+  copied to the blackboard explicitly, which makes the resume semantics
+  visible in the document itself.
+- Each `set` persists the blackboard atomically before the next instruction
+  runs (see [Blackboard](#blackboard-and-persistence)).
+
+#### `try` — cleanup and error handling
+
+```jsonc
+{ "try": [ /* body */ ],
+  "catch": [ /* optional: runs on body error; error.* in scope */ ],
+  "finally": [ /* optional: always runs */ ] }
+```
+
+- Semantics follow the `calibrator-flats` cleanup guard: `finally` runs
+  whether the body succeeded, failed, or was cancelled by safety — with the
+  caveat that after a safety cancellation `rp` has already secured the
+  equipment and torn down the MCP session, so `finally` instructions that
+  call tools will themselves fail; the engine runs them best-effort, logs
+  each failure, and does not let a `finally` failure mask the original
+  error.
+- `catch` handles the error (the workflow continues after the `try`) unless
+  it re-raises via `fail`. In `catch` and `finally` (on the error path),
+  expressions can read `error.message`, `error.instruction_id`, and
+  `error.tool` (null when the error was not a tool error).
+- `{ "fail": { "message": "<expression or literal string>" } }` is accepted
+  inside `catch`/`then`/`else`/anywhere an instruction is, and raises a
+  workflow error deliberately.
+
+#### `wait` — pause at a safe point
+
+```jsonc
+{ "wait": { "duration": "30s" } }
+{ "wait": { "until_event": "guide_settled", "timeout": "5m" } }
+{ "wait": { "until": "seconds_until(session.flip_at) <= 0", "poll_interval": "10s", "timeout": "2h" } }
+```
+
+- Exactly one of `duration`, `until_event` (an `rp` event name), or `until`
+  (expression re-evaluated every `poll_interval`, default `"10s"`).
+- `until_event` and `until` require a `timeout`; expiry raises a workflow
+  error. Triggers keep firing during a `wait` — a `wait` is one long safe
+  point.
+
+#### `log` — operator-visible message
+
+```jsonc
+{ "log": { "level": "info",
+           "message": "exposure converged",
+           "values": { "duration": "session.duration" } } }
+```
+
+`level` is `debug` (default) or `info`, matching the workspace logging rule
+(`info` only where the operator derives clear value). `values` entries are
+expressions, rendered into the structured log record.
+
+#### Reserved: `script`
+
+`{ "script": … }` is **reserved** for a future sandboxed Luau handler node
+(decision D3 in the plan). v1 validation rejects it with an explicit
+"reserved for a future format version" error rather than "unknown key", so
+documents written against a future version fail comprehensibly on an old
+engine.
+
+### Triggers
+
+Triggers are the reactive overlay: cross-cutting rules that fire while the
+procedure tree runs. They are declared at the document top level.
+
+```jsonc
+{
+  "id": "refocus-on-hfr-degradation",
+  "on": { "event": "exposure_complete" },
+  "when": "event.hfr != null && session.last_focus_hfr != null && event.hfr > session.last_focus_hfr * 1.2",
+  "while": "session.imaging == true",
+  "cooldown": "15m",
+  "do": [
+    { "tool": "auto_focus", "args": { /* … */ } },
+    { "set": { "session.last_focus_hfr": "result.best_hfr" } }
+  ]
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `id` | Required, unique within the document. Names the trigger in logs and in the `session._triggers.*` bookkeeping state. |
+| `on` | The source. `{ "event": "<rp event name>" }` — an envelope from the SSE stream; the envelope's `payload` becomes `event.*`. `{ "poll": { "tool": "<name>", "args": { … }, "interval": "30s" } }` — the engine calls the tool on the interval and the result becomes `event.*`. `{ "event": "correction_requested" }` — the synthetic source fired when a tool result carries a correction (payload: `event.action`, `event.reason`, `event.urgency`, `event.source`). |
+| `when` | Optional expression over `event.*` + the usual namespaces. The trigger fires only when it evaluates to `true`. Absent = always fire. |
+| `while` | Optional expression gate evaluated at fire time; lets a document scope a trigger to a phase via a blackboard flag (e.g. set `session.imaging = true` when the capture loop starts). This is the v1 substitute for container-scoped triggers, which are deferred. |
+| `cooldown` | Optional minimum interval between firings (humantime). Last-fired timestamps live in the blackboard, so cooldowns survive resume. |
+| `once` | Optional boolean: fire at most once per session (recorded in the blackboard). |
+| `do` | Instructions, same vocabulary as the tree (nested triggers excepted). |
+
+**Interleaving contract (safe points).** Trigger `do` blocks never preempt
+an in-flight instruction. When a trigger fires, its action is queued; queued
+actions run at the next **safe point** — after the current instruction
+completes, or continuously during a `wait`. Multiple queued triggers run in
+document order. A trigger whose action is queued or running does not queue
+again. Only `rp` (safety) and Sentinel (watchdog) ever abort an in-flight
+operation; a document that wants "stop the current exposure when X" reacts
+to the *correction* `rp` delivers rather than aborting on its own.
+
+**Poll lifecycle.** Poll triggers start when the workflow starts and stop
+when it completes or is cancelled. A poll whose tool call fails logs at
+`debug!` and skips that cycle — a flaky poll must not kill the session.
+
+### Expressions
+
+Expressions are strings in a small, pure, CEL-style language. They appear in
+`when` / `while` / `until` / `if` / `set` values / `$expr` wrappers /
+`fail.message` / `log.values`.
+
+**Namespaces** (read-only except via `set`):
+
+| Namespace | Contents | Lifetime |
+|-----------|----------|----------|
+| `params.*` | Invocation parameters after defaulting/type-check. | Session (immutable). |
+| `session.*` | The blackboard. | Session (persisted, survives crash/resume). |
+| `result.*` | Structured result of the immediately preceding instruction in the same block (`null` for the first instruction of a block). | One instruction. |
+| `event.*` | The triggering envelope payload (in trigger `when`/`do`) or poll result. | One trigger firing. |
+| `error.*` | `message`, `instruction_id`, `tool` inside `catch`/`finally`. | One error scope. |
+
+**Semantics:**
+
+- Types: `null`, boolean, number (f64), string, plus JSON arrays/objects
+  from tool results (member access and indexing only).
+- Operators: `== != < <= > >=`, `+ - * / %`, `&& || !`, `?:` (conditional),
+  parentheses.
+- Functions (v1): `abs`, `min`, `max`, `clamp(x, lo, hi)`, `floor`, `ceil`,
+  `round`, `seconds("1m30s")` (humantime string → f64 seconds),
+  `humantime(secs)` (f64 seconds → humantime string, for building tool
+  args), `has(session.x)` (path exists and is non-null),
+  `seconds_until("<RFC3339>")` (evaluated against the engine's clock at
+  evaluation time — the single sanctioned time observation, needed for
+  dawn/flip math).
+- **No** loops, user function definitions, assignment, tool calls, string
+  interpolation, or regular expressions. Anything effectful is an
+  instruction; anything algorithmic beyond this belongs in a built-in `rp`
+  tool or (future) a `script` node.
+- Accessing a missing path yields `null`; `null` in arithmetic or comparison
+  (other than `==`/`!=`) raises an expression error → workflow error at
+  that instruction. Authors guard with `has()` / `!= null` (as the trigger
+  example above does). This is deliberate: silent `null` propagation in a
+  system that moves telescopes is worse than a loud 2 a.m. error.
+- Division by zero raises. There is no implicit type coercion.
+
+The concrete implementation (the `cel-interpreter` crate vs a hand-rolled
+parser) is a Phase B spike; the semantics above are the contract either way.
+
+## Blackboard and Persistence
+
+The blackboard (`session.*`) is the workflow's only mutable state. It is a
+JSON object persisted to `<state_dir>/<session_id>.json` with the workspace
+atomic-write pattern (sibling temp file, fsync, rename, fsync parent
+directory — same as `rp`'s exposure documents).
+
+Writes happen after **every** mutation: each `set`, each `once` completion
+marker, each trigger bookkeeping update (cooldown timestamps, once flags).
+Mutations are small and infrequent (human-scale session cadence), so write
+amplification is a non-issue; the invariant "the file always reflects every
+completed `set`" is what makes tenet 2 sound.
+
+Engine bookkeeping lives under reserved keys the schema forbids documents
+from setting directly: `session._once.*` (completed once-markers),
+`session._triggers.<id>.*` (last-fired, fired-once flags).
+
+The file is deleted when a session completes and the completion has been
+acknowledged by `rp`; a leftover file at `/invoke` time for a **new**
+session (no `recovery` context, different `session_id`) is ignored and
+replaced.
+
+## Re-entrancy Contract
+
+Resume is re-execution: on a recovery invocation, the engine reloads the
+blackboard and runs the document from the root. For this to continue the
+session rather than repeat it, documents must be **re-entrant**:
+
+> Running the document from the top with the persisted blackboard and the
+> current device state must converge to *continuing* the session, not
+> redoing completed work.
+
+The format provides three tools for this, in preference order:
+
+1. **Dispatch-driven loops.** A capture loop that asks `get_next_target`
+   and records progress with `record_exposure` is naturally re-entrant —
+   `rp`'s persisted progress counters *are* the resume state. This is the
+   ecosystem lesson (Ekos counts frames on disk; Target Scheduler keeps a
+   DB) applied through `rp`'s planner.
+2. **Idempotent procedure.** Startup steps that are safe to repeat (cool
+   the camera to a setpoint, unpark, connect) simply re-run.
+3. **`once` markers** for steps that are *not* safe or sensible to repeat:
+
+   ```jsonc
+   { "tool": "calibrator_on", "args": { "calibrator_id": "flat-panel" },
+     "once": "panel-on" }
+   ```
+
+   When the instruction completes, `session._once["panel-on"]` is recorded;
+   on re-execution the instruction is skipped. `once` keys must be unique
+   within a document (validated). Use sparingly — a document that needs many
+   `once` markers is usually missing a dispatch loop.
+
+Resume behavior at `/invoke` with a non-null `recovery`:
+
+1. Reload the blackboard for `session_id`. A missing blackboard file is not
+   an error — the document starts with an empty `session.*` (first-run
+   equivalent), because a crash can predate the first `set`.
+2. Re-validate the document against the live tool catalog (equipment may
+   have changed across the outage).
+3. Log the recovery context (`reason`, interruption time) at `info!` and
+   expose it as `params._recovery.*` so a document *may* branch on it
+   (e.g. re-run `center_on_target` after any interruption) — but a correct
+   document does not need to.
+4. Execute from the root.
+
+## Safety Behavior
+
+On an unsafe transition `rp` — not `session-runner` — aborts exposures,
+stops guiding, parks the mount, and terminates the plugin's MCP session
+(per `rp.md` § Safety). From the engine's perspective: the in-flight tool
+call fails with a terminated-session error. The engine then:
+
+1. Stops trigger evaluation and abandons queued trigger actions.
+2. Runs any enclosing `finally` blocks best-effort (their tool calls will
+   fail; failures are logged, not raised).
+3. Persists the blackboard (already current, by the write-on-mutation
+   invariant).
+4. Exits the run **without** posting a completion — the session is not
+   over; `rp` re-invokes with recovery context on the safe transition, and
+   the [re-entrancy contract](#re-entrancy-contract) takes it from there.
+
+A document cannot subscribe to `safety_changed` to *countermand* any of
+this; it may subscribe to it (e.g. to `log`), but by the time the trigger
+would run, the MCP session is gone. Safety-reaction logic in documents is a
+smell the authoring docs will warn about.
+
+## Event Subscription
+
+The engine consumes `rp`'s SSE stream (`/api/events/subscribe`) for trigger
+sources. The SSE `id` is the envelope's `event_seq`; on reconnect the engine
+sends `Last-Event-ID` so no envelope is missed across a stream drop
+(`rp.md` § Real-Time Stream). Events that arrive while no trigger matches
+are discarded — the engine keeps no event history. The stream URL is derived
+from the invocation's `mcp_server_url` origin unless overridden in
+configuration.
+
+Webhook delivery is not used: `session-runner` registers no
+`subscribes_to`/`barrier_gates` and never blocks `rp`'s tool pipeline. It is
+purely a *consumer* of the stream plus an MCP *client*.
+
+## Invocation
+
+`rp` POSTs `/invoke` per the orchestrator protocol:
+
+```jsonc
+{
+  "workflow_id": "wf-550e8400-e29b-41d4",
+  "session_id": "session-2026-07-01",
+  "mcp_server_url": "http://localhost:11115/mcp",
+  "recovery": null,
+  "config": {
+    "workflow": "deep_sky",
+    "parameters": { "camera_id": "main-cam", "focuser_id": "main-foc" }
+  }
+}
+```
+
+- `config.workflow` names a document: `<name>.json` resolved in the
+  configured `workflows_dir`, or an absolute path. Resolution outside
+  `workflows_dir` for relative names is rejected.
+- `config.parameters` is validated against the document's `parameters`
+  declarations (unknown parameter names are errors; missing required
+  parameters are errors; types must match).
+- The acknowledgment returns the document's `estimated_duration` /
+  `max_duration` (engine defaults `"1h"` / `"14h"` when the document omits
+  them — `max_duration` must comfortably exceed a full night because `rp`
+  treats its expiry as plugin timeout).
+- Any validation failure (unknown document, schema violation, unknown tool,
+  bad parameters) is returned as the `/invoke` error response — the session
+  fails to start loudly, before any hardware moves.
+- Completion is posted to `POST /api/plugins/{workflow_id}/complete` with
+  `status` and a result payload: `{ "workflow": "<name>", "outcome":
+  "complete" | "failed", "error": "<message when failed>" }` plus any
+  values the document placed under `session.report.*` (the conventional
+  place for a document to accumulate its summary — e.g. frames per filter).
+
+## Validation
+
+Three layers, all sharing one implementation:
+
+1. **Schema validation** — the document against
+   `schema/workflow-v1.schema.json`: structure, discriminant keys, unknown
+   keys, unique trigger `id`s / `once` keys, loop-bound requirements,
+   expression fields parse-checked.
+2. **Catalog validation** (requires `rp`) — every `tool` node's name exists
+   in `tools/list`; literal args type-check against the tool's parameter
+   schema; required tool parameters are present (as literal or `$expr`);
+   `$expr` argument types are checked at runtime when the call is made.
+   Poll-trigger tools validate the same way.
+3. **Parameter validation** — invocation `parameters` against the
+   document's declarations.
+
+`POST /validate` with `{ "document": { … } }` (or `{ "workflow": "<name>" }`)
+runs layers 1–2 and returns a structured list of errors with JSON-Pointer
+locations — the hook for CI on shared workflow repositories, the future UI,
+and LLM authoring loops. `/invoke` runs all three layers before executing.
+
+## Configuration
+
+`session-runner`'s own config file (via `rusty-photon-config` conventions):
+
+```jsonc
+{
+  "port": 11171,
+  "workflows_dir": "/var/lib/rusty-photon/workflows",
+  "state_dir": "/var/lib/rusty-photon/session-runner",
+  "events_url": null            // override; default derives from mcp_server_url origin
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `port` | int | 11171 | HTTP listen port for `/invoke`, `/validate`, `/health` |
+| `workflows_dir` | path | required | Directory of workflow documents; first-party documents ship in the package |
+| `state_dir` | path | required | Blackboard persistence directory |
+| `events_url` | string or null | null | Explicit SSE endpoint; null derives `<mcp origin>/api/events/subscribe` |
+
+## Example Documents
+
+Shipped first-party documents live in `services/session-runner/workflows/`.
+
+### `calibrator_flats.json` (the generalization proof, abridged)
+
+The port of the existing Rust orchestrator's algorithm
+([`calibrator-flats.md`](calibrator-flats.md)) — its BDD scenarios are the
+behavioral oracle. Filters are supplied as a parameterized plan; shown here
+for a single filter for brevity:
+
+```jsonc
+{
+  "version": 1,
+  "name": "calibrator-flats",
+  "parameters": {
+    "camera_id": { "type": "string", "required": true },
+    "filter_wheel_id": { "type": "string", "required": true },
+    "calibrator_id": { "type": "string", "required": true },
+    "target_adu_fraction": { "type": "number", "default": 0.5 },
+    "tolerance": { "type": "number", "default": 0.05 },
+    "max_iterations": { "type": "integer", "default": 10 },
+    "initial_duration": { "type": "duration", "default": "1s" },
+    "filter": { "type": "string", "required": true },
+    "count": { "type": "integer", "required": true }
+  },
+  "triggers": [],
+  "root": { "sequence": [
+    { "tool": "get_camera_info", "args": { "camera_id": { "$expr": "params.camera_id" } } },
+    { "set": { "session.target_adu": "result.max_adu * params.target_adu_fraction",
+               "session.exp_min": "result.exposure_min",
+               "session.exp_max": "result.exposure_max",
+               "session.duration": "seconds(params.initial_duration)" } },
+    { "try": [
+        { "tool": "close_cover", "args": { "calibrator_id": { "$expr": "params.calibrator_id" } } },
+        { "tool": "calibrator_on", "args": { "calibrator_id": { "$expr": "params.calibrator_id" } } },
+        { "tool": "set_filter", "args": { "filter_wheel_id": { "$expr": "params.filter_wheel_id" },
+                                          "filter_name": { "$expr": "params.filter" } } },
+        { "id": "find-exposure",
+          "repeat": { "until": "abs(session.median_adu - session.target_adu) / session.target_adu <= params.tolerance",
+                      "max_iterations": { "$expr": "params.max_iterations" } },
+          "body": [
+            { "tool": "capture", "args": { "camera_id": { "$expr": "params.camera_id" },
+                                           "duration": { "$expr": "humantime(session.duration)" } } },
+            { "tool": "compute_image_stats", "args": { "document_id": { "$expr": "result.document_id" } } },
+            { "set": { "session.median_adu": "result.median_adu",
+                       "session.duration": "clamp(session.duration * (session.target_adu / max(result.median_adu, 1.0)), session.exp_min, session.exp_max)" } } ] },
+        { "if": "result.converged == false",
+          "then": [ { "log": { "level": "info", "message": "exposure did not converge",
+                               "values": { "filter": "params.filter" } } } ] },
+        { "repeat": { "count": { "$expr": "params.count" } },
+          "body": [
+            { "tool": "capture", "args": { "camera_id": { "$expr": "params.camera_id" },
+                                           "duration": { "$expr": "humantime(session.duration)" } } } ] }
+      ],
+      "finally": [
+        { "tool": "calibrator_off", "args": { "calibrator_id": { "$expr": "params.calibrator_id" } } },
+        { "tool": "open_cover", "args": { "calibrator_id": { "$expr": "params.calibrator_id" } } } ] }
+  ] }
+}
+```
+
+(The full document loops over a filter-plan array; array-valued parameters
+and per-element iteration are settled in Phase A schema work — either an
+array parameter with `repeat`-over-array, or one invocation per filter
+driven by `rp`'s plugin config. The single-filter core above is the
+behavioral spec either way.)
+
+### `deep_sky.json` (skeleton)
+
+```jsonc
+{
+  "version": 1,
+  "name": "deep-sky",
+  "parameters": { "camera_id": { "type": "string", "required": true },
+                  "focuser_id": { "type": "string", "required": true },
+                  "guide": { "type": "boolean", "default": true },
+                  "dither_every": { "type": "integer", "default": 3 } },
+  "triggers": [
+    { "id": "refocus-on-hfr",
+      "on": { "event": "exposure_complete" },
+      "when": "has(session.last_focus_hfr) && event.hfr != null && event.hfr > session.last_focus_hfr * 1.2",
+      "while": "session.imaging == true",
+      "cooldown": "15m",
+      "do": [ { "tool": "auto_focus", "args": { /* … */ } },
+              { "set": { "session.last_focus_hfr": "result.best_hfr" } } ] },
+    { "id": "flip-when-due",
+      "on": { "poll": { "tool": "get_meridian_status", "interval": "60s" } },
+      "when": "event.time_to_flip_seconds < 300",
+      "while": "session.imaging == true",
+      "do": [ /* stop guiding, slew (flip), re-center, re-focus, resume guiding */ ] },
+    { "id": "handle-correction",
+      "on": { "event": "correction_requested" },
+      "do": [ /* branch on event.action: focus → auto_focus, center → center_on_target */ ] }
+  ],
+  "root": { "sequence": [
+    /* startup: unpark, set_tracking, cool camera — idempotent, safe to re-run */
+    { "repeat": { "while": "session.session_over != true", "max_iterations": 1000 },
+      "body": [
+        { "tool": "get_next_target" },
+        { "if": "result.reason == 'WaitForTwilight'",
+          "then": [ { "wait": { "duration": "5m" } } ],
+          "else": [ { "if": "result.reason == 'EndOfSession'",
+              "then": [ { "set": { "session.session_over": "true" } } ],
+              "else": [
+                { "set": { "session.target_name": "result.target", "session.target_ra": "result.ra", "session.target_dec": "result.dec" } },
+                /* slew → center_on_target → auto_focus → start_guiding,
+                   set session.imaging = true, capture + record_exposure loop
+                   re-asking get_next_target after each frame; dither every
+                   params.dither_every frames; on target change: stop guiding,
+                   session.imaging = false, continue outer loop */ ] } ] } ] },
+    /* shutdown: stop_guiding, park */ ] }
+}
+```
+
+The dispatch loop (`get_next_target` after every frame + `record_exposure`
+progress in `rp`) is what makes this document re-entrant with **zero**
+`once` markers: after a crash, the same loop simply continues from the
+persisted progress.
+
+## Error Handling Summary
+
+| Failure | Behavior |
+|---------|----------|
+| Document fails schema/catalog/parameter validation | `/invoke` returns the error; nothing executes. |
+| Tool call errors (after `retry`) | Workflow error → nearest `catch`, `finally` blocks run; uncaught → workflow fails, completion posted with `outcome: "failed"`. |
+| Tool result carries a correction | Synthetic `correction_requested` trigger; not an error. |
+| Expression error (null arithmetic, division by zero) | Workflow error at that instruction, same propagation as tool errors. |
+| `wait` timeout | Workflow error. |
+| Loop `max_iterations` exhausted (`until`/`while`) | Loop completes with `result.converged = false`; not an error. |
+| SSE stream drops | Reconnect with `Last-Event-ID`; no envelopes lost; poll triggers unaffected. |
+| Poll-trigger tool call fails | `debug!` log, skip cycle. |
+| MCP session terminated by `rp` (safety) | Best-effort `finally`, persist blackboard, exit without completion; await re-invocation. |
+| Engine crash / power failure | Blackboard reflects every completed `set`; recovery invocation re-executes per the re-entrancy contract. |
+| Blackboard write fails | Workflow error (fail loud — continuing with unpersistable state would silently break resume). |
+
+## MVP Scope
+
+**In scope (v1):** the instruction vocabulary above; expressions per the
+semantics above; `event` / `poll` / `correction_requested` triggers with
+`when`/`while`/`once`/`cooldown`; blackboard persistence + re-derive resume;
+schema + catalog + parameter validation and `/validate`; SSE consumption
+with replay; the two shipped documents (`calibrator_flats.json`,
+`deep_sky.json`).
+
+**Deferred:** Luau `script` nodes (schema key reserved); container-scoped
+triggers (use `while` gates); parallel containers; sub-workflow
+imports/templates; a `ui-htmx` document editor; array-parameter ergonomics
+beyond what the flats port needs; retirement of the Rust `calibrator-flats`
+service (separate decision after the port has mileage).
+
+## Module Structure
+
+```
+services/session-runner/
+  schema/workflow-v1.schema.json   The published document schema
+  workflows/                       First-party documents (installed with the service)
+  src/
+    main.rs            CLI entry point (rusty-photon-service-lifecycle)
+    lib.rs             ServerBuilder (two-phase: build → start)
+    config.rs          Service configuration
+    error.rs           SessionRunnerError (thiserror)
+    document/          Document model, JSON Schema + catalog validation
+    expr/              Expression parsing + evaluation (Phase B)
+    blackboard.rs      session.* state + atomic persistence
+    engine/            Tree execution, safe points, trigger queue, resume
+    events.rs          SSE client (Last-Event-ID replay)
+    mcp_client.rs      rmcp Streamable HTTP client to rp's /mcp
+    routes.rs          Axum router: POST /invoke, POST /validate, GET /health
+```
+
+## Testing Strategy
+
+Testing follows [`docs/skills/testing.md`](../skills/testing.md).
+
+### Unit tests
+
+- Document parsing and validation: every instruction type, every schema
+  error (unknown key, missing loop bound, duplicate trigger id, `script`
+  reservation message).
+- Expression evaluation: every operator/function, every namespace, null
+  handling, division by zero — table-driven, exhaustive.
+- Engine semantics against a mock MCP-client trait: sequencing, `result`
+  scoping, `set` persistence ordering, `try`/`catch`/`finally` paths
+  (including finally-does-not-mask), `retry`, loop bounds and
+  `result.converged`, trigger safe-point interleaving, `once`/`cooldown`
+  bookkeeping.
+- Blackboard: atomic write, reload, reserved-key protection.
+
+### BDD tests (Cucumber, rp-harness)
+
+Full three-process topology (OmniSim + `rp` + `session-runner`) via
+`bdd_infra::rp_harness`, mirroring `calibrator-flats`' suite:
+
+| Design section | Feature file | Representative scenarios |
+|----------------|--------------|--------------------------|
+| Invocation + validation | `invocation.feature` | invalid document rejected at `/invoke`; unknown tool named in error; parameter type mismatch |
+| Flats port equivalence | `flat_calibration.feature` | the scenarios from `calibrator-flats`' suite, run against the document — same events, frame counts, cleanup-on-failure |
+| Triggers | `triggers.feature` | refocus fires between exposures, not during; cooldown respected; poll trigger fires flip action |
+| Resume | `recovery.feature` | kill mid-capture-loop → re-invoke with recovery → progress continues without repeated frames; `once` marker not re-run |
+| Safety | `safety.feature` | unsafe transition → engine exits without completion → safe transition → re-invocation resumes |
+
+### Golden documents
+
+The shipped `workflows/*.json` are validated in CI against the published
+schema (a unit test walks the directory), so a schema change that breaks a
+first-party document fails the build.
+
+## Future Considerations
+
+- **Luau script handlers** (`script` nodes): stateless per-event handlers
+  with blackboard-only state, preserving the re-derive resume model; the
+  coroutine-yield boundary is where deterministic replay would attach if
+  ever needed.
+- **Document editor in `ui-htmx`** driven by the JSON Schema, including an
+  expression condition-builder.
+- **Sub-workflow composition** (`{"call": "…"}`) once shipped documents
+  show real duplication.
+- **Sky-flat document** — the stress test for the expression layer's
+  ceiling (per-frame exposure adaptation against a brightening/darkening
+  sky); if it doesn't fit the bounded expressions, it becomes the motivating
+  case for `script` nodes rather than for growing the expression language.

@@ -1789,6 +1789,15 @@ Different imaging types use different orchestrators:
 | `calibrator-flats` | close cover → calibrator on → per-filter: find exposure time iteratively → capture N flats → calibrator off → open cover |
 | `sky-flat` | point at clear sky → per-filter during twilight: capture with per-frame exposure adjustment → handle changing sky brightness |
 
+> **How orchestrators are built.** An orchestrator can be a hand-written
+> service in any language (like `calibrator-flats`, Rust) **or** a
+> declarative **workflow document** executed by the generic
+> [`session-runner`](session-runner.md) plugin (design stage — see
+> [`docs/plans/workflow-dsl.md`](../plans/workflow-dsl.md)). The
+> `deep-sky-orchestrator` and `sky-flat` rows above are planned as workflow
+> documents, not standalone binaries; `rp` cannot tell the difference —
+> both shapes follow the same plugin protocol.
+
 ### What `rp` Owns vs. What the Orchestrator Owns
 
 **`rp` owns** (enforced regardless of which orchestrator runs):
