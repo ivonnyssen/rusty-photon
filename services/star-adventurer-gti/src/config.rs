@@ -189,7 +189,7 @@ pub struct MountConfig {
     /// Minimum apparent-altitude floor, degrees. Slew / sync targets
     /// whose computed local altitude — from the target hour angle,
     /// declination, and `site_latitude_deg` via
-    /// [`crate::coordinates::target_altitude_degrees`] — is below the
+    /// [`crate::coordinates::ra_dec_to_alt_az`] — is below the
     /// floor are rejected with `INVALID_VALUE` before any wire motion;
     /// a target exactly at the floor is accepted. Default `0.0` — the
     /// geometric horizon. Positive values add an operator buffer
