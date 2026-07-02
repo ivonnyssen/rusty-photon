@@ -86,6 +86,9 @@ pub use shutdown::Shutdown;
 /// Re-exported so services can *name* the error type in signatures (e.g.
 /// `plate-solver`'s `ExitCode` path) without depending on `color-eyre`
 /// themselves. Deliberately a type-only re-export: the `eyre!`/`bail!`
-/// macros are NOT re-exported, so ad-hoc untyped errors cannot be conjured
-/// outside this crate (ADR-011).
+/// macros are NOT re-exported. Constructing a `Report` directly (e.g.
+/// `Report::msg(...)`) remains *possible* through this re-export, but it is
+/// against workspace policy outside the binary boundary — errors below it
+/// stay `thiserror`-typed, and the crate-local dependency on `color-eyre`
+/// is the structural guardrail (ADR-011).
 pub use color_eyre::Report;

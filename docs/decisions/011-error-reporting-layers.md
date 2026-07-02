@@ -55,7 +55,11 @@ Concretely:
    `RunError`, `RunResult`, `Report`) plus one chain-preserving conversion
    (`report_from_boxed`, for the rare fallible step that runs before the
    runner). The `eyre!`/`bail!` macros are **never** re-exported: services
-   can name the types but cannot conjure ad-hoc untyped errors.
+   can name the types, and while inherent constructors like `Report::msg`
+   remain reachable through the re-export, using them outside the binary
+   boundary is against policy — the macros' absence removes the path of
+   least resistance, and the crate-local dependency keeps any violation a
+   visible, reviewable `Cargo.toml` edit.
 6. `plate-solver` keeps its `ExitCode`-returning `main` (it owns process exit
    codes) but formats the runner's `Report` with `{:?}` on stderr, so it
    prints the same multi-line chain.

@@ -220,10 +220,11 @@ binary looks like.
 These are deliberate boundaries (see the crate design's "Out of scope"
 section for the full list):
 
-- **Call `init_tracing` for you.** The crate *provides* the shared
-  subscriber (`init_tracing` — stderr, `RUST_LOG`/fallback filtering,
-  `ErrorLayer` for span context in panic reports), but the service binary
-  calls it itself, before the runner, passing its own `--log-level` value.
+- **Initialize logging automatically.** The runner never calls
+  `init_tracing` itself. The crate *provides* the shared subscriber
+  (`init_tracing` — stderr, `RUST_LOG`/fallback filtering, `ErrorLayer`
+  for span context in panic reports), but the service binary must call it,
+  before the runner, passing its own `--log-level` value.
 - **Parse CLI arguments.** Services keep `clap`. The runner takes a
   static name and a closure, nothing else.
 - **Define what graceful shutdown means for your server.** It just
