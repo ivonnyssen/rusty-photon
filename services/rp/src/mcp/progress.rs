@@ -99,12 +99,11 @@ impl ProgressSink {
 #[async_trait]
 impl ProgressEmitter for ProgressSink {
     async fn emit(&self, progress: f64, total: Option<f64>, message: Option<String>) {
-        let param = ProgressNotificationParam {
-            progress_token: self.token.clone(),
-            progress,
-            total,
-            message,
-        };
+        // `ProgressNotificationParam` is `#[non_exhaustive]` as of rmcp 2.0,
+        // so it must be built via its constructor.
+        let mut param = ProgressNotificationParam::new(self.token.clone(), progress);
+        param.total = total;
+        param.message = message;
         // A closed transport (client went away mid-tool) is a normal
         // case — surfacing it would abort the tool body for no
         // operational reason. Drop the error after a debug log.

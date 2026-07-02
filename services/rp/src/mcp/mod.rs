@@ -84,7 +84,7 @@ pub use handler::McpHandler;
 /// Build a successful `CallToolResult` from a `serde_json::json!(...)` value.
 macro_rules! tool_success {
     ($($json:tt)+) => {
-        ::rmcp::model::CallToolResult::success(vec![::rmcp::model::Content::text(
+        ::rmcp::model::CallToolResult::success(vec![::rmcp::model::ContentBlock::text(
             ::serde_json::json!($($json)+).to_string(),
         )])
     };
@@ -93,10 +93,10 @@ macro_rules! tool_success {
 /// Build an error `CallToolResult` from a format string or literal.
 macro_rules! tool_error {
     ($lit:literal) => {
-        ::rmcp::model::CallToolResult::error(vec![::rmcp::model::Content::text($lit)])
+        ::rmcp::model::CallToolResult::error(vec![::rmcp::model::ContentBlock::text($lit)])
     };
     ($($arg:tt)+) => {
-        ::rmcp::model::CallToolResult::error(vec![::rmcp::model::Content::text(format!($($arg)+))])
+        ::rmcp::model::CallToolResult::error(vec![::rmcp::model::ContentBlock::text(format!($($arg)+))])
     };
 }
 
