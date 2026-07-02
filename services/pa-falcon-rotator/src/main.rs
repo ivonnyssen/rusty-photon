@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use clap::Parser;
-use rusty_photon_service_lifecycle::ServiceRunner;
+use rusty_photon_service_lifecycle::{ServiceResult, ServiceRunner};
 use tracing::{debug, info, Level};
 
 use pa_falcon_rotator::config::{load_effective_config, CliOverrides};
@@ -48,7 +48,7 @@ fn parse_log_level(s: &str) -> Result<Level, String> {
 }
 
 #[cfg_attr(coverage_nightly, coverage(off))]
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> ServiceResult {
     let args = Args::parse();
 
     rusty_photon_service_lifecycle::init_tracing(args.log_level);

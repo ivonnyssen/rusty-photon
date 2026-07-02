@@ -40,11 +40,11 @@ optional SCM behind a cargo feature.
 For any new service binary, this is the shape:
 
 ```rust
-use rusty_photon_service_lifecycle::ServiceRunner;
+use rusty_photon_service_lifecycle::{init_tracing, ServiceResult, ServiceRunner};
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> ServiceResult {
     let args = Args::parse();
-    tracing_subscriber::fmt().with_max_level(args.log_level).init();
+    init_tracing(args.log_level);
 
     ServiceRunner::new("my-service").run(move |shutdown| async move {
         let bound = ServerBuilder::new()
@@ -71,7 +71,17 @@ Key points:
 - `shutdown.token()` returns a `CancellationToken` clone for code that
   prefers tokens over futures (`tokio::select! { _ = token.cancelled() => ... }`,
   or APIs like sentinel's `with_cancellation_token`).
-- Return type from the closure is `Result<(), Box<dyn std::error::Error>>`.
+- Return type from the closure is `Result<(), Box<dyn std::error::Error + Send + Sync>>`
+  (the crate's `RunResult`); `?` works on typed `thiserror` errors and boxed
+  helpers alike. `main` returns the crate's `ServiceResult`: the runner
+  converts the closure's error into a `color_eyre::Report`, so startup
+  failures print the full `source()` chain, and it installs the `color-eyre`
+  panic hook once per process (formatted panic reports with span context —
+  see [ADR-011](../decisions/011-error-reporting-layers.md)). Never add
+  `color-eyre`/`eyre` to a service or library crate; errors below the binary
+  boundary stay `thiserror`-typed. For a rare fallible step *before*
+  `ServiceRunner::run` whose helper returns a boxed error, convert with
+  `rusty_photon_service_lifecycle::report_from_boxed`.
 
 ---
 
@@ -184,7 +194,7 @@ struct Args {
     service: bool,
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> ServiceResult {
     let args = Args::parse();
 
     ServiceRunner::new("my-service")
@@ -210,9 +220,10 @@ binary looks like.
 These are deliberate boundaries (see the crate design's "Out of scope"
 section for the full list):
 
-- **Initialize `tracing` / logging.** Services vary on filters,
-  formats, and CLI flags; init `tracing_subscriber` yourself before
-  calling the runner.
+- **Call `init_tracing` for you.** The crate *provides* the shared
+  subscriber (`init_tracing` — stderr, `RUST_LOG`/fallback filtering,
+  `ErrorLayer` for span context in panic reports), but the service binary
+  calls it itself, before the runner, passing its own `--log-level` value.
 - **Parse CLI arguments.** Services keep `clap`. The runner takes a
   static name and a closure, nothing else.
 - **Define what graceful shutdown means for your server.** It just
@@ -238,8 +249,11 @@ section for the full list):
   the future. `move` ownership into the closure (which is the natural
   shape anyway) and you're fine.
 - **`Fut: Send` is not required.** `Runtime::block_on` polls on the
-  calling thread; error types inside your closure don't need `Send`
-  bounds. Only the *closure itself* is `Send + 'static`.
+  calling thread; intermediate state inside your closure doesn't need
+  `Send` bounds. Only the *closure itself* is `Send + 'static`. The
+  closure's *returned error* is the exception: it must be
+  `Send + Sync` (the crate's `RunError`), because the runner wraps it
+  in a `color_eyre::Report` (ADR-011).
 
 ---
 

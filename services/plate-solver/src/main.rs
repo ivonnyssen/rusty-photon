@@ -46,7 +46,9 @@ fn main() -> ExitCode {
             .with_config(config)
             .build()
             .await
-            .map_err(|e| -> Box<dyn std::error::Error> { Box::from(format!("build: {e}")) })?;
+            .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
+                Box::from(format!("build: {e}"))
+            })?;
 
         let addr = server.listen_addr();
         // `bound_addr=` is parsed by `bdd-infra::parse_bound_port` to
@@ -54,10 +56,9 @@ fn main() -> ExitCode {
         println!("bound_addr={addr}");
         tracing::info!(%addr, "plate-solver listening");
 
-        server
-            .start(shutdown.cancelled())
-            .await
-            .map_err(|e| -> Box<dyn std::error::Error> { Box::from(format!("server: {e}")) })?;
+        server.start(shutdown.cancelled()).await.map_err(
+            |e| -> Box<dyn std::error::Error + Send + Sync> { Box::from(format!("server: {e}")) },
+        )?;
         Ok(())
     });
 
@@ -65,12 +66,14 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             let msg = e.to_string();
-            eprintln!("plate-solver: {msg}");
+            // `{e:?}` on the runner's `Report` prints the full multi-line
+            // error chain (ADR-011), matching what the other services get
+            // by returning `ServiceResult` from `main`.
+            eprintln!("plate-solver: {e:?}");
             // Preserve the prior split: config / build failures returned
-            // 2, runtime errors returned 1. After the migration the
-            // closure surfaces both via Box<dyn Error>; we recover the
-            // distinction by tagging build failures with a "build: "
-            // prefix in the closure above.
+            // 2, runtime errors returned 1. The closure surfaces both via
+            // the runner's `Report`; we recover the distinction by tagging
+            // build failures with a "build: " prefix in the closure above.
             if msg.starts_with("build: ") {
                 ExitCode::from(2)
             } else {

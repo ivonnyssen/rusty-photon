@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use clap::Parser;
 use dsd_fp2::{load_effective_config, resolve_config_path, CliOverrides, ServerBuilder};
-use rusty_photon_service_lifecycle::ServiceRunner;
+use rusty_photon_service_lifecycle::{report_from_boxed, ServiceResult, ServiceRunner};
 use tracing::{debug, info, Level};
 
 #[cfg(feature = "mock")]
@@ -45,7 +45,7 @@ fn parse_log_level(s: &str) -> Result<Level, String> {
     })
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> ServiceResult {
     let args = Args::parse();
 
     rusty_photon_service_lifecycle::init_tracing(args.log_level);
@@ -57,7 +57,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // A config path is always resolvable (explicit --config or the XDG default),
     // so config editing is never disabled for lack of one.
-    let config_path = resolve_config_path(args.config)?;
+    let config_path = resolve_config_path(args.config).map_err(report_from_boxed)?;
     let overrides = CliOverrides {
         serial_port: args.port,
         server_port: args.server_port,

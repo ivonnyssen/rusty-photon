@@ -118,7 +118,9 @@ impl Default for CoverCalibratorConfig {
 }
 
 /// Load configuration from a JSON file.
-pub fn load_config(path: &Path) -> std::result::Result<Config, Box<dyn std::error::Error>> {
+pub fn load_config(
+    path: &Path,
+) -> std::result::Result<Config, Box<dyn std::error::Error + Send + Sync>> {
     let content = std::fs::read_to_string(path)?;
     let config: Config = serde_json::from_str(&content)?;
     Ok(config)
@@ -168,7 +170,7 @@ impl CliOverrides {
 /// resolvable, so config editing is never disabled for lack of one.
 pub fn resolve_config_path(
     explicit: Option<PathBuf>,
-) -> std::result::Result<PathBuf, Box<dyn std::error::Error>> {
+) -> std::result::Result<PathBuf, Box<dyn std::error::Error + Send + Sync>> {
     if let Some(path) = explicit {
         return Ok(path);
     }
@@ -183,7 +185,7 @@ pub fn resolve_config_path(
 pub fn load_effective_config(
     path: &Path,
     overrides: &CliOverrides,
-) -> std::result::Result<Config, Box<dyn std::error::Error>> {
+) -> std::result::Result<Config, Box<dyn std::error::Error + Send + Sync>> {
     let mut config = match std::fs::read_to_string(path) {
         // Wrap both failure paths with the path (matching
         // `rusty_photon_config::read_file_value`) so a startup/reload failure

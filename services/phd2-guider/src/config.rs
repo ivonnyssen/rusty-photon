@@ -141,7 +141,9 @@ fn default_settle_timeout() -> Duration {
 }
 
 /// Load configuration from a JSON file
-pub fn load_config(path: &Path) -> std::result::Result<Config, Box<dyn std::error::Error>> {
+pub fn load_config(
+    path: &Path,
+) -> std::result::Result<Config, Box<dyn std::error::Error + Send + Sync>> {
     let content = std::fs::read_to_string(path)?;
     let config: Config = serde_json::from_str(&content)?;
     Ok(config)
