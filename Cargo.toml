@@ -183,7 +183,7 @@ rust-embed = { version = "8", features = ["debug-embed"] }
 # string-roundtrip conversions at every `negotiate_languages` call site.
 # Revisit when https://github.com/kellpossible/cargo-i18n ships a release
 # that requires `fluent-langneg ^0.14`.
-fluent-langneg = "0.13"
+fluent-langneg = "0.14"
 sys-locale = "0.3"
 unic-langid = { version = "0.9", features = ["macros"] }
 syn = { version = "2", features = ["full"] }
