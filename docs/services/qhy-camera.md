@@ -478,6 +478,8 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
 Standard shape per [`service-lifecycle.md`](../skills/service-lifecycle.md):
 
 ```rust
+use rusty_photon_service_lifecycle::{ServiceResult, ServiceRunner};
+
 fn main() -> ServiceResult {
     let args = Args::parse();
     rusty_photon_service_lifecycle::init_tracing(args.log_level);
