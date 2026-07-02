@@ -20,7 +20,8 @@ use bdd_infra::ServiceHandle;
 use cucumber::World;
 use serde_json::Value;
 use star_adventurer_gti::{
-    Config, CwExclusionZone, MountConfig, ServerConfig, TransportConfig, UsbConfig,
+    Config, CwExclusionZone, MinAltitudeDegrees, MountConfig, ServerConfig, TransportConfig,
+    UsbConfig,
 };
 use tempfile::TempDir;
 use tokio::time::sleep;
@@ -284,6 +285,13 @@ fn default_test_config() -> Config {
             // the unit tests in
             // `mount_device::tests::slew_async_refuses_ra_target_in_binding_zone`.
             cw_exclusion_zone: CwExclusionZone::Disabled,
+            // Same wallclock-LST reasoning for the altitude floor: a
+            // hardcoded RA/Dec target's apparent altitude depends on
+            // when the test runs. `-90°` never rejects. The floor
+            // itself is exercised by altitude_floor.feature, whose
+            // steps address targets by hour angle and configure the
+            // floor explicitly.
+            min_altitude_degrees: MinAltitudeDegrees::try_new(-90.0).expect("-90 is a valid floor"),
             ..MountConfig::default()
         },
     }

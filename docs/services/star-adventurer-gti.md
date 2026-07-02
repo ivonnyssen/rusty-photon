@@ -868,10 +868,57 @@ pattern. The operator's `park_ra_ticks` / `park_dec_ticks` are
 assumed to have been validated against the zone at the time of
 configuration.
 
-The Dec envelope (`dec_limits`, default
-`{ min_degrees: -90, max_degrees: 90 }`) is independent — it bounds the
-celestial Dec the driver will accept, primarily a sanity check against
-client-side coordinate-math bugs.
+#### Altitude floor
+
+The second, independent gate on slew / sync targets is a **minimum
+apparent-altitude floor** (`min_altitude_degrees`, default `0.0` — the
+geometric horizon). The driver computes the target's local altitude
+from its hour angle, declination, and the site latitude:
+
+```
+sin(alt) = sin(lat) · sin(dec) + cos(lat) · cos(dec) · cos(HA)
+```
+
+and rejects the operation with `INVALID_VALUE` (naming the computed
+altitude and the configured floor) when `alt < min_altitude_degrees`.
+A target *at* the floor is accepted. Altitude is a celestial property
+of the target — the check uses the celestial `HA = LST − RA`, so it is
+the same for both pier sides of a flip-planned slew.
+
+This replaced the earlier rectangular celestial-Dec envelope
+(`dec_limits`, removed 2026-07-01; a config file still carrying
+`dec_limits` keeps loading — serde ignores unknown fields — but the
+field has no effect). The rectangle was the
+wrong shape for what operators mean by "don't slew there": the local
+horizon is a tilted great circle on the celestial sphere, so a
+rectangle is simultaneously too loose (accepts below-horizon targets at
+mid Dec, e.g. `(HA = −3 h, dec = −40°)` at LAT 45°N → alt `−4°`) and
+too tight when narrowed (rejects legitimate above-horizon targets like
+`(HA = −3 h, dec = −30°)` → alt `+4.5°`). The altitude floor follows
+the horizon circle exactly.
+
+The floor accepts values in `[-90, +90]`:
+
+- `0.0` (default) — geometric horizon. Refraction-corrected pointing
+  (apparent horizon ≈ geometric `−0.5°`) is available by setting
+  `-0.5`.
+- `5.0` / `10.0` — operator buffer for refraction, horizon light
+  pollution, or local obstructions.
+- Negative values allow below-horizon pointing (dust-cap operations,
+  closed-roof flats). The driver logs `info!` at startup when the floor
+  is negative so the relaxed state is discoverable in support
+  transcripts. `-90` never rejects anything (the check is
+  effectively disabled — the BDD suite ships this in its default test
+  config because scenario targets are wallclock-LST-dependent).
+
+Like the CW exclusion zone, the floor gates `SlewToCoordinatesAsync` /
+`SlewToTargetAsync`, `SyncToCoordinates` / `SyncToTarget`, and the
+per-side validation inside `DestinationSideOfPier`. `Park` is exempt —
+park targets are mechanically-defined encoder ticks the operator chose
+explicitly via `SetPark` (the same privileged-park pattern as the
+exclusion-zone check). The out-of-range celestial gate
+(`validate_coordinates`, RA `[0, 24)` / Dec `[-90, +90]`) remains a
+separate, earlier check.
 
 #### Tracking-time safety guard
 
@@ -1108,7 +1155,7 @@ out-of-range value during `load_config`, with the offending field named,
 so a bad config fails at startup rather than mid-session. `flip_range_hours`
 must be `(0, 0.95]`; `tracking_guard_margin_hours` `[0, 1.0]`; an active
 `cw_exclusion_zone` must satisfy `-12 ≤ min_hours < max_hours ≤ 12`;
-`dec_limits` must satisfy `-90 ≤ min_degrees < max_degrees ≤ 90`. (This
+`min_altitude_degrees` must be finite in `[-90, 90]`. (This
 replaced the former runtime `MountConfig::validate` / `FlipPolicy::validate`
 — see [ADR-006](../decisions/006-typed-physical-quantities-for-mount-pointing.md).)
 
@@ -1139,7 +1186,7 @@ replaced the former runtime `MountConfig::validate` / `FlipPolicy::validate`
     "tracking_rate": "sidereal",
     "cw_exclusion_zone": { "min_hours": 0.95, "max_hours": 11.05 },
     "tracking_guard_margin_hours": 0.05,
-    "dec_limits": { "min_degrees": -90.0, "max_degrees": 90.0 },
+    "min_altitude_degrees": 0.0,
     "park_ra_ticks": null,
     "park_dec_ticks": null,
     "flip_policy": {
@@ -1208,10 +1255,14 @@ Notes:
   (≈ 45 s of sidereal drift); `0.0` stops exactly at the zone entry;
   valid range `[0, 1.0]`. Independent of `flip_policy.enabled`. See
   [§Tracking-time safety guard](#tracking-time-safety-guard).
-- `dec_limits` (`{ "min_degrees": .., "max_degrees": .. }`) clips the
-  celestial-Dec range the driver accepts on slew / sync. Default
-  `{ "min_degrees": -90.0, "max_degrees": 90.0 }`; must satisfy
-  `-90 ≤ min_degrees < max_degrees ≤ 90`.
+- `min_altitude_degrees` rejects slew / sync targets whose computed
+  apparent altitude (from HA + Dec + `site_latitude_deg`) is below the
+  floor. Default `0.0` (geometric horizon); must be finite in
+  `[-90, 90]`. Negative values permit below-horizon pointing and are
+  logged `info!` at startup; `-90` effectively disables the check. See
+  [§Altitude floor](#altitude-floor). (Replaced the rectangular
+  `dec_limits` envelope 2026-07-01; a stale `dec_limits` key is
+  ignored on load.)
 - `park_ra_ticks` / `park_dec_ticks` are written by `SetPark` and read
   on every connect; absent (or `null`) at first run, populated once
   `SetPark` is called. Operators may set them by hand to pin a known
@@ -1856,6 +1907,7 @@ survive via the connection-cell swap. (Same service-lifetime pattern as
 | **Phase A8 — Nightly ConformU opt-out (#201)** | landed (issue #201) — removed `[package.metadata.conformu]` again. ConformU's `conformance` phase fails for three independent reasons that need driver work first: (a) `SideOfPierTests` slews to mech-HA ±9 h, which the safety envelope correctly rejects on hardware but which ConformU treats as a fatal CheckMethods-level exception that abandons the rest of the suite; (b) `SideOfPier` always returns `pierWest` for in-envelope targets (Dec-encoder convention) where ConformU asserts the ASCOM pointing-state convention; (c) PulseGuide Dec moves at full sidereal rate instead of `guide_rate_dec_fraction × sidereal`. See [§Running ConformU manually](#running-conformu-manually) and [§Expected ConformU report](#expected-conformu-report) for the failure details and reproduction steps. |
 | **Phase 5 — user-defined `SetPark` + persistence** | landed (issue #203) — park target now sourced from `mount.park_ra_ticks` / `mount.park_dec_ticks` in the config (fallback: encoder positions captured at handshake), `SetPark` writes the current encoder pair back into the running config file via atomic rename, `CanSetPark` flips on when `--config` is provided. See [§Park lifecycle](#park-lifecycle) and [§Park persistence](#park-persistence). |
 | **Phase 6 — meridian-flip support** | hardware-validated 2026-05-16 (lat 32.7°N) — adds `MountConfig::flip_policy` (`enabled` + `flip_range_hours`), the asymmetric CW exclusion zone safety envelope, CW-exclusion zone-path-aware through-wrap RA routing, visible-pole Dec routing, `SetSideOfPier`, and flip-aware `DestinationSideOfPier`. End-to-end AP Park 1–5 traversal (including the through-wrap saddle-east flip and its flip-back) ran clean; the flip-back from the saddle-east wrap caught a sign-blind heuristic in `flip_slew_ra_delta` that the path-aware check now handles. `flip_policy.enabled` still defaults `false` (operators opt in once they've replayed the validation locally). The tracking-time CW-exclusion-zone safety guard (Part 1 of issue #259) has since landed — a background watcher stops tracking before the encoder `mech_HA` drifts into the zone (see [§Tracking-time safety guard](#tracking-time-safety-guard)). Driver-planned auto-flip-during-tracking (Phase 2.5 / Part 2 of #259) remains deferred — the driver only flips on an explicit `SetSideOfPier` or a slew whose target requires the opposite side. Plan: [`docs/plans/star-adventurer-gti-meridian-flip.md`](../plans/star-adventurer-gti-meridian-flip.md). See [§Meridian flip](#meridian-flip). |
+| **Phase 7 — altitude-based safety floor (#223)** | landed 2026-07-01 ("Phase 3" in the plan's local numbering) — replaces the rectangular celestial-Dec envelope (`dec_limits`) with `MountConfig::min_altitude_degrees`: slew / sync targets whose computed apparent altitude (`sin alt = sin lat · sin dec + cos lat · cos dec · cos HA`) is below the floor are rejected with `INVALID_VALUE`. Default `0.0` (geometric horizon); negative floors permit below-horizon pointing and log `info!` at startup. `Park` stays exempt (privileged-park pattern). See [§Altitude floor](#altitude-floor). |
 
 #### Phase 4 findings (hardware bringup)
 
@@ -2018,8 +2070,10 @@ In addition to the codec fixes:
   the motor against a hard stop while the encoder counter kept
   advancing (audible motor noise, OTA stationary). `MountConfig`
   carries the asymmetric mech_HA interval where the CW binds against
-  the pier (`cw_exclusion_zone`) plus the Dec envelope (`dec_limits`) —
-  both later wrapped as validated newtypes per
+  the pier (`cw_exclusion_zone`) plus the apparent-altitude floor
+  (`min_altitude_degrees`, which replaced the rectangular `dec_limits`
+  envelope 2026-07-01) —
+  both wrapped as validated newtypes per
   [ADR-006](../decisions/006-typed-physical-quantities-for-mount-pointing.md).
   `SyncToCoordinates` and
   `SlewToCoordinatesAsync` reject targets whose chosen-side
@@ -2040,7 +2094,8 @@ In addition to the codec fixes:
   used before 2026-05-17 but missed the ascending half of the
   CW exclusion arc — see
   [§Safety envelope](#safety-envelope-cw-exclusion-zone)
-  for the hardware session that triggered the widening. `±90°` Dec.
+  for the hardware session that triggered the widening. Altitude
+  floor `0°` (geometric horizon) — see [§Altitude floor](#altitude-floor).
 - **Slew watcher abort on `:f` blocked** — both the slew and
   park completion watchers issue `:L` on both axes and clear
   `slew_in_progress` if either axis reports `blocked=true`.
@@ -2107,6 +2162,8 @@ What's still outstanding from Phase 4:
   first-hardware verification — see [§Meridian flip](#meridian-flip))
 - Per-pier-side safety envelopes and through-wrap slew routing for
   flip slews (Phase 6, in progress)
+- Apparent-altitude floor on slew / sync targets
+  (`min_altitude_degrees` — see [§Altitude floor](#altitude-floor))
 - `Slewing` poll
 - `UTCDate` / `SiderealTime` (host-clock-derived)
 - Mock transport for BDD tests; feature-gated mock for `test_lib.rs` and
@@ -2127,7 +2184,6 @@ What's still outstanding from Phase 4:
 | WiFi station mode (mount on a routed network) | AP-mode UDP is verified; station mode just changes the bind-address selection — straightforward to add once a station-mode test setup exists |
 | Multi-mount support on a single binary | `rp` assumes one mount per service; multi-mount is a separate concern |
 | Driver-planned auto-flip during tracking (Phase 2.5 / Part 2 of issue #259: `flip_policy.auto_flip_during_tracking` + `auto_flip_at_meridian_offset_hours`) | hosts like NINA / SGP / `rp` own flip timing themselves; mid-exposure auto-flip is a footgun for astrophotography and a separate state machine. The Part 1 tracking-time safety guard (stop-only, see [§Tracking-time safety guard](#tracking-time-safety-guard)) has landed; auto-flip would replace the stop with a flip slew and re-engage tracking on the new pier side |
-| Altitude-based safety floor (Phase 3 in [`docs/plans/star-adventurer-gti-meridian-flip.md`](../plans/star-adventurer-gti-meridian-flip.md)) | replaces the rectangular Dec envelope with an altitude floor; independent of Phase 6 and can land in either order |
 
 ## References
 

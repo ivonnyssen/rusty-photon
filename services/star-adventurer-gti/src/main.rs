@@ -116,6 +116,16 @@ fn main() -> ServiceResult {
                 let mut config = load_config(&config_path)?;
                 apply_cli_overrides(&mut config, &args)?;
                 info!("Server port: {}", config.server.port);
+                // Deliberately `info!` (not `debug!`): a negative floor
+                // permits below-horizon pointing, and support
+                // transcripts should show that relaxed state.
+                let floor = config.mount.min_altitude_degrees.value();
+                if floor < 0.0 {
+                    info!(
+                        "min_altitude_degrees is negative ({floor}°): below-horizon \
+                         slew/sync targets are permitted"
+                    );
+                }
 
                 let builder = ServerBuilder::new()
                     .with_config(config)
