@@ -240,7 +240,7 @@ impl SafetyMonitor for FileMonitorDevice {
     }
 }
 
-pub fn load_config(path: &Path) -> Result<Config, Box<dyn std::error::Error>> {
+pub fn load_config(path: &Path) -> Result<Config, Box<dyn std::error::Error + Send + Sync>> {
     let content = std::fs::read_to_string(path)?;
     let config: Config = serde_json::from_str(&content)?;
     Ok(config)
@@ -259,7 +259,7 @@ impl ServerBuilder {
         Self { config }
     }
 
-    pub async fn build(self) -> Result<BoundServer, Box<dyn std::error::Error>> {
+    pub async fn build(self) -> Result<BoundServer, Box<dyn std::error::Error + Send + Sync>> {
         let device = FileMonitorDevice::new(self.config.clone());
 
         let mut server = Server::new(CargoServerInfo!());
@@ -329,7 +329,7 @@ impl BoundServer {
     pub async fn start(
         self,
         shutdown: impl Future<Output = ()> + Send + 'static,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         match self.tls {
             Some(ref tls_config) => {
                 info!("filemonitor started on {} (TLS)", self.local_addr);
@@ -352,7 +352,7 @@ impl BoundServer {
 pub async fn start_server(
     config: Config,
     shutdown: impl Future<Output = ()> + Send + 'static,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     ServerBuilder::new(config)
         .build()
         .await?
@@ -370,7 +370,7 @@ pub async fn run_server_loop(
     config_path: &Path,
     shutdown: CancellationToken,
     reload: ReloadSignal,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     loop {
         let config = load_config(config_path)?;
         info!("Starting filemonitor server on port {}", config.server.port);

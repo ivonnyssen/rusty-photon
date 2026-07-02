@@ -114,7 +114,7 @@ impl Default for DriverTarget {
 }
 
 /// Load BFF configuration from a JSON file.
-pub fn load_config(path: &Path) -> Result<Config, Box<dyn std::error::Error>> {
+pub fn load_config(path: &Path) -> Result<Config, Box<dyn std::error::Error + Send + Sync>> {
     let content = std::fs::read_to_string(path)?;
     let config = serde_json::from_str(&content)?;
     Ok(config)

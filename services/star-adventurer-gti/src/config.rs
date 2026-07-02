@@ -1026,7 +1026,9 @@ impl Default for MountConfig {
 }
 
 /// Load a [`Config`] from a JSON file.
-pub fn load_config(path: &Path) -> std::result::Result<Config, Box<dyn std::error::Error>> {
+pub fn load_config(
+    path: &Path,
+) -> std::result::Result<Config, Box<dyn std::error::Error + Send + Sync>> {
     let content = std::fs::read_to_string(path)?;
     // Validation is construct-time: the config newtypes
     // (`FlipRangeHours`, `CwExclusionZone`, `MinAltitudeDegrees`,

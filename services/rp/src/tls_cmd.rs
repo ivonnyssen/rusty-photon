@@ -10,7 +10,7 @@ pub fn run(
     output_dir: Option<&str>,
     services: Option<&[String]>,
     extra_sans: &[String],
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let pki_dir = match output_dir {
         Some(dir) => config::expand_tilde(dir),
         None => config::default_pki_dir(),
@@ -87,7 +87,7 @@ pub async fn run_acme(
     dns_token: Option<&str>,
     email: Option<&str>,
     staging: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let domain = domain.ok_or("--domain is required with --acme")?;
     let dns_provider_name = dns_provider_name.ok_or("--dns-provider is required with --acme")?;
     let dns_token = dns_token.ok_or("--dns-token is required with --acme")?;
@@ -135,7 +135,7 @@ async fn run_acme_issue(
     acme_config: &rp_tls::acme_config::AcmeConfig,
     pki_dir: &Path,
     acme_client: &dyn rp_tls::acme::AcmeClient,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     info!(
         "Requesting wildcard certificate for *.{}",
         acme_config.domain

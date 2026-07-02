@@ -28,12 +28,25 @@
 //!   (stdout is reserved for the `bound_addr=` handshake), filtered by `RUST_LOG`
 //!   or a fallback level. Every service binary calls this at startup.
 //!
+//! * [`ServiceResult`] — the result type service `main`s return. Its error
+//!   side is [`Report`], so startup failures and fatal exits print a readable
+//!   multi-line `source()` chain instead of a one-line `Debug` dump. Run
+//!   closures return [`RunResult`] (a boxed [`RunError`]) instead — the runner
+//!   converts that into the `Report` at its own boundary, so closures keep
+//!   plain `?` ergonomics on typed and boxed errors alike. The runner also
+//!   installs the `color-eyre` panic hook (once per process), so panics print
+//!   formatted reports with span context (via the `ErrorLayer` that
+//!   [`init_tracing`] composes in). Per ADR-011 this crate is the **only**
+//!   owner of `color-eyre`: errors stay `thiserror`-typed everywhere below the
+//!   binary boundary, and only the *types* are re-exported here — never the
+//!   `eyre!`/`bail!` macros.
+//!
 //! ## Minimal example
 //!
 //! ```no_run
-//! use rusty_photon_service_lifecycle::ServiceRunner;
+//! use rusty_photon_service_lifecycle::{ServiceResult, ServiceRunner};
 //!
-//! fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! fn main() -> ServiceResult {
 //!     ServiceRunner::new("example-service").run(|shutdown| async move {
 //!         // Race the server against shutdown.
 //!         tokio::select! {
@@ -67,5 +80,15 @@ mod shutdown;
 
 pub use logging::init_tracing;
 pub use reload::ReloadSignal;
-pub use runner::ServiceRunner;
+pub use runner::{report_from_boxed, RunError, RunResult, ServiceResult, ServiceRunner};
 pub use shutdown::Shutdown;
+
+/// Re-exported so services can *name* the error type in signatures (e.g.
+/// `plate-solver`'s `ExitCode` path) without depending on `color-eyre`
+/// themselves. Deliberately a type-only re-export: the `eyre!`/`bail!`
+/// macros are NOT re-exported. Constructing a `Report` directly (e.g.
+/// `Report::msg(...)`) remains *possible* through this re-export, but it is
+/// against workspace policy outside the binary boundary — errors below it
+/// stay `thiserror`-typed, and the crate-local dependency on `color-eyre`
+/// is the structural guardrail (ADR-011).
+pub use color_eyre::Report;

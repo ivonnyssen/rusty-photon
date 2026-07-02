@@ -114,7 +114,9 @@ impl ServerBuilder {
         self
     }
 
-    pub async fn build(self) -> std::result::Result<BoundServer, Box<dyn std::error::Error>> {
+    pub async fn build(
+        self,
+    ) -> std::result::Result<BoundServer, Box<dyn std::error::Error + Send + Sync>> {
         let manager = FalconManager::new(self.factory);
 
         // Eager hardware validation at startup: opens the port,
@@ -129,7 +131,10 @@ impl ServerBuilder {
         // before propagating; otherwise the reconnect supervisor task
         // would outlive the dropped manager and keep the port open
         // until process exit.
-        let build_result: std::result::Result<BoundServer, Box<dyn std::error::Error>> = async {
+        let build_result: std::result::Result<
+            BoundServer,
+            Box<dyn std::error::Error + Send + Sync>,
+        > = async {
             let mut server = Server::new(CargoServerInfo!());
             server.listen_addr = SocketAddr::from(([0, 0, 0, 0], self.config.server.port));
             server.discovery_port = self.config.server.discovery_port;
@@ -246,7 +251,7 @@ impl BoundServer {
     pub async fn start(
         self,
         shutdown: impl Future<Output = ()> + Send + 'static,
-    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // Capture the serve result so transport.shutdown() runs even
         // when the HTTP server errors out — otherwise the supervisor
         // and port would leak past a serve failure.

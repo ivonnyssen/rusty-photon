@@ -31,6 +31,19 @@ this doc covers the crate's own design.
   harness parses), filtered by `RUST_LOG` when set, otherwise at a
   caller-supplied fallback level. Idempotent. Every service binary calls
   this once at startup so logging is configured identically everywhere.
+  The subscriber carries a `tracing_error::ErrorLayer` so panic reports
+  include the active span stack.
+- Own top-level error & panic reporting ([ADR-011](../decisions/011-error-reporting-layers.md)):
+  the runner installs the `color-eyre` hooks once per process, so panics
+  print formatted reports with span context on every service; run-closure
+  errors are converted into a `color_eyre::Report` at the runner's return,
+  so `main` prints a readable multi-line `source()` chain instead of a
+  single-line `Debug` dump. This crate is the **only** owner of
+  `color-eyre`/`tracing-error` in the workspace — errors stay
+  `thiserror`-typed everywhere below the binary boundary, and only the
+  *types* (`ServiceResult`, `RunError`, `RunResult`, `Report`) plus the
+  chain-preserving [`report_from_boxed`] conversion are re-exported, never
+  the `eyre!`/`bail!` macros.
 
 Out of scope:
 
@@ -49,7 +62,9 @@ Out of scope:
 
 ## Public API
 
-Three types and one free function ([`init_tracing`]).
+Three types, three result/error aliases, and two free functions
+([`init_tracing`], [`report_from_boxed`]), plus the type-only
+`color_eyre::Report` re-export.
 [`Shutdown`] is constructed only by the runner.
 [`ReloadSignal`] has a public constructor so integration tests can
 drive a service's run loop with synthetic reload events, and so
@@ -60,8 +75,8 @@ same primitive — but the canonical producer remains the runner.
 ServiceRunner::new(name)                       -> ServiceRunner
 ServiceRunner::with_reload(self)               -> ServiceRunner
 ServiceRunner::scm_mode(self, enable)          -> ServiceRunner   // no-op unless cfg(all(windows, feature = "scm"))
-ServiceRunner::run(self, |Shutdown| async)              -> Result<(), Box<dyn Error>>
-ServiceRunner::run_with_reload(self, |Shutdown, ReloadSignal| async) -> Result<(), Box<dyn Error>>
+ServiceRunner::run(self, |Shutdown| async)              -> ServiceResult
+ServiceRunner::run_with_reload(self, |Shutdown, ReloadSignal| async) -> ServiceResult
 
 Shutdown::token()        -> CancellationToken
 Shutdown::cancelled()    -> impl Future<Output = ()> + Send + 'static
@@ -71,19 +86,28 @@ ReloadSignal::new()      -> ReloadSignal      // for tests / alt sources
 ReloadSignal::notify(&self)                   // wake one waiter
 ReloadSignal::recv(&self) -> impl Future<Output = ()> + '_
 
-init_tracing(default_level: tracing::Level)   // stderr + RUST_LOG/EnvFilter subscriber; idempotent
+init_tracing(default_level: tracing::Level)   // stderr + RUST_LOG/EnvFilter subscriber + ErrorLayer; idempotent
+
+type ServiceResult = Result<(), color_eyre::Report>   // what main returns
+type RunError      = Box<dyn Error + Send + Sync>     // what run closures return (error side)
+type RunResult     = Result<(), RunError>             // what run closures return
+report_from_boxed(RunError) -> Report          // chain-preserving conversion for pre-runner `?` sites
+pub use color_eyre::Report                     // type-only re-export; eyre!/bail! are NOT re-exported
 ```
 
 The closure passed to `run` / `run_with_reload` is `FnOnce(...) -> Fut`
-where `Fut: Future<Output = Result<(), Box<dyn Error>>> + 'static`
-and the closure itself is `Send + 'static`. Bounds explained:
+where `Fut: Future<Output = RunResult> + 'static`
+and the closure itself is `Send + 'static`. The runner converts the
+closure's boxed error into the `Report` that `main` returns (preserving
+the `source()` chain) — closures keep using `?` on typed and boxed errors
+alike, and never construct `Report`s themselves (ADR-011). Bounds explained:
 
 * `F: Send + 'static` — the SCM dispatch path stashes the closure in
   a `OnceLock` and re-enters it from the `extern "system" fn` service
   entry point, which requires both bounds. The console path inherits
   them for API uniformity.
 * `Fut: 'static` — the SCM path type-erases the future into
-  `Pin<Box<dyn Future<Output = ServiceResult>>>`, which is implicitly
+  `Pin<Box<dyn Future<Output = RunResult>>>`, which is implicitly
   `+ 'static`. Most async fn bodies satisfy this naturally because
   they own their captures via `move` semantics; the only futures that
   fail are those that borrow non-`'static` data.
@@ -234,9 +258,9 @@ by making axum's `with_graceful_shutdown` (inside `BoundServer::start`)
 fire on the same source as the OS-signal watcher.
 
 ```rust
-use rusty_photon_service_lifecycle::ServiceRunner;
+use rusty_photon_service_lifecycle::{ServiceResult, ServiceRunner};
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> ServiceResult {
     let args = Args::parse();
     init_tracing(args.log_level);
 
@@ -301,7 +325,7 @@ SCM control manager passes via `binPath`), and use
 `run_with_reload`:
 
 ```rust
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> ServiceResult {
     let args = Args::parse();
     init_tracing(args.log_level);
 
@@ -341,7 +365,7 @@ struct Args {
     service: bool,
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> ServiceResult {
     let args = Args::parse();
 
     ServiceRunner::new("my-service")
@@ -393,6 +417,12 @@ If the SCM glue grows past ~100 LOC it gets its own module.
   `.with_reload()` returns a descriptive error rather than running
   the closure. The runner builds and tears down a fresh runtime
   per call.
+- **Error reporting** — the `Once`-guarded `color_eyre::install()` is
+  idempotent across repeated `ServiceRunner::run` calls; a closure
+  error with a `source()` chain renders as a multi-line report (chain
+  present) rather than a single `Debug` line; the subscriber built by
+  `init_tracing` carries the `ErrorLayer` (asserted via
+  `SpanTrace::capture()` under `tracing::subscriber::with_default`).
 - **SCM mode** — `scm_mode(false)` is a no-op and falls through to
   the OS-signal path on Windows. The full SCM dispatch is *not*
   exercised in CI: `windows_service::service_dispatcher::start` only
@@ -415,10 +445,17 @@ If the SCM glue grows past ~100 LOC it gets its own module.
 | `tokio` | runtime, signal handling, `sync::Notify` |
 | `tokio-util` | `CancellationToken` |
 | `tracing` | warn/debug logging on signal events |
+| `tracing-subscriber` | `init_tracing` subscriber (fmt + `EnvFilter`) |
+| `color-eyre` | panic hook + `Report` formatting at the binary boundary (ADR-011) |
+| `tracing-error` | `ErrorLayer` so panic reports carry the active `SpanTrace` |
 | `windows-service` (opt, feature `scm`) | Windows Service Control Manager dispatch + control handler |
 
-Workspace-pinned versions live in the workspace `Cargo.toml`. The
-`scm` feature is opt-in per consumer; non-adopters get zero
+Workspace-pinned versions live in the workspace `Cargo.toml` — except
+`color-eyre` and `tracing-error`, which are **deliberately crate-local**:
+this crate being their sole owner is the structural guardrail that keeps
+`eyre!`-style ad-hoc errors out of the `thiserror`-typed library/device
+code (see [ADR-011](../decisions/011-error-reporting-layers.md) §3.4 of
+the plan). The `scm` feature is opt-in per consumer; non-adopters get zero
 `windows-service` content in their dep tree.
 
 `windows-service` is `windows-service = "0.8"` — the Mullvad-

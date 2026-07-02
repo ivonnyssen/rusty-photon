@@ -198,9 +198,10 @@ fn test_cli_help() {
     assert!(stdout.contains("--log-level"));
 }
 
-/// Assert that a `Box<dyn Error>` reached main (config-load failure) and that
-/// clap did *not* reject the arguments — i.e., `--log-level <variant>` parsed
-/// successfully and the binary then failed opening the missing config.
+/// Assert that a config-load failure reached main (rendered by the runner's
+/// error report, ADR-011) and that clap did *not* reject the arguments —
+/// i.e., `--log-level <variant>` parsed successfully and the binary then
+/// failed opening the missing config.
 #[cfg(not(miri))]
 fn assert_config_not_found(output: &std::process::Output) {
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -210,8 +211,11 @@ fn assert_config_not_found(output: &std::process::Output) {
         "clap rejected the arguments; stderr:\n{}",
         stderr
     );
+    // The report prints the io::Error's Display form; the "file not found"
+    // OS code is 2 on both Unix (ENOENT) and Windows (ERROR_FILE_NOT_FOUND),
+    // while the message text differs per OS.
     assert!(
-        stderr.contains("NotFound"),
+        stderr.contains("(os error 2)"),
         "expected config-not-found error; stderr:\n{}",
         stderr
     );

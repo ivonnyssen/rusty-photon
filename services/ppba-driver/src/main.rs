@@ -9,7 +9,7 @@ use std::sync::Arc;
 use clap::Parser;
 use rust_embed::RustEmbed;
 use rusty_photon_i18n::{fl, fluent_language_loader, LocalizedParser};
-use rusty_photon_service_lifecycle::ServiceRunner;
+use rusty_photon_service_lifecycle::{ServiceResult, ServiceRunner};
 use tracing::Level;
 
 use ppba_driver::config::{load_effective_config, CliOverrides};
@@ -70,7 +70,7 @@ fn parse_log_level(s: &str) -> Result<Level, String> {
     })
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> ServiceResult {
     let (loader, i18n_status) = rusty_photon_i18n::init(fluent_language_loader!(), &Localizations);
     let args = Args::parse_localized(&loader);
 

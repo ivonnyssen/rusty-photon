@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use clap::Parser;
-use rusty_photon_service_lifecycle::ServiceRunner;
+use rusty_photon_service_lifecycle::{ServiceResult, ServiceRunner};
 use tracing::{debug, info, Level};
 
 #[cfg(feature = "mock")]
@@ -51,7 +51,7 @@ fn parse_log_level(s: &str) -> Result<Level, String> {
         .map_err(|_| format!("Invalid log level: {s}. Use: trace, debug, info, warn, error"))
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> ServiceResult {
     let args = Args::parse();
 
     rusty_photon_service_lifecycle::init_tracing(args.log_level);
@@ -174,7 +174,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
 }
 
-fn apply_cli_overrides(config: &mut Config, args: &Args) -> Result<(), Box<dyn std::error::Error>> {
+fn apply_cli_overrides(
+    config: &mut Config,
+    args: &Args,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use star_adventurer_gti::TransportConfig;
 
     if let Some(kind) = &args.transport {
