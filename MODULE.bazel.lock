@@ -523,7 +523,7 @@
           "FILE:@@//services/qhy-camera/Cargo.toml 01c6581a16d8e4770e3eaf922441c066db5b095089cbb7bb01c1dc50f2b09c71",
           "FILE:@@//services/qhy-focuser/Cargo.toml fc23375fef74f04afcb857da28338437312e6b40bc8cc3f5f75d398ec2e2af55",
           "FILE:@@//services/calibrator-flats/Cargo.toml 54de4e36e277e9598276c361a85e4502fbc7e78c50337919bb7feefd42a8dc94",
-          "FILE:@@//services/dsd-fp2/Cargo.toml e67c0b8d3d3cc5ecd7c1919c14874755d9c6909767fc012871b42a2d2753daa2",
+          "FILE:@@//services/dsd-fp2/Cargo.toml a260d6bec61b5426348a9a641010f00f3496f0703be5b92032a5bf4f2d706d2b",
           "FILE:@@//services/rp/Cargo.toml 6147cdd32ee3645a595da67603fa9f581b56ca132a1f4e448e880d31b7cf82aa",
           "FILE:@@//services/plate-solver/Cargo.toml 026a1a096f211e650e9e7093e977a6b65d0e4ce3bec8768c326a33871472a748",
           "FILE:@@//services/sentinel/Cargo.toml a623a6fbb2cf5bbea3d9a236ecac903ff2c0513af08e364b0a457c94c30da221",

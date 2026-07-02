@@ -20,12 +20,14 @@ use ascom_alpaca::{ASCOMError, ASCOMErrorCode};
 use skywatcher_motor_protocol::Axis;
 use tokio::sync::RwLock;
 
-use crate::config::{ActiveZone, Config, CwExclusionZone, DecLimits, TrackingGuardMarginHours};
-use crate::coordinates::SIDEREAL_DEG_PER_SEC;
+use crate::config::{
+    ActiveZone, Config, CwExclusionZone, MinAltitudeDegrees, TrackingGuardMarginHours,
+};
+use crate::coordinates::{ra_dec_to_alt_az, SIDEREAL_DEG_PER_SEC};
 use crate::error::StarAdvError;
 use crate::manager::MountManager;
 use crate::transport::mock::{CapturingMockFactory, MockMountState, MockTransportFactory};
-use crate::units::{Cpr, RaTicks};
+use crate::units::{Cpr, Dec, Lst, Ra, RaTicks};
 
 use super::park_persistence::{read_connect_fields, write_park_to_config};
 use super::slew::{
@@ -42,6 +44,7 @@ fn device() -> MountDevice {
     // mechanical-envelope check for tests that don't exercise it.
     // Disable the CW-exclusion zone check for this test.
     cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
+    cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
     let manager = MountManager::new(cfg.clone(), Arc::new(MockTransportFactory));
     MountDevice::new(cfg.mount, manager)
 }
@@ -554,14 +557,14 @@ fn fast_settle_device() -> MountDevice {
     }
     cfg.mount.settle_after_slew = Duration::from_millis(0);
     // The slew-lifecycle tests pass hardcoded RA/Dec targets
-    // (typically `(6.0 h, 30°)`) whose mech-HA depends on the
-    // wallclock LST and would intermittently fall outside the
-    // production default envelope of `±6.95 h / ±90°`. Open the
-    // envelope all the way for these tests; the safety-gate
-    // behaviour is covered separately by
-    // [`fast_settle_connected_narrow_envelope`].
-    // Disable the CW-exclusion zone check for this test.
+    // (typically `(6.0 h, 30°)`) whose mech-HA — and hence apparent
+    // altitude — depends on the wallclock LST and would
+    // intermittently trip the envelope gates. Neutralise both: the
+    // CW-exclusion-zone behaviour is covered separately by
+    // [`fast_settle_connected_narrow_envelope`], the altitude floor
+    // by [`fast_settle_connected_with_altitude_floor`].
     cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
+    cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
     // Pin the park target to the mock's start position (0, 0) so
     // `park()` is a zero-distance, instant slew. The park-lifecycle
     // tests using this helper exercise the watcher / AtPark flip, not
@@ -582,12 +585,10 @@ async fn fast_settle_connected() -> MountDevice {
     d
 }
 
-/// Like `fast_settle_connected`, but with a narrow safety
-/// configuration (a small CW exclusion zone + tight Dec range) so the
-/// safety-gate tests can land target coords that are clearly
-/// inside the CW exclusion zone or outside the Dec band without first
-/// needing to push past the GTi default `(6.95, 11.05)` /
-/// `±90°`.
+/// Like `fast_settle_connected`, but with a narrow CW exclusion zone
+/// so the safety-gate tests can land target coords that are clearly
+/// inside it without first needing to push past the GTi default
+/// `(0.95, 11.05)`.
 async fn fast_settle_connected_narrow_envelope() -> MountDevice {
     let mut cfg = Config::default();
     if let crate::config::TransportConfig::Usb(usb) = &mut cfg.transport {
@@ -595,11 +596,33 @@ async fn fast_settle_connected_narrow_envelope() -> MountDevice {
     }
     cfg.mount.settle_after_slew = Duration::from_millis(0);
     // Narrow CW exclusion zone covering `mech_HA ∈ [0.5, 1.5] h` so a
-    // target 1 h past meridian on the natural side is inside it,
-    // and tight Dec band `[-5°, +5°]` so off-equator targets are
-    // rejected.
+    // target 1 h past meridian on the natural side is inside it.
+    // Neutralise the altitude floor so these tests exercise the CW
+    // gate in isolation (the floor has its own device builder below).
     cfg.mount.cw_exclusion_zone = CwExclusionZone::Active(ActiveZone::new(0.5, 1.5));
-    cfg.mount.dec_limits = DecLimits::new(-5.0, 5.0);
+    cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
+    // Pin the park target to (0, 0) — see `fast_settle_device` for why
+    // (keeps `park()` instant despite the `preferred_ap_park` default).
+    cfg.mount.park_ra_ticks = Some(0);
+    cfg.mount.park_dec_ticks = Some(0);
+    let manager = MountManager::new(cfg.clone(), Arc::new(MockTransportFactory));
+    let d = MountDevice::new(cfg.mount, manager);
+    d.set_connected(true).await.unwrap();
+    d
+}
+
+/// Like `fast_settle_connected`, but at site latitude 45°N with an
+/// explicit altitude floor and the CW exclusion zone disabled, so the
+/// altitude gate is exercised in isolation.
+async fn fast_settle_connected_with_altitude_floor(floor_degrees: f64) -> MountDevice {
+    let mut cfg = Config::default();
+    if let crate::config::TransportConfig::Usb(usb) = &mut cfg.transport {
+        usb.polling_interval = Duration::from_millis(20);
+    }
+    cfg.mount.settle_after_slew = Duration::from_millis(0);
+    cfg.mount.site_latitude_deg = 45.0;
+    cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
+    cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(floor_degrees);
     // Pin the park target to (0, 0) — see `fast_settle_device` for why
     // (keeps `park()` instant despite the `preferred_ap_park` default).
     cfg.mount.park_ra_ticks = Some(0);
@@ -611,20 +634,62 @@ async fn fast_settle_connected_narrow_envelope() -> MountDevice {
 }
 
 #[tokio::test]
-async fn slew_async_refuses_dec_outside_safe_envelope() {
-    // Envelope: Dec in [-5°, +5°]. Slew to Dec = +30° is far
-    // outside and must be rejected before any wire motion.
-    let d = fast_settle_connected_narrow_envelope().await;
+async fn slew_async_refuses_target_below_altitude_floor() {
+    // LAT 45°N, floor 0° (geometric horizon). The target at
+    // HA = −3 h, Dec = −40° computes apparent altitude −4.1° and
+    // must be rejected before any wire motion.
+    let d = fast_settle_connected_with_altitude_floor(0.0).await;
+    let lst = d.sidereal_time().await.unwrap();
+    let target_ra = (lst + 3.0).rem_euclid(24.0); // HA = LST − RA = −3 h
     let err = d
-        .slew_to_coordinates_async(d.sidereal_time().await.unwrap(), 30.0)
+        .slew_to_coordinates_async(target_ra, -40.0)
         .await
         .unwrap_err();
     assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
     assert!(
-        err.message.contains("outside safe envelope"),
-        "error message must call out the envelope: {}",
+        err.message.contains("altitude"),
+        "error message must call out the altitude floor: {}",
         err.message
     );
+}
+
+#[tokio::test]
+async fn slew_async_accepts_low_target_above_altitude_floor() {
+    // Same geometry as the refusal test, but Dec = −30° puts the
+    // target at apparent altitude +4.6° — above the 0° floor, so
+    // the slew is accepted even though the target is nowhere near
+    // the rectangular Dec envelope this gate replaced.
+    let d = fast_settle_connected_with_altitude_floor(0.0).await;
+    let lst = d.sidereal_time().await.unwrap();
+    let target_ra = (lst + 3.0).rem_euclid(24.0); // HA = −3 h
+    d.slew_to_coordinates_async(target_ra, -30.0).await.unwrap();
+}
+
+#[tokio::test]
+async fn envelope_check_accepts_target_exactly_at_altitude_floor() {
+    // The comparator is `alt < floor` — a target exactly at the
+    // floor is accepted, one 0.001° below is rejected. Pin the floor
+    // to the precise altitude the driver will compute for the target
+    // (same function, same inputs), then probe the check directly
+    // with a fixed LST so no wallclock is involved.
+    let (alt, _az) = ra_dec_to_alt_az(Ra::new(12.0), Dec::new(-44.0), 45.0, Lst::new(12.0));
+    let d = fast_settle_connected_with_altitude_floor(alt).await;
+    d.check_within_safe_envelope(12.0, -44.0, 12.0, false)
+        .expect("target exactly at the floor is accepted");
+    let err = d
+        .check_within_safe_envelope(12.0, -44.001, 12.0, false)
+        .expect_err("target below the floor is rejected");
+    assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
+}
+
+#[tokio::test]
+async fn envelope_check_negative_floor_permits_below_horizon_target() {
+    // floor −45°: the HA = −3 h / Dec = −40° target (alt −4.1°) that
+    // the 0° floor rejects is accepted.
+    let d = fast_settle_connected_with_altitude_floor(-45.0).await;
+    let lst = d.sidereal_time().await.unwrap();
+    let target_ra = (lst + 3.0).rem_euclid(24.0);
+    d.slew_to_coordinates_async(target_ra, -40.0).await.unwrap();
 }
 
 #[tokio::test]
@@ -647,14 +712,13 @@ async fn slew_async_refuses_ra_target_in_binding_zone() {
 
 #[tokio::test]
 async fn sync_refuses_target_outside_safe_envelope() {
-    // Same envelope. Sync would seed the encoder for a position
-    // outside the safe zone — tracking from there walks into a
-    // mechanical stop.
-    let d = fast_settle_connected_narrow_envelope().await;
-    let err = d
-        .sync_to_coordinates(d.sidereal_time().await.unwrap(), 30.0)
-        .await
-        .unwrap_err();
+    // Sync runs the same envelope gates as slew: a below-floor
+    // target (HA = −3 h, Dec = −40° at LAT 45°N → alt −4.1°) is
+    // rejected before the encoder is touched.
+    let d = fast_settle_connected_with_altitude_floor(0.0).await;
+    let lst = d.sidereal_time().await.unwrap();
+    let target_ra = (lst + 3.0).rem_euclid(24.0);
+    let err = d.sync_to_coordinates(target_ra, -40.0).await.unwrap_err();
     assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
 }
 
@@ -828,6 +892,7 @@ async fn slew_async_issues_indi_sequence_per_axis() {
     cfg.mount.settle_after_slew = Duration::from_millis(0);
     // Disable the CW-exclusion zone check for this test.
     cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
+    cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
     let manager = MountManager::new(cfg.clone(), Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
@@ -909,6 +974,7 @@ async fn slew_watcher_pickup_loop_reissues_when_residual_exceeds_tolerance() {
     cfg.mount.settle_after_slew = Duration::from_millis(0);
     // Disable the CW-exclusion zone check for this test.
     cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
+    cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
     let manager = MountManager::new(cfg.clone(), Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
@@ -978,6 +1044,7 @@ async fn slew_watcher_aborts_via_instant_stop_when_axis_reports_blocked() {
     cfg.mount.settle_after_slew = Duration::from_millis(0);
     // Disable the CW-exclusion zone check for this test.
     cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
+    cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
     let manager = MountManager::new(cfg.clone(), Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
@@ -1187,6 +1254,7 @@ async fn capturing_connected_device() -> (MountDevice, Arc<tokio::sync::Mutex<Mo
     // Open the envelope so the slew reaches the wire; settle instantly so
     // a successful slew's watcher doesn't linger between scenarios.
     cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
+    cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
     cfg.mount.settle_after_slew = Duration::from_millis(0);
     let manager = MountManager::new(cfg.clone(), Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
@@ -1522,6 +1590,7 @@ fn device_with_path(path: PathBuf) -> MountDevice {
     let mut cfg = Config::default();
     // Disable the CW-exclusion zone check for this test.
     cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
+    cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
     let manager = MountManager::new(cfg.clone(), Arc::new(MockTransportFactory));
     MountDevice::with_config_file_path(cfg.mount, manager, Some(path))
 }
@@ -1539,6 +1608,7 @@ fn device_with_path_and_mock(
     let mut cfg = Config::default();
     // Disable the CW-exclusion zone check for these tests.
     cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
+    cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
     let manager = MountManager::new(cfg.clone(), Arc::new(factory));
     let d = MountDevice::with_config_file_path(cfg.mount, manager, Some(path));
     (d, mock)
@@ -1900,6 +1970,7 @@ async fn set_park_refuses_when_wire_snapshot_reports_axis_running() {
     }
     // Disable the CW-exclusion zone check for this test.
     cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
+    cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
     let dir = tempfile::TempDir::new().unwrap();
     let path = dir.path().join("config.json");
     seed_default_config(&path);
@@ -2005,6 +2076,7 @@ async fn unpark_seed_fires_when_firmware_reports_near_zero_encoder() {
     let mut cfg = Config::default();
     // Disable the CW-exclusion zone check for this test.
     cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
+    cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
     cfg.mount.unpark_from_ap_position = crate::config::ApPark::ApPark3;
     cfg.mount.site_latitude_deg = 32.7157;
     let manager = MountManager::new(cfg.clone(), Arc::new(factory));
@@ -2035,6 +2107,7 @@ async fn unpark_seed_skips_when_firmware_encoder_beyond_tolerance() {
     let mut cfg = Config::default();
     // Disable the CW-exclusion zone check for this test.
     cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
+    cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
     cfg.mount.unpark_from_ap_position = crate::config::ApPark::ApPark3;
     cfg.mount.site_latitude_deg = 32.7157;
     let manager = MountManager::new(cfg.clone(), Arc::new(factory));
@@ -2062,6 +2135,7 @@ async fn unpark_seed_skips_just_above_fresh_power_up_tolerance() {
     }
     let mut cfg = Config::default();
     cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
+    cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
     cfg.mount.unpark_from_ap_position = crate::config::ApPark::ApPark3;
     cfg.mount.site_latitude_deg = 32.7157;
     let manager = MountManager::new(cfg.clone(), Arc::new(factory));
@@ -2082,6 +2156,7 @@ async fn park_target_uses_preferred_ap_park_distinct_from_unpark_seed() {
     let mut cfg = Config::default();
     // Disable the CW-exclusion zone check for this test.
     cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
+    cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
     cfg.mount.unpark_from_ap_position = crate::config::ApPark::ApPark3;
     cfg.mount.preferred_ap_park = crate::config::ApPark::ApPark2;
     cfg.mount.site_latitude_deg = 32.7157;
@@ -2300,6 +2375,7 @@ async fn unpark_from_ap_position_named_park_resets_encoder_and_clears_at_park() 
     }
     let mut cfg = Config::default();
     cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
+    cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
     cfg.mount.site_latitude_deg = 32.7157;
     let manager = MountManager::new(cfg.clone(), Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
@@ -2403,6 +2479,7 @@ async fn park_target_prefers_config_values_over_handshake_capture() {
     let mut cfg = Config::default();
     // Disable the CW-exclusion zone check for this test.
     cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
+    cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
     cfg.mount.park_ra_ticks = Some(5000);
     cfg.mount.park_dec_ticks = Some(-7000);
     let manager = MountManager::new(cfg.clone(), Arc::new(MockTransportFactory));
@@ -2930,6 +3007,7 @@ async fn pulse_guide_rolls_back_flag_on_wire_failure() {
     let mut cfg = Config::default();
     // Disable the CW-exclusion zone check for this test.
     cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
+    cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
     let manager = MountManager::new(cfg.clone(), Arc::new(StuckAxisFactory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
@@ -3541,6 +3619,7 @@ async fn flip_enabled_device() -> MountDevice {
     cfg.mount.settle_after_slew = Duration::from_millis(0);
     // Disable the CW-exclusion zone check for this test.
     cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
+    cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
     cfg.mount.flip_policy.enabled = true;
     let manager = MountManager::new(cfg.clone(), Arc::new(MockTransportFactory));
     MountDevice::new(cfg.mount, manager)
@@ -3931,6 +4010,7 @@ async fn slew_watcher_re_enables_tracking_after_completion() {
     cfg.mount.settle_after_slew = Duration::from_millis(0);
     // Open the envelope so the test target lands inside.
     cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
+    cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
     let manager = MountManager::new(cfg.clone(), Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();

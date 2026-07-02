@@ -39,8 +39,8 @@ use tracing::{debug, info};
 use crate::codec::SkywatcherCodec;
 use crate::config::ApPark;
 use crate::coordinates::{
-    local_sidereal_time_hours, side_of_pier as side_of_pier_calc, target_encoder_flipped,
-    target_encoder_normal, SIDEREAL_DEG_PER_SEC,
+    local_sidereal_time_hours, ra_dec_to_alt_az, side_of_pier as side_of_pier_calc,
+    target_encoder_flipped, target_encoder_normal, SIDEREAL_DEG_PER_SEC,
 };
 use crate::error::StarAdvError;
 use crate::units::{Cpr, Dec, DecTicks, Lst, MechDec, MechHa, Ra, RaTicks};
@@ -160,7 +160,8 @@ impl MountDevice {
     }
 
     /// Reject a slew / sync / destination-side prediction whose target
-    /// would land inside the CW exclusion zone.
+    /// would land inside the CW exclusion zone or below the configured
+    /// minimum-altitude floor.
     ///
     /// **Why:** the Star Adventurer GTi has a mechanical safety
     /// constraint — the counterweights must not rise more than 0.95 h
@@ -201,9 +202,19 @@ impl MountDevice {
     /// `mech_HA = ±12` on the chosen pier) are reachable via slew
     /// because their mech_HA is outside the CW exclusion zone.
     ///
-    /// Both axes are validated together so a partial-failure slew
-    /// can't issue motion on RA before discovering Dec is out of
-    /// range.
+    /// The second gate is the **altitude floor**
+    /// ([`crate::config::MountConfig::min_altitude_degrees`]): the
+    /// target's apparent altitude, computed from HA + Dec + site
+    /// latitude via [`ra_dec_to_alt_az`], must be at or above the
+    /// configured floor. A target exactly at the floor is accepted;
+    /// a floor of `-90°` never rejects. Unlike the CW zone this is an
+    /// operator pointing preference (default `0°`, the geometric
+    /// horizon), not a mechanical constraint, and it has no path leg —
+    /// only the destination is checked.
+    ///
+    /// Both gates are validated together, before any motion, so a
+    /// partial-failure slew can't issue motion on RA before
+    /// discovering the target fails the altitude gate.
     pub(super) fn check_within_safe_envelope(
         &self,
         ra_hours: f64,
@@ -236,13 +247,23 @@ impl MountDevice {
                 ),
             ));
         }
-        if !self.config.dec_limits.range().contains(&dec_degrees) {
+        // Altitude floor: apparent altitude is a celestial property of
+        // the target (a function of HA + Dec + site latitude), so the
+        // check is identical for both pier sides — no
+        // `target_is_flipped` involvement.
+        let floor = self.config.min_altitude_degrees.value();
+        let (target_alt, _az) = ra_dec_to_alt_az(
+            Ra::new(ra_hours),
+            Dec::new(dec_degrees),
+            self.config.site_latitude_deg,
+            Lst::new(lst_hours),
+        );
+        if target_alt < floor {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_VALUE,
                 format!(
-                    "Dec target {dec_degrees:.3}° outside safe envelope [{}, {}]°",
-                    self.config.dec_limits.min_degrees(),
-                    self.config.dec_limits.max_degrees()
+                    "target altitude {target_alt:.3}° is below the configured \
+                     minimum altitude {floor}°"
                 ),
             ));
         }

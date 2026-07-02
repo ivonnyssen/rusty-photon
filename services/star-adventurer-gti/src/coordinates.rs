@@ -651,6 +651,36 @@ mod tests {
     }
 
     #[test]
+    fn altitude_matches_the_altitude_floor_worked_examples() {
+        // The worked-example table backing the altitude-floor gate
+        // (plan `star-adventurer-gti-meridian-flip.md` §3.1, LAT 45°N)
+        // plus hemisphere/latitude extremes. LST is pinned to 12 h and
+        // `RA = LST − HA`, so the HA column is exact.
+        let alt = |ha_hours: f64, dec: f64, lat: f64| {
+            ra_dec_to_alt_az(Ra::new(12.0 - ha_hours), Dec::new(dec), lat, Lst::new(12.0)).0
+        };
+        // Meridian target 5° above the south horizon.
+        assert!((alt(0.0, -40.0, 45.0) - 5.0).abs() < 1e-6);
+        // East horizon at the celestial equator: alt = 0 (edge).
+        assert!(alt(-6.0, 0.0, 45.0).abs() < 1e-6);
+        // Slightly east of meridian, still low above the horizon
+        // (the plan's table rounds this row to ≈ 5°; exact is 5.33°).
+        assert!((alt(-0.5, -39.4, 45.0) - 5.33).abs() < 0.05);
+        // Low west, mid-Dec: below the horizon.
+        assert!((alt(-3.0, -40.0, 45.0) - (-4.1)).abs() < 0.05);
+        // Low west, higher Dec: above the horizon.
+        assert!((alt(-3.0, -30.0, 45.0) - 4.56).abs() < 0.05);
+        // NCP sits at alt = latitude regardless of HA.
+        assert!((alt(1.234, 90.0, 45.0) - 45.0).abs() < 1e-6);
+        // Equator observer: equatorial target at HA 0 is at zenith.
+        assert!((alt(0.0, 0.0, 0.0) - 90.0).abs() < 1e-6);
+        // North-pole observer: alt = dec at any HA.
+        assert!((alt(4.0, 45.0, 90.0) - 45.0).abs() < 1e-6);
+        // Southern hemisphere: dec = lat is the zenith.
+        assert!((alt(0.0, -45.0, -45.0) - 90.0).abs() < 1e-6);
+    }
+
+    #[test]
     fn sidereal_step_period_for_gti_defaults() {
         // tmr_freq = 16M, cpr = 3,628,800 → period ≈ 379,887.
         let p = sidereal_step_period(0x00F4_2400, cpr());

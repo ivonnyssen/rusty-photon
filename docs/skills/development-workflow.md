@@ -243,8 +243,8 @@ rule becomes a newtype (or a small grouped type) with a `serde`
 `try_from` that rejects a bad value during `serde_json::from_str`, with
 the offending field named, so a bad config fails at **load** (startup)
 rather than mid-session. `star-adventurer-gti`'s `config.rs`
-(`FlipRangeHours`, `CwExclusionZone`, `DecLimits`, …) is the reference; it
-retired a hand-rolled `MountConfig::validate`.
+(`FlipRangeHours`, `CwExclusionZone`, `MinAltitudeDegrees`, …) is the
+reference; it retired a hand-rolled `MountConfig::validate`.
 
 ---
 
