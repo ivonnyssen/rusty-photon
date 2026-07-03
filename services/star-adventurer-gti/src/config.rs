@@ -186,12 +186,23 @@ pub struct MountConfig {
     #[serde(default)]
     pub tracking_guard_margin_hours: TrackingGuardMarginHours,
 
-    /// Safe Dec mechanical-degree envelope. Same enforcement and
-    /// rationale as the RA limits. Defaults `[-90.0, +90.0]` — the
-    /// observable hemisphere, plus the convention that
-    /// "encoder = 0" is OTA on the meridian.
+    /// Minimum apparent-altitude floor, degrees. Slew / sync targets
+    /// whose computed local altitude — from the target hour angle,
+    /// declination, and `site_latitude_deg` via
+    /// [`crate::coordinates::ra_dec_to_alt_az`] — is below the
+    /// floor are rejected with `INVALID_VALUE` before any wire motion;
+    /// a target exactly at the floor is accepted. Default `0.0` — the
+    /// geometric horizon. Positive values add an operator buffer
+    /// (refraction, horizon light pollution, local obstructions);
+    /// negative values permit below-horizon pointing (dust-cap
+    /// operations, closed-roof flats) and are logged `info!` at
+    /// startup; `-90` never rejects anything. Replaced the rectangular
+    /// `dec_limits` Dec envelope (2026-07-01); a stale `dec_limits`
+    /// key in an existing config file is ignored on load. See the
+    /// design doc's
+    /// [§Altitude floor](../../../docs/services/star-adventurer-gti.md#altitude-floor).
     #[serde(default)]
-    pub dec_limits: DecLimits,
+    pub min_altitude_degrees: MinAltitudeDegrees,
 
     /// Persisted park-target encoder positions, written by `SetPark`
     /// and read on every connect. When `None` (default on first run),
@@ -509,72 +520,44 @@ impl From<CwExclusionZone> for Option<ActiveZone> {
     }
 }
 
-/// Safe declination envelope, degrees: `-90 <= min_degrees < max_degrees <= 90`.
-/// JSON form is `{ "min_degrees": .., "max_degrees": .. }`.
+/// Minimum apparent-altitude floor, degrees. Valid finite `[-90, 90]`
+/// (`-90` never rejects — the check is effectively disabled). JSON
+/// form is a bare number.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(into = "DecLimitsWire", try_from = "DecLimitsWire")]
-pub struct DecLimits {
-    min_degrees: f64,
-    max_degrees: f64,
-}
+#[serde(into = "f64", try_from = "f64")]
+pub struct MinAltitudeDegrees(f64);
 
-#[derive(Serialize, Deserialize, schemars::JsonSchema)]
-struct DecLimitsWire {
-    min_degrees: f64,
-    max_degrees: f64,
-}
-
-impl DecLimits {
+impl MinAltitudeDegrees {
     /// Unchecked `const` constructor — see [`FlipRangeHours::new`].
-    pub(crate) const fn new(min_degrees: f64, max_degrees: f64) -> Self {
-        Self {
-            min_degrees,
-            max_degrees,
-        }
+    pub(crate) const fn new(degrees: f64) -> Self {
+        Self(degrees)
     }
     /// Validating constructor — see [`FlipRangeHours::try_new`]. `Err`
-    /// unless `-90 <= min_degrees < max_degrees <= 90`.
-    pub fn try_new(min_degrees: f64, max_degrees: f64) -> std::result::Result<Self, String> {
-        if !min_degrees.is_finite() || !max_degrees.is_finite() {
+    /// unless `degrees` is finite in `[-90, 90]`.
+    pub fn try_new(degrees: f64) -> std::result::Result<Self, String> {
+        if !degrees.is_finite() || !(-90.0..=90.0).contains(&degrees) {
             return Err(format!(
-                "dec_limits must be finite, got ({min_degrees}, {max_degrees})"
+                "min_altitude_degrees must be finite in [-90, 90] degrees, got {degrees}"
             ));
         }
-        if min_degrees < -90.0 || max_degrees > 90.0 || min_degrees >= max_degrees {
-            return Err(format!(
-                "dec_limits must satisfy -90 <= min_degrees < max_degrees <= 90, got ({min_degrees}, {max_degrees})"
-            ));
-        }
-        Ok(Self {
-            min_degrees,
-            max_degrees,
-        })
+        Ok(Self(degrees))
     }
-    pub fn min_degrees(self) -> f64 {
-        self.min_degrees
-    }
-    pub fn max_degrees(self) -> f64 {
-        self.max_degrees
-    }
-    /// Inclusive `[min, max]` range for membership tests.
-    pub fn range(self) -> std::ops::RangeInclusive<f64> {
-        self.min_degrees..=self.max_degrees
+    /// The underlying value in degrees.
+    pub fn value(self) -> f64 {
+        self.0
     }
 }
 
-impl TryFrom<DecLimitsWire> for DecLimits {
+impl TryFrom<f64> for MinAltitudeDegrees {
     type Error = String;
-    fn try_from(w: DecLimitsWire) -> std::result::Result<Self, String> {
-        Self::try_new(w.min_degrees, w.max_degrees)
+    fn try_from(v: f64) -> std::result::Result<Self, String> {
+        Self::try_new(v)
     }
 }
 
-impl From<DecLimits> for DecLimitsWire {
-    fn from(d: DecLimits) -> Self {
-        Self {
-            min_degrees: d.min_degrees,
-            max_degrees: d.max_degrees,
-        }
+impl From<MinAltitudeDegrees> for f64 {
+    fn from(v: MinAltitudeDegrees) -> Self {
+        v.0
     }
 }
 
@@ -603,10 +586,10 @@ impl Default for CwExclusionZone {
     }
 }
 
-impl Default for DecLimits {
-    /// `[-90, +90]°` — the observable hemisphere.
+impl Default for MinAltitudeDegrees {
+    /// `0.0`° — the geometric horizon.
     fn default() -> Self {
-        Self::new(-90.0, 90.0)
+        Self::new(0.0)
     }
 }
 
@@ -1032,7 +1015,7 @@ impl Default for MountConfig {
             tracking_rate: TrackingRateName::Sidereal,
             cw_exclusion_zone: CwExclusionZone::default(),
             tracking_guard_margin_hours: TrackingGuardMarginHours::default(),
-            dec_limits: DecLimits::default(),
+            min_altitude_degrees: MinAltitudeDegrees::default(),
             park_ra_ticks: None,
             park_dec_ticks: None,
             flip_policy: FlipPolicy::default(),
@@ -1048,7 +1031,7 @@ pub fn load_config(
 ) -> std::result::Result<Config, Box<dyn std::error::Error + Send + Sync>> {
     let content = std::fs::read_to_string(path)?;
     // Validation is construct-time: the config newtypes
-    // (`FlipRangeHours`, `CwExclusionZone`, `DecLimits`,
+    // (`FlipRangeHours`, `CwExclusionZone`, `MinAltitudeDegrees`,
     // `TrackingGuardMarginHours`) reject out-of-range values during
     // deserialize, with the offending field named in the error — so a
     // bad config fails here at load rather than at slew/track time.
@@ -1672,22 +1655,24 @@ mod tests {
     }
 
     #[test]
-    fn dec_limits_validates_at_deserialize() {
-        for bad in [
-            r#"{"min_degrees": 10.0, "max_degrees": -10.0}"#, // inverted
-            r#"{"min_degrees": -100.0, "max_degrees": 90.0}"#, // < -90
-        ] {
+    fn min_altitude_degrees_validates_at_deserialize() {
+        for bad in ["-90.1", "90.1", "NaN"] {
             assert!(
-                serde_json::from_str::<DecLimits>(bad).is_err(),
+                serde_json::from_str::<MinAltitudeDegrees>(bad).is_err(),
                 "{bad} should be rejected"
             );
         }
-        serde_json::from_str::<DecLimits>(r#"{"min_degrees": -90.0, "max_degrees": 90.0}"#)
-            .expect("valid");
+        for good in ["-90.0", "0.0", "5.0", "90.0"] {
+            serde_json::from_str::<MinAltitudeDegrees>(good)
+                .unwrap_or_else(|e| panic!("{good} should parse: {e}"));
+        }
         // The public checked constructor enforces the same invariant.
-        DecLimits::try_new(-90.0, 90.0).expect("full hemisphere");
-        assert!(DecLimits::try_new(10.0, -10.0).is_err(), "inverted");
-        assert!(DecLimits::try_new(-100.0, 90.0).is_err(), "< -90");
+        MinAltitudeDegrees::try_new(0.0).expect("geometric horizon");
+        assert_eq!(MinAltitudeDegrees::try_new(-45.0).unwrap().value(), -45.0);
+        assert!(MinAltitudeDegrees::try_new(-90.1).is_err(), "< -90");
+        assert!(MinAltitudeDegrees::try_new(90.1).is_err(), "> 90");
+        assert!(MinAltitudeDegrees::try_new(f64::NAN).is_err(), "NaN");
+        assert!(MinAltitudeDegrees::try_new(f64::INFINITY).is_err(), "inf");
     }
 
     #[test]

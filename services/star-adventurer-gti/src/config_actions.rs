@@ -5,7 +5,7 @@
 //! actions) lives in [`rusty_photon_driver`]; this module supplies only what
 //! varies for the GTi — its `Config`, validation, secrets, and editability tiers.
 //!
-//! The mount's parse-don't-validate config types (`FlipRangeHours`, `DecLimits`,
+//! The mount's parse-don't-validate config types (`FlipRangeHours`, `MinAltitudeDegrees`,
 //! the `Usb|Udp` transport enum, the custom-serde `ApPark`, …) self-validate at
 //! **deserialize** time, so a bad submission fails with `ApplyError::Parse`
 //! before `validate` runs. `Overrides = ()`: the CLI transport/server-port

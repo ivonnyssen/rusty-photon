@@ -238,7 +238,10 @@ bare-number JSON form. The CW zone becomes one `CwExclusionZone`
 the wire — an `{ min_hours, max_hours }` object, or `null` for disabled —
 so the "disabled" state is explicit rather than the old `min ≥ max`
 convention; `ActiveZone` validates `-12 ≤ min < max ≤ 12`. `DecLimits`
-is the analogous `{ min_degrees, max_degrees }` type. Defaults live on
+is the analogous `{ min_degrees, max_degrees }` type. (`DecLimits` was
+later replaced by the bare-number `MinAltitudeDegrees` when the
+altitude floor superseded the rectangular Dec envelope, 2026-07-01 —
+same newtype pattern.) Defaults live on
 the types (`Default` impls), so the fields use bare `#[serde(default)]`.
 
 As-built notes: because there are no operators yet, the config JSON

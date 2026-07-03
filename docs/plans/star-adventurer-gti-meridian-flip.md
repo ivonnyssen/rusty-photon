@@ -4,10 +4,18 @@
 
 - **Phase 1.1 — envelope defaults (±6.95 h, hour-margin framing): LANDED**
   in commit `b8e83bc` (2026-05-15) on
-  `feature/star-adventurer-gti-envelope-refinements`. Default
-  `MountConfig::ra_min_hours` / `ra_max_hours` moved from `±6.0` to
-  `±6.95` — 3 arcmin inside the GTi's hardware-verified `±6.99 h`
+  `feature/star-adventurer-gti-envelope-refinements`, merged as PR #230.
+  Default `MountConfig::ra_min_hours` / `ra_max_hours` moved from `±6.0`
+  to `±6.95` — 3 arcmin inside the GTi's hardware-verified `±6.99 h`
   mechanical limit and INDI eqmod's baked-in `±7 h` envelope.
+  **Superseded 2026-05-17 by PR #252:** after an OTA–tripod contact
+  during a `SetSideOfPier` from Park 3, the RA band was replaced by the
+  asymmetric `MountConfig::cw_exclusion_zone` (default
+  `(0.95, 11.05)` mech-HA hours, JSON `null` to disable) plus
+  path-crossing checks; the `ra_min_hours` / `ra_max_hours` fields no
+  longer exist. A tracking-time safety guard
+  (`tracking_guard_margin_hours`, issue #259 Part 1) later extended the
+  zone's enforcement to tracking drift.
 - **Phase 1.2 — tick-slack at the boundary: DROPPED.** Superseded by
   the hour-margin framing in 1.1: with the configured envelope sitting
   3 arcmin inside the mechanical limit, ASCOM `SlewToCoordinates`
@@ -32,13 +40,65 @@
   `flip_slew_ra_delta`) was caught mid-session and fixed in commit
   `072cc72`. `flip_policy.enabled` still defaults `false` — operators
   opt in once they've replayed the validation locally.
-- **Phase 3 — altitude-based safety floor: planning.** Replaces the
-  rectangular Dec envelope (`dec_min_degrees` / `dec_max_degrees`)
-  with a single `min_altitude_degrees` floor computed from HA + dec +
-  site latitude. The rectangular envelope doesn't follow the tilted
-  local-horizon circle on the celestial sphere; the altitude floor
-  does. Independent of Phase 2 (no interaction; can land in either
-  order).
+- **Phase 3 — altitude-based safety floor: IMPLEMENTED (2026-07-01,
+  branch `worktree-issue223`; PR #421).** Replaces the rectangular Dec
+  envelope (the former `MountConfig::dec_limits: DecLimits` struct,
+  removed by this phase — the `dec_min_degrees` / `dec_max_degrees`
+  field names in §§3.3–3.5 below predate even that struct) with a single
+  `min_altitude_degrees` floor computed from HA + dec + site latitude.
+  The rectangular envelope doesn't follow the tilted local-horizon
+  circle on the celestial sphere; the altitude floor does. Independent
+  of Phase 2 (no interaction; can land in either order).
+
+  **Current-code refresh (2026-07-01 audit before implementation):**
+  the sections below were written against the pre-PR-#252 code and are
+  stale in three ways. (1) §3.3's "keep the existing RA mech-HA check"
+  now means keeping the `cw_exclusion_zone` destination + path checks,
+  not an `ra_min/ra_max` band. (2) `check_within_safe_envelope` already
+  has the signature Phase 3 needs —
+  `(ra_hours, dec_degrees, lst_hours, target_is_flipped)` — so the
+  §3.3 call-site change is moot. (3) Config validation moved to
+  parse-don't-validate newtypes (`FlipRangeHours`, `CwExclusionZone`,
+  `DecLimits`, …), so `min_altitude_degrees` lands as a validating
+  `MinAltitudeDegrees` newtype, not a bare `f64`. One addition to
+  §3.6/§3.7: the BDD suite cannot pin LST (no clock injection), so the
+  BDD default config neutralises the floor at `-90°` (mirroring how it
+  disables `cw_exclusion_zone`), the altitude scenarios configure the
+  floor explicitly and address targets by *hour angle* (steps compute
+  `RA = LST − HA` at test time), and exact-boundary cases live in unit
+  tests where HA is passed directly. On §3.5: the config structs do
+  not use `deny_unknown_fields` (schema-driven `config.apply` tooling
+  round-trips full JSON across versions), so "strict-from-start" is
+  moot — a stale `dec_limits` key in an existing config file is
+  silently ignored rather than rejected at load.
+
+  **As-built notes (2026-07-01):**
+
+  - §3.2's `target_altitude_degrees` helper was **not added** — the
+    identical spherical-astronomy formula already existed as
+    `coordinates::ra_dec_to_alt_az` (it backs the ASCOM `Altitude` /
+    `Azimuth` reads), and the envelope check reuses it. The §3.1
+    worked-example table is pinned by a unit test against that
+    function instead.
+  - The `dec_limits` removal was re-examined before landing: the
+    counter-argument was that `dec_limits` might be a *mechanical*
+    restriction (distinct from the floor's image-quality purpose) and
+    should stay. Resolved to remove it per §3.4 after review: the
+    field was enforced against *celestial* Dec (identical for both
+    pier sides), so it never expressed a mechanical Dec-axis bound —
+    the mount's mechanical protection is `cw_exclusion_zone`, and the
+    celestial `[-90, +90]` clamp lives in `validate_coordinates`. If
+    a genuine mechanical Dec-encoder constraint ever surfaces
+    (cabling, camera-vs-tripod clearance at past-pole rotations), it
+    should be designed as a *mechanical-encoder-space* limit, not a
+    celestial-Dec rectangle.
+  - The floor gates slew, sync, and `DestinationSideOfPier`
+    validation (everything routed through
+    `check_within_safe_envelope`); `Park` stays exempt
+    (privileged-park pattern, plan §3.8 option (a)).
+  - `MinAltitudeDegrees` accepts `[-90, +90]`; `-90` never rejects,
+    which is what the BDD default test config and the
+    envelope-isolation unit-test builders use to neutralise the gate.
 
 This plan covers related items that surfaced while landing
 issue #202 (Dec-encoder `SideOfPier` + `DestinationSideOfPier`).
