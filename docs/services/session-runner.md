@@ -102,7 +102,7 @@ A workflow document is a single JSON file. Top-level structure:
 | `parameters` | Declared invocation parameters. Each has a `type` (`string`, `integer`, `number`, `boolean`, `duration`), and either `required: true` or a `default`. Values supplied at invocation are type-checked against the declaration; missing required parameters fail validation before anything runs. Available to expressions as `params.*`. Names beginning with `_` are reserved for the engine — declaring one is a validation error. |
 | `estimated_duration` / `max_duration` | The acknowledgment durations returned to `rp` from `/invoke` (humantime strings). Optional; engine defaults apply when absent (see [Invocation](#invocation)). |
 | `triggers` | Document-global reactive rules, evaluated alongside the procedure tree. |
-| `root` | The procedure tree — a single container instruction. |
+| `root` | The procedure tree — conventionally a `sequence` container, though any instruction is structurally valid as the root. |
 
 ### Instructions
 
