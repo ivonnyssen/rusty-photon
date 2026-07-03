@@ -619,6 +619,23 @@ The service exposes a `conformu = ["mock", "ascom-alpaca/test"]` feature.
 `tests/conformu_integration.rs` launches the binary against a mock port
 and points ConformU at it. The same approach `qhy-focuser` uses.
 
+#### Mock move-settling model
+
+`mock.rs`'s `[SMOV]` applies the target `cover_angle` immediately but
+reports the motor running (`[GMOV]` → `(1)`) for exactly one read, then
+clears it — mirroring `pa-falcon-rotator`'s `is_moving` (cleared on the
+next `FA`). An earlier version resolved `[SMOV]` instantly (position
+*and* motor-stopped in the same round trip), which raced the driver's
+own optimistic `CoverState = Moving` write (`device.rs::execute_move`):
+the very next `while_open` poll tick could observe the mock already
+stopped and correct the cache within a few milliseconds of the
+optimistic write, and if that landed between ConformU's back-to-back
+`CoverState`/`CoverMoving` reads it saw two different snapshots
+([#423](https://github.com/ivonnyssen/rusty-photon/issues/423)). The
+one-shot clear guarantees at least one full `polling_interval` of
+stable `Moving` state before the cache can flip, which comfortably
+exceeds any HTTP round trip.
+
 ## Known Limitations
 
 The driver returns `MethodNotImplementedException` from `HaltCover`

@@ -161,13 +161,22 @@ impl MockFrameTransport {
                 format!("({})", v)
             }
             "GPOS" => format!("({})", inner.cover_angle),
-            "GMOV" => format!("({})", if inner.motor_running { 1 } else { 0 }),
+            "GMOV" => {
+                // One-shot: running for exactly the first `[GMOV]` read
+                // after `[SMOV]`, then clears — mirrors pa-falcon-rotator's
+                // mock (`is_moving` cleared on next `FA`). An instant
+                // arrival raced the driver's optimistic `Moving` write
+                // (device.rs `execute_move`) against the next poll tick;
+                // see issue #423.
+                let resp = format!("({})", if inner.motor_running { 1 } else { 0 });
+                inner.motor_running = false;
+                resp
+            }
             "SMOV" => {
                 if let Some(t) = inner.target_angle.take() {
-                    // Immediate arrival; real device takes ~3s.
                     inner.cover_angle = t;
                 }
-                inner.motor_running = false;
+                inner.motor_running = true;
                 "(OK)".to_string()
             }
             "GLON" => format!("({})", if inner.light_on { 1 } else { 0 }),
@@ -279,7 +288,14 @@ mod tests {
         let state = MockState::default();
         assert_eq!(round_trip(&state, "[STRG270]").await, "(OK)");
         assert_eq!(round_trip(&state, "[SMOV]").await, "(OK)");
+        // Position arrives immediately...
         assert_eq!(round_trip(&state, "[GPOS]").await, "(270)");
+        // ...but the motor is reported running for exactly one `[GMOV]`
+        // read, so `[GOPS]` still reports "in-between" (255) until that
+        // read happens.
+        assert_eq!(round_trip(&state, "[GOPS]").await, "(255)");
+        assert_eq!(round_trip(&state, "[GMOV]").await, "(1)");
+        assert_eq!(round_trip(&state, "[GMOV]").await, "(0)");
         assert_eq!(round_trip(&state, "[GOPS]").await, "(0)");
     }
 
