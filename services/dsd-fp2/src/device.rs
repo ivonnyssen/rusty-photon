@@ -473,10 +473,11 @@ mod mock_tests {
         // Moving.
         device.close_cover().await.unwrap();
         // After close, our local optimistic write set motor_running =
-        // Some(true). Our mock completes moves instantly inside `[SMOV]`,
-        // so the motor is no longer running on the device side; the next
-        // poll would correct the cache. For now we just verify the call
-        // succeeded and exercise the open path too.
+        // Some(true). The mock reports the motor running for exactly one
+        // `[GMOV]` poll after `[SMOV]` before settling (mock.rs), so the
+        // cache stays consistent with the optimistic write across the
+        // next poll cycle. For now we just verify the call succeeded and
+        // exercise the open path too.
         device.open_cover().await.unwrap();
         device.set_connected(false).await.unwrap();
     }
