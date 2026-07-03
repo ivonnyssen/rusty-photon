@@ -1540,9 +1540,15 @@ invokes it when a session starts:
   "type": "orchestrator",
   "invoke_url": "http://localhost:11160/invoke",
   "requires_tools": ["slew", "capture", "start_guiding", "stop_guiding",
-                      "dither", "get_next_target", "record_exposure"]
+                      "dither", "get_next_target", "record_exposure"],
+  "config": { "camera_id": "main-cam", "focuser_id": "main-focuser" }
 }
 ```
+
+The optional `config` object is opaque to `rp`: it is stored with the
+registration and passed through verbatim at invocation (see below).
+`calibrator-flats` carries its flat plan here; `session-runner` uses it to
+name the workflow document to execute and that document's parameters.
 
 #### Orchestrator Invocation Protocol
 
@@ -1557,12 +1563,23 @@ Content-Type: application/json
   "workflow_id": "wf-550e8400-e29b-41d4",
   "session_id": "session-2026-03-01",
   "mcp_server_url": "http://localhost:11115/mcp",
-  "recovery": null
+  "recovery": null,
+  "config": { "camera_id": "main-cam", "focuser_id": "main-focuser" }
 }
 ```
 
 On recovery after a safety event or power failure, `recovery` contains
 the last known session state so the orchestrator can resume.
+
+`config` is the orchestrator's registered `config` object, passed through
+verbatim — `rp` never interprets it. A hand-written orchestrator may
+equally read settings from its own service configuration; document-driven
+orchestrators (`session-runner`) rely on the pass-through so one service
+can run many workflows.
+
+> **Implementation status.** `rp` currently sends only the first four
+> fields; the `config` pass-through lands with `session-runner` Phase C
+> ([`docs/plans/workflow-dsl.md`](../plans/workflow-dsl.md)).
 
 The orchestrator acknowledges with timing estimates computed from the
 session context it just received:

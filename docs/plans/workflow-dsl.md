@@ -130,7 +130,7 @@ expression-language critique
 |---|----------|-----------|----------------------|
 | D1 | Workflows are **declarative reactive-tree documents in JSON**, executed by one generic **`session-runner`** orchestrator plugin (port 11171). | Matches the ecosystem-converged shape (procedure tree + trigger overlay + dispatch via `rp`'s planner); leaves validate against MCP tool schemas; authorable by power users now, a `ui-htmx` editor and LLMs later. | Embedded scripting as the *primary* format (no UI story, users must program); plain Rust per session type (every variation is a PR); YAML/KDL/TOML/custom text surface (weaker schema + round-trip tooling; JSON chosen deliberately). |
 | D2 | **Rust orchestrators remain first-class.** The plugin protocol is unchanged and language-agnostic; `calibrator-flats` keeps shipping as Rust until its DSL port is proven equivalent, and future workflows may still be Rust when that fits better. | The DSL is an addition, not a replacement; the process boundary is also the escape hatch for users who prefer real languages (external MCP clients). | Mandating the DSL for all workflows. |
-| D3 | **Escape hatch designed up front**: CEL-style **bounded expressions** in `when` / `until` / `set` / `$expr` positions in v1 — pure, total, no I/O, reading only the document's namespaces. The document schema **reserves a `script` node type** for sandboxed Luau handlers later, so scripting can land without a format break. | Avoids the accreted-expression-language failure mode (HA, GH Actions, NINA Powerups) while keeping v1 small; expressions stay pure so resume and UI round-tripping stay sound. | Pure-declarative v1 (vocabulary explosion, retrofitted expressions later); full Luau in v1 (second authoring surface before the first has users). |
+| D3 | **Escape hatch designed up front**: CEL-style **bounded expressions** in `when` / `until` / `set` / `$expr` positions in v1 — pure, total, no I/O, reading only the document's namespaces plus a single sanctioned clock read (`seconds_until()`, for dawn/flip math — tenet 4 in the design doc). The document schema **reserves a `script` node type** for sandboxed Luau handlers later, so scripting can land without a format break. | Avoids the accreted-expression-language failure mode (HA, GH Actions, NINA Powerups) while keeping v1 small; expressions stay pure so resume and UI round-tripping stay sound. | Pure-declarative v1 (vocabulary explosion, retrofitted expressions later); full Luau in v1 (second authoring surface before the first has users). |
 | D4 | **Resume = re-derive from state.** On (re-)invocation the engine re-executes the document from the root against the persisted blackboard + live device state; documents must be written re-entrant (progress guards, `rp` planner progress counters, `once` markers). No replay log, no interpreter snapshots. | Matches how Ekos / Target Scheduler resume; rides `rp`'s existing session-persistence design; smallest machinery. Replay becomes necessary only if long-running scripts ever drive sessions — and the Luau-handler design (stateless per-event, state in blackboard) is chosen precisely so they don't. | Event-sourced replay (more machinery than v1 needs); interpreter snapshots (not implementable). |
 | D5 | **Safety stays exclusively in `rp`.** A workflow document cannot express, delay, or override park-on-unsafe; the engine just gets its MCP session cancelled and is re-invoked with recovery context later. | Already an `rp` tenet; reinforced by the Home Assistant lesson (safety logic lives in the simplest, most reliable layer). | Safety triggers in documents. |
 | D6 | **Dispatch is delegated to `rp`'s planner tools** (`get_next_target`, `record_exposure`, …). The DSL expresses *procedure* and *reaction*; target/filter *choice* stays a pure function in `rp`. | The ecosystem's dispatch cores are DBs + planners, not workflow syntax; `rp` already owns this. | Target-selection logic in documents. |
@@ -158,13 +158,44 @@ committable on its own.
 
 ### Phase B — Expression layer
 
-- [ ] **Spike (time-boxed)**: `cel-interpreter` vs a hand-rolled Pratt-parsed
-      expression grammar. Evaluate: no-I/O purity enforcement, error message
-      quality (authors will read these at 2 a.m.), footprint, maintenance
-      status. The *semantics* are fixed either way (see design doc §
-      Expressions); the spike only picks the implementation.
+- [ ] **Spike (time-boxed)**: pick the parser. An implementation-research
+      pass (2026-07-02, verified against crates.io/GitHub) found that **no
+      off-the-shelf interpreter implements the fixed semantics** — every
+      live candidate deviates on f64-only numbers, strict
+      null/division-by-zero, or grammar subsettability — so the evaluator
+      is hand-written in every arm and the spike compares parser
+      strategies:
+      1. **Hand-rolled** lexer + Pratt parser (~800 LOC, zero deps;
+         `miette` optional for dual human/structured diagnostics;
+         `proptest` round-trip + `cargo-fuzz` as the test harness).
+      2. **The `cel` crate as parser only** (the `cel-interpreter` crate
+         was renamed `cel` at 0.11 — actively maintained, MIT, pure Rust,
+         multi-maintainer): parse-only API with per-node spans and a
+         public AST, but a deny-by-default AST walk must reject
+         comprehension macros (expanded at parse time, no off switch) and
+         rewrite int literals to f64, and its stock evaluator is unusable
+         as-is (error-absorbing `&&`/`||`, IEEE-infinity float division,
+         raise-on-missing-key).
+      3. **`oxc_parser` JS-expression subset**: the specced grammar is a
+         JavaScript expression subset and JS numbers are f64 — parse with
+         oxc, allowlist AST node kinds plus lexical checks (comments, hex
+         and `_`-separator literals share node kinds), evaluate strictly
+         by hand. Cost: oxc's rapid 0.x release churn (pin + adapter).
+      Evaluate: exactness of grammar subsetting (tenet 5 — anything the
+      parser accepts becomes de-facto format), span quality mapped to
+      JSON-Pointer `/validate` errors (incl. structured/serializable error
+      types), error-message quality at 2 a.m., footprint, maintenance.
+      Rejected up front by the same research: Rhai expression-mode (no
+      `?:`, irremovable i64, silent cross-type comparisons), `evalexpr`
+      (AGPL-3.0-only since v12), `zen-expression` (Decimal arithmetic,
+      division by zero yields null), JEXL (no function-call grammar,
+      silent Infinity), and the JSON-tree family (JsonLogic/jq/JMESPath/
+      FEEL — lenient-null semantics and/or unreadable authoring contradict
+      tenets 4–5).
 - [ ] Implement the expression module with exhaustive unit tests (every
-      operator, every namespace, every error case).
+      operator, every namespace, every error case), property tests
+      (parse ↔ pretty-print round-trip), and a fuzz target (the parser
+      must never panic on operator-authored input).
 
 ### Phase C — Engine core + `calibrator-flats` port (the equivalence proof)
 
@@ -172,9 +203,14 @@ committable on its own.
       `session-runner`), `@wip`-tagged per testing.md §2.7 until green.
 - [ ] Engine core: document loading + schema validation, static tool-call
       validation against `tools/list`, `sequence` / `tool` / `set` / `if` /
-      `repeat` / `try`-`finally` / `wait` / `log` execution, blackboard with
+      `repeat` / `try`-`catch`-`finally` / `fail` / `wait` / `log`
+      execution, blackboard with
       atomic persistence, MCP client, `/invoke` + `/health` + `/validate`
       routes, completion posting.
+- [ ] `rp`: forward the orchestrator registration's `config` object
+      verbatim in the `/invoke` POST (the protocol addition documented in
+      `rp.md` § Orchestrator Invocation Protocol; `rp` today sends only
+      `workflow_id` / `session_id` / `mcp_server_url` / `recovery`).
 - [ ] `workflows/calibrator_flats.json` shipped as a first-party document.
 - [ ] Port `calibrator-flats`' BDD scenarios to run against `session-runner`
       executing that document; behavior must match the Rust plugin (same
@@ -186,8 +222,9 @@ committable on its own.
 
 - [ ] SSE event client (`/api/events/subscribe`, `Last-Event-ID` = the
       envelope's `event_seq`).
-- [ ] Trigger engine: `event` and `poll` sources, `when` gating, safe-point
-      interleaving, `once` / `cooldown`.
+- [ ] Trigger engine: `event`, `poll`, and the synthetic
+      `correction_requested` sources; `when` gating and `while`
+      phase-gates; safe-point interleaving; `once` / `cooldown`.
 - [ ] Resume: recovery invocation → blackboard reload → re-execution;
       BDD scenarios for kill-mid-session → re-invoke → session continues
       without repeating completed work (frame counts prove it).
@@ -210,7 +247,8 @@ committable on its own.
       the format, the expression grammar, the re-entrancy contract, worked
       examples.
 - [ ] Update `rp.md` § Orchestration to describe `session-runner` as the
-      home of the deep-sky / sky-flat / planetary workflows.
+      home of the deep-sky and sky-flat workflow documents (the Phase A
+      edit only cross-references the plan there).
 - [ ] Example documents beyond the two v1 workflows (sky-flat is the natural
       third: it exercises the expression layer's convergence-loop ceiling).
 
@@ -238,6 +276,10 @@ committable on its own.
   exists.
 - Exact expression function set beyond the v1 list in the design doc —
   grows with worked examples, gated by the purity rules.
+- Numeric edge semantics to pin during Phase B: whether f64 overflow to
+  ±Infinity raises at the producing operation or at `set` persistence
+  (JSON cannot represent it), and string ordered-comparison semantics
+  (`'a' < 'b'` — lexicographic or a type error).
 - Document versioning policy beyond `"version": 1` (pre-1.0 stance: breaking
   changes to the format are acceptable; the field exists so the engine can
   reject documents it doesn't understand with a clear error).

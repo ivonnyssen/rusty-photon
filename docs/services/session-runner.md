@@ -28,10 +28,14 @@ Decision record and phase plan:
    against the workflow schema, and every tool call in it is checked against
    `rp`'s live tool catalog, before the first instruction runs. Authoring
    errors surface at load, at the `/validate` endpoint, or at session start
-   — never mid-night.
-4. **Expressions are pure.** The bounded expression language reads document
-   state and computes values. It cannot perform I/O, call tools, loop, or
-   observe wall-clock time. Anything effectful is an instruction.
+   — never in the middle of the night.
+4. **Expressions are pure — with one sanctioned exception.** The bounded
+   expression language reads document state and computes values. It cannot
+   perform I/O, call tools, or loop. The single sanctioned observation of
+   the outside world is `seconds_until()`, which reads the engine clock at
+   evaluation time — dawn/flip math is impossible without it (see
+   [Expressions](#expressions)). Everything else effectful is an
+   instruction.
 5. **The document format is the API.** The published JSON Schema is the
    contract for hand-authors, the future `ui-htmx` editor, and LLM
    generation alike. The engine's internals may change; the format versions
@@ -95,7 +99,7 @@ A workflow document is a single JSON file. Top-level structure:
 |-------|---------|
 | `version` | Format version. The engine rejects documents whose version it does not implement, naming the supported version(s) in the error. |
 | `name` / `description` | Identification for logs, events, and the completion payload. |
-| `parameters` | Declared invocation parameters. Each has a `type` (`string`, `integer`, `number`, `boolean`, `duration`), and either `required: true` or a `default`. Values supplied at invocation are type-checked against the declaration; missing required parameters fail validation before anything runs. Available to expressions as `params.*`. |
+| `parameters` | Declared invocation parameters. Each has a `type` (`string`, `integer`, `number`, `boolean`, `duration`), and either `required: true` or a `default`. Values supplied at invocation are type-checked against the declaration; missing required parameters fail validation before anything runs. Available to expressions as `params.*`. Names beginning with `_` are reserved for the engine — declaring one is a validation error. |
 | `estimated_duration` / `max_duration` | The acknowledgment durations returned to `rp` from `/invoke` (humantime strings). Optional; engine defaults apply when absent (see [Invocation](#invocation)). |
 | `triggers` | Document-global reactive rules, evaluated alongside the procedure tree. |
 | `root` | The procedure tree — a single container instruction. |
@@ -104,7 +108,8 @@ A workflow document is a single JSON file. Top-level structure:
 
 The v1 instruction vocabulary. Every instruction is a JSON object with
 exactly one *discriminant* key (`tool`, `sequence`, `repeat`, `if`, `set`,
-`try`, `wait`, `log`) plus the optional common keys `id` (a string used in
+`try`, `fail`, `wait`, `log` — plus `script`, reserved but rejected in v1)
+plus the optional common keys `id` (a string used in
 logs and error messages) and `once` (see
 [Re-entrancy Contract](#re-entrancy-contract)). Unknown keys are a
 validation error — misspellings must not silently no-op.
@@ -123,8 +128,8 @@ validation error — misspellings must not silently no-op.
   strings (humantime durations, filter names) unambiguous and lets static
   validation type-check every literal argument against the tool's JSON
   Schema.
-- The tool's structured result becomes `result` for the **next** instruction
-  in the same block (see [Expressions](#expressions)).
+- The tool's structured result becomes `result` for the instructions that
+  follow (see [`result` scoping](#result-scoping)).
 - Optional `retry`: on tool error, retry up to `max_attempts` total attempts
   with a fixed `backoff` delay between attempts. Default: no retry.
 - A tool error (after retries) raises a workflow error that propagates
@@ -159,10 +164,12 @@ such as `capture`-while-guiding).
 - Exactly one of `until` (expression, checked **after** each pass), `while`
   (expression, checked **before** each pass), or `count` (integer or
   `$expr`) is required.
-- `max_iterations` is **required** alongside `until`/`while` — unbounded
-  loops are a validation error. When `max_iterations` is exhausted without
-  the condition being met, the loop *completes* and sets
-  `result.converged = false` (plus `result.iterations`); the document
+- `max_iterations` (integer or `$expr` — evaluated once at loop entry, and
+  a workflow error unless it yields a positive integer) is **required**
+  alongside `until`/`while` — unbounded loops are a validation error. When
+  `max_iterations` is exhausted without the condition being met, the loop
+  still *completes*, with `result.converged = false` (see
+  [`result` scoping](#result-scoping)); the document
   decides whether that is fatal (an `if` + `fail` pattern) or a warning
   (`log`). This mirrors `calibrator-flats`' non-converged-exposure warning
   behavior.
@@ -183,6 +190,8 @@ such as `capture`-while-guiding).
 ```
 
 - Keys must be `session.*` paths; values are always expressions.
+- All values are evaluated before any key is written — a `set` cannot read
+  its own writes.
 - `set` is the **only** way state crosses instruction boundaries or survives
   a crash. `result` is transient by design — anything worth keeping is
   copied to the blackboard explicitly, which makes the resume semantics
@@ -209,9 +218,17 @@ such as `capture`-while-guiding).
   it re-raises via `fail`. In `catch` and `finally` (on the error path),
   expressions can read `error.message`, `error.instruction_id`, and
   `error.tool` (null when the error was not a tool error).
-- `{ "fail": { "message": "<expression or literal string>" } }` is accepted
-  inside `catch`/`then`/`else`/anywhere an instruction is, and raises a
-  workflow error deliberately.
+
+#### `fail` — raise a workflow error
+
+```jsonc
+{ "fail": { "message": "'exposure never converged'" } }
+```
+
+Accepted anywhere an instruction is (`catch`, `then`, `else`, a `repeat`
+body, …) and raises a workflow error deliberately; inside `catch` it
+re-raises, propagating the failure outward. `message` is an expression —
+quote it (as above) for a fixed string.
 
 #### `wait` — pause at a safe point
 
@@ -247,6 +264,27 @@ expressions, rendered into the structured log record.
 documents written against a future version fail comprehensibly on an old
 engine.
 
+### `result` scoping
+
+`result` is always the structured result of the most recently completed
+result-producing instruction on the current execution path. Concretely:
+
+- `tool` calls produce their structured result. A completed `repeat`
+  produces a loop summary — `result.iterations`, plus `result.converged`
+  for `until`/`while` loops (`true` when the condition was met, `false`
+  when `max_iterations` ran out).
+- `set`, `log`, and `wait` produce no result and leave `result` unchanged;
+  containers (`sequence`, `if`, `try`) leave whatever the last instruction
+  executed inside them left. In particular, the first instruction of a
+  `then`/`else`/`catch`/`finally` block sees the `result` that was in
+  scope when the branch was taken — an `if` condition reads `result`
+  without consuming it.
+- A `repeat`'s `until` expression is evaluated with the `result` left by
+  the pass that just completed; `while` is evaluated with the `result` in
+  scope before the upcoming pass.
+- `result` is `null` at the start of a session and at the start of a
+  trigger `do` block.
+
 ### Triggers
 
 Triggers are the reactive overlay: cross-cutting rules that fire while the
@@ -256,20 +294,29 @@ procedure tree runs. They are declared at the document top level.
 {
   "id": "refocus-on-hfr-degradation",
   "on": { "event": "exposure_complete" },
-  "when": "event.hfr != null && session.last_focus_hfr != null && event.hfr > session.last_focus_hfr * 1.2",
+  "when": "session.last_focus_hfr != null",
   "while": "session.imaging == true",
   "cooldown": "15m",
   "do": [
-    { "tool": "auto_focus", "args": { /* … */ } },
-    { "set": { "session.last_focus_hfr": "result.best_hfr" } }
+    { "tool": "measure_basic", "args": { "document_id": { "$expr": "event.document_id" } } },
+    { "if": "result.hfr != null && result.hfr > session.last_focus_hfr * 1.2",
+      "then": [
+        { "tool": "auto_focus", "args": { /* … */ } },
+        { "set": { "session.last_focus_hfr": "result.best_hfr" } } ] }
   ]
 }
 ```
 
+(`exposure_complete`'s payload carries `document_id` / `file_path` only —
+`rp.md` § Events — so the trigger measures HFR itself before deciding; the
+`when` gate keeps it idle until the first `auto_focus` has seeded
+`session.last_focus_hfr`, and `cooldown` bounds how often the measurement
+itself runs.)
+
 | Field | Meaning |
 |-------|---------|
 | `id` | Required, unique within the document. Names the trigger in logs and in the `session._triggers.*` bookkeeping state. |
-| `on` | The source. `{ "event": "<rp event name>" }` — an envelope from the SSE stream; the envelope's `payload` becomes `event.*`. `{ "poll": { "tool": "<name>", "args": { … }, "interval": "30s" } }` — the engine calls the tool on the interval and the result becomes `event.*`. `{ "event": "correction_requested" }` — the synthetic source fired when a tool result carries a correction (payload: `event.action`, `event.reason`, `event.urgency`, `event.source`). |
+| `on` | The source. `{ "event": "<rp event name>" }` — an envelope from the SSE stream; the envelope's `payload` becomes `event.*`. `{ "poll": { "tool": "<name>", "args": { … }, "interval": "30s" } }` — the engine calls the tool on the interval and the result becomes `event.*`. `{ "event": "correction_requested" }` — the synthetic source fired when a tool result carries a correction (payload: `event.action`, `event.reason`, `event.source`, plus engine-synthesized `event.delivery` — `"immediate"` when the tool result was `aborted`, `"after_current"` for `pending_correction`). |
 | `when` | Optional expression over `event.*` + the usual namespaces. The trigger fires only when it evaluates to `true`. Absent = always fire. |
 | `while` | Optional expression gate evaluated at fire time; lets a document scope a trigger to a phase via a blackboard flag (e.g. set `session.imaging = true` when the capture loop starts). This is the v1 substitute for container-scoped triggers, which are deferred. |
 | `cooldown` | Optional minimum interval between firings (humantime). Last-fired timestamps live in the blackboard, so cooldowns survive resume. |
@@ -299,9 +346,9 @@ Expressions are strings in a small, pure, CEL-style language. They appear in
 
 | Namespace | Contents | Lifetime |
 |-----------|----------|----------|
-| `params.*` | Invocation parameters after defaulting/type-check. | Session (immutable). |
+| `params.*` | Invocation parameters after defaulting/type-check; on recovery invocations the engine also injects `params._recovery.*` ([Re-entrancy Contract](#re-entrancy-contract)). | Session (immutable). |
 | `session.*` | The blackboard. | Session (persisted, survives crash/resume). |
-| `result.*` | Structured result of the immediately preceding instruction in the same block (`null` for the first instruction of a block). | One instruction. |
+| `result.*` | Structured result of the most recent result-producing instruction ([`result` scoping](#result-scoping)). | Until the next result-producing instruction. |
 | `event.*` | The triggering envelope payload (in trigger `when`/`do`) or poll result. | One trigger firing. |
 | `error.*` | `message`, `instruction_id`, `tool` inside `catch`/`finally`. | One error scope. |
 
@@ -316,8 +363,8 @@ Expressions are strings in a small, pure, CEL-style language. They appear in
   `humantime(secs)` (f64 seconds → humantime string, for building tool
   args), `has(session.x)` (path exists and is non-null),
   `seconds_until("<RFC3339>")` (evaluated against the engine's clock at
-  evaluation time — the single sanctioned time observation, needed for
-  dawn/flip math).
+  evaluation time — the one sanctioned exception to tenet 4's purity rule,
+  needed for dawn/flip math).
 - **No** loops, user function definitions, assignment, tool calls, string
   interpolation, or regular expressions. Anything effectful is an
   instruction; anything algorithmic beyond this belongs in a built-in `rp`
@@ -327,10 +374,13 @@ Expressions are strings in a small, pure, CEL-style language. They appear in
   that instruction. Authors guard with `has()` / `!= null` (as the trigger
   example above does). This is deliberate: silent `null` propagation in a
   system that moves telescopes is worse than a loud 2 a.m. error.
-- Division by zero raises. There is no implicit type coercion.
+- Division or remainder by zero raises. There is no implicit type
+  coercion.
 
-The concrete implementation (the `cel-interpreter` crate vs a hand-rolled
-parser) is a Phase B spike; the semantics above are the contract either way.
+The concrete implementation (reusing the `cel` crate's parser, an
+`oxc_parser` JS-expression subset, or a hand-rolled parser — the evaluator
+is hand-written in every arm; see the plan's Phase B) is a Phase B spike;
+the semantics above are the contract either way.
 
 ## Blackboard and Persistence
 
@@ -423,8 +473,13 @@ smell the authoring docs will warn about.
 
 The engine consumes `rp`'s SSE stream (`/api/events/subscribe`) for trigger
 sources. The SSE `id` is the envelope's `event_seq`; on reconnect the engine
-sends `Last-Event-ID` so no envelope is missed across a stream drop
-(`rp.md` § Real-Time Stream). Events that arrive while no trigger matches
+sends `Last-Event-ID`, and replay is exact within `rp`'s retention window
+(the most recent 512 envelopes — `rp.md` § Real-Time Stream). If the engine
+was gone long enough that its cursor was evicted, the stream leads with a
+`stream_gap` event instead: the engine logs the gap at `info!` and simply
+continues — poll triggers re-observe current state on their next cycle, and
+the re-entrancy contract already assumes events can be missed across an
+outage. Events that arrive while no trigger matches
 are discarded — the engine keeps no event history. The stream URL is derived
 from the invocation's `mcp_server_url` origin unless overridden in
 configuration.
@@ -450,6 +505,8 @@ purely a *consumer* of the stream plus an MCP *client*.
 }
 ```
 
+- `config` is this plugin's registered `config` object, forwarded verbatim
+  by `rp` (`rp.md` § Orchestrator Invocation Protocol).
 - `config.workflow` names a document: `<name>.json` resolved in the
   configured `workflows_dir`, or an absolute path. Resolution outside
   `workflows_dir` for relative names is rejected.
@@ -475,7 +532,8 @@ Three layers, all sharing one implementation:
 
 1. **Schema validation** — the document against
    `schema/workflow-v1.schema.json`: structure, discriminant keys, unknown
-   keys, unique trigger `id`s / `once` keys, loop-bound requirements,
+   keys, reserved names (`_`-prefixed parameters, `session._*` writes),
+   unique trigger `id`s / `once` keys, loop-bound requirements,
    expression fields parse-checked.
 2. **Catalog validation** (requires `rp`) — every `tool` node's name exists
    in `tools/list`; literal args type-check against the tool's parameter
@@ -488,7 +546,11 @@ Three layers, all sharing one implementation:
 `POST /validate` with `{ "document": { … } }` (or `{ "workflow": "<name>" }`)
 runs layers 1–2 and returns a structured list of errors with JSON-Pointer
 locations — the hook for CI on shared workflow repositories, the future UI,
-and LLM authoring loops. `/invoke` runs all three layers before executing.
+and LLM authoring loops. Standalone `/validate` reaches `rp` through the
+configured `mcp_server_url`; when that is unset or `rp` is unreachable, it
+runs layer 1 only and marks catalog validation as skipped in the response.
+`/invoke`, which always carries a live `mcp_server_url`, runs all three
+layers before executing.
 
 ## Configuration
 
@@ -499,6 +561,7 @@ and LLM authoring loops. `/invoke` runs all three layers before executing.
   "port": 11171,
   "workflows_dir": "/var/lib/rusty-photon/workflows",
   "state_dir": "/var/lib/rusty-photon/session-runner",
+  "mcp_server_url": null,       // rp MCP endpoint for standalone /validate only
   "events_url": null            // override; default derives from mcp_server_url origin
 }
 ```
@@ -508,6 +571,7 @@ and LLM authoring loops. `/invoke` runs all three layers before executing.
 | `port` | int | 11171 | HTTP listen port for `/invoke`, `/validate`, `/health` |
 | `workflows_dir` | path | required | Directory of workflow documents; first-party documents ship in the package |
 | `state_dir` | path | required | Blackboard persistence directory |
+| `mcp_server_url` | string or null | null | `rp` MCP endpoint used only by standalone `/validate` catalog validation; invocations always use the URL delivered in the `/invoke` payload |
 | `events_url` | string or null | null | Explicit SSE endpoint; null derives `<mcp origin>/api/events/subscribe` |
 
 ## Example Documents
@@ -556,7 +620,7 @@ for a single filter for brevity:
                                            "duration": { "$expr": "humantime(session.duration)" } } },
             { "tool": "compute_image_stats", "args": { "document_id": { "$expr": "result.document_id" } } },
             { "set": { "session.median_adu": "result.median_adu",
-                       "session.duration": "clamp(session.duration * (session.target_adu / max(result.median_adu, 1.0)), session.exp_min, session.exp_max)" } } ] },
+                       "session.duration": "clamp(result.median_adu == 0 ? session.duration * 2 : session.duration * (session.target_adu / result.median_adu), session.exp_min, session.exp_max)" } } ] },
         { "if": "result.converged == false",
           "then": [ { "log": { "level": "info", "message": "exposure did not converge",
                                "values": { "filter": "params.filter" } } } ] },
@@ -591,11 +655,13 @@ behavioral spec either way.)
   "triggers": [
     { "id": "refocus-on-hfr",
       "on": { "event": "exposure_complete" },
-      "when": "has(session.last_focus_hfr) && event.hfr != null && event.hfr > session.last_focus_hfr * 1.2",
+      "when": "has(session.last_focus_hfr)",
       "while": "session.imaging == true",
       "cooldown": "15m",
-      "do": [ { "tool": "auto_focus", "args": { /* … */ } },
-              { "set": { "session.last_focus_hfr": "result.best_hfr" } } ] },
+      "do": [ { "tool": "measure_basic", "args": { "document_id": { "$expr": "event.document_id" } } },
+              { "if": "result.hfr != null && result.hfr > session.last_focus_hfr * 1.2",
+                "then": [ { "tool": "auto_focus", "args": { /* … */ } },
+                          { "set": { "session.last_focus_hfr": "result.best_hfr" } } ] } ] },
     { "id": "flip-when-due",
       "on": { "poll": { "tool": "get_meridian_status", "interval": "60s" } },
       "when": "event.time_to_flip_seconds < 300",
@@ -610,12 +676,14 @@ behavioral spec either way.)
     { "repeat": { "while": "session.session_over != true", "max_iterations": 1000 },
       "body": [
         { "tool": "get_next_target" },
-        { "if": "result.reason == 'WaitForTwilight'",
-          "then": [ { "wait": { "duration": "5m" } } ],
-          "else": [ { "if": "result.reason == 'EndOfSession'",
-              "then": [ { "set": { "session.session_over": "true" } } ],
+        { "if": "result.reason == 'end_of_session'",
+          "then": [ { "set": { "session.session_over": "true" } } ],
+          "else": [ { "if": "result.target == null",
+              "then": [ { "wait": { "duration": "5m" } } ],  // wait_for_twilight, all_below_min_altitude, …
               "else": [
-                { "set": { "session.target_name": "result.target", "session.target_ra": "result.ra", "session.target_dec": "result.dec" } },
+                { "set": { "session.target_name": "result.target.name",
+                           "session.target_ra": "result.target.ra_hours",
+                           "session.target_dec": "result.target.dec_degrees" } },
                 /* slew → center_on_target → auto_focus → start_guiding,
                    set session.imaging = true, capture + record_exposure loop
                    re-asking get_next_target after each frame; dither every
@@ -640,7 +708,7 @@ persisted progress.
 | Expression error (null arithmetic, division by zero) | Workflow error at that instruction, same propagation as tool errors. |
 | `wait` timeout | Workflow error. |
 | Loop `max_iterations` exhausted (`until`/`while`) | Loop completes with `result.converged = false`; not an error. |
-| SSE stream drops | Reconnect with `Last-Event-ID`; no envelopes lost; poll triggers unaffected. |
+| SSE stream drops | Reconnect with `Last-Event-ID`; exact replay within `rp`'s 512-event retention; on `stream_gap`, log and continue (§ Event Subscription). |
 | Poll-trigger tool call fails | `debug!` log, skip cycle. |
 | MCP session terminated by `rp` (safety) | Best-effort `finally`, persist blackboard, exit without completion; await re-invocation. |
 | Engine crash / power failure | Blackboard reflects every completed `set`; recovery invocation re-executes per the re-entrancy contract. |
@@ -688,8 +756,8 @@ Testing follows [`docs/skills/testing.md`](../skills/testing.md).
 ### Unit tests
 
 - Document parsing and validation: every instruction type, every schema
-  error (unknown key, missing loop bound, duplicate trigger id, `script`
-  reservation message).
+  error (unknown key, missing loop bound, duplicate trigger id, reserved
+  names, `script` reservation message).
 - Expression evaluation: every operator/function, every namespace, null
   handling, division by zero — table-driven, exhaustive.
 - Engine semantics against a mock MCP-client trait: sequencing, `result`
