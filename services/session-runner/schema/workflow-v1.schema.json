@@ -1,0 +1,471 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "workflow-v1.schema.json",
+  "title": "rusty-photon workflow document (v1)",
+  "description": "Structural schema for session-runner workflow documents, per docs/services/session-runner.md. This is schema-validation layer 1 of 3 (docs/services/session-runner.md § Validation): it checks document shape, discriminant keys, reserved names, and loop-bound requirements. Two invariants it cannot express are enforced by the validator alongside this schema: (1) trigger `id` values and instruction `once` keys must each be unique within a document; (2) `tool` node names and their `args` must exist and type-check against rp's live tool catalog (layer 2, requires a live rp connection) — this schema only checks that `args` is an object, not its contents. Expression strings (see $defs/expression) are opaque here; their grammar is checked by the Phase B expression parser.",
+  "type": "object",
+  "properties": {
+    "version": {
+      "const": 1,
+      "description": "Format version. This schema file validates version 1 only; a document with a different version is rejected by the engine before this schema even runs, naming the supported version(s) in the error."
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Identification for logs, events, and the completion payload. Need not match the document's filename or the `config.workflow` value used to select it."
+    },
+    "description": {
+      "type": "string"
+    },
+    "parameters": {
+      "type": "object",
+      "description": "Declared invocation parameters, available to expressions as params.*.",
+      "propertyNames": {
+        "$ref": "#/$defs/identifier"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/parameterDeclaration"
+      }
+    },
+    "estimated_duration": {
+      "$ref": "#/$defs/humantime"
+    },
+    "max_duration": {
+      "$ref": "#/$defs/humantime"
+    },
+    "triggers": {
+      "type": "array",
+      "description": "Document-global reactive rules, evaluated alongside the procedure tree. Trigger `id` values must be unique within the document (enforced by the validator, not expressible in this schema).",
+      "items": {
+        "$ref": "#/$defs/trigger"
+      }
+    },
+    "root": {
+      "$ref": "#/$defs/instruction",
+      "description": "The procedure tree. Conventionally a `sequence` container, though any instruction is structurally valid as the root."
+    }
+  },
+  "required": ["version", "name", "root"],
+  "additionalProperties": false,
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9_]*$",
+      "description": "Starts with a letter, so a name cannot begin with `_` — the reserved prefix for engine-injected names (e.g. params._recovery)."
+    },
+    "expression": {
+      "type": "string",
+      "minLength": 1,
+      "description": "A bounded, pure, CEL-style expression string (docs/services/session-runner.md § Expressions). Grammar is validated by the expression parser (Phase B), not by this JSON Schema."
+    },
+    "exprWrapper": {
+      "type": "object",
+      "description": "Marks a tool-arg value as computed rather than literal JSON.",
+      "properties": {
+        "$expr": {
+          "$ref": "#/$defs/expression"
+        }
+      },
+      "required": ["$expr"],
+      "additionalProperties": false
+    },
+    "countBound": {
+      "description": "repeat.count: a literal non-negative integer, or an expression evaluated once at loop entry.",
+      "oneOf": [
+        { "type": "integer", "minimum": 0 },
+        { "$ref": "#/$defs/exprWrapper" }
+      ]
+    },
+    "positiveBound": {
+      "description": "repeat.max_iterations: a literal positive integer, or an expression evaluated once at loop entry (must yield a positive integer or the loop entry raises a workflow error).",
+      "oneOf": [
+        { "type": "integer", "minimum": 1 },
+        { "$ref": "#/$defs/exprWrapper" }
+      ]
+    },
+    "humantime": {
+      "type": "string",
+      "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h|d|w|y)\\s*)+$",
+      "description": "A humantime duration string (e.g. \"300s\", \"1h30m\"). This pattern is a sanity check, not the authoritative grammar — the engine's humantime parser is the source of truth."
+    },
+    "instructionId": {
+      "type": "string",
+      "minLength": 1,
+      "description": "A label used in logs and error messages. No uniqueness requirement."
+    },
+    "onceKey": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The re-entrancy-contract idempotency key for this instruction (session._once.<key>). Must be unique within a document (enforced by the validator, not expressible in this schema)."
+    },
+    "parameterDeclaration": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "enum": ["string", "integer", "number", "boolean", "duration"]
+        },
+        "required": {
+          "const": true
+        },
+        "default": {}
+      },
+      "required": ["type"],
+      "additionalProperties": false,
+      "oneOf": [
+        { "required": ["required"] },
+        { "required": ["default"] }
+      ],
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "string" } } },
+          "then": { "properties": { "default": { "type": "string" } } }
+        },
+        {
+          "if": { "properties": { "type": { "const": "integer" } } },
+          "then": { "properties": { "default": { "type": "integer" } } }
+        },
+        {
+          "if": { "properties": { "type": { "const": "number" } } },
+          "then": { "properties": { "default": { "type": "number" } } }
+        },
+        {
+          "if": { "properties": { "type": { "const": "boolean" } } },
+          "then": { "properties": { "default": { "type": "boolean" } } }
+        },
+        {
+          "if": { "properties": { "type": { "const": "duration" } } },
+          "then": { "properties": { "default": { "$ref": "#/$defs/humantime" } } }
+        }
+      ]
+    },
+    "instruction": {
+      "description": "Exactly one discriminant key (tool, sequence, repeat, if, set, try, fail, wait, log), plus the optional common keys id/once. `script` is recognized structurally but is reserved: v1 documents must not use it (docs/services/session-runner.md § Reserved: script) — the validator rejects it with a dedicated 'reserved for a future format version' error rather than a generic unknown-key error.",
+      "oneOf": [
+        { "$ref": "#/$defs/toolInstruction" },
+        { "$ref": "#/$defs/sequenceInstruction" },
+        { "$ref": "#/$defs/repeatInstruction" },
+        { "$ref": "#/$defs/ifInstruction" },
+        { "$ref": "#/$defs/setInstruction" },
+        { "$ref": "#/$defs/tryInstruction" },
+        { "$ref": "#/$defs/failInstruction" },
+        { "$ref": "#/$defs/waitInstruction" },
+        { "$ref": "#/$defs/logInstruction" },
+        { "$ref": "#/$defs/scriptInstructionReserved" }
+      ]
+    },
+    "toolInstruction": {
+      "type": "object",
+      "properties": {
+        "tool": {
+          "type": "string",
+          "minLength": 1,
+          "description": "An MCP tool name, checked against rp's live tool catalog at catalog-validation time (layer 2)."
+        },
+        "args": {
+          "type": "object",
+          "description": "Values are literal JSON by default; a computed value is wrapped as {\"$expr\": \"<expression>\"}. Literal args are type-checked against the tool's parameter schema at catalog-validation time (layer 2); $expr arg types are checked at call time."
+        },
+        "retry": {
+          "type": "object",
+          "properties": {
+            "max_attempts": { "type": "integer", "minimum": 1 },
+            "backoff": { "$ref": "#/$defs/humantime" }
+          },
+          "required": ["max_attempts", "backoff"],
+          "additionalProperties": false
+        },
+        "id": { "$ref": "#/$defs/instructionId" },
+        "once": { "$ref": "#/$defs/onceKey" }
+      },
+      "required": ["tool"],
+      "additionalProperties": false
+    },
+    "sequenceInstruction": {
+      "type": "object",
+      "properties": {
+        "sequence": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/instruction" }
+        },
+        "id": { "$ref": "#/$defs/instructionId" },
+        "once": { "$ref": "#/$defs/onceKey" }
+      },
+      "required": ["sequence"],
+      "additionalProperties": false
+    },
+    "repeatOptions": {
+      "type": "object",
+      "properties": {
+        "until": { "$ref": "#/$defs/expression" },
+        "while": { "$ref": "#/$defs/expression" },
+        "count": { "$ref": "#/$defs/countBound" },
+        "max_iterations": { "$ref": "#/$defs/positiveBound" }
+      },
+      "additionalProperties": false,
+      "description": "Exactly one of until/while/count. max_iterations is required alongside until/while and optional (but permitted) alongside count.",
+      "oneOf": [
+        {
+          "required": ["until", "max_iterations"],
+          "not": { "anyOf": [{ "required": ["while"] }, { "required": ["count"] }] }
+        },
+        {
+          "required": ["while", "max_iterations"],
+          "not": { "anyOf": [{ "required": ["until"] }, { "required": ["count"] }] }
+        },
+        {
+          "required": ["count"],
+          "not": { "anyOf": [{ "required": ["until"] }, { "required": ["while"] }] }
+        }
+      ]
+    },
+    "repeatInstruction": {
+      "type": "object",
+      "properties": {
+        "repeat": { "$ref": "#/$defs/repeatOptions" },
+        "body": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/instruction" },
+          "minItems": 1
+        },
+        "id": { "$ref": "#/$defs/instructionId" },
+        "once": { "$ref": "#/$defs/onceKey" }
+      },
+      "required": ["repeat", "body"],
+      "additionalProperties": false
+    },
+    "ifInstruction": {
+      "type": "object",
+      "properties": {
+        "if": { "$ref": "#/$defs/expression" },
+        "then": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/instruction" },
+          "minItems": 1
+        },
+        "else": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/instruction" },
+          "minItems": 1
+        },
+        "id": { "$ref": "#/$defs/instructionId" },
+        "once": { "$ref": "#/$defs/onceKey" }
+      },
+      "required": ["if", "then"],
+      "additionalProperties": false
+    },
+    "setInstruction": {
+      "type": "object",
+      "properties": {
+        "set": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": {
+            "pattern": "^session(\\.[A-Za-z][A-Za-z0-9_]*)+$",
+            "description": "session.* paths only, one or more dot-separated segments, each starting with a letter — excludes the reserved session._once.* / session._triggers.* engine bookkeeping keys, which cannot start a segment with an underscore."
+          },
+          "additionalProperties": { "$ref": "#/$defs/expression" }
+        },
+        "id": { "$ref": "#/$defs/instructionId" },
+        "once": { "$ref": "#/$defs/onceKey" }
+      },
+      "required": ["set"],
+      "additionalProperties": false
+    },
+    "tryInstruction": {
+      "type": "object",
+      "properties": {
+        "try": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/instruction" },
+          "minItems": 1
+        },
+        "catch": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/instruction" },
+          "minItems": 1
+        },
+        "finally": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/instruction" },
+          "minItems": 1
+        },
+        "id": { "$ref": "#/$defs/instructionId" },
+        "once": { "$ref": "#/$defs/onceKey" }
+      },
+      "required": ["try"],
+      "additionalProperties": false
+    },
+    "failInstruction": {
+      "type": "object",
+      "properties": {
+        "fail": {
+          "type": "object",
+          "properties": {
+            "message": { "$ref": "#/$defs/expression" }
+          },
+          "required": ["message"],
+          "additionalProperties": false
+        },
+        "id": { "$ref": "#/$defs/instructionId" },
+        "once": { "$ref": "#/$defs/onceKey" }
+      },
+      "required": ["fail"],
+      "additionalProperties": false
+    },
+    "waitInstruction": {
+      "type": "object",
+      "properties": {
+        "wait": { "$ref": "#/$defs/waitOptions" },
+        "id": { "$ref": "#/$defs/instructionId" },
+        "once": { "$ref": "#/$defs/onceKey" }
+      },
+      "required": ["wait"],
+      "additionalProperties": false
+    },
+    "waitOptions": {
+      "type": "object",
+      "properties": {
+        "duration": { "$ref": "#/$defs/humantime" },
+        "until_event": {
+          "type": "string",
+          "minLength": 1,
+          "description": "An rp event name."
+        },
+        "until": { "$ref": "#/$defs/expression" },
+        "timeout": {
+          "$ref": "#/$defs/humantime",
+          "description": "Required with until_event or until; expiry raises a workflow error."
+        },
+        "poll_interval": {
+          "$ref": "#/$defs/humantime",
+          "description": "Re-evaluation interval for until. Default \"10s\" when omitted."
+        }
+      },
+      "additionalProperties": false,
+      "description": "Exactly one of duration/until_event/until. timeout is required with until_event/until and not used with duration. poll_interval only applies to until.",
+      "oneOf": [
+        {
+          "required": ["duration"],
+          "not": {
+            "anyOf": [
+              { "required": ["until_event"] },
+              { "required": ["until"] },
+              { "required": ["timeout"] },
+              { "required": ["poll_interval"] }
+            ]
+          }
+        },
+        {
+          "required": ["until_event", "timeout"],
+          "not": {
+            "anyOf": [
+              { "required": ["duration"] },
+              { "required": ["until"] },
+              { "required": ["poll_interval"] }
+            ]
+          }
+        },
+        {
+          "required": ["until", "timeout"],
+          "not": {
+            "anyOf": [{ "required": ["duration"] }, { "required": ["until_event"] }]
+          }
+        }
+      ]
+    },
+    "logInstruction": {
+      "type": "object",
+      "properties": {
+        "log": {
+          "type": "object",
+          "properties": {
+            "level": {
+              "enum": ["debug", "info"],
+              "description": "Default \"debug\" when omitted."
+            },
+            "message": { "type": "string", "minLength": 1 },
+            "values": {
+              "type": "object",
+              "additionalProperties": { "$ref": "#/$defs/expression" }
+            }
+          },
+          "required": ["message"],
+          "additionalProperties": false
+        },
+        "id": { "$ref": "#/$defs/instructionId" },
+        "once": { "$ref": "#/$defs/onceKey" }
+      },
+      "required": ["log"],
+      "additionalProperties": false
+    },
+    "scriptInstructionReserved": {
+      "type": "object",
+      "description": "Reserved for a future sandboxed Luau handler node (decision D3, docs/plans/workflow-dsl.md). Matches structurally so the validator can reject it with an explicit 'reserved for a future format version' error instead of a generic unknown-key error; v1 documents must not use this discriminant.",
+      "properties": {
+        "script": true,
+        "id": { "$ref": "#/$defs/instructionId" },
+        "once": { "$ref": "#/$defs/onceKey" }
+      },
+      "required": ["script"],
+      "additionalProperties": false
+    },
+    "trigger": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/instructionId",
+          "description": "Required, unique within the document (uniqueness enforced by the validator, not expressible in this schema)."
+        },
+        "on": {
+          "description": "The trigger source: an rp SSE event, or a polled tool call.",
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "event": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "An rp event name, or the synthetic \"correction_requested\" source."
+                }
+              },
+              "required": ["event"],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "poll": {
+                  "type": "object",
+                  "properties": {
+                    "tool": { "type": "string", "minLength": 1 },
+                    "args": { "type": "object" },
+                    "interval": { "$ref": "#/$defs/humantime" }
+                  },
+                  "required": ["tool", "interval"],
+                  "additionalProperties": false
+                }
+              },
+              "required": ["poll"],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "when": { "$ref": "#/$defs/expression" },
+        "while": { "$ref": "#/$defs/expression" },
+        "cooldown": { "$ref": "#/$defs/humantime" },
+        "once": {
+          "type": "boolean",
+          "description": "Fire at most once per session. Unlike an instruction's `once` (an idempotency key string), this is a plain boolean."
+        },
+        "do": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/instruction" },
+          "minItems": 1,
+          "description": "Same instruction vocabulary as the procedure tree; nested triggers are not part of the instruction vocabulary and so cannot appear here."
+        }
+      },
+      "required": ["id", "on", "do"],
+      "additionalProperties": false
+    }
+  }
+}
