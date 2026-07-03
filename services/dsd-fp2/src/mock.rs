@@ -175,8 +175,8 @@ impl MockFrameTransport {
             "SMOV" => {
                 if let Some(t) = inner.target_angle.take() {
                     inner.cover_angle = t;
+                    inner.motor_running = true;
                 }
-                inner.motor_running = true;
                 "(OK)".to_string()
             }
             "GLON" => format!("({})", if inner.light_on { 1 } else { 0 }),
@@ -297,6 +297,14 @@ mod tests {
         assert_eq!(round_trip(&state, "[GMOV]").await, "(1)");
         assert_eq!(round_trip(&state, "[GMOV]").await, "(0)");
         assert_eq!(round_trip(&state, "[GOPS]").await, "(0)");
+    }
+
+    #[tokio::test]
+    async fn smov_without_a_target_does_not_start_the_motor() {
+        let state = MockState::default();
+        assert_eq!(round_trip(&state, "[SMOV]").await, "(OK)");
+        assert_eq!(round_trip(&state, "[GMOV]").await, "(0)");
+        assert_eq!(round_trip(&state, "[GOPS]").await, "(0)"); // unmoved default (closed)
     }
 
     #[tokio::test]
