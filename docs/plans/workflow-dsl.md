@@ -150,11 +150,13 @@ committable on its own.
       document format, instruction/trigger vocabulary, expression semantics,
       blackboard + re-entrancy contract, validation, configuration, MVP
       boundary.
-- [ ] Publish the workflow-document **JSON Schema**
+- [x] Publish the workflow-document **JSON Schema**
       (`services/session-runner/schema/workflow-v1.schema.json`) — the
       contract for authors, the future UI, and LLM generation. Written by
       hand (the schema *is* the format spec); `schemars` is not the source
       of truth here because the schema outlives any one Rust representation.
+      Validated (draft 2020-12) against both shipped golden documents and a
+      battery of negative cases derived from the spec's own stated rules.
 
 ### Phase B — Expression layer
 
