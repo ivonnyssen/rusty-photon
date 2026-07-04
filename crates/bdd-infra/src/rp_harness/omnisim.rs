@@ -32,6 +32,24 @@ struct OmniSimProcess {
 /// Global singleton — one OmniSim process shared by all scenarios.
 static OMNISIM: OnceCell<OmniSimProcess> = OnceCell::const_new();
 
+/// Process-wide serialization of `/restart` PUTs. OmniSim's restart
+/// handler (`DriverManager.Load{Class}(n)`) mutates unsynchronised
+/// process-wide static state, so concurrent restarts race inside the
+/// simulator. `reset_all_devices` already issues its 5 PUTs
+/// sequentially (#171), but that only serialises *within* one hook —
+/// cucumber runs untagged scenarios concurrently, and every
+/// concurrently-drawn scenario runs its own before-hook. In the
+/// pi-nightly failure behind #431 the 11 non-`@serial` rp scenarios
+/// were all drawn at once after the `@serial` queue drained, their 11
+/// hooks issued ~11 concurrent restarts per device class, and OmniSim
+/// deadlocked mid-wave (log torn then silent, no stderr, subsequent
+/// PUTs timing out) — failing the remaining hooks loud. Holding this
+/// mutex across each PUT caps in-flight restarts at one per test
+/// process, which removes the trigger. Known limitation: it cannot
+/// serialise across *processes* (e.g. two Bazel bdd actions sharing
+/// one OmniSim on port 32323).
+static RESTART_SERIALIZER: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 impl OmniSimHandle {
     /// Get or start the shared OmniSim process. Returns a lightweight handle.
     ///
@@ -94,7 +112,11 @@ impl OmniSimHandle {
     /// `invalid type: null, expected struct ConfiguredDevice` and
     /// silently registered the device as disconnected — which is the
     /// camera/calibrator/focuser "not connected" cascade in #171.
-    /// Sequential PUTs eliminate that race.
+    /// Sequential PUTs eliminate that race *within* one hook; the
+    /// process-wide [`RESTART_SERIALIZER`] taken inside each PUT
+    /// eliminates it *across* concurrently-running hooks too — the
+    /// end-of-run burst of non-`@serial` scenarios deadlocked OmniSim
+    /// on the Pi nightly (#431).
     ///
     /// The wall-time cost is small: 5 localhost round-trips serialised
     /// is ~10-25 ms per scenario depending on runner.
@@ -170,12 +192,21 @@ impl OmniSimHandle {
     /// tests can drive the HTTP path against an axum stub without
     /// touching the global `OMNISIM` singleton. See the `tests` module
     /// at the bottom of this file.
+    ///
+    /// The PUT is issued under [`RESTART_SERIALIZER`], so at most one
+    /// restart is in flight per test process no matter how many
+    /// scenario hooks run concurrently — see the mutex docs for the
+    /// OmniSim deadlock (#431) this prevents.
     async fn restart_device_at(base_url: &str, class: &str, n: u32) -> Result<(), String> {
         let url = format!("{}/simulator/v1/{}/{}/restart", base_url, class, n);
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(5))
             .build()
             .map_err(|e| format!("reqwest client build failed: {e}"))?;
+        // Lock only around the request itself — client construction and
+        // URL formatting don't touch OmniSim and would just lengthen the
+        // critical section when many hooks queue here.
+        let _serialized = RESTART_SERIALIZER.lock().await;
         let resp = client
             .put(&url)
             .send()
@@ -529,6 +560,66 @@ mod tests {
             .expect_err("expected an error for 500 response");
         assert!(err.contains("500"), "expected 500 in error: {err}");
         let _ = shutdown.send(());
+    }
+
+    #[tokio::test]
+    async fn restart_device_serializes_concurrent_restarts() {
+        use std::sync::atomic::{AtomicI32, Ordering};
+        use std::sync::Arc;
+
+        // Stub that records whether two restart requests were ever in
+        // flight at the same time. Each handler bumps an in-flight
+        // counter, holds the request open briefly, then decrements —
+        // without RESTART_SERIALIZER, 16 concurrent PUTs overlap here
+        // reliably (this test failed before the mutex was added).
+        let in_flight = Arc::new(AtomicI32::new(0));
+        let overlapped = Arc::new(AtomicI32::new(0));
+        let (in_flight_h, overlapped_h) = (in_flight.clone(), overlapped.clone());
+        let app = Router::new().route(
+            "/simulator/v1/camera/0/restart",
+            put(move || {
+                let in_flight = in_flight_h.clone();
+                let overlapped = overlapped_h.clone();
+                async move {
+                    if in_flight.fetch_add(1, Ordering::SeqCst) > 0 {
+                        overlapped.fetch_add(1, Ordering::SeqCst);
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    in_flight.fetch_sub(1, Ordering::SeqCst);
+                    StatusCode::OK
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async {
+                    let _ = rx.await;
+                })
+                .await
+                .unwrap();
+        });
+        let base_url = format!("http://127.0.0.1:{port}");
+
+        let puts: Vec<_> = (0..16)
+            .map(|_| {
+                let base_url = base_url.clone();
+                tokio::spawn(async move {
+                    OmniSimHandle::restart_device_at(&base_url, "camera", 0).await
+                })
+            })
+            .collect();
+        for put in puts {
+            put.await.unwrap().unwrap();
+        }
+        assert_eq!(
+            overlapped.load(Ordering::SeqCst),
+            0,
+            "restart PUTs overlapped despite RESTART_SERIALIZER"
+        );
+        let _ = tx.send(());
     }
 
     #[tokio::test]
