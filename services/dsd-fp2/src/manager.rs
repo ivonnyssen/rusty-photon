@@ -377,7 +377,12 @@ mod mock_tests {
             .unwrap()
             .parse_ok()
             .unwrap();
-        // Confirm the cover state observable through GOPS.
+        // The mock reports the motor running for exactly one `[GMOV]`
+        // read after `[SMOV]` (matches real hardware's async settle;
+        // see mock.rs), same as `poll_once` consuming it each cycle.
+        let m = session.request(Command::GetMotorState).await.unwrap();
+        assert!(m.parse_bool().unwrap());
+        // Confirm the cover state observable through GOPS once settled.
         let s = session.request(Command::GetCoverState).await.unwrap();
         assert_eq!(s.parse_int().unwrap(), 0); // 0 = closed
         session.close().await.unwrap();

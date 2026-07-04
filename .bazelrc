@@ -160,7 +160,17 @@ build:ci --color=yes
 build:ci --show_timestamps
 build:ci --announce_rc
 build:ci --remote_download_outputs=toplevel  # build-without-the-bytes
-build:ci --jobs=auto
+# `--jobs` and `--local_resources=cpu=N` are separate knobs: `--jobs` caps how
+# many actions may be outstanding at once, the CPU resource pool (left on
+# auto-detect, i.e. the runner's real core count) caps how many can actively
+# compile. `auto` ties both to the GitHub-hosted runners' small core count
+# (4 vCPU), so network-bound remote-cache checks queue behind the same tiny
+# ceiling as CPU-bound compilation, even though they don't need a core to be
+# in flight. A fixed, higher --jobs decouples the two: local testing (holding
+# CPU fixed at a real 4-core budget) measured elapsed-vs-critical-path
+# overhead dropping from 52% at --jobs=4 to 15% at --jobs=50 on the same
+# 2,500-action graph. 64 leaves headroom above that without over-dispatching.
+build:ci --jobs=64
 build:ci --experimental_ui_max_stdouterr_bytes=10485760
 test:ci --test_output=errors
 test:ci --test_summary=terse
