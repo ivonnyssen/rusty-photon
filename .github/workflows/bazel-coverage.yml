@@ -120,8 +120,8 @@ jobs:
           # build:ci's `toplevel` so the combined lcov and its per-test .dat inputs
           # are materialised locally. --test_output=all surfaces rp:bdd's BDD-TRACE
           # breadcrumbs (ENTER / reset-ok / EXIT, tagged +Ns) even on a passing run
-          # — parity with the BDD leg in bazel.yml. --spawn_strategy=local and
-          # --remote_timeout=3 (the confirmed rp:bdd post-scenario park fix) are
+          # — parity with the BDD leg in bazel.yml. --spawn_strategy=local (the
+          # confirmed rp:bdd post-scenario park fix) and --remote_timeout=15 are
           # inherited from `.bazelrc` test:ci/build:ci.
           #
           # `|| status=$?` keeps a non-zero exit from aborting the step and records
@@ -148,7 +148,7 @@ jobs:
           # here skips the no-`if:` Split step, which is the intended behaviour). The always()
           # test-log capture step still runs regardless, so a failure is fully triage-able.
           # The rp:bdd post-scenario park (which could cancel ~half of these runs at the
-          # 60-min wall) is fixed (3s --remote_timeout + --spawn_strategy=local in .bazelrc);
+          # 60-min wall) is fixed (bounded --remote_timeout + --spawn_strategy=local in .bazelrc);
           # this job is a required gate.
           if [[ $status -eq 124 || $status -eq 137 ]]; then
             echo "::error title=bazel coverage capped::Hit the 50-min observability cap (exit $status) — a test (almost certainly //services/rp:bdd) did not finish in time. Captured test logs are in the 'bazel-testlogs' artifact."
