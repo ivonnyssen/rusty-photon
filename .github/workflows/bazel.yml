@@ -157,7 +157,7 @@ jobs:
         # --test_env discards Bazel's analysis cache; see .bazelrc for the why).
         # --spawn_strategy=local (bypasses the sandbox so the BDD-spawned OmniSim
         # can bind ports; also the confirmed fix for the rp:bdd post-scenario
-        # park) and --remote_timeout=3 both live in `.bazelrc`. --test_output=all
+        # park) and --remote_timeout=15 both live in `.bazelrc`. --test_output=all
         # surfaces rp:bdd's BDD-TRACE per-scenario breadcrumbs even on a passing run
         # (services/rp/tests/bdd.rs).
         run: |

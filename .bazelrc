@@ -177,17 +177,22 @@ test:ci --test_summary=terse
 
 # --remote_timeout is the per-RPC idle/inactivity timeout for remote-cache
 # operations, NOT a total transfer cap — healthy byte-flowing transfers survive
-# it; it only bites an RPC that has stalled with no bytes moving. Dropped from
-# the old 600s to 3s as the confirmed fix for the intermittent `//services/rp:bdd`
-# post-scenario park (PR #342 + the park experiment; see
+# it; it only bites an RPC that has stalled with no bytes moving. Originally
+# dropped from 600s to 3s as the confirmed fix for the intermittent
+# `//services/rp:bdd` post-scenario park (PR #342 + the park experiment; see
 # docs/plans/archive/bazel-migration.md): the park was a stale pooled keep-alive cache
 # RPC that blackholed and blocked until the timeout, so a tight idle bound
-# collapses it. On `build:ci`, so it applies to every CI invocation (build, fast
-# test, BDD, coverage) — the build/fast-test steps therefore also use 3s now; the
-# only risk there is a cold-object time-to-first-byte tripping a spurious retry,
-# which has not materialized in CI. Raise this if a slow cold cache starts
-# retrying healthy transfers.
-build:ci --remote_timeout=3
+# collapses it. Raised 3 -> 15 (2026-07-04): the spurious-retry risk the 3s
+# setting accepted DID materialize — CI showed `Download of '/ac/…' timed out.
+# Received 0 bytes` on PR reads and `Upload of '/cas/…' timed out. Sent 151
+# bytes` during main-push bulk uploads (disproportionately the Windows leg;
+# a 151-byte upload timing out is a slow first byte, not bandwidth). Failed
+# main-push uploads leave holes in the cache that later PR runs miss on. 15s
+# gives cold Worker+R2 round trips real headroom while still collapsing a
+# recurred park in seconds, not the old 600 — and the park's other, independent
+# fix (test:ci --spawn_strategy=local below) remains in place. On `build:ci`,
+# so it applies to every CI invocation (build, fast test, BDD, coverage).
+build:ci --remote_timeout=15
 
 # Bypass the sandbox for tests under CI. Required on macOS/Windows (darwin-sandbox
 # blocks the BDD-spawned ASCOM OmniSim from binding network ports) AND now on
