@@ -60,8 +60,11 @@ belong in any single service design doc.
 | [ADR-008](decisions/008-zwo-camera-native-sdk-ffi.md) | `zwo-camera` native ZWO SDK: author-maintained `zwo-rs`/`libzwo-sys` FFI + MIT-SDK public caching |
 | [ADR-009](decisions/009-vendor-qhyccd-rs.md) | Vendor `qhyccd-rs` + `libqhyccd-sys` into the workspace (dual-homed) |
 | [ADR-010](decisions/010-vendor-zwo-rs.md) | Vendor `zwo-rs` + `libzwo-sys` into the workspace (dual-homed) |
+| [ADR-011](decisions/011-error-reporting-layers.md) | Layered error reporting — `thiserror` everywhere, `color-eyre` only at the binary boundary |
+| [ADR-012](decisions/012-service-packaging-architecture.md) | System packaging architecture — native `.deb`/`.rpm` for all services (`rusty-photon-*` naming, XDG config, shared service user) |
+| [ADR-013](decisions/013-native-sdk-payload-policy.md) | Native SDK payload policy — redistribute ZWO (MIT), download QHY firmware on-target (proprietary) |
 | **Plans** (in-flight initiatives — see [docs/plans/](plans/)) | |
-| [filemonitor-packaging.md](plans/filemonitor-packaging.md) | Filemonitor OS packaging |
+| [service-packaging.md](plans/service-packaging.md) | `.deb`/`.rpm` packages for every service (14 daemons + phd2-guider CLI): shared `rusty-photon` user, hardened unit classes, QHY firmware downloader, ZWO blob bundling, on-rig arm64 builds. Behind [ADR-012](decisions/012-service-packaging-architecture.md)/[ADR-013](decisions/013-native-sdk-payload-policy.md) |
 | [i18n.md](plans/i18n.md) | Workspace internationalization: scope, tech-stack, and translation-sourcing options |
 | [workflow-dsl.md](plans/workflow-dsl.md) | Imaging workflow DSL: declarative JSON workflow documents executed by the generic `session-runner` orchestrator plugin (CEL-style bounded expressions, trigger overlay, re-derive resume); decision record + phases behind [`docs/services/session-runner.md`](services/session-runner.md) |
 | [ui-testing.md](plans/ui-testing.md) | ui-htmx UI-behavior testing strategy: BDD-embedded `scraper` DOM assertions + cross-OS `insta` snapshots + an advisory `thirtyfour` browser layer, with an anticipatory spike plan; Bazel-primary aware; Gherkin stays the source of truth |
