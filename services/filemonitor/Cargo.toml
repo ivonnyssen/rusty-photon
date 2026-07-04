@@ -29,6 +29,7 @@ tracing = { workspace = true }
 rp-tls = { workspace = true }
 rp-auth = { workspace = true }
 axum = { workspace = true }
+rusty-photon-config = { workspace = true }
 rusty-photon-service-lifecycle = { workspace = true }
 tokio-util = { workspace = true }
 
@@ -48,42 +49,51 @@ command = "cargo miri test -p filemonitor"
 eula = false
 
 [package.metadata.deb]
+name = "rusty-photon-filemonitor"
 maintainer = "Igor von Nyssen <igor@vonnyssen.com>"
 extended-description = "ASCOM Alpaca SafetyMonitor that monitors file content for astrophotography safety."
 section = "science"
 priority = "optional"
+# $auto = dpkg-shlibdeps (needs a Debian build host); adduser is used by postinst.
+depends = "$auto, adduser"
 assets = [
-    ["target/release/filemonitor", "usr/bin/", "755"],
-    ["pkg/config.json", "etc/filemonitor/config.json", "644"],
+    ["target/release/filemonitor", "usr/bin/rusty-photon-filemonitor", "755"],
 ]
-conf-files = ["/etc/filemonitor/config.json"]
 maintainer-scripts = "pkg/"
 
 [package.metadata.deb.systemd-units]
-unit-name = "filemonitor"
+unit-name = "rusty-photon-filemonitor"
 unit-scripts = "pkg/"
 enable = true
 start = true
 restart-after-upgrade = true
 
 [package.metadata.generate-rpm]
+name = "rusty-photon-filemonitor"
 summary = "ASCOM Alpaca SafetyMonitor that monitors file content"
 license = "MIT OR Apache-2.0"
 assets = [
-    { source = "target/release/filemonitor", dest = "/usr/bin/filemonitor", mode = "755" },
-    { source = "pkg/config.json", dest = "/etc/filemonitor/config.json", mode = "644", config = "noreplace" },
-    { source = "pkg/filemonitor.service", dest = "/usr/lib/systemd/system/filemonitor.service", mode = "644" },
+    { source = "target/release/filemonitor", dest = "/usr/bin/rusty-photon-filemonitor", mode = "755" },
+    { source = "pkg/rusty-photon-filemonitor.service", dest = "/usr/lib/systemd/system/rusty-photon-filemonitor.service", mode = "644" },
 ]
 post_install_script = """
-getent passwd filemonitor > /dev/null || useradd -r -s /sbin/nologin filemonitor
+getent passwd rusty-photon > /dev/null || useradd -r -d /var/lib/rusty-photon -s /sbin/nologin rusty-photon
+install -d -m 0750 -o rusty-photon -g rusty-photon /var/lib/rusty-photon
+[ -e /etc/rusty-photon ] || ln -s /var/lib/rusty-photon/.config/rusty-photon /etc/rusty-photon
 systemctl daemon-reload
-systemctl enable filemonitor.service
+systemctl enable rusty-photon-filemonitor.service
 """
 pre_uninstall_script = """
-systemctl stop filemonitor.service || true
-systemctl disable filemonitor.service || true
+systemctl stop rusty-photon-filemonitor.service || true
+systemctl disable rusty-photon-filemonitor.service || true
 """
-post_uninstall_script = "systemctl daemon-reload"
+post_uninstall_script = """
+systemctl daemon-reload
+if [ "$1" = "0" ]; then
+    rm -f /var/lib/rusty-photon/.config/rusty-photon/filemonitor.json
+    rm -rf /var/lib/rusty-photon/filemonitor
+fi
+"""
 require-sh = true
 
 [dev-dependencies]

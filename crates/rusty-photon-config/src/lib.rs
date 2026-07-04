@@ -102,6 +102,20 @@ pub fn save(path: &Path, value: &Value) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Persist `default` at `path` if no config file exists there yet, so a fresh
+/// install materializes an editable file on the service's first start.
+/// Returns whether a file was written; an existing file is never touched.
+pub fn init_file_if_absent(path: &Path, default: &Value) -> Result<bool, ConfigError> {
+    if path.exists() {
+        return Ok(false);
+    }
+    save(path, default).map_err(|source| ConfigError::Write {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    Ok(true)
+}
+
 /// The result of [`materialize_identity`].
 pub struct MaterializeOutcome {
     /// Whether the file was (re)written (i.e. at least one id was minted).
@@ -204,6 +218,30 @@ mod tests {
         let p = resolve_config_path("dsd-fp2", None).unwrap();
         assert!(p.ends_with("dsd-fp2.json"), "{p:?}");
         assert!(p.to_string_lossy().contains("rusty-photon"), "{p:?}");
+    }
+
+    #[test]
+    fn init_file_if_absent_writes_default_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.json");
+        let default = json!({ "server": { "port": 11111 } });
+
+        assert!(init_file_if_absent(&path, &default).unwrap());
+        let on_disk: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(on_disk, default);
+    }
+
+    #[test]
+    fn init_file_if_absent_never_touches_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.json");
+        std::fs::write(&path, "{\"server\":{\"port\":9}}").unwrap();
+
+        assert!(!init_file_if_absent(&path, &json!({ "server": { "port": 11111 } })).unwrap());
+        let on_disk: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(on_disk, json!({ "server": { "port": 9 } }));
     }
 
     #[test]

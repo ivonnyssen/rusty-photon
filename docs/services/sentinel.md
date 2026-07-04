@@ -392,6 +392,12 @@ cargo run -p sentinel -- -c config.json --dashboard-port 8080
 cargo run -p sentinel -- -c config.json -l debug
 ```
 
+Without `-c`, the config path resolves to the per-user platform config
+directory (`~/.config/rusty-photon/sentinel.json` on Linux) and a default
+config file is created there on first start if none exists — the same
+convention as the driver services (see
+[ADR-012](../decisions/012-service-packaging-architecture.md)).
+
 ## Port
 
 11114 (dashboard, configurable)

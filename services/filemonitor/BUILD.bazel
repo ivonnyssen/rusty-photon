@@ -14,6 +14,7 @@ exports_files(
 _INTRA_WORKSPACE_DEPS = [
     "//crates/rp-auth:rp-auth",
     "//crates/rp-tls:rp-tls",
+    "//crates/rusty-photon-config:rusty-photon-config",
 ] + select({
     "@platforms//os:windows": ["//crates/rusty-photon-service-lifecycle:rusty-photon-service-lifecycle_scm"],
     "//conditions:default": ["//crates/rusty-photon-service-lifecycle:rusty-photon-service-lifecycle"],

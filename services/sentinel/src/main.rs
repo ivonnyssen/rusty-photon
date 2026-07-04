@@ -14,7 +14,9 @@ use tracing::Level;
 #[command(about = "Observatory monitoring and notification service")]
 #[command(version)]
 struct Args {
-    /// Path to configuration file
+    /// Path to configuration file. Defaults to the per-user platform config
+    /// directory (e.g. `~/.config/rusty-photon/sentinel.json` on Linux);
+    /// created with defaults on first start if absent.
     #[arg(short, long)]
     config: Option<PathBuf>,
 
@@ -39,13 +41,21 @@ fn main() -> ServiceResult {
         args.log_level
     );
 
-    let mut config = if let Some(config_path) = &args.config {
-        tracing::debug!("Loading configuration from {:?}", config_path);
-        load_config(config_path)?
-    } else {
-        tracing::debug!("Using default configuration");
-        Config::default()
-    };
+    // Self-create defaults only for the XDG default path (packaged first
+    // start); an explicit --config pointing at a missing file must stay a
+    // hard error so a typo'd path never silently drops monitors/notifiers.
+    let explicit = args.config.is_some();
+    let config_path = rusty_photon_config::resolve_config_path("sentinel", args.config)?;
+    if !explicit
+        && rusty_photon_config::init_file_if_absent(
+            &config_path,
+            &serde_json::to_value(Config::default())?,
+        )?
+    {
+        tracing::info!("Created default config at {}", config_path.display());
+    }
+    tracing::debug!("Loading configuration from {:?}", config_path);
+    let mut config = load_config(&config_path)?;
 
     config.resolve_secrets()?;
 

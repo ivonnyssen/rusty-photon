@@ -23,7 +23,7 @@ while keeping host-level setup anyway (see ADR-012 Context).
 | Phase | Description | Status | Branch / PR |
 |-------|-------------|--------|-------------|
 | PR-1 | This plan + ADR-012 + ADR-013 + archive old plan | In progress | `feature/service-packaging-plan` |
-| PR-2 | Migrate filemonitor to the new pattern (template proof) + sentinel XDG fix + `check-pkg-assets.sh` | Pending | |
+| PR-2 | Migrate filemonitor to the new pattern (template proof) + filemonitor/sentinel XDG fix + `check-pkg-assets.sh` | In progress | `feature/service-packaging-filemonitor` |
 | PR-3 | 11 pure-Rust daemons + `phd2-guider` CLI package | Pending | |
 | PR-4 | `qhy-camera` package + firmware downloader helper | Pending | |
 | PR-5 | `zwo-camera` package with bundled MIT SDK blobs | Pending | |
@@ -214,13 +214,24 @@ not process rpm macros). Camera packages additionally
 `getent group plugdev >/dev/null || groupadd -r plugdev` (the group is not
 standard on RPM distros).
 
-### Code change required (PR-2)
+### Code changes required (PR-2 / PR-3)
 
-`sentinel` is the one service without the XDG fallback: it loads config only
-when `--config` is passed, else silently runs on `Config::default()`. Switch
-it to `resolve_config_path` like every other service so the no-flag packaged
-unit behaves identically to the rest. Verify no other service bypasses
-`resolve_config_path`.
+Survey result: the 8 hardware drivers use `resolve_config_path` (+
+`materialize_identity`), but **six services do not**: `filemonitor`
+(CWD-relative `config.json` default), `sentinel` (loads config only with
+`--config`, else silent in-memory defaults), and `rp` / `ui-htmx` /
+`plate-solver` / `calibrator-flats`. All six adopt the same pattern:
+`resolve_config_path("<svc>", args.config)` + the new
+`rusty_photon_config::init_file_if_absent` (writes the typed default config
+on first start, so a packaged install materializes an editable file).
+Self-creation applies **only to the XDG default path**: an explicit
+`--config` naming a missing file stays a hard error (fail-fast contract —
+a typo'd path must never silently run on defaults; filemonitor's
+integration test and BDD scenarios pin this).
+filemonitor + sentinel land in PR-2 (filemonitor also gains an
+`impl Default for Config` based on its previously packaged default, watch
+path moved to `/var/lib/rusty-photon/filemonitor/`); the remaining four land
+in PR-3 alongside their packaging.
 
 ### qhy-camera (PR-4)
 
@@ -300,7 +311,19 @@ Runs on Debian arm64 (the rig) and x86_64 dev boxes:
 ## Verification
 
 - `lintian` on all debs (documented expected findings:
-  `custom-library-search-path` on zwo-camera); `rpmlint` on rpms.
+  `custom-library-search-path` on zwo-camera; `no-changelog` /
+  `no-manual-page` / `copyright-without-copyright-notice` accepted pre-1.0;
+  `empty-field Depends` + `unstripped-binary` appear only on ad-hoc non-Debian
+  host builds — Debian/CI builds run dpkg-shlibdeps and strip). All daemon
+  packages carry `depends = "$auto, adduser"` (postinst uses adduser).
+  `rpmlint` on rpms.
+- **Rootless-container caveat (PR-2 finding):** rootless podman cannot apply
+  the units' sandboxing (mount-namespace + seccomp setup across the `User=`
+  switch fails with `217/USER` / `226/NAMESPACE`). `verify-packages.sh` must
+  install a drop-in resetting the whole hardening block inside the container
+  — packaging lifecycle is what containers verify; the hardening itself is
+  verified on real hosts (`systemd-analyze security` + active unit on the
+  rig).
 - `scripts/verify-packages.sh` in a podman `--systemd=always` `debian:trixie`
   container (arm64 natively on the rig, x86_64 on the dev box), per service:
   install → unit `active` → config self-created at
