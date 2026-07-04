@@ -93,6 +93,40 @@ rust_test(
     ),
 )
 
+# Unit tests of the feature-gated rp_harness / sky_survey_camera_harness
+# modules. The base :bdd-infra_unit_test compiles WITHOUT the rp-harness
+# feature, so those modules' tests (OmniSim restart serialization, config
+# builders, stubs, SSE parsing) are cfg'd out of it — and it is tagged
+# requires-cargo anyway, so per-PR `bazel test //...` never ran them; they
+# only ran in the nightly Cargo safety net. This target compiles the
+# rp-harness variant and positively filters to the two feature-gated
+# module trees, skipping the base `tests::` module whose run_once_* tests
+# shell out to cargo. All filtered-in tests are hermetic (localhost axum
+# stubs, tempfiles, pure parsing), so no requires-cargo tag: they run on
+# every PR — including the #431 restart-serialization regression test.
+rust_test(
+    name = "bdd-infra_rp_harness_unit_test",
+    size = "small",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    args = [
+        "rp_harness::",
+        "sky_survey_camera_harness::",
+    ],
+    crate = ":bdd-infra_rp_harness",
+    crate_features = ["rp-harness"],
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = ["//crates/rp-fits"] + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
 rust_test(
     name = "service_handle",
     size = "small",

@@ -198,12 +198,15 @@ impl OmniSimHandle {
     /// scenario hooks run concurrently — see the mutex docs for the
     /// OmniSim deadlock (#431) this prevents.
     async fn restart_device_at(base_url: &str, class: &str, n: u32) -> Result<(), String> {
-        let _serialized = RESTART_SERIALIZER.lock().await;
         let url = format!("{}/simulator/v1/{}/{}/restart", base_url, class, n);
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(5))
             .build()
             .map_err(|e| format!("reqwest client build failed: {e}"))?;
+        // Lock only around the request itself — client construction and
+        // URL formatting don't touch OmniSim and would just lengthen the
+        // critical section when many hooks queue here.
+        let _serialized = RESTART_SERIALIZER.lock().await;
         let resp = client
             .put(&url)
             .send()
