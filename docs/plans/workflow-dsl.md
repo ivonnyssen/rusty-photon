@@ -160,7 +160,7 @@ committable on its own.
 
 ### Phase B — Expression layer
 
-- [ ] **Spike (time-boxed)**: pick the parser. An implementation-research
+- [x] **Spike (time-boxed)**: pick the parser. An implementation-research
       pass (2026-07-02, verified against crates.io/GitHub) found that **no
       off-the-shelf interpreter implements the fixed semantics** — every
       live candidate deviates on f64-only numbers, strict
@@ -194,6 +194,55 @@ committable on its own.
       silent Infinity), and the JSON-tree family (JsonLogic/jq/JMESPath/
       FEEL — lenient-null semantics and/or unreadable authoring contradict
       tenets 4–5).
+
+      **Spike outcome (2026-07-03): hand-rolled lexer + Pratt parser.**
+      All three arms were built against a shared target AST and evaluated
+      with a 178-case conformance corpus derived from the design doc's
+      § Expressions (including every golden expression from the shipped
+      document examples), a cross-arm canonical-form agreement check, an
+      error-message battery, a 30 000-input mutation robustness run, and
+      footprint measurement. Results:
+
+      | Criterion | hand-rolled | `cel` 0.14 parser | `oxc_parser` 0.138 subset |
+      |---|---|---|---|
+      | Conformance | 178/178 | 165/178 | 178/178 |
+      | Transitive deps | 0 | 41 (ANTLR runtime, chrono, regex, nom, …) | 73 |
+      | Clean release build | 0.4 s | ~6 s | ~12 s |
+      | Panics under mutation | 0 | 0 | 0 |
+
+      The `cel` arm is **disqualified on correctness**: its parser
+      collapses runs of identical unary operators to a single application
+      (`- -x` → `-x`, a silent sign flip; `!!x` → `!x`), invisible to any
+      AST walk. Its 13 corpus deviations are structural, not fixable from
+      the AST: no parenthesis nodes (so the non-chaining comparison rule is
+      unenforceable and CEL's single-level relation grammar mis-groups
+      `a == b < c`), `SourceInfo` spans attached only to errors (subset
+      rejections cannot point at the offending token), lexical over-
+      acceptance (`0x1F`, `007`, `.5`, `//` comments, `r'raw'`)
+      indistinguishable in the AST, and ANTLR error text that actively
+      suggests forbidden syntax (`expecting {'[', '{', … NUM_UINT, BYTES,
+      'in'}`).
+
+      The `oxc` arm matched the hand parser 178/178 — but only after four
+      classes of wrapper lexical checks (string-aware comment pre-scan,
+      trailing-input check because `parse_expression()` does not verify it
+      consumed the source, `raw`-text re-validation of every number and
+      string literal, source-slice sniffing for legal-JS trailing commas).
+      That wrapper is ~450 LOC of exactly the kind of lexical code the
+      hand parser consists of, on top of 73 dependencies and oxc's 0.x
+      churn; operator-precise spans would need further work (node spans
+      cover whole expressions).
+
+      The hand-rolled arm is exact by construction, dependency-free, and
+      produced the best diagnostics (span-exact, with fix hints like
+      "`===` is not an operator here — use `==`"; "`=` … did you mean
+      `==`? (expressions cannot assign; use a `set` instruction)") in
+      766 spike LOC. Grammar details pinned during the spike are recorded
+      in the design doc's § Expressions (JSON-syntax number literals,
+      single non-chaining comparison level, the exact escape set, ASCII
+      identifiers, reserved-word field names, no comments / unary runs /
+      trailing commas). The spike corpus transfers as the seed conformance
+      suite for the implementation step below.
 - [ ] Implement the expression module with exhaustive unit tests (every
       operator, every namespace, every error case), property tests
       (parse ↔ pretty-print round-trip), and a fuzz target (the parser
@@ -281,7 +330,9 @@ committable on its own.
 - Numeric edge semantics to pin during Phase B: whether f64 overflow to
   ±Infinity raises at the producing operation or at `set` persistence
   (JSON cannot represent it), and string ordered-comparison semantics
-  (`'a' < 'b'` — lexicographic or a type error).
+  (`'a' < 'b'` — lexicographic or a type error). The spike pinned the
+  *literal* side (a number literal that overflows f64 is a parse error);
+  runtime overflow remains open for the implementation step.
 - Document versioning policy beyond `"version": 1` (pre-1.0 stance: breaking
   changes to the format are acceptable; the field exists so the engine can
   reject documents it doesn't understand with a clear error).

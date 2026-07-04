@@ -377,10 +377,45 @@ Expressions are strings in a small, pure, CEL-style language. They appear in
 - Division or remainder by zero raises. There is no implicit type
   coercion.
 
-The concrete implementation (reusing the `cel` crate's parser, an
-`oxc_parser` JS-expression subset, or a hand-rolled parser — the evaluator
-is hand-written in every arm; see the plan's Phase B) is a Phase B spike;
-the semantics above are the contract either way.
+**Grammar pins** (fixed by the Phase B parser spike, 2026-07-03):
+
+- **Number literals use JSON number syntax, unsigned** (`-` is the unary
+  operator): a leading digit is required (`0.5`, not `.5`), digits must
+  follow the decimal point (`5.0`, not `5.`), exponents are allowed
+  (`1.5e-3`), and leading zeros, hex/octal/binary forms, `_` separators,
+  and bigint suffixes are rejected. A literal that overflows f64 is a
+  parse error.
+- **Strings** are `'…'` or `"…"` (single quotes are the ergonomic choice
+  inside JSON documents) with exactly the escapes
+  `\\ \' \" \n \r \t \uXXXX`; raw newlines and any other escape are
+  errors.
+- **Identifiers** (namespace roots and `.`-fields) are ASCII
+  `[A-Za-z_][A-Za-z0-9_]*`. `null` / `true` / `false` are reserved words
+  and cannot be field names — use `['null']` indexing for such keys.
+  Other keys (unicode, `$`, spaces) are reachable the same way.
+- **Comparison and equality operators form one non-chaining precedence
+  level**: `a < b < c` and `a == b < c` are parse errors ("comparison
+  operators cannot be chained"); parenthesize explicitly. Rationale: CEL
+  groups `a == b < c` as `(a == b) < c` while JavaScript groups it as
+  `a == (b < c)` — the format refuses the ambiguity instead of inheriting
+  either convention.
+- **Precedence** (tightest first): postfix (`.` `[]` call) → unary
+  (`!`, `-`) → `* / %` → `+ -` → comparisons (non-chaining) → `&&` →
+  `||` → `?:` (right-associative).
+- **No comments**, no unary `+`, no `--`/`++` (write `-(-x)` for double
+  negation), no trailing commas in argument lists, and calls only on bare
+  built-in function names (no method-call syntax).
+- `min` / `max` take two or more arguments; every other function's arity
+  is fixed at its signature.
+
+The implementation is a **hand-rolled lexer + Pratt parser with a
+hand-written evaluator** (zero dependencies). The Phase B spike compared
+this against reusing the `cel` crate's parser and an `oxc_parser`
+JS-expression subset on a 178-case conformance corpus: the cel parser
+silently collapses unary-operator runs (`- -x` → `-x`) and cannot enforce
+the pins above from its AST; the oxc subset can, but only with wrapper
+lexical checks approximating the hand lexer on top of 73 dependencies.
+See the plan's Phase B spike outcome for the full evidence.
 
 ## Blackboard and Persistence
 
