@@ -26,18 +26,24 @@ const KEY_RE = /^(ac|cas)\/[0-9a-fA-F]+$/;
 // constraint is TOUCH_AFTER + the longest read gap of a live object < the
 // lifecycle window (7 days); the nightly full build of main reads the entire
 // //... action-cache set daily, so 2 days leaves wide margin. Known residue,
-// both backstopped by Bazel 9's default eviction retries (rewind + rebuild):
-//  - blobs a hit-heavy build never GETs (build-without-the-bytes skips most
-//    intermediate downloads) are not touched and still age out;
-//  - a touch can race a concurrent push-to-main PUT of the same /ac key and
-//    resurrect the just-replaced entry (both are valid results; harmless).
+// backstopped by Bazel 9's default eviction retries (rewind + rebuild): blobs
+// a hit-heavy build never GETs (build-without-the-bytes skips most
+// intermediate downloads) are not touched and still age out.
 const TOUCH_AFTER_MS = 2 * 24 * 60 * 60 * 1000;
 
-async function touch(env, key) {
+async function touch(env, key, seenUploadedMs) {
   // Fresh get(): the client response consumes its own body stream. put()
   // accepts the R2ObjectBody stream directly (its length is known).
   const obj = await env.CACHE.get(key);
-  if (obj) await env.CACHE.put(key, obj.body);
+  // Gone, or already refreshed/replaced since the GET that scheduled this
+  // touch (a sibling touch from a GET burst on the same stale key, or a real
+  // push-to-main PUT) -> nothing to do. Collapses duplicate touches to one
+  // Class A write and keeps a touch from resurrecting a replaced entry.
+  if (!obj || obj.uploaded.getTime() !== seenUploadedMs) return;
+  // The conditional write closes the remaining get->put window: if anything
+  // replaced the object in between, the etag no longer matches and R2 drops
+  // the touch (put resolves null; fine — the object is fresh either way).
+  await env.CACHE.put(key, obj.body, { onlyIf: { etagMatches: obj.etag } });
 }
 
 export default {
@@ -57,7 +63,7 @@ export default {
         const obj = await env.CACHE.get(key);
         if (!obj) return new Response(null, { status: 404 });
         if (Date.now() - obj.uploaded.getTime() > TOUCH_AFTER_MS) {
-          ctx.waitUntil(touch(env, key));
+          ctx.waitUntil(touch(env, key, obj.uploaded.getTime()));
         }
         return new Response(obj.body, { status: 200 });
       }
