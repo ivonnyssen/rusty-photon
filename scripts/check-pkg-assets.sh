@@ -7,6 +7,15 @@ set -eu
 fail=0
 err() { echo "check-pkg-assets: $*" >&2; fail=1; }
 
+# Print the body of one TOML table (from its [header] to the next [header]),
+# so key checks are position-independent within the section.
+toml_section() { # $1=file $2=exact table name
+    awk -v want="[$2]" '
+        /^\[/ { in_section = ($0 == want); next }
+        in_section { print }
+    ' "$1"
+}
+
 [ -f packaging/postinst.common ] || { echo "check-pkg-assets: run from the repo root" >&2; exit 2; }
 
 for pkgdir in services/*/pkg; do
@@ -33,11 +42,11 @@ for pkgdir in services/*/pkg; do
             || err "$svc: pkg/$s differs from packaging/$s.common"
     done
 
-    grep -A 2 '^\[package\.metadata\.deb\]' "$toml" | grep -q "name = \"$name\"" \
+    toml_section "$toml" "package.metadata.deb" | grep -q "^name = \"$name\"" \
         || err "$svc: [package.metadata.deb] name must be \"$name\""
-    grep -q "unit-name = \"$name\"" "$toml" \
+    toml_section "$toml" "package.metadata.deb.systemd-units" | grep -q "^unit-name = \"$name\"" \
         || err "$svc: [package.metadata.deb.systemd-units] unit-name must be \"$name\""
-    grep -A 2 '^\[package\.metadata\.generate-rpm\]' "$toml" | grep -q "name = \"$name\"" \
+    toml_section "$toml" "package.metadata.generate-rpm" | grep -q "^name = \"$name\"" \
         || err "$svc: [package.metadata.generate-rpm] name must be \"$name\""
 done
 

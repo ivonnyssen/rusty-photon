@@ -98,6 +98,11 @@ impl Default for Config {
                         pattern: "OPEN".to_string(),
                         safe: false,
                     },
+                    ParsingRule {
+                        rule_type: RuleType::Regex,
+                        pattern: r"Status:\s*(SAFE|OK)".to_string(),
+                        safe: true,
+                    },
                 ],
                 case_sensitive: false,
             },

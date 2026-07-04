@@ -210,7 +210,9 @@ udevadm trigger || true` stanza — the one sanctioned variant, checked by
 
 RPM mirrors this via `post_install_script` / `pre_uninstall_script` /
 `post_uninstall_script` (plain `systemctl` calls — cargo-generate-rpm does
-not process rpm macros). Camera packages additionally
+not process rpm macros). rpm has **no purge lifecycle**: erase preserves the
+runtime-created config and state (parity with `dpkg remove`); removing them
+is a documented manual step in `docs/packaging.md`. Camera packages additionally
 `getent group plugdev >/dev/null || groupadd -r plugdev` (the group is not
 standard on RPM distros).
 
