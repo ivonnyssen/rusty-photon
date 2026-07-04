@@ -2,9 +2,9 @@
 
 ## Status
 
-Accepted (2026-07-04); implemented by
-[`docs/plans/service-packaging.md`](../plans/service-packaging.md) (PR-4 /
-PR-5). Resolves the redistribution question left open by
+Accepted (2026-07-04); implementation planned in phases PR-4 / PR-5 of
+[`docs/plans/service-packaging.md`](../plans/service-packaging.md).
+Resolves the redistribution question left open by
 [ADR-009](009-vendor-qhyccd-rs.md).
 
 ## Context

@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted (2026-07-04); implemented by
+Accepted (2026-07-04); implementation tracked by
 [`docs/plans/service-packaging.md`](../plans/service-packaging.md).
 Supersedes the per-service packaging decisions embodied in
 [`docs/plans/archive/filemonitor-packaging.md`](../plans/archive/filemonitor-packaging.md)
