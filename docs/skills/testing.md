@@ -638,12 +638,17 @@ issue #143 is the specific case we already hit; the fix generalises to
 every device class.
 
 The pattern is to call `OmniSimHandle::reset_all_devices()` from a
-cucumber `before(scenario)` hook. The helper issues parallel
+cucumber `before(scenario)` hook. The helper issues sequential
 `PUT /simulator/v1/{class}/{n}/restart` requests to OmniSim's private
 restart endpoint for every class our suites touch (`telescope`,
 `camera`, `filterwheel`, `focuser`, `covercalibrator`); see
-`crates/bdd-infra/src/rp_harness/omnisim.rs`. Total per-scenario
-overhead is one localhost round-trip. Before the singleton has been
+`crates/bdd-infra/src/rp_harness/omnisim.rs`. Each PUT also takes a
+process-wide mutex, so hooks of concurrently-running scenarios never
+have more than one restart in flight — OmniSim's restart handler
+mutates unsynchronised static state, and concurrent restarts have
+corrupted its device list (#171) and deadlocked it outright (#431).
+Total per-scenario overhead is five localhost round-trips
+(~10-25 ms). Before the singleton has been
 initialised the helper falls back to the default OmniSim base URL
 (`http://127.0.0.1:32323`), so a pre-existing OmniSim from a prior
 dev session is reset before scenario 1 reuses it; if no OmniSim is
@@ -677,11 +682,16 @@ scenario is queued, so tagging every OmniSim-touching feature with
 `services/rp/tests/features/*.feature` and
 `services/calibrator-flats/tests/features/*.feature` for the expected
 pattern: a single `@serial` tag on the line above `Feature:`. Adding
-a new feature that touches OmniSim? Tag it `@serial` too. (Other
-features in this repo are already tagged `@serial` for their own
-reasons — auth tests share an Argon2id keying constant, TLS / ACME
-tests touch shared cert directories — so don't take their tagging as
-evidence one way or the other about OmniSim.)
+a new feature that touches OmniSim? Tag it `@serial` too. (Some
+other features are tagged `@serial` for their own reasons — auth
+tests share an Argon2id keying constant — so don't take tagging as
+evidence one way or the other about OmniSim. The TLS / ACME features
+are deliberately untagged: their scenarios use per-scenario temp
+dirs and never touch OmniSim devices. Note cucumber refuses to
+drain Concurrent scenarios while `@serial` ones are queued, so all
+untagged scenarios launch simultaneously once the serial queue
+empties — their before-hooks fire as one burst, which is why the
+restart PUTs are serialized process-wide; see #431.)
 
 ---
 

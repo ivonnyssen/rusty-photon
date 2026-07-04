@@ -244,7 +244,14 @@ Scenarios with `@serial` (on scenario, rule, or feature level) run sequentially.
   `reset_filter_wheel` / `reset_focuser` /
   `reset_cover_calibrator` each wrap the matching
   `/simulator/v1/{class}/0/restart` endpoint, and
-  `reset_all_devices` issues them in parallel.
+  `reset_all_devices` issues them sequentially. Every restart PUT
+  additionally takes a process-wide mutex, so at most one restart is
+  in flight per test process regardless of how many scenario hooks
+  run concurrently — OmniSim's restart handler mutates
+  unsynchronised static state, and concurrent restarts have both
+  corrupted its device list (#171) and deadlocked the simulator
+  outright (#431, the end-of-run burst of non-`@serial` scenarios
+  on the Pi nightly).
 
 - `services/rp/tests/bdd.rs` and
   `services/calibrator-flats/tests/bdd.rs` — the cucumber
