@@ -4699,6 +4699,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "session-runner"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "humantime",
+ "proptest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "sha2"
 version = "0.10.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
