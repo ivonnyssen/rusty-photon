@@ -203,7 +203,7 @@ committable on its own.
       error-message battery, a 30 000-input mutation robustness run, and
       footprint measurement. Results:
 
-      | | hand-rolled | `cel` 0.14 parser | `oxc_parser` 0.138 subset |
+      | Criterion | hand-rolled | `cel` 0.14 parser | `oxc_parser` 0.138 subset |
       |---|---|---|---|
       | Conformance | 178/178 | 165/178 | 178/178 |
       | Transitive deps | 0 | 41 (ANTLR runtime, chrono, regex, nom, …) | 73 |

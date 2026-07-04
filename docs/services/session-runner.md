@@ -386,8 +386,9 @@ Expressions are strings in a small, pure, CEL-style language. They appear in
   and bigint suffixes are rejected. A literal that overflows f64 is a
   parse error.
 - **Strings** are `'…'` or `"…"` (single quotes are the ergonomic choice
-  inside JSON documents) with exactly the escapes `\\ \' \" \n \r \t
-  \uXXXX`; raw newlines and any other escape are errors.
+  inside JSON documents) with exactly the escapes
+  `\\ \' \" \n \r \t \uXXXX`; raw newlines and any other escape are
+  errors.
 - **Identifiers** (namespace roots and `.`-fields) are ASCII
   `[A-Za-z_][A-Za-z0-9_]*`. `null` / `true` / `false` are reserved words
   and cannot be field names — use `['null']` indexing for such keys.
