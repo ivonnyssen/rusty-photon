@@ -243,10 +243,27 @@ committable on its own.
       identifiers, reserved-word field names, no comments / unary runs /
       trailing commas). The spike corpus transfers as the seed conformance
       suite for the implementation step below.
-- [ ] Implement the expression module with exhaustive unit tests (every
+- [x] Implement the expression module with exhaustive unit tests (every
       operator, every namespace, every error case), property tests
       (parse ↔ pretty-print round-trip), and a fuzz target (the parser
       must never panic on operator-authored input).
+
+      **Done (2026-07-04):** `services/session-runner/src/expr/` — the
+      spike's hand parser lifted and made panic-free, plus the hand-written
+      strict evaluator over `serde_json::Value` with the engine clock
+      injected (`EvalContext.now`). The spike's 178-case corpus transferred
+      verbatim as the conformance suite; ~90 unit tests cover every
+      operator/function/namespace/error class; proptest properties cover
+      the print↔parse round-trip and no-panic totality; the cargo-fuzz
+      target lives in `services/session-runner/fuzz/` (standalone
+      workspace, `cargo +nightly fuzz run expr_parse`). Fuzzing immediately
+      found unbounded parser recursion (deep `((((…` → stack overflow) that
+      the property tests could not — fixed with a 64-level nesting cap and
+      regression tests; a follow-up 5.9M-run session found nothing else.
+      The evaluation pins this step fixed (runtime overflow raises at the
+      producing operation, ordered comparisons are numbers-only, no
+      truthiness, total path traversal) are recorded in the design doc's
+      § Expressions.
 
 ### Phase C — Engine core + `calibrator-flats` port (the equivalence proof)
 
@@ -327,12 +344,12 @@ committable on its own.
   exists.
 - Exact expression function set beyond the v1 list in the design doc —
   grows with worked examples, gated by the purity rules.
-- Numeric edge semantics to pin during Phase B: whether f64 overflow to
-  ±Infinity raises at the producing operation or at `set` persistence
-  (JSON cannot represent it), and string ordered-comparison semantics
-  (`'a' < 'b'` — lexicographic or a type error). The spike pinned the
-  *literal* side (a number literal that overflows f64 is a parse error);
-  runtime overflow remains open for the implementation step.
+- ~~Numeric edge semantics to pin during Phase B~~ — resolved by the
+  Phase B implementation step (2026-07-04): runtime f64 overflow raises at
+  the **producing operation** (so every number in the system stays finite
+  and `set` can always persist), and string ordered comparison is a **type
+  error** (`'a' < 'b'` raises; `==`/`!=` are the string comparisons). Both
+  recorded as evaluation pins in the design doc's § Expressions.
 - Document versioning policy beyond `"version": 1` (pre-1.0 stance: breaking
   changes to the format are acceptable; the field exists so the engine can
   reject documents it doesn't understand with a clear error).

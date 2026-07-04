@@ -407,15 +407,62 @@ Expressions are strings in a small, pure, CEL-style language. They appear in
   built-in function names (no method-call syntax).
 - `min` / `max` take two or more arguments; every other function's arity
   is fixed at its signature.
+- **Nesting depth is capped at 64 levels** (parentheses, unary runs,
+  argument lists, ternary branches). No legitimate expression comes near
+  this; without the cap, adversarially deep input overflows the parser
+  stack (found by the fuzz target).
 
-The implementation is a **hand-rolled lexer + Pratt parser with a
-hand-written evaluator** (zero dependencies). The Phase B spike compared
-this against reusing the `cel` crate's parser and an `oxc_parser`
-JS-expression subset on a 178-case conformance corpus: the cel parser
-silently collapses unary-operator runs (`- -x` → `-x`) and cannot enforce
-the pins above from its AST; the oxc subset can, but only with wrapper
-lexical checks approximating the hand lexer on top of 73 dependencies.
-See the plan's Phase B spike outcome for the full evidence.
+**Evaluation pins** (fixed by the Phase B implementation, 2026-07-04):
+
+- **Path traversal is total** — it never raises. Member/index access
+  through `null`, a missing key, an out-of-range / negative / non-integer
+  array index, a non-string object key, or a value of the wrong shape
+  yields `null`. `has(path)` is true iff the path resolves to non-null
+  (an explicit JSON `null` value counts as absent). The loudness comes
+  when the `null` reaches an operator or function, per the null rule
+  above.
+- **Arithmetic and ordered comparisons are numbers-only.** `+` does not
+  concatenate strings; `< <= > >=` on strings is a type error (string
+  ordering is deliberately undefined — `==` / `!=` are the string
+  comparisons).
+- **Runtime overflow raises at the producing operation**: any `+ - * / %`
+  result outside the finite f64 range is an evaluation error there (not
+  at `set` persistence). Together with finite literals, JSON-sourced
+  values, and the division/remainder-by-zero rule this makes ±Infinity
+  and NaN unrepresentable — every number in the system is finite.
+- **No truthiness.** `&&` / `||` / `!` and the `?:` condition require
+  booleans. `&&` / `||` short-circuit left to right and `?:` evaluates
+  only the taken branch — this is what makes
+  `has(session.x) && session.x > 0` a sound guard.
+- **Equality is deep and total.** `==` / `!=` accept any two values:
+  structural for arrays/objects, numbers by numeric value regardless of
+  JSON representation (a tool result's integer `5` equals the literal
+  `5`), cross-type comparison is `false`, never an error.
+- `%` is the f64 remainder (sign follows the dividend); `round()` rounds
+  half away from zero; `clamp(x, lo, hi)` raises if `lo > hi`;
+  `humantime(n)` requires a non-negative in-range number;
+  `seconds_until(s)` requires an RFC 3339 string and is measured against
+  the engine clock injected into the evaluation context (never the wall
+  clock directly), so evaluation stays deterministic and testable.
+
+The implementation (`src/expr/`) is a **hand-rolled lexer + Pratt parser
+with a hand-written evaluator** — the parser is dependency-free; the
+evaluator sits on the workspace's `serde_json` (values), `humantime`
+(`seconds`/`humantime`), and `chrono` (`seconds_until`). The Phase B
+spike compared this against reusing the `cel` crate's parser and an
+`oxc_parser` JS-expression subset on a 178-case conformance corpus: the
+cel parser silently collapses unary-operator runs (`- -x` → `-x`) and
+cannot enforce the pins above from its AST; the oxc subset can, but only
+with wrapper lexical checks approximating the hand lexer on top of 73
+dependencies. See the plan's Phase B spike outcome for the full
+evidence. The corpus ships as the module's conformance suite, alongside
+proptest round-trip/no-panic properties and a cargo-fuzz target
+(`services/session-runner/fuzz/`, standalone workspace, run with
+`cargo +nightly fuzz run expr_parse`). Parse-time errors (lexing,
+parsing, static checks: namespace roots, known functions and arities,
+`has()` path arguments) and evaluation errors share one serializable
+error type carrying a byte span into the expression source, for mapping
+to JSON-Pointer locations in `/validate` responses.
 
 ## Blackboard and Persistence
 

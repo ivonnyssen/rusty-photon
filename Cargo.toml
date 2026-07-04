@@ -27,6 +27,7 @@ members = [
   "services/rp",
   "services/plate-solver",
   "services/sentinel",
+  "services/session-runner",
   "services/sky-survey-camera",
   "services/star-adventurer-gti",
   "services/ui-htmx",
