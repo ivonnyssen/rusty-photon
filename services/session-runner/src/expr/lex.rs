@@ -393,7 +393,14 @@ pub(crate) fn lex(src: &str) -> Result<Vec<Token>, ExprError> {
 }
 
 fn err_at(lx: &Lexer, start: usize, msg: impl Into<String>) -> ExprError {
-    let end = (start + 1).min(lx.src.len().max(start));
+    // Span the whole character at `start`: a fixed `start + 1` would split
+    // a multi-byte UTF-8 character, and such a span is not a valid slice
+    // boundary in the source (`&src[start..end]` would panic downstream).
+    let end = lx
+        .src
+        .get(start..)
+        .and_then(|rest| rest.chars().next())
+        .map_or(start, |c| start + c.len_utf8());
     ExprError::parse(msg, Span::new(start, end))
 }
 

@@ -385,6 +385,14 @@ fn run_tag(tag: &str) {
                         case.src, e.kind
                     ));
                 }
+                // Spans must be valid slice boundaries in the source —
+                // /validate consumers will slice with them.
+                if case.src.get(e.span.start..e.span.end).is_none() {
+                    failures.push(format!(
+                        "  {:?}: error span {}..{} is not a valid slice of the source",
+                        case.src, e.span.start, e.span.end
+                    ));
+                }
             }
         }
     }
@@ -642,6 +650,16 @@ fn test_error_serializes_with_span_and_kind() {
     assert!(v["span"]["start"].is_u64());
     assert!(v["span"]["end"].is_u64());
     assert!(v["message"].is_string());
+}
+
+#[test]
+fn test_error_span_covers_the_whole_utf8_char() {
+    // `é` occupies bytes 3..5; the span must cover the full character so
+    // it stays a valid slice boundary (a bare start+1 would split it).
+    let src = "café + 1";
+    let err = Expression::parse(src).unwrap_err();
+    assert_eq!((err.span.start, err.span.end), (3, 5));
+    assert_eq!(&src[err.span.start..err.span.end], "é");
 }
 
 #[test]

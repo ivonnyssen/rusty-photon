@@ -583,6 +583,25 @@ fn test_seconds_until_future_past_and_offset() {
 }
 
 #[test]
+fn test_seconds_until_fractional_seconds_keep_their_sign() {
+    // chrono's `TimeDelta::subsec_nanos()` is signed (unlike
+    // `std::time::Duration`'s), so a negative fractional delta keeps its
+    // sign and magnitude: num_seconds() + subsec_nanos()*1e-9 is exact.
+    assert_eq!(
+        eval_empty("seconds_until('2026-07-03T03:59:58.5Z')").unwrap(),
+        json!(-1.5)
+    );
+    assert_eq!(
+        eval_empty("seconds_until('2026-07-03T03:59:59.75Z')").unwrap(),
+        json!(-0.25)
+    );
+    assert_eq!(
+        eval_empty("seconds_until('2026-07-03T04:00:00.25Z')").unwrap(),
+        json!(0.25)
+    );
+}
+
+#[test]
 fn test_seconds_until_reads_the_blackboard() {
     let session = json!({"flip_at": "2026-07-03T04:10:00Z"});
     assert_eq!(
