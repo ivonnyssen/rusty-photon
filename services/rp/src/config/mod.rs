@@ -77,6 +77,19 @@ pub struct Config {
     pub server: ServerConfig,
 }
 
+/// Minimal runnable scaffold `rp` writes on first start when no config
+/// exists at the XDG default path: no equipment, default server, session
+/// data under the packaged unit's `StateDirectory`
+/// (`/var/lib/rusty-photon/rp/`). Must stay deserializable into
+/// [`Config`] — the packaged first-start contract depends on it.
+pub fn default_scaffold() -> serde_json::Value {
+    serde_json::json!({
+        "session": { "data_directory": "/var/lib/rusty-photon/rp/data" },
+        "equipment": {},
+        "server": {}
+    })
+}
+
 pub fn load_config(path: &Path) -> Result<Config> {
     let contents = std::fs::read_to_string(path).map_err(|e| {
         RpError::Config(format!(
@@ -117,6 +130,18 @@ pub(crate) mod test_support {
 mod tests {
     use super::test_support::MINIMAL_CONFIG_JSON;
     use super::*;
+
+    #[test]
+    fn default_scaffold_deserializes_into_config() {
+        let config: Config = serde_json::from_value(default_scaffold()).unwrap();
+        assert_eq!(
+            config.session.data_directory,
+            "/var/lib/rusty-photon/rp/data"
+        );
+        assert!(config.equipment.cameras.is_empty());
+        assert!(config.site.is_none());
+        assert_eq!(config.server.port, 11115);
+    }
 
     #[test]
     fn load_config_from_file() {

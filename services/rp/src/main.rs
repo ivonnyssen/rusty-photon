@@ -147,16 +147,10 @@ fn main() -> ServiceResult {
 }
 
 fn run_serve(config: Option<PathBuf>) -> ServiceResult {
-    // Minimal runnable scaffold (no equipment, default port), written on
-    // first start at the XDG default path only — an explicit `--config`
-    // naming a missing file stays a hard error. `session.data_directory`
-    // matches the packaged unit's StateDirectory.
-    let default_config = serde_json::json!({
-        "session": { "data_directory": "/var/lib/rusty-photon/rp/data" },
-        "equipment": {},
-        "server": {}
-    });
-    let config_path = rusty_photon_config::resolve_and_init("rp", config, &default_config)?;
+    // Self-creation applies only to the XDG default path — an explicit
+    // `--config` naming a missing file stays a hard error.
+    let config_path =
+        rusty_photon_config::resolve_and_init("rp", config, &rp::config::default_scaffold())?;
     ServiceRunner::new("rp").run(move |shutdown: Shutdown| async move {
         debug!(config_path = %config_path.display(), "loading configuration");
         let config = rp::config::load_config(&config_path)?;
