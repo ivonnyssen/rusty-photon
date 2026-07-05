@@ -72,6 +72,15 @@ for pkgdir in services/*/pkg; do
             ;;
     esac
 
+    # Camera packages ship their own udev rule (the postinst udev stanza
+    # reloads rules on install, so the rule file must actually be there).
+    case "$svc" in
+        qhy-camera)
+            [ -f "$pkgdir/90-rusty-photon-qhy.rules" ] \
+                || err "$svc: missing pkg/90-rusty-photon-qhy.rules"
+            ;;
+    esac
+
     toml_section "$toml" "package.metadata.deb" | grep -q "^name = \"$name\"" \
         || err "$svc: [package.metadata.deb] name must be \"$name\""
     toml_section "$toml" "package.metadata.deb.systemd-units" | grep -q "^unit-name = \"$name\"" \

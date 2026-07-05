@@ -1,0 +1,128 @@
+#!/bin/sh
+# rusty-photon-qhy-firmware-install — fetch the pinned QHYCCD SDK and
+# install the pieces a QHY camera needs at runtime. Per ADR-013 the SDK
+# is proprietary and never bundled in a package; this helper downloads
+# it from qhyccd.com at the operator's explicit request, verifies a
+# pinned sha256, and installs:
+#
+#   /lib/firmware/qhy/                  camera firmware images
+#   /etc/udev/rules.d/85-qhyccd.rules   QHYCCD's firmware-upload rules,
+#                                       RUN paths rewritten to the
+#                                       fxload installed below
+#   /usr/local/sbin/fxload              QHYCCD's FX2/FX3-capable fxload
+#
+# A cold-plugged QHY camera enumerates as a raw Cypress controller and
+# only becomes a camera after root uploads firmware into it; on Linux
+# the SDK delegates that to udev + fxload (its in-process upload entry
+# points are macOS/Android-only). Stock Debian fxload cannot program
+# FX3, so QHYCCD's build goes to /usr/local/sbin — never
+# /usr/sbin/fxload, which the Debian fxload package may own.
+#
+# The SDK's shared library, headers, and samples are NOT installed; the
+# driver links libqhyccd statically.
+#
+# Usage: rusty-photon-qhy-firmware-install [--force] [--root DIR]
+#   --force      reinstall even if everything is already installed
+#   --root DIR   install under DIR instead of / (container testing;
+#                skips the root requirement and the udev reload).
+#                `--root /` is normalized to a plain root install.
+
+set -eu
+
+VERSION="26.06.04"
+# QHY's download layout for >= 26.06.04: the directory is the version
+# with the dots dropped (YYMMDD).
+URL_BASE="https://www.qhyccd.com/file/repository/publish/SDK/260604"
+SHA256_X86_64="cbfcec159809e6984c5013a587fed88c892afae9d834019e820213f64616a308"
+SHA256_AARCH64="d28795977311fba1cb7a4fdc48bbd6d5f994716674b2154d9a860d1fdf2f5e0e"
+
+usage() {
+    echo "usage: rusty-photon-qhy-firmware-install [--force] [--root DIR]"
+}
+
+FORCE=0
+ROOT=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --force) FORCE=1 ;;
+        --root)
+            shift
+            [ $# -gt 0 ] || { echo "--root needs a directory" >&2; exit 2; }
+            ROOT="$1"
+            ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
+    esac
+    shift
+done
+
+# `--root /` is a real-root install: keep the root check and udev reload.
+[ "$ROOT" = "/" ] && ROOT=""
+
+if [ -z "$ROOT" ] && [ "$(id -u)" != 0 ]; then
+    echo "rusty-photon-qhy-firmware-install: must run as root (or use --root)" >&2
+    exit 1
+fi
+
+case "$(uname -m)" in
+    x86_64) FILE="sdk_linux64_${VERSION}.tar.gz" SHA256="$SHA256_X86_64" ;;
+    aarch64) FILE="sdk_linux_arm64_${VERSION}.tar.gz" SHA256="$SHA256_AARCH64" ;;
+    *)
+        echo "unsupported architecture $(uname -m) (QHYCCD publishes x86_64 and aarch64)" >&2
+        exit 1
+        ;;
+esac
+
+# Complete only when all three artifacts are present — a partial state
+# (e.g. firmware left behind by QHYCCD's own install.sh, or an
+# interrupted run) must proceed and converge on the full layout.
+if [ "$FORCE" != 1 ] \
+    && [ -d "$ROOT/lib/firmware/qhy" ] \
+    && [ -x "$ROOT/usr/local/sbin/fxload" ] \
+    && [ -f "$ROOT/etc/udev/rules.d/85-qhyccd.rules" ]; then
+    echo "firmware, fxload, and udev rules already installed; use --force to reinstall"
+    exit 0
+fi
+
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT INT TERM
+
+echo "Downloading QHYCCD SDK $VERSION ($FILE)..."
+if command -v curl > /dev/null 2>&1; then
+    curl -fsSL -o "$TMP/$FILE" "$URL_BASE/$FILE"
+elif command -v wget > /dev/null 2>&1; then
+    wget -q -O "$TMP/$FILE" "$URL_BASE/$FILE"
+else
+    echo "rusty-photon-qhy-firmware-install: needs curl or wget" >&2
+    exit 1
+fi
+
+if ! echo "$SHA256  $TMP/$FILE" | sha256sum -c --status -; then
+    echo "rusty-photon-qhy-firmware-install: sha256 mismatch for $FILE" >&2
+    echo "  expected: $SHA256" >&2
+    echo "  actual:   $(sha256sum "$TMP/$FILE" | cut -d' ' -f1)" >&2
+    exit 1
+fi
+echo "sha256 verified."
+
+tar -xzf "$TMP/$FILE" -C "$TMP"
+SRC="$TMP/${FILE%.tar.gz}"
+
+install -d -m 0755 "$ROOT/lib/firmware/qhy"
+install -m 0644 "$SRC"/lib/firmware/qhy/* "$ROOT/lib/firmware/qhy/"
+
+install -d -m 0755 "$ROOT/usr/local/sbin"
+install -m 0755 "$SRC/sbin/fxload" "$ROOT/usr/local/sbin/fxload"
+
+install -d -m 0755 "$ROOT/etc/udev/rules.d"
+sed 's|/sbin/fxload |/usr/local/sbin/fxload |g' \
+    "$SRC/etc/udev/rules.d/85-qhyccd.rules" > "$TMP/85-qhyccd.rules"
+install -m 0644 "$TMP/85-qhyccd.rules" "$ROOT/etc/udev/rules.d/85-qhyccd.rules"
+
+if [ -z "$ROOT" ] && command -v udevadm > /dev/null 2>&1; then
+    udevadm control --reload-rules || true
+    udevadm trigger || true
+fi
+
+echo "QHYCCD firmware $VERSION installed. Unplug and replug the camera:"
+echo "udev uploads firmware to cold cameras on the next plug-in."

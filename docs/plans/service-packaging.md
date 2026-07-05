@@ -25,7 +25,7 @@ while keeping host-level setup anyway (see ADR-012 Context).
 | PR-1 | This plan + ADR-012 + ADR-013 + archive old plan | Merged | #435 |
 | PR-2 | Migrate filemonitor to the new pattern (template proof) + filemonitor/sentinel XDG fix + `check-pkg-assets.sh` | Merged | #438 |
 | PR-3 | 11 pure-Rust daemons + `phd2-guider` CLI package | Merged | #441 |
-| PR-4 | `qhy-camera` package + firmware downloader helper | Pending | |
+| PR-4 | `qhy-camera` package + firmware downloader helper | In progress | `feature/qhy-camera-packaging` |
 | PR-5 | `zwo-camera` package with bundled MIT SDK blobs | Pending | |
 | PR-6 | `build-packages.sh` + `verify-packages.sh` + `docs/packaging.md`; first on-rig install | Pending | |
 | PR-7 | `release.yml` generalization (x86_64 matrix, Homebrew rename) | Deferred | |
@@ -95,7 +95,7 @@ services/<svc>/pkg/
   postrm                 # copy of packaging/postrm.common
 ```
 
-Extras: `services/qhy-camera/pkg/` adds `70-rusty-photon-qhy.rules` +
+Extras: `services/qhy-camera/pkg/` adds `90-rusty-photon-qhy.rules` +
 `rusty-photon-qhy-firmware-install`; `services/zwo-camera/pkg/` adds
 `70-rusty-photon-zwo.rules` + a gitignored `lib/` dir into which the build
 script stages the ZWO blobs + license before `cargo deb` runs.
@@ -277,12 +277,15 @@ startup error — and their units are `ConditionPathExists`-gated, as is
 - `libqhyccd.a` is linked **statically** → runtime NEEDED is only
   `libusb-1.0.so.0` + `libstdc++.so.6`; deb `depends = "$auto"` resolves them
   via dpkg-shlibdeps.
-- Own-authored udev rule `70-rusty-photon-qhy.rules` →
-  `/usr/lib/udev/rules.d/` (never `/etc/udev/rules.d` from a package):
+- Own-authored udev rule `90-rusty-photon-qhy.rules` →
+  `/usr/lib/udev/rules.d/` (never `/etc/udev/rules.d` from a package). It
+  deliberately sorts **after** the SDK's `85-qhyccd.rules` so its
+  `GROUP="plugdev", MODE="0660"` tightens the SDK rules' trailing blanket
+  `MODE="0666"`:
 
   ```
   SUBSYSTEMS=="usb", ATTRS{idVendor}=="1618", GROUP="plugdev", MODE="0660"
-  ACTION=="add", SUBSYSTEMS=="usb", ATTRS{idVendor}=="1618", RUN+="/bin/sh -c 'echo 200 > /sys/module/usbcore/parameters/usbfs_memory_mb'"
+  ACTION=="add", SUBSYSTEMS=="usb", ATTRS{idVendor}=="1618", RUN+="/bin/sh -c 'echo 200 > /sys/module/usbcore/parameters/usbfs_memory_mb || true'"
   ```
 
 - `/usr/sbin/rusty-photon-qhy-firmware-install` (root-only, run manually;
@@ -290,10 +293,28 @@ startup error — and their units are `ConditionPathExists`-gated, as is
   fail): downloads the QHYCCD SDK pinned at **26.06.04** from
   `https://www.qhyccd.com/file/repository/publish/SDK/260604/` —
   `sdk_linux_arm64_26.06.04.tar.gz` (aarch64) or
-  `sdk_linux64_26.06.04.tar.gz` (x86_64) — verifies a pinned sha256, and
-  installs **only the firmware files** to `/lib/firmware/qhy`. It installs
-  neither `libqhyccd.so` (we link statically) nor the SDK's udev rules (we
-  ship our own). `--force` re-installs.
+  `sdk_linux64_26.06.04.tar.gz` (x86_64) — verifies the pinned sha256
+  (pins live in the helper; the URL-dir scheme for >= 26.06.04 is the
+  dotless YYMMDD form, matching `qhyccd-sdk-install@v4`), and installs the
+  pieces a camera needs at runtime: firmware images → `/lib/firmware/qhy`,
+  the SDK's `85-qhyccd.rules` → `/etc/udev/rules.d/` with its `RUN` paths
+  rewritten, and QHYCCD's FX2/FX3-capable `fxload` → `/usr/local/sbin/fxload`
+  (never `/usr/sbin/fxload`, which Debian's FX2-only `fxload` package may
+  own). It installs neither `libqhyccd.so` (we link statically) nor
+  headers/samples. `--force` re-installs; `--root DIR` supports container
+  testing.
+
+  **PR-4 finding — the helper installs the SDK udev rules + fxload after
+  all** (this plan originally said firmware files only): on Linux the SDK
+  performs **no in-process firmware upload** — its only firmware-path entry
+  points (`OSXInitQHYCCDFirmware*`) are macOS/Android, and `libqhyccd.a`
+  embeds firmware *basenames* but no search directory. A cold-plugged
+  camera enumerates as a raw Cypress controller (VID `1618` with a raw
+  per-model PID; the legacy Cypress VID `04b4` appears only in the bare
+  FX2 dev-board rule) and receives firmware solely via the SDK's udev
+  `RUN` rules exec'ing fxload as root out of `/lib/firmware/qhy`. Without
+  those rules and QHYCCD's own fxload build (stock Debian fxload cannot
+  program FX3), a factory-fresh camera never becomes usable.
 
 ### zwo-camera (PR-5)
 
@@ -385,14 +406,19 @@ Runs on Debian arm64 (the rig) and x86_64 dev boxes:
 
 ## Flagged unknowns (resolve during PR-2/PR-4)
 
-- [ ] Firmware directory the static libqhyccd expects at runtime
-      (`strings libqhyccd.a | grep -i firmware`); adjust the helper's
-      destination if not `/lib/firmware/qhy`.
-- [ ] Whether libqhyccd uploads firmware in-process via libusb (firmware
-      files + our udev rule suffice) or depends on the SDK's udev/fxload
-      rules for cold devices; whether the rig's camera cold-enumerates under
-      the Cypress VID `04b4` (add a second rule line if so).
-- [ ] sha256 pins for both SDK archives (capture on first download).
+- [x] Firmware directory: confirmed `/lib/firmware/qhy` (every fxload `RUN`
+      line in the SDK's udev rules hardcodes it, and the 26.06.04 archive
+      ships `lib/firmware/qhy/**`; `libqhyccd.a` itself embeds only
+      basenames).
+- [x] In-process vs fxload: on Linux, firmware upload is **udev + fxload
+      only** (the SDK's in-process entry points are macOS/Android-only), so
+      the helper also installs the SDK's `85-qhyccd.rules` (RUN paths
+      rewritten) and QHYCCD's fxload — see the PR-4 finding above. Cold
+      cameras enumerate at VID `1618` with raw per-model PIDs; `04b4` is
+      only the bare FX2 dev board, already covered by the SDK rules. The
+      end-to-end cold-plug check stays an on-rig item (PR-6).
+- [x] sha256 pins for both 26.06.04 archives captured in
+      `rusty-photon-qhy-firmware-install` (single source of truth).
 - [ ] `cargo-generate-rpm` support for a package `name` override (if
       missing: document and keep rpm crate-named until upstream supports it).
 - [ ] `dirs`-crate home resolution under systemd `User=` without `$HOME`

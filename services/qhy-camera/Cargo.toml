@@ -50,6 +50,59 @@ parking_lot = { workspace = true }
 [package.metadata.conformu]
 command = "cargo test -p qhy-camera --features conformu --test conformu_integration -- --nocapture"
 
+[package.metadata.deb]
+name = "rusty-photon-qhy-camera"
+maintainer = "Igor von Nyssen <igor@vonnyssen.com>"
+extended-description = "ASCOM Alpaca Camera and FilterWheel driver for QHYCCD cameras. QHYCCD's proprietary firmware is not bundled: run rusty-photon-qhy-firmware-install once as root after installation."
+section = "science"
+priority = "optional"
+# $auto = dpkg-shlibdeps (needs a Debian build host); adduser is used by postinst.
+depends = "$auto, adduser"
+assets = [
+    ["target/release/qhy-camera", "usr/bin/rusty-photon-qhy-camera", "755"],
+    ["pkg/90-rusty-photon-qhy.rules", "usr/lib/udev/rules.d/90-rusty-photon-qhy.rules", "644"],
+    ["pkg/rusty-photon-qhy-firmware-install", "usr/sbin/rusty-photon-qhy-firmware-install", "755"],
+]
+maintainer-scripts = "pkg/"
+
+[package.metadata.deb.systemd-units]
+unit-name = "rusty-photon-qhy-camera"
+unit-scripts = "pkg/"
+enable = true
+start = true
+restart-after-upgrade = true
+
+[package.metadata.generate-rpm]
+name = "rusty-photon-qhy-camera"
+summary = "ASCOM Alpaca Camera and FilterWheel driver for QHYCCD cameras"
+license = "MIT OR Apache-2.0"
+assets = [
+    { source = "target/release/qhy-camera", dest = "/usr/bin/rusty-photon-qhy-camera", mode = "755" },
+    { source = "pkg/rusty-photon-qhy-camera.service", dest = "/usr/lib/systemd/system/rusty-photon-qhy-camera.service", mode = "644" },
+    { source = "pkg/90-rusty-photon-qhy.rules", dest = "/usr/lib/udev/rules.d/90-rusty-photon-qhy.rules", mode = "644" },
+    { source = "pkg/rusty-photon-qhy-firmware-install", dest = "/usr/sbin/rusty-photon-qhy-firmware-install", mode = "755" },
+]
+post_install_script = """
+getent passwd rusty-photon > /dev/null || useradd -r -d /var/lib/rusty-photon -s /sbin/nologin rusty-photon
+getent group plugdev > /dev/null || groupadd -r plugdev
+install -d -m 0750 -o rusty-photon -g rusty-photon /var/lib/rusty-photon /var/lib/rusty-photon/.config /var/lib/rusty-photon/.config/rusty-photon
+[ -e /etc/rusty-photon ] || ln -s /var/lib/rusty-photon/.config/rusty-photon /etc/rusty-photon
+systemctl daemon-reload
+systemctl enable rusty-photon-qhy-camera.service
+udevadm control --reload-rules || true
+udevadm trigger || true
+echo "rusty-photon-qhy-camera: camera firmware is not bundled."
+echo "Run '/usr/sbin/rusty-photon-qhy-firmware-install' once as root before first use."
+"""
+pre_uninstall_script = """
+systemctl stop rusty-photon-qhy-camera.service || true
+systemctl disable rusty-photon-qhy-camera.service || true
+"""
+# rpm has no purge lifecycle: erase preserves the runtime-created config and
+# state (removal is a documented manual step), matching dpkg remove-vs-purge.
+post_uninstall_script = "systemctl daemon-reload"
+require-sh = true
+
 [dev-dependencies]
 # ascom-alpaca's `client` feature is used only by the BDD harness
 # (tests/bdd/world.rs), so keep it out of the production server binary — it
