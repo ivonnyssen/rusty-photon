@@ -87,7 +87,12 @@ else
     exit 1
 fi
 
-echo "$SHA256  $TMP/$FILE" | sha256sum -c - > /dev/null
+if ! echo "$SHA256  $TMP/$FILE" | sha256sum -c --status -; then
+    echo "rusty-photon-qhy-firmware-install: sha256 mismatch for $FILE" >&2
+    echo "  expected: $SHA256" >&2
+    echo "  actual:   $(sha256sum "$TMP/$FILE" | cut -d' ' -f1)" >&2
+    exit 1
+fi
 echo "sha256 verified."
 
 tar -xzf "$TMP/$FILE" -C "$TMP"
