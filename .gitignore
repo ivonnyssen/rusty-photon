@@ -5,6 +5,11 @@ lcov.info
 .vscode
 .env
 
+# ZWO MIT SDK blobs staged there by scripts/build-packages.sh right before
+# `cargo deb` runs; downloaded from the pinned indi-3rdparty ref, never
+# committed (ADR-013).
+services/zwo-camera/pkg/lib/
+
 # Bazel
 # bazel-* are workspace symlinks at the repo root (bazel-bin, bazel-out, ...).
 # Anchored to root so it doesn't match e.g. docs/plans/archive/bazel-migration.md.
