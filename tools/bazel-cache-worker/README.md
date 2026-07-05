@@ -56,10 +56,26 @@ wrangler deploy
 
 ### Retention / eviction
 
-R2 has no built-in LRU, so set a **lifecycle rule** to bound growth: Cloudflare
-dashboard → R2 → `rusty-photon-bazel-cache` → Settings → Object lifecycle →
-**delete objects older than 30 days**. Cache entries are regenerable, so
-age-based eviction is safe and keeps storage in the free tier.
+R2 has no built-in LRU. Growth is bounded by an **object lifecycle rule**
+(Cloudflare dashboard → R2 → `rusty-photon-bazel-cache` → Settings → Object
+lifecycle), currently **delete objects older than 7 days**. On its own that
+rule would be an age bomb, not an LRU: R2 expires by *upload* time, and Bazel
+never re-uploads an entry that keeps getting cache hits, so every object would
+die a fixed time after it was last *built* — the stable core of the graph
+expiring en masse once per window, followed by a cold rebuild. (The nightly
+main build does not help here: an all-hit build uploads nothing.)
+
+The Worker therefore **touches on read**: a GET of an object older than 2 days
+re-puts it under the same key (in `ctx.waitUntil`, off the response path),
+resetting its lifecycle clock. Net effect: age expiry becomes effective LRU —
+anything read within the window survives, genuinely unused entries age out.
+The nightly full build reads the complete action-cache set daily, so live
+entries are touched well before the 7-day deadline. Cost bound: at most one
+Class A write per read object per 2 days (~$1–4/mo at this repo's scale).
+Residue: blobs a hit-heavy build never GETs (build-without-the-bytes skips
+most intermediate downloads) still age out; entries are regenerable and
+Bazel 9's default eviction retries rebuild through it. If the lifecycle
+window changes, keep `TOUCH_AFTER_MS` (src/cache.js) comfortably below it.
 
 ## Verify
 
