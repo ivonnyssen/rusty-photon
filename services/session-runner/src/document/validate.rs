@@ -13,9 +13,14 @@
 //! accepts passes the schema, everything the schema rejects this walk
 //! rejects — is enforced by the schema-agreement test suite.
 //!
-//! Recursion depth is bounded by the JSON itself: `serde_json` refuses
-//! input nested deeper than 128 levels, so a `Value` can never drive this
-//! walk into a stack overflow.
+//! Recursion depth is explicitly bounded: [`build`] rejects values
+//! nested deeper than [`MAX_NESTING`] (serde_json's own default parser
+//! limit) with a single issue *before* walking, measured iteratively so
+//! the check itself cannot recurse. Values arriving through
+//! `Document::parse` are already bounded by serde_json, but
+//! `Document::from_value` is public and can be handed an arbitrarily
+//! deep, programmatically built `Value` — without the gate that could
+//! overflow the walk's stack.
 
 use std::collections::BTreeMap;
 
@@ -47,13 +52,43 @@ const TREE: Scope = Scope {
     error_ok: false,
 };
 
+/// The maximum JSON nesting depth the walk accepts — serde_json's own
+/// default parser recursion limit, so no document that `serde_json`
+/// could parse is ever affected.
+const MAX_NESTING: usize = 128;
+
 pub(super) fn build(value: &Value) -> Result<Document, Vec<ValidationIssue>> {
+    if nesting_exceeds(value, MAX_NESTING) {
+        return Err(vec![ValidationIssue {
+            pointer: String::new(),
+            message: format!("document nesting exceeds {MAX_NESTING} levels"),
+            expr_span: None,
+        }]);
+    }
     let mut b = Builder::default();
     let doc = b.document(value);
     match doc {
         Some(doc) if b.issues.is_empty() => Ok(doc),
         _ => Err(b.issues),
     }
+}
+
+/// Whether `value` nests deeper than `limit` levels. Iterative (an
+/// explicit work stack), so the guard itself is safe on input the
+/// recursive walk could not survive.
+fn nesting_exceeds(value: &Value, limit: usize) -> bool {
+    let mut stack = vec![(value, 1usize)];
+    while let Some((v, depth)) = stack.pop() {
+        if depth > limit {
+            return true;
+        }
+        match v {
+            Value::Object(m) => stack.extend(m.values().map(|c| (c, depth + 1))),
+            Value::Array(a) => stack.extend(a.iter().map(|c| (c, depth + 1))),
+            _ => {}
+        }
+    }
+    false
 }
 
 /// Appends `key` to a JSON Pointer, escaping per RFC 6901.

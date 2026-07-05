@@ -67,6 +67,34 @@ fn test_json_syntax_error_is_a_single_whole_document_issue() {
 }
 
 #[test]
+fn test_arbitrarily_deep_values_are_gated_not_recursed() {
+    // `Document::from_value` is public: a programmatically built `Value`
+    // never went through serde_json's 128-level parser limit, so the
+    // walk gates nesting explicitly instead of recursing into it.
+    let mut v = json!(1);
+    for _ in 0..300 {
+        v = json!({ "sequence": [v] });
+    }
+    let issues = Document::from_value(&v).unwrap_err();
+    assert_eq!(issues.len(), 1);
+    assert_eq!(issues[0].pointer, "");
+    assert!(
+        issues[0].message.contains("nesting exceeds 128 levels"),
+        "{}",
+        issues[0].message
+    );
+
+    // Values arriving as text hit serde_json's own limit first.
+    let deep_text = format!("{}1{}", "[".repeat(300), "]".repeat(300));
+    let issues = Document::parse(&deep_text).unwrap_err();
+    assert!(
+        issues[0].message.contains("not valid JSON"),
+        "{}",
+        issues[0].message
+    );
+}
+
+#[test]
 fn test_unsupported_version_short_circuits_all_other_findings() {
     // The rest of this document is riddled with v1 errors, but a document
     // for another format version gets exactly one error and no v1 noise.
