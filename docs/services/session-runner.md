@@ -593,10 +593,11 @@ stops guiding, parks the mount, and terminates the plugin's MCP session
 (per `rp.md` § Safety). From the engine's perspective: the in-flight tool
 call fails with a terminated-session error. (MCP client pin: a call that
 *returns* with the MCP `is_error` flag is a tool failure — retryable and
-catchable; a call whose request fails at the transport/session level is
-the terminated-session error — never retried, never caught. Any other
-transport loss maps the same way, because the engine's response — persist,
-exit without completion, await re-invocation — is also the safest generic
+catchable; **any request-level failure** — transport loss *or* a JSON-RPC
+protocol error — is the terminated-session error, never retried, never
+caught. `rp` reports tool failures via `is_error` results, so a protocol
+error means `rp` itself is unhealthy, and the engine's response — persist,
+exit without completion, await re-invocation — is the safest generic
 recovery. Tool results arrive as one JSON text content block: no content
 is a `null` result; non-JSON content is a loud tool failure.) The engine
 then:

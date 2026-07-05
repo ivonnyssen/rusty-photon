@@ -40,6 +40,7 @@ pub fn resolve_workflow_path(workflows_dir: &Path, name: &str) -> Result<PathBuf
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;

@@ -1,3 +1,4 @@
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 //! `session-runner` — generic imaging-workflow orchestrator (an `rp`
 //! orchestrator plugin).
 //!

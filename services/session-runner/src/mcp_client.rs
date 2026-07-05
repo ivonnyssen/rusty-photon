@@ -3,13 +3,15 @@
 //!
 //! Error mapping (pinned in `docs/services/session-runner.md` § Safety
 //! Behavior): a call that *returns* with `is_error` is a tool failure —
-//! retryable and catchable ([`ToolCallError::Failed`]). A call that fails
-//! at the **transport/session level** (the request itself errors) is
-//! treated as a terminated MCP session ([`ToolCallError::SessionTerminated`])
-//! — `rp` tearing the session down on a safety transition presents exactly
-//! this way, and the engine's response (best-effort `finally`, persist,
-//! exit without completion, await re-invocation) is also the safest
-//! recovery from any other transport loss.
+//! retryable and catchable ([`ToolCallError::Failed`]). Any
+//! **request-level failure** — transport loss or a JSON-RPC protocol
+//! error — is treated as a terminated MCP session
+//! ([`ToolCallError::SessionTerminated`]): `rp` tearing the session down
+//! on a safety transition presents exactly this way, `rp` reports tool
+//! failures via `is_error` results (so a protocol error means `rp` itself
+//! is unhealthy), and the engine's response (best-effort `finally`,
+//! persist, exit without completion, await re-invocation) is the safest
+//! generic recovery.
 
 use rmcp::model::CallToolRequestParams;
 use rmcp::service::RunningService;
