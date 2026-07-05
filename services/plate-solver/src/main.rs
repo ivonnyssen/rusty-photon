@@ -1,9 +1,10 @@
 //! plate-solver service binary.
 //!
-//! Reads a JSON config file passed via `--config`, validates it, builds
-//! the HTTP server, prints `bound_addr=<host>:<port>` to stdout (so
-//! `bdd-infra::ServiceHandle` can discover the bound port), and serves
-//! until SIGTERM / Ctrl-C.
+//! Reads a JSON config file (`--config`, or when omitted the per-user
+//! platform config path — `~/.config/rusty-photon/plate-solver.json` on
+//! Linux), validates it, builds the HTTP server, prints
+//! `bound_addr=<host>:<port>` to stdout (so `bdd-infra::ServiceHandle`
+//! can discover the bound port), and serves until SIGTERM / Ctrl-C.
 
 use clap::Parser;
 use plate_solver::{load_config, ServerBuilder};
