@@ -86,7 +86,9 @@ restart-after-upgrade = true
 [package.metadata.generate-rpm]
 name = "rusty-photon-zwo-camera"
 summary = "ASCOM Alpaca Camera driver for ZWO ASI cameras"
-license = "MIT OR Apache-2.0"
+# Aggregate expression: our dual-licensed code AND the bundled MIT-only ZWO
+# SDK blobs — Apache-2.0 alone does not cover the whole package contents.
+license = "(MIT OR Apache-2.0) AND MIT"
 assets = [
     { source = "target/release/zwo-camera", dest = "/usr/bin/rusty-photon-zwo-camera", mode = "755" },
     { source = "pkg/rusty-photon-zwo-camera.service", dest = "/usr/lib/systemd/system/rusty-photon-zwo-camera.service", mode = "644" },
