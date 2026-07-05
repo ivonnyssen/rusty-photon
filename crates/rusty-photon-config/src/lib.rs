@@ -75,10 +75,12 @@ pub fn read_file_value(path: &Path, default: &Value) -> Result<Value, ConfigErro
     }
 }
 
-/// Atomically persist `value` as pretty JSON: create parent dirs, stage to a uniquely-named temp
-/// file in the same directory, fsync, rename into place, then fsync the directory (Unix) so the
-/// rename itself is durable.
-pub fn save(path: &Path, value: &Value) -> std::io::Result<()> {
+/// Stage `value` as pretty JSON in a synced temp file next to `path` (same
+/// directory, so the final rename/link stays on one filesystem).
+fn stage_pretty_json<'p>(
+    path: &'p Path,
+    value: &Value,
+) -> std::io::Result<(tempfile::NamedTempFile, &'p Path)> {
     use std::io::Write as _;
 
     let parent = match path.parent() {
@@ -93,13 +95,69 @@ pub fn save(path: &Path, value: &Value) -> std::io::Result<()> {
     let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
     tmp.write_all(&bytes)?;
     tmp.as_file().sync_all()?;
-    tmp.persist(path).map_err(|e| e.error)?;
+    Ok((tmp, parent))
+}
 
-    #[cfg(unix)]
-    {
-        std::fs::File::open(parent)?.sync_all()?;
-    }
+#[cfg(unix)]
+fn sync_dir(parent: &Path) -> std::io::Result<()> {
+    std::fs::File::open(parent)?.sync_all()
+}
+#[cfg(not(unix))]
+fn sync_dir(_parent: &Path) -> std::io::Result<()> {
     Ok(())
+}
+
+/// Atomically persist `value` as pretty JSON: create parent dirs, stage to a uniquely-named temp
+/// file in the same directory, fsync, rename into place, then fsync the directory (Unix) so the
+/// rename itself is durable.
+pub fn save(path: &Path, value: &Value) -> std::io::Result<()> {
+    let (tmp, parent) = stage_pretty_json(path, value)?;
+    tmp.persist(path).map_err(|e| e.error)?;
+    sync_dir(parent)
+}
+
+/// Persist `default` at `path` if no config file exists there yet, so a fresh
+/// install materializes an editable file on the service's first start.
+/// Returns whether a file was written; an existing file is never touched —
+/// the final step is an atomic no-clobber link, so even a file created
+/// concurrently between the existence check and the write survives intact.
+pub fn init_file_if_absent(path: &Path, default: &Value) -> Result<bool, ConfigError> {
+    if path.exists() {
+        return Ok(false);
+    }
+    let wrap = |source: std::io::Error| ConfigError::Write {
+        path: path.to_path_buf(),
+        source,
+    };
+    let (tmp, parent) = stage_pretty_json(path, default).map_err(wrap)?;
+    match tmp.persist_noclobber(path) {
+        Ok(_) => {
+            sync_dir(parent).map_err(wrap)?;
+            Ok(true)
+        }
+        Err(e) if e.error.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        Err(e) => Err(wrap(e.error)),
+    }
+}
+
+/// The canonical startup bootstrap: resolve the config path and, when it is
+/// the XDG default (no explicit `--config`), persist `default` there on
+/// first start so a packaged install materializes an editable file.
+///
+/// An explicit path is returned untouched even if no file exists there —
+/// loading a missing explicit file must remain the caller's hard error, so a
+/// typo'd `--config` never silently runs a service on defaults.
+pub fn resolve_and_init(
+    service: &str,
+    explicit: Option<PathBuf>,
+    default: &Value,
+) -> Result<PathBuf, ConfigError> {
+    let is_explicit = explicit.is_some();
+    let path = resolve_config_path(service, explicit)?;
+    if !is_explicit && init_file_if_absent(&path, default)? {
+        tracing::info!("Created default config at {}", path.display());
+    }
+    Ok(path)
 }
 
 /// The result of [`materialize_identity`].
@@ -204,6 +262,84 @@ mod tests {
         let p = resolve_config_path("dsd-fp2", None).unwrap();
         assert!(p.ends_with("dsd-fp2.json"), "{p:?}");
         assert!(p.to_string_lossy().contains("rusty-photon"), "{p:?}");
+    }
+
+    #[test]
+    fn init_file_if_absent_writes_default_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.json");
+        let default = json!({ "server": { "port": 11111 } });
+
+        assert!(init_file_if_absent(&path, &default).unwrap());
+        let on_disk: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(on_disk, default);
+    }
+
+    #[test]
+    fn init_file_if_absent_never_touches_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.json");
+        std::fs::write(&path, "{\"server\":{\"port\":9}}").unwrap();
+
+        assert!(!init_file_if_absent(&path, &json!({ "server": { "port": 11111 } })).unwrap());
+        let on_disk: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(on_disk, json!({ "server": { "port": 9 } }));
+    }
+
+    #[test]
+    fn resolve_and_init_leaves_missing_explicit_path_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("typo.json");
+
+        let p = resolve_and_init("dsd-fp2", Some(missing.clone()), &json!({})).unwrap();
+
+        assert_eq!(p, missing);
+        assert!(
+            !missing.exists(),
+            "explicit path must never be self-created"
+        );
+    }
+
+    /// Restores an env var's prior state on drop (including on panic).
+    #[cfg(target_os = "linux")]
+    struct EnvGuard {
+        key: &'static str,
+        prev: Option<std::ffi::OsString>,
+    }
+    #[cfg(target_os = "linux")]
+    impl EnvGuard {
+        fn set(key: &'static str, value: &std::path::Path) -> Self {
+            let prev = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, prev }
+        }
+    }
+    #[cfg(target_os = "linux")]
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.prev {
+                Some(v) => std::env::set_var(self.key, v),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn resolve_and_init_creates_default_at_xdg_path() {
+        // XDG_CONFIG_HOME is honored on Linux only; other platforms would hit
+        // the real per-user dir, so this test is Linux-scoped.
+        let dir = tempfile::tempdir().unwrap();
+        let _env = EnvGuard::set("XDG_CONFIG_HOME", dir.path());
+        let default = json!({ "server": { "port": 11111 } });
+
+        let p = resolve_and_init("xdg-init-test", None, &default).unwrap();
+
+        assert!(p.starts_with(dir.path()), "{p:?}");
+        let on_disk: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(on_disk, default);
     }
 
     #[test]

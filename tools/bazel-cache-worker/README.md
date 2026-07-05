@@ -75,7 +75,27 @@ Class A write per read object per 2 days (~$1–4/mo at this repo's scale).
 Residue: blobs a hit-heavy build never GETs (build-without-the-bytes skips
 most intermediate downloads) still age out; entries are regenerable and
 Bazel 9's default eviction retries rebuild through it. If the lifecycle
-window changes, keep `TOUCH_AFTER_MS` (src/cache.js) comfortably below it.
+window changes, keep `TOUCH_AFTER_MS + CAS_EDGE_TTL_S` (src/cache.js)
+comfortably below it — the edge cache (next section) adds its TTL to the
+worst-case gap between an object's R2 touches.
+
+### Edge cache (`/cas/` reads)
+
+CAS keys are content hashes — a key's bytes can never legitimately change —
+so the Worker serves `/cas/` GETs from Cloudflare's per-datacenter cache
+(`caches.default`, `max-age` 1 day) and only falls through to R2 on a miss
+(with one retry on transient R2 read errors). The common CI shape — the
+Linux/macOS/Windows build+test legs plus the coverage job pulling the same
+blobs within hours of each other — is served at edge latency, and an R2
+latency spike or transient error can't stall an edge-cached read. `/ac/`
+entries are mutable (a re-executed action re-uploads under the same key), so
+they always read R2 and are never edge-cached.
+
+Interplay with retention: an edge hit never reaches R2, so it cannot touch —
+a hot blob's R2 clock only advances on the origin reads between TTL
+expiries. The 1-day TTL bounds that: worst-case R2 age of a live object is
+2d (touch threshold) + 1d (edge TTL) + 1d (nightly read gap) ≈ 4d, inside
+the 7-day lifecycle window with margin.
 
 ## Verify
 

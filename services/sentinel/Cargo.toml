@@ -27,6 +27,7 @@ axum = { workspace = true }
 tower = { workspace = true }
 rp-auth = { workspace = true }
 rp-tls = { workspace = true }
+rusty-photon-config = { workspace = true }
 rusty-photon-service-lifecycle = { workspace = true }
 
 [dev-dependencies]
