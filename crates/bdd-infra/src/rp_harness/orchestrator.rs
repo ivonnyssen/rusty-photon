@@ -23,8 +23,10 @@ pub struct OrchestratorInvocation {
     pub session_id: String,
     pub mcp_server_url: String,
     pub recovery: Option<Value>,
-    /// The registration's `config` object, passed through verbatim by rp
-    /// (`Value::Null` when the registration carried none).
+    /// The registration's `config` object, passed through verbatim by rp.
+    /// `Some(Value::Null)` when the registration carried none — rp always
+    /// sends the key. `None` means the key was missing from the POST
+    /// entirely, which would be a protocol violation.
     pub config: Option<Value>,
 }
 
