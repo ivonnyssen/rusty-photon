@@ -460,7 +460,14 @@ where
                 poll_interval,
                 timeout,
             } => {
-                let started = self.clock.now();
+                // The timeout budget is tracked by accumulating the
+                // durations actually slept — monotonic by construction
+                // (production `sleep` is tokio's monotonic timer), so a
+                // wall-clock step (NTP) can neither extend the wait nor
+                // fire the timeout early. `clock.now()` (wall time) is
+                // only for `seconds_until()` inside the condition, where
+                // calendar time is the point.
+                let mut elapsed = std::time::Duration::ZERO;
                 loop {
                     // Evaluated on entry, after each interval, and once
                     // more when the timeout expires (the last sleep is
@@ -468,7 +475,6 @@ where
                     if self.condition(ins, condition, "`wait` `until` condition")? {
                         return Ok(());
                     }
-                    let elapsed = (self.clock.now() - started).to_std().unwrap_or_default();
                     if elapsed >= *timeout {
                         return Err(self.error_here(
                             ins,
@@ -479,8 +485,9 @@ where
                             ),
                         ));
                     }
-                    let remaining = *timeout - elapsed;
-                    self.clock.sleep((*poll_interval).min(remaining)).await;
+                    let sleep_for = (*poll_interval).min(*timeout - elapsed);
+                    self.clock.sleep(sleep_for).await;
+                    elapsed += sleep_for;
                 }
             }
         }

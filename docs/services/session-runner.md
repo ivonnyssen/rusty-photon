@@ -281,7 +281,11 @@ rendered as compact JSON (an error message is terminal output, not data).
   point.
 - An `until` condition is evaluated on entry, after each `poll_interval`,
   and one final time exactly when the timeout expires (the last sleep is
-  clamped to the remaining budget) — only then does expiry raise.
+  clamped to the remaining budget) — only then does expiry raise. The
+  timeout budget is measured by accumulated sleep time (monotonic), so a
+  wall-clock adjustment (NTP step) can neither fire a timeout early nor
+  extend a wait; the wall clock feeds only `seconds_until()`, where
+  calendar time is the point.
 
 #### `log` — operator-visible message
 

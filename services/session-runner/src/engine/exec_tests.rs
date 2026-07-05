@@ -136,7 +136,7 @@ async fn run_in(
     doc: &Document,
     params: &Value,
     tools: &MockTools,
-    clock: &MockClock,
+    clock: &(impl Clock + Sync),
 ) -> (RunOutcome, Value) {
     let mut blackboard = Blackboard::load(dir.path().join("session.json")).unwrap();
     let outcome = run(doc, params, &mut blackboard, tools, clock).await;
@@ -822,6 +822,63 @@ async fn test_wait_until_timeout_raises_after_a_final_check() {
             Duration::from_secs(40),
             Duration::from_secs(10)
         ]
+    );
+}
+
+/// A clock whose wall time leaps an hour forward across every sleep — the
+/// NTP-step scenario a wall-clock-based timeout would misread.
+struct SteppingClock {
+    now: Mutex<DateTime<Utc>>,
+    sleeps: Mutex<Vec<Duration>>,
+}
+
+impl SteppingClock {
+    fn new() -> Self {
+        Self {
+            now: Mutex::new(Utc.with_ymd_and_hms(2026, 7, 1, 22, 0, 0).unwrap()),
+            sleeps: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl Clock for SteppingClock {
+    fn now(&self) -> DateTime<Utc> {
+        *self.now.lock().unwrap()
+    }
+
+    async fn sleep(&self, duration: Duration) {
+        let step = chrono::Duration::from_std(duration).unwrap() + chrono::Duration::hours(1);
+        {
+            let mut now = self.now.lock().unwrap();
+            *now += step;
+        }
+        self.sleeps.lock().unwrap().push(duration);
+    }
+}
+
+#[tokio::test]
+async fn test_wait_until_timeout_is_immune_to_wall_clock_steps() {
+    // The timeout budget is accumulated sleep time, not wall-clock
+    // differences — an NTP step (here +1 h per sleep) must neither fire
+    // the timeout early nor extend the wait.
+    let tools = MockTools::none();
+    let clock = SteppingClock::new();
+    let dir = tempfile::tempdir().unwrap();
+    let doc = doc_with_root(json!({ "wait": {
+        "until": "false",
+        "poll_interval": "10s",
+        "timeout": "30s"
+    } }));
+    let (outcome, _) = run_in(&dir, &doc, &json!({}), &tools, &clock).await;
+
+    assert_eq!(
+        failure(outcome).message,
+        "`wait` `until` condition `false` did not become true within 30s"
+    );
+    // The full poll schedule ran despite `now()` racing three hours ahead.
+    assert_eq!(
+        clock.sleeps.lock().unwrap().clone(),
+        vec![Duration::from_secs(10); 3]
     );
 }
 
