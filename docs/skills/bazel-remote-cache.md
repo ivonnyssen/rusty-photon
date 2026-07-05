@@ -15,8 +15,11 @@ Code, config, and deploy steps live in
 Retention is an R2 lifecycle rule (delete after 7 days) made into effective
 LRU by the Worker's **touch-on-read** (a GET of an object older than 2 days
 re-puts it, resetting its expiry clock) — see the Worker README's
-"Retention / eviction" for the full model. Worker changes only take effect
-after `wrangler deploy` (manual; no CI deploy step).
+"Retention / eviction" for the full model. `/cas/` GETs are additionally
+served from Cloudflare's per-PoP **edge cache** (1-day TTL; immutable
+content-addressed blobs, so no invalidation — the TTL is counted into the
+retention margin, see the README's "Edge cache"). Worker changes only take
+effect after `wrangler deploy` (manual; no CI deploy step).
 
 For **local builds**, point a gitignored `user.bazelrc` at a LAN `bazel-remote`
 (reads at LAN speed):

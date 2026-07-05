@@ -9,6 +9,8 @@ lcov.info
 # bazel-* are workspace symlinks at the repo root (bazel-bin, bazel-out, ...).
 # Anchored to root so it doesn't match e.g. docs/plans/archive/bazel-migration.md.
 /bazel-*
+# wrangler's local state (created by `wrangler deploy` in tools/bazel-cache-worker/).
+.wrangler/
 # user.bazelrc allows per-developer overrides without touching .bazelrc.
 user.bazelrc
 # MODULE.bazel.lock IS committed (like Cargo.lock) for reproducibility.
