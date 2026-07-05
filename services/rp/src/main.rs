@@ -8,11 +8,17 @@ use tracing::{debug, Level};
 
 #[derive(Parser)]
 #[command(name = "rp", about = "Rusty Photon - equipment gateway and event bus")]
+// With `Serve.config` optional, `rp --config <path> serve` would otherwise
+// parse the path into the top-level shorthand and silently ignore it
+// (serving from the XDG default instead). Reject the mixed form outright:
+// use `rp --config <path>` or `rp serve --config <path>`.
+#[command(args_conflicts_with_subcommands = true)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
 
-    /// Path to configuration file (shorthand for `rp serve --config`)
+    /// Path to configuration file (shorthand for `rp serve --config`;
+    /// cannot be combined with a subcommand)
     #[arg(long)]
     config: Option<PathBuf>,
 
