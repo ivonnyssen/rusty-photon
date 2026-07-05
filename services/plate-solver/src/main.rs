@@ -1,9 +1,10 @@
 //! plate-solver service binary.
 //!
-//! Reads a JSON config file passed via `--config`, validates it, builds
-//! the HTTP server, prints `bound_addr=<host>:<port>` to stdout (so
-//! `bdd-infra::ServiceHandle` can discover the bound port), and serves
-//! until SIGTERM / Ctrl-C.
+//! Reads a JSON config file (`--config`, or when omitted the per-user
+//! platform config path — `~/.config/rusty-photon/plate-solver.json` on
+//! Linux), validates it, builds the HTTP server, prints
+//! `bound_addr=<host>:<port>` to stdout (so `bdd-infra::ServiceHandle`
+//! can discover the bound port), and serves until SIGTERM / Ctrl-C.
 
 use clap::Parser;
 use plate_solver::{load_config, ServerBuilder};
@@ -19,9 +20,12 @@ use tracing::Level;
     about = "rp-managed plate solver service"
 )]
 struct Cli {
-    /// Path to the JSON config file.
+    /// Path to the JSON config file. Defaults to the per-user platform
+    /// config directory (e.g. `~/.config/rusty-photon/plate-solver.json`
+    /// on Linux). There is no built-in default config: the file must
+    /// exist (`astap_binary_path` / `astap_db_directory` are mandatory).
     #[arg(short, long)]
-    config: PathBuf,
+    config: Option<PathBuf>,
 
     /// Log level (trace, debug, info, warn, error)
     #[arg(long, default_value = "info", value_parser = clap::value_parser!(Level))]
@@ -33,7 +37,14 @@ fn main() -> ExitCode {
 
     init_tracing(cli.log_level);
 
-    let config = match load_config(&cli.config) {
+    let config_path = match rusty_photon_config::resolve_config_path("plate-solver", cli.config) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("plate-solver: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    let config = match load_config(&config_path) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("plate-solver: {e}");

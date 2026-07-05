@@ -8,11 +8,17 @@ use tracing::{debug, Level};
 
 #[derive(Parser)]
 #[command(name = "rp", about = "Rusty Photon - equipment gateway and event bus")]
+// With `Serve.config` optional, `rp --config <path> serve` would otherwise
+// parse the path into the top-level shorthand and silently ignore it
+// (serving from the XDG default instead). Reject the mixed form outright:
+// use `rp --config <path>` or `rp serve --config <path>`.
+#[command(args_conflicts_with_subcommands = true)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
 
-    /// Path to configuration file (shorthand for `rp serve --config`)
+    /// Path to configuration file (shorthand for `rp serve --config`;
+    /// cannot be combined with a subcommand)
     #[arg(long)]
     config: Option<PathBuf>,
 
@@ -25,9 +31,11 @@ struct Cli {
 enum Commands {
     /// Start the rp server
     Serve {
-        /// Path to configuration file
+        /// Path to configuration file. Defaults to the per-user platform
+        /// config directory (e.g. `~/.config/rusty-photon/rp.json` on
+        /// Linux); created with a minimal scaffold on first start if absent.
         #[arg(long)]
-        config: PathBuf,
+        config: Option<PathBuf>,
 
         /// Log level (trace, debug, info, warn, error)
         #[arg(long, default_value = "info", value_parser = clap::value_parser!(Level))]
@@ -135,20 +143,20 @@ fn main() -> ServiceResult {
             }
         }
         None => {
-            // Backward compat: `rp --config <path>` works without a subcommand
-            let config = cli.config.ok_or_else(|| {
-                report_from_boxed(
-                    "no subcommand given. Use `rp serve --config <path>` or `rp --config <path>`"
-                        .into(),
-                )
-            })?;
+            // No subcommand serves (packaged units run a bare
+            // `/usr/bin/rusty-photon-rp`); `rp --config <path>` still works
+            // as a shorthand for `rp serve --config <path>`.
             init_tracing(cli.log_level);
-            run_serve(config)
+            run_serve(cli.config)
         }
     }
 }
 
-fn run_serve(config_path: PathBuf) -> ServiceResult {
+fn run_serve(config: Option<PathBuf>) -> ServiceResult {
+    // Self-creation applies only to the XDG default path — an explicit
+    // `--config` naming a missing file stays a hard error.
+    let config_path =
+        rusty_photon_config::resolve_and_init("rp", config, &rp::config::default_scaffold())?;
     ServiceRunner::new("rp").run(move |shutdown: Shutdown| async move {
         debug!(config_path = %config_path.display(), "loading configuration");
         let config = rp::config::load_config(&config_path)?;

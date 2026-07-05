@@ -357,7 +357,7 @@ ASCOM discovery (see [Deferred](#deferred)).
 
 | Argument | Description |
 |----------|-------------|
-| `-c, --config`     | Path to the BFF configuration file. If omitted, `Config::default()` is used (binds `127.0.0.1:11120`, with a single `dsd-fp2` driver at `http://127.0.0.1:11119`). |
+| `-c, --config`     | Path to the BFF configuration file. If omitted, the path resolves to the per-user platform config directory (`~/.config/rusty-photon/ui-htmx.json` on Linux) and is created with `Config::default()` on first start (binds `127.0.0.1:11120`, with a single `dsd-fp2` driver at `http://127.0.0.1:11119`). An explicit `--config` naming a missing file stays a hard error. |
 | `--port`           | BFF listen port (overrides `server.port`). |
 | `-l, --log-level`  | Log level: trace, debug, info, warn, error. |
 

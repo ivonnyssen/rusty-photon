@@ -3044,7 +3044,15 @@ every other route.
 
 ## Configuration
 
-All configuration is in a single JSON file. Equipment is listed with Alpaca
+All configuration is in a single JSON file. `rp serve --config <path>`
+(or the `rp --config <path>` shorthand) names it explicitly; when omitted
+— including a bare `rp`, which serves (that is what the packaged
+`rusty-photon-rp` unit runs) — the path resolves to the per-user platform
+config directory (`~/.config/rusty-photon/rp.json` on Linux) via
+`rusty-photon-config`, and a minimal runnable scaffold (no equipment,
+default port, `session.data_directory` under `/var/lib/rusty-photon/rp/`)
+is written on first start if the file is absent. An explicit `--config`
+naming a missing file stays a hard error. Equipment is listed with Alpaca
 connection details. Plugins register their webhook URLs and command endpoints.
 
 The `mount` field is singular: exactly one mount is the typical

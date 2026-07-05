@@ -379,7 +379,13 @@ probe, so a binary removed after startup is detected.
 
 ## Configuration
 
-The service reads a single JSON config file passed via `--config`.
+The service reads a single JSON config file. `--config` names it
+explicitly; when omitted, the path resolves to the per-user platform
+config directory (`~/.config/rusty-photon/plate-solver.json` on Linux)
+via `rusty-photon-config`. There is no built-in default config — the
+file must exist (`astap_binary_path` / `astap_db_directory` are
+mandatory), so the packaged systemd unit gates on it with
+`ConditionPathExists` instead of crash-looping on a fresh install.
 
 ```json
 {

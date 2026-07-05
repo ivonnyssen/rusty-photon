@@ -174,6 +174,19 @@ mod tests {
     }
 
     #[test]
+    fn default_scaffold_round_trips_through_load_config() {
+        // main() writes `Config::default()` to the XDG path on first start
+        // (resolve_and_init); that serialized form must load back cleanly.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ui-htmx.json");
+        let scaffold = serde_json::to_string_pretty(&Config::default()).unwrap();
+        std::fs::write(&path, scaffold).unwrap();
+        let c = load_config(&path).unwrap();
+        assert_eq!(c.server.port, 11120);
+        assert!(c.drivers.0.contains_key("dsd-fp2"));
+    }
+
+    #[test]
     fn load_config_reads_a_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("ui-htmx.json");

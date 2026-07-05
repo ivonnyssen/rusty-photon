@@ -12,8 +12,10 @@ use ui_htmx::{build_router, load_config, AppState, Config};
 #[command(about = "Server-rendered web configuration UI (BFF) for rusty-photon")]
 #[command(version)]
 struct Args {
-    /// Path to the BFF configuration file. If omitted, defaults are used
-    /// (binds 127.0.0.1:11120, targets dsd-fp2 at http://127.0.0.1:11119).
+    /// Path to the BFF configuration file. Defaults to the per-user platform
+    /// config directory (e.g. `~/.config/rusty-photon/ui-htmx.json` on
+    /// Linux); created with defaults on first start if absent (binds
+    /// 127.0.0.1:11120, targets dsd-fp2 at http://127.0.0.1:11119).
     #[arg(short, long)]
     config: Option<PathBuf>,
 
@@ -36,16 +38,13 @@ fn main() -> ServiceResult {
 
     rusty_photon_service_lifecycle::init_tracing(args.log_level);
 
-    let mut config = match &args.config {
-        Some(path) => {
-            debug!("Loading configuration from {path:?}");
-            load_config(path).map_err(report_from_boxed)?
-        }
-        None => {
-            debug!("Using default configuration");
-            Config::default()
-        }
-    };
+    let config_path = rusty_photon_config::resolve_and_init(
+        "ui-htmx",
+        args.config,
+        &serde_json::to_value(Config::default())?,
+    )?;
+    debug!("Loading configuration from {config_path:?}");
+    let mut config = load_config(&config_path).map_err(report_from_boxed)?;
     if let Some(port) = args.port {
         config.server.port = port;
     }
