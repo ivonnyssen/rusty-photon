@@ -599,7 +599,9 @@ caught. `rp` reports tool failures via `is_error` results, so a protocol
 error means `rp` itself is unhealthy, and the engine's response — persist,
 exit without completion, await re-invocation — is the safest generic
 recovery. Tool results arrive as one JSON text content block: no content
-is a `null` result; non-JSON content is a loud tool failure.) The engine
+is a `null` result; anything else — non-JSON text, a non-text block, or
+multiple blocks — is a loud tool failure rather than a silently dropped
+or stringified result.) The engine
 then:
 
 1. Stops trigger evaluation and abandons queued trigger actions.
@@ -679,7 +681,8 @@ purely a *consumer* of the stream plus an MCP *client*.
   (2xx), the blackboard file is deleted. A safety termination posts
   nothing and keeps the blackboard (see [Safety
   Behavior](#safety-behavior)); an unacknowledged completion also keeps
-  it, and is logged loudly.
+  it, and is logged loudly (the post carries a 30 s timeout — a stalled
+  `rp` counts as unacknowledged rather than wedging the session task).
 
 ## Validation
 

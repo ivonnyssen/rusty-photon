@@ -80,26 +80,35 @@ impl ToolClient for McpClient {
             Err(e) => return Err(ToolCallError::SessionTerminated(e.to_string())),
         };
 
-        let text = result
-            .content
-            .first()
-            .and_then(|content| content.as_text())
-            .map(|text_content| text_content.text.clone());
-
         if result.is_error.unwrap_or(false) {
-            return Err(ToolCallError::Failed(
-                text.unwrap_or_else(|| "unknown error".to_owned()),
-            ));
+            // Best-effort message extraction on the error path.
+            let message = result
+                .content
+                .first()
+                .and_then(|content| content.as_text())
+                .map_or_else(|| "unknown error".to_owned(), |text| text.text.clone());
+            return Err(ToolCallError::Failed(message));
         }
 
         // rp returns tool results as one JSON text content block; the
         // parsed value becomes the document's `result` namespace. No
-        // content means no result (`null`); non-JSON content is a loud
-        // failure rather than a silently stringified result.
-        match text {
-            None => Ok(Value::Null),
-            Some(text) => serde_json::from_str(&text)
-                .map_err(|e| ToolCallError::Failed(format!("tool returned non-JSON content: {e}"))),
+        // content means no result (`null`). Anything else — non-JSON
+        // text, a non-text block, multiple blocks — is a loud failure
+        // rather than a silently dropped or stringified result.
+        match result.content.as_slice() {
+            [] => Ok(Value::Null),
+            [block] => match block.as_text() {
+                Some(text) => serde_json::from_str(&text.text).map_err(|e| {
+                    ToolCallError::Failed(format!("tool returned non-JSON content: {e}"))
+                }),
+                None => Err(ToolCallError::Failed(
+                    "tool returned non-text content; expected one JSON text block".to_owned(),
+                )),
+            },
+            blocks => Err(ToolCallError::Failed(format!(
+                "tool returned {} content blocks; expected one JSON text block",
+                blocks.len()
+            ))),
         }
     }
 }

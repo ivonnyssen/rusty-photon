@@ -102,9 +102,10 @@ impl Blackboard {
     /// not an error — the session starts with an empty `session.*`
     /// (first-run equivalent), because a crash can predate the first
     /// `set`. A present-but-unparsable file is an error: silently
-    /// discarding state would break resume.
-    pub fn load(path: PathBuf) -> Result<Self, BlackboardError> {
-        let session = match std::fs::read(&path) {
+    /// discarding state would break resume. Async so the `/invoke`
+    /// request path never does blocking file I/O on a runtime worker.
+    pub async fn load(path: PathBuf) -> Result<Self, BlackboardError> {
+        let session = match tokio::fs::read(&path).await {
             Ok(bytes) => {
                 let value: Value =
                     serde_json::from_slice(&bytes).map_err(|e| BlackboardError::Corrupt {
@@ -295,28 +296,30 @@ mod tests {
         path.iter().map(|s| (*s).to_owned()).collect()
     }
 
-    #[test]
-    fn test_load_missing_file_starts_empty() {
+    #[tokio::test]
+    async fn test_load_missing_file_starts_empty() {
         let dir = tempfile::tempdir().unwrap();
-        let bb = Blackboard::load(dir.path().join("nope.json")).unwrap();
+        let bb = Blackboard::load(dir.path().join("nope.json"))
+            .await
+            .unwrap();
         assert_eq!(*bb.value(), json!({}));
     }
 
-    #[test]
-    fn test_load_corrupt_json_is_an_error() {
+    #[tokio::test]
+    async fn test_load_corrupt_json_is_an_error() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("s.json");
         std::fs::write(&path, b"{ not json").unwrap();
-        let err = Blackboard::load(path).unwrap_err();
+        let err = Blackboard::load(path).await.unwrap_err();
         assert!(matches!(err, BlackboardError::Corrupt { .. }), "{err}");
     }
 
-    #[test]
-    fn test_load_non_object_top_level_is_an_error() {
+    #[tokio::test]
+    async fn test_load_non_object_top_level_is_an_error() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("s.json");
         std::fs::write(&path, b"[1, 2]").unwrap();
-        let err = Blackboard::load(path).unwrap_err();
+        let err = Blackboard::load(path).await.unwrap_err();
         assert_eq!(
             err.to_string(),
             format!(
@@ -394,7 +397,7 @@ mod tests {
         bb.set_path(&segs(&["target_adu"]), json!(32767.5)).unwrap();
         bb.persist().await.unwrap();
 
-        let reloaded = Blackboard::load(path).unwrap();
+        let reloaded = Blackboard::load(path).await.unwrap();
         assert_eq!(reloaded.value(), bb.value());
     }
 
@@ -449,7 +452,7 @@ mod tests {
         );
         // Reloading (what a recovery invocation does) now sees a fresh
         // session, not the stale state.
-        assert_eq!(*Blackboard::load(path).unwrap().value(), json!({}));
+        assert_eq!(*Blackboard::load(path).await.unwrap().value(), json!({}));
     }
 
     #[tokio::test]
@@ -470,17 +473,17 @@ mod tests {
         bb.mark_once("panel-on").await.unwrap();
         assert!(bb.once_done("panel-on"));
 
-        let reloaded = Blackboard::load(path).unwrap();
+        let reloaded = Blackboard::load(path).await.unwrap();
         assert!(reloaded.once_done("panel-on"));
         assert_eq!(*reloaded.value(), json!({"_once": {"panel-on": true}}));
     }
 
-    #[test]
-    fn test_once_done_requires_a_true_marker() {
+    #[tokio::test]
+    async fn test_once_done_requires_a_true_marker() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("s.json");
         std::fs::write(&path, br#"{"_once": {"a": false, "b": 1}, "c": 2}"#).unwrap();
-        let bb = Blackboard::load(path).unwrap();
+        let bb = Blackboard::load(path).await.unwrap();
         assert!(!bb.once_done("a"));
         assert!(!bb.once_done("b"));
         assert!(!bb.once_done("missing"));
@@ -491,7 +494,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("s.json");
         std::fs::write(&path, br#"{"_once": 5}"#).unwrap();
-        let mut bb = Blackboard::load(path).unwrap();
+        let mut bb = Blackboard::load(path).await.unwrap();
         assert!(!bb.once_done("k"));
         bb.mark_once("k").await.unwrap();
         assert!(bb.once_done("k"));

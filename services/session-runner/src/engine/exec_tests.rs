@@ -138,7 +138,9 @@ async fn run_in(
     tools: &MockTools,
     clock: &(impl Clock + Sync),
 ) -> (RunOutcome, Value) {
-    let mut blackboard = Blackboard::load(dir.path().join("session.json")).unwrap();
+    let mut blackboard = Blackboard::load(dir.path().join("session.json"))
+        .await
+        .unwrap();
     let outcome = run(doc, params, &mut blackboard, tools, clock).await;
     let session = blackboard.value().clone();
     (outcome, session)

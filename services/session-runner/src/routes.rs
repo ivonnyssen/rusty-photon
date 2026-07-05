@@ -281,7 +281,7 @@ async fn invoke(
         .state_dir
         .join(format!("{}.json", request.session_id));
     let blackboard = if request.recovery.is_some() {
-        Blackboard::load(blackboard_path)
+        Blackboard::load(blackboard_path).await
     } else {
         Blackboard::replace(blackboard_path).await
     };
@@ -379,6 +379,12 @@ fn completion_result(
     Value::Object(result)
 }
 
+/// How long the completion POST may take before it counts as
+/// unacknowledged. A stalled `rp` (accepted connection, no response) must
+/// not wedge the session task forever — timeout expiry lands in the
+/// unacknowledged path: blackboard kept, warning logged.
+const COMPLETION_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// POST the completion to `rp`; `true` when acknowledged (2xx).
 async fn post_completion(
     mcp_server_url: &str,
@@ -390,7 +396,17 @@ async fn post_completion(
     let url = format!("{base_url}/api/plugins/{workflow_id}/complete");
     let body = json!({ "status": status, "result": result });
     debug!(%url, %status, "posting completion");
-    match reqwest::Client::new().post(&url).json(&body).send().await {
+    let client = match reqwest::Client::builder()
+        .timeout(COMPLETION_TIMEOUT)
+        .build()
+    {
+        Ok(client) => client,
+        Err(e) => {
+            warn!(%url, error = %e, "cannot build HTTP client for the completion post");
+            return false;
+        }
+    };
+    match client.post(&url).json(&body).send().await {
         Ok(response) if response.status().is_success() => true,
         Ok(response) => {
             warn!(%url, status = %response.status(), "completion was not acknowledged");
