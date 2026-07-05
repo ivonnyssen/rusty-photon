@@ -373,6 +373,19 @@ pub(super) fn cases() -> Vec<Case> {
             doc(json!({ "script": "return 1" })),
             &[("/root/script", "reserved for a future format version")],
         ),
+        // The reservation message is for well-formed future-version
+        // documents (where `script` is the sole discriminant). Alongside
+        // another discriminant the object is malformed under *every*
+        // format version, so the accurate diagnosis is the generic
+        // exactly-one error naming both keys — not a version mismatch.
+        invalid(
+            "script_alongside_another_discriminant",
+            doc(json!({ "tool": "x", "script": "return 1" })),
+            &[(
+                "/root",
+                "exactly one discriminant key; found `tool`, `script`",
+            )],
+        ),
         invalid(
             "unknown_key_in_tool_instruction",
             doc(json!({ "tool": "capture", "retyr": { "max_attempts": 3, "backoff": "1s" } })),
@@ -538,6 +551,25 @@ pub(super) fn cases() -> Vec<Case> {
             "set_overlapping_keys",
             doc(json!({ "set": { "session.a": "1", "session.a.b": "2" } })),
             &[("/root/set/session.a.b", "overlap")],
+        ),
+        // The overlap scan must see through interleaving keys
+        // (`session.a2` sorts between `session.a` and `session.a.b` as a
+        // raw string) and report each entry against its nearest prefix
+        // ancestor in a chain.
+        invalid(
+            "set_overlap_chain_with_interleaving_key",
+            doc(json!({ "set": { "session.a": "1", "session.a2": "2",
+                                 "session.a.b": "3", "session.a.b.c": "4" } })),
+            &[
+                (
+                    "/root/set/session.a.b",
+                    "`session.a` and `session.a.b` overlap",
+                ),
+                (
+                    "/root/set/session.a.b.c",
+                    "`session.a.b` and `session.a.b.c` overlap",
+                ),
+            ],
         ),
         invalid(
             "set_value_not_an_expression_string",

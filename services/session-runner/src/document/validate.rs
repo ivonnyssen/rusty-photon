@@ -1023,28 +1023,37 @@ impl Builder {
         }
         // Overlapping paths within one `set` would make the write order
         // observable; all values are evaluated before any write, so the
-        // format forbids the ambiguity outright.
-        for i in 0..out.len() {
-            for j in (i + 1)..out.len() {
-                let (a, b) = (&out[i], &out[j]);
-                let (shorter, longer) = if a.path.len() <= b.path.len() {
-                    (a, b)
-                } else {
-                    (b, a)
-                };
-                if longer.path.starts_with(&shorter.path) {
-                    self.issue(
-                        &child(&sptr, &longer.key()),
-                        format!(
-                            "set keys `{}` and `{}` overlap — one is a path prefix of the \
-                             other, so the write order would be ambiguous",
-                            shorter.key(),
-                            longer.key()
-                        ),
-                    );
-                    ok = false;
+        // format forbids the ambiguity outright. Detection is a sorted
+        // prefix-stack scan rather than a pairwise loop: `/validate`
+        // takes untrusted input, and in Vec-lexicographic order a prefix
+        // sorts immediately before its extensions, so O(n log n) covers
+        // what the pairwise scan did in O(n²). Each entry reports its
+        // nearest prefix ancestor, bounding the issues at one per entry.
+        let mut sorted: Vec<&SetEntry> = out.iter().collect();
+        sorted.sort_by(|a, b| a.path.cmp(&b.path));
+        let mut overlaps = Vec::new();
+        let mut prefix_chain: Vec<&SetEntry> = Vec::new();
+        for entry in sorted {
+            while let Some(top) = prefix_chain.last() {
+                if entry.path.starts_with(&top.path) {
+                    break;
                 }
+                prefix_chain.pop();
             }
+            if let Some(prefix) = prefix_chain.last() {
+                overlaps.push((prefix.key(), entry.key()));
+            }
+            prefix_chain.push(entry);
+        }
+        for (prefix, extension) in overlaps {
+            self.issue(
+                &child(&sptr, &extension),
+                format!(
+                    "set keys `{prefix}` and `{extension}` overlap — one is a path prefix \
+                     of the other, so the write order would be ambiguous"
+                ),
+            );
+            ok = false;
         }
         ok.then_some(InstructionKind::Set(out))
     }
