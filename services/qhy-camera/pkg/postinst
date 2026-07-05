@@ -1,0 +1,26 @@
+#!/bin/sh
+set -e
+if ! getent passwd rusty-photon > /dev/null; then
+    adduser --system --group --home /var/lib/rusty-photon --quiet rusty-photon
+fi
+# Create the config directory chain too: /etc/rusty-photon points at it,
+# and ConditionPathExists-gated services never start on a fresh install,
+# so nothing else would create it before the operator writes a config.
+install -d -m 0750 -o rusty-photon -g rusty-photon \
+    /var/lib/rusty-photon \
+    /var/lib/rusty-photon/.config \
+    /var/lib/rusty-photon/.config/rusty-photon
+if [ ! -e /etc/rusty-photon ]; then
+    ln -s /var/lib/rusty-photon/.config/rusty-photon /etc/rusty-photon
+fi
+# Camera packages ship a udev rule; make it effective without a reboot.
+udevadm control --reload-rules || true
+udevadm trigger || true
+# Proprietary camera firmware is never packaged (ADR-013). When the
+# package ships a firmware-install helper, point the operator at it.
+fw_helper="/usr/sbin/${DPKG_MAINTSCRIPT_PACKAGE%-camera}-firmware-install"
+if [ -x "$fw_helper" ]; then
+    echo "$DPKG_MAINTSCRIPT_PACKAGE: camera firmware is not bundled."
+    echo "Run '$fw_helper' once as root before first use."
+fi
+#DEBHELPER#

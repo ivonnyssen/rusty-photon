@@ -20,7 +20,13 @@ The camera packages (`qhy-camera`, `zwo-camera`) are the one sanctioned
 variant: their `postinst` must be exactly `postinst.common` with
 [`postinst.udev-stanza`](postinst.udev-stanza) inserted before the
 `#DEBHELPER#` line (they ship udev rules). The checker verifies that exact
-construction, byte for byte.
+construction, byte for byte. The stanza also prints a pointer to
+`/usr/sbin/<pkg-minus-camera>-firmware-install` when the package ships one
+(qhy-camera does — proprietary firmware is downloaded by the operator, never
+packaged, per ADR-013; zwo-camera bundles its MIT blobs instead, so the
+pointer is a no-op there). Camera `pkg/` dirs additionally hold the udev
+rule file and, for qhy-camera, the firmware helper — both listed as plain
+`assets` in the metadata blocks.
 
 `scripts/check-pkg-assets.sh` enforces all of this — run it after touching
 anything under `packaging/` or a service's `pkg/` directory. It discovers
