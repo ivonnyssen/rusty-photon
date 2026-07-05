@@ -4899,10 +4899,16 @@ dependencies = [
 name = "session-runner"
 version = "0.1.0"
 dependencies = [
+ "axum",
  "chrono",
+ "clap",
  "humantime",
  "jsonschema",
  "proptest",
+ "reqwest 0.13.4",
+ "rmcp",
+ "rusty-photon-config",
+ "rusty-photon-service-lifecycle",
  "serde",
  "serde_json",
  "tempfile",

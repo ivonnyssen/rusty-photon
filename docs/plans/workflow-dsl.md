@@ -269,22 +269,25 @@ committable on its own.
 
 - [ ] BDD scaffold for `session-runner` (rp-harness: OmniSim + `rp` +
       `session-runner`), `@wip`-tagged per testing.md §2.7 until green.
-- [ ] Engine core: document loading + schema validation, static tool-call
+- [x] Engine core: document loading + schema validation, static tool-call
       validation against `tools/list`, `sequence` / `tool` / `set` / `if` /
       `repeat` / `try`-`catch`-`finally` / `fail` / `wait` / `log`
       execution, blackboard with
       atomic persistence, MCP client, `/invoke` + `/health` + `/validate`
       routes, completion posting.
 
-      **Progress:** the document layer (typed model, schema-layer
-      validation, parameter binding, workflow-name resolution) landed
-      2026-07-05 (PR #439); the interpreter + blackboard (tree execution
-      against the `ToolClient`/`Clock` seams, atomic persistence, `once`
-      bookkeeping, the terminated-session path) landed 2026-07-05.
-      Remaining: the real MCP client, catalog validation (layer 2), the
-      HTTP routes + service binary, and completion posting. Until Phase D,
-      declared triggers do not fire (warned at run start) and
-      `wait.until_event` raises a workflow error.
+      **Done in three slices (all 2026-07-05):** the document layer
+      (typed model, schema-layer validation, parameter binding,
+      workflow-name resolution — PR #439); the interpreter + blackboard
+      (tree execution against the `ToolClient`/`Clock` seams, atomic
+      persistence, `once` bookkeeping, the terminated-session path —
+      PR #442); and the service wiring (rmcp MCP client, layer-2 catalog
+      validation, `/invoke` + `/validate` + `/health`, completion
+      posting, `main.rs` per service-lifecycle). Until Phase D, declared
+      triggers do not fire (warned at run start) and `wait.until_event`
+      raises a workflow error. Packaging (deb/rpm metadata + `pkg/`
+      scripts per the service-packaging plan) is a follow-up once the
+      first-party documents ship.
 - [ ] `rp`: forward the orchestrator registration's `config` object
       verbatim in the `/invoke` POST (the protocol addition documented in
       `rp.md` § Orchestrator Invocation Protocol; `rp` today sends only

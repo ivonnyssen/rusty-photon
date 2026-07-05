@@ -1,0 +1,118 @@
+//! Service configuration, per `docs/services/session-runner.md`
+//! § Configuration. Loaded via `rusty-photon-config` conventions; the file
+//! must exist (there are no usable defaults for `workflows_dir` /
+//! `state_dir`).
+
+use std::path::{Path, PathBuf};
+
+use serde::Deserialize;
+
+use crate::error::{Result, SessionRunnerError};
+
+/// The documented default listen port (the orchestrator-plugin range,
+/// next to `calibrator-flats`' 11170).
+pub const DEFAULT_PORT: u16 = 11171;
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Config {
+    /// HTTP listen port for `/invoke`, `/validate`, `/health`.
+    #[serde(default = "default_port")]
+    pub port: u16,
+    /// Directory of workflow documents; first-party documents ship in the
+    /// package. Required.
+    pub workflows_dir: PathBuf,
+    /// Blackboard persistence directory. Required.
+    pub state_dir: PathBuf,
+    /// `rp` MCP endpoint used only by standalone `/validate` catalog
+    /// validation; invocations always use the URL delivered in the
+    /// `/invoke` payload.
+    #[serde(default)]
+    pub mcp_server_url: Option<String>,
+    /// Explicit SSE endpoint override (Phase D); `null` derives
+    /// `<mcp origin>/api/events/subscribe`.
+    #[serde(default)]
+    pub events_url: Option<String>,
+}
+
+fn default_port() -> u16 {
+    DEFAULT_PORT
+}
+
+/// Load and parse the configuration file. Unknown keys are rejected —
+/// a misspelled field must not silently fall back to a default.
+pub fn load_config(path: &Path) -> Result<Config> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| SessionRunnerError::Config(format!("cannot read {}: {e}", path.display())))?;
+    serde_json::from_str(&text)
+        .map_err(|e| SessionRunnerError::Config(format!("cannot parse {}: {e}", path.display())))
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+mod tests {
+    use super::*;
+
+    fn write_config(dir: &tempfile::TempDir, body: &str) -> PathBuf {
+        let path = dir.path().join("session-runner.json");
+        std::fs::write(&path, body).unwrap();
+        path
+    }
+
+    #[test]
+    fn test_minimal_config_gets_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_config(
+            &dir,
+            r#"{ "workflows_dir": "/var/lib/rp/workflows", "state_dir": "/var/lib/rp/state" }"#,
+        );
+        let config = load_config(&path).unwrap();
+        assert_eq!(config.port, 11171);
+        assert_eq!(config.workflows_dir, PathBuf::from("/var/lib/rp/workflows"));
+        assert_eq!(config.state_dir, PathBuf::from("/var/lib/rp/state"));
+        assert_eq!(config.mcp_server_url, None);
+        assert_eq!(config.events_url, None);
+    }
+
+    #[test]
+    fn test_full_config_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_config(
+            &dir,
+            r#"{ "port": 12000, "workflows_dir": "w", "state_dir": "s",
+                 "mcp_server_url": "http://localhost:11115/mcp",
+                 "events_url": "http://localhost:11115/api/events/subscribe" }"#,
+        );
+        let config = load_config(&path).unwrap();
+        assert_eq!(config.port, 12000);
+        assert_eq!(
+            config.mcp_server_url.as_deref(),
+            Some("http://localhost:11115/mcp")
+        );
+    }
+
+    #[test]
+    fn test_missing_required_directory_fields_fail_loud() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_config(&dir, r#"{ "workflows_dir": "w" }"#);
+        let err = load_config(&path).unwrap_err();
+        assert!(err.to_string().contains("state_dir"), "{err}");
+    }
+
+    #[test]
+    fn test_unknown_keys_are_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_config(
+            &dir,
+            r#"{ "workflows_dir": "w", "state_dir": "s", "workflow_dir": "typo" }"#,
+        );
+        let err = load_config(&path).unwrap_err();
+        assert!(err.to_string().contains("workflow_dir"), "{err}");
+    }
+
+    #[test]
+    fn test_missing_file_is_a_config_error() {
+        let err = load_config(Path::new("/nonexistent/session-runner.json")).unwrap_err();
+        assert!(matches!(err, SessionRunnerError::Config(_)), "{err}");
+    }
+}

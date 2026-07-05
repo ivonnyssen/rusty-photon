@@ -18,11 +18,16 @@
 //! - [`resolve_workflow_path`] maps a `config.workflow` name to a path
 //!   under `workflows_dir`.
 
+mod catalog;
 mod duration;
 mod locate;
 mod model;
 mod params;
 mod validate;
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+mod catalog_tests;
 
 // `pub(crate)`: the engine's tests execute the corpus's golden documents.
 #[cfg(test)]
@@ -41,6 +46,7 @@ mod validate_tests;
 use serde::Serialize;
 use serde_json::Value;
 
+pub use catalog::{validate_against_catalog, ToolSpec};
 pub use locate::resolve_workflow_path;
 pub use model::{
     ArgValue, Bound, Document, Instruction, InstructionKind, Log, LogLevel, ParameterDecl,
