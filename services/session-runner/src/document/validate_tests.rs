@@ -95,6 +95,33 @@ fn test_arbitrarily_deep_values_are_gated_not_recursed() {
 }
 
 #[test]
+fn test_nesting_gate_counts_containers_only_and_sits_at_128() {
+    let deep = |containers: usize| {
+        let mut v = json!(1);
+        for _ in 0..containers {
+            v = json!([v]);
+        }
+        v
+    };
+    // Exactly 128 containers clear the gate — the innermost primitive
+    // does not add a level — and the walk then reports the actual shape
+    // error. (serde_json itself stops at 127 containers, so nothing
+    // parseable comes near the gate.)
+    let issues = Document::from_value(&deep(128)).unwrap_err();
+    assert!(
+        issues[0].message.contains("must be a JSON object"),
+        "{}",
+        issues[0].message
+    );
+    let issues = Document::from_value(&deep(129)).unwrap_err();
+    assert!(
+        issues[0].message.contains("nesting exceeds 128 levels"),
+        "{}",
+        issues[0].message
+    );
+}
+
+#[test]
 fn test_unsupported_version_short_circuits_all_other_findings() {
     // The rest of this document is riddled with v1 errors, but a document
     // for another format version gets exactly one error and no v1 noise.

@@ -73,16 +73,19 @@ pub(super) fn build(value: &Value) -> Result<Document, Vec<ValidationIssue>> {
     }
 }
 
-/// Whether `value` nests deeper than `limit` levels. Iterative (an
-/// explicit work stack), so the guard itself is safe on input the
-/// recursive walk could not survive.
+/// Whether `value` nests **containers** (objects / arrays) deeper than
+/// `limit` levels — primitives do not add a level, so this counts
+/// exactly what serde_json's parser recursion limit counts. serde_json
+/// itself errors on *entering* container number `limit`, i.e. accepts
+/// at most `limit - 1` nested containers, so every parseable document
+/// clears this gate with a level to spare. Iterative (an explicit work
+/// stack), so the guard itself is safe on input the recursive walk
+/// could not survive.
 fn nesting_exceeds(value: &Value, limit: usize) -> bool {
     let mut stack = vec![(value, 1usize)];
     while let Some((v, depth)) = stack.pop() {
-        if depth > limit {
-            return true;
-        }
         match v {
+            Value::Object(_) | Value::Array(_) if depth > limit => return true,
             Value::Object(m) => stack.extend(m.values().map(|c| (c, depth + 1))),
             Value::Array(a) => stack.extend(a.iter().map(|c| (c, depth + 1))),
             _ => {}
