@@ -441,14 +441,29 @@ mod tests {
                 .send()
                 .await
         });
-        // Give the handler time to park inside the Hang branch.
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        // Wait until the handler has entered the Hang branch (it records
+        // the request before parking). A blind sleep raced request
+        // delivery on slow CI runners: if `stop()` fired before hyper had
+        // read the request head, graceful shutdown closed the connection
+        // unreplied and the client saw `IncompleteMessage` instead of the
+        // released 500 (issue #434). Once the handler is entered the
+        // request is in flight, and graceful shutdown drains its response.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while stub.requests().await.is_empty() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "handler did not receive the request within 5s"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
         assert!(
             !request.is_finished(),
             "Hang must hold the request open while the stub is running"
         );
 
-        // Stopping the stub releases the parked handler with a 500.
+        // Stopping the stub releases the parked handler with a 500. Even
+        // if the release lands before the handler parks, the sticky
+        // `watch` value makes `wait_for` return immediately.
         stub.stop();
         let resp = tokio::time::timeout(Duration::from_secs(2), request)
             .await
