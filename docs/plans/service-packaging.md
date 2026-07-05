@@ -24,7 +24,7 @@ while keeping host-level setup anyway (see ADR-012 Context).
 |-------|-------------|--------|-------------|
 | PR-1 | This plan + ADR-012 + ADR-013 + archive old plan | Merged | #435 |
 | PR-2 | Migrate filemonitor to the new pattern (template proof) + filemonitor/sentinel XDG fix + `check-pkg-assets.sh` | Merged | #438 |
-| PR-3 | 11 pure-Rust daemons + `phd2-guider` CLI package | In progress | `feature/service-packaging-bulk` |
+| PR-3 | 11 pure-Rust daemons + `phd2-guider` CLI package | Merged | #441 |
 | PR-4 | `qhy-camera` package + firmware downloader helper | Pending | |
 | PR-5 | `zwo-camera` package with bundled MIT SDK blobs | Pending | |
 | PR-6 | `build-packages.sh` + `verify-packages.sh` + `docs/packaging.md`; first on-rig install | Pending | |

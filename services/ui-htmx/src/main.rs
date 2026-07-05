@@ -38,11 +38,9 @@ fn main() -> ServiceResult {
 
     rusty_photon_service_lifecycle::init_tracing(args.log_level);
 
-    let config_path = rusty_photon_config::resolve_and_init(
-        "ui-htmx",
-        args.config,
-        &serde_json::to_value(Config::default())?,
-    )?;
+    let default_config = serde_json::to_value(Config::default())?;
+    let config_path =
+        rusty_photon_config::resolve_and_init("ui-htmx", args.config, &default_config)?;
     debug!("Loading configuration from {config_path:?}");
     let mut config = load_config(&config_path).map_err(report_from_boxed)?;
     if let Some(port) = args.port {

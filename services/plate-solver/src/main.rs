@@ -37,14 +37,14 @@ fn main() -> ExitCode {
 
     init_tracing(cli.log_level);
 
-    let config_path = match rusty_photon_config::resolve_config_path("plate-solver", cli.config) {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("plate-solver: {e}");
-            return ExitCode::from(2);
-        }
-    };
-    let config = match load_config(&config_path) {
+    // Path resolution and config load share one failure arm: both are
+    // startup config errors (exit 2). `resolve_config_path` errors only
+    // when no home directory is resolvable at all, which no supported
+    // platform produces — a dedicated branch could never be exercised.
+    let config = match rusty_photon_config::resolve_config_path("plate-solver", cli.config)
+        .map_err(Box::<dyn std::error::Error>::from)
+        .and_then(|path| load_config(&path).map_err(Box::from))
+    {
         Ok(c) => c,
         Err(e) => {
             eprintln!("plate-solver: {e}");
