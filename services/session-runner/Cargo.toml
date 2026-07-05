@@ -12,8 +12,20 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+axum = { workspace = true }
 chrono = { workspace = true }
+clap = { workspace = true }
 humantime = { workspace = true }
+# Layer-2 catalog validation checks literal tool arguments against rp's
+# tool parameter schemas (draft 2020-12); the schema-agreement test suite
+# reuses it. Layer 1 stays the hand-rolled walk in src/document/validate.rs
+# (precise pointers + messages JSON Schema output cannot produce). Default
+# features off: no external $refs to resolve.
+jsonschema = { version = "0.46", default-features = false }
+reqwest = { workspace = true }
+rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest"] }
+rusty-photon-config = { workspace = true }
+rusty-photon-service-lifecycle = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
@@ -22,11 +34,4 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-# Dev-only: the schema-agreement suite checks the in-code validator
-# against the published workflow-v1.schema.json (draft 2020-12). The
-# production validator is the hand-rolled walk in src/document/validate.rs
-# (precise pointers + messages the schema cannot produce); this crate
-# never ships in the binary. Default features off: the schema has no
-# external $refs to resolve.
-jsonschema = { version = "0.46", default-features = false }
 proptest = { workspace = true }

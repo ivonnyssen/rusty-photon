@@ -532,8 +532,11 @@ from setting directly: `session._once.*` (completed once-markers),
 
 The file is deleted when a session completes and the completion has been
 acknowledged by `rp`; a leftover file at `/invoke` time for a **new**
-session (no `recovery` context, different `session_id`) is ignored and
-replaced.
+session (no `recovery` context) is deleted **eagerly**, before the run
+starts — lazy replacement on first persist would not be enough, because a
+safety termination before the first write must not leave a stale file
+(stale `_once` markers included) to be mistaken for this session's state
+on the recovery invocation.
 
 ## Re-entrancy Contract
 
@@ -588,7 +591,18 @@ Resume behavior at `/invoke` with a non-null `recovery`:
 On an unsafe transition `rp` — not `session-runner` — aborts exposures,
 stops guiding, parks the mount, and terminates the plugin's MCP session
 (per `rp.md` § Safety). From the engine's perspective: the in-flight tool
-call fails with a terminated-session error. The engine then:
+call fails with a terminated-session error. (MCP client pin: a call that
+*returns* with the MCP `is_error` flag is a tool failure — retryable and
+catchable; **any request-level failure** — transport loss *or* a JSON-RPC
+protocol error — is the terminated-session error, never retried, never
+caught. `rp` reports tool failures via `is_error` results, so a protocol
+error means `rp` itself is unhealthy, and the engine's response — persist,
+exit without completion, await re-invocation — is the safest generic
+recovery. Tool results arrive as one JSON text content block: no content
+is a `null` result; anything else — non-JSON text, a non-text block, or
+multiple blocks — is a loud tool failure rather than a silently dropped
+or stringified result.) The engine
+then:
 
 1. Stops trigger evaluation and abandons queued trigger actions.
 2. Runs any enclosing `finally` blocks best-effort (their tool calls will
@@ -657,10 +671,18 @@ purely a *consumer* of the stream plus an MCP *client*.
   bad parameters) is returned as the `/invoke` error response — the session
   fails to start loudly, before any hardware moves.
 - Completion is posted to `POST /api/plugins/{workflow_id}/complete` with
-  `status` and a result payload: `{ "workflow": "<name>", "outcome":
+  `status` (`"complete"`, or `"error"` for a failed workflow) and a result
+  payload: `{ "workflow": "<name>", "outcome":
   "complete" | "failed", "error": "<message when failed>" }` plus any
   values the document placed under `session.report.*` (the conventional
-  place for a document to accumulate its summary — e.g. frames per filter).
+  place for a document to accumulate its summary — e.g. frames per filter;
+  the fixed `workflow`/`outcome`/`error` keys win on a name collision).
+  Both outcomes end the session: once `rp` acknowledges the completion
+  (2xx), the blackboard file is deleted. A safety termination posts
+  nothing and keeps the blackboard (see [Safety
+  Behavior](#safety-behavior)); an unacknowledged completion also keeps
+  it, and is logged loudly (the post carries a 30 s timeout — a stalled
+  `rp` counts as unacknowledged rather than wedging the session task).
 
 ## Validation
 
@@ -688,21 +710,49 @@ Three layers, all sharing one implementation:
    in `tools/list`; literal args type-check against the tool's parameter
    schema; required tool parameters are present (as literal or `$expr`);
    `$expr` argument types are checked at runtime when the call is made.
-   Poll-trigger tools validate the same way.
+   Poll-trigger tools validate the same way. When a tool's schema pins
+   `additionalProperties: false`, every argument **name** (literal or
+   `$expr`) must be a declared property — a misspelled argument must not
+   silently travel to the tool. Implementation
+   (`src/document/catalog.rs`): literal values are checked with a real
+   JSON-Schema validator against the tool's input schema (top-level
+   `required` / `additionalProperties` stripped — those two are enforced
+   separately so they see `$expr` arguments too); nested constraints
+   inside a literal value (types, nested `required`, ranges) apply in
+   full, and issue pointers extend into the literal
+   (`…/args/target/ra_hours`).
 3. **Parameter validation** — invocation `parameters` against the
    document's declarations.
 
-`POST /validate` with `{ "document": { … } }` (or `{ "workflow": "<name>" }`)
-runs layers 1–2 and returns a structured list of errors with JSON-Pointer
-locations — the hook for CI on shared workflow repositories, the future UI,
-and LLM authoring loops. Each error is
+`POST /validate` with `{ "document": { … } }` (or `{ "workflow": "<name>" }`
+— exactly one) runs layers 1–2 and returns `200` with a report — the hook
+for CI on shared workflow repositories, the future UI, and LLM authoring
+loops:
+
+```jsonc
+{
+  "valid": false,
+  "errors": [ { "pointer": "/root/args/gain", "message": "…" } ],
+  "catalog_validation": "checked"   // or "skipped: <reason>"
+}
+```
+
+Each error is
 `{ "pointer": "<RFC 6901 JSON Pointer>", "message": "…" }`, plus
 `"expr_span": { "start": …, "end": … }` (byte offsets into the expression
 string at that location) when the finding is inside an expression. Standalone `/validate` reaches `rp` through the
 configured `mcp_server_url`; when that is unset or `rp` is unreachable, it
-runs layer 1 only and marks catalog validation as skipped in the response.
+runs layer 1 only and says so in `catalog_validation` (`"skipped: no
+mcp_server_url configured"` / `"skipped: rp unreachable (…)"`; schema
+failures and workflows that cannot be loaded also skip the catalog check,
+each under its own label). `4xx` is reserved for a malformed
+*request* (neither/both input forms, invalid JSON).
 `/invoke`, which always carries a live `mcp_server_url`, runs all three
-layers before executing.
+layers before executing: validation failures return `400` with
+`{ "error": "…", "issues": [ … ] }`, an unreachable `rp` returns `502`,
+and only a fully validated invocation is acknowledged. A `session_id`
+that could traverse outside `state_dir` (path separators, `..`) is
+rejected — it names the blackboard file.
 
 ## Configuration
 
@@ -725,6 +775,13 @@ layers before executing.
 | `state_dir` | path | required | Blackboard persistence directory |
 | `mcp_server_url` | string or null | null | `rp` MCP endpoint used only by standalone `/validate` catalog validation; invocations always use the URL delivered in the `/invoke` payload |
 | `events_url` | string or null | null | Explicit SSE endpoint; null derives `<mcp origin>/api/events/subscribe` |
+
+Unknown configuration keys are rejected at load — a misspelled field must
+not silently fall back to a default. CLI: `--config <path>` (default: the
+per-user platform config directory, e.g.
+`~/.config/rusty-photon/session-runner.json`), `--port` (overrides the
+file's `port`; `--port 0` binds an ephemeral port, printed at startup),
+`--bind-address` (default `127.0.0.1`), `--log-level`.
 
 ## Example Documents
 

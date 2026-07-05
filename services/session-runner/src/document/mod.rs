@@ -18,29 +18,40 @@
 //! - [`resolve_workflow_path`] maps a `config.workflow` name to a path
 //!   under `workflows_dir`.
 
+mod catalog;
 mod duration;
 mod locate;
 mod model;
 mod params;
 mod validate;
 
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+mod catalog_tests;
+
 // `pub(crate)`: the engine's tests execute the corpus's golden documents.
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 pub(crate) mod corpus;
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod params_tests;
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod schema_agreement_tests;
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod validate_tests;
 
 use serde::Serialize;
 use serde_json::Value;
 
+pub use catalog::{validate_against_catalog, ToolSpec};
 pub use locate::resolve_workflow_path;
 pub use model::{
     ArgValue, Bound, Document, Instruction, InstructionKind, Log, LogLevel, ParameterDecl,

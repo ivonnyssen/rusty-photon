@@ -95,7 +95,7 @@ fn nesting_exceeds(value: &Value, limit: usize) -> bool {
 }
 
 /// Appends `key` to a JSON Pointer, escaping per RFC 6901.
-fn child(ptr: &str, key: &str) -> String {
+pub(super) fn child(ptr: &str, key: &str) -> String {
     if key.contains(['~', '/']) {
         let escaped = key.replace('~', "~0").replace('/', "~1");
         format!("{ptr}/{escaped}")

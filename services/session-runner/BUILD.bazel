@@ -1,20 +1,38 @@
 load("@cr//:defs.bzl", "aliases", "all_crate_deps")
-load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 
 exports_files(
     ["Cargo.toml"],
     visibility = ["//visibility:public"],
 )
 
+_INTRA_WORKSPACE_DEPS = [
+    "//crates/rusty-photon-config:rusty-photon-config",
+    "//crates/rusty-photon-service-lifecycle:rusty-photon-service-lifecycle",
+]
+
 rust_library(
-    name = "session-runner",
-    srcs = glob(["src/**/*.rs"]),
+    name = "session-runner_lib",
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = ["src/main.rs"],
+    ),
     aliases = aliases(),
     crate_name = "session_runner",
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = ["//visibility:public"],
-    deps = all_crate_deps(normal = True),
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+)
+
+rust_binary(
+    name = "session-runner",
+    srcs = ["src/main.rs"],
+    aliases = aliases(),
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//visibility:public"],
+    deps = [":session-runner_lib"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
 
 rust_test(
@@ -27,12 +45,12 @@ rust_test(
     # The schema-agreement suite embeds the published schema via
     # include_str!("../../schema/workflow-v1.schema.json").
     compile_data = ["schema/workflow-v1.schema.json"],
-    crate = ":session-runner",
+    crate = ":session-runner_lib",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,
     ),
-    deps = all_crate_deps(
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(
         normal = True,
         normal_dev = True,
     ),
