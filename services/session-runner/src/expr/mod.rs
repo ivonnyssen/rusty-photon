@@ -39,6 +39,7 @@ mod eval_tests;
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod prop_tests;
 
+use std::collections::BTreeMap;
 use std::fmt;
 
 use serde::Serialize;
@@ -128,6 +129,18 @@ impl Expression {
     /// structural (spans are ignored); intended for diagnostics and tests.
     pub fn canon(&self) -> String {
         self.ast.canon()
+    }
+
+    /// The namespace roots this expression reads (a subset of `params`,
+    /// `session`, `result`, `event`, `error`), each with the span of its
+    /// first occurrence. After static checking, every bare identifier in
+    /// the tree is a namespace root, so this is exact. Document
+    /// validation uses it for scope checks (e.g. `event.*` is only in
+    /// scope inside a trigger), pointing at the offending root.
+    pub fn namespaces(&self) -> BTreeMap<&str, Span> {
+        let mut roots = BTreeMap::new();
+        self.ast.collect_idents(&mut roots);
+        roots
     }
 
     /// Evaluate against the given context. Strict semantics: no type

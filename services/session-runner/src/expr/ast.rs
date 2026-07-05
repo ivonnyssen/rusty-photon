@@ -115,6 +115,45 @@ impl Expr {
         }
     }
 
+    /// Collects every bare identifier in the tree into `roots`, keeping
+    /// the span of each name's first occurrence (in tree order). After
+    /// static checking these are exactly the namespace roots the
+    /// expression reads (function names live in `Call::func`, not in
+    /// `Ident` nodes).
+    pub(crate) fn collect_idents<'a>(
+        &'a self,
+        roots: &mut std::collections::BTreeMap<&'a str, Span>,
+    ) {
+        match self {
+            Expr::Null(_) | Expr::Bool(_, _) | Expr::Num(_, _) | Expr::Str(_, _) => {}
+            Expr::Ident(name, span) => {
+                roots.entry(name).or_insert(*span);
+            }
+            Expr::Member { obj, .. } => obj.collect_idents(roots),
+            Expr::Index { obj, idx, .. } => {
+                obj.collect_idents(roots);
+                idx.collect_idents(roots);
+            }
+            Expr::Call { args, .. } => {
+                for a in args {
+                    a.collect_idents(roots);
+                }
+            }
+            Expr::Unary { rhs, .. } => rhs.collect_idents(roots),
+            Expr::Binary { lhs, rhs, .. } => {
+                lhs.collect_idents(roots);
+                rhs.collect_idents(roots);
+            }
+            Expr::Cond {
+                cond, then, els, ..
+            } => {
+                cond.collect_idents(roots);
+                then.collect_idents(roots);
+                els.collect_idents(roots);
+            }
+        }
+    }
+
     /// Smart constructor for unary expressions: folds `-` over a numeric
     /// literal so `-3` and `- -3` produce literal nodes, matching the
     /// grammar pin that `-` is an operator while number literals are

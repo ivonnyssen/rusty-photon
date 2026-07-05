@@ -24,6 +24,9 @@ rust_test(
         normal_dev = True,
         proc_macro_dev = True,
     ),
+    # The schema-agreement suite embeds the published schema via
+    # include_str!("../../schema/workflow-v1.schema.json").
+    compile_data = ["schema/workflow-v1.schema.json"],
     crate = ":session-runner",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,

@@ -668,3 +668,29 @@ fn test_expression_display_and_source_are_verbatim() {
     assert_eq!(e.source(), "  1 + 2  ");
     assert_eq!(e.to_string(), "  1 + 2  ");
 }
+
+#[test]
+fn test_namespaces_reports_exactly_the_roots_read() {
+    let cases: &[(&str, &[&str])] = &[
+        ("1 + 2", &[]),
+        ("params.camera_id", &["params"]),
+        (
+            "has(session.x) && session.x > event.hfr ? result.a : error.message",
+            &["error", "event", "result", "session"],
+        ),
+        // Roots inside index expressions and call arguments count too.
+        ("session[params.key]", &["params", "session"]),
+        (
+            "abs(result.median_adu - session.target_adu)",
+            &["result", "session"],
+        ),
+        // A namespace-named field is not a root: `session.params` reads
+        // only `session`.
+        ("session.params", &["session"]),
+    ];
+    for (src, want) in cases {
+        let expr = Expression::parse(src).unwrap();
+        let got: Vec<&str> = expr.namespaces().into_keys().collect();
+        assert_eq!(got, *want, "namespaces of {src:?}");
+    }
+}
