@@ -127,6 +127,23 @@ fn test_number_accepts_integers_and_floats() {
 }
 
 #[test]
+fn test_array_accepts_any_json_array_and_rejects_the_rest() {
+    let d = decls(json!({ "filters": { "type": "array", "required": true } }));
+    // Elements are opaque in v1 — any array binds, heterogeneous included.
+    let plan = json!([{ "name": "L", "count": 2 }, "loose-string", 3]);
+    let bound = bind_parameters(&d, Some(&json!({ "filters": plan }))).unwrap();
+    assert_eq!(bound["filters"], plan);
+    for not_an_array in [json!({ "name": "L" }), json!("L"), json!(3)] {
+        let issues = bind_parameters(&d, Some(&json!({ "filters": not_an_array }))).unwrap_err();
+        assert!(
+            issues[0].message.contains("expected an `array` value"),
+            "{}",
+            issues[0].message
+        );
+    }
+}
+
+#[test]
 fn test_duration_parameters_enforce_the_document_surface() {
     let d = decls(json!({ "t": { "type": "duration", "required": true } }));
     let bound = bind_parameters(&d, Some(&json!({ "t": "1h30m" }))).unwrap();

@@ -34,4 +34,11 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+bdd-infra = { workspace = true, features = ["rp-harness"] }
+cucumber = { workspace = true }
+derive_more = { workspace = true }
 proptest = { workspace = true }
+
+[[test]]
+name = "bdd"
+harness = false

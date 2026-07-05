@@ -267,8 +267,15 @@ committable on its own.
 
 ### Phase C — Engine core + `calibrator-flats` port (the equivalence proof)
 
-- [ ] BDD scaffold for `session-runner` (rp-harness: OmniSim + `rp` +
+- [x] BDD scaffold for `session-runner` (rp-harness: OmniSim + `rp` +
       `session-runner`), `@wip`-tagged per testing.md §2.7 until green.
+
+      **Done (2026-07-05):** `services/session-runner/tests/` — the same
+      three-process shape as `calibrator-flats`' suite (`bdd_main!`,
+      OmniSim device reset per scenario, `resources:omnisim:1` under
+      Bazel). The runner carries the `@wip` filter for Phase D scenarios;
+      the Phase C scenarios landed green in the same PR, so nothing ships
+      tagged.
 - [x] Engine core: document loading + schema validation, static tool-call
       validation against `tools/list`, `sequence` / `tool` / `set` / `if` /
       `repeat` / `try`-`catch`-`finally` / `fail` / `wait` / `log`
@@ -294,12 +301,32 @@ committable on its own.
       always carries a `config` key — the registered object verbatim, or
       `null` when the registration has none — pinned by the
       session-lifecycle BDD scenarios.
-- [ ] `workflows/calibrator_flats.json` shipped as a first-party document.
-- [ ] Port `calibrator-flats`' BDD scenarios to run against `session-runner`
+- [x] `workflows/calibrator_flats.json` shipped as a first-party document.
+
+      **Done (2026-07-05):** `services/session-runner/workflows/`. Shipping
+      it settled the filter-plan question the design left open: `rp`
+      invokes the orchestrator exactly once per session, so the plan is an
+      **`array` parameter** — a minimal format addition (`array` joins the
+      parameter type enum; elements stay opaque, typed element
+      declarations remain deferred) — iterated with a blackboard index and
+      a `while has(params.filters[session.filter_index])` gate. The
+      golden-document unit suite walks `workflows/` (validation walk +
+      published schema), and the validation corpus embeds the shipped file
+      so the engine's exec tests execute the real artifact.
+- [x] Port `calibrator-flats`' BDD scenarios to run against `session-runner`
       executing that document; behavior must match the Rust plugin (same
       events, same frame counts, same cleanup-on-failure). The Rust
       `calibrator-flats` service is **not** retired in this plan — retirement
       is a separate decision after the port has real-world mileage.
+
+      **Done (2026-07-05):** both scenarios ported
+      (`services/session-runner/tests/features/flat_calibration.feature`)
+      and green: the session completes back to `idle` and a 2 × 2 plan
+      emits ≥ 4 `exposure_complete` events — the oracle suite's exact
+      assertions. The call-sequence equivalence BDD cannot assert
+      (per-filter exposure reset, no rescale once converged,
+      cleanup-on-failure ordering) is pinned by the engine's exec tests
+      running the shipped document against `rp`-faithful mock results.
 
 ### Phase D — Triggers, events, resume
 

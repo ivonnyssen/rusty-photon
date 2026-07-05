@@ -102,7 +102,7 @@
       "type": "object",
       "properties": {
         "type": {
-          "enum": ["string", "integer", "number", "boolean", "duration"]
+          "enum": ["string", "integer", "number", "boolean", "duration", "array"]
         },
         "required": {
           "const": true
@@ -135,6 +135,10 @@
         {
           "if": { "properties": { "type": { "const": "duration" } } },
           "then": { "properties": { "default": { "$ref": "#/$defs/humantime" } } }
+        },
+        {
+          "if": { "properties": { "type": { "const": "array" } } },
+          "then": { "properties": { "default": { "type": "array" } } }
         }
       ]
     },

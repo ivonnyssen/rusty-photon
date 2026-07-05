@@ -99,7 +99,7 @@ A workflow document is a single JSON file. Top-level structure:
 |-------|---------|
 | `version` | Format version. The engine rejects documents whose version it does not implement, naming the supported version(s) in the error. |
 | `name` / `description` | Identification for logs, events, and the completion payload. |
-| `parameters` | Declared invocation parameters. Each has a `type` (`string`, `integer`, `number`, `boolean`, `duration`), and either `required: true` or a `default`. Values supplied at invocation are type-checked against the declaration; missing required parameters fail validation before anything runs. Available to expressions as `params.*`. Names beginning with `_` are reserved for the engine — declaring one is a validation error. |
+| `parameters` | Declared invocation parameters. Each has a `type` (`string`, `integer`, `number`, `boolean`, `duration`, `array`), and either `required: true` or a `default`. Values supplied at invocation are type-checked against the declaration; missing required parameters fail validation before anything runs. Available to expressions as `params.*`. Names beginning with `_` are reserved for the engine — declaring one is a validation error. An `array` parameter is an opaque JSON array in v1 — no element shape is declared, so element errors surface as loud expression errors at run time (typed element declarations are deferred; see [MVP Scope](#mvp-scope)). Durations stay humantime strings — expressions read them via `seconds()`. |
 | `estimated_duration` / `max_duration` | The acknowledgment durations returned to `rp` from `/invoke` (humantime strings). Optional; engine defaults apply when absent (see [Invocation](#invocation)). |
 | `triggers` | Document-global reactive rules, evaluated alongside the procedure tree. |
 | `root` | The procedure tree — conventionally a `sequence` container, though any instruction is structurally valid as the root. |
@@ -787,12 +787,22 @@ file's `port`; `--port 0` binds an ephemeral port, printed at startup),
 
 Shipped first-party documents live in `services/session-runner/workflows/`.
 
-### `calibrator_flats.json` (the generalization proof, abridged)
+### `calibrator_flats.json` (the generalization proof)
 
 The port of the existing Rust orchestrator's algorithm
-([`calibrator-flats.md`](calibrator-flats.md)) — its BDD scenarios are the
-behavioral oracle. Filters are supplied as a parameterized plan; shown here
-for a single filter for brevity:
+([`calibrator-flats.md`](calibrator-flats.md)). The shipped file is
+canonical; its BDD scenarios — the Rust orchestrator's suite re-run
+against this document through the same OmniSim + `rp` + `session-runner`
+topology — are the behavioral oracle, and the engine's unit suite
+executes the same file against `rp`-faithful mock results to pin the
+exact call sequence to the Rust loop's (per-filter exposure reset, no
+rescale once converged, cleanup on failure).
+
+The filter plan is an `array` parameter (`[ { "name": "L", "count": 20 },
+… ]`) iterated with the total-traversal idiom: a blackboard index and a
+`while` gate of `has(params.filters[session.filter_index])` — one past
+the end reads `null`, so `has()` turns false and the loop completes.
+Abridged to the load-bearing shape:
 
 ```jsonc
 {
@@ -802,41 +812,58 @@ for a single filter for brevity:
     "camera_id": { "type": "string", "required": true },
     "filter_wheel_id": { "type": "string", "required": true },
     "calibrator_id": { "type": "string", "required": true },
+    "filters": { "type": "array", "required": true },   // [ { "name", "count" }, … ]
     "target_adu_fraction": { "type": "number", "default": 0.5 },
     "tolerance": { "type": "number", "default": 0.05 },
     "max_iterations": { "type": "integer", "default": 10 },
-    "initial_duration": { "type": "duration", "default": "1s" },
-    "filter": { "type": "string", "required": true },
-    "count": { "type": "integer", "required": true }
+    "initial_duration": { "type": "duration", "default": "1s" }
   },
   "triggers": [],
   "root": { "sequence": [
     { "tool": "get_camera_info", "args": { "camera_id": { "$expr": "params.camera_id" } } },
     { "set": { "session.target_adu": "result.max_adu * params.target_adu_fraction",
-               "session.exp_min": "result.exposure_min",
-               "session.exp_max": "result.exposure_max",
-               "session.duration": "seconds(params.initial_duration)" } },
+               // exposure limits arrive as humantime strings — convert once,
+               // do arithmetic on numbers, humantime() back at the tool call
+               "session.exp_min": "seconds(result.exposure_min)",
+               "session.exp_max": "seconds(result.exposure_max)",
+               // has() guard: resume continues at the current filter
+               "session.filter_index": "has(session.filter_index) ? session.filter_index : 0" } },
     { "try": [
         { "tool": "close_cover", "args": { "calibrator_id": { "$expr": "params.calibrator_id" } } },
         { "tool": "calibrator_on", "args": { "calibrator_id": { "$expr": "params.calibrator_id" } } },
-        { "tool": "set_filter", "args": { "filter_wheel_id": { "$expr": "params.filter_wheel_id" },
-                                          "filter_name": { "$expr": "params.filter" } } },
-        { "id": "find-exposure",
-          "repeat": { "until": "abs(session.median_adu - session.target_adu) / session.target_adu <= params.tolerance",
-                      "max_iterations": { "$expr": "params.max_iterations" } },
+        { "id": "filter-plan",
+          "repeat": { "while": "has(params.filters[session.filter_index])", "max_iterations": 64 },
           "body": [
-            { "tool": "capture", "args": { "camera_id": { "$expr": "params.camera_id" },
-                                           "duration": { "$expr": "humantime(session.duration)" } } },
-            { "tool": "compute_image_stats", "args": { "document_id": { "$expr": "result.document_id" } } },
-            { "set": { "session.median_adu": "result.median_adu",
-                       "session.duration": "clamp(result.median_adu == 0 ? session.duration * 2 : session.duration * (session.target_adu / result.median_adu), session.exp_min, session.exp_max)" } } ] },
+            { "tool": "set_filter", "args": { "filter_wheel_id": { "$expr": "params.filter_wheel_id" },
+                                              "filter_name": { "$expr": "params.filters[session.filter_index].name" } } },
+            { "set": { "session.duration": "seconds(params.initial_duration)" } },  // reset per filter
+            { "id": "find-exposure",
+              "repeat": { "until": "abs(session.median_adu - session.target_adu) / session.target_adu <= params.tolerance",
+                          "max_iterations": { "$expr": "params.max_iterations" } },
+              "body": [
+                { "tool": "capture", "args": { "camera_id": { "$expr": "params.camera_id" },
+                                               "duration": { "$expr": "humantime(session.duration)" } } },
+                { "tool": "compute_image_stats", "args": { "document_id": { "$expr": "result.document_id" } } },
+                { "set": { "session.median_adu": "result.median_adu" } },
+                // rescale only when another pass is coming, so the duration
+                // that converged is the one the flats reuse (the Rust loop's
+                // exact behavior)
+                { "if": "abs(session.median_adu - session.target_adu) / session.target_adu > params.tolerance",
+                  "then": [ { "set": { "session.duration": "clamp(session.median_adu == 0 ? session.duration * 2 : session.duration * (session.target_adu / session.median_adu), session.exp_min, session.exp_max)" } } ] } ] },
+            { "if": "result.converged == false",
+              "then": [ { "log": { "level": "info", "message": "exposure did not converge, using best duration",
+                                   "values": { "filter": "params.filters[session.filter_index].name" } } } ] },
+            { "repeat": { "count": { "$expr": "params.filters[session.filter_index].count" } },
+              "body": [
+                { "tool": "capture", "args": { "camera_id": { "$expr": "params.camera_id" },
+                                               "duration": { "$expr": "humantime(session.duration)" } } } ] },
+            { "set": { "session.report.total_frames": "session.report.total_frames + params.filters[session.filter_index].count",
+                       "session.filter_index": "session.filter_index + 1" } } ] },
+        // a while loop that exhausts its budget completes with
+        // result.converged == false — for this document that means an
+        // absurd plan, and silently skipping filters is worse than failing
         { "if": "result.converged == false",
-          "then": [ { "log": { "level": "info", "message": "exposure did not converge",
-                               "values": { "filter": "params.filter" } } } ] },
-        { "repeat": { "count": { "$expr": "params.count" } },
-          "body": [
-            { "tool": "capture", "args": { "camera_id": { "$expr": "params.camera_id" },
-                                           "duration": { "$expr": "humantime(session.duration)" } } } ] }
+          "then": [ { "fail": { "message": "'the filter plan exceeds the 64-filter loop budget'" } } ] }
       ],
       "finally": [
         { "tool": "calibrator_off", "args": { "calibrator_id": { "$expr": "params.calibrator_id" } } },
@@ -844,12 +871,6 @@ for a single filter for brevity:
   ] }
 }
 ```
-
-(The full document loops over a filter-plan array; array-valued parameters
-and per-element iteration are settled in Phase A schema work — either an
-array parameter with `repeat`-over-array, or one invocation per filter
-driven by `rp`'s plugin config. The single-filter core above is the
-behavioral spec either way.)
 
 ### `deep_sky.json` (skeleton)
 
@@ -934,9 +955,12 @@ with replay; the two shipped documents (`calibrator_flats.json`,
 
 **Deferred:** Luau `script` nodes (schema key reserved); container-scoped
 triggers (use `while` gates); parallel containers; sub-workflow
-imports/templates; a `ui-htmx` document editor; array-parameter ergonomics
-beyond what the flats port needs; retirement of the Rust `calibrator-flats`
-service (separate decision after the port has mileage).
+imports/templates; a `ui-htmx` document editor; typed array-element
+declarations (v1 `array` parameters are opaque JSON arrays — the flats
+port needs no more, and element-shape mistakes still fail loudly, as
+run-time expression errors instead of load-time findings); retirement of
+the Rust `calibrator-flats` service (separate decision after the port has
+mileage).
 
 ## Module Structure
 
@@ -993,9 +1017,13 @@ Full three-process topology (OmniSim + `rp` + `session-runner`) via
 
 ### Golden documents
 
-The shipped `workflows/*.json` are validated in CI against the published
-schema (a unit test walks the directory), so a schema change that breaks a
-first-party document fails the build.
+The shipped `workflows/*.json` are validated in CI against both the
+validation walk and the published schema (a unit test walks the
+directory), so a format change that breaks a first-party document fails
+the build. The validation corpus additionally embeds
+`calibrator_flats.json` verbatim, and the engine's exec tests execute it
+against `rp`-faithful mock results — the shipped artifact, not a copy, is
+what the unit suites pin.
 
 ## Future Considerations
 

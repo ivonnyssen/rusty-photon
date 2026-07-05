@@ -9,6 +9,13 @@ to `rp` as an MCP client, iteratively determines the correct exposure
 time per filter to achieve the target ADU level, then captures the
 requested number of flat frames at that duration.
 
+> **Document port.** The same algorithm also ships as a `session-runner`
+> workflow document (`services/session-runner/workflows/calibrator_flats.json`;
+> see [`session-runner.md`](session-runner.md) § Example Documents), with
+> this service's behavior as the oracle its tests pin. This Rust service
+> remains first-class; retiring it is a separate decision after the port
+> has real-world mileage (`docs/plans/workflow-dsl.md`).
+
 ### Tenets
 
 1. **Target 50% well depth.** Flat frames must have a median pixel value
