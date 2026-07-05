@@ -25,9 +25,11 @@ struct Cli {
 enum Commands {
     /// Start the rp server
     Serve {
-        /// Path to configuration file
+        /// Path to configuration file. Defaults to the per-user platform
+        /// config directory (e.g. `~/.config/rusty-photon/rp.json` on
+        /// Linux); created with a minimal scaffold on first start if absent.
         #[arg(long)]
-        config: PathBuf,
+        config: Option<PathBuf>,
 
         /// Log level (trace, debug, info, warn, error)
         #[arg(long, default_value = "info", value_parser = clap::value_parser!(Level))]
@@ -135,20 +137,26 @@ fn main() -> ServiceResult {
             }
         }
         None => {
-            // Backward compat: `rp --config <path>` works without a subcommand
-            let config = cli.config.ok_or_else(|| {
-                report_from_boxed(
-                    "no subcommand given. Use `rp serve --config <path>` or `rp --config <path>`"
-                        .into(),
-                )
-            })?;
+            // No subcommand serves (packaged units run a bare
+            // `/usr/bin/rusty-photon-rp`); `rp --config <path>` still works
+            // as a shorthand for `rp serve --config <path>`.
             init_tracing(cli.log_level);
-            run_serve(config)
+            run_serve(cli.config)
         }
     }
 }
 
-fn run_serve(config_path: PathBuf) -> ServiceResult {
+fn run_serve(config: Option<PathBuf>) -> ServiceResult {
+    // Minimal runnable scaffold (no equipment, default port), written on
+    // first start at the XDG default path only — an explicit `--config`
+    // naming a missing file stays a hard error. `session.data_directory`
+    // matches the packaged unit's StateDirectory.
+    let default_config = serde_json::json!({
+        "session": { "data_directory": "/var/lib/rusty-photon/rp/data" },
+        "equipment": {},
+        "server": {}
+    });
+    let config_path = rusty_photon_config::resolve_and_init("rp", config, &default_config)?;
     ServiceRunner::new("rp").run(move |shutdown: Shutdown| async move {
         debug!(config_path = %config_path.display(), "loading configuration");
         let config = rp::config::load_config(&config_path)?;

@@ -49,6 +49,50 @@ rusty-photon-service-lifecycle = { workspace = true }
 # (services/rp uses it), so this only adds an edge.
 async-stream = { workspace = true, optional = true }
 
+[package.metadata.deb]
+name = "rusty-photon-ui-htmx"
+maintainer = "Igor von Nyssen <igor@vonnyssen.com>"
+extended-description = "Server-rendered web configuration UI for Rusty Photon services."
+section = "science"
+priority = "optional"
+# $auto = dpkg-shlibdeps (needs a Debian build host); adduser is used by postinst.
+depends = "$auto, adduser"
+assets = [
+    ["target/release/ui-htmx", "usr/bin/rusty-photon-ui-htmx", "755"],
+]
+maintainer-scripts = "pkg/"
+
+[package.metadata.deb.systemd-units]
+unit-name = "rusty-photon-ui-htmx"
+unit-scripts = "pkg/"
+enable = true
+start = true
+restart-after-upgrade = true
+
+[package.metadata.generate-rpm]
+name = "rusty-photon-ui-htmx"
+summary = "Web configuration UI for Rusty Photon services"
+license = "MIT OR Apache-2.0"
+assets = [
+    { source = "target/release/ui-htmx", dest = "/usr/bin/rusty-photon-ui-htmx", mode = "755" },
+    { source = "pkg/rusty-photon-ui-htmx.service", dest = "/usr/lib/systemd/system/rusty-photon-ui-htmx.service", mode = "644" },
+]
+post_install_script = """
+getent passwd rusty-photon > /dev/null || useradd -r -d /var/lib/rusty-photon -s /sbin/nologin rusty-photon
+install -d -m 0750 -o rusty-photon -g rusty-photon /var/lib/rusty-photon
+[ -e /etc/rusty-photon ] || ln -s /var/lib/rusty-photon/.config/rusty-photon /etc/rusty-photon
+systemctl daemon-reload
+systemctl enable rusty-photon-ui-htmx.service
+"""
+pre_uninstall_script = """
+systemctl stop rusty-photon-ui-htmx.service || true
+systemctl disable rusty-photon-ui-htmx.service || true
+"""
+# rpm has no purge lifecycle: erase preserves the runtime-created config and
+# state (removal is a documented manual step), matching dpkg remove-vs-purge.
+post_uninstall_script = "systemctl daemon-reload"
+require-sh = true
+
 [dev-dependencies]
 bdd-infra = { workspace = true }
 mockall = { workspace = true }

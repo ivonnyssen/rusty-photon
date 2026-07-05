@@ -7,6 +7,7 @@ exports_files(
 )
 
 _INTRA_WORKSPACE_DEPS = [
+    "//crates/rusty-photon-config:rusty-photon-config",
     "//crates/rusty-photon-service-lifecycle:rusty-photon-service-lifecycle",
 ]
 

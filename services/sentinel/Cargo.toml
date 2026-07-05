@@ -30,6 +30,50 @@ rp-tls = { workspace = true }
 rusty-photon-config = { workspace = true }
 rusty-photon-service-lifecycle = { workspace = true }
 
+[package.metadata.deb]
+name = "rusty-photon-sentinel"
+maintainer = "Igor von Nyssen <igor@vonnyssen.com>"
+extended-description = "Observatory monitoring and notification service that polls ASCOM Alpaca devices and serves a web dashboard."
+section = "science"
+priority = "optional"
+# $auto = dpkg-shlibdeps (needs a Debian build host); adduser is used by postinst.
+depends = "$auto, adduser"
+assets = [
+    ["target/release/sentinel", "usr/bin/rusty-photon-sentinel", "755"],
+]
+maintainer-scripts = "pkg/"
+
+[package.metadata.deb.systemd-units]
+unit-name = "rusty-photon-sentinel"
+unit-scripts = "pkg/"
+enable = true
+start = true
+restart-after-upgrade = true
+
+[package.metadata.generate-rpm]
+name = "rusty-photon-sentinel"
+summary = "Observatory monitoring and notification service"
+license = "MIT OR Apache-2.0"
+assets = [
+    { source = "target/release/sentinel", dest = "/usr/bin/rusty-photon-sentinel", mode = "755" },
+    { source = "pkg/rusty-photon-sentinel.service", dest = "/usr/lib/systemd/system/rusty-photon-sentinel.service", mode = "644" },
+]
+post_install_script = """
+getent passwd rusty-photon > /dev/null || useradd -r -d /var/lib/rusty-photon -s /sbin/nologin rusty-photon
+install -d -m 0750 -o rusty-photon -g rusty-photon /var/lib/rusty-photon
+[ -e /etc/rusty-photon ] || ln -s /var/lib/rusty-photon/.config/rusty-photon /etc/rusty-photon
+systemctl daemon-reload
+systemctl enable rusty-photon-sentinel.service
+"""
+pre_uninstall_script = """
+systemctl stop rusty-photon-sentinel.service || true
+systemctl disable rusty-photon-sentinel.service || true
+"""
+# rpm has no purge lifecycle: erase preserves the runtime-created config and
+# state (removal is a documented manual step), matching dpkg remove-vs-purge.
+post_uninstall_script = "systemctl daemon-reload"
+require-sh = true
+
 [dev-dependencies]
 bdd-infra = { workspace = true }
 tokio-test = { workspace = true }

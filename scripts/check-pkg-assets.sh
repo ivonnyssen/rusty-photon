@@ -35,6 +35,21 @@ for pkgdir in services/*/pkg; do
     else
         grep -q "^ExecStart=/usr/bin/$name\$" "$unit" \
             || err "$svc: ExecStart must be exactly /usr/bin/$name (config is XDG-resolved; no --config flag)"
+        # Reload-capable services (ServiceRunner::with_reload) expose SIGHUP.
+        case "$svc" in
+            filemonitor|ppba-driver|qhy-focuser|sky-survey-camera|pa-falcon-rotator|dsd-fp2|star-adventurer-gti|qhy-camera|zwo-camera)
+                grep -q '^ExecReload=/bin/kill -HUP \$MAINPID$' "$unit" \
+                    || err "$svc: reload-capable service must have ExecReload=/bin/kill -HUP \$MAINPID"
+                ;;
+        esac
+        # Services with no defaultable config gate on the config file existing
+        # instead of crash-looping on a fresh install.
+        case "$svc" in
+            sky-survey-camera|plate-solver|calibrator-flats)
+                grep -q "^ConditionPathExists=/var/lib/rusty-photon/\.config/rusty-photon/$svc\.json\$" "$unit" \
+                    || err "$svc: no-default-config service must gate on ConditionPathExists=<XDG config path>"
+                ;;
+        esac
     fi
 
     # postrm is byte-identical everywhere. postinst is byte-identical too,

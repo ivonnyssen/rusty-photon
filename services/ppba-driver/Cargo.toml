@@ -58,6 +58,50 @@ command = "cargo test -p ppba-driver --features conformu --test conformu_integra
 #[package.metadata.miri] - takes over 6 hours on github, so disabling
 #command = "cargo miri test -p ppba-driver"
 
+[package.metadata.deb]
+name = "rusty-photon-ppba-driver"
+maintainer = "Igor von Nyssen <igor@vonnyssen.com>"
+extended-description = "ASCOM Alpaca Switch and ObservingConditions driver for the Pegasus Astro Pocket Powerbox Advance Gen2."
+section = "science"
+priority = "optional"
+# $auto = dpkg-shlibdeps (needs a Debian build host); adduser is used by postinst.
+depends = "$auto, adduser"
+assets = [
+    ["target/release/ppba-driver", "usr/bin/rusty-photon-ppba-driver", "755"],
+]
+maintainer-scripts = "pkg/"
+
+[package.metadata.deb.systemd-units]
+unit-name = "rusty-photon-ppba-driver"
+unit-scripts = "pkg/"
+enable = true
+start = true
+restart-after-upgrade = true
+
+[package.metadata.generate-rpm]
+name = "rusty-photon-ppba-driver"
+summary = "ASCOM Alpaca driver for the Pegasus PPBA Gen2"
+license = "MIT OR Apache-2.0"
+assets = [
+    { source = "target/release/ppba-driver", dest = "/usr/bin/rusty-photon-ppba-driver", mode = "755" },
+    { source = "pkg/rusty-photon-ppba-driver.service", dest = "/usr/lib/systemd/system/rusty-photon-ppba-driver.service", mode = "644" },
+]
+post_install_script = """
+getent passwd rusty-photon > /dev/null || useradd -r -d /var/lib/rusty-photon -s /sbin/nologin rusty-photon
+install -d -m 0750 -o rusty-photon -g rusty-photon /var/lib/rusty-photon
+[ -e /etc/rusty-photon ] || ln -s /var/lib/rusty-photon/.config/rusty-photon /etc/rusty-photon
+systemctl daemon-reload
+systemctl enable rusty-photon-ppba-driver.service
+"""
+pre_uninstall_script = """
+systemctl stop rusty-photon-ppba-driver.service || true
+systemctl disable rusty-photon-ppba-driver.service || true
+"""
+# rpm has no purge lifecycle: erase preserves the runtime-created config and
+# state (removal is a documented manual step), matching dpkg remove-vs-purge.
+post_uninstall_script = "systemctl daemon-reload"
+require-sh = true
+
 [dev-dependencies]
 tracing-subscriber = { workspace = true }
 ascom-alpaca = { workspace = true, features = ["client", "switch", "observing_conditions"] }

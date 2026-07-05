@@ -22,9 +22,9 @@ while keeping host-level setup anyway (see ADR-012 Context).
 
 | Phase | Description | Status | Branch / PR |
 |-------|-------------|--------|-------------|
-| PR-1 | This plan + ADR-012 + ADR-013 + archive old plan | In progress | `feature/service-packaging-plan` |
-| PR-2 | Migrate filemonitor to the new pattern (template proof) + filemonitor/sentinel XDG fix + `check-pkg-assets.sh` | In progress | `feature/service-packaging-filemonitor` |
-| PR-3 | 11 pure-Rust daemons + `phd2-guider` CLI package | Pending | |
+| PR-1 | This plan + ADR-012 + ADR-013 + archive old plan | Merged | #435 |
+| PR-2 | Migrate filemonitor to the new pattern (template proof) + filemonitor/sentinel XDG fix + `check-pkg-assets.sh` | Merged | #438 |
+| PR-3 | 11 pure-Rust daemons + `phd2-guider` CLI package | In progress | `feature/service-packaging-bulk` |
 | PR-4 | `qhy-camera` package + firmware downloader helper | Pending | |
 | PR-5 | `zwo-camera` package with bundled MIT SDK blobs | Pending | |
 | PR-6 | `build-packages.sh` + `verify-packages.sh` + `docs/packaging.md`; first on-rig install | Pending | |
@@ -168,10 +168,24 @@ pa-falcon-rotator, star-adventurer-gti, dsd-fp2, qhy-camera, ppba-driver,
 sky-survey-camera, qhy-focuser.
 
 Ports (for unit descriptions): filemonitor 11111, ppba-driver 11112,
-qhy-focuser 11113, sentinel 11114, rp 11115, sky-survey-camera 11116,
-pa-falcon-rotator 11118, dsd-fp2 11119, ui-htmx 11120, qhy-camera 11121,
-zwo-camera 11122, plate-solver 11131, calibrator-flats 11170,
-star-adventurer-gti 11880.
+qhy-focuser 11113, sentinel 11114 (dashboard), rp 11115, sky-survey-camera
+11116, star-adventurer-gti 11117 (its Alpaca port — 11880 is the mount's
+own SynScan UDP wire port, not ours), pa-falcon-rotator 11118, dsd-fp2
+11119, ui-htmx 11120, qhy-camera 11121, zwo-camera 11122, plate-solver
+11131, calibrator-flats 11170.
+
+**No-defaultable-config gate:** three services cannot self-create a
+config — `sky-survey-camera` (optics fields are deliberately mandatory,
+no `Config::default()`), `plate-solver` (`astap_binary_path` /
+`astap_db_directory` point at operator-installed ASTAP), and
+`calibrator-flats` (the config *is* a flat plan naming real device IDs).
+Self-creating placeholder values would just move the failure somewhere
+more confusing. Their units instead carry
+`ConditionPathExists=/var/lib/rusty-photon/.config/rusty-photon/<svc>.json`:
+on a fresh install the unit is skipped (condition failed — not an error,
+no restart loop) until the operator writes the config; `systemctl start`
+then works normally. `check-pkg-assets.sh` asserts the gate on exactly
+these three, and asserts `ExecReload` on the reload-capable list above.
 
 ### Maintainer scripts
 
@@ -235,10 +249,22 @@ stays a hard error, baked into the helper so the fail-fast contract cannot
 be miscopied (a typo'd path must never silently run on defaults;
 filemonitor's integration test and BDD scenarios pin this). The underlying
 primitives (`resolve_config_path`, `init_file_if_absent`) stay public.
-filemonitor + sentinel land in PR-2 (filemonitor also gains an
+filemonitor + sentinel landed in PR-2 (filemonitor also gained an
 `impl Default for Config` based on its previously packaged default, watch
-path moved to `/var/lib/rusty-photon/filemonitor/`); the remaining four land
-in PR-3 alongside their packaging.
+path moved to `/var/lib/rusty-photon/filemonitor/`).
+
+PR-3 reality check on the remaining four: only `ui-htmx` and `rp` have a
+meaningful default, so only they adopt `resolve_and_init`. `ui-htmx`
+serializes `Config::default()`; `rp`'s config derives neither `Default`
+nor `Serialize`, so its scaffold is a hand-written minimal JSON value
+(`session.data_directory` under `/var/lib/rusty-photon/rp/`, empty
+`equipment`, default `server`) — and a bare `rp` (no subcommand) now
+serves instead of erroring, since the packaged unit runs a flag-less
+binary. `plate-solver` and `calibrator-flats` have no defaultable config
+(see the gate note above): they adopt `resolve_config_path` only — XDG
+path resolution with `--config` now optional, missing file stays a clear
+startup error — and their units are `ConditionPathExists`-gated, as is
+`sky-survey-camera`'s (already on `resolve_config_path`; no code change).
 
 ### qhy-camera (PR-4)
 
