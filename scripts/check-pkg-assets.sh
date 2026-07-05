@@ -79,6 +79,10 @@ for pkgdir in services/*/pkg; do
             [ -f "$pkgdir/90-rusty-photon-qhy.rules" ] \
                 || err "$svc: missing pkg/90-rusty-photon-qhy.rules"
             ;;
+        zwo-camera)
+            [ -f "$pkgdir/90-rusty-photon-zwo.rules" ] \
+                || err "$svc: missing pkg/90-rusty-photon-zwo.rules"
+            ;;
     esac
 
     toml_section "$toml" "package.metadata.deb" | grep -q "^name = \"$name\"" \
@@ -97,6 +101,27 @@ if [ -f "$bp" ] && [ -f "$fw" ]; then
     v2=$(sed -n 's/^VERSION="\(.*\)"$/\1/p' "$fw" | head -1)
     if [ -z "$v1" ] || [ "$v1" != "$v2" ]; then
         err "QHY SDK version pin mismatch: build-packages.sh='$v1' vs firmware-install='$v2'"
+    fi
+fi
+
+# The packaged ZWO SDK license must match the copy vendored with the SDK
+# headers (single upstream source; the pkg/ copy exists only because cargo-deb
+# assets should stay inside the crate directory).
+zl=services/zwo-camera/pkg/ZWO-SDK-LICENSE.txt
+zv=crates/zwo-rs/libzwo-sys/sdk/include/license.txt
+cmp -s "$zv" "$zl" \
+    || err "zwo-camera: pkg/ZWO-SDK-LICENSE.txt differs from $zv"
+
+# The ZWO blob ref is pinned in two places once the build script exists:
+# build-packages.sh (stages pkg/lib/ for the deb) and the CI action's default
+# ref (provisions the link-time SDK) — the shipped blobs and the CI-linked
+# blobs must come from the same indi-3rdparty commit.
+act=.github/actions/install-zwo-sdk/action.yml
+if [ -f "$bp" ] && [ -f "$act" ]; then
+    z1=$(sed -n 's/^ZWO_SDK_REF="\(.*\)"$/\1/p' "$bp" | head -1)
+    z2=$(awk '$1 == "ref:" { in_ref = 1 } in_ref && $1 == "default:" { print $2; exit }' "$act")
+    if [ -z "$z1" ] || [ "$z1" != "$z2" ]; then
+        err "ZWO SDK ref pin mismatch: build-packages.sh='$z1' vs install-zwo-sdk default='$z2'"
     fi
 fi
 

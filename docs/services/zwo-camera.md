@@ -793,6 +793,30 @@ driver itself). The FFI crate is the long pole (~40–50% of effort); once
 - Per-serial connect-time tuning; `FullWellCapacity`; TLS / Basic Auth via
   `rp-tls` / `rp-auth`.
 
+## Packaging
+
+Packaged as `rusty-photon-zwo-camera` (`.deb`/`.rpm`) per
+[ADR-012](../decisions/012-service-packaging-architecture.md) /
+[ADR-013](../decisions/013-native-sdk-payload-policy.md) and
+[`docs/plans/service-packaging.md`](../plans/service-packaging.md):
+binary at `/usr/bin/rusty-photon-zwo-camera`, hardened
+`rusty-photon-zwo-camera.service` (camera class: `plugdev` +
+`AF_NETLINK`, no `PrivateDevices`/`MemoryDenyWriteExecute`), and a udev
+rule `90-rusty-photon-zwo.rules` granting `plugdev` members access to
+enumerated ZWO devices (VID `03c3`) plus the usbfs memory bump.
+
+Unlike qhy-camera, the native SDK ships **inside the package**: ZWO's
+blobs are MIT-licensed, so `libASICamera2.so` + `libEFWFilter.so`
+(downloaded at package-build time by `scripts/build-packages.sh` from the
+same pinned indi-3rdparty commit `.github/actions/install-zwo-sdk` uses)
+are installed at `/usr/lib/rusty-photon/`, with the SDK license at
+`/usr/share/doc/rusty-photon-zwo-camera/ZWO-SDK-LICENSE.txt`. The blobs
+carry no SONAME, so the packaged binary locates them via a RUNPATH
+(`-Wl,-rpath,/usr/lib/rusty-photon`) injected by the build script — no
+`ldconfig`, no `/usr/local` spill, no external SDK install step for the
+operator. ZWO cameras keep their firmware in onboard flash, so there is
+no firmware-install helper and no cold-plug upload path.
+
 ## References
 
 - Decision record: [`docs/plans/zwo-driver.md`](../plans/zwo-driver.md) ·

@@ -25,8 +25,12 @@ construction, byte for byte. The stanza also prints a pointer to
 (qhy-camera does — proprietary firmware is downloaded by the operator, never
 packaged, per ADR-013; zwo-camera bundles its MIT blobs instead, so the
 pointer is a no-op there). Camera `pkg/` dirs additionally hold the udev
-rule file and, for qhy-camera, the firmware helper — both listed as plain
-`assets` in the metadata blocks.
+rule file and the per-camera native-SDK payload pieces, all listed as plain
+`assets` in the metadata blocks: qhy-camera the firmware helper; zwo-camera
+the committed `ZWO-SDK-LICENSE.txt` (checker-`cmp`'d against the copy
+vendored with the libzwo-sys headers) plus a gitignored `lib/` dir into
+which `scripts/build-packages.sh` stages the MIT SDK blobs right before
+`cargo deb` runs.
 
 `scripts/check-pkg-assets.sh` enforces all of this — run it after touching
 anything under `packaging/` or a service's `pkg/` directory. It discovers

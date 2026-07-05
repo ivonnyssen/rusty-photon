@@ -26,7 +26,7 @@ while keeping host-level setup anyway (see ADR-012 Context).
 | PR-2 | Migrate filemonitor to the new pattern (template proof) + filemonitor/sentinel XDG fix + `check-pkg-assets.sh` | Merged | #438 |
 | PR-3 | 11 pure-Rust daemons + `phd2-guider` CLI package | Merged | #441 |
 | PR-4 | `qhy-camera` package + firmware downloader helper | In progress | `feature/qhy-camera-packaging` |
-| PR-5 | `zwo-camera` package with bundled MIT SDK blobs | Pending | |
+| PR-5 | `zwo-camera` package with bundled MIT SDK blobs | In progress | `feature/zwo-camera-packaging` |
 | PR-6 | `build-packages.sh` + `verify-packages.sh` + `docs/packaging.md`; first on-rig install | Pending | |
 | PR-7 | `release.yml` generalization (x86_64 matrix, Homebrew rename) | Deferred | |
 
@@ -97,8 +97,11 @@ services/<svc>/pkg/
 
 Extras: `services/qhy-camera/pkg/` adds `90-rusty-photon-qhy.rules` +
 `rusty-photon-qhy-firmware-install`; `services/zwo-camera/pkg/` adds
-`70-rusty-photon-zwo.rules` + a gitignored `lib/` dir into which the build
-script stages the ZWO blobs + license before `cargo deb` runs.
+`90-rusty-photon-zwo.rules` (named 90- for family consistency; unlike QHY
+there are no vendor rules to sort against), a committed
+`ZWO-SDK-LICENSE.txt` (checker-verified copy of the license vendored with
+the libzwo-sys headers), and a gitignored `lib/` dir into which the build
+script stages the ZWO blobs before `cargo deb` runs.
 
 `check-pkg-assets.sh` asserts, per daemon crate: unit file named
 `rusty-photon-<dir>.service` with `ExecStart=/usr/bin/rusty-photon-<dir>`
@@ -321,7 +324,10 @@ startup error — and their units are `ConditionPathExists`-gated, as is
 - MIT blobs `libASICamera2.so` + `libEFWFilter.so` (from the same pinned
   indi-3rdparty commit `.github/actions/install-zwo-sdk` uses) are packaged
   at `/usr/lib/rusty-photon/`, license at
-  `/usr/share/doc/rusty-photon-zwo-camera/ZWO-SDK-LICENSE.txt`.
+  `/usr/share/doc/rusty-photon-zwo-camera/ZWO-SDK-LICENSE.txt`. The license
+  asset is a **committed copy** in `pkg/` (cargo-deb assets stay inside the
+  crate dir); the checker `cmp`s it against the canonical
+  `crates/zwo-rs/libzwo-sys/sdk/include/license.txt` so it cannot drift.
 - The blobs carry **no SONAME** → loader resolution via **RUNPATH**:
   `build-packages.sh` exports
   `RUSTFLAGS="-C link-arg=-Wl,-rpath,/usr/lib/rusty-photon"` for the release
@@ -329,11 +335,23 @@ startup error — and their units are `ConditionPathExists`-gated, as is
   `build.rs` change, which would ripple into Bazel/repin). Expected lintian
   finding `custom-library-search-path` is documented, not fixed.
 - deb `depends` are **explicit** (`libc6, libgcc-s1, libstdc++6,
-  libusb-1.0-0, libudev1`) — dpkg-shlibdeps cannot map SONAME-less private
-  blobs and `$auto` would fail.
+  libusb-1.0-0, libudev1, adduser`) — dpkg-shlibdeps cannot map SONAME-less
+  private blobs and `$auto` would fail.
+- rpm mirrors that with `auto-req = "disabled"`: rpm's dependency generator
+  would emit requires on the bundled SONAME-less blobs that no package
+  provides, making the rpm uninstallable. The deb `depends` list stays the
+  canonical statement of runtime needs (rpm is an x86_64 dev-box
+  convenience pre-1.0).
 - Build staging: blobs downloaded into gitignored
   `services/zwo-camera/pkg/lib/`; `ZWO_SDK_LIB_DIR` points there for the
-  link; `cargo deb` picks them up as plain assets.
+  link; `cargo deb` picks them up as plain assets. The checker asserts (once
+  `build-packages.sh` exists) that its `ZWO_SDK_REF` pin equals the
+  `install-zwo-sdk` action's default ref — shipped blobs and CI-linked blobs
+  must come from the same commit.
+- Own udev rule `90-rusty-photon-zwo.rules` (VID `03c3` → `plugdev`/`0660`
+  + the usbfs memory bump). ZWO cameras keep firmware in onboard flash — no
+  upload step, no vendor udev rules, no firmware helper; the postinst
+  stanza's firmware-pointer branch is a deliberate no-op here.
 
 ### phd2-guider (PR-3)
 

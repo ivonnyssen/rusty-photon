@@ -49,6 +49,79 @@ parking_lot = { workspace = true }
 [package.metadata.conformu]
 command = "cargo test -p zwo-camera --features conformu --test conformu_integration -- --nocapture"
 
+[package.metadata.deb]
+name = "rusty-photon-zwo-camera"
+maintainer = "Igor von Nyssen <igor@vonnyssen.com>"
+extended-description = "ASCOM Alpaca Camera driver for ZWO ASI cameras. Bundles ZWO's MIT-licensed SDK libraries (libASICamera2, libEFWFilter) under /usr/lib/rusty-photon; no separate SDK install is needed."
+section = "science"
+priority = "optional"
+# Explicit list, NOT "$auto": the bundled SDK blobs carry no SONAME, so
+# dpkg-shlibdeps cannot map the binary's bare libASICamera2.so/libEFWFilter.so
+# NEEDED entries to any package and would fail. These are the direct runtime
+# needs (glibc, libgcc, C++ runtime for libASICamera2, libusb, libudev for
+# libEFWFilter); adduser is used by postinst.
+depends = "libc6, libgcc-s1, libstdc++6, libusb-1.0-0, libudev1, adduser"
+assets = [
+    ["target/release/zwo-camera", "usr/bin/rusty-photon-zwo-camera", "755"],
+    ["pkg/90-rusty-photon-zwo.rules", "usr/lib/udev/rules.d/90-rusty-photon-zwo.rules", "644"],
+    # MIT SDK blobs: staged into gitignored pkg/lib/ by scripts/build-packages.sh
+    # from the pinned indi-3rdparty ref (same pin as .github/actions/install-zwo-sdk),
+    # never committed (ADR-013). The blobs have no SONAME, so the binary finds them
+    # via the RUNPATH build-packages.sh injects (-Wl,-rpath,/usr/lib/rusty-photon).
+    ["pkg/lib/libASICamera2.so", "usr/lib/rusty-photon/libASICamera2.so", "644"],
+    ["pkg/lib/libEFWFilter.so", "usr/lib/rusty-photon/libEFWFilter.so", "644"],
+    # The license must travel with the redistributed blobs (checker asserts this
+    # copy matches the one vendored with the SDK headers in libzwo-sys).
+    ["pkg/ZWO-SDK-LICENSE.txt", "usr/share/doc/rusty-photon-zwo-camera/ZWO-SDK-LICENSE.txt", "644"],
+]
+maintainer-scripts = "pkg/"
+
+[package.metadata.deb.systemd-units]
+unit-name = "rusty-photon-zwo-camera"
+unit-scripts = "pkg/"
+enable = true
+start = true
+restart-after-upgrade = true
+
+[package.metadata.generate-rpm]
+name = "rusty-photon-zwo-camera"
+summary = "ASCOM Alpaca Camera driver for ZWO ASI cameras"
+# Aggregate expression: our dual-licensed code AND the bundled MIT-only ZWO
+# SDK blobs — Apache-2.0 alone does not cover the whole package contents.
+license = "(MIT OR Apache-2.0) AND MIT"
+assets = [
+    { source = "target/release/zwo-camera", dest = "/usr/bin/rusty-photon-zwo-camera", mode = "755" },
+    { source = "pkg/rusty-photon-zwo-camera.service", dest = "/usr/lib/systemd/system/rusty-photon-zwo-camera.service", mode = "644" },
+    { source = "pkg/90-rusty-photon-zwo.rules", dest = "/usr/lib/udev/rules.d/90-rusty-photon-zwo.rules", mode = "644" },
+    { source = "pkg/lib/libASICamera2.so", dest = "/usr/lib/rusty-photon/libASICamera2.so", mode = "644" },
+    { source = "pkg/lib/libEFWFilter.so", dest = "/usr/lib/rusty-photon/libEFWFilter.so", mode = "644" },
+    { source = "pkg/ZWO-SDK-LICENSE.txt", dest = "/usr/share/doc/rusty-photon-zwo-camera/ZWO-SDK-LICENSE.txt", mode = "644" },
+]
+# rpm's dependency generator would emit requires on the SONAME-less bundled
+# blobs (libASICamera2.so, libEFWFilter.so) that no package provides, making
+# the rpm uninstallable. Disable it; the deb `depends` list above is the
+# canonical statement of runtime needs (rpm builds are an x86_64 dev-box
+# convenience pre-1.0, per the plan).
+auto-req = "disabled"
+post_install_script = """
+getent passwd rusty-photon > /dev/null || useradd -r -d /var/lib/rusty-photon -s /sbin/nologin rusty-photon
+getent group plugdev > /dev/null || groupadd -r plugdev
+install -d -m 0750 -o rusty-photon -g rusty-photon /var/lib/rusty-photon /var/lib/rusty-photon/.config /var/lib/rusty-photon/.config/rusty-photon
+[ -e /etc/rusty-photon ] || ln -s /var/lib/rusty-photon/.config/rusty-photon /etc/rusty-photon
+systemctl daemon-reload
+systemctl enable rusty-photon-zwo-camera.service
+udevadm control --reload-rules || true
+udevadm trigger || true
+"""
+pre_uninstall_script = """
+systemctl stop rusty-photon-zwo-camera.service || true
+systemctl disable rusty-photon-zwo-camera.service || true
+"""
+# rpm has no purge lifecycle: erase preserves the runtime-created config and
+# state (removal is a documented manual step), matching dpkg remove-vs-purge.
+post_uninstall_script = "systemctl daemon-reload"
+require-sh = true
+
 [dev-dependencies]
 # zwo-rs is now a first-party member with explicit Bazel real
 # (`//crates/zwo-rs:zwo-rs`) and simulation (`:zwo-rs_sim`) variants, so this
