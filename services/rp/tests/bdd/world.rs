@@ -85,6 +85,9 @@ pub struct RpWorld {
     pub orchestrator_invocations: Arc<RwLock<Vec<OrchestratorInvocation>>>,
     /// Whether the test orchestrator was cancelled
     pub orchestrator_cancelled: Arc<RwLock<bool>>,
+    /// The `config` object attached to the orchestrator registration,
+    /// for asserting rp's verbatim pass-through at invocation.
+    pub orchestrator_registered_config: Option<Value>,
 
     // --- MCP client state ---
     /// Last captured image path (for compute_image_stats chaining)

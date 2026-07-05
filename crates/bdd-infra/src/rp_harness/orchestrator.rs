@@ -23,6 +23,11 @@ pub struct OrchestratorInvocation {
     pub session_id: String,
     pub mcp_server_url: String,
     pub recovery: Option<Value>,
+    /// The registration's `config` object, passed through verbatim by rp.
+    /// `Some(Value::Null)` when the registration carried none — rp always
+    /// sends the key. `None` means the key was missing from the POST
+    /// entirely, which would be a protocol violation.
+    pub config: Option<Value>,
 }
 
 /// Configurable behavior for the test orchestrator.
@@ -130,6 +135,7 @@ async fn orchestrator_invoke_handler(
             .unwrap_or("")
             .to_string(),
         recovery: body.get("recovery").cloned(),
+        config: body.get("config").cloned(),
     };
 
     state.invocations.write().await.push(invocation.clone());
