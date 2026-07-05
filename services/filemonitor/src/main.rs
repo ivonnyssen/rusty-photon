@@ -2,7 +2,7 @@ use clap::Parser;
 use filemonitor::{run_server_loop, Config};
 use rusty_photon_service_lifecycle::{ServiceResult, ServiceRunner};
 use std::path::PathBuf;
-use tracing::{debug, info, Level};
+use tracing::{debug, Level};
 
 #[derive(Parser)]
 #[command(name = "filemonitor")]
@@ -34,20 +34,11 @@ fn main() -> ServiceResult {
         args.config, args.log_level, args.service
     );
 
-    // Self-create defaults only for the XDG default path (packaged first
-    // start); an explicit --config pointing at a missing file must stay a
-    // hard error so a typo'd path never silently runs a default safety
-    // monitor.
-    let explicit = args.config.is_some();
-    let config_path = rusty_photon_config::resolve_config_path("filemonitor", args.config)?;
-    if !explicit
-        && rusty_photon_config::init_file_if_absent(
-            &config_path,
-            &serde_json::to_value(Config::default())?,
-        )?
-    {
-        info!("Created default config at {}", config_path.display());
-    }
+    let config_path = rusty_photon_config::resolve_and_init(
+        "filemonitor",
+        args.config,
+        &serde_json::to_value(Config::default())?,
+    )?;
     ServiceRunner::new("filemonitor")
         .with_reload()
         .scm_mode(args.service)

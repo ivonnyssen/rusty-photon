@@ -116,6 +116,26 @@ pub fn init_file_if_absent(path: &Path, default: &Value) -> Result<bool, ConfigE
     Ok(true)
 }
 
+/// The canonical startup bootstrap: resolve the config path and, when it is
+/// the XDG default (no explicit `--config`), persist `default` there on
+/// first start so a packaged install materializes an editable file.
+///
+/// An explicit path is returned untouched even if no file exists there —
+/// loading a missing explicit file must remain the caller's hard error, so a
+/// typo'd `--config` never silently runs a service on defaults.
+pub fn resolve_and_init(
+    service: &str,
+    explicit: Option<PathBuf>,
+    default: &Value,
+) -> Result<PathBuf, ConfigError> {
+    let is_explicit = explicit.is_some();
+    let path = resolve_config_path(service, explicit)?;
+    if !is_explicit && init_file_if_absent(&path, default)? {
+        tracing::info!("Created default config at {}", path.display());
+    }
+    Ok(path)
+}
+
 /// The result of [`materialize_identity`].
 pub struct MaterializeOutcome {
     /// Whether the file was (re)written (i.e. at least one id was minted).
@@ -242,6 +262,36 @@ mod tests {
         let on_disk: Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(on_disk, json!({ "server": { "port": 9 } }));
+    }
+
+    #[test]
+    fn resolve_and_init_leaves_missing_explicit_path_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("typo.json");
+
+        let p = resolve_and_init("dsd-fp2", Some(missing.clone()), &json!({})).unwrap();
+
+        assert_eq!(p, missing);
+        assert!(
+            !missing.exists(),
+            "explicit path must never be self-created"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn resolve_and_init_creates_default_at_xdg_path() {
+        // XDG_CONFIG_HOME is honored on Linux only; other platforms would hit
+        // the real per-user dir, so this test is Linux-scoped.
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", dir.path());
+        let default = json!({ "server": { "port": 11111 } });
+
+        let p = resolve_and_init("xdg-init-test", None, &default).unwrap();
+
+        assert!(p.starts_with(dir.path()), "{p:?}");
+        let on_disk: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(on_disk, default);
     }
 
     #[test]

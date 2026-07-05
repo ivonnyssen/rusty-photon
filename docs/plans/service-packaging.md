@@ -222,14 +222,16 @@ Survey result: the 8 hardware drivers use `resolve_config_path` (+
 `materialize_identity`), but **six services do not**: `filemonitor`
 (CWD-relative `config.json` default), `sentinel` (loads config only with
 `--config`, else silent in-memory defaults), and `rp` / `ui-htmx` /
-`plate-solver` / `calibrator-flats`. All six adopt the same pattern:
-`resolve_config_path("<svc>", args.config)` + the new
-`rusty_photon_config::init_file_if_absent` (writes the typed default config
-on first start, so a packaged install materializes an editable file).
-Self-creation applies **only to the XDG default path**: an explicit
-`--config` naming a missing file stays a hard error (fail-fast contract —
-a typo'd path must never silently run on defaults; filemonitor's
-integration test and BDD scenarios pin this).
+`plate-solver` / `calibrator-flats`. All six adopt the same one-line bootstrap —
+`rusty_photon_config::resolve_and_init("<svc>", args.config, &default)` —
+the canonical composite that resolves the path and writes the typed default
+config on first start (so a packaged install materializes an editable
+file), logging `Created default config at …`. Self-creation applies **only
+to the XDG default path**: an explicit `--config` naming a missing file
+stays a hard error, baked into the helper so the fail-fast contract cannot
+be miscopied (a typo'd path must never silently run on defaults;
+filemonitor's integration test and BDD scenarios pin this). The underlying
+primitives (`resolve_config_path`, `init_file_if_absent`) stay public.
 filemonitor + sentinel land in PR-2 (filemonitor also gains an
 `impl Default for Config` based on its previously packaged default, watch
 path moved to `/var/lib/rusty-photon/filemonitor/`); the remaining four land
