@@ -12,6 +12,11 @@ Cloud CI (`.github/workflows/bazel.yml`) uses a Bazel HTTP remote cache served
 by a **Cloudflare Worker backed by R2**, at `https://cache.rustyphoton.space`.
 Code, config, and deploy steps live in
 [`tools/bazel-cache-worker/`](../../tools/bazel-cache-worker/README.md).
+Retention is an R2 lifecycle rule (delete after 7 days) made into effective
+LRU by the Worker's **touch-on-read** (a GET of an object older than 2 days
+re-puts it, resetting its expiry clock) — see the Worker README's
+"Retention / eviction" for the full model. Worker changes only take effect
+after `wrangler deploy` (manual; no CI deploy step).
 
 For **local builds**, point a gitignored `user.bazelrc` at a LAN `bazel-remote`
 (reads at LAN speed):

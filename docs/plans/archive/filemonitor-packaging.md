@@ -1,5 +1,16 @@
 # Filemonitor Packaging Plan
 
+**Status: SUPERSEDED (archived 2026-07-04).** The in-repo packaging work
+shipped in PR #33 (`88f2d98`) and proved the cargo-deb / cargo-generate-rpm /
+cargo-wix / Homebrew pattern. Family-wide packaging is now driven by
+[`service-packaging.md`](../service-packaging.md) per
+[ADR-012](../../decisions/012-service-packaging-architecture.md), which
+supersedes this plan's per-service decisions (bare `filemonitor`
+package/binary/unit names → `rusty-photon-*`; `/etc` conffile config →
+user-based XDG; per-service system user → shared `rusty-photon` user). The
+two unfinished manual steps below (Homebrew tap repo + `HOMEBREW_TAP_TOKEN`
+secret) carry over to that plan's PR-7 phase.
+
 ## Goal
 
 Create platform-specific installable packages for the filemonitor service so users can install it without a Rust toolchain.
