@@ -24,9 +24,10 @@ mod model;
 mod params;
 mod validate;
 
+// `pub(crate)`: the engine's tests execute the corpus's golden documents.
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
-mod corpus;
+pub(crate) mod corpus;
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod params_tests;
