@@ -176,6 +176,16 @@ such as `capture`-while-guiding).
   decides whether that is fatal (an `if` + `fail` pattern) or a warning
   (`log`). This mirrors `calibrator-flats`' non-converged-exposure warning
   behavior.
+- Bound evaluation pins: a `$expr` bound must yield an integer-valued
+  number (`2.0` from a tool result counts; `2.5` or a string is a workflow
+  error at loop entry); `count` may be zero (zero passes), `max_iterations`
+  must be ≥ 1. A `while` condition is also evaluated once *after* the
+  final permitted pass, so a condition that turns false exactly at the
+  budget still completes with `result.converged = true` — `converged =
+  false` means the budget ran out while the condition still requested
+  another pass. On a `count` loop, `max_iterations` is a guard against a
+  runaway `$expr` count: if the evaluated `count` exceeds it, the loop
+  fails loudly at entry rather than silently truncating the pass count.
 
 #### `if` — conditional
 
@@ -198,6 +208,11 @@ such as `capture`-while-guiding).
   **overlap** (no key may be a path prefix of another, e.g. `session.a`
   alongside `session.a.b`) — the write order would be ambiguous;
   validation rejects the overlap.
+- Writing a nested key creates missing (or `null` — the same thing, in
+  `has()`'s view) intermediate objects; an intermediate that exists as a
+  **non-object** (`session.a.b` when `session.a` is a number) is a
+  workflow error — silently discarding the scalar would hide a document
+  bug.
 - `set` is the **only** way state crosses instruction boundaries or survives
   a crash. `result` is transient by design — anything worth keeping is
   copied to the blackboard explicitly, which makes the resume semantics
@@ -224,6 +239,20 @@ such as `capture`-while-guiding).
   it re-raises via `fail`. In `catch` and `finally` (on the error path),
   expressions can read `error.message`, `error.instruction_id`, and
   `error.tool` (null when the error was not a tool error).
+  `error.instruction_id` is the raising instruction's **own** `id` (null
+  when it declares none), not a nearest-ancestor id.
+- `error.*` names the error the nearest enclosing error path is handling:
+  a `catch` (or an error-path `finally`) binds it for its block and the
+  enclosing scope's value is restored afterwards; a success-path `finally`
+  leaves the enclosing scope's value visible (so a `finally` nested inside
+  an outer `catch` still reads the outer error). Where no error is being
+  handled, `error.*` reads as `null` — `has(error.message)` is the guard.
+- `finally` failure semantics: on the success path a `finally` failure is
+  a real workflow error; on the error path it is logged and the original
+  error propagates (never masked); a safety termination during `finally`
+  supersedes everything. A safety termination also skips `catch` entirely
+  — by then `rp` has secured the equipment and torn down the MCP session,
+  so there is nothing left to handle; only `finally` runs (best-effort).
 
 #### `fail` — raise a workflow error
 
@@ -234,7 +263,8 @@ such as `capture`-while-guiding).
 Accepted anywhere an instruction is (`catch`, `then`, `else`, a `repeat`
 body, …) and raises a workflow error deliberately; inside `catch` it
 re-raises, propagating the failure outward. `message` is an expression —
-quote it (as above) for a fixed string.
+quote it (as above) for a fixed string. A non-string message value is
+rendered as compact JSON (an error message is terminal output, not data).
 
 #### `wait` — pause at a safe point
 
@@ -249,6 +279,9 @@ quote it (as above) for a fixed string.
 - `until_event` and `until` require a `timeout`; expiry raises a workflow
   error. Triggers keep firing during a `wait` — a `wait` is one long safe
   point.
+- An `until` condition is evaluated on entry, after each `poll_interval`,
+  and one final time exactly when the timeout expires (the last sleep is
+  clamped to the remaining budget) — only then does expiry raise.
 
 #### `log` — operator-visible message
 
@@ -524,8 +557,12 @@ The format provides three tools for this, in preference order:
      "once": "panel-on" }
    ```
 
-   When the instruction completes, `session._once["panel-on"]` is recorded;
-   on re-execution the instruction is skipped. `once` keys must be unique
+   When the instruction completes **successfully**, `session._once["panel-on"]`
+   is recorded (a failed instruction re-runs on resume); on re-execution
+   the instruction is skipped. A skipped instruction produces nothing and
+   leaves `result` unchanged — a following instruction that reads `result`
+   must not assume the marked instruction just ran (that assumption is
+   itself a re-entrancy bug). `once` keys must be unique
    within a document (validated). Use sparingly — a document that needs many
    `once` markers is usually missing a dispatch loop.
 

@@ -782,7 +782,7 @@ pub(super) fn cases() -> Vec<Case> {
 /// (`docs/services/session-runner.md` § Example Documents) — the golden
 /// positive case: it exercises parameters, `try`/`finally`, both loop
 /// forms, `$expr` args, `set`, and `if`.
-pub(super) fn golden_calibrator_flats() -> serde_json::Value {
+pub(crate) fn golden_calibrator_flats() -> serde_json::Value {
     json!({
         "version": 1,
         "name": "calibrator-flats",

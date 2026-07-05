@@ -16,7 +16,10 @@ chrono = { workspace = true }
 humantime = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+tempfile = { workspace = true }
 thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 # Dev-only: the schema-agreement suite checks the in-code validator

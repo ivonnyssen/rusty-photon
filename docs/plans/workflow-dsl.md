@@ -275,6 +275,16 @@ committable on its own.
       execution, blackboard with
       atomic persistence, MCP client, `/invoke` + `/health` + `/validate`
       routes, completion posting.
+
+      **Progress:** the document layer (typed model, schema-layer
+      validation, parameter binding, workflow-name resolution) landed
+      2026-07-05 (PR #439); the interpreter + blackboard (tree execution
+      against the `ToolClient`/`Clock` seams, atomic persistence, `once`
+      bookkeeping, the terminated-session path) landed 2026-07-05.
+      Remaining: the real MCP client, catalog validation (layer 2), the
+      HTTP routes + service binary, and completion posting. Until Phase D,
+      declared triggers do not fire (warned at run start) and
+      `wait.until_event` raises a workflow error.
 - [ ] `rp`: forward the orchestrator registration's `config` object
       verbatim in the `/invoke` POST (the protocol addition documented in
       `rp.md` § Orchestrator Invocation Protocol; `rp` today sends only
