@@ -67,15 +67,35 @@ pub struct Blackboard {
 }
 
 impl Blackboard {
-    /// An empty blackboard for a fresh session. Any leftover file at
-    /// `path` (an earlier session that never completed) is ignored and
-    /// overwritten on the first persist, per the design's invocation
-    /// rules.
+    /// An empty blackboard bound to `path`, with no I/O. Prefer
+    /// [`Blackboard::replace`] for a new session — it also clears any
+    /// leftover file.
     pub fn new_empty(path: PathBuf) -> Self {
         Self {
             session: Value::Object(Map::new()),
             path,
         }
+    }
+
+    /// A fresh blackboard for a new (non-recovery) session: any leftover
+    /// file at `path` (an earlier session that never completed) is
+    /// deleted **eagerly**, per the design's invocation rules. Lazy
+    /// replacement on first persist would not be enough — a safety
+    /// termination before the first write must not leave the stale file
+    /// (stale `_once` markers included) to be mistaken for this session's
+    /// state on the recovery invocation.
+    pub async fn replace(path: PathBuf) -> Result<Self, BlackboardError> {
+        match tokio::fs::remove_file(&path).await {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(BlackboardError::Write {
+                    path,
+                    message: format!("cannot delete leftover blackboard: {e}"),
+                })
+            }
+        }
+        Ok(Self::new_empty(path))
     }
 
     /// Load the blackboard for a recovery invocation. A missing file is
@@ -409,6 +429,35 @@ mod tests {
         let bb = Blackboard::new_empty(path);
         let err = bb.persist().await.unwrap_err();
         assert!(matches!(err, BlackboardError::Write { .. }), "{err}");
+    }
+
+    #[tokio::test]
+    async fn test_replace_deletes_a_leftover_file_eagerly() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session-1.json");
+        // A stale file from an earlier incarnation of the same session id
+        // — with a once-marker that would wrongly skip work if it ever
+        // resurfaced on a recovery invocation.
+        std::fs::write(&path, br#"{"_once": {"panel-on": true}, "stale": 1}"#).unwrap();
+
+        let bb = Blackboard::replace(path.clone()).await.unwrap();
+        assert_eq!(*bb.value(), json!({}));
+        assert!(
+            !path.exists(),
+            "the leftover file must be gone even if this session never persists"
+        );
+        // Reloading (what a recovery invocation does) now sees a fresh
+        // session, not the stale state.
+        assert_eq!(*Blackboard::load(path).unwrap().value(), json!({}));
+    }
+
+    #[tokio::test]
+    async fn test_replace_without_a_leftover_file_is_fine() {
+        let dir = tempfile::tempdir().unwrap();
+        let bb = Blackboard::replace(dir.path().join("nope.json"))
+            .await
+            .unwrap();
+        assert_eq!(*bb.value(), json!({}));
     }
 
     #[tokio::test]

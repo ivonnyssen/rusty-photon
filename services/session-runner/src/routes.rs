@@ -2,8 +2,10 @@
 //! /validate` (layers 1–2 as a service), `GET /health`.
 //!
 //! `/invoke` runs **all three validation layers before acknowledging**
-//! (design tenet 3): schema (layer 1), catalog against the live
-//! `tools/list` (layer 2), and invocation parameters (layer 3). Any
+//! (design tenet 3). Deliberately local-first: schema (layer 1) and
+//! invocation parameters (layer 3) run before the catalog check
+//! (layer 2), which needs a network round-trip to `rp` — a document or
+//! parameter error is diagnosed without touching `rp` at all. Any
 //! failure is the error response — the session fails to start loudly,
 //! before any hardware moves. Only then is the engine run spawned and the
 //! acknowledgment returned.
@@ -84,16 +86,23 @@ async fn validate(
     State(config): State<Arc<Config>>,
     Json(request): Json<ValidateRequest>,
 ) -> (StatusCode, Json<Value>) {
-    // Exactly one input form.
+    // Exactly one input form. Failures carry the reason the catalog
+    // check was skipped: a workflow that could not be loaded is not a
+    // schema failure.
     let document = match (request.document, request.workflow) {
-        (Some(document), None) => Document::from_value(&document),
+        (Some(document), None) => {
+            Document::from_value(&document).map_err(|issues| (issues, "schema validation failed"))
+        }
         (None, Some(name)) => match load_workflow_source(&config, &name).await {
-            Ok(src) => Document::parse(&src),
-            Err(message) => Err(vec![ValidationIssue {
-                pointer: String::new(),
-                message,
-                expr_span: None,
-            }]),
+            Ok(src) => Document::parse(&src).map_err(|issues| (issues, "schema validation failed")),
+            Err(message) => Err((
+                vec![ValidationIssue {
+                    pointer: String::new(),
+                    message,
+                    expr_span: None,
+                }],
+                "the workflow could not be loaded",
+            )),
         },
         _ => {
             return error_response(
@@ -107,14 +116,10 @@ async fn validate(
 
     let document = match document {
         Ok(document) => document,
-        Err(issues) => {
+        Err((issues, reason)) => {
             return (
                 StatusCode::OK,
-                validate_report(
-                    false,
-                    issues,
-                    "skipped: schema validation failed".to_owned(),
-                ),
+                validate_report(false, issues, format!("skipped: {reason}")),
             )
         }
     };
@@ -269,18 +274,20 @@ async fn invoke(
         return issues_response(StatusCode::BAD_REQUEST, "catalog validation failed", issues);
     }
 
-    // Blackboard: reloaded on recovery; fresh otherwise (a leftover file
-    // from an earlier session is ignored and replaced).
+    // Blackboard: reloaded on recovery; fresh otherwise, with any
+    // leftover file deleted eagerly — a termination before the first
+    // persist must not resurrect stale state on the recovery invocation.
     let blackboard_path = config
         .state_dir
         .join(format!("{}.json", request.session_id));
     let blackboard = if request.recovery.is_some() {
-        match Blackboard::load(blackboard_path) {
-            Ok(blackboard) => blackboard,
-            Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-        }
+        Blackboard::load(blackboard_path)
     } else {
-        Blackboard::new_empty(blackboard_path)
+        Blackboard::replace(blackboard_path).await
+    };
+    let blackboard = match blackboard {
+        Ok(blackboard) => blackboard,
+        Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     };
     if let Some(recovery) = &request.recovery {
         // Exposed as `params._recovery.*`; declared parameter names cannot
@@ -578,6 +585,11 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(response["valid"], json!(false));
+        // A load failure is not a schema failure — the skip reason says so.
+        assert_eq!(
+            response["catalog_validation"],
+            json!("skipped: the workflow could not be loaded")
+        );
         let message = response["errors"][0]["message"].as_str().unwrap();
         assert!(message.contains("missing"), "{message}");
     }

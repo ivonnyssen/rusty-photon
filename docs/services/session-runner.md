@@ -532,8 +532,11 @@ from setting directly: `session._once.*` (completed once-markers),
 
 The file is deleted when a session completes and the completion has been
 acknowledged by `rp`; a leftover file at `/invoke` time for a **new**
-session (no `recovery` context, different `session_id`) is ignored and
-replaced.
+session (no `recovery` context) is deleted **eagerly**, before the run
+starts — lazy replacement on first persist would not be enough, because a
+safety termination before the first write must not leave a stale file
+(stale `_once` markers included) to be mistaken for this session's state
+on the recovery invocation.
 
 ## Re-entrancy Contract
 
@@ -737,7 +740,8 @@ string at that location) when the finding is inside an expression. Standalone `/
 configured `mcp_server_url`; when that is unset or `rp` is unreachable, it
 runs layer 1 only and says so in `catalog_validation` (`"skipped: no
 mcp_server_url configured"` / `"skipped: rp unreachable (…)"`; schema
-failures also skip the catalog check). `4xx` is reserved for a malformed
+failures and workflows that cannot be loaded also skip the catalog check,
+each under its own label). `4xx` is reserved for a malformed
 *request* (neither/both input forms, invalid JSON).
 `/invoke`, which always carries a live `mcp_server_url`, runs all three
 layers before executing: validation failures return `400` with
