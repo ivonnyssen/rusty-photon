@@ -127,7 +127,10 @@ validation error — misspellings must not silently no-op.
   computed is wrapped as `{ "$expr": "<expression>" }`. This keeps literal
   strings (humantime durations, filter names) unambiguous and lets static
   validation type-check every literal argument against the tool's JSON
-  Schema.
+  Schema. `$expr` is recognized only as a **direct** argument value; a
+  `$expr` key nested anywhere inside a literal value is a validation
+  error — letting it pass as data would silently send the wrapper object
+  to the tool, exactly the no-op misspelling the format forbids.
 - The tool's structured result becomes `result` for the instructions that
   follow (see [`result` scoping](#result-scoping)).
 - Optional `retry`: on tool error, retry up to `max_attempts` total attempts
@@ -191,7 +194,10 @@ such as `capture`-while-guiding).
 
 - Keys must be `session.*` paths; values are always expressions.
 - All values are evaluated before any key is written — a `set` cannot read
-  its own writes.
+  its own writes. Because of this, keys within one `set` must not
+  **overlap** (no key may be a path prefix of another, e.g. `session.a`
+  alongside `session.a.b`) — the write order would be ambiguous;
+  validation rejects the overlap.
 - `set` is the **only** way state crosses instruction boundaries or survives
   a crash. `result` is transient by design — anything worth keeping is
   copied to the blackboard explicitly, which makes the resume semantics
@@ -351,6 +357,12 @@ Expressions are strings in a small, pure, CEL-style language. They appear in
 | `result.*` | Structured result of the most recent result-producing instruction ([`result` scoping](#result-scoping)). | Until the next result-producing instruction. |
 | `event.*` | The triggering envelope payload (in trigger `when`/`do`) or poll result. | One trigger firing. |
 | `error.*` | `message`, `instruction_id`, `tool` inside `catch`/`finally`. | One error scope. |
+
+`event.*` is only in scope in a trigger's `when` / `while` / `do`;
+`error.*` only inside `catch` / `finally` blocks. Referencing either
+anywhere else is a **load-time validation error** (the engine knows
+statically the value could never be non-null there), pointing at the
+offending namespace root within the expression.
 
 **Semantics:**
 
@@ -590,7 +602,8 @@ purely a *consumer* of the stream plus an MCP *client*.
 - `config` is this plugin's registered `config` object, forwarded verbatim
   by `rp` (`rp.md` § Orchestrator Invocation Protocol).
 - `config.workflow` names a document: `<name>.json` resolved in the
-  configured `workflows_dir`, or an absolute path. Resolution outside
+  configured `workflows_dir` (the `.json` suffix may be spelled out; it is
+  appended when absent), or an absolute path. Resolution outside
   `workflows_dir` for relative names is rejected.
 - `config.parameters` is validated against the document's `parameters`
   declarations (unknown parameter names are errors; missing required
@@ -612,11 +625,24 @@ purely a *consumer* of the stream plus an MCP *client*.
 
 Three layers, all sharing one implementation:
 
-1. **Schema validation** — the document against
+1. **Schema validation** — the document against the rules published in
    `schema/workflow-v1.schema.json`: structure, discriminant keys, unknown
    keys, reserved names (`_`-prefixed parameters, `session._*` writes),
    unique trigger `id`s / `once` keys, loop-bound requirements,
-   expression fields parse-checked.
+   expression fields parse-checked (including the namespace-scope rule
+   above), `$expr` placement, non-overlapping `set` keys, and duration
+   fields checked against the published surface form **and** humantime
+   (humantime alone is looser — it accepts `1day` / `1 h`, which the
+   published pattern rejects; the document format is their intersection).
+   Implementation note: layer 1 is a hand-rolled validation walk
+   (`src/document/validate.rs`) that doubles as the typed-model builder
+   (parse-don't-validate) and reports **all** findings in one pass with
+   exact JSON-Pointer locations and targeted messages (raw JSON-Schema
+   `oneOf` output cannot name a misspelled key or produce the `script`
+   reservation error). The published schema remains the external
+   contract: an agreement suite enforces that everything the walk accepts
+   passes the schema — the walk is only ever *stronger*, where JSON
+   Schema cannot express a rule.
 2. **Catalog validation** (requires `rp`) — every `tool` node's name exists
    in `tools/list`; literal args type-check against the tool's parameter
    schema; required tool parameters are present (as literal or `$expr`);
@@ -628,7 +654,10 @@ Three layers, all sharing one implementation:
 `POST /validate` with `{ "document": { … } }` (or `{ "workflow": "<name>" }`)
 runs layers 1–2 and returns a structured list of errors with JSON-Pointer
 locations — the hook for CI on shared workflow repositories, the future UI,
-and LLM authoring loops. Standalone `/validate` reaches `rp` through the
+and LLM authoring loops. Each error is
+`{ "pointer": "<RFC 6901 JSON Pointer>", "message": "…" }`, plus
+`"expr_span": { "start": …, "end": … }` (byte offsets into the expression
+string at that location) when the finding is inside an expression. Standalone `/validate` reaches `rp` through the
 configured `mcp_server_url`; when that is unset or `rp` is unreachable, it
 runs layer 1 only and marks catalog validation as skipped in the response.
 `/invoke`, which always carries a live `mcp_server_url`, runs all three
@@ -822,7 +851,9 @@ services/session-runner/
     lib.rs             ServerBuilder (two-phase: build → start)
     config.rs          Service configuration
     error.rs           SessionRunnerError (thiserror)
-    document/          Document model, JSON Schema + catalog validation
+    document/          Document model, schema-layer validation, parameter
+                       binding, workflow-name resolution (catalog
+                       validation joins once the MCP client exists)
     expr/              Expression parsing + evaluation (Phase B)
     blackboard.rs      session.* state + atomic persistence
     engine/            Tree execution, safe points, trigger queue, resume

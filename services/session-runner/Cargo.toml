@@ -19,4 +19,11 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
+# Dev-only: the schema-agreement suite checks the in-code validator
+# against the published workflow-v1.schema.json (draft 2020-12). The
+# production validator is the hand-rolled walk in src/document/validate.rs
+# (precise pointers + messages the schema cannot produce); this crate
+# never ships in the binary. Default features off: the schema has no
+# external $refs to resolve.
+jsonschema = { version = "0.46", default-features = false }
 proptest = { workspace = true }
