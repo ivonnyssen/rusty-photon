@@ -37,10 +37,25 @@ for pkgdir in services/*/pkg; do
             || err "$svc: ExecStart must be exactly /usr/bin/$name (config is XDG-resolved; no --config flag)"
     fi
 
-    for s in postinst postrm; do
-        cmp -s "packaging/$s.common" "$pkgdir/$s" \
-            || err "$svc: pkg/$s differs from packaging/$s.common"
-    done
+    # postrm is byte-identical everywhere. postinst is byte-identical too,
+    # except the camera packages: theirs must equal postinst.common with the
+    # canonical udev stanza inserted before #DEBHELPER# (still deterministic).
+    cmp -s "packaging/postrm.common" "$pkgdir/postrm" \
+        || err "$svc: pkg/postrm differs from packaging/postrm.common"
+    case "$svc" in
+        qhy-camera|zwo-camera)
+            expected=$(mktemp)
+            awk '/^#DEBHELPER#/ { while ((getline line < "packaging/postinst.udev-stanza") > 0) print line } { print }' \
+                packaging/postinst.common > "$expected"
+            cmp -s "$expected" "$pkgdir/postinst" \
+                || err "$svc: pkg/postinst must be postinst.common + udev stanza before #DEBHELPER#"
+            rm -f "$expected"
+            ;;
+        *)
+            cmp -s "packaging/postinst.common" "$pkgdir/postinst" \
+                || err "$svc: pkg/postinst differs from packaging/postinst.common"
+            ;;
+    esac
 
     toml_section "$toml" "package.metadata.deb" | grep -q "^name = \"$name\"" \
         || err "$svc: [package.metadata.deb] name must be \"$name\""

@@ -82,7 +82,8 @@ per-service instances convergent.
 ```
 packaging/
   postinst.common        # canonical; every daemon pkg/postinst is byte-identical
-  postrm.common          # canonical; ditto (qhy/zwo: documented +udevadm variant)
+  postinst.udev-stanza   # canonical camera addition (inserted before #DEBHELPER#)
+  postrm.common          # canonical; byte-identical everywhere
   README.md              # invariants, how to add a service
 scripts/
   check-pkg-assets.sh    # asserts the invariants below
@@ -204,15 +205,17 @@ fi
 
 The shared user, home, and `/etc/rusty-photon` symlink are never removed on
 purge (shared across packages; Debian convention keeps system users). The
-camera packages' postinst appends a `udevadm control --reload-rules &&
-udevadm trigger || true` stanza — the one sanctioned variant, checked by
-`check-pkg-assets.sh`.
+camera packages' postinst is the one sanctioned variant:
+`postinst.common` with the canonical `packaging/postinst.udev-stanza`
+inserted before `#DEBHELPER#` — `check-pkg-assets.sh` verifies the exact
+byte-level construction.
 
 RPM mirrors this via `post_install_script` / `pre_uninstall_script` /
 `post_uninstall_script` (plain `systemctl` calls — cargo-generate-rpm does
 not process rpm macros). rpm has **no purge lifecycle**: erase preserves the
 runtime-created config and state (parity with `dpkg remove`); removing them
-is a documented manual step in `docs/packaging.md`. Camera packages additionally
+is a manual step to be documented in the operator guide (`docs/packaging.md`,
+a PR-6 deliverable — it does not exist yet). Camera packages additionally
 `getent group plugdev >/dev/null || groupadd -r plugdev` (the group is not
 standard on RPM distros).
 
@@ -288,7 +291,8 @@ unit, no user, no maintainer scripts beyond defaults.
 
 ASTAP is an external runtime dependency (Recommends-level, not a hard dep):
 the operator installs it separately (arm64 `.deb` from the ASTAP site) and
-points the service config at the binary. Documented in `docs/packaging.md`.
+points the service config at the binary. To be documented in the operator
+guide (`docs/packaging.md`, a PR-6 deliverable).
 
 ### On-device build — `scripts/build-packages.sh` (PR-6)
 

@@ -1,0 +1,3 @@
+# Camera packages ship a udev rule; make it effective without a reboot.
+udevadm control --reload-rules || true
+udevadm trigger || true

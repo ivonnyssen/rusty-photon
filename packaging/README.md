@@ -17,8 +17,10 @@ Every packaged daemon owns a `services/<svc>/pkg/` directory containing:
 The maintainer scripts are deliberately service-agnostic: they derive the
 service name from `$DPKG_MAINTSCRIPT_PACKAGE`, so the copies never diverge.
 The camera packages (`qhy-camera`, `zwo-camera`) are the one sanctioned
-variant: their `postinst` is the common body plus a
-`udevadm control --reload-rules` stanza (they ship udev rules).
+variant: their `postinst` must be exactly `postinst.common` with
+[`postinst.udev-stanza`](postinst.udev-stanza) inserted before the
+`#DEBHELPER#` line (they ship udev rules). The checker verifies that exact
+construction, byte for byte.
 
 `scripts/check-pkg-assets.sh` enforces all of this — run it after touching
 anything under `packaging/` or a service's `pkg/` directory. It discovers
