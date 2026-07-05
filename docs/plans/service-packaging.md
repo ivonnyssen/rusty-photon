@@ -23,7 +23,7 @@ while keeping host-level setup anyway (see ADR-012 Context).
 | Phase | Description | Status | Branch / PR |
 |-------|-------------|--------|-------------|
 | PR-1 | This plan + ADR-012 + ADR-013 + archive old plan | In progress | `feature/service-packaging-plan` |
-| PR-2 | Migrate filemonitor to the new pattern (template proof) + sentinel XDG fix + `check-pkg-assets.sh` | Pending | |
+| PR-2 | Migrate filemonitor to the new pattern (template proof) + filemonitor/sentinel XDG fix + `check-pkg-assets.sh` | In progress | `feature/service-packaging-filemonitor` |
 | PR-3 | 11 pure-Rust daemons + `phd2-guider` CLI package | Pending | |
 | PR-4 | `qhy-camera` package + firmware downloader helper | Pending | |
 | PR-5 | `zwo-camera` package with bundled MIT SDK blobs | Pending | |
@@ -82,7 +82,8 @@ per-service instances convergent.
 ```
 packaging/
   postinst.common        # canonical; every daemon pkg/postinst is byte-identical
-  postrm.common          # canonical; ditto (qhy/zwo: documented +udevadm variant)
+  postinst.udev-stanza   # canonical camera addition (inserted before #DEBHELPER#)
+  postrm.common          # canonical; byte-identical everywhere
   README.md              # invariants, how to add a service
 scripts/
   check-pkg-assets.sh    # asserts the invariants below
@@ -204,23 +205,40 @@ fi
 
 The shared user, home, and `/etc/rusty-photon` symlink are never removed on
 purge (shared across packages; Debian convention keeps system users). The
-camera packages' postinst appends a `udevadm control --reload-rules &&
-udevadm trigger || true` stanza — the one sanctioned variant, checked by
-`check-pkg-assets.sh`.
+camera packages' postinst is the one sanctioned variant:
+`postinst.common` with the canonical `packaging/postinst.udev-stanza`
+inserted before `#DEBHELPER#` — `check-pkg-assets.sh` verifies the exact
+byte-level construction.
 
 RPM mirrors this via `post_install_script` / `pre_uninstall_script` /
 `post_uninstall_script` (plain `systemctl` calls — cargo-generate-rpm does
-not process rpm macros). Camera packages additionally
+not process rpm macros). rpm has **no purge lifecycle**: erase preserves the
+runtime-created config and state (parity with `dpkg remove`); removing them
+is a manual step to be documented in the operator guide (`docs/packaging.md`,
+a PR-6 deliverable — it does not exist yet). Camera packages additionally
 `getent group plugdev >/dev/null || groupadd -r plugdev` (the group is not
 standard on RPM distros).
 
-### Code change required (PR-2)
+### Code changes required (PR-2 / PR-3)
 
-`sentinel` is the one service without the XDG fallback: it loads config only
-when `--config` is passed, else silently runs on `Config::default()`. Switch
-it to `resolve_config_path` like every other service so the no-flag packaged
-unit behaves identically to the rest. Verify no other service bypasses
-`resolve_config_path`.
+Survey result: the 8 hardware drivers use `resolve_config_path` (+
+`materialize_identity`), but **six services do not**: `filemonitor`
+(CWD-relative `config.json` default), `sentinel` (loads config only with
+`--config`, else silent in-memory defaults), and `rp` / `ui-htmx` /
+`plate-solver` / `calibrator-flats`. All six adopt the same one-line bootstrap —
+`rusty_photon_config::resolve_and_init("<svc>", args.config, &default)` —
+the canonical composite that resolves the path and writes the typed default
+config on first start (so a packaged install materializes an editable
+file), logging `Created default config at …`. Self-creation applies **only
+to the XDG default path**: an explicit `--config` naming a missing file
+stays a hard error, baked into the helper so the fail-fast contract cannot
+be miscopied (a typo'd path must never silently run on defaults;
+filemonitor's integration test and BDD scenarios pin this). The underlying
+primitives (`resolve_config_path`, `init_file_if_absent`) stay public.
+filemonitor + sentinel land in PR-2 (filemonitor also gains an
+`impl Default for Config` based on its previously packaged default, watch
+path moved to `/var/lib/rusty-photon/filemonitor/`); the remaining four land
+in PR-3 alongside their packaging.
 
 ### qhy-camera (PR-4)
 
@@ -273,7 +291,8 @@ unit, no user, no maintainer scripts beyond defaults.
 
 ASTAP is an external runtime dependency (Recommends-level, not a hard dep):
 the operator installs it separately (arm64 `.deb` from the ASTAP site) and
-points the service config at the binary. Documented in `docs/packaging.md`.
+points the service config at the binary. To be documented in the operator
+guide (`docs/packaging.md`, a PR-6 deliverable).
 
 ### On-device build — `scripts/build-packages.sh` (PR-6)
 
@@ -300,7 +319,19 @@ Runs on Debian arm64 (the rig) and x86_64 dev boxes:
 ## Verification
 
 - `lintian` on all debs (documented expected findings:
-  `custom-library-search-path` on zwo-camera); `rpmlint` on rpms.
+  `custom-library-search-path` on zwo-camera; `no-changelog` /
+  `no-manual-page` / `copyright-without-copyright-notice` accepted pre-1.0;
+  `empty-field Depends` + `unstripped-binary` appear only on ad-hoc non-Debian
+  host builds — Debian/CI builds run dpkg-shlibdeps and strip). All daemon
+  packages carry `depends = "$auto, adduser"` (postinst uses adduser).
+  `rpmlint` on rpms.
+- **Rootless-container caveat (PR-2 finding):** rootless podman cannot apply
+  the units' sandboxing (mount-namespace + seccomp setup across the `User=`
+  switch fails with `217/USER` / `226/NAMESPACE`). `verify-packages.sh` must
+  install a drop-in resetting the whole hardening block inside the container
+  — packaging lifecycle is what containers verify; the hardening itself is
+  verified on real hosts (`systemd-analyze security` + active unit on the
+  rig).
 - `scripts/verify-packages.sh` in a podman `--systemd=always` `debian:trixie`
   container (arm64 natively on the rig, x86_64 on the dev box), per service:
   install → unit `active` → config self-created at

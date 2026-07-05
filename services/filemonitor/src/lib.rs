@@ -72,6 +72,50 @@ fn default_discovery_port() -> Option<u16> {
     Some(ascom_alpaca::discovery::DEFAULT_DISCOVERY_PORT)
 }
 
+impl Default for Config {
+    /// The packaged first-start default: watch a roof-status file under the
+    /// service's state directory and fail safe (no readable status = unsafe).
+    fn default() -> Self {
+        Self {
+            device: DeviceConfig {
+                name: "File Safety Monitor".to_string(),
+                unique_id: "filemonitor-001".to_string(),
+                description: "ASCOM Alpaca SafetyMonitor that monitors file content".to_string(),
+            },
+            file: FileConfig {
+                path: PathBuf::from("/var/lib/rusty-photon/filemonitor/RoofStatusFile.txt"),
+                polling_interval: Duration::from_secs(60),
+            },
+            parsing: ParsingConfig {
+                rules: vec![
+                    ParsingRule {
+                        rule_type: RuleType::Contains,
+                        pattern: "CLOSED".to_string(),
+                        safe: true,
+                    },
+                    ParsingRule {
+                        rule_type: RuleType::Contains,
+                        pattern: "OPEN".to_string(),
+                        safe: false,
+                    },
+                    ParsingRule {
+                        rule_type: RuleType::Regex,
+                        pattern: r"Status:\s*(SAFE|OK)".to_string(),
+                        safe: true,
+                    },
+                ],
+                case_sensitive: false,
+            },
+            server: ServerConfig {
+                port: 11111,
+                discovery_port: default_discovery_port(),
+                tls: None,
+                auth: None,
+            },
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct FileMonitorDevice {
     config: Config,

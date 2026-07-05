@@ -14,7 +14,9 @@ use tracing::Level;
 #[command(about = "Observatory monitoring and notification service")]
 #[command(version)]
 struct Args {
-    /// Path to configuration file
+    /// Path to configuration file. Defaults to the per-user platform config
+    /// directory (e.g. `~/.config/rusty-photon/sentinel.json` on Linux);
+    /// created with defaults on first start if absent.
     #[arg(short, long)]
     config: Option<PathBuf>,
 
@@ -39,13 +41,13 @@ fn main() -> ServiceResult {
         args.log_level
     );
 
-    let mut config = if let Some(config_path) = &args.config {
-        tracing::debug!("Loading configuration from {:?}", config_path);
-        load_config(config_path)?
-    } else {
-        tracing::debug!("Using default configuration");
-        Config::default()
-    };
+    let config_path = rusty_photon_config::resolve_and_init(
+        "sentinel",
+        args.config,
+        &serde_json::to_value(Config::default())?,
+    )?;
+    tracing::debug!("Loading configuration from {:?}", config_path);
+    let mut config = load_config(&config_path)?;
 
     config.resolve_secrets()?;
 

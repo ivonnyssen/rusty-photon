@@ -167,17 +167,25 @@ The service uses Rust's `PathBuf` for cross-platform path handling:
 
 #### Linux (Debian/Ubuntu) — `.deb` package
 ```bash
-sudo dpkg -i filemonitor_0.1.0-1_amd64.deb
+sudo dpkg -i rusty-photon-filemonitor_0.1.0-1_amd64.deb
 ```
 
-This installs the binary to `/usr/bin/filemonitor`, a default config to `/etc/filemonitor/config.json`, enables and starts a systemd service, and creates a `filemonitor` system user. Edit `/etc/filemonitor/config.json` to point to your monitored file. The config is preserved across package upgrades.
+This installs the binary to `/usr/bin/rusty-photon-filemonitor`, enables and
+starts the `rusty-photon-filemonitor` systemd unit, and creates the shared
+`rusty-photon` system user (see
+[ADR-012](../decisions/012-service-packaging-architecture.md)). The package
+ships **no config file**: the service self-creates its config with defaults
+on first start at `/var/lib/rusty-photon/.config/rusty-photon/filemonitor.json`
+(also reachable via the `/etc/rusty-photon` symlink). Edit it to point at
+your monitored file, then `systemctl reload rusty-photon-filemonitor`.
+Upgrades never touch the config; package purge removes it.
 
 #### Linux (Fedora/RHEL) — `.rpm` package
 ```bash
-sudo rpm -i filemonitor-0.1.0-1.x86_64.rpm
+sudo rpm -i rusty-photon-filemonitor-0.1.0-1.x86_64.rpm
 ```
 
-Same layout as the `.deb` package. User edits to `/etc/filemonitor/config.json` are preserved on upgrade (`noreplace`).
+Same layout and config behavior as the `.deb` package.
 
 #### macOS — Homebrew
 ```bash
@@ -198,15 +206,18 @@ cargo build --release -p filemonitor
 ### Service Integration
 
 #### Linux (systemd)
-A systemd unit file is provided at `pkg/filemonitor.service`. When installed via the `.deb` or `.rpm` package, the service is automatically enabled and started. Manual setup:
+A hardened systemd unit is provided at `pkg/rusty-photon-filemonitor.service`
+(network-only service class per ADR-012). When installed via the `.deb` or
+`.rpm` package, the unit is automatically enabled and started. Manual setup:
 
 ```bash
-sudo cp pkg/filemonitor.service /etc/systemd/system/
+sudo cp pkg/rusty-photon-filemonitor.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now filemonitor
+sudo systemctl enable --now rusty-photon-filemonitor
 ```
 
-The service runs as a dedicated `filemonitor` system user, created automatically during package installation.
+The service runs as the shared `rusty-photon` system user, created
+automatically during package installation.
 
 #### macOS / Windows
 **Runtime support:** The filemonitor binary accepts a hidden `--service`
