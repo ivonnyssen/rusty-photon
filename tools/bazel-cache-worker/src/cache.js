@@ -2,7 +2,9 @@
 //
 // Implements the Bazel HTTP cache protocol (GET/HEAD/PUT on /ac/<hash> and
 // /cas/<hash>) over an R2 bucket, served from Cloudflare's edge, so cloud CI
-// reads it at edge speed (with R2's zero egress cost).
+// reads it at edge speed (with R2's zero egress cost). Hot /cas/ blobs are
+// served straight from the per-PoP edge cache with no R2 round trip at all
+// (see CAS_EDGE_TTL_S below).
 //
 // Security (public repo): reads are ANONYMOUS, so every PR including forks gets
 // a warm cache; writes require a Bearer token that only push-to-main / nightly
@@ -30,6 +32,30 @@ const KEY_RE = /^(ac|cas)\/[0-9a-fA-F]+$/;
 // a hit-heavy build never GETs (build-without-the-bytes skips most
 // intermediate downloads) are not touched and still age out.
 const TOUCH_AFTER_MS = 2 * 24 * 60 * 60 * 1000;
+
+// Edge-cache TTL for /cas/ reads. CAS keys are content hashes — a key's bytes
+// can never legitimately change — so serving them from Cloudflare's
+// per-datacenter cache needs no invalidation story (even a touch re-put
+// writes identical content). The constraint is retention interplay: an edge
+// hit never reaches R2, so it cannot touch — a hot blob's R2 clock only
+// advances on the origin reads between TTL expiries. Worst-case R2 age of a
+// live object is TOUCH_AFTER (2d) + this TTL (1d) + the nightly read gap
+// (1d) ≈ 4d, comfortably inside the 7-day lifecycle window; keep
+// TOUCH_AFTER_MS + CAS_EDGE_TTL_S well below that window if either changes.
+// A longer TTL would buy little anyway: CI reads are bursty (all legs of a
+// run land within hours), and the next origin read re-primes the PoP.
+const CAS_EDGE_TTL_S = 24 * 60 * 60;
+
+// One immediate retry on R2 read exceptions. Transient R2 errors exist, and
+// to Bazel a failed cache read becomes a rebuilt action — a second read is
+// far cheaper than that.
+async function r2Get(env, key) {
+  try {
+    return await env.CACHE.get(key);
+  } catch {
+    return env.CACHE.get(key);
+  }
+}
 
 async function touch(env, key, seenUploadedMs) {
   // Fresh get(): the client response consumes its own body stream. put()
@@ -60,12 +86,28 @@ export default {
 
     switch (request.method) {
       case "GET": {
-        const obj = await env.CACHE.get(key);
+        // /cas/ is immutable -> edge-cacheable: a hit never reaches R2, so an
+        // R2 latency spike or transient error can't stall the read. /ac/
+        // entries are mutable (a re-executed action re-uploads under the same
+        // key), so they always read R2.
+        const edgeable = key.startsWith("cas/");
+        if (edgeable) {
+          const hit = await caches.default.match(request);
+          if (hit) return hit;
+        }
+        const obj = await r2Get(env, key);
         if (!obj) return new Response(null, { status: 404 });
         if (Date.now() - obj.uploaded.getTime() > TOUCH_AFTER_MS) {
           ctx.waitUntil(touch(env, key, obj.uploaded.getTime()));
         }
-        return new Response(obj.body, { status: 200 });
+        // Content-Length gives Bazel a sized body instead of a chunked
+        // stream; Cache-Control is what makes cache.put store the response.
+        const headers = { "Content-Length": String(obj.size) };
+        if (edgeable) headers["Cache-Control"] = `public, max-age=${CAS_EDGE_TTL_S}`;
+        const res = new Response(obj.body, { status: 200, headers });
+        // clone() tees the body: one branch to the client, one to the edge.
+        if (edgeable) ctx.waitUntil(caches.default.put(request, res.clone()));
+        return res;
       }
       case "HEAD": {
         const obj = await env.CACHE.head(key);
