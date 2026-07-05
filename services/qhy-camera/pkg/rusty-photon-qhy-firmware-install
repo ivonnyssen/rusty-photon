@@ -22,9 +22,10 @@
 # driver links libqhyccd statically.
 #
 # Usage: rusty-photon-qhy-firmware-install [--force] [--root DIR]
-#   --force      reinstall over an existing /lib/firmware/qhy
+#   --force      reinstall even if everything is already installed
 #   --root DIR   install under DIR instead of / (container testing;
-#                skips the root requirement and the udev reload)
+#                skips the root requirement and the udev reload).
+#                `--root /` is normalized to a plain root install.
 
 set -eu
 
@@ -55,6 +56,9 @@ while [ $# -gt 0 ]; do
     shift
 done
 
+# `--root /` is a real-root install: keep the root check and udev reload.
+[ "$ROOT" = "/" ] && ROOT=""
+
 if [ -z "$ROOT" ] && [ "$(id -u)" != 0 ]; then
     echo "rusty-photon-qhy-firmware-install: must run as root (or use --root)" >&2
     exit 1
@@ -69,8 +73,14 @@ case "$(uname -m)" in
         ;;
 esac
 
-if [ -d "$ROOT/lib/firmware/qhy" ] && [ "$FORCE" != 1 ]; then
-    echo "$ROOT/lib/firmware/qhy already exists; use --force to reinstall"
+# Complete only when all three artifacts are present — a partial state
+# (e.g. firmware left behind by QHYCCD's own install.sh, or an
+# interrupted run) must proceed and converge on the full layout.
+if [ "$FORCE" != 1 ] \
+    && [ -d "$ROOT/lib/firmware/qhy" ] \
+    && [ -x "$ROOT/usr/local/sbin/fxload" ] \
+    && [ -f "$ROOT/etc/udev/rules.d/85-qhyccd.rules" ]; then
+    echo "firmware, fxload, and udev rules already installed; use --force to reinstall"
     exit 0
 fi
 
