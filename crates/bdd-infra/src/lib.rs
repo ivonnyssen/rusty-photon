@@ -1179,8 +1179,14 @@ mod tests {
     #[test]
     fn test_run_once_captures_stderr_on_failure() {
         ensure_rp_binary();
-        let output = run_once("rp", &["serve"], None);
-        // serve without --config should fail
+        // An explicit --config naming a missing file is a hard error
+        // (self-creation applies only to the XDG default path; a bare
+        // `serve` would resolve XDG, scaffold a config, and serve forever).
+        let output = run_once(
+            "rp",
+            &["serve", "--config", "/nonexistent/rp-test-config.json"],
+            None,
+        );
         assert!(!output.status.success());
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(!stderr.is_empty(), "stderr should contain error message");

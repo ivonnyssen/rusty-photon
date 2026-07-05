@@ -30,7 +30,12 @@ packaged services by the presence of `pkg/` dirs, so adding a service means:
 2. write `rusty-photon-<svc>.service` (start from filemonitor's and apply
    the service-class delta from the plan: serial → `SupplementaryGroups=dialout`;
    camera → `plugdev` + `AF_NETLINK`; network-only → `PrivateDevices=yes` +
-   `MemoryDenyWriteExecute=yes`),
+   `MemoryDenyWriteExecute=yes`). Reload-capable services (those calling
+   `ServiceRunner::with_reload`) add `ExecReload=/bin/kill -HUP $MAINPID`;
+   services with no defaultable config gate on
+   `ConditionPathExists=/var/lib/rusty-photon/.config/rusty-photon/<svc>.json`
+   instead of crash-looping on a fresh install (both lists are enforced by
+   the checker),
 3. add the `[package.metadata.deb]` / `[package.metadata.generate-rpm]`
    blocks to the service's `Cargo.toml` (names all `rusty-photon-<svc>`),
 4. run `scripts/check-pkg-assets.sh`.

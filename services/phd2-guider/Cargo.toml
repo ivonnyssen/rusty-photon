@@ -32,6 +32,25 @@ command = "cargo miri test -p phd2-guider"
 name = "mock_phd2"
 path = "src/bin/mock_phd2.rs"
 
+[package.metadata.deb]
+name = "rusty-photon-phd2-guider"
+maintainer = "Igor von Nyssen <igor@vonnyssen.com>"
+extended-description = "Command-line client for the PHD2 guiding application."
+section = "science"
+priority = "optional"
+depends = "$auto"
+assets = [
+    ["target/release/phd2-guider", "usr/bin/rusty-photon-phd2-guider", "755"],
+]
+
+[package.metadata.generate-rpm]
+name = "rusty-photon-phd2-guider"
+summary = "Command-line client for the PHD2 guiding application"
+license = "MIT OR Apache-2.0"
+assets = [
+    { source = "target/release/phd2-guider", dest = "/usr/bin/rusty-photon-phd2-guider", mode = "755" },
+]
+
 [dev-dependencies]
 tokio-test = { workspace = true }
 base64 = { workspace = true }
