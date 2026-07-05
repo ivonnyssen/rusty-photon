@@ -93,7 +93,8 @@ for pkgdir in services/*/pkg; do
         || err "$svc: [package.metadata.generate-rpm] name must be \"$name\""
 done
 
-# The QHY SDK version is pinned in two shipped places (ADR-013); they must match.
+# The QHY SDK pins (version + archive sha256s) live in two shipped places
+# (ADR-013); they must match.
 bp=scripts/build-packages.sh
 fw=services/qhy-camera/pkg/rusty-photon-qhy-firmware-install
 if [ -f "$bp" ] && [ -f "$fw" ]; then
@@ -102,6 +103,13 @@ if [ -f "$bp" ] && [ -f "$fw" ]; then
     if [ -z "$v1" ] || [ "$v1" != "$v2" ]; then
         err "QHY SDK version pin mismatch: build-packages.sh='$v1' vs firmware-install='$v2'"
     fi
+    for arch in X86_64 AARCH64; do
+        s1=$(sed -n "s/^QHY_SHA256_$arch=\"\(.*\)\"\$/\1/p" "$bp" | head -1)
+        s2=$(sed -n "s/^SHA256_$arch=\"\(.*\)\"\$/\1/p" "$fw" | head -1)
+        if [ -z "$s1" ] || [ "$s1" != "$s2" ]; then
+            err "QHY SDK sha256 pin mismatch ($arch): build-packages.sh='$s1' vs firmware-install='$s2'"
+        fi
+    done
 fi
 
 # The packaged ZWO SDK license must match the copy vendored with the SDK

@@ -25,9 +25,9 @@ while keeping host-level setup anyway (see ADR-012 Context).
 | PR-1 | This plan + ADR-012 + ADR-013 + archive old plan | Merged | #435 |
 | PR-2 | Migrate filemonitor to the new pattern (template proof) + filemonitor/sentinel XDG fix + `check-pkg-assets.sh` | Merged | #438 |
 | PR-3 | 11 pure-Rust daemons + `phd2-guider` CLI package | Merged | #441 |
-| PR-4 | `qhy-camera` package + firmware downloader helper | In progress | `feature/qhy-camera-packaging` |
-| PR-5 | `zwo-camera` package with bundled MIT SDK blobs | In progress | `feature/zwo-camera-packaging` |
-| PR-6 | `build-packages.sh` + `verify-packages.sh` + `docs/packaging.md`; first on-rig install | Pending | |
+| PR-4 | `qhy-camera` package + firmware downloader helper | Merged | #444 |
+| PR-5 | `zwo-camera` package with bundled MIT SDK blobs | Merged | #446 |
+| PR-6 | `build-packages.sh` + `verify-packages.sh` + `docs/packaging.md`; first on-rig install | In progress | `feature/packaging-tooling` |
 | PR-7 | `release.yml` generalization (x86_64 matrix, Homebrew rename) | Deferred | |
 
 Carried over from the superseded plan (still open, now owned by PR-7):
@@ -369,13 +369,16 @@ guide (`docs/packaging.md`, a PR-6 deliverable).
 
 Runs on Debian arm64 (the rig) and x86_64 dev boxes:
 
-1. apt prereqs (idempotent): `build-essential pkg-config curl git libssl-dev
-   libcfitsio-dev libusb-1.0-0-dev libudev-dev clang libclang-dev dpkg-dev
-   ca-certificates`; `cargo install --locked cargo-deb` (3.6.x);
+1. apt prereqs (idempotent): `build-essential pkg-config curl git
+   libusb-1.0-0-dev libudev-dev clang libclang-dev dpkg-dev
+   ca-certificates` (`libssl-dev` and `libcfitsio-dev` from the original
+   sketch dropped — the workspace links neither: TLS is rustls, FITS is
+   pure-Rust `fitsrs`); `cargo install --locked cargo-deb`;
    `cargo-generate-rpm` only with `--rpm`.
 2. Stage QHY SDK into `~/.cache/rusty-photon-pkg/` (same pinned URL + sha256
-   as the firmware helper — the checker asserts the pins match), export
-   `QHYCCD_SDK_DIR=<extracted>/usr/local/lib`.
+   as the firmware helper — the checker asserts version **and both archive
+   sha256 pins** match), export `QHYCCD_SDK_DIR=<dir containing
+   libqhyccd.a>` (located with `find`, not a hardcoded archive layout).
 3. Stage ZWO blobs into `services/zwo-camera/pkg/lib/`, export
    `ZWO_SDK_LIB_DIR` to it.
 4. `RUSTFLAGS="-C link-arg=-Wl,-rpath,/usr/lib/rusty-photon" cargo build
@@ -410,6 +413,21 @@ Runs on Debian arm64 (the rig) and x86_64 dev boxes:
   `unique_id` → port probe (`/management/apiversions` for Alpaca services;
   service-specific endpoint otherwise) → remove (config survives) → purge
   (config + state gone; user/home/symlink stay).
+  **PR-6 findings:** (1) the stock Debian container image ships a
+  `policy-rc.d` that exits 101, silently blocking every maintainer-script
+  unit start — the verify image removes it. (2) "unit active" is the wrong
+  assertion for the five shared-transport serial drivers: their **eager
+  startup handshake** exits non-zero when the device is absent (deliberate —
+  never advertise a broken device), leaving the unit in a 5s restart loop
+  until hardware appears. For them the script instead asserts: handshake
+  attempted (journal), config self-created, and — only if a driver ever
+  gains warn-and-serve — the port probe. The active+probe class is the
+  cameras (qhy contract C0 warn-and-serve; zwo serves with zero cameras)
+  plus the network-only daemons. (3) The cameras do **not** self-create a
+  config (deliberate: no `materialize_identity` — UniqueIDs derive from
+  camera serials; they run on defaults until `config.apply` or an operator
+  writes a file), so the config-self-created assertion applies to the
+  network-only daemons and serial drivers only.
 - Cameras start with zero devices attached (qhy-camera contract C0:
   warn-and-serve). zwo-camera: `ldd` resolves `libASICamera2.so` to
   `/usr/lib/rusty-photon/` (RUNPATH proof).

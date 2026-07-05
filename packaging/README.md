@@ -3,6 +3,8 @@
 Canonical shared files for the per-service `.deb`/`.rpm` packages described
 in [`docs/plans/service-packaging.md`](../docs/plans/service-packaging.md)
 and [ADR-012](../docs/decisions/012-service-packaging-architecture.md).
+Operator-facing docs (building, installing, configuring) live in
+[`docs/packaging.md`](../docs/packaging.md).
 
 ## Layout
 
