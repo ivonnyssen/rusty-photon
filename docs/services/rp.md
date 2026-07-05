@@ -1572,14 +1572,11 @@ On recovery after a safety event or power failure, `recovery` contains
 the last known session state so the orchestrator can resume.
 
 `config` is the orchestrator's registered `config` object, passed through
-verbatim — `rp` never interprets it. A hand-written orchestrator may
-equally read settings from its own service configuration; document-driven
-orchestrators (`session-runner`) rely on the pass-through so one service
-can run many workflows.
-
-> **Implementation status.** `rp` currently sends only the first four
-> fields; the `config` pass-through lands with `session-runner` Phase C
-> ([`docs/plans/workflow-dsl.md`](../plans/workflow-dsl.md)).
+verbatim — `rp` never interprets it. The key is always present: when the
+registration carries no `config`, `rp` sends `"config": null`. A
+hand-written orchestrator may equally read settings from its own service
+configuration; document-driven orchestrators (`session-runner`) rely on
+the pass-through so one service can run many workflows.
 
 The orchestrator acknowledges with timing estimates computed from the
 session context it just received:

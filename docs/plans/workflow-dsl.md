@@ -288,10 +288,12 @@ committable on its own.
       raises a workflow error. Packaging (deb/rpm metadata + `pkg/`
       scripts per the service-packaging plan) is a follow-up once the
       first-party documents ship.
-- [ ] `rp`: forward the orchestrator registration's `config` object
+- [x] `rp`: forward the orchestrator registration's `config` object
       verbatim in the `/invoke` POST (the protocol addition documented in
-      `rp.md` § Orchestrator Invocation Protocol; `rp` today sends only
-      `workflow_id` / `session_id` / `mcp_server_url` / `recovery`).
+      `rp.md` § Orchestrator Invocation Protocol). The invoke body now
+      always carries a `config` key — the registered object verbatim, or
+      `null` when the registration has none — pinned by the
+      session-lifecycle BDD scenarios.
 - [ ] `workflows/calibrator_flats.json` shipped as a first-party document.
 - [ ] Port `calibrator-flats`' BDD scenarios to run against `session-runner`
       executing that document; behavior must match the Rust plugin (same

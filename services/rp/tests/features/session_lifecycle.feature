@@ -13,6 +13,16 @@ Feature: Session lifecycle with flat calibration orchestrator
     Then the test orchestrator should have been invoked
     And the invocation payload should contain a session id
     And the invocation payload should contain the MCP server URL
+    And the invocation payload should carry a null config
+
+  Scenario: Session invocation passes the registered config through verbatim
+    Given a running Alpaca simulator
+    And a test orchestrator that completes immediately
+    And the orchestrator registration carries a config object
+    And rp is running with a camera and filter wheel on the simulator and the test orchestrator
+    When a session is started via the REST API
+    Then the test orchestrator should have been invoked
+    And the invocation payload should carry the registered config verbatim
 
   Scenario: Session emits started event
     Given a running Alpaca simulator

@@ -54,6 +54,26 @@ fn plugin_configured_as_orchestrator(world: &mut RpWorld, invoke_url: String) {
     }
 }
 
+#[given("the orchestrator registration carries a config object")]
+fn orchestrator_registration_carries_config(world: &mut RpWorld) {
+    let config = serde_json::json!({
+        "workflow": "calibrator_flats",
+        "parameters": { "camera_id": "main-cam", "flat_count": 2 }
+    });
+
+    let entry = world
+        .plugin_configs
+        .iter_mut()
+        .find(|p| p.get("type").and_then(|v| v.as_str()) == Some("orchestrator"))
+        .expect("no orchestrator plugin registered; add the test orchestrator first");
+    entry
+        .as_object_mut()
+        .expect("orchestrator plugin config is not an object")
+        .insert("config".to_string(), config.clone());
+
+    world.orchestrator_registered_config = Some(config);
+}
+
 #[given("rp is running with a camera and filter wheel on the simulator and the test orchestrator")]
 async fn rp_running_with_equipment_and_orchestrator(world: &mut RpWorld) {
     crate::steps::tool_steps::ensure_omnisim(world).await;
@@ -245,6 +265,35 @@ async fn invocation_has_mcp_url(world: &mut RpWorld) {
         invocation.mcp_server_url.contains("/mcp"),
         "expected mcp_server_url to contain '/mcp', got: {}",
         invocation.mcp_server_url
+    );
+}
+
+#[then("the invocation payload should carry the registered config verbatim")]
+async fn invocation_carries_registered_config(world: &mut RpWorld) {
+    let registered = world
+        .orchestrator_registered_config
+        .clone()
+        .expect("no config was registered for the orchestrator");
+
+    let invocations = world.orchestrator_invocations.read().await;
+    let invocation = invocations.last().expect("no orchestrator invocation");
+
+    assert_eq!(
+        invocation.config.as_ref(),
+        Some(&registered),
+        "expected the invocation to carry the registered config verbatim"
+    );
+}
+
+#[then("the invocation payload should carry a null config")]
+async fn invocation_carries_null_config(world: &mut RpWorld) {
+    let invocations = world.orchestrator_invocations.read().await;
+    let invocation = invocations.last().expect("no orchestrator invocation");
+
+    assert_eq!(
+        invocation.config.as_ref(),
+        Some(&serde_json::Value::Null),
+        "expected the invocation to carry `config: null` when none was registered"
     );
 }
 

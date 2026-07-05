@@ -24,17 +24,22 @@ pub struct SessionManager {
     state: RwLock<SessionState>,
     event_bus: Arc<EventBus>,
     orchestrator_invoke_url: Option<String>,
+    /// The orchestrator registration's `config` object — opaque to rp,
+    /// passed through verbatim in the `/invoke` POST.
+    orchestrator_config: Option<Value>,
     mcp_base_url: RwLock<String>,
 }
 
 impl SessionManager {
     pub fn new(event_bus: Arc<EventBus>, plugins: &[Value]) -> Self {
-        let orchestrator_invoke_url = plugins
+        let orchestrator = plugins
             .iter()
-            .find(|p| p.get("type").and_then(|v| v.as_str()) == Some("orchestrator"))
+            .find(|p| p.get("type").and_then(|v| v.as_str()) == Some("orchestrator"));
+        let orchestrator_invoke_url = orchestrator
             .and_then(|p| p.get("invoke_url"))
             .and_then(|v| v.as_str())
             .map(String::from);
+        let orchestrator_config = orchestrator.and_then(|p| p.get("config")).cloned();
 
         debug!(orchestrator_url = ?orchestrator_invoke_url, "session manager initialized");
 
@@ -42,6 +47,7 @@ impl SessionManager {
             state: RwLock::new(SessionState::Idle),
             event_bus,
             orchestrator_invoke_url,
+            orchestrator_config,
             mcp_base_url: RwLock::new(String::new()),
         }
     }
@@ -83,6 +89,7 @@ impl SessionManager {
             let invoke_url = invoke_url.clone();
             let wf_id = workflow_id.clone();
             let s_id = session_id.clone();
+            let config = self.orchestrator_config.clone();
 
             tokio::spawn(async move {
                 debug!(url = %invoke_url, "invoking orchestrator");
@@ -92,6 +99,7 @@ impl SessionManager {
                     "session_id": s_id,
                     "mcp_server_url": mcp_server_url,
                     "recovery": null,
+                    "config": config,
                 });
                 match client.post(&invoke_url).json(&body).send().await {
                     Ok(resp) => {
