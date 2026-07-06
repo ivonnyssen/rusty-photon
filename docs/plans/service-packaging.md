@@ -462,6 +462,12 @@ Runs on Debian arm64 (the rig) and x86_64 dev boxes:
   SDK rules' `ACTION=="add"` fxload lines — an already-plugged cold
   camera stayed raw; the helper now triggers
   `--action=add --subsystem-match=usb`.
+- ZWO end-to-end with real hardware (ASI120MC-S): hot-plug →
+  `90-rusty-photon-zwo.rules` applied `plugdev`/`0660` on the add event
+  (no trigger needed) → `systemctl reload` (SIGHUP, no restart)
+  re-enumerated → served on 11122 with a serial-derived UniqueID; the
+  bundled MIT blobs do the USB work via the RUNPATH. Zero manual steps
+  beyond the reload — the no-firmware-helper design confirmed.
 - lintian (debian profile; filemonitor/qhy-camera/zwo-camera): only the
   findings documented in `docs/packaging.md` — no surprises.
 - **Open finding (product, not packaging):** nothing binds UDP 32227.
