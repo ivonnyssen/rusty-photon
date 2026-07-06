@@ -51,6 +51,11 @@ pub enum ParameterType {
     Number,
     Boolean,
     Duration,
+    /// An opaque JSON array. v1 declares no element shape — element
+    /// errors surface as loud expression errors at run time (typed
+    /// element declarations are the deferred "array-parameter
+    /// ergonomics" in the design doc's MVP boundary).
+    Array,
 }
 
 impl ParameterType {
@@ -61,6 +66,7 @@ impl ParameterType {
             ParameterType::Number => "number",
             ParameterType::Boolean => "boolean",
             ParameterType::Duration => "duration",
+            ParameterType::Array => "array",
         }
     }
 }

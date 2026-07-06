@@ -27,11 +27,12 @@ pub(super) fn type_check(ty: ParameterType, v: &Value) -> Result<(), String> {
             Value::String(s) => return duration::parse_duration(s).map(|_| ()),
             _ => false,
         },
+        ParameterType::Array => v.is_array(),
     };
     if ok {
         Ok(())
     } else {
-        let article = if ty == ParameterType::Integer {
+        let article = if matches!(ty, ParameterType::Integer | ParameterType::Array) {
             "an"
         } else {
             "a"

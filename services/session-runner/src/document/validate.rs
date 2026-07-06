@@ -325,12 +325,13 @@ impl Builder {
                 "number" => Some(ParameterType::Number),
                 "boolean" => Some(ParameterType::Boolean),
                 "duration" => Some(ParameterType::Duration),
+                "array" => Some(ParameterType::Array),
                 other => {
                     self.issue(
                         &child(ptr, "type"),
                         format!(
                             "unknown parameter type `{other}` (allowed: `string`, `integer`, \
-                             `number`, `boolean`, `duration`)"
+                             `number`, `boolean`, `duration`, `array`)"
                         ),
                     );
                     None

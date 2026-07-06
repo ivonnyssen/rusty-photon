@@ -43,14 +43,82 @@ rust_test(
         proc_macro_dev = True,
     ),
     # The schema-agreement suite embeds the published schema via
-    # include_str!("../../schema/workflow-v1.schema.json").
-    compile_data = ["schema/workflow-v1.schema.json"],
+    # include_str!("../../schema/workflow-v1.schema.json"), and the
+    # validation corpus embeds the shipped calibrator_flats.json the
+    # same way.
+    compile_data = ["schema/workflow-v1.schema.json"] + glob(["workflows/*.json"]),
     crate = ":session-runner_lib",
+    # The golden-document suite walks workflows/ at run time (via
+    # TEST_SRCDIR under Bazel) so an unwired future document cannot slip
+    # past validation.
+    data = glob(["workflows/*.json"]),
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,
     ),
     deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+# BDD cucumber suite. Drives workflow documents end-to-end through three
+# spawned processes: OmniSim (via OMNISIM_PATH, forwarded by the CI
+# `build:ci --test_env`), rp (RP_BINARY), and session-runner itself
+# (SESSION_RUNNER_BINARY). Uses bdd-infra's rp-harness variant — the same
+# shared harness the rp and calibrator-flats suites use; the scenarios are
+# the port of calibrator-flats' suite onto the shipped
+# workflows/calibrator_flats.json document. A local
+# `bazel test //services/session-runner:bdd` needs OmniSim installed and
+# OMNISIM_PATH set, like any rp_harness BDD target.
+rust_test(
+    name = "bdd",
+    # Spawns three processes per scenario; generous timeout.
+    size = "large",
+    srcs = ["tests/bdd.rs"] + glob(["tests/bdd/**/*.rs"]),
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate_root = "tests/bdd.rs",
+    data = [
+        "Cargo.toml",
+        ":session-runner",
+        "//services/rp",
+    ] + glob([
+        "tests/features/**",
+        "workflows/*.json",
+    ]),
+    edition = "2021",
+    env = {
+        "BDD_PACKAGE_DIR": "services/session-runner",
+        "SESSION_RUNNER_BINARY": "$(rootpath :session-runner)",
+        "RP_BINARY": "$(rootpath //services/rp:rp)",
+        "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :session-runner):$(rootpath //services/rp:rp)",
+    },
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    # bdd-infra derives {PKG_UPPER_SNAKE}_BINARY from CARGO_PKG_NAME, so it must
+    # be the service name (rules_rust would otherwise use the crate name "bdd").
+    rustc_env = {"CARGO_PKG_NAME": "session-runner"},
+    # `resources:omnisim:1`: see the longer note in services/rp/BUILD.bazel. OmniSim
+    # allows only one instance per host (machine-global mutex keyed on a fixed GUID),
+    # so the OmniSim-spawning BDD targets (rp:bdd, calibrator-flats:bdd, this one)
+    # must never run concurrently or they race for that single instance and one
+    # loses OmniSim mid-run. The `omnisim` resource pool (sized 1 in .bazelrc)
+    # serializes them against each other while leaving them parallel to
+    # non-OmniSim tests.
+    tags = [
+        "bdd",
+        "resources:omnisim:1",
+    ],
+    use_libtest_harness = False,
+    deps = [
+        ":session-runner_lib",
+        "//crates/bdd-infra:bdd-infra_rp_harness",
+    ] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
         normal = True,
         normal_dev = True,
     ),

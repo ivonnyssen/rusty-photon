@@ -215,28 +215,51 @@ fn test_golden_document_builds_the_expected_tree() {
     let doc = parse(corpus::golden_calibrator_flats());
     assert_eq!(doc.version, 1);
     assert_eq!(doc.name, "calibrator-flats");
-    assert_eq!(doc.parameters.len(), 9);
+    assert_eq!(doc.parameters.len(), 8);
     assert!(doc.triggers.is_empty());
 
     let InstructionKind::Sequence(steps) = &doc.root.kind else {
         panic!("root is {:?}", doc.root.kind);
     };
-    assert_eq!(steps.len(), 3);
+    assert_eq!(steps.len(), 4);
 
+    // camera-info tool, set, the fail-fast target guard, then the try.
+    assert_eq!(steps[2].id.as_deref(), Some("target-adu-guard"));
     let InstructionKind::Try {
         body,
         catch,
         finally,
-    } = &steps[2].kind
+    } = &steps[3].kind
     else {
-        panic!("third step is {:?}", steps[2].kind);
+        panic!("fourth step is {:?}", steps[3].kind);
     };
     assert!(catch.is_none());
     assert_eq!(finally.as_ref().unwrap().len(), 2);
-    assert_eq!(body.len(), 6);
+    assert_eq!(body.len(), 4);
+
+    // The filter-plan loop: a `while` mode over the array parameter with
+    // a literal budget.
+    let filter_plan = &body[2];
+    assert_eq!(filter_plan.id.as_deref(), Some("filter-plan"));
+    let InstructionKind::Repeat(outer) = &filter_plan.kind else {
+        panic!("filter-plan is {:?}", filter_plan.kind);
+    };
+    let RepeatMode::While {
+        condition,
+        max_iterations,
+    } = &outer.mode
+    else {
+        panic!("mode is {:?}", outer.mode);
+    };
+    assert_eq!(
+        condition.source(),
+        "has(params.filters[session.filter_index])"
+    );
+    assert_eq!(max_iterations, &Bound::Literal(64));
+    assert_eq!(outer.body.len(), 6);
 
     // The find-exposure loop: an `until` mode with an `$expr` bound.
-    let find_exposure = &body[3];
+    let find_exposure = &outer.body[2];
     assert_eq!(find_exposure.id.as_deref(), Some("find-exposure"));
     let InstructionKind::Repeat(repeat) = &find_exposure.kind else {
         panic!("find-exposure is {:?}", find_exposure.kind);
@@ -254,9 +277,9 @@ fn test_golden_document_builds_the_expected_tree() {
     };
     assert_eq!(e.source(), "params.max_iterations");
 
-    // The capture loop: a literal-free `count` mode.
-    let InstructionKind::Repeat(capture_loop) = &body[5].kind else {
-        panic!("capture loop is {:?}", body[5].kind);
+    // The capture loop: a `count` mode with an `$expr` count.
+    let InstructionKind::Repeat(capture_loop) = &outer.body[4].kind else {
+        panic!("capture loop is {:?}", outer.body[4].kind);
     };
     assert!(matches!(
         &capture_loop.mode,
@@ -290,6 +313,10 @@ fn test_parameter_declarations_capture_type_and_default() {
     assert_eq!(initial.ty, ParameterType::Duration);
     // Duration defaults stay strings: expressions read them via seconds().
     assert_eq!(initial.default, Some(json!("1s")));
+
+    let filters = &doc.parameters["filters"];
+    assert_eq!(filters.ty, ParameterType::Array);
+    assert!(filters.default.is_none());
 }
 
 #[test]

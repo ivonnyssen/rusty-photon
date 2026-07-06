@@ -76,7 +76,8 @@ pub(super) fn cases() -> Vec<Case> {
                     "count": { "type": "integer", "default": 3 },
                     "fraction": { "type": "number", "default": 0.5 },
                     "guide": { "type": "boolean", "default": true },
-                    "initial": { "type": "duration", "default": "1.5s" }
+                    "initial": { "type": "duration", "default": "1.5s" },
+                    "filters": { "type": "array", "default": [{ "name": "L", "count": 5 }] }
                 },
                 "root": { "sequence": [] }
             }),
@@ -218,10 +219,7 @@ pub(super) fn cases() -> Vec<Case> {
                 } ]
             }),
         ),
-        valid(
-            "golden_calibrator_flats_abridged",
-            golden_calibrator_flats(),
-        ),
+        valid("shipped_calibrator_flats", golden_calibrator_flats()),
         // ---- invalid: document level -----------------------------------
         invalid(
             "document_not_an_object",
@@ -339,6 +337,13 @@ pub(super) fn cases() -> Vec<Case> {
                     "parameters": { "n": { "type": "integer", "default": 3.5 } },
                     "root": { "sequence": [] } }),
             &[("/parameters/n/default", "expected an `integer` value")],
+        ),
+        invalid(
+            "array_default_is_not_an_array",
+            json!({ "version": 1, "name": "t",
+                    "parameters": { "filters": { "type": "array", "default": { "name": "L" } } },
+                    "root": { "sequence": [] } }),
+            &[("/parameters/filters/default", "expected an `array` value")],
         ),
         invalid(
             "duration_default_is_not_a_duration",
@@ -778,57 +783,14 @@ pub(super) fn cases() -> Vec<Case> {
     ]
 }
 
-/// The design doc's abridged single-filter `calibrator_flats` example
-/// (`docs/services/session-runner.md` § Example Documents) — the golden
-/// positive case: it exercises parameters, `try`/`finally`, both loop
-/// forms, `$expr` args, `set`, and `if`.
+/// The shipped `calibrator_flats.json` first-party document
+/// (`services/session-runner/workflows/`) — the golden positive case: it
+/// exercises parameters (array included), `try`/`finally`, all three loop
+/// forms, `$expr` args, `set`, and `if`. Embedding the real file keeps
+/// every suite that consumes this corpus pinned to the artifact that
+/// ships; the engine's exec tests execute it against `rp`-faithful mock
+/// results.
 pub(crate) fn golden_calibrator_flats() -> serde_json::Value {
-    json!({
-        "version": 1,
-        "name": "calibrator-flats",
-        "parameters": {
-            "camera_id": { "type": "string", "required": true },
-            "filter_wheel_id": { "type": "string", "required": true },
-            "calibrator_id": { "type": "string", "required": true },
-            "target_adu_fraction": { "type": "number", "default": 0.5 },
-            "tolerance": { "type": "number", "default": 0.05 },
-            "max_iterations": { "type": "integer", "default": 10 },
-            "initial_duration": { "type": "duration", "default": "1s" },
-            "filter": { "type": "string", "required": true },
-            "count": { "type": "integer", "required": true }
-        },
-        "triggers": [],
-        "root": { "sequence": [
-            { "tool": "get_camera_info", "args": { "camera_id": { "$expr": "params.camera_id" } } },
-            { "set": { "session.target_adu": "result.max_adu * params.target_adu_fraction",
-                       "session.exp_min": "result.exposure_min",
-                       "session.exp_max": "result.exposure_max",
-                       "session.duration": "seconds(params.initial_duration)" } },
-            { "try": [
-                { "tool": "close_cover", "args": { "calibrator_id": { "$expr": "params.calibrator_id" } } },
-                { "tool": "calibrator_on", "args": { "calibrator_id": { "$expr": "params.calibrator_id" } } },
-                { "tool": "set_filter", "args": { "filter_wheel_id": { "$expr": "params.filter_wheel_id" },
-                                                  "filter_name": { "$expr": "params.filter" } } },
-                { "id": "find-exposure",
-                  "repeat": { "until": "abs(session.median_adu - session.target_adu) / session.target_adu <= params.tolerance",
-                              "max_iterations": { "$expr": "params.max_iterations" } },
-                  "body": [
-                    { "tool": "capture", "args": { "camera_id": { "$expr": "params.camera_id" },
-                                                   "duration": { "$expr": "humantime(session.duration)" } } },
-                    { "tool": "compute_image_stats", "args": { "document_id": { "$expr": "result.document_id" } } },
-                    { "set": { "session.median_adu": "result.median_adu",
-                               "session.duration": "clamp(result.median_adu == 0 ? session.duration * 2 : session.duration * (session.target_adu / result.median_adu), session.exp_min, session.exp_max)" } } ] },
-                { "if": "result.converged == false",
-                  "then": [ { "log": { "level": "info", "message": "exposure did not converge",
-                                       "values": { "filter": "params.filter" } } } ] },
-                { "repeat": { "count": { "$expr": "params.count" } },
-                  "body": [
-                    { "tool": "capture", "args": { "camera_id": { "$expr": "params.camera_id" },
-                                                   "duration": { "$expr": "humantime(session.duration)" } } } ] }
-              ],
-              "finally": [
-                { "tool": "calibrator_off", "args": { "calibrator_id": { "$expr": "params.calibrator_id" } } },
-                { "tool": "open_cover", "args": { "calibrator_id": { "$expr": "params.calibrator_id" } } } ] }
-        ] }
-    })
+    serde_json::from_str(include_str!("../../workflows/calibrator_flats.json"))
+        .expect("workflows/calibrator_flats.json is not valid JSON")
 }
