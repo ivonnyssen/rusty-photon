@@ -221,15 +221,17 @@ fn test_golden_document_builds_the_expected_tree() {
     let InstructionKind::Sequence(steps) = &doc.root.kind else {
         panic!("root is {:?}", doc.root.kind);
     };
-    assert_eq!(steps.len(), 3);
+    assert_eq!(steps.len(), 4);
 
+    // camera-info tool, set, the fail-fast target guard, then the try.
+    assert_eq!(steps[2].id.as_deref(), Some("target-adu-guard"));
     let InstructionKind::Try {
         body,
         catch,
         finally,
-    } = &steps[2].kind
+    } = &steps[3].kind
     else {
-        panic!("third step is {:?}", steps[2].kind);
+        panic!("fourth step is {:?}", steps[3].kind);
     };
     assert!(catch.is_none());
     assert_eq!(finally.as_ref().unwrap().len(), 2);

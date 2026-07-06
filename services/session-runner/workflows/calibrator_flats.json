@@ -32,6 +32,13 @@
         }
       },
       {
+        "id": "target-adu-guard",
+        "if": "session.target_adu <= 0",
+        "then": [
+          { "fail": { "message": "'target_adu is not positive (max_adu * target_adu_fraction) — check get_camera_info and target_adu_fraction'" } }
+        ]
+      },
+      {
         "try": [
           {
             "tool": "close_cover",

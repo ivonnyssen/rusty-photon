@@ -1181,3 +1181,31 @@ async fn test_golden_calibrator_flats_cleans_up_when_the_loop_fails() {
         &["calibrator_off".to_owned(), "open_cover".to_owned()]
     );
 }
+
+#[tokio::test]
+async fn test_golden_calibrator_flats_rejects_a_zero_target_adu_before_moving_anything() {
+    // The Rust oracle errors on `target_adu == 0` inside its exposure
+    // search; the document's fail-fast guard does one better and raises
+    // before the `try` — the cover never closes and no frame is wasted
+    // on a division-by-zero mid-loop.
+    let doc = make_doc(crate::document::corpus::golden_calibrator_flats());
+    let params = flats_params(&doc, json!([{ "name": "L", "count": 2 }]));
+    let tools = MockTools::new(|_, tool, _| match tool {
+        "get_camera_info" => Ok(json!({
+            "max_adu": 0,
+            "exposure_min": "1ms",
+            "exposure_max": "30s"
+        })),
+        other => panic!("unexpected tool call `{other}` after a zero target_adu"),
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let (outcome, _) = run_in(&dir, &doc, &params, &tools, &MockClock::new()).await;
+
+    let error = failure(outcome);
+    assert!(
+        error.message.contains("target_adu is not positive"),
+        "{}",
+        error.message
+    );
+    assert_eq!(tools.call_names(), vec!["get_camera_info"]);
+}

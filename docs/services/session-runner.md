@@ -828,6 +828,11 @@ Abridged to the load-bearing shape:
                "session.exp_max": "seconds(result.exposure_max)",
                // has() guard: resume continues at the current filter
                "session.filter_index": "has(session.filter_index) ? session.filter_index : 0" } },
+    // fail fast on a nonsensical target — before the try, so the cover
+    // never closes (the Rust oracle catches this mid-search; the document
+    // raises before any hardware moves)
+    { "if": "session.target_adu <= 0",
+      "then": [ { "fail": { "message": "'target_adu is not positive (max_adu * target_adu_fraction) — check get_camera_info and target_adu_fraction'" } } ] },
     { "try": [
         { "tool": "close_cover", "args": { "calibrator_id": { "$expr": "params.calibrator_id" } } },
         { "tool": "calibrator_on", "args": { "calibrator_id": { "$expr": "params.calibrator_id" } } },
