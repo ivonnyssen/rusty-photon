@@ -1170,7 +1170,6 @@ replaced the former runtime `MountConfig::validate` / `FlipPolicy::validate`
   },
   "server": {
     "port": 11117,
-    "discovery_port": 32227,
     "tls": null,
     "auth": null
   },

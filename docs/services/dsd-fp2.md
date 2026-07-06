@@ -287,7 +287,6 @@ service can later expose a Switch device (heater control) without redesign.
   },
   "server": {
     "port": 11119,
-    "discovery_port": 32227,
     "auth": null,
     "tls": null
   },

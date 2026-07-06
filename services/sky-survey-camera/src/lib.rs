@@ -150,11 +150,6 @@ pub async fn run_with_client_ctx(
 
     let mut server = Server::new(CargoServerInfo!());
     server.listen_addr = std::net::SocketAddr::from(([0, 0, 0, 0], config.server.port));
-    // Disable the UDP discovery server in v0 — BDD tests bind to
-    // ephemeral ports and don't need discovery, and the production
-    // deployment story (systemd / Windows service) doesn't require it
-    // either.
-    server.discovery_port = None;
     server.devices.register(device);
 
     let alpaca_service = server.into_service();
@@ -168,16 +163,25 @@ pub async fn run_with_client_ctx(
     let local = listener
         .local_addr()
         .map_err(|e| SkySurveyCameraError::Bind(format!("local_addr: {e}")))?;
+
+    // Opt-in Alpaca UDP discovery responder (config `discovery_port`);
+    // bound here so a taken port fails startup, run alongside serve below.
+    let discovery = rusty_photon_driver::discovery::bind(local, config.server.discovery_port)
+        .await
+        .map_err(|e| SkySurveyCameraError::Bind(format!("alpaca discovery responder: {e}")))?;
     println!("bound_addr={local}");
     tracing::info!(address = %local, "sky-survey-camera serving");
 
     // Graceful shutdown on Ctrl+C / SIGTERM. Required so coverage
     // profraw files flush when bdd-infra's ServiceHandle sends
     // SIGTERM at the end of each scenario.
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown)
-        .await
-        .map_err(|e| SkySurveyCameraError::Server(e.to_string()))?;
+    let serve = async {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(shutdown)
+            .await
+            .map_err(|e| SkySurveyCameraError::Server(e.to_string()))
+    };
+    rusty_photon_driver::discovery::serve_with(discovery, serve).await?;
     Ok(())
 }
 

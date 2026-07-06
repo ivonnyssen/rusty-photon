@@ -60,16 +60,16 @@ pub enum RuleType {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerConfig {
     pub port: u16,
-    #[serde(default = "default_discovery_port")]
+    /// Alpaca UDP discovery responder port (normally 32227). Absent/`null` —
+    /// the default — disables discovery: many rusty-photon servers on one
+    /// host would collide on the shared discovery port, so it is a per-host
+    /// opt-in for single-driver deployments.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub discovery_port: Option<u16>,
     #[serde(default)]
     pub tls: Option<rp_tls::config::TlsConfig>,
     #[serde(default)]
     pub auth: Option<rp_auth::config::AuthConfig>,
-}
-
-fn default_discovery_port() -> Option<u16> {
-    Some(ascom_alpaca::discovery::DEFAULT_DISCOVERY_PORT)
 }
 
 impl Default for Config {
@@ -108,7 +108,7 @@ impl Default for Config {
             },
             server: ServerConfig {
                 port: 11111,
-                discovery_port: default_discovery_port(),
+                discovery_port: None,
                 tls: None,
                 auth: None,
             },
@@ -308,7 +308,6 @@ impl ServerBuilder {
 
         let mut server = Server::new(CargoServerInfo!());
         server.listen_addr = SocketAddr::from(([0, 0, 0, 0], self.config.server.port));
-        server.discovery_port = self.config.server.discovery_port;
         server.devices.register(device);
 
         info!(
@@ -346,6 +345,12 @@ impl ServerBuilder {
         .await?;
         let local_addr = listener.local_addr()?;
 
+        // Opt-in Alpaca UDP discovery responder (config `discovery_port`);
+        // bound here so a taken port fails startup, run in start().
+        let discovery =
+            rusty_photon_driver::discovery::bind(local_addr, self.config.server.discovery_port)
+                .await?;
+
         println!("Bound Alpaca server bound_addr={}", local_addr);
 
         Ok(BoundServer {
@@ -353,6 +358,7 @@ impl ServerBuilder {
             router,
             local_addr,
             tls,
+            discovery,
         })
     }
 }
@@ -363,6 +369,9 @@ pub struct BoundServer {
     router: axum::Router,
     local_addr: SocketAddr,
     tls: Option<TlsConfig>,
+    /// Alpaca UDP discovery responder, when the config opts in. Runs inside
+    /// `start()`'s select so its socket closes when serving ends (reload).
+    discovery: Option<ascom_alpaca::discovery::BoundDiscoveryServer>,
 }
 
 impl BoundServer {
@@ -374,16 +383,26 @@ impl BoundServer {
         self,
         shutdown: impl Future<Output = ()> + Send + 'static,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        match self.tls {
-            Some(ref tls_config) => {
-                info!("filemonitor started on {} (TLS)", self.local_addr);
-                rp_tls::server::serve_tls(self.listener, self.router, tls_config, shutdown).await?;
+        let Self {
+            listener,
+            router,
+            local_addr,
+            tls,
+            discovery,
+        } = self;
+        let serve = async {
+            match tls {
+                Some(ref tls_config) => {
+                    info!("filemonitor started on {} (TLS)", local_addr);
+                    rp_tls::server::serve_tls(listener, router, tls_config, shutdown).await
+                }
+                None => {
+                    info!("filemonitor started on {}", local_addr);
+                    rp_tls::server::serve_plain(listener, router, shutdown).await
+                }
             }
-            None => {
-                info!("filemonitor started on {}", self.local_addr);
-                rp_tls::server::serve_plain(self.listener, self.router, shutdown).await?;
-            }
-        }
+        };
+        rusty_photon_driver::discovery::serve_with(discovery, serve).await?;
         debug!("filemonitor shut down");
         Ok(())
     }

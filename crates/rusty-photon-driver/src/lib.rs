@@ -23,6 +23,7 @@
 //! [`docs/decisions/007-rusty-photon-driver-shared-crate.md`]: ../../../docs/decisions/007-rusty-photon-driver-shared-crate.md
 
 pub mod actions;
+pub mod discovery;
 pub mod error;
 mod macros;
 

@@ -622,8 +622,10 @@ the "how" decisions made while building.
 - **Empty simulation backend** (the C0 zero-camera scenario) is selected by a
   hidden, `simulation`-feature-gated `--simulation-empty` CLI flag that makes
   `build()` use `Sdk::new_simulated()` (empty) instead of `Sdk::new()`.
-- **Transport.** v0 serves with plain `axum::serve` on `server.port` (config
-  carries only the port; `discovery_port` is disabled), like `sky-survey-camera`.
+- **Transport.** v0 serves with plain `axum::serve` on `server.port`. Alpaca
+  UDP discovery is opt-in via `server.discovery_port` (absent by default —
+  many rusty-photon servers on one host would collide on the shared
+  discovery port), like every Alpaca service.
   The listener is created via the shared `rp_tls::server::bind_dual_stack_tokio`
   helper (IPv6 + IPv4, `SO_REUSEADDR`) like every other Alpaca service, so the
   in-process `with_reload` rebind survives a prior listener's lingering

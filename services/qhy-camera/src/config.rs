@@ -50,11 +50,20 @@ pub struct ServerConfig {
     /// Listening port. One port hosts all enumerated devices. Hard read-only
     /// (a port change would make the BFF lose the devices).
     pub port: u16,
+    /// Alpaca UDP discovery responder port (normally 32227). Absent/`null` —
+    /// the default — disables discovery: many rusty-photon servers on one
+    /// host would collide on the shared discovery port, so it is a per-host
+    /// opt-in for single-driver deployments.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discovery_port: Option<u16>,
 }
 
 impl Default for ServerConfig {
     fn default() -> Self {
-        Self { port: 11121 }
+        Self {
+            port: 11121,
+            discovery_port: None,
+        }
     }
 }
 

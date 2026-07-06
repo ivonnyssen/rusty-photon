@@ -259,7 +259,6 @@ Either path is a follow-up PR. The MVP just exposes the raw count.
   },
   "server": {
     "port": 11118,
-    "discovery_port": 32227,
     "auth": {
       "username": "observatory",
       "password_hash": "$argon2id$v=19$m=19456,t=2,p=1$..."
@@ -286,7 +285,7 @@ Either path is a follow-up PR. The MVP just exposes the raw count.
 | `serial` | `baud_rate` | Baud rate | `9600` |
 | `serial` | `timeout` | Serial read/write timeout (`humantime`) | `"2s"` |
 | `server` | `port` | HTTP server port | `11118` |
-| `server` | `discovery_port` | Alpaca discovery port | `32227` |
+| `server` | `discovery_port` | Alpaca UDP discovery responder port (opt-in; normally `32227`). Absent/`null` disables discovery — many rusty-photon servers on one host would collide on the shared port | _absent_ (disabled) |
 | `server` | `tls` | Optional `rp-tls` block | none |
 | `server` | `auth` | Optional `rp-auth` block | none |
 | `rotator` | `name` | ASCOM device name | `"Pegasus Falcon Rotator"` |
