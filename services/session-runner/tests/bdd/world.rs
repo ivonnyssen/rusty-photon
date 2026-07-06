@@ -172,6 +172,14 @@ impl SessionRunnerWorld {
     pub async fn blackboard_frames(&self) -> Option<u64> {
         let bytes = tokio::fs::read(self.blackboard_path()).await.ok()?;
         let session: Value = serde_json::from_slice(&bytes).ok()?;
-        session.get("frames")?.as_f64().map(|f| f as u64)
+        // The engine's expression layer stores numbers as f64 (`2.0`,
+        // not `2`), so `as_u64()` would reject every real counter;
+        // accept exactly-integral values and fail loud on anything else.
+        let frames = session.get("frames")?.as_f64()?;
+        assert!(
+            frames >= 0.0 && frames.fract() == 0.0,
+            "the blackboard's `frames` is not a whole non-negative number: {frames}"
+        );
+        Some(frames as u64)
     }
 }

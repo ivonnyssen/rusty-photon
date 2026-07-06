@@ -180,7 +180,10 @@ async fn sse_shows_remaining(world: &mut SessionRunnerWorld, event_type: String)
     let frames = world
         .frames_before_resume
         .expect("no pre-resume frame count — add the re-invoke step first");
-    let remaining = usize::try_from(plan - frames).expect("plan fits usize");
+    let remaining = plan.checked_sub(frames).unwrap_or_else(|| {
+        panic!("the blackboard records more frames ({frames}) than the plan ({plan})")
+    });
+    let remaining = usize::try_from(remaining).expect("plan fits usize");
 
     let count = settled_event_count(world, &event_type, remaining).await;
     assert_eq!(
