@@ -32,7 +32,8 @@ use crate::document::{
     bind_parameters, resolve_workflow_path, validate_against_catalog, Document, ToolSpec,
     ValidationIssue,
 };
-use crate::engine::{run, RunOutcome, SystemClock, ToolClient};
+use crate::engine::{run, EventIntake, RunOutcome, SystemClock, ToolClient};
+use crate::events;
 use crate::mcp_client::McpClient;
 
 /// Engine defaults for the acknowledgment durations when the document
@@ -307,16 +308,35 @@ async fn invoke(
         "max_duration": humantime::format_duration(max).to_string(),
     });
 
+    // Subscribe to rp's SSE stream before the first instruction runs, so
+    // an event emitted during an early instruction still satisfies a later
+    // `until_event` wait (and, Phase D2, feeds triggers). The client task
+    // lives exactly as long as the run: it exits when the intake drops.
+    let events_url = config.events_url.clone().unwrap_or_else(|| {
+        format!(
+            "{}/api/events/subscribe",
+            rp_base_url(&request.mcp_server_url)
+        )
+    });
+    let intake = events::subscribe(events_url);
+
     tokio::spawn(run_session(
         document,
         params,
         blackboard,
         mcp,
+        intake,
         request.workflow_id,
         request.mcp_server_url,
     ));
 
     (StatusCode::OK, Json(ack))
+}
+
+/// `rp`'s HTTP origin, derived from the invocation's MCP endpoint — the
+/// base for the completion POST and the default SSE stream URL.
+fn rp_base_url(mcp_server_url: &str) -> &str {
+    mcp_server_url.trim_end_matches("/mcp")
 }
 
 /// Run the engine to completion and honor the completion contract:
@@ -328,10 +348,19 @@ async fn run_session<T: ToolClient + Sync>(
     params: Value,
     mut blackboard: Blackboard,
     tools: T,
+    events: EventIntake,
     workflow_id: String,
     mcp_server_url: String,
 ) {
-    let outcome = run(&document, &params, &mut blackboard, &tools, &SystemClock).await;
+    let outcome = run(
+        &document,
+        &params,
+        &mut blackboard,
+        &tools,
+        &SystemClock,
+        events,
+    )
+    .await;
     let (status, result) = match &outcome {
         RunOutcome::Terminated => return,
         RunOutcome::Completed => (
@@ -392,8 +421,10 @@ async fn post_completion(
     status: &str,
     result: Value,
 ) -> bool {
-    let base_url = mcp_server_url.trim_end_matches("/mcp");
-    let url = format!("{base_url}/api/plugins/{workflow_id}/complete");
+    let url = format!(
+        "{}/api/plugins/{workflow_id}/complete",
+        rp_base_url(mcp_server_url)
+    );
     let body = json!({ "status": status, "result": result });
     debug!(%url, %status, "posting completion");
     let client = match reqwest::Client::builder()
@@ -774,6 +805,7 @@ mod tests {
             json!({}),
             blackboard,
             tools,
+            EventIntake::disconnected(),
             "wf-1".to_owned(),
             mcp_url,
         )

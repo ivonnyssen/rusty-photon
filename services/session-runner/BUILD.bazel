@@ -87,6 +87,7 @@ rust_test(
         "//services/rp",
     ] + glob([
         "tests/features/**",
+        "tests/fixtures/**",
         "workflows/*.json",
     ]),
     edition = "2021",

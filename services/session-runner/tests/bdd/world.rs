@@ -29,6 +29,10 @@ pub struct SessionRunnerWorld {
     /// Blackboard persistence directory for the spawned session-runner;
     /// held here so it outlives the scenario's service process.
     pub state_dir: Option<tempfile::TempDir>,
+    /// The spawned session-runner's workflows directory: the shipped
+    /// `workflows/` merged with `tests/fixtures/workflows/`, built per
+    /// scenario.
+    pub workflows_dir: Option<tempfile::TempDir>,
 
     // --- rp config building ---
     pub cameras: Vec<CameraConfig>,
@@ -88,6 +92,25 @@ impl SessionRunnerWorld {
     /// Wait for rp's `/health` endpoint to return 200.
     pub async fn wait_for_rp_healthy(&self) -> bool {
         bdd_infra::rp_harness::wait_for_rp_healthy(&self.rp_url()).await
+    }
+
+    /// Poll rp's session status until it reports `idle`, or `budget`
+    /// elapses.
+    pub async fn wait_for_session_idle(&self, budget: Duration) -> bool {
+        let client = reqwest::Client::new();
+        let url = format!("{}/api/session/status", self.rp_url());
+        let deadline = std::time::Instant::now() + budget;
+        while std::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            if let Ok(resp) = client.get(&url).send().await {
+                if let Ok(body) = resp.json::<serde_json::Value>().await {
+                    if body.get("status").and_then(|v| v.as_str()) == Some("idle") {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
     }
 
     /// Wait for at least `count` events of the given type. 40 × 250ms = 10s.

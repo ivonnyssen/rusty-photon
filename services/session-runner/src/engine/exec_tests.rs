@@ -12,7 +12,7 @@ use std::time::Duration;
 use chrono::{DateTime, TimeZone, Utc};
 use serde_json::{json, Map, Value};
 
-use super::{run, Clock, RunOutcome, ToolCallError, ToolClient};
+use super::{run, Clock, EngineEvent, EventIntake, RunOutcome, ToolCallError, ToolClient};
 use crate::blackboard::Blackboard;
 use crate::document::{bind_parameters, Document};
 
@@ -115,6 +115,11 @@ impl Clock for MockClock {
         }
         self.sleeps.lock().unwrap().push(duration);
     }
+
+    fn monotonic(&self) -> Duration {
+        // Mock time passes only while sleeping.
+        self.sleeps.lock().unwrap().iter().sum()
+    }
 }
 
 // --- harness --------------------------------------------------------------
@@ -130,7 +135,7 @@ fn doc_with_root(root: Value) -> Document {
 
 /// Run `doc` against a blackboard file in `dir` (loaded, so repeated runs
 /// share persisted state) and return the outcome plus the final session
-/// value.
+/// value. No event stream — see [`run_with_events`] for that.
 async fn run_in(
     dir: &tempfile::TempDir,
     doc: &Document,
@@ -141,9 +146,35 @@ async fn run_in(
     let mut blackboard = Blackboard::load(dir.path().join("session.json"))
         .await
         .unwrap();
-    let outcome = run(doc, params, &mut blackboard, tools, clock).await;
+    let outcome = run(
+        doc,
+        params,
+        &mut blackboard,
+        tools,
+        clock,
+        EventIntake::disconnected(),
+    )
+    .await;
     let session = blackboard.value().clone();
     (outcome, session)
+}
+
+/// One-shot run of a parameterless document with a live event intake fed
+/// by the returned sender's prior sends (buffer the events, then run —
+/// the intake is live from run start, so pre-buffered events model events
+/// emitted while earlier instructions ran).
+async fn run_with_events(
+    root: Value,
+    tools: &MockTools,
+    clock: &(impl Clock + Sync),
+    events: EventIntake,
+) -> RunOutcome {
+    let dir = tempfile::tempdir().unwrap();
+    let doc = doc_with_root(root);
+    let mut blackboard = Blackboard::load(dir.path().join("session.json"))
+        .await
+        .unwrap();
+    run(&doc, &json!({}), &mut blackboard, tools, clock, events).await
 }
 
 /// One-shot run of a parameterless document.
@@ -856,6 +887,12 @@ impl Clock for SteppingClock {
         }
         self.sleeps.lock().unwrap().push(duration);
     }
+
+    fn monotonic(&self) -> Duration {
+        // The wall clock steps; the monotonic reading, by contract,
+        // advances only by the time actually slept.
+        self.sleeps.lock().unwrap().iter().sum()
+    }
 }
 
 #[tokio::test]
@@ -884,16 +921,85 @@ async fn test_wait_until_timeout_is_immune_to_wall_clock_steps() {
     );
 }
 
+// --- wait: until_event ------------------------------------------------------
+
+/// An intake pre-loaded with `events` (name, payload) — models events that
+/// arrived (and were buffered) while earlier instructions ran.
+fn buffered_events(events: &[(&str, Value)]) -> EventIntake {
+    let (tx, rx) = tokio::sync::mpsc::channel(events.len().max(1));
+    for (event, payload) in events {
+        tx.try_send(EngineEvent {
+            event: (*event).to_owned(),
+            payload: payload.clone(),
+        })
+        .unwrap();
+    }
+    // The sender drops here: the stream ends after the buffered events,
+    // exactly like an rp that emitted these and then went quiet.
+    EventIntake::new(rx)
+}
+
 #[tokio::test]
-async fn test_wait_until_event_is_a_phase_d_gap_for_now() {
+async fn test_wait_until_event_is_satisfied_by_a_buffered_event() {
+    // The intake runs from before the first instruction, so an event that
+    // arrived during an earlier instruction still satisfies the wait — no
+    // sleeping needed.
     let tools = MockTools::none();
+    let clock = MockClock::new();
     let root = json!({ "wait": { "until_event": "guide_settled", "timeout": "5m" } });
-    let (outcome, _) = run_root(root, &tools).await;
+    let events = buffered_events(&[("guide_settled", json!({ "rms": 0.4 }))]);
+    let outcome = run_with_events(root, &tools, &clock, events).await;
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert_eq!(clock.sleeps(), Vec::<Duration>::new());
+}
+
+#[tokio::test]
+async fn test_wait_until_event_drains_past_non_matching_events() {
+    let tools = MockTools::none();
+    let clock = MockClock::new();
+    let root = json!({ "wait": { "until_event": "guide_settled", "timeout": "5m" } });
+    let events = buffered_events(&[
+        ("exposure_complete", json!({ "document_id": "doc-1" })),
+        ("filter_switch", json!({ "filter_name": "Ha" })),
+        ("guide_settled", Value::Null),
+    ]);
+    let outcome = run_with_events(root, &tools, &clock, events).await;
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert_eq!(clock.sleeps(), Vec::<Duration>::new());
+}
+
+#[tokio::test]
+async fn test_wait_until_event_times_out_when_the_event_never_arrives() {
+    // A closed, empty intake: the select's event arm pends forever, so
+    // the full remaining budget is slept away and expiry raises.
+    let tools = MockTools::none();
+    let clock = MockClock::new();
+    let root = json!({ "id": "settle",
+                       "wait": { "until_event": "guide_settled", "timeout": "5m" } });
+    let outcome = run_with_events(root, &tools, &clock, EventIntake::disconnected()).await;
+    let error = failure(outcome);
+    assert_eq!(
+        error.message,
+        "`wait` `until_event` `guide_settled` did not arrive within 5m"
+    );
+    assert_eq!(error.instruction_id.as_deref(), Some("settle"));
+    assert_eq!(clock.sleeps(), vec![Duration::from_secs(300)]);
+}
+
+#[tokio::test]
+async fn test_wait_until_event_times_out_past_non_matching_events() {
+    // Non-matching buffered events are consumed but must not satisfy —
+    // or extend — the wait.
+    let tools = MockTools::none();
+    let clock = MockClock::new();
+    let root = json!({ "wait": { "until_event": "guide_settled", "timeout": "1m" } });
+    let events = buffered_events(&[("exposure_complete", Value::Null)]);
+    let outcome = run_with_events(root, &tools, &clock, events).await;
     assert_eq!(
         failure(outcome).message,
-        "`wait` `until_event` (`guide_settled`) is not implemented yet — event \
-         subscriptions land with the trigger engine (workflow-dsl plan, Phase D)"
+        "`wait` `until_event` `guide_settled` did not arrive within 1m"
     );
+    assert_eq!(clock.sleeps(), vec![Duration::from_secs(60)]);
 }
 
 // --- fail, if, log -------------------------------------------------------------

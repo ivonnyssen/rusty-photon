@@ -330,8 +330,23 @@ committable on its own.
 
 ### Phase D — Triggers, events, resume
 
-- [ ] SSE event client (`/api/events/subscribe`, `Last-Event-ID` = the
+- [x] SSE event client (`/api/events/subscribe`, `Last-Event-ID` = the
       envelope's `event_seq`).
+
+      **Done (2026-07-05):** `services/session-runner/src/events.rs` — the
+      workspace's house SSE-client pattern (chunked `reqwest` + hand
+      parser, as in sentinel's watchdog and bdd-infra), reconnecting every
+      1 s with the cursor, `stream_gap` logged-and-continued. The intake
+      opens per session run before the first instruction and closes with
+      it; the engine gained the `EventIntake`/`EngineEvent` seam and a
+      monotonic `Clock` reading, and `wait.until_event` is implemented
+      against it (buffered-since-run-start matching, final check at
+      expiry, sleep-measured budget — pins recorded in the design doc's
+      § `wait` / § Event Subscription). BDD: `events.feature` runs
+      purpose-built fixture documents (`tests/fixtures/workflows/`,
+      merged into the spawned service's `workflows_dir`) proving the
+      buffered-event wait and the timeout-ends-the-session path
+      end-to-end.
 - [ ] Trigger engine: `event`, `poll`, and the synthetic
       `correction_requested` sources; `when` gating and `while`
       phase-gates; safe-point interleaving; `once` / `cooldown`.
