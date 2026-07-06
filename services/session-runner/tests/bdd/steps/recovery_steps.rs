@@ -120,23 +120,32 @@ async fn reinvoke_with_recovery(world: &mut SessionRunnerWorld) {
 
 #[then("the session-runner is still healthy and the blackboard is kept")]
 async fn runner_healthy_blackboard_kept(world: &mut SessionRunnerWorld) {
-    // Give the engine a moment to hit the request-level MCP failure and
-    // terminate the run (never retried, so this is quick).
-    tokio::time::sleep(Duration::from_secs(2)).await;
-
+    // With rp dead the tool transport is gone, so run progress is
+    // physically impossible and termination itself cannot be observed
+    // from outside — the scenario proves it downstream, where the
+    // resumed run captures exactly the remaining frames. What this step
+    // pins is the engine's *reaction* to rp's loss: the process must
+    // survive and must not tear down its persisted state. Both
+    // invariants are asserted continuously across the window in which
+    // the failed tool call lands (within moments of the kill), so a
+    // crash or a blackboard deletion is caught rather than slipping
+    // between a sleep and a single check.
     let handle = world
         .session_runner
         .as_ref()
         .expect("session-runner not started");
-    let response = reqwest::get(format!("{}/health", handle.base_url))
-        .await
-        .expect("session-runner did not answer /health after rp died");
-    assert!(response.status().is_success(), "{}", response.status());
-
-    assert!(
-        world.blackboard_path().exists(),
-        "a terminated run must keep its blackboard for the recovery invocation"
-    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while std::time::Instant::now() < deadline {
+        let response = reqwest::get(format!("{}/health", handle.base_url))
+            .await
+            .expect("session-runner did not answer /health after rp died");
+        assert!(response.status().is_success(), "{}", response.status());
+        assert!(
+            world.blackboard_path().exists(),
+            "a terminated run must keep its blackboard for the recovery invocation"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
 }
 
 #[then(expr = "the blackboard is deleted within {int} seconds")]
