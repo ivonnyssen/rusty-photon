@@ -485,7 +485,7 @@ its deps:
 
 ```
 bazel test //services/<pkg>:bdd          # builds the binary as a dep
-bazel test --test_tag_filters=bdd //...   # or all BDD suites
+bazel test //...                          # BDD suites run by default (result-cached)
 ```
 
 A local `bazel build //...` pre-builds the affected packages; the nightly

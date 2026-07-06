@@ -43,8 +43,7 @@
 > authoritative pre-push is:
 >
 > ```bash
-> bazel build //... && bazel test //...                       # bazel / <os> (build + fast tests)
-> bazel test --test_tag_filters=bdd //...                     # BDD suites (needs OmniSim + OMNISIM_PATH)
+> bazel build //... && bazel test //...                       # bazel / <os> (build + tests incl. BDD; OmniSim suites need OMNISIM_PATH/OMNISIM_DIR)
 > bazel coverage --config=coverage //...                      # bazel coverage (needs OmniSim)
 > cargo fmt --check                                           # `stable / fmt`
 > cargo clippy --all-targets --all-features -- -D warnings    # `stable / clippy`
@@ -344,8 +343,7 @@ Pre-push checks (copy-paste) — these mirror the full required gate (`bazel / <
 Cargo-only lint jobs Bazel doesn't cover:
 
 ```bash
-bazel build //... && bazel test //...                     # bazel / <os> (build + fast tests)
-bazel test --test_tag_filters=bdd //...                   # BDD suites (needs OmniSim + OMNISIM_PATH)
+bazel build //... && bazel test //...                     # bazel / <os> (build + tests incl. BDD; OmniSim suites need OMNISIM_PATH/OMNISIM_DIR)
 bazel coverage --config=coverage //...                    # bazel coverage (heavier; needs OmniSim)
 cargo fmt --check                                         # stable / fmt
 cargo clippy --all-targets --all-features -- -D warnings  # stable / clippy
