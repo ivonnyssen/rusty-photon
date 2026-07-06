@@ -10,6 +10,9 @@ lcov.info
 # committed (ADR-013).
 services/zwo-camera/pkg/lib/
 
+# Package build output of scripts/build-packages.sh (deb/rpm + SHA256SUMS).
+/dist/
+
 # Bazel
 # bazel-* are workspace symlinks at the repo root (bazel-bin, bazel-out, ...).
 # Anchored to root so it doesn't match e.g. docs/plans/archive/bazel-migration.md.

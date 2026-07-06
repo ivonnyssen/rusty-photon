@@ -121,8 +121,11 @@ install -m 0644 "$TMP/85-qhyccd.rules" "$ROOT/etc/udev/rules.d/85-qhyccd.rules"
 
 if [ -z "$ROOT" ] && command -v udevadm > /dev/null 2>&1; then
     udevadm control --reload-rules || true
-    udevadm trigger || true
+    # Re-emit *add* events: the SDK rules' fxload lines match ACTION=="add",
+    # so a plain trigger (change events) leaves an already-plugged cold
+    # camera raw. Verified on-rig: a 1618:0715 flashed only on an add event.
+    udevadm trigger --action=add --subsystem-match=usb || true
 fi
 
-echo "QHYCCD firmware $VERSION installed. Unplug and replug the camera:"
-echo "udev uploads firmware to cold cameras on the next plug-in."
+echo "QHYCCD firmware $VERSION installed. An already-plugged cold camera is"
+echo "flashed immediately; otherwise udev uploads firmware on the next plug-in."
