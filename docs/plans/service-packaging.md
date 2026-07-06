@@ -440,6 +440,38 @@ Runs on Debian arm64 (the rig) and x86_64 dev boxes:
   sha256, replug, enumeration under plugdev/0660); serial access via
   dialout; Alpaca UDP discovery from another host.
 
+### On-rig results (first install — 2026-07-05, Debian 13 arm64 rig)
+
+- `build-packages.sh` from a fresh clone (only rustup + git pre-installed):
+  15 arm64 debs + SHA256SUMS; the AARCH64 QHY sha256 pin verified on first
+  use. On a Debian host `$auto` Depends resolve properly (qhy-camera:
+  `adduser, libc6, libstdc++6, libusb-1.0-0`).
+- All 15 installed in one apt transaction under the **real** hardening
+  (no drop-ins): the 6 network/camera services active with 200 on their
+  probes, the 5 serial drivers in the designed 5s retry loop, the 3 gated
+  units inactive-not-failed; the 9 expected configs self-created;
+  `/etc/rusty-photon` symlink in place; zwo blobs resolve via RUNPATH
+  (`ldd`). The sandbox does not break config write-back.
+- `systemd-analyze security`: network-only 6.2 MEDIUM (filemonitor),
+  serial 6.9 MEDIUM (dsd-fp2), camera 6.9 MEDIUM (qhy-camera).
+- QHY firmware helper end-to-end: download + sha256 + install OK; a cold
+  QHY5III715C (raw Cypress `1618:0715`) flashed and re-enumerated as
+  `1618:0716`, device node `plugdev`/`0660`, and the sandboxed service
+  discovered and serves it (`cameras=1`). **Helper fix from this test:**
+  a plain `udevadm trigger` emits change events, which do not fire the
+  SDK rules' `ACTION=="add"` fxload lines — an already-plugged cold
+  camera stayed raw; the helper now triggers
+  `--action=add --subsystem-match=usb`.
+- lintian (debian profile; filemonitor/qhy-camera/zwo-camera): only the
+  findings documented in `docs/packaging.md` — no surprises.
+- **Open finding (product, not packaging):** nothing binds UDP 32227.
+  Every service self-serves through rp-tls via `Server::into_service()`,
+  which bypasses ascom-alpaca's discovery responder, so the
+  `discovery_port` config field is dead and cross-host Alpaca UDP
+  discovery gets no answer (qhy-camera even sets `discovery_port = None`
+  explicitly). Needs a serving-path fix — spawn the discovery responder
+  alongside the HTTP listener — in its own PR.
+
 ## Flagged unknowns (resolve during PR-2/PR-4)
 
 - [x] Firmware directory: confirmed `/lib/firmware/qhy` (every fxload `RUN`

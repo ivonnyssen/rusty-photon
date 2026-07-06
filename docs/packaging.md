@@ -127,8 +127,9 @@ sudo rusty-photon-qhy-firmware-install
 
 It downloads the pinned SDK release from qhyccd.com, verifies a pinned
 sha256, and installs the camera firmware images, QHYCCD's udev
-firmware-upload rules, and their FX3-capable `fxload`. Then unplug/replug
-the camera — udev uploads firmware on plug-in. Offline installs work; the
+firmware-upload rules, and their FX3-capable `fxload`. An already-plugged
+cold camera is flashed immediately (the helper re-emits udev add events);
+otherwise firmware uploads on the next plug-in. Offline installs work; the
 camera just stays unusable until the helper has run.
 
 **zwo-camera** — nothing to do: the MIT-licensed SDK blobs are bundled at
@@ -180,7 +181,11 @@ verified on real hosts with `systemd-analyze security
 rusty-photon-<svc>.service`.
 
 Expected `lintian` findings (accepted, not bugs):
-`custom-library-search-path` on zwo-camera (the RUNPATH is the design);
-`no-changelog` / `no-manual-page` / `copyright-without-copyright-notice`
-pre-1.0; `empty-field Depends` and `unstripped-binary` appear only on
-ad-hoc builds from non-Debian hosts.
+`custom-library-search-path` on every package (the RUNPATH is injected
+uniformly; only zwo-camera uses it); `no-changelog` / `no-manual-page` /
+`copyright-without-copyright-notice` pre-1.0; `unstripped-binary-or-object`
+and `hardening-no-relro` on the two vendored ZWO blobs (shipped exactly as
+published); `embedded-library` on qhy-camera's statically linked SDK;
+`appstream-metadata-missing-modalias-provide` on the camera packages' udev
+rules; `empty-field Depends` and `unstripped-binary` on our own binaries
+only on ad-hoc builds from non-Debian hosts.
