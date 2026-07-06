@@ -334,9 +334,12 @@ async fn invoke(
 }
 
 /// `rp`'s HTTP origin, derived from the invocation's MCP endpoint — the
-/// base for the completion POST and the default SSE stream URL.
+/// base for the completion POST and the default SSE stream URL. Tolerates
+/// a trailing slash on the endpoint (`…/mcp/`), which would otherwise
+/// survive the suffix strip and double the slash in derived URLs.
 fn rp_base_url(mcp_server_url: &str) -> &str {
-    mcp_server_url.trim_end_matches("/mcp")
+    let trimmed = mcp_server_url.trim_end_matches('/');
+    trimmed.strip_suffix("/mcp").unwrap_or(trimmed)
 }
 
 /// Run the engine to completion and honor the completion contract:
@@ -640,6 +643,17 @@ mod tests {
         );
         let message = response["errors"][0]["message"].as_str().unwrap();
         assert!(message.contains("missing"), "{message}");
+    }
+
+    // --- rp URL derivation -----------------------------------------------------
+
+    #[test]
+    fn test_rp_base_url_strips_the_mcp_suffix_with_or_without_a_trailing_slash() {
+        for url in ["http://host:11115/mcp", "http://host:11115/mcp/"] {
+            assert_eq!(rp_base_url(url), "http://host:11115", "{url}");
+        }
+        // No /mcp suffix: only trailing slashes are dropped.
+        assert_eq!(rp_base_url("http://host:11115/"), "http://host:11115");
     }
 
     // --- /invoke error paths -------------------------------------------------
