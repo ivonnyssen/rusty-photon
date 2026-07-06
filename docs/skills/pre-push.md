@@ -372,14 +372,15 @@ CARGO_BAZEL_REPIN=1 bazel mod tidy && bazel mod tidy
 git add MODULE.bazel.lock
 ```
 
-BDD cucumber tests build and run under Bazel but
-are tagged `bdd` and excluded from the default test filter because
-the full suite takes ~150 s. Run them explicitly:
+BDD cucumber tests build and run under Bazel and are **part of the
+default test filter** (since PR #452): a plain `bazel test //...` runs
+them, and Bazel's result cache re-executes only the suites your change
+affects. The OmniSim-backed suites need `OMNISIM_PATH` or `OMNISIM_DIR`
+set. To narrow a run:
 
 ```bash
-bazel test --test_tag_filters=bdd //...
-# Or a single service:
-bazel test //services/filemonitor:bdd
+bazel test //services/filemonitor:bdd    # a single service's suite
+bazel test --test_tag_filters=bdd //...  # only the BDD suites
 ```
 
 Coverage runs as a separate required workflow
@@ -400,8 +401,8 @@ code that never runs at the telescope. It uploads under the canonical
 `<pkg>` Codecov flags that drive the per-service badges, and is the **sole**
 coverage source (the Cargo jobs do not collect coverage). It **includes the BDD suite**
 (`--config=coverage` drops only the `requires-cargo` tag), so locally it needs
-OmniSim installed and `OMNISIM_PATH` set, the same as a
-`bazel test --test_tag_filters=bdd` run. Whether the BDD-spawned service
+OmniSim installed and `OMNISIM_PATH`/`OMNISIM_DIR` set, the same as a plain
+`bazel test //...` run. Whether the BDD-spawned service
 binaries' coverage is collected is validated in CI.
 
 Known limitations:

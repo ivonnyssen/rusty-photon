@@ -16,7 +16,7 @@
 4. You MUST ALWAYS run the local quality gate before committing your work and fix all errors and warnings from the change you've made:
 
    ```sh
-   bazel build //... && bazel test //...                     # build + fast tests (the per-PR Bazel gate, run locally)
+   bazel build //... && bazel test //...                     # build + tests incl. BDD (the per-PR Bazel gate, run locally)
    cargo fmt
    cargo clippy --all-targets --all-features -- -D warnings  # Bazel runs neither rustfmt nor clippy
    ```
