@@ -1152,8 +1152,14 @@ Full three-process topology (OmniSim + `rp` + `session-runner`) via
 | Flats port equivalence | `flat_calibration.feature` | the scenarios from `calibrator-flats`' suite, run against the document — same events, frame counts, cleanup-on-failure |
 | Event subscription | `events.feature` | an `until_event` wait satisfied by an event emitted during an earlier instruction (pins subscription-from-run-start); a wait whose event never arrives fails the session at its timeout rather than hanging |
 | Triggers | `triggers.feature` | a trigger action lands between exposures, never during one (proved by SSE seq order); `once` fires exactly once across three captures; cooldown suppresses firings inside its window; a poll trigger fires through its `when` gate |
-| Resume | `recovery.feature` | kill mid-capture-loop → re-invoke with recovery → progress continues without repeated frames; `once` marker not re-run |
-| Safety | `safety.feature` | unsafe transition → engine exits without completion → safe transition → re-invocation resumes |
+| Resume | `recovery.feature` | SIGKILL the engine mid-capture-loop → restart → re-invoke with recovery → progress continues without repeated frames (exposure totals prove it); `once` marker not re-run (`filter_switch` count proves it); an rp outage terminates the run (service stays healthy, blackboard kept) and the session resumes against the restarted rp |
+| Safety | `safety.feature` | unsafe transition → engine exits without completion → safe transition → re-invocation resumes. **Blocked on rp**: rp has no safety re-invocation machinery yet (its `/invoke` hard-codes `recovery: null` — tracked as an rp issue); until then the engine-side path (request-level failure → terminated run → blackboard kept → recovery) is covered by `recovery.feature`'s rp-outage scenario and the unit pins |
+
+Because rp never sends a non-null `recovery` yet, the resume scenarios
+POST `/invoke` directly — same ids, the registration's forwarded
+`config`, a non-null `recovery` object — standing in for rp's future
+re-invocation. When rp grows that machinery, the scenarios hand the
+re-invoke back to rp.
 
 Scenarios that need a document the shipped set doesn't provide (a
 targeted `until_event` wait, resume fixtures) execute purpose-built

@@ -63,38 +63,45 @@ pub async fn configure_default_equipment(world: &mut SessionRunnerWorld) {
 /// documents from `tests/fixtures/workflows/` (the cucumber runner's cwd
 /// is the package dir — `bdd_main!` chdirs to `BDD_PACKAGE_DIR` under
 /// Bazel).
+///
+/// Both directories are created once per scenario and reused when the
+/// service is started again — a recovery scenario that kills and restarts
+/// session-runner needs the new process to find the old one's blackboard.
 pub async fn start_session_runner_service(world: &mut SessionRunnerWorld) {
     if world.session_runner.is_some() {
         return;
     }
 
-    let cwd = std::env::current_dir().expect("cannot read the cwd");
-    let workflows_dir = tempfile::tempdir().expect("cannot create a workflows_dir");
-    let mut copied = 0;
-    for source in [cwd.join("workflows"), cwd.join("tests/fixtures/workflows")] {
-        let entries = std::fs::read_dir(&source)
-            .unwrap_or_else(|e| panic!("cannot read {}: {e}", source.display()));
-        for entry in entries {
-            let path = entry.expect("cannot read a workflows entry").path();
-            if path.extension().is_some_and(|ext| ext == "json") {
-                let name = path.file_name().expect("a file has a name");
-                std::fs::copy(&path, workflows_dir.path().join(name))
-                    .unwrap_or_else(|e| panic!("cannot copy {}: {e}", path.display()));
-                copied += 1;
+    if world.workflows_dir.is_none() {
+        let cwd = std::env::current_dir().expect("cannot read the cwd");
+        let workflows_dir = tempfile::tempdir().expect("cannot create a workflows_dir");
+        let mut copied = 0;
+        for source in [cwd.join("workflows"), cwd.join("tests/fixtures/workflows")] {
+            let entries = std::fs::read_dir(&source)
+                .unwrap_or_else(|e| panic!("cannot read {}: {e}", source.display()));
+            for entry in entries {
+                let path = entry.expect("cannot read a workflows entry").path();
+                if path.extension().is_some_and(|ext| ext == "json") {
+                    let name = path.file_name().expect("a file has a name");
+                    std::fs::copy(&path, workflows_dir.path().join(name))
+                        .unwrap_or_else(|e| panic!("cannot copy {}: {e}", path.display()));
+                    copied += 1;
+                }
             }
         }
+        assert!(copied > 0, "no workflow documents found to copy");
+        world.workflows_dir = Some(workflows_dir);
     }
-    assert!(copied > 0, "no workflow documents found to copy");
+    if world.state_dir.is_none() {
+        world.state_dir = Some(tempfile::tempdir().expect("cannot create a state_dir"));
+    }
 
-    let state_dir = tempfile::tempdir().expect("cannot create a state_dir");
     let config = serde_json::json!({
         "port": 0,
-        "workflows_dir": workflows_dir.path(),
-        "state_dir": state_dir.path(),
+        "workflows_dir": world.workflows_dir.as_ref().expect("just ensured").path(),
+        "state_dir": world.state_dir.as_ref().expect("just ensured").path(),
     });
     let config_path = write_temp_config_file("session-runner-config", &config).await;
-    world.workflows_dir = Some(workflows_dir);
-    world.state_dir = Some(state_dir);
 
     world.session_runner = Some(ServiceHandle::start(env!("CARGO_PKG_NAME"), &config_path).await);
 }
@@ -117,6 +124,7 @@ pub fn register_orchestrator(
     if let Some(parameters) = parameters {
         config["parameters"] = parameters;
     }
+    world.orchestrator_config = Some(config.clone());
     world.plugin_configs.push(serde_json::json!({
         "name": "session-runner",
         "type": "orchestrator",

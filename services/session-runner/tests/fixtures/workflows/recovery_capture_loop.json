@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "name": "recovery-capture-loop",
+  "description": "Re-entrancy fixture for the resume scenarios: a once-marked filter setup plus a capture loop whose progress counter lives in the blackboard. Interrupted and re-invoked with recovery context, the loop continues from the persisted count instead of starting over - the exposure totals prove it, and the filter_switch count proves the once marker was not re-run. Exposures are 2s so a scenario can reliably interrupt mid-loop.",
+  "parameters": {
+    "camera_id": { "type": "string", "required": true },
+    "filter_wheel_id": { "type": "string", "required": true },
+    "plan": { "type": "number", "required": true }
+  },
+  "estimated_duration": "1m",
+  "max_duration": "10m",
+  "root": {
+    "sequence": [
+      {
+        "tool": "set_filter",
+        "args": {
+          "filter_wheel_id": { "$expr": "params.filter_wheel_id" },
+          "filter_name": "Red"
+        },
+        "once": "setup-filter"
+      },
+      {
+        "set": {
+          "session.frames": "has(session.frames) ? session.frames : 0"
+        }
+      },
+      {
+        "repeat": { "while": "session.frames < params.plan", "max_iterations": 20 },
+        "body": [
+          {
+            "tool": "capture",
+            "args": {
+              "camera_id": { "$expr": "params.camera_id" },
+              "duration": "2s"
+            }
+          },
+          { "set": { "session.frames": "session.frames + 1" } }
+        ]
+      }
+    ]
+  }
+}

@@ -382,6 +382,23 @@ impl ServiceHandle {
             }
         }
     }
+
+    /// Kill the service immediately and forcibly (SIGKILL on Unix,
+    /// `TerminateProcess` on Windows) — no shutdown path runs.
+    ///
+    /// This simulates a crash / power failure for resume and recovery
+    /// scenarios; use [`stop`](Self::stop) everywhere else (a forced kill
+    /// also forfeits the process's coverage flush). The wait +
+    /// stdout-drain handling is delegated to `stop`: the forced kill is
+    /// already pending and cannot be handled, so the process never runs
+    /// its graceful shutdown path — `stop` just reaps it and joins the
+    /// drain.
+    pub async fn kill(&mut self) {
+        if let Some(child) = self.child.as_mut() {
+            let _ = child.start_kill();
+        }
+        self.stop().await;
+    }
 }
 
 impl Drop for ServiceHandle {
