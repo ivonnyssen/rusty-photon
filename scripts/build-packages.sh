@@ -162,7 +162,9 @@ if [ "$needs_qhy" = 1 ]; then
         mkdir -p "$tmp"
         tar -xzf "$CACHE/$QHY_FILE" -C "$tmp"
         mv "$tmp/${QHY_FILE%.tar.gz}" "$QHY_EXTRACT"
-        rmdir "$tmp"
+        # rm -rf, not rmdir: any extra top-level entry in a future archive
+        # layout would make rmdir abort the build under set -e.
+        rm -rf "$tmp"
     fi
     # Locate the static lib rather than hardcoding the archive layout.
     qhy_lib=$(find "$QHY_EXTRACT" -name libqhyccd.a | head -1)

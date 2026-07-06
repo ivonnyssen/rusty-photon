@@ -75,8 +75,12 @@ else
 fi
 [ -n "$SERVICES" ] || die "no rusty-photon-*.deb packages in $DIST_ABS"
 for s in $SERVICES; do
-    ls "$DIST_ABS/rusty-photon-${s}_"*.deb > /dev/null 2>&1 \
-        || die "no rusty-photon-${s}_*.deb in $DIST_ABS"
+    # Exactly one deb per service: a multi-match glob (e.g. two revisions
+    # left over from an upgrade test) would make the in-container
+    # dpkg-deb/apt-get invocations below misbehave in confusing ways.
+    set -- "$DIST_ABS/rusty-photon-${s}_"*.deb
+    [ -e "$1" ] || die "no rusty-photon-${s}_*.deb in $DIST_ABS"
+    [ $# -eq 1 ] || die "multiple rusty-photon-${s}_*.deb in $DIST_ABS — remove stale builds first"
 done
 echo "Verifying: $SERVICES"
 
