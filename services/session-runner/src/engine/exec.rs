@@ -21,7 +21,7 @@ use crate::document::{
 };
 use crate::expr::{EvalContext, Expression};
 
-use super::{Clock, ToolCallError, ToolClient, WorkflowError};
+use super::{Clock, EventIntake, ToolCallError, ToolClient, WorkflowError};
 
 /// Why execution stopped early.
 #[derive(Debug)]
@@ -42,6 +42,8 @@ pub(super) struct Exec<'a, T, C> {
     blackboard: &'a mut Blackboard,
     tools: &'a T,
     clock: &'a C,
+    /// The session's event intake, live from before the first instruction.
+    events: EventIntake,
     /// The `result` namespace: the structured result of the most recent
     /// result-producing instruction on the current path (`null` at
     /// session start).
@@ -61,12 +63,14 @@ where
         blackboard: &'a mut Blackboard,
         tools: &'a T,
         clock: &'a C,
+        events: EventIntake,
     ) -> Self {
         Self {
             params,
             blackboard,
             tools,
             clock,
+            events,
             result: Value::Null,
             error: None,
         }
@@ -448,13 +452,63 @@ where
                 self.clock.sleep(*duration).await;
                 Ok(())
             }
-            Wait::UntilEvent { event, timeout: _ } => Err(self.error_here(
-                ins,
-                format!(
-                    "`wait` `until_event` (`{event}`) is not implemented yet — event \
-                     subscriptions land with the trigger engine (workflow-dsl plan, Phase D)"
-                ),
-            )),
+            Wait::UntilEvent { event, timeout } => {
+                debug!(
+                    event = %event,
+                    timeout = %humantime::format_duration(*timeout),
+                    "waiting for event"
+                );
+                // The intake runs from before the first instruction, so an
+                // event emitted while an earlier instruction ran is still
+                // buffered here — a wait can be satisfied by an event that
+                // technically preceded it (design § Event Subscription).
+                //
+                // The timeout budget is the time spent *waiting* (measured
+                // on the monotonic clock, so an NTP step can neither fire
+                // the timeout early nor extend the wait); Phase D2's
+                // trigger actions, which run during a wait, will not count
+                // against it.
+                let mut elapsed = std::time::Duration::ZERO;
+                loop {
+                    // Drain the buffer first — and once more when the
+                    // budget expires, so an event that arrived exactly at
+                    // expiry still satisfies the wait (mirroring `until`'s
+                    // final evaluation at timeout).
+                    while let Some(received) = self.events.try_next() {
+                        if received.event == *event {
+                            return Ok(());
+                        }
+                        debug!(received = %received.event, awaiting = %event,
+                               "ignoring non-matching event during `until_event` wait");
+                    }
+                    if elapsed >= *timeout {
+                        return Err(self.error_here(
+                            ins,
+                            format!(
+                                "`wait` `until_event` `{event}` did not arrive within {}",
+                                humantime::format_duration(*timeout)
+                            ),
+                        ));
+                    }
+                    let remaining = *timeout - elapsed;
+                    let waited_from = self.clock.monotonic();
+                    tokio::select! {
+                        // Biased so a just-arrived event beats an
+                        // already-expired sleep (the mock clock's sleeps
+                        // resolve instantly).
+                        biased;
+                        received = self.events.next() => {
+                            if received.event == *event {
+                                return Ok(());
+                            }
+                            debug!(received = %received.event, awaiting = %event,
+                                   "ignoring non-matching event during `until_event` wait");
+                        }
+                        () = self.clock.sleep(remaining) => {}
+                    }
+                    elapsed += self.clock.monotonic().saturating_sub(waited_from);
+                }
+            }
             Wait::Until {
                 condition,
                 poll_interval,

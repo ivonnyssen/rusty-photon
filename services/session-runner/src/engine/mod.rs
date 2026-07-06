@@ -8,11 +8,11 @@
 //! two seams so unit tests need no `rp`: a [`ToolClient`] (the real MCP
 //! client arrives with the Phase C service wiring) and a [`Clock`].
 //!
-//! Phase boundary (`docs/plans/workflow-dsl.md`): this is the Phase C
-//! engine core. Trigger evaluation — including `wait` `until_event` and
-//! the `event.*` namespace — lands in Phase D; until then a document's
-//! declared triggers do not fire (warned at run start) and an
-//! `until_event` wait raises a workflow error.
+//! Phase boundary (`docs/plans/workflow-dsl.md`): the Phase C engine core
+//! plus the Phase D event intake (`wait` `until_event` against the SSE
+//! stream). Trigger evaluation — including the `event.*` namespace — is
+//! the remaining Phase D work; until it lands a document's declared
+//! triggers do not fire (warned at run start).
 
 mod exec;
 mod io;
@@ -25,7 +25,7 @@ mod exec_tests;
 use serde_json::{json, Value};
 use tracing::{debug, info, warn};
 
-pub use io::{Clock, SystemClock, ToolCallError, ToolClient};
+pub use io::{Clock, EngineEvent, EventIntake, SystemClock, ToolCallError, ToolClient};
 
 use crate::blackboard::Blackboard;
 use crate::document::Document;
@@ -77,13 +77,16 @@ pub enum RunOutcome {
 /// [`crate::document::bind_parameters`]; `blackboard` is empty for a fresh
 /// session or reloaded for a recovery invocation — re-execution from the
 /// root against the persisted blackboard *is* the resume model (design
-/// § Re-entrancy Contract).
+/// § Re-entrancy Contract). `events` is the session's event intake
+/// (subscribed before the first instruction, so an event emitted while an
+/// earlier instruction ran still satisfies a later `until_event` wait).
 pub async fn run<T, C>(
     doc: &Document,
     params: &Value,
     blackboard: &mut Blackboard,
     tools: &T,
     clock: &C,
+    events: EventIntake,
 ) -> RunOutcome
 where
     T: ToolClient + Sync,
@@ -97,7 +100,7 @@ where
              (workflow-dsl plan, Phase D) — they will not fire"
         );
     }
-    let mut exec = exec::Exec::new(params, blackboard, tools, clock);
+    let mut exec = exec::Exec::new(params, blackboard, tools, clock, events);
     match exec.exec_block(std::slice::from_ref(&doc.root)).await {
         Ok(()) => {
             debug!(document = %doc.name, "workflow completed");

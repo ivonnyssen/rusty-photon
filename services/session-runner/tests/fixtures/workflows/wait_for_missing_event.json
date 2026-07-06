@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "name": "wait-for-missing-event",
+  "estimated_duration": "1m",
+  "max_duration": "5m",
+  "root": {
+    "wait": { "until_event": "meridian_flip", "timeout": "2s" }
+  }
+}

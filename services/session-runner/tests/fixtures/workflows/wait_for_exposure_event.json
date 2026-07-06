@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "name": "wait-for-exposure-event",
+  "parameters": {
+    "camera_id": { "type": "string", "required": true }
+  },
+  "estimated_duration": "1m",
+  "max_duration": "10m",
+  "root": {
+    "sequence": [
+      {
+        "id": "expose",
+        "tool": "capture",
+        "args": {
+          "camera_id": { "$expr": "params.camera_id" },
+          "duration": "100ms"
+        }
+      },
+      {
+        "id": "wait-for-the-event-the-capture-already-emitted",
+        "wait": { "until_event": "exposure_complete", "timeout": "5m" }
+      }
+    ]
+  }
+}

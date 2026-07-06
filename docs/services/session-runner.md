@@ -286,6 +286,20 @@ rendered as compact JSON (an error message is terminal output, not data).
   wall-clock adjustment (NTP step) can neither fire a timeout early nor
   extend a wait; the wall clock feeds only `seconds_until()`, where
   calendar time is the point.
+- An `until_event` wait matches against every event received since the
+  **run** started, not just those arriving after the wait began: the
+  engine's event intake opens before the first instruction and buffers
+  while instructions run, so an event emitted during an earlier
+  instruction (say, the `exposure_complete` of a capture the document
+  just made) still satisfies a later wait. Buffered events are checked
+  once more exactly when the timeout expires — only then does expiry
+  raise (the same final-evaluation rule as `until`). Its budget is
+  measured like `until`'s: monotonic time spent waiting, so trigger
+  actions running during the wait do not count against it. Non-matching
+  events are consumed and (Phase D2) feed trigger evaluation; the wait
+  neither extends nor aborts for them. If the event stream is down, the
+  wait simply runs to its timeout — a missing stream is never an
+  instruction error ([Event Subscription](#event-subscription)).
 
 #### `log` — operator-visible message
 
@@ -621,7 +635,8 @@ smell the authoring docs will warn about.
 ## Event Subscription
 
 The engine consumes `rp`'s SSE stream (`/api/events/subscribe`) for trigger
-sources. The SSE `id` is the envelope's `event_seq`; on reconnect the engine
+sources and `until_event` waits. The SSE `id` is the envelope's `event_seq`;
+on reconnect the engine
 sends `Last-Event-ID`, and replay is exact within `rp`'s retention window
 (the most recent 512 envelopes — `rp.md` § Real-Time Stream). If the engine
 was gone long enough that its cursor was evicted, the stream leads with a
@@ -632,6 +647,27 @@ outage. Events that arrive while no trigger matches
 are discarded — the engine keeps no event history. The stream URL is derived
 from the invocation's `mcp_server_url` origin unless overridden in
 configuration.
+
+Implementation pins (`src/events.rs`, Phase D):
+
+- The subscription is **per session run**: it opens before the first
+  instruction executes (so nothing emitted mid-session is missed — the
+  `until_event` buffering above depends on this) and closes when the run
+  ends. Reconnects after a dropped stream or refused connect retry every
+  1 s, indefinitely, carrying the cursor; a session with a dead stream
+  keeps running — tool calls, not events, decide whether `rp` is alive
+  (§ Safety Behavior).
+- What the engine sees of an envelope is its event-type name plus its
+  `payload` (the `event.*` value). Stream-control frames (`stream_gap`,
+  `stream_error`) and malformed frames never reach the engine.
+- The intake buffers up to 256 events (matching `rp`'s own broadcast
+  buffer) while an instruction runs; if the engine falls further behind,
+  backpressure reaches the socket and `rp`'s slow-consumer cutoff +
+  reconnect replay take over — the designed loss path, ending in a
+  logged `stream_gap` at worst.
+- The transport is the workspace's house SSE-client pattern (`sentinel`'s
+  watchdog, `bdd-infra`'s harness client): a chunked `reqwest` `GET` and
+  a hand-rolled `id:`/`event:`/`data:` parser.
 
 Webhook delivery is not used: `session-runner` registers no
 `subscribes_to`/`barrier_gates` and never blocks `rp`'s tool pipeline. It is
@@ -1016,9 +1052,16 @@ Full three-process topology (OmniSim + `rp` + `session-runner`) via
 |----------------|--------------|--------------------------|
 | Invocation + validation | `invocation.feature` | invalid document rejected at `/invoke`; unknown tool named in error; parameter type mismatch |
 | Flats port equivalence | `flat_calibration.feature` | the scenarios from `calibrator-flats`' suite, run against the document — same events, frame counts, cleanup-on-failure |
+| Event subscription | `events.feature` | an `until_event` wait satisfied by an event emitted during an earlier instruction (pins subscription-from-run-start); a wait whose event never arrives fails the session at its timeout rather than hanging |
 | Triggers | `triggers.feature` | refocus fires between exposures, not during; cooldown respected; poll trigger fires flip action |
 | Resume | `recovery.feature` | kill mid-capture-loop → re-invoke with recovery → progress continues without repeated frames; `once` marker not re-run |
 | Safety | `safety.feature` | unsafe transition → engine exits without completion → safe transition → re-invocation resumes |
+
+Scenarios that need a document the shipped set doesn't provide (a
+targeted `until_event` wait, resume fixtures) execute purpose-built
+documents from `tests/fixtures/workflows/`; the spawned service's
+`workflows_dir` is a per-scenario merge of `workflows/` and that fixtures
+directory.
 
 ### Golden documents
 
