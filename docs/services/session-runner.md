@@ -741,9 +741,14 @@ Implementation pins (`src/events.rs`, Phase D):
   inline on the `/invoke` path, before the invocation is acknowledged and
   the first instruction executes — an event emitted milliseconds into the
   first tool call is already being captured (the `until_event` buffering
-  and trigger evaluation depend on this). A failed or timed-out (5 s
-  connect cap) first attempt does not block the session; it just falls
-  through to the retry loop. The subscription closes when the run
+  and trigger evaluation depend on this). A failed or timed-out first
+  attempt does not block the session; it just falls through to the retry
+  loop. Every subscribe attempt — initial and reconnect alike — is
+  capped at 5 s end to end (TCP, TLS, response headers), so an endpoint
+  that accepts the connection but never answers cannot hang the
+  invocation or wedge the reconnect loop; reads of the established
+  stream stay uncapped (an idle stream is healthy — `rp` keep-alives
+  every 15 s). The subscription closes when the run
   ends. Reconnects after a dropped stream or refused connect retry every
   1 s, indefinitely, carrying the cursor; a session with a dead stream
   keeps running — tool calls, not events, decide whether `rp` is alive
