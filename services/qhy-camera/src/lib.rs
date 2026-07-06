@@ -102,7 +102,6 @@ impl ServerBuilder {
 
         let mut server = Server::new(CargoServerInfo!());
         server.listen_addr = SocketAddr::from(([0, 0, 0, 0], self.config.server.port));
-        server.discovery_port = None;
 
         // Clone the camera/CFW handles out so the `sdk` borrow ends before `sdk`
         // is moved into the BoundServer (the cloned handles share its backend).
@@ -177,6 +176,12 @@ impl ServerBuilder {
             source: rp_tls::error::TlsError::Io(e),
         })?;
 
+        // Opt-in Alpaca UDP discovery responder (config `discovery_port`);
+        // bound here so a taken port fails startup, run in start().
+        let discovery =
+            rusty_photon_driver::discovery::bind(local_addr, self.config.server.discovery_port)
+                .await?;
+
         // Load-bearing: `bdd_infra::ServiceHandle` greps stdout for `bound_addr=`.
         println!("Bound Alpaca server bound_addr={local_addr}");
         info!(
@@ -189,6 +194,7 @@ impl ServerBuilder {
             listener,
             router,
             local_addr,
+            discovery,
             _sdk: sdk,
         })
     }
@@ -199,6 +205,9 @@ pub struct BoundServer {
     listener: tokio::net::TcpListener,
     router: axum::Router,
     local_addr: SocketAddr,
+    /// Alpaca UDP discovery responder, when the config opts in. Runs inside
+    /// `start()`'s select so its socket closes when serving ends (reload).
+    discovery: Option<ascom_alpaca::discovery::BoundDiscoveryServer>,
     /// Held so the SDK is released (its `Drop` calls `ReleaseQHYCCDResource` on
     /// real hardware) only after the HTTP server stops — on shutdown *and* reload.
     _sdk: qhyccd_rs::Sdk,
@@ -213,10 +222,20 @@ impl BoundServer {
         self,
         shutdown: impl Future<Output = ()> + Send + 'static,
     ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let result = axum::serve(self.listener, self.router)
-            .with_graceful_shutdown(shutdown)
-            .await
-            .map_err(|e| QhyCameraError::Server(e.to_string()));
+        let Self {
+            listener,
+            router,
+            local_addr: _,
+            discovery,
+            _sdk,
+        } = self;
+        let serve = async {
+            axum::serve(listener, router)
+                .with_graceful_shutdown(shutdown)
+                .await
+                .map_err(|e| QhyCameraError::Server(e.to_string()))
+        };
+        let result = rusty_photon_driver::discovery::serve_with(discovery, serve).await;
         debug!("qhy-camera shut down");
         // `_sdk` drops here, after serving completes.
         result.map_err(Into::into)

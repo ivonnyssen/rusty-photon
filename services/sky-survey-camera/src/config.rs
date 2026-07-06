@@ -133,6 +133,12 @@ fn default_survey_endpoint() -> String {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ServerConfig {
     pub port: u16,
+    /// Alpaca UDP discovery responder port (normally 32227). Absent/`null` —
+    /// the default — disables discovery: many rusty-photon servers on one
+    /// host would collide on the shared discovery port, so it is a per-host
+    /// opt-in for single-driver deployments.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discovery_port: Option<u16>,
 }
 
 pub async fn load_config(path: &Path) -> Result<Config, SkySurveyCameraError> {
@@ -212,7 +218,10 @@ mod tests {
                 cache_dir: PathBuf::from("/tmp"),
                 endpoint: default_survey_endpoint(),
             },
-            server: ServerConfig { port: 0 },
+            server: ServerConfig {
+                port: 0,
+                discovery_port: None,
+            },
         }
     }
 

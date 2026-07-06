@@ -30,4 +30,8 @@ pub enum ZwoCameraError {
     /// The HTTP server stopped with an error.
     #[error("server error: {0}")]
     Server(String),
+
+    /// Binding the Alpaca UDP discovery responder failed.
+    #[error("failed to bind the Alpaca discovery responder: {0}")]
+    Discovery(String),
 }

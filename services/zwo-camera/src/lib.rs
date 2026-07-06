@@ -165,6 +165,13 @@ impl ServerBuilder {
                 source: rp_tls::error::TlsError::Io(source),
             })?;
 
+        // Opt-in Alpaca UDP discovery responder (config `discovery_port`);
+        // bound here so a taken port fails startup, run in start().
+        let discovery =
+            rusty_photon_driver::discovery::bind(local_addr, self.config.server.discovery_port)
+                .await
+                .map_err(|e| ZwoCameraError::Discovery(e.to_string()))?;
+
         let app = axum::Router::new().fallback_service(server.into_service());
         // Stdout is reserved for the machine-readable `bound_addr=<host>:<port>`
         // handshake that `bdd-infra::parse_bound_port` waits on for port
@@ -176,6 +183,7 @@ impl ServerBuilder {
             listener,
             app,
             local_addr,
+            discovery,
         })
     }
 }
@@ -185,6 +193,9 @@ pub struct BoundServer {
     listener: TcpListener,
     app: axum::Router,
     local_addr: SocketAddr,
+    /// Alpaca UDP discovery responder, when the config opts in. Runs inside
+    /// `start()`'s select so its socket closes when serving ends (reload).
+    discovery: Option<ascom_alpaca::discovery::BoundDiscoveryServer>,
 }
 
 impl BoundServer {
@@ -202,10 +213,19 @@ impl BoundServer {
         self,
         shutdown: impl Future<Output = ()> + Send + 'static,
     ) -> Result<(), ZwoCameraError> {
-        axum::serve(self.listener, self.app)
-            .with_graceful_shutdown(shutdown)
-            .await
-            .map_err(|e| ZwoCameraError::Server(e.to_string()))?;
+        let Self {
+            listener,
+            app,
+            local_addr: _,
+            discovery,
+        } = self;
+        let serve = async {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(shutdown)
+                .await
+                .map_err(|e| ZwoCameraError::Server(e.to_string()))
+        };
+        rusty_photon_driver::discovery::serve_with(discovery, serve).await?;
         Ok(())
     }
 }

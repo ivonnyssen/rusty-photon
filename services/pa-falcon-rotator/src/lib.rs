@@ -137,7 +137,6 @@ impl ServerBuilder {
         > = async {
             let mut server = Server::new(CargoServerInfo!());
             server.listen_addr = SocketAddr::from(([0, 0, 0, 0], self.config.server.port));
-            server.discovery_port = self.config.server.discovery_port;
 
             // Build the shared config-action context once (when a config source
             // + reload signal were supplied) and clone it to each device, so both
@@ -204,6 +203,12 @@ impl ServerBuilder {
             .await?;
             let local_addr = listener.local_addr()?;
 
+            // Opt-in Alpaca UDP discovery responder (config `discovery_port`);
+            // bound here so a taken port fails startup, run in start().
+            let discovery =
+                rusty_photon_driver::discovery::bind(local_addr, self.config.server.discovery_port)
+                    .await?;
+
             println!("Bound Alpaca server bound_addr={}", local_addr);
             info!("Bound Alpaca server bound_addr={}", local_addr);
 
@@ -212,6 +217,7 @@ impl ServerBuilder {
                 router,
                 local_addr,
                 tls,
+                discovery,
                 manager: Arc::clone(&manager),
             })
         }
@@ -238,6 +244,9 @@ pub struct BoundServer {
     router: axum::Router,
     local_addr: SocketAddr,
     tls: Option<TlsConfig>,
+    /// Alpaca UDP discovery responder, when the config opts in. Runs inside
+    /// `start()`'s select so its socket closes when serving ends (reload).
+    discovery: Option<ascom_alpaca::discovery::BoundDiscoveryServer>,
     /// Held so `start()` can call `manager.transport().shutdown()` after
     /// the HTTP server stops. No-op in LazyAcquire mode.
     manager: Arc<FalconManager>,
@@ -255,17 +264,28 @@ impl BoundServer {
         // Capture the serve result so transport.shutdown() runs even
         // when the HTTP server errors out — otherwise the supervisor
         // and port would leak past a serve failure.
-        let serve_result = match self.tls {
-            Some(ref tls_config) => {
-                info!("pa-falcon-rotator started on {} (TLS)", self.local_addr);
-                rp_tls::server::serve_tls(self.listener, self.router, tls_config, shutdown).await
-            }
-            None => {
-                info!("pa-falcon-rotator started on {}", self.local_addr);
-                rp_tls::server::serve_plain(self.listener, self.router, shutdown).await
+        let Self {
+            listener,
+            router,
+            local_addr,
+            tls,
+            discovery,
+            manager,
+        } = self;
+        let serve = async {
+            match tls {
+                Some(ref tls_config) => {
+                    info!("pa-falcon-rotator started on {} (TLS)", local_addr);
+                    rp_tls::server::serve_tls(listener, router, tls_config, shutdown).await
+                }
+                None => {
+                    info!("pa-falcon-rotator started on {}", local_addr);
+                    rp_tls::server::serve_plain(listener, router, shutdown).await
+                }
             }
         };
-        if let Err(e) = self.manager.transport().shutdown().await {
+        let serve_result = rusty_photon_driver::discovery::serve_with(discovery, serve).await;
+        if let Err(e) = manager.transport().shutdown().await {
             tracing::warn!(error = %e, "transport shutdown returned an error during teardown");
         }
         debug!("pa-falcon-rotator shut down");

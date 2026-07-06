@@ -1316,6 +1316,7 @@ dependencies = [
  "rp-auth",
  "rp-tls",
  "rusty-photon-config",
+ "rusty-photon-driver",
  "rusty-photon-service-lifecycle",
  "serde",
  "serde_json",

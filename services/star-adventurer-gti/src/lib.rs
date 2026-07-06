@@ -169,7 +169,6 @@ impl ServerBuilder {
         > = async {
             let mut server = Server::new(CargoServerInfo!());
             server.listen_addr = SocketAddr::from(([0, 0, 0, 0], self.config.server.port));
-            server.discovery_port = self.config.server.discovery_port;
 
             if self.config.mount.enabled {
                 let mut device = MountDevice::with_config_file_path(
@@ -233,6 +232,12 @@ impl ServerBuilder {
             .await?;
             let local_addr = listener.local_addr()?;
 
+            // Opt-in Alpaca UDP discovery responder (config `discovery_port`);
+            // bound here so a taken port fails startup, run in start().
+            let discovery =
+                rusty_photon_driver::discovery::bind(local_addr, self.config.server.discovery_port)
+                    .await?;
+
             println!("Bound Alpaca server bound_addr={}", local_addr);
             info!("Bound Alpaca server bound_addr={}", local_addr);
 
@@ -241,6 +246,7 @@ impl ServerBuilder {
                 router,
                 local_addr,
                 tls,
+                discovery,
                 manager: Arc::clone(&manager),
             })
         }
@@ -266,6 +272,9 @@ pub struct BoundServer {
     router: axum::Router,
     local_addr: SocketAddr,
     tls: Option<TlsConfig>,
+    /// Alpaca UDP discovery responder, when the config opts in. Runs inside
+    /// `start()`'s select so its socket closes when serving ends (reload).
+    discovery: Option<ascom_alpaca::discovery::BoundDiscoveryServer>,
     /// Held so `BoundServer::start` can call `manager.transport().shutdown()`
     /// after the HTTP server stops accepting requests. In
     /// `ServiceLifetime` mode this cancels the reconnect supervisor, runs
@@ -288,22 +297,33 @@ impl BoundServer {
         // the reconnect supervisor alive (the original `?` shape did
         // skip the shutdown block on serve failure). The serve error,
         // if any, is propagated after the transport-side teardown.
-        let serve_result = match self.tls {
-            Some(ref tls_config) => {
-                info!("star-adventurer-gti started on {} (TLS)", self.local_addr);
-                rp_tls::server::serve_tls(self.listener, self.router, tls_config, shutdown).await
-            }
-            None => {
-                info!("star-adventurer-gti started on {}", self.local_addr);
-                rp_tls::server::serve_plain(self.listener, self.router, shutdown).await
+        let Self {
+            listener,
+            router,
+            local_addr,
+            tls,
+            discovery,
+            manager,
+        } = self;
+        let serve = async {
+            match tls {
+                Some(ref tls_config) => {
+                    info!("star-adventurer-gti started on {} (TLS)", local_addr);
+                    rp_tls::server::serve_tls(listener, router, tls_config, shutdown).await
+                }
+                None => {
+                    info!("star-adventurer-gti started on {}", local_addr);
+                    rp_tls::server::serve_plain(listener, router, shutdown).await
+                }
             }
         };
+        let serve_result = rusty_photon_driver::discovery::serve_with(discovery, serve).await;
         // Always-run transport shutdown. In ServiceLifetime mode this
         // cancels the supervisor, runs the safety teardown one last
         // time, and drops the port. Errors are logged-not-propagated
         // because we're already on the way down — the serve_result
         // below is the canonical exit status.
-        if let Err(e) = self.manager.transport().shutdown().await {
+        if let Err(e) = manager.transport().shutdown().await {
             tracing::warn!(error = %e, "transport shutdown returned an error during teardown");
         }
         debug!("star-adventurer-gti shut down");

@@ -142,7 +142,10 @@ mod tests {
                 cache_dir: P::from("/tmp"),
                 endpoint: "http://x/".into(),
             },
-            server: ServerConfig { port: 0 },
+            server: ServerConfig {
+                port: 0,
+                discovery_port: None,
+            },
         }
     }
 

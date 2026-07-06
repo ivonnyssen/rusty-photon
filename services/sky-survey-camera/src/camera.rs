@@ -853,7 +853,10 @@ mod tests {
                 cache_dir: std::env::temp_dir().join("sky-survey-camera-tests"),
                 endpoint: "http://placeholder/".into(),
             },
-            server: ServerConfig { port: 0 },
+            server: ServerConfig {
+                port: 0,
+                discovery_port: None,
+            },
         }
     }
 
