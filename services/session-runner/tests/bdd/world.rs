@@ -42,6 +42,16 @@ pub struct SessionRunnerWorld {
     pub filter_wheels: Vec<FilterWheelConfig>,
     pub cover_calibrators: Vec<CoverCalibratorConfig>,
     pub plugin_configs: Vec<Value>,
+    /// The orchestrator registration's `config` object (workflow name +
+    /// parameters), kept so the recovery scenarios can re-invoke the
+    /// session with the exact object rp forwarded on the first invocation.
+    pub orchestrator_config: Option<Value>,
+
+    // --- Recovery scenario state ---
+    /// The blackboard's frame counter, read just before a recovery
+    /// re-invocation — the resumed run must capture exactly
+    /// `plan - frames_before_resume` more exposures.
+    pub frames_before_resume: Option<u64>,
 
     // --- Webhook state ---
     pub received_events: Arc<RwLock<Vec<ReceivedEvent>>>,
@@ -127,5 +137,41 @@ impl SessionRunnerWorld {
             }
         }
         false
+    }
+
+    /// The `session_id` from the last `/api/session/start` response.
+    pub fn session_id(&self) -> String {
+        self.start_response_field("session_id")
+    }
+
+    /// The `workflow_id` from the last `/api/session/start` response.
+    pub fn workflow_id(&self) -> String {
+        self.start_response_field("workflow_id")
+    }
+
+    fn start_response_field(&self, field: &str) -> String {
+        self.last_api_body
+            .as_ref()
+            .and_then(|body| body.get(field))
+            .and_then(|v| v.as_str())
+            .unwrap_or_else(|| panic!("no `{field}` captured — start a session via the REST API"))
+            .to_owned()
+    }
+
+    /// The spawned session-runner's blackboard file for the current session.
+    pub fn blackboard_path(&self) -> std::path::PathBuf {
+        self.state_dir
+            .as_ref()
+            .expect("session-runner must be started before reading its state_dir")
+            .path()
+            .join(format!("{}.json", self.session_id()))
+    }
+
+    /// The persisted `session.frames` counter, when the blackboard file
+    /// exists and carries one.
+    pub async fn blackboard_frames(&self) -> Option<u64> {
+        let bytes = tokio::fs::read(self.blackboard_path()).await.ok()?;
+        let session: Value = serde_json::from_slice(&bytes).ok()?;
+        session.get("frames")?.as_f64().map(|f| f as u64)
     }
 }

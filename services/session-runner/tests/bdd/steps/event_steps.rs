@@ -25,6 +25,11 @@ async fn rp_running_with_fixture_workflow(world: &mut SessionRunnerWorld, workfl
             Some(serde_json::json!({ "camera_id": "main-cam", "filter_wheel_id": "main-fw" }))
         }
         "trigger_poll" => Some(serde_json::json!({ "filter_wheel_id": "main-fw" })),
+        // 4 × 2s exposures: slow enough to interrupt mid-loop after two
+        // recorded frames, fast enough for the suite's time budget.
+        "recovery_capture_loop" => Some(serde_json::json!({
+            "camera_id": "main-cam", "filter_wheel_id": "main-fw", "plan": 4
+        })),
         other => panic!("no registration parameters defined for fixture workflow `{other}`"),
     };
     register_orchestrator(world, &workflow, parameters);

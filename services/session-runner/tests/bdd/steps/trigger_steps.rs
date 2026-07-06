@@ -7,11 +7,14 @@
 use std::time::Duration;
 
 use bdd_infra::rp_harness::SseClient;
-use cucumber::{given, then};
+use cucumber::{given, then, when};
 
 use crate::world::SessionRunnerWorld;
 
+// Also a `when`: the recovery scenarios attach a fresh client mid-scenario
+// after restarting rp (the old client died with the old instance).
 #[given("an SSE client is watching rp's event stream")]
+#[when("an SSE client is watching rp's event stream")]
 async fn sse_client_watching(world: &mut SessionRunnerWorld) {
     world.sse_client = Some(SseClient::connect(&world.rp_url(), None).await);
 }
@@ -22,30 +25,37 @@ async fn sse_shows_exactly_n_events(
     expected: usize,
     event_type: String,
 ) {
+    let count = settled_event_count(world, &event_type, expected).await;
+    assert_eq!(
+        count, expected,
+        "expected exactly {expected} '{event_type}' event(s) on the SSE stream, saw {count}"
+    );
+}
+
+/// Wait (bounded) for at least `expected` events of the given type on the
+/// scenario's SSE client — the reader task consumes the stream
+/// asynchronously — then settle briefly so an over-firing straggler is
+/// caught by the caller's count assertion rather than sneaking in after
+/// it. Returns the final count.
+pub async fn settled_event_count(
+    world: &SessionRunnerWorld,
+    event_type: &str,
+    expected: usize,
+) -> usize {
     let client = world
         .sse_client
         .as_ref()
         .expect("no SSE client — add the 'an SSE client is watching' step");
-
-    // The reader task consumes the stream asynchronously, so give the
-    // expected frames a moment to land…
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     loop {
-        let count = count_events(client, &event_type).await;
+        let count = count_events(client, event_type).await;
         if count >= expected || std::time::Instant::now() >= deadline {
             break;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    // …then settle briefly so an over-firing straggler would be caught by
-    // the exact-count assertion rather than sneak in after it.
     tokio::time::sleep(Duration::from_millis(500)).await;
-
-    let count = count_events(client, &event_type).await;
-    assert_eq!(
-        count, expected,
-        "expected exactly {expected} '{event_type}' event(s) on the SSE stream, saw {count}"
-    );
+    count_events(client, event_type).await
 }
 
 async fn count_events(client: &SseClient, event_type: &str) -> usize {

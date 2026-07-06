@@ -368,9 +368,27 @@ committable on its own.
       connect inline, before `/invoke` acknowledges — previously the
       first instruction could outrun the subscription and lose its
       events.
-- [ ] Resume: recovery invocation → blackboard reload → re-execution;
+- [x] Resume: recovery invocation → blackboard reload → re-execution;
       BDD scenarios for kill-mid-session → re-invoke → session continues
       without repeating completed work (frame counts prove it).
+
+      **Done (2026-07-06):** the engine machinery already existed
+      (recovery `/invoke` → `Blackboard::load`, eager replace for fresh
+      sessions, `params._recovery.*`, Terminated-keeps-blackboard); this
+      slice proves it end-to-end. `recovery.feature` runs a purpose-built
+      re-entrant fixture (`recovery_capture_loop`: once-marked filter
+      setup + a capture loop counting frames in the blackboard): SIGKILL
+      the engine mid-loop → restart → re-invoke with recovery → exposure
+      totals stay ≤ plan + 1 and the once marker is not re-run; and an
+      rp outage mid-loop → the request-level MCP failure terminates the
+      run (service healthy, blackboard kept) → re-invoke against the
+      restarted rp captures exactly the remaining frames. The scenarios
+      POST `/invoke` directly because **rp's recovery re-invocation
+      machinery does not exist** — its `/invoke` body hard-codes
+      `recovery: null`, nothing re-invokes on the safety safe-transition
+      or after an rp restart (session state is in-memory), and a failed
+      `/invoke` leaves the session active forever; closing that is rp
+      work, tracked in its own issue.
 
 ### Phase E — Deep-sky workflow
 
