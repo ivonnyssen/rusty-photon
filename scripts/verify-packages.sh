@@ -2,11 +2,13 @@
 # verify-packages.sh — lifecycle-verify the built .deb packages in a podman
 # systemd container (debian:trixie). Per service: install → unit active →
 # config self-created at /var/lib/rusty-photon/.config/rusty-photon/<svc>.json
-# → HTTP probe → remove (config survives) → purge (config + state gone;
-# shared user/home//etc symlink stay). ConditionPathExists-gated services
-# (sky-survey-camera, plate-solver, calibrator-flats) instead verify
-# enabled-but-not-started-and-not-failed. Runs natively on arm64 (the rig)
-# and x86_64 (dev box).
+# → HTTP probe → remove (config survives) → purge (config + state gone; the
+# shared user, home dir, and /etc/rusty-photon symlink stay). Class
+# exceptions: ConditionPathExists-gated services (sky-survey-camera,
+# plate-solver, calibrator-flats) verify enabled-but-inactive-and-not-failed;
+# serial drivers verify config + handshake-attempted instead of active (see
+# is_serial); the cameras never self-create a config (see
+# self_creates_config). Runs natively on arm64 (the rig) and x86_64 (dev box).
 #
 # Rootless-container caveat (docs/plans/service-packaging.md): rootless
 # podman cannot apply the units' sandboxing across the User= switch

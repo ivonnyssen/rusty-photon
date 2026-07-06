@@ -145,10 +145,11 @@ cargo run -p sentinel -- -c services/sentinel/examples/config.json
 
 ### Deploying
 
-Every service ships as a `.deb` / `.rpm` package (`rusty-photon-<svc>`)
-with a hardened systemd unit, built natively on the target machine via
-`scripts/build-packages.sh`. See [docs/packaging.md](docs/packaging.md)
-for building, installing, configuring, and camera-SDK specifics.
+Every service ships as a `.deb` / `.rpm` package (`rusty-photon-<svc>`),
+built natively on the target machine via `scripts/build-packages.sh` —
+each daemon with a hardened systemd unit, `phd2-guider` as a plain CLI
+tool. See [docs/packaging.md](docs/packaging.md) for building,
+installing, configuring, and camera-SDK specifics.
 
 ## Testing
 
