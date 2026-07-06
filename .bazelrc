@@ -27,13 +27,28 @@ test --test_output=errors
 test --keep_going
 
 # Tests tagged `requires-cargo` need a real Cargo invocation (they test
-# cargo-integration code in bdd-infra). Tests tagged `bdd` spin up service
-# binaries and are slow (~150 s total). Tests tagged `conformu` drive the
+# cargo-integration code in bdd-infra). Tests tagged `conformu` drive the
 # external ConformU tool against a service binary and self-skip unless
-# CONFORMU_PATH is set. All three are excluded by default; run BDD with
-# `bazel test --test_tag_filters=bdd` and conformu with `bazel test --config=conformu`.
-# Use `bazel test ... --test_tag_filters=''` to include everything.
-test --test_tag_filters=-requires-cargo,-bdd,-conformu
+# CONFORMU_PATH is set. Both are excluded by default; run conformu with
+# `bazel test --config=conformu`, or `--test_tag_filters=''` for everything.
+#
+# `bdd` suites run BY DEFAULT since 2026-07-06: Bazel caches test results, so
+# after the first run only suites your change actually affects re-execute —
+# and BDD failures (e.g. ui-htmx's snapshots of OTHER services' config.get
+# output) must surface locally, not first on CI. The CI workflows are
+# unaffected: bazel.yml's fast step and the coverage job pass their own
+# explicit --test_tag_filters (BDD stays a separate CI step for failure
+# attribution). Locally, the OmniSim-backed suites need OMNISIM_PATH or
+# OMNISIM_DIR set (see the forwards just below).
+test --test_tag_filters=-requires-cargo,-conformu
+
+# Forward the OmniSim locators into local test sandboxes by name
+# (bdd_infra::rp_harness::OmniSimHandle::start reads OMNISIM_PATH, then
+# OMNISIM_DIR). CI forwards OMNISIM_PATH via `build:ci` below (kept there so
+# the ci flag SET stays what it was); these default-scope forwards are what
+# make the OmniSim BDD suites work in a plain local `bazel test //...`.
+test --test_env=OMNISIM_PATH
+test --test_env=OMNISIM_DIR
 
 # OmniSim allows only one instance per host (ASCOM.Alpaca.Simulators guards
 # startup with a machine-global named Mutex keyed on a fixed GUID, not the port).
@@ -317,13 +332,16 @@ build:browser --test_env=GECKODRIVER_BINARY
 #    by tools/coverage/split_lcov.py before the per-flag Codecov upload.
 #
 # --test_tag_filters=-requires-cargo OVERRIDES the base
-# `test --test_tag_filters=-requires-cargo,-bdd`: coverage MUST include the BDD
-# suite, which exercises the service-binary integration paths (main.rs,
-# startup/shutdown, cross-service wiring) that unit tests never reach.
+# `test --test_tag_filters=-requires-cargo,-conformu`: coverage MUST include
+# the BDD suite (like the default test filter, which has run bdd since PR
+# #452), because it exercises the service-binary integration paths (main.rs,
+# startup/shutdown, cross-service wiring) that unit tests never reach — and it
+# additionally includes conformu (those self-skip without CONFORMU_PATH).
 # requires-cargo stays excluded (those tests shell out to cargo). BDD needs
-# OMNISIM_PATH (forwarded by build:ci --test_env) for rp's scenarios, so a local
-# `bazel coverage --config=coverage` needs OmniSim installed + OMNISIM_PATH set,
-# exactly like a local `bazel test --test_tag_filters=bdd` run.
+# OMNISIM_PATH (forwarded by build:ci --test_env; locally the default-scope
+# OMNISIM_PATH/OMNISIM_DIR forwards above) for rp's scenarios, so a local
+# `bazel coverage --config=coverage` needs OmniSim installed, exactly like a
+# plain local `bazel test //...` run.
 #
 # Child-process coverage (three stages): under `bazel coverage //...` the spawned
 # service binaries ARE instrumented (first-party targets matching the filter).

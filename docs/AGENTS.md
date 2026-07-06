@@ -16,12 +16,12 @@
 4. You MUST ALWAYS run the local quality gate before committing your work and fix all errors and warnings from the change you've made:
 
    ```sh
-   bazel build //... && bazel test //...                     # build + fast tests (the per-PR Bazel gate, run locally)
+   bazel build //... && bazel test //...                     # build + tests incl. BDD (the per-PR Bazel gate, run locally)
    cargo fmt
    cargo clippy --all-targets --all-features -- -D warnings  # Bazel runs neither rustfmt nor clippy
    ```
 
-   `bazel build //... && bazel test //...` is the fast local inner loop: Bazel's content-addressed action graph rebuilds and retests only the targets your change affects (ground-truth change detection, not a heuristic), and a shared local `--disk_cache` (`~/.cache/bazel-disk-cache`, set in `.bazelrc`) keeps it fast across worktrees and `bazel clean`. Local builds use that disk cache plus the output base — **never the remote cache**, which is opt-in via `--config=remote-cache` and used only by CI. The default test filter in `.bazelrc` excludes the slow `bdd`, `conformu`, and `requires-cargo` suites; when you touch BDD, run it explicitly with `bazel test --test_tag_filters=bdd //...` (needs OmniSim + `OMNISIM_PATH`). `cargo fmt` + stable `cargo clippy` stay because Bazel runs neither and both are required PR checks (`check.yml`).
+   `bazel build //... && bazel test //...` is the fast local inner loop: Bazel's content-addressed action graph rebuilds and retests only the targets your change affects (ground-truth change detection, not a heuristic), and a shared local `--disk_cache` (`~/.cache/bazel-disk-cache`, set in `.bazelrc`) keeps it fast across worktrees and `bazel clean`. Local builds use that disk cache plus the output base — **never the remote cache**, which is opt-in via `--config=remote-cache` and used only by CI. The default test filter in `.bazelrc` runs the `bdd` suites too (Bazel caches test results, so only suites your change affects re-execute; OmniSim-backed suites need `OMNISIM_PATH` or `OMNISIM_DIR` set) and excludes only `conformu` and `requires-cargo`; run conformu with `bazel test --config=conformu`. `cargo fmt` + stable `cargo clippy` stay because Bazel runs neither and both are required PR checks (`check.yml`).
 
    **cargo-rail is retired** — do **not** run `cargo rail`; Bazel is the build/test loop. Bazel is the per-PR CI gate: `bazel.yml` (build + test on Linux/macOS/Windows) and `bazel-coverage.yml` (coverage) are the required Bazel checks. `parity.yml` (Bazel/Cargo target parity) and the Cargo build/test jobs (`test.yml`) run nightly as a safety net; coverage is Bazel-only via `bazel coverage`. See `docs/skills/pre-push.md` for the full pre-push set and how to reproduce the nightly Cargo safety net locally via `act`. Cargo.toml / Cargo.lock are still the single source of truth for dependency versions (`crate_universe` reads them; see rule 10).
 

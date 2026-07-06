@@ -135,9 +135,10 @@ jobs:
           bazel build --config=ci "${REMOTE_FLAGS[@]}" //...
 
       - name: bazel test (fast)
-        # .bazelrc filters -requires-cargo,-bdd by default; keep fast
-        # unit + integration pass separate from BDD so log output stays
-        # useful when something breaks.
+        # The .bazelrc default filter includes bdd (for the local loop);
+        # exclude it here explicitly to keep the fast unit + integration
+        # pass separate from BDD, so log output and failure attribution
+        # stay useful when something breaks.
         run: |
           REMOTE_FLAGS=(--config=remote-cache)
           if [[ -n "$CACHE_WRITE_TOKEN" ]]; then
@@ -145,7 +146,8 @@ jobs:
           else
             REMOTE_FLAGS+=(--remote_upload_local_results=false)
           fi
-          bazel test --config=ci "${REMOTE_FLAGS[@]}" //...
+          bazel test --config=ci "${REMOTE_FLAGS[@]}" \
+            --test_tag_filters=-requires-cargo,-bdd,-conformu //...
 
       - name: bazel test (BDD)
         # BDD cucumber tests spawn service binaries and take 30-150s each;
