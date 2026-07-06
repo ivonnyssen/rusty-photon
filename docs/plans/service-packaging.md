@@ -27,7 +27,7 @@ while keeping host-level setup anyway (see ADR-012 Context).
 | PR-3 | 11 pure-Rust daemons + `phd2-guider` CLI package | Merged | #441 |
 | PR-4 | `qhy-camera` package + firmware downloader helper | Merged | #444 |
 | PR-5 | `zwo-camera` package with bundled MIT SDK blobs | Merged | #446 |
-| PR-6 | `build-packages.sh` + `verify-packages.sh` + `docs/packaging.md`; first on-rig install | In progress | `feature/packaging-tooling` |
+| PR-6 | `build-packages.sh` + `verify-packages.sh` + `docs/packaging.md`; first on-rig install | Merged | #448 |
 | PR-7 | `release.yml` generalization (x86_64 matrix, Homebrew rename) | Deferred | |
 
 Carried over from the superseded plan (still open, now owned by PR-7):
@@ -477,9 +477,34 @@ Runs on Debian arm64 (the rig) and x86_64 dev boxes:
   rusty-photon puts up to 14 Alpaca servers on one host, which would
   collide on the discovery port (and a unicast query against a REUSEPORT
   group is answered by an arbitrary one of them). Clients are configured
-  with explicit `host:port` instead. Possible later cleanup: the
-  `discovery_port` field the services persist in their configs is inert
-  and reads as if it did something.
+  with explicit `host:port` instead. Follow-up landed as PR #450: the
+  previously inert `discovery_port` config field is functional again as a
+  per-host opt-in (`Option<u16>`, absent/`null` = disabled, the default —
+  serialized only when set), restoring what PR #63 silently dropped when
+  serving moved to `into_service()`.
+
+### On-rig redeploy from merged main (2026-07-05)
+
+After PR-6 (#448) and the discovery follow-up (#450) merged, the rig was
+rebuilt from `main` and upgraded in place:
+
+- `build-packages.sh` incremental rebuild (cargo cache from the branch
+  build): 15 arm64 debs + SHA256SUMS.
+- Same-version reinstall via `dpkg -i dist/0.1.0/*.deb` (apt skips an
+  identical version; dpkg reinstalls) — all 15 unpacked `0.1.0-1` over
+  `0.1.0-1`, maintainer scripts restarted every daemon, no prompts.
+- Post-upgrade state identical to the first install: network/camera
+  services active with probes answering (both cameras re-enumerated —
+  QHY5III715C served on 11121, ZWO on 11122), serial drivers in the
+  designed retry loop, gated units inactive-not-failed, configs untouched.
+- The first-install caveat "old binaries' `config.apply` could re-persist
+  a stale `discovery_port` key" is closed: the deployed binaries carry
+  PR #450, which only serializes the field when set, and the rig configs
+  carry no `discovery_port` keys. Discovery stays off on the rig (the
+  intended default); the opt-in path is covered by
+  `crates/rusty-photon-driver/tests/test_discovery.rs` and a pre-merge
+  live smoke, and can be exercised on the rig any time by setting
+  `server.discovery_port` and reloading.
 
 ## Flagged unknowns (resolve during PR-2/PR-4)
 
@@ -504,6 +529,9 @@ Runs on Debian arm64 (the rig) and x86_64 dev boxes:
 
 ## Future considerations
 
+- `session-runner` postdates this plan's service inventory and is the one
+  unpackaged daemon (network-only class, no new pattern needed). Package it
+  in a small follow-up PR once the workflow-DSL implementation stabilizes.
 - PR-7: generalize `release.yml` to a service matrix (x86_64 deb/rpm),
   rename tarballs/Homebrew formula (`Formula/rusty-photon-filemonitor.rb`,
   class `RustyPhotonFilemonitor`); finish the tap setup carried over from
