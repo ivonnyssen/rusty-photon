@@ -295,9 +295,10 @@ rendered as compact JSON (an error message is terminal output, not data).
   once more exactly when the timeout expires — only then does expiry
   raise (the same final-evaluation rule as `until`). Its budget is
   measured like `until`'s: monotonic time spent waiting, so trigger
-  actions running during the wait do not count against it. Non-matching
-  events are consumed and (Phase D2) feed trigger evaluation; the wait
-  neither extends nor aborts for them. If the event stream is down, the
+  actions running during the wait do not count against it. Every
+  consumed event — the matching one included — feeds trigger
+  evaluation; the wait neither extends nor aborts for non-matching
+  ones. If the event stream is down, the
   wait simply runs to its timeout — a missing stream is never an
   instruction error ([Event Subscription](#event-subscription)).
 
@@ -392,6 +393,89 @@ to the *correction* `rp` delivers rather than aborting on its own.
 **Poll lifecycle.** Poll triggers start when the workflow starts and stop
 when it completes or is cancelled. A poll whose tool call fails logs at
 `debug!` and skips that cycle — a flaky poll must not kill the session.
+
+Implementation pins (`src/engine/`, Phase D2):
+
+- **The pump.** Trigger evaluation is single-threaded and runs only at
+  safe points: drain buffered events (synthetic first, then the SSE
+  intake), match and gate them against each trigger, call due poll
+  sources, then run queued actions in document order. An event that
+  arrives mid-instruction waits in the intake until the instruction
+  completes. The run's last safe point follows its last instruction: an
+  event still in flight on the stream when the tree completes does not
+  fire its trigger — a document that must react to its final operation's
+  events ends with a short `wait`. Trigger evaluation never re-enters:
+  inside a trigger action
+  the pump only moves intake events into the engine's pending buffer
+  (an `until_event` inside a `do` block matches against that buffer
+  without feeding evaluation), and anything a trigger action itself
+  provokes — new events, a synthetic correction from one of its tool
+  calls — is evaluated at the next safe point on the procedure tree.
+- **Occurrence counters.** Because the pump consumes events for trigger
+  evaluation, the engine keeps a per-event-name count of *unconsumed
+  occurrences* (names and counts only — still no event history). An
+  `until_event` wait is satisfied by, and decrements, one unconsumed
+  occurrence of its event name — that is how "matches every event since
+  the run started" (§ `wait`) survives trigger evaluation running
+  first. A wait consumes only its own event name's occurrences; unlike
+  Phase D1's buffer draining, a wait no longer discards other names'
+  events (they remain for later waits — and have already fed
+  evaluation).
+- **Gate timing.** `when` (together with the `once`, `cooldown`, and
+  already-queued checks) is evaluated when the event is drained — a
+  passing trigger queues its firing with the event payload. `while` is
+  evaluated at fire time, immediately before the action runs, so an
+  earlier trigger's action in the same batch can retract a later one by
+  flipping the phase flag. An expression error or non-boolean value in
+  either gate is a workflow error: a gate that cannot be evaluated is an
+  authoring bug, and silently never-firing would hide it (write robust
+  gates with `has()` and `??`).
+- **Errors in actions.** An uncaught workflow error inside a `do` block
+  fails the session, its message prefixed with the trigger id; a trigger
+  that must not take the session down wraps its body in `try`. A safety
+  termination during an action behaves as § Safety Behavior.
+- **Bookkeeping.** `session._triggers.<id>.last_fired` (RFC 3339 wall
+  time) and `.fired_once` are recorded when the action **completes
+  successfully** — mirroring instruction `once` semantics, an action
+  interrupted by a crash or termination does not count as fired, and
+  instruction-level `once` markers inside the `do` block are the tool
+  for non-repeatable steps within it. Cooldowns compare wall-clock time
+  (they must survive resume, so they cannot use the monotonic reading
+  that measures `wait` budgets); a backwards clock step extends a
+  cooldown rather than firing early.
+- **Polls.** The first cycle of a poll source is due one `interval`
+  after the run starts, and each handled due reschedules the next at
+  now + `interval` (missed cycles collapse — no burst after a long
+  instruction). The schedule is in-memory: on a recovery invocation
+  polls restart with a fresh first-due. A due poll whose trigger cannot
+  fire anyway (`once` spent, cooldown open, firing already queued)
+  skips the tool call entirely. An argument-expression failure counts
+  as a call failure (`debug!`, skip the cycle) — poll args commonly
+  read session state a later phase sets, and a poll must not kill the
+  session before that phase arrives. During waits, sleep segments are
+  clamped to the next poll due so polls stay on schedule; between
+  instructions a due poll runs at the next safe point. A zero
+  `interval` is a validation error.
+- **Synthetic corrections.** A tool result with `status: "aborted"` or
+  `status: "blocked_by_correction"` carrying a `correction` object
+  synthesizes `correction_requested` with `event.delivery =
+  "immediate"`; a result carrying `pending_correction` synthesizes it
+  with `"after_current"` (`rp.md` § Corrections). The synthetic event is
+  evaluated at the safe point immediately after the carrying tool call,
+  ahead of that safe point's intake drain. A correction value that is
+  not a JSON object is logged at `debug!` and ignored.
+- **Action scoping.** A `do` block starts with `result = null` and
+  `error.*` null and sees the firing's payload as `event.*`; all three
+  are restored when the action ends (§ `result` scoping).
+- **Waits.** A wait is one long safe point: the pump runs continuously
+  between sleep segments, and time spent in trigger actions never
+  counts against a wait's duration or timeout budget (budgets measure
+  monotonic time around the sleeps alone). The awaited event of an
+  `until_event` also feeds trigger evaluation — a trigger on the same
+  event still fires, during the wait's own safe point, before the wait
+  returns. An `until` condition may be re-evaluated more often than
+  `poll_interval` while trigger actions run; `poll_interval` is the
+  guaranteed maximum gap between evaluations only while idle.
 
 ### Expressions
 
@@ -542,7 +626,8 @@ completed `set`" is what makes tenet 2 sound.
 
 Engine bookkeeping lives under reserved keys the schema forbids documents
 from setting directly: `session._once.*` (completed once-markers),
-`session._triggers.<id>.*` (last-fired, fired-once flags).
+`session._triggers.<id>.*` (`last_fired` RFC 3339 timestamp, `fired_once`
+flag — § Triggers implementation pins).
 
 The file is deleted when a session completes and the completion has been
 acknowledged by `rp`; a leftover file at `/invoke` time for a **new**
@@ -644,15 +729,21 @@ was gone long enough that its cursor was evicted, the stream leads with a
 continues — poll triggers re-observe current state on their next cycle, and
 the re-entrancy contract already assumes events can be missed across an
 outage. Events that arrive while no trigger matches
-are discarded — the engine keeps no event history. The stream URL is derived
+are discarded — the engine keeps no event history, only the per-name
+unconsumed-occurrence counters that serve `until_event` waits
+(§ Triggers implementation pins). The stream URL is derived
 from the invocation's `mcp_server_url` origin unless overridden in
 configuration.
 
 Implementation pins (`src/events.rs`, Phase D):
 
-- The subscription is **per session run**: it opens before the first
-  instruction executes (so nothing emitted mid-session is missed — the
-  `until_event` buffering above depends on this) and closes when the run
+- The subscription is **per session run**: the initial connect completes
+  inline on the `/invoke` path, before the invocation is acknowledged and
+  the first instruction executes — an event emitted milliseconds into the
+  first tool call is already being captured (the `until_event` buffering
+  and trigger evaluation depend on this). A failed or timed-out (5 s
+  connect cap) first attempt does not block the session; it just falls
+  through to the retry loop. The subscription closes when the run
   ends. Reconnects after a dropped stream or refused connect retry every
   1 s, indefinitely, carrying the cursor; a session with a dead stream
   keeps running — tool calls, not events, decide whether `rp` is alive
@@ -978,6 +1069,8 @@ persisted progress.
 | Tool result carries a correction | Synthetic `correction_requested` trigger; not an error. |
 | Expression error (null arithmetic, division by zero) | Workflow error at that instruction, same propagation as tool errors. |
 | `wait` timeout | Workflow error. |
+| Trigger `when`/`while` gate errors or yields a non-boolean | Workflow error — a gate that cannot be evaluated is an authoring bug; silently never-firing would hide it. |
+| Uncaught error in a trigger `do` block | Fails the session, message prefixed with the trigger id; wrap the body in `try` for a resilient trigger. |
 | Loop `max_iterations` exhausted (`until`/`while`) | Loop completes with `result.converged = false`; not an error. |
 | SSE stream drops | Reconnect with `Last-Event-ID`; exact replay within `rp`'s 512-event retention; on `stream_gap`, log and continue (§ Event Subscription). |
 | Poll-trigger tool call fails | `debug!` log, skip cycle. |
@@ -1053,7 +1146,7 @@ Full three-process topology (OmniSim + `rp` + `session-runner`) via
 | Invocation + validation | `invocation.feature` | invalid document rejected at `/invoke`; unknown tool named in error; parameter type mismatch |
 | Flats port equivalence | `flat_calibration.feature` | the scenarios from `calibrator-flats`' suite, run against the document — same events, frame counts, cleanup-on-failure |
 | Event subscription | `events.feature` | an `until_event` wait satisfied by an event emitted during an earlier instruction (pins subscription-from-run-start); a wait whose event never arrives fails the session at its timeout rather than hanging |
-| Triggers | `triggers.feature` | refocus fires between exposures, not during; cooldown respected; poll trigger fires flip action |
+| Triggers | `triggers.feature` | a trigger action lands between exposures, never during one (proved by SSE seq order); `once` fires exactly once across three captures; cooldown suppresses firings inside its window; a poll trigger fires through its `when` gate |
 | Resume | `recovery.feature` | kill mid-capture-loop → re-invoke with recovery → progress continues without repeated frames; `once` marker not re-run |
 | Safety | `safety.feature` | unsafe transition → engine exits without completion → safe transition → re-invocation resumes |
 

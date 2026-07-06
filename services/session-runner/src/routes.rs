@@ -308,9 +308,10 @@ async fn invoke(
         "max_duration": humantime::format_duration(max).to_string(),
     });
 
-    // Subscribe to rp's SSE stream before the first instruction runs, so
-    // an event emitted during an early instruction still satisfies a later
-    // `until_event` wait (and, Phase D2, feeds triggers). The client task
+    // Subscribe to rp's SSE stream before the first instruction runs —
+    // the initial connect completes inside `subscribe`, so an event
+    // emitted during an early instruction still satisfies a later
+    // `until_event` wait and feeds trigger evaluation. The client task
     // lives exactly as long as the run: it exits when the intake drops.
     let events_url = config.events_url.clone().unwrap_or_else(|| {
         format!(
@@ -318,7 +319,7 @@ async fn invoke(
             rp_base_url(&request.mcp_server_url)
         )
     });
-    let intake = events::subscribe(events_url);
+    let intake = events::subscribe(events_url).await;
 
     tokio::spawn(run_session(
         document,

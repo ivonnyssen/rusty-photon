@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "name": "trigger-between-exposures",
+  "description": "Pins the safe-point interleaving contract: the trigger fires on exposure_started (emitted while capture is in flight), so its set_filter must land after that exposure completes - filter_switch seqs fall between exposures, never inside one. The trailing wait keeps the run alive long enough for the last exposure's event to arrive over SSE and fire the trigger - a run that ends at its last instruction may legitimately miss it.",
+  "parameters": {
+    "camera_id": { "type": "string", "required": true },
+    "filter_wheel_id": { "type": "string", "required": true }
+  },
+  "estimated_duration": "1m",
+  "max_duration": "10m",
+  "triggers": [
+    {
+      "id": "switch-filter-between-exposures",
+      "on": { "event": "exposure_started" },
+      "do": [
+        {
+          "tool": "set_filter",
+          "args": {
+            "filter_wheel_id": { "$expr": "params.filter_wheel_id" },
+            "filter_name": "Red"
+          }
+        }
+      ]
+    }
+  ],
+  "root": {
+    "sequence": [
+      {
+        "repeat": { "count": 2 },
+        "body": [
+          {
+            "tool": "capture",
+            "args": {
+              "camera_id": { "$expr": "params.camera_id" },
+              "duration": "100ms"
+            }
+          }
+        ]
+      },
+      { "wait": { "duration": "2s" } }
+    ]
+  }
+}

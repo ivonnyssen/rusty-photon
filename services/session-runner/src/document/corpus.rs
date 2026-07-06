@@ -700,6 +700,21 @@ pub(super) fn cases() -> Vec<Case> {
                 "`event` is not in scope here",
             )],
         ),
+        invalid(
+            "zero_poll_interval",
+            json!({
+                "version": 1, "name": "t", "root": { "sequence": [] },
+                "triggers": [ {
+                    "id": "p",
+                    "on": { "poll": { "tool": "status", "interval": "0s" } },
+                    "do": [ { "log": { "message": "x" } } ]
+                } ]
+            }),
+            &[(
+                "/triggers/0/on/poll/interval",
+                "a poll `interval` must be positive",
+            )],
+        ),
         // ---- invalid: triggers ---------------------------------------------
         invalid(
             "triggers_not_an_array",

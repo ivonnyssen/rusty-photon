@@ -10,9 +10,9 @@
 //!
 //! Phase boundary (`docs/plans/workflow-dsl.md`): the Phase C engine core
 //! plus the Phase D event intake (`wait` `until_event` against the SSE
-//! stream). Trigger evaluation — including the `event.*` namespace — is
-//! the remaining Phase D work; until it lands a document's declared
-//! triggers do not fire (warned at run start).
+//! stream) and trigger engine — the safe-point pump, `when`/`while`
+//! gates, `once`/`cooldown` bookkeeping, poll sources, and synthetic
+//! `correction_requested` events (design § Triggers).
 
 mod exec;
 mod io;
@@ -23,7 +23,7 @@ mod io;
 mod exec_tests;
 
 use serde_json::{json, Value};
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 pub use io::{Clock, EngineEvent, EventIntake, SystemClock, ToolCallError, ToolClient};
 
@@ -92,15 +92,7 @@ where
     T: ToolClient + Sync,
     C: Clock + Sync,
 {
-    if !doc.triggers.is_empty() {
-        warn!(
-            document = %doc.name,
-            triggers = doc.triggers.len(),
-            "document declares triggers, which this engine does not evaluate yet \
-             (workflow-dsl plan, Phase D) — they will not fire"
-        );
-    }
-    let mut exec = exec::Exec::new(params, blackboard, tools, clock, events);
+    let mut exec = exec::Exec::new(params, blackboard, tools, clock, events, &doc.triggers);
     match exec.exec_block(std::slice::from_ref(&doc.root)).await {
         Ok(()) => {
             debug!(document = %doc.name, "workflow completed");

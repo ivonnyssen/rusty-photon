@@ -12,17 +12,21 @@
 //!
 //! Engine bookkeeping lives under reserved keys documents cannot set:
 //! `session._once.*` (completed once-markers) and `session._triggers.<id>.*`
-//! (trigger bookkeeping, Phase D). [`Blackboard::set_path`] rejects
+//! (`last_fired` / `fired_once`). [`Blackboard::set_path`] rejects
 //! `_`-prefixed roots as defense in depth — the document validator already
 //! refuses such `set` keys at load.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use chrono::{DateTime, Utc};
 use serde_json::{Map, Value};
 
 /// Root key of the completed-`once`-marker map (`session._once.*`).
 const ONCE_KEY: &str = "_once";
+
+/// Root key of the trigger-bookkeeping map (`session._triggers.<id>.*`).
+const TRIGGERS_KEY: &str = "_triggers";
 
 /// A blackboard I/O failure. Per the design's error table these fail loud:
 /// continuing with unpersistable state would silently break resume.
@@ -213,6 +217,65 @@ impl Blackboard {
             }
             if let Value::Object(markers) = once {
                 markers.insert(key.to_owned(), Value::Bool(true));
+            }
+        }
+        self.persist().await
+    }
+
+    /// Whether trigger `id` has completed a firing with `once` recorded
+    /// (in this or an earlier run of the session).
+    pub fn trigger_fired_once(&self, id: &str) -> bool {
+        self.trigger_entry(id)
+            .and_then(|t| t.get("fired_once"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    }
+
+    /// The wall-clock time trigger `id` last completed its action, for
+    /// cooldown gating. `None` when it never fired or the recorded value
+    /// is unreadable — engine-owned bookkeeping heals rather than errors,
+    /// and treating a corrupt timestamp as "never fired" only shortens a
+    /// cooldown once.
+    pub fn trigger_last_fired(&self, id: &str) -> Option<DateTime<Utc>> {
+        let recorded = self.trigger_entry(id)?.get("last_fired")?.as_str()?;
+        DateTime::parse_from_rfc3339(recorded)
+            .ok()
+            .map(|t| t.with_timezone(&Utc))
+    }
+
+    fn trigger_entry(&self, id: &str) -> Option<&Value> {
+        self.session.get(TRIGGERS_KEY)?.get(id)
+    }
+
+    /// Record that trigger `id`'s action completed at `at` — and, for a
+    /// `once` trigger, that it must not fire again this session — then
+    /// persist. Corrupt non-object bookkeeping values are replaced.
+    pub async fn mark_trigger_fired(
+        &mut self,
+        id: &str,
+        at: DateTime<Utc>,
+        once: bool,
+    ) -> Result<(), BlackboardError> {
+        if let Value::Object(root) = &mut self.session {
+            let triggers = root
+                .entry(TRIGGERS_KEY)
+                .or_insert_with(|| Value::Object(Map::new()));
+            if !triggers.is_object() {
+                *triggers = Value::Object(Map::new());
+            }
+            if let Value::Object(by_id) = triggers {
+                let entry = by_id
+                    .entry(id.to_owned())
+                    .or_insert_with(|| Value::Object(Map::new()));
+                if !entry.is_object() {
+                    *entry = Value::Object(Map::new());
+                }
+                if let Value::Object(bookkeeping) = entry {
+                    bookkeeping.insert("last_fired".to_owned(), Value::String(at.to_rfc3339()));
+                    if once {
+                        bookkeeping.insert("fired_once".to_owned(), Value::Bool(true));
+                    }
+                }
             }
         }
         self.persist().await
@@ -487,6 +550,59 @@ mod tests {
         assert!(!bb.once_done("a"));
         assert!(!bb.once_done("b"));
         assert!(!bb.once_done("missing"));
+    }
+
+    #[tokio::test]
+    async fn test_trigger_bookkeeping_records_and_persists() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.json");
+        let mut bb = Blackboard::new_empty(path.clone());
+        assert!(!bb.trigger_fired_once("refocus"));
+        assert_eq!(bb.trigger_last_fired("refocus"), None);
+
+        let at = chrono::Utc::now();
+        bb.mark_trigger_fired("refocus", at, true).await.unwrap();
+        assert!(bb.trigger_fired_once("refocus"));
+        assert_eq!(bb.trigger_last_fired("refocus"), Some(at));
+
+        let reloaded = Blackboard::load(path).await.unwrap();
+        assert!(reloaded.trigger_fired_once("refocus"));
+        assert_eq!(reloaded.trigger_last_fired("refocus"), Some(at));
+    }
+
+    #[tokio::test]
+    async fn test_mark_trigger_fired_without_once_leaves_no_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut bb = Blackboard::new_empty(dir.path().join("s.json"));
+        let at = chrono::Utc::now();
+        bb.mark_trigger_fired("watch", at, false).await.unwrap();
+        assert!(!bb.trigger_fired_once("watch"));
+        assert_eq!(bb.trigger_last_fired("watch"), Some(at));
+        assert_eq!(
+            *bb.value(),
+            json!({"_triggers": {"watch": {"last_fired": at.to_rfc3339()}}})
+        );
+    }
+
+    #[tokio::test]
+    async fn test_trigger_bookkeeping_heals_corrupt_values() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.json");
+        std::fs::write(
+            &path,
+            br#"{"_triggers": {"a": 5, "b": {"last_fired": "not a timestamp"}}}"#,
+        )
+        .unwrap();
+        let mut bb = Blackboard::load(path).await.unwrap();
+        // Unreadable bookkeeping reads as "never fired"…
+        assert!(!bb.trigger_fired_once("a"));
+        assert_eq!(bb.trigger_last_fired("a"), None);
+        assert_eq!(bb.trigger_last_fired("b"), None);
+        // …and is replaced on the next write.
+        let at = chrono::Utc::now();
+        bb.mark_trigger_fired("a", at, true).await.unwrap();
+        assert!(bb.trigger_fired_once("a"));
+        assert_eq!(bb.trigger_last_fired("a"), Some(at));
     }
 
     #[tokio::test]
