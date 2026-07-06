@@ -470,13 +470,16 @@ Runs on Debian arm64 (the rig) and x86_64 dev boxes:
   beyond the reload — the no-firmware-helper design confirmed.
 - lintian (debian profile; filemonitor/qhy-camera/zwo-camera): only the
   findings documented in `docs/packaging.md` — no surprises.
-- **Open finding (product, not packaging):** nothing binds UDP 32227.
-  Every service self-serves through rp-tls via `Server::into_service()`,
-  which bypasses ascom-alpaca's discovery responder, so the
-  `discovery_port` config field is dead and cross-host Alpaca UDP
-  discovery gets no answer (qhy-camera even sets `discovery_port = None`
-  explicitly). Needs a serving-path fix — spawn the discovery responder
-  alongside the HTTP listener — in its own PR.
+- **Discovery: off by default is the intended behavior** (confirmed by
+  Igor during this verification). Nothing binds UDP 32227: every service
+  self-serves through rp-tls via `Server::into_service()`, which bypasses
+  ascom-alpaca's discovery responder. That is correct for this family —
+  rusty-photon puts up to 14 Alpaca servers on one host, which would
+  collide on the discovery port (and a unicast query against a REUSEPORT
+  group is answered by an arbitrary one of them). Clients are configured
+  with explicit `host:port` instead. Possible later cleanup: the
+  `discovery_port` field the services persist in their configs is inert
+  and reads as if it did something.
 
 ## Flagged unknowns (resolve during PR-2/PR-4)
 

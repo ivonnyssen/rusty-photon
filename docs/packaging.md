@@ -39,6 +39,10 @@ installed. `phd2-guider` is the one plain CLI package (no unit, no user).
 | plate-solver | 11131 | config-gated; needs ASTAP (below) |
 | calibrator-flats | 11170 | config-gated |
 
+Alpaca UDP discovery is deliberately not served: with this many Alpaca
+servers on one host they would collide on the discovery port. Point
+clients (N.I.N.A. etc.) at `host:port` directly using the table above.
+
 ## Building packages
 
 Packages are built natively on the target architecture — arm64 directly on
