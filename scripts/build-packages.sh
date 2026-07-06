@@ -143,6 +143,9 @@ mkdir -p "$CACHE"
 
 # fetch URL DEST — atomic download (no half-written file poisoning the cache).
 fetch() {
+    # Explicit check: on non-apt hosts nothing above installed curl, and a
+    # bare `curl: not found` under set -e would be low-signal.
+    command -v curl > /dev/null 2>&1 || die "curl not found (needed to download the SDKs)"
     echo "Downloading $1"
     curl -fsSL -o "$2.part" "$1"
     mv "$2.part" "$2"
@@ -203,6 +206,9 @@ echo "Building release binaries:$build_args"
 # shellcheck disable=SC2086 # word-splitting the -p list is intended
 cargo build --release $build_args
 
+# Same reasoning as the curl check in fetch(): make a missing binutils on a
+# non-apt host fail with an actionable message, not a bare `strip: not found`.
+command -v strip > /dev/null 2>&1 || die "strip not found (install binutils)"
 for s in $SERVICES; do
     strip "target/release/$s"
 done

@@ -294,6 +294,7 @@ for s in $SERVICES; do
             # In case a serial driver ever gains warn-and-serve, hold it to
             # the full contract.
             port=$(port_of "$s")
+            [ -n "$port" ] || fail "$s" "no port mapping — add $s to port_of()"
             path=$(probe_path "$s")
             cx curl -fsS -o /dev/null "http://127.0.0.1:$port$path" 2> /dev/null \
                 || fail "$s" "active but no HTTP response on port $port ($path)"
@@ -321,6 +322,7 @@ for s in $SERVICES; do
     fi
 
     port=$(port_of "$s")
+    [ -n "$port" ] || fail "$s" "no port mapping — add $s to port_of()"
     path=$(probe_path "$s")
     i=0
     until cx curl -fsS -o /dev/null "http://127.0.0.1:$port$path" 2> /dev/null; do
