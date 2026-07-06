@@ -1133,22 +1133,625 @@ async fn test_blackboard_reflects_every_completed_set_at_termination() {
     assert_eq!(on_disk["progress"], json!(7.0));
 }
 
-// --- documents with triggers (Phase D gap) ---------------------------------------
+// --- triggers: the safe-point pump ------------------------------------------
+
+/// A live event channel: the sender side is handed to tool responders so a
+/// tool call can emit an event mid-run (modelling `rp` emitting on the SSE
+/// stream while an instruction is in flight).
+fn live_events() -> (tokio::sync::mpsc::Sender<EngineEvent>, EventIntake) {
+    let (tx, rx) = tokio::sync::mpsc::channel(16);
+    (tx, EventIntake::new(rx))
+}
+
+fn ev(event: &str, payload: Value) -> EngineEvent {
+    EngineEvent {
+        event: event.to_owned(),
+        payload,
+    }
+}
+
+/// Run a full document (triggers included) against a fresh blackboard and
+/// the given intake; returns the outcome and the final session value.
+async fn run_doc_with_events(
+    doc: &Document,
+    tools: &MockTools,
+    clock: &(impl Clock + Sync),
+    events: EventIntake,
+) -> (RunOutcome, Value) {
+    let dir = tempfile::tempdir().unwrap();
+    let mut blackboard = Blackboard::load(dir.path().join("session.json"))
+        .await
+        .unwrap();
+    let outcome = run(doc, &json!({}), &mut blackboard, tools, clock, events).await;
+    let session = blackboard.value().clone();
+    (outcome, session)
+}
 
 #[tokio::test]
-async fn test_documents_with_triggers_run_but_triggers_do_not_fire() {
+async fn test_event_trigger_action_runs_at_the_next_safe_point_not_mid_instruction() {
+    let (tx, events) = live_events();
+    // The event is emitted while `a` is in flight; the trigger action must
+    // run after `a` completes and before `b` starts.
+    let tools = MockTools::new(move |_, tool, _| {
+        if tool == "a" {
+            tx.try_send(ev("hfr_degraded", json!({}))).unwrap();
+        }
+        Ok(json!({}))
+    });
+    let doc = make_doc(json!({
+        "version": 1, "name": "t",
+        "triggers": [ { "id": "correct", "on": { "event": "hfr_degraded" },
+                        "do": [ { "tool": "refocus" } ] } ],
+        "root": { "sequence": [ { "tool": "a" }, { "tool": "b" } ] }
+    }));
+    let (outcome, _) = run_doc_with_events(&doc, &tools, &MockClock::new(), events).await;
+
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert_eq!(tools.call_names(), vec!["a", "refocus", "b"]);
+}
+
+#[tokio::test]
+async fn test_queued_trigger_actions_run_in_document_order() {
+    let (tx, events) = live_events();
+    let tools = MockTools::new(move |_, tool, _| {
+        if tool == "a" {
+            tx.try_send(ev("e", json!({}))).unwrap();
+        }
+        Ok(json!({}))
+    });
+    let doc = make_doc(json!({
+        "version": 1, "name": "t",
+        "triggers": [
+            { "id": "t1", "on": { "event": "e" }, "do": [ { "tool": "first" } ] },
+            { "id": "t2", "on": { "event": "e" }, "do": [ { "tool": "second" } ] }
+        ],
+        "root": { "sequence": [ { "tool": "a" }, { "tool": "b" } ] }
+    }));
+    let (outcome, _) = run_doc_with_events(&doc, &tools, &MockClock::new(), events).await;
+
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert_eq!(tools.call_names(), vec!["a", "first", "second", "b"]);
+}
+
+#[tokio::test]
+async fn test_a_queued_trigger_does_not_queue_again() {
+    let (tx, events) = live_events();
+    // Two occurrences drain in the same batch; the trigger queues once.
+    let tools = MockTools::new(move |_, tool, _| {
+        if tool == "a" {
+            tx.try_send(ev("e", json!({}))).unwrap();
+            tx.try_send(ev("e", json!({}))).unwrap();
+        }
+        Ok(json!({}))
+    });
+    let doc = make_doc(json!({
+        "version": 1, "name": "t",
+        "triggers": [ { "id": "t", "on": { "event": "e" }, "do": [ { "tool": "act" } ] } ],
+        "root": { "sequence": [ { "tool": "a" }, { "tool": "b" } ] }
+    }));
+    let (outcome, _) = run_doc_with_events(&doc, &tools, &MockClock::new(), events).await;
+
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert_eq!(tools.call_names(), vec!["a", "act", "b"]);
+}
+
+#[tokio::test]
+async fn test_when_gate_filters_on_the_event_payload() {
+    let (tx, events) = live_events();
+    let tools = MockTools::new(move |_, tool, _| {
+        match tool {
+            "a" => tx
+                .try_send(ev("exposure_complete", json!({ "hfr": 2.0 })))
+                .unwrap(),
+            "b" => tx
+                .try_send(ev("exposure_complete", json!({ "hfr": 4.0 })))
+                .unwrap(),
+            _ => {}
+        }
+        Ok(json!({}))
+    });
+    let doc = make_doc(json!({
+        "version": 1, "name": "t",
+        "triggers": [ { "id": "refocus-on-degradation",
+                        "on": { "event": "exposure_complete" },
+                        "when": "event.hfr > 3.0",
+                        "do": [ { "tool": "refocus" } ] } ],
+        "root": { "sequence": [ { "tool": "a" }, { "tool": "b" }, { "tool": "c" } ] }
+    }));
+    let (outcome, _) = run_doc_with_events(&doc, &tools, &MockClock::new(), events).await;
+
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert_eq!(tools.call_names(), vec!["a", "b", "refocus", "c"]);
+}
+
+#[tokio::test]
+async fn test_while_gate_is_evaluated_at_fire_time() {
+    let (tx, events) = live_events();
+    let tools = MockTools::new(move |_, tool, _| {
+        if tool == "a" {
+            tx.try_send(ev("e", json!({}))).unwrap();
+        }
+        Ok(json!({}))
+    });
+    // Both triggers queue from the same event; t1's action flips the flag
+    // t2's `while` reads, so t2's queued firing is dropped at fire time.
+    let doc = make_doc(json!({
+        "version": 1, "name": "t",
+        "triggers": [
+            { "id": "t1", "on": { "event": "e" },
+              "do": [ { "set": { "session.stop": "true" } } ] },
+            { "id": "t2", "on": { "event": "e" }, "while": "session.stop != true",
+              "do": [ { "tool": "never" } ] }
+        ],
+        "root": { "sequence": [ { "tool": "a" }, { "tool": "b" } ] }
+    }));
+    let (outcome, session) = run_doc_with_events(&doc, &tools, &MockClock::new(), events).await;
+
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert_eq!(tools.call_names(), vec!["a", "b"]);
+    assert_eq!(session["stop"], json!(true));
+    // t1 fired (bookkeeping recorded); t2's dropped firing did not.
+    assert!(session["_triggers"]["t1"]["last_fired"].is_string());
+    assert_eq!(session["_triggers"].get("t2"), None);
+}
+
+#[tokio::test]
+async fn test_once_trigger_fires_at_most_once_per_session_including_resume() {
+    let doc = make_doc(json!({
+        "version": 1, "name": "t",
+        "triggers": [ { "id": "t", "on": { "event": "e" }, "once": true,
+                        "do": [ { "tool": "act" } ] } ],
+        "root": { "sequence": [ { "tool": "a" }, { "tool": "b" } ] }
+    }));
+    let dir = tempfile::tempdir().unwrap();
+
+    // First run: fires once; the second occurrence (after `b`) is gated.
+    let (tx, events) = live_events();
+    let tools = MockTools::new(move |_, tool, _| {
+        if tool == "a" || tool == "b" {
+            tx.try_send(ev("e", json!({}))).unwrap();
+        }
+        Ok(json!({}))
+    });
+    let mut blackboard = Blackboard::load(dir.path().join("session.json"))
+        .await
+        .unwrap();
+    let outcome = run(
+        &doc,
+        &json!({}),
+        &mut blackboard,
+        &tools,
+        &MockClock::new(),
+        events,
+    )
+    .await;
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert_eq!(tools.call_names(), vec!["a", "act", "b"]);
+    assert_eq!(
+        blackboard.value()["_triggers"]["t"]["fired_once"],
+        json!(true)
+    );
+
+    // Resume (same blackboard file): `once` is per session, so a fresh
+    // occurrence must not fire it again.
+    let (tx2, events2) = live_events();
+    let tools2 = MockTools::new(move |_, tool, _| {
+        if tool == "a" {
+            tx2.try_send(ev("e", json!({}))).unwrap();
+        }
+        Ok(json!({}))
+    });
+    let mut reloaded = Blackboard::load(dir.path().join("session.json"))
+        .await
+        .unwrap();
+    let outcome = run(
+        &doc,
+        &json!({}),
+        &mut reloaded,
+        &tools2,
+        &MockClock::new(),
+        events2,
+    )
+    .await;
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert_eq!(tools2.call_names(), vec!["a", "b"]);
+}
+
+#[tokio::test]
+async fn test_cooldown_gates_by_wall_clock_and_reopens() {
+    let (tx, events) = live_events();
+    let tools = MockTools::new(move |_, tool, _| {
+        if matches!(tool, "a" | "b" | "c") {
+            tx.try_send(ev("e", json!({}))).unwrap();
+        }
+        Ok(json!({}))
+    });
+    // `a` fires the trigger; `b`'s occurrence lands inside the 10m
+    // cooldown (no time has passed); the 15m wait reopens it for `c`'s.
+    let doc = make_doc(json!({
+        "version": 1, "name": "t",
+        "triggers": [ { "id": "t", "on": { "event": "e" }, "cooldown": "10m",
+                        "do": [ { "tool": "act" } ] } ],
+        "root": { "sequence": [
+            { "tool": "a" },
+            { "tool": "b" },
+            { "wait": { "duration": "15m" } },
+            { "tool": "c" },
+            { "tool": "d" }
+        ] }
+    }));
+    let (outcome, _) = run_doc_with_events(&doc, &tools, &MockClock::new(), events).await;
+
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert_eq!(tools.call_names(), vec!["a", "act", "b", "c", "act", "d"]);
+}
+
+#[tokio::test]
+async fn test_uncaught_trigger_action_error_fails_the_session_naming_the_trigger() {
+    let (tx, events) = live_events();
+    let tools = MockTools::new(move |_, tool, _| {
+        if tool == "a" {
+            tx.try_send(ev("e", json!({}))).unwrap();
+        }
+        if tool == "boom" {
+            return Err(ToolCallError::Failed("dew heater offline".to_owned()));
+        }
+        Ok(json!({}))
+    });
+    let doc = make_doc(json!({
+        "version": 1, "name": "t",
+        "triggers": [ { "id": "t", "on": { "event": "e" }, "do": [ { "tool": "boom" } ] } ],
+        "root": { "sequence": [ { "tool": "a" }, { "tool": "never" } ] }
+    }));
+    let (outcome, _) = run_doc_with_events(&doc, &tools, &MockClock::new(), events).await;
+
+    let error = failure(outcome);
+    assert_eq!(
+        error.message,
+        "trigger `t`: tool `boom` failed: dew heater offline"
+    );
+    assert_eq!(tools.call_names(), vec!["a", "boom"]);
+}
+
+#[tokio::test]
+async fn test_a_try_inside_the_do_block_makes_a_trigger_resilient() {
+    let (tx, events) = live_events();
+    let tools = MockTools::new(move |_, tool, _| {
+        if tool == "a" {
+            tx.try_send(ev("e", json!({}))).unwrap();
+        }
+        if tool == "boom" {
+            return Err(ToolCallError::Failed("still offline".to_owned()));
+        }
+        Ok(json!({}))
+    });
+    let doc = make_doc(json!({
+        "version": 1, "name": "t",
+        "triggers": [ { "id": "t", "on": { "event": "e" },
+                        "do": [ { "try": [ { "tool": "boom" } ],
+                                  "catch": [ { "tool": "cleanup" } ] } ] } ],
+        "root": { "sequence": [ { "tool": "a" }, { "tool": "b" } ] }
+    }));
+    let (outcome, session) = run_doc_with_events(&doc, &tools, &MockClock::new(), events).await;
+
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert_eq!(tools.call_names(), vec!["a", "boom", "cleanup", "b"]);
+    // The caught firing still counts as fired.
+    assert!(session["_triggers"]["t"]["last_fired"].is_string());
+}
+
+#[tokio::test]
+async fn test_trigger_action_scoping_result_error_and_event() {
+    let (tx, events) = live_events();
+    let tools = MockTools::new(move |_, tool, _| {
+        if tool == "a" {
+            tx.try_send(ev("e", json!({ "reason": "drift" }))).unwrap();
+            return Ok(json!({ "v": "root" }));
+        }
+        Ok(json!({ "v": "trigger" }))
+    });
+    // The `do` block starts with `result` null and sees `event.*`; the
+    // tree's `result` is restored after the action (the trigger's own
+    // tool result must not leak into the `set` that follows `a`).
+    let doc = make_doc(json!({
+        "version": 1, "name": "t",
+        "triggers": [ { "id": "t", "on": { "event": "e" },
+                        "do": [
+                            { "set": { "session.result_was_null": "result == null",
+                                       "session.reason": "event.reason" } },
+                            { "tool": "inner" }
+                        ] } ],
+        "root": { "sequence": [
+            { "tool": "a" },
+            { "set": { "session.root_result": "result.v" } }
+        ] }
+    }));
+    let (outcome, session) = run_doc_with_events(&doc, &tools, &MockClock::new(), events).await;
+
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert_eq!(session["result_was_null"], json!(true));
+    assert_eq!(session["reason"], json!("drift"));
+    assert_eq!(session["root_result"], json!("root"));
+}
+
+#[tokio::test]
+async fn test_when_gate_yielding_a_non_boolean_is_a_workflow_error() {
+    let events = buffered_events(&[("e", json!({ "x": 5 }))]);
+    let doc = make_doc(json!({
+        "version": 1, "name": "t",
+        "triggers": [ { "id": "t", "on": { "event": "e" }, "when": "event.x",
+                        "do": [ { "tool": "never" } ] } ],
+        "root": { "wait": { "duration": "1s" } }
+    }));
+    let (outcome, _) =
+        run_doc_with_events(&doc, &MockTools::none(), &MockClock::new(), events).await;
+
+    let error = failure(outcome);
+    assert_eq!(
+        error.message,
+        "trigger `t`: `when` gate `event.x` must yield a boolean, got 5"
+    );
+}
+
+// --- triggers: waits as long safe points -------------------------------------
+
+#[tokio::test]
+async fn test_trigger_fires_during_a_duration_wait_without_consuming_its_budget() {
+    // The action's own 3s wait must not count against the outer 30s wait:
+    // the sleep ledger shows both in full.
+    let events = buffered_events(&[("e", json!({}))]);
+    let clock = MockClock::new();
+    let doc = make_doc(json!({
+        "version": 1, "name": "t",
+        "triggers": [ { "id": "t", "on": { "event": "e" },
+                        "do": [ { "wait": { "duration": "3s" } } ] } ],
+        "root": { "wait": { "duration": "30s" } }
+    }));
+    let (outcome, session) = run_doc_with_events(&doc, &MockTools::none(), &clock, events).await;
+
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert_eq!(
+        clock.sleeps(),
+        vec![Duration::from_secs(3), Duration::from_secs(30)]
+    );
+    assert!(session["_triggers"]["t"]["last_fired"].is_string());
+}
+
+#[tokio::test]
+async fn test_until_event_timeout_budget_excludes_trigger_action_time() {
+    let events = buffered_events(&[("progress", json!({}))]);
+    let clock = MockClock::new();
+    let doc = make_doc(json!({
+        "version": 1, "name": "t",
+        "triggers": [ { "id": "t", "on": { "event": "progress" },
+                        "do": [ { "wait": { "duration": "3s" } } ] } ],
+        "root": { "id": "settle",
+                  "wait": { "until_event": "never_comes", "timeout": "10s" } }
+    }));
+    let (outcome, _) = run_doc_with_events(&doc, &MockTools::none(), &clock, events).await;
+
+    let error = failure(outcome);
+    assert_eq!(
+        error.message,
+        "`wait` `until_event` `never_comes` did not arrive within 10s"
+    );
+    // 3s of action time, then the full 10s budget — not 7s.
+    assert_eq!(
+        clock.sleeps(),
+        vec![Duration::from_secs(3), Duration::from_secs(10)]
+    );
+}
+
+#[tokio::test]
+async fn test_the_awaited_event_also_feeds_trigger_evaluation() {
+    let (tx, events) = live_events();
+    let tools = MockTools::new(move |_, tool, _| {
+        if tool == "a" {
+            tx.try_send(ev("done", json!({}))).unwrap();
+        }
+        Ok(json!({}))
+    });
+    let clock = MockClock::new();
+    let doc = make_doc(json!({
+        "version": 1, "name": "t",
+        "triggers": [ { "id": "t", "on": { "event": "done" }, "do": [ { "tool": "act" } ] } ],
+        "root": { "sequence": [
+            { "tool": "a" },
+            { "wait": { "until_event": "done", "timeout": "5m" } },
+            { "tool": "b" }
+        ] }
+    }));
+    let (outcome, _) = run_doc_with_events(&doc, &tools, &clock, events).await;
+
+    assert_eq!(outcome, RunOutcome::Completed);
+    // One `done`: the trigger fires at the safe point after `a`, and the
+    // wait is satisfied by the same occurrence — with no sleeping.
+    assert_eq!(tools.call_names(), vec!["a", "act", "b"]);
+    assert_eq!(clock.sleeps(), Vec::<Duration>::new());
+}
+
+// --- triggers: poll sources ---------------------------------------------------
+
+#[tokio::test]
+async fn test_poll_trigger_polls_on_schedule_and_fires_through_its_when_gate() {
+    let clock = MockClock::new();
+    // First cycle gated by `when`, second passes.
+    let responses = Mutex::new(VecDeque::from([
+        json!({ "ok": false }),
+        json!({ "ok": true }),
+    ]));
+    let tools = MockTools::new(move |_, tool, _| {
+        Ok(match tool {
+            "check" => responses.lock().unwrap().pop_front().unwrap(),
+            _ => json!({}),
+        })
+    });
+    let doc = make_doc(json!({
+        "version": 1, "name": "t",
+        "triggers": [ { "id": "t",
+                        "on": { "poll": { "tool": "check", "interval": "10s" } },
+                        "when": "event.ok == true",
+                        "do": [ { "tool": "act" } ] } ],
+        "root": { "wait": { "duration": "25s" } }
+    }));
+    let (outcome, _) = run_doc_with_events(&doc, &tools, &clock, EventIntake::disconnected()).await;
+
+    assert_eq!(outcome, RunOutcome::Completed);
+    // First due one interval after run start; sleep segments clamp to the
+    // schedule: 10s, 10s, then the remaining 5s.
+    assert_eq!(tools.call_names(), vec!["check", "check", "act"]);
+    assert_eq!(
+        clock.sleeps(),
+        vec![
+            Duration::from_secs(10),
+            Duration::from_secs(10),
+            Duration::from_secs(5)
+        ]
+    );
+}
+
+#[tokio::test]
+async fn test_poll_failure_skips_the_cycle_without_failing_the_session() {
+    let clock = MockClock::new();
+    let responses = Mutex::new(VecDeque::from([
+        Err(ToolCallError::Failed("flaky".to_owned())),
+        Ok(json!({})),
+    ]));
+    let tools = MockTools::new(move |_, tool, _| match tool {
+        "check" => responses.lock().unwrap().pop_front().unwrap(),
+        _ => Ok(json!({})),
+    });
+    let doc = make_doc(json!({
+        "version": 1, "name": "t",
+        "triggers": [ { "id": "t",
+                        "on": { "poll": { "tool": "check", "interval": "10s" } },
+                        "do": [ { "tool": "act" } ] } ],
+        "root": { "wait": { "duration": "25s" } }
+    }));
+    let (outcome, _) = run_doc_with_events(&doc, &tools, &clock, EventIntake::disconnected()).await;
+
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert_eq!(tools.call_names(), vec!["check", "check", "act"]);
+}
+
+#[tokio::test]
+async fn test_a_due_poll_whose_trigger_cannot_fire_skips_the_tool_call() {
+    let clock = MockClock::new();
+    let tools = MockTools::ok(json!({}));
+    let doc = make_doc(json!({
+        "version": 1, "name": "t",
+        "triggers": [ { "id": "t", "once": true,
+                        "on": { "poll": { "tool": "check", "interval": "10s" } },
+                        "do": [ { "tool": "act" } ] } ],
+        "root": { "wait": { "duration": "35s" } }
+    }));
+    let (outcome, _) = run_doc_with_events(&doc, &tools, &clock, EventIntake::disconnected()).await;
+
+    assert_eq!(outcome, RunOutcome::Completed);
+    // Fires at 10s; the dues at 20s and 30s skip the call (`once` spent).
+    assert_eq!(tools.call_names(), vec!["check", "act"]);
+}
+
+#[tokio::test]
+async fn test_a_poll_argument_that_fails_to_evaluate_skips_the_cycle() {
+    let clock = MockClock::new();
     let tools = MockTools::none();
     let doc = make_doc(json!({
         "version": 1, "name": "t",
-        "triggers": [ { "id": "t1", "on": { "event": "exposure_complete" },
-                        "do": [ { "tool": "never" } ] } ],
-        "root": { "set": { "session.ran": "true" } }
+        "triggers": [ { "id": "t",
+                        "on": { "poll": { "tool": "check", "interval": "10s",
+                                          "args": { "pos": { "$expr": "1 / 0" } } } },
+                        "do": [ { "tool": "act" } ] } ],
+        "root": { "wait": { "duration": "15s" } }
     }));
-    let dir = tempfile::tempdir().unwrap();
-    let (outcome, session) = run_in(&dir, &doc, &json!({}), &tools, &MockClock::new()).await;
+    let (outcome, _) = run_doc_with_events(&doc, &tools, &clock, EventIntake::disconnected()).await;
+
     assert_eq!(outcome, RunOutcome::Completed);
-    assert_eq!(session["ran"], json!(true));
     assert!(tools.calls().is_empty());
+}
+
+// --- triggers: synthetic corrections ------------------------------------------
+
+#[tokio::test]
+async fn test_an_aborted_tool_result_synthesizes_an_immediate_correction() {
+    let tools = MockTools::new(|_, tool, _| {
+        Ok(match tool {
+            "capture" => json!({
+                "status": "aborted",
+                "correction": { "action": "focus", "reason": "HFR 4.8", "source": "analyzer" }
+            }),
+            _ => json!({}),
+        })
+    });
+    let doc = make_doc(json!({
+        "version": 1, "name": "t",
+        "triggers": [ { "id": "on-correction", "on": { "event": "correction_requested" },
+                        "do": [ { "set": {
+                            "session.action": "event.action",
+                            "session.delivery": "event.delivery",
+                            "session.source": "event.source" } } ] } ],
+        "root": { "sequence": [ { "tool": "capture" }, { "tool": "b" } ] }
+    }));
+    let (outcome, session) =
+        run_doc_with_events(&doc, &tools, &MockClock::new(), EventIntake::disconnected()).await;
+
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert_eq!(session["action"], json!("focus"));
+    assert_eq!(session["delivery"], json!("immediate"));
+    assert_eq!(session["source"], json!("analyzer"));
+}
+
+#[tokio::test]
+async fn test_a_pending_correction_synthesizes_an_after_current_correction() {
+    let tools = MockTools::new(|_, tool, _| {
+        Ok(match tool {
+            "capture" => json!({
+                "image_path": "/data/f.fits",
+                "pending_correction": { "action": "focus", "reason": "trending" }
+            }),
+            _ => json!({}),
+        })
+    });
+    let doc = make_doc(json!({
+        "version": 1, "name": "t",
+        "triggers": [ { "id": "on-correction", "on": { "event": "correction_requested" },
+                        "do": [ { "set": { "session.delivery": "event.delivery" } } ] } ],
+        "root": { "sequence": [
+            { "tool": "capture" },
+            // The carrying result stays in scope for the tree.
+            { "set": { "session.path": "result.image_path" } }
+        ] }
+    }));
+    let (outcome, session) =
+        run_doc_with_events(&doc, &tools, &MockClock::new(), EventIntake::disconnected()).await;
+
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert_eq!(session["delivery"], json!("after_current"));
+    assert_eq!(session["path"], json!("/data/f.fits"));
+}
+
+#[tokio::test]
+async fn test_a_blocked_by_correction_result_synthesizes_an_immediate_correction() {
+    let tools = MockTools::new(|_, tool, _| {
+        Ok(match tool {
+            "slew" => json!({
+                "status": "blocked_by_correction",
+                "correction": { "action": "focus", "reason": "frame bad", "source": "analyzer" }
+            }),
+            _ => json!({}),
+        })
+    });
+    let doc = make_doc(json!({
+        "version": 1, "name": "t",
+        "triggers": [ { "id": "on-correction", "on": { "event": "correction_requested" },
+                        "do": [ { "set": { "session.delivery": "event.delivery" } } ] } ],
+        "root": { "tool": "slew" }
+    }));
+    let (outcome, session) =
+        run_doc_with_events(&doc, &tools, &MockClock::new(), EventIntake::disconnected()).await;
+
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert_eq!(session["delivery"], json!("immediate"));
 }
 
 // --- the golden document end-to-end ----------------------------------------------

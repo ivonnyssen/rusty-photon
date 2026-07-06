@@ -35,43 +35,86 @@ const RECONNECT_BACKOFF: Duration = Duration::from_secs(1);
 /// consumer loose with a `stream_gap` — the designed slow-consumer path.
 const EVENT_BUFFER: usize = 256;
 
+/// Cap on one whole subscribe attempt — TCP connect, TLS, and the
+/// response headers. `subscribe`'s initial attempt runs inline on the
+/// `/invoke` path, so an endpoint that is black-holed *or* accepts the
+/// connection and then never answers (reqwest's `connect_timeout` covers
+/// only the TCP phase) must not hang the invocation. Reads of the
+/// established stream are uncapped — an idle stream is healthy (`rp`
+/// keep-alives every 15 s).
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Subscribe to the SSE stream at `events_url` and return the engine's
-/// intake. The connection (and every reconnect) happens on a background
-/// task that exits when the returned intake is dropped.
-pub fn subscribe(events_url: String) -> EventIntake {
+/// intake. The **initial connect happens inline** — when this returns,
+/// the subscription is live (or its first attempt has failed), so an
+/// event emitted while the session's first instruction runs is already
+/// being captured (design § Event Subscription). Reconnects happen on a
+/// background task that exits when the returned intake is dropped; a
+/// failed first attempt is retried there too — a dead stream never
+/// blocks the session.
+pub async fn subscribe(events_url: String) -> EventIntake {
     let (tx, rx) = mpsc::channel(EVENT_BUFFER);
-    tokio::spawn(client_loop(events_url, tx));
+    let client = reqwest::Client::new();
+    let first = connect(&client, &events_url, None).await;
+    tokio::spawn(client_loop(client, events_url, tx, first));
     EventIntake::new(rx)
 }
 
-async fn client_loop(url: String, tx: mpsc::Sender<EngineEvent>) {
-    let client = reqwest::Client::new();
-    let mut last_seq: Option<u64> = None;
-    loop {
-        let mut request = client.get(&url).header("accept", "text/event-stream");
-        if let Some(id) = last_seq {
-            request = request.header("last-event-id", id.to_string());
+/// One subscribe attempt, capped at [`CONNECT_TIMEOUT`] end to end;
+/// `None` on a refused, rejected, timed-out, or failed connect (logged
+/// at `debug!` — reconnection is routine).
+async fn connect(
+    client: &reqwest::Client,
+    url: &str,
+    last_seq: Option<u64>,
+) -> Option<reqwest::Response> {
+    let mut request = client.get(url).header("accept", "text/event-stream");
+    if let Some(id) = last_seq {
+        request = request.header("last-event-id", id.to_string());
+    }
+    let response = match tokio::time::timeout(CONNECT_TIMEOUT, request.send()).await {
+        Ok(response) => response,
+        Err(_) => {
+            debug!(%url, "event stream subscribe attempt timed out");
+            return None;
         }
-        let response = tokio::select! {
-            _ = tx.closed() => return,
-            sent = request.send() => sent,
-        };
-        match response {
-            Ok(response) if response.status().is_success() => {
-                debug!(%url, cursor = ?last_seq, "event stream connected");
-                read_stream(response, &tx, &mut last_seq).await;
-            }
-            Ok(response) => {
-                debug!(%url, status = %response.status(), "event stream subscribe rejected");
-            }
-            Err(e) => {
-                debug!(%url, error = %e, "event stream connect failed");
-            }
+    };
+    match response {
+        Ok(response) if response.status().is_success() => {
+            debug!(%url, cursor = ?last_seq, "event stream connected");
+            Some(response)
+        }
+        Ok(response) => {
+            debug!(%url, status = %response.status(), "event stream subscribe rejected");
+            None
+        }
+        Err(e) => {
+            debug!(%url, error = %e, "event stream connect failed");
+            None
+        }
+    }
+}
+
+async fn client_loop(
+    client: reqwest::Client,
+    url: String,
+    tx: mpsc::Sender<EngineEvent>,
+    first: Option<reqwest::Response>,
+) {
+    let mut last_seq: Option<u64> = None;
+    let mut connection = first;
+    loop {
+        if let Some(response) = connection.take() {
+            read_stream(response, &tx, &mut last_seq).await;
         }
         tokio::select! {
             _ = tx.closed() => return,
             () = tokio::time::sleep(RECONNECT_BACKOFF) => {}
         }
+        connection = tokio::select! {
+            _ = tx.closed() => return,
+            connected = connect(&client, &url, last_seq) => connected,
+        };
     }
 }
 
@@ -303,7 +346,7 @@ mod tests {
         }])
         .await;
 
-        let mut intake = subscribe(url);
+        let mut intake = subscribe(url).await;
         assert_eq!(
             next_event(&mut intake).await,
             EngineEvent {
@@ -341,7 +384,7 @@ mod tests {
         ])
         .await;
 
-        let mut intake = subscribe(url);
+        let mut intake = subscribe(url).await;
         for n in 1..=3 {
             assert_eq!(next_event(&mut intake).await.payload, json!({ "n": n }));
         }
@@ -355,6 +398,45 @@ mod tests {
             second_head.contains("last-event-id: 42"),
             "the reconnect must resume after the last seen event_seq: {second_head}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_subscribe_returns_with_the_stream_already_connected() {
+        // The trigger/`until_event` contract needs the subscription live
+        // before the session's first instruction: an event emitted
+        // milliseconds into the first tool call must be captured.
+        let (url, mut heads) = spawn_sse_server(vec![Connection {
+            status: "200 OK",
+            body: "",
+            hold: true,
+        }])
+        .await;
+
+        let _intake = subscribe(url).await;
+        assert!(
+            heads.try_recv().is_ok(),
+            "subscribe must complete the initial connect before returning"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_a_server_that_accepts_but_never_answers_does_not_hang_subscribe() {
+        // A wedged endpoint: the OS accepts the TCP connection (into the
+        // listener's backlog) but no response headers ever come. reqwest's
+        // `connect_timeout` would never fire here — only the attempt-level
+        // timeout gets `subscribe` off the `/invoke` path. Paused tokio
+        // time auto-advances past the cap, so this is instant.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let mut intake = timeout(
+            Duration::from_secs(60),
+            subscribe(format!("http://{addr}/api/events/subscribe")),
+        )
+        .await
+        .expect("subscribe must time out a wedged endpoint, not hang the /invoke path");
+        assert!(intake.try_next().is_none());
+        drop(listener);
     }
 
     #[tokio::test]
@@ -373,7 +455,7 @@ mod tests {
         ])
         .await;
 
-        let mut intake = subscribe(url);
+        let mut intake = subscribe(url).await;
         assert_eq!(next_event(&mut intake).await.event, "tick");
     }
 
@@ -394,7 +476,7 @@ mod tests {
         ])
         .await;
 
-        let intake = subscribe(url);
+        let intake = subscribe(url).await;
         // First connection established…
         heads.recv().await.unwrap();
         drop(intake);

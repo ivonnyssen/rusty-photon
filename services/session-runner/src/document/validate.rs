@@ -1539,7 +1539,20 @@ impl Builder {
                 // event context: only params/session/result are in scope.
                 let args = self.args(p.get("args"), &child(&pptr, "args"), TREE);
                 let interval = match p.get("interval") {
-                    Some(v) => self.duration_field(v, &child(&pptr, "interval"), "`interval`"),
+                    Some(v) => {
+                        match self.duration_field(v, &child(&pptr, "interval"), "`interval`") {
+                            // A zero interval would make the poll due at every
+                            // safe point — a busy loop against `rp`.
+                            Some(d) if d.is_zero() => {
+                                self.issue(
+                                    &child(&pptr, "interval"),
+                                    "a poll `interval` must be positive",
+                                );
+                                None
+                            }
+                            other => other,
+                        }
+                    }
                     None => {
                         self.issue(&pptr, "`poll` requires an `interval`");
                         None

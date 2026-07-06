@@ -21,6 +21,10 @@ async fn rp_running_with_fixture_workflow(world: &mut SessionRunnerWorld, workfl
     let parameters = match workflow.as_str() {
         "wait_for_exposure_event" => Some(serde_json::json!({ "camera_id": "main-cam" })),
         "wait_for_missing_event" => None,
+        "trigger_between_exposures" | "trigger_once" | "trigger_cooldown" => {
+            Some(serde_json::json!({ "camera_id": "main-cam", "filter_wheel_id": "main-fw" }))
+        }
+        "trigger_poll" => Some(serde_json::json!({ "filter_wheel_id": "main-fw" })),
         other => panic!("no registration parameters defined for fixture workflow `{other}`"),
     };
     register_orchestrator(world, &workflow, parameters);

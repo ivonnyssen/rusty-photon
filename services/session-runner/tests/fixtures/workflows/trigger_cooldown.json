@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "name": "trigger-cooldown",
+  "description": "Pins the cooldown gate: three captures each emit exposure_complete, but the 1h cooldown (longer than the whole session) admits only the first firing - one filter_switch on the stream.",
+  "parameters": {
+    "camera_id": { "type": "string", "required": true },
+    "filter_wheel_id": { "type": "string", "required": true }
+  },
+  "estimated_duration": "1m",
+  "max_duration": "10m",
+  "triggers": [
+    {
+      "id": "switch-filter-cooled",
+      "on": { "event": "exposure_complete" },
+      "cooldown": "1h",
+      "do": [
+        {
+          "tool": "set_filter",
+          "args": {
+            "filter_wheel_id": { "$expr": "params.filter_wheel_id" },
+            "filter_name": "Red"
+          }
+        }
+      ]
+    }
+  ],
+  "root": {
+    "repeat": { "count": 3 },
+    "body": [
+      {
+        "tool": "capture",
+        "args": {
+          "camera_id": { "$expr": "params.camera_id" },
+          "duration": "100ms"
+        }
+      }
+    ]
+  }
+}

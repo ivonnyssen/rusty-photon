@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use bdd_infra::rp_harness::{
     CameraConfig, CoverCalibratorConfig, FilterWheelConfig, ReceivedEvent, RpConfigBuilder,
-    WebhookReceiver,
+    SseClient, WebhookReceiver,
 };
 use bdd_infra::ServiceHandle;
 use cucumber::World;
@@ -26,6 +26,9 @@ pub struct SessionRunnerWorld {
     pub rp: Option<ServiceHandle>,
     pub session_runner: Option<ServiceHandle>,
     pub webhook_receiver: Option<WebhookReceiver>,
+    /// A test-side subscriber to rp's SSE stream, for seq-ordered
+    /// assertions on what the engine's triggers did.
+    pub sse_client: Option<SseClient>,
     /// Blackboard persistence directory for the spawned session-runner;
     /// held here so it outlives the scenario's service process.
     pub state_dir: Option<tempfile::TempDir>,

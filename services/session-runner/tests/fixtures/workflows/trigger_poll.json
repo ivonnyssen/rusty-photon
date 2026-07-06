@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "name": "trigger-poll",
+  "description": "Pins the poll source end-to-end: the engine polls get_filter every second during the wait, the `when` gate reads the polled result as event.*, and the firing's set_filter emits one filter_switch (`once` stops repeat firings).",
+  "parameters": {
+    "filter_wheel_id": { "type": "string", "required": true }
+  },
+  "estimated_duration": "1m",
+  "max_duration": "10m",
+  "triggers": [
+    {
+      "id": "switch-filter-from-poll",
+      "on": {
+        "poll": {
+          "tool": "get_filter",
+          "args": { "filter_wheel_id": { "$expr": "params.filter_wheel_id" } },
+          "interval": "1s"
+        }
+      },
+      "when": "event.filter_name != null",
+      "once": true,
+      "do": [
+        {
+          "tool": "set_filter",
+          "args": {
+            "filter_wheel_id": { "$expr": "params.filter_wheel_id" },
+            "filter_name": "Blue"
+          }
+        }
+      ]
+    }
+  ],
+  "root": {
+    "wait": { "duration": "4s" }
+  }
+}

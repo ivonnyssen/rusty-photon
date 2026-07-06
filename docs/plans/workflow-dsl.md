@@ -347,9 +347,27 @@ committable on its own.
       merged into the spawned service's `workflows_dir`) proving the
       buffered-event wait and the timeout-ends-the-session path
       end-to-end.
-- [ ] Trigger engine: `event`, `poll`, and the synthetic
+- [x] Trigger engine: `event`, `poll`, and the synthetic
       `correction_requested` sources; `when` gating and `while`
       phase-gates; safe-point interleaving; `once` / `cooldown`.
+
+      **Done (2026-07-05):** the safe-point pump in
+      `services/session-runner/src/engine/exec.rs` — evaluation after
+      every instruction and continuously during waits, queued firings in
+      document order, `when` at queue time / `while` at fire time,
+      `once`/`cooldown` bookkeeping under `session._triggers.<id>` (recorded
+      on successful action completion), poll sources due one interval
+      after run start with gated-skip and debug-skip-on-failure, and
+      synthetic `correction_requested` from `aborted` /
+      `blocked_by_correction` / `pending_correction` tool results. Because
+      the pump now consumes events, `until_event` matching moved to
+      per-name unconsumed-occurrence counters (pins in the design doc's
+      § Triggers). Landing the BDD suite (`triggers.feature`: interleaving
+      by SSE seq order, `once`, cooldown, poll) also surfaced and fixed a
+      Phase D1 latent race: `events::subscribe` now completes its initial
+      connect inline, before `/invoke` acknowledges — previously the
+      first instruction could outrun the subscription and lose its
+      events.
 - [ ] Resume: recovery invocation → blackboard reload → re-execution;
       BDD scenarios for kill-mid-session → re-invoke → session continues
       without repeating completed work (frame counts prove it).

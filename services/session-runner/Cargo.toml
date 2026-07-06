@@ -38,6 +38,9 @@ bdd-infra = { workspace = true, features = ["rp-harness"] }
 cucumber = { workspace = true }
 derive_more = { workspace = true }
 proptest = { workspace = true }
+# `test-util` unlocks paused tokio time (`start_paused`), which the
+# events tests use to exercise the subscribe-attempt timeout instantly.
+tokio = { workspace = true, features = ["test-util"] }
 
 [[test]]
 name = "bdd"

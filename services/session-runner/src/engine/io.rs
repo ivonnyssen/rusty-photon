@@ -93,8 +93,8 @@ pub struct EngineEvent {
 ///
 /// A closed or absent stream is not an error — [`EventIntake::next`]
 /// simply never resolves, so an `until_event` wait runs to its timeout
-/// and (Phase D2) triggers never fire, matching the design's stance that
-/// events can always be missed across an outage.
+/// and event triggers never fire (poll triggers keep running), matching
+/// the design's stance that events can always be missed across an outage.
 #[derive(Debug)]
 pub struct EventIntake {
     /// `None` once the sending side is gone (or for

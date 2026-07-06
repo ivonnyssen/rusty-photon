@@ -1,15 +1,19 @@
 //! The procedure-tree walk: executes a validated [`Instruction`] tree
-//! against the blackboard, the tool client, and the clock.
+//! against the blackboard, the tool client, and the clock — and pumps the
+//! document's triggers at every safe point along the way.
 //!
 //! Semantics implemented here are pinned in
 //! `docs/services/session-runner.md` — § Instructions, § `result` scoping,
+//! § Triggers (the safe-point pump and its implementation pins),
 //! § Re-entrancy Contract (`once` markers), and § Safety Behavior (the
 //! terminated-session path). Two interrupts propagate outward: a workflow
 //! error (catchable by `try`) and a session termination (never caught;
 //! `finally` blocks still run best-effort).
 
+use std::collections::{BTreeMap, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
+use std::time::Duration;
 
 use serde_json::{json, Map, Value};
 use tracing::{debug, info};
@@ -17,11 +21,11 @@ use tracing::{debug, info};
 use crate::blackboard::Blackboard;
 use crate::document::{
     ArgValue, Bound, Instruction, InstructionKind, Log, LogLevel, Repeat, RepeatMode, SetEntry,
-    ToolCall, Wait,
+    ToolCall, Trigger, TriggerSource, Wait,
 };
 use crate::expr::{EvalContext, Expression};
 
-use super::{Clock, EventIntake, ToolCallError, ToolClient, WorkflowError};
+use super::{Clock, EngineEvent, EventIntake, ToolCallError, ToolClient, WorkflowError};
 
 /// Why execution stopped early.
 #[derive(Debug)]
@@ -44,6 +48,8 @@ pub(super) struct Exec<'a, T, C> {
     clock: &'a C,
     /// The session's event intake, live from before the first instruction.
     events: EventIntake,
+    /// The document's triggers, pumped at safe points.
+    triggers: &'a [Trigger],
     /// The `result` namespace: the structured result of the most recent
     /// result-producing instruction on the current path (`null` at
     /// session start).
@@ -51,6 +57,26 @@ pub(super) struct Exec<'a, T, C> {
     /// The `error.*` namespace value while a `catch` or an error-path
     /// `finally` runs; `None` elsewhere (expressions read `null`).
     error: Option<Value>,
+    /// The `event.*` namespace value while a trigger action runs; `None`
+    /// on the procedure tree.
+    event: Option<Value>,
+    /// Set while a trigger action runs: safe points inside it only move
+    /// intake events into `pending` — trigger evaluation never re-enters.
+    in_trigger_action: bool,
+    /// Events awaiting evaluation ahead of the intake: synthetic
+    /// `correction_requested` events, plus events received by a wait's
+    /// select or drained during a trigger action.
+    pending: VecDeque<EngineEvent>,
+    /// Unconsumed occurrences per event name — what an `until_event`
+    /// wait matches against (every event since run start, § `wait`),
+    /// maintained because the pump consumes the events themselves.
+    occurrences: BTreeMap<String, u64>,
+    /// Per-trigger queued firing (the `event.*` payload); at most one
+    /// each — a queued or running trigger does not queue again.
+    queued: Vec<Option<Value>>,
+    /// Per-trigger next poll due on the monotonic clock; `None` for
+    /// event triggers. First due is one interval after run start.
+    poll_due: Vec<Option<Duration>>,
 }
 
 impl<'a, T, C> Exec<'a, T, C>
@@ -64,15 +90,30 @@ where
         tools: &'a T,
         clock: &'a C,
         events: EventIntake,
+        triggers: &'a [Trigger],
     ) -> Self {
+        let poll_due = triggers
+            .iter()
+            .map(|t| match &t.on {
+                TriggerSource::Poll { interval, .. } => Some(clock.monotonic() + *interval),
+                TriggerSource::Event(_) => None,
+            })
+            .collect();
         Self {
             params,
             blackboard,
             tools,
             clock,
             events,
+            triggers,
             result: Value::Null,
             error: None,
+            event: None,
+            in_trigger_action: false,
+            pending: VecDeque::new(),
+            occurrences: BTreeMap::new(),
+            queued: vec![None; triggers.len()],
+            poll_due,
         }
     }
 
@@ -81,17 +122,19 @@ where
             params: Some(self.params),
             session: Some(self.blackboard.value()),
             result: Some(&self.result),
-            // Trigger `do` blocks (which carry `event.*`) land in Phase D.
-            event: None,
+            event: self.event.as_ref(),
             error: self.error.as_ref(),
             now: self.clock.now(),
         }
     }
 
-    /// Run a block of instructions in order.
+    /// Run a block of instructions in order, with a safe point after each
+    /// (§ Triggers: queued trigger actions run after the current
+    /// instruction completes).
     pub(super) async fn exec_block(&mut self, block: &'a [Instruction]) -> ExecResult {
         for ins in block {
             self.exec_boxed(ins).await?;
+            self.safe_point().await?;
         }
         Ok(())
     }
@@ -207,6 +250,12 @@ where
             debug!(tool = %call.tool, attempt, "calling tool");
             match self.tools.call(&call.tool, args.clone()).await {
                 Ok(result) => {
+                    if let Some(synthetic) = correction_event(&result) {
+                        debug!(tool = %call.tool,
+                               "tool result carries a correction; synthesizing \
+                                correction_requested for the next safe point");
+                        self.pending.push_back(synthetic);
+                    }
                     self.result = result;
                     return Ok(());
                 }
@@ -445,12 +494,25 @@ where
         self.error_here(ins, message)
     }
 
+    /// A `wait` is one long safe point (§ Triggers): every iteration pumps
+    /// the triggers, then sleeps one segment — clamped to the next poll
+    /// due and interrupted by an arriving event, which is buffered for the
+    /// next iteration's pump. Budgets accumulate the monotonic time spent
+    /// in the sleep segments alone, so a wall-clock step (NTP) can neither
+    /// fire a timeout early nor extend a wait, and time spent in trigger
+    /// actions (inside the pump) never counts.
     async fn exec_wait(&mut self, ins: &'a Instruction, wait: &'a Wait) -> ExecResult {
         match wait {
             Wait::Duration(duration) => {
                 debug!(duration = %humantime::format_duration(*duration), "waiting");
-                self.clock.sleep(*duration).await;
-                Ok(())
+                let mut remaining = *duration;
+                loop {
+                    self.safe_point().await?;
+                    if remaining.is_zero() {
+                        return Ok(());
+                    }
+                    remaining = remaining.saturating_sub(self.wait_segment(remaining).await);
+                }
             }
             Wait::UntilEvent { event, timeout } => {
                 debug!(
@@ -458,28 +520,18 @@ where
                     timeout = %humantime::format_duration(*timeout),
                     "waiting for event"
                 );
-                // The intake runs from before the first instruction, so an
-                // event emitted while an earlier instruction ran is still
-                // buffered here — a wait can be satisfied by an event that
-                // technically preceded it (design § Event Subscription).
-                //
-                // The timeout budget is the time spent *waiting* (measured
-                // on the monotonic clock, so an NTP step can neither fire
-                // the timeout early nor extend the wait); Phase D2's
-                // trigger actions, which run during a wait, will not count
-                // against it.
-                let mut elapsed = std::time::Duration::ZERO;
+                let mut elapsed = Duration::ZERO;
                 loop {
-                    // Drain the buffer first — and once more when the
-                    // budget expires, so an event that arrived exactly at
-                    // expiry still satisfies the wait (mirroring `until`'s
-                    // final evaluation at timeout).
-                    while let Some(received) = self.events.try_next() {
-                        if received.event == *event {
-                            return Ok(());
-                        }
-                        debug!(received = %received.event, awaiting = %event,
-                               "ignoring non-matching event during `until_event` wait");
+                    // The pump counts every drained event's occurrence, so
+                    // the consume below matches events from the whole run —
+                    // including one emitted while an earlier instruction
+                    // ran (design § `wait`). The pump runs once more when
+                    // the budget expires, so an event that arrived exactly
+                    // at expiry still satisfies the wait (mirroring
+                    // `until`'s final evaluation at timeout).
+                    self.safe_point().await?;
+                    if self.consume_occurrence(event) {
+                        return Ok(());
                     }
                     if elapsed >= *timeout {
                         return Err(self.error_here(
@@ -490,23 +542,7 @@ where
                             ),
                         ));
                     }
-                    let remaining = *timeout - elapsed;
-                    let waited_from = self.clock.monotonic();
-                    tokio::select! {
-                        // Biased so a just-arrived event beats an
-                        // already-expired sleep (the mock clock's sleeps
-                        // resolve instantly).
-                        biased;
-                        received = self.events.next() => {
-                            if received.event == *event {
-                                return Ok(());
-                            }
-                            debug!(received = %received.event, awaiting = %event,
-                                   "ignoring non-matching event during `until_event` wait");
-                        }
-                        () = self.clock.sleep(remaining) => {}
-                    }
-                    elapsed += self.clock.monotonic().saturating_sub(waited_from);
+                    elapsed += self.wait_segment(*timeout - elapsed).await;
                 }
             }
             Wait::Until {
@@ -514,18 +550,13 @@ where
                 poll_interval,
                 timeout,
             } => {
-                // The timeout budget is tracked by accumulating the
-                // durations actually slept — monotonic by construction
-                // (production `sleep` is tokio's monotonic timer), so a
-                // wall-clock step (NTP) can neither extend the wait nor
-                // fire the timeout early. `clock.now()` (wall time) is
-                // only for `seconds_until()` inside the condition, where
-                // calendar time is the point.
-                let mut elapsed = std::time::Duration::ZERO;
+                let mut elapsed = Duration::ZERO;
                 loop {
-                    // Evaluated on entry, after each interval, and once
-                    // more when the timeout expires (the last sleep is
-                    // clamped to the remaining budget).
+                    // Evaluated on entry, after each interval (or sooner,
+                    // when an event or trigger action ends a segment
+                    // early), and once more when the timeout expires (the
+                    // last sleep is clamped to the remaining budget).
+                    self.safe_point().await?;
                     if self.condition(ins, condition, "`wait` `until` condition")? {
                         return Ok(());
                     }
@@ -539,12 +570,313 @@ where
                             ),
                         ));
                     }
-                    let sleep_for = (*poll_interval).min(*timeout - elapsed);
-                    self.clock.sleep(sleep_for).await;
-                    elapsed += sleep_for;
+                    let segment = (*poll_interval).min(*timeout - elapsed);
+                    elapsed += self.wait_segment(segment).await;
                 }
             }
         }
+    }
+
+    /// One sleep segment of a wait: at most `remaining`, clamped to the
+    /// next poll due so poll sources stay on schedule, and ended early by
+    /// an arriving event (buffered into `pending` for the caller's next
+    /// pump). Returns the monotonic time actually spent — the only time
+    /// that counts against a wait's budget.
+    async fn wait_segment(&mut self, remaining: Duration) -> Duration {
+        let sleep_for = match self.next_poll_due_in() {
+            Some(until_due) => remaining.min(until_due),
+            None => remaining,
+        };
+        let waited_from = self.clock.monotonic();
+        tokio::select! {
+            // Biased so a just-arrived event beats an already-expired
+            // sleep (the mock clock's sleeps resolve instantly).
+            biased;
+            received = self.events.next() => self.pending.push_back(received),
+            () = self.clock.sleep(sleep_for) => {}
+        }
+        self.clock.monotonic().saturating_sub(waited_from)
+    }
+
+    /// Time until the earliest poll due, `None` when the document has no
+    /// poll triggers (or inside a trigger action, where polls cannot run
+    /// anyway — clamping there would spin on an already-due poll).
+    fn next_poll_due_in(&self) -> Option<Duration> {
+        if self.in_trigger_action {
+            return None;
+        }
+        let now = self.clock.monotonic();
+        self.poll_due
+            .iter()
+            .flatten()
+            .map(|due| due.saturating_sub(now))
+            .min()
+    }
+
+    /// Satisfy an `until_event`: decrement an unconsumed occurrence of
+    /// `name`, or — inside a trigger action, where the pump does not
+    /// count — consume a matching event straight from `pending`.
+    fn consume_occurrence(&mut self, name: &str) -> bool {
+        if let Some(n) = self.occurrences.get_mut(name) {
+            *n -= 1;
+            if *n == 0 {
+                self.occurrences.remove(name);
+            }
+            return true;
+        }
+        if let Some(pos) = self.pending.iter().position(|e| e.event == name) {
+            self.pending.remove(pos);
+            return true;
+        }
+        false
+    }
+
+    // ---- the trigger pump (design § Triggers, implementation pins) -------
+
+    /// A safe point on the procedure tree: feed buffered events (synthetic
+    /// first, then the intake) to trigger evaluation, run due poll
+    /// sources, then run queued trigger actions in document order.
+    ///
+    /// Inside a trigger action only the intake drain happens — evaluation
+    /// never re-enters; everything drained there is evaluated at the next
+    /// safe point on the tree.
+    async fn safe_point(&mut self) -> ExecResult {
+        while let Some(received) = self.events.try_next() {
+            self.pending.push_back(received);
+        }
+        if self.in_trigger_action {
+            return Ok(());
+        }
+        while let Some(received) = self.pending.pop_front() {
+            *self.occurrences.entry(received.event.clone()).or_insert(0) += 1;
+            self.consider_event(&received)?;
+        }
+        self.run_due_polls().await?;
+        self.run_queued().await
+    }
+
+    /// Queue every event trigger this event fires: name match, then the
+    /// payload-independent gates, then the `when` gate over `event.*`.
+    fn consider_event(&mut self, received: &EngineEvent) -> Result<(), Interrupt> {
+        let triggers = self.triggers;
+        for (idx, trigger) in triggers.iter().enumerate() {
+            let TriggerSource::Event(name) = &trigger.on else {
+                continue;
+            };
+            if *name != received.event || self.gated(idx, trigger) {
+                continue;
+            }
+            if !self.gate_passes(trigger, trigger.when.as_ref(), &received.payload, "`when`")? {
+                continue;
+            }
+            debug!(trigger = %trigger.id, event = %received.event, "trigger firing queued");
+            self.queued[idx] = Some(received.payload.clone());
+        }
+        Ok(())
+    }
+
+    /// The payload-independent fire gates: a firing already queued, a
+    /// spent `once`, an open cooldown.
+    fn gated(&self, idx: usize, trigger: &Trigger) -> bool {
+        if self.queued[idx].is_some() {
+            return true;
+        }
+        if trigger.once && self.blackboard.trigger_fired_once(&trigger.id) {
+            debug!(trigger = %trigger.id, "trigger already fired this session (`once`)");
+            return true;
+        }
+        if let Some(cooldown) = trigger.cooldown {
+            if let Some(last) = self.blackboard.trigger_last_fired(&trigger.id) {
+                // Wall-clock on purpose: cooldowns survive resume. A
+                // negative elapsed (backwards clock step) extends the
+                // cooldown rather than firing early, as does a cooldown
+                // too large for chrono to represent.
+                let since = self.clock.now().signed_duration_since(last);
+                let cooldown =
+                    chrono::Duration::from_std(cooldown).unwrap_or(chrono::Duration::MAX);
+                if since < cooldown {
+                    debug!(trigger = %trigger.id, "trigger inside its cooldown");
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Evaluate a `when`/`while` gate with `event.*` bound to the
+    /// firing's payload. Absent = passes. An evaluation error or
+    /// non-boolean value is a workflow error attributed to the trigger —
+    /// a gate that cannot be evaluated is an authoring bug, and silently
+    /// never-firing would hide it (design § Triggers pins).
+    fn gate_passes(
+        &self,
+        trigger: &Trigger,
+        gate: Option<&Expression>,
+        payload: &Value,
+        role: &str,
+    ) -> Result<bool, Interrupt> {
+        let Some(gate) = gate else {
+            return Ok(true);
+        };
+        let ctx = EvalContext {
+            event: Some(payload),
+            ..self.ctx()
+        };
+        let message = match gate.eval(&ctx) {
+            Ok(Value::Bool(b)) => return Ok(b),
+            Ok(other) => format!(
+                "trigger `{}`: {role} gate `{}` must yield a boolean, got {other}",
+                trigger.id,
+                gate.source()
+            ),
+            Err(e) => format!(
+                "trigger `{}`: {role} gate `{}` failed: {e}",
+                trigger.id,
+                gate.source()
+            ),
+        };
+        Err(Interrupt::Error(WorkflowError {
+            message,
+            instruction_id: None,
+            tool: None,
+        }))
+    }
+
+    /// Call every due poll source and queue the firings its result
+    /// gates through. Each handled due reschedules the next cycle at
+    /// now + interval (missed cycles collapse). A gated trigger skips
+    /// the tool call entirely; a failed call — argument evaluation
+    /// included — skips the cycle at `debug!` (a flaky poll must not
+    /// kill the session).
+    async fn run_due_polls(&mut self) -> ExecResult {
+        let triggers = self.triggers;
+        for (idx, trigger) in triggers.iter().enumerate() {
+            let TriggerSource::Poll {
+                tool,
+                args,
+                interval,
+            } = &trigger.on
+            else {
+                continue;
+            };
+            if self.poll_due[idx].is_some_and(|due| self.clock.monotonic() < due) {
+                continue;
+            }
+            self.poll_due[idx] = Some(self.clock.monotonic() + *interval);
+            if self.gated(idx, trigger) {
+                continue;
+            }
+            let Some(call_args) = self.poll_args(trigger, args) else {
+                continue;
+            };
+            debug!(trigger = %trigger.id, tool = %tool, "poll trigger due; calling its tool");
+            match self.tools.call(tool, call_args).await {
+                Ok(payload) => {
+                    if let Some(synthetic) = correction_event(&payload) {
+                        // Evaluated at the next safe point, like a
+                        // correction on any other tool call.
+                        self.pending.push_back(synthetic);
+                    }
+                    if self.gate_passes(trigger, trigger.when.as_ref(), &payload, "`when`")? {
+                        debug!(trigger = %trigger.id, "poll trigger firing queued");
+                        self.queued[idx] = Some(payload);
+                    }
+                }
+                Err(ToolCallError::SessionTerminated(message)) => {
+                    debug!(trigger = %trigger.id, %message,
+                           "MCP session terminated during a poll call");
+                    return Err(Interrupt::Terminated);
+                }
+                Err(ToolCallError::Failed(message)) => {
+                    debug!(trigger = %trigger.id, tool = %tool, %message,
+                           "poll tool call failed; skipping this cycle");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Evaluate a poll's arguments (params/session/result in scope, per
+    /// validation); `None` skips the cycle — poll args commonly read
+    /// session state a later phase sets, and a poll must not kill the
+    /// session before that phase arrives.
+    fn poll_args(
+        &self,
+        trigger: &Trigger,
+        args: &BTreeMap<String, ArgValue>,
+    ) -> Option<Map<String, Value>> {
+        let mut call_args = Map::new();
+        for (name, arg) in args {
+            let value = match arg {
+                ArgValue::Literal(v) => v.clone(),
+                ArgValue::Expr(expr) => match expr.eval(&self.ctx()) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        debug!(trigger = %trigger.id, argument = %name, error = %e,
+                               "poll argument failed to evaluate; skipping this cycle");
+                        return None;
+                    }
+                },
+            };
+            call_args.insert(name.clone(), value);
+        }
+        Some(call_args)
+    }
+
+    /// Run queued trigger actions in document order. The `while` gate is
+    /// re-checked at fire time (an earlier trigger's action in the same
+    /// batch can retract a later one); bookkeeping is recorded on
+    /// successful completion only, mirroring instruction `once`
+    /// semantics; an uncaught error fails the session, its message
+    /// prefixed with the trigger id.
+    async fn run_queued(&mut self) -> ExecResult {
+        let triggers = self.triggers;
+        for (idx, trigger) in triggers.iter().enumerate() {
+            let Some(payload) = self.queued[idx].take() else {
+                continue;
+            };
+            if !self.gate_passes(trigger, trigger.while_gate.as_ref(), &payload, "`while`")? {
+                debug!(trigger = %trigger.id,
+                       "`while` gate false at fire time; dropping the queued firing");
+                continue;
+            }
+            debug!(trigger = %trigger.id, "trigger fired; running its `do` block");
+            // A `do` block starts with `result` and `error.*` null and
+            // sees the firing's payload as `event.*`; all three are
+            // restored when the action ends (§ `result` scoping).
+            let saved_result = std::mem::replace(&mut self.result, Value::Null);
+            let saved_error = self.error.take();
+            let saved_event = self.event.replace(payload);
+            self.in_trigger_action = true;
+            // Boxed: this re-entry into block execution would otherwise
+            // make the safe-point future's type infinitely recursive.
+            let outcome = Box::pin(self.exec_block(&trigger.actions)).await;
+            self.in_trigger_action = false;
+            self.event = saved_event;
+            self.error = saved_error;
+            self.result = saved_result;
+            match outcome {
+                Ok(()) => {}
+                Err(Interrupt::Error(error)) => {
+                    return Err(Interrupt::Error(WorkflowError {
+                        message: format!("trigger `{}`: {}", trigger.id, error.message),
+                        ..error
+                    }));
+                }
+                Err(Interrupt::Terminated) => return Err(Interrupt::Terminated),
+            }
+            self.blackboard
+                .mark_trigger_fired(&trigger.id, self.clock.now(), trigger.once)
+                .await
+                .map_err(|e| {
+                    Interrupt::Error(WorkflowError {
+                        message: format!("trigger `{}`: {e}", trigger.id),
+                        instruction_id: None,
+                        tool: None,
+                    })
+                })?;
+        }
+        Ok(())
     }
 
     fn exec_log(&self, ins: &'a Instruction, log: &'a Log) -> ExecResult {
@@ -564,6 +896,31 @@ where
         }
         Ok(())
     }
+}
+
+/// The synthetic `correction_requested` event for a tool result that
+/// carries a correction (design § Triggers pins; `rp.md` § Corrections):
+/// `status: "aborted"` or `"blocked_by_correction"` with a `correction`
+/// object → `event.delivery = "immediate"`; a `pending_correction`
+/// object → `"after_current"`. A correction value that is not a JSON
+/// object is logged and ignored.
+fn correction_event(result: &Value) -> Option<EngineEvent> {
+    let status = result.get("status").and_then(Value::as_str);
+    let (correction, delivery) = if matches!(status, Some("aborted" | "blocked_by_correction")) {
+        (result.get("correction")?, "immediate")
+    } else {
+        (result.get("pending_correction")?, "after_current")
+    };
+    let Value::Object(fields) = correction else {
+        debug!(%correction, "ignoring a correction that is not a JSON object");
+        return None;
+    };
+    let mut payload = fields.clone();
+    payload.insert("delivery".to_owned(), Value::String(delivery.to_owned()));
+    Some(EngineEvent {
+        event: "correction_requested".to_owned(),
+        payload: Value::Object(payload),
+    })
 }
 
 /// A `Value` as a `u64` loop bound: any JSON number whose value is a

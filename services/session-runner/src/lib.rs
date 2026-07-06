@@ -5,10 +5,11 @@
 //! Design: `docs/services/session-runner.md`; delivery plan:
 //! `docs/plans/workflow-dsl.md`. This crate ships the expression layer
 //! ([`expr`]), the document layer ([`document`]: model, validation layers
-//! 1–2, parameter binding), the engine ([`engine`] + [`blackboard`]), the
-//! SSE event client ([`events`]), and the service wiring ([`mcp_client`],
-//! [`routes`], [`config`]) behind the two-phase [`ServerBuilder`]. Still
-//! ahead in the plan: the trigger engine and resume BDD (Phase D).
+//! 1–2, parameter binding), the engine ([`engine`] + [`blackboard`],
+//! triggers included), the SSE event client ([`events`]), and the service
+//! wiring ([`mcp_client`], [`routes`], [`config`]) behind the two-phase
+//! [`ServerBuilder`]. Still ahead in the plan: the resume BDD proof
+//! (Phase D) and the deep-sky document (Phase E).
 
 pub mod blackboard;
 pub mod config;
