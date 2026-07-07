@@ -91,8 +91,16 @@ impl SessionManager {
     pub async fn start(self: &Arc<Self>) -> Result<Value, String> {
         let mut state = self.state.write().await;
 
-        if !matches!(*state, SessionState::Idle) {
-            return Err("a session is already active".to_string());
+        match &*state {
+            SessionState::Idle => {}
+            SessionState::Active { .. } => {
+                return Err("a session is already active".to_string());
+            }
+            SessionState::Interrupted { .. } => {
+                return Err(
+                    "a session is interrupted, awaiting safe conditions to resume".to_string(),
+                );
+            }
         }
 
         let session_id = Uuid::new_v4().to_string();
@@ -411,8 +419,13 @@ mod tests {
         Arc::new(SessionManager::new(event_bus, &plugins))
     }
 
+    // 300 × 50ms = 15s. Generous because the unreachable-orchestrator test
+    // sits through the full retry schedule first, and on Windows a refused
+    // localhost connect is not instant — WinSock retries SYNs for about a
+    // second before reporting `WSAECONNREFUSED`, so three attempts plus two
+    // 1s backoffs already burn ~5s there.
     async fn wait_for_status(manager: &Arc<SessionManager>, expected: &str) -> bool {
-        for _ in 0..100 {
+        for _ in 0..300 {
             if manager.status().await == expected {
                 return true;
             }
@@ -524,14 +537,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn start_is_refused_while_interrupted() {
+    async fn start_is_refused_while_active_and_while_interrupted() {
         let stub = spawn_invoke_stub(vec![StatusCode::OK]).await;
         let manager = manager_for(&stub.url);
         manager.start().await.unwrap();
-        manager.interrupt().await;
 
         let err = manager.start().await.unwrap_err();
         assert!(err.contains("already active"), "got: {err}");
+
+        manager.interrupt().await;
+        // The refusal must name the interrupted state, not claim the
+        // session is active — the operator would otherwise look for a
+        // running workflow that isn't there.
+        let err = manager.start().await.unwrap_err();
+        assert!(err.contains("interrupted"), "got: {err}");
     }
 
     #[tokio::test]
@@ -572,5 +591,15 @@ mod tests {
         // current session.
         manager.fail_invoke("some-older-workflow").await;
         assert_eq!(manager.status().await, "active");
+
+        // Nor may a late failure resurrect activity once the session is
+        // over: fail_invoke on an idle manager stays idle.
+        let workflow_id = stub.bodies.read().await[0]["workflow_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        manager.stop().await.unwrap();
+        manager.fail_invoke(&workflow_id).await;
+        assert_eq!(manager.status().await, "idle");
     }
 }

@@ -119,6 +119,10 @@ impl<P: SafetyProbe> SafetyEnforcer<P> {
         let mut per_monitor: HashMap<String, bool> = HashMap::new();
         let mut overall = true;
         loop {
+            // Poll before sleeping: a monitor that is unsafe (or
+            // unreadable) at startup must gate immediately, not after
+            // the first interval elapses.
+            overall = self.poll_once(&mut per_monitor, overall).await;
             tokio::select! {
                 () = cancel.cancelled() => {
                     debug!("safety monitoring stopped");
@@ -126,7 +130,6 @@ impl<P: SafetyProbe> SafetyEnforcer<P> {
                 }
                 () = tokio::time::sleep(self.poll_interval) => {}
             }
-            overall = self.poll_once(&mut per_monitor, overall).await;
         }
     }
 
@@ -420,6 +423,48 @@ mod tests {
             .unwrap();
     }
 
+    /// The first poll happens immediately, not after the first interval:
+    /// a monitor that is unsafe at startup must gate `/mcp` right away.
+    /// The interval here is far longer than the wait, so a pass proves
+    /// the gate closed on the immediate poll.
+    #[tokio::test]
+    async fn run_polls_immediately_at_startup() {
+        let mut enforcer = enforcer_with(vec![ScriptedProbe::new("sm", vec![Ok(false)])]);
+        enforcer.poll_interval = Duration::from_secs(3600);
+        let safety_ok = enforcer.safety_ok.clone();
+        let cancel = CancellationToken::new();
+        let task = tokio::spawn(enforcer.run(cancel.clone()));
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while safety_ok.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            !safety_ok.load(Ordering::SeqCst),
+            "the gate never closed — the loop slept a full interval before its first poll"
+        );
+        cancel.cancel();
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("run() did not stop on cancellation")
+            .unwrap();
+    }
+
+    /// Terminating a session whose worker already died must be harmless
+    /// (the close reports an error; the registry still ends up empty).
+    #[tokio::test]
+    async fn terminating_already_dead_mcp_sessions_is_harmless() {
+        let enforcer = enforcer_with(vec![ScriptedProbe::new("sm", vec![Ok(false)])]);
+        let (_id, transport) = enforcer.mcp_sessions.create_session().await.unwrap();
+        // Dropping the transport kills the session's worker.
+        drop(transport);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let mut state = HashMap::new();
+        enforcer.poll_once(&mut state, true).await;
+        assert!(enforcer.mcp_sessions.sessions.read().await.is_empty());
+    }
+
     #[tokio::test]
     async fn from_registry_is_none_without_monitors() {
         let event_bus = Arc::new(EventBus::from_config(&[]));
@@ -433,5 +478,155 @@ mod tests {
             Duration::from_secs(10),
         );
         assert!(enforcer.is_none());
+    }
+
+    /// Build the enforcer from a real registry so the production
+    /// [`AlpacaSafetyProbe`] is exercised (not the scripted test probe):
+    /// a connected monitor reads through the Alpaca `issafe` endpoint,
+    /// and a monitor whose connect failed reads as an error → unsafe.
+    /// The registry also carries cameras so the unsafe transition's
+    /// exposure abort covers all three arms: abort acknowledged, abort
+    /// rejected (no exposure in progress), and camera not connected.
+    #[tokio::test]
+    async fn alpaca_probe_reads_issafe_and_unsafe_aborts_exposures() {
+        use axum::routing::{get, put};
+        use axum::{Json, Router};
+
+        let app = Router::new()
+            .route(
+                "/management/v1/configureddevices",
+                get(|| async {
+                    Json(serde_json::json!({
+                        "Value": [
+                            {
+                                "DeviceName": "Safety Monitor 0",
+                                "DeviceType": "SafetyMonitor",
+                                "DeviceNumber": 0,
+                                "UniqueID": "test-sm-uid"
+                            },
+                            {
+                                "DeviceName": "Camera 0",
+                                "DeviceType": "Camera",
+                                "DeviceNumber": 0,
+                                "UniqueID": "test-cam-0"
+                            },
+                            {
+                                "DeviceName": "Camera 1",
+                                "DeviceType": "Camera",
+                                "DeviceNumber": 1,
+                                "UniqueID": "test-cam-1"
+                            }
+                        ],
+                        "ErrorNumber": 0,
+                        "ErrorMessage": ""
+                    }))
+                }),
+            )
+            .route(
+                "/api/v1/safetymonitor/0/connected",
+                put(|| async { Json(serde_json::json!({"ErrorNumber": 0, "ErrorMessage": ""})) }),
+            )
+            .route(
+                "/api/v1/safetymonitor/0/issafe",
+                get(|| async {
+                    Json(serde_json::json!({
+                        "Value": true,
+                        "ErrorNumber": 0,
+                        "ErrorMessage": ""
+                    }))
+                }),
+            )
+            .route(
+                "/api/v1/camera/0/connected",
+                put(|| async { Json(serde_json::json!({"ErrorNumber": 0, "ErrorMessage": ""})) }),
+            )
+            .route(
+                "/api/v1/camera/1/connected",
+                put(|| async { Json(serde_json::json!({"ErrorNumber": 0, "ErrorMessage": ""})) }),
+            )
+            .route(
+                "/api/v1/camera/0/abortexposure",
+                put(|| async { Json(serde_json::json!({"ErrorNumber": 0, "ErrorMessage": ""})) }),
+            )
+            .route(
+                "/api/v1/camera/1/abortexposure",
+                put(|| async {
+                    Json(serde_json::json!({
+                        "ErrorNumber": 1035,
+                        "ErrorMessage": "no exposure in progress"
+                    }))
+                }),
+            );
+        let stub = crate::equipment::test_support::spawn_stub(app).await;
+
+        fn camera_cfg(id: &str, url: &str, device_number: u32) -> crate::config::CameraConfig {
+            crate::config::CameraConfig {
+                id: id.to_string(),
+                name: id.to_string(),
+                alpaca_url: url.to_string(),
+                device_type: String::new(),
+                device_number,
+                cooler_target_c: None,
+                gain: None,
+                offset: None,
+                focal_length_mm: None,
+                readout_time_estimate: None,
+                auth: None,
+            }
+        }
+        let equipment_cfg = crate::config::EquipmentConfig {
+            cameras: vec![
+                camera_cfg("aborts-ok", &stub.url(), 0),
+                camera_cfg("abort-rejected", &stub.url(), 1),
+                // Client construction fails instantly on a bad URL, so
+                // this entry is disconnected without any retry delay.
+                camera_cfg("never-connected-cam", "not-a-url", 0),
+            ],
+            mount: None,
+            focusers: vec![],
+            filter_wheels: vec![],
+            cover_calibrators: vec![],
+            safety_monitors: vec![
+                crate::config::SafetyMonitorConfig {
+                    id: "reachable".to_string(),
+                    alpaca_url: stub.url(),
+                    device_number: 0,
+                    auth: None,
+                },
+                crate::config::SafetyMonitorConfig {
+                    id: "never-connected".to_string(),
+                    alpaca_url: "not-a-url".to_string(),
+                    device_number: 0,
+                    auth: None,
+                },
+            ],
+        };
+        let equipment = Arc::new(EquipmentRegistry::new(&equipment_cfg).await);
+        let event_bus = Arc::new(EventBus::from_config(&[]));
+        let session = Arc::new(SessionManager::new(event_bus.clone(), &[]));
+        let enforcer = SafetyEnforcer::from_registry(
+            equipment,
+            event_bus.clone(),
+            session,
+            Arc::new(LocalSessionManager::default()),
+            Arc::new(AtomicBool::new(true)),
+            Duration::from_millis(1),
+        )
+        .expect("monitors are configured");
+        let mut events = event_bus.subscribe();
+
+        let mut state = HashMap::new();
+        let overall = enforcer.poll_once(&mut state, true).await;
+
+        // The reachable monitor reads safe; the disconnected one reads
+        // as an error and counts unsafe — overall unsafe, and only the
+        // disconnected monitor emits a transition. The unsafe handling
+        // ran the exposure abort against all three cameras (asserted
+        // implicitly: poll_once returned, no panic on any arm).
+        assert!(!overall);
+        assert!(!enforcer.safety_ok.load(Ordering::SeqCst));
+        let changed = events.recv().await.unwrap();
+        assert_eq!(changed.payload["monitor"], "never-connected");
+        assert_eq!(changed.payload["new_state"], "unsafe");
     }
 }
