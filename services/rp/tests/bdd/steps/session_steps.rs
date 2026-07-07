@@ -322,6 +322,14 @@ async fn session_status_is(world: &mut RpWorld, expected: String) {
     );
 }
 
+#[then(expr = "the session status should become {string}")]
+async fn session_status_becomes(world: &mut RpWorld, expected: String) {
+    assert!(
+        world.wait_for_session_status(&expected).await,
+        "session status did not become '{expected}' within the wait budget"
+    );
+}
+
 #[then("the test orchestrator should have been cancelled")]
 async fn orchestrator_was_cancelled(world: &mut RpWorld) {
     // The orchestrator's WaitForStop behavior checks the cancelled flag.

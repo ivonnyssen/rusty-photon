@@ -9,15 +9,18 @@ pub mod mcp;
 pub mod persistence;
 pub mod planner;
 pub mod routes;
+pub mod safety;
 pub mod session;
 pub mod tls_cmd;
 
 use std::future::Future;
 use std::net::SocketAddr;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use tracing::{debug, info};
 
+use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rp_tls::config::TlsConfig;
 use tokio_util::sync::CancellationToken;
 
@@ -28,6 +31,7 @@ use crate::events::EventBus;
 use crate::mcp::McpHandler;
 use crate::persistence::ImageCache;
 use crate::routes::{build_router, AppState};
+use crate::safety::{AlpacaSafetyProbe, SafetyEnforcer};
 use crate::session::{SessionConfig, SessionManager};
 
 /// Builder for the rp server.
@@ -156,12 +160,30 @@ impl ServerBuilder {
         // would block axum's graceful shutdown from ever completing.
         let sse_shutdown = CancellationToken::new();
 
+        // Safety enforcement (rp.md § Safety): the gate flag is read by the
+        // `/mcp` middleware, the session registry is shared with the
+        // enforcer so an unsafe transition can terminate every open MCP
+        // session. `None` when no safety monitors are configured — sessions
+        // then run ungated and no polling task is spawned.
+        let safety_ok = Arc::new(AtomicBool::new(true));
+        let mcp_sessions = Arc::new(LocalSessionManager::default());
+        let safety = SafetyEnforcer::from_registry(
+            equipment.clone(),
+            event_bus.clone(),
+            session.clone(),
+            mcp_sessions.clone(),
+            safety_ok.clone(),
+            config.safety.poll_interval,
+        );
+
         let state = AppState {
             equipment,
             mcp,
             session: session.clone(),
             image_cache,
             sse_shutdown: sse_shutdown.clone(),
+            safety_ok,
+            mcp_sessions,
         };
 
         let router = build_router(state);
@@ -202,6 +224,7 @@ impl ServerBuilder {
             local_addr,
             tls,
             sse_shutdown,
+            safety,
         })
     }
 }
@@ -222,6 +245,9 @@ pub struct BoundServer {
     /// in-flight `/api/events/subscribe` SSE streams end and axum's graceful
     /// shutdown can drain. A clone lives in `AppState` for the handler.
     sse_shutdown: CancellationToken,
+    /// Safety polling loop, spawned by `start()` and cancelled on shutdown.
+    /// `None` when no safety monitors are configured.
+    safety: Option<SafetyEnforcer<AlpacaSafetyProbe>>,
 }
 
 impl BoundServer {
@@ -234,11 +260,18 @@ impl BoundServer {
         // signal fires, cancel in-flight `/api/events/subscribe` streams first
         // so their long-lived response bodies end, then let axum's graceful
         // shutdown drain the remaining connections. Without this, a connected
-        // SSE consumer would keep the server from ever shutting down.
+        // SSE consumer would keep the server from ever shutting down. The
+        // safety polling loop rides the same signal.
+        let safety_cancel = CancellationToken::new();
+        let safety_task = self.safety.map(|enforcer| {
+            let cancel = safety_cancel.clone();
+            tokio::spawn(enforcer.run(cancel))
+        });
         let sse_shutdown = self.sse_shutdown;
         let graceful = async move {
             shutdown.await;
             sse_shutdown.cancel();
+            safety_cancel.cancel();
         };
 
         match self.tls {
@@ -254,6 +287,12 @@ impl BoundServer {
                     .with_graceful_shutdown(graceful)
                     .await?;
             }
+        }
+
+        // The safety loop was cancelled by `graceful`; join it so the
+        // process doesn't exit mid-transition.
+        if let Some(task) = safety_task {
+            let _ = task.await;
         }
 
         debug!("rp service shut down");

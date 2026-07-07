@@ -103,12 +103,15 @@ Feature: Session lifecycle with flat calibration orchestrator
     And a workflow completion is posted with an unknown workflow id
     Then the session status should be "active"
 
-  Scenario: Session with unreachable orchestrator still starts
+  Scenario: A session whose orchestrator is unreachable fails loud and returns to idle
     Given a running Alpaca simulator
     And a plugin configured as orchestrator with invoke URL "http://localhost:1/invoke"
-    And rp is running with a camera and filter wheel on the simulator and the test orchestrator
+    And a test webhook receiver subscribed to "session_stopped"
+    And rp is running with equipment and both plugins configured
     When a session is started via the REST API
-    Then the session status should be "active"
+    Then the session status should become "idle"
+    And the test webhook receiver should receive a "session_stopped" event
+    And the "session_stopped" event payload field "reason" should be "orchestrator_invoke_failed"
 
   Scenario: Session can be restarted after completion
     Given a running Alpaca simulator

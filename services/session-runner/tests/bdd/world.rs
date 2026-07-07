@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use bdd_infra::rp_harness::{
     CameraConfig, CoverCalibratorConfig, FilterWheelConfig, ReceivedEvent, RpConfigBuilder,
-    SseClient, WebhookReceiver,
+    SafetyMonitorConfig, SseClient, WebhookReceiver,
 };
 use bdd_infra::ServiceHandle;
 use cucumber::World;
@@ -41,6 +41,12 @@ pub struct SessionRunnerWorld {
     pub cameras: Vec<CameraConfig>,
     pub filter_wheels: Vec<FilterWheelConfig>,
     pub cover_calibrators: Vec<CoverCalibratorConfig>,
+    /// Safety monitors gating the session (recovery.feature's safety
+    /// interruption scenario).
+    pub safety_monitors: Vec<SafetyMonitorConfig>,
+    /// Override rp's `safety.poll_interval`; pinned short so unsafe/safe
+    /// transitions are detected in test time.
+    pub safety_poll_interval: Option<Duration>,
     pub plugin_configs: Vec<Value>,
     /// The orchestrator registration's `config` object (workflow name +
     /// parameters), kept so the recovery scenarios can re-invoke the
@@ -95,6 +101,12 @@ impl SessionRunnerWorld {
         }
         for cc in &self.cover_calibrators {
             builder.add_cover_calibrator(cc.clone());
+        }
+        for sm in &self.safety_monitors {
+            builder.add_safety_monitor(sm.clone());
+        }
+        if let Some(interval) = self.safety_poll_interval {
+            builder.with_safety_poll_interval(interval);
         }
         for plugin in &self.plugin_configs {
             builder.add_plugin(plugin.clone());

@@ -1,11 +1,11 @@
 use serde::Deserialize;
-use serde_json::Value;
 
 use super::camera::CameraConfig;
 use super::cover_calibrator::CoverCalibratorConfig;
 use super::filter_wheel::FilterWheelConfig;
 use super::focuser::FocuserConfig;
 use super::mount::MountConfig;
+use super::safety_monitor::SafetyMonitorConfig;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct EquipmentConfig {
@@ -20,5 +20,5 @@ pub struct EquipmentConfig {
     #[serde(default)]
     pub cover_calibrators: Vec<CoverCalibratorConfig>,
     #[serde(default)]
-    pub safety_monitors: Vec<Value>,
+    pub safety_monitors: Vec<SafetyMonitorConfig>,
 }

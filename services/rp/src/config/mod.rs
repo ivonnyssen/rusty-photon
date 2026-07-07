@@ -17,6 +17,8 @@ pub mod focuser;
 pub mod imaging;
 pub mod mount;
 pub mod plate_solver;
+pub mod safety;
+pub mod safety_monitor;
 pub mod server;
 pub mod session;
 pub mod site;
@@ -30,6 +32,8 @@ pub use focuser::FocuserConfig;
 pub use imaging::ImagingConfig;
 pub use mount::MountConfig;
 pub use plate_solver::PlateSolverConfig;
+pub use safety::SafetyConfig;
+pub use safety_monitor::SafetyMonitorConfig;
 pub use server::ServerConfig;
 pub use session::SessionConfig;
 pub use site::SiteConfig;
@@ -59,8 +63,10 @@ pub struct Config {
     pub targets: Value,
     #[serde(default)]
     pub planner: Value,
+    /// Safety-enforcement knobs (rp.md § Safety); the monitors
+    /// themselves live under `equipment.safety_monitors`.
     #[serde(default)]
-    pub safety: Value,
+    pub safety: SafetyConfig,
     #[serde(default)]
     pub imaging: ImagingConfig,
     /// Per-rig estimates that size the advisory `center_on_target`

@@ -1568,8 +1568,20 @@ Content-Type: application/json
 }
 ```
 
-On recovery after a safety event or power failure, `recovery` contains
-the last known session state so the orchestrator can resume.
+On recovery re-invocation `recovery` is a non-null object carrying the
+reason for the interruption (today `{"reason": "safety_interruption"}`,
+emitted when a safety monitor returns to safe — see § Safety). `rp`
+keeps no per-workflow progress of its own; the orchestrator persists
+whatever state it needs to resume (for `session-runner` that is the
+blackboard, keyed by the unchanged `session_id`) and receives the same
+`workflow_id`/`session_id`/`config` as the original invocation.
+
+The invoke POST is retried on transport errors and 5xx responses
+(3 attempts, 1 s apart); a 4xx response is treated as permanent. If
+all attempts fail, the session returns to `idle` and a
+`session_stopped` event with `reason: "orchestrator_invoke_failed"`
+is emitted — a session never sits `active` with an orchestrator that
+was never reached.
 
 `config` is the orchestrator's registered `config` object, passed through
 verbatim — `rp` never interprets it. The key is always present: when the
@@ -1676,9 +1688,12 @@ in the catalog. Safety is enforced at the tool level, universally:
   cancels the workflow, moves equipment to a safe state, and proceeds
   with the next orchestration phase. The MCP session is terminated.
 - **Safety override**: a safety event (unsafe transition) immediately
-  cancels any active workflow. The MCP session is terminated — the
-  plugin's next tool call returns an error indicating the workflow was
-  cancelled.
+  cancels any active workflow. Every open MCP session is closed
+  (cancelling in-flight tool calls) and the `/mcp` endpoint rejects all
+  requests with `503` while conditions remain unsafe — the plugin's
+  next tool call surfaces as a terminated session. The session itself
+  is *interrupted*, not ended: on the safe transition `rp` re-invokes
+  the orchestrator with recovery context (see § Safety).
 
 ### Config-Time Validation
 
@@ -1855,9 +1870,10 @@ User starts session via API
   → rp emits events as tools execute (exposure_started, slew_complete, etc.)
 
 Safety event (unsafe transition)
-  → rp immediately: aborts exposures, stops guiding, parks mount
-  → rp terminates the orchestrator's MCP session
-  → rp persists session state
+  → rp terminates the orchestrator's MCP sessions and gates /mcp
+  → rp aborts in-progress exposures (guiding stop / mount park planned)
+  → the session is marked interrupted; the orchestrator's own persisted
+    state (e.g. session-runner's blackboard) survives
   → on safe transition: rp re-invokes the orchestrator with recovery context
 
 Session ends (orchestrator completes, user stops, or dawn)
@@ -2823,6 +2839,14 @@ The application must survive power failures and resume from where it left off.
 
 ### Recovery Behavior
 
+> **Status:** designed, not yet implemented. `rp`'s session registry is
+> in-memory today, so an `rp` restart orphans an interrupted session —
+> the orchestrator's own persisted state (e.g. `session-runner`'s
+> blackboard) survives and the session can be resumed by re-invoking
+> the orchestrator, but `rp` does not yet do so on startup. The
+> safety-event recovery path (terminate on unsafe, re-invoke on safe
+> within one `rp` process) **is** implemented — see § Safety.
+
 On startup, `rp` checks for an existing session state file:
 
 1. If no session file exists, start fresh (wait for user to start a session).
@@ -2852,24 +2876,45 @@ can override any operation, including cancelling the active orchestrator.
 
 ### SafetyMonitor Polling
 
-`rp` polls configured ASCOM Alpaca SafetyMonitor devices at a configurable
-interval. On an unsafe transition:
+`rp` polls every configured ASCOM Alpaca SafetyMonitor device
+(`equipment.safety_monitors`, connected at startup like any other
+device) at `safety.poll_interval` (humantime string, default `"10s"`).
+When no monitors are configured the loop never starts and sessions run
+ungated. A monitor read is **fail-unsafe**: a device that is
+disconnected or errors on `IsSafe` counts as unsafe, and the overall
+state is safe only when *all* monitors report safe. Each per-monitor
+transition emits a `safety_changed` event (`monitor`, `new_state`).
 
-1. Terminate the orchestrator's MCP session (cancel any in-flight tool
-   calls).
-2. Abort all in-progress exposures (discard partial frames).
-3. Stop guiding.
-4. Park the mount.
-5. Persist session state.
-6. Emit `safety_changed` event.
-7. Wait in parked state.
+On the overall safe → unsafe transition:
 
-On a safe transition while in parked state:
-1. Unpark mount.
-2. Re-invoke the orchestrator with recovery context (last session state,
-   reason for interruption).
+1. Gate the `/mcp` endpoint: every request is rejected with `503`
+   while conditions remain unsafe.
+2. Close all open MCP sessions (cancelling in-flight tool calls); the
+   orchestrator's next tool call surfaces as a terminated session, and
+   a `session-runner`-style orchestrator exits without completion,
+   keeping its persisted state.
+3. Mark the active session `interrupted` (`/api/session/status`
+   reports `"interrupted"`; starting another session is still refused).
+4. Abort in-progress exposures on all connected cameras (best-effort).
+
+Not yet implemented on unsafe: stopping guiding and parking the mount
+(no guider integration in `rp` yet; parking is planned alongside it).
+
+On the overall unsafe → safe transition:
+
+1. Lift the `/mcp` gate.
+2. If a session is interrupted, mark it `active` again and re-invoke
+   the orchestrator with recovery context
+   (`{"reason": "safety_interruption"}`) and the same
+   `workflow_id`/`session_id`/`config` — retry/failure semantics as in
+   § Orchestrator Invocation Protocol.
 3. The orchestrator decides how to resume (verify pointing, re-acquire
-   guiding, continue from last target).
+   guiding, continue from its persisted progress).
+
+There is no resume-delay/debounce knob yet: `rp` re-invokes on the
+first safe poll. Flapping conditions produce repeated
+interrupt/resume cycles, each of which is safe by construction (the
+re-entrancy contract makes resume idempotent).
 
 ### Sentinel Watchdog Integration
 
@@ -3153,9 +3198,9 @@ return a structured "site not configured" error.
     ],
     "safety_monitors": [
       {
+        "id": "weather-watcher",
         "alpaca_url": "http://localhost:11111",
-        "device_number": 0,
-        "polling_interval_secs": 10
+        "device_number": 0
       }
     ],
     "cover_calibrators": [
@@ -3247,10 +3292,7 @@ return a structured "site not configured" error.
     "minimize_filter_changes": true
   },
   "safety": {
-    "polling_interval_secs": 10,
-    "park_on_unsafe": true,
-    "resume_on_safe": true,
-    "resume_delay_secs": 300
+    "poll_interval": "10s"
   },
   "server": {
     "port": 11115,
@@ -3300,7 +3342,9 @@ services/rp/src/
                         guider client work lands)
 
   # Safety enforcement
-  safety.rs             SafetyMonitor polling, park/resume, orchestrator cancellation
+  safety.rs             SafetyMonitor polling loop, /mcp gate, session
+                        interrupt/resume, MCP session termination,
+                        exposure abort (park/guiding-stop planned)
 
   # Planning (exposed as MCP tools — see Planning and Ephemeris)
   # Math and catalog data live in workspace crates rp-ephemeris and
@@ -3472,7 +3516,8 @@ Testing follows the conventions in `docs/skills/testing.md`.
 - **Planner tools**: Given a target list, progress, and sky state, assert
   correct target/filter selection. Pure function, easy to test exhaustively.
 - **Safety enforcement**: Assert correct behavior on unsafe transitions
-  (orchestrator cancellation, mount parking, session persistence).
+  (transition detection, MCP session termination, `/mcp` gate, session
+  interrupt/resume, invoke retry classification).
 - **Document**: Serialization round-trips, section merging, atomic persistence.
 - **Configuration**: Deserialization, validation, defaults.
 - **Config-time validation**: Missing tools, conflicting plugins, circular
@@ -3489,11 +3534,17 @@ Testing follows the conventions in `docs/skills/testing.md`.
 
 Behavioral specifications for `rp`'s responsibilities:
 
-- Session lifecycle (start → invoke orchestrator, stop, safety override)
-- Safety override (cancel orchestrator, park mount, persist state, resume)
+- Session lifecycle (start → invoke orchestrator, stop, unreachable
+  orchestrator fails loud back to idle)
+- Safety override (unsafe interrupts the session and gates `/mcp`;
+  safe re-invokes the orchestrator with recovery context — the
+  end-to-end resume against a real engine lives in
+  `services/session-runner/tests/features/recovery.feature`)
 - MCP tool validation and safety guardrails
 - Event delivery to webhook endpoints
-- Power failure recovery (re-invoke orchestrator with recovery context)
+- Power failure recovery (re-invoke orchestrator with recovery context
+  on `rp` restart — designed, not yet implemented; see § Recovery
+  Behavior)
 
 Note: orchestration workflow tests (capture loops, target switching,
 meridian flips) belong to the orchestrator plugin, not to `rp`. For
