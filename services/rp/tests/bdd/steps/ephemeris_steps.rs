@@ -48,10 +48,21 @@ fn target_with_exposure_plan(world: &mut RpWorld, name: String, step: &Step) {
         assert_eq!(header[2], "count");
     }
     let exposures = rows
-        .map(|row| ExposurePlanConfig {
-            filter: Some(row[0].clone()),
-            duration_secs: row[1].parse().expect("duration_secs must parse as f64"),
-            count: with_counts.then(|| row[2].parse().expect("count must parse as u32")),
+        .map(|row| {
+            assert_eq!(
+                row.len(),
+                header.len(),
+                "exposure-plan row width must match the header: {row:?}"
+            );
+            ExposurePlanConfig {
+                filter: Some(row[0].clone()),
+                duration_secs: row[1].parse().expect("duration_secs must parse as f64"),
+                // An empty count cell = no finite goal for this entry.
+                count: with_counts
+                    .then(|| row[2].trim())
+                    .filter(|c| !c.is_empty())
+                    .map(|c| c.parse().expect("count must parse as u32")),
+            }
         })
         .collect();
     world

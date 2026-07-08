@@ -440,8 +440,9 @@ impl McpHandler {
                        target_name (resolved via the embedded catalog) or a \
                        raw ra/dec pair. progress is the per-filter \
                        {completed, goal} map from the record_exposure \
-                       counters when target_name matches a configured \
-                       targets[] entry, null otherwise. Requires `site`.")]
+                       counters when target_name (as given or \
+                       catalog-resolved) matches a configured targets[] \
+                       entry, null otherwise. Requires `site`.")]
     pub(crate) async fn get_target_status(
         &self,
         Parameters(params): Parameters<GetTargetStatusParams>,
@@ -492,14 +493,15 @@ impl McpHandler {
             }
         };
         // The progress map is keyed by configured target names, which
-        // are free-form — match the caller's `target_name` verbatim
-        // (catalog resolution normalises "m 31" → "M 31", but a
-        // `targets[]` entry can be named anything).
-        let progress = match params
-            .target_name
-            .as_deref()
-            .and_then(|n| self.targets.iter().find(|t| t.name == n))
-        {
+        // are free-form, while the catalog normalises "m 31" → "M 31"
+        // — so match the caller's `target_name` as given first, then
+        // its catalog-resolved form (`name`). The ra/dec form has no
+        // name to match and reports progress: null.
+        let progress = match params.target_name.as_deref().and_then(|raw| {
+            self.targets
+                .iter()
+                .find(|t| t.name == raw || t.name == name)
+        }) {
             Some(configured) => {
                 let store = self.progress.lock().unwrap_or_else(|e| e.into_inner());
                 crate::planner::convenience::target_progress_view(configured, &store)

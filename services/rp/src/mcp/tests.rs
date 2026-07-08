@@ -3602,6 +3602,24 @@ async fn get_target_status_reports_progress_for_a_configured_target() {
         v["progress"]["Red"],
         serde_json::json!({"completed": 1, "goal": 4})
     );
+    // A case-variant spelling resolves through the catalog to the
+    // same canonical name, and the progress lookup must follow it —
+    // "m 31" answers with "M 31"'s counters, not progress: null.
+    let v = ok_json(
+        h.get_target_status(Parameters(GetTargetStatusParams {
+            target_name: Some("m 31".into()),
+            ra: None,
+            dec: None,
+            time: None,
+        }))
+        .await,
+    );
+    assert_eq!(v["target_name"], "M 31");
+    assert_eq!(
+        v["progress"]["Red"],
+        serde_json::json!({"completed": 1, "goal": 4}),
+        "progress must match via the catalog-resolved name"
+    );
 }
 
 #[tokio::test]
