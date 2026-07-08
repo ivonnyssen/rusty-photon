@@ -4,8 +4,9 @@
 //! configuration flags and starts the ASCOM Alpaca server.
 //!
 //! Requires the `mock` feature. All tests are skipped under Miri since it cannot
-//! call socket syscalls. Tests run sequentially because the ASCOM Alpaca
-//! discovery service binds to a fixed address.
+//! call socket syscalls. Tests run sequentially behind `SERVER_LOCK` so the
+//! spawned server + transport lifecycles never overlap (discovery is disabled
+//! in these configs, so there is no shared discovery port to contend for).
 #![allow(clippy::await_holding_lock)]
 #![cfg(feature = "mock")]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]

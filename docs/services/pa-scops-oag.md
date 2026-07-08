@@ -113,7 +113,7 @@ rejects them and ASCOM has no matching property.
 | ASCOM Property/Method | Implementation |
 |-----------------------|----------------|
 | Absolute | `true` (always) |
-| Position | Cached from the `A` report (i64 → i32 cast). The eager startup handshake seeds the cache before the HTTP listener binds, so it is available immediately after connect; polling keeps it fresh. `INVALID_OPERATION` only in the unseeded-cache edge case (never in normal startup) |
+| Position | Cached from the `A` report (checked i64 → i32 conversion; a report beyond the i32 range is surfaced as an error, never wrapped). The eager startup handshake seeds the cache before the HTTP listener binds, so it is available immediately after connect; polling keeps it fresh. `INVALID_OPERATION` only in the unseeded-cache edge case (never in normal startup) |
 | IsMoving | Cached from `A` field 6; force-refreshed via `A` when a move is in flight |
 | MaxStep | From config `max_step` |
 | MaxIncrement | From config `max_step` (a single absolute move can span full travel) |

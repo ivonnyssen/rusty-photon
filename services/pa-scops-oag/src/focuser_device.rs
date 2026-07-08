@@ -168,7 +168,15 @@ impl Focuser for ScopsFocuserDevice {
                 "Position not yet available",
             )
         })?;
-        Ok(position as i32)
+        // The cache/wire type is i64; ASCOM `Position` is i32. A report outside
+        // the i32 range can only be firmware nonsense — surface it rather than
+        // silently wrapping.
+        i32::try_from(position).map_err(|_| {
+            ASCOMError::new(
+                ASCOMErrorCode::INVALID_OPERATION,
+                format!("Device-reported position {position} exceeds the ASCOM i32 range"),
+            )
+        })
     }
 
     async fn step_size(&self) -> ASCOMResult<f64> {
@@ -219,5 +227,45 @@ impl Focuser for ScopsFocuserDevice {
         let session = guard.as_ref().ok_or(ASCOMError::NOT_CONNECTED)?;
         self.manager.move_absolute(session, position as i64).await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::mock::MockScopsTransportFactory;
+    use crate::protocol::Command;
+    use rusty_photon_shared_transport::TransportFactory;
+
+    #[tokio::test]
+    async fn position_errors_instead_of_wrapping_beyond_i32() {
+        let factory: Arc<dyn TransportFactory> = Arc::new(MockScopsTransportFactory::default());
+        let config = Config::default();
+        let manager = FocuserManager::new(config.clone(), factory);
+        let device = ScopsFocuserDevice::new(config.focuser, Arc::clone(&manager));
+        device.set_connected(true).await.unwrap();
+
+        // Drive the mock past the i32 range out-of-band (`W:` syncs the counter
+        // without moving the motor), then force the shared cache to pick it up.
+        let session = manager.transport().acquire().await.unwrap();
+        let beyond_i32 = i64::from(i32::MAX) + 1;
+        session
+            .request(Command::SyncPosition {
+                position: beyond_i32,
+            })
+            .await
+            .unwrap();
+        manager.refresh_status(&session).await.unwrap();
+
+        let err = device.position().await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+        assert!(
+            err.to_string().contains("exceeds the ASCOM i32 range"),
+            "unexpected error: {err}"
+        );
+        session.close().await.unwrap();
     }
 }
