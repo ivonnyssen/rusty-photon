@@ -124,9 +124,10 @@ impl MockState {
 }
 
 fn parse_pos(s: &str) -> Option<i64> {
-    // Tolerate the INDI `M:<pos>d` quirk by stripping the trailing `d` (and
-    // only `d` — the firmware tolerates exactly that stray byte).
-    let s = s.trim().trim_end_matches('d');
+    // Tolerate the INDI `M:<pos>d` quirk: strip at most one trailing `d` —
+    // the firmware tolerates exactly that single stray byte.
+    let s = s.trim();
+    let s = s.strip_suffix('d').unwrap_or(s);
     s.parse().ok()
 }
 
@@ -292,5 +293,14 @@ mod tests {
         let mut t = open(&factory).await;
         // INDI's `snprintf("%ud")` quirk; the firmware tolerates it.
         assert_eq!(round_trip(&mut t, b"M:5000d\n").await, "M:5000");
+    }
+
+    #[tokio::test]
+    async fn move_with_multiple_trailing_ds_is_rejected() {
+        let factory = MockScopsTransportFactory::default();
+        let mut t = open(&factory).await;
+        // Only the single INDI stray byte is tolerated; anything beyond is
+        // malformed and answered `ERR:` like any other unparseable position.
+        assert_eq!(round_trip(&mut t, b"M:5000dd\n").await, "ERR:");
     }
 }
