@@ -1821,11 +1821,12 @@ Different imaging types use different orchestrators:
 > **How orchestrators are built.** An orchestrator can be a hand-written
 > service in any language (like `calibrator-flats`, Rust) **or** a
 > declarative **workflow document** executed by the generic
-> [`session-runner`](session-runner.md) plugin (design stage — see
+> [`session-runner`](session-runner.md) plugin (see
 > [`docs/plans/workflow-dsl.md`](../plans/workflow-dsl.md)). The
-> `deep-sky-orchestrator` and `sky-flat` rows above are planned as workflow
-> documents, not standalone binaries; `rp` cannot tell the difference —
-> both shapes follow the same plugin protocol.
+> `deep-sky-orchestrator` row above ships as `session-runner`'s
+> `deep_sky.json` document (as does a port of `calibrator-flats`);
+> `sky-flat` is planned as a document too. `rp` cannot tell the
+> difference — both shapes follow the same plugin protocol.
 
 ### What `rp` Owns vs. What the Orchestrator Owns
 

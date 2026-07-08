@@ -1009,61 +1009,109 @@ Abridged to the load-bearing shape:
 }
 ```
 
-### `deep_sky.json` (skeleton)
+### `deep_sky.json` (the night-cycle document)
+
+The classic deep-sky session as a shipped first-party document: startup
+(unpark, tracking, optional filter) → a dispatch loop (`get_next_target` →
+acquire on target change: slew → optional `center_on_target` → optional
+`auto_focus` → one `capture` per pass, re-asking the planner after every
+frame) → shutdown (optional `park`). The full document lives in
+`workflows/deep_sky.json`; the shape:
 
 ```jsonc
 {
-  "version": 1,
-  "name": "deep-sky",
-  "parameters": { "camera_id": { "type": "string", "required": true },
-                  "focuser_id": { "type": "string", "required": true },
-                  "guide": { "type": "boolean", "default": true },
-                  "dither_every": { "type": "integer", "default": 3 } },
-  "triggers": [
-    { "id": "refocus-on-hfr",
-      "on": { "event": "exposure_complete" },
-      "when": "has(session.last_focus_hfr)",
-      "while": "session.imaging == true",
-      "cooldown": "15m",
-      "do": [ { "tool": "measure_basic", "args": { "document_id": { "$expr": "event.document_id" } } },
-              { "if": "result.hfr != null && result.hfr > session.last_focus_hfr * 1.2",
-                "then": [ { "tool": "auto_focus", "args": { /* … */ } },
-                          { "set": { "session.last_focus_hfr": "result.best_hfr" } } ] } ] },
-    { "id": "flip-when-due",
-      "on": { "poll": { "tool": "get_meridian_status", "interval": "60s" } },
-      "when": "event.time_to_flip_seconds < 300",
-      "while": "session.imaging == true",
-      "do": [ /* stop guiding, slew (flip), re-center, re-focus, resume guiding */ ] },
-    { "id": "handle-correction",
-      "on": { "event": "correction_requested" },
-      "do": [ /* branch on event.action: focus → auto_focus, center → center_on_target */ ] }
-  ],
   "root": { "sequence": [
-    /* startup: unpark, set_tracking, cool camera — idempotent, safe to re-run */
-    { "repeat": { "while": "session.session_over != true", "max_iterations": 1000 },
+    /* fail-fast parameter guards, before any equipment motion:
+       focus enabled requires focuser_id; a filter requires
+       filter_wheel_id — misconfiguration fails the session loudly
+       instead of silently degrading the night */
+    /* init: counter defaults; on a recovery invocation, null
+       session.target_name so the loop re-acquires (re-slew, re-center,
+       re-focus) before the next frame */
+    { "if": "has(params._recovery.reason)",
+      "then": [ { "set": { "session.target_name": "null",
+                           "session.imaging": "false" } } ] },
+    /* unpark, set_tracking, optional set_filter — all idempotent */
+    { "repeat": { "while": "session.session_over != true", "max_iterations": 20000 },
       "body": [
         { "tool": "get_next_target" },
-        { "if": "result.reason == 'end_of_session'",
-          "then": [ { "set": { "session.session_over": "true" } } ],
-          "else": [ { "if": "result.target == null",
-              "then": [ { "wait": { "duration": "5m" } } ],  // wait_for_twilight, all_below_min_altitude, …
-              "else": [
-                { "set": { "session.target_name": "result.target.name",
-                           "session.target_ra": "result.target.ra_hours",
-                           "session.target_dec": "result.target.dec_degrees" } },
-                /* slew → center_on_target → auto_focus → start_guiding,
-                   set session.imaging = true, capture + record_exposure loop
-                   re-asking get_next_target after each frame; dither every
-                   params.dither_every frames; on target change: stop guiding,
-                   session.imaging = false, continue outer loop */ ] } ] } ] },
-    /* shutdown: stop_guiding, park */ ] }
+        /* end_of_session → done; target == null → dawn heuristic
+           (wait_for_twilight after frames were captured ends the
+           session) or a 5m wait-and-re-ask; target change → stash
+           coords, slew, center, focus, commit session.target_* and
+           session.imaging = true; then one capture + counter updates,
+           ending when params.max_frames (> 0) is reached */ ] },
+    /* shutdown: session.imaging = false, optional park */ ] }
 }
 ```
 
-The dispatch loop (`get_next_target` after every frame + `record_exposure`
-progress in `rp`) is what makes this document re-entrant with **zero**
-`once` markers: after a crash, the same loop simply continues from the
-persisted progress.
+**v1 adaptations.** The document is written against `rp`'s implemented
+tool surface, and its shape reflects the documented planner v1 gaps
+(`rp.md` § Dynamic Planner) — each is `rp` work, tracked as an issue, and
+the document simplifies when it lands:
+
+- **The exposure plan is a parameter, not a planner output.**
+  `get_next_target` v1 returns `filter: null` / `duration_secs: null`
+  (the per-target `exposures[]` config is not yet threaded through), so
+  the document takes `exposure` (per-frame duration), an optional fixed
+  `filter`, and a `max_frames` budget (`0` = unbounded) as invocation
+  parameters.
+- **Progress lives in the blackboard, not in `rp`.** `record_exposure` /
+  `get_session_progress` do not exist yet, so the document counts frames
+  in `session.total_frames` (mirrored to `session.report.total_frames`
+  for the completion payload). Until progress-aware dispatch exists, the
+  planner recommends the same target while it stays viable — target
+  switches happen on visibility grounds (a target sets below its
+  altitude floor), not on integration goals.
+- **No guiding, no dithering.** `rp` has no guider integration
+  (`start_guiding` / `stop_guiding` / `dither` are unimplemented), and
+  catalog validation rightly rejects a document naming unknown tools.
+  The capture loop runs unguided; the guide/dither steps join the
+  document when the tools land.
+- **Dawn is a heuristic.** `EndOfSession` is unreachable from `rp`'s v1
+  code path, and v1's `wait_for_twilight` reason fires whenever the Sun
+  is above −18° — dusk and dawn alike. The document disambiguates by
+  progress: `wait_for_twilight` with zero frames captured is dusk (wait
+  5 minutes, re-ask), with frames captured it is dawn (end the session).
+
+**Triggers.** Three reactive rules, all gated `while session.imaging ==
+true` so they stay silent during acquisition and shutdown:
+
+- `refocus-after-frames` — on `exposure_complete`, when
+  `session.frames_since_focus` reaches `refocus_every` (a parameter;
+  `0` disables): re-run `auto_focus`. The frame counter only counts
+  light frames (the capture loop increments it), so a sweep's own
+  exposures cannot re-trigger it.
+- `refocus-on-hfr-degradation` — on `exposure_complete`, when
+  `auto_focus` has seeded `session.last_focus_hfr` and
+  `refocus_hfr_factor` (> 0) is set: `measure_basic` the finished
+  frame and re-focus when its HFR exceeds `last_focus_hfr × factor`;
+  `cooldown: "15m"` bounds how often the measurement itself runs.
+- `flip-when-due` — poll `get_meridian_status` every 30 s; when
+  `time_to_flip_seconds` drops under `meridian_margin` (default 300 s):
+  re-slew to the current target (the post-meridian slew is what flips a
+  GEM) and re-center. Self-limiting: after the flip the next crossing
+  is ~24 h out, so the gate goes false without `once`/`cooldown`
+  bookkeeping. Guiding is not stopped/restarted (no guider tools — the
+  gap above).
+
+In both refocus triggers the `auto_focus` call is wrapped in `try` with
+a logging `catch`: a failed focus sweep degrades the night, but ending
+the session over it would be worse (tenet: robustness). The skeleton's
+`handle-correction` trigger from earlier drafts is **not** shipped: no
+first-party plugin emits corrections yet, so it would be untestable
+speculation — the synthetic `correction_requested` source remains
+engine-tested and the trigger joins the document alongside the first
+correction-emitting plugin.
+
+**Re-entrancy.** The dispatch loop re-derives everything from the
+blackboard + the planner: after a crash or safety interruption the same
+loop continues from the persisted counters with **zero** `once` markers.
+Startup is idempotent (unpark on an unparked mount is a no-op, tracking
+and filter re-assert their state), and a recovery invocation nulls
+`session.target_name` so the first loop pass re-acquires — re-slew,
+re-center, re-focus — before capturing again, regardless of what the
+interruption did to the mount.
 
 ## Error Handling Summary
 
@@ -1154,6 +1202,7 @@ Full three-process topology (OmniSim + `rp` + `session-runner`) via
 | Triggers | `triggers.feature` | a trigger action lands between exposures, never during one (proved by SSE seq order); `once` fires exactly once across three captures; cooldown suppresses firings inside its window; a poll trigger fires through its `when` gate |
 | Resume | `recovery.feature` | SIGKILL the engine mid-capture-loop → restart → re-invoke with recovery → progress continues without repeated frames (exposure totals prove it); `once` marker not re-run (`filter_switch` count proves it); an rp outage terminates the run (service stays healthy, blackboard kept) and the session resumes against the restarted rp |
 | Safety | `recovery.feature` | a SafetyMonitor unsafe reading interrupts the session end-to-end through rp's own machinery (rp terminates the MCP session, the run terminates keeping its blackboard) and the safe transition re-invokes the engine with `recovery.reason = "safety_interruption"` — the resumed run captures exactly the remaining frames, the once marker is not re-run, and the completion deletes the blackboard. rp-side specifics (session `interrupted` status, `/mcp` 503 gate, `safety_changed` events) are pinned in rp's own `safety.feature` |
+| Deep-sky document | `deep_sky.feature` | the shipped `deep_sky.json` against a computed night sky (site + planner targets placed so a candidate is viable at test time): the full cycle completes (unpark → slew → center → capture ×N → park); a target sinking below its per-target altitude floor switches the dispatch loop to the second target (a second slew, frames on both sides of it); `refocus_every` fires `auto_focus` from the trigger overlay (`focus_started` count proves it); a due meridian flip re-slews between exposures, never during one; a safety interruption resumes with re-acquisition (two `centering_complete`) |
 
 The safety scenario exercises rp's real recovery re-invocation. The
 engine-kill and rp-outage scenarios POST `/invoke` directly — same ids,

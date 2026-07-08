@@ -1918,3 +1918,59 @@ async fn test_golden_calibrator_flats_rejects_a_zero_target_adu_before_moving_an
     );
     assert_eq!(tools.call_names(), vec!["get_camera_info"]);
 }
+
+fn deep_sky_params(doc: &Document, overrides: Value) -> Value {
+    let mut supplied = json!({ "camera_id": "cam" });
+    if let (Some(base), Some(extra)) = (supplied.as_object_mut(), overrides.as_object()) {
+        for (k, v) in extra {
+            base.insert(k.clone(), v.clone());
+        }
+    }
+    bind_parameters(&doc.parameters, Some(&supplied)).unwrap()
+}
+
+#[tokio::test]
+async fn test_golden_deep_sky_rejects_enabled_focus_without_a_focuser_id_before_moving_anything() {
+    // `focus` defaults to true, so a minimal invocation that forgets
+    // `focuser_id` would otherwise run every acquisition through a
+    // doomed auto_focus (caught by the try, silently degrading the
+    // night). The fail-fast guard raises before unpark — no tool call
+    // is made at all.
+    let doc = make_doc(crate::document::corpus::golden_deep_sky());
+    let params = deep_sky_params(&doc, json!({}));
+    let tools = MockTools::new(|_, tool, _| {
+        panic!("unexpected tool call `{tool}` after a failed focuser-id guard")
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let (outcome, _) = run_in(&dir, &doc, &params, &tools, &MockClock::new()).await;
+
+    let error = failure(outcome);
+    assert!(
+        error.message.contains("focuser_id is empty"),
+        "{}",
+        error.message
+    );
+    assert!(tools.call_names().is_empty());
+}
+
+#[tokio::test]
+async fn test_golden_deep_sky_rejects_a_filter_without_a_filter_wheel_before_moving_anything() {
+    // A `filter` with no `filter_wheel_id` would otherwise silently
+    // skip the filter change and image the whole night through
+    // whatever the wheel happens to hold.
+    let doc = make_doc(crate::document::corpus::golden_deep_sky());
+    let params = deep_sky_params(&doc, json!({ "focus": false, "filter": "Luminance" }));
+    let tools = MockTools::new(|_, tool, _| {
+        panic!("unexpected tool call `{tool}` after a failed filter-wheel guard")
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let (outcome, _) = run_in(&dir, &doc, &params, &tools, &MockClock::new()).await;
+
+    let error = failure(outcome);
+    assert!(
+        error.message.contains("filter_wheel_id is empty"),
+        "{}",
+        error.message
+    );
+    assert!(tools.call_names().is_empty());
+}

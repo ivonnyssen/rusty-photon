@@ -220,6 +220,7 @@ pub(super) fn cases() -> Vec<Case> {
             }),
         ),
         valid("shipped_calibrator_flats", golden_calibrator_flats()),
+        valid("shipped_deep_sky", golden_deep_sky()),
         // ---- invalid: document level -----------------------------------
         invalid(
             "document_not_an_object",
@@ -808,4 +809,15 @@ pub(super) fn cases() -> Vec<Case> {
 pub(crate) fn golden_calibrator_flats() -> serde_json::Value {
     serde_json::from_str(include_str!("../../workflows/calibrator_flats.json"))
         .expect("workflows/calibrator_flats.json is not valid JSON")
+}
+
+/// The shipped `deep_sky.json` first-party document — the dispatch-loop
+/// golden case: planner-driven target acquisition, the trigger overlay
+/// (event + poll sources), fail-fast parameter guards, and a `while`
+/// loop re-entrant with zero `once` markers. Embedded verbatim for the
+/// same reason as the flats document: the suites pin the shipped
+/// artifact, not a copy.
+pub(crate) fn golden_deep_sky() -> serde_json::Value {
+    serde_json::from_str(include_str!("../../workflows/deep_sky.json"))
+        .expect("workflows/deep_sky.json is not valid JSON")
 }
