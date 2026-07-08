@@ -32,16 +32,16 @@ pub struct SerialConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ServerConfig {
     pub port: u16,
-    #[serde(default = "default_discovery_port")]
+    /// Alpaca UDP discovery responder port (normally 32227). Absent/`null` —
+    /// the default — disables discovery: many rusty-photon servers on one
+    /// host would collide on the shared discovery port, so it is a per-host
+    /// opt-in for single-driver deployments.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub discovery_port: Option<u16>,
     #[serde(default)]
     pub tls: Option<rp_tls::config::TlsConfig>,
     #[serde(default)]
     pub auth: Option<rp_auth::config::AuthConfig>,
-}
-
-fn default_discovery_port() -> Option<u16> {
-    Some(ascom_alpaca::discovery::DEFAULT_DISCOVERY_PORT)
 }
 
 /// Focuser device configuration
@@ -59,9 +59,9 @@ pub struct FocuserConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
     /// Maximum permitted absolute step position. The Scops OAG has **no**
-    /// firmware travel limit; this bound is enforced by the driver. Tune it to
-    /// the device's real travel (the reference unit powered on at position
-    /// 22000, so the limit is at least that).
+    /// firmware travel limit; this bound is enforced by the driver. The
+    /// default matches the 0–22000 travel range the official Pegasus Astro
+    /// software (Unity) enforces for the Scops OAG.
     #[serde(default = "default_max_step")]
     pub max_step: u32,
 }
@@ -85,7 +85,9 @@ fn default_true() -> bool {
 }
 
 fn default_max_step() -> u32 {
-    100_000
+    // The travel range the official Pegasus Astro software enforces for the
+    // Scops OAG (positions 0–22000).
+    22_000
 }
 
 impl Default for SerialConfig {
@@ -103,7 +105,7 @@ impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             port: 11123,
-            discovery_port: default_discovery_port(),
+            discovery_port: None,
             tls: None,
             auth: None,
         }
@@ -125,7 +127,9 @@ impl Default for FocuserConfig {
 }
 
 /// Load configuration from a JSON file
-pub fn load_config(path: &Path) -> std::result::Result<Config, Box<dyn std::error::Error>> {
+pub fn load_config(
+    path: &Path,
+) -> std::result::Result<Config, Box<dyn std::error::Error + Send + Sync>> {
     let content = std::fs::read_to_string(path)?;
     let config: Config = serde_json::from_str(&content)?;
     Ok(config)
@@ -174,7 +178,7 @@ impl CliOverrides {
 pub fn load_effective_config(
     path: &Path,
     overrides: &CliOverrides,
-) -> std::result::Result<Config, Box<dyn std::error::Error>> {
+) -> std::result::Result<Config, Box<dyn std::error::Error + Send + Sync>> {
     let mut config = match std::fs::read_to_string(path) {
         Ok(content) => serde_json::from_str(&content)
             .map_err(|e| format!("config file {} is not valid JSON: {e}", path.display()))?,
@@ -197,7 +201,7 @@ mod tests {
 
         assert_eq!(config.focuser.name, "Pegasus Scops OAG");
         assert!(config.focuser.enabled);
-        assert_eq!(config.focuser.max_step, 100_000);
+        assert_eq!(config.focuser.max_step, 22_000);
 
         assert_eq!(config.serial.port, "/dev/ttyUSB0");
         assert_eq!(config.serial.baud_rate, 19200);
@@ -217,7 +221,7 @@ mod tests {
         assert_eq!(config.unique_id, "");
         assert!(!config.description.is_empty());
         assert!(config.enabled);
-        assert_eq!(config.max_step, 100_000);
+        assert_eq!(config.max_step, 22_000);
     }
 
     #[test]
@@ -308,7 +312,7 @@ mod tests {
         assert_eq!(config.serial.polling_interval, Duration::from_millis(1000));
         assert_eq!(config.serial.timeout, Duration::from_secs(2));
         assert!(config.focuser.enabled);
-        assert_eq!(config.focuser.max_step, 100_000);
+        assert_eq!(config.focuser.max_step, 22_000);
     }
 
     #[test]

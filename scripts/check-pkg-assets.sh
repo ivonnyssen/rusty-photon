@@ -37,7 +37,7 @@ for pkgdir in services/*/pkg; do
             || err "$svc: ExecStart must be exactly /usr/bin/$name (config is XDG-resolved; no --config flag)"
         # Reload-capable services (ServiceRunner::with_reload) expose SIGHUP.
         case "$svc" in
-            filemonitor|ppba-driver|qhy-focuser|sky-survey-camera|pa-falcon-rotator|dsd-fp2|star-adventurer-gti|qhy-camera|zwo-camera)
+            filemonitor|ppba-driver|qhy-focuser|sky-survey-camera|pa-falcon-rotator|pa-scops-oag|dsd-fp2|star-adventurer-gti|qhy-camera|zwo-camera)
                 grep -q '^ExecReload=/bin/kill -HUP \$MAINPID$' "$unit" \
                     || err "$svc: reload-capable service must have ExecReload=/bin/kill -HUP \$MAINPID"
                 ;;

@@ -57,9 +57,9 @@ reconnect supervisor; this service contributes the protocol-specific pieces:
   trailing `\r`.
 - **Stepper motor**, absolute position counter (unsigned integer ticks).
 - **Position limit**: there is **no firmware max-position command**; the upper
-  bound is software-enforced by the driver via `max_step`. The observed power-on
-  position on the reference unit was `22000`; the true travel limit must be
-  determined per device and `max_step` configured accordingly (default 100000).
+  bound is software-enforced by the driver via `max_step`. The official Pegasus
+  Astro software (Unity, Windows) enforces a travel range of **0–22000** for the
+  Scops OAG, so `max_step` defaults to `22000`.
 - **No temperature sensor.** The `A` report carries a temperature *slot* for
   protocol compatibility with the DMFC family; on this unit it reads `0` and is
   ignored by the driver.
@@ -113,7 +113,7 @@ rejects them and ASCOM has no matching property.
 | ASCOM Property/Method | Implementation |
 |-----------------------|----------------|
 | Absolute | `true` (always) |
-| Position | Cached from `A` polling (i64 → i32 cast); `INVALID_OPERATION` until first poll |
+| Position | Cached from the `A` report (i64 → i32 cast). The eager startup handshake seeds the cache before the HTTP listener binds, so it is available immediately after connect; polling keeps it fresh. `INVALID_OPERATION` only in the unseeded-cache edge case (never in normal startup) |
 | IsMoving | Cached from `A` field 6; force-refreshed via `A` when a move is in flight |
 | MaxStep | From config `max_step` |
 | MaxIncrement | From config `max_step` (a single absolute move can span full travel) |
@@ -148,16 +148,20 @@ compensation" profile ConformU accepts.
     "unique_id": "",
     "description": "Pegasus Astro Scops OAG motorized off-axis guider focuser",
     "enabled": true,
-    "max_step": 100000
+    "max_step": 22000
   }
 }
 ```
 
 `unique_id` is optional and may be omitted or left empty: the service mints a
 UUIDv4 on first run and persists it (see [Device identity](#device-identity-uniqueid)).
-`max_step` defaults to `100000`; tune it down to the OAG's actual travel limit
-once known (the reference unit powered on at position `22000`, so the limit is at
-least that).
+`max_step` defaults to `22000`, the travel range the official Pegasus Astro
+software enforces for the Scops OAG (positions 0–22000).
+
+`server.discovery_port` (not shown above) is the Alpaca UDP discovery responder
+port (opt-in; normally `32227`). Absent/`null` — the default — disables
+discovery: many rusty-photon servers on one host would collide on the shared
+discovery port, so it is a per-host opt-in for single-driver deployments.
 
 ### Device identity (UniqueID)
 
@@ -265,7 +269,7 @@ sessions resume on the new connection on their next request.
 ```bash
 cargo test -p pa-scops-oag --features mock
 cargo test -p pa-scops-oag --test bdd --features mock
-cargo test -p pa-scops-oag --features conformu --test conformu_integration -- --ignored
+cargo test -p pa-scops-oag --features conformu --test conformu_integration -- --nocapture
 cargo run  -p pa-scops-oag --features mock
 ```
 
@@ -291,4 +295,3 @@ surfaced.
 - **Scops OAG product page**: [scops-oag](https://pegasusastro.com/products/scops-oag/)
 - Sibling services: [`qhy-focuser.md`](qhy-focuser.md) (ASCOM Focuser template),
   [`falcon-rotator.md`](falcon-rotator.md) (Pegasus ASCII serial protocol).
-</invoke>

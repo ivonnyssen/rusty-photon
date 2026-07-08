@@ -13,6 +13,6 @@
     "unique_id": "",
     "description": "Pegasus Astro Scops OAG motorized off-axis guider focuser",
     "enabled": true,
-    "max_step": 100000
+    "max_step": 22000
   }
 }

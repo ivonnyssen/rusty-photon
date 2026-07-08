@@ -84,7 +84,7 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + S
             "name": "ConformU Test Scops OAG",
             "unique_id": "conformu-pa-scops-oag-001",
             "description": "Test Pegasus Scops OAG for ConformU compliance",
-            "max_step": 100000
+            "max_step": 22000
         }
     });
 

@@ -98,6 +98,7 @@ port_of() {
         ui-htmx) echo 11120 ;;
         qhy-camera) echo 11121 ;;
         zwo-camera) echo 11122 ;;
+        pa-scops-oag) echo 11123 ;;
         plate-solver) echo 11131 ;;
         calibrator-flats) echo 11170 ;;
         *) echo "" ;;
@@ -128,7 +129,7 @@ is_serial() {
     # every 5s until the device appears. The container has no serial
     # devices, so "active" is not the contract to verify for these.
     case "$1" in
-        ppba-driver|qhy-focuser|pa-falcon-rotator|dsd-fp2|star-adventurer-gti) return 0 ;;
+        ppba-driver|qhy-focuser|pa-falcon-rotator|pa-scops-oag|dsd-fp2|star-adventurer-gti) return 0 ;;
         *) return 1 ;;
     esac
 }

@@ -28,7 +28,7 @@ Feature: Movement control
   Scenario: Halt stops movement
     Given a running focuser service
     When I connect the device
-    And I move the focuser to position 50000
+    And I move the focuser to position 22000
     And I halt the focuser
     Then the focuser should not be moving
 
