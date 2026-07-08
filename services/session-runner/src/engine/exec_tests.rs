@@ -2151,3 +2151,39 @@ async fn test_golden_deep_sky_fails_when_the_plan_names_a_filter_but_no_wheel_is
         "the failure must land after the slew and before any set_filter/capture"
     );
 }
+
+#[tokio::test]
+async fn test_golden_deep_sky_ends_the_session_when_the_planner_says_end_of_session() {
+    // The planner owns dawn (rp #465): an `end_of_session` reason ends
+    // the session on the spot — no frames-captured heuristic, no slew,
+    // no capture, no 5-minute wait.
+    let doc = make_doc(crate::document::corpus::golden_deep_sky());
+    let params = deep_sky_params(
+        &doc,
+        json!({
+            "focus": false,
+            "centering": false,
+            "max_frames": 1,
+            "park_on_finish": false
+        }),
+    );
+    let tools = MockTools::new(|_, tool, _| match tool {
+        "unpark" | "set_tracking" => Ok(json!({})),
+        "get_next_target" => Ok(json!({
+            "target": null,
+            "reason": "end_of_session",
+            "filter": null,
+            "duration_secs": null
+        })),
+        other => panic!("unexpected tool call `{other}` after end_of_session"),
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let (outcome, _) = run_in(&dir, &doc, &params, &tools, &MockClock::new()).await;
+
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert_eq!(
+        tools.call_names(),
+        vec!["unpark", "set_tracking", "get_next_target"],
+        "end_of_session must terminate the dispatch loop immediately"
+    );
+}

@@ -22,16 +22,17 @@
 //! rp's own types, which keeps the dependency direction one-way (rp's tests
 //! and plugin tests depend on bdd-infra; bdd-infra does not depend on rp).
 
+mod computed_sky;
 mod config;
 mod launcher;
 mod mcp_client;
-mod night_sky;
 mod omnisim;
 mod orchestrator;
 mod plate_solver_stub;
 mod sse;
 mod webhook;
 
+pub use computed_sky::ComputedSky;
 pub use config::{
     build_calibrator_flats_config, CameraConfig, CoverCalibratorConfig, ExposurePlanConfig,
     FilterWheelConfig, FocuserConfig, MountConfig, PlannerTargetConfig, PlateSolverConfig,
@@ -39,13 +40,12 @@ pub use config::{
 };
 pub use launcher::{start_rp, wait_for_rp_healthy, write_temp_config_file};
 pub use mcp_client::McpTestClient;
-pub use night_sky::NightSky;
 pub use omnisim::OmniSimHandle;
 pub use orchestrator::{OrchestratorBehavior, OrchestratorInvocation, TestOrchestrator};
 pub use plate_solver_stub::{CannedWcs, PlateSolverStub, StubBehavior};
 pub use sse::{SseClient, SseFrame};
 pub use webhook::{ReceivedEvent, WebhookReceiver};
 
-// Re-exported so harness consumers can hold NightSky's target coords
+// Re-exported so harness consumers can hold ComputedSky's target coords
 // without depending on rp-ephemeris themselves.
 pub use rp_ephemeris::IcrsCoord;

@@ -1,14 +1,22 @@
-//! A computed night sky for planner-driven BDD scenarios.
+//! A computed sky for planner-driven BDD scenarios.
 //!
 //! rp's `get_next_target` gates on real ephemeris: a target is viable
 //! only when it sits above its altitude floor while the Sun is below
 //! astronomical dusk (−18°) at the configured site — all evaluated at
 //! wall-clock "now". A scenario that hard-codes a site and target would
 //! therefore only pass at certain times of day. This module removes the
-//! time dependence by *choosing the site to fit the clock*: an observer
-//! on the equator at the anti-solar longitude always has the Sun at
-//! lower culmination, altitude ≈ −(90° − |δ☉|) ≤ −66° — deep
-//! astronomical night at any moment of any date.
+//! time dependence by *choosing the site to fit the clock*, in either
+//! of two directions:
+//!
+//! - [`ComputedSky::night_at`] — an observer on the equator at the
+//!   anti-solar longitude always has the Sun at lower culmination,
+//!   altitude ≈ −(90° − |δ☉|) ≤ −66° — deep astronomical night at any
+//!   moment of any date.
+//! - [`ComputedSky::morning_at`] — an equatorial observer 45° west of
+//!   the sub-solar longitude has local apparent solar time ≈ 09:00:
+//!   the Sun is ≈ 40–45° up and climbing at roughly 13°/hour — a
+//!   risen, unambiguous morning at any moment of any date. This is
+//!   the lever for "the planner declares the night over" scenarios.
 //!
 //! Targets are then placed on the celestial equator by hour angle. At
 //! an equatorial site a dec-0 target's altitude is 90° − 15°·|HA| and it
@@ -23,17 +31,19 @@
 use chrono::{DateTime, Utc};
 use rp_ephemeris::{Ephemeris, ErfarsEphemeris, IcrsCoord, Site};
 
-/// A site + instant where it is guaranteed to be astronomical night,
-/// with helpers to place planner targets by hour angle.
+/// A site + instant computed so the Sun is where the scenario needs it
+/// (deep night or risen morning), with helpers to place planner
+/// targets by hour angle.
 #[derive(Debug)]
-pub struct NightSky {
+pub struct ComputedSky {
     site: Site,
     now: DateTime<Utc>,
     eph: ErfarsEphemeris,
 }
 
-impl NightSky {
-    /// Compute the equatorial anti-solar site for `now`.
+impl ComputedSky {
+    /// Compute the equatorial anti-solar site for `now` — guaranteed
+    /// deep astronomical night.
     ///
     /// The Sun transits (upper culmination) where local sidereal time
     /// equals its right ascension; the anti-solar meridian is 180°
@@ -41,7 +51,25 @@ impl NightSky {
     /// the site longitude is `(RA☉ − GMST)·15 + 180`, normalised to
     /// Alpaca/ASCOM's ±180 convention. Latitude 0 puts the Sun's lower
     /// culmination at −90° + |δ☉| — never brighter than −66°.
-    pub fn at(now: DateTime<Utc>) -> Self {
+    pub fn night_at(now: DateTime<Utc>) -> Self {
+        Self::at_solar_offset(now, 180.0)
+    }
+
+    /// Compute an equatorial site 45° west of the sub-solar longitude
+    /// for `now` — guaranteed risen morning.
+    ///
+    /// Local apparent solar time there is ≈ 09:00, so the Sun stands
+    /// ≈ 40–45° above the horizon (declination shrinks it toward the
+    /// solstices) and climbs toward its noon culmination — the
+    /// planner's dawn-side trend check reads it as "the night is
+    /// over" at any moment of any date.
+    pub fn morning_at(now: DateTime<Utc>) -> Self {
+        Self::at_solar_offset(now, -45.0)
+    }
+
+    /// The equatorial site whose longitude sits `offset_degrees` east
+    /// of the sub-solar longitude at `now`.
+    fn at_solar_offset(now: DateTime<Utc>, offset_degrees: f64) -> Self {
         let eph = ErfarsEphemeris::new();
         // Greenwich reference site: LST at longitude 0 is GMST.
         let greenwich = Site::new(0.0, 0.0).expect("the Greenwich reference site is valid");
@@ -49,7 +77,7 @@ impl NightSky {
         let sun_ra_hours = eph.sun_position(&greenwich, now).coords.ra_hours;
 
         let sub_solar_lon = (sun_ra_hours - gmst_hours) * 15.0;
-        let mut lon = sub_solar_lon + 180.0;
+        let mut lon = sub_solar_lon + offset_degrees;
         // Normalise to (−180, 180] for Site's range check.
         lon = lon.rem_euclid(360.0);
         if lon > 180.0 {
@@ -67,11 +95,19 @@ impl NightSky {
         self.site.longitude_degrees
     }
 
-    /// The Sun's altitude at the site at `now` — negative and well
-    /// below −18° by construction; exposed so tests can assert it.
+    /// The Sun's altitude at the site at `now` — far below −18° for a
+    /// night sky, well risen for a morning sky; exposed so tests can
+    /// assert the construction.
     pub fn sun_altitude_degrees(&self) -> f64 {
+        self.sun_altitude_degrees_in(0)
+    }
+
+    /// The Sun's altitude at the site `seconds` after `now` — the
+    /// morning-sky tests assert the climb with it.
+    pub fn sun_altitude_degrees_in(&self, seconds: i64) -> f64 {
+        let at = self.now + chrono::Duration::seconds(seconds);
         self.eph
-            .sun_position(&self.site, self.now)
+            .sun_position(&self.site, at)
             .alt_az
             .altitude_degrees
     }
@@ -110,8 +146,8 @@ mod tests {
     use chrono::TimeZone;
 
     fn moments() -> Vec<DateTime<Utc>> {
-        // Solstices, equinox, and odd hours across the day — the site
-        // must produce deep night at all of them.
+        // Solstices, equinox, and odd hours across the day — the
+        // computed sites must hold their guarantee at all of them.
         vec![
             Utc.with_ymd_and_hms(2026, 6, 21, 12, 0, 0).unwrap(),
             Utc.with_ymd_and_hms(2026, 12, 21, 0, 30, 0).unwrap(),
@@ -124,7 +160,7 @@ mod tests {
     #[test]
     fn the_sun_is_in_deep_astronomical_night_at_every_moment() {
         for now in moments() {
-            let sky = NightSky::at(now);
+            let sky = ComputedSky::night_at(now);
             let sun_alt = sky.sun_altitude_degrees();
             assert!(
                 sun_alt < -60.0,
@@ -134,22 +170,40 @@ mod tests {
     }
 
     #[test]
-    fn the_site_is_equatorial_with_in_range_longitude() {
+    fn the_morning_sun_is_well_risen_and_climbing_at_every_moment() {
         for now in moments() {
-            let sky = NightSky::at(now);
-            assert_eq!(sky.latitude_degrees(), 0.0);
+            let sky = ComputedSky::morning_at(now);
+            let sun_alt = sky.sun_altitude_degrees();
             assert!(
-                (-180.0..=180.0).contains(&sky.longitude_degrees()),
-                "longitude out of Site range at {now}: {}",
-                sky.longitude_degrees()
+                sun_alt > 35.0,
+                "expected a well-risen morning Sun at {now}, got {sun_alt}°"
             );
+            let climb = sky.sun_altitude_degrees_in(600) - sun_alt;
+            assert!(
+                climb > 1.0,
+                "expected the morning Sun to climb ≈ 2° over 600 s at {now}, got {climb}°"
+            );
+        }
+    }
+
+    #[test]
+    fn the_sites_are_equatorial_with_in_range_longitude() {
+        for now in moments() {
+            for sky in [ComputedSky::night_at(now), ComputedSky::morning_at(now)] {
+                assert_eq!(sky.latitude_degrees(), 0.0);
+                assert!(
+                    (-180.0..=180.0).contains(&sky.longitude_degrees()),
+                    "longitude out of Site range at {now}: {}",
+                    sky.longitude_degrees()
+                );
+            }
         }
     }
 
     #[test]
     fn a_target_half_an_hour_past_transit_stands_near_82_degrees() {
         for now in moments() {
-            let sky = NightSky::at(now);
+            let sky = ComputedSky::night_at(now);
             let target = sky.target_at_hour_angle(0.5);
             let alt = sky.altitude_degrees_in(target, 0);
             // 90 − 15·0.5 = 82.5°; refraction adds well under a degree.
@@ -162,7 +216,7 @@ mod tests {
 
     #[test]
     fn a_descending_target_sinks_a_quarter_degree_per_minute() {
-        let sky = NightSky::at(Utc.with_ymd_and_hms(2026, 7, 7, 3, 0, 0).unwrap());
+        let sky = ComputedSky::night_at(Utc.with_ymd_and_hms(2026, 7, 7, 3, 0, 0).unwrap());
         let target = sky.target_at_hour_angle(3.0);
         let now_alt = sky.altitude_degrees_in(target, 0);
         let later_alt = sky.altitude_degrees_in(target, 120);
@@ -175,7 +229,7 @@ mod tests {
 
     #[test]
     fn hour_angle_zero_is_the_zenith_at_an_equatorial_site() {
-        let sky = NightSky::at(Utc.with_ymd_and_hms(2026, 7, 7, 3, 0, 0).unwrap());
+        let sky = ComputedSky::night_at(Utc.with_ymd_and_hms(2026, 7, 7, 3, 0, 0).unwrap());
         let target = sky.target_at_hour_angle(0.0);
         let alt = sky.altitude_degrees_in(target, 0);
         assert!(alt > 89.0, "expected the zenith, got {alt}°");

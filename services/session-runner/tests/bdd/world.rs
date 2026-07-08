@@ -52,7 +52,7 @@ pub struct SessionRunnerWorld {
     /// transitions are detected in test time.
     pub safety_poll_interval: Option<Duration>,
     /// Observer site `(latitude, longitude)` — computed per scenario by
-    /// `NightSky` so the planner sees astronomical night at test time.
+    /// `ComputedSky` so the planner sees the sky the scenario needs at test time.
     pub site: Option<(f64, f64)>,
     /// Planner targets emitted into rp's `targets[]` (order matters:
     /// exact |hour-angle| ties break by position).

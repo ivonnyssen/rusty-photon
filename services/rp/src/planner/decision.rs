@@ -5,15 +5,18 @@
 //!
 //! v1 implements three of the rp.md §"Dynamic Planner" decision-logic
 //! bullets: altitude elimination (the first half of bullet 1),
-//! transit preference (bullet 2), and the
-//! `WaitForTwilight` / `AllBelowMinAltitude` fallback (the half of
-//! bullet 6 that's reachable from this code path). Documented gaps:
+//! transit preference (bullet 2), and bullet 6's sky gating — when
+//! no target survives, the Sun-elevation cut-off plus the Sun's
+//! trend separates `WaitForTwilight` (dusk side), `EndOfSession`
+//! (dawn side: the night is over), and `AllBelowMinAltitude` (true
+//! astronomical night). Documented gaps:
 //! the set-time half of bullet 1, bullet 3 (least-progress preference),
 //! bullet 4 (filter-change minimization), explicit bullet 5
 //! (meridian-flip-aware exposure-fit check; the choice of
-//! smallest-|HA| target satisfies it indirectly), and `EndOfSession`
-//! reachability — all need session-state plumbing to land cleanly,
-//! tracked in the rp.md §"v1 implementation status" callout.
+//! smallest-|HA| target satisfies it indirectly), and the
+//! exhausted-targets half of `EndOfSession` — all need session-state
+//! plumbing to land cleanly, tracked in the rp.md §"v1 implementation
+//! status" callout.
 //!
 //! The returned `NextTargetReason` is a structured discriminant so
 //! a planner plugin can branch without parsing free-form text.
@@ -28,6 +31,13 @@ use serde_json::Value;
 /// sky is still too bright for deep-sky imaging (daylight, civil, or
 /// nautical twilight); below it, true astronomical night.
 const ASTRONOMICAL_DUSK_DEG: f64 = -18.0;
+
+/// How far ahead the Sun is re-sampled to read its altitude trend
+/// when the sky is brighter than astronomical dusk. Over 60 s the Sun
+/// moves up to ≈ 0.25° in altitude — far above floating-point noise,
+/// yet short enough that the sample cannot jump across a culmination
+/// to the other side of the night.
+const SUN_TREND_SAMPLE_SECS: i64 = 60;
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct PlannerTarget {
@@ -127,24 +137,30 @@ pub fn next_target(
 
     if survivors.is_empty() {
         // Distinguish "the sky is too bright to image" from "all
-        // targets are genuinely below the altitude floor". The
-        // rp.md prose for `WaitForTwilight` says "astronomical dusk
-        // has not yet begun", which is the Sun-altitude threshold
-        // for astronomical twilight (-18°). Anything brighter than
-        // that — daylight, civil, or nautical twilight — is the
-        // "wait" branch; below -18° (true astronomical night) and
-        // every target still below floor is `AllBelowMinAltitude`.
+        // targets are genuinely below the altitude floor": below the
+        // Sun-altitude threshold for astronomical twilight (-18°,
+        // true astronomical night) every target under its floor is
+        // `AllBelowMinAltitude`. Brighter than that, the Sun's own
+        // trend tells the two bright ends of the night apart: a
+        // climbing Sun (re-sampled `SUN_TREND_SAMPLE_SECS` ahead) is
+        // the dawn side — the night is over, `EndOfSession` — while
+        // a descending Sun matches rp.md's "astronomical dusk has
+        // not yet begun", `WaitForTwilight`. A level Sun (only at
+        // the culminations) ties to waiting, because a wait loop
+        // re-asks and self-corrects while ending a session is final.
         //
-        // `EndOfSession` is in the discriminant for forward
-        // compatibility but unreachable from this v1 code path: it
-        // belongs in a future revision that knows the difference
-        // between "all targets exhausted" (per-target progress
-        // counters all met) and "the night is over" (set times have
-        // all passed). Both require state we don't yet thread
-        // through — see rp.md §"Dynamic Planner" bullets 1, 3.
+        // The other `EndOfSession` trigger — every target met its
+        // integration goal — still needs the per-target progress
+        // counters of rp.md §"Dynamic Planner" bullet 3.
         let sun_alt = eph.sun_position(site, now).alt_az.altitude_degrees;
         let reason = if sun_alt > ASTRONOMICAL_DUSK_DEG {
-            NextTargetReason::WaitForTwilight
+            let resample = now + chrono::Duration::seconds(SUN_TREND_SAMPLE_SECS);
+            let sun_alt_later = eph.sun_position(site, resample).alt_az.altitude_degrees;
+            if sun_alt_later > sun_alt {
+                NextTargetReason::EndOfSession
+            } else {
+                NextTargetReason::WaitForTwilight
+            }
         } else {
             NextTargetReason::AllBelowMinAltitude
         };
@@ -324,7 +340,12 @@ mod tests {
     struct MockEphemeris {
         /// (ra_hours, dec_degrees) → altitude_degrees
         alt_overrides: Vec<((f64, f64), f64)>,
+        /// Sun altitude at the tests' `now()` epoch.
         sun_alt: f64,
+        /// Sun-altitude change per minute after `now()` — drives the
+        /// dusk/dawn trend check. `0.0` freezes the Sun (a level Sun
+        /// reads as the dusk side).
+        sun_alt_rate_deg_per_min: f64,
         lst_hours: f64,
     }
 
@@ -391,14 +412,15 @@ mod tests {
         ) -> Option<chrono::Duration> {
             None
         }
-        fn sun_position(&self, _site: &Site, _t: DateTime<Utc>) -> SunInfo {
+        fn sun_position(&self, _site: &Site, t: DateTime<Utc>) -> SunInfo {
+            let minutes = (t - now()).num_seconds() as f64 / 60.0;
             SunInfo {
                 coords: IcrsCoord {
                     ra_hours: 0.0,
                     dec_degrees: 0.0,
                 },
                 alt_az: AltAz {
-                    altitude_degrees: self.sun_alt,
+                    altitude_degrees: self.sun_alt + self.sun_alt_rate_deg_per_min * minutes,
                     azimuth_degrees: 0.0,
                 },
             }
@@ -456,6 +478,7 @@ mod tests {
         let eph = MockEphemeris {
             alt_overrides: vec![((0.7123, 41.27), 10.0)],
             sun_alt: -25.0, // true astronomical night (sun < -18°)
+            sun_alt_rate_deg_per_min: 0.0,
             lst_hours: 12.0,
         };
         let targets = vec![PlannerTarget {
@@ -471,10 +494,11 @@ mod tests {
     }
 
     #[test]
-    fn daytime_returns_wait_for_twilight() {
+    fn a_level_daytime_sun_is_wait_for_twilight() {
         let eph = MockEphemeris {
             alt_overrides: vec![((0.7123, 41.27), 10.0)],
-            sun_alt: 30.0, // sun is up
+            sun_alt: 30.0, // the Sun is up and, frozen at rate 0, not climbing
+            sun_alt_rate_deg_per_min: 0.0,
             lst_hours: 12.0,
         };
         let targets = vec![PlannerTarget {
@@ -497,6 +521,7 @@ mod tests {
         let eph = MockEphemeris {
             alt_overrides: vec![((0.7123, 41.27), 10.0)],
             sun_alt: -10.0,
+            sun_alt_rate_deg_per_min: 0.0,
             lst_hours: 12.0,
         };
         let targets = vec![PlannerTarget {
@@ -511,12 +536,147 @@ mod tests {
     }
 
     #[test]
+    fn a_descending_twilight_sun_is_wait_for_twilight() {
+        // Evening twilight: the Sun at -10° and sinking — the night
+        // has not started, wait for it.
+        let eph = MockEphemeris {
+            alt_overrides: vec![((0.7123, 41.27), 10.0)],
+            sun_alt: -10.0,
+            sun_alt_rate_deg_per_min: -0.2,
+            lst_hours: 12.0,
+        };
+        let targets = vec![PlannerTarget {
+            name: "M31".into(),
+            ra_hours: 0.7123,
+            dec_degrees: 41.27,
+            min_altitude_degrees: None,
+            exposures: Vec::new(),
+        }];
+        let rec = next_target(&eph, &site(), now(), &targets, 30.0);
+        assert_eq!(rec.reason, NextTargetReason::WaitForTwilight);
+    }
+
+    #[test]
+    fn a_climbing_twilight_sun_is_end_of_session() {
+        // Morning twilight: the Sun at -10° and climbing — the night
+        // is over.
+        let eph = MockEphemeris {
+            alt_overrides: vec![((0.7123, 41.27), 10.0)],
+            sun_alt: -10.0,
+            sun_alt_rate_deg_per_min: 0.2,
+            lst_hours: 12.0,
+        };
+        let targets = vec![PlannerTarget {
+            name: "M31".into(),
+            ra_hours: 0.7123,
+            dec_degrees: 41.27,
+            min_altitude_degrees: None,
+            exposures: Vec::new(),
+        }];
+        let rec = next_target(&eph, &site(), now(), &targets, 30.0);
+        assert!(rec.target.is_none());
+        assert_eq!(rec.reason, NextTargetReason::EndOfSession);
+    }
+
+    #[test]
+    fn a_climbing_daytime_sun_is_end_of_session() {
+        // A session invoked mid-morning: the Sun is high and still
+        // climbing. This calendar night is over — end, don't wait.
+        let eph = MockEphemeris {
+            alt_overrides: vec![((0.7123, 41.27), 10.0)],
+            sun_alt: 30.0,
+            sun_alt_rate_deg_per_min: 0.2,
+            lst_hours: 12.0,
+        };
+        let targets = vec![PlannerTarget {
+            name: "M31".into(),
+            ra_hours: 0.7123,
+            dec_degrees: 41.27,
+            min_altitude_degrees: None,
+            exposures: Vec::new(),
+        }];
+        let rec = next_target(&eph, &site(), now(), &targets, 30.0);
+        assert_eq!(rec.reason, NextTargetReason::EndOfSession);
+    }
+
+    #[test]
+    fn a_climbing_sun_still_below_astronomical_dusk_is_all_below_min_altitude() {
+        // Pre-dawn astronomical night: the Sun rises toward -18° but
+        // has not crossed it. It is still properly dark, so a
+        // below-floor target set is reported as such — dawn is only
+        // declared once the sky is actually bright.
+        let eph = MockEphemeris {
+            alt_overrides: vec![((0.7123, 41.27), 10.0)],
+            sun_alt: -25.0,
+            sun_alt_rate_deg_per_min: 0.2,
+            lst_hours: 12.0,
+        };
+        let targets = vec![PlannerTarget {
+            name: "M31".into(),
+            ra_hours: 0.7123,
+            dec_degrees: 41.27,
+            min_altitude_degrees: None,
+            exposures: Vec::new(),
+        }];
+        let rec = next_target(&eph, &site(), now(), &targets, 30.0);
+        assert_eq!(rec.reason, NextTargetReason::AllBelowMinAltitude);
+    }
+
+    /// A target no computed altitude can reach — forces the
+    /// no-survivors branch against the real ephemeris.
+    fn never_visible_target() -> Vec<PlannerTarget> {
+        vec![PlannerTarget {
+            name: "below floor".into(),
+            ra_hours: 0.0,
+            dec_degrees: 0.0,
+            min_altitude_degrees: Some(90.0),
+            exposures: Vec::new(),
+        }]
+    }
+
+    // The two real-ephemeris tests below pin the same equinox
+    // instants the BDD dusk/dawn scenarios use, but through
+    // `next_target` directly — the mock tests above fix the trend
+    // maths, these keep it honest against the real sky. At the UK
+    // site on 2026-03-20 the Sun sits near -11° descending at
+    // 19:20 UTC and near -10° climbing at 05:00 UTC.
+
+    #[test]
+    fn real_ephemeris_evening_twilight_is_wait_for_twilight() {
+        let eph = rp_ephemeris::ErfarsEphemeris::new();
+        let site = Site::new(51.0786, -0.2944).unwrap();
+        let t = Utc.with_ymd_and_hms(2026, 3, 20, 19, 20, 0).unwrap();
+        let sun_alt = eph.sun_position(&site, t).alt_az.altitude_degrees;
+        assert!(
+            (-18.0..0.0).contains(&sun_alt),
+            "the pinned instant must sit in twilight; the Sun is at {sun_alt}°"
+        );
+        let rec = next_target(&eph, &site, t, &never_visible_target(), 20.0);
+        assert_eq!(rec.reason, NextTargetReason::WaitForTwilight);
+    }
+
+    #[test]
+    fn real_ephemeris_morning_twilight_is_end_of_session() {
+        let eph = rp_ephemeris::ErfarsEphemeris::new();
+        let site = Site::new(51.0786, -0.2944).unwrap();
+        let t = Utc.with_ymd_and_hms(2026, 3, 20, 5, 0, 0).unwrap();
+        let sun_alt = eph.sun_position(&site, t).alt_az.altitude_degrees;
+        assert!(
+            (-18.0..0.0).contains(&sun_alt),
+            "the pinned instant must sit in twilight; the Sun is at {sun_alt}°"
+        );
+        let rec = next_target(&eph, &site, t, &never_visible_target(), 20.0);
+        assert_eq!(rec.reason, NextTargetReason::EndOfSession);
+    }
+
+    #[test]
     fn full_astronomical_night_with_no_targets_above_floor_is_all_below_min() {
         // Sun well below -18° (true astronomical night) and every
         // target still below the floor → distinguish from twilight.
         let eph = MockEphemeris {
             alt_overrides: vec![((0.7123, 41.27), 10.0)],
             sun_alt: -25.0,
+            sun_alt_rate_deg_per_min: 0.0,
             lst_hours: 12.0,
         };
         let targets = vec![PlannerTarget {
@@ -538,6 +698,7 @@ mod tests {
         let eph = MockEphemeris {
             alt_overrides: vec![((0.7, 41.0), 50.0), ((11.0, -5.0), 50.0)],
             sun_alt: -20.0,
+            sun_alt_rate_deg_per_min: 0.0,
             lst_hours: 12.0,
         };
         let targets = vec![
@@ -567,6 +728,7 @@ mod tests {
         let eph = MockEphemeris {
             alt_overrides: vec![((1.0, 0.0), 25.0)],
             sun_alt: -20.0,
+            sun_alt_rate_deg_per_min: 0.0,
             lst_hours: 1.0,
         };
         let targets = vec![PlannerTarget {

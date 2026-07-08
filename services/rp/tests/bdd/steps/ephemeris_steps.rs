@@ -60,6 +60,22 @@ fn target_without_exposure_plan(world: &mut RpWorld, name: String) {
         .push(always_visible_target(name, Vec::new()));
 }
 
+/// The mirror of [`always_visible_target`]: `min_altitude_degrees: 90`
+/// exceeds any computed altitude (short of an exact zenith crossing,
+/// which dec 0 at this latitude never approaches), so the planner
+/// always eliminates the target — forcing the no-survivors branch
+/// whose reason the dusk/dawn scenarios pin.
+#[given(expr = "rp is configured with the never-visible target {string}")]
+fn never_visible_target(world: &mut RpWorld, name: String) {
+    world.planner_targets.push(PlannerTargetConfig {
+        name,
+        ra_hours: 0.0,
+        dec_degrees: 0.0,
+        min_altitude_degrees: Some(90.0),
+        exposures: Vec::new(),
+    });
+}
+
 // --- When steps ---
 
 /// Polaris ICRS coords (J2000.0): RA = 2.530... h, Dec = +89.264°.
@@ -120,6 +136,16 @@ async fn call_next_target(world: &mut RpWorld) {
     let result = world
         .mcp()
         .call_tool("get_next_target", serde_json::json!({}))
+        .await;
+    world.last_tool_result = Some(result);
+}
+
+#[when(expr = "the MCP client calls \"get_next_target\" at time {string}")]
+async fn call_next_target_at(world: &mut RpWorld, time: String) {
+    ensure_mcp_client(world).await;
+    let result = world
+        .mcp()
+        .call_tool("get_next_target", serde_json::json!({ "time": time }))
         .await;
     world.last_tool_result = Some(result);
 }

@@ -76,6 +76,35 @@ Feature: Planner convenience tools
     And the result filter should be null
     And the result duration_secs should be null
 
+  # The dusk/dawn pair pins bullet 6's sky gating end-to-end against
+  # the real ephemeris: a never-visible target (floor 90 degrees, which
+  # no computed altitude reaches) forces the no-survivors branch, and
+  # the explicit evaluation time puts the Sun in evening vs morning
+  # twilight at the configured site. 2026-03-20 is the March equinox:
+  # at this longitude the Sun sits near -10 degrees and descending at
+  # 19:20 UTC, near -10 degrees and climbing at 05:00 UTC.
+  Scenario: get_next_target in evening twilight says wait_for_twilight
+    Given a running Alpaca simulator
+    And rp is configured with site latitude 51.0786 longitude -0.2944
+    And rp is configured with the never-visible target "Below Floor"
+    And rp is running with a mount on the simulator
+    And an MCP client connected to rp
+    When the MCP client calls "get_next_target" at time "2026-03-20T19:20:00Z"
+    Then the tool call should succeed
+    And the result reason should be "wait_for_twilight"
+    And the result target should be null
+
+  Scenario: get_next_target in morning twilight says end_of_session
+    Given a running Alpaca simulator
+    And rp is configured with site latitude 51.0786 longitude -0.2944
+    And rp is configured with the never-visible target "Below Floor"
+    And rp is running with a mount on the simulator
+    And an MCP client connected to rp
+    When the MCP client calls "get_next_target" at time "2026-03-20T05:00:00Z"
+    Then the tool call should succeed
+    And the result reason should be "end_of_session"
+    And the result target should be null
+
   Scenario: get_target_status fails when site is missing
     Given a running Alpaca simulator
     And rp is running with a mount on the simulator
