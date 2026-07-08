@@ -320,10 +320,15 @@ impl OmniSimHandle {
             .json()
             .await
             .map_err(|e| format!("GET {url} returned a non-JSON body: {e}"))?;
+        // A response without a numeric ErrorNumber is not an Alpaca
+        // response at all (wrong port, proxy error page, …) — reject
+        // it rather than treating it as success.
         let error_number = body
             .get("ErrorNumber")
             .and_then(|v| v.as_i64())
-            .unwrap_or(0);
+            .ok_or_else(|| {
+                format!("GET {url} returned a body without a numeric ErrorNumber: {body}")
+            })?;
         if error_number != 0 {
             let message = body
                 .get("ErrorMessage")
@@ -417,10 +422,15 @@ impl OmniSimHandle {
             .json()
             .await
             .map_err(|e| format!("PUT {url} returned a non-JSON body: {e}"))?;
+        // A response without a numeric ErrorNumber is not an Alpaca
+        // response at all (wrong port, proxy error page, …) — reject
+        // it rather than treating it as success.
         let error_number = body
             .get("ErrorNumber")
             .and_then(|v| v.as_i64())
-            .unwrap_or(0);
+            .ok_or_else(|| {
+                format!("PUT {url} returned a body without a numeric ErrorNumber: {body}")
+            })?;
         if error_number != 0 {
             let message = body
                 .get("ErrorMessage")
@@ -1062,6 +1072,52 @@ mod tests {
             err.contains("1024") && err.contains("not implemented"),
             "unexpected error format: {err}"
         );
+        let _ = tx.send(());
+    }
+
+    #[tokio::test]
+    async fn telescope_helpers_reject_a_body_without_an_error_number() {
+        use axum::routing::get;
+
+        // An empty JSON object is what a non-Alpaca endpoint (wrong
+        // port, proxy) might answer — both helpers must reject it
+        // rather than read the missing ErrorNumber as success.
+        let app = Router::new()
+            .route(
+                "/api/v1/telescope/0/sitelatitude",
+                get(|| async { axum::Json(serde_json::json!({})) }),
+            )
+            .route(
+                "/api/v1/telescope/0/tracking",
+                put(|| async { axum::Json(serde_json::json!({})) }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async {
+                    let _ = rx.await;
+                })
+                .await
+                .unwrap();
+        });
+        let base_url = format!("http://127.0.0.1:{}", port);
+
+        let err = OmniSimHandle::get_telescope_number_at(&base_url, 0, "sitelatitude")
+            .await
+            .expect_err("a body without ErrorNumber must not read as success");
+        assert!(err.contains("without a numeric ErrorNumber"), "{err}");
+
+        let err = OmniSimHandle::put_telescope_form_at(
+            &base_url,
+            0,
+            "tracking",
+            &[("Tracking", "true".to_string())],
+        )
+        .await
+        .expect_err("a body without ErrorNumber must not read as success");
+        assert!(err.contains("without a numeric ErrorNumber"), "{err}");
         let _ = tx.send(());
     }
 
