@@ -124,8 +124,8 @@ impl MockState {
 }
 
 fn parse_pos(s: &str) -> Option<i64> {
-    // Tolerate the INDI `M:<pos>d` trailing-byte quirk by stripping a trailing
-    // non-digit, mirroring the firmware's tolerance.
+    // Tolerate the INDI `M:<pos>d` quirk by stripping the trailing `d` (and
+    // only `d` — the firmware tolerates exactly that stray byte).
     let s = s.trim().trim_end_matches('d');
     s.parse().ok()
 }

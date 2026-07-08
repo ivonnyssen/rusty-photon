@@ -28,9 +28,6 @@ pub struct ScopsWorld {
     /// TLS test state
     pub tls_pki_dir: Option<TempDir>,
 
-    /// Auth test state — plaintext password for HTTP Basic Auth assertions
-    pub auth_password: Option<String>,
-
     /// Parsed JSON body of the last config.get / config.apply / config.schema action.
     pub last_response: Option<serde_json::Value>,
     /// Result of the last supported_actions query.

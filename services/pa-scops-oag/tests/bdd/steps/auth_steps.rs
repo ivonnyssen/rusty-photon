@@ -49,7 +49,6 @@ fn configured_with_tls_and_auth(world: &mut ScopsWorld) {
     let certs_dir = pki_dir(world).join("certs");
     // The auth hash is injected in the When step when writing the config JSON.
     world.config = Some(mock_config(Some(&certs_dir)));
-    world.auth_password = Some(AUTH_PASSWORD.to_string());
 }
 
 #[given("pa-scops-oag is configured without auth and with mock serial")]
