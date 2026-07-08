@@ -15,7 +15,8 @@ use std::time::Duration;
 use bdd_infra::rp_harness::{
     CameraConfig, CoverCalibratorConfig, FilterWheelConfig, FocuserConfig, McpTestClient,
     MountConfig, OmniSimHandle, OrchestratorInvocation, PlateSolverConfig, PlateSolverStub,
-    ReceivedEvent, RpConfigBuilder, SseClient, TestOrchestrator, WebhookReceiver,
+    ReceivedEvent, RpConfigBuilder, SafetyMonitorConfig, SseClient, TestOrchestrator,
+    WebhookReceiver,
 };
 use bdd_infra::sky_survey_camera_harness::SkyViewStub;
 use bdd_infra::ServiceHandle;
@@ -71,6 +72,11 @@ pub struct RpWorld {
     /// the generated rp config. Used by `target_catalog`,
     /// `ephemeris_primitives`, and `planner` BDD features.
     pub site: Option<(f64, f64)>,
+    /// Safety monitors accumulated via Given steps (safety.feature).
+    pub safety_monitors: Vec<SafetyMonitorConfig>,
+    /// Override rp's `safety.poll_interval`; safety scenarios pin this
+    /// short so transitions are detected in test time.
+    pub safety_poll_interval: Option<Duration>,
     /// Plugin configs accumulated via Given steps
     pub plugin_configs: Vec<Value>,
 
@@ -255,6 +261,12 @@ impl RpWorld {
         }
         if let Some((lat, lon)) = self.site {
             builder.with_site(lat, lon);
+        }
+        for sm in &self.safety_monitors {
+            builder.add_safety_monitor(sm.clone());
+        }
+        if let Some(interval) = self.safety_poll_interval {
+            builder.with_safety_poll_interval(interval);
         }
         for plugin in &self.plugin_configs {
             builder.add_plugin(plugin.clone());

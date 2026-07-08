@@ -74,6 +74,14 @@ pub struct MountConfig {
     pub settle_after_slew: Option<std::time::Duration>,
 }
 
+/// Safety-monitor equipment entry.
+#[derive(Debug, Clone)]
+pub struct SafetyMonitorConfig {
+    pub id: String,
+    pub alpaca_url: String,
+    pub device_number: u32,
+}
+
 /// Plate-solver service config — emitted as the top-level
 /// `plate_solver` block in rp's JSON config (parallel to `mount`,
 /// `guider`, etc.; the plate solver is an rp-managed service, not
@@ -97,6 +105,12 @@ pub struct RpConfigBuilder {
     pub filter_wheels: Vec<FilterWheelConfig>,
     pub cover_calibrators: Vec<CoverCalibratorConfig>,
     pub focusers: Vec<FocuserConfig>,
+    /// Safety monitors gating the session (see rp.md § Safety).
+    pub safety_monitors: Vec<SafetyMonitorConfig>,
+    /// Override `safety.poll_interval` in the emitted rp config.
+    /// `None` ⇒ rp's default (10 s). Safety scenarios pin this short
+    /// (~250 ms) so unsafe/safe transitions are detected quickly.
+    pub safety_poll_interval: Option<std::time::Duration>,
     /// Singular mount — at most one per `rp` deployment.
     pub mount: Option<MountConfig>,
     /// Optional plate-solver service config. `None` ⇒ omit the
@@ -148,6 +162,19 @@ impl RpConfigBuilder {
 
     pub fn add_focuser(&mut self, foc: FocuserConfig) -> &mut Self {
         self.focusers.push(foc);
+        self
+    }
+
+    pub fn add_safety_monitor(&mut self, sm: SafetyMonitorConfig) -> &mut Self {
+        self.safety_monitors.push(sm);
+        self
+    }
+
+    /// Override rp's safety poll interval (overwrites any prior call).
+    /// When unset, the emitted `safety` block is empty and rp's default
+    /// (10 s) applies.
+    pub fn with_safety_poll_interval(&mut self, interval: std::time::Duration) -> &mut Self {
+        self.safety_poll_interval = Some(interval);
         self
     }
 
@@ -284,6 +311,23 @@ impl RpConfigBuilder {
             })
             .collect();
 
+        let safety_monitors: Vec<Value> = self
+            .safety_monitors
+            .iter()
+            .map(|sm| {
+                serde_json::json!({
+                    "id": sm.id,
+                    "alpaca_url": sm.alpaca_url,
+                    "device_number": sm.device_number,
+                })
+            })
+            .collect();
+
+        let mut safety = serde_json::json!({});
+        if let Some(poll) = self.safety_poll_interval {
+            safety["poll_interval"] = serde_json::json!(format!("{}ms", poll.as_millis()));
+        }
+
         let pid = std::process::id();
         let seq = SESSION_SEQ.fetch_add(1, Ordering::Relaxed);
 
@@ -323,7 +367,7 @@ impl RpConfigBuilder {
                 "focusers": focusers,
                 "filter_wheels": filter_wheels,
                 "cover_calibrators": cover_calibrators,
-                "safety_monitors": []
+                "safety_monitors": safety_monitors
             },
             "plugins": self.plugin_configs,
             "targets": [],
@@ -333,12 +377,7 @@ impl RpConfigBuilder {
                 "prefer_transiting": true,
                 "minimize_filter_changes": true
             },
-            "safety": {
-                "polling_interval_secs": 10,
-                "park_on_unsafe": true,
-                "resume_on_safe": true,
-                "resume_delay_secs": 300
-            },
+            "safety": safety,
             "server": {
                 "port": 0,
                 "bind_address": "127.0.0.1"
@@ -599,6 +638,33 @@ mod tests {
         let c = &cfg["centering"];
         assert_eq!(c["solve_time_estimate"], "1000ms");
         assert_eq!(c["slew_overhead_estimate"], "500ms");
+    }
+
+    #[test]
+    fn safety_block_empty_and_no_monitors_by_default() {
+        let cfg = RpConfigBuilder::new().build();
+        assert_eq!(cfg["safety"], serde_json::json!({}));
+        assert!(cfg["equipment"]["safety_monitors"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn safety_monitor_and_poll_interval_are_emitted() {
+        let mut b = RpConfigBuilder::new();
+        b.add_safety_monitor(SafetyMonitorConfig {
+            id: "weather-watcher".to_string(),
+            alpaca_url: "http://127.0.0.1:32323".to_string(),
+            device_number: 0,
+        });
+        b.with_safety_poll_interval(std::time::Duration::from_millis(250));
+        let cfg = b.build();
+        let sm = &cfg["equipment"]["safety_monitors"][0];
+        assert_eq!(sm["id"], "weather-watcher");
+        assert_eq!(sm["alpaca_url"], "http://127.0.0.1:32323");
+        assert_eq!(sm["device_number"], 0);
+        assert_eq!(cfg["safety"]["poll_interval"], "250ms");
     }
 
     #[test]

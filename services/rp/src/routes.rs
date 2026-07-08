@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -39,6 +40,13 @@ pub struct AppState {
     /// it to end in-flight `/api/events/subscribe` streams. See
     /// `BoundServer::start`.
     pub sse_shutdown: CancellationToken,
+    /// `false` while safety conditions are unsafe — the `/mcp` gate below
+    /// rejects every request with 503 (rp.md § Safety). Written by the
+    /// safety enforcer.
+    pub safety_ok: Arc<AtomicBool>,
+    /// The MCP transport's session registry, shared with the safety
+    /// enforcer so an unsafe transition can terminate every open session.
+    pub mcp_sessions: Arc<LocalSessionManager>,
 }
 
 pub fn build_router(state: AppState) -> Router {
@@ -47,14 +55,39 @@ pub fn build_router(state: AppState) -> Router {
     mcp_config.json_response = true;
     let mcp_service = StreamableHttpService::new(
         move || Ok(mcp_handler.clone()),
-        Arc::new(LocalSessionManager::default()),
+        state.mcp_sessions.clone(),
         mcp_config,
     );
+
+    // The safety gate (rp.md § Safety): while conditions are unsafe every
+    // MCP request — a new session or an in-flight workflow's next call —
+    // is rejected with 503, surfacing to the orchestrator as a terminated
+    // session instead of quietly driving hardware under unsafe skies.
+    let safety_ok = state.safety_ok.clone();
+    let gated_mcp =
+        Router::new()
+            .nest_service("/mcp", mcp_service)
+            .layer(axum::middleware::from_fn(
+                move |request: axum::extract::Request, next: axum::middleware::Next| {
+                    let safety_ok = safety_ok.clone();
+                    async move {
+                        if safety_ok.load(Ordering::SeqCst) {
+                            next.run(request).await
+                        } else {
+                            (
+                                StatusCode::SERVICE_UNAVAILABLE,
+                                "safety: conditions are unsafe; the workflow was cancelled",
+                            )
+                                .into_response()
+                        }
+                    }
+                },
+            ));
 
     Router::new()
         .route("/health", get(health))
         .route("/api/equipment", get(get_equipment))
-        .nest_service("/mcp", mcp_service)
+        .merge(gated_mcp)
         .route("/api/session/start", post(session_start))
         .route("/api/session/stop", post(session_stop))
         .route("/api/session/status", get(session_status))
@@ -407,6 +440,7 @@ mod tests {
     fn test_app_state(image_cache: ImageCache) -> AppState {
         let event_bus = Arc::new(EventBus::from_config(&[]));
         let equipment = Arc::new(crate::equipment::EquipmentRegistry {
+            safety_monitors: vec![],
             cameras: vec![],
             filter_wheels: vec![],
             cover_calibrators: vec![],
@@ -429,7 +463,65 @@ mod tests {
             session,
             image_cache,
             sse_shutdown: CancellationToken::new(),
+            safety_ok: Arc::new(AtomicBool::new(true)),
+            mcp_sessions: Arc::new(LocalSessionManager::default()),
         }
+    }
+
+    #[tokio::test]
+    async fn mcp_gate_rejects_with_503_while_unsafe_and_lifts_after() {
+        let state = test_app_state(ImageCache::new(64, 4, std::path::PathBuf::from("/tmp")));
+        let safety_ok = state.safety_ok.clone();
+        let app = build_router(state);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async {
+                    let _ = rx.await;
+                })
+                .await
+                .unwrap();
+        });
+
+        let client = reqwest::Client::new();
+        let probe = || {
+            client
+                .post(format!("http://{addr}/mcp"))
+                .header("accept", "application/json, text/event-stream")
+                .json(&serde_json::json!({
+                    "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2025-03-26",
+                        "capabilities": {},
+                        "clientInfo": {"name": "gate-test", "version": "0"}
+                    }
+                }))
+                .send()
+        };
+
+        safety_ok.store(false, Ordering::SeqCst);
+        let gated = probe().await.unwrap();
+        assert_eq!(gated.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+
+        safety_ok.store(true, Ordering::SeqCst);
+        let open = probe().await.unwrap();
+        assert_ne!(
+            open.status(),
+            reqwest::StatusCode::SERVICE_UNAVAILABLE,
+            "the gate must lift once conditions are safe again"
+        );
+
+        // Only /mcp is gated — the REST API keeps answering while unsafe.
+        safety_ok.store(false, Ordering::SeqCst);
+        let health = client
+            .get(format!("http://{addr}/health"))
+            .send()
+            .await
+            .unwrap();
+        assert!(health.status().is_success());
+        let _ = tx.send(());
     }
 
     fn cached_u16(arr: ndarray::Array2<u16>) -> CachedImage {

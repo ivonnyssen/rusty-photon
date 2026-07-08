@@ -884,6 +884,7 @@ fn camera_registry_with_meta(
     meta: CachedCameraMeta,
 ) -> crate::equipment::EquipmentRegistry {
     crate::equipment::EquipmentRegistry {
+        safety_monitors: vec![],
         cameras: vec![crate::equipment::CameraEntry {
             id: "cam".to_string(),
             connected: true,
@@ -918,6 +919,7 @@ fn filter_wheel_registry(
     fw: Arc<dyn ascom_alpaca::api::FilterWheel>,
 ) -> crate::equipment::EquipmentRegistry {
     crate::equipment::EquipmentRegistry {
+        safety_monitors: vec![],
         cameras: vec![],
         filter_wheels: vec![crate::equipment::FilterWheelEntry {
             id: "fw".to_string(),
@@ -942,6 +944,7 @@ fn calibrator_registry(
     cc: Arc<dyn ascom_alpaca::api::CoverCalibrator>,
 ) -> crate::equipment::EquipmentRegistry {
     crate::equipment::EquipmentRegistry {
+        safety_monitors: vec![],
         cameras: vec![],
         filter_wheels: vec![],
         cover_calibrators: vec![crate::equipment::CoverCalibratorEntry {
@@ -967,6 +970,7 @@ fn focuser_registry(
     max_position: Option<i32>,
 ) -> crate::equipment::EquipmentRegistry {
     crate::equipment::EquipmentRegistry {
+        safety_monitors: vec![],
         cameras: vec![],
         filter_wheels: vec![],
         cover_calibrators: vec![],
@@ -994,6 +998,7 @@ fn mount_registry(
     settle_after_slew: Option<Duration>,
 ) -> crate::equipment::EquipmentRegistry {
     crate::equipment::EquipmentRegistry {
+        safety_monitors: vec![],
         cameras: vec![],
         filter_wheels: vec![],
         cover_calibrators: vec![],
@@ -1026,6 +1031,7 @@ fn camera_mount_registry(
 
 fn empty_registry() -> crate::equipment::EquipmentRegistry {
     crate::equipment::EquipmentRegistry {
+        safety_monitors: vec![],
         cameras: vec![],
         filter_wheels: vec![],
         cover_calibrators: vec![],
@@ -1036,6 +1042,7 @@ fn empty_registry() -> crate::equipment::EquipmentRegistry {
 
 fn disconnected_mount_registry() -> crate::equipment::EquipmentRegistry {
     crate::equipment::EquipmentRegistry {
+        safety_monitors: vec![],
         cameras: vec![],
         filter_wheels: vec![],
         cover_calibrators: vec![],
@@ -1713,6 +1720,7 @@ async fn test_persist_capture_artifact_skips_cache_on_sidecar_failure() {
     let cache = ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent"));
     let handler = McpHandler::new(
         Arc::new(crate::equipment::EquipmentRegistry {
+            safety_monitors: vec![],
             cameras: vec![],
             filter_wheels: vec![],
             cover_calibrators: vec![],
@@ -1958,6 +1966,7 @@ async fn test_compute_image_stats_bad_fits() {
     std::fs::write(&bad_file, b"not a fits file").unwrap();
 
     let handler = test_handler(crate::equipment::EquipmentRegistry {
+        safety_monitors: vec![],
         cameras: vec![],
         filter_wheels: vec![],
         cover_calibrators: vec![],
@@ -1979,6 +1988,7 @@ async fn test_compute_image_stats_missing_arguments() {
     // or image_path"): callers must supply at least one. Mirrors the
     // missing-args branch tested for measure_basic / estimate_background.
     let handler = test_handler(crate::equipment::EquipmentRegistry {
+        safety_monitors: vec![],
         cameras: vec![],
         filter_wheels: vec![],
         cover_calibrators: vec![],
@@ -2045,6 +2055,7 @@ async fn test_compute_image_stats_persists_section_via_document_id() {
 
     let handler = McpHandler::new(
         Arc::new(crate::equipment::EquipmentRegistry {
+            safety_monitors: vec![],
             cameras: vec![],
             filter_wheels: vec![],
             cover_calibrators: vec![],
@@ -2335,6 +2346,7 @@ async fn test_move_focuser_timeout() {
 #[tokio::test]
 async fn test_move_focuser_not_connected() {
     let registry = crate::equipment::EquipmentRegistry {
+        safety_monitors: vec![],
         cameras: vec![],
         filter_wheels: vec![],
         cover_calibrators: vec![],
@@ -2388,6 +2400,7 @@ async fn test_get_focuser_position_success() {
 #[tokio::test]
 async fn test_get_focuser_position_not_connected() {
     let registry = crate::equipment::EquipmentRegistry {
+        safety_monitors: vec![],
         cameras: vec![],
         filter_wheels: vec![],
         cover_calibrators: vec![],
@@ -3449,6 +3462,7 @@ fn handler_with_site_and_mount() -> McpHandler {
     // Skip the connect-time HTTP fetch by hand-building a registry
     // with the mock device wired in directly.
     let registry = crate::equipment::EquipmentRegistry {
+        safety_monitors: vec![],
         cameras: vec![],
         filter_wheels: vec![],
         cover_calibrators: vec![],
@@ -4328,6 +4342,7 @@ fn auto_focus_registry(starting_position: i32) -> crate::equipment::EquipmentReg
     let camera = FixtureCamera::new(load_auto_focus_fixtures());
     let focuser = TrackingFocuser::new(starting_position, 4.5);
     crate::equipment::EquipmentRegistry {
+        safety_monitors: vec![],
         cameras: vec![crate::equipment::CameraEntry {
             id: "cam".to_string(),
             connected: true,
@@ -5007,6 +5022,7 @@ async fn slew_started_omits_deadline_when_pointing_read_fails() {
 #[tokio::test]
 async fn slew_deadline_overflow_falls_back_without_panic() {
     let registry = crate::equipment::EquipmentRegistry {
+        safety_monitors: vec![],
         cameras: vec![],
         filter_wheels: vec![],
         cover_calibrators: vec![],

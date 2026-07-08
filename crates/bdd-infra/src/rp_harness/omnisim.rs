@@ -35,7 +35,7 @@ static OMNISIM: OnceCell<OmniSimProcess> = OnceCell::const_new();
 /// Process-wide serialization of `/restart` PUTs. OmniSim's restart
 /// handler (`DriverManager.Load{Class}(n)`) mutates unsynchronised
 /// process-wide static state, so concurrent restarts race inside the
-/// simulator. `reset_all_devices` already issues its 5 PUTs
+/// simulator. `reset_all_devices` already issues its per-device PUTs
 /// sequentially (#171), but that only serialises *within* one hook —
 /// cucumber runs untagged scenarios concurrently, and every
 /// concurrently-drawn scenario runs its own before-hook. In the
@@ -98,14 +98,24 @@ impl OmniSimHandle {
         Self::restart_device("covercalibrator", 0).await
     }
 
+    /// Reset the safety-monitor simulator device 0 to its OmniSim default
+    /// state. `restart` reloads the device from its persisted profile, and
+    /// [`Self::set_safety_monitor_is_safe`] writes only the in-memory
+    /// setting — so this restores the profile's `IsSafe` (true in our
+    /// seeded config) after a safety scenario flipped it.
+    pub async fn reset_safety_monitor() -> Result<(), String> {
+        Self::restart_device("safetymonitor", 0).await
+    }
+
     /// Reset every device class our BDD suites currently exercise
-    /// (telescope, camera, filter wheel, focuser, cover calibrator) to
-    /// OmniSim defaults. Issued **sequentially** — one PUT at a time.
+    /// (telescope, camera, filter wheel, focuser, cover calibrator,
+    /// safety monitor) to OmniSim defaults. Issued **sequentially** —
+    /// one PUT at a time.
     ///
     /// Why not parallel? OmniSim's `DriverManager.Load{Class}(n)`
     /// mutates a process-wide `static List<AlpacaConfiguredDevice>
     /// AlpacaDevices` via unsynchronised `List.Remove(...)` +
-    /// `List.Add(...)`. When two of our 5 PUTs landed on different
+    /// `List.Add(...)`. When two of our PUTs landed on different
     /// Kestrel threads they raced inside that list, leaving a `null`
     /// entry that the management endpoint then serialised verbatim
     /// into `configureddevices` responses. rp's deserialiser hit
@@ -118,8 +128,8 @@ impl OmniSimHandle {
     /// end-of-run burst of non-`@serial` scenarios deadlocked OmniSim
     /// on the Pi nightly (#431).
     ///
-    /// The wall-time cost is small: 5 localhost round-trips serialised
-    /// is ~10-25 ms per scenario depending on runner.
+    /// The wall-time cost is small: 6 localhost round-trips serialised
+    /// is ~10-30 ms per scenario depending on runner.
     ///
     /// Errors are collected and returned. **Exception:** when the
     /// shared `OMNISIM` singleton has not been initialised yet (i.e.
@@ -133,9 +143,9 @@ impl OmniSimHandle {
     /// failure is fatal — that's the loud-reset behaviour from #172
     /// that catches state leakage between scenarios.
     ///
-    /// Other device classes (dome, rotator, switch, observingconditions,
-    /// safetymonitor) also expose `/restart`, but our scenarios don't
-    /// touch them yet; add a call here when that changes.
+    /// Other device classes (dome, rotator, switch, observingconditions)
+    /// also expose `/restart`, but our scenarios don't touch them yet;
+    /// add a call here when that changes.
     pub async fn reset_all_devices() -> Result<(), Vec<String>> {
         let omnisim_was_started = OMNISIM.get().is_some();
         let mut errors: Vec<String> = Vec::new();
@@ -145,6 +155,7 @@ impl OmniSimHandle {
             Self::reset_filter_wheel().await,
             Self::reset_focuser().await,
             Self::reset_cover_calibrator().await,
+            Self::reset_safety_monitor().await,
         ];
         for result in results {
             if let Err(e) = result {
@@ -186,6 +197,53 @@ impl OmniSimHandle {
             .map(|p| p.base_url.clone())
             .unwrap_or_else(|| format!("http://127.0.0.1:{}", OMNISIM_PORT));
         Self::restart_device_at(&base_url, class, n).await
+    }
+
+    /// Set what the safety-monitor simulator device 0 reports for
+    /// `IsSafe`, via OmniSim's private
+    /// `PUT /simulator/v1/safetymonitor/{n}/issafesetting` endpoint.
+    ///
+    /// This writes the device's in-memory setting only (OmniSim persists
+    /// it to the profile on its own save path, which this endpoint does
+    /// not trigger), so [`Self::reset_safety_monitor`] — or the next
+    /// process restart — restores the profile default (safe). Safety
+    /// scenarios still set `true` explicitly during setup so they never
+    /// depend on reset ordering.
+    pub async fn set_safety_monitor_is_safe(is_safe: bool) -> Result<(), String> {
+        let base_url = OMNISIM
+            .get()
+            .map(|p| p.base_url.clone())
+            .unwrap_or_else(|| format!("http://127.0.0.1:{}", OMNISIM_PORT));
+        Self::set_safety_monitor_is_safe_at(&base_url, 0, is_safe).await
+    }
+
+    /// `set_safety_monitor_is_safe` extracted to take an explicit
+    /// `base_url` and device number so unit tests can drive the HTTP
+    /// path against an axum stub without touching the global `OMNISIM`
+    /// singleton.
+    async fn set_safety_monitor_is_safe_at(
+        base_url: &str,
+        n: u32,
+        is_safe: bool,
+    ) -> Result<(), String> {
+        let url = format!(
+            "{}/simulator/v1/safetymonitor/{}/issafesetting",
+            base_url, n
+        );
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .map_err(|e| format!("reqwest client build failed: {e}"))?;
+        let resp = client
+            .put(&url)
+            .form(&[("IsSafeSetting", if is_safe { "true" } else { "false" })])
+            .send()
+            .await
+            .map_err(|e| format!("PUT {url} failed: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("PUT {url} returned HTTP {}", resp.status()));
+        }
+        Ok(())
     }
 
     /// `restart_device` extracted to take an explicit `base_url` so unit
@@ -619,6 +677,72 @@ mod tests {
             0,
             "restart PUTs overlapped despite RESTART_SERIALIZER"
         );
+        let _ = tx.send(());
+    }
+
+    #[tokio::test]
+    async fn set_safety_monitor_is_safe_puts_form_value() {
+        use axum::Form;
+        use std::collections::HashMap;
+
+        let (tx_seen, rx_seen) = tokio::sync::oneshot::channel::<String>();
+        let tx_seen = std::sync::Arc::new(std::sync::Mutex::new(Some(tx_seen)));
+        let app = Router::new().route(
+            "/simulator/v1/safetymonitor/0/issafesetting",
+            put(move |Form(form): Form<HashMap<String, String>>| {
+                let tx_seen = tx_seen.clone();
+                async move {
+                    if let Some(tx) = tx_seen.lock().unwrap().take() {
+                        let _ = tx.send(form.get("IsSafeSetting").cloned().unwrap_or_default());
+                    }
+                    StatusCode::OK
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async {
+                    let _ = rx.await;
+                })
+                .await
+                .unwrap();
+        });
+        let base_url = format!("http://127.0.0.1:{}", port);
+
+        OmniSimHandle::set_safety_monitor_is_safe_at(&base_url, 0, false)
+            .await
+            .unwrap();
+        assert_eq!(rx_seen.await.unwrap(), "false");
+        let _ = tx.send(());
+    }
+
+    #[tokio::test]
+    async fn set_safety_monitor_is_safe_returns_err_on_server_error() {
+        let route = "/simulator/v1/safetymonitor/0/issafesetting";
+        let app = Router::new().route(
+            route,
+            put(move || async move { StatusCode::INTERNAL_SERVER_ERROR }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async {
+                    let _ = rx.await;
+                })
+                .await
+                .unwrap();
+        });
+        let base_url = format!("http://127.0.0.1:{}", port);
+
+        let err = OmniSimHandle::set_safety_monitor_is_safe_at(&base_url, 0, true)
+            .await
+            .expect_err("expected an error for 500 response");
+        assert!(err.contains("500"), "expected 500 in error: {err}");
         let _ = tx.send(());
     }
 

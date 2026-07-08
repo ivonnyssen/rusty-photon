@@ -1,18 +1,26 @@
 //! BDD step definitions for the resume contract (design § Re-entrancy
-//! Contract): a session interrupted mid-run — the engine killed, or `rp`
-//! itself gone — continues from the persisted blackboard when re-invoked
-//! with recovery context, without repeating recorded work.
+//! Contract): a session interrupted mid-run — the engine killed, `rp`
+//! itself gone, or a safety monitor turning unsafe — continues from the
+//! persisted blackboard when re-invoked with recovery context, without
+//! repeating recorded work.
 //!
-//! `rp`'s own recovery re-invocation machinery is not implemented yet
-//! (`services/rp/src/session.rs` hard-codes `"recovery": null`), so these
-//! steps POST `/invoke` directly, standing in for it — same ids, same
-//! forwarded `config`, a non-null `recovery` object.
+//! The safety scenario exercises `rp`'s own recovery re-invocation
+//! end-to-end (unsafe terminates the run, safe re-invokes). The other
+//! two interrupt the session in ways `rp` cannot recover from yet — an
+//! engine kill and an `rp` restart both need `rp`-side startup recovery,
+//! which is designed but not implemented — so their steps POST `/invoke`
+//! directly, standing in for it: same ids, same forwarded `config`, a
+//! non-null `recovery` object.
 
 use std::time::Duration;
 
-use cucumber::{then, when};
+use cucumber::{given, then, when};
 
-use crate::steps::infrastructure::{start_rp_service, start_session_runner_service};
+use bdd_infra::rp_harness::{OmniSimHandle, SafetyMonitorConfig};
+
+use crate::steps::infrastructure::{
+    ensure_omnisim, start_rp_service, start_session_runner_service,
+};
 use crate::steps::trigger_steps::settled_event_count;
 use crate::world::SessionRunnerWorld;
 
@@ -32,6 +40,69 @@ async fn blackboard_records_frames(world: &mut SessionRunnerWorld, frames: u64) 
         "the blackboard never recorded {frames} frames within {OBSERVATION_BUDGET:?} \
          (last: {:?})",
         world.blackboard_frames().await
+    );
+}
+
+#[given("a safety monitor guards the session")]
+async fn safety_monitor_guards_session(world: &mut SessionRunnerWorld) {
+    ensure_omnisim(world).await;
+    // Start from a known-safe reading regardless of what a previous
+    // scenario (or crashed run) left in the simulator's memory.
+    OmniSimHandle::set_safety_monitor_is_safe(true)
+        .await
+        .expect("failed to reset OmniSim's safety monitor to safe");
+    world.safety_monitors.push(SafetyMonitorConfig {
+        id: "weather-watcher".to_string(),
+        alpaca_url: world.omnisim_url(),
+        device_number: 0,
+    });
+    // Fast polling so rp detects the flips in test time, not the
+    // production default (10 s).
+    world.safety_poll_interval = Some(Duration::from_millis(250));
+}
+
+#[when("the safety monitor reports unsafe")]
+async fn safety_monitor_reports_unsafe(_world: &mut SessionRunnerWorld) {
+    OmniSimHandle::set_safety_monitor_is_safe(false)
+        .await
+        .expect("failed to flip OmniSim's safety monitor to unsafe");
+}
+
+#[when("the safety monitor reports safe again")]
+async fn safety_monitor_reports_safe(_world: &mut SessionRunnerWorld) {
+    OmniSimHandle::set_safety_monitor_is_safe(true)
+        .await
+        .expect("failed to flip OmniSim's safety monitor to safe");
+}
+
+#[then(expr = "rp reports the session as {string} within {int} seconds")]
+async fn rp_reports_session_status(world: &mut SessionRunnerWorld, expected: String, seconds: u64) {
+    let client = reqwest::Client::new();
+    let url = format!("{}/api/session/status", world.rp_url());
+    let deadline = std::time::Instant::now() + Duration::from_secs(seconds);
+    let mut last = None;
+    while std::time::Instant::now() < deadline {
+        if let Ok(resp) = client.get(&url).send().await {
+            if let Ok(body) = resp.json::<serde_json::Value>().await {
+                last = body
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_owned);
+                if last.as_deref() == Some(expected.as_str()) {
+                    return;
+                }
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("rp never reported the session as '{expected}' within {seconds}s (last: {last:?})");
+}
+
+#[then("the blackboard is kept")]
+async fn blackboard_is_kept(world: &mut SessionRunnerWorld) {
+    assert!(
+        world.blackboard_path().exists(),
+        "an interrupted session must keep its blackboard for the recovery invocation"
     );
 }
 

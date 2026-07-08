@@ -383,12 +383,20 @@ committable on its own.
       rp outage mid-loop → the request-level MCP failure terminates the
       run (service healthy, blackboard kept) → re-invoke against the
       restarted rp captures exactly the remaining frames. The scenarios
-      POST `/invoke` directly because **rp's recovery re-invocation
-      machinery does not exist** — its `/invoke` body hard-codes
-      `recovery: null`, nothing re-invokes on the safety safe-transition
-      or after an rp restart (session state is in-memory), and a failed
-      `/invoke` leaves the session active forever; closing that is rp
-      work, tracked in its own issue.
+      POST `/invoke` directly because rp's recovery re-invocation
+      machinery did not exist at the time.
+
+      **Follow-up (2026-07-07):** rp's safety-recovery machinery is now
+      implemented (rp.md § Safety): SafetyMonitor polling, unsafe →
+      MCP-session termination + `/mcp` 503 gate + session `interrupted`,
+      safe → re-invocation with `recovery.reason = "safety_interruption"`,
+      and a failed `/invoke` now returns the session to idle
+      (`session_stopped` / `orchestrator_invoke_failed`) instead of
+      wedging it active. `recovery.feature` gained the end-to-end safety
+      interruption + resume scenario through rp's real machinery; rp's own
+      `safety.feature` pins the rp-side contract. Still deferred: rp-side
+      *startup* recovery (session registry is in-memory; rp.md § Recovery
+      Behavior).
 
 ### Phase E — Deep-sky workflow
 

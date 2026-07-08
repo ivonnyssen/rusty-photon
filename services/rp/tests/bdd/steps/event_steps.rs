@@ -161,6 +161,35 @@ async fn timing_estimates_recorded(world: &mut RpWorld) {
     );
 }
 
+#[then(expr = "the {string} event payload field {string} should be {string}")]
+async fn event_payload_field_equals(
+    world: &mut RpWorld,
+    event_type: String,
+    field: String,
+    expected: String,
+) {
+    let events = world.received_events.read().await;
+    let event = events
+        .iter()
+        .find(|e| e.event_type == event_type)
+        .unwrap_or_else(|| panic!("no '{}' event found", event_type));
+
+    let actual = event
+        .payload
+        .get(&field)
+        .and_then(|v| v.as_str())
+        .unwrap_or_else(|| {
+            panic!(
+                "expected string field '{}' in '{}' event payload, got: {:?}",
+                field, event_type, event.payload
+            )
+        });
+    assert_eq!(
+        actual, expected,
+        "expected '{event_type}' payload field '{field}' to be '{expected}', got '{actual}'"
+    );
+}
+
 #[then(expr = "the {string} event payload should contain a {string}")]
 async fn event_payload_contains_field(world: &mut RpWorld, event_type: String, field: String) {
     let events = world.received_events.read().await;

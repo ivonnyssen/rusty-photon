@@ -19,6 +19,7 @@ pub mod cover_calibrator;
 pub mod filter_wheel;
 pub mod focuser;
 pub mod mount;
+pub mod safety_monitor;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
@@ -29,6 +30,7 @@ pub use cover_calibrator::CoverCalibratorEntry;
 pub use filter_wheel::FilterWheelEntry;
 pub use focuser::FocuserEntry;
 pub use mount::MountEntry;
+pub use safety_monitor::SafetyMonitorEntry;
 
 use serde::Serialize;
 use tracing::debug;
@@ -41,6 +43,7 @@ pub struct EquipmentRegistry {
     pub filter_wheels: Vec<FilterWheelEntry>,
     pub cover_calibrators: Vec<CoverCalibratorEntry>,
     pub focusers: Vec<FocuserEntry>,
+    pub safety_monitors: Vec<SafetyMonitorEntry>,
     pub mount: Option<MountEntry>,
 }
 
@@ -50,6 +53,7 @@ pub struct EquipmentStatus {
     pub filter_wheels: Vec<DeviceStatus>,
     pub cover_calibrators: Vec<DeviceStatus>,
     pub focusers: Vec<DeviceStatus>,
+    pub safety_monitors: Vec<DeviceStatus>,
     pub mount: Option<MountStatus>,
 }
 
@@ -97,6 +101,12 @@ impl EquipmentRegistry {
             focusers.push(entry);
         }
 
+        let mut safety_monitors = Vec::new();
+        for sm_config in &equipment_config.safety_monitors {
+            let entry = safety_monitor::connect_safety_monitor(sm_config).await;
+            safety_monitors.push(entry);
+        }
+
         let mount = match &equipment_config.mount {
             Some(mount_config) => Some(mount::connect_mount(mount_config).await),
             None => None,
@@ -107,6 +117,7 @@ impl EquipmentRegistry {
             filter_wheels,
             cover_calibrators,
             focusers,
+            safety_monitors,
             mount,
         }
     }
@@ -145,6 +156,14 @@ impl EquipmentRegistry {
                     connected: f.connected,
                 })
                 .collect(),
+            safety_monitors: self
+                .safety_monitors
+                .iter()
+                .map(|sm| DeviceStatus {
+                    id: sm.id.clone(),
+                    connected: sm.connected,
+                })
+                .collect(),
             mount: self.mount.as_ref().map(|m| MountStatus {
                 connected: m.connected,
             }),
@@ -165,6 +184,10 @@ impl EquipmentRegistry {
 
     pub fn find_focuser(&self, id: &str) -> Option<&FocuserEntry> {
         self.focusers.iter().find(|f| f.id == id)
+    }
+
+    pub fn find_safety_monitor(&self, id: &str) -> Option<&SafetyMonitorEntry> {
+        self.safety_monitors.iter().find(|sm| sm.id == id)
     }
 
     /// Returns the singular mount entry, or `None` when no mount is
