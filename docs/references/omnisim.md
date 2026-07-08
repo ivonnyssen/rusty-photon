@@ -4,9 +4,9 @@ OmniSim is the [ASCOM Alpaca Simulators](https://github.com/ASCOMInitiative/ASCO
 
 The simulator is *faithful* to real hardware behavior in many ways that aren't immediately obvious from the ASCOM spec, and those behaviors have caused us several days of debugging. This doc captures what we've learned.
 
-## Single-instance enforcement (no parallelism)
+## Single-instance enforcement — and our `--multi-instance` escape hatch
 
-OmniSim acquires a hardcoded global named mutex on startup:
+Upstream OmniSim acquires a hardcoded global named mutex on startup:
 
 ```csharp
 // ASCOM.Alpaca.Simulators/Program.cs
@@ -23,14 +23,37 @@ using (var mutex = new Mutex(false, mutexId, out bool createdNew))
 }
 ```
 
-**Implications:**
+**Upstream implications:**
 
-- Only one OmniSim per machine. Period.
-- The GUID is hardcoded — no CLI flag, env var, or config to override it.
-- A second instance does *not* run independently. It connects to the first instance's named pipe (`{2249563F-E844-4264-8956-73AC7A44BEA0}`, also hardcoded), forwards its CLI args, and exits.
-- BDD scenarios cannot be parallelized at the OmniSim level. Cucumber's `@serial` tag (which the rusty-photon BDD features use) is what keeps things working.
+- Only one OmniSim per machine. The GUID is hardcoded — no upstream CLI
+  flag, env var, or config to override it. On Linux/macOS the mutex is
+  backed by a file under `/tmp/.dotnet/shm/global/` (that's why an isolated
+  `/tmp` — a container, or a mount namespace — defeats it); on Windows it's
+  a kernel object.
+- A second instance does *not* run independently. It connects to the first
+  instance's named pipe (`{2249563F-E844-4264-8956-73AC7A44BEA0}`, also
+  hardcoded), forwards its CLI args, and exits.
 
-If you see `Timeout waiting for exclusive access` in OmniSim's stderr, another instance is already running.
+If you see `Timeout waiting for exclusive access` in OmniSim's stderr,
+another instance is already running.
+
+**Our fork lifts this** (issue #467): `ivonnyssen/ASCOM.Alpaca.Simulators`
+release `v0.5.0-467.1` adds a `--multi-instance` flag that skips the mutex
+and the named-pipe server for that process, and `v0.5.0-467.2` adds the
+`OMNISIM_SETTINGS_DIR` environment variable, which re-roots the profile
+store per instance on **every** platform. Both are needed for concurrent
+instances: the settings write-back is unsynchronised, and the default
+store location is not redirectable per-process on Windows
+(`%USERPROFILE%\.ASCOM` via SHGetKnownFolderPath) or macOS
+(`~/Library/Application Support` via NSSearchPath — .NET honors
+`XDG_CONFIG_HOME` on other Unixes only; a shared store on macOS CI leaked
+one suite's persisted telescope site into another's scenarios). Without
+the flag and variable, behavior is exactly upstream's.
+`bdd_infra::rp_harness::OmniSimHandle` always spawns with both, plus a
+dynamically chosen `--urls` port, giving every BDD test process (including
+every Bazel shard of `rp:bdd`) a private simulator. The `@serial` feature
+tag still serializes scenarios *within* one test process, which share that
+process's instance.
 
 ## Binding port
 
@@ -39,7 +62,9 @@ OmniSim is an ASP.NET Core app. Default port is **32323**. Override via either:
 - CLI: `ascom.alpaca.simulators --urls "http://127.0.0.1:33333"`
 - Env: `ASPNETCORE_URLS=http://127.0.0.1:33333`
 
-But — see above. Port override is moot if another OmniSim is already running, because the mutex blocks before the bind.
+Under upstream's single-instance guard a port override is moot if another
+OmniSim is already running (the mutex blocks before the bind); with our
+fork's `--multi-instance` it's how concurrent instances coexist.
 
 ## State persistence
 
@@ -60,7 +85,7 @@ OmniSim writes per-device settings to XDG config:
 └── telescope/v1/instance-0.xml
 ```
 
-The path is **not configurable** via OmniSim's own config. On Linux, .NET respects `XDG_CONFIG_HOME`, so re-rooting that env var does redirect the state dir — but be aware nothing inside OmniSim documents this.
+Upstream, the path is **not configurable**: on non-macOS Unix, .NET respects `XDG_CONFIG_HOME`, so re-rooting that env var redirects the state dir (nothing inside OmniSim documents this); on Windows the base is `%USERPROFILE%\.ASCOM` and on macOS `~/Library/Application Support/ascom` (ASCOM.Tools `XMLProfile` via `GetFolderPath`), neither redirectable by any env var. Our fork's `OMNISIM_SETTINGS_DIR` (`v0.5.0-467.2+`) re-roots the store on every platform, keeping XMLProfile's own layout under the given root. `bdd_infra::rp_harness` sets it to a private `bdd-infra-omnisim-<pid>/` dir seeded from `crates/bdd-infra/omnisim-config/`, so concurrent instances never share a writable profile store (and test runs never touch your real profile dirs).
 
 State is loaded on startup and persisted on shutdown. State persists across OmniSim restarts unless explicitly reset (see CLI flags / `/simulator/v1/.../reset` below).
 
@@ -75,6 +100,8 @@ From `readme.md`:
 | `--local-address` | Print the URL of the running instance (when invoked as a second instance) |
 | `--show-browser` | Open the web UI in a browser (when invoked as a second instance) |
 | `--urls <url>` | ASP.NET Core convention; override the bind URL |
+| `--multi-instance` | **Fork-only** (`v0.5.0-467.1+`): skip the single-instance mutex + named-pipe server so several OmniSims can run concurrently (pair with distinct `--urls` and settings stores) |
+| `OMNISIM_SETTINGS_DIR` (env var) | **Fork-only** (`v0.5.0-467.2+`): re-root the profile store to the given directory (XMLProfile layout underneath), on every platform |
 
 `--reset` only takes effect at startup. To reset state in a *running* instance, use the OmniSim-only HTTP API.
 

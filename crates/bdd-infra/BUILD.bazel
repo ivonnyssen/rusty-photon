@@ -37,6 +37,12 @@ rust_library(
     aliases = aliases(),
     crate_features = ["rp-harness"],
     crate_name = "bdd_infra",
+    # The OmniSim profile seed tree rides along in the runfiles of every
+    # test that links this harness, so the per-instance OMNISIM_SETTINGS_DIR
+    # seeding (rp_harness/omnisim.rs `seed_config_source`, branch 2 -- the
+    # cwd-ancestors walk) resolves it under Bazel. Without this the seed
+    # never resolved under Bazel and OmniSim ran on upstream defaults.
+    data = glob(["omnisim-config/**"]),
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = ["//visibility:public"],

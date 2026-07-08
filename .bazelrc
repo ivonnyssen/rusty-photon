@@ -50,19 +50,30 @@ test --test_tag_filters=-requires-cargo,-conformu
 test --test_env=OMNISIM_PATH
 test --test_env=OMNISIM_DIR
 
-# OmniSim allows only one instance per host (ASCOM.Alpaca.Simulators guards
-# startup with a machine-global named Mutex keyed on a fixed GUID, not the port).
-# The two BDD targets that spawn it (//services/rp:bdd,
-# //services/calibrator-flats:bdd) are tagged `resources:omnisim:1`; this defines
-# the matching pool with capacity 1 so Bazel never schedules those two
-# concurrently — while leaving them free to run in parallel with every
-# non-OmniSim test (unlike the `exclusive` tag, which would serialize against
-# everything). The pool MUST be defined or those tests fail loudly with "Resource
-# omnisim is not being tracked by the resource manager"; defining it here on
-# `test` (inherited by `coverage`) keeps it present for every test invocation,
-# local and CI. --local_resources is a scheduling-only flag, so it does not enter
-# action keys and never perturbs the remote cache.
-test --local_resources=omnisim=1
+# The `omnisim` resource pool. Every OmniSim-spawning BDD action (the four
+# suites rp:bdd / calibrator-flats:bdd / session-runner:bdd /
+# operation-watchdog-e2e:bdd, and each shard of a sharded suite) is tagged
+# `resources:omnisim:1` and takes one token. Since #467 the bdd-infra harness
+# gives every test process a PRIVATE OmniSim — spawned with the fork's
+# --multi-instance flag (skips upstream's machine-global single-instance
+# mutex) on a dynamically chosen port, with a per-instance
+# OMNISIM_SETTINGS_DIR — so these actions can genuinely run in parallel on
+# every OS and the pool is sized above the worst-case concurrent demand
+# (8 rp:bdd shards + 8 session-runner:bdd shards + 2 suites = 18); it
+# exists only as a throttle to grab if OmniSim concurrency
+# ever turns flaky (e.g. `test:windows --local_resources=omnisim=1` would
+# re-serialize one platform — --enable_platform_specific_config appends
+# platform lines after this one, so they win). Profile-store isolation is
+# the fork's OMNISIM_SETTINGS_DIR (release v0.5.0-467.2), which works on
+# every platform — XDG_CONFIG_HOME did not: .NET ignores it on macOS, and
+# the resulting shared store leaked session-runner's persisted telescope
+# site into rp's shards on macOS CI. The pool MUST be defined or the tagged tests
+# fail loudly with "Resource omnisim is not being tracked by the resource
+# manager"; defining it on `test` (inherited by `coverage`) keeps it present
+# for every test invocation, local and CI. --local_resources is a
+# scheduling-only flag, so it does not enter action keys and never perturbs
+# the remote cache.
+test --local_resources=omnisim=24
 
 # --- Rust toolchain --------------------------------------------------------
 

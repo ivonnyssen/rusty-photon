@@ -100,7 +100,15 @@ bdd_infra::bdd_main! {
         .filter_run_and_exit("tests/features", |feat, _rule, sc| {
             let is_wip = feat.tags.iter().any(|t| t == "wip" || t == "@wip")
                 || sc.tags.iter().any(|t| t == "wip" || t == "@wip");
-            !is_wip
+            // Bazel sharding (BUILD `shard_count`): each shard process runs
+            // only its deterministic slice of the scenarios, against its own
+            // private OmniSim. Outside Bazel sharding this always passes.
+            let in_shard = bdd_infra::sharding::scenario_in_current_shard(
+                feat.path.as_deref(),
+                &feat.name,
+                sc.position.line,
+            );
+            !is_wip && in_shard
         })
         .await;
 
