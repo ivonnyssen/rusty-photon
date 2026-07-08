@@ -34,18 +34,35 @@ fn target_with_exposure_plan(world: &mut RpWorld, name: String, step: &Step) {
     let table = step
         .table
         .as_ref()
-        .expect("step requires a `| filter | duration_secs |` table");
+        .expect("step requires a `| filter | duration_secs [| count] |` table");
     let mut rows = table.rows.iter();
     let header = rows.next().expect("exposure-plan table must have a header");
-    assert_eq!(
-        header,
-        &vec!["filter".to_string(), "duration_secs".to_string()],
-        "exposure-plan table header must be `| filter | duration_secs |`"
-    );
+    let with_counts = match header.len() {
+        2 => false,
+        3 => true,
+        _ => panic!("exposure-plan table header must be `| filter | duration_secs |` or `| filter | duration_secs | count |`"),
+    };
+    assert_eq!(header[0], "filter");
+    assert_eq!(header[1], "duration_secs");
+    if with_counts {
+        assert_eq!(header[2], "count");
+    }
     let exposures = rows
-        .map(|row| ExposurePlanConfig {
-            filter: Some(row[0].clone()),
-            duration_secs: row[1].parse().expect("duration_secs must parse as f64"),
+        .map(|row| {
+            assert_eq!(
+                row.len(),
+                header.len(),
+                "exposure-plan row width must match the header: {row:?}"
+            );
+            ExposurePlanConfig {
+                filter: Some(row[0].clone()),
+                duration_secs: row[1].parse().expect("duration_secs must parse as f64"),
+                // An empty count cell = no finite goal for this entry.
+                count: with_counts
+                    .then(|| row[2].trim())
+                    .filter(|c| !c.is_empty())
+                    .map(|c| c.parse().expect("count must parse as u32")),
+            }
         })
         .collect();
     world
@@ -58,6 +75,32 @@ fn target_without_exposure_plan(world: &mut RpWorld, name: String) {
     world
         .planner_targets
         .push(always_visible_target(name, Vec::new()));
+}
+
+/// Distinct plans that the progress tie-breakers cannot mistake for
+/// each other: same coordinates (identical hour angle, so bullet 2
+/// genuinely ties), one counted entry each.
+#[given(
+    expr = "rp is configured with the always-visible targets {string} and {string}, each wanting \
+            {int} unfiltered {int}-second frames"
+)]
+fn two_identical_targets_with_goals(
+    world: &mut RpWorld,
+    first: String,
+    second: String,
+    count: u32,
+    duration_secs: u32,
+) {
+    for name in [first, second] {
+        world.planner_targets.push(always_visible_target(
+            name,
+            vec![ExposurePlanConfig {
+                filter: None,
+                duration_secs: f64::from(duration_secs),
+                count: Some(count),
+            }],
+        ));
+    }
 }
 
 /// The mirror of [`always_visible_target`]: `min_altitude_degrees: 90`
@@ -150,6 +193,39 @@ async fn call_next_target_at(world: &mut RpWorld, time: String) {
     world.last_tool_result = Some(result);
 }
 
+#[when(expr = "the MCP client calls \"record_exposure\" for target {string} filter {string}")]
+async fn call_record_exposure(world: &mut RpWorld, target: String, filter: String) {
+    ensure_mcp_client(world).await;
+    let result = world
+        .mcp()
+        .call_tool(
+            "record_exposure",
+            serde_json::json!({ "target": target, "filter": filter }),
+        )
+        .await;
+    world.last_tool_result = Some(result);
+}
+
+#[when(expr = "the MCP client calls \"record_exposure\" for target {string} with no filter")]
+async fn call_record_exposure_unfiltered(world: &mut RpWorld, target: String) {
+    ensure_mcp_client(world).await;
+    let result = world
+        .mcp()
+        .call_tool("record_exposure", serde_json::json!({ "target": target }))
+        .await;
+    world.last_tool_result = Some(result);
+}
+
+#[when("the MCP client calls \"get_session_progress\"")]
+async fn call_session_progress(world: &mut RpWorld) {
+    ensure_mcp_client(world).await;
+    let result = world
+        .mcp()
+        .call_tool("get_session_progress", serde_json::json!({}))
+        .await;
+    world.last_tool_result = Some(result);
+}
+
 #[then(expr = "the result target_name should be {string}")]
 fn result_target_name(world: &mut RpWorld, expected: String) {
     let value = success_payload(world);
@@ -187,6 +263,46 @@ fn result_target_null(world: &mut RpWorld) {
         value.get("target").is_some_and(|v| v.is_null()),
         "expected target=null, got: {value}"
     );
+}
+
+#[then(expr = "the recommended target should be {string}")]
+fn recommended_target(world: &mut RpWorld, expected: String) {
+    let value = success_payload(world);
+    let name = value
+        .pointer("/target/name")
+        .and_then(|v| v.as_str())
+        .unwrap_or_else(|| panic!("missing `target.name` in: {value}"));
+    assert_eq!(name, expected.as_str());
+}
+
+#[then(expr = "the result completed should be {int} with a goal of {int}")]
+fn result_completed_and_goal(world: &mut RpWorld, completed: u64, goal: u64) {
+    let value = success_payload(world);
+    assert_eq!(
+        value.get("completed").and_then(|v| v.as_u64()),
+        Some(completed),
+        "unexpected `completed` in: {value}"
+    );
+    assert_eq!(
+        value.get("goal").and_then(|v| v.as_u64()),
+        Some(goal),
+        "unexpected `goal` in: {value}"
+    );
+}
+
+/// Asserts one slot of the `get_session_progress` payload. The filter
+/// key is the exact map key — pass `""` for the unfiltered slot.
+#[then(expr = "the progress for target {string} filter {string} should be {int} of {int}")]
+fn progress_slot(world: &mut RpWorld, target: String, filter: String, completed: u64, goal: u64) {
+    let value = success_payload(world);
+    let slot = value
+        .pointer(&format!("/progress/{target}/{filter}"))
+        .unwrap_or_else(|| panic!("missing progress slot `{target}`/`{filter}` in: {value}"));
+    assert_eq!(
+        slot.get("completed").and_then(|v| v.as_u64()),
+        Some(completed)
+    );
+    assert_eq!(slot.get("goal").and_then(|v| v.as_u64()), Some(goal));
 }
 
 #[then(expr = "the result filter should be {string}")]

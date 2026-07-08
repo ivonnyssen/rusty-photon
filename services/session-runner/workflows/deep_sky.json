@@ -1,7 +1,7 @@
 {
   "version": 1,
   "name": "deep-sky",
-  "description": "Classic multi-target deep-sky imaging session: unpark and start tracking, then a dispatch loop that asks rp's planner for the best target after every frame — acquiring on target change (slew, filter from the planner's exposure plan, optional plate-solve centering, optional auto-focus) and capturing one frame per pass — with reactive refocusing and meridian-flip handling, ending at the frame budget or when the planner declares the night over (end_of_session) and optionally parking. Written against rp's v1 planner surface: get_next_target supplies filter/duration_secs from the target's first exposures[] entry with the exposure/filter parameters as fallback (rotation within a plan needs record_exposure, which does not exist yet — progress is counted in the blackboard), and there is no guiding or dithering (rp has no guider tools yet) — see docs/services/session-runner.md § deep_sky.json.",
+  "description": "Classic multi-target deep-sky imaging session: unpark and start tracking, then a dispatch loop that asks rp's planner for the best target after every frame — changing filter whenever the recommended one differs from the wheel's current, acquiring on target change (slew, optional plate-solve centering, optional auto-focus), capturing one frame per pass, and recording it via record_exposure so rp's progress counters rotate exposure plans, balance targets, and end the session once every integration goal is met — with reactive refocusing and meridian-flip handling, ending at the frame budget or when the planner declares the session over (end_of_session) and optionally parking. get_next_target supplies filter/duration_secs from the target's first incomplete exposures[] entry with the exposure/filter parameters as fallback for plan-less targets; there is no guiding or dithering (rp has no guider tools yet) — see docs/services/session-runner.md § deep_sky.json.",
   "parameters": {
     "camera_id": { "type": "string", "required": true },
     "exposure": { "type": "duration", "default": "300s" },
@@ -178,7 +178,8 @@
         "set": {
           "session.total_frames": "has(session.total_frames) ? session.total_frames : 0",
           "session.frames_since_focus": "has(session.frames_since_focus) ? session.frames_since_focus : 0",
-          "session.report.total_frames": "has(session.report.total_frames) ? session.report.total_frames : 0"
+          "session.report.total_frames": "has(session.report.total_frames) ? session.report.total_frames : 0",
+          "session.current_filter": "has(session.current_filter) ? session.current_filter : ''"
         }
       },
       {
@@ -228,58 +229,60 @@
                 ],
                 "else": [
                   {
-                    "id": "acquire-on-target-change",
-                    "if": "session.target_name != result.target.name",
+                    "set": {
+                      "session.pass_target": "result.target.name",
+                      "session.pass_ra": "result.target.ra_hours",
+                      "session.pass_dec": "result.target.dec_degrees",
+                      "session.pass_filter": "result.duration_secs != null ? (result.filter != null ? result.filter : '') : params.filter",
+                      "session.pass_duration": "result.duration_secs != null ? humantime(result.duration_secs) : params.exposure"
+                    }
+                  },
+                  {
+                    "id": "filter-on-change",
+                    "if": "session.pass_filter != '' && session.pass_filter != session.current_filter",
                     "then": [
                       {
-                        "set": {
-                          "session.imaging": "false",
-                          "session.acquire_name": "result.target.name",
-                          "session.acquire_ra": "result.target.ra_hours",
-                          "session.acquire_dec": "result.target.dec_degrees",
-                          "session.acquire_filter": "result.duration_secs != null ? (result.filter != null ? result.filter : '') : params.filter",
-                          "session.acquire_duration": "result.duration_secs != null ? humantime(result.duration_secs) : params.exposure"
+                        "if": "params.filter_wheel_id == ''",
+                        "then": [
+                          {
+                            "fail": {
+                              "message": "'the exposure plan names a filter but filter_wheel_id is empty — supply filter_wheel_id or remove filters from the target exposures[] in rp config'"
+                            }
+                          }
+                        ]
+                      },
+                      {
+                        "tool": "set_filter",
+                        "args": {
+                          "filter_wheel_id": { "$expr": "params.filter_wheel_id" },
+                          "filter_name": { "$expr": "session.pass_filter" }
                         }
                       },
+                      { "set": { "session.current_filter": "session.pass_filter" } }
+                    ]
+                  },
+                  {
+                    "id": "acquire-on-target-change",
+                    "if": "session.target_name != session.pass_target",
+                    "then": [
+                      { "set": { "session.imaging": "false" } },
                       {
                         "log": {
                           "level": "info",
                           "message": "acquiring target",
                           "values": {
-                            "target": "session.acquire_name",
-                            "filter": "session.acquire_filter",
-                            "duration": "session.acquire_duration"
+                            "target": "session.pass_target",
+                            "filter": "session.pass_filter",
+                            "duration": "session.pass_duration"
                           }
                         }
                       },
                       {
                         "tool": "slew",
                         "args": {
-                          "ra": { "$expr": "session.acquire_ra" },
-                          "dec": { "$expr": "session.acquire_dec" }
+                          "ra": { "$expr": "session.pass_ra" },
+                          "dec": { "$expr": "session.pass_dec" }
                         }
-                      },
-                      {
-                        "if": "session.acquire_filter != ''",
-                        "then": [
-                          {
-                            "if": "params.filter_wheel_id == ''",
-                            "then": [
-                              {
-                                "fail": {
-                                  "message": "'the exposure plan names a filter but filter_wheel_id is empty — supply filter_wheel_id or remove filters from the target exposures[] in rp config'"
-                                }
-                              }
-                            ]
-                          },
-                          {
-                            "tool": "set_filter",
-                            "args": {
-                              "filter_wheel_id": { "$expr": "params.filter_wheel_id" },
-                              "filter_name": { "$expr": "session.acquire_filter" }
-                            }
-                          }
-                        ]
                       },
                       {
                         "if": "params.centering == true",
@@ -288,8 +291,8 @@
                             "tool": "center_on_target",
                             "args": {
                               "camera_id": { "$expr": "params.camera_id" },
-                              "ra": { "$expr": "session.acquire_ra" },
-                              "dec": { "$expr": "session.acquire_dec" },
+                              "ra": { "$expr": "session.pass_ra" },
+                              "dec": { "$expr": "session.pass_dec" },
                               "duration": { "$expr": "params.centering_exposure" },
                               "tolerance_arcsec": { "$expr": "params.centering_tolerance_arcsec" },
                               "max_attempts": { "$expr": "params.centering_max_attempts" }
@@ -331,9 +334,9 @@
                       },
                       {
                         "set": {
-                          "session.target_name": "session.acquire_name",
-                          "session.target_ra": "session.acquire_ra",
-                          "session.target_dec": "session.acquire_dec",
+                          "session.target_name": "session.pass_target",
+                          "session.target_ra": "session.pass_ra",
+                          "session.target_dec": "session.pass_dec",
                           "session.imaging": "true"
                         }
                       }
@@ -344,8 +347,29 @@
                     "tool": "capture",
                     "args": {
                       "camera_id": { "$expr": "params.camera_id" },
-                      "duration": { "$expr": "session.acquire_duration" }
+                      "duration": { "$expr": "session.pass_duration" }
                     }
+                  },
+                  {
+                    "id": "record-light-frame",
+                    "try": [
+                      {
+                        "tool": "record_exposure",
+                        "args": {
+                          "target": { "$expr": "session.target_name" },
+                          "filter": { "$expr": "session.pass_filter" }
+                        }
+                      }
+                    ],
+                    "catch": [
+                      {
+                        "log": {
+                          "level": "info",
+                          "message": "record_exposure failed; the planner will not see this frame",
+                          "values": { "error": "error.message" }
+                        }
+                      }
+                    ]
                   },
                   {
                     "set": {

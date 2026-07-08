@@ -110,6 +110,10 @@ pub struct ExposurePlanConfig {
     /// planner returns `filter: null` for this entry).
     pub filter: Option<String>,
     pub duration_secs: f64,
+    /// Integration goal for the entry (rp's `record_exposure`
+    /// counters). `None` ⇒ omit the `count` field — no finite goal,
+    /// the target never exhausts.
+    pub count: Option<u32>,
 }
 
 /// Plate-solver service config — emitted as the top-level
@@ -434,6 +438,9 @@ impl RpConfigBuilder {
                                 if let Some(filter) = &e.filter {
                                     entry["filter"] = serde_json::json!(filter);
                                 }
+                                if let Some(count) = e.count {
+                                    entry["count"] = serde_json::json!(count);
+                                }
                                 entry
                             })
                             .collect::<Vec<Value>>()
@@ -753,10 +760,12 @@ mod tests {
                 ExposurePlanConfig {
                     filter: Some("Red".to_string()),
                     duration_secs: 120.0,
+                    count: Some(20),
                 },
                 ExposurePlanConfig {
                     filter: None,
                     duration_secs: 60.0,
+                    count: None,
                 },
             ],
         });
@@ -776,11 +785,16 @@ mod tests {
         assert_eq!(exposures.len(), 2);
         assert_eq!(exposures[0]["filter"], "Red");
         assert_eq!(exposures[0]["duration_secs"], 120.0);
+        assert_eq!(exposures[0]["count"], 20);
         assert!(
             exposures[1].get("filter").is_none(),
             "a None filter must omit the field (unfiltered entry)"
         );
         assert_eq!(exposures[1]["duration_secs"], 60.0);
+        assert!(
+            exposures[1].get("count").is_none(),
+            "a None count must omit the field (no finite goal)"
+        );
         assert_eq!(targets[1]["name"], "backup");
         assert!(
             targets[1].get("min_altitude_degrees").is_none(),

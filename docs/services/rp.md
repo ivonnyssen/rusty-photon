@@ -827,11 +827,11 @@ hours, `dec` is degrees. See
 
 | Action | Parameters | Returns | Description |
 |--------|-----------|---------|-------------|
-| `get_next_target` | time (optional) | target, reason, filter, duration_secs | Evaluate candidates and recommend next target. `filter`/`duration_secs` come from the recommended target's first `exposures[]` entry; null when the target defines none — see §"Dynamic Planner" |
-| `get_target_status` | target_name *or* (ra + dec); time (optional) | target_name, altitude_degrees, azimuth_degrees, hour_angle_hours, time_to_set_seconds, progress | Sky position + progress for a catalog target or raw ICRS coords. `progress` is null in v1 |
+| `get_next_target` | time (optional) | target, reason, filter, duration_secs | Evaluate candidates and recommend next target. `filter`/`duration_secs` come from the recommended target's first **incomplete** `exposures[]` entry (the `record_exposure` counters rotate the plan); null when the target defines none — see §"Dynamic Planner" |
+| `get_target_status` | target_name *or* (ra + dec); time (optional) | target_name, altitude_degrees, azimuth_degrees, hour_angle_hours, time_to_set_seconds, progress | Sky position + progress for a catalog target or raw ICRS coords. `progress` is the per-filter `{completed, goal}` map when `target_name` (as given or catalog-resolved) matches a `targets[]` entry, null otherwise (including the ra/dec form) |
 | `get_meridian_status` | time (optional) | time_to_flip_seconds, side_of_pier, mount_ra_hours, mount_dec_degrees | Time-to-flip + side-of-pier from the mount's current pointing |
-| `record_exposure` | target, filter | completed, goal | Increment counter, return updated progress |
-| `get_session_progress` | — | per-target, per-filter progress | Full progress overview |
+| `record_exposure` | target, filter (optional) | target, filter, completed, goal | Increment the per-target/per-filter counter and return it. `target` must name a `targets[]` entry; omit `filter` (or pass null / `""`) for an unfiltered frame. `goal` is the summed `count` for that filter in the target's plan — null when the filter is not in the plan or any matching entry is uncounted |
+| `get_session_progress` | — | progress | Full progress overview: target name → filter → `{completed, goal}` for every configured target (the unfiltered slot appears under the empty-string key) |
 
 **Session**
 
@@ -2720,8 +2720,8 @@ decide what to do next — `rp` does not make workflow decisions.
 | `get_next_target` | — | target, filter, duration, reason | Evaluate all candidates and recommend the best target/filter |
 | `get_target_status` | target_name | altitude, hour_angle, time_to_set, progress | Sky position and progress for a specific target |
 | `get_meridian_status` | — | time_to_flip, side_of_pier | Time until meridian flip is needed |
-| `record_exposure` | target, filter | completed, goal | Increment exposure counter, return updated progress |
-| `get_session_progress` | — | per-target, per-filter progress | Full progress overview |
+| `record_exposure` | target, filter | target, filter, completed, goal | Increment exposure counter, return updated progress |
+| `get_session_progress` | — | progress | Full per-target, per-filter progress overview |
 
 ### Decision Logic (inside `get_next_target`)
 
@@ -2757,21 +2757,35 @@ table.
 The orchestrator decides when to call `get_next_target` — typically
 after each exposure, after each target switch, or when conditions change.
 
-> **v1 implementation status.** Three of the six bullets land
-> partially in v1: the altitude half of bullet 1 (per-target /
+> **v1 implementation status.** Five of the six bullets land at
+> least partially in v1: the altitude half of bullet 1 (per-target /
 > per-planner-default floor), bullet 2 (smallest-|HA| transit
-> preference), and bullet 6's sky gating — when no target survives
-> the altitude floors, the Sun-elevation cut-off (astronomical
-> dusk, -18°) separates a bright sky from `AllBelowMinAltitude`,
-> and the Sun's trend (sampled 60 s ahead) separates dusk from
-> dawn: `WaitForTwilight` while the Sun is descending toward
-> tonight's dark window (or holding level), `EndOfSession` once it
-> is climbing out of it — the night is over.
-> The recommendation also carries the exposure plan: `filter`
-> and `duration_secs` are the recommended target's **first**
-> `exposures[]` entry (null when the target defines none) —
-> rotating *within* a target's plan by progress is the bullet-3/4
-> work below.
+> preference), bullets 3–4 (progress + filter tie-breaking, below),
+> and bullet 6 in full — when no target survives, either **every**
+> target has met its integration goal (all plans complete per the
+> `record_exposure` counters) and the answer is `EndOfSession`, or
+> the Sun-elevation cut-off (astronomical dusk, -18°) separates a
+> bright sky from `AllBelowMinAltitude` and the Sun's trend
+> (sampled 60 s ahead) separates dusk from dawn: `WaitForTwilight`
+> while the Sun is descending toward tonight's dark window (or
+> holding level), `EndOfSession` once it is climbing out of it.
+> A target whose plan is complete (every `exposures[]` entry
+> carries a `count` and its per-filter counter has reached it) is
+> **exhausted** and eliminated like a below-floor target; a target
+> with no plan, or any uncounted entry, has no finite goal and is
+> never exhausted.
+> Bullets 3–4 break transit ties: targets whose |HA| is within
+> 0.5 h of the best candidate's count as equally transiting (near
+> culmination the altitude gain over half an hour of hour angle is
+> negligible), and among them the smallest completed-to-goal
+> fraction wins (bullet 3; a target without goals counts as 0),
+> then the target whose next exposure matches the last recorded
+> frame's filter (bullet 4), then `targets[]` order.
+> The recommendation carries the exposure plan progress-aware:
+> `filter` and `duration_secs` are the recommended target's first
+> **incomplete** `exposures[]` entry in plan order (null when the
+> target defines none) — 40 completed Luminance frames rotate the
+> recommendation to the plan's Red entry.
 > Documented v1 gaps:
 >
 > - **Bullet 1 set-time elimination** — `next_target` does *not*
@@ -2780,22 +2794,12 @@ after each exposure, after each target switch, or when conditions change.
 >   before now and sets in five minutes can still be recommended;
 >   the orchestrator must catch the short-set case and re-call
 >   `get_next_target`.
-> - **Bullet 3 (least-progress preference) and bullet 4
->   (filter-change minimisation)** — both no-op until `rp` threads
->   per-target `record_exposure` counters and the last-frame filter
->   into the planner. Tied transit-distance targets break by
->   ordering in `targets[]`, not by progress.
 > - **Bullet 5 (meridian-flip avoidance)** — satisfied *indirectly*:
 >   a target whose transit was in the recent past has a large
 >   positive HA and ranks lower than a target approaching transit,
 >   so the smallest-|HA| pick tends to avoid imminent flips. The
 >   planner does *not* check `time_to_flip` against
 >   `exposures[].duration_secs` explicitly.
-> - **`EndOfSession` (exhausted-targets half)** — the reason is
->   reachable for "the night is over" (dawn-side bright sky,
->   above), but the planner cannot yet end a session mid-night
->   because every target met its integration goal — that needs the
->   per-target `record_exposure` counters from bullet 3.
 >
 > A follow-up will close these gaps once session state is wired
 > through.
@@ -2819,12 +2823,18 @@ after each exposure, after each target switch, or when conditions change.
 ```
 
 v1 reads `name`, `ra_hours`, `dec_degrees`, `min_altitude_degrees`,
-and `exposures[]`. Within an exposure entry, `duration_secs` is
-required (positive, finite); `filter` is optional — omit it (or set
-it to `null` / `""`) for an unfiltered rig, and `get_next_target`
-returns `filter: null`. `count` (and the target-level `priority`)
-are parsed-over but unused until per-target progress lands
-(`record_exposure`). A
+`exposures[]`, and within an exposure entry `duration_secs`
+(required: positive, finite), `filter` (optional — omit it, or set
+it to `null` / `""`, for an unfiltered rig, and `get_next_target`
+returns `filter: null`), and `count` (optional — the entry's
+integration goal for the `record_exposure` counters; a positive
+integer when present, and an entry without one has no finite goal,
+so its target never exhausts). The target-level `priority` is
+parsed-over but unused. An unfiltered entry means "no wheel
+movement": orchestrators (e.g. `deep_sky.json`) leave the wheel
+where it is and record the frame under the unfiltered slot, so a
+plan that wants glass-free frames *through a filter wheel* should
+name the wheel's clear slot (e.g. `"filter": "Clear"`) instead. A
 malformed exposure entry is skipped with a `debug!` log; a target
 whose plan is missing or entirely invalid still recommends, with
 `filter` / `duration_secs` null — the orchestrator's fallback
@@ -2869,7 +2879,14 @@ The application must survive power failures and resume from where it left off.
 > blackboard) survives and the session can be resumed by re-invoking
 > the orchestrator, but `rp` does not yet do so on startup. The
 > safety-event recovery path (terminate on unsafe, re-invoke on safe
-> within one `rp` process) **is** implemented — see § Safety.
+> within one `rp` process) **is** implemented — see § Safety. The
+> `progress` map **is** implemented, in-memory: the `record_exposure`
+> counters are shared across MCP connections within one `rp` process,
+> survive a safety interrupt/resume (the re-invoked orchestrator sees
+> the same counters — its dispatch continues where the night left
+> off), and are cleared when a fresh session starts (a new
+> `session_id` is a new night). Only the state-*file* write and the
+> startup read-back remain unimplemented.
 
 On startup, `rp` checks for an existing session state file:
 

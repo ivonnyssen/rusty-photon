@@ -95,6 +95,19 @@ pub struct GetNextTargetParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct RecordExposureParams {
+    /// Name of a configured `targets[]` entry.
+    pub target: String,
+    /// Filter of the completed frame. Omit (or pass `null` / `""`)
+    /// for an unfiltered frame.
+    #[serde(default)]
+    pub filter: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GetSessionProgressParams {}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct GetMeridianStatusParams {
     #[serde(default)]
     pub time: Option<String>,
@@ -425,9 +438,11 @@ impl McpHandler {
 
     #[tool(description = "Sky position + progress for a target. Accepts either \
                        target_name (resolved via the embedded catalog) or a \
-                       raw ra/dec pair. progress is null in v1 (per-target \
-                       record_exposure tracking is not yet wired into the \
-                       planner). Requires `site`.")]
+                       raw ra/dec pair. progress is the per-filter \
+                       {completed, goal} map from the record_exposure \
+                       counters when target_name (as given or \
+                       catalog-resolved) matches a configured targets[] \
+                       entry, null otherwise. Requires `site`.")]
     pub(crate) async fn get_target_status(
         &self,
         Parameters(params): Parameters<GetTargetStatusParams>,
@@ -477,12 +492,29 @@ impl McpHandler {
                 ))
             }
         };
+        // The progress map is keyed by configured target names, which
+        // are free-form, while the catalog normalises "m 31" → "M 31"
+        // — so match the caller's `target_name` as given first, then
+        // its catalog-resolved form (`name`). The ra/dec form has no
+        // name to match and reports progress: null.
+        let progress = match params.target_name.as_deref().and_then(|raw| {
+            self.targets
+                .iter()
+                .find(|t| t.name == raw || t.name == name)
+        }) {
+            Some(configured) => {
+                let store = self.progress.lock().unwrap_or_else(|e| e.into_inner());
+                crate::planner::convenience::target_progress_view(configured, &store)
+            }
+            None => serde_json::Value::Null,
+        };
         match crate::planner::convenience::target_status_view(
             site,
             target,
             &name,
             time,
             self.default_min_altitude_degrees,
+            progress,
         ) {
             Ok(v) => Ok(CallToolResult::success(vec![ContentBlock::text(
                 v.to_string(),
@@ -493,14 +525,18 @@ impl McpHandler {
 
     #[tool(
         description = "Recommend the next target from `targets[]` config based on \
-                       altitude / approaching transit / sun-elevation gating. \
-                       Returns target=null and a structured reason \
+                       altitude / approaching transit / integration progress / \
+                       sun-elevation gating. filter and duration_secs are the \
+                       recommended target's first incomplete exposures[] entry \
+                       per the record_exposure counters (null when it has no \
+                       plan). Returns target=null and a structured reason \
                        (no_targets_configured / all_below_min_altitude / \
                        wait_for_twilight / end_of_session) when no candidate is \
                        viable: wait_for_twilight = the Sun is brighter than \
                        astronomical dusk and not rising (evening — wait and \
-                       re-ask); end_of_session = brighter and rising (dawn — \
-                       the night is over). Requires `site`."
+                       re-ask); end_of_session = brighter and rising (dawn) or \
+                       every target's integration goal is met — the session is \
+                       over. Requires `site`."
     )]
     pub(crate) async fn get_next_target(
         &self,
@@ -520,14 +556,75 @@ impl McpHandler {
             Err(e) => return Ok(tool_error!("{}", e)),
         };
         let eph = rp_ephemeris::ErfarsEphemeris::new();
-        let rec = crate::planner::decision::next_target(
-            &eph,
-            site,
-            time,
-            &self.targets,
-            self.default_min_altitude_degrees,
-        );
+        let rec = {
+            let progress = self.progress.lock().unwrap_or_else(|e| e.into_inner());
+            crate::planner::decision::next_target(
+                &eph,
+                site,
+                time,
+                &self.targets,
+                self.default_min_altitude_degrees,
+                &progress,
+            )
+        };
         let v = crate::planner::convenience::next_target_view(rec);
+        Ok(CallToolResult::success(vec![ContentBlock::text(
+            v.to_string(),
+        )]))
+    }
+
+    #[tool(
+        description = "Record one completed frame against a configured targets[] \
+                       entry's per-filter counter and return it: {target, \
+                       filter, completed, goal}. goal is the summed `count` \
+                       for that filter in the target's exposures[] plan (null \
+                       when the filter is not in the plan or any matching \
+                       entry has no count). Omit filter (or pass null / \"\") \
+                       for an unfiltered frame. The counters drive \
+                       get_next_target's plan rotation, target balancing, and \
+                       the all-goals-met end_of_session; they reset when a \
+                       fresh session starts."
+    )]
+    pub(crate) async fn record_exposure(
+        &self,
+        Parameters(params): Parameters<RecordExposureParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        // Recording against an unknown name would count frames the
+        // planner can never see — a typo'd orchestrator config should
+        // fail loudly, not silently disable progress tracking.
+        let Some(target) = self.targets.iter().find(|t| t.name == params.target) else {
+            return Ok(tool_error!(
+                "unknown target `{}`: not a configured targets[] entry",
+                params.target
+            ));
+        };
+        let key = crate::planner::progress::filter_key(params.filter.as_deref());
+        let completed = {
+            let mut store = self.progress.lock().unwrap_or_else(|e| e.into_inner());
+            store.record(&target.name, params.filter.as_deref())
+        };
+        let goal = crate::planner::progress::SessionProgress::goal_for(target, &key);
+        Ok(tool_success!({
+            "target": target.name,
+            "filter": if key.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(key) },
+            "completed": completed,
+            "goal": goal,
+        }))
+    }
+
+    #[tool(
+        description = "Full progress overview from the record_exposure counters: \
+                       target name -> filter -> {completed, goal} for every \
+                       configured targets[] entry (the unfiltered slot appears \
+                       under the empty-string key; a recorded filter outside \
+                       the target's plan has goal null)."
+    )]
+    pub(crate) async fn get_session_progress(
+        &self,
+        Parameters(_params): Parameters<GetSessionProgressParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let store = self.progress.lock().unwrap_or_else(|e| e.into_inner());
+        let v = crate::planner::convenience::session_progress_view(&self.targets, &store);
         Ok(CallToolResult::success(vec![ContentBlock::text(
             v.to_string(),
         )]))

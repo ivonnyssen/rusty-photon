@@ -1,21 +1,20 @@
 //! Convenience-tool body helpers: `get_target_status`,
-//! `get_next_target`, `get_meridian_status`. Each produces a JSON
-//! `Value` from typed inputs; the MCP tool body in `crate::mcp` handles
-//! parameter parsing, equipment lookup, and `CallToolResult` shaping.
-//!
-//! Per rp.md §"Dynamic Planner": v1 does not yet wire per-target
-//! progress (`record_exposure`) through the planner, so the
-//! `progress` field on `target_status` is `null`. A future commit
-//! will populate it once session-state plumbing is connected to the
-//! planner.
+//! `get_next_target`, `get_meridian_status`, plus the progress views
+//! for `record_exposure` / `get_session_progress`. Each produces a
+//! JSON `Value` from typed inputs; the MCP tool body in `crate::mcp`
+//! handles parameter parsing, equipment lookup, locking the shared
+//! progress store, and `CallToolResult` shaping.
 
 use chrono::{DateTime, Utc};
 use rp_ephemeris::{Ephemeris, ErfarsEphemeris, IcrsCoord, SideOfPier, Site};
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 
-use super::decision::{signed_hour_angle, NextTargetRecommendation};
+use super::decision::{signed_hour_angle, NextTargetRecommendation, PlannerTarget};
+use super::progress::SessionProgress;
 
-/// Status of a single named target: alt, az, hour-angle, time-to-set.
+/// Status of a single named target: alt, az, hour-angle, time-to-set,
+/// plus the caller-supplied `progress` (the per-filter map when the
+/// name matches a configured target, `Value::Null` otherwise).
 /// `time_to_set_seconds` is `null` when the target is circumpolar
 /// above `min_altitude` or never reaches it on the supplied date.
 pub fn target_status_view(
@@ -24,6 +23,7 @@ pub fn target_status_view(
     target_name: &str,
     now: DateTime<Utc>,
     min_altitude_degrees: f64,
+    progress: Value,
 ) -> Result<Value, String> {
     let eph = ErfarsEphemeris::new();
     let aa = eph
@@ -61,7 +61,7 @@ pub fn target_status_view(
         "azimuth_degrees": aa.azimuth_degrees,
         "hour_angle_hours": ha,
         "time_to_set_seconds": time_to_set_seconds,
-        "progress": serde_json::Value::Null,
+        "progress": progress,
     }))
 }
 
@@ -73,12 +73,11 @@ pub fn next_target_view(rec: NextTargetRecommendation) -> Value {
     // practice; fall back to `Value::Null` rather than panicking if
     // serde ever rejects the variant.
     let reason = serde_json::to_value(rec.reason).unwrap_or(serde_json::Value::Null);
-    // The exposure plan: the first `exposures[]` entry of the
-    // recommended target, null when it defines none. Rotating within
-    // the plan (least progress, filter batching) is deferred until
-    // `record_exposure` counters exist — see rp.md §"Dynamic Planner"
-    // decision-logic bullets 3–4.
-    let plan = rec.target.as_ref().and_then(|t| t.exposures.first());
+    // The exposure plan: the recommended target's first *incomplete*
+    // `exposures[]` entry, chosen by the decision logic against the
+    // `record_exposure` counters; null when the target defines no
+    // plan (the orchestrator's own exposure parameters apply).
+    let plan = rec.exposure.as_ref();
     let filter = plan
         .and_then(|p| p.filter.clone())
         .map_or(Value::Null, Value::String);
@@ -97,6 +96,44 @@ pub fn next_target_view(rec: NextTargetRecommendation) -> Value {
         "filter": filter,
         "duration_secs": duration_secs,
     })
+}
+
+/// One target's per-filter progress map: filter key (the empty string
+/// is the unfiltered slot) → `{completed, goal}`. Plan entries seed
+/// the keys (so untouched goals show `completed: 0`), and recorded
+/// filters outside the plan appear with `goal: null`.
+pub fn target_progress_view(target: &PlannerTarget, progress: &SessionProgress) -> Value {
+    let mut keys: Vec<String> = target
+        .exposures
+        .iter()
+        .map(|e| super::progress::filter_key(e.filter.as_deref()))
+        .chain(
+            progress
+                .recorded_filter_keys(&target.name)
+                .into_iter()
+                .map(String::from),
+        )
+        .collect();
+    keys.sort();
+    keys.dedup();
+    let mut map = Map::new();
+    for key in keys {
+        let completed = progress.completed_for(&target.name, Some(&key));
+        let goal = SessionProgress::goal_for(target, &key).map_or(Value::Null, |g| json!(g));
+        map.insert(key, json!({ "completed": completed, "goal": goal }));
+    }
+    Value::Object(map)
+}
+
+/// The full `get_session_progress` payload: target name → per-filter
+/// progress for every configured target (a target with no plan and no
+/// recorded frames appears as an empty object).
+pub fn session_progress_view(targets: &[PlannerTarget], progress: &SessionProgress) -> Value {
+    let mut map = Map::new();
+    for target in targets {
+        map.insert(target.name.clone(), target_progress_view(target, progress));
+    }
+    json!({ "progress": Value::Object(map) })
 }
 
 /// Status of the meridian-flip clock: time-to-flip from the mount's
@@ -145,7 +182,7 @@ mod tests {
             dec_degrees: 89.2641111,
         };
         let now = chrono::TimeZone::with_ymd_and_hms(&Utc, 2026, 11, 1, 6, 0, 0).unwrap();
-        let v = target_status_view(&site(), polaris, "Polaris", now, 20.0).unwrap();
+        let v = target_status_view(&site(), polaris, "Polaris", now, 20.0, Value::Null).unwrap();
         assert_eq!(v["target_name"], "Polaris");
         assert!(v["altitude_degrees"].as_f64().is_some());
         assert!(v["azimuth_degrees"].as_f64().is_some());
@@ -153,6 +190,8 @@ mod tests {
         // Polaris is circumpolar at Seattle, so time_to_set_seconds
         // is null.
         assert!(v["time_to_set_seconds"].is_null());
+        // The progress argument passes through verbatim (null here —
+        // Polaris is not a configured target).
         assert!(v["progress"].is_null());
     }
 
@@ -161,6 +200,7 @@ mod tests {
         let rec = NextTargetRecommendation {
             target: None,
             reason: NextTargetReason::NoTargetsConfigured,
+            exposure: None,
         };
         let v = next_target_view(rec);
         assert_eq!(v["reason"], "no_targets_configured");
@@ -180,6 +220,7 @@ mod tests {
                 exposures: Vec::new(),
             }),
             reason: NextTargetReason::BestTransitingCandidate,
+            exposure: None,
         };
         let v = next_target_view(rec);
         assert_eq!(v["reason"], "best_transiting_candidate");
@@ -192,7 +233,10 @@ mod tests {
     }
 
     #[test]
-    fn next_target_view_returns_the_first_exposure_plan_entry() {
+    fn next_target_view_surfaces_the_recommended_exposure_entry() {
+        // The decision logic picks the entry (first incomplete, per
+        // the progress counters); the view must surface exactly that
+        // one — here the plan's *second* entry — not exposures[0].
         let rec = NextTargetRecommendation {
             target: Some(PlannerTarget {
                 name: "M31".into(),
@@ -203,18 +247,25 @@ mod tests {
                     ExposureSpec {
                         filter: Some("Luminance".to_string()),
                         duration_secs: 300.0,
+                        count: Some(1),
                     },
                     ExposureSpec {
                         filter: Some("Red".to_string()),
                         duration_secs: 120.0,
+                        count: Some(1),
                     },
                 ],
             }),
             reason: NextTargetReason::BestTransitingCandidate,
+            exposure: Some(ExposureSpec {
+                filter: Some("Red".to_string()),
+                duration_secs: 120.0,
+                count: Some(1),
+            }),
         };
         let v = next_target_view(rec);
-        assert_eq!(v["filter"], "Luminance");
-        assert_eq!(v["duration_secs"], 300.0);
+        assert_eq!(v["filter"], "Red");
+        assert_eq!(v["duration_secs"], 120.0);
         assert!(
             v["target"].get("exposures").is_none(),
             "the wire target object carries coordinates only: {v}"
@@ -223,22 +274,97 @@ mod tests {
 
     #[test]
     fn next_target_view_leaves_filter_null_for_an_unfiltered_plan_entry() {
+        let entry = ExposureSpec {
+            filter: None,
+            duration_secs: 60.0,
+            count: None,
+        };
         let rec = NextTargetRecommendation {
             target: Some(PlannerTarget {
                 name: "OSC Field".into(),
                 ra_hours: 0.7,
                 dec_degrees: 41.0,
                 min_altitude_degrees: None,
-                exposures: vec![ExposureSpec {
-                    filter: None,
-                    duration_secs: 60.0,
-                }],
+                exposures: vec![entry.clone()],
             }),
             reason: NextTargetReason::BestTransitingCandidate,
+            exposure: Some(entry),
         };
         let v = next_target_view(rec);
         assert!(v["filter"].is_null());
         assert_eq!(v["duration_secs"], 60.0);
+    }
+
+    #[test]
+    fn target_progress_view_seeds_plan_keys_and_carries_off_plan_records() {
+        let target = PlannerTarget {
+            name: "M31".into(),
+            ra_hours: 0.7,
+            dec_degrees: 41.0,
+            min_altitude_degrees: None,
+            exposures: vec![
+                ExposureSpec {
+                    filter: Some("L".to_string()),
+                    duration_secs: 300.0,
+                    count: Some(4),
+                },
+                ExposureSpec {
+                    filter: Some("R".to_string()),
+                    duration_secs: 120.0,
+                    count: None,
+                },
+            ],
+        };
+        let mut progress = SessionProgress::default();
+        progress.record("M31", Some("L"));
+        progress.record("M31", Some("Ha"));
+        let v = target_progress_view(&target, &progress);
+        assert_eq!(v["L"], serde_json::json!({"completed": 1, "goal": 4}));
+        assert_eq!(
+            v["R"],
+            serde_json::json!({"completed": 0, "goal": null}),
+            "an uncounted plan entry appears with a null goal"
+        );
+        assert_eq!(
+            v["Ha"],
+            serde_json::json!({"completed": 1, "goal": null}),
+            "a recorded filter outside the plan appears with a null goal"
+        );
+    }
+
+    #[test]
+    fn session_progress_view_lists_every_configured_target() {
+        let planned = PlannerTarget {
+            name: "M31".into(),
+            ra_hours: 0.7,
+            dec_degrees: 41.0,
+            min_altitude_degrees: None,
+            exposures: vec![ExposureSpec {
+                filter: None,
+                duration_secs: 60.0,
+                count: Some(2),
+            }],
+        };
+        let bare = PlannerTarget {
+            name: "M42".into(),
+            ra_hours: 5.5,
+            dec_degrees: -5.4,
+            min_altitude_degrees: None,
+            exposures: Vec::new(),
+        };
+        let mut progress = SessionProgress::default();
+        progress.record("M31", None);
+        let v = session_progress_view(&[planned, bare], &progress);
+        assert_eq!(
+            v["progress"]["M31"][""],
+            serde_json::json!({"completed": 1, "goal": 2}),
+            "the unfiltered slot lives under the empty-string key"
+        );
+        assert_eq!(
+            v["progress"]["M42"],
+            serde_json::json!({}),
+            "a target with no plan and no records is an empty object"
+        );
     }
 
     #[test]
