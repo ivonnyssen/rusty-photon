@@ -556,13 +556,12 @@ impl OmniSimProcess {
             .env_remove("LSAN_OPTIONS");
 
         // Per-instance settings dir: concurrent OmniSims must not share a
-        // writable profile store (see `prepare_settings_dir`). The fork's
+        // writable profile store (see `prepare_settings_dir`, which panics
+        // rather than degrade to the shared platform default). The fork's
         // OMNISIM_SETTINGS_DIR (467.2) re-roots the profile store on every
         // platform — XDG_CONFIG_HOME would cover Linux only (.NET ignores
         // it on macOS, and Windows never honored it).
-        if let Some(dir) = Self::prepare_settings_dir() {
-            cmd.env("OMNISIM_SETTINGS_DIR", dir);
-        }
+        cmd.env("OMNISIM_SETTINGS_DIR", Self::prepare_settings_dir());
 
         // On Linux, set PR_SET_PDEATHSIG so the kernel will SIGKILL this
         // child when the test process exits (normal, panic, or SIGKILL).
@@ -628,22 +627,31 @@ impl OmniSimProcess {
     /// every spawn so a write-back from a prior run can't leak into this
     /// one.
     ///
-    /// Returns `None` (and the caller proceeds without the override) only
-    /// when the destination dir can't be created at all. A missing seed
-    /// source is non-fatal: the instance still gets a private, initially
-    /// empty config dir and runs on upstream defaults.
-    fn prepare_settings_dir() -> Option<PathBuf> {
+    /// Panics when the destination dir can't be created: spawning without
+    /// the override would silently fall back to the shared platform-default
+    /// profile store — reintroducing exactly the cross-suite leakage this
+    /// isolation exists to prevent — so it must fail loudly instead. A
+    /// missing seed *source* stays non-fatal: the instance still gets a
+    /// private, initially empty config dir and runs on upstream defaults.
+    fn prepare_settings_dir() -> PathBuf {
         let dest = Self::state_root().join(format!("bdd-infra-omnisim-{}", std::process::id()));
         // Wipe whatever a prior spawn attempt (or a previous run that
         // recycled this PID) left behind so an OmniSim write-back from
         // then can't survive into this run's profile.
         let _ = std::fs::remove_dir_all(&dest);
-        std::fs::create_dir_all(&dest).ok()?;
+        std::fs::create_dir_all(&dest).unwrap_or_else(|e| {
+            panic!(
+                "bdd-infra: failed to create the per-instance OmniSim settings dir {}: {e} — \
+                 proceeding without OMNISIM_SETTINGS_DIR would make concurrent OmniSim \
+                 instances share the platform-default profile store",
+                dest.display()
+            )
+        });
         if let Some(src) = Self::seed_config_source() {
             // Best-effort: a partial copy still leaves a private dir.
             let _ = Self::copy_dir_recursive(&src, &dest);
         }
-        Some(dest)
+        dest
     }
 
     /// Locate the checked-in `omnisim-config` seed tree.

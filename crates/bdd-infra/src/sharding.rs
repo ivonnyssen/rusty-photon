@@ -45,11 +45,20 @@ static SHARD: OnceLock<Option<(u64, u64)>> = OnceLock::new();
 /// ("test runner did not advertise sharding support"). `bdd_main!` calls
 /// this unconditionally — it is a no-op outside Bazel and for unsharded
 /// targets.
+///
+/// Panics if the touch fails: Bazel would fail the shard anyway, but only
+/// *after* the process has run its full scenario slice, and with an error
+/// pointing at sharding support rather than at the actual I/O problem.
+/// Failing here surfaces the root cause before any scenario runs.
 pub fn advertise_bazel_sharding_support() {
     if let Some(path) = std::env::var_os("TEST_SHARD_STATUS_FILE") {
-        if let Err(e) = std::fs::write(&path, b"") {
-            eprintln!("bdd_main: failed to touch TEST_SHARD_STATUS_FILE {path:?}: {e}");
-        }
+        std::fs::write(&path, b"").unwrap_or_else(|e| {
+            panic!(
+                "bdd_main: failed to touch TEST_SHARD_STATUS_FILE {path:?}: {e} — \
+                 Bazel would treat the runner as non-sharding-aware and fail the \
+                 test after running the whole suite"
+            )
+        });
     }
 }
 
@@ -230,15 +239,43 @@ mod tests {
         assert!(with_name_a < 8 && with_name_b < 8);
     }
 
+    /// Serializes the tests that mutate the process-wide
+    /// `TEST_SHARD_STATUS_FILE` env var. Recovers from poisoning so a
+    /// panicking sibling (the should-fail test below uses catch_unwind,
+    /// but belt-and-braces) can't cascade.
+    static STATUS_FILE_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn lock_status_env() -> std::sync::MutexGuard<'static, ()> {
+        STATUS_FILE_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     #[test]
     fn advertise_touches_status_file_when_env_set() {
-        // Env mutation: TEST_SHARD_STATUS_FILE is only read inside this call,
-        // and no other test in this crate touches it.
+        let _lock = lock_status_env();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("shard_status");
         std::env::set_var("TEST_SHARD_STATUS_FILE", &path);
         advertise_bazel_sharding_support();
         std::env::remove_var("TEST_SHARD_STATUS_FILE");
         assert!(path.exists(), "status file must be created");
+    }
+
+    #[test]
+    fn advertise_panics_when_the_status_file_cannot_be_written() {
+        let _lock = lock_status_env();
+        let dir = tempfile::tempdir().unwrap();
+        // A path inside a directory that doesn't exist: the write must fail,
+        // and the failure must surface as a panic naming the file — not as a
+        // log line followed by Bazel failing the shard after the fact.
+        let path = dir.path().join("no-such-dir").join("shard_status");
+        std::env::set_var("TEST_SHARD_STATUS_FILE", &path);
+        let result = std::panic::catch_unwind(advertise_bazel_sharding_support);
+        std::env::remove_var("TEST_SHARD_STATUS_FILE");
+        assert!(
+            result.is_err(),
+            "an unwritable status file must fail loudly"
+        );
     }
 }
