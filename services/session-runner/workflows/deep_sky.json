@@ -252,7 +252,7 @@
                           "session.acquire_name": "result.target.name",
                           "session.acquire_ra": "result.target.ra_hours",
                           "session.acquire_dec": "result.target.dec_degrees",
-                          "session.acquire_filter": "result.filter != null ? result.filter : params.filter",
+                          "session.acquire_filter": "result.duration_secs != null ? (result.filter != null ? result.filter : '') : params.filter",
                           "session.acquire_duration": "result.duration_secs != null ? humantime(result.duration_secs) : params.exposure"
                         }
                       },

@@ -2074,6 +2074,47 @@ async fn test_golden_deep_sky_falls_back_to_the_exposure_parameter_without_a_pla
 }
 
 #[tokio::test]
+async fn test_golden_deep_sky_respects_an_unfiltered_plan_over_the_filter_parameter() {
+    // A plan whose first entry is explicitly unfiltered (filter null,
+    // duration_secs set) must image unfiltered — the `filter`
+    // parameter is a fallback for a *missing* plan, not a default the
+    // plan merges with. Falling back here would force a filter change
+    // the plan deliberately avoided.
+    let doc = make_doc(crate::document::corpus::golden_deep_sky());
+    let params = deep_sky_params(
+        &doc,
+        json!({
+            "focus": false,
+            "centering": false,
+            "filter": "Red",
+            "filter_wheel_id": "fw",
+            "max_frames": 1,
+            "park_on_finish": false
+        }),
+    );
+    let tools = MockTools::new(|_, tool, _| match tool {
+        "unpark" | "set_tracking" | "slew" => Ok(json!({})),
+        "get_next_target" => Ok(planned_recommendation(Value::Null, json!(60))),
+        "capture" => Ok(json!({ "image_path": "/tmp/light.fits", "document_id": "doc-1" })),
+        other => panic!("unexpected tool call `{other}`"),
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let (outcome, _) = run_in(&dir, &doc, &params, &tools, &MockClock::new()).await;
+
+    assert_eq!(outcome, RunOutcome::Completed);
+    let calls = tools.calls();
+    assert!(
+        !calls.iter().any(|(name, _)| name == "set_filter"),
+        "an explicitly unfiltered plan must not fall back to params.filter"
+    );
+    let capture = calls
+        .iter()
+        .find(|(name, _)| name == "capture")
+        .expect("capture must be called");
+    assert_eq!(capture.1["duration"], "1m");
+}
+
+#[tokio::test]
 async fn test_golden_deep_sky_fails_when_the_plan_names_a_filter_but_no_wheel_is_configured() {
     // The t=0 guard can only see the `filter` parameter; a filter
     // arriving in the planner's exposure plan mid-session must fail

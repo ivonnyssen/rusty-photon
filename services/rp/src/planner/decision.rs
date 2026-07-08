@@ -283,7 +283,7 @@ fn parse_exposures(entry: &Value, target: &str) -> Vec<ExposureSpec> {
         if !duration_secs.is_finite() || duration_secs <= 0.0 {
             tracing::debug!(
                 target = %target, duration_secs,
-                "skipping exposure entry with a non-positive `duration_secs`"
+                "skipping exposure entry with a non-finite or non-positive `duration_secs`"
             );
             continue;
         }

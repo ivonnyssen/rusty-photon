@@ -1059,9 +1059,12 @@ the document simplifies when it lands:
   the recommended target's first `exposures[]` entry (rp issue #462,
   closed). At acquisition the document stashes them — converting
   `duration_secs` to a humantime string with the `humantime()`
-  builtin — and falls back to the `exposure` / `filter` parameters when
-  the planner returns null (a target without `exposures[]`). A plan
-  that names a filter while `filter_wheel_id` is empty fails the
+  builtin — and falls back to the `exposure` / `filter` parameters
+  only when the target has **no plan** (`duration_secs` null). A plan
+  is authoritative for the whole exposure spec: an explicitly
+  unfiltered entry images unfiltered rather than merging with the
+  `filter` parameter. A plan that names a filter while
+  `filter_wheel_id` is empty fails the
   session loudly, mirroring the parameter guard. `max_frames`
   (`0` = unbounded) remains an invocation parameter. Rotating *within*
   a target's plan (Red after 20 Luminance frames) still needs progress
