@@ -12,7 +12,7 @@ inputs:
   version:
     description: OmniSim release version
     required: false
-    default: "v0.5.0-467.1"
+    default: "v0.5.0-467.2"
 
 runs:
   using: composite
@@ -20,14 +20,19 @@ runs:
     # Per-OS table. SHA-256 values are pinned against the OmniSim
     # release assets named below. They currently point at the patched
     # fork ivonnyssen/ASCOM.Alpaca.Simulators (default `repo` input,
-    # tag v0.5.0-467.1 = v0.5.0-326.4 + the --multi-instance flag).
+    # tag v0.5.0-467.2 = v0.5.0-326.4 + --multi-instance + OMNISIM_SETTINGS_DIR).
     #
-    # 467.1 (rusty-photon #467) adds `--multi-instance`: skips upstream's
-    # machine-global single-instance guard (named Mutex + named-pipe command
-    # server) so bdd-infra can run one private OmniSim per test process —
-    # the enabler for parallel OmniSim BDD suites and rp:bdd sharding.
-    # bdd-infra ALWAYS passes the flag now, so this pin is a hard floor:
-    # an older binary exits at startup whenever another instance is running.
+    # 467.x (rusty-photon #467) enables one private OmniSim per test process
+    # — the enabler for parallel OmniSim BDD suites and rp:bdd sharding.
+    # 467.1 adds `--multi-instance` (skips upstream's machine-global
+    # single-instance guard: named Mutex + named-pipe command server);
+    # 467.2 adds the OMNISIM_SETTINGS_DIR env var (re-roots the profile
+    # store — the default location is not redirectable on Windows or macOS,
+    # where concurrent instances otherwise share one store and leak
+    # persisted settings across suites; that took down 4 of 8 rp:bdd shards
+    # on macOS CI). bdd-infra ALWAYS passes both now, so this pin is a hard
+    # floor: an older binary exits at startup whenever another instance is
+    # running, or silently shares the profile store.
     #
     # The carried 326.x series fixes TelescopeHardware slew bugs behind the
     # center_on_target hang/flake (ivonnyssen/rusty-photon #326, #319):
@@ -49,23 +54,23 @@ runs:
         case "${{ runner.os }}-${{ runner.arch }}" in
           Linux-X64)
             ASSET="ascom.alpaca.simulators.linux-x64.tar.xz"
-            SHA256="68cca3f2b326579a71e02e70fd767987253fd7a700132cf23bd2fa5dace363e8"
+            SHA256="238cc7aa301b2d6cb3ad3ea07de8e55fa190007b086d49291eccd608741f834b"
             ;;
           Linux-ARM64)
             ASSET="ascom.alpaca.simulators.linux-aarch64.tar.xz"
-            SHA256="6c6dc32479b5a10e17b9a20b831940ccfb54e80576bd4946e2c1056ba432f1aa"
+            SHA256="22706e0f52d3ac46ab2c8612c4f231bb6e8c01a9eb814b3325f350ed5239ff49"
             ;;
           macOS-ARM64)
             ASSET="ascom.alpaca.simulators.macos-arm64.zip"
-            SHA256="3ab44c0abfa82c556f73da6c85c9d727956b67e6d66a9ae30996069ba168b7d0"
+            SHA256="8abc316ae14b9f40e860ff2423b377c32e6b348cd8d8b12dee4f4b37654aa4c3"
             ;;
           macOS-X64)
             ASSET="ascom.alpaca.simulators.macos-x64.zip"
-            SHA256="3b01f427f875c40e6ea4b5603e568ef9615ceea57e89f12c803449031bf8eff4"
+            SHA256="9f08339510ac72c14c073fc7e1d5cb7b14133d83564a5bbd1a95d7c3838d33e0"
             ;;
           Windows-X64)
             ASSET="ascom.alpaca.simulators.windows-x64.zip"
-            SHA256="ff2d558e661ce5d465da2c345be16164ba0ddea3837ea7f68ff76073427995b6"
+            SHA256="dc5dc71c7149b66ad9b5cc728d3a3c384d0b12587dc6f3b3d405f28fcf5f46ba"
             ;;
           *)
             echo "::error::Unsupported platform: ${{ runner.os }}-${{ runner.arch }}"

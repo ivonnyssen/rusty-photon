@@ -2,10 +2,12 @@
 <!--
   OmniSim covercalibrator profile shipped by bdd-infra. This file is
   the source of truth for the per-test simulator defaults; bdd-infra
-  copies the entire `crates/bdd-infra/omnisim-config/ascom/alpaca/...`
-  tree to a per-build XDG_CONFIG_HOME under the cargo target directory
-  before spawning OmniSim, so the simulator's own write-back on
-  startup goes there and never touches this checked-in copy.
+  copies the entire `crates/bdd-infra/omnisim-config/` tree into a
+  per-instance OMNISIM_SETTINGS_DIR (a scratch dir under TEST_TMPDIR
+  or the cargo target tree) before spawning OmniSim, so the
+  simulator's own write-back on startup goes there and never touches
+  this checked-in copy. The tree's layout mirrors what the patched
+  fork (v0.5.0-467.2+) expects under the settings root.
 
   Tunables relevant to BDD wall-clock:
     Cover Opening Time            seconds; OmniSim uses asynchronous

@@ -415,9 +415,12 @@ test spawns `rp` alongside OmniSim and/or an orchestrator plugin:
 
 - `OmniSimHandle` — per-test-process Alpaca simulator shared across that
   process's scenarios. Spawned with the fork's `--multi-instance` flag on a
-  dynamically chosen port with a private settings dir, so concurrent test
+  dynamically chosen port with a private settings dir (the fork's
+  `OMNISIM_SETTINGS_DIR` env var — works on every OS, unlike
+  `XDG_CONFIG_HOME`, which .NET ignores on macOS), so concurrent test
   processes (parallel Bazel suites, `rp:bdd` shards, a dev OmniSim on the
-  default port) never contend for one simulator.
+  default port) never contend for one simulator or leak persisted profile
+  settings into each other.
 - `RpConfigBuilder` + `CameraConfig` / `FilterWheelConfig` /
   `CoverCalibratorConfig` — fluent builder that emits rp's JSON config.
 - `start_rp`, `wait_for_rp_healthy`, `write_temp_config_file`,
@@ -710,10 +713,12 @@ sharding support to Bazel. Skipping step 2 silently makes every shard
 run the whole suite. Scenarios are partitioned by a stable hash of
 (feature file name, scenario line), and `@serial` still applies within
 each shard, which is exactly the scope it protects — one process's
-shared instance. Windows is the exception: OmniSim's profile store
-there can't be isolated per instance, so the Bazel `omnisim` resource
-pool (capacity 1 on Windows, see `.bazelrc`) serializes all
-OmniSim-spawning actions, shards included.
+shared instance. This holds on every OS: profile-store isolation uses
+the fork's `OMNISIM_SETTINGS_DIR` (release `v0.5.0-467.2`), which
+re-roots OmniSim's profile store per instance on all platforms — the
+default store is not redirectable on Windows or macOS, and a shared
+store leaks persisted settings (e.g. the telescope site) between
+concurrently running suites.
 
 ---
 

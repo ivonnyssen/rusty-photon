@@ -3,22 +3,28 @@
 //! A single OmniSim process is shared across all scenarios in a test binary
 //! via a [`tokio::sync::OnceCell`]. Each test process spawns its **own**
 //! instance on a **dynamically chosen port**, passing `--multi-instance` —
-//! the flag added to our OmniSim fork (release `v0.5.0-467.1`,
-//! `ivonnyssen/ASCOM.Alpaca.Simulators`) that skips upstream's machine-global
+//! the flag added to our OmniSim fork (`ivonnyssen/ASCOM.Alpaca.Simulators`,
+//! release `v0.5.0-467.1`) that skips upstream's machine-global
 //! single-instance guard (a named Mutex keyed on a fixed GUID, backed by a
 //! file under `/tmp/.dotnet/shm/` on Unix). Combined with a per-instance
-//! settings dir (see [`OmniSimProcess::prepare_xdg_config_home`]), any number
+//! settings dir (see [`OmniSimProcess::prepare_settings_dir`]), any number
 //! of BDD test processes — parallel Bazel targets, shards of one target, or a
 //! stray dev instance on the default port — can run concurrently without
 //! contending for one simulator. This is what lets Bazel run the
 //! OmniSim-backed suites in parallel and shard `rp:bdd` (issue #467).
 //!
-//! Windows is the exception: OmniSim's profile store there is
-//! `%USERPROFILE%\.ASCOM` (ASCOM.Tools `XMLProfile`), which no environment
-//! variable can redirect per-instance, so concurrent instances would race
-//! each other's profile write-backs. The Bazel `omnisim` resource pool keeps
-//! capacity 1 on Windows (see `.bazelrc`) and these suites still serialize
-//! there.
+//! The settings dir is passed via `OMNISIM_SETTINGS_DIR` (fork release
+//! `v0.5.0-467.2`, the version floor), NOT `XDG_CONFIG_HOME`: .NET honors
+//! XDG only on non-macOS Unix, so on macOS OmniSim's profile store defaults
+//! to the shared `~/Library/Application Support` (and on Windows to
+//! `%USERPROFILE%\.ASCOM`), neither redirectable by any environment
+//! variable. Concurrent instances sharing one profile store race their
+//! startup write-backs and leak persisted *settings* across suites — on
+//! macOS CI, session-runner's computed telescope site leaked into rp's
+//! shards through per-scenario `restart` (which reloads from the profile)
+//! and rp refused to start on mount-site validation. The fork's env var
+//! bypasses the platform lookup entirely, so isolation is deterministic on
+//! every OS and the Bazel `omnisim` pool runs parallel everywhere.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -86,10 +92,12 @@ impl OmniSimHandle {
     /// 2. `OMNISIM_DIR` env var — directory containing the binary
     /// 3. `ascom.alpaca.simulators` on `PATH`
     ///
-    /// The binary must support `--multi-instance` (fork release
-    /// `v0.5.0-467.1` or newer); an older binary exits immediately when
-    /// another instance is running, which surfaces here as a spawn failure
-    /// naming the flag.
+    /// The binary must support `--multi-instance` and `OMNISIM_SETTINGS_DIR`
+    /// (fork release `v0.5.0-467.2` or newer). An older binary either exits
+    /// immediately when another instance is running (pre-467.1, surfaces
+    /// here as a spawn failure naming the flag) or silently ignores the
+    /// settings-dir override and shares the platform-default profile store
+    /// with every other instance (467.1 on macOS/Windows).
     pub async fn start() -> Self {
         let process = OMNISIM
             .get_or_init(|| async { OmniSimProcess::get_or_spawn().await })
@@ -509,10 +517,11 @@ impl OmniSimProcess {
         }
         panic!(
             "failed to start OmniSim binary '{}' after {} attempts: {}. \
-             Note: bdd-infra spawns OmniSim with --multi-instance, which needs \
-             the patched fork (ivonnyssen/ASCOM.Alpaca.Simulators release \
-             v0.5.0-467.1 or newer) — an older binary exits at startup when \
-             any other OmniSim instance is running on the host.",
+             Note: bdd-infra spawns OmniSim with --multi-instance and \
+             OMNISIM_SETTINGS_DIR, which need the patched fork \
+             (ivonnyssen/ASCOM.Alpaca.Simulators release v0.5.0-467.2 or \
+             newer) — an older binary exits at startup when any other \
+             OmniSim instance is running on the host.",
             binary, SPAWN_ATTEMPTS, last_failure
         );
     }
@@ -546,12 +555,12 @@ impl OmniSimProcess {
             .env_remove("LSAN_OPTIONS");
 
         // Per-instance settings dir: concurrent OmniSims must not share a
-        // writable profile store (see `prepare_xdg_config_home`). On Windows
-        // OmniSim ignores XDG_CONFIG_HOME (profile lives in
-        // %USERPROFILE%\.ASCOM) — the env var is harmless there, and the
-        // Bazel `omnisim` pool keeps Windows serialized instead.
-        if let Some(xdg) = Self::prepare_xdg_config_home() {
-            cmd.env("XDG_CONFIG_HOME", xdg);
+        // writable profile store (see `prepare_settings_dir`). The fork's
+        // OMNISIM_SETTINGS_DIR (467.2) re-roots the profile store on every
+        // platform — XDG_CONFIG_HOME would cover Linux only (.NET ignores
+        // it on macOS, and Windows never honored it).
+        if let Some(dir) = Self::prepare_settings_dir() {
+            cmd.env("OMNISIM_SETTINGS_DIR", dir);
         }
 
         // On Linux, set PR_SET_PDEATHSIG so the kernel will SIGKILL this
@@ -595,13 +604,16 @@ impl OmniSimProcess {
             .unwrap_or_else(|e| panic!("failed to probe a free port for OmniSim: {}", e))
     }
 
-    /// Seed a per-instance `XDG_CONFIG_HOME` for OmniSim and return its
-    /// path. The seed is a recursive copy of the checked-in
-    /// `crates/bdd-infra/omnisim-config/...` tree. OmniSim writes back
-    /// to this directory on startup (e.g. emitting missing UniqueIDs,
-    /// persisting full default profiles), so we MUST copy the source
-    /// into a scratch location and never let OmniSim see the repository
-    /// copy directly.
+    /// Seed a per-instance `OMNISIM_SETTINGS_DIR` for OmniSim and return
+    /// its path. The seed is a recursive copy of the checked-in
+    /// `crates/bdd-infra/omnisim-config/` tree, whose layout mirrors what
+    /// the fork puts under the settings root
+    /// (`ascom-alpaca-simulator/<device>/v1/instance-0.xml`; the lowercase
+    /// names also satisfy Windows' case-insensitive lookups of its
+    /// platform-cased paths). OmniSim writes back to this directory on
+    /// startup (e.g. emitting missing UniqueIDs, persisting full default
+    /// profiles), so we MUST copy the source into a scratch location and
+    /// never let OmniSim see the repository copy directly.
     ///
     /// The destination is suffixed with the test process's PID
     /// (`bdd-infra-omnisim-<pid>/`) under [`Self::state_root`]: with
@@ -609,14 +621,17 @@ impl OmniSimProcess {
     /// instances must not share a writable profile dir either — a shared
     /// dir would race the startup write-backs and leak profile *settings*
     /// (e.g. the telescope site, which `restart` does not reset) between
-    /// concurrently running suites. We fully reseed on every spawn so a
-    /// write-back from a prior run can't leak into this one.
+    /// concurrently running suites. That leak is not hypothetical: it
+    /// failed 4 of 8 rp:bdd shards on macOS CI when isolation still rode
+    /// on XDG_CONFIG_HOME, which .NET ignores there. We fully reseed on
+    /// every spawn so a write-back from a prior run can't leak into this
+    /// one.
     ///
     /// Returns `None` (and the caller proceeds without the override) only
     /// when the destination dir can't be created at all. A missing seed
     /// source is non-fatal: the instance still gets a private, initially
     /// empty config dir and runs on upstream defaults.
-    fn prepare_xdg_config_home() -> Option<PathBuf> {
+    fn prepare_settings_dir() -> Option<PathBuf> {
         let dest = Self::state_root().join(format!("bdd-infra-omnisim-{}", std::process::id()));
         // Wipe whatever a prior spawn attempt (or a previous run that
         // recycled this PID) left behind so an OmniSim write-back from
@@ -685,7 +700,7 @@ impl OmniSimProcess {
     /// Resolve the log directory for OmniSim's captured stdout/stderr.
     /// Lives at `<CARGO_TARGET_DIR>/bdd-infra-omnisim-logs/` (or
     /// `<workspace>/target/bdd-infra-omnisim-logs/` if unset). Kept
-    /// outside the seeded XDG dir so `prepare_xdg_config_home`'s
+    /// outside the seeded settings dir so `prepare_settings_dir`'s
     /// `remove_dir_all` can't sweep the previous run's logs.
     ///
     /// Returns `None` (caller falls back to `Stdio::null`) only if the

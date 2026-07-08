@@ -3587,12 +3587,15 @@ of the environment variables above. In CI, the
 automatically.
 
 **CI pins a patched fork**, not upstream: the action defaults to
-[`ivonnyssen/ASCOM.Alpaca.Simulators` `v0.5.0-467.1`](https://github.com/ivonnyssen/ASCOM.Alpaca.Simulators/releases/tag/v0.5.0-467.1).
-That release adds the `--multi-instance` flag (issue #467) — the harness
-always spawns OmniSim with it, so **the fork is a hard requirement for
-BDD runs now**, local ones included: it skips upstream's machine-global
-single-instance mutex so every test process (parallel suites, `rp:bdd`
-shards) gets a private simulator on its own port. It also carries the
+[`ivonnyssen/ASCOM.Alpaca.Simulators` `v0.5.0-467.2`](https://github.com/ivonnyssen/ASCOM.Alpaca.Simulators/releases/tag/v0.5.0-467.2).
+The `467.x` releases (issue #467) add the `--multi-instance` flag (467.1,
+skips upstream's machine-global single-instance mutex) and the
+`OMNISIM_SETTINGS_DIR` env var (467.2, re-roots the profile store per
+instance on every platform — the default store is not redirectable on
+Windows or macOS). The harness always spawns OmniSim with both, so **the
+fork is a hard requirement for BDD runs now**, local ones included: every
+test process (parallel suites, `rp:bdd` shards) gets a private simulator
+on its own port with a private profile store. It also carries the
 `326.x` series of `TelescopeHardware` fixes
 for the `center_on_target` slew-state hang/flake (issues #326, #319):
 326.1/.2 put the slew-engine writers and the

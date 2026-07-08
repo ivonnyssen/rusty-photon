@@ -157,20 +157,19 @@ rust_test(
     # sharding support (TEST_SHARD_STATUS_FILE) and tests/bdd.rs routes the
     # scenario filter through bdd_infra::sharding, so each shard runs a
     # deterministic slice of the scenarios against its own private OmniSim
-    # (--multi-instance + dynamic port; see crates/bdd-infra/src/rp_harness/
-    # omnisim.rs). @serial semantics are preserved *within* each shard. On
-    # Windows the `omnisim` pool (capacity 1, .bazelrc) serializes the shards
-    # — wall clock there stays roughly the unsharded total.
+    # (--multi-instance + dynamic port + per-instance OMNISIM_SETTINGS_DIR;
+    # see crates/bdd-infra/src/rp_harness/omnisim.rs). @serial semantics are
+    # preserved *within* each shard.
     shard_count = 8,
     # `resources:omnisim:1`: every OmniSim-spawning BDD action (each shard of
     # this target, and the other three OmniSim suites) takes one token from
     # the `omnisim` pool defined in .bazelrc. Since #467 the harness spawns a
     # private OmniSim per test process (--multi-instance + dynamic port +
-    # per-instance XDG_CONFIG_HOME), so on Linux/macOS the pool is sized
-    # generously and these actions genuinely run in parallel. On Windows the
-    # pool stays at 1: OmniSim's profile store there is %USERPROFILE%\.ASCOM
-    # (ASCOM.Tools XMLProfile), which no env var can redirect per-instance,
-    # so concurrent instances would race each other's profile write-backs.
+    # per-instance OMNISIM_SETTINGS_DIR — the fork env var that re-roots the
+    # profile store on every platform; XDG_CONFIG_HOME only worked on Linux),
+    # so the pool is sized generously on every OS and these actions genuinely
+    # run in parallel; it remains only as a throttle to grab if OmniSim
+    # concurrency ever turns flaky.
     # Any new OmniSim-spawning BDD target MUST also carry this tag.
     tags = [
         "bdd",
