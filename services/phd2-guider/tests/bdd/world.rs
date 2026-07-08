@@ -111,16 +111,28 @@ impl GuiderWorld {
         apply_child_coverage_profile(&mut cmd);
         let mut child = cmd.spawn().expect("spawn mock_phd2");
 
+        // Bounded wait for the port announcement: a wedged child must
+        // fail the scenario within 10 s (and be reaped) rather than
+        // hanging the suite on an endless stdout read.
         let stdout = child.stdout.take().expect("mock_phd2 stdout piped");
-        let port = BufReader::new(stdout)
-            .lines()
-            .find_map(|line| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let port = BufReader::new(stdout).lines().find_map(|line| {
                 line.ok().and_then(|l| {
                     l.strip_prefix("MOCK_PHD2_PORT:")
                         .and_then(|p| p.parse::<u16>().ok())
                 })
-            })
-            .expect("mock_phd2 announced no port");
+            });
+            let _ = tx.send(port);
+        });
+        let port = match rx.recv_timeout(Duration::from_secs(10)) {
+            Ok(Some(port)) => port,
+            outcome => {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("mock_phd2 announced no port within 10s (read outcome: {outcome:?})");
+            }
+        };
 
         self.mock = Some(MockPhd2Handle { port, child });
     }

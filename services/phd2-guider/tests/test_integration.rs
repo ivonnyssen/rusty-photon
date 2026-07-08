@@ -2380,17 +2380,25 @@ fn test_no_subcommand_starts_the_http_service() {
         .spawn()
         .expect("spawn bare phd2-guider");
 
+    // Bounded wait: a serve that wedges before printing must fail the
+    // test within 10 s (and be reaped), not hang the runner on an
+    // endless stdout read.
     let stdout = child.stdout.take().expect("stdout piped");
-    let bound = BufReader::new(stdout)
-        .lines()
-        .find_map(|line| line.ok().filter(|l| l.starts_with("bound_addr=")));
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let bound = BufReader::new(stdout)
+            .lines()
+            .find_map(|line| line.ok().filter(|l| l.starts_with("bound_addr=")));
+        let _ = tx.send(bound);
+    });
+    let bound = rx.recv_timeout(Duration::from_secs(10)).ok().flatten();
 
     let _ = child.kill();
     let _ = child.wait();
 
     assert!(
         bound.is_some(),
-        "bare invocation must start the HTTP service and print bound_addr="
+        "bare invocation must start the HTTP service and print bound_addr= within 10s"
     );
 }
 

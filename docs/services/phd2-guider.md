@@ -844,10 +844,11 @@ meaningless. `stats` and `health` do not take the mutex.
 
 ### Error envelope
 
-Errors return the plate-solver's structured shape:
+Errors return the plate-solver's structured shape (`details` is
+omitted from the wire when there is nothing to attach):
 
 ```json
-{ "error": "guide_failed", "message": "settle failed: Star lost", "details": null }
+{ "error": "guide_failed", "message": "settle failed: Star lost" }
 ```
 
 | Code | HTTP status | Trigger |
