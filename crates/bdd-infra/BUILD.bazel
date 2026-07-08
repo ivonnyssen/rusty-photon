@@ -24,9 +24,10 @@ rust_library(
 # rp_harness module (OmniSim, rp config builder, webhook receiver,
 # test orchestrator, MCP client) and the sky_survey_camera_harness
 # module (SkyView stub, sky-survey-camera config builder, process
-# spawner). The rp-harness feature gates the dep on rp-fits, which
-# is used by both the plate-solver stub's CRVAL round-trip and the
-# SkyView stub's WCS-bearing FITS minting.
+# spawner). The rp-harness feature gates the deps on rp-fits (the
+# plate-solver stub's CRVAL round-trip and the SkyView stub's
+# WCS-bearing FITS minting) and rp-ephemeris (the NightSky computed
+# site/targets for planner-driven scenarios).
 rust_library(
     name = "bdd-infra_rp_harness",
     srcs = glob(
@@ -39,7 +40,10 @@ rust_library(
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = ["//visibility:public"],
-    deps = ["//crates/rp-fits"] + all_crate_deps(normal = True),
+    deps = [
+        "//crates/rp-ephemeris",
+        "//crates/rp-fits",
+    ] + all_crate_deps(normal = True),
 )
 
 # Variant with the conformu feature enabled. Services' conformu_integration
@@ -121,7 +125,10 @@ rust_test(
         proc_macro = True,
         proc_macro_dev = True,
     ),
-    deps = ["//crates/rp-fits"] + all_crate_deps(
+    deps = [
+        "//crates/rp-ephemeris",
+        "//crates/rp-fits",
+    ] + all_crate_deps(
         normal = True,
         normal_dev = True,
     ),

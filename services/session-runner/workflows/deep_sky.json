@@ -1,0 +1,370 @@
+{
+  "version": 1,
+  "name": "deep-sky",
+  "description": "Classic multi-target deep-sky imaging session: unpark and start tracking, then a dispatch loop that asks rp's planner for the best target after every frame — acquiring on target change (slew, optional plate-solve centering, optional auto-focus) and capturing one frame per pass — with reactive refocusing and meridian-flip handling, ending at the frame budget or dawn and optionally parking. Written against rp's v1 planner surface: the exposure plan is parameters (get_next_target returns no filter/duration yet), progress is counted in the blackboard (record_exposure does not exist yet), and there is no guiding or dithering (rp has no guider tools yet) — see docs/services/session-runner.md § deep_sky.json.",
+  "parameters": {
+    "camera_id": { "type": "string", "required": true },
+    "exposure": { "type": "duration", "default": "300s" },
+    "max_frames": { "type": "integer", "default": 0 },
+    "filter_wheel_id": { "type": "string", "default": "" },
+    "filter": { "type": "string", "default": "" },
+    "centering": { "type": "boolean", "default": true },
+    "centering_exposure": { "type": "duration", "default": "5s" },
+    "centering_tolerance_arcsec": { "type": "number", "default": 60 },
+    "centering_max_attempts": { "type": "integer", "default": 5 },
+    "focus": { "type": "boolean", "default": true },
+    "focuser_id": { "type": "string", "default": "" },
+    "focus_exposure": { "type": "duration", "default": "3s" },
+    "focus_step_size": { "type": "integer", "default": 100 },
+    "focus_half_width": { "type": "integer", "default": 500 },
+    "focus_min_area": { "type": "integer", "default": 5 },
+    "focus_max_area": { "type": "integer", "default": 65536 },
+    "refocus_every": { "type": "integer", "default": 0 },
+    "refocus_hfr_factor": { "type": "number", "default": 1.2 },
+    "meridian_margin": { "type": "number", "default": 300 },
+    "park_on_finish": { "type": "boolean", "default": true }
+  },
+  "estimated_duration": "8h",
+  "max_duration": "14h",
+  "triggers": [
+    {
+      "id": "refocus-after-frames",
+      "on": { "event": "exposure_complete" },
+      "when": "params.focus == true && params.refocus_every > 0 && session.frames_since_focus >= params.refocus_every",
+      "while": "session.imaging == true",
+      "do": [
+        {
+          "try": [
+            {
+              "tool": "auto_focus",
+              "args": {
+                "camera_id": { "$expr": "params.camera_id" },
+                "focuser_id": { "$expr": "params.focuser_id" },
+                "duration": { "$expr": "params.focus_exposure" },
+                "step_size": { "$expr": "params.focus_step_size" },
+                "half_width": { "$expr": "params.focus_half_width" },
+                "min_area": { "$expr": "params.focus_min_area" },
+                "max_area": { "$expr": "params.focus_max_area" }
+              }
+            },
+            { "set": { "session.last_focus_hfr": "result.best_hfr" } }
+          ],
+          "catch": [
+            {
+              "log": {
+                "level": "info",
+                "message": "scheduled refocus failed; continuing at the current focus position",
+                "values": { "error": "error.message" }
+              }
+            }
+          ]
+        },
+        { "set": { "session.frames_since_focus": "0" } }
+      ]
+    },
+    {
+      "id": "refocus-on-hfr-degradation",
+      "on": { "event": "exposure_complete" },
+      "when": "params.focus == true && params.refocus_hfr_factor > 0 && has(session.last_focus_hfr)",
+      "while": "session.imaging == true",
+      "cooldown": "15m",
+      "do": [
+        {
+          "tool": "measure_basic",
+          "args": {
+            "document_id": { "$expr": "event.document_id" },
+            "min_area": { "$expr": "params.focus_min_area" },
+            "max_area": { "$expr": "params.focus_max_area" }
+          }
+        },
+        {
+          "if": "result.hfr != null && result.hfr > session.last_focus_hfr * params.refocus_hfr_factor",
+          "then": [
+            {
+              "try": [
+                {
+                  "tool": "auto_focus",
+                  "args": {
+                    "camera_id": { "$expr": "params.camera_id" },
+                    "focuser_id": { "$expr": "params.focuser_id" },
+                    "duration": { "$expr": "params.focus_exposure" },
+                    "step_size": { "$expr": "params.focus_step_size" },
+                    "half_width": { "$expr": "params.focus_half_width" },
+                    "min_area": { "$expr": "params.focus_min_area" },
+                    "max_area": { "$expr": "params.focus_max_area" }
+                  }
+                },
+                { "set": { "session.last_focus_hfr": "result.best_hfr" } }
+              ],
+              "catch": [
+                {
+                  "log": {
+                    "level": "info",
+                    "message": "HFR-triggered refocus failed; continuing at the current focus position",
+                    "values": { "error": "error.message" }
+                  }
+                }
+              ]
+            },
+            { "set": { "session.frames_since_focus": "0" } }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "flip-when-due",
+      "on": { "poll": { "tool": "get_meridian_status", "args": {}, "interval": "30s" } },
+      "when": "event.time_to_flip_seconds != null && event.time_to_flip_seconds < params.meridian_margin",
+      "while": "session.imaging == true",
+      "do": [
+        {
+          "log": {
+            "level": "info",
+            "message": "meridian flip due — re-slewing to the target",
+            "values": { "time_to_flip_seconds": "event.time_to_flip_seconds" }
+          }
+        },
+        {
+          "tool": "slew",
+          "args": {
+            "ra": { "$expr": "session.target_ra" },
+            "dec": { "$expr": "session.target_dec" }
+          }
+        },
+        {
+          "if": "params.centering == true",
+          "then": [
+            {
+              "tool": "center_on_target",
+              "args": {
+                "camera_id": { "$expr": "params.camera_id" },
+                "ra": { "$expr": "session.target_ra" },
+                "dec": { "$expr": "session.target_dec" },
+                "duration": { "$expr": "params.centering_exposure" },
+                "tolerance_arcsec": { "$expr": "params.centering_tolerance_arcsec" },
+                "max_attempts": { "$expr": "params.centering_max_attempts" }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "root": {
+    "sequence": [
+      {
+        "set": {
+          "session.total_frames": "has(session.total_frames) ? session.total_frames : 0",
+          "session.frames_since_focus": "has(session.frames_since_focus) ? session.frames_since_focus : 0",
+          "session.report.total_frames": "has(session.report.total_frames) ? session.report.total_frames : 0"
+        }
+      },
+      {
+        "id": "recovery-reacquire",
+        "if": "has(params._recovery.reason)",
+        "then": [
+          {
+            "log": {
+              "level": "info",
+              "message": "resuming after an interruption — the target will be re-acquired",
+              "values": { "reason": "params._recovery.reason" }
+            }
+          },
+          {
+            "set": {
+              "session.target_name": "null",
+              "session.imaging": "false"
+            }
+          }
+        ]
+      },
+      { "tool": "unpark", "args": {} },
+      { "tool": "set_tracking", "args": { "enabled": true } },
+      {
+        "if": "params.filter != '' && params.filter_wheel_id != ''",
+        "then": [
+          {
+            "tool": "set_filter",
+            "args": {
+              "filter_wheel_id": { "$expr": "params.filter_wheel_id" },
+              "filter_name": { "$expr": "params.filter" }
+            }
+          }
+        ]
+      },
+      {
+        "id": "dispatch",
+        "repeat": { "while": "session.session_over != true", "max_iterations": 20000 },
+        "body": [
+          { "tool": "get_next_target", "args": {} },
+          {
+            "if": "result.reason == 'end_of_session'",
+            "then": [
+              { "log": { "level": "info", "message": "the planner declared the session over" } },
+              { "set": { "session.session_over": "true" } }
+            ],
+            "else": [
+              {
+                "if": "result.target == null",
+                "then": [
+                  {
+                    "if": "result.reason == 'wait_for_twilight' && session.total_frames > 0",
+                    "then": [
+                      {
+                        "log": {
+                          "level": "info",
+                          "message": "dawn twilight reached — ending the session",
+                          "values": { "total_frames": "session.total_frames" }
+                        }
+                      },
+                      { "set": { "session.session_over": "true" } }
+                    ],
+                    "else": [
+                      { "set": { "session.imaging": "false" } },
+                      {
+                        "log": {
+                          "message": "no viable target — waiting before re-asking the planner",
+                          "values": { "reason": "result.reason" }
+                        }
+                      },
+                      { "wait": { "duration": "5m" } }
+                    ]
+                  }
+                ],
+                "else": [
+                  {
+                    "id": "acquire-on-target-change",
+                    "if": "session.target_name != result.target.name",
+                    "then": [
+                      {
+                        "set": {
+                          "session.imaging": "false",
+                          "session.acquire_name": "result.target.name",
+                          "session.acquire_ra": "result.target.ra_hours",
+                          "session.acquire_dec": "result.target.dec_degrees"
+                        }
+                      },
+                      {
+                        "log": {
+                          "level": "info",
+                          "message": "acquiring target",
+                          "values": { "target": "session.acquire_name" }
+                        }
+                      },
+                      {
+                        "tool": "slew",
+                        "args": {
+                          "ra": { "$expr": "session.acquire_ra" },
+                          "dec": { "$expr": "session.acquire_dec" }
+                        }
+                      },
+                      {
+                        "if": "params.centering == true",
+                        "then": [
+                          {
+                            "tool": "center_on_target",
+                            "args": {
+                              "camera_id": { "$expr": "params.camera_id" },
+                              "ra": { "$expr": "session.acquire_ra" },
+                              "dec": { "$expr": "session.acquire_dec" },
+                              "duration": { "$expr": "params.centering_exposure" },
+                              "tolerance_arcsec": { "$expr": "params.centering_tolerance_arcsec" },
+                              "max_attempts": { "$expr": "params.centering_max_attempts" }
+                            }
+                          }
+                        ]
+                      },
+                      {
+                        "if": "params.focus == true",
+                        "then": [
+                          {
+                            "try": [
+                              {
+                                "tool": "auto_focus",
+                                "args": {
+                                  "camera_id": { "$expr": "params.camera_id" },
+                                  "focuser_id": { "$expr": "params.focuser_id" },
+                                  "duration": { "$expr": "params.focus_exposure" },
+                                  "step_size": { "$expr": "params.focus_step_size" },
+                                  "half_width": { "$expr": "params.focus_half_width" },
+                                  "min_area": { "$expr": "params.focus_min_area" },
+                                  "max_area": { "$expr": "params.focus_max_area" }
+                                }
+                              },
+                              { "set": { "session.last_focus_hfr": "result.best_hfr" } }
+                            ],
+                            "catch": [
+                              {
+                                "log": {
+                                  "level": "info",
+                                  "message": "auto-focus failed; continuing at the current focus position",
+                                  "values": { "error": "error.message" }
+                                }
+                              }
+                            ]
+                          },
+                          { "set": { "session.frames_since_focus": "0" } }
+                        ]
+                      },
+                      {
+                        "set": {
+                          "session.target_name": "session.acquire_name",
+                          "session.target_ra": "session.acquire_ra",
+                          "session.target_dec": "session.acquire_dec",
+                          "session.imaging": "true"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "id": "light-frame",
+                    "tool": "capture",
+                    "args": {
+                      "camera_id": { "$expr": "params.camera_id" },
+                      "duration": { "$expr": "params.exposure" }
+                    }
+                  },
+                  {
+                    "set": {
+                      "session.total_frames": "session.total_frames + 1",
+                      "session.frames_since_focus": "session.frames_since_focus + 1"
+                    }
+                  },
+                  { "set": { "session.report.total_frames": "session.total_frames" } },
+                  {
+                    "if": "params.max_frames > 0 && session.total_frames >= params.max_frames",
+                    "then": [
+                      {
+                        "log": {
+                          "level": "info",
+                          "message": "frame budget reached — ending the session",
+                          "values": { "total_frames": "session.total_frames" }
+                        }
+                      },
+                      { "set": { "session.session_over": "true" } }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      { "set": { "session.imaging": "false" } },
+      {
+        "log": {
+          "level": "info",
+          "message": "session over — shutting down",
+          "values": {
+            "total_frames": "session.total_frames",
+            "dispatch_converged": "result.converged"
+          }
+        }
+      },
+      {
+        "if": "params.park_on_finish == true",
+        "then": [{ "tool": "park", "args": {} }]
+      }
+    ]
+  }
+}

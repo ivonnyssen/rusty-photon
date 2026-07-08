@@ -246,6 +246,133 @@ impl OmniSimHandle {
         Ok(())
     }
 
+    /// Set the telescope simulator's observer site (`SiteLatitude` /
+    /// `SiteLongitude`, standard Alpaca telescope properties). rp
+    /// hard-errors on mount connect when its configured `site` differs
+    /// from the mount's reported site by more than 0.01° (rp.md § Site
+    /// Validation Against the ASCOM Mount), so scenarios that compute a
+    /// site at runtime must teach the simulated mount the same one
+    /// before rp starts.
+    ///
+    /// The write is in-memory until OmniSim's own profile-save path
+    /// runs; the per-scenario `restart` reloads the persisted profile,
+    /// so scenarios set the site after the reset hook, not before.
+    pub async fn set_telescope_site(
+        latitude_degrees: f64,
+        longitude_degrees: f64,
+    ) -> Result<(), String> {
+        let base_url = Self::singleton_base_url();
+        Self::put_telescope_form_at(
+            &base_url,
+            0,
+            "sitelatitude",
+            &[("SiteLatitude", format!("{latitude_degrees}"))],
+        )
+        .await?;
+        Self::put_telescope_form_at(
+            &base_url,
+            0,
+            "sitelongitude",
+            &[("SiteLongitude", format!("{longitude_degrees}"))],
+        )
+        .await
+    }
+
+    /// Enable or disable the telescope simulator's sidereal tracking
+    /// (`Tracking`, standard Alpaca). OmniSim requires tracking to be
+    /// on before `SyncToCoordinates` — call this before
+    /// [`Self::sync_telescope_to`].
+    pub async fn set_telescope_tracking(enabled: bool) -> Result<(), String> {
+        let base_url = Self::singleton_base_url();
+        Self::put_telescope_form_at(
+            &base_url,
+            0,
+            "tracking",
+            &[(
+                "Tracking",
+                if enabled { "true" } else { "false" }.to_string(),
+            )],
+        )
+        .await
+    }
+
+    /// Sync the telescope simulator to equatorial coordinates
+    /// (`SyncToCoordinates`, standard Alpaca): teleports the mount's
+    /// coordinate frame without physical motion, so a scenario can
+    /// start a session with the mount already "pointing" near its
+    /// target and every document slew stays sub-degree (OmniSim slews
+    /// at real-mount speed — a tens-of-degrees slew costs minutes).
+    /// Requires tracking on (OmniSim-imposed; see
+    /// [`Self::set_telescope_tracking`]).
+    pub async fn sync_telescope_to(ra_hours: f64, dec_degrees: f64) -> Result<(), String> {
+        let base_url = Self::singleton_base_url();
+        Self::put_telescope_form_at(
+            &base_url,
+            0,
+            "synctocoordinates",
+            &[
+                ("RightAscension", format!("{ra_hours}")),
+                ("Declination", format!("{dec_degrees}")),
+            ],
+        )
+        .await
+    }
+
+    /// The shared singleton's base URL, falling back to the default
+    /// port when no scenario has started OmniSim through this process
+    /// yet (mirrors [`Self::restart_device`]).
+    fn singleton_base_url() -> String {
+        OMNISIM
+            .get()
+            .map(|p| p.base_url.clone())
+            .unwrap_or_else(|| format!("http://127.0.0.1:{}", OMNISIM_PORT))
+    }
+
+    /// One form-encoded PUT against the standard Alpaca telescope API
+    /// (`/api/v1/telescope/{n}/{property}`), checking both the HTTP
+    /// status and the Alpaca `ErrorNumber` in the response body — an
+    /// Alpaca-level refusal (e.g. syncing with tracking off) arrives
+    /// as HTTP 200 with a non-zero `ErrorNumber`.
+    async fn put_telescope_form_at(
+        base_url: &str,
+        n: u32,
+        property: &str,
+        form: &[(&str, String)],
+    ) -> Result<(), String> {
+        let url = format!("{}/api/v1/telescope/{}/{}", base_url, n, property);
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .map_err(|e| format!("reqwest client build failed: {e}"))?;
+        let resp = client
+            .put(&url)
+            .form(form)
+            .send()
+            .await
+            .map_err(|e| format!("PUT {url} failed: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("PUT {url} returned HTTP {}", resp.status()));
+        }
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("PUT {url} returned a non-JSON body: {e}"))?;
+        let error_number = body
+            .get("ErrorNumber")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        if error_number != 0 {
+            let message = body
+                .get("ErrorMessage")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            return Err(format!(
+                "PUT {url} returned Alpaca error {error_number}: {message}"
+            ));
+        }
+        Ok(())
+    }
+
     /// `restart_device` extracted to take an explicit `base_url` so unit
     /// tests can drive the HTTP path against an axum stub without
     /// touching the global `OMNISIM` singleton. See the `tests` module
@@ -761,5 +888,99 @@ mod tests {
             err.starts_with("PUT ") && err.contains("failed"),
             "unexpected transport error format: {err}"
         );
+    }
+
+    /// Stub answering one Alpaca telescope property PUT with the given
+    /// JSON body, capturing the submitted form for assertion.
+    async fn spawn_telescope_put_stub(
+        property: &str,
+        body: serde_json::Value,
+    ) -> (
+        String,
+        tokio::sync::oneshot::Receiver<std::collections::HashMap<String, String>>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        use axum::Form;
+        use std::collections::HashMap;
+
+        let (tx_seen, rx_seen) = tokio::sync::oneshot::channel::<HashMap<String, String>>();
+        let tx_seen = std::sync::Arc::new(std::sync::Mutex::new(Some(tx_seen)));
+        let route = format!("/api/v1/telescope/0/{property}");
+        let app = Router::new().route(
+            &route,
+            put(move |Form(form): Form<HashMap<String, String>>| {
+                let tx_seen = tx_seen.clone();
+                let body = body.clone();
+                async move {
+                    if let Some(tx) = tx_seen.lock().unwrap().take() {
+                        let _ = tx.send(form);
+                    }
+                    axum::Json(body)
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async {
+                    let _ = rx.await;
+                })
+                .await
+                .unwrap();
+        });
+        (format!("http://127.0.0.1:{}", port), rx_seen, tx)
+    }
+
+    #[tokio::test]
+    async fn telescope_form_put_sends_values_and_accepts_error_number_zero() {
+        let (base_url, rx_seen, shutdown) = spawn_telescope_put_stub(
+            "synctocoordinates",
+            serde_json::json!({ "ErrorNumber": 0, "ErrorMessage": "" }),
+        )
+        .await;
+        OmniSimHandle::put_telescope_form_at(
+            &base_url,
+            0,
+            "synctocoordinates",
+            &[
+                ("RightAscension", "2.5".to_string()),
+                ("Declination", "0".to_string()),
+            ],
+        )
+        .await
+        .unwrap();
+        let form = rx_seen.await.unwrap();
+        assert_eq!(form.get("RightAscension").map(String::as_str), Some("2.5"));
+        assert_eq!(form.get("Declination").map(String::as_str), Some("0"));
+        let _ = shutdown.send(());
+    }
+
+    #[tokio::test]
+    async fn telescope_form_put_surfaces_alpaca_error_number() {
+        // OmniSim refuses e.g. a sync with tracking off as HTTP 200 +
+        // a non-zero ErrorNumber — the helper must fail loud on it.
+        let (base_url, _rx_seen, shutdown) = spawn_telescope_put_stub(
+            "synctocoordinates",
+            serde_json::json!({
+                "ErrorNumber": 1036,
+                "ErrorMessage": "SyncToCoordinates is not allowed when tracking is False"
+            }),
+        )
+        .await;
+        let err = OmniSimHandle::put_telescope_form_at(
+            &base_url,
+            0,
+            "synctocoordinates",
+            &[("RightAscension", "2.5".to_string())],
+        )
+        .await
+        .expect_err("expected the Alpaca error to surface");
+        assert!(
+            err.contains("1036") && err.contains("tracking is False"),
+            "unexpected error format: {err}"
+        );
+        let _ = shutdown.send(());
     }
 }

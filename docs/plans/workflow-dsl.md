@@ -400,15 +400,52 @@ committable on its own.
 
 ### Phase E — Deep-sky workflow
 
-- [ ] `workflows/deep_sky.json`: startup → dispatch loop
+- [x] `workflows/deep_sky.json`: startup → dispatch loop
       (`get_next_target` → slew → `center_on_target` → `auto_focus` →
       guide → capture loop with dither/refocus/meridian-flip triggers) →
       shutdown, per the flow sketched in `rp.md` § Orchestration.
-- [ ] BDD scenarios against OmniSim for the full night-cycle happy path,
+
+      **Done (2026-07-07):** shipped as the second first-party document,
+      written against `rp`'s *implemented* tool surface — no
+      guide/dither steps (no guider tools exist), the exposure plan as
+      parameters (`get_next_target` v1 returns no filter/duration), and
+      blackboard-side frame counting (no `record_exposure`). Triggers:
+      `refocus-after-frames` (every-N, parameter-disabled by default),
+      `refocus-on-hfr-degradation` (measure_basic + factor, 15 m
+      cooldown), `flip-when-due` (30 s `get_meridian_status` poll). The
+      dispatch loop is re-entrant with zero `once` markers, and a
+      recovery invocation nulls `session.target_name` so the resumed
+      run re-acquires (re-slew/center/focus). Design details in
+      `session-runner.md` § `deep_sky.json`.
+- [x] BDD scenarios against OmniSim for the full night-cycle happy path,
       target switch, refocus trigger, and safety interruption + resume.
-- [ ] Any `rp` planner v1 gaps this exposes (documented in `rp.md` § Dynamic
+
+      **Done (2026-07-07):** `deep_sky.feature` — five scenarios,
+      including a bonus meridian-flip one (a due flip re-slews between
+      exposures, never during one). The planner gates on real ephemeris
+      at wall-clock now, so the harness computes the sky to fit the
+      clock (`bdd_infra::rp_harness::NightSky`): an equatorial site at
+      the anti-solar longitude is always in deep astronomical night,
+      and dec-0 targets placed by hour angle sink at a constant
+      0.25°/min — making "target drops below its floor in N seconds"
+      exact (the target-switch lever). The harness also teaches OmniSim's
+      telescope the computed site (rp hard-errors on a mount/config site
+      mismatch) and syncs it onto the first target so document slews
+      stay sub-degree.
+- [x] Any `rp` planner v1 gaps this exposes (documented in `rp.md` § Dynamic
       Planner) get issues filed — closing them is `rp` work, not
       `session-runner` work.
+
+      **Done (2026-07-07):** four gaps the document had to design
+      around, each an `rp` issue: `get_next_target` returns no
+      exposure plan; no `record_exposure` / `get_session_progress`
+      (so no progress-aware dispatch or goal-driven target rotation);
+      no guider tools (`start_guiding` / `stop_guiding` / `dither`);
+      `end_of_session` unreachable (dawn is a document-side heuristic
+      until then). All four are also recorded in
+      `session-runner.md` § `deep_sky.json` ("v1 adaptations") with
+      what the document does meanwhile and what changes when each
+      lands.
 
 ### Phase F — Polish and adoption
 
