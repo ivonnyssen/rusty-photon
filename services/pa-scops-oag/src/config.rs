@@ -1,0 +1,388 @@
+//! Configuration types for the Pegasus Astro Scops OAG driver
+
+use serde::{Deserialize, Serialize};
+use std::path::Path;
+use std::time::Duration;
+
+/// Main configuration structure
+#[derive(Debug, Clone, Serialize, Deserialize, Default, schemars::JsonSchema)]
+pub struct Config {
+    pub serial: SerialConfig,
+    pub server: ServerConfig,
+    pub focuser: FocuserConfig,
+}
+
+/// Serial port configuration
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct SerialConfig {
+    pub port: String,
+    #[serde(default = "default_baud_rate")]
+    pub baud_rate: u32,
+    // `humantime_serde` stores the duration as a string (e.g. "1s"); schemars
+    // describes it as a string so the schema matches the wire form.
+    #[serde(default = "default_polling_interval", with = "humantime_serde")]
+    #[schemars(with = "String")]
+    pub polling_interval: Duration,
+    #[serde(default = "default_timeout", with = "humantime_serde")]
+    #[schemars(with = "String")]
+    pub timeout: Duration,
+}
+
+/// Server configuration
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ServerConfig {
+    pub port: u16,
+    /// Alpaca UDP discovery responder port (normally 32227). Absent/`null` —
+    /// the default — disables discovery: many rusty-photon servers on one
+    /// host would collide on the shared discovery port, so it is a per-host
+    /// opt-in for single-driver deployments.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discovery_port: Option<u16>,
+    #[serde(default)]
+    pub tls: Option<rp_tls::config::TlsConfig>,
+    #[serde(default)]
+    pub auth: Option<rp_auth::config::AuthConfig>,
+}
+
+/// Focuser device configuration
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct FocuserConfig {
+    pub name: String,
+    /// ASCOM `UniqueID`. Minted as a UUIDv4 on first run by
+    /// `rusty_photon_config::materialize_identity` (JSON pointer
+    /// `/focuser/unique_id`), persisted, and never overwritten. Defaults to an
+    /// empty string so an absent or empty value triggers minting rather than
+    /// reusing a hardcoded literal.
+    #[serde(default)]
+    pub unique_id: String,
+    pub description: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Maximum permitted absolute step position. The Scops OAG has **no**
+    /// firmware travel limit; this bound is enforced by the driver. The
+    /// default matches the 0–22000 travel range the official Pegasus Astro
+    /// software (Unity) enforces for the Scops OAG.
+    #[serde(default = "default_max_step")]
+    pub max_step: u32,
+}
+
+fn default_baud_rate() -> u32 {
+    // The Scops OAG (Pegasus DMFC family) speaks 19200 8N1. This unit does not
+    // respond at 9600 — see docs/services/pa-scops-oag.md "Hardware Constraints".
+    19200
+}
+
+fn default_polling_interval() -> Duration {
+    Duration::from_millis(1000)
+}
+
+fn default_timeout() -> Duration {
+    Duration::from_secs(2)
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_max_step() -> u32 {
+    // The travel range the official Pegasus Astro software enforces for the
+    // Scops OAG (positions 0–22000).
+    22_000
+}
+
+impl Default for SerialConfig {
+    fn default() -> Self {
+        Self {
+            port: "/dev/ttyUSB0".to_string(),
+            baud_rate: default_baud_rate(),
+            polling_interval: default_polling_interval(),
+            timeout: default_timeout(),
+        }
+    }
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            port: 11123,
+            discovery_port: None,
+            tls: None,
+            auth: None,
+        }
+    }
+}
+
+impl Default for FocuserConfig {
+    fn default() -> Self {
+        Self {
+            name: "Pegasus Scops OAG".to_string(),
+            // Empty by default; minted as a UUIDv4 on first run and persisted by
+            // `rusty_photon_config::materialize_identity`.
+            unique_id: String::new(),
+            description: "Pegasus Astro Scops OAG motorized off-axis guider focuser".to_string(),
+            enabled: true,
+            max_step: default_max_step(),
+        }
+    }
+}
+
+/// Load configuration from a JSON file
+pub fn load_config(
+    path: &Path,
+) -> std::result::Result<Config, Box<dyn std::error::Error + Send + Sync>> {
+    let content = std::fs::read_to_string(path)?;
+    let config: Config = serde_json::from_str(&content)?;
+    Ok(config)
+}
+
+/// CLI overrides layered over the file config. Tracks which fields are pinned by
+/// a command-line flag so the config actions can distinguish the file layer from
+/// the override layer (see `docs/services/pa-scops-oag.md` "Config actions").
+#[derive(Debug, Clone, Default)]
+pub struct CliOverrides {
+    /// `--port` → `serial.port`.
+    pub serial_port: Option<String>,
+    /// `--server-port` → `server.port`.
+    pub server_port: Option<u16>,
+}
+
+impl CliOverrides {
+    /// Dotted JSON paths currently pinned by an active override. Reported by
+    /// `config.get` (`overrides[]`) and skipped by `config.apply`.
+    pub fn pinned_paths(&self) -> Vec<String> {
+        let mut paths = Vec::new();
+        if self.serial_port.is_some() {
+            paths.push("serial.port".to_string());
+        }
+        if self.server_port.is_some() {
+            paths.push("server.port".to_string());
+        }
+        paths
+    }
+
+    /// Apply the overrides onto `config` in place.
+    pub fn apply(&self, config: &mut Config) {
+        if let Some(port) = &self.serial_port {
+            config.serial.port = port.clone();
+        }
+        if let Some(port) = self.server_port {
+            config.server.port = port;
+        }
+    }
+}
+
+/// Load the effective config: the file at `path` if it exists, else
+/// `Config::default()`, with CLI `overrides` applied on top. This is what the
+/// running driver uses and what `config.get` reports. A present-but-corrupt file
+/// is surfaced (naming the path) rather than silently reset.
+pub fn load_effective_config(
+    path: &Path,
+    overrides: &CliOverrides,
+) -> std::result::Result<Config, Box<dyn std::error::Error + Send + Sync>> {
+    let mut config = match std::fs::read_to_string(path) {
+        Ok(content) => serde_json::from_str(&content)
+            .map_err(|e| format!("config file {} is not valid JSON: {e}", path.display()))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Config::default(),
+        Err(e) => return Err(format!("could not read config file {}: {e}", path.display()).into()),
+    };
+    overrides.apply(&mut config);
+    Ok(config)
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_config_has_expected_values() {
+        let config = Config::default();
+
+        assert_eq!(config.focuser.name, "Pegasus Scops OAG");
+        assert!(config.focuser.enabled);
+        assert_eq!(config.focuser.max_step, 22_000);
+
+        assert_eq!(config.serial.port, "/dev/ttyUSB0");
+        assert_eq!(config.serial.baud_rate, 19200);
+        assert_eq!(config.serial.polling_interval, Duration::from_millis(1000));
+        assert_eq!(config.serial.timeout, Duration::from_secs(2));
+
+        assert_eq!(config.server.port, 11123);
+    }
+
+    #[test]
+    fn focuser_config_default() {
+        let config = FocuserConfig::default();
+
+        assert_eq!(config.name, "Pegasus Scops OAG");
+        // `unique_id` defaults to empty so it is minted on first run rather than
+        // reusing a hardcoded literal (see `materialize_identity` in main.rs).
+        assert_eq!(config.unique_id, "");
+        assert!(!config.description.is_empty());
+        assert!(config.enabled);
+        assert_eq!(config.max_step, 22_000);
+    }
+
+    #[test]
+    fn serial_config_default_uses_19200() {
+        let config = SerialConfig::default();
+
+        assert_eq!(config.port, "/dev/ttyUSB0");
+        // The Scops OAG only responds at 19200 — guard the default against
+        // regression to the DMFC doc's "try 9600" footnote.
+        assert_eq!(config.baud_rate, 19200);
+        assert_eq!(config.polling_interval, Duration::from_millis(1000));
+        assert_eq!(config.timeout, Duration::from_secs(2));
+    }
+
+    #[test]
+    fn server_config_default() {
+        let config = ServerConfig::default();
+        assert_eq!(config.port, 11123);
+    }
+
+    #[test]
+    fn config_serializes_to_json() {
+        let config = Config::default();
+        let json = serde_json::to_string(&config).unwrap();
+
+        assert!(json.contains("Pegasus Scops OAG"));
+        assert!(json.contains("/dev/ttyUSB0"));
+        assert!(json.contains("19200"));
+        assert!(json.contains("11123"));
+    }
+
+    #[test]
+    fn config_deserializes_from_json() {
+        let json = r#"{
+            "serial": {
+                "port": "/dev/ttyUSB1",
+                "baud_rate": 19200,
+                "polling_interval": "2s",
+                "timeout": "5s"
+            },
+            "server": {
+                "port": 8080
+            },
+            "focuser": {
+                "name": "Test Scops",
+                "unique_id": "scops-test-001",
+                "description": "Test focuser description",
+                "enabled": true,
+                "max_step": 64000
+            }
+        }"#;
+
+        let config: Config = serde_json::from_str(json).unwrap();
+
+        assert_eq!(config.focuser.name, "Test Scops");
+        assert_eq!(config.focuser.unique_id, "scops-test-001");
+        assert!(config.focuser.enabled);
+        assert_eq!(config.focuser.max_step, 64000);
+
+        assert_eq!(config.serial.port, "/dev/ttyUSB1");
+        assert_eq!(config.serial.baud_rate, 19200);
+        assert_eq!(config.serial.polling_interval, Duration::from_secs(2));
+        assert_eq!(config.serial.timeout, Duration::from_secs(5));
+        assert_eq!(config.server.port, 8080);
+    }
+
+    #[test]
+    fn config_deserializes_with_defaults() {
+        let json = r#"{
+            "serial": {
+                "port": "/dev/ttyUSB1"
+            },
+            "server": {
+                "port": 9000
+            },
+            "focuser": {
+                "name": "Minimal Scops",
+                "unique_id": "min-scops-001",
+                "description": "Minimal config"
+            }
+        }"#;
+
+        let config: Config = serde_json::from_str(json).unwrap();
+
+        assert_eq!(config.focuser.name, "Minimal Scops");
+        assert_eq!(config.serial.port, "/dev/ttyUSB1");
+        assert_eq!(config.serial.baud_rate, 19200);
+        assert_eq!(config.serial.polling_interval, Duration::from_millis(1000));
+        assert_eq!(config.serial.timeout, Duration::from_secs(2));
+        assert!(config.focuser.enabled);
+        assert_eq!(config.focuser.max_step, 22_000);
+    }
+
+    #[test]
+    fn config_deserializes_with_omitted_unique_id() {
+        // A config that omits `unique_id` must still parse, defaulting the field
+        // to empty so first-run minting fills it.
+        let json = r#"{
+            "serial": { "port": "/dev/ttyUSB1" },
+            "server": { "port": 9000 },
+            "focuser": {
+                "name": "No-ID Scops",
+                "description": "unique_id omitted"
+            }
+        }"#;
+
+        let config: Config = serde_json::from_str(json).unwrap();
+
+        assert_eq!(config.focuser.name, "No-ID Scops");
+        assert_eq!(config.focuser.unique_id, "");
+    }
+
+    #[test]
+    fn load_config_from_file() {
+        let dir = std::env::temp_dir().join("pa_scops_oag_test_load_config");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+
+        let json = r#"{
+            "serial": { "port": "/dev/ttyUSB0", "baud_rate": 19200 },
+            "server": { "port": 9999 },
+            "focuser": {
+                "name": "Test Scops",
+                "unique_id": "test-001",
+                "description": "A test focuser",
+                "max_step": 50000
+            }
+        }"#;
+        std::fs::write(&path, json).unwrap();
+
+        let config = load_config(&path).unwrap();
+        assert_eq!(config.serial.port, "/dev/ttyUSB0");
+        assert_eq!(config.serial.baud_rate, 19200);
+        assert_eq!(config.server.port, 9999);
+        assert_eq!(config.focuser.name, "Test Scops");
+        assert_eq!(config.focuser.max_step, 50000);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_config_nonexistent_file() {
+        let path = std::path::PathBuf::from("/tmp/pa_scops_oag_nonexistent_config_12345.json");
+        let result = load_config(&path);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn load_effective_config_applies_overrides() {
+        let overrides = CliOverrides {
+            serial_port: Some("/dev/ttyUSB7".to_string()),
+            server_port: Some(7777),
+        };
+        let path = std::path::PathBuf::from("/tmp/pa_scops_oag_nonexistent_eff_98765.json");
+        // File absent → defaults, then overrides applied on top.
+        let config = load_effective_config(&path, &overrides).unwrap();
+        assert_eq!(config.serial.port, "/dev/ttyUSB7");
+        assert_eq!(config.server.port, 7777);
+        assert_eq!(
+            overrides.pinned_paths(),
+            vec!["serial.port".to_string(), "server.port".to_string()]
+        );
+    }
+}

@@ -122,6 +122,7 @@ UI can't edit away its own reachability.
 | `qhy-focuser` | Focuser | auth password hash | single device |
 | `pa-falcon-rotator` | Rotator + Switch | auth password hash | two devices share one config + reload |
 | `ppba-driver` | Switch + ObservingConditions | auth password hash | two devices; `--enable-*` flags pin the enabled fields |
+| `pa-scops-oag` | Focuser | auth password hash | single device; FTDI serial focuser, no temperature sensor |
 | `sky-survey-camera` | Camera | follow-mode client passwords | `Overrides = ()`; cross-field validation |
 | `star-adventurer-gti` | Telescope | auth password hash | config actions alongside the `ApPark` actions; `transport` block read-only |
 

@@ -36,6 +36,7 @@ installed. `phd2-guider` is the one plain CLI package (no unit, no user).
 | ui-htmx | 11120 | web config UI |
 | qhy-camera | 11121 | USB camera; needs the firmware helper (below) |
 | zwo-camera | 11122 | USB camera; SDK blobs bundled |
+| pa-scops-oag | 11123 | serial (dialout) |
 | plate-solver | 11131 | config-gated; needs ASTAP (below) |
 | calibrator-flats | 11170 | config-gated |
 
@@ -90,7 +91,7 @@ stays inactive (not failed) until you write
 `/etc/rusty-photon/<svc>.json`, then `systemctl start rusty-photon-<svc>`.
 
 **Serial-device drivers** (`ppba-driver`, `qhy-focuser`,
-`pa-falcon-rotator`, `dsd-fp2`, `star-adventurer-gti`) validate their
+`pa-falcon-rotator`, `pa-scops-oag`, `dsd-fp2`, `star-adventurer-gti`) validate their
 hardware eagerly at startup and exit if the device is missing — by design,
 so a broken device is never advertised on the network. Until the device is
 attached (and its path matches the config), the unit sits in a
@@ -114,8 +115,8 @@ sudo systemctl restart rusty-photon-<svc>   # the rest
 ```
 
 Reload-capable (SIGHUP): filemonitor, ppba-driver, qhy-focuser,
-sky-survey-camera, pa-falcon-rotator, dsd-fp2, star-adventurer-gti,
-qhy-camera, zwo-camera. Note that services with `config.apply` support
+sky-survey-camera, pa-falcon-rotator, pa-scops-oag, dsd-fp2,
+star-adventurer-gti, qhy-camera, zwo-camera. Note that services with `config.apply` support
 (via ui-htmx) rewrite these files at runtime — hand-edits and UI edits
 share the same file.
 
