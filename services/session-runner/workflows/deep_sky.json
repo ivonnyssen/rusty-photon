@@ -1,7 +1,7 @@
 {
   "version": 1,
   "name": "deep-sky",
-  "description": "Classic multi-target deep-sky imaging session: unpark and start tracking, then a dispatch loop that asks rp's planner for the best target after every frame — acquiring on target change (slew, filter from the planner's exposure plan, optional plate-solve centering, optional auto-focus) and capturing one frame per pass — with reactive refocusing and meridian-flip handling, ending at the frame budget or dawn and optionally parking. Written against rp's v1 planner surface: get_next_target supplies filter/duration_secs from the target's first exposures[] entry with the exposure/filter parameters as fallback (rotation within a plan needs record_exposure, which does not exist yet — progress is counted in the blackboard), and there is no guiding or dithering (rp has no guider tools yet) — see docs/services/session-runner.md § deep_sky.json.",
+  "description": "Classic multi-target deep-sky imaging session: unpark and start tracking, then a dispatch loop that asks rp's planner for the best target after every frame — acquiring on target change (slew, filter from the planner's exposure plan, optional plate-solve centering, optional auto-focus) and capturing one frame per pass — with reactive refocusing and meridian-flip handling, ending at the frame budget or when the planner declares the night over (end_of_session) and optionally parking. Written against rp's v1 planner surface: get_next_target supplies filter/duration_secs from the target's first exposures[] entry with the exposure/filter parameters as fallback (rotation within a plan needs record_exposure, which does not exist yet — progress is counted in the blackboard), and there is no guiding or dithering (rp has no guider tools yet) — see docs/services/session-runner.md § deep_sky.json.",
   "parameters": {
     "camera_id": { "type": "string", "required": true },
     "exposure": { "type": "duration", "default": "300s" },
@@ -217,29 +217,14 @@
               {
                 "if": "result.target == null",
                 "then": [
+                  { "set": { "session.imaging": "false" } },
                   {
-                    "if": "result.reason == 'wait_for_twilight' && session.total_frames > 0",
-                    "then": [
-                      {
-                        "log": {
-                          "level": "info",
-                          "message": "dawn twilight reached — ending the session",
-                          "values": { "total_frames": "session.total_frames" }
-                        }
-                      },
-                      { "set": { "session.session_over": "true" } }
-                    ],
-                    "else": [
-                      { "set": { "session.imaging": "false" } },
-                      {
-                        "log": {
-                          "message": "no viable target — waiting before re-asking the planner",
-                          "values": { "reason": "result.reason" }
-                        }
-                      },
-                      { "wait": { "duration": "5m" } }
-                    ]
-                  }
+                    "log": {
+                      "message": "no viable target — waiting before re-asking the planner",
+                      "values": { "reason": "result.reason" }
+                    }
+                  },
+                  { "wait": { "duration": "5m" } }
                 ],
                 "else": [
                   {

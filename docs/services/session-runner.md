@@ -1035,9 +1035,8 @@ The full document lives in `workflows/deep_sky.json`; the shape:
     { "repeat": { "while": "session.session_over != true", "max_iterations": 20000 },
       "body": [
         { "tool": "get_next_target" },
-        /* end_of_session → done; target == null → dawn heuristic
-           (wait_for_twilight after frames were captured ends the
-           session) or a 5m wait-and-re-ask; target change → stash
+        /* end_of_session → done; target == null → 5m
+           wait-and-re-ask; target change → stash
            coords + the exposure plan (result.filter /
            result.duration_secs, falling back to params.filter /
            params.exposure when null), slew, set_filter if the plan
@@ -1081,11 +1080,14 @@ the document simplifies when it lands:
   catalog validation rightly rejects a document naming unknown tools.
   The capture loop runs unguided; the guide/dither steps join the
   document when the tools land.
-- **Dawn is a heuristic.** `EndOfSession` is unreachable from `rp`'s v1
-  code path, and v1's `wait_for_twilight` reason fires whenever the Sun
-  is above −18° — dusk and dawn alike. The document disambiguates by
-  progress: `wait_for_twilight` with zero frames captured is dusk (wait
-  5 minutes, re-ask), with frames captured it is dawn (end the session).
+- **Dawn belongs to the planner.** `get_next_target` distinguishes dusk
+  from dawn by the Sun's trend (rp issue #465, closed): `end_of_session`
+  when the sky is bright and the Sun is rising, `wait_for_twilight` when
+  it is not yet dark and the Sun is descending. The document trusts the
+  reason alone — `end_of_session` ends the session, any other
+  target-less reason waits 5 minutes and re-asks. (An earlier revision
+  disambiguated dawn by frames-captured progress in the document; the
+  heuristic is gone.)
 
 **Triggers.** Three reactive rules, all gated `while session.imaging ==
 true` so they stay silent during acquisition and shutdown:
@@ -1215,7 +1217,7 @@ Full three-process topology (OmniSim + `rp` + `session-runner`) via
 | Triggers | `triggers.feature` | a trigger action lands between exposures, never during one (proved by SSE seq order); `once` fires exactly once across three captures; cooldown suppresses firings inside its window; a poll trigger fires through its `when` gate |
 | Resume | `recovery.feature` | SIGKILL the engine mid-capture-loop → restart → re-invoke with recovery → progress continues without repeated frames (exposure totals prove it); `once` marker not re-run (`filter_switch` count proves it); an rp outage terminates the run (service stays healthy, blackboard kept) and the session resumes against the restarted rp |
 | Safety | `recovery.feature` | a SafetyMonitor unsafe reading interrupts the session end-to-end through rp's own machinery (rp terminates the MCP session, the run terminates keeping its blackboard) and the safe transition re-invokes the engine with `recovery.reason = "safety_interruption"` — the resumed run captures exactly the remaining frames, the once marker is not re-run, and the completion deletes the blackboard. rp-side specifics (session `interrupted` status, `/mcp` 503 gate, `safety_changed` events) are pinned in rp's own `safety.feature` |
-| Deep-sky document | `deep_sky.feature` | the shipped `deep_sky.json` against a computed night sky (site + planner targets placed so a candidate is viable at test time): the full cycle completes (unpark → slew → center → capture ×N → park); the planner's exposure plan drives the capture duration (a 2 s plan finishes a session the 300 s parameter default could not); a target sinking below its per-target altitude floor switches the dispatch loop to the second target (a second slew, frames on both sides of it); `refocus_every` fires `auto_focus` from the trigger overlay (`focus_started` count proves it); a due meridian flip re-slews between exposures, never during one; a safety interruption resumes with re-acquisition (two `centering_complete`) |
+| Deep-sky document | `deep_sky.feature` | the shipped `deep_sky.json` against a computed night sky (site + planner targets placed so a candidate is viable at test time): the full cycle completes (unpark → slew → center → capture ×N → park); the planner's exposure plan drives the capture duration (a 2 s plan finishes a session the 300 s parameter default could not); a session started after dawn (a computed morning site — Sun risen and climbing) ends on the planner's `end_of_session` with zero slews and zero frames; a target sinking below its per-target altitude floor switches the dispatch loop to the second target (a second slew, frames on both sides of it); `refocus_every` fires `auto_focus` from the trigger overlay (`focus_started` count proves it); a due meridian flip re-slews between exposures, never during one; a safety interruption resumes with re-acquisition (two `centering_complete`) |
 
 The safety scenario exercises rp's real recovery re-invocation. The
 engine-kill and rp-outage scenarios POST `/invoke` directly — same ids,

@@ -26,7 +26,7 @@ rust_library(
 # module (SkyView stub, sky-survey-camera config builder, process
 # spawner). The rp-harness feature gates the deps on rp-fits (the
 # plate-solver stub's CRVAL round-trip and the SkyView stub's
-# WCS-bearing FITS minting) and rp-ephemeris (the NightSky computed
+# WCS-bearing FITS minting) and rp-ephemeris (the ComputedSky
 # site/targets for planner-driven scenarios).
 rust_library(
     name = "bdd-infra_rp_harness",

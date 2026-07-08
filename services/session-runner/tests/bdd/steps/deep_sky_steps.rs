@@ -6,11 +6,14 @@
 //!
 //! The planner evaluates real ephemeris at wall-clock now, so these
 //! steps compute the observing site to fit the clock
-//! (`bdd_infra::rp_harness::NightSky`): an equatorial site at the
+//! (`bdd_infra::rp_harness::ComputedSky`): an equatorial site at the
 //! anti-solar longitude is always in deep astronomical night, and
 //! celestial-equator targets placed by hour angle sink at a constant
 //! ≈ 0.25°/minute — which makes "the first target drops below its
-//! floor N seconds from now" exact. The simulated mount is taught the
+//! floor N seconds from now" exact. The dawn scenario flips the
+//! trick: a site 45° west of the sub-solar longitude has a risen,
+//! still-climbing morning Sun at any moment, so the planner declares
+//! the night over. The simulated mount is taught the
 //! same site (rp hard-errors on mount connect when the mount's
 //! reported site disagrees with config) and synced onto the first
 //! target so every document slew stays sub-degree (OmniSim slews at
@@ -22,7 +25,7 @@ use cucumber::gherkin::Step;
 use cucumber::{given, then, when};
 
 use bdd_infra::rp_harness::{
-    CameraConfig, CannedWcs, ExposurePlanConfig, FocuserConfig, MountConfig, NightSky,
+    CameraConfig, CannedWcs, ComputedSky, ExposurePlanConfig, FocuserConfig, MountConfig,
     OmniSimHandle, PlannerTargetConfig, PlateSolverConfig, PlateSolverStub, StubBehavior,
 };
 
@@ -58,7 +61,7 @@ async fn night_sky_with_one_planned_target(world: &mut SessionRunnerWorld, secon
 }
 
 fn push_one_night_target(world: &mut SessionRunnerWorld, exposures: Vec<ExposurePlanConfig>) {
-    let sky = NightSky::at(chrono::Utc::now());
+    let sky = ComputedSky::night_at(chrono::Utc::now());
     // Half an hour past transit: ≈ 82.5° altitude and sinking, next
     // meridian crossing ≈ 23.5 sidereal hours away — no flip pressure,
     // viable for hours against the planner-wide 20° floor.
@@ -79,7 +82,7 @@ fn push_one_night_target(world: &mut SessionRunnerWorld, exposures: Vec<Exposure
             targets sinks below its floor after {int} seconds"
 )]
 async fn night_sky_with_sinking_target(world: &mut SessionRunnerWorld, seconds: i64) {
-    let sky = NightSky::at(chrono::Utc::now());
+    let sky = ComputedSky::night_at(chrono::Utc::now());
     // Both targets descend in the west near 45° altitude, 0.05 h of
     // hour angle (0.75° of sky) apart so the switch slew is quick. The
     // sinker is closer to transit, so the planner prefers it while it
@@ -107,6 +110,28 @@ async fn night_sky_with_sinking_target(world: &mut SessionRunnerWorld, seconds: 
     });
     world.night_targets.push(sinker);
     world.night_targets.push(backup);
+}
+
+#[given(
+    "an observing site where the morning sun has risen and one planner target sits below \
+     its floor"
+)]
+async fn morning_sky_with_one_unviable_target(world: &mut SessionRunnerWorld) {
+    let sky = ComputedSky::morning_at(chrono::Utc::now());
+    // High in the sky (so the mount can sync onto it) but pinned below
+    // its own floor: no altitude reaches 90°, so the planner never
+    // recommends it and must fall through to the sky gating — a bright
+    // rising Sun, i.e. end_of_session.
+    let target = sky.target_at_hour_angle(0.5);
+    world.site = Some((sky.latitude_degrees(), sky.longitude_degrees()));
+    world.planner_targets.push(PlannerTargetConfig {
+        name: "unreachable".to_string(),
+        ra_hours: target.ra_hours,
+        dec_degrees: target.dec_degrees,
+        min_altitude_degrees: Some(90.0),
+        exposures: Vec::new(),
+    });
+    world.night_targets.push(target);
 }
 
 #[given("the simulated mount matches the site and points at the first target")]

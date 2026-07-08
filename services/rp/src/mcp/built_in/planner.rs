@@ -497,7 +497,10 @@ impl McpHandler {
                        Returns target=null and a structured reason \
                        (no_targets_configured / all_below_min_altitude / \
                        wait_for_twilight / end_of_session) when no candidate is \
-                       viable. Requires `site`."
+                       viable: wait_for_twilight = the Sun is brighter than \
+                       astronomical dusk and not rising (evening — wait and \
+                       re-ask); end_of_session = brighter and rising (dawn — \
+                       the night is over). Requires `site`."
     )]
     pub(crate) async fn get_next_target(
         &self,

@@ -10,7 +10,10 @@ Feature: Deep-sky workflow document
   clock: an equatorial site at the anti-solar longitude is always in
   deep astronomical night, and celestial-equator targets placed by hour
   angle sink at a constant 0.25 degrees per minute — which makes "this
-  target drops below its floor in N seconds" exact. The simulated mount
+  target drops below its floor in N seconds" exact. The dawn scenario
+  flips the trick: a site 45 degrees west of the sub-solar longitude
+  has a risen, still-climbing morning sun at any moment, so the planner
+  answers end_of_session. The simulated mount
   is taught the same site (rp refuses a mount whose reported site
   disagrees with config) and synced onto the first target so document
   slews stay sub-degree.
@@ -58,6 +61,27 @@ Feature: Deep-sky workflow document
     # plan is what reaches the camera.
     Then the session ends within 90 seconds
     And the SSE stream should show exactly 2 "exposure_complete" events
+
+  Scenario: A session started after dawn ends immediately with no frames
+    Given a running Alpaca simulator
+    And an observing site where the morning sun has risen and one planner target sits below its floor
+    And the simulated mount matches the site and points at the first target
+    And rp is running with a camera, a mount, and the session-runner orchestrator running the "deep_sky" workflow with parameters:
+      | exposure       | 2s    |
+      | max_frames     | 2     |
+      | focus          | false |
+      | centering      | false |
+      | park_on_finish | false |
+    And an SSE client is watching rp's event stream
+    When a session is started via the REST API
+    # The planner sees a bright rising Sun and no viable target, so its
+    # first answer is end_of_session and the document ends the session
+    # before slewing or capturing anything. Before rp #465 the reason
+    # was wait_for_twilight and the document's zero-frames heuristic
+    # read it as dusk — it would have waited forever.
+    Then the session ends within 30 seconds
+    And the SSE stream should show exactly 0 "slew_complete" events
+    And the SSE stream should show exactly 0 "exposure_complete" events
 
   Scenario: A target sinking below its altitude floor switches the dispatch loop to the next target
     Given a running Alpaca simulator

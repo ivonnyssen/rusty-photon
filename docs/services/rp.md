@@ -2748,9 +2748,11 @@ table.
    exposure if `compute_meridian_flip` returns a `time_to_flip`
    shorter than the per-target `exposures[].duration_secs` plus a
    safety margin.
-6. If no targets are viable, return a `WaitForTwilight` (when
-   `get_twilight` says astronomical dusk has not yet begun) or
-   `EndOfSession` recommendation.
+6. If no targets are viable, return a `WaitForTwilight`
+   recommendation when the night has not started (the Sun is above
+   astronomical dusk, −18°, and not rising — wait and re-ask), or
+   `EndOfSession` when the night is over (the Sun is back above
+   −18° and rising) or every target has met its integration goal.
 
 The orchestrator decides when to call `get_next_target` — typically
 after each exposure, after each target switch, or when conditions change.
@@ -2758,10 +2760,13 @@ after each exposure, after each target switch, or when conditions change.
 > **v1 implementation status.** Three of the six bullets land
 > partially in v1: the altitude half of bullet 1 (per-target /
 > per-planner-default floor), bullet 2 (smallest-|HA| transit
-> preference), and the `WaitForTwilight` /
-> `AllBelowMinAltitude` half of bullet 6 (the Sun-elevation
-> cut-off uses astronomical dusk, -18°, matching the
-> "astronomical dusk has not yet begun" wording above).
+> preference), and bullet 6's sky gating — when no target survives
+> the altitude floors, the Sun-elevation cut-off (astronomical
+> dusk, -18°) separates a bright sky from `AllBelowMinAltitude`,
+> and the Sun's trend (sampled 60 s ahead) separates dusk from
+> dawn: `WaitForTwilight` while the Sun is descending toward
+> tonight's dark window (or holding level), `EndOfSession` once it
+> is climbing out of it — the night is over.
 > The recommendation also carries the exposure plan: `filter`
 > and `duration_secs` are the recommended target's **first**
 > `exposures[]` entry (null when the target defines none) —
@@ -2786,10 +2791,11 @@ after each exposure, after each target switch, or when conditions change.
 >   so the smallest-|HA| pick tends to avoid imminent flips. The
 >   planner does *not* check `time_to_flip` against
 >   `exposures[].duration_secs` explicitly.
-> - **`EndOfSession`** — wired in the reason-discriminant for
->   forward compatibility but unreachable from the v1 code path
->   (would need session-state plumbing to detect "all targets
->   exhausted" or "the night is over").
+> - **`EndOfSession` (exhausted-targets half)** — the reason is
+>   reachable for "the night is over" (dawn-side bright sky,
+>   above), but the planner cannot yet end a session mid-night
+>   because every target met its integration goal — that needs the
+>   per-target `record_exposure` counters from bullet 3.
 >
 > A follow-up will close these gaps once session state is wired
 > through.

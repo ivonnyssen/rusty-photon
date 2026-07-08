@@ -444,7 +444,9 @@ committable on its own.
       `get_session_progress` (#463, so no progress-aware dispatch or
       goal-driven target rotation); no guider tools (`start_guiding` /
       `stop_guiding` / `dither`) (#464); `end_of_session` unreachable
-      (#465, dawn is a document-side heuristic until then). All are
+      (#465 — since closed: the planner reads the Sun's trend to tell
+      dawn from dusk and the document dropped its frames-captured dawn
+      heuristic). All are
       also recorded in `session-runner.md` § `deep_sky.json`
       ("v1 adaptations") with what the document does meanwhile and
       what changes when each lands.
