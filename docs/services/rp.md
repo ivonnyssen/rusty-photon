@@ -3587,8 +3587,13 @@ of the environment variables above. In CI, the
 automatically.
 
 **CI pins a patched fork**, not upstream: the action defaults to
-[`ivonnyssen/ASCOM.Alpaca.Simulators` `v0.5.0-326.4`](https://github.com/ivonnyssen/ASCOM.Alpaca.Simulators/releases/tag/v0.5.0-326.4),
-a build of upstream `v0.5.0` plus a series of `TelescopeHardware` fixes
+[`ivonnyssen/ASCOM.Alpaca.Simulators` `v0.5.0-467.1`](https://github.com/ivonnyssen/ASCOM.Alpaca.Simulators/releases/tag/v0.5.0-467.1).
+That release adds the `--multi-instance` flag (issue #467) — the harness
+always spawns OmniSim with it, so **the fork is a hard requirement for
+BDD runs now**, local ones included: it skips upstream's machine-global
+single-instance mutex so every test process (parallel suites, `rp:bdd`
+shards) gets a private simulator on its own port. It also carries the
+`326.x` series of `TelescopeHardware` fixes
 for the `center_on_target` slew-state hang/flake (issues #326, #319):
 326.1/.2 put the slew-engine writers and the
 `IsSlewing`/RA/Dec/`AtPark`/`SlewState` readers under `hardwareLock`;
@@ -3605,13 +3610,15 @@ the slew never finishes and `IsSlewing` stays `true` forever.
 for the `RA < 180` off-target row at certain sidereal times (hence the
 intermittent CI flake). 326.4 makes `DoSlew` take the limit-avoiding
 rotation to the *same* target (pier side unchanged, so ConformU stays
-clean) and adds a no-progress guard. The action's `repo`
-and `version` inputs revert to upstream
+clean) and adds a no-progress guard. Reverting the action's `repo` and
+`version` inputs to upstream
 [`v0.5.0`](https://github.com/ASCOMInitiative/ASCOM.Alpaca.Simulators/releases/tag/v0.5.0)
-in one line once the fix lands upstream. For local runs, use the pinned
-fork as well — upstream `v0.5.0` still carries both the #326 races and
-the sidereal-time-gated #319 wedge, so it can hang `center_on_target`
-intermittently and is not recommended for local BDD runs.
+is no longer a one-line change: upstream has no `--multi-instance`, so
+the `bdd-infra` spawn path (and the parallel/sharded BDD scheduling
+built on it) would have to be reverted too. For local runs, use the
+pinned fork — upstream `v0.5.0` lacks `--multi-instance` (every BDD
+suite fails at OmniSim spawn) and still carries the #326 races and the
+sidereal-time-gated #319 wedge.
 
 #### Graceful Shutdown and Coverage
 

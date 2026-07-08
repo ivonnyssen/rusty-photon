@@ -5,13 +5,14 @@ inputs:
   repo:
     description: GitHub repo to download OmniSim release assets from
     required: false
-    # Patched fork carrying the issue #326 TelescopeHardware locking fix.
+    # Patched fork carrying the issue #326 TelescopeHardware locking fixes
+    # and the issue #467 --multi-instance flag.
     # Set to "ASCOMInitiative/ASCOM.Alpaca.Simulators" to revert to upstream.
     default: "ivonnyssen/ASCOM.Alpaca.Simulators"
   version:
     description: OmniSim release version
     required: false
-    default: "v0.5.0-326.4"
+    default: "v0.5.0-467.1"
 
 runs:
   using: composite
@@ -19,21 +20,28 @@ runs:
     # Per-OS table. SHA-256 values are pinned against the OmniSim
     # release assets named below. They currently point at the patched
     # fork ivonnyssen/ASCOM.Alpaca.Simulators (default `repo` input,
-    # tag v0.5.0-326.4). The 326.x series fixes TelescopeHardware slew
-    # bugs behind the center_on_target hang/flake (ivonnyssen/rusty-photon
-    # #326, #319): 326.1 locked the slew-engine writers + IsSlewing/RA/Dec
-    # readers; 326.2 adds the AtPark/SlewState readers (closes the park-poll
-    # hang); 326.3 disposes the prior slew timer on Init() (was leaking one
-    # live timer on each per-scenario reset) and resets the slew state under
-    # hardwareLock; 326.4 closes the center_on_target IsSlewing wedge proper
-    # (issue #319) — a GEM goto whose short-path rotation crossed the
-    # hour-angle limit pinned IsSlewing=true forever; DoSlew now takes the
-    # limit-avoiding rotation to the same target (pier side unchanged), plus
-    # a no-progress guard. ConformU-clean vs upstream. To revert to upstream,
-    # set `repo` to ASCOMInitiative/ASCOM.Alpaca.Simulators and `version`
-    # back to v0.5.0, then refresh every SHA below. Bumping either input
-    # requires refreshing the SHAs — the verify step fails closed on any
-    # mismatch. Same shape and supply-chain reasoning as install-astap.
+    # tag v0.5.0-467.1 = v0.5.0-326.4 + the --multi-instance flag).
+    #
+    # 467.1 (rusty-photon #467) adds `--multi-instance`: skips upstream's
+    # machine-global single-instance guard (named Mutex + named-pipe command
+    # server) so bdd-infra can run one private OmniSim per test process —
+    # the enabler for parallel OmniSim BDD suites and rp:bdd sharding.
+    # bdd-infra ALWAYS passes the flag now, so this pin is a hard floor:
+    # an older binary exits at startup whenever another instance is running.
+    #
+    # The carried 326.x series fixes TelescopeHardware slew bugs behind the
+    # center_on_target hang/flake (ivonnyssen/rusty-photon #326, #319):
+    # 326.1 locked the slew-engine writers + IsSlewing/RA/Dec readers;
+    # 326.2 adds the AtPark/SlewState readers (closes the park-poll hang);
+    # 326.3 disposes the prior slew timer on Init() and resets the slew
+    # state under hardwareLock; 326.4 closes the center_on_target IsSlewing
+    # wedge proper (issue #319). ConformU-clean vs upstream.
+    #
+    # Reverting to upstream (repo=ASCOMInitiative/..., version=v0.5.0) is no
+    # longer SHA-refresh-only: upstream has no --multi-instance, so the
+    # bdd-infra spawn path would have to be reverted too. Bumping either
+    # input requires refreshing the SHAs — the verify step fails closed on
+    # any mismatch. Same shape and supply-chain reasoning as install-astap.
     - name: Determine asset name and pinned SHA-256
       id: asset
       shell: bash
@@ -41,23 +49,23 @@ runs:
         case "${{ runner.os }}-${{ runner.arch }}" in
           Linux-X64)
             ASSET="ascom.alpaca.simulators.linux-x64.tar.xz"
-            SHA256="74d96ae5b1c41f4eae27336c5dafc47e8264939ce8946f2178949eb3fcbf0153"
+            SHA256="68cca3f2b326579a71e02e70fd767987253fd7a700132cf23bd2fa5dace363e8"
             ;;
           Linux-ARM64)
             ASSET="ascom.alpaca.simulators.linux-aarch64.tar.xz"
-            SHA256="5218f57038cc520139b63454265eb53f6ecbbb7b8cee9374ad74dd759af48e30"
+            SHA256="6c6dc32479b5a10e17b9a20b831940ccfb54e80576bd4946e2c1056ba432f1aa"
             ;;
           macOS-ARM64)
             ASSET="ascom.alpaca.simulators.macos-arm64.zip"
-            SHA256="54c0d8aaf18222f572e348fc36addc884013a5ab734ace1f3c475b9603c57ee5"
+            SHA256="3ab44c0abfa82c556f73da6c85c9d727956b67e6d66a9ae30996069ba168b7d0"
             ;;
           macOS-X64)
             ASSET="ascom.alpaca.simulators.macos-x64.zip"
-            SHA256="1af188a340dfc46f0d86391af67007202a47e377b2eac0d21d0b7b26b1234336"
+            SHA256="3b01f427f875c40e6ea4b5603e568ef9615ceea57e89f12c803449031bf8eff4"
             ;;
           Windows-X64)
             ASSET="ascom.alpaca.simulators.windows-x64.zip"
-            SHA256="4aacde332d3c92ddd27924d0609d50bde020e1294d14ec6f4844a87df0a9d938"
+            SHA256="ff2d558e661ce5d465da2c345be16164ba0ddea3837ea7f68ff76073427995b6"
             ;;
           *)
             echo "::error::Unsupported platform: ${{ runner.os }}-${{ runner.arch }}"

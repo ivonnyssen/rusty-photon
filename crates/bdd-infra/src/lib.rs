@@ -92,6 +92,13 @@
 /// they do under `cargo test`. Any `*_BINARY` env vars that hold relative
 /// paths are rewritten to absolute paths before chdir so binary discovery
 /// still resolves against the runfiles root.
+///
+/// The macro also advertises Bazel test-sharding support (touching
+/// `TEST_SHARD_STATUS_FILE` when set — required for targets with
+/// `shard_count`). Note that advertising is not partitioning: a sharded
+/// suite must additionally route its scenario filter through
+/// [`sharding::scenario_in_current_shard`], or every shard runs the whole
+/// suite.
 #[macro_export]
 macro_rules! bdd_main {
     ($($body:tt)*) => {
@@ -100,6 +107,7 @@ macro_rules! bdd_main {
 
         #[cfg(not(miri))]
         fn main() {
+            $crate::sharding::advertise_bazel_sharding_support();
             $crate::__bdd_bazel_chdir();
             // 16 MB driver + worker stacks: see the macro docs — the rp suite
             // overflows Windows' ~1 MB main-thread stack otherwise.
@@ -145,6 +153,8 @@ pub fn __bdd_bazel_chdir() {
     }
     std::env::set_current_dir(&dir).unwrap_or_else(|e| panic!("bdd_main: chdir to {}: {}", dir, e));
 }
+
+pub mod sharding;
 
 #[cfg(feature = "rp-harness")]
 pub mod rp_harness;

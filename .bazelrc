@@ -50,19 +50,29 @@ test --test_tag_filters=-requires-cargo,-conformu
 test --test_env=OMNISIM_PATH
 test --test_env=OMNISIM_DIR
 
-# OmniSim allows only one instance per host (ASCOM.Alpaca.Simulators guards
-# startup with a machine-global named Mutex keyed on a fixed GUID, not the port).
-# The two BDD targets that spawn it (//services/rp:bdd,
-# //services/calibrator-flats:bdd) are tagged `resources:omnisim:1`; this defines
-# the matching pool with capacity 1 so Bazel never schedules those two
-# concurrently — while leaving them free to run in parallel with every
-# non-OmniSim test (unlike the `exclusive` tag, which would serialize against
-# everything). The pool MUST be defined or those tests fail loudly with "Resource
-# omnisim is not being tracked by the resource manager"; defining it here on
-# `test` (inherited by `coverage`) keeps it present for every test invocation,
-# local and CI. --local_resources is a scheduling-only flag, so it does not enter
-# action keys and never perturbs the remote cache.
-test --local_resources=omnisim=1
+# The `omnisim` resource pool. Every OmniSim-spawning BDD action (the four
+# suites rp:bdd / calibrator-flats:bdd / session-runner:bdd /
+# operation-watchdog-e2e:bdd, and each shard of a sharded suite) is tagged
+# `resources:omnisim:1` and takes one token. Since #467 the bdd-infra harness
+# gives every test process a PRIVATE OmniSim — spawned with the fork's
+# --multi-instance flag (skips upstream's machine-global single-instance
+# mutex) on a dynamically chosen port, with a per-instance XDG_CONFIG_HOME —
+# so on Linux/macOS these actions can genuinely run in parallel and the pool
+# is sized above the worst-case concurrent demand (8 rp shards + 3 suites);
+# it exists there only as a throttle to grab if OmniSim concurrency ever
+# turns flaky. Windows is different: OmniSim's profile store is
+# %USERPROFILE%\.ASCOM (ASCOM.Tools XMLProfile), which no environment
+# variable can redirect per-instance, so concurrent instances would race
+# each other's profile write-backs — capacity 1 keeps Windows serialized
+# (the platform-specific line wins because --enable_platform_specific_config
+# appends it after this one). The pool MUST be defined or the tagged tests
+# fail loudly with "Resource omnisim is not being tracked by the resource
+# manager"; defining it on `test` (inherited by `coverage`) keeps it present
+# for every test invocation, local and CI. --local_resources is a
+# scheduling-only flag, so it does not enter action keys and never perturbs
+# the remote cache.
+test --local_resources=omnisim=16
+test:windows --local_resources=omnisim=1
 
 # --- Rust toolchain --------------------------------------------------------
 

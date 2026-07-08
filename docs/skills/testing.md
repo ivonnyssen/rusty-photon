@@ -413,7 +413,11 @@ binary discovery, spawning, port parsing, and graceful shutdown logic.
 **Optional `rp-harness` feature** — adds the higher-level helpers needed when a
 test spawns `rp` alongside OmniSim and/or an orchestrator plugin:
 
-- `OmniSimHandle` — singleton Alpaca simulator shared across scenarios.
+- `OmniSimHandle` — per-test-process Alpaca simulator shared across that
+  process's scenarios. Spawned with the fork's `--multi-instance` flag on a
+  dynamically chosen port with a private settings dir, so concurrent test
+  processes (parallel Bazel suites, `rp:bdd` shards, a dev OmniSim on the
+  default port) never contend for one simulator.
 - `RpConfigBuilder` + `CameraConfig` / `FilterWheelConfig` /
   `CoverCalibratorConfig` — fluent builder that emits rp's JSON config.
 - `start_rp`, `wait_for_rp_healthy`, `write_temp_config_file`,
@@ -648,12 +652,11 @@ have more than one restart in flight — OmniSim's restart handler
 mutates unsynchronised static state, and concurrent restarts have
 corrupted its device list (#171) and deadlocked it outright (#431).
 Total per-scenario overhead is five localhost round-trips
-(~10-25 ms). Before the singleton has been
-initialised the helper falls back to the default OmniSim base URL
-(`http://127.0.0.1:32323`), so a pre-existing OmniSim from a prior
-dev session is reset before scenario 1 reuses it; if no OmniSim is
-listening, the request fails silently and the hook is effectively a
-no-op. Either way the hook is safe to wire up unconditionally.
+(~10-25 ms). Before the singleton has been initialised the helper is
+a no-op: the test process hasn't spawned its OmniSim yet, and the
+private instance `OmniSimHandle::start()` eventually spawns is fresh
+by construction (pre-existing instances are never reused). The hook
+is safe to wire up unconditionally.
 
 ```rust
 MyWorld::cucumber()
@@ -692,6 +695,25 @@ drain Concurrent scenarios while `@serial` ones are queued, so all
 untagged scenarios launch simultaneously once the serial queue
 empties — their before-hooks fire as one burst, which is why the
 restart PUTs are serialized process-wide; see #431.)
+
+**Parallelism comes from processes, not from dropping `@serial`.**
+Since #467 every BDD test process owns a private OmniSim
+(`--multi-instance` + dynamic port + per-instance settings dir), so
+the wall-clock lever is more processes, each with its own simulator:
+the four OmniSim suites run concurrently under Bazel on Linux/macOS,
+and `rp:bdd` is additionally split into parallel shard processes via
+Bazel `shard_count`. To shard a suite: (1) set `shard_count` on its
+`rust_test` target, and (2) route its cucumber filter through
+`bdd_infra::sharding::scenario_in_current_shard(feat.path.as_deref(),
+&feat.name, sc.position.line)` — `bdd_main!` already advertises
+sharding support to Bazel. Skipping step 2 silently makes every shard
+run the whole suite. Scenarios are partitioned by a stable hash of
+(feature file name, scenario line), and `@serial` still applies within
+each shard, which is exactly the scope it protects — one process's
+shared instance. Windows is the exception: OmniSim's profile store
+there can't be isolated per instance, so the Bazel `omnisim` resource
+pool (capacity 1 on Windows, see `.bazelrc`) serializes all
+OmniSim-spawning actions, shards included.
 
 ---
 
