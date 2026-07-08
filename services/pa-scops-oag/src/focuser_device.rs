@@ -203,7 +203,9 @@ impl Focuser for ScopsFocuserDevice {
     async fn move_(&self, position: i32) -> ASCOMResult<()> {
         ensure_connected!(self);
 
-        if position < 0 || position > self.config.max_step as i32 {
+        // Compare in i64: `max_step` is u32 and may exceed `i32::MAX`, where a
+        // `as i32` cast would wrap negative and reject every move.
+        if position < 0 || i64::from(position) > i64::from(self.config.max_step) {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_VALUE,
                 format!(

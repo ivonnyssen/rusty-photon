@@ -20,6 +20,13 @@ Feature: Movement control
     And I try to move the focuser to position 200000
     Then the operation should fail with invalid-value
 
+  Scenario: Move validation does not wrap when max step exceeds the i32 range
+    Given a focuser service configured with max step 4294967295
+    When I connect the device
+    And I move the focuser to position 2147483647
+    And I halt the focuser
+    Then the focuser should not be moving
+
   Scenario: Move fails when not connected
     Given a running focuser service
     When I try to move the focuser to position 5000
