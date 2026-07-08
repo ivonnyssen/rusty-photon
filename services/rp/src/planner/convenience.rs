@@ -73,7 +73,17 @@ pub fn next_target_view(rec: NextTargetRecommendation) -> Value {
     // practice; fall back to `Value::Null` rather than panicking if
     // serde ever rejects the variant.
     let reason = serde_json::to_value(rec.reason).unwrap_or(serde_json::Value::Null);
-    let target = rec.target.map(|t| {
+    // The exposure plan: the first `exposures[]` entry of the
+    // recommended target, null when it defines none. Rotating within
+    // the plan (least progress, filter batching) is deferred until
+    // `record_exposure` counters exist — see rp.md §"Dynamic Planner"
+    // decision-logic bullets 3–4.
+    let plan = rec.target.as_ref().and_then(|t| t.exposures.first());
+    let filter = plan
+        .and_then(|p| p.filter.clone())
+        .map_or(Value::Null, Value::String);
+    let duration_secs = plan.map_or(Value::Null, |p| json!(p.duration_secs));
+    let target = rec.target.as_ref().map(|t| {
         json!({
             "name": t.name,
             "ra_hours": t.ra_hours,
@@ -84,11 +94,8 @@ pub fn next_target_view(rec: NextTargetRecommendation) -> Value {
     json!({
         "target": target,
         "reason": reason,
-        // v1 does not yet pick filters or per-frame durations — the
-        // planner returns the target, the orchestrator picks an
-        // exposure plan from the target's `exposures[]` config.
-        "filter": serde_json::Value::Null,
-        "duration_secs": serde_json::Value::Null,
+        "filter": filter,
+        "duration_secs": duration_secs,
     })
 }
 
@@ -125,7 +132,7 @@ pub fn meridian_status_view(
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;
-    use crate::planner::decision::{NextTargetReason, PlannerTarget};
+    use crate::planner::decision::{ExposureSpec, NextTargetReason, PlannerTarget};
 
     fn site() -> Site {
         Site::new(47.6062, -122.3321).unwrap()
@@ -158,6 +165,8 @@ mod tests {
         let v = next_target_view(rec);
         assert_eq!(v["reason"], "no_targets_configured");
         assert!(v["target"].is_null());
+        assert!(v["filter"].is_null());
+        assert!(v["duration_secs"].is_null());
     }
 
     #[test]
@@ -168,6 +177,7 @@ mod tests {
                 ra_hours: 0.7,
                 dec_degrees: 41.0,
                 min_altitude_degrees: Some(25.0),
+                exposures: Vec::new(),
             }),
             reason: NextTargetReason::BestTransitingCandidate,
         };
@@ -175,6 +185,60 @@ mod tests {
         assert_eq!(v["reason"], "best_transiting_candidate");
         assert_eq!(v["target"]["name"], "M31");
         assert_eq!(v["target"]["min_altitude_degrees"], 25.0);
+        assert!(
+            v["filter"].is_null() && v["duration_secs"].is_null(),
+            "a target without exposures[] must leave the plan null: {v}"
+        );
+    }
+
+    #[test]
+    fn next_target_view_returns_the_first_exposure_plan_entry() {
+        let rec = NextTargetRecommendation {
+            target: Some(PlannerTarget {
+                name: "M31".into(),
+                ra_hours: 0.7,
+                dec_degrees: 41.0,
+                min_altitude_degrees: None,
+                exposures: vec![
+                    ExposureSpec {
+                        filter: Some("Luminance".to_string()),
+                        duration_secs: 300.0,
+                    },
+                    ExposureSpec {
+                        filter: Some("Red".to_string()),
+                        duration_secs: 120.0,
+                    },
+                ],
+            }),
+            reason: NextTargetReason::BestTransitingCandidate,
+        };
+        let v = next_target_view(rec);
+        assert_eq!(v["filter"], "Luminance");
+        assert_eq!(v["duration_secs"], 300.0);
+        assert!(
+            v["target"].get("exposures").is_none(),
+            "the wire target object carries coordinates only: {v}"
+        );
+    }
+
+    #[test]
+    fn next_target_view_leaves_filter_null_for_an_unfiltered_plan_entry() {
+        let rec = NextTargetRecommendation {
+            target: Some(PlannerTarget {
+                name: "OSC Field".into(),
+                ra_hours: 0.7,
+                dec_degrees: 41.0,
+                min_altitude_degrees: None,
+                exposures: vec![ExposureSpec {
+                    filter: None,
+                    duration_secs: 60.0,
+                }],
+            }),
+            reason: NextTargetReason::BestTransitingCandidate,
+        };
+        let v = next_target_view(rec);
+        assert!(v["filter"].is_null());
+        assert_eq!(v["duration_secs"], 60.0);
     }
 
     #[test]

@@ -436,16 +436,18 @@ committable on its own.
       Planner) get issues filed — closing them is `rp` work, not
       `session-runner` work.
 
-      **Done (2026-07-07):** four gaps the document had to design
-      around, each an `rp` issue: `get_next_target` returns no
-      exposure plan; no `record_exposure` / `get_session_progress`
-      (so no progress-aware dispatch or goal-driven target rotation);
-      no guider tools (`start_guiding` / `stop_guiding` / `dither`);
-      `end_of_session` unreachable (dawn is a document-side heuristic
-      until then). All four are also recorded in
-      `session-runner.md` § `deep_sky.json` ("v1 adaptations") with
-      what the document does meanwhile and what changes when each
-      lands.
+      **Done (2026-07-07, filed 2026-07-08):** four gaps the document
+      had to design around, each an `rp` issue: `get_next_target`
+      returns no exposure plan (#462 — since closed: the planner now
+      returns the first `exposures[]` entry and the document falls
+      back to its parameters); no `record_exposure` /
+      `get_session_progress` (#463, so no progress-aware dispatch or
+      goal-driven target rotation); no guider tools (`start_guiding` /
+      `stop_guiding` / `dither`) (#464); `end_of_session` unreachable
+      (#465, dawn is a document-side heuristic until then). All are
+      also recorded in `session-runner.md` § `deep_sky.json`
+      ("v1 adaptations") with what the document does meanwhile and
+      what changes when each lands.
 
 ### Phase F — Polish and adoption
 

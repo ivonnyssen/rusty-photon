@@ -827,7 +827,7 @@ hours, `dec` is degrees. See
 
 | Action | Parameters | Returns | Description |
 |--------|-----------|---------|-------------|
-| `get_next_target` | time (optional) | target, reason, filter, duration_secs | Evaluate candidates and recommend next target. v1 returns `filter`/`duration_secs` as null — see §"Dynamic Planner" |
+| `get_next_target` | time (optional) | target, reason, filter, duration_secs | Evaluate candidates and recommend next target. `filter`/`duration_secs` come from the recommended target's first `exposures[]` entry; null when the target defines none — see §"Dynamic Planner" |
 | `get_target_status` | target_name *or* (ra + dec); time (optional) | target_name, altitude_degrees, azimuth_degrees, hour_angle_hours, time_to_set_seconds, progress | Sky position + progress for a catalog target or raw ICRS coords. `progress` is null in v1 |
 | `get_meridian_status` | time (optional) | time_to_flip_seconds, side_of_pier, mount_ra_hours, mount_dec_degrees | Time-to-flip + side-of-pier from the mount's current pointing |
 | `record_exposure` | target, filter | completed, goal | Increment counter, return updated progress |
@@ -2762,6 +2762,11 @@ after each exposure, after each target switch, or when conditions change.
 > `AllBelowMinAltitude` half of bullet 6 (the Sun-elevation
 > cut-off uses astronomical dusk, -18°, matching the
 > "astronomical dusk has not yet begun" wording above).
+> The recommendation also carries the exposure plan: `filter`
+> and `duration_secs` are the recommended target's **first**
+> `exposures[]` entry (null when the target defines none) —
+> rotating *within* a target's plan by progress is the bullet-3/4
+> work below.
 > Documented v1 gaps:
 >
 > - **Bullet 1 set-time elimination** — `next_target` does *not*
@@ -2806,6 +2811,18 @@ after each exposure, after each target switch, or when conditions change.
   "priority": 1
 }
 ```
+
+v1 reads `name`, `ra_hours`, `dec_degrees`, `min_altitude_degrees`,
+and `exposures[]`. Within an exposure entry, `duration_secs` is
+required (positive, finite); `filter` is optional — omit it (or set
+it to `null` / `""`) for an unfiltered rig, and `get_next_target`
+returns `filter: null`. `count` (and the target-level `priority`)
+are parsed-over but unused until per-target progress lands
+(`record_exposure`). A
+malformed exposure entry is skipped with a `debug!` log; a target
+whose plan is missing or entirely invalid still recommends, with
+`filter` / `duration_secs` null — the orchestrator's fallback
+(e.g. `deep_sky.json`'s `exposure` / `filter` parameters) applies.
 
 ## Session Persistence
 

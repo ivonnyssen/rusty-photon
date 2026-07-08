@@ -22,8 +22,8 @@ use cucumber::gherkin::Step;
 use cucumber::{given, then, when};
 
 use bdd_infra::rp_harness::{
-    CameraConfig, CannedWcs, FocuserConfig, MountConfig, NightSky, OmniSimHandle,
-    PlannerTargetConfig, PlateSolverConfig, PlateSolverStub, StubBehavior,
+    CameraConfig, CannedWcs, ExposurePlanConfig, FocuserConfig, MountConfig, NightSky,
+    OmniSimHandle, PlannerTargetConfig, PlateSolverConfig, PlateSolverStub, StubBehavior,
 };
 
 use crate::steps::infrastructure::{
@@ -40,6 +40,24 @@ const OBSERVATION_BUDGET: Duration = Duration::from_secs(30);
 
 #[given("an observing site where it is astronomical night with one planner target")]
 async fn night_sky_with_one_target(world: &mut SessionRunnerWorld) {
+    push_one_night_target(world, Vec::new());
+}
+
+#[given(
+    expr = "an observing site where it is astronomical night with one planner target whose \
+            exposure plan is a single unfiltered {int}-second frame"
+)]
+async fn night_sky_with_one_planned_target(world: &mut SessionRunnerWorld, seconds: u64) {
+    push_one_night_target(
+        world,
+        vec![ExposurePlanConfig {
+            filter: None,
+            duration_secs: seconds as f64,
+        }],
+    );
+}
+
+fn push_one_night_target(world: &mut SessionRunnerWorld, exposures: Vec<ExposurePlanConfig>) {
     let sky = NightSky::at(chrono::Utc::now());
     // Half an hour past transit: ≈ 82.5° altitude and sinking, next
     // meridian crossing ≈ 23.5 sidereal hours away — no flip pressure,
@@ -51,6 +69,7 @@ async fn night_sky_with_one_target(world: &mut SessionRunnerWorld) {
         ra_hours: target.ra_hours,
         dec_degrees: target.dec_degrees,
         min_altitude_degrees: None,
+        exposures,
     });
     world.night_targets.push(target);
 }
@@ -77,12 +96,14 @@ async fn night_sky_with_sinking_target(world: &mut SessionRunnerWorld, seconds: 
         ra_hours: sinker.ra_hours,
         dec_degrees: sinker.dec_degrees,
         min_altitude_degrees: Some(floor),
+        exposures: Vec::new(),
     });
     world.planner_targets.push(PlannerTargetConfig {
         name: "backup".to_string(),
         ra_hours: backup.ra_hours,
         dec_degrees: backup.dec_degrees,
         min_altitude_degrees: None,
+        exposures: Vec::new(),
     });
     world.night_targets.push(sinker);
     world.night_targets.push(backup);
@@ -290,7 +311,8 @@ async fn sse_shows_at_least(world: &mut SessionRunnerWorld, minimum: usize, even
 /// The deep-sky equipment set: one camera and the singular mount, plus
 /// a focuser for the refocus scenarios. No filter wheel — the
 /// scenarios leave the document's `filter` parameter at its empty
-/// default, so `set_filter` never runs.
+/// default and give their planner targets unfiltered exposure plans
+/// (if any), so `set_filter` never runs.
 async fn configure_deep_sky_equipment(world: &mut SessionRunnerWorld, with_focuser: bool) {
     ensure_omnisim(world).await;
     let alpaca_url = world.omnisim_url();

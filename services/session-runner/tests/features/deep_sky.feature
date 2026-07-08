@@ -42,6 +42,23 @@ Feature: Deep-sky workflow document
     And the SSE stream should show exactly 4 "exposure_complete" events
     And the SSE stream should show exactly 1 "park_complete" event
 
+  Scenario: The planner's exposure plan drives the capture duration
+    Given a running Alpaca simulator
+    And an observing site where it is astronomical night with one planner target whose exposure plan is a single unfiltered 2-second frame
+    And the simulated mount matches the site and points at the first target
+    And rp is running with a camera, a mount, and the session-runner orchestrator running the "deep_sky" workflow with parameters:
+      | max_frames     | 2     |
+      | focus          | false |
+      | centering      | false |
+      | park_on_finish | false |
+    And an SSE client is watching rp's event stream
+    When a session is started via the REST API
+    # `exposure` is deliberately not supplied: its default is 300s, so
+    # the session can only finish this fast if the planner-returned 2s
+    # plan is what reaches the camera.
+    Then the session ends within 90 seconds
+    And the SSE stream should show exactly 2 "exposure_complete" events
+
   Scenario: A target sinking below its altitude floor switches the dispatch loop to the next target
     Given a running Alpaca simulator
     And an observing site where it is astronomical night and the first of two planner targets sinks below its floor after 120 seconds

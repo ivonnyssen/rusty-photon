@@ -96,6 +96,20 @@ pub struct PlannerTargetConfig {
     /// planner-wide `planner.min_altitude_degrees` (20 in the emitted
     /// config) applies.
     pub min_altitude_degrees: Option<f64>,
+    /// Exposure plan — `get_next_target` returns the first entry as
+    /// the recommended `filter` / `duration_secs`. Empty ⇒ omit the
+    /// `exposures` field (the planner returns both as null).
+    pub exposures: Vec<ExposurePlanConfig>,
+}
+
+/// One `exposures[]` entry on a planner target (rp.md § Target
+/// Definition).
+#[derive(Debug, Clone)]
+pub struct ExposurePlanConfig {
+    /// `None` ⇒ omit the `filter` field (an unfiltered rig; the
+    /// planner returns `filter: null` for this entry).
+    pub filter: Option<String>,
+    pub duration_secs: f64,
 }
 
 /// Plate-solver service config — emitted as the top-level
@@ -409,6 +423,22 @@ impl RpConfigBuilder {
                     if let Some(floor) = t.min_altitude_degrees {
                         obj["min_altitude_degrees"] = serde_json::json!(floor);
                     }
+                    if !t.exposures.is_empty() {
+                        obj["exposures"] = t
+                            .exposures
+                            .iter()
+                            .map(|e| {
+                                let mut entry = serde_json::json!({
+                                    "duration_secs": e.duration_secs,
+                                });
+                                if let Some(filter) = &e.filter {
+                                    entry["filter"] = serde_json::json!(filter);
+                                }
+                                entry
+                            })
+                            .collect::<Vec<Value>>()
+                            .into();
+                    }
                     obj
                 })
                 .collect::<Vec<Value>>(),
@@ -719,22 +749,46 @@ mod tests {
             ra_hours: 2.5,
             dec_degrees: 0.0,
             min_altitude_degrees: Some(44.8),
+            exposures: vec![
+                ExposurePlanConfig {
+                    filter: Some("Red".to_string()),
+                    duration_secs: 120.0,
+                },
+                ExposurePlanConfig {
+                    filter: None,
+                    duration_secs: 60.0,
+                },
+            ],
         });
         b.add_target(PlannerTargetConfig {
             name: "backup".to_string(),
             ra_hours: 2.45,
             dec_degrees: 0.0,
             min_altitude_degrees: None,
+            exposures: Vec::new(),
         });
         let cfg = b.build();
         let targets = cfg["targets"].as_array().unwrap();
         assert_eq!(targets.len(), 2);
         assert_eq!(targets[0]["name"], "sinker");
         assert_eq!(targets[0]["min_altitude_degrees"], 44.8);
+        let exposures = targets[0]["exposures"].as_array().unwrap();
+        assert_eq!(exposures.len(), 2);
+        assert_eq!(exposures[0]["filter"], "Red");
+        assert_eq!(exposures[0]["duration_secs"], 120.0);
+        assert!(
+            exposures[1].get("filter").is_none(),
+            "a None filter must omit the field (unfiltered entry)"
+        );
+        assert_eq!(exposures[1]["duration_secs"], 60.0);
         assert_eq!(targets[1]["name"], "backup");
         assert!(
             targets[1].get("min_altitude_degrees").is_none(),
             "a None floor must omit the field so rp's planner-wide default applies"
+        );
+        assert!(
+            targets[1].get("exposures").is_none(),
+            "an empty plan must omit the exposures field"
         );
     }
 

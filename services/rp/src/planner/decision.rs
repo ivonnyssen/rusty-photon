@@ -37,6 +37,23 @@ pub struct PlannerTarget {
     /// Per-target altitude floor. `None` falls back to the
     /// planner-wide minimum supplied by the caller.
     pub min_altitude_degrees: Option<f64>,
+    /// The target's `exposures[]` plan, in config order. The
+    /// recommendation surfaces the first entry as `filter` /
+    /// `duration_secs`; empty ⇒ both null (the orchestrator's own
+    /// exposure parameters apply).
+    pub exposures: Vec<ExposureSpec>,
+}
+
+/// One entry of a target's `exposures[]` plan (rp.md § Target
+/// Definition). v1 reads `filter` and `duration_secs`; `count` stays
+/// unread until per-target progress (`record_exposure`) lands.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ExposureSpec {
+    /// `None` for an unfiltered entry (no `filter` key, `null`, or
+    /// `""` in config — e.g. an OSC rig without a filter wheel).
+    pub filter: Option<String>,
+    /// Exposure duration in seconds; positive and finite.
+    pub duration_secs: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -231,6 +248,60 @@ pub fn parse_targets_from_value(v: &Value) -> Vec<PlannerTarget> {
             ra_hours: ra,
             dec_degrees: dec,
             min_altitude_degrees: min_alt,
+            exposures: parse_exposures(entry, name),
+        });
+    }
+    out
+}
+
+/// Parse a target row's `exposures[]` into typed entries, skipping
+/// (with a `debug!` log) entries without a positive finite
+/// `duration_secs` or with a non-string `filter`. Same rationale as
+/// the target rows themselves: flag a config typo at parse time
+/// instead of letting it surface as a confusing null plan at night.
+fn parse_exposures(entry: &Value, target: &str) -> Vec<ExposureSpec> {
+    let exposures = match entry.get("exposures") {
+        None => return Vec::new(),
+        Some(v) => v,
+    };
+    let Some(arr) = exposures.as_array() else {
+        tracing::debug!(
+            target = %target,
+            "ignoring `exposures` that is not an array"
+        );
+        return Vec::new();
+    };
+    let mut out = Vec::with_capacity(arr.len());
+    for e in arr {
+        let Some(duration_secs) = e.get("duration_secs").and_then(|n| n.as_f64()) else {
+            tracing::debug!(
+                target = %target, entry = ?e,
+                "skipping exposure entry missing a numeric `duration_secs`"
+            );
+            continue;
+        };
+        if !duration_secs.is_finite() || duration_secs <= 0.0 {
+            tracing::debug!(
+                target = %target, duration_secs,
+                "skipping exposure entry with a non-finite or non-positive `duration_secs`"
+            );
+            continue;
+        }
+        let filter = match e.get("filter") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(s)) if s.is_empty() => None,
+            Some(Value::String(s)) => Some(s.clone()),
+            Some(other) => {
+                tracing::debug!(
+                    target = %target, filter = ?other,
+                    "skipping exposure entry whose `filter` is not a string"
+                );
+                continue;
+            }
+        };
+        out.push(ExposureSpec {
+            filter,
+            duration_secs,
         });
     }
     out
@@ -392,6 +463,7 @@ mod tests {
             ra_hours: 0.7123,
             dec_degrees: 41.27,
             min_altitude_degrees: None,
+            exposures: Vec::new(),
         }];
         let rec = next_target(&eph, &site(), now(), &targets, 30.0);
         assert!(rec.target.is_none());
@@ -410,6 +482,7 @@ mod tests {
             ra_hours: 0.7123,
             dec_degrees: 41.27,
             min_altitude_degrees: None,
+            exposures: Vec::new(),
         }];
         let rec = next_target(&eph, &site(), now(), &targets, 30.0);
         assert!(rec.target.is_none());
@@ -431,6 +504,7 @@ mod tests {
             ra_hours: 0.7123,
             dec_degrees: 41.27,
             min_altitude_degrees: None,
+            exposures: Vec::new(),
         }];
         let rec = next_target(&eph, &site(), now(), &targets, 30.0);
         assert_eq!(rec.reason, NextTargetReason::WaitForTwilight);
@@ -450,6 +524,7 @@ mod tests {
             ra_hours: 0.7123,
             dec_degrees: 41.27,
             min_altitude_degrees: None,
+            exposures: Vec::new(),
         }];
         let rec = next_target(&eph, &site(), now(), &targets, 30.0);
         assert_eq!(rec.reason, NextTargetReason::AllBelowMinAltitude);
@@ -471,12 +546,14 @@ mod tests {
                 ra_hours: 0.7,
                 dec_degrees: 41.0,
                 min_altitude_degrees: None,
+                exposures: Vec::new(),
             },
             PlannerTarget {
                 name: "M42".into(),
                 ra_hours: 11.0,
                 dec_degrees: -5.0,
                 min_altitude_degrees: None,
+                exposures: Vec::new(),
             },
         ];
         let rec = next_target(&eph, &site(), now(), &targets, 20.0);
@@ -497,6 +574,7 @@ mod tests {
             ra_hours: 1.0,
             dec_degrees: 0.0,
             min_altitude_degrees: Some(20.0),
+            exposures: Vec::new(),
         }];
         // default 30 would eliminate; per-target 20 keeps it.
         let rec = next_target(&eph, &site(), now(), &targets, 30.0);
@@ -547,5 +625,83 @@ mod tests {
         let parsed = parse_targets_from_value(&v);
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].name, "good");
+    }
+
+    #[test]
+    fn parse_targets_reads_exposures_in_order() {
+        let v = serde_json::json!([{
+            "name": "M31",
+            "ra_hours": 0.7,
+            "dec_degrees": 41.0,
+            "exposures": [
+                {"filter": "Luminance", "duration_secs": 300, "count": 40},
+                {"filter": "Red", "duration_secs": 120.5},
+                {"duration_secs": 60},
+            ],
+        }]);
+        let parsed = parse_targets_from_value(&v);
+        assert_eq!(
+            parsed[0].exposures,
+            vec![
+                ExposureSpec {
+                    filter: Some("Luminance".to_string()),
+                    duration_secs: 300.0,
+                },
+                ExposureSpec {
+                    filter: Some("Red".to_string()),
+                    duration_secs: 120.5,
+                },
+                ExposureSpec {
+                    filter: None,
+                    duration_secs: 60.0,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_targets_without_exposures_yields_an_empty_plan() {
+        let v = serde_json::json!([
+            {"name": "bare", "ra_hours": 1.0, "dec_degrees": 0.0},
+            {"name": "not_array", "ra_hours": 2.0, "dec_degrees": 0.0, "exposures": "oops"},
+        ]);
+        let parsed = parse_targets_from_value(&v);
+        assert_eq!(parsed.len(), 2);
+        assert!(parsed[0].exposures.is_empty());
+        assert!(parsed[1].exposures.is_empty());
+    }
+
+    #[test]
+    fn parse_exposures_skips_invalid_entries_and_normalises_empty_filters() {
+        let v = serde_json::json!([{
+            "name": "M31",
+            "ra_hours": 0.7,
+            "dec_degrees": 41.0,
+            "exposures": [
+                {"filter": "Red"},
+                {"filter": "Red", "duration_secs": 0},
+                {"filter": "Red", "duration_secs": -5},
+                {"filter": "Red", "duration_secs": "300"},
+                {"filter": 5, "duration_secs": 300},
+                {"filter": "", "duration_secs": 30},
+                {"filter": null, "duration_secs": 45},
+            ],
+        }]);
+        let parsed = parse_targets_from_value(&v);
+        assert_eq!(
+            parsed[0].exposures,
+            vec![
+                ExposureSpec {
+                    filter: None,
+                    duration_secs: 30.0,
+                },
+                ExposureSpec {
+                    filter: None,
+                    duration_secs: 45.0,
+                },
+            ],
+            "only entries with a positive numeric duration survive; \
+             empty/null filters normalise to None"
+        );
     }
 }
