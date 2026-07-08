@@ -1021,6 +1021,10 @@ frame) → shutdown (optional `park`). The full document lives in
 ```jsonc
 {
   "root": { "sequence": [
+    /* fail-fast parameter guards, before any equipment motion:
+       focus enabled requires focuser_id; a filter requires
+       filter_wheel_id — misconfiguration fails the session loudly
+       instead of silently degrading the night */
     /* init: counter defaults; on a recovery invocation, null
        session.target_name so the loop re-acquires (re-slew, re-center,
        re-focus) before the next frame */

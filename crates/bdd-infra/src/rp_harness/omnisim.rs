@@ -254,9 +254,17 @@ impl OmniSimHandle {
     /// site at runtime must teach the simulated mount the same one
     /// before rp starts.
     ///
-    /// The write is in-memory until OmniSim's own profile-save path
-    /// runs; the per-scenario `restart` reloads the persisted profile,
-    /// so scenarios set the site after the reset hook, not before.
+    /// **The write outlives the scenario.** OmniSim treats the site as
+    /// a profile *setting*, not runtime state: the per-scenario
+    /// `restart` does NOT restore the default (unlike tracking or the
+    /// mount position), and on platforms without `PR_SET_PDEATHSIG`
+    /// (macOS, Windows) the OmniSim process itself outlives the test
+    /// binary, so a leaked site poisons the *next* suite that reuses
+    /// the instance — rp's planner scenarios pin their config to
+    /// OmniSim's default site and fail mount-site validation against a
+    /// leftover computed one. Scenarios that call this must capture
+    /// the prior site via [`Self::get_telescope_site`] and restore it
+    /// when they finish.
     pub async fn set_telescope_site(
         latitude_degrees: f64,
         longitude_degrees: f64,
@@ -276,6 +284,58 @@ impl OmniSimHandle {
             &[("SiteLongitude", format!("{longitude_degrees}"))],
         )
         .await
+    }
+
+    /// Read the telescope simulator's observer site — the capture half
+    /// of the capture/restore contract on [`Self::set_telescope_site`].
+    pub async fn get_telescope_site() -> Result<(f64, f64), String> {
+        let base_url = Self::singleton_base_url();
+        let lat = Self::get_telescope_number_at(&base_url, 0, "sitelatitude").await?;
+        let lon = Self::get_telescope_number_at(&base_url, 0, "sitelongitude").await?;
+        Ok((lat, lon))
+    }
+
+    /// One GET against the standard Alpaca telescope API, returning the
+    /// numeric `Value` and checking both the HTTP status and the Alpaca
+    /// `ErrorNumber`.
+    async fn get_telescope_number_at(
+        base_url: &str,
+        n: u32,
+        property: &str,
+    ) -> Result<f64, String> {
+        let url = format!("{}/api/v1/telescope/{}/{}", base_url, n, property);
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .map_err(|e| format!("reqwest client build failed: {e}"))?;
+        let resp = client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| format!("GET {url} failed: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("GET {url} returned HTTP {}", resp.status()));
+        }
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("GET {url} returned a non-JSON body: {e}"))?;
+        let error_number = body
+            .get("ErrorNumber")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        if error_number != 0 {
+            let message = body
+                .get("ErrorMessage")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            return Err(format!(
+                "GET {url} returned Alpaca error {error_number}: {message}"
+            ));
+        }
+        body.get("Value")
+            .and_then(|v| v.as_f64())
+            .ok_or_else(|| format!("GET {url} returned no numeric Value: {body}"))
     }
 
     /// Enable or disable the telescope simulator's sidereal tracking
@@ -955,6 +1015,54 @@ mod tests {
         assert_eq!(form.get("RightAscension").map(String::as_str), Some("2.5"));
         assert_eq!(form.get("Declination").map(String::as_str), Some("0"));
         let _ = shutdown.send(());
+    }
+
+    #[tokio::test]
+    async fn telescope_number_get_parses_value_and_surfaces_alpaca_error() {
+        use axum::routing::get;
+
+        let app = Router::new()
+            .route(
+                "/api/v1/telescope/0/sitelatitude",
+                get(|| async {
+                    axum::Json(serde_json::json!({ "Value": 51.07861, "ErrorNumber": 0 }))
+                }),
+            )
+            .route(
+                "/api/v1/telescope/0/sitelongitude",
+                get(|| async {
+                    axum::Json(serde_json::json!({
+                        "ErrorNumber": 1024,
+                        "ErrorMessage": "property not implemented"
+                    }))
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async {
+                    let _ = rx.await;
+                })
+                .await
+                .unwrap();
+        });
+        let base_url = format!("http://127.0.0.1:{}", port);
+
+        let lat = OmniSimHandle::get_telescope_number_at(&base_url, 0, "sitelatitude")
+            .await
+            .unwrap();
+        assert!((lat - 51.07861).abs() < 1e-9, "unexpected latitude {lat}");
+
+        let err = OmniSimHandle::get_telescope_number_at(&base_url, 0, "sitelongitude")
+            .await
+            .expect_err("expected the Alpaca error to surface");
+        assert!(
+            err.contains("1024") && err.contains("not implemented"),
+            "unexpected error format: {err}"
+        );
+        let _ = tx.send(());
     }
 
     #[tokio::test]

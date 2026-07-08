@@ -153,6 +153,28 @@
   "root": {
     "sequence": [
       {
+        "id": "guard-focuser-id",
+        "if": "params.focus == true && params.focuser_id == ''",
+        "then": [
+          {
+            "fail": {
+              "message": "'focus is enabled but focuser_id is empty — supply focuser_id or invoke with focus: false'"
+            }
+          }
+        ]
+      },
+      {
+        "id": "guard-filter-wheel-id",
+        "if": "params.filter != '' && params.filter_wheel_id == ''",
+        "then": [
+          {
+            "fail": {
+              "message": "'filter is set but filter_wheel_id is empty — supply filter_wheel_id or drop the filter parameter'"
+            }
+          }
+        ]
+      },
+      {
         "set": {
           "session.total_frames": "has(session.total_frames) ? session.total_frames : 0",
           "session.frames_since_focus": "has(session.frames_since_focus) ? session.frames_since_focus : 0",
@@ -181,7 +203,7 @@
       { "tool": "unpark", "args": {} },
       { "tool": "set_tracking", "args": { "enabled": true } },
       {
-        "if": "params.filter != '' && params.filter_wheel_id != ''",
+        "if": "params.filter != ''",
         "then": [
           {
             "tool": "set_filter",

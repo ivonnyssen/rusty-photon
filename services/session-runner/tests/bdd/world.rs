@@ -60,6 +60,14 @@ pub struct SessionRunnerWorld {
     /// The computed target coordinates behind `planner_targets`, kept
     /// for the mount-sync and plate-solver-echo steps.
     pub night_targets: Vec<IcrsCoord>,
+    /// OmniSim's telescope site as it was before a scenario overwrote
+    /// it. The site is a profile *setting* the per-scenario device
+    /// restart does not reset, and on platforms without
+    /// `PR_SET_PDEATHSIG` the OmniSim process outlives this test
+    /// binary — so the after-hook must put the site back or the next
+    /// suite reusing the instance (rp's planner scenarios pin their
+    /// config to OmniSim's default site) fails mount-site validation.
+    pub original_telescope_site: Option<(f64, f64)>,
     /// The scenario's plate-solver stub (kept alive for its lifetime)
     /// and the rp config block pointing at it.
     pub plate_solver_stub: Option<PlateSolverStub>,

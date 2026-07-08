@@ -98,6 +98,14 @@ async fn mount_matches_site_and_target(world: &mut SessionRunnerWorld) {
         .night_targets
         .first()
         .expect("compute the planner targets before configuring the mount");
+    // Capture the site before overwriting it — it is a profile setting
+    // the per-scenario restart does not reset, so the after-hook puts
+    // it back for whatever suite reuses this OmniSim next.
+    world.original_telescope_site = Some(
+        OmniSimHandle::get_telescope_site()
+            .await
+            .expect("failed to read the simulated mount's site"),
+    );
     OmniSimHandle::set_telescope_site(lat, lon)
         .await
         .expect("failed to set the simulated mount's site");

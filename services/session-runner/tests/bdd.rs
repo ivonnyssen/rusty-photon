@@ -43,6 +43,20 @@ bdd_infra::bdd_main! {
                     if let Some(rp) = world.rp.as_mut() {
                         rp.stop().await;
                     }
+                    // Put back OmniSim's telescope site when a deep-sky
+                    // scenario overwrote it with a computed one. The
+                    // site is a profile setting the per-scenario
+                    // restart does NOT reset, and on platforms without
+                    // PR_SET_PDEATHSIG (macOS, Windows) the OmniSim
+                    // process outlives this test binary — a leaked
+                    // site fails rp's own planner scenarios, which pin
+                    // their config to OmniSim's default site, on the
+                    // reused instance.
+                    if let Some((lat, lon)) = world.original_telescope_site {
+                        bdd_infra::rp_harness::OmniSimHandle::set_telescope_site(lat, lon)
+                            .await
+                            .expect("failed to restore OmniSim's telescope site");
+                    }
                 }
             })
         })
