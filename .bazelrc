@@ -56,10 +56,11 @@ test --test_env=OMNISIM_DIR
 # `resources:omnisim:1` and takes one token. Since #467 the bdd-infra harness
 # gives every test process a PRIVATE OmniSim — spawned with the fork's
 # --multi-instance flag (skips upstream's machine-global single-instance
-# mutex) on a dynamically chosen port, with a per-instance XDG_CONFIG_HOME —
-# so on Linux/macOS these actions can genuinely run in parallel and the pool
-# is sized above the worst-case concurrent demand (8 rp shards + 3 suites)
-# on every OS; it exists only as a throttle to grab if OmniSim concurrency
+# mutex) on a dynamically chosen port, with a per-instance
+# OMNISIM_SETTINGS_DIR — so these actions can genuinely run in parallel on
+# every OS and the pool is sized above the worst-case concurrent demand
+# (8 rp:bdd shards + 8 session-runner:bdd shards + 2 suites = 18); it
+# exists only as a throttle to grab if OmniSim concurrency
 # ever turns flaky (e.g. `test:windows --local_resources=omnisim=1` would
 # re-serialize one platform — --enable_platform_specific_config appends
 # platform lines after this one, so they win). Profile-store isolation is
@@ -72,7 +73,7 @@ test --test_env=OMNISIM_DIR
 # for every test invocation, local and CI. --local_resources is a
 # scheduling-only flag, so it does not enter action keys and never perturbs
 # the remote cache.
-test --local_resources=omnisim=16
+test --local_resources=omnisim=24
 
 # --- Rust toolchain --------------------------------------------------------
 

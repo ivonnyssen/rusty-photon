@@ -45,6 +45,7 @@ pub struct OmniSimHandle {
 }
 
 /// Singleton that owns the OmniSim child process for the entire test run.
+#[derive(Debug)]
 struct OmniSimProcess {
     _child: std::process::Child,
     base_url: String,
@@ -662,11 +663,22 @@ impl OmniSimProcess {
     /// branch 2 closes that gap and brings the tuned timings (shorter
     /// cover-calibrator open/close) to Bazel runs too.
     fn seed_config_source() -> Option<PathBuf> {
-        let compile_time = Path::new(env!("CARGO_MANIFEST_DIR")).join("omnisim-config");
+        Self::seed_config_source_from(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("omnisim-config"),
+            std::env::current_dir().ok(),
+        )
+    }
+
+    /// `seed_config_source` extracted over explicit candidates so the
+    /// cwd-ancestors walk — the branch that resolves the seed inside the
+    /// Bazel runfiles tree, where the compile-time path is dead — is
+    /// unit-testable without depending on the build environment. See the
+    /// `tests` module at the bottom of this file.
+    fn seed_config_source_from(compile_time: PathBuf, cwd: Option<PathBuf>) -> Option<PathBuf> {
         if compile_time.is_dir() {
             return Some(compile_time);
         }
-        let cwd = std::env::current_dir().ok()?;
+        let cwd = cwd?;
         for ancestor in cwd.ancestors() {
             let candidate = ancestor
                 .join("crates")
@@ -1252,6 +1264,233 @@ mod tests {
         .await
         .expect_err("a body without ErrorNumber must not read as success");
         assert!(err.contains("without a numeric ErrorNumber"), "{err}");
+        let _ = tx.send(());
+    }
+
+    /// Serializes tests that mutate the process-wide OMNISIM_PATH /
+    /// OMNISIM_DIR env vars (`find_binary` reads them). tokio's Mutex so
+    /// async tests can hold the guard across `.await` without tripping
+    /// `clippy::await_holding_lock`; sync tests use `blocking_lock`.
+    static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    fn restore_env(key: &str, saved: Option<std::ffi::OsString>) {
+        match saved {
+            Some(v) => std::env::set_var(key, v),
+            None => std::env::remove_var(key),
+        }
+    }
+
+    /// A PATH-resolvable binary that exits quickly (with an error) when
+    /// handed OmniSim's `--multi-instance --urls=...` args — a stand-in
+    /// for a pre-fork OmniSim losing the port-bind race or bailing out.
+    fn quick_fail_binary() -> &'static str {
+        if cfg!(windows) {
+            // whoami rejects unknown arguments and exits fast.
+            "whoami"
+        } else {
+            // false ignores arguments and exits 1 immediately.
+            "false"
+        }
+    }
+
+    #[test]
+    fn find_binary_prefers_path_then_dir_then_bare_name() {
+        let _lock = ENV_LOCK.blocking_lock();
+        let saved_path = std::env::var_os("OMNISIM_PATH");
+        let saved_dir = std::env::var_os("OMNISIM_DIR");
+
+        let expected_name = if cfg!(target_os = "windows") {
+            "ascom.alpaca.simulators.exe"
+        } else {
+            "ascom.alpaca.simulators"
+        };
+
+        // OMNISIM_PATH wins over OMNISIM_DIR.
+        std::env::set_var("OMNISIM_PATH", "/explicit/omnisim-binary");
+        std::env::set_var("OMNISIM_DIR", "/some/install/dir");
+        let from_path = OmniSimProcess::find_binary();
+
+        // OMNISIM_DIR gets the platform binary name appended — this is the
+        // branch local dev setups rely on.
+        std::env::remove_var("OMNISIM_PATH");
+        let from_dir = OmniSimProcess::find_binary();
+
+        // Neither set: bare name, resolved via PATH at spawn time.
+        std::env::remove_var("OMNISIM_DIR");
+        let bare = OmniSimProcess::find_binary();
+
+        restore_env("OMNISIM_PATH", saved_path);
+        restore_env("OMNISIM_DIR", saved_dir);
+
+        assert_eq!(from_path, "/explicit/omnisim-binary");
+        assert_eq!(
+            std::path::PathBuf::from(&from_dir),
+            std::path::Path::new("/some/install/dir").join(expected_name)
+        );
+        assert_eq!(bare, expected_name);
+    }
+
+    #[tokio::test]
+    async fn wait_healthy_fails_fast_when_the_child_exits() {
+        // Portable quick-exit child: the health wait must report the exit
+        // (with the --multi-instance hint) instead of burning the full
+        // 30-second window against a port nothing listens on.
+        let mut child = if cfg!(windows) {
+            std::process::Command::new("cmd")
+                .args(["/C", "exit 0"])
+                .spawn()
+                .unwrap()
+        } else {
+            std::process::Command::new("sh")
+                .args(["-c", "exit 0"])
+                .spawn()
+                .unwrap()
+        };
+        let err = OmniSimProcess::wait_healthy(&mut child, "http://127.0.0.1:9")
+            .await
+            .expect_err("an exited child must fail the health wait");
+        assert!(err.contains("exited during startup"), "{err}");
+        assert!(err.contains("--multi-instance"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn spawn_on_port_reports_early_exit_and_reaps_the_child() {
+        let port = OmniSimProcess::pick_free_port();
+        let err = OmniSimProcess::spawn_on_port(quick_fail_binary(), port)
+            .await
+            .expect_err("a binary that exits at startup must not yield an instance");
+        assert!(err.contains("exited during startup"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn get_or_spawn_panics_with_the_fork_floor_hint_after_all_attempts() {
+        let _lock = ENV_LOCK.lock().await;
+        let saved_path = std::env::var_os("OMNISIM_PATH");
+        let saved_dir = std::env::var_os("OMNISIM_DIR");
+        std::env::set_var("OMNISIM_PATH", quick_fail_binary());
+        std::env::remove_var("OMNISIM_DIR");
+
+        // get_or_spawn only touches the global OMNISIM singleton via its
+        // caller (OmniSimHandle::start), so calling it directly is safe;
+        // run it on a task so the expected panic is observable.
+        let joined = tokio::spawn(async { OmniSimProcess::get_or_spawn().await }).await;
+
+        restore_env("OMNISIM_PATH", saved_path);
+        restore_env("OMNISIM_DIR", saved_dir);
+
+        let join_err = joined.expect_err("get_or_spawn must panic when every attempt fails");
+        assert!(join_err.is_panic());
+        let message = *join_err
+            .into_panic()
+            .downcast::<String>()
+            .expect("panic payload is the formatted message");
+        assert!(
+            message.contains(&format!("after {} attempts", SPAWN_ATTEMPTS)),
+            "{message}"
+        );
+        assert!(message.contains("v0.5.0-467.2"), "{message}");
+    }
+
+    #[test]
+    fn seed_config_source_prefers_the_compile_time_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let compile_time = tmp.path().join("omnisim-config");
+        std::fs::create_dir_all(&compile_time).unwrap();
+        let found = OmniSimProcess::seed_config_source_from(compile_time.clone(), None);
+        assert_eq!(found, Some(compile_time));
+    }
+
+    #[test]
+    fn seed_config_source_walks_cwd_ancestors_when_compile_time_path_is_dead() {
+        // The Bazel case: the compile-time path points into a build sandbox
+        // that no longer exists, and the seed sits in the runfiles tree a
+        // few directories above the (chdir'd) cwd.
+        let tmp = tempfile::tempdir().unwrap();
+        let seed = tmp
+            .path()
+            .join("crates")
+            .join("bdd-infra")
+            .join("omnisim-config");
+        std::fs::create_dir_all(&seed).unwrap();
+        let cwd = tmp.path().join("services").join("rp");
+        std::fs::create_dir_all(&cwd).unwrap();
+
+        let found = OmniSimProcess::seed_config_source_from(
+            tmp.path().join("no-such-sandbox").join("omnisim-config"),
+            Some(cwd),
+        );
+        assert_eq!(
+            found.map(|p| p.canonicalize().unwrap()),
+            Some(seed.canonicalize().unwrap())
+        );
+    }
+
+    #[test]
+    fn seed_config_source_returns_none_when_no_candidate_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let found = OmniSimProcess::seed_config_source_from(
+            tmp.path().join("missing"),
+            Some(tmp.path().to_path_buf()),
+        );
+        assert_eq!(found, None);
+    }
+
+    #[tokio::test]
+    async fn telescope_number_get_surfaces_http_error_status() {
+        use axum::routing::get;
+
+        let app = Router::new().route(
+            "/api/v1/telescope/0/sitelatitude",
+            get(|| async { StatusCode::INTERNAL_SERVER_ERROR }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async {
+                    let _ = rx.await;
+                })
+                .await
+                .unwrap();
+        });
+        let base_url = format!("http://127.0.0.1:{}", port);
+
+        let err = OmniSimHandle::get_telescope_number_at(&base_url, 0, "sitelatitude")
+            .await
+            .expect_err("a non-success HTTP status must not read as success");
+        assert!(err.contains("500"), "{err}");
+        let _ = tx.send(());
+    }
+
+    #[tokio::test]
+    async fn telescope_form_put_surfaces_http_error_status() {
+        let app = Router::new().route(
+            "/api/v1/telescope/0/tracking",
+            put(|| async { StatusCode::INTERNAL_SERVER_ERROR }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async {
+                    let _ = rx.await;
+                })
+                .await
+                .unwrap();
+        });
+        let base_url = format!("http://127.0.0.1:{}", port);
+
+        let err = OmniSimHandle::put_telescope_form_at(
+            &base_url,
+            0,
+            "tracking",
+            &[("Tracking", "true".to_string())],
+        )
+        .await
+        .expect_err("a non-success HTTP status must not read as success");
+        assert!(err.contains("500"), "{err}");
         let _ = tx.send(());
     }
 
