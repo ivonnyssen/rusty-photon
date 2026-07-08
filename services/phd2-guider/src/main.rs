@@ -1,5 +1,7 @@
 use clap::{Parser, Subcommand};
-use phd2_guider::{load_config, Phd2Client, Phd2Config, Phd2Event, Rect, SettleParams};
+use phd2_guider::{
+    load_config, Config, Phd2Client, Phd2Config, Phd2Event, Rect, ServerBuilder, SettleParams,
+};
 use rusty_photon_service_lifecycle::{ServiceResult, ServiceRunner, Shutdown};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -29,12 +31,19 @@ struct Args {
     #[arg(short, long, default_value = "info", value_parser = clap::value_parser!(Level))]
     log_level: Level,
 
+    /// Subcommand; running with none starts the HTTP service (the
+    /// packaged systemd unit invokes the bare binary).
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Run the rp-managed guider HTTP service — the default when no
+    /// subcommand is given (see docs/services/phd2-guider.md § "HTTP
+    /// Service Mode")
+    Serve,
+
     /// Connect to PHD2 and show status
     Status,
 
@@ -130,22 +139,49 @@ fn main() -> ServiceResult {
     );
 
     ServiceRunner::new("phd2-guider").run(move |shutdown| async move {
-        // Build configuration from CLI args or config file
-        let phd2_config = if let Some(config_path) = &args.config {
+        // No subcommand = serve (the packaged systemd unit invokes the
+        // bare binary).
+        let command = args.command.unwrap_or(Commands::Serve);
+
+        // Build configuration from CLI args or config file. An explicit
+        // --config must load; without one, `serve` also picks up the
+        // per-user platform config path when the file exists there
+        // (systemd passes no arguments), and every mode falls back to
+        // defaults with the --host/--port flags applied.
+        let config = if let Some(config_path) = &args.config {
             debug!("Loading configuration from {:?}", config_path);
-            let config = load_config(config_path)?;
-            config.phd2
+            load_config(config_path)?
         } else {
-            Phd2Config {
-                host: args.host,
-                port: args.port,
-                ..Default::default()
+            let default_path = matches!(command, Commands::Serve)
+                .then(|| rusty_photon_config::resolve_config_path("phd2-guider", None).ok())
+                .flatten()
+                .filter(|p| p.exists());
+            match default_path {
+                Some(path) => {
+                    debug!("Loading configuration from default path {:?}", path);
+                    load_config(&path)?
+                }
+                None => Config {
+                    phd2: Phd2Config {
+                        host: args.host,
+                        port: args.port,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
             }
         };
 
-        let client = Phd2Client::new(phd2_config);
+        if let Commands::Serve = command {
+            return run_serve(config, shutdown).await;
+        }
 
-        match args.command {
+        let client = Phd2Client::new(config.phd2);
+
+        match command {
+            // Handled by the early return above; kept for match
+            // exhaustiveness.
+            Commands::Serve => {}
             Commands::Status => run_status(&client).await?,
             Commands::Monitor => run_monitor(&client, shutdown).await?,
             Commands::Connect => run_connect(&client).await?,
@@ -195,6 +231,22 @@ fn main() -> ServiceResult {
 
         Ok(())
     })
+}
+
+/// Run the rp-managed guider HTTP service until shutdown.
+///
+/// Prints `bound_addr=<host>:<port>` to stdout once the listener is
+/// bound (the `bdd-infra::ServiceHandle` port-discovery convention).
+async fn run_serve(
+    config: Config,
+    shutdown: Shutdown,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let bound = ServerBuilder::new().with_config(config).build().await?;
+    // Parsed by test harnesses; keep the exact format.
+    println!("bound_addr={}", bound.listen_addr());
+    info!("guider service listening on {}", bound.listen_addr());
+    bound.start(shutdown.cancelled()).await?;
+    Ok(())
 }
 
 async fn run_status(client: &Phd2Client) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {

@@ -16,11 +16,13 @@ udev / firmware needs and ASCOM Alpaca's UDP discovery defeat containers
 ## What gets installed
 
 Every package is named `rusty-photon-<svc>` and installs
-`/usr/bin/rusty-photon-<svc>` plus (for daemons) a hardened
+`/usr/bin/rusty-photon-<svc>` plus a hardened
 `rusty-photon-<svc>.service` unit that is enabled and started on install.
 All daemons run as the shared system user `rusty-photon` (home
 `/var/lib/rusty-photon`, no login shell), created by the first package
-installed. `phd2-guider` is the one plain CLI package (no unit, no user).
+installed. (`phd2-guider` was originally the one plain CLI package; it
+gained a unit when its HTTP service mode landed — issue #464. Its binary
+doubles as the PHD2 CLI via subcommands.)
 
 | Service | Port | Notes |
 |---------|------|-------|
@@ -37,6 +39,7 @@ installed. `phd2-guider` is the one plain CLI package (no unit, no user).
 | qhy-camera | 11121 | USB camera; needs the firmware helper (below) |
 | zwo-camera | 11122 | USB camera; SDK blobs bundled |
 | pa-scops-oag | 11123 | serial (dialout) |
+| phd2-guider | 11130 | guider service wrapping PHD2 (PHD2 installed separately) |
 | plate-solver | 11131 | config-gated; needs ASTAP (below) |
 | calibrator-flats | 11170 | config-gated |
 

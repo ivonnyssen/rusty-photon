@@ -37,8 +37,11 @@ create the `ivonnyssen/homebrew-rusty-photon` tap content and add the
 ## Decisions (fixed — see ADR-012 / ADR-013 for rationale)
 
 - **Scope:** all services. 14 systemd-supervised daemons + `phd2-guider`
-  packaged as a plain CLI (it is a clap subcommand tool, not a daemon).
-  Test-double bins (`mock_phd2`, `mock_astap`) are never packaged.
+  packaged as a plain CLI (it was a clap subcommand tool, not a daemon,
+  when this plan shipped; issue #464 later gave it an HTTP service mode
+  and a unit — see the update in § "phd2-guider (PR-3)" below, making it
+  the 15th daemon). Test-double bins (`mock_phd2`, `mock_astap`) are
+  never packaged.
 - **Naming:** `rusty-photon-` prefix on packages **and** installed binaries
   **and** units: package `rusty-photon-<svc>`, `/usr/bin/rusty-photon-<svc>`,
   `rusty-photon-<svc>.service`. Cargo bin names are unchanged; the rename
@@ -357,6 +360,16 @@ startup error — and their units are `ConditionPathExists`-gated, as is
 
 CLI package: binary asset (`/usr/bin/rusty-photon-phd2-guider`) only. No
 unit, no user, no maintainer scripts beyond defaults.
+
+**Update (2026-07-08, issue #464):** `phd2-guider` gained an HTTP service
+mode (`serve`, the default when the binary runs with no subcommand) and is
+now packaged like every other daemon: `pkg/` with the hardened unit +
+canonical postinst/postrm, `systemd-units` deb metadata, shared
+`rusty-photon` user. No `ConditionPathExists` gate — the service runs with
+built-in defaults and merely reports 503 on `/health` until PHD2 is
+reachable. The CLI subcommands remain available from the same binary.
+`check-pkg-assets.sh`'s CLI-only exemption and `build-packages.sh`'s
+explicit list append were removed with it.
 
 ### plate-solver note
 

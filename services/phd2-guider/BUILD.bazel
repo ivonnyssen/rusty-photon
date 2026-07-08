@@ -8,6 +8,7 @@ exports_files(
 
 _INTRA_WORKSPACE_DEPS = [
     "//crates/rp-fits:rp-fits",
+    "//crates/rusty-photon-config:rusty-photon-config",
     "//crates/rusty-photon-service-lifecycle:rusty-photon-service-lifecycle",
 ]
 
@@ -121,6 +122,50 @@ rust_test(
         proc_macro_dev = True,
     ),
     deps = [":phd2-guider_lib"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+# HTTP service (serve mode) contract suite. Spawns mock_phd2 and the
+# phd2-guider binary per scenario; Bazel supplies both via env vars
+# (the suite resolves MOCK_PHD2_BINARY via the world helper and
+# PHD2_GUIDER_BINARY via bdd-infra's {PKG}_BINARY convention).
+rust_test(
+    name = "bdd",
+    # One settle-backstop scenario legitimately waits ~11 s; generous size.
+    size = "large",
+    srcs = ["tests/bdd.rs"] + glob(["tests/bdd/**/*.rs"]),
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate_root = "tests/bdd.rs",
+    data = [
+        "Cargo.toml",
+        ":mock_phd2",
+        ":phd2-guider",
+    ] + glob(["tests/features/**"]),
+    edition = "2021",
+    env = {
+        "BDD_PACKAGE_DIR": "services/phd2-guider",
+        "MOCK_PHD2_BINARY": "$(rootpath :mock_phd2)",
+        "PHD2_GUIDER_BINARY": "$(rootpath :phd2-guider)",
+        "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :mock_phd2):$(rootpath :phd2-guider)",
+    },
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    # bdd-infra derives {PKG_UPPER_SNAKE}_BINARY from CARGO_PKG_NAME, so it must
+    # be the service name (rules_rust would otherwise use the crate name "bdd").
+    rustc_env = {"CARGO_PKG_NAME": "phd2-guider"},
+    tags = ["bdd"],
+    use_libtest_harness = False,
+    deps = [
+        ":phd2-guider_lib",
+        "//crates/bdd-infra",
+    ] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
         normal = True,
         normal_dev = True,
     ),

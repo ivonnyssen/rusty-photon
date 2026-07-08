@@ -25,11 +25,6 @@ for pkgdir in services/*/pkg; do
     unit="$pkgdir/$name.service"
     toml="services/$svc/Cargo.toml"
 
-    # CLI-only packages: binary asset only, no daemon invariants.
-    case "$svc" in
-        phd2-guider) continue ;;
-    esac
-
     if [ ! -f "$unit" ]; then
         err "$svc: missing $unit"
     else

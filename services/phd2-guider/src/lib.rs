@@ -14,6 +14,7 @@
 //! - [`fits`] - FITS file utilities for saving images
 //! - [`process`] - PHD2 process management
 //! - [`rpc`] - JSON RPC 2.0 types
+//! - [`service`] - HTTP service mode (`phd2-guider serve`), the rp-managed guider service
 //! - [`types`] - Common types (Rect, Profile, Equipment)
 //!
 //! ## Example
@@ -45,6 +46,7 @@ pub mod fits;
 pub mod io;
 pub mod process;
 pub mod rpc;
+pub mod service;
 pub mod types;
 
 // Re-export commonly used types at the crate root for convenience
@@ -59,6 +61,7 @@ pub use io::{
 };
 pub use process::{get_default_phd2_path, Phd2ProcessManager};
 pub use rpc::{RpcErrorObject, RpcRequest, RpcResponse};
+pub use service::{BoundServer, ServerBuilder};
 pub use types::{
     CalibrationData, CalibrationTarget, CoolerStatus, Equipment, EquipmentDevice, GuideAxis,
     Profile, Rect, StarImage,

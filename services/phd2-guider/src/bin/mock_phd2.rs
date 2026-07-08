@@ -1,7 +1,8 @@
 //! Mock PHD2 server for testing
 //!
-//! A simple mock PHD2 server that responds to JSON-RPC requests.
-//! Used for testing process management and connection handling.
+//! A simple mock PHD2 server that responds to JSON-RPC requests and
+//! emits the event stream the HTTP service mode's settle wait and
+//! stop poll observe.
 //!
 //! Usage:
 //!   mock_phd2 [--port PORT]
@@ -14,6 +15,20 @@
 //!     - "no_listen": Sleep without binding to port (tests connection timeout)
 //!     - "slow_start": Wait 5 seconds before binding (tests startup timing)
 //!     - "shutdown_fails": Ignore shutdown commands (tests fallback to force kill)
+//!   MOCK_PHD2_SETTLE_MODE - What follows a `guide`/`dither` RPC:
+//!     - "settle_ok" (default): emit Settling, two fixed GuideStep events
+//!       (RADistanceRaw +0.3/-0.3, DECDistanceRaw -0.4/+0.4 so the RMS is
+//!       deterministic: 0.3 / 0.4 / 0.5), then SettleDone{Status: 0}
+//!     - "settle_fail": same lead-in, then
+//!       SettleDone{Status: 1, Error: "Mock star lost"}
+//!     - "never_settle": emit Settling and GuideSteps but no SettleDone
+//!       (drives the service's settle_timeout backstop)
+//!   MOCK_PHD2_STOP_MODE - stop_capture behavior:
+//!     - "stops" (default): application state transitions to Stopped
+//!     - "never_stops": state stays Guiding (drives stop_timeout)
+//!   MOCK_PHD2_RPC_LOG - Path to a JSON-lines file each received
+//!     {"method", "params"} is appended to (request-forwarding assertions;
+//!     the MOCK_ASTAP_ARGV_OUT equivalent)
 //!
 //! Command line argument takes precedence over environment variable for port.
 //! Default port is 4400 (same as PHD2).
@@ -27,7 +42,12 @@
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+/// Application state shared across connections, mirroring the single
+/// state machine inside a real PHD2 instance.
+type AppState = Arc<Mutex<String>>;
 
 fn main() {
     // Get operating mode from environment
@@ -95,6 +115,7 @@ fn main() {
         .port();
 
     let shutdown = Arc::new(AtomicBool::new(false));
+    let app_state: AppState = Arc::new(Mutex::new("Stopped".to_string()));
 
     // Set a timeout so we can check shutdown flag periodically
     listener
@@ -115,8 +136,14 @@ fn main() {
                 eprintln!("Connection from {}", addr);
                 let shutdown_clone = shutdown.clone();
                 let ignore_shutdown_clone = ignore_shutdown;
+                let app_state_clone = app_state.clone();
                 std::thread::spawn(move || {
-                    handle_client(stream, shutdown_clone, ignore_shutdown_clone);
+                    handle_client(
+                        stream,
+                        shutdown_clone,
+                        ignore_shutdown_clone,
+                        app_state_clone,
+                    );
                 });
             }
             Err(ref e)
@@ -135,7 +162,81 @@ fn main() {
     eprintln!("Mock PHD2 shutting down");
 }
 
-fn handle_client(mut stream: TcpStream, shutdown: Arc<AtomicBool>, ignore_shutdown: bool) {
+/// Write one whole line under the writer lock so event-emitter threads
+/// and the response path never interleave mid-line.
+fn write_line(writer: &Arc<Mutex<TcpStream>>, line: &str) -> std::io::Result<()> {
+    let mut stream = writer.lock().unwrap();
+    writeln!(stream, "{}", line)?;
+    stream.flush()
+}
+
+/// Append the received RPC to the JSON-lines log named by
+/// MOCK_PHD2_RPC_LOG, when set. One process, many threads: a global
+/// lock serializes appends.
+fn log_rpc(method: &str, params: &serde_json::Value) {
+    static LOG_LOCK: Mutex<()> = Mutex::new(());
+    let Ok(path) = std::env::var("MOCK_PHD2_RPC_LOG") else {
+        return;
+    };
+    let line = serde_json::json!({ "method": method, "params": params }).to_string();
+    let _guard = LOG_LOCK.lock().unwrap();
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        let _ = writeln!(file, "{}", line);
+    }
+}
+
+/// Emit the event sequence that follows a `guide` or `dither` RPC,
+/// per MOCK_PHD2_SETTLE_MODE. Runs on its own thread so the request
+/// loop keeps answering RPCs (the service polls get_app_state and
+/// waits for SettleDone concurrently).
+fn emit_settle_sequence(writer: Arc<Mutex<TcpStream>>) {
+    let settle_mode =
+        std::env::var("MOCK_PHD2_SETTLE_MODE").unwrap_or_else(|_| "settle_ok".to_string());
+    std::thread::spawn(move || {
+        let pause = Duration::from_millis(30);
+        std::thread::sleep(pause);
+        let _ = write_line(
+            &writer,
+            r#"{"Event":"Settling","Distance":1.2,"Time":0.5,"SettleTime":10.0,"StarLocked":true}"#,
+        );
+        std::thread::sleep(pause);
+        let _ = write_line(
+            &writer,
+            r#"{"Event":"GuideStep","Frame":1,"Time":1.0,"Mount":"Mock Mount","dx":0.1,"dy":0.1,"RADistanceRaw":0.3,"DECDistanceRaw":-0.4,"SNR":25.1,"StarMass":5340.0}"#,
+        );
+        std::thread::sleep(pause);
+        let _ = write_line(
+            &writer,
+            r#"{"Event":"GuideStep","Frame":2,"Time":2.0,"Mount":"Mock Mount","dx":0.1,"dy":0.1,"RADistanceRaw":-0.3,"DECDistanceRaw":0.4,"SNR":25.1,"StarMass":5340.0}"#,
+        );
+        std::thread::sleep(pause);
+        match settle_mode.as_str() {
+            "settle_fail" => {
+                let _ = write_line(
+                    &writer,
+                    r#"{"Event":"SettleDone","Status":1,"Error":"Mock star lost"}"#,
+                );
+            }
+            "never_settle" => {
+                eprintln!("Mock PHD2: never_settle mode - withholding SettleDone");
+            }
+            _ => {
+                let _ = write_line(&writer, r#"{"Event":"SettleDone","Status":0}"#);
+            }
+        }
+    });
+}
+
+fn handle_client(
+    stream: TcpStream,
+    shutdown: Arc<AtomicBool>,
+    ignore_shutdown: bool,
+    app_state: AppState,
+) {
     stream
         .set_read_timeout(Some(std::time::Duration::from_secs(5)))
         .ok();
@@ -143,19 +244,17 @@ fn handle_client(mut stream: TcpStream, shutdown: Arc<AtomicBool>, ignore_shutdo
         .set_write_timeout(Some(std::time::Duration::from_secs(5)))
         .ok();
 
+    let reader = BufReader::new(stream.try_clone().unwrap());
+    let writer = Arc::new(Mutex::new(stream));
+
     // Send Version event on connect
     let version_event =
         r#"{"Event":"Version","PHDVersion":"2.6.11-mock","PHDSubver":"test","MsgVersion":1}"#;
-    if writeln!(stream, "{}", version_event).is_err() {
-        return;
-    }
-    if stream.flush().is_err() {
+    if write_line(&writer, version_event).is_err() {
         return;
     }
 
     eprintln!("Sent version event");
-
-    let reader = BufReader::new(stream.try_clone().unwrap());
 
     for line in reader.lines() {
         match line {
@@ -166,13 +265,11 @@ fn handle_client(mut stream: TcpStream, shutdown: Arc<AtomicBool>, ignore_shutdo
 
                 eprintln!("Received: {}", request);
 
-                let response = handle_request(&request, &shutdown, ignore_shutdown);
+                let response =
+                    handle_request(&request, &shutdown, ignore_shutdown, &app_state, &writer);
                 eprintln!("Sending: {}", response);
 
-                if writeln!(stream, "{}", response).is_err() {
-                    break;
-                }
-                if stream.flush().is_err() {
+                if write_line(&writer, &response).is_err() {
                     break;
                 }
 
@@ -200,7 +297,13 @@ fn handle_client(mut stream: TcpStream, shutdown: Arc<AtomicBool>, ignore_shutdo
     eprintln!("Client disconnected");
 }
 
-fn handle_request(request: &str, shutdown: &Arc<AtomicBool>, ignore_shutdown: bool) -> String {
+fn handle_request(
+    request: &str,
+    shutdown: &Arc<AtomicBool>,
+    ignore_shutdown: bool,
+    app_state: &AppState,
+    writer: &Arc<Mutex<TcpStream>>,
+) -> String {
     // Parse JSON-RPC request
     let req: serde_json::Value = match serde_json::from_str(request) {
         Ok(v) => v,
@@ -212,10 +315,15 @@ fn handle_request(request: &str, shutdown: &Arc<AtomicBool>, ignore_shutdown: bo
 
     let id = req.get("id").cloned().unwrap_or(serde_json::Value::Null);
     let method = req.get("method").and_then(|m| m.as_str()).unwrap_or("");
+    let params = req
+        .get("params")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    log_rpc(method, &params);
 
     // Mock responses for different methods
     let result = match method {
-        "get_app_state" => serde_json::json!("Stopped"),
+        "get_app_state" => serde_json::json!(app_state.lock().unwrap().clone()),
         "get_connected" => serde_json::json!(false),
         "set_connected" => serde_json::json!(0),
         "get_profiles" => serde_json::json!([
@@ -252,10 +360,29 @@ fn handle_request(request: &str, shutdown: &Arc<AtomicBool>, ignore_shutdown: bo
         "find_star" => serde_json::json!(0),
         "get_paused" => serde_json::json!(false),
         "set_paused" => serde_json::json!(0),
-        "guide" => serde_json::json!(0),
-        "loop" => serde_json::json!(0),
-        "stop_capture" => serde_json::json!(0),
-        "dither" => serde_json::json!(0),
+        "guide" => {
+            *app_state.lock().unwrap() = "Guiding".to_string();
+            emit_settle_sequence(writer.clone());
+            serde_json::json!(0)
+        }
+        "loop" => {
+            *app_state.lock().unwrap() = "Looping".to_string();
+            serde_json::json!(0)
+        }
+        "stop_capture" => {
+            let stop_mode =
+                std::env::var("MOCK_PHD2_STOP_MODE").unwrap_or_else(|_| "stops".to_string());
+            if stop_mode == "never_stops" {
+                eprintln!("Mock PHD2: never_stops mode - state unchanged");
+            } else {
+                *app_state.lock().unwrap() = "Stopped".to_string();
+            }
+            serde_json::json!(0)
+        }
+        "dither" => {
+            emit_settle_sequence(writer.clone());
+            serde_json::json!(0)
+        }
         "get_algo_param_names" => serde_json::json!(["Aggressiveness", "MinMove"]),
         "get_algo_param" => serde_json::json!(0.5),
         "set_algo_param" => serde_json::json!(0),
