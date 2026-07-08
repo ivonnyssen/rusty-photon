@@ -2830,7 +2830,11 @@ returns `filter: null`), and `count` (optional — the entry's
 integration goal for the `record_exposure` counters; a positive
 integer when present, and an entry without one has no finite goal,
 so its target never exhausts). The target-level `priority` is
-parsed-over but unused. A
+parsed-over but unused. An unfiltered entry means "no wheel
+movement": orchestrators (e.g. `deep_sky.json`) leave the wheel
+where it is and record the frame under the unfiltered slot, so a
+plan that wants glass-free frames *through a filter wheel* should
+name the wheel's clear slot (e.g. `"filter": "Clear"`) instead. A
 malformed exposure entry is skipped with a `debug!` log; a target
 whose plan is missing or entirely invalid still recommends, with
 `filter` / `duration_secs` null — the orchestrator's fallback

@@ -1066,7 +1066,11 @@ the document simplifies when it lands:
   to the `exposure` / `filter` parameters only when the target has
   **no plan** (`duration_secs` null). A plan is authoritative for the
   whole exposure spec: an explicitly unfiltered entry images
-  unfiltered rather than merging with the `filter` parameter. The
+  unfiltered rather than merging with the `filter` parameter — and
+  "unfiltered" means the wheel is left untouched, so a plan that
+  wants glass-free frames through a filter wheel names its clear
+  slot (rp.md § Target Definition), which also keeps the
+  `record_exposure` counters truthful. The
   filter change is its own step *before* acquisition, gated on "does
   this pass's filter differ from the wheel's current one"
   (`session.current_filter`) — so it fires on a target switch **and**
