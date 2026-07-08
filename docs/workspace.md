@@ -359,8 +359,12 @@ worked example.
 ## Build Notes
 
 - The `ascom-alpaca` crate is a git dependency from
-  `ivonnyssen/ascom-alpaca-rs.git` (branch `integration`,
-  `default-features = false`).
+  `ivonnyssen/ascom-alpaca-rs.git` (branch `pr/integer-parameter-handling`,
+  `default-features = false`). That branch is upstream `RReverser/ascom-alpaca-rs`
+  `main` plus our one still-open PR against it (#14); once #14 merges upstream,
+  drop the fork/git dependency in favor of upstream `main` directly. The old
+  `integration` branch, which used to combine several open PRs, is retired now
+  that all but #14 have merged upstream.
 
 ### Bazel
 
