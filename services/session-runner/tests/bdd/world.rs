@@ -10,7 +10,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bdd_infra::rp_harness::{
-    CameraConfig, CoverCalibratorConfig, FilterWheelConfig, ReceivedEvent, RpConfigBuilder,
+    CameraConfig, CoverCalibratorConfig, FilterWheelConfig, FocuserConfig, IcrsCoord, MountConfig,
+    PlannerTargetConfig, PlateSolverConfig, PlateSolverStub, ReceivedEvent, RpConfigBuilder,
     SafetyMonitorConfig, SseClient, WebhookReceiver,
 };
 use bdd_infra::ServiceHandle;
@@ -41,12 +42,36 @@ pub struct SessionRunnerWorld {
     pub cameras: Vec<CameraConfig>,
     pub filter_wheels: Vec<FilterWheelConfig>,
     pub cover_calibrators: Vec<CoverCalibratorConfig>,
+    /// Singular mount (deep_sky.feature's scenarios).
+    pub mount: Option<MountConfig>,
+    pub focusers: Vec<FocuserConfig>,
     /// Safety monitors gating the session (recovery.feature's safety
     /// interruption scenario).
     pub safety_monitors: Vec<SafetyMonitorConfig>,
     /// Override rp's `safety.poll_interval`; pinned short so unsafe/safe
     /// transitions are detected in test time.
     pub safety_poll_interval: Option<Duration>,
+    /// Observer site `(latitude, longitude)` — computed per scenario by
+    /// `NightSky` so the planner sees astronomical night at test time.
+    pub site: Option<(f64, f64)>,
+    /// Planner targets emitted into rp's `targets[]` (order matters:
+    /// exact |hour-angle| ties break by position).
+    pub planner_targets: Vec<PlannerTargetConfig>,
+    /// The computed target coordinates behind `planner_targets`, kept
+    /// for the mount-sync and plate-solver-echo steps.
+    pub night_targets: Vec<IcrsCoord>,
+    /// OmniSim's telescope site as it was before a scenario overwrote
+    /// it. The site is a profile *setting* the per-scenario device
+    /// restart does not reset, and on platforms without
+    /// `PR_SET_PDEATHSIG` the OmniSim process outlives this test
+    /// binary — so the after-hook must put the site back or the next
+    /// suite reusing the instance (rp's planner scenarios pin their
+    /// config to OmniSim's default site) fails mount-site validation.
+    pub original_telescope_site: Option<(f64, f64)>,
+    /// The scenario's plate-solver stub (kept alive for its lifetime)
+    /// and the rp config block pointing at it.
+    pub plate_solver_stub: Option<PlateSolverStub>,
+    pub plate_solver: Option<PlateSolverConfig>,
     pub plugin_configs: Vec<Value>,
     /// The orchestrator registration's `config` object (workflow name +
     /// parameters), kept so the recovery scenarios can re-invoke the
@@ -102,11 +127,26 @@ impl SessionRunnerWorld {
         for cc in &self.cover_calibrators {
             builder.add_cover_calibrator(cc.clone());
         }
+        if let Some(mount) = &self.mount {
+            builder.with_mount(mount.clone());
+        }
+        for focuser in &self.focusers {
+            builder.add_focuser(focuser.clone());
+        }
         for sm in &self.safety_monitors {
             builder.add_safety_monitor(sm.clone());
         }
         if let Some(interval) = self.safety_poll_interval {
             builder.with_safety_poll_interval(interval);
+        }
+        if let Some((lat, lon)) = self.site {
+            builder.with_site(lat, lon);
+        }
+        for target in &self.planner_targets {
+            builder.add_target(target.clone());
+        }
+        if let Some(ps) = &self.plate_solver {
+            builder.with_plate_solver(ps.clone());
         }
         for plugin in &self.plugin_configs {
             builder.add_plugin(plugin.clone());
@@ -180,18 +220,24 @@ impl SessionRunnerWorld {
     }
 
     /// The persisted `session.frames` counter, when the blackboard file
-    /// exists and carries one.
+    /// exists and carries one (the recovery fixture's counter).
     pub async fn blackboard_frames(&self) -> Option<u64> {
+        self.blackboard_counter("frames").await
+    }
+
+    /// A whole-number counter from the persisted blackboard, when the
+    /// file exists and carries the key.
+    pub async fn blackboard_counter(&self, key: &str) -> Option<u64> {
         let bytes = tokio::fs::read(self.blackboard_path()).await.ok()?;
         let session: Value = serde_json::from_slice(&bytes).ok()?;
         // The engine's expression layer stores numbers as f64 (`2.0`,
         // not `2`), so `as_u64()` would reject every real counter;
         // accept exactly-integral values and fail loud on anything else.
-        let frames = session.get("frames")?.as_f64()?;
+        let value = session.get(key)?.as_f64()?;
         assert!(
-            frames >= 0.0 && frames.fract() == 0.0,
-            "the blackboard's `frames` is not a whole non-negative number: {frames}"
+            value >= 0.0 && value.fract() == 0.0,
+            "the blackboard's `{key}` is not a whole non-negative number: {value}"
         );
-        Some(frames as u64)
+        Some(value as u64)
     }
 }

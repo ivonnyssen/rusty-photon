@@ -25,6 +25,7 @@
 mod config;
 mod launcher;
 mod mcp_client;
+mod night_sky;
 mod omnisim;
 mod orchestrator;
 mod plate_solver_stub;
@@ -33,12 +34,18 @@ mod webhook;
 
 pub use config::{
     build_calibrator_flats_config, CameraConfig, CoverCalibratorConfig, FilterWheelConfig,
-    FocuserConfig, MountConfig, PlateSolverConfig, RpConfigBuilder, SafetyMonitorConfig,
+    FocuserConfig, MountConfig, PlannerTargetConfig, PlateSolverConfig, RpConfigBuilder,
+    SafetyMonitorConfig,
 };
 pub use launcher::{start_rp, wait_for_rp_healthy, write_temp_config_file};
 pub use mcp_client::McpTestClient;
+pub use night_sky::NightSky;
 pub use omnisim::OmniSimHandle;
 pub use orchestrator::{OrchestratorBehavior, OrchestratorInvocation, TestOrchestrator};
 pub use plate_solver_stub::{CannedWcs, PlateSolverStub, StubBehavior};
 pub use sse::{SseClient, SseFrame};
 pub use webhook::{ReceivedEvent, WebhookReceiver};
+
+// Re-exported so harness consumers can hold NightSky's target coords
+// without depending on rp-ephemeris themselves.
+pub use rp_ephemeris::IcrsCoord;

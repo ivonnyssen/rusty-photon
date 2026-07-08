@@ -82,6 +82,22 @@ pub struct SafetyMonitorConfig {
     pub device_number: u32,
 }
 
+/// Planner target entry — emitted into rp's top-level `targets` array
+/// (rp.md § Target Definition; only the fields rp's
+/// `parse_targets_from_value` reads today).
+#[derive(Debug, Clone)]
+pub struct PlannerTargetConfig {
+    pub name: String,
+    /// ICRS right ascension in decimal hours, [0, 24).
+    pub ra_hours: f64,
+    /// ICRS declination in decimal degrees, [-90, 90].
+    pub dec_degrees: f64,
+    /// Per-target altitude floor. `None` ⇒ omit the field so the
+    /// planner-wide `planner.min_altitude_degrees` (20 in the emitted
+    /// config) applies.
+    pub min_altitude_degrees: Option<f64>,
+}
+
 /// Plate-solver service config — emitted as the top-level
 /// `plate_solver` block in rp's JSON config (parallel to `mount`,
 /// `guider`, etc.; the plate solver is an rp-managed service, not
@@ -122,6 +138,10 @@ pub struct RpConfigBuilder {
     /// alt/az MCP tools) and for exercising the mount-side site
     /// validation path. None ⇒ rp's `site` field stays absent.
     pub site: Option<(f64, f64)>,
+    /// Planner targets — emitted as the top-level `targets` array
+    /// `get_next_target` recommends from. Empty ⇒ `targets: []`
+    /// (the planner's `no_targets_configured` branch).
+    pub targets: Vec<PlannerTargetConfig>,
     pub plugin_configs: Vec<Value>,
     /// Override `session.data_directory`. When `None`, the builder
     /// generates a fresh per-call path. The cross-restart BDD scenarios
@@ -198,6 +218,13 @@ impl RpConfigBuilder {
     /// the mount-side site validation rule on connect.
     pub fn with_site(&mut self, latitude_degrees: f64, longitude_degrees: f64) -> &mut Self {
         self.site = Some((latitude_degrees, longitude_degrees));
+        self
+    }
+
+    /// Append a planner target (order matters: rp's `next_target`
+    /// breaks exact |hour-angle| ties by position in `targets[]`).
+    pub fn add_target(&mut self, target: PlannerTargetConfig) -> &mut Self {
+        self.targets.push(target);
         self
     }
 
@@ -370,7 +397,21 @@ impl RpConfigBuilder {
                 "safety_monitors": safety_monitors
             },
             "plugins": self.plugin_configs,
-            "targets": [],
+            "targets": self
+                .targets
+                .iter()
+                .map(|t| {
+                    let mut obj = serde_json::json!({
+                        "name": t.name,
+                        "ra_hours": t.ra_hours,
+                        "dec_degrees": t.dec_degrees,
+                    });
+                    if let Some(floor) = t.min_altitude_degrees {
+                        obj["min_altitude_degrees"] = serde_json::json!(floor);
+                    }
+                    obj
+                })
+                .collect::<Vec<Value>>(),
             "planner": {
                 "min_altitude_degrees": 20,
                 "dawn_buffer_minutes": 30,
@@ -665,6 +706,36 @@ mod tests {
         assert_eq!(sm["alpaca_url"], "http://127.0.0.1:32323");
         assert_eq!(sm["device_number"], 0);
         assert_eq!(cfg["safety"]["poll_interval"], "250ms");
+    }
+
+    #[test]
+    fn targets_array_empty_by_default_and_preserves_order() {
+        let cfg = RpConfigBuilder::new().build();
+        assert_eq!(cfg["targets"], serde_json::json!([]));
+
+        let mut b = RpConfigBuilder::new();
+        b.add_target(PlannerTargetConfig {
+            name: "sinker".to_string(),
+            ra_hours: 2.5,
+            dec_degrees: 0.0,
+            min_altitude_degrees: Some(44.8),
+        });
+        b.add_target(PlannerTargetConfig {
+            name: "backup".to_string(),
+            ra_hours: 2.45,
+            dec_degrees: 0.0,
+            min_altitude_degrees: None,
+        });
+        let cfg = b.build();
+        let targets = cfg["targets"].as_array().unwrap();
+        assert_eq!(targets.len(), 2);
+        assert_eq!(targets[0]["name"], "sinker");
+        assert_eq!(targets[0]["min_altitude_degrees"], 44.8);
+        assert_eq!(targets[1]["name"], "backup");
+        assert!(
+            targets[1].get("min_altitude_degrees").is_none(),
+            "a None floor must omit the field so rp's planner-wide default applies"
+        );
     }
 
     #[test]
