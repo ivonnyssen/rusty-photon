@@ -359,7 +359,14 @@ fn coerce_parameter(value: &str) -> serde_json::Value {
         return serde_json::json!(i);
     }
     if let Ok(f) = value.parse::<f64>() {
-        return serde_json::json!(f);
+        // Rust's f64 parser accepts "NaN"/"inf", which JSON cannot
+        // represent (`json!` would map them to null — a silently wrong
+        // parameter). Only finite values are numbers; anything else
+        // falls through as the literal string, which the engine's
+        // parameter type-check then rejects loudly.
+        if f.is_finite() {
+            return serde_json::json!(f);
+        }
     }
     serde_json::json!(value)
 }
