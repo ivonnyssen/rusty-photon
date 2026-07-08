@@ -494,7 +494,7 @@ mod tests {
     }
 
     #[test]
-    fn daytime_returns_wait_for_twilight() {
+    fn a_level_daytime_sun_is_wait_for_twilight() {
         let eph = MockEphemeris {
             alt_overrides: vec![((0.7123, 41.27), 10.0)],
             sun_alt: 30.0, // the Sun is up and, frozen at rate 0, not climbing
