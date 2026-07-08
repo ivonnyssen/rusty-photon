@@ -4,8 +4,9 @@ Feature: Deep-sky workflow document
   planner: unpark and start tracking, then a dispatch loop that asks
   get_next_target after every frame — on a target change it slews,
   optionally plate-solve-centers and auto-focuses, then captures one
-  frame per pass — ending at the max_frames budget (or dawn) and
-  optionally parking. Because the planner evaluates real ephemeris at
+  frame per pass and records it via record_exposure — ending at the
+  max_frames budget, at dawn, or when every target's integration goal
+  is met, and optionally parking. Because the planner evaluates real ephemeris at
   wall-clock now, every scenario computes its observing site to fit the
   clock: an equatorial site at the anti-solar longitude is always in
   deep astronomical night, and celestial-equator targets placed by hour
@@ -61,6 +62,25 @@ Feature: Deep-sky workflow document
     # plan is what reaches the camera.
     Then the session ends within 90 seconds
     And the SSE stream should show exactly 2 "exposure_complete" events
+
+  Scenario: A session ends when the target's integration goal is met
+    Given a running Alpaca simulator
+    And an observing site where it is astronomical night with one planner target whose integration goal is 2 unfiltered 2-second frames
+    And the simulated mount matches the site and points at the first target
+    And rp is running with a camera, a mount, and the session-runner orchestrator running the "deep_sky" workflow with parameters:
+      | max_frames     | 0     |
+      | focus          | false |
+      | centering      | false |
+      | park_on_finish | false |
+    And an SSE client is watching rp's event stream
+    When a session is started via the REST API
+    # max_frames is 0 (no budget), so the session can only end through
+    # rp's progress counters: each captured frame is recorded via
+    # record_exposure, and once the 2-frame goal is met the planner
+    # eliminates the exhausted target and answers end_of_session.
+    Then the session ends within 90 seconds
+    And the SSE stream should show exactly 2 "exposure_complete" events
+    And the SSE stream should show exactly 1 "slew_complete" event
 
   Scenario: A session started after dawn ends immediately with no frames
     Given a running Alpaca simulator

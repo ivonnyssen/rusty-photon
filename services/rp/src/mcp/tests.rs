@@ -3424,6 +3424,186 @@ async fn get_next_target_with_no_targets_returns_no_targets_configured() {
     assert!(text.contains("no_targets_configured"), "got: {text}");
 }
 
+// -----------------------------------------------------------------------
+// record_exposure / get_session_progress — the progress counters behind
+// plan rotation and the all-goals-met end_of_session. Counter and
+// selection math is covered by progress.rs / decision.rs unit tests;
+// these pin the tool wiring (store sharing, goal lookup, error arms).
+// -----------------------------------------------------------------------
+
+/// A handler whose single always-visible target (`min_altitude` -90
+/// survives any sky) carries a Red×1 + Blue×1 plan.
+fn handler_with_planned_target() -> McpHandler {
+    use crate::planner::decision::{ExposureSpec, PlannerTarget};
+    test_handler_with_site(test_site()).with_planner_config(
+        vec![PlannerTarget {
+            name: "Test Field".into(),
+            ra_hours: 0.0,
+            dec_degrees: 0.0,
+            min_altitude_degrees: Some(-90.0),
+            exposures: vec![
+                ExposureSpec {
+                    filter: Some("Red".into()),
+                    duration_secs: 120.0,
+                    count: Some(1),
+                },
+                ExposureSpec {
+                    filter: Some("Blue".into()),
+                    duration_secs: 60.0,
+                    count: Some(1),
+                },
+            ],
+        }],
+        20.0,
+    )
+}
+
+#[tokio::test]
+async fn record_exposure_errors_for_an_unknown_target() {
+    let h = handler_with_planned_target();
+    let r = h
+        .record_exposure(Parameters(RecordExposureParams {
+            target: "No Such Field".into(),
+            filter: Some("Red".into()),
+        }))
+        .await;
+    assert_tool_error(r, "unknown target");
+}
+
+#[tokio::test]
+async fn record_exposure_increments_and_reports_the_plan_goal() {
+    let h = handler_with_planned_target();
+    let v = ok_json(
+        h.record_exposure(Parameters(RecordExposureParams {
+            target: "Test Field".into(),
+            filter: Some("Red".into()),
+        }))
+        .await,
+    );
+    assert_eq!(v["target"], "Test Field");
+    assert_eq!(v["filter"], "Red");
+    assert_eq!(v["completed"], 1);
+    assert_eq!(v["goal"], 1);
+    // An unfiltered frame lands in the empty-string slot, outside
+    // this plan: filter echoes back null and the goal is null.
+    let v = ok_json(
+        h.record_exposure(Parameters(RecordExposureParams {
+            target: "Test Field".into(),
+            filter: None,
+        }))
+        .await,
+    );
+    assert!(v["filter"].is_null());
+    assert_eq!(v["completed"], 1);
+    assert!(v["goal"].is_null());
+}
+
+#[tokio::test]
+async fn get_session_progress_reports_every_configured_target() {
+    let h = handler_with_planned_target();
+    let _ = ok_json(
+        h.record_exposure(Parameters(RecordExposureParams {
+            target: "Test Field".into(),
+            filter: Some("Red".into()),
+        }))
+        .await,
+    );
+    let v = ok_json(
+        h.get_session_progress(Parameters(GetSessionProgressParams {}))
+            .await,
+    );
+    assert_eq!(
+        v["progress"]["Test Field"]["Red"],
+        serde_json::json!({"completed": 1, "goal": 1})
+    );
+    assert_eq!(
+        v["progress"]["Test Field"]["Blue"],
+        serde_json::json!({"completed": 0, "goal": 1}),
+        "plan entries appear before any frame is recorded"
+    );
+}
+
+#[tokio::test]
+async fn get_next_target_rotates_the_plan_and_ends_when_goals_are_met() {
+    // The tool-level loop an orchestrator drives: recommend Red,
+    // record it, recommend Blue, record it, end_of_session — all
+    // through one shared progress store.
+    let h = handler_with_planned_target();
+    let v = ok_json(
+        h.get_next_target(Parameters(GetNextTargetParams { time: None }))
+            .await,
+    );
+    assert_eq!(v["filter"], "Red");
+    assert_eq!(v["duration_secs"], 120.0);
+    let _ = ok_json(
+        h.record_exposure(Parameters(RecordExposureParams {
+            target: "Test Field".into(),
+            filter: Some("Red".into()),
+        }))
+        .await,
+    );
+    let v = ok_json(
+        h.get_next_target(Parameters(GetNextTargetParams { time: None }))
+            .await,
+    );
+    assert_eq!(v["filter"], "Blue", "the met Red goal rotates the plan");
+    assert_eq!(v["duration_secs"], 60.0);
+    let _ = ok_json(
+        h.record_exposure(Parameters(RecordExposureParams {
+            target: "Test Field".into(),
+            filter: Some("Blue".into()),
+        }))
+        .await,
+    );
+    let v = ok_json(
+        h.get_next_target(Parameters(GetNextTargetParams { time: None }))
+            .await,
+    );
+    assert_eq!(v["reason"], "end_of_session");
+    assert!(v["target"].is_null());
+}
+
+#[tokio::test]
+async fn get_target_status_reports_progress_for_a_configured_target() {
+    use crate::planner::decision::{ExposureSpec, PlannerTarget};
+    // Configured under its catalog name so the same string both
+    // resolves coordinates and matches the progress map.
+    let h = test_handler_with_site(test_site()).with_planner_config(
+        vec![PlannerTarget {
+            name: "M 31".into(),
+            ra_hours: 0.7123,
+            dec_degrees: 41.269,
+            min_altitude_degrees: None,
+            exposures: vec![ExposureSpec {
+                filter: Some("Red".into()),
+                duration_secs: 120.0,
+                count: Some(4),
+            }],
+        }],
+        20.0,
+    );
+    let _ = ok_json(
+        h.record_exposure(Parameters(RecordExposureParams {
+            target: "M 31".into(),
+            filter: Some("Red".into()),
+        }))
+        .await,
+    );
+    let v = ok_json(
+        h.get_target_status(Parameters(GetTargetStatusParams {
+            target_name: Some("M 31".into()),
+            ra: None,
+            dec: None,
+            time: None,
+        }))
+        .await,
+    );
+    assert_eq!(
+        v["progress"]["Red"],
+        serde_json::json!({"completed": 1, "goal": 4})
+    );
+}
+
 #[tokio::test]
 async fn get_meridian_status_errors_when_site_absent() {
     let h = test_handler(empty_registry());

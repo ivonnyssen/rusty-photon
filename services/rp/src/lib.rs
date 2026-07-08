@@ -77,7 +77,17 @@ impl ServerBuilder {
         let event_bus = Arc::new(EventBus::from_config(&config.plugins));
 
         debug!("initializing session manager");
-        let session = Arc::new(SessionManager::new(event_bus.clone(), &config.plugins));
+        // The planner's record_exposure counters, shared between the
+        // MCP handler (the tools read and write them) and the session
+        // manager (a fresh session start clears them — a new
+        // session_id is a new night).
+        let planner_progress = Arc::new(std::sync::Mutex::new(
+            crate::planner::progress::SessionProgress::default(),
+        ));
+        let session = Arc::new(
+            SessionManager::new(event_bus.clone(), &config.plugins)
+                .with_progress_store(planner_progress.clone()),
+        );
 
         let session_config = SessionConfig {
             data_directory: config.session.data_directory.clone(),
@@ -150,6 +160,7 @@ impl ServerBuilder {
             site,
         )
         .with_planner_config(targets, default_min_alt)
+        .with_progress_store(planner_progress)
         .with_plate_solver(plate_solver_client, plate_solver_default_radius)
         .with_centering_config(config.centering.clone());
 

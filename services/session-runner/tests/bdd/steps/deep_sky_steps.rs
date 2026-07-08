@@ -56,6 +56,22 @@ async fn night_sky_with_one_planned_target(world: &mut SessionRunnerWorld, secon
         vec![ExposurePlanConfig {
             filter: None,
             duration_secs: seconds as f64,
+            count: None,
+        }],
+    );
+}
+
+#[given(
+    expr = "an observing site where it is astronomical night with one planner target whose \
+            integration goal is {int} unfiltered {int}-second frames"
+)]
+async fn night_sky_with_one_goal_target(world: &mut SessionRunnerWorld, count: u32, seconds: u64) {
+    push_one_night_target(
+        world,
+        vec![ExposurePlanConfig {
+            filter: None,
+            duration_secs: seconds as f64,
+            count: Some(count),
         }],
     );
 }

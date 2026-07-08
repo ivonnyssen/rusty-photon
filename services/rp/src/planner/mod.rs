@@ -13,3 +13,4 @@ pub mod catalog;
 pub mod convenience;
 pub mod decision;
 pub mod primitives;
+pub mod progress;

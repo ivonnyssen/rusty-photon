@@ -1,22 +1,27 @@
 //! Decision logic for the convenience planner tools (`get_next_target`,
 //! `get_target_status`). Pure function over (target list, current
-//! time, site, `Ephemeris` impl, default min-altitude); a hand-rolled
-//! mock `Ephemeris` can drive it deterministically in tests.
+//! time, site, `Ephemeris` impl, default min-altitude, progress
+//! counters); a hand-rolled mock `Ephemeris` can drive it
+//! deterministically in tests.
 //!
-//! v1 implements three of the rp.md §"Dynamic Planner" decision-logic
+//! v1 implements five of the rp.md §"Dynamic Planner" decision-logic
 //! bullets: altitude elimination (the first half of bullet 1),
-//! transit preference (bullet 2), and bullet 6's sky gating — when
-//! no target survives, the Sun-elevation cut-off plus the Sun's
+//! transit preference (bullet 2), progress + filter tie-breaking
+//! (bullets 3–4: survivors within [`TRANSIT_TIE_BAND_HOURS`] of the
+//! best |HA| count as equally transiting, and among them least
+//! completed-to-goal fraction wins, then a next-exposure filter
+//! matching the last recorded frame, then `targets[]` order), and
+//! bullet 6 in full — an exhausted target (every plan entry's
+//! `count` met per the `record_exposure` counters) is eliminated,
+//! all targets exhausted is `EndOfSession`, and otherwise when no
+//! target survives, the Sun-elevation cut-off plus the Sun's
 //! trend separates `WaitForTwilight` (dusk side), `EndOfSession`
 //! (dawn side: the night is over), and `AllBelowMinAltitude` (true
-//! astronomical night). Documented gaps:
-//! the set-time half of bullet 1, bullet 3 (least-progress preference),
-//! bullet 4 (filter-change minimization), explicit bullet 5
-//! (meridian-flip-aware exposure-fit check; the choice of
-//! smallest-|HA| target satisfies it indirectly), and the
-//! exhausted-targets half of `EndOfSession` — all need session-state
-//! plumbing to land cleanly, tracked in the rp.md §"v1 implementation
-//! status" callout.
+//! astronomical night). Documented gaps: the set-time half of
+//! bullet 1 and explicit bullet 5 (meridian-flip-aware exposure-fit
+//! check; the choice of smallest-|HA| target satisfies it
+//! indirectly) — tracked in the rp.md §"v1 implementation status"
+//! callout.
 //!
 //! The returned `NextTargetReason` is a structured discriminant so
 //! a planner plugin can branch without parsing free-form text.
@@ -25,6 +30,8 @@ use chrono::{DateTime, Utc};
 use rp_ephemeris::{Ephemeris, Site};
 use serde::Serialize;
 use serde_json::Value;
+
+use super::progress::SessionProgress;
 
 /// Sun altitude (degrees) at astronomical dusk — the boundary that
 /// rp.md's prose for `WaitForTwilight` references. Above this, the
@@ -38,6 +45,14 @@ const ASTRONOMICAL_DUSK_DEG: f64 = -18.0;
 /// yet short enough that the sample cannot jump across a culmination
 /// to the other side of the night.
 const SUN_TREND_SAMPLE_SECS: i64 = 60;
+
+/// Survivors whose |HA| is within this band of the best candidate's
+/// count as equally transiting, letting the progress and filter
+/// tie-breakers (rp.md §"Dynamic Planner" bullets 3–4) choose among
+/// them. Half an hour of hour angle costs a negligible fraction of a
+/// degree of altitude near culmination, so trading it for balanced
+/// integration (and fewer filter changes) is free.
+const TRANSIT_TIE_BAND_HOURS: f64 = 0.5;
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct PlannerTarget {
@@ -55,8 +70,7 @@ pub struct PlannerTarget {
 }
 
 /// One entry of a target's `exposures[]` plan (rp.md § Target
-/// Definition). v1 reads `filter` and `duration_secs`; `count` stays
-/// unread until per-target progress (`record_exposure`) lands.
+/// Definition).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ExposureSpec {
     /// `None` for an unfiltered entry (no `filter` key, `null`, or
@@ -64,6 +78,10 @@ pub struct ExposureSpec {
     pub filter: Option<String>,
     /// Exposure duration in seconds; positive and finite.
     pub duration_secs: f64,
+    /// Integration goal for this entry (frames), tracked by the
+    /// `record_exposure` counters. `None` = no finite goal: the entry
+    /// recommends forever and its target never exhausts.
+    pub count: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -82,33 +100,52 @@ pub struct NextTargetRecommendation {
     /// `AllBelowMinAltitude`, `WaitForTwilight`, or `EndOfSession`.
     pub target: Option<PlannerTarget>,
     pub reason: NextTargetReason,
+    /// The recommended target's first *incomplete* `exposures[]`
+    /// entry in plan order — what the `filter` / `duration_secs`
+    /// fields of the tool result surface. `None` when there is no
+    /// target or its plan is empty (the orchestrator's own exposure
+    /// parameters apply).
+    pub exposure: Option<ExposureSpec>,
 }
 
 /// Pick the next target to slew to. The decision is a pure function
 /// of its arguments, so tests can drive it with a hand-rolled
-/// `Ephemeris` mock and a frozen `now`.
+/// `Ephemeris` mock, a frozen `now`, and a hand-filled progress
+/// store.
 pub fn next_target(
     eph: &impl Ephemeris,
     site: &Site,
     now: DateTime<Utc>,
     targets: &[PlannerTarget],
     default_min_altitude_deg: f64,
+    progress: &SessionProgress,
 ) -> NextTargetRecommendation {
     if targets.is_empty() {
         return NextTargetRecommendation {
             target: None,
             reason: NextTargetReason::NoTargetsConfigured,
+            exposure: None,
         };
     }
 
-    // Step 1: eliminate by altitude. A target whose computed alt is
-    // below `min_altitude_degrees` (per-target if set, else default)
-    // is dropped. Set-time elimination (the "will set before one
+    // Step 1: eliminate. A target whose computed alt is below
+    // `min_altitude_degrees` (per-target if set, else default) is
+    // dropped, and so is an exhausted one — every `exposures[]`
+    // entry's `count` met per the `record_exposure` counters
+    // (rp.md §"Dynamic Planner" bullet 6's "met its integration
+    // goal"). Set-time elimination (the "will set before one
     // exposure can complete" half of rp.md §"Dynamic Planner"
     // bullet 1) is a documented v1 gap — see the §"v1 implementation
     // status" callout in `docs/services/rp.md`.
     let mut survivors: Vec<&PlannerTarget> = Vec::new();
     for t in targets {
+        if progress.is_exhausted(t) {
+            tracing::debug!(
+                target = %t.name,
+                "target met its integration goal; eliminated from next_target evaluation"
+            );
+            continue;
+        }
         let coords = rp_ephemeris::IcrsCoord {
             ra_hours: t.ra_hours,
             dec_degrees: t.dec_degrees,
@@ -136,6 +173,17 @@ pub fn next_target(
     }
 
     if survivors.is_empty() {
+        // Every target met its integration goal: the session is
+        // complete regardless of what the sky is doing — the other
+        // `EndOfSession` trigger of rp.md §"Dynamic Planner"
+        // bullet 6.
+        if targets.iter().all(|t| progress.is_exhausted(t)) {
+            return NextTargetRecommendation {
+                target: None,
+                reason: NextTargetReason::EndOfSession,
+                exposure: None,
+            };
+        }
         // Distinguish "the sky is too bright to image" from "all
         // targets are genuinely below the altitude floor": below the
         // Sun-altitude threshold for astronomical twilight (-18°,
@@ -148,10 +196,6 @@ pub fn next_target(
         // not yet begun", `WaitForTwilight`. A level Sun (only at
         // the culminations) ties to waiting, because a wait loop
         // re-asks and self-corrects while ending a session is final.
-        //
-        // The other `EndOfSession` trigger — every target met its
-        // integration goal — still needs the per-target progress
-        // counters of rp.md §"Dynamic Planner" bullet 3.
         let sun_alt = eph.sun_position(site, now).alt_az.altitude_degrees;
         let reason = if sun_alt > ASTRONOMICAL_DUSK_DEG {
             let resample = now + chrono::Duration::seconds(SUN_TREND_SAMPLE_SECS);
@@ -167,20 +211,25 @@ pub fn next_target(
         return NextTargetRecommendation {
             target: None,
             reason,
+            exposure: None,
         };
     }
 
-    // Step 2: prefer transiting. The transit time minimises absolute
-    // hour-angle from the current LST; pick the target with the
-    // smallest |HA|.
+    // Step 2: prefer transiting — smallest |HA| from the current LST
+    // (bullet 2), with survivors inside `TRANSIT_TIE_BAND_HOURS` of
+    // that best |HA| treated as ties for the progress and filter
+    // tie-breakers (bullets 3–4) to order: least completed-to-goal
+    // fraction first, then a next exposure whose filter matches the
+    // last recorded frame's, then `targets[]` order (survivors keep
+    // config order, so the scan's strict `<` is that final
+    // tie-break).
     let lst = eph.sidereal_time(site, now).lst_hours;
-    let Some(chosen) = survivors.into_iter().min_by(|a, b| {
-        let ha_a = signed_hour_angle(lst, a.ra_hours);
-        let ha_b = signed_hour_angle(lst, b.ra_hours);
-        ha_a.abs()
-            .partial_cmp(&ha_b.abs())
-            .unwrap_or(std::cmp::Ordering::Equal)
-    }) else {
+    let abs_ha = |t: &PlannerTarget| signed_hour_angle(lst, t.ra_hours).abs();
+    let Some(best_ha) = survivors
+        .iter()
+        .map(|t| abs_ha(t))
+        .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+    else {
         // Unreachable: the empty-survivors branch returns above. If a
         // future refactor invalidates that invariant we fall back to
         // the same "nothing above min altitude" outcome rather than
@@ -188,12 +237,56 @@ pub fn next_target(
         return NextTargetRecommendation {
             target: None,
             reason: NextTargetReason::AllBelowMinAltitude,
+            exposure: None,
+        };
+    };
+    let mut chosen: Option<(&PlannerTarget, (f64, bool, f64))> = None;
+    for t in &survivors {
+        let ha = abs_ha(t);
+        if ha > best_ha + TRANSIT_TIE_BAND_HOURS {
+            continue;
+        }
+        let filter_matches_last = match (
+            progress.last_filter_key(),
+            progress.next_incomplete_entry(t),
+        ) {
+            (Some(last), Some(entry)) => {
+                super::progress::filter_key(entry.filter.as_deref()) == last
+            }
+            _ => false,
+        };
+        // Sort key inside the band, in bullet order: least fraction
+        // (bullet 3), then a matching filter (bullet 4 — negated so
+        // `false` = match sorts first), then the in-band |HA| itself
+        // so two otherwise-equal candidates still prefer the closer
+        // transit. Config order wins remaining exact ties via the
+        // strict `<`.
+        let key = (progress.fraction(t), !filter_matches_last, ha);
+        let better = match &chosen {
+            None => true,
+            Some((_, k)) => key
+                .partial_cmp(k)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .is_lt(),
+        };
+        if better {
+            chosen = Some((t, key));
+        }
+    }
+    let Some((chosen, _)) = chosen else {
+        // Unreachable for the same reason as above: at least the
+        // best-|HA| survivor is inside its own band.
+        return NextTargetRecommendation {
+            target: None,
+            reason: NextTargetReason::AllBelowMinAltitude,
+            exposure: None,
         };
     };
 
     NextTargetRecommendation {
         target: Some(chosen.clone()),
         reason: NextTargetReason::BestTransitingCandidate,
+        exposure: progress.next_incomplete_entry(chosen).cloned(),
     }
 }
 
@@ -315,9 +408,27 @@ fn parse_exposures(entry: &Value, target: &str) -> Vec<ExposureSpec> {
                 continue;
             }
         };
+        let count = match e.get("count") {
+            None | Some(Value::Null) => None,
+            Some(v) => match v
+                .as_u64()
+                .filter(|c| *c > 0)
+                .and_then(|c| u32::try_from(c).ok())
+            {
+                Some(c) => Some(c),
+                None => {
+                    tracing::debug!(
+                        target = %target, count = ?v,
+                        "skipping exposure entry whose `count` is not a positive integer"
+                    );
+                    continue;
+                }
+            },
+        };
         out.push(ExposureSpec {
             filter,
             duration_secs,
+            count,
         });
     }
     out
@@ -468,7 +579,14 @@ mod tests {
 
     #[test]
     fn empty_targets_return_no_targets_configured() {
-        let rec = next_target(&MockEphemeris::default(), &site(), now(), &[], 20.0);
+        let rec = next_target(
+            &MockEphemeris::default(),
+            &site(),
+            now(),
+            &[],
+            20.0,
+            &SessionProgress::default(),
+        );
         assert!(rec.target.is_none());
         assert_eq!(rec.reason, NextTargetReason::NoTargetsConfigured);
     }
@@ -488,7 +606,14 @@ mod tests {
             min_altitude_degrees: None,
             exposures: Vec::new(),
         }];
-        let rec = next_target(&eph, &site(), now(), &targets, 30.0);
+        let rec = next_target(
+            &eph,
+            &site(),
+            now(),
+            &targets,
+            30.0,
+            &SessionProgress::default(),
+        );
         assert!(rec.target.is_none());
         assert_eq!(rec.reason, NextTargetReason::AllBelowMinAltitude);
     }
@@ -508,7 +633,14 @@ mod tests {
             min_altitude_degrees: None,
             exposures: Vec::new(),
         }];
-        let rec = next_target(&eph, &site(), now(), &targets, 30.0);
+        let rec = next_target(
+            &eph,
+            &site(),
+            now(),
+            &targets,
+            30.0,
+            &SessionProgress::default(),
+        );
         assert!(rec.target.is_none());
         assert_eq!(rec.reason, NextTargetReason::WaitForTwilight);
     }
@@ -531,7 +663,14 @@ mod tests {
             min_altitude_degrees: None,
             exposures: Vec::new(),
         }];
-        let rec = next_target(&eph, &site(), now(), &targets, 30.0);
+        let rec = next_target(
+            &eph,
+            &site(),
+            now(),
+            &targets,
+            30.0,
+            &SessionProgress::default(),
+        );
         assert_eq!(rec.reason, NextTargetReason::WaitForTwilight);
     }
 
@@ -552,7 +691,14 @@ mod tests {
             min_altitude_degrees: None,
             exposures: Vec::new(),
         }];
-        let rec = next_target(&eph, &site(), now(), &targets, 30.0);
+        let rec = next_target(
+            &eph,
+            &site(),
+            now(),
+            &targets,
+            30.0,
+            &SessionProgress::default(),
+        );
         assert_eq!(rec.reason, NextTargetReason::WaitForTwilight);
     }
 
@@ -573,7 +719,14 @@ mod tests {
             min_altitude_degrees: None,
             exposures: Vec::new(),
         }];
-        let rec = next_target(&eph, &site(), now(), &targets, 30.0);
+        let rec = next_target(
+            &eph,
+            &site(),
+            now(),
+            &targets,
+            30.0,
+            &SessionProgress::default(),
+        );
         assert!(rec.target.is_none());
         assert_eq!(rec.reason, NextTargetReason::EndOfSession);
     }
@@ -595,7 +748,14 @@ mod tests {
             min_altitude_degrees: None,
             exposures: Vec::new(),
         }];
-        let rec = next_target(&eph, &site(), now(), &targets, 30.0);
+        let rec = next_target(
+            &eph,
+            &site(),
+            now(),
+            &targets,
+            30.0,
+            &SessionProgress::default(),
+        );
         assert_eq!(rec.reason, NextTargetReason::EndOfSession);
     }
 
@@ -618,7 +778,14 @@ mod tests {
             min_altitude_degrees: None,
             exposures: Vec::new(),
         }];
-        let rec = next_target(&eph, &site(), now(), &targets, 30.0);
+        let rec = next_target(
+            &eph,
+            &site(),
+            now(),
+            &targets,
+            30.0,
+            &SessionProgress::default(),
+        );
         assert_eq!(rec.reason, NextTargetReason::AllBelowMinAltitude);
     }
 
@@ -651,7 +818,14 @@ mod tests {
             (-18.0..0.0).contains(&sun_alt),
             "the pinned instant must sit in twilight; the Sun is at {sun_alt}°"
         );
-        let rec = next_target(&eph, &site, t, &never_visible_target(), 20.0);
+        let rec = next_target(
+            &eph,
+            &site,
+            t,
+            &never_visible_target(),
+            20.0,
+            &SessionProgress::default(),
+        );
         assert_eq!(rec.reason, NextTargetReason::WaitForTwilight);
     }
 
@@ -665,7 +839,14 @@ mod tests {
             (-18.0..0.0).contains(&sun_alt),
             "the pinned instant must sit in twilight; the Sun is at {sun_alt}°"
         );
-        let rec = next_target(&eph, &site, t, &never_visible_target(), 20.0);
+        let rec = next_target(
+            &eph,
+            &site,
+            t,
+            &never_visible_target(),
+            20.0,
+            &SessionProgress::default(),
+        );
         assert_eq!(rec.reason, NextTargetReason::EndOfSession);
     }
 
@@ -686,7 +867,14 @@ mod tests {
             min_altitude_degrees: None,
             exposures: Vec::new(),
         }];
-        let rec = next_target(&eph, &site(), now(), &targets, 30.0);
+        let rec = next_target(
+            &eph,
+            &site(),
+            now(),
+            &targets,
+            30.0,
+            &SessionProgress::default(),
+        );
         assert_eq!(rec.reason, NextTargetReason::AllBelowMinAltitude);
     }
 
@@ -717,10 +905,176 @@ mod tests {
                 exposures: Vec::new(),
             },
         ];
-        let rec = next_target(&eph, &site(), now(), &targets, 20.0);
+        let rec = next_target(
+            &eph,
+            &site(),
+            now(),
+            &targets,
+            20.0,
+            &SessionProgress::default(),
+        );
         let target = rec.target.expect("expected a target");
         assert_eq!(target.name, "M42");
         assert_eq!(rec.reason, NextTargetReason::BestTransitingCandidate);
+    }
+
+    // --- progress-aware selection (rp.md bullets 3, 4, and the
+    // exhausted-targets half of bullet 6) -------------------------
+
+    /// A dec-0 target above the floor at `ra_hours`, with a plan.
+    fn target_with_plan(name: &str, ra_hours: f64, exposures: Vec<ExposureSpec>) -> PlannerTarget {
+        PlannerTarget {
+            name: name.into(),
+            ra_hours,
+            dec_degrees: 0.0,
+            min_altitude_degrees: None,
+            exposures,
+        }
+    }
+
+    fn spec(filter: &str, count: u32) -> ExposureSpec {
+        ExposureSpec {
+            filter: Some(filter.into()),
+            duration_secs: 60.0,
+            count: Some(count),
+        }
+    }
+
+    /// Every dec-0 target at the given RAs sits at 50° — selection
+    /// tests care about hour angle and progress, not elimination.
+    fn night_eph(ras: &[f64]) -> MockEphemeris {
+        MockEphemeris {
+            alt_overrides: ras.iter().map(|ra| ((*ra, 0.0), 50.0)).collect(),
+            sun_alt: -25.0,
+            sun_alt_rate_deg_per_min: 0.0,
+            lst_hours: 12.0,
+        }
+    }
+
+    #[test]
+    fn an_exhausted_target_is_eliminated_and_the_backup_recommended() {
+        // "M31" transits (HA 0) but its whole plan is complete; the
+        // farther "M42" is the only live candidate.
+        let eph = night_eph(&[12.0, 10.0]);
+        let targets = vec![
+            target_with_plan("M31", 12.0, vec![spec("L", 1)]),
+            target_with_plan("M42", 10.0, vec![spec("L", 1)]),
+        ];
+        let mut p = SessionProgress::default();
+        p.record("M31", Some("L"));
+        let rec = next_target(&eph, &site(), now(), &targets, 20.0, &p);
+        assert_eq!(rec.target.expect("expected a target").name, "M42");
+    }
+
+    #[test]
+    fn all_targets_exhausted_is_end_of_session_even_in_deep_night() {
+        // Sun at -25° (true astronomical night) and the target still
+        // above its floor — but its integration goal is met, so the
+        // session is over. This is the non-dawn `EndOfSession`.
+        let eph = night_eph(&[12.0]);
+        let targets = vec![target_with_plan("M31", 12.0, vec![spec("L", 1)])];
+        let mut p = SessionProgress::default();
+        p.record("M31", Some("L"));
+        let rec = next_target(&eph, &site(), now(), &targets, 20.0, &p);
+        assert!(rec.target.is_none());
+        assert_eq!(rec.reason, NextTargetReason::EndOfSession);
+    }
+
+    #[test]
+    fn a_below_floor_survivor_prevents_the_exhaustion_end_of_session() {
+        // One target exhausted, the other merely below its floor: the
+        // night is not over — the sky gating answers (dark sky ⇒
+        // AllBelowMinAltitude), so the orchestrator keeps waiting for
+        // the unfinished target to rise.
+        let eph = MockEphemeris {
+            alt_overrides: vec![((12.0, 0.0), 50.0), ((10.0, 0.0), 5.0)],
+            sun_alt: -25.0,
+            sun_alt_rate_deg_per_min: 0.0,
+            lst_hours: 12.0,
+        };
+        let targets = vec![
+            target_with_plan("done", 12.0, vec![spec("L", 1)]),
+            target_with_plan("still rising", 10.0, vec![spec("L", 1)]),
+        ];
+        let mut p = SessionProgress::default();
+        p.record("done", Some("L"));
+        let rec = next_target(&eph, &site(), now(), &targets, 20.0, &p);
+        assert!(rec.target.is_none());
+        assert_eq!(rec.reason, NextTargetReason::AllBelowMinAltitude);
+    }
+
+    #[test]
+    fn the_recommendation_rotates_to_the_first_incomplete_plan_entry() {
+        let eph = night_eph(&[12.0]);
+        let targets = vec![target_with_plan(
+            "M31",
+            12.0,
+            vec![spec("L", 1), spec("R", 1)],
+        )];
+        let mut p = SessionProgress::default();
+        let rec = next_target(&eph, &site(), now(), &targets, 20.0, &p);
+        assert_eq!(
+            rec.exposure.expect("plan entry").filter.as_deref(),
+            Some("L")
+        );
+        p.record("M31", Some("L"));
+        let rec = next_target(&eph, &site(), now(), &targets, 20.0, &p);
+        assert_eq!(
+            rec.exposure.expect("plan entry").filter.as_deref(),
+            Some("R"),
+            "the completed Luminance goal must rotate the recommendation to Red"
+        );
+    }
+
+    #[test]
+    fn least_progress_wins_inside_the_transit_tie_band() {
+        // "closer" transits exactly (HA 0) but is half done; "fresh"
+        // sits 0.3 h away — inside the 0.5 h band, so bullet 3 hands
+        // it the recommendation.
+        let eph = night_eph(&[12.0, 11.7]);
+        let targets = vec![
+            target_with_plan("closer", 12.0, vec![spec("L", 2)]),
+            target_with_plan("fresh", 11.7, vec![spec("L", 2)]),
+        ];
+        let mut p = SessionProgress::default();
+        p.record("closer", Some("L"));
+        let rec = next_target(&eph, &site(), now(), &targets, 20.0, &p);
+        assert_eq!(rec.target.expect("expected a target").name, "fresh");
+    }
+
+    #[test]
+    fn a_matching_filter_breaks_a_progress_tie() {
+        // Both candidates are untouched (fraction 0) and in-band; the
+        // last recorded frame was Red, so the target whose next
+        // exposure is Red wins (bullet 4) despite the larger |HA| and
+        // later config position.
+        let eph = night_eph(&[12.0, 11.7]);
+        let targets = vec![
+            target_with_plan("blue next", 12.0, vec![spec("Blue", 5)]),
+            target_with_plan("red next", 11.7, vec![spec("Red", 5)]),
+        ];
+        let mut p = SessionProgress::default();
+        p.record("somewhere else entirely", Some("Red"));
+        let rec = next_target(&eph, &site(), now(), &targets, 20.0, &p);
+        assert_eq!(rec.target.expect("expected a target").name, "red next");
+    }
+
+    #[test]
+    fn outside_the_band_the_closer_transit_wins_regardless_of_progress() {
+        // 1.1 h of hour angle is past the 0.5 h tie band: transit
+        // preference (bullet 2) stays primary and the nearly-done
+        // transiting target still wins.
+        let eph = night_eph(&[12.0, 10.9]);
+        let targets = vec![
+            target_with_plan("transiting", 12.0, vec![spec("L", 10)]),
+            target_with_plan("far and fresh", 10.9, vec![spec("L", 10)]),
+        ];
+        let mut p = SessionProgress::default();
+        for _ in 0..9 {
+            p.record("transiting", Some("L"));
+        }
+        let rec = next_target(&eph, &site(), now(), &targets, 20.0, &p);
+        assert_eq!(rec.target.expect("expected a target").name, "transiting");
     }
 
     #[test]
@@ -739,7 +1093,14 @@ mod tests {
             exposures: Vec::new(),
         }];
         // default 30 would eliminate; per-target 20 keeps it.
-        let rec = next_target(&eph, &site(), now(), &targets, 30.0);
+        let rec = next_target(
+            &eph,
+            &site(),
+            now(),
+            &targets,
+            30.0,
+            &SessionProgress::default(),
+        );
         assert!(
             rec.target.is_some(),
             "per-target floor must override default"
@@ -808,14 +1169,17 @@ mod tests {
                 ExposureSpec {
                     filter: Some("Luminance".to_string()),
                     duration_secs: 300.0,
+                    count: Some(40),
                 },
                 ExposureSpec {
                     filter: Some("Red".to_string()),
                     duration_secs: 120.5,
+                    count: None,
                 },
                 ExposureSpec {
                     filter: None,
                     duration_secs: 60.0,
+                    count: None,
                 },
             ]
         );
@@ -856,14 +1220,51 @@ mod tests {
                 ExposureSpec {
                     filter: None,
                     duration_secs: 30.0,
+                    count: None,
                 },
                 ExposureSpec {
                     filter: None,
                     duration_secs: 45.0,
+                    count: None,
                 },
             ],
             "only entries with a positive numeric duration survive; \
              empty/null filters normalise to None"
+        );
+    }
+
+    #[test]
+    fn parse_exposures_skips_entries_with_an_invalid_count() {
+        let v = serde_json::json!([{
+            "name": "M31",
+            "ra_hours": 0.7,
+            "dec_degrees": 41.0,
+            "exposures": [
+                {"duration_secs": 10, "count": 0},
+                {"duration_secs": 20, "count": -3},
+                {"duration_secs": 30, "count": 2.5},
+                {"duration_secs": 40, "count": "5"},
+                {"duration_secs": 50, "count": null},
+                {"duration_secs": 60, "count": 7},
+            ],
+        }]);
+        let parsed = parse_targets_from_value(&v);
+        assert_eq!(
+            parsed[0].exposures,
+            vec![
+                ExposureSpec {
+                    filter: None,
+                    duration_secs: 50.0,
+                    count: None,
+                },
+                ExposureSpec {
+                    filter: None,
+                    duration_secs: 60.0,
+                    count: Some(7),
+                },
+            ],
+            "a `count` must be a positive integer when present; \
+             null reads as absent (no finite goal)"
         );
     }
 }

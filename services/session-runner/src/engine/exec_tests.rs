@@ -2010,7 +2010,7 @@ async fn test_golden_deep_sky_captures_at_the_planner_duration_and_filter() {
         }),
     );
     let tools = MockTools::new(|_, tool, _| match tool {
-        "unpark" | "set_tracking" | "slew" | "set_filter" => Ok(json!({})),
+        "unpark" | "set_tracking" | "slew" | "set_filter" | "record_exposure" => Ok(json!({})),
         "get_next_target" => Ok(planned_recommendation(json!("Red"), json!(120))),
         "capture" => Ok(json!({ "image_path": "/tmp/light.fits", "document_id": "doc-1" })),
         other => panic!("unexpected tool call `{other}`"),
@@ -2052,7 +2052,7 @@ async fn test_golden_deep_sky_falls_back_to_the_exposure_parameter_without_a_pla
         }),
     );
     let tools = MockTools::new(|_, tool, _| match tool {
-        "unpark" | "set_tracking" | "slew" => Ok(json!({})),
+        "unpark" | "set_tracking" | "slew" | "record_exposure" => Ok(json!({})),
         "get_next_target" => Ok(planned_recommendation(Value::Null, Value::Null)),
         "capture" => Ok(json!({ "image_path": "/tmp/light.fits", "document_id": "doc-1" })),
         other => panic!("unexpected tool call `{other}`"),
@@ -2093,7 +2093,7 @@ async fn test_golden_deep_sky_respects_an_unfiltered_plan_over_the_filter_parame
         }),
     );
     let tools = MockTools::new(|_, tool, _| match tool {
-        "unpark" | "set_tracking" | "slew" => Ok(json!({})),
+        "unpark" | "set_tracking" | "slew" | "record_exposure" => Ok(json!({})),
         "get_next_target" => Ok(planned_recommendation(Value::Null, json!(60))),
         "capture" => Ok(json!({ "image_path": "/tmp/light.fits", "document_id": "doc-1" })),
         other => panic!("unexpected tool call `{other}`"),
@@ -2130,7 +2130,7 @@ async fn test_golden_deep_sky_fails_when_the_plan_names_a_filter_but_no_wheel_is
         }),
     );
     let tools = MockTools::new(|_, tool, _| match tool {
-        "unpark" | "set_tracking" | "slew" => Ok(json!({})),
+        "unpark" | "set_tracking" => Ok(json!({})),
         "get_next_target" => Ok(planned_recommendation(json!("Red"), json!(120))),
         other => panic!("unexpected tool call `{other}` after the plan-filter guard"),
     });
@@ -2147,8 +2147,9 @@ async fn test_golden_deep_sky_fails_when_the_plan_names_a_filter_but_no_wheel_is
     );
     assert_eq!(
         tools.call_names(),
-        vec!["unpark", "set_tracking", "get_next_target", "slew"],
-        "the failure must land after the slew and before any set_filter/capture"
+        vec!["unpark", "set_tracking", "get_next_target"],
+        "the failure must land before the slew — a target the rig \
+         cannot filter for must not move the mount"
     );
 }
 
@@ -2185,5 +2186,92 @@ async fn test_golden_deep_sky_ends_the_session_when_the_planner_says_end_of_sess
         tools.call_names(),
         vec!["unpark", "set_tracking", "get_next_target"],
         "end_of_session must terminate the dispatch loop immediately"
+    );
+}
+
+#[tokio::test]
+async fn test_golden_deep_sky_follows_plan_rotation_and_records_each_frame() {
+    // rp #463: the planner rotates within a target's plan as recorded
+    // goals complete. Pass 1 recommends Red@120s, pass 2 Blue@60s on
+    // the SAME target, pass 3 end_of_session. The document must
+    // re-derive filter/duration on every pass — the filter changes
+    // mid-target with no re-slew — and record each light frame with
+    // the filter it was actually taken through.
+    let doc = make_doc(crate::document::corpus::golden_deep_sky());
+    let params = deep_sky_params(
+        &doc,
+        json!({
+            "focus": false,
+            "centering": false,
+            "filter_wheel_id": "fw",
+            "max_frames": 0,
+            "park_on_finish": false
+        }),
+    );
+    let planner_calls = std::sync::Arc::new(Mutex::new(0u32));
+    let counter = planner_calls.clone();
+    let tools = MockTools::new(move |_, tool, _| match tool {
+        "unpark" | "set_tracking" | "slew" | "set_filter" | "record_exposure" => Ok(json!({})),
+        "capture" => Ok(json!({ "image_path": "/tmp/light.fits", "document_id": "doc-1" })),
+        "get_next_target" => {
+            let mut n = counter.lock().unwrap();
+            *n += 1;
+            match *n {
+                1 => Ok(planned_recommendation(json!("Red"), json!(120))),
+                2 => Ok(planned_recommendation(json!("Blue"), json!(60))),
+                _ => Ok(json!({
+                    "target": null,
+                    "reason": "end_of_session",
+                    "filter": null,
+                    "duration_secs": null
+                })),
+            }
+        }
+        other => panic!("unexpected tool call `{other}`"),
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let (outcome, _) = run_in(&dir, &doc, &params, &tools, &MockClock::new()).await;
+
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert_eq!(
+        tools.call_names(),
+        vec![
+            "unpark",
+            "set_tracking",
+            // Pass 1: new filter + new target.
+            "get_next_target",
+            "set_filter",
+            "slew",
+            "capture",
+            "record_exposure",
+            // Pass 2: the plan rotated — filter change only, no slew.
+            "get_next_target",
+            "set_filter",
+            "capture",
+            "record_exposure",
+            // Pass 3: every goal met.
+            "get_next_target",
+        ],
+        "plan rotation must change the filter without re-acquiring the target"
+    );
+    let calls = tools.calls();
+    let set_filters: Vec<&Value> = calls
+        .iter()
+        .filter(|(name, _)| name == "set_filter")
+        .map(|(_, args)| &args["filter_name"])
+        .collect();
+    assert_eq!(set_filters, [&json!("Red"), &json!("Blue")]);
+    let recorded: Vec<(&Value, &Value)> = calls
+        .iter()
+        .filter(|(name, _)| name == "record_exposure")
+        .map(|(_, args)| (&args["target"], &args["filter"]))
+        .collect();
+    assert_eq!(
+        recorded,
+        [
+            (&json!("M31"), &json!("Red")),
+            (&json!("M31"), &json!("Blue"))
+        ],
+        "each frame must be recorded with the filter it was taken through"
     );
 }

@@ -441,8 +441,11 @@ committable on its own.
       returns no exposure plan (#462 — since closed: the planner now
       returns the first `exposures[]` entry and the document falls
       back to its parameters); no `record_exposure` /
-      `get_session_progress` (#463, so no progress-aware dispatch or
-      goal-driven target rotation); no guider tools (`start_guiding` /
+      `get_session_progress` (#463 — since closed: rp tracks
+      per-target/per-filter progress, rotates plans, balances tied
+      targets, ends the session when every goal is met, and the
+      document records each light frame and follows the rotation with
+      a per-pass filter-change step); no guider tools (`start_guiding` /
       `stop_guiding` / `dither`) (#464); `end_of_session` unreachable
       (#465 — since closed: the planner reads the Sun's trend to tell
       dawn from dusk and the document dropped its frames-captured dawn

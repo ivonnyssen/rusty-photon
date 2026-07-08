@@ -35,6 +35,14 @@ pub struct McpHandler {
     /// `Config.planner.min_altitude_degrees`, falling back to 20°
     /// when omitted.
     pub default_min_altitude_degrees: f64,
+    /// The `record_exposure` counters (rp.md §"Session Persistence"
+    /// `progress` map, in-memory). Behind an `Arc` so every clone of
+    /// the handler — rmcp clones it per MCP connection — shares one
+    /// store, and so `SessionManager::start` can clear it when a
+    /// fresh session begins. Lock with
+    /// `.lock().unwrap_or_else(|e| e.into_inner())` (the event-bus
+    /// convention) and never hold it across an `.await`.
+    pub progress: Arc<std::sync::Mutex<crate::planner::progress::SessionProgress>>,
     /// Optional plate-solver HTTP client. `None` ⇒ `plate_solve`
     /// MCP tool returns "plate solver not configured". Wired by
     /// `with_plate_solver` from the `plate_solver` block in rp
@@ -72,6 +80,9 @@ impl McpHandler {
             site,
             targets: Vec::new(),
             default_min_altitude_degrees: 20.0,
+            progress: Arc::new(std::sync::Mutex::new(
+                crate::planner::progress::SessionProgress::default(),
+            )),
             plate_solver: None,
             plate_solver_default_search_radius_deg: None,
             centering: crate::config::CenteringConfig::default(),
@@ -106,6 +117,18 @@ impl McpHandler {
     ) -> Self {
         self.targets = targets;
         self.default_min_altitude_degrees = default_min_altitude_degrees;
+        self
+    }
+
+    /// Share the `record_exposure` counters with the rest of the
+    /// process (lib.rs passes the same `Arc` to `SessionManager` so a
+    /// fresh session start clears them). Tests that only exercise the
+    /// tools can keep the private store `new()` creates.
+    pub fn with_progress_store(
+        mut self,
+        store: Arc<std::sync::Mutex<crate::planner::progress::SessionProgress>>,
+    ) -> Self {
+        self.progress = store;
         self
     }
 

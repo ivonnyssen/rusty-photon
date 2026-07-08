@@ -60,6 +60,13 @@ pub struct SessionManager {
     /// passed through verbatim in the `/invoke` POST.
     orchestrator_config: Option<Value>,
     mcp_base_url: RwLock<String>,
+    /// The planner's `record_exposure` counters, shared with
+    /// `McpHandler` (see `lib.rs`). A fresh `start()` clears them — a
+    /// new `session_id` is a new night — while the safety
+    /// interrupt/resume path never passes through `start()`, so a
+    /// resumed session keeps its progress. `None` in tests that don't
+    /// exercise the planner.
+    planner_progress: Option<Arc<std::sync::Mutex<crate::planner::progress::SessionProgress>>>,
 }
 
 impl SessionManager {
@@ -81,7 +88,18 @@ impl SessionManager {
             orchestrator_invoke_url,
             orchestrator_config,
             mcp_base_url: RwLock::new(String::new()),
+            planner_progress: None,
         }
+    }
+
+    /// Share the planner's `record_exposure` counters so `start()`
+    /// can clear them when a fresh session begins.
+    pub fn with_progress_store(
+        mut self,
+        store: Arc<std::sync::Mutex<crate::planner::progress::SessionProgress>>,
+    ) -> Self {
+        self.planner_progress = Some(store);
+        self
     }
 
     pub async fn set_mcp_base_url(&self, url: String) {
@@ -111,6 +129,15 @@ impl SessionManager {
             workflow_id: workflow_id.clone(),
         };
         drop(state);
+
+        // A fresh session is a fresh night: reset the planner's
+        // record_exposure counters. The safety interrupt/resume path
+        // re-invokes the orchestrator without passing through here,
+        // so a resumed session keeps its progress.
+        if let Some(progress) = &self.planner_progress {
+            progress.lock().unwrap_or_else(|e| e.into_inner()).clear();
+            debug!("planner progress counters cleared for the fresh session");
+        }
 
         debug!(session_id = %session_id, workflow_id = %workflow_id, "session started");
 
@@ -458,6 +485,32 @@ mod tests {
         assert_eq!(bodies[0]["config"], json!({"workflow": "w"}));
         drop(bodies);
         assert_eq!(manager.status().await, "active");
+    }
+
+    #[tokio::test]
+    async fn a_fresh_start_clears_the_planner_progress_counters() {
+        let stub = spawn_invoke_stub(vec![StatusCode::OK]).await;
+        let event_bus = Arc::new(EventBus::from_config(&[]));
+        let plugins = vec![json!({
+            "name": "test-orchestrator",
+            "type": "orchestrator",
+            "invoke_url": stub.url,
+        })];
+        let progress = Arc::new(std::sync::Mutex::new(
+            crate::planner::progress::SessionProgress::default(),
+        ));
+        progress.lock().unwrap().record("M31", Some("Red"));
+        let manager = Arc::new(
+            SessionManager::new(event_bus, &plugins).with_progress_store(progress.clone()),
+        );
+
+        manager.start().await.unwrap();
+
+        assert_eq!(
+            progress.lock().unwrap().completed_for("M31", Some("Red")),
+            0,
+            "a fresh session start must reset last night's counters"
+        );
     }
 
     #[tokio::test]
