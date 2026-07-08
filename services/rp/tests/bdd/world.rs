@@ -14,9 +14,9 @@ use std::time::Duration;
 
 use bdd_infra::rp_harness::{
     CameraConfig, CoverCalibratorConfig, FilterWheelConfig, FocuserConfig, McpTestClient,
-    MountConfig, OmniSimHandle, OrchestratorInvocation, PlateSolverConfig, PlateSolverStub,
-    ReceivedEvent, RpConfigBuilder, SafetyMonitorConfig, SseClient, TestOrchestrator,
-    WebhookReceiver,
+    MountConfig, OmniSimHandle, OrchestratorInvocation, PlannerTargetConfig, PlateSolverConfig,
+    PlateSolverStub, ReceivedEvent, RpConfigBuilder, SafetyMonitorConfig, SseClient,
+    TestOrchestrator, WebhookReceiver,
 };
 use bdd_infra::sky_survey_camera_harness::SkyViewStub;
 use bdd_infra::ServiceHandle;
@@ -72,6 +72,9 @@ pub struct RpWorld {
     /// the generated rp config. Used by `target_catalog`,
     /// `ephemeris_primitives`, and `planner` BDD features.
     pub site: Option<(f64, f64)>,
+    /// Planner targets accumulated via Given steps — emitted as the
+    /// top-level `targets` array `get_next_target` recommends from.
+    pub planner_targets: Vec<PlannerTargetConfig>,
     /// Safety monitors accumulated via Given steps (safety.feature).
     pub safety_monitors: Vec<SafetyMonitorConfig>,
     /// Override rp's `safety.poll_interval`; safety scenarios pin this
@@ -261,6 +264,9 @@ impl RpWorld {
         }
         if let Some((lat, lon)) = self.site {
             builder.with_site(lat, lon);
+        }
+        for target in &self.planner_targets {
+            builder.add_target(target.clone());
         }
         for sm in &self.safety_monitors {
             builder.add_safety_monitor(sm.clone());

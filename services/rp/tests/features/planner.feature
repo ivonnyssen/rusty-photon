@@ -14,6 +14,11 @@ Feature: Planner convenience tools
   `all_below_min_altitude`, `wait_for_twilight`, `end_of_session`)
   so a planner plugin can branch without parsing free-form text.
 
+  A recommendation also carries the target's exposure plan: `filter`
+  and `duration_secs` are the first entry of the target's
+  `exposures[]` config, or null when the target defines none — the
+  orchestrator then falls back to its own exposure parameters.
+
   Scenario: Tool catalog includes the convenience tools
     Given a running Alpaca simulator
     And rp is configured with site latitude 51.0786 longitude -0.2944
@@ -43,6 +48,33 @@ Feature: Planner convenience tools
     Then the tool call should succeed
     And the result reason should be "no_targets_configured"
     And the result target should be null
+
+  Scenario: get_next_target returns the first exposure-plan entry for the recommended target
+    Given a running Alpaca simulator
+    And rp is configured with site latitude 51.0786 longitude -0.2944
+    And rp is configured with the always-visible target "Test Field" whose exposure plan is:
+      | filter | duration_secs |
+      | Red    | 120           |
+      | Blue   | 60            |
+    And rp is running with a mount on the simulator
+    And an MCP client connected to rp
+    When the MCP client calls "get_next_target"
+    Then the tool call should succeed
+    And the result reason should be "best_transiting_candidate"
+    And the result filter should be "Red"
+    And the result duration_secs should be 120
+
+  Scenario: get_next_target leaves the exposure plan null for a target without one
+    Given a running Alpaca simulator
+    And rp is configured with site latitude 51.0786 longitude -0.2944
+    And rp is configured with the always-visible target "Bare Field" and no exposure plan
+    And rp is running with a mount on the simulator
+    And an MCP client connected to rp
+    When the MCP client calls "get_next_target"
+    Then the tool call should succeed
+    And the result reason should be "best_transiting_candidate"
+    And the result filter should be null
+    And the result duration_secs should be null
 
   Scenario: get_target_status fails when site is missing
     Given a running Alpaca simulator

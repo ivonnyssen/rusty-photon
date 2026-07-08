@@ -1974,3 +1974,139 @@ async fn test_golden_deep_sky_rejects_a_filter_without_a_filter_wheel_before_mov
     );
     assert!(tools.call_names().is_empty());
 }
+
+/// `get_next_target` result carrying an exposure plan, as rp returns
+/// it after #462: `filter` / `duration_secs` are the recommended
+/// target's first `exposures[]` entry.
+fn planned_recommendation(filter: Value, duration_secs: Value) -> Value {
+    json!({
+        "target": {
+            "name": "M31",
+            "ra_hours": 0.7,
+            "dec_degrees": 41.0,
+            "min_altitude_degrees": null
+        },
+        "reason": "best_transiting_candidate",
+        "filter": filter,
+        "duration_secs": duration_secs
+    })
+}
+
+#[tokio::test]
+async fn test_golden_deep_sky_captures_at_the_planner_duration_and_filter() {
+    // The planner recommends Red at 120 s; the `exposure` parameter
+    // stays at its 300s default and `filter` at "". The acquisition
+    // must set the plan's filter and the capture must run at the
+    // plan's duration (120 s → "2m" through the humantime() builtin).
+    let doc = make_doc(crate::document::corpus::golden_deep_sky());
+    let params = deep_sky_params(
+        &doc,
+        json!({
+            "focus": false,
+            "centering": false,
+            "filter_wheel_id": "fw",
+            "max_frames": 1,
+            "park_on_finish": false
+        }),
+    );
+    let tools = MockTools::new(|_, tool, _| match tool {
+        "unpark" | "set_tracking" | "slew" | "set_filter" => Ok(json!({})),
+        "get_next_target" => Ok(planned_recommendation(json!("Red"), json!(120))),
+        "capture" => Ok(json!({ "image_path": "/tmp/light.fits", "document_id": "doc-1" })),
+        other => panic!("unexpected tool call `{other}`"),
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let (outcome, _) = run_in(&dir, &doc, &params, &tools, &MockClock::new()).await;
+
+    assert_eq!(outcome, RunOutcome::Completed);
+    let calls = tools.calls();
+    let set_filter = calls
+        .iter()
+        .find(|(name, _)| name == "set_filter")
+        .expect("set_filter must be called for a plan that names a filter");
+    assert_eq!(set_filter.1["filter_wheel_id"], "fw");
+    assert_eq!(set_filter.1["filter_name"], "Red");
+    let capture = calls
+        .iter()
+        .find(|(name, _)| name == "capture")
+        .expect("capture must be called");
+    assert_eq!(
+        capture.1["duration"], "2m",
+        "the capture must run at the plan's 120 s, not params.exposure"
+    );
+}
+
+#[tokio::test]
+async fn test_golden_deep_sky_falls_back_to_the_exposure_parameter_without_a_plan() {
+    // A target without `exposures[]` recommends with a null plan; the
+    // capture falls back to `params.exposure` (default 300s) and no
+    // filter change happens.
+    let doc = make_doc(crate::document::corpus::golden_deep_sky());
+    let params = deep_sky_params(
+        &doc,
+        json!({
+            "focus": false,
+            "centering": false,
+            "max_frames": 1,
+            "park_on_finish": false
+        }),
+    );
+    let tools = MockTools::new(|_, tool, _| match tool {
+        "unpark" | "set_tracking" | "slew" => Ok(json!({})),
+        "get_next_target" => Ok(planned_recommendation(Value::Null, Value::Null)),
+        "capture" => Ok(json!({ "image_path": "/tmp/light.fits", "document_id": "doc-1" })),
+        other => panic!("unexpected tool call `{other}`"),
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let (outcome, _) = run_in(&dir, &doc, &params, &tools, &MockClock::new()).await;
+
+    assert_eq!(outcome, RunOutcome::Completed);
+    let calls = tools.calls();
+    assert!(
+        !calls.iter().any(|(name, _)| name == "set_filter"),
+        "no plan filter and no filter parameter ⇒ no set_filter call"
+    );
+    let capture = calls
+        .iter()
+        .find(|(name, _)| name == "capture")
+        .expect("capture must be called");
+    assert_eq!(capture.1["duration"], "300s");
+}
+
+#[tokio::test]
+async fn test_golden_deep_sky_fails_when_the_plan_names_a_filter_but_no_wheel_is_configured() {
+    // The t=0 guard can only see the `filter` parameter; a filter
+    // arriving in the planner's exposure plan mid-session must fail
+    // just as loudly instead of silently imaging unfiltered.
+    let doc = make_doc(crate::document::corpus::golden_deep_sky());
+    let params = deep_sky_params(
+        &doc,
+        json!({
+            "focus": false,
+            "centering": false,
+            "max_frames": 1,
+            "park_on_finish": false
+        }),
+    );
+    let tools = MockTools::new(|_, tool, _| match tool {
+        "unpark" | "set_tracking" | "slew" => Ok(json!({})),
+        "get_next_target" => Ok(planned_recommendation(json!("Red"), json!(120))),
+        other => panic!("unexpected tool call `{other}` after the plan-filter guard"),
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let (outcome, _) = run_in(&dir, &doc, &params, &tools, &MockClock::new()).await;
+
+    let error = failure(outcome);
+    assert!(
+        error
+            .message
+            .contains("the exposure plan names a filter but filter_wheel_id is empty"),
+        "{}",
+        error.message
+    );
+    assert_eq!(
+        tools.call_names(),
+        vec!["unpark", "set_tracking", "get_next_target", "slew"],
+        "the failure must land after the slew and before any set_filter/capture"
+    );
+}

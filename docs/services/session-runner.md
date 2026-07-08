@@ -1012,11 +1012,11 @@ Abridged to the load-bearing shape:
 ### `deep_sky.json` (the night-cycle document)
 
 The classic deep-sky session as a shipped first-party document: startup
-(unpark, tracking, optional filter) → a dispatch loop (`get_next_target` →
-acquire on target change: slew → optional `center_on_target` → optional
-`auto_focus` → one `capture` per pass, re-asking the planner after every
-frame) → shutdown (optional `park`). The full document lives in
-`workflows/deep_sky.json`; the shape:
+(unpark, tracking) → a dispatch loop (`get_next_target` → acquire on
+target change: slew → `set_filter` when the plan names one → optional
+`center_on_target` → optional `auto_focus` → one `capture` per pass,
+re-asking the planner after every frame) → shutdown (optional `park`).
+The full document lives in `workflows/deep_sky.json`; the shape:
 
 ```jsonc
 {
@@ -1031,16 +1031,20 @@ frame) → shutdown (optional `park`). The full document lives in
     { "if": "has(params._recovery.reason)",
       "then": [ { "set": { "session.target_name": "null",
                            "session.imaging": "false" } } ] },
-    /* unpark, set_tracking, optional set_filter — all idempotent */
+    /* unpark, set_tracking — both idempotent */
     { "repeat": { "while": "session.session_over != true", "max_iterations": 20000 },
       "body": [
         { "tool": "get_next_target" },
         /* end_of_session → done; target == null → dawn heuristic
            (wait_for_twilight after frames were captured ends the
            session) or a 5m wait-and-re-ask; target change → stash
-           coords, slew, center, focus, commit session.target_* and
-           session.imaging = true; then one capture + counter updates,
-           ending when params.max_frames (> 0) is reached */ ] },
+           coords + the exposure plan (result.filter /
+           result.duration_secs, falling back to params.filter /
+           params.exposure when null), slew, set_filter if the plan
+           names one, center, focus, commit session.target_* and
+           session.imaging = true; then one capture at the plan
+           duration + counter updates, ending when params.max_frames
+           (> 0) is reached */ ] },
     /* shutdown: session.imaging = false, optional park */ ] }
 }
 ```
@@ -1050,12 +1054,18 @@ tool surface, and its shape reflects the documented planner v1 gaps
 (`rp.md` § Dynamic Planner) — each is `rp` work, tracked as an issue, and
 the document simplifies when it lands:
 
-- **The exposure plan is a parameter, not a planner output.**
-  `get_next_target` v1 returns `filter: null` / `duration_secs: null`
-  (the per-target `exposures[]` config is not yet threaded through), so
-  the document takes `exposure` (per-frame duration), an optional fixed
-  `filter`, and a `max_frames` budget (`0` = unbounded) as invocation
-  parameters.
+- **The planner supplies the exposure plan; parameters are the
+  fallback.** `get_next_target` returns `filter` / `duration_secs` from
+  the recommended target's first `exposures[]` entry (rp issue #462,
+  closed). At acquisition the document stashes them — converting
+  `duration_secs` to a humantime string with the `humantime()`
+  builtin — and falls back to the `exposure` / `filter` parameters when
+  the planner returns null (a target without `exposures[]`). A plan
+  that names a filter while `filter_wheel_id` is empty fails the
+  session loudly, mirroring the parameter guard. `max_frames`
+  (`0` = unbounded) remains an invocation parameter. Rotating *within*
+  a target's plan (Red after 20 Luminance frames) still needs progress
+  counters — that part rides the `record_exposure` issue.
 - **Progress lives in the blackboard, not in `rp`.** `record_exposure` /
   `get_session_progress` do not exist yet, so the document counts frames
   in `session.total_frames` (mirrored to `session.report.total_frames`
@@ -1202,7 +1212,7 @@ Full three-process topology (OmniSim + `rp` + `session-runner`) via
 | Triggers | `triggers.feature` | a trigger action lands between exposures, never during one (proved by SSE seq order); `once` fires exactly once across three captures; cooldown suppresses firings inside its window; a poll trigger fires through its `when` gate |
 | Resume | `recovery.feature` | SIGKILL the engine mid-capture-loop → restart → re-invoke with recovery → progress continues without repeated frames (exposure totals prove it); `once` marker not re-run (`filter_switch` count proves it); an rp outage terminates the run (service stays healthy, blackboard kept) and the session resumes against the restarted rp |
 | Safety | `recovery.feature` | a SafetyMonitor unsafe reading interrupts the session end-to-end through rp's own machinery (rp terminates the MCP session, the run terminates keeping its blackboard) and the safe transition re-invokes the engine with `recovery.reason = "safety_interruption"` — the resumed run captures exactly the remaining frames, the once marker is not re-run, and the completion deletes the blackboard. rp-side specifics (session `interrupted` status, `/mcp` 503 gate, `safety_changed` events) are pinned in rp's own `safety.feature` |
-| Deep-sky document | `deep_sky.feature` | the shipped `deep_sky.json` against a computed night sky (site + planner targets placed so a candidate is viable at test time): the full cycle completes (unpark → slew → center → capture ×N → park); a target sinking below its per-target altitude floor switches the dispatch loop to the second target (a second slew, frames on both sides of it); `refocus_every` fires `auto_focus` from the trigger overlay (`focus_started` count proves it); a due meridian flip re-slews between exposures, never during one; a safety interruption resumes with re-acquisition (two `centering_complete`) |
+| Deep-sky document | `deep_sky.feature` | the shipped `deep_sky.json` against a computed night sky (site + planner targets placed so a candidate is viable at test time): the full cycle completes (unpark → slew → center → capture ×N → park); the planner's exposure plan drives the capture duration (a 2 s plan finishes a session the 300 s parameter default could not); a target sinking below its per-target altitude floor switches the dispatch loop to the second target (a second slew, frames on both sides of it); `refocus_every` fires `auto_focus` from the trigger overlay (`focus_started` count proves it); a due meridian flip re-slews between exposures, never during one; a safety interruption resumes with re-acquisition (two `centering_complete`) |
 
 The safety scenario exercises rp's real recovery re-invocation. The
 engine-kill and rp-outage scenarios POST `/invoke` directly — same ids,
