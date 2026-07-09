@@ -236,13 +236,20 @@ impl GuiderWorld {
             .collect()
     }
 
+    /// Shared suite-wide HTTP client. The timeout exceeds the
+    /// worst-case settle backstop (default settle.timeout 60 s + the
+    /// 10 s grace), so a legitimate settle-timeout response is never
+    /// preempted client-side.
     pub fn http_client() -> reqwest::Client {
-        reqwest::Client::builder()
-            // Generous: the settle-backstop scenario legitimately takes
-            // settle.timeout + the 10 s grace before responding.
-            .timeout(Duration::from_secs(60))
-            .build()
-            .expect("build reqwest client")
+        static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+        CLIENT
+            .get_or_init(|| {
+                reqwest::Client::builder()
+                    .timeout(Duration::from_secs(90))
+                    .build()
+                    .expect("build reqwest client")
+            })
+            .clone()
     }
 }
 

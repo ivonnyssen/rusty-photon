@@ -47,12 +47,11 @@ impl StatsWindow {
             self.steps.pop_front();
         }
         self.steps.push_back((ra, dec));
-        if snr.is_some() {
-            self.last_snr = snr;
-        }
-        if mass.is_some() {
-            self.last_star_mass = mass;
-        }
+        // Mirror the most recent guide step exactly — a step without a
+        // measurement clears the field rather than leaving stale
+        // telemetry in the snapshot.
+        self.last_snr = snr;
+        self.last_star_mass = mass;
     }
 
     fn snapshot(&self) -> StatsSnapshot {
@@ -377,7 +376,9 @@ mod tests {
         approx(snap.total_rms_px.unwrap(), 0.5);
         assert_eq!(snap.sample_count, 2);
         approx(snap.snr.unwrap(), 26.0);
-        approx(snap.star_mass.unwrap(), 5340.0);
+        // The latest step omitted StarMass: the snapshot mirrors the
+        // most recent step exactly rather than holding a stale value.
+        assert_eq!(snap.star_mass, None);
     }
 
     #[test]

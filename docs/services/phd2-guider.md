@@ -811,9 +811,10 @@ mutating-request queue.
 ```
 
 `app_state` is a fresh `get_app_state` RPC (`guiding` is derived from
-it). `snr`/`star_mass` come from the most recent `GuideStep` event;
-RMS from the rolling window. All nullable fields are `null` when no
-samples exist.
+it). `snr`/`star_mass` mirror the most recent `GuideStep` event
+exactly — `null` when the latest step omitted the measurement, so the
+snapshot never reports stale telemetry. RMS comes from the rolling
+window; all nullable fields are `null` when no samples exist.
 
 #### `GET /health`
 
