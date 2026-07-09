@@ -6,7 +6,11 @@ description: >-
   `--features simulation` builds (it removes the camera, not the link). See
   docs/services/zwo-camera.md "Native dependency & build gating" and ADR-008.
   Linux/macOS pull ZWO's prebuilt blobs from the INDI mirror; Windows pulls the
-  official per-SDK developer zips from ZWO's download CDN.
+  official per-SDK developer zips from ZWO's download CDN. The Linux/macOS
+  blobs are wrapped in actions/cache (keyed on arch + `ref`) so a warm cache
+  skips the mirror fetch entirely — the mirror rate-limits CI's ephemeral IPs
+  (429s), see issue #476. The unpinned Windows CDN URLs are not cached (no
+  version to key on).
 
 inputs:
   ref:
@@ -78,17 +82,13 @@ runs:
         # bindgen needs libclang; surface Homebrew's llvm to subsequent steps.
         echo "LIBCLANG_PATH=$(brew --prefix llvm)/lib" >> "$GITHUB_ENV"
 
-    - name: Download + install the ZWO SDK (Linux/macOS)
+    - name: Determine ZWO SDK arch (Linux/macOS)
       # Linux uses this sudo path only when sudo == 'true'; the sudo-free Linux
       # path is the dedicated step below. macOS always uses this path.
       if: runner.os == 'macOS' || (runner.os == 'Linux' && inputs.sudo == 'true')
+      id: asset
       shell: bash
-      env:
-        PREFIX: ${{ inputs.prefix }}
-        REF: ${{ inputs.ref }}
       run: |
-        set -euo pipefail
-        BASE="https://github.com/indilib/indi-3rdparty/raw/${REF}/libasi"
         case "${{ runner.os }}-${{ runner.arch }}" in
           Linux-X64)    ARCH=x64 ;;
           Linux-ARM64)  ARCH=armv8 ;;
@@ -96,27 +96,78 @@ runs:
           macOS-X64)    ARCH=mac_x64 ;;
           *) echo "::error::unsupported ZWO SDK arch: ${{ runner.os }}-${{ runner.arch }}"; exit 1 ;;
         esac
-        echo "install-zwo-sdk: arch=$ARCH prefix=$PREFIX ref=$REF"
-        sudo install -d "$PREFIX/lib" "$PREFIX/include"
+        if [[ "${{ runner.os }}" == "macOS" ]]; then EXT=dylib; else EXT=so; fi
+        {
+          echo "arch=$ARCH"
+          echo "ext=$EXT"
+          # ARCH values are already OS-unique (x64/armv8 are Linux-only,
+          # mac_arm64/mac_x64 are macOS-only), so no separate os component is
+          # needed. `ref` participates so bumping the indi-3rdparty pin
+          # invalidates any previously cached blob.
+          echo "cache-key=zwo-sdk-blobs-$ARCH-${{ inputs.ref }}"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Cache ZWO SDK blobs (Linux/macOS)
+      # Caches the raw mirror download, not the installed $PREFIX tree — the
+      # install step below (always runs) does the sudo copy into $PREFIX, so a
+      # cache hit here skips the indi-3rdparty mirror fetch entirely instead of
+      # eating its 429s (issue #476).
+      if: runner.os == 'macOS' || (runner.os == 'Linux' && inputs.sudo == 'true')
+      id: cache
+      uses: actions/cache@v6
+      with:
+        path: zwo-sdk-blobs
+        key: ${{ steps.asset.outputs.cache-key }}
+
+    - name: Download the ZWO SDK (Linux/macOS)
+      if: (runner.os == 'macOS' || (runner.os == 'Linux' && inputs.sudo == 'true')) && steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        REF: ${{ inputs.ref }}
+        ARCH: ${{ steps.asset.outputs.arch }}
+        EXT: ${{ steps.asset.outputs.ext }}
+      run: |
+        set -euo pipefail
+        BASE="https://github.com/indilib/indi-3rdparty/raw/${REF}/libasi"
+        echo "install-zwo-sdk: downloading arch=$ARCH ref=$REF (cache miss)"
+        mkdir -p zwo-sdk-blobs
 
         # Headers (MIT) — bindgen reads the copies vendored inside libzwo-sys, so
         # these are for completeness; the license notice must travel with the blob.
         for h in ASICamera2.h EFW_filter.h EAF_focuser.h license.txt; do
-          sudo curl -fsSL "$BASE/$h" -o "$PREFIX/include/$h"
+          curl -fsSL "$BASE/$h" -o "zwo-sdk-blobs/$h"
         done
 
-        # Shared libraries. INDI's `.bin` is ZWO's upstream `.so`/`.dylib`;
-        # install under the linker name so `-lASICamera2` / `-lEFWFilter` resolve.
-        if [[ "${{ runner.os }}" == "macOS" ]]; then
-          EXT=dylib
-        else
-          EXT=so
+        # Shared libraries. INDI's `.bin` is ZWO's upstream `.so`/`.dylib`.
+        curl -fsSL "$BASE/$ARCH/libASICamera2.bin" -o "zwo-sdk-blobs/libASICamera2.$EXT"
+        curl -fsSL "$BASE/$ARCH/libEFWFilter.bin"  -o "zwo-sdk-blobs/libEFWFilter.$EXT"
+        # EAF focuser is not linked yet (Future Work); download it so the runner
+        # is ready when focuser support lands — mirrors zwo-rs/ci/install-zwo-sdk.sh.
+        curl -fsSL "$BASE/$ARCH/libEAFFocuser.bin" -o "zwo-sdk-blobs/libEAFFocuser.$EXT" || true
+
+    - name: Install the ZWO SDK (Linux/macOS)
+      # Always runs (cache hit or miss) — a plain local copy from zwo-sdk-blobs
+      # into $PREFIX, so it's cheap either way.
+      if: runner.os == 'macOS' || (runner.os == 'Linux' && inputs.sudo == 'true')
+      shell: bash
+      env:
+        PREFIX: ${{ inputs.prefix }}
+        EXT: ${{ steps.asset.outputs.ext }}
+      run: |
+        set -euo pipefail
+        echo "install-zwo-sdk: prefix=$PREFIX"
+        sudo install -d "$PREFIX/lib" "$PREFIX/include"
+
+        for h in ASICamera2.h EFW_filter.h EAF_focuser.h license.txt; do
+          sudo cp "zwo-sdk-blobs/$h" "$PREFIX/include/$h"
+        done
+
+        # Install under the linker name so `-lASICamera2` / `-lEFWFilter` resolve.
+        sudo cp "zwo-sdk-blobs/libASICamera2.$EXT" "$PREFIX/lib/libASICamera2.$EXT"
+        sudo cp "zwo-sdk-blobs/libEFWFilter.$EXT"  "$PREFIX/lib/libEFWFilter.$EXT"
+        if [[ -f "zwo-sdk-blobs/libEAFFocuser.$EXT" ]]; then
+          sudo cp "zwo-sdk-blobs/libEAFFocuser.$EXT" "$PREFIX/lib/libEAFFocuser.$EXT"
         fi
-        sudo curl -fsSL "$BASE/$ARCH/libASICamera2.bin" -o "$PREFIX/lib/libASICamera2.$EXT"
-        sudo curl -fsSL "$BASE/$ARCH/libEFWFilter.bin"  -o "$PREFIX/lib/libEFWFilter.$EXT"
-        # EAF focuser is not linked yet (Future Work); install it so the runner is
-        # ready when focuser support lands — mirrors zwo-rs/ci/install-zwo-sdk.sh.
-        sudo curl -fsSL "$BASE/$ARCH/libEAFFocuser.bin" -o "$PREFIX/lib/libEAFFocuser.$EXT" || true
 
         if [[ "${{ runner.os }}" == "macOS" ]]; then
           # macOS dylibs ship with an install_name that must match the on-disk
