@@ -363,9 +363,10 @@ fn with_settle_deadlines(
         return envelope;
     };
     let predicted = settle.and_then(|s| s.time).unwrap_or(timeout).min(timeout);
+    let max = timeout.saturating_add(SETTLE_BACKSTOP_GRACE);
     envelope.with_deadlines(
-        predicted.as_millis() as u64,
-        timeout.saturating_add(SETTLE_BACKSTOP_GRACE).as_millis() as u64,
+        u64::try_from(predicted.as_millis()).unwrap_or(u64::MAX),
+        u64::try_from(max.as_millis()).unwrap_or(u64::MAX),
     )
 }
 

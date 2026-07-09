@@ -5873,8 +5873,10 @@ async fn start_guiding_clamps_predicted_duration_to_the_timeout_when_settle_time
 #[tokio::test]
 async fn start_guiding_saturates_instead_of_overflowing_on_an_extreme_settle_timeout() {
     // An operator-configured settle_timeout near Duration::MAX must not
-    // panic the process via `Duration`'s overflow-checked `Add` — the
-    // backstop-grace addition saturates instead.
+    // panic the process via `Duration`'s overflow-checked `Add` (the
+    // backstop-grace addition saturates instead), and the resulting
+    // millisecond count must saturate to u64::MAX rather than silently
+    // truncating (as a bare `as u64` cast on the u128 millis would).
     let defaults = GuiderDefaults {
         settle_pixels: None,
         settle_time: None,
@@ -5896,8 +5898,8 @@ async fn start_guiding_saturates_instead_of_overflowing_on_an_extreme_settle_tim
         .unwrap();
 
     let started = next_event(&mut rx).await;
-    assert!(started.max_duration_ms.is_some());
-    assert!(started.predicted_duration_ms <= started.max_duration_ms);
+    assert_eq!(started.predicted_duration_ms, Some(u64::MAX));
+    assert_eq!(started.max_duration_ms, Some(u64::MAX));
 }
 
 #[tokio::test]

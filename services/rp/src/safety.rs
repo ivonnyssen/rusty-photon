@@ -240,22 +240,39 @@ async fn abort_exposures(equipment: &EquipmentRegistry) {
     }
 }
 
+/// Upper bound on how long the unsafe transition waits for stop-guiding
+/// to confirm before moving on to parking regardless. The guider
+/// service's own `stop_timeout` config defaults to 10 s
+/// (`phd2-guider.md` § "POST /api/v1/guiding/stop"), so this leaves
+/// margin for a normal confirmed stop to land without letting a wedged
+/// guider service (or an operator-configured `guider.timeout` far
+/// longer than the client call would otherwise honor) delay parking —
+/// the safety-critical step — for the client's full HTTP timeout.
+const SAFETY_STOP_GUIDING_TIMEOUT: Duration = Duration::from_secs(15);
+
 /// Best-effort stop-guiding through the shared guider client — the
 /// guide loop must not keep dragging the mount while conditions are
 /// unsafe. Emits `guide_stopped` with `reason: "safety"` on a
-/// confirmed stop; a failure (service down, PHD2 gone) is logged and
-/// swallowed so the park below still runs.
+/// confirmed stop; a failure (service down, PHD2 gone) or a stop that
+/// doesn't confirm within [`SAFETY_STOP_GUIDING_TIMEOUT`] is logged and
+/// swallowed so the park below still runs promptly.
 async fn stop_guiding(guider: Option<&Arc<dyn rp_guider::GuiderClient>>, event_bus: &EventBus) {
     let Some(client) = guider else {
         return;
     };
-    match client.stop_guiding().await {
-        Ok(()) => {
+    match tokio::time::timeout(SAFETY_STOP_GUIDING_TIMEOUT, client.stop_guiding()).await {
+        Ok(Ok(())) => {
             debug!("guiding stopped on unsafe transition");
             event_bus.emit("guide_stopped", serde_json::json!({ "reason": "safety" }));
         }
-        Err(e) => {
+        Ok(Err(e)) => {
             debug!(error = %e, "stop_guiding failed during unsafe transition");
+        }
+        Err(_) => {
+            debug!(
+                timeout = ?SAFETY_STOP_GUIDING_TIMEOUT,
+                "stop_guiding did not confirm in time during unsafe transition; proceeding to park"
+            );
         }
     }
 }
@@ -521,6 +538,68 @@ mod tests {
         let changed = events.recv().await.unwrap();
         assert_eq!(changed.event, "safety_changed");
         assert!(events.try_recv().is_err());
+    }
+
+    /// A `GuiderClient` whose `stop_guiding` never resolves — stands in
+    /// for a wedged guider service (process hung, not just PHD2) to
+    /// prove `stop_guiding`'s timeout wrapper actually engages instead
+    /// of blocking the unsafe transition indefinitely.
+    struct HangingGuiderClient;
+
+    #[async_trait::async_trait]
+    impl rp_guider::GuiderClient for HangingGuiderClient {
+        async fn start_guiding(
+            &self,
+            _request: rp_guider::StartGuidingRequest,
+        ) -> Result<rp_guider::SettledOutcome, rp_guider::GuiderError> {
+            unreachable!("not exercised by this test")
+        }
+
+        async fn stop_guiding(&self) -> Result<(), rp_guider::GuiderError> {
+            std::future::pending().await
+        }
+
+        async fn pause_guiding(&self, _full: bool) -> Result<(), rp_guider::GuiderError> {
+            unreachable!("not exercised by this test")
+        }
+
+        async fn resume_guiding(&self) -> Result<(), rp_guider::GuiderError> {
+            unreachable!("not exercised by this test")
+        }
+
+        async fn dither(
+            &self,
+            _request: rp_guider::DitherRequest,
+        ) -> Result<rp_guider::SettledOutcome, rp_guider::GuiderError> {
+            unreachable!("not exercised by this test")
+        }
+
+        async fn guiding_stats(&self) -> Result<rp_guider::GuidingStats, rp_guider::GuiderError> {
+            unreachable!("not exercised by this test")
+        }
+    }
+
+    /// A guider service that never confirms the stop must not delay
+    /// parking indefinitely — `SAFETY_STOP_GUIDING_TIMEOUT` bounds the
+    /// wait, and no `guide_stopped` event fires since the stop was
+    /// never confirmed. Paused time makes the 15 s bound resolve
+    /// instantly instead of slowing down the test suite.
+    #[tokio::test(start_paused = true)]
+    async fn stop_guiding_gives_up_after_the_safety_timeout_when_the_service_is_wedged() {
+        let mut enforcer = enforcer_with(vec![ScriptedProbe::new("sm", vec![Ok(false)])]);
+        enforcer.guider = Some(Arc::new(HangingGuiderClient));
+        let mut events = enforcer.event_bus.subscribe();
+
+        let mut state = HashMap::new();
+        enforcer.poll_once(&mut state, true).await;
+
+        assert!(!enforcer.safety_ok.load(Ordering::SeqCst));
+        let changed = events.recv().await.unwrap();
+        assert_eq!(changed.event, "safety_changed");
+        assert!(
+            events.try_recv().is_err(),
+            "no guide_stopped event when the stop never confirmed"
+        );
     }
 
     #[tokio::test]
