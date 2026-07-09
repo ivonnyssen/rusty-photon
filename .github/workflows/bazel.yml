@@ -131,15 +131,35 @@ jobs:
           else
             REMOTE_FLAGS+=(--remote_upload_local_results=false)
           fi
-          # TEMP DIAGNOSTIC (see PR #474): windows-latest deterministically
-          # fails a handful of rust_test targets with E0463 "can't find
-          # crate", reproducing identically (same remote-cache-hit count)
-          # across reruns. Bypassing remote-cache READS isolates whether a
-          # corrupted/stale cache entry is being replayed.
-          if [[ "$RUNNER_OS" == "Windows" ]]; then
-            REMOTE_FLAGS+=(--noremote_accept_cached)
-          fi
           bazel build --config=ci "${REMOTE_FLAGS[@]}" //...
+
+      # TEMP DIAGNOSTIC (see PR #474): windows-latest deterministically fails
+      # a couple of ppba-driver rust_test targets (bdd, conformu_integration)
+      # with E0463 "can't find crate", reproducing byte-identically across
+      # reruns and even with remote-cache reads disabled -- so it's neither
+      # flakiness nor a stale cache entry. Dump the actual generated .params
+      # file for the two known-bad targets on failure so we can see the real
+      # --extern paths Bazel computed instead of inferring from rustc's error.
+      - name: Dump failing params files (Windows diagnostic)
+        if: failure() && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $files = @(
+            "bazel-out/x64_windows-fastbuild/bin/services/ppba-driver/bdd.exe-0.params",
+            "bazel-out/x64_windows-fastbuild/bin/services/ppba-driver/conformu_integration.exe-0.params"
+          )
+          foreach ($f in $files) {
+            Write-Output "=== $f ==="
+            if (Test-Path $f) {
+              $content = Get-Content $f -Raw
+              Write-Output $content
+              Write-Output "--- total chars: $($content.Length) ---"
+              Write-Output "--- extern lines ---"
+              Get-Content $f | Select-String -Pattern '^--extern'
+            } else {
+              Write-Output "(not found)"
+            }
+          }
 
       - name: bazel test (fast)
         # The .bazelrc default filter includes bdd (for the local loop);
