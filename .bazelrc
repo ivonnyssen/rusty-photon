@@ -186,20 +186,6 @@ build:ci --color=yes
 build:ci --show_timestamps
 build:ci --announce_rc
 build:ci --remote_download_outputs=toplevel  # build-without-the-bytes
-
-# DIAGNOSTIC (PR #474/#473): windows-latest's `bazel build //...` step
-# deterministically fails a couple of ppba-driver rust_test binaries with
-# rustc E0463 "can't find crate", varying WHICH target loses the race across
-# reruns, even with the sandbox bypassed (build:windows --spawn_strategy=local
-# above) and even with --noremote_accept_cached. The dumped .params files show
-# correct --extern flags, so it isn't a deps/lockfile bug. Remaining
-# hypothesis: with --remote_download_outputs=toplevel above, intermediate
-# .rlib artifacts aren't downloaded upfront -- they're lazily fetched from the
-# remote CAS only when a local action needs them as input. If that per-action
-# JIT fetch is unreliable on Windows, a local compile action could start with
-# an incompletely-materialized dependency, exactly matching what's observed.
-# Force full downloads on Windows to test/rule this out.
-build:windows --remote_download_outputs=all
 # `--jobs` and `--local_resources=cpu=N` are separate knobs: `--jobs` caps how
 # many actions may be outstanding at once, the CPU resource pool (left on
 # auto-detect, i.e. the runner's real core count) caps how many can actively
@@ -245,36 +231,6 @@ build:ci --remote_timeout=15
 # under Cargo. Scheduling/execution-only: does not enter action keys, so it never
 # perturbs the remote cache.
 test:ci --spawn_strategy=local
-
-# Bypass the sandbox on Windows for the plain `bazel build` step too (not just
-# `test:ci` above). Root-caused via PR #474/#473: windows-latest's `bazel build
-# //...` step deterministically (but non-repeatably as to WHICH target) failed
-# a couple of ppba-driver rust_test binaries (bdd, conformu_integration) with
-# rustc E0463 "can't find crate" for several of their `--extern` deps — the
-# dumped .params files showed the `--extern` flags were correct and complete,
-# so this isn't a deps/lockfile bug; it's the referenced .rlib not being
-# reliably present in the sandboxed input tree at execution time on Windows
-# (sandboxed input materialization on Windows is symlink/copy-fallback based
-# and known-fragile — see rules_rust's own acknowledged weak Windows support).
-# `build:windows` (not `build:ci`) so it isn't gated to CI and stays scoped to
-# the one platform that showed the failure; Linux/macOS keep the sandbox on
-# `bazel build`.
-build:windows --spawn_strategy=local
-
-# DIAGNOSTIC (PR #474/#473), round 3: neither the sandbox bypass above nor
-# forcing full remote downloads fixed the windows-latest E0463 failures --
-# same signature, still varies which of ppba-driver's two largest rust_test
-# targets (bdd, conformu_integration; by far the most --extern deps of any
-# targets in the repo) loses the race. The failure tracks dependency COUNT,
-# not any specific crate, which smells like a low-probability per-file race
-# that just compounds across a large deps list rather than a deterministic
-# bug against one crate. `build:ci --jobs=64` allows up to 64 actions
-# in flight at once -- input staging/file writes for that many concurrent
-# actions is plausibly enough contention to trigger Windows-specific
-# file-visibility flakiness (antivirus scanning, NTFS metadata lag) even
-# though actual CPU-bound compilation is separately capped by the
-# auto-detected core count. Cut concurrency hard on Windows to test.
-build:windows --jobs=8
 
 # Forward OMNISIM_PATH (the install-omnisim action's pinned OmniSim binary path,
 # consumed by bdd_infra::rp_harness::OmniSimHandle::start) into test sandboxes.
