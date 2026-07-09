@@ -5833,6 +5833,39 @@ async fn start_guiding_emits_started_and_settled_with_the_settle_deadline() {
 }
 
 #[tokio::test]
+async fn start_guiding_clamps_predicted_duration_to_the_timeout_when_settle_time_exceeds_it() {
+    // A misconfigured settle_time longer than settle_timeout must
+    // never produce predicted_duration_ms > max_duration_ms — the
+    // guider service itself does not validate that ordering.
+    let defaults = GuiderDefaults {
+        settle_pixels: None,
+        settle_time: Some(Duration::from_secs(120)),
+        settle_timeout: Some(Duration::from_secs(40)),
+        dither_pixels: None,
+    };
+    let handler = handler_with_guider(
+        |mock| {
+            mock.expect_start_guiding()
+                .returning(|_| Ok(settled_outcome()));
+        },
+        defaults,
+    );
+    let mut rx = handler.event_bus.subscribe();
+
+    handler
+        .start_guiding(Parameters(start_params_empty()))
+        .await
+        .unwrap();
+
+    let started = next_event(&mut rx).await;
+    // predicted clamps down to the timeout (40s), not the oversized
+    // settle_time (120s); max stays timeout + 10s backstop grace.
+    assert_eq!(started.predicted_duration_ms, Some(40_000));
+    assert_eq!(started.max_duration_ms, Some(50_000));
+    assert!(started.predicted_duration_ms <= started.max_duration_ms);
+}
+
+#[tokio::test]
 async fn start_guiding_without_a_settle_timeout_omits_the_deadline() {
     let handler = handler_with_guider(
         |mock| {

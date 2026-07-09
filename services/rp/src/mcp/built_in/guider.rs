@@ -349,6 +349,12 @@ impl McpHandler {
 /// service's backstop grace. Without a resolved timeout rp cannot
 /// know the service-side default, so the deadline fields stay
 /// omitted (same posture as operations without predictions).
+///
+/// The service does not itself validate `settle_time <=
+/// settle_timeout`, so a misconfigured hold time longer than the
+/// timeout is clamped to the timeout here — `predicted_duration_ms`
+/// must never exceed `max_duration_ms` (Sentinel treats that as a
+/// contract violation).
 fn with_settle_deadlines(
     envelope: EventEnvelope,
     settle: Option<&rp_guider::SettleOverride>,
@@ -356,7 +362,7 @@ fn with_settle_deadlines(
     let Some(timeout) = settle.and_then(|s| s.timeout) else {
         return envelope;
     };
-    let predicted = settle.and_then(|s| s.time).unwrap_or(timeout);
+    let predicted = settle.and_then(|s| s.time).unwrap_or(timeout).min(timeout);
     envelope.with_deadlines(
         predicted.as_millis() as u64,
         (timeout + SETTLE_BACKSTOP_GRACE).as_millis() as u64,
