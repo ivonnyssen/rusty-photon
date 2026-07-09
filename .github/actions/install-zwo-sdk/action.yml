@@ -103,8 +103,11 @@ runs:
           # ARCH values are already OS-unique (x64/armv8 are Linux-only,
           # mac_arm64/mac_x64 are macOS-only), so no separate os component is
           # needed. `ref` participates so bumping the indi-3rdparty pin
-          # invalidates any previously cached blob.
-          echo "cache-key=zwo-sdk-blobs-$ARCH-${{ inputs.ref }}"
+          # invalidates any previously cached blob. The leading `v1` is a
+          # schema version for the *set* of files this action fetches/caches
+          # (headers + libs) — bump it if that set changes, so a stale cache
+          # entry can be invalidated without needing an unrelated `ref` bump.
+          echo "cache-key=zwo-sdk-blobs-v1-$ARCH-${{ inputs.ref }}"
         } >> "$GITHUB_OUTPUT"
 
     - name: Cache ZWO SDK blobs (Linux/macOS)
@@ -134,16 +137,19 @@ runs:
 
         # Headers (MIT) — bindgen reads the copies vendored inside libzwo-sys, so
         # these are for completeness; the license notice must travel with the blob.
+        # --retry: a cold cache (first run for a new arch/ref) still hits the
+        # mirror directly, so absorb transient 429s/timeouts the same way
+        # install-astap does rather than failing the whole job on one blip.
         for h in ASICamera2.h EFW_filter.h EAF_focuser.h license.txt; do
-          curl -fsSL "$BASE/$h" -o "zwo-sdk-blobs/$h"
+          curl -fsSL --retry 3 --retry-delay 2 "$BASE/$h" -o "zwo-sdk-blobs/$h"
         done
 
         # Shared libraries. INDI's `.bin` is ZWO's upstream `.so`/`.dylib`.
-        curl -fsSL "$BASE/$ARCH/libASICamera2.bin" -o "zwo-sdk-blobs/libASICamera2.$EXT"
-        curl -fsSL "$BASE/$ARCH/libEFWFilter.bin"  -o "zwo-sdk-blobs/libEFWFilter.$EXT"
+        curl -fsSL --retry 3 --retry-delay 2 "$BASE/$ARCH/libASICamera2.bin" -o "zwo-sdk-blobs/libASICamera2.$EXT"
+        curl -fsSL --retry 3 --retry-delay 2 "$BASE/$ARCH/libEFWFilter.bin"  -o "zwo-sdk-blobs/libEFWFilter.$EXT"
         # EAF focuser is not linked yet (Future Work); download it so the runner
         # is ready when focuser support lands — mirrors zwo-rs/ci/install-zwo-sdk.sh.
-        curl -fsSL "$BASE/$ARCH/libEAFFocuser.bin" -o "zwo-sdk-blobs/libEAFFocuser.$EXT" || true
+        curl -fsSL --retry 3 --retry-delay 2 "$BASE/$ARCH/libEAFFocuser.bin" -o "zwo-sdk-blobs/libEAFFocuser.$EXT" || true
 
     - name: Install the ZWO SDK (Linux/macOS)
       # Always runs (cache hit or miss) — a plain local copy from zwo-sdk-blobs
@@ -213,18 +219,21 @@ runs:
         echo "install-zwo-sdk (sudo-free): arch=$ARCH libdir=$LIBDIR ref=$REF"
 
         # Headers (MIT) for completeness; bindgen reads libzwo-sys' vendored copies.
+        # --retry: this path isn't behind the actions/cache wrapping (Pi
+        # nightly, per-run, self-hosted), so absorb transient mirror
+        # 429s/timeouts the same way install-astap does.
         for h in ASICamera2.h EFW_filter.h EAF_focuser.h license.txt; do
-          curl -fsSL "$BASE/$h" -o "$INCDIR/$h"
+          curl -fsSL --retry 3 --retry-delay 2 "$BASE/$h" -o "$INCDIR/$h"
         done
 
         # ZWO blobs under the linker name so `-lASICamera2` / `-lEFWFilter`
         # resolve. INDI's .bin carries no SONAME, so a consumer's NEEDED entry is
         # the bare `libASICamera2.so` — hence the LD_LIBRARY_PATH export below so
         # the nextest / BDD binaries load them at runtime.
-        curl -fsSL "$BASE/$ARCH/libASICamera2.bin" -o "$LIBDIR/libASICamera2.so"
-        curl -fsSL "$BASE/$ARCH/libEFWFilter.bin"  -o "$LIBDIR/libEFWFilter.so"
+        curl -fsSL --retry 3 --retry-delay 2 "$BASE/$ARCH/libASICamera2.bin" -o "$LIBDIR/libASICamera2.so"
+        curl -fsSL --retry 3 --retry-delay 2 "$BASE/$ARCH/libEFWFilter.bin"  -o "$LIBDIR/libEFWFilter.so"
         # EAF focuser is not linked yet (Future Work); best-effort for parity.
-        curl -fsSL "$BASE/$ARCH/libEAFFocuser.bin" -o "$LIBDIR/libEAFFocuser.so" || true
+        curl -fsSL --retry 3 --retry-delay 2 "$BASE/$ARCH/libEAFFocuser.bin" -o "$LIBDIR/libEAFFocuser.so" || true
 
         # `-lusb-1.0` / `-ludev` normally need the unversioned linker-name .so
         # from libusb-1.0-0-dev / libudev-dev. Without sudo we cannot apt-install
