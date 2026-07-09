@@ -4,6 +4,16 @@
 
 The PHD2 guider service provides a Rust client library and service for interacting with Open PHD Guiding 2 (PHD2). It enables programmatic control of PHD2 including starting/stopping the application, managing equipment profiles, and controlling guiding operations.
 
+The binary has two roles:
+
+- **CLI** — one-shot subcommands (`status`, `guide`, `dither`, …) for
+  operators and scripts.
+- **rp-managed HTTP service** — `phd2-guider serve` runs the guider
+  service that `rp` proxies its guider MCP tools
+  (`start_guiding`, `stop_guiding`, `dither`, …) to. See
+  [HTTP Service Mode](#http-service-mode-serve) below and
+  `docs/services/rp.md` § "Guider Service".
+
 **Cross-Platform Support:** The service runs natively on Linux, macOS, and Windows, matching PHD2's platform support.
 
 ## Architecture Overview
@@ -45,7 +55,12 @@ services/phd2-guider/src/
 ├── io.rs           # I/O traits and implementations for testability
 ├── process.rs      # Phd2ProcessManager, get_default_phd2_path
 ├── rpc.rs          # RpcRequest, RpcResponse, RpcErrorObject
-└── types.rs        # Rect, Profile, Equipment (shared types)
+├── types.rs        # Rect, Profile, Equipment (shared types)
+└── service/        # HTTP service mode (`phd2-guider serve`)
+    ├── mod.rs      # ServerBuilder, BoundServer
+    ├── api.rs      # axum router, wire types, request handlers
+    ├── error.rs    # ServiceError enum + structured error envelope
+    └── guider.rs   # GuiderOps: settle wait, stop poll, rolling RMS stats
 ```
 
 | Module | Description | Key Types |
@@ -60,6 +75,7 @@ services/phd2-guider/src/
 | `process` | Process management | `Phd2ProcessManager`, `get_default_phd2_path` |
 | `rpc` | JSON RPC 2.0 protocol | `RpcRequest`, `RpcResponse`, `RpcErrorObject` |
 | `types` | Common types | `Rect`, `Profile`, `Equipment`, `EquipmentDevice`, `CalibrationData`, `CalibrationTarget`, `GuideAxis`, `CoolerStatus`, `StarImage` |
+| `service` | HTTP service mode | `ServerBuilder`, `BoundServer`, `GuiderOps`, `ServiceError` |
 
 All commonly used types are re-exported at the crate root for convenience. The `connection` module is internal (`pub(crate)`) and handles TCP connection establishment, message reading, and auto-reconnection logic.
 
@@ -523,6 +539,9 @@ async fn stop_reconnection(&self);
 
 ```json
 {
+  "bind_address": "127.0.0.1",
+  "port": 11130,
+  "stop_timeout": "10s",
   "phd2": {
     "host": "localhost",
     "port": 4400,
@@ -551,13 +570,23 @@ convention.
 
 Configuration sections:
 
+- **HTTP service mode** (top level; only read by `phd2-guider serve`,
+  ignored by the CLI subcommands):
+  - `bind_address`: listen address (default: `127.0.0.1`; bind
+    `0.0.0.0` only when `rp` runs on a different machine)
+  - `port`: HTTP port (default: `11130`; `0` auto-assigns — used by
+    tests)
+  - `stop_timeout`: how long `POST /api/v1/guiding/stop` waits for
+    PHD2 to reach `Stopped` (default: `"10s"`)
 - **phd2**: PHD2 connection and process settings
   - `host`: PHD2 host address (default: localhost)
   - `port`: JSON RPC port (default: 4400)
   - `executable_path`: Path to PHD2 executable (null for system default)
   - `connection_timeout`: TCP connection timeout (default: `"10s"`)
   - `command_timeout`: RPC command timeout (default: `"30s"`)
-  - `auto_start`: Automatically start PHD2 if not running
+  - `auto_start`: Automatically start PHD2 if not running (declared
+    for future use — no code path honors it yet, `serve` included;
+    see § HTTP Service Mode)
   - `auto_connect_equipment`: Automatically connect equipment after PHD2 starts
   - `reconnect`: Auto-reconnect settings
     - `enabled`: Enable automatic reconnection (default: true)
@@ -627,6 +656,227 @@ Auto-reconnect can be controlled at runtime:
 - `stop_reconnection()` - Stops current reconnection attempt without disabling future reconnects
 - `disconnect()` - Cleanly disconnects and stops any reconnection attempts
 
+## HTTP Service Mode (`serve`)
+
+`phd2-guider serve` — also the default when the binary runs with no
+subcommand, which is how the packaged systemd unit invokes it — runs
+the **rp-managed guider service** described in `docs/services/rp.md`
+§ "Guider Service": a narrow HTTP API in front of the PHD2 JSON-RPC
+client, so `rp` speaks only HTTP and never PHD2's wire protocol. The shape deliberately mirrors
+[`docs/services/plate-solver.md`](plate-solver.md) — the other
+rp-managed service — including the structured error envelope, the
+`/health` probe, the `bound_addr=` stdout line for test harnesses, and
+the OS-process-supervisor recovery posture.
+
+Default port: **11130** (matches the `guider.url` placeholder in
+`rp.md` § "Configuration").
+
+### What serve mode does and does not do
+
+- It **connects to an already-running PHD2** (`phd2.host`/`phd2.port`)
+  using the client's auto-reconnect. A failed connect at startup is
+  **not fatal**: the service binds and serves anyway, reports `503` on
+  `/health`, fails guiding requests with `phd2_unreachable`, and keeps
+  retrying in the background. PHD2 starting later (or restarting
+  mid-night) needs no service restart.
+- It does **not** spawn or supervise the PHD2 process in v1.
+  `Phd2Config.auto_start` and the `Phd2ProcessManager` remain
+  library/CLI functionality; under `serve` the operator (or their OS
+  supervisor) owns the PHD2 process. Process adoption is future work.
+- It is **stateless across restarts** in the way that matters:
+  guiding runs *in PHD2*, so a service restart never interrupts an
+  active guide loop. The only state lost is the rolling RMS window,
+  which refills within a few guide exposures. Restart is always cheap
+  — the same property that makes the plate-solver's supervision
+  posture safe.
+- Graceful shutdown does **not** stop guiding. Stopping the guide loop
+  is an explicit `POST /api/v1/guiding/stop` (issued by `rp` — e.g.
+  its safety path), never a side effect of service lifecycle.
+
+### Units
+
+All pixel quantities carry the `_px` suffix on the wire
+(`rms_ra_px`, `amount_px`). Settle thresholds and dither offsets are
+**guide-camera pixels** — PHD2's native unit — not arcseconds:
+converting arcseconds would require the guide camera's pixel scale,
+which PHD2 only knows after calibration, and a settle threshold must
+be expressible before the first calibration of the night.
+
+### HTTP API
+
+All request/response bodies are JSON. Durations are humantime strings
+(`"10s"`); the service converts to PHD2's integer seconds with ceil
+rounding (see § Configuration).
+
+#### `POST /api/v1/guiding/start`
+
+Start the guide loop and **block until PHD2 reports the star settled**.
+
+Request (all fields optional):
+
+```json
+{
+  "recalibrate": false,
+  "settle": { "pixels": 1.5, "time": "10s", "timeout": "60s" }
+}
+```
+
+`settle` defaults to the config `settling` block. `recalibrate`
+defaults to `false` (PHD2 reuses its stored calibration and
+calibrates on its own if it has none).
+
+Behavior:
+
+1. Subscribe to the PHD2 event stream **before** issuing the `guide`
+   RPC, so a fast `SettleDone` cannot be missed.
+2. Reset the rolling RMS window, then send `guide` with the settle
+   parameters.
+3. Wait for `SettleDone`, bounded by a wall-clock backstop of
+   `settle.timeout + 10 s` (PHD2 enforces `settle.timeout` itself and
+   reports expiry via `SettleDone{status≠0}`; the backstop only
+   catches a wedged or disconnected PHD2).
+4. `SettleDone{status: 0}` → `200` with the current RMS snapshot.
+   `SettleDone{status ≠ 0}` → `guide_failed` carrying PHD2's error
+   text. Backstop expiry → `settle_timeout`.
+
+Calling it while already guiding is valid: PHD2 re-runs the settle
+check and the service returns the fresh RMS snapshot.
+
+Success response (also the shape `dither` returns):
+
+```json
+{
+  "state": "guiding",
+  "rms_ra_px": 0.3,
+  "rms_dec_px": 0.4,
+  "total_rms_px": 0.5,
+  "sample_count": 12
+}
+```
+
+RMS fields are `null` while `sample_count` is 0.
+
+#### `POST /api/v1/guiding/stop`
+
+Stop capture and **block until PHD2 confirms it stopped**. Sends
+`stop_capture`, then polls `get_app_state` every 250 ms until it
+reports `Stopped`, bounded by the config `stop_timeout` (default
+`"10s"`; expiry → `stop_timeout` error). Idempotent — an
+already-stopped PHD2 returns success immediately.
+
+Response: `{ "state": "stopped" }`.
+
+#### `POST /api/v1/guiding/pause` / `POST /api/v1/guiding/resume`
+
+Forward to PHD2's `set_paused`. `pause` accepts
+`{ "full": false }` (default `false`: keep looping exposures, just
+stop sending corrections — the right mode around a camera readout).
+Both return `{ "state": "paused" | "resumed" }`. Neither blocks on
+settling; resuming does not re-settle.
+
+#### `POST /api/v1/dither`
+
+Shift the lock position and **block until settled** (same wait, same
+backstop, and same success shape as `guiding/start`).
+
+```json
+{
+  "amount_px": 5.0,
+  "ra_only": false,
+  "settle": { "pixels": 1.5, "time": "10s", "timeout": "60s" }
+}
+```
+
+`amount_px` is required and must be `> 0`. The service first checks
+PHD2's application state and rejects the request with `not_guiding`
+when the state is not `Guiding` — deterministic, instead of parsing
+whatever error text PHD2 would produce.
+
+#### `GET /api/v1/guiding/stats`
+
+Read-only snapshot; never blocks on settling and bypasses the
+mutating-request queue.
+
+```json
+{
+  "app_state": "Guiding",
+  "guiding": true,
+  "rms_ra_px": 0.3,
+  "rms_dec_px": 0.4,
+  "total_rms_px": 0.5,
+  "snr": 25.1,
+  "star_mass": 5340.0,
+  "sample_count": 12
+}
+```
+
+`app_state` is a fresh `get_app_state` RPC (`guiding` is derived from
+it). `snr`/`star_mass` mirror the most recent `GuideStep` event
+exactly — `null` when the latest step omitted the measurement, so the
+snapshot never reports stale telemetry. RMS comes from the rolling
+window; all nullable fields are `null` when no samples exist.
+
+#### `GET /health`
+
+`200 {"status": "ok"}` while the TCP connection to PHD2 is
+established; `503` otherwise. Cheap (no RPC round-trip — it reads the
+client's connection state), so external tooling may probe at high
+frequency. Auto-reconnect keeps working regardless of probes.
+
+### RMS statistics
+
+The service accumulates PHD2 `GuideStep` events into a rolling window
+(last **50** steps), cleared each time `guiding/start` is issued.
+
+- `rms_ra_px` = √(mean(`RADistanceRaw`²)), `rms_dec_px` =
+  √(mean(`DECDistanceRaw`²)), `total_rms_px` =
+  √(`rms_ra_px`² + `rms_dec_px`²).
+- Steps missing a distance field are skipped for that axis.
+- The window survives a guiding stop (last-known stats remain
+  readable) and is lost on service restart.
+
+### Concurrency
+
+Mutating requests (`guiding/start`, `guiding/stop`, `pause`,
+`resume`, `dither`) serialize behind a single-flight mutex —
+overlapping requests **queue, not error** (plate-solver precedent).
+PHD2 is a single guiding head; concurrent settle waits are
+meaningless. `stats` and `health` do not take the mutex.
+
+### Error envelope
+
+Errors return the plate-solver's structured shape (`details` is
+omitted from the wire when there is nothing to attach):
+
+```json
+{ "error": "guide_failed", "message": "settle failed: Star lost" }
+```
+
+| Code | HTTP status | Trigger |
+|------|-------------|---------|
+| `invalid_request` | 400 | Schema-invalid body, non-positive or non-finite `amount_px` / `settle.pixels`, unparseable durations. Rejected before any RPC. |
+| `not_guiding` | 409 | `dither` while PHD2's application state is not `Guiding`. |
+| `guide_failed` | 422 | PHD2 reported `SettleDone{status ≠ 0}` (star lost, calibration failed, settle threshold not reached in time). PHD2's error text is in `message`. |
+| `settle_timeout` | 504 | Wall-clock backstop (`settle.timeout + 10 s`) expired without any `SettleDone`. |
+| `stop_timeout` | 504 | PHD2 did not reach `Stopped` within `stop_timeout`. |
+| `phd2_unreachable` | 502 | No PHD2 connection, or the RPC failed to send. |
+| `internal` | 500 | Unexpected service failure. |
+
+### Supervision and recovery
+
+Same three-domain posture as the plate-solver: the operator's OS
+process supervisor restarts `phd2-guider serve` (and PHD2, and `rp`)
+on exit; `/health` is exposed for operational tooling; `rp`'s HTTP
+client applies its own outer timeout as the backstop. Because guiding
+state lives in PHD2, a service restart costs at most one in-flight
+request.
+
+### Startup and port discovery
+
+`serve` binds `bind_address:port` and prints `bound_addr=<host>:<port>`
+to stdout (the `bdd-infra::ServiceHandle` discovery convention; `port: 0`
+auto-assigns). Config validation failures exit non-zero before binding.
+
 ## Implementation Phases
 
 ### Phase 1: Core Connection and JSON RPC Client (MVP) ✅
@@ -682,6 +932,14 @@ Auto-reconnect can be controlled at runtime:
 - [ ] Cross-platform testing (Linux, Windows, macOS)
 - [ ] Documentation and examples
 
+### Phase 8: HTTP Service Mode ✅
+- [x] `serve` subcommand with two-phase `ServerBuilder` (bind, then run)
+- [x] Guiding endpoints with settle blocking + rolling RMS stats
+- [x] Structured error envelope + `/health`
+- [x] `mock_phd2` event emission (settle modes, RPC log, app-state tracking)
+- [x] BDD suite for the HTTP contract (`http_api.feature`)
+- [ ] PHD2 process adoption under serve (spawn/supervise; `auto_start`) — deferred
+
 ## Dependencies
 
 ```toml
@@ -693,6 +951,7 @@ tracing = "0.1"
 thiserror = "2"
 base64 = "0.22"
 rp-fits = { workspace = true }
+axum = { workspace = true }        # HTTP service mode
 ```
 
 ## Testing Strategy
@@ -702,7 +961,11 @@ rp-fits = { workspace = true }
 ```
 services/phd2-guider/tests/
 ├── test_integration.rs        # End-to-end tests: library + CLI subprocess
-└── test_mock_server.rs        # Mock server protocol tests (TCP binding + client internals)
+├── test_mock_server.rs        # Mock server protocol tests (TCP binding + client internals)
+├── bdd.rs                     # BDD entry point (harness = false)
+├── bdd/                       # World + step definitions for the HTTP service contract
+└── features/
+    └── http_api.feature       # serve-mode contract (the API rp proxies to)
 # Unit and mock-based tests are in src/ as #[cfg(test)] modules
 ```
 
@@ -728,10 +991,37 @@ services/phd2-guider/tests/
 - Equipment connect/disconnect
 - Process start/stop
 
+### BDD (HTTP service contract)
+
+`tests/features/http_api.feature` is the canonical contract for the
+serve mode — `rp`'s guider client (`crates/rp-guider`) is written
+against it. Each scenario spawns `mock_phd2` (with per-scenario env)
+and then `phd2-guider serve` pointed at it via
+`bdd_infra::ServiceHandle`, mirroring how `plate-solver`'s BDD drives
+`mock_astap`.
+
+`mock_phd2` supports scenario control via environment variables:
+
+| Variable | Effect |
+|----------|--------|
+| `MOCK_PHD2_MODE` | Process/connection behavior: `normal` (default), `exit_immediately`, `no_listen`, `slow_start`, `shutdown_fails` |
+| `MOCK_PHD2_SETTLE_MODE` | What follows a `guide`/`dither` RPC: `settle_ok` (default — emit `Settling`, two fixed `GuideStep` events, then `SettleDone{status: 0}`), `settle_fail` (`SettleDone{status: 1, Error: "Mock star lost"}`), `never_settle` (no `SettleDone` — drives the `settle_timeout` backstop) |
+| `MOCK_PHD2_STOP_MODE` | `stops` (default — `stop_capture` moves the app state to `Stopped`) or `never_stops` (state stays `Guiding` — drives `stop_timeout`) |
+| `MOCK_PHD2_RPC_LOG` | Path to a JSON-lines file the mock appends each received `{method, params}` to — used for request-forwarding assertions (the `MOCK_ASTAP_ARGV_OUT` equivalent) |
+
+The mock tracks a per-connection application state
+(`Stopped` → `Guiding` on `guide`, → `Stopped` on `stop_capture`) so
+the service's stop poll and the `dither`-while-stopped rejection are
+observable. The fixed `GuideStep` distances (`RADistanceRaw` ±0.3,
+`DECDistanceRaw` ∓0.4) make the RMS deterministic:
+`rms_ra_px = 0.3`, `rms_dec_px = 0.4`, `total_rms_px = 0.5`.
+
 ### Manual Testing
 - Test with real guiding session
 - Verify dithering works with imaging software
 - Test auto-reconnect after PHD2 crash
+- Exercise serve mode against a real PHD2 (`phd2-guider serve` +
+  `curl` the endpoints above)
 
 ## Error Handling
 

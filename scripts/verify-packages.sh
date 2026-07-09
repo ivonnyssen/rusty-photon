@@ -7,8 +7,10 @@
 # exceptions: ConditionPathExists-gated services (sky-survey-camera,
 # plate-solver, calibrator-flats) verify enabled-but-inactive-and-not-failed;
 # serial drivers verify config + handshake-attempted instead of active (see
-# is_serial); the cameras never self-create a config (see
-# self_creates_config). Runs natively on arm64 (the rig) and x86_64 (dev box).
+# is_serial); the cameras and phd2-guider never self-create a config (see
+# self_creates_config); phd2-guider's /health legitimately answers 503 in
+# the container (no PHD2), so its probe accepts 200 or 503. Runs natively
+# on arm64 (the rig) and x86_64 (dev box).
 #
 # Rootless-container caveat (docs/plans/service-packaging.md): rootless
 # podman cannot apply the units' sandboxing across the User= switch
@@ -99,6 +101,7 @@ port_of() {
         qhy-camera) echo 11121 ;;
         zwo-camera) echo 11122 ;;
         pa-scops-oag) echo 11123 ;;
+        phd2-guider) echo 11130 ;;
         plate-solver) echo 11131 ;;
         calibrator-flats) echo 11170 ;;
         *) echo "" ;;
@@ -107,9 +110,10 @@ port_of() {
 
 probe_path() {
     # Alpaca services answer the management API; the plain-HTTP services
-    # (sentinel dashboard, rp orchestrator, ui-htmx BFF) expose /health.
+    # (sentinel dashboard, rp orchestrator, ui-htmx BFF, phd2-guider)
+    # expose /health.
     case "$1" in
-        sentinel|rp|ui-htmx) echo /health ;;
+        sentinel|rp|ui-htmx|phd2-guider) echo /health ;;
         *) echo /management/apiversions ;;
     esac
 }
@@ -134,21 +138,15 @@ is_serial() {
     esac
 }
 
-is_cli() {
-    case "$1" in
-        phd2-guider) return 0 ;;
-        *) return 1 ;;
-    esac
-}
-
 self_creates_config() {
     # The cameras deliberately do NOT materialize a config on start (no
     # materialize_identity — ASCOM UniqueIDs derive from camera serials;
     # they run on defaults until config.apply / an operator writes a file).
+    # phd2-guider likewise runs on built-in defaults and never writes one.
     # Gated services never start without one.
     if is_gated "$1"; then return 1; fi
     case "$1" in
-        qhy-camera|zwo-camera) return 1 ;;
+        qhy-camera|zwo-camera|phd2-guider) return 1 ;;
         *) return 0 ;;
     esac
 }
@@ -204,7 +202,6 @@ done
 # Hardening-reset drop-ins must exist BEFORE the debs install (postinst
 # starts the units immediately).
 for s in $SERVICES; do
-    is_cli "$s" && continue
     cx mkdir -p "/etc/systemd/system/rusty-photon-$s.service.d"
     podman exec -i "$CNAME" sh -c \
         "cat > /etc/systemd/system/rusty-photon-$s.service.d/99-container-verify.conf" <<'EOF'
@@ -252,13 +249,6 @@ for s in $SERVICES; do
     echo "== $s: install"
     cx sh -c "DEBIAN_FRONTEND=noninteractive apt-get install -y /dist/rusty-photon-${s}_*.deb" \
         > /dev/null || fail "$s" "apt-get install failed"
-
-    if is_cli "$s"; then
-        cx test -x "/usr/bin/rusty-photon-$s" || fail "$s" "binary missing"
-        cx "/usr/bin/rusty-photon-$s" --help > /dev/null || fail "$s" "--help failed"
-        echo "== $s: OK (CLI)"
-        continue
-    fi
 
     # Shared layout, created by the first daemon postinst and stable after.
     cx test -L /etc/rusty-photon || fail "$s" "/etc/rusty-photon symlink missing"
@@ -329,12 +319,30 @@ for s in $SERVICES; do
     port=$(port_of "$s")
     [ -n "$port" ] || fail "$s" "no port mapping — add $s to port_of()"
     path=$(probe_path "$s")
-    i=0
-    until cx curl -fsS -o /dev/null "http://127.0.0.1:$port$path" 2> /dev/null; do
-        i=$((i + 1))
-        [ "$i" -lt 30 ] || fail "$s" "no HTTP response on port $port ($path)"
-        sleep 1
-    done
+    if [ "$s" = phd2-guider ]; then
+        # No PHD2 in the container: /health legitimately answers 503
+        # (unit active, listener up, guider not connected). Verify the
+        # listener answers 200 or 503 instead of requiring success.
+        i=0
+        while :; do
+            code=$(cx curl -sS -o /dev/null -w '%{http_code}' \
+                "http://127.0.0.1:$port$path" 2> /dev/null || echo 000)
+            [ "$code" = 200 ] || [ "$code" = 503 ] || {
+                i=$((i + 1))
+                [ "$i" -lt 30 ] || fail "$s" "no HTTP response on port $port ($path; last code $code)"
+                sleep 1
+                continue
+            }
+            break
+        done
+    else
+        i=0
+        until cx curl -fsS -o /dev/null "http://127.0.0.1:$port$path" 2> /dev/null; do
+            i=$((i + 1))
+            [ "$i" -lt 30 ] || fail "$s" "no HTTP response on port $port ($path)"
+            sleep 1
+        done
+    fi
 
     if [ "$s" = zwo-camera ]; then
         # RUNPATH proof: the SONAME-less bundled blobs resolve from the
@@ -350,9 +358,6 @@ for s in $SERVICES; do
     echo "== $s: remove + purge"
     cx sh -c "DEBIAN_FRONTEND=noninteractive apt-get remove -y rusty-photon-$s" > /dev/null \
         || fail "$s" "apt-get remove failed"
-    if is_cli "$s"; then
-        continue
-    fi
     cfg="/var/lib/rusty-photon/.config/rusty-photon/$s.json"
     if self_creates_config "$s"; then
         cx test -f "$cfg" || fail "$s" "config did not survive remove (must only go on purge)"

@@ -71,11 +71,10 @@ done
 [ -f packaging/postinst.common ] || die "run from the repo root"
 
 # ---- service selection --------------------------------------------------
-# Packaged daemons are exactly the crates with a pkg/ dir (same discovery as
-# check-pkg-assets.sh); phd2-guider is the one CLI-only package (deb/rpm
-# metadata but no pkg/ dir).
+# Packaged services are exactly the crates with a pkg/ dir (same discovery
+# as check-pkg-assets.sh). All of them are daemons — phd2-guider gained its
+# unit with the HTTP service mode (issue #464).
 ALL_SERVICES=$(for d in services/*/pkg; do [ -d "$d" ] && basename "$(dirname "$d")"; done | tr '\n' ' ')
-ALL_SERVICES="$ALL_SERVICES phd2-guider"
 
 SERVICES=""
 if [ -n "$ONLY_SERVICES" ]; then

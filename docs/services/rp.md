@@ -1754,12 +1754,15 @@ skipped with a `debug!()` log. See
 ### Guider Service
 
 The guider service is an **rp-managed service** that wraps PHD2 and
-exposes an HTTP API to `rp`. The existing `phd2-guider` library provides
-the PHD2 JSON-RPC integration and will be reworked to run as an HTTP
-service. Like the plate solver, it is a separate process because PHD2
+exposes an HTTP API to `rp`. The `phd2-guider` binary provides the
+PHD2 JSON-RPC integration and runs as that HTTP service via its
+`serve` mode — contract, error envelope, and supervision posture in
+[`docs/services/phd2-guider.md`](phd2-guider.md) § "HTTP Service
+Mode". Like the plate solver, it is a separate process because PHD2
 itself is an external program with its own crash/restart behavior;
-Sentinel can supervise and restart it via the standard rp-managed-service
-flow.
+Sentinel can supervise and restart it via the standard
+rp-managed-service flow. (The rp-side integration — client crate and
+MCP tool surface — is tracked by issue #464.)
 
 PHD2 uses JSON-RPC over TCP, which is the one exception to the Alpaca-only
 rule — there is no Alpaca guider device type. The guider service encapsulates

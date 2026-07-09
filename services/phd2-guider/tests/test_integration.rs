@@ -2363,10 +2363,43 @@ fn test_invalid_subcommand() {
 
 #[test]
 #[cfg_attr(miri, ignore)]
-fn test_missing_subcommand() {
-    let output = run_cli_no_server(&[]);
+fn test_no_subcommand_starts_the_http_service() {
+    // No subcommand = serve (the packaged systemd unit invokes the bare
+    // binary). Point the service at port 0 via a config so parallel test
+    // runs never collide on the default 11130, wait for the bound_addr=
+    // discovery line, then terminate.
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let config_path = dir.path().join("config.json");
+    std::fs::write(&config_path, r#"{"port": 0}"#).expect("write config");
 
-    assert!(!output.status.success(), "Missing subcommand should fail");
+    let mut child = phd2_guider_command()
+        .arg("--config")
+        .arg(&config_path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn bare phd2-guider");
+
+    // Bounded wait: a serve that wedges before printing must fail the
+    // test within 10 s (and be reaped), not hang the runner on an
+    // endless stdout read.
+    let stdout = child.stdout.take().expect("stdout piped");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let bound = BufReader::new(stdout)
+            .lines()
+            .find_map(|line| line.ok().filter(|l| l.starts_with("bound_addr=")));
+        let _ = tx.send(bound);
+    });
+    let bound = rx.recv_timeout(Duration::from_secs(10)).ok().flatten();
+
+    let _ = child.kill();
+    let _ = child.wait();
+
+    assert!(
+        bound.is_some(),
+        "bare invocation must start the HTTP service and print bound_addr= within 10s"
+    );
 }
 
 // ----------------------------------------------------------------------------

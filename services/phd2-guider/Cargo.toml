@@ -21,7 +21,9 @@ clap = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
 base64 = { workspace = true }
+axum = { workspace = true }
 rp-fits = { workspace = true }
+rusty-photon-config = { workspace = true }
 rusty-photon-service-lifecycle = { workspace = true }
 async-trait = { workspace = true }
 
@@ -32,24 +34,53 @@ command = "cargo miri test -p phd2-guider"
 name = "mock_phd2"
 path = "src/bin/mock_phd2.rs"
 
+[[test]]
+name = "bdd"
+harness = false
+
 [package.metadata.deb]
 name = "rusty-photon-phd2-guider"
 maintainer = "Igor von Nyssen <igor@vonnyssen.com>"
-extended-description = "Command-line client for the PHD2 guiding application."
+extended-description = "Guider service wrapping the PHD2 guiding application (HTTP API for rp), plus a command-line PHD2 client."
 section = "science"
 priority = "optional"
-depends = "$auto"
+# $auto = dpkg-shlibdeps (needs a Debian build host); adduser is used by postinst.
+depends = "$auto, adduser"
 assets = [
     ["target/release/phd2-guider", "usr/bin/rusty-photon-phd2-guider", "755"],
 ]
+maintainer-scripts = "pkg/"
+
+[package.metadata.deb.systemd-units]
+unit-name = "rusty-photon-phd2-guider"
+unit-scripts = "pkg/"
+enable = true
+start = true
+restart-after-upgrade = true
 
 [package.metadata.generate-rpm]
 name = "rusty-photon-phd2-guider"
-summary = "Command-line client for the PHD2 guiding application"
+summary = "Guider service wrapping the PHD2 guiding application (HTTP API for rp)"
 license = "MIT OR Apache-2.0"
 assets = [
     { source = "target/release/phd2-guider", dest = "/usr/bin/rusty-photon-phd2-guider", mode = "755" },
+    { source = "pkg/rusty-photon-phd2-guider.service", dest = "/usr/lib/systemd/system/rusty-photon-phd2-guider.service", mode = "644" },
 ]
+post_install_script = """
+getent passwd rusty-photon > /dev/null || useradd -r -d /var/lib/rusty-photon -s /sbin/nologin rusty-photon
+install -d -m 0750 -o rusty-photon -g rusty-photon /var/lib/rusty-photon /var/lib/rusty-photon/.config /var/lib/rusty-photon/.config/rusty-photon
+[ -e /etc/rusty-photon ] || ln -s /var/lib/rusty-photon/.config/rusty-photon /etc/rusty-photon
+systemctl daemon-reload
+systemctl enable rusty-photon-phd2-guider.service
+"""
+pre_uninstall_script = """
+systemctl stop rusty-photon-phd2-guider.service || true
+systemctl disable rusty-photon-phd2-guider.service || true
+"""
+# rpm has no purge lifecycle: erase preserves the runtime-created config and
+# state (removal is a documented manual step), matching dpkg remove-vs-purge.
+post_uninstall_script = "systemctl daemon-reload"
+require-sh = true
 
 [dev-dependencies]
 tokio-test = { workspace = true }
@@ -57,6 +88,9 @@ base64 = { workspace = true }
 mockall = { workspace = true }
 tempfile = { workspace = true }
 cargo-husky = { workspace = true }
+cucumber = { workspace = true }
+bdd-infra = { workspace = true }
+reqwest = { workspace = true }
 
 [target.'cfg(unix)'.dev-dependencies]
 libc = { workspace = true }

@@ -1,0 +1,427 @@
+//! Guiding operations behind the HTTP API: settle-blocking guide and
+//! dither, the confirmed stop, and the rolling RMS window.
+//!
+//! Behavior contract: `docs/services/phd2-guider.md` § "HTTP Service
+//! Mode". The mutating operations serialize behind a single-flight
+//! mutex (overlapping requests queue, not error); the read-only
+//! snapshot paths bypass it.
+
+use std::collections::VecDeque;
+use std::sync::Arc;
+use std::time::Duration;
+
+use tokio::sync::broadcast;
+use tracing::{debug, info, warn};
+
+use crate::client::Phd2Client;
+use crate::config::SettleParams;
+use crate::events::{AppState, Phd2Event};
+
+use super::error::ServiceError;
+
+/// Rolling RMS window size, in guide steps.
+const RMS_WINDOW: usize = 50;
+
+/// Wall-clock grace added to the request's settle timeout for the
+/// backstop. PHD2 enforces the settle timeout itself and reports
+/// expiry via `SettleDone{status≠0}`; the backstop only catches a
+/// wedged or disconnected PHD2.
+const SETTLE_GRACE: Duration = Duration::from_secs(10);
+
+/// Poll cadence for the stop confirmation loop.
+const STOP_POLL_INTERVAL: Duration = Duration::from_millis(250);
+
+/// One retained guide step: `(RADistanceRaw, DECDistanceRaw)`.
+type StepSample = (Option<f64>, Option<f64>);
+
+#[derive(Debug, Default)]
+struct StatsWindow {
+    steps: VecDeque<StepSample>,
+    last_snr: Option<f64>,
+    last_star_mass: Option<f64>,
+}
+
+impl StatsWindow {
+    fn push(&mut self, ra: Option<f64>, dec: Option<f64>, snr: Option<f64>, mass: Option<f64>) {
+        if self.steps.len() == RMS_WINDOW {
+            self.steps.pop_front();
+        }
+        self.steps.push_back((ra, dec));
+        // Mirror the most recent guide step exactly — a step without a
+        // measurement clears the field rather than leaving stale
+        // telemetry in the snapshot.
+        self.last_snr = snr;
+        self.last_star_mass = mass;
+    }
+
+    fn snapshot(&self) -> StatsSnapshot {
+        // Single pass over the (bounded) window; no per-call allocation.
+        let (mut ra_sum_sq, mut ra_n, mut dec_sum_sq, mut dec_n) = (0.0f64, 0u32, 0.0f64, 0u32);
+        for (ra, dec) in &self.steps {
+            if let Some(v) = ra {
+                ra_sum_sq += v * v;
+                ra_n += 1;
+            }
+            if let Some(v) = dec {
+                dec_sum_sq += v * v;
+                dec_n += 1;
+            }
+        }
+        let rms = |sum_sq: f64, n: u32| (n > 0).then(|| (sum_sq / f64::from(n)).sqrt());
+        let rms_ra_px = rms(ra_sum_sq, ra_n);
+        let rms_dec_px = rms(dec_sum_sq, dec_n);
+        let total_rms_px = match (rms_ra_px, rms_dec_px) {
+            (Some(ra), Some(dec)) => Some((ra * ra + dec * dec).sqrt()),
+            _ => None,
+        };
+        StatsSnapshot {
+            rms_ra_px,
+            rms_dec_px,
+            total_rms_px,
+            snr: self.last_snr,
+            star_mass: self.last_star_mass,
+            sample_count: self.steps.len() as u32,
+        }
+    }
+}
+
+/// Point-in-time view of the rolling window, embedded in guide,
+/// dither, and stats responses.
+#[derive(Debug, Clone, Copy)]
+pub struct StatsSnapshot {
+    pub rms_ra_px: Option<f64>,
+    pub rms_dec_px: Option<f64>,
+    pub total_rms_px: Option<f64>,
+    pub snr: Option<f64>,
+    pub star_mass: Option<f64>,
+    pub sample_count: u32,
+}
+
+/// Stats endpoint payload: the window snapshot plus PHD2's current
+/// application state.
+#[derive(Debug)]
+pub struct GuidingStats {
+    pub app_state: AppState,
+    pub snapshot: StatsSnapshot,
+}
+
+pub struct GuiderOps {
+    client: Arc<Phd2Client>,
+    /// Single-flight lock for mutating operations.
+    op_lock: tokio::sync::Mutex<()>,
+    stats: std::sync::Mutex<StatsWindow>,
+    default_settle: SettleParams,
+    stop_timeout: Duration,
+}
+
+impl GuiderOps {
+    pub fn new(
+        client: Arc<Phd2Client>,
+        default_settle: SettleParams,
+        stop_timeout: Duration,
+    ) -> Self {
+        Self {
+            client,
+            op_lock: tokio::sync::Mutex::new(()),
+            stats: std::sync::Mutex::new(StatsWindow::default()),
+            default_settle,
+            stop_timeout,
+        }
+    }
+
+    /// Merge a partial per-request settle override onto the config
+    /// defaults, field by field.
+    pub fn resolve_settle(
+        &self,
+        pixels: Option<f64>,
+        time: Option<Duration>,
+        timeout: Option<Duration>,
+    ) -> SettleParams {
+        SettleParams {
+            pixels: pixels.unwrap_or(self.default_settle.pixels),
+            time: time.unwrap_or(self.default_settle.time),
+            timeout: timeout.unwrap_or(self.default_settle.timeout),
+        }
+    }
+
+    /// Feed the rolling window from the client's event stream. Runs
+    /// until the event channel closes (client dropped).
+    pub fn spawn_event_pump(self: &Arc<Self>) {
+        let ops = Arc::clone(self);
+        tokio::spawn(async move {
+            let mut rx = ops.client.subscribe();
+            loop {
+                match rx.recv().await {
+                    Ok(Phd2Event::GuideStep(step)) => {
+                        let mut window = ops.stats.lock().unwrap_or_else(|e| e.into_inner());
+                        window.push(
+                            step.ra_distance_raw,
+                            step.dec_distance_raw,
+                            step.snr,
+                            step.star_mass,
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        debug!("guide event pump lagged, skipped {n} events");
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+    }
+
+    /// Keep trying to establish the initial PHD2 connection. Once
+    /// established, the client's own auto-reconnect owns recovery.
+    pub fn spawn_connect_retry(self: &Arc<Self>, interval: Duration) {
+        let ops = Arc::clone(self);
+        tokio::spawn(async move {
+            loop {
+                match ops.client.connect().await {
+                    Ok(()) => {
+                        info!("connected to PHD2");
+                        break;
+                    }
+                    Err(e) => {
+                        debug!("PHD2 not reachable yet: {e}; retrying in {interval:?}");
+                        tokio::time::sleep(interval).await;
+                    }
+                }
+            }
+        });
+    }
+
+    pub async fn is_connected(&self) -> bool {
+        self.client.is_connected().await
+    }
+
+    /// Start guiding and block until PHD2 reports the star settled.
+    pub async fn start_guiding(
+        &self,
+        settle: SettleParams,
+        recalibrate: bool,
+    ) -> Result<StatsSnapshot, ServiceError> {
+        let _op = self.op_lock.lock().await;
+        // Subscribe before issuing the RPC so a fast SettleDone
+        // cannot be missed.
+        let rx = self.client.subscribe();
+        {
+            let mut window = self.stats.lock().unwrap_or_else(|e| e.into_inner());
+            *window = StatsWindow::default();
+        }
+        debug!(
+            pixels = settle.pixels,
+            time = ?settle.time,
+            timeout = ?settle.timeout,
+            recalibrate,
+            "starting guiding"
+        );
+        self.client
+            .start_guiding(&settle, recalibrate, None)
+            .await
+            .map_err(ServiceError::from)?;
+        self.wait_for_settle(rx, &settle).await?;
+        Ok(self.stats_snapshot())
+    }
+
+    /// Dither and block until PHD2 reports the star settled. Rejected
+    /// with `not_guiding` unless PHD2's application state is Guiding.
+    pub async fn dither(
+        &self,
+        amount_px: f64,
+        ra_only: bool,
+        settle: SettleParams,
+    ) -> Result<StatsSnapshot, ServiceError> {
+        let _op = self.op_lock.lock().await;
+        let state = self
+            .client
+            .get_app_state()
+            .await
+            .map_err(ServiceError::from)?;
+        if state != AppState::Guiding {
+            return Err(ServiceError::NotGuiding(state.to_string()));
+        }
+        let rx = self.client.subscribe();
+        debug!(amount_px, ra_only, "dithering");
+        self.client
+            .dither(amount_px, ra_only, &settle)
+            .await
+            .map_err(ServiceError::from)?;
+        self.wait_for_settle(rx, &settle).await?;
+        Ok(self.stats_snapshot())
+    }
+
+    /// Stop capture and block until PHD2 confirms the Stopped state.
+    /// Idempotent: an already-stopped PHD2 succeeds immediately.
+    pub async fn stop(&self) -> Result<(), ServiceError> {
+        let _op = self.op_lock.lock().await;
+        let state = self
+            .client
+            .get_app_state()
+            .await
+            .map_err(ServiceError::from)?;
+        if state == AppState::Stopped {
+            debug!("stop requested while already stopped");
+            return Ok(());
+        }
+        self.client
+            .stop_capture()
+            .await
+            .map_err(ServiceError::from)?;
+        let deadline = tokio::time::Instant::now() + self.stop_timeout;
+        loop {
+            tokio::time::sleep(STOP_POLL_INTERVAL).await;
+            let state = self
+                .client
+                .get_app_state()
+                .await
+                .map_err(ServiceError::from)?;
+            if state == AppState::Stopped {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                warn!("PHD2 did not reach Stopped within {:?}", self.stop_timeout);
+                return Err(ServiceError::StopTimeout(
+                    humantime::format_duration(self.stop_timeout).to_string(),
+                ));
+            }
+        }
+    }
+
+    pub async fn pause(&self, full: bool) -> Result<(), ServiceError> {
+        let _op = self.op_lock.lock().await;
+        self.client.pause(full).await.map_err(ServiceError::from)
+    }
+
+    pub async fn resume(&self) -> Result<(), ServiceError> {
+        let _op = self.op_lock.lock().await;
+        self.client.resume().await.map_err(ServiceError::from)
+    }
+
+    pub async fn stats(&self) -> Result<GuidingStats, ServiceError> {
+        let app_state = self
+            .client
+            .get_app_state()
+            .await
+            .map_err(ServiceError::from)?;
+        Ok(GuidingStats {
+            app_state,
+            snapshot: self.stats_snapshot(),
+        })
+    }
+
+    fn stats_snapshot(&self) -> StatsSnapshot {
+        self.stats
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .snapshot()
+    }
+
+    async fn wait_for_settle(
+        &self,
+        mut rx: broadcast::Receiver<Phd2Event>,
+        settle: &SettleParams,
+    ) -> Result<(), ServiceError> {
+        let backstop = settle.timeout + SETTLE_GRACE;
+        let deadline = tokio::time::Instant::now() + backstop;
+        loop {
+            match tokio::time::timeout_at(deadline, rx.recv()).await {
+                Err(_) => {
+                    warn!("no SettleDone within the {backstop:?} backstop");
+                    return Err(ServiceError::SettleTimeout(
+                        humantime::format_duration(backstop).to_string(),
+                    ));
+                }
+                Ok(Ok(Phd2Event::SettleDone { status, error })) => {
+                    if status == 0 {
+                        return Ok(());
+                    }
+                    return Err(ServiceError::GuideFailed(
+                        error.unwrap_or_else(|| format!("SettleDone status {status}")),
+                    ));
+                }
+                Ok(Ok(_)) => continue,
+                Ok(Err(broadcast::error::RecvError::Lagged(n))) => {
+                    debug!("settle wait lagged, skipped {n} events");
+                    continue;
+                }
+                Ok(Err(broadcast::error::RecvError::Closed)) => {
+                    return Err(ServiceError::Phd2Unreachable(
+                        "PHD2 event stream closed".to_string(),
+                    ));
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+mod tests {
+    use super::*;
+
+    fn approx(a: f64, b: f64) {
+        assert!((a - b).abs() < 1e-9, "{a} !~ {b}");
+    }
+
+    #[test]
+    fn the_rms_window_computes_per_axis_and_total_rms() {
+        let mut window = StatsWindow::default();
+        window.push(Some(0.3), Some(-0.4), Some(25.1), Some(5340.0));
+        window.push(Some(-0.3), Some(0.4), Some(26.0), None);
+        let snap = window.snapshot();
+        approx(snap.rms_ra_px.unwrap(), 0.3);
+        approx(snap.rms_dec_px.unwrap(), 0.4);
+        approx(snap.total_rms_px.unwrap(), 0.5);
+        assert_eq!(snap.sample_count, 2);
+        approx(snap.snr.unwrap(), 26.0);
+        // The latest step omitted StarMass: the snapshot mirrors the
+        // most recent step exactly rather than holding a stale value.
+        assert_eq!(snap.star_mass, None);
+    }
+
+    #[test]
+    fn an_empty_window_reports_nulls_and_zero_samples() {
+        let snap = StatsWindow::default().snapshot();
+        assert_eq!(snap.rms_ra_px, None);
+        assert_eq!(snap.rms_dec_px, None);
+        assert_eq!(snap.total_rms_px, None);
+        assert_eq!(snap.snr, None);
+        assert_eq!(snap.sample_count, 0);
+    }
+
+    #[test]
+    fn steps_missing_a_distance_are_skipped_for_that_axis_only() {
+        let mut window = StatsWindow::default();
+        window.push(Some(0.3), None, None, None);
+        window.push(Some(-0.3), Some(0.4), None, None);
+        let snap = window.snapshot();
+        approx(snap.rms_ra_px.unwrap(), 0.3);
+        approx(snap.rms_dec_px.unwrap(), 0.4);
+        assert_eq!(snap.sample_count, 2);
+    }
+
+    #[test]
+    fn the_window_is_capped_at_fifty_steps() {
+        let mut window = StatsWindow::default();
+        // 50 old steps at 1.0, then one new step at 0.0 evicting one.
+        for _ in 0..RMS_WINDOW {
+            window.push(Some(1.0), Some(1.0), None, None);
+        }
+        window.push(Some(0.0), Some(0.0), None, None);
+        let snap = window.snapshot();
+        assert_eq!(snap.sample_count, RMS_WINDOW as u32);
+        approx(snap.rms_ra_px.unwrap(), (49.0f64 / 50.0).sqrt());
+    }
+
+    #[test]
+    fn settle_overrides_merge_field_by_field_onto_the_defaults() {
+        let client = Arc::new(Phd2Client::new(crate::config::Phd2Config::default()));
+        let ops = GuiderOps::new(client, SettleParams::default(), Duration::from_secs(10));
+        let merged = ops.resolve_settle(Some(2.0), None, Some(Duration::from_secs(30)));
+        approx(merged.pixels, 2.0);
+        assert_eq!(merged.time, Duration::from_secs(10));
+        assert_eq!(merged.timeout, Duration::from_secs(30));
+    }
+}

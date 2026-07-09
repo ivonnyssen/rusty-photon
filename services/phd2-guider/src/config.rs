@@ -1,19 +1,58 @@
 //! Configuration types for the PHD2 guider service
 
 use serde::{Deserialize, Serialize};
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// PHD2 service configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
+    /// HTTP listen address (`serve` mode only; the CLI ignores it).
+    /// Typed as `IpAddr` so a malformed address fails at config load.
+    #[serde(default = "default_bind_address")]
+    pub bind_address: IpAddr,
+    /// HTTP port (`serve` mode only). `0` auto-assigns — used by tests.
+    #[serde(default = "default_service_port")]
+    pub port: u16,
+    /// How long `POST /api/v1/guiding/stop` waits for PHD2 to reach
+    /// the `Stopped` state (`serve` mode only).
+    #[serde(default = "default_stop_timeout", with = "humantime_serde")]
+    pub stop_timeout: Duration,
+    #[serde(default)]
     pub phd2: Phd2Config,
     #[serde(default)]
     pub settling: SettleParams,
 }
 
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            bind_address: default_bind_address(),
+            port: default_service_port(),
+            stop_timeout: default_stop_timeout(),
+            phd2: Phd2Config::default(),
+            settling: SettleParams::default(),
+        }
+    }
+}
+
+fn default_bind_address() -> IpAddr {
+    IpAddr::from([127, 0, 0, 1])
+}
+
+fn default_service_port() -> u16 {
+    11130
+}
+
+fn default_stop_timeout() -> Duration {
+    Duration::from_secs(10)
+}
+
 /// PHD2 connection settings
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Phd2Config {
     #[serde(default = "default_host")]
     pub host: String,
@@ -38,6 +77,7 @@ pub struct Phd2Config {
 
 /// Configuration for automatic reconnection
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ReconnectConfig {
     /// Enable automatic reconnection when connection is lost
     #[serde(default = "default_reconnect_enabled")]
@@ -109,6 +149,7 @@ fn default_command_timeout() -> Duration {
 /// `settle_secs_ceil`, because the PHD2 protocol requires integer values and
 /// ceil-rounding avoids truncating sub-second durations down to `0`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SettleParams {
     #[serde(default = "default_settle_pixels")]
     pub pixels: f64,
@@ -209,5 +250,46 @@ mod tests {
         assert_eq!(json["pixels"], 1.5);
         assert_eq!(json["time"], "15s");
         assert_eq!(json["timeout"], "2m");
+    }
+
+    #[test]
+    fn an_empty_config_loads_with_the_serve_mode_defaults() {
+        let config: Config = serde_json::from_str("{}").unwrap();
+        assert_eq!(config.bind_address, IpAddr::from([127, 0, 0, 1]));
+        assert_eq!(config.port, 11130);
+        assert_eq!(config.stop_timeout, Duration::from_secs(10));
+        assert_eq!(config.phd2.host, "localhost");
+        assert_eq!(config.settling.pixels, 0.5);
+    }
+
+    #[test]
+    fn the_serve_mode_fields_parse_from_json() {
+        let config: Config = serde_json::from_str(
+            r#"{
+                "bind_address": "0.0.0.0",
+                "port": 0,
+                "stop_timeout": "1s",
+                "phd2": { "host": "127.0.0.1", "port": 14400 }
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(config.bind_address, IpAddr::from([0, 0, 0, 0]));
+        assert_eq!(config.port, 0);
+        assert_eq!(config.stop_timeout, Duration::from_secs(1));
+        assert_eq!(config.phd2.port, 14400);
+    }
+
+    #[test]
+    fn a_malformed_bind_address_fails_at_config_load() {
+        let err = serde_json::from_str::<Config>(r#"{"bind_address": "not-an-ip"}"#).unwrap_err();
+        assert!(err.to_string().contains("invalid IP address"));
+    }
+
+    #[test]
+    fn a_misspelled_config_key_fails_at_config_load() {
+        let err = serde_json::from_str::<Config>(r#"{"stop_timout": "5s"}"#).unwrap_err();
+        assert!(err.to_string().contains("stop_timout"));
+        let err = serde_json::from_str::<Config>(r#"{"settling": {"pixles": 1.0}}"#).unwrap_err();
+        assert!(err.to_string().contains("pixles"));
     }
 }
