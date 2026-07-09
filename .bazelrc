@@ -186,6 +186,20 @@ build:ci --color=yes
 build:ci --show_timestamps
 build:ci --announce_rc
 build:ci --remote_download_outputs=toplevel  # build-without-the-bytes
+
+# DIAGNOSTIC (PR #474/#473): windows-latest's `bazel build //...` step
+# deterministically fails a couple of ppba-driver rust_test binaries with
+# rustc E0463 "can't find crate", varying WHICH target loses the race across
+# reruns, even with the sandbox bypassed (build:windows --spawn_strategy=local
+# above) and even with --noremote_accept_cached. The dumped .params files show
+# correct --extern flags, so it isn't a deps/lockfile bug. Remaining
+# hypothesis: with --remote_download_outputs=toplevel above, intermediate
+# .rlib artifacts aren't downloaded upfront -- they're lazily fetched from the
+# remote CAS only when a local action needs them as input. If that per-action
+# JIT fetch is unreliable on Windows, a local compile action could start with
+# an incompletely-materialized dependency, exactly matching what's observed.
+# Force full downloads on Windows to test/rule this out.
+build:windows --remote_download_outputs=all
 # `--jobs` and `--local_resources=cpu=N` are separate knobs: `--jobs` caps how
 # many actions may be outstanding at once, the CPU resource pool (left on
 # auto-detect, i.e. the runner's real core count) caps how many can actively
