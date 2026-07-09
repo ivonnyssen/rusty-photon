@@ -65,6 +65,14 @@ impl ServerBuilder {
             config.settling.clone(),
             config.stop_timeout,
         ));
+
+        // Bind before spawning any background task: a bind failure a
+        // caller chooses to handle must not leak an event pump or a
+        // PHD2 connect-retry loop.
+        let bind_addr = SocketAddr::new(config.bind_address, config.port);
+        let listener = TcpListener::bind(bind_addr).await?;
+        let local_addr = listener.local_addr()?;
+
         ops.spawn_event_pump();
         // A failed initial connect is not fatal: PHD2 may start later.
         // The retry task establishes the first connection; the
@@ -72,10 +80,6 @@ impl ServerBuilder {
         ops.spawn_connect_retry(config.phd2.reconnect.interval);
 
         let router = api::build_router(ops);
-
-        let bind_addr = SocketAddr::new(config.bind_address, config.port);
-        let listener = TcpListener::bind(bind_addr).await?;
-        let local_addr = listener.local_addr()?;
 
         Ok(BoundServer {
             listener,
