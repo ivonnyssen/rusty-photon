@@ -68,6 +68,30 @@ jobs:
           Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name 'LongPathsEnabled' -Value 1
           git config --system core.longpaths true
 
+      # DIAGNOSTIC (PR #474/#473): windows-latest's `bazel build //...`
+      # deterministically fails a couple of ppba-driver rust_test binaries
+      # (its two targets with by far the most --extern deps) with rustc
+      # E0463 "can't find crate", varying WHICH crate/target loses the race
+      # across reruns. Ruled out so far: lockfile/deps-graph content (dumped
+      # .params show correct --extern flags), remote-cache read corruption
+      # (--noremote_accept_cached didn't help), sandboxed input
+      # materialization (--spawn_strategy=local didn't help), lazy CAS
+      # fetch (--remote_download_outputs=all didn't help), and Bazel-level
+      # action concurrency (--jobs=8 didn't help). Testing whether Windows
+      # Defender's real-time scan is transiently locking newly-written
+      # .rlib files out from under a near-simultaneous rustc read -- a
+      # well-documented class of GitHub Actions Windows flakiness that no
+      # Bazel-side flag can fix, since it's an OS-level file lock.
+      - name: Exclude workspace from Windows Defender (diagnostic)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Add-MpPreference -ExclusionPath "${{ github.workspace }}"
+          Add-MpPreference -ExclusionPath "C:\b"
+          Add-MpPreference -ExclusionProcess "bazel.exe"
+          Add-MpPreference -ExclusionProcess "rustc.exe"
+          Add-MpPreference -ExclusionProcess "process_wrapper.exe"
+
       # Using --output_base=C:/b eliminates the workspace-hash
       # subdirectory and saves ~50 characters vs the default
       # (rules_rust #1120). .bazelrc already imports user.bazelrc via
