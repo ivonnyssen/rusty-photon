@@ -131,6 +131,14 @@ jobs:
           else
             REMOTE_FLAGS+=(--remote_upload_local_results=false)
           fi
+          # TEMP DIAGNOSTIC (see PR #474): windows-latest deterministically
+          # fails a handful of rust_test targets with E0463 "can't find
+          # crate", reproducing identically (same remote-cache-hit count)
+          # across reruns. Bypassing remote-cache READS isolates whether a
+          # corrupted/stale cache entry is being replayed.
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            REMOTE_FLAGS+=(--noremote_accept_cached)
+          fi
           bazel build --config=ci "${REMOTE_FLAGS[@]}" //...
 
       - name: bazel test (fast)
