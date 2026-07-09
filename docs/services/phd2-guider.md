@@ -853,7 +853,7 @@ omitted from the wire when there is nothing to attach):
 
 | Code | HTTP status | Trigger |
 |------|-------------|---------|
-| `invalid_request` | 400 | Schema-invalid body, `amount_px ≤ 0`, unparseable durations. Rejected before any RPC. |
+| `invalid_request` | 400 | Schema-invalid body, non-positive or non-finite `amount_px` / `settle.pixels`, unparseable durations. Rejected before any RPC. |
 | `not_guiding` | 409 | `dither` while PHD2's application state is not `Guiding`. |
 | `guide_failed` | 422 | PHD2 reported `SettleDone{status ≠ 0}` (star lost, calibration failed, settle threshold not reached in time). PHD2's error text is in `message`. |
 | `settle_timeout` | 504 | Wall-clock backstop (`settle.timeout + 10 s`) expired without any `SettleDone`. |

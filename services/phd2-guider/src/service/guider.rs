@@ -56,15 +56,21 @@ impl StatsWindow {
     }
 
     fn snapshot(&self) -> StatsSnapshot {
-        let rms_of = |values: Vec<f64>| -> Option<f64> {
-            if values.is_empty() {
-                return None;
+        // Single pass over the (bounded) window; no per-call allocation.
+        let (mut ra_sum_sq, mut ra_n, mut dec_sum_sq, mut dec_n) = (0.0f64, 0u32, 0.0f64, 0u32);
+        for (ra, dec) in &self.steps {
+            if let Some(v) = ra {
+                ra_sum_sq += v * v;
+                ra_n += 1;
             }
-            let mean_sq = values.iter().map(|v| v * v).sum::<f64>() / values.len() as f64;
-            Some(mean_sq.sqrt())
-        };
-        let rms_ra_px = rms_of(self.steps.iter().filter_map(|(ra, _)| *ra).collect());
-        let rms_dec_px = rms_of(self.steps.iter().filter_map(|(_, dec)| *dec).collect());
+            if let Some(v) = dec {
+                dec_sum_sq += v * v;
+                dec_n += 1;
+            }
+        }
+        let rms = |sum_sq: f64, n: u32| (n > 0).then(|| (sum_sq / f64::from(n)).sqrt());
+        let rms_ra_px = rms(ra_sum_sq, ra_n);
+        let rms_dec_px = rms(dec_sum_sq, dec_n);
         let total_rms_px = match (rms_ra_px, rms_dec_px) {
             (Some(ra), Some(dec)) => Some((ra * ra + dec * dec).sqrt()),
             _ => None,

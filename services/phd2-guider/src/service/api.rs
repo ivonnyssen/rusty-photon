@@ -109,14 +109,15 @@ struct StateResponse {
     state: &'static str,
 }
 
-/// Parse a request body whose fields are all optional: an empty body
-/// is `{}`; a malformed one is `invalid_request`. Explicit `Bytes`
-/// parsing (rather than the `Json` extractor) keeps the error inside
-/// the structured envelope and makes the empty body valid.
+/// Parse a request body whose fields are all optional: an empty (or
+/// whitespace-only) body is `{}`; a malformed one is
+/// `invalid_request`. Explicit `Bytes` parsing (rather than the `Json`
+/// extractor) keeps the error inside the structured envelope and makes
+/// the empty body valid.
 fn parse_optional_body<T: Default + serde::de::DeserializeOwned>(
     bytes: &axum::body::Bytes,
 ) -> Result<T, ServiceError> {
-    if bytes.is_empty() {
+    if bytes.iter().all(|b| b.is_ascii_whitespace()) {
         return Ok(T::default());
     }
     serde_json::from_slice(bytes)
@@ -130,9 +131,22 @@ fn parse_required_body<T: serde::de::DeserializeOwned>(
         .map_err(|e| ServiceError::InvalidRequest(format!("malformed body: {e}")))
 }
 
-fn resolve_settle(ops: &GuiderOps, settle: Option<SettleBody>) -> crate::config::SettleParams {
+/// Merge a per-request settle override onto the config defaults,
+/// rejecting a non-positive or non-finite threshold before anything
+/// reaches the PHD2 RPC layer (same bar as `amount_px`).
+fn resolve_settle(
+    ops: &GuiderOps,
+    settle: Option<SettleBody>,
+) -> Result<crate::config::SettleParams, ServiceError> {
     let settle = settle.unwrap_or_default();
-    ops.resolve_settle(settle.pixels, settle.time, settle.timeout)
+    if let Some(pixels) = settle.pixels {
+        if !pixels.is_finite() || pixels <= 0.0 {
+            return Err(ServiceError::InvalidRequest(format!(
+                "settle.pixels must be a positive number of pixels, got {pixels}"
+            )));
+        }
+    }
+    Ok(ops.resolve_settle(settle.pixels, settle.time, settle.timeout))
 }
 
 async fn start_guiding(
@@ -140,7 +154,7 @@ async fn start_guiding(
     bytes: axum::body::Bytes,
 ) -> Result<Json<SettledResponse>, ServiceError> {
     let body: StartBody = parse_optional_body(&bytes)?;
-    let settle = resolve_settle(&ops, body.settle);
+    let settle = resolve_settle(&ops, body.settle)?;
     let snapshot = ops.start_guiding(settle, body.recalibrate).await?;
     Ok(Json(SettledResponse::from_snapshot(snapshot)))
 }
@@ -179,7 +193,7 @@ async fn dither(
             body.amount_px
         )));
     }
-    let settle = resolve_settle(&ops, body.settle);
+    let settle = resolve_settle(&ops, body.settle)?;
     let snapshot = ops.dither(body.amount_px, body.ra_only, settle).await?;
     Ok(Json(SettledResponse::from_snapshot(snapshot)))
 }
@@ -215,11 +229,43 @@ async fn health(State(ops): State<Arc<GuiderOps>>) -> impl IntoResponse {
 mod tests {
     use super::*;
 
+    fn test_ops() -> GuiderOps {
+        GuiderOps::new(
+            Arc::new(crate::client::Phd2Client::new(
+                crate::config::Phd2Config::default(),
+            )),
+            crate::config::SettleParams::default(),
+            Duration::from_secs(10),
+        )
+    }
+
     #[test]
     fn a_start_body_defaults_to_no_recalibrate_and_no_settle_override() {
         let body: StartBody = serde_json::from_str("{}").unwrap();
         assert!(!body.recalibrate);
         assert!(body.settle.is_none());
+    }
+
+    #[test]
+    fn a_whitespace_only_body_parses_as_the_default() {
+        let bytes = axum::body::Bytes::from_static(b" \n\t ");
+        let body: StartBody = parse_optional_body(&bytes).unwrap();
+        assert!(!body.recalibrate);
+        assert!(body.settle.is_none());
+    }
+
+    #[test]
+    fn a_non_positive_settle_threshold_is_rejected_before_any_rpc() {
+        let ops = test_ops();
+        for pixels in [0.0, -1.5, f64::NAN, f64::INFINITY] {
+            let settle = Some(SettleBody {
+                pixels: Some(pixels),
+                time: None,
+                timeout: None,
+            });
+            let err = resolve_settle(&ops, settle).unwrap_err();
+            assert_eq!(err.code(), super::super::error::ErrorCode::InvalidRequest);
+        }
     }
 
     #[test]
