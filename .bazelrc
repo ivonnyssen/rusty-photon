@@ -261,6 +261,21 @@ test:ci --spawn_strategy=local
 # `bazel build`.
 build:windows --spawn_strategy=local
 
+# DIAGNOSTIC (PR #474/#473), round 3: neither the sandbox bypass above nor
+# forcing full remote downloads fixed the windows-latest E0463 failures --
+# same signature, still varies which of ppba-driver's two largest rust_test
+# targets (bdd, conformu_integration; by far the most --extern deps of any
+# targets in the repo) loses the race. The failure tracks dependency COUNT,
+# not any specific crate, which smells like a low-probability per-file race
+# that just compounds across a large deps list rather than a deterministic
+# bug against one crate. `build:ci --jobs=64` allows up to 64 actions
+# in flight at once -- input staging/file writes for that many concurrent
+# actions is plausibly enough contention to trigger Windows-specific
+# file-visibility flakiness (antivirus scanning, NTFS metadata lag) even
+# though actual CPU-bound compilation is separately capped by the
+# auto-detected core count. Cut concurrency hard on Windows to test.
+build:windows --jobs=8
+
 # Forward OMNISIM_PATH (the install-omnisim action's pinned OmniSim binary path,
 # consumed by bdd_infra::rp_harness::OmniSimHandle::start) into test sandboxes.
 # Deliberately on build:ci — applied to EVERY ci invocation (build, fast test,
