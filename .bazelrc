@@ -232,6 +232,21 @@ build:ci --remote_timeout=15
 # perturbs the remote cache.
 test:ci --spawn_strategy=local
 
+# Bypass the sandbox on Windows for the plain `bazel build` step too (not just
+# `test:ci` above). Root-caused via PR #474/#473: windows-latest's `bazel build
+# //...` step deterministically (but non-repeatably as to WHICH target) failed
+# a couple of ppba-driver rust_test binaries (bdd, conformu_integration) with
+# rustc E0463 "can't find crate" for several of their `--extern` deps — the
+# dumped .params files showed the `--extern` flags were correct and complete,
+# so this isn't a deps/lockfile bug; it's the referenced .rlib not being
+# reliably present in the sandboxed input tree at execution time on Windows
+# (sandboxed input materialization on Windows is symlink/copy-fallback based
+# and known-fragile — see rules_rust's own acknowledged weak Windows support).
+# `build:windows` (not `build:ci`) so it isn't gated to CI and stays scoped to
+# the one platform that showed the failure; Linux/macOS keep the sandbox on
+# `bazel build`.
+build:windows --spawn_strategy=local
+
 # Forward OMNISIM_PATH (the install-omnisim action's pinned OmniSim binary path,
 # consumed by bdd_infra::rp_harness::OmniSimHandle::start) into test sandboxes.
 # Deliberately on build:ci — applied to EVERY ci invocation (build, fast test,
