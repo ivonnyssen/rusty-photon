@@ -176,7 +176,10 @@ impl GuiderWorld {
             let client = reqwest::Client::new();
             let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
             loop {
-                if let Ok(response) = client.get(&url).send().await {
+                // Per-request timeout keeps a hung request from blowing
+                // past the loop's overall deadline.
+                let probe = client.get(&url).timeout(Duration::from_secs(2)).send();
+                if let Ok(response) = probe.await {
                     if response.status().as_u16() == 200 {
                         break;
                     }
