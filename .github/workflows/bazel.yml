@@ -155,6 +155,17 @@ jobs:
           else
             REMOTE_FLAGS+=(--remote_upload_local_results=false)
           fi
+          # DIAGNOSTIC (PR #474/#473): --keep_going surfaces every failing
+          # target in one run instead of stopping at the first, so we can see
+          # whether the windows-latest E0463 pattern (100% reproducible per
+          # target: conformu_integration always fails on exactly {bdd_infra,
+          # tokio, tracing_subscriber}; bdd always on exactly {ascom_alpaca,
+          # bdd_infra, cucumber, serde, tokio}) is unique to ppba-driver or
+          # hits other services with the same large-rust_test-target shape
+          # (e.g. qhy-focuser's conformu_integration).
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            REMOTE_FLAGS+=(--keep_going)
+          fi
           bazel build --config=ci "${REMOTE_FLAGS[@]}" //...
 
       # TEMP DIAGNOSTIC (see PR #474): windows-latest deterministically fails
