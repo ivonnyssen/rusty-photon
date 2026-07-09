@@ -5078,14 +5078,18 @@ fn assert_end_mirrors_start(
     );
     // The matching `*_started` envelope carries deadline fields only for
     // operations with a predictive deadline (slew §2.1, park + move_focuser
-    // §2.2/§2.3, exposure §2.4, centering §2.5); every other operation's
-    // start must still omit them. (Each converted operation's start is
-    // asserted present by its own test.)
+    // §2.2/§2.3, exposure §2.4, centering §2.5, and guide/dither when a
+    // settle timeout is resolved); every other operation's start must
+    // still omit them. (Each converted operation's start is asserted
+    // present by its own test, and guide/dither's no-timeout omission by
+    // `start_guiding_without_a_settle_timeout_omits_the_deadline`.)
     let has_predictive_deadline = start.event.starts_with("slew")
         || start.event.starts_with("park")
         || start.event.starts_with("move_focuser")
         || start.event.starts_with("exposure")
-        || start.event.starts_with("centering");
+        || start.event.starts_with("centering")
+        || start.event.starts_with("guide")
+        || start.event.starts_with("dither");
     if !has_predictive_deadline {
         assert!(
             start.predicted_duration_ms.is_none(),
@@ -5644,4 +5648,521 @@ async fn unpark_failure_emits_started_then_failed() {
         .unwrap()
         .contains("failed to unpark"));
     assert_end_mirrors_start(&started, &failed);
+}
+
+// ---------------------------------------------------------------------------
+// Guider tools (start_guiding / stop_guiding / dither / pause_guiding /
+// resume_guiding / get_guiding_stats)
+//
+// These exercise the MCP handler against `MockGuiderClient`: settle
+// merging (per-call > config default > omitted), the dither-amount
+// fallback, the per-code error mapping, and the guide/dither event
+// triples. End-to-end wire-format coverage lives in the BDD suite
+// (`guider.feature`) against `GuiderStub`.
+// ---------------------------------------------------------------------------
+
+use crate::config::GuiderDefaults;
+use crate::mcp::built_in::guider::{
+    DitherParams, GetGuidingStatsParams, PauseGuidingParams, ResumeGuidingParams,
+    StartGuidingParams, StopGuidingParams,
+};
+use rp_guider::{GuiderError, GuidingStats, MockGuiderClient, SettledOutcome};
+
+fn settled_outcome() -> SettledOutcome {
+    SettledOutcome {
+        state: "guiding".to_string(),
+        rms_ra_px: Some(0.3),
+        rms_dec_px: Some(0.4),
+        total_rms_px: Some(0.5),
+        sample_count: 12,
+    }
+}
+
+fn start_params_empty() -> StartGuidingParams {
+    StartGuidingParams {
+        recalibrate: None,
+        settle_pixels: None,
+        settle_time: None,
+        settle_timeout: None,
+    }
+}
+
+fn dither_params_empty() -> DitherParams {
+    DitherParams {
+        pixels: None,
+        ra_only: None,
+        settle_pixels: None,
+        settle_time: None,
+        settle_timeout: None,
+    }
+}
+
+/// Build a handler with a configured guider client. Pass
+/// `configure` to wire up mock expectations before the handler is
+/// built.
+fn handler_with_guider(
+    configure: impl FnOnce(&mut MockGuiderClient),
+    defaults: GuiderDefaults,
+) -> McpHandler {
+    let mut mock = MockGuiderClient::new();
+    configure(&mut mock);
+    let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(mock);
+    test_handler(empty_registry()).with_guider(Some(client), defaults)
+}
+
+#[tokio::test]
+async fn start_guiding_returns_the_settled_snapshot() {
+    let handler = handler_with_guider(
+        |mock| {
+            mock.expect_start_guiding()
+                .withf(|req| !req.recalibrate && req.settle.is_none())
+                .returning(|_| Ok(settled_outcome()));
+        },
+        GuiderDefaults::default(),
+    );
+    let result = handler
+        .start_guiding(Parameters(start_params_empty()))
+        .await
+        .unwrap();
+    let json = ok_text(result);
+    assert_eq!(json["state"], "guiding");
+    assert_eq!(json["rms_ra_px"], 0.3);
+    assert_eq!(json["rms_dec_px"], 0.4);
+    assert_eq!(json["total_rms_px"], 0.5);
+    assert_eq!(json["sample_count"], 12);
+}
+
+#[tokio::test]
+async fn start_guiding_forwards_config_settle_defaults() {
+    let defaults = GuiderDefaults {
+        settle_pixels: Some(0.8),
+        settle_time: Some(Duration::from_secs(8)),
+        settle_timeout: Some(Duration::from_secs(40)),
+        dither_pixels: None,
+    };
+    let handler = handler_with_guider(
+        |mock| {
+            mock.expect_start_guiding()
+                .withf(|req| {
+                    let settle = req.settle.as_ref().expect("settle expected");
+                    settle.pixels == Some(0.8)
+                        && settle.time == Some(Duration::from_secs(8))
+                        && settle.timeout == Some(Duration::from_secs(40))
+                })
+                .returning(|_| Ok(settled_outcome()));
+        },
+        defaults,
+    );
+    let result = handler
+        .start_guiding(Parameters(start_params_empty()))
+        .await
+        .unwrap();
+    assert!(!result.is_error.unwrap_or(false));
+}
+
+#[tokio::test]
+async fn start_guiding_per_call_settle_overrides_config_field_by_field() {
+    let defaults = GuiderDefaults {
+        settle_pixels: Some(0.8),
+        settle_time: Some(Duration::from_secs(8)),
+        settle_timeout: Some(Duration::from_secs(40)),
+        dither_pixels: None,
+    };
+    let handler = handler_with_guider(
+        |mock| {
+            mock.expect_start_guiding()
+                .withf(|req| {
+                    let settle = req.settle.as_ref().expect("settle expected");
+                    // pixels and timeout from the call; time from config.
+                    settle.pixels == Some(1.5)
+                        && settle.time == Some(Duration::from_secs(8))
+                        && settle.timeout == Some(Duration::from_secs(20))
+                })
+                .returning(|_| Ok(settled_outcome()));
+        },
+        defaults,
+    );
+    let result = handler
+        .start_guiding(Parameters(StartGuidingParams {
+            recalibrate: None,
+            settle_pixels: Some(1.5),
+            settle_time: None,
+            settle_timeout: Some(Duration::from_secs(20)),
+        }))
+        .await
+        .unwrap();
+    assert!(!result.is_error.unwrap_or(false));
+}
+
+#[tokio::test]
+async fn start_guiding_emits_started_and_settled_with_the_settle_deadline() {
+    let defaults = GuiderDefaults {
+        settle_pixels: None,
+        settle_time: Some(Duration::from_secs(8)),
+        settle_timeout: Some(Duration::from_secs(40)),
+        dither_pixels: None,
+    };
+    let handler = handler_with_guider(
+        |mock| {
+            mock.expect_start_guiding()
+                .returning(|_| Ok(settled_outcome()));
+        },
+        defaults,
+    );
+    let mut rx = handler.event_bus.subscribe();
+
+    let result = handler
+        .start_guiding(Parameters(start_params_empty()))
+        .await
+        .unwrap();
+    assert!(!result.is_error.unwrap_or(false));
+
+    let started = next_event(&mut rx).await;
+    let settled = next_event(&mut rx).await;
+    assert_no_more_events(&mut rx).await;
+
+    assert_eq!(started.event, "guide_started");
+    // predicted = settle_time; max = settle_timeout + the service's
+    // 10 s backstop grace.
+    assert_eq!(started.predicted_duration_ms, Some(8_000));
+    assert_eq!(started.max_duration_ms, Some(50_000));
+    assert_eq!(settled.event, "guide_settled");
+    assert_eq!(settled.payload["total_rms_px"], 0.5);
+    assert_eq!(settled.payload["sample_count"], 12);
+    assert_end_mirrors_start(&started, &settled);
+}
+
+#[tokio::test]
+async fn start_guiding_without_a_settle_timeout_omits_the_deadline() {
+    let handler = handler_with_guider(
+        |mock| {
+            mock.expect_start_guiding()
+                .returning(|_| Ok(settled_outcome()));
+        },
+        GuiderDefaults::default(),
+    );
+    let mut rx = handler.event_bus.subscribe();
+
+    handler
+        .start_guiding(Parameters(start_params_empty()))
+        .await
+        .unwrap();
+
+    let started = next_event(&mut rx).await;
+    assert_eq!(started.event, "guide_started");
+    assert!(started.predicted_duration_ms.is_none());
+    assert!(started.max_duration_ms.is_none());
+}
+
+#[tokio::test]
+async fn start_guiding_failure_maps_the_envelope_and_emits_guide_failed() {
+    let handler = handler_with_guider(
+        |mock| {
+            mock.expect_start_guiding().returning(|_| {
+                Err(GuiderError::Service {
+                    code: "guide_failed".to_string(),
+                    message: "no guide star".to_string(),
+                    details: serde_json::Value::Null,
+                })
+            });
+        },
+        GuiderDefaults::default(),
+    );
+    let mut rx = handler.event_bus.subscribe();
+
+    let result = handler
+        .start_guiding(Parameters(start_params_empty()))
+        .await;
+    assert_tool_error(result, "guide_failed: no guide star");
+
+    let started = next_event(&mut rx).await;
+    let failed = next_event(&mut rx).await;
+    assert_eq!(started.event, "guide_started");
+    assert_eq!(failed.event, "guide_failed");
+    assert!(failed.payload["error"]
+        .as_str()
+        .unwrap()
+        .contains("no guide star"));
+    assert_end_mirrors_start(&started, &failed);
+}
+
+#[tokio::test]
+async fn start_guiding_unreachable_service_maps_to_service_unreachable() {
+    let handler = handler_with_guider(
+        |mock| {
+            mock.expect_start_guiding().returning(|_| {
+                Err(GuiderError::ServiceUnreachable(
+                    "connection refused".to_string(),
+                ))
+            });
+        },
+        GuiderDefaults::default(),
+    );
+    let result = handler
+        .start_guiding(Parameters(start_params_empty()))
+        .await;
+    assert_tool_error(result, "service unreachable");
+}
+
+#[tokio::test]
+async fn dither_uses_the_pixels_parameter() {
+    let handler = handler_with_guider(
+        |mock| {
+            mock.expect_dither()
+                .withf(|req| req.amount_px == 5.0 && req.ra_only)
+                .returning(|_| Ok(settled_outcome()));
+        },
+        GuiderDefaults::default(),
+    );
+    let result = handler
+        .dither(Parameters(DitherParams {
+            pixels: Some(5.0),
+            ra_only: Some(true),
+            ..dither_params_empty()
+        }))
+        .await
+        .unwrap();
+    let json = ok_text(result);
+    assert_eq!(json["state"], "guiding");
+}
+
+#[tokio::test]
+async fn dither_falls_back_to_the_configured_dither_pixels() {
+    let defaults = GuiderDefaults {
+        dither_pixels: Some(3.5),
+        ..GuiderDefaults::default()
+    };
+    let handler = handler_with_guider(
+        |mock| {
+            mock.expect_dither()
+                .withf(|req| req.amount_px == 3.5 && !req.ra_only)
+                .returning(|_| Ok(settled_outcome()));
+        },
+        defaults,
+    );
+    let result = handler
+        .dither(Parameters(dither_params_empty()))
+        .await
+        .unwrap();
+    assert!(!result.is_error.unwrap_or(false));
+}
+
+#[tokio::test]
+async fn dither_with_no_amount_available_errors_without_an_rpc() {
+    // No expectation on the mock: reaching the client would panic.
+    let handler = handler_with_guider(|_| {}, GuiderDefaults::default());
+    let result = handler.dither(Parameters(dither_params_empty())).await;
+    assert_tool_error(result, "dither_pixels");
+}
+
+#[tokio::test]
+async fn dither_emits_started_and_settled() {
+    let handler = handler_with_guider(
+        |mock| {
+            mock.expect_dither().returning(|_| Ok(settled_outcome()));
+        },
+        GuiderDefaults::default(),
+    );
+    let mut rx = handler.event_bus.subscribe();
+
+    handler
+        .dither(Parameters(DitherParams {
+            pixels: Some(5.0),
+            ..dither_params_empty()
+        }))
+        .await
+        .unwrap();
+
+    let started = next_event(&mut rx).await;
+    let settled = next_event(&mut rx).await;
+    assert_no_more_events(&mut rx).await;
+
+    assert_eq!(started.event, "dither_started");
+    assert_eq!(started.payload["pixels"], 5.0);
+    assert_eq!(settled.event, "dither_settled");
+    assert_end_mirrors_start(&started, &settled);
+}
+
+#[tokio::test]
+async fn dither_failure_emits_dither_failed() {
+    let handler = handler_with_guider(
+        |mock| {
+            mock.expect_dither().returning(|_| {
+                Err(GuiderError::Service {
+                    code: "not_guiding".to_string(),
+                    message: "PHD2 is not guiding".to_string(),
+                    details: serde_json::Value::Null,
+                })
+            });
+        },
+        GuiderDefaults::default(),
+    );
+    let mut rx = handler.event_bus.subscribe();
+
+    let result = handler
+        .dither(Parameters(DitherParams {
+            pixels: Some(5.0),
+            ..dither_params_empty()
+        }))
+        .await;
+    assert_tool_error(result, "not_guiding");
+
+    let started = next_event(&mut rx).await;
+    let failed = next_event(&mut rx).await;
+    assert_eq!(started.event, "dither_started");
+    assert_eq!(failed.event, "dither_failed");
+}
+
+#[tokio::test]
+async fn stop_guiding_emits_guide_stopped_with_reason_requested() {
+    let handler = handler_with_guider(
+        |mock| {
+            mock.expect_stop_guiding().returning(|| Ok(()));
+        },
+        GuiderDefaults::default(),
+    );
+    let mut rx = handler.event_bus.subscribe();
+
+    let result = handler
+        .stop_guiding(Parameters(StopGuidingParams {}))
+        .await
+        .unwrap();
+    let json = ok_text(result);
+    assert_eq!(json["state"], "stopped");
+
+    let stopped = next_event(&mut rx).await;
+    assert_no_more_events(&mut rx).await;
+    assert_eq!(stopped.event, "guide_stopped");
+    assert_eq!(stopped.payload["reason"], "requested");
+    assert!(stopped.operation_id.is_none(), "point event, no operation");
+}
+
+#[tokio::test]
+async fn stop_guiding_failure_errors_without_the_stopped_event() {
+    let handler = handler_with_guider(
+        |mock| {
+            mock.expect_stop_guiding().returning(|| {
+                Err(GuiderError::Service {
+                    code: "stop_timeout".to_string(),
+                    message: "PHD2 did not confirm the stop".to_string(),
+                    details: serde_json::Value::Null,
+                })
+            });
+        },
+        GuiderDefaults::default(),
+    );
+    let mut rx = handler.event_bus.subscribe();
+
+    let result = handler.stop_guiding(Parameters(StopGuidingParams {})).await;
+    assert_tool_error(result, "stop_timeout");
+    assert_no_more_events(&mut rx).await;
+}
+
+#[tokio::test]
+async fn pause_guiding_forwards_full() {
+    let handler = handler_with_guider(
+        |mock| {
+            mock.expect_pause_guiding()
+                .withf(|&full| full)
+                .returning(|_| Ok(()));
+        },
+        GuiderDefaults::default(),
+    );
+    let result = handler
+        .pause_guiding(Parameters(PauseGuidingParams { full: Some(true) }))
+        .await
+        .unwrap();
+    let json = ok_text(result);
+    assert_eq!(json["state"], "paused");
+}
+
+#[tokio::test]
+async fn resume_guiding_resumes() {
+    let handler = handler_with_guider(
+        |mock| {
+            mock.expect_resume_guiding().returning(|| Ok(()));
+        },
+        GuiderDefaults::default(),
+    );
+    let result = handler
+        .resume_guiding(Parameters(ResumeGuidingParams {}))
+        .await
+        .unwrap();
+    let json = ok_text(result);
+    assert_eq!(json["state"], "resumed");
+}
+
+#[tokio::test]
+async fn get_guiding_stats_passes_the_snapshot_through() {
+    let handler = handler_with_guider(
+        |mock| {
+            mock.expect_guiding_stats().returning(|| {
+                Ok(GuidingStats {
+                    app_state: "Guiding".to_string(),
+                    guiding: true,
+                    rms_ra_px: Some(0.3),
+                    rms_dec_px: Some(0.4),
+                    total_rms_px: Some(0.5),
+                    snr: None,
+                    star_mass: None,
+                    sample_count: 12,
+                })
+            });
+        },
+        GuiderDefaults::default(),
+    );
+    let result = handler
+        .get_guiding_stats(Parameters(GetGuidingStatsParams {}))
+        .await
+        .unwrap();
+    let json = ok_text(result);
+    assert_eq!(json["app_state"], "Guiding");
+    assert_eq!(json["guiding"], true);
+    assert_eq!(json["rms_ra_px"], 0.3);
+    // Never-sampled telemetry stays null, not stale numbers.
+    assert_eq!(json["snr"], serde_json::Value::Null);
+    assert_eq!(json["star_mass"], serde_json::Value::Null);
+}
+
+#[tokio::test]
+async fn every_guider_tool_reports_not_configured_without_a_guider_block() {
+    // No `with_guider` call ⇒ each of the six tools errors cleanly.
+    let handler = test_handler(empty_registry());
+    assert_tool_error(
+        handler
+            .start_guiding(Parameters(start_params_empty()))
+            .await,
+        "start_guiding: guider not configured",
+    );
+    assert_tool_error(
+        handler.stop_guiding(Parameters(StopGuidingParams {})).await,
+        "stop_guiding: guider not configured",
+    );
+    assert_tool_error(
+        handler
+            .dither(Parameters(DitherParams {
+                pixels: Some(5.0),
+                ..dither_params_empty()
+            }))
+            .await,
+        "dither: guider not configured",
+    );
+    assert_tool_error(
+        handler
+            .pause_guiding(Parameters(PauseGuidingParams { full: None }))
+            .await,
+        "pause_guiding: guider not configured",
+    );
+    assert_tool_error(
+        handler
+            .resume_guiding(Parameters(ResumeGuidingParams {}))
+            .await,
+        "resume_guiding: guider not configured",
+    );
+    assert_tool_error(
+        handler
+            .get_guiding_stats(Parameters(GetGuidingStatsParams {}))
+            .await,
+        "get_guiding_stats: guider not configured",
+    );
 }
