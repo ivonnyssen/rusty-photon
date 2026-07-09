@@ -7,6 +7,7 @@ use std::time::Duration;
 
 /// PHD2 service configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     /// HTTP listen address (`serve` mode only; the CLI ignores it).
     /// Typed as `IpAddr` so a malformed address fails at config load.
@@ -51,6 +52,7 @@ fn default_stop_timeout() -> Duration {
 
 /// PHD2 connection settings
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Phd2Config {
     #[serde(default = "default_host")]
     pub host: String,
@@ -75,6 +77,7 @@ pub struct Phd2Config {
 
 /// Configuration for automatic reconnection
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ReconnectConfig {
     /// Enable automatic reconnection when connection is lost
     #[serde(default = "default_reconnect_enabled")]
@@ -146,6 +149,7 @@ fn default_command_timeout() -> Duration {
 /// `settle_secs_ceil`, because the PHD2 protocol requires integer values and
 /// ceil-rounding avoids truncating sub-second durations down to `0`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SettleParams {
     #[serde(default = "default_settle_pixels")]
     pub pixels: f64,
@@ -279,5 +283,13 @@ mod tests {
     fn a_malformed_bind_address_fails_at_config_load() {
         let err = serde_json::from_str::<Config>(r#"{"bind_address": "not-an-ip"}"#).unwrap_err();
         assert!(err.to_string().contains("invalid IP address"));
+    }
+
+    #[test]
+    fn a_misspelled_config_key_fails_at_config_load() {
+        let err = serde_json::from_str::<Config>(r#"{"stop_timout": "5s"}"#).unwrap_err();
+        assert!(err.to_string().contains("stop_timout"));
+        let err = serde_json::from_str::<Config>(r#"{"settling": {"pixles": 1.0}}"#).unwrap_err();
+        assert!(err.to_string().contains("pixles"));
     }
 }
