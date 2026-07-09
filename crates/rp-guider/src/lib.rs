@@ -227,7 +227,7 @@ impl GuiderServiceClient {
     /// plus margin when the request pins one.
     fn settle_request_timeout(&self, settle: Option<&SettleOverride>) -> Duration {
         match settle.and_then(|s| s.timeout) {
-            Some(t) => self.timeout.max(t + SETTLE_BACKSTOP_MARGIN),
+            Some(t) => self.timeout.max(t.saturating_add(SETTLE_BACKSTOP_MARGIN)),
             None => self.timeout,
         }
     }
@@ -780,6 +780,21 @@ mod tests {
             client.settle_request_timeout(Some(&long)),
             Duration::from_secs(135)
         );
+    }
+
+    #[test]
+    fn settle_request_timeout_saturates_instead_of_overflowing_on_an_extreme_settle_timeout() {
+        let client = GuiderServiceClient::new(
+            "http://localhost:11130".to_string(),
+            Duration::from_secs(90),
+        )
+        .unwrap();
+        let extreme = SettleOverride {
+            pixels: None,
+            time: None,
+            timeout: Some(Duration::MAX),
+        };
+        assert_eq!(client.settle_request_timeout(Some(&extreme)), Duration::MAX);
     }
 
     #[test]

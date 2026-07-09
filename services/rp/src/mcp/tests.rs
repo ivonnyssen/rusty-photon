@@ -5080,16 +5080,21 @@ fn assert_end_mirrors_start(
     // operations with a predictive deadline (slew §2.1, park + move_focuser
     // §2.2/§2.3, exposure §2.4, centering §2.5, and guide/dither when a
     // settle timeout is resolved); every other operation's start must
-    // still omit them. (Each converted operation's start is asserted
-    // present by its own test, and guide/dither's no-timeout omission by
-    // `start_guiding_without_a_settle_timeout_omits_the_deadline`.)
+    // still omit them. Slew/park/move_focuser/exposure/centering always
+    // predict, so those are keyed off the event name (each such
+    // operation's start is asserted present by its own test). Guide/dither
+    // predict only conditionally, so those are keyed off whether the start
+    // envelope actually carries a deadline — that way any guide/dither test
+    // built on `GuiderDefaults::default()` (no settle timeout) gets its
+    // omission checked here for free, not just by the one dedicated test
+    // (`start_guiding_without_a_settle_timeout_omits_the_deadline`).
     let has_predictive_deadline = start.event.starts_with("slew")
         || start.event.starts_with("park")
         || start.event.starts_with("move_focuser")
         || start.event.starts_with("exposure")
         || start.event.starts_with("centering")
-        || start.event.starts_with("guide")
-        || start.event.starts_with("dither");
+        || ((start.event.starts_with("guide") || start.event.starts_with("dither"))
+            && start.predicted_duration_ms.is_some());
     if !has_predictive_deadline {
         assert!(
             start.predicted_duration_ms.is_none(),
@@ -5862,6 +5867,36 @@ async fn start_guiding_clamps_predicted_duration_to_the_timeout_when_settle_time
     // settle_time (120s); max stays timeout + 10s backstop grace.
     assert_eq!(started.predicted_duration_ms, Some(40_000));
     assert_eq!(started.max_duration_ms, Some(50_000));
+    assert!(started.predicted_duration_ms <= started.max_duration_ms);
+}
+
+#[tokio::test]
+async fn start_guiding_saturates_instead_of_overflowing_on_an_extreme_settle_timeout() {
+    // An operator-configured settle_timeout near Duration::MAX must not
+    // panic the process via `Duration`'s overflow-checked `Add` — the
+    // backstop-grace addition saturates instead.
+    let defaults = GuiderDefaults {
+        settle_pixels: None,
+        settle_time: None,
+        settle_timeout: Some(Duration::MAX),
+        dither_pixels: None,
+    };
+    let handler = handler_with_guider(
+        |mock| {
+            mock.expect_start_guiding()
+                .returning(|_| Ok(settled_outcome()));
+        },
+        defaults,
+    );
+    let mut rx = handler.event_bus.subscribe();
+
+    handler
+        .start_guiding(Parameters(start_params_empty()))
+        .await
+        .unwrap();
+
+    let started = next_event(&mut rx).await;
+    assert!(started.max_duration_ms.is_some());
     assert!(started.predicted_duration_ms <= started.max_duration_ms);
 }
 

@@ -365,7 +365,7 @@ fn with_settle_deadlines(
     let predicted = settle.and_then(|s| s.time).unwrap_or(timeout).min(timeout);
     envelope.with_deadlines(
         predicted.as_millis() as u64,
-        (timeout + SETTLE_BACKSTOP_GRACE).as_millis() as u64,
+        timeout.saturating_add(SETTLE_BACKSTOP_GRACE).as_millis() as u64,
     )
 }
 
