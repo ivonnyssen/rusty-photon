@@ -1,0 +1,140 @@
+[package]
+name = "zwo-focuser"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "ASCOM Alpaca Focuser driver for the ZWO EAF"
+
+[features]
+default = []
+# Forwards to `zwo-rs/simulation`: a hardware-free, in-Rust simulated focuser
+# for development and tests. As in zwo-camera this removes the *focuser*, NOT
+# the SDK *link* — the native ZWO SDK is still linked. See the README and
+# docs/services/zwo-focuser.md "Native dependency & build gating".
+simulation = ["zwo-rs/simulation"]
+# Cross-driver alias for `simulation` (the workspace-wide test-backend name).
+mock = ["simulation"]
+# `conformu` enables `mock` so a single `--features conformu` flag builds and
+# runs the compliance test against the simulation backend.
+conformu = ["mock"]
+
+[lints]
+workspace = true
+
+[dependencies]
+# `client` is NOT enabled here — the production server never builds an Alpaca
+# client; only the BDD harness does, so it lives in [dev-dependencies] below.
+ascom-alpaca = { workspace = true, features = ["server", "focuser"] }
+zwo-rs = { workspace = true }
+rp-tls = { workspace = true }
+rusty-photon-config = { workspace = true }
+rusty-photon-driver = { workspace = true }
+rusty-photon-service-lifecycle = { workspace = true }
+tokio = { workspace = true }
+axum = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+derive_more = { workspace = true }
+parking_lot = { workspace = true }
+
+[package.metadata.conformu]
+command = "cargo test -p zwo-focuser --features conformu --test conformu_integration -- --nocapture"
+
+[package.metadata.deb]
+name = "rusty-photon-zwo-focuser"
+maintainer = "Igor von Nyssen <igor@vonnyssen.com>"
+extended-description = "ASCOM Alpaca Focuser driver for the ZWO EAF. Bundles ZWO's MIT-licensed SDK library (libEAFFocuser) under /usr/lib/rusty-photon; no separate SDK install is needed."
+section = "science"
+priority = "optional"
+# Explicit list, NOT "$auto": the bundled SDK blob carries no SONAME, so
+# dpkg-shlibdeps cannot map the binary's bare libEAFFocuser.so NEEDED entry to
+# any package and would fail. These are the direct runtime needs (glibc,
+# libgcc, C++ runtime, libusb, libudev); adduser is used by postinst.
+depends = "libc6, libgcc-s1, libstdc++6, libusb-1.0-0, libudev1, adduser"
+assets = [
+    ["target/release/zwo-focuser", "usr/bin/rusty-photon-zwo-focuser", "755"],
+    ["pkg/90-rusty-photon-zwo-focuser.rules", "usr/lib/udev/rules.d/90-rusty-photon-zwo-focuser.rules", "644"],
+    # MIT SDK blob: staged into gitignored pkg/lib/ by scripts/build-packages.sh
+    # from the pinned indi-3rdparty ref (same pin as .github/actions/install-zwo-sdk),
+    # never committed (ADR-013). The blob has no SONAME, so the binary finds it
+    # via the RUNPATH build-packages.sh injects (-Wl,-rpath,/usr/lib/rusty-photon).
+    ["pkg/lib/libEAFFocuser.so", "usr/lib/rusty-photon/libEAFFocuser.so", "644"],
+    # The license must travel with the redistributed blob (checker asserts this
+    # copy matches the one vendored with the SDK headers in libzwo-sys).
+    ["pkg/ZWO-SDK-LICENSE.txt", "usr/share/doc/rusty-photon-zwo-focuser/ZWO-SDK-LICENSE.txt", "644"],
+]
+maintainer-scripts = "pkg/"
+
+[package.metadata.deb.systemd-units]
+unit-name = "rusty-photon-zwo-focuser"
+unit-scripts = "pkg/"
+enable = true
+start = true
+restart-after-upgrade = true
+
+[package.metadata.generate-rpm]
+name = "rusty-photon-zwo-focuser"
+summary = "ASCOM Alpaca Focuser driver for the ZWO EAF"
+# Aggregate expression: our dual-licensed code AND the bundled MIT-only ZWO
+# SDK blob — Apache-2.0 alone does not cover the whole package contents.
+license = "(MIT OR Apache-2.0) AND MIT"
+assets = [
+    { source = "target/release/zwo-focuser", dest = "/usr/bin/rusty-photon-zwo-focuser", mode = "755" },
+    { source = "pkg/rusty-photon-zwo-focuser.service", dest = "/usr/lib/systemd/system/rusty-photon-zwo-focuser.service", mode = "644" },
+    { source = "pkg/90-rusty-photon-zwo-focuser.rules", dest = "/usr/lib/udev/rules.d/90-rusty-photon-zwo-focuser.rules", mode = "644" },
+    { source = "pkg/lib/libEAFFocuser.so", dest = "/usr/lib/rusty-photon/libEAFFocuser.so", mode = "644" },
+    { source = "pkg/ZWO-SDK-LICENSE.txt", dest = "/usr/share/doc/rusty-photon-zwo-focuser/ZWO-SDK-LICENSE.txt", mode = "644" },
+]
+# rpm's dependency generator would emit requires on the SONAME-less bundled
+# blob (libEAFFocuser.so) that no package provides, making the rpm
+# uninstallable. Disable it; the deb `depends` list above is the canonical
+# statement of runtime needs (rpm builds are an x86_64 dev-box convenience
+# pre-1.0, per the plan).
+auto-req = "disabled"
+post_install_script = """
+getent passwd rusty-photon > /dev/null || useradd -r -d /var/lib/rusty-photon -s /sbin/nologin rusty-photon
+getent group plugdev > /dev/null || groupadd -r plugdev
+install -d -m 0750 -o rusty-photon -g rusty-photon /var/lib/rusty-photon /var/lib/rusty-photon/.config /var/lib/rusty-photon/.config/rusty-photon
+[ -e /etc/rusty-photon ] || ln -s /var/lib/rusty-photon/.config/rusty-photon /etc/rusty-photon
+systemctl daemon-reload
+systemctl enable rusty-photon-zwo-focuser.service
+udevadm control --reload-rules || true
+udevadm trigger || true
+"""
+pre_uninstall_script = """
+systemctl stop rusty-photon-zwo-focuser.service || true
+systemctl disable rusty-photon-zwo-focuser.service || true
+"""
+# rpm has no purge lifecycle: erase preserves the runtime-created config and
+# state (removal is a documented manual step), matching dpkg remove-vs-purge.
+post_uninstall_script = "systemctl daemon-reload"
+require-sh = true
+
+[dev-dependencies]
+# zwo-rs is a first-party member with explicit Bazel real (`//crates/zwo-rs:zwo-rs`)
+# and simulation (`:zwo-rs_sim`) variants, so this dev-dep does not flip a Bazel
+# variant. Its role: `crate_universe` only resolves an optional dep into `@cr`
+# if some workspace member enables the gating feature, so this keeps
+# `zwo-rs/simulation`'s optional deps (rand, rayon) present in `@cr` — which the
+# `:zwo-rs_sim` target pulls via `all_crate_deps`. Resolver v2 keeps it out of
+# the production `cargo build`.
+zwo-rs = { workspace = true, features = ["simulation"] }
+# Client API for the BDD harness (tests/bdd/world.rs); kept out of the prod build.
+ascom-alpaca = { workspace = true, features = ["client"] }
+tracing-subscriber = { workspace = true }
+bdd-infra = { workspace = true, features = ["conformu"] }
+cucumber = { workspace = true }
+tempfile = { workspace = true }
+tokio-test = { workspace = true }
+
+[[test]]
+name = "bdd"
+harness = false
