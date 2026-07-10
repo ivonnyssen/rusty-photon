@@ -24,6 +24,11 @@ _RP_PLATE_SOLVER = "//crates/rp-plate-solver:rp-plate-solver"
 
 _RP_PLATE_SOLVER_WITH_MOCK = "//crates/rp-plate-solver:rp-plate-solver_with_mock"
 
+# rp-guider follows the same two-variant pattern.
+_RP_GUIDER = "//crates/rp-guider:rp-guider"
+
+_RP_GUIDER_WITH_MOCK = "//crates/rp-guider:rp-guider_with_mock"
+
 rust_library(
     name = "rp_lib",
     srcs = glob(
@@ -35,7 +40,10 @@ rust_library(
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = ["//visibility:public"],
-    deps = _INTRA_WORKSPACE_DEPS + [_RP_PLATE_SOLVER] + all_crate_deps(normal = True),
+    deps = _INTRA_WORKSPACE_DEPS + [
+        _RP_PLATE_SOLVER,
+        _RP_GUIDER,
+    ] + all_crate_deps(normal = True),
 )
 
 # Test-only twin of `rp_lib` linking the `_with_mock` plate-solver
@@ -65,7 +73,10 @@ rust_library(
     crate_name = "rp",
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
-    deps = _INTRA_WORKSPACE_DEPS + [_RP_PLATE_SOLVER_WITH_MOCK] + all_crate_deps(normal = True),
+    deps = _INTRA_WORKSPACE_DEPS + [
+        _RP_PLATE_SOLVER_WITH_MOCK,
+        _RP_GUIDER_WITH_MOCK,
+    ] + all_crate_deps(normal = True),
 )
 
 rust_binary(
@@ -75,7 +86,10 @@ rust_binary(
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = ["//visibility:public"],
-    deps = [":rp_lib"] + _INTRA_WORKSPACE_DEPS + [_RP_PLATE_SOLVER] + all_crate_deps(normal = True),
+    deps = [":rp_lib"] + _INTRA_WORKSPACE_DEPS + [
+        _RP_PLATE_SOLVER,
+        _RP_GUIDER,
+    ] + all_crate_deps(normal = True),
 )
 
 # Examples built by `cargo build --all-targets` (not executed in CI). Bazel
@@ -88,7 +102,10 @@ rust_binary(
     aliases = aliases(),
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
-    deps = [":rp_lib"] + _INTRA_WORKSPACE_DEPS + [_RP_PLATE_SOLVER] + all_crate_deps(normal = True),
+    deps = [":rp_lib"] + _INTRA_WORKSPACE_DEPS + [
+        _RP_PLATE_SOLVER,
+        _RP_GUIDER,
+    ] + all_crate_deps(normal = True),
 )
 
 rust_binary(
@@ -97,7 +114,10 @@ rust_binary(
     aliases = aliases(),
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
-    deps = [":rp_lib"] + _INTRA_WORKSPACE_DEPS + [_RP_PLATE_SOLVER] + all_crate_deps(normal = True),
+    deps = [":rp_lib"] + _INTRA_WORKSPACE_DEPS + [
+        _RP_PLATE_SOLVER,
+        _RP_GUIDER,
+    ] + all_crate_deps(normal = True),
 )
 
 rust_test(
@@ -112,7 +132,10 @@ rust_test(
         proc_macro = True,
         proc_macro_dev = True,
     ),
-    deps = _INTRA_WORKSPACE_DEPS + [_RP_PLATE_SOLVER_WITH_MOCK] + all_crate_deps(
+    deps = _INTRA_WORKSPACE_DEPS + [
+        _RP_PLATE_SOLVER_WITH_MOCK,
+        _RP_GUIDER_WITH_MOCK,
+    ] + all_crate_deps(
         normal = True,
         normal_dev = True,
     ),
@@ -179,7 +202,10 @@ rust_test(
     deps = [
         ":rp_lib",
         "//crates/bdd-infra:bdd-infra_rp_harness",
-    ] + _INTRA_WORKSPACE_DEPS + [_RP_PLATE_SOLVER] + all_crate_deps(
+    ] + _INTRA_WORKSPACE_DEPS + [
+        _RP_PLATE_SOLVER,
+        _RP_GUIDER,
+    ] + all_crate_deps(
         normal = True,
         normal_dev = True,
     ),

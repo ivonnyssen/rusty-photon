@@ -132,6 +132,42 @@ pub struct PlateSolverConfig {
     pub default_search_radius_deg: Option<f64>,
 }
 
+/// Guider service config — emitted as the top-level `guider` block
+/// in rp's JSON config (parallel to `plate_solver`; the guider is an
+/// rp-managed service, not equipment). All thresholds are
+/// guide-camera pixels.
+#[derive(Debug, Clone)]
+pub struct GuiderConfig {
+    pub url: String,
+    /// rp HTTP-client deadline for the quick guider calls. `None` ⇒
+    /// rp's default (`90s`).
+    pub timeout: Option<std::time::Duration>,
+    /// Operator-set settle defaults forwarded on every
+    /// `start_guiding` / `dither` call. `None` fields are omitted
+    /// from the emitted block (the guider service's own `settling`
+    /// config then applies).
+    pub settle_pixels: Option<f64>,
+    pub settle_time: Option<std::time::Duration>,
+    pub settle_timeout: Option<std::time::Duration>,
+    /// Default `dither` amount when the per-call `pixels` parameter
+    /// is omitted.
+    pub dither_pixels: Option<f64>,
+}
+
+impl GuiderConfig {
+    /// A url-only config: every default left to rp / the service.
+    pub fn url_only(url: String) -> Self {
+        Self {
+            url,
+            timeout: None,
+            settle_pixels: None,
+            settle_time: None,
+            settle_timeout: None,
+            dither_pixels: None,
+        }
+    }
+}
+
 /// Accumulates equipment and plugin entries, then emits rp's JSON config.
 #[derive(Debug, Default, Clone)]
 pub struct RpConfigBuilder {
@@ -151,6 +187,10 @@ pub struct RpConfigBuilder {
     /// top-level `plate_solver` block from the emitted config so
     /// rp's `plate_solve` MCP tool reports "not configured".
     pub plate_solver: Option<PlateSolverConfig>,
+    /// Optional guider service config. `None` ⇒ omit the top-level
+    /// `guider` block so rp's guiding MCP tools report "not
+    /// configured".
+    pub guider: Option<GuiderConfig>,
     /// Optional `(latitude_degrees, longitude_degrees)` site block.
     /// Required for ephemeris-driven scenarios (planner, twilight,
     /// alt/az MCP tools) and for exercising the mount-side site
@@ -228,6 +268,14 @@ impl RpConfigBuilder {
     /// "not configured".
     pub fn with_plate_solver(&mut self, plate_solver: PlateSolverConfig) -> &mut Self {
         self.plate_solver = Some(plate_solver);
+        self
+    }
+
+    /// Set the guider service config (overwrites any prior call).
+    /// When unset, the emitted rp config has no `guider` block and
+    /// the guiding MCP tools report "not configured".
+    pub fn with_guider(&mut self, guider: GuiderConfig) -> &mut Self {
+        self.guider = Some(guider);
         self
     }
 
@@ -489,6 +537,28 @@ impl RpConfigBuilder {
             config["plate_solver"] = block;
         }
 
+        if let Some(g) = &self.guider {
+            let mut block = serde_json::json!({
+                "url": g.url,
+            });
+            if let Some(t) = g.timeout {
+                block["timeout"] = serde_json::json!(format!("{}ms", t.as_millis()));
+            }
+            if let Some(p) = g.settle_pixels {
+                block["settle_pixels"] = serde_json::json!(p);
+            }
+            if let Some(t) = g.settle_time {
+                block["settle_time"] = serde_json::json!(format!("{}ms", t.as_millis()));
+            }
+            if let Some(t) = g.settle_timeout {
+                block["settle_timeout"] = serde_json::json!(format!("{}ms", t.as_millis()));
+            }
+            if let Some(p) = g.dither_pixels {
+                block["dither_pixels"] = serde_json::json!(p);
+            }
+            config["guider"] = block;
+        }
+
         if let Some((solve, slew_overhead)) = self.centering {
             config["centering"] = serde_json::json!({
                 "solve_time_estimate": format!("{}ms", solve.as_millis()),
@@ -693,6 +763,58 @@ mod tests {
         assert_eq!(ps["url"], "http://127.0.0.1:11131");
         assert_eq!(ps["timeout"], "30000ms");
         assert_eq!(ps["default_search_radius_deg"], 3.5);
+    }
+
+    #[test]
+    fn guider_block_omitted_by_default() {
+        let cfg = RpConfigBuilder::new().build();
+        assert!(
+            cfg.get("guider").is_none(),
+            "expected guider key to be absent when not set, got: {:?}",
+            cfg.get("guider")
+        );
+    }
+
+    #[test]
+    fn with_guider_emits_url_only_block() {
+        let mut b = RpConfigBuilder::new();
+        b.with_guider(GuiderConfig::url_only("http://127.0.0.1:11130".to_string()));
+        let cfg = b.build();
+        let g = &cfg["guider"];
+        assert_eq!(g["url"], "http://127.0.0.1:11130");
+        for field in [
+            "timeout",
+            "settle_pixels",
+            "settle_time",
+            "settle_timeout",
+            "dither_pixels",
+        ] {
+            assert!(
+                g.get(field).is_none(),
+                "expected '{field}' to be omitted when None"
+            );
+        }
+    }
+
+    #[test]
+    fn with_guider_emits_full_overrides() {
+        let mut b = RpConfigBuilder::new();
+        b.with_guider(GuiderConfig {
+            url: "http://127.0.0.1:11130".to_string(),
+            timeout: Some(std::time::Duration::from_secs(120)),
+            settle_pixels: Some(0.8),
+            settle_time: Some(std::time::Duration::from_secs(8)),
+            settle_timeout: Some(std::time::Duration::from_secs(40)),
+            dither_pixels: Some(5.0),
+        });
+        let cfg = b.build();
+        let g = &cfg["guider"];
+        assert_eq!(g["url"], "http://127.0.0.1:11130");
+        assert_eq!(g["timeout"], "120000ms");
+        assert_eq!(g["settle_pixels"], 0.8);
+        assert_eq!(g["settle_time"], "8000ms");
+        assert_eq!(g["settle_timeout"], "40000ms");
+        assert_eq!(g["dither_pixels"], 5.0);
     }
 
     #[test]

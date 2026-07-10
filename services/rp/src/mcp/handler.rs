@@ -52,6 +52,17 @@ pub struct McpHandler {
     /// `search_radius_deg` parameter is omitted. Mirrors
     /// `PlateSolverConfig::default_search_radius_deg`.
     pub plate_solver_default_search_radius_deg: Option<f64>,
+    /// Optional guider-service HTTP client. `None` ⇒ every guiding
+    /// MCP tool returns "guider not configured". Wired by
+    /// `with_guider` from the `guider` block in rp config; the same
+    /// client `Arc` is shared with the safety enforcer's
+    /// stop-guiding-on-unsafe path.
+    pub guider: Option<Arc<dyn rp_guider::GuiderClient>>,
+    /// Operator-set guiding defaults (settle threshold/time/timeout,
+    /// dither amount) applied when the per-call MCP parameters are
+    /// omitted. Mirrors the non-connection fields of
+    /// `GuiderConfig`.
+    pub guider_defaults: crate::config::GuiderDefaults,
     /// Per-rig estimates sizing the advisory `center_on_target` deadline
     /// (§2.5) carried on `centering_started`. Wired by
     /// `with_centering_config` from the `centering` block in rp config;
@@ -85,6 +96,8 @@ impl McpHandler {
             )),
             plate_solver: None,
             plate_solver_default_search_radius_deg: None,
+            guider: None,
+            guider_defaults: crate::config::GuiderDefaults::default(),
             centering: crate::config::CenteringConfig::default(),
             // Pattern (c) merge: each `built_in/<category>.rs`
             // declares a `#[tool_router(router = tool_router_<name>,
@@ -101,6 +114,7 @@ impl McpHandler {
                 + Self::tool_router_mount()
                 + Self::tool_router_auto_focus()
                 + Self::tool_router_plate_solve()
+                + Self::tool_router_guider()
                 + Self::tool_router_center_on_target()
                 + Self::tool_router_planner(),
         }
@@ -144,6 +158,21 @@ impl McpHandler {
     ) -> Self {
         self.plate_solver = client;
         self.plate_solver_default_search_radius_deg = default_search_radius_deg;
+        self
+    }
+
+    /// Wire the guider-service HTTP client + operator-set guiding
+    /// defaults. `None` for `client` keeps the guiding MCP tools
+    /// reporting "not configured"; unset fields in `defaults` mean
+    /// the per-call parameters (or the guider service's own
+    /// `settling` config) decide.
+    pub fn with_guider(
+        mut self,
+        client: Option<Arc<dyn rp_guider::GuiderClient>>,
+        defaults: crate::config::GuiderDefaults,
+    ) -> Self {
+        self.guider = client;
+        self.guider_defaults = defaults;
         self
     }
 

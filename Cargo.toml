@@ -7,6 +7,7 @@ members = [
   "crates/rp-catalog",
   "crates/rp-ephemeris",
   "crates/rp-fits",
+  "crates/rp-guider",
   "crates/rp-plate-solver",
   "crates/rp-tls",
   "crates/rusty-photon-config",
@@ -137,6 +138,7 @@ rp-auth = { path = "crates/rp-auth" }
 rp-catalog = { path = "crates/rp-catalog" }
 rp-ephemeris = { path = "crates/rp-ephemeris" }
 rp-fits = { path = "crates/rp-fits" }
+rp-guider = { path = "crates/rp-guider" }
 rp-plate-solver = { path = "crates/rp-plate-solver" }
 rp-tls = { path = "crates/rp-tls" }
 skywatcher-motor-protocol = { path = "crates/skywatcher-motor-protocol" }

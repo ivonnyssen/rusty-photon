@@ -158,6 +158,20 @@ impl EventEnvelope {
         Self::ended(operation, "complete", operation_id, started_at, payload)
     }
 
+    /// Build a `*_settled` envelope — the success terminator for the
+    /// settle-blocking guider operations (`guide_settled`,
+    /// `dither_settled`; the event catalog uses "settled" rather than
+    /// "complete" for operations that end by guiding stabilizing).
+    /// Same timing semantics as [`EventEnvelope::complete`].
+    pub fn settled(
+        operation: &str,
+        operation_id: &str,
+        started_at: DateTime<Utc>,
+        payload: Value,
+    ) -> Self {
+        Self::ended(operation, "settled", operation_id, started_at, payload)
+    }
+
     /// Build a `*_failed` envelope. The error message is carried as
     /// `{"error": <message>}` in the payload.
     pub fn failed(
@@ -485,6 +499,28 @@ mod tests {
         // Phase 1 reserves but never populates the deadline fields.
         assert!(started.predicted_duration_ms.is_none());
         assert!(complete.max_duration_ms.is_none());
+    }
+
+    #[tokio::test]
+    async fn settled_is_a_complete_shaped_terminator_with_the_settled_suffix() {
+        let bus = bus();
+        let mut rx = bus.subscribe();
+        let started_at = Utc::now();
+
+        bus.emit_operation(EventEnvelope::settled(
+            "guide",
+            "op-7",
+            started_at,
+            serde_json::json!({ "rms_ra_px": 0.3 }),
+        ));
+
+        let settled = rx.recv().await.unwrap();
+        assert_eq!(settled.event, "guide_settled");
+        assert_eq!(settled.operation_id.as_deref(), Some("op-7"));
+        assert_eq!(settled.payload["rms_ra_px"], 0.3);
+        assert!(settled.started_at.is_some());
+        assert!(settled.ended_at.is_some());
+        assert!(settled.elapsed_ms.is_some());
     }
 
     #[tokio::test]

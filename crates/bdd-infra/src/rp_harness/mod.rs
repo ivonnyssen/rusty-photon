@@ -24,6 +24,7 @@
 
 mod computed_sky;
 mod config;
+mod guider_stub;
 mod launcher;
 mod mcp_client;
 mod omnisim;
@@ -35,9 +36,10 @@ mod webhook;
 pub use computed_sky::ComputedSky;
 pub use config::{
     build_calibrator_flats_config, CameraConfig, CoverCalibratorConfig, ExposurePlanConfig,
-    FilterWheelConfig, FocuserConfig, MountConfig, PlannerTargetConfig, PlateSolverConfig,
-    RpConfigBuilder, SafetyMonitorConfig,
+    FilterWheelConfig, FocuserConfig, GuiderConfig, MountConfig, PlannerTargetConfig,
+    PlateSolverConfig, RpConfigBuilder, SafetyMonitorConfig,
 };
+pub use guider_stub::{CannedGuiding, GuiderStub, GuiderStubBehavior};
 pub use launcher::{start_rp, wait_for_rp_healthy, write_temp_config_file};
 pub use mcp_client::McpTestClient;
 pub use omnisim::OmniSimHandle;

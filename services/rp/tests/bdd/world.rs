@@ -13,10 +13,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bdd_infra::rp_harness::{
-    CameraConfig, CoverCalibratorConfig, FilterWheelConfig, FocuserConfig, McpTestClient,
-    MountConfig, OmniSimHandle, OrchestratorInvocation, PlannerTargetConfig, PlateSolverConfig,
-    PlateSolverStub, ReceivedEvent, RpConfigBuilder, SafetyMonitorConfig, SseClient,
-    TestOrchestrator, WebhookReceiver,
+    CameraConfig, CoverCalibratorConfig, FilterWheelConfig, FocuserConfig, GuiderConfig,
+    GuiderStub, McpTestClient, MountConfig, OmniSimHandle, OrchestratorInvocation,
+    PlannerTargetConfig, PlateSolverConfig, PlateSolverStub, ReceivedEvent, RpConfigBuilder,
+    SafetyMonitorConfig, SseClient, TestOrchestrator, WebhookReceiver,
 };
 use bdd_infra::sky_survey_camera_harness::SkyViewStub;
 use bdd_infra::ServiceHandle;
@@ -67,6 +67,13 @@ pub struct RpWorld {
     /// the world so its request log stays accessible to `Then`
     /// steps and the spawned axum task isn't cancelled mid-scenario.
     pub plate_solver_stub: Option<PlateSolverStub>,
+    /// Optional guider service config emitted into rp's `guider`
+    /// block. Set by the BDD `Given a stub guider ...` steps after
+    /// spawning the stub.
+    pub guider: Option<GuiderConfig>,
+    /// Handle to the in-process stub guider server (same lifecycle
+    /// rationale as `plate_solver_stub`).
+    pub guider_stub: Option<GuiderStub>,
     /// Optional `(latitude_degrees, longitude_degrees)` site for
     /// ephemeris-driven scenarios; emitted as the `site` block in
     /// the generated rp config. Used by `target_catalog`,
@@ -119,6 +126,9 @@ pub struct RpWorld {
     pub last_auto_focus_result: Option<Value>,
     /// Last plate_solve result
     pub last_plate_solve_result: Option<Value>,
+    /// Last successful guider-tool result (start_guiding, dither,
+    /// get_guiding_stats, ...)
+    pub last_guider_result: Option<Value>,
     /// Last center_on_target result
     pub last_center_on_target_result: Option<Value>,
     /// Last exposure document fetched via GET /api/documents/{id}
@@ -261,6 +271,9 @@ impl RpWorld {
         }
         if let Some(ps) = &self.plate_solver {
             builder.with_plate_solver(ps.clone());
+        }
+        if let Some(g) = &self.guider {
+            builder.with_guider(g.clone());
         }
         if let Some((lat, lon)) = self.site {
             builder.with_site(lat, lon);

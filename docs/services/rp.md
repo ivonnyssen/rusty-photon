@@ -251,9 +251,9 @@ document and persists the sidecar JSON. Each section is opaque to `rp` — it st
       "background_stddev": 45
     },
     "guiding_stats": {
-      "rms_ra_arcsec": 0.45,
-      "rms_dec_arcsec": 0.38,
-      "total_rms_arcsec": 0.59
+      "rms_ra_px": 0.45,
+      "rms_dec_px": 0.38,
+      "total_rms_px": 0.59
     },
     "weather": {
       "temperature_c": -5.2,
@@ -362,11 +362,13 @@ emits only `_complete` / `_failed`, with no `_started`.) Point events
 | `focus_started` | camera_id, focuser_id, position, temperature | Auto-focus begins |
 | `focus_complete` | camera_id, focuser_id, position, hfr, samples_used | Auto-focus result |
 | `focus_failed` | error | Auto-focus failed |
-| `guide_started` | guider_id | Guiding loop started |
-| `guide_settled` | rms_ra, rms_dec | Guiding RMS below threshold |
-| `guide_stopped` | reason | Guiding stopped |
-| `dither_started` | pixels | Dither command sent |
-| `dither_settled` | rms_ra, rms_dec | Post-dither settle complete |
+| `guide_started` | recalibrate, settle_pixels, settle_time, settle_timeout | Guiding loop starting; carries the settle deadline (`max_duration_ms` = settle_timeout + the service's 10 s backstop grace) when a settle timeout is resolved |
+| `guide_settled` | rms_ra_px, rms_dec_px, total_rms_px, sample_count | Post-start settle complete |
+| `guide_failed` | error | Guiding start or settle failed |
+| `guide_stopped` | reason (`requested` \| `safety`) | Guiding stopped (point event) |
+| `dither_started` | pixels, ra_only, settle_pixels, settle_time, settle_timeout | Dither command sent; deadline as on `guide_started` |
+| `dither_settled` | rms_ra_px, rms_dec_px, total_rms_px, sample_count | Post-dither settle complete |
+| `dither_failed` | error | Dither or its settle failed |
 | `safety_changed` | monitor, new_state | SafetyMonitor transition |
 | `temperature_changed` | sensor, value | Significant temperature change |
 | `meridian_flip_started` | hour_angle | Flip initiated |
@@ -762,12 +764,17 @@ the exact parameter types and return structure.
 
 | Action | Parameters | Returns | Description |
 |--------|-----------|---------|-------------|
-| `start_guiding` | — | rms_ra, rms_dec | Start guiding loop, block until settled |
-| `stop_guiding` | — | — | Stop guiding loop, block until confirmed |
-| `dither` | pixels | rms_ra, rms_dec | Send dither command, block until settled |
-| `pause_guiding` | — | — | Pause guiding (e.g., during readout) |
-| `resume_guiding` | — | — | Resume paused guiding |
-| `get_guiding_stats` | — | rms_ra, rms_dec, total_rms | Read current guiding statistics |
+| `start_guiding` | recalibrate (optional), settle_pixels / settle_time / settle_timeout (optional; per-call > `guider` config > service default, field by field) | state, rms_ra_px, rms_dec_px, total_rms_px, sample_count | Start guiding loop, block until settled |
+| `stop_guiding` | — | state | Stop guiding loop, block until confirmed (idempotent) |
+| `dither` | pixels (optional; falls back to `guider.dither_pixels`), ra_only (optional), settle_* as in `start_guiding` | state, rms_ra_px, rms_dec_px, total_rms_px, sample_count | Send dither command, block until re-settled |
+| `pause_guiding` | full (optional) | state | Pause guide corrections (e.g., during readout); `full` also pauses looping |
+| `resume_guiding` | — | state | Resume paused guiding |
+| `get_guiding_stats` | — | app_state, guiding, rms_ra_px, rms_dec_px, total_rms_px, snr, star_mass, sample_count | Read current guiding statistics (cheap; safe to poll) |
+
+All guider quantities are **guide-camera pixels** (a pixel scale only
+exists after PHD2 calibration, so arcsecond thresholds are not
+accepted). The tools proxy to the guider service and error with
+"guider not configured" when the `guider` config block is absent.
 
 **Compute (image analysis)**
 
@@ -1761,8 +1768,10 @@ PHD2 JSON-RPC integration and runs as that HTTP service via its
 Mode". Like the plate solver, it is a separate process because PHD2
 itself is an external program with its own crash/restart behavior;
 Sentinel can supervise and restart it via the standard
-rp-managed-service flow. (The rp-side integration — client crate and
-MCP tool surface — is tracked by issue #464.)
+rp-managed-service flow. `rp` talks to it through the
+`crates/rp-guider` HTTP client, configured by the optional top-level
+`guider` block (url, timeout, settle defaults, dither amount); the
+same client backs the safety enforcer's stop-guiding-on-unsafe step.
 
 PHD2 uses JSON-RPC over TCP, which is the one exception to the Alpaca-only
 rule — there is no Alpaca guider device type. The guider service encapsulates
@@ -1875,7 +1884,7 @@ User starts session via API
 
 Safety event (unsafe transition)
   → rp terminates the orchestrator's MCP sessions and gates /mcp
-  → rp aborts in-progress exposures (guiding stop / mount park planned)
+  → rp aborts in-progress exposures, stops guiding, parks the mount
   → the session is marked interrupted; the orchestrator's own persisted
     state (e.g. session-runner's blackboard) survives
   → on safe transition: rp re-invokes the orchestrator with recovery context
@@ -2940,9 +2949,16 @@ On the overall safe → unsafe transition:
 3. Mark the active session `interrupted` (`/api/session/status`
    reports `"interrupted"`; starting another session is still refused).
 4. Abort in-progress exposures on all connected cameras (best-effort).
+5. Stop guiding through the configured guider service (best-effort;
+   a confirmed stop emits `guide_stopped` with `reason: "safety"`, a
+   failed one is logged and skipped so the park below still runs).
+6. Park the mount (best-effort, fire-and-forget: the Alpaca `Park`
+   is issued and logged, but `rp` does not block on `AtPark` —
+   Sentinel's watchdog owns escalation if the mount never gets
+   there).
 
-Not yet implemented on unsafe: stopping guiding and parking the mount
-(no guider integration in `rp` yet; parking is planned alongside it).
+The hardware steps run in that order deliberately: the mount must not
+move under an exposing camera or an active guide loop.
 
 On the overall unsafe → safe transition:
 
@@ -2977,7 +2993,7 @@ the disconnection is an immediate trigger for Sentinel to attempt recovery.
 | Park | `park_started` | `park_complete` | `max_duration_ms` from the `park_started` envelope (rp-computed worst-case traverse: `(180° / rate + settle) × 2`, floored at `MIN_PARK_DEADLINE`) |
 | Move focuser | `move_focuser_started` | `move_focuser_complete` | `max_duration_ms` from the `move_focuser_started` envelope (rp-computed: `(\|target − current\| / steps_per_sec) × 2`, floored at `MIN_FOCUSER_DEADLINE`) |
 | Focus | `focus_started` | `focus_complete` | configurable max focus time |
-| Guide settle | `guide_started` | `guide_settled` | configurable settle timeout |
+| Guide settle | `guide_started` | `guide_settled` | `max_duration_ms` from the `guide_started` envelope (the resolved settle timeout + the guider service's 10 s backstop grace; omitted when no settle timeout is configured per-call or in the `guider` block). `dither_started` → `dither_settled` carries the same deadline shape |
 | Centering | `centering_started` | `centering_complete` | `max_duration_ms` from the `centering_started` envelope (rp-computed advisory outer-loop deadline: `max_attempts × (duration + centering.solve_time_estimate + centering.slew_overhead_estimate)`; per-iteration ops carry their own deadlines) |
 
 #### Corrective Actions
@@ -3257,10 +3273,11 @@ return a structured "site not configured" error.
   },
   "guider": {
     "url": "http://localhost:11130",
-    "settle_threshold_arcsec": 0.8,
+    "timeout": "90s",
+    "settle_pixels": 0.8,
     "settle_time": "10s",
-    "dither_pixels": 5,
-    "dither_every_n_exposures": 3
+    "settle_timeout": "60s",
+    "dither_pixels": 5
   },
   "plate_solver": {
     "url": "http://localhost:11131",
@@ -3375,20 +3392,17 @@ services/rp/src/
 
   # Services (non-Alpaca integrations, backing built-in MCP tools)
   # Per-service HTTP clients live in workspace crates following the
-  # `crates/rp-*` convention (e.g. crates/rp-plate-solver). The
-  # services/ sub-tree here remains the in-rp glue (lifecycle, MCP
-  # adapter shell). plate_solve's MCP tool wiring lives in mcp.rs;
-  # the transport/types live in crates/rp-plate-solver.
+  # `crates/rp-*` convention. plate_solve's MCP tool wiring lives in
+  # mcp/built_in/plate_solve.rs with transport/types in
+  # crates/rp-plate-solver; the guiding tools live in
+  # mcp/built_in/guider.rs with transport/types in crates/rp-guider.
   services/
     mod.rs              Service trait, service manager
-    guider.rs           Guider service client (planned — to follow
-                        rp-plate-solver as crates/rp-guider when the
-                        guider client work lands)
 
   # Safety enforcement
   safety.rs             SafetyMonitor polling loop, /mcp gate, session
                         interrupt/resume, MCP session termination,
-                        exposure abort (park/guiding-stop planned)
+                        exposure abort, guiding stop, mount park
 
   # Planning (exposed as MCP tools — see Planning and Ephemeris)
   # Math and catalog data live in workspace crates rp-ephemeris and
@@ -3427,7 +3441,8 @@ services/rp/src/
                           Re-exports `McpHandler`.
     handler.rs          The McpHandler struct (state fields plus
                           `tool_router: ToolRouter<Self>`),
-                          `new()`/`with_planner_config()`/`with_plate_solver()`.
+                          `new()`/`with_planner_config()`/
+                          `with_plate_solver()`/`with_guider()`.
                           `new()` merges per-category routers via
                           `Self::tool_router_<category>() + …`.
     internals.rs        Private/`pub(crate)` helpers shared across
@@ -3474,6 +3489,11 @@ services/rp/src/
                           traits to the handler's primitives).
       plate_solve.rs    PointingHint, PlateSolveParams + plate_solve
                           tool.
+      guider.rs         6 guider param structs + the 6 guiding tools
+                          (start_guiding, stop_guiding, dither,
+                          pause_guiding, resume_guiding,
+                          get_guiding_stats), proxying to the guider
+                          service via crates/rp-guider.
       planner.rs        13 planner param structs + 10 ephemeris
                           primitive tools + 3 convenience tools
                           (get_target_status, get_next_target,
