@@ -148,10 +148,11 @@ runs:
         # Shared libraries. INDI's `.bin` is ZWO's upstream `.so`/`.dylib`.
         curl -fsSL --retry 3 --retry-delay 2 "$BASE/$ARCH/libASICamera2.bin" -o "zwo-sdk-blobs/libASICamera2.$EXT"
         curl -fsSL --retry 3 --retry-delay 2 "$BASE/$ARCH/libEFWFilter.bin"  -o "zwo-sdk-blobs/libEFWFilter.$EXT"
-        # Linked by zwo-focuser. `|| true`: some (arch, ref) combinations may
-        # not carry every blob on the mirror; a missing file surfaces later as
-        # a clear link-time "undefined symbol" rather than failing this step.
-        curl -fsSL --retry 3 --retry-delay 2 "$BASE/$ARCH/libEAFFocuser.bin" -o "zwo-sdk-blobs/libEAFFocuser.$EXT" || true
+        # libzwo-sys links libEAFFocuser unconditionally (zwo-camera and
+        # zwo-focuser share one build script), so it's as required as the two
+        # blobs above — fail this step now rather than deferring to a less
+        # actionable link/runtime error later.
+        curl -fsSL --retry 3 --retry-delay 2 "$BASE/$ARCH/libEAFFocuser.bin" -o "zwo-sdk-blobs/libEAFFocuser.$EXT"
 
     - name: Install the ZWO SDK (Linux/macOS)
       # Always runs (cache hit or miss) — a plain local copy from zwo-sdk-blobs
@@ -170,33 +171,39 @@ runs:
           sudo cp "zwo-sdk-blobs/$h" "$PREFIX/include/$h"
         done
 
-        # Install under the linker name so `-lASICamera2` / `-lEFWFilter` resolve.
+        # Install under the linker name so `-lASICamera2` / `-lEFWFilter` /
+        # `-lEAFFocuser` resolve — all three are required (see the fetch step).
         sudo cp "zwo-sdk-blobs/libASICamera2.$EXT" "$PREFIX/lib/libASICamera2.$EXT"
         sudo cp "zwo-sdk-blobs/libEFWFilter.$EXT"  "$PREFIX/lib/libEFWFilter.$EXT"
-        if [[ -f "zwo-sdk-blobs/libEAFFocuser.$EXT" ]]; then
-          sudo cp "zwo-sdk-blobs/libEAFFocuser.$EXT" "$PREFIX/lib/libEAFFocuser.$EXT"
-        fi
+        sudo cp "zwo-sdk-blobs/libEAFFocuser.$EXT" "$PREFIX/lib/libEAFFocuser.$EXT"
 
         if [[ "${{ runner.os }}" == "macOS" ]]; then
           # macOS dylibs ship with an install_name that must match the on-disk
-          # path before they will link (INDI automates this).
+          # path before they will link (INDI automates this). libEAFFocuser is
+          # now linked unconditionally alongside the other two (libzwo-sys's
+          # build.rs emits all three `-l` directives together), so it needs
+          # the same fixup or Bazel's rust_test binaries fail at runtime with
+          # dyld "Library not loaded: @rpath/libEAFFocuser.dylib".
           sudo install_name_tool -id "$PREFIX/lib/libASICamera2.dylib" "$PREFIX/lib/libASICamera2.dylib"
           sudo install_name_tool -id "$PREFIX/lib/libEFWFilter.dylib" "$PREFIX/lib/libEFWFilter.dylib"
+          sudo install_name_tool -id "$PREFIX/lib/libEAFFocuser.dylib" "$PREFIX/lib/libEAFFocuser.dylib"
           # libASICamera2/libEFWFilter reference `@rpath/libusb-1.0.0.dylib`.
           # Stage libusb alongside the SDK, then rewrite that reference to the
           # absolute path so it resolves regardless of the consuming binary's
           # @rpath: Cargo binaries get this SDK prefix on their rpath (a
           # link-search dir), but Bazel's rust_test binaries do not — without the
-          # rewrite they fail at runtime with dyld "Library not loaded".
+          # rewrite they fail at runtime with dyld "Library not loaded". Include
+          # libEAFFocuser in the rewrite loop too: `|| true` already tolerates it
+          # not referencing libusb at all, so this is a safe no-op either way.
           sudo cp "$(brew --prefix libusb)/lib/libusb-1.0.0.dylib" "$PREFIX/lib/"
-          for lib in libASICamera2 libEFWFilter; do
+          for lib in libASICamera2 libEFWFilter libEAFFocuser; do
             sudo install_name_tool -change @rpath/libusb-1.0.0.dylib \
               "$PREFIX/lib/libusb-1.0.0.dylib" "$PREFIX/lib/$lib.dylib" 2>/dev/null || true
           done
         elif command -v ldconfig >/dev/null 2>&1; then
           sudo ldconfig
         fi
-        echo "install-zwo-sdk: installed libASICamera2 + libEFWFilter under $PREFIX/lib"
+        echo "install-zwo-sdk: installed libASICamera2 + libEFWFilter + libEAFFocuser under $PREFIX/lib"
 
     - name: Provision ZWO SDK (Linux, sudo-free)
       # The sudo-LESS self-hosted Pi nightly runner cannot apt-install the -dev
@@ -234,9 +241,10 @@ runs:
         # the nextest / BDD binaries load them at runtime.
         curl -fsSL --retry 3 --retry-delay 2 "$BASE/$ARCH/libASICamera2.bin" -o "$LIBDIR/libASICamera2.so"
         curl -fsSL --retry 3 --retry-delay 2 "$BASE/$ARCH/libEFWFilter.bin"  -o "$LIBDIR/libEFWFilter.so"
-        # Linked by zwo-focuser; `|| true` for the same reason as the cached
-        # Linux/macOS path above (a missing blob surfaces as a link error).
-        curl -fsSL --retry 3 --retry-delay 2 "$BASE/$ARCH/libEAFFocuser.bin" -o "$LIBDIR/libEAFFocuser.so" || true
+        # Required for the same reason as the cached Linux/macOS path above:
+        # libzwo-sys links libEAFFocuser unconditionally, so a missing blob
+        # should fail this step now, not surface later as a link error.
+        curl -fsSL --retry 3 --retry-delay 2 "$BASE/$ARCH/libEAFFocuser.bin" -o "$LIBDIR/libEAFFocuser.so"
 
         # `-lusb-1.0` / `-ludev` normally need the unversioned linker-name .so
         # from libusb-1.0-0-dev / libudev-dev. Without sudo we cannot apt-install
@@ -313,7 +321,10 @@ runs:
         }
         Get-Sdk $env:CAMERA_URL "asi" $true
         Get-Sdk $env:EFW_URL    "efw" $true
-        Get-Sdk $env:EAF_URL    "eaf" $false
+        # Required, same as ASICamera2/EFWFilter: the Stage calls below already
+        # treat EAFFocuser as required, so tolerating a failed download here
+        # would just defer to a less direct "not found in the Windows SDK" error.
+        Get-Sdk $env:EAF_URL    "eaf" $true
 
         # The per-arch import libs/DLLs live inside nested *Windows*SDK*.zip
         # archives; extract those too before staging.

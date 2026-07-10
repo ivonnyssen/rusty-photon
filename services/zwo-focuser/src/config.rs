@@ -19,7 +19,7 @@ pub const DEFAULT_PORT: u16 = 11124;
 
 /// Effective service configuration.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Config {
     /// Optional per-device overrides keyed by SDK serial.
     pub devices: BTreeMap<String, DeviceOverride>,
@@ -29,7 +29,7 @@ pub struct Config {
 
 /// Friendly overrides for a specific device, keyed by its SDK serial.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct DeviceOverride {
     /// Display name override.
     pub name: Option<String>,
@@ -39,7 +39,7 @@ pub struct DeviceOverride {
 
 /// HTTP server settings.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ServerConfig {
     /// The listening port (one port hosts every enumerated device).
     #[serde(default = "default_port")]

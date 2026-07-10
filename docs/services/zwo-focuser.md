@@ -56,10 +56,16 @@ dependency & build gating" for the full rationale) — summarized here:
   is still required at link time. `ZWO_SKIP_NATIVE_LINK=1` omits the link
   directives entirely for sanitizer/simulation-only CI jobs, exactly as it does
   for `zwo-camera`.
-- **CI provisioning:** `.github/actions/install-zwo-sdk` already downloads and
-  stages `libEAFFocuser` (best-effort) on all three OSes in anticipation of this
-  service — this addition activates that staging, requiring no changes to the
-  provisioning action itself.
+- **CI provisioning:** `.github/actions/install-zwo-sdk` already downloaded and
+  staged `libEAFFocuser` on all three OSes in anticipation of this service, but
+  tolerated a missing/failed blob (`|| true` on Linux/macOS, an optional
+  download on Windows) since nothing linked it unconditionally yet. Landing
+  this service made that link real, so the action was tightened to fail fast
+  instead of deferring to a later, less actionable link/runtime error — and a
+  macOS-only gap surfaced by CI was fixed alongside it: the `install_name_tool
+  -id` rewrite that makes the SDK's dylibs resolvable to Bazel's `rust_test`
+  binaries (no `@rpath` entries) covered `ASICamera2`/`EFWFilter` but not the
+  newly-required `EAFFocuser`.
 - **Bazel:** `zwo-rs`/`zwo-rs_sim` already exist as a real/sim two-variant build
   (ADR-010); `focuser.rs` becomes part of both targets' existing
   `glob(["src/**/*.rs"])` with no `BUILD.bazel` change in `crates/zwo-rs`.

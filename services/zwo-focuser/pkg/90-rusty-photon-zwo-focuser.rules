@@ -7,6 +7,8 @@
 #
 # Named uniquely (not 90-rusty-photon-zwo.rules, zwo-camera's file) so
 # both packages can install their udev rule on the same host without a
-# dpkg/rpm filename collision — both files carry identical VID-matching
-# content otherwise.
+# dpkg/rpm filename collision. The VID-matching line below is identical to
+# zwo-camera's, but this file omits zwo-camera's extra usbfs_memory_mb bump —
+# that rule raises the usbfs buffer for bulk image transfers, which a
+# stepper-motor focuser (small status/position commands only) doesn't do.
 SUBSYSTEMS=="usb", ATTRS{idVendor}=="03c3", GROUP="plugdev", MODE="0660"
