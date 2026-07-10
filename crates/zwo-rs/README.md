@@ -1,18 +1,20 @@
 # zwo-rs
 
-Safe Rust bindings for the **ZWO ASI camera** and **EFW filter wheel** SDK (with
-**EAF focuser** to follow). Sibling crate to
+Safe Rust bindings for the **ZWO ASI camera**, **EFW filter wheel**, and **EAF
+focuser** SDK. Sibling crate to
 [`qhyccd-rs`](https://github.com/ivonnyssen/qhyccd-rs); consumed by rusty-photon's
-`zwo-camera` ASCOM Alpaca driver.
+`zwo-camera` and `zwo-focuser` ASCOM Alpaca drivers.
 
 > **Status: under construction.** Enumeration, SDK-version queries, typed
-> ASI/EFW error mapping, the ASI **camera handle** (open/init, `CameraInfo`,
+> ASI/EFW/EAF error mapping, the ASI **camera handle** (open/init, `CameraInfo`,
 > serial, control caps, ROI/binning, control get/set, single exposures with
-> frame download, ST4 pulse guiding), and the EFW **filter-wheel handle** (open,
+> frame download, ST4 pulse guiding), the EFW **filter-wheel handle** (open,
 > slot count, position with the `-1`-while-moving sentinel, serial, firmware,
-> calibration, rotation direction) are wired to the FFI. The EAF focuser is next.
-> Scope order: **Camera → EFW filter wheel → EAF focuser**. See the rusty-photon
-> `docs/plans/zwo-driver.md` plan for the full design.
+> calibration, rotation direction), and the EAF **focuser handle** (open,
+> `MaxStep`, position, dedicated `IsMoving`, absolute move, stop, temperature,
+> reverse, serial, firmware) are all wired to the FFI. Scope order: **Camera →
+> EFW filter wheel → EAF focuser**. See the rusty-photon `docs/plans/zwo-driver.md`
+> plan for the full design.
 
 ## Crates
 
@@ -39,7 +41,7 @@ SDK **binary** is *not* vendored — it is installed on the system (below).
 | Need | For | Notes |
 |---|---|---|
 | **libclang** | `bindgen` (so `check`/`clippy`/`doc`/`build`) | Set `LIBCLANG_PATH` if not auto-found — e.g. `/usr/lib/<triple>` (Debian) or `/usr/lib64` (Fedora). |
-| **ZWO ASI SDK** (`libASICamera2`, `libEFWFilter`) + **libusb-1.0** | *linking* (`build`/`test`) | Required even with `--features simulation`. `cargo check`/`clippy` do **not** link. |
+| **ZWO ASI SDK** (`libASICamera2`, `libEFWFilter`, `libEAFFocuser`) + **libusb-1.0** | *linking* (`build`/`test`) | Required even with `--features simulation`. `cargo check`/`clippy` do **not** link. |
 | udev `99-asi.rules` | running against real hardware (Linux) | VID `03c3`, `MODE=0666`, `usbfs_memory_mb=200`. |
 
 Install the SDK from the INDI mirror (MIT) — Linux x86_64 = `x64`, aarch64 =
@@ -53,6 +55,7 @@ sudo install -d /usr/local/lib
 # INDI's `.bin` == ZWO's upstream `.so`; install under the linker name.
 sudo curl -fsSL "$BASE/$ARCH/libASICamera2.bin" -o /usr/local/lib/libASICamera2.so
 sudo curl -fsSL "$BASE/$ARCH/libEFWFilter.bin"  -o /usr/local/lib/libEFWFilter.so
+sudo curl -fsSL "$BASE/$ARCH/libEAFFocuser.bin" -o /usr/local/lib/libEAFFocuser.so
 sudo ldconfig
 ```
 

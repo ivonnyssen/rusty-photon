@@ -9,11 +9,13 @@
 //!
 //! **Under construction.** Enumeration, SDK-version queries, the ASI [`Camera`]
 //! handle (open/init, [`CameraInfo`], serial, control caps, ROI and binning,
-//! control get/set, single exposures, frame download, and ST4 guiding), and the
+//! control get/set, single exposures, frame download, and ST4 guiding), the
 //! EFW [`FilterWheel`] handle (open, slot count, position with the moving
-//! sentinel, serial, firmware, calibration, direction) are wired to the FFI. The
-//! EAF focuser is next, per the rusty-photon `docs/plans/zwo-driver.md` plan.
-//! Scope order: **Camera → EFW filter wheel → EAF focuser**.
+//! sentinel, serial, firmware, calibration, direction), and the EAF [`Focuser`]
+//! handle (open, `MaxStep`, position, dedicated `IsMoving`, absolute move,
+//! stop, temperature, reverse, serial, firmware) are all wired to the FFI, per
+//! the rusty-photon `docs/plans/zwo-driver.md` plan. Scope order: **Camera →
+//! EFW filter wheel → EAF focuser**.
 //!
 //! ## `simulation` feature
 //!
@@ -39,12 +41,14 @@ mod efw;
 mod error;
 #[cfg(not(feature = "simulation"))]
 mod ffi_util;
+mod focuser;
 pub use camera::{
     BayerPattern, Camera, CameraInfo, ControlCaps, ControlType, ControlValue, ExposureStatus,
     GuideDirection, ImageType, RoiFormat,
 };
 pub use efw::{FilterWheel, FilterWheelInfo};
-pub use error::{asi_check, efw_check, AsiError, EfwError, Error, Result};
+pub use error::{asi_check, eaf_check, efw_check, AsiError, EafError, EfwError, Error, Result};
+pub use focuser::{Focuser, FocuserInfo};
 
 /// Number of simulated ASI cameras presented when the `simulation` feature is on.
 #[cfg(feature = "simulation")]
@@ -53,6 +57,10 @@ pub const SIM_CAMERA_COUNT: usize = 1;
 /// Number of simulated EFW filter wheels presented when `simulation` is on.
 #[cfg(feature = "simulation")]
 pub const SIM_FILTER_WHEEL_COUNT: usize = 1;
+
+/// Number of simulated EAF focusers presented when `simulation` is on.
+#[cfg(feature = "simulation")]
+pub const SIM_FOCUSER_COUNT: usize = 1;
 
 /// Entry point to the ZWO SDK.
 ///
@@ -143,6 +151,40 @@ impl Sdk {
         };
         Ok(version)
     }
+
+    /// Number of connected EAF focusers (`EAFGetNum`).
+    ///
+    /// # Errors
+    /// Infallible today; returns [`Result`] for forward compatibility.
+    pub fn focuser_count(&self) -> Result<usize> {
+        #[cfg(feature = "simulation")]
+        let count = SIM_FOCUSER_COUNT;
+        #[cfg(not(feature = "simulation"))]
+        let count = {
+            // SAFETY: `EAFGetNum` takes no arguments and returns the connected
+            // focuser count; always safe to call. Negative is clamped.
+            let n = unsafe { sys::EAFGetNum() };
+            usize::try_from(n).unwrap_or(0)
+        };
+        Ok(count)
+    }
+
+    /// EAF focuser SDK version string (`EAFGetSDKVersion`).
+    ///
+    /// # Errors
+    /// Infallible today; returns [`Result`] for forward compatibility.
+    pub fn eaf_version(&self) -> Result<String> {
+        #[cfg(feature = "simulation")]
+        let version = "simulation".to_owned();
+        #[cfg(not(feature = "simulation"))]
+        let version = {
+            // SAFETY: as `asi_version` — a static, SDK-owned NUL-terminated
+            // string we only read.
+            let ptr = unsafe { sys::EAFGetSDKVersion() };
+            version_string(ptr)
+        };
+        Ok(version)
+    }
 }
 
 /// Read an SDK-owned, NUL-terminated C string into an owned [`String`]
@@ -212,16 +254,18 @@ mod tests {
         let sdk = Sdk::new().unwrap();
         let cameras = sdk.camera_count().unwrap();
         let wheels = sdk.filter_wheel_count().unwrap();
+        let focusers = sdk.focuser_count().unwrap();
         #[cfg(feature = "simulation")]
         {
             assert_eq!(cameras, SIM_CAMERA_COUNT);
             assert_eq!(wheels, SIM_FILTER_WHEEL_COUNT);
+            assert_eq!(focusers, SIM_FOCUSER_COUNT);
         }
         // Without the simulation feature this calls the real SDK; with no
         // hardware attached the counts are zero, but the call must not panic.
         #[cfg(not(feature = "simulation"))]
         {
-            let _ = (cameras, wheels);
+            let _ = (cameras, wheels, focusers);
         }
     }
 
@@ -230,6 +274,7 @@ mod tests {
         let sdk = Sdk::new().unwrap();
         assert!(!sdk.asi_version().unwrap().is_empty());
         assert!(!sdk.efw_version().unwrap().is_empty());
+        assert!(!sdk.eaf_version().unwrap().is_empty());
     }
 
     #[test]
@@ -257,6 +302,17 @@ mod tests {
         assert_eq!(
             efw_check(42).unwrap_err(),
             Error::Efw(EfwError::Unknown(42))
+        );
+    }
+
+    #[test]
+    fn eaf_check_maps_known_and_unknown_codes() {
+        eaf_check(0).unwrap();
+        assert_eq!(eaf_check(5).unwrap_err(), Error::Eaf(EafError::Moving));
+        assert_eq!(eaf_check(9).unwrap_err(), Error::Eaf(EafError::Closed));
+        assert_eq!(
+            eaf_check(42).unwrap_err(),
+            Error::Eaf(EafError::Unknown(42))
         );
     }
 

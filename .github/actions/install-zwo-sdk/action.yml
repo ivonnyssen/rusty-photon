@@ -1,10 +1,11 @@
-name: Install ZWO ASI/EFW SDK
+name: Install ZWO ASI/EFW/EAF SDK
 description: >-
-  Install the MIT-licensed ZWO ASI camera + EFW filter-wheel SDK (and the
-  libusb-1.0 / libclang prerequisites) so the `zwo-camera` service can link.
-  The SDK links unconditionally via libzwo-sys, so this is required even for
-  `--features simulation` builds (it removes the camera, not the link). See
-  docs/services/zwo-camera.md "Native dependency & build gating" and ADR-008.
+  Install the MIT-licensed ZWO ASI camera + EFW filter-wheel + EAF focuser SDK
+  (and the libusb-1.0 / libclang prerequisites) so the `zwo-camera` and
+  `zwo-focuser` services can link. The SDK links unconditionally via
+  libzwo-sys, so this is required even for `--features simulation` builds (it
+  removes the hardware, not the link). See docs/services/zwo-camera.md /
+  docs/services/zwo-focuser.md "Native dependency & build gating" and ADR-008.
   Linux/macOS pull ZWO's prebuilt blobs from the INDI mirror; Windows pulls the
   official per-SDK developer zips from ZWO's download CDN. The Linux/macOS
   blobs are wrapped in actions/cache (keyed on arch + `ref`) so a warm cache
@@ -51,8 +52,8 @@ inputs:
     default: https://dl.zwoastro.com/software?app=DeveloperEfwSdk&platform=windows86&region=Overseas
   windows_eaf_sdk_url:
     description: >-
-      ZWO EAF focuser developer SDK (Windows) download URL. Staged best-effort
-      for future focuser work; not linked by zwo-camera today.
+      ZWO EAF focuser developer SDK (Windows) download URL. Linked by
+      zwo-focuser.
     default: https://dl.zwoastro.com/software?app=DeveloperEafSdk&platform=windows86&region=Overseas
 
 runs:
@@ -147,8 +148,9 @@ runs:
         # Shared libraries. INDI's `.bin` is ZWO's upstream `.so`/`.dylib`.
         curl -fsSL --retry 3 --retry-delay 2 "$BASE/$ARCH/libASICamera2.bin" -o "zwo-sdk-blobs/libASICamera2.$EXT"
         curl -fsSL --retry 3 --retry-delay 2 "$BASE/$ARCH/libEFWFilter.bin"  -o "zwo-sdk-blobs/libEFWFilter.$EXT"
-        # EAF focuser is not linked yet (Future Work); download it so the runner
-        # is ready when focuser support lands — mirrors zwo-rs/ci/install-zwo-sdk.sh.
+        # Linked by zwo-focuser. `|| true`: some (arch, ref) combinations may
+        # not carry every blob on the mirror; a missing file surfaces later as
+        # a clear link-time "undefined symbol" rather than failing this step.
         curl -fsSL --retry 3 --retry-delay 2 "$BASE/$ARCH/libEAFFocuser.bin" -o "zwo-sdk-blobs/libEAFFocuser.$EXT" || true
 
     - name: Install the ZWO SDK (Linux/macOS)
@@ -232,7 +234,8 @@ runs:
         # the nextest / BDD binaries load them at runtime.
         curl -fsSL --retry 3 --retry-delay 2 "$BASE/$ARCH/libASICamera2.bin" -o "$LIBDIR/libASICamera2.so"
         curl -fsSL --retry 3 --retry-delay 2 "$BASE/$ARCH/libEFWFilter.bin"  -o "$LIBDIR/libEFWFilter.so"
-        # EAF focuser is not linked yet (Future Work); best-effort for parity.
+        # Linked by zwo-focuser; `|| true` for the same reason as the cached
+        # Linux/macOS path above (a missing blob surfaces as a link error).
         curl -fsSL --retry 3 --retry-delay 2 "$BASE/$ARCH/libEAFFocuser.bin" -o "$LIBDIR/libEAFFocuser.so" || true
 
         # `-lusb-1.0` / `-ludev` normally need the unversioned linker-name .so
@@ -339,9 +342,9 @@ runs:
         # so normalise the name.
         Stage "EFW_filter.lib" "EFWFilter.lib" $true
         Stage "EFW_filter.dll" "EFWFilter.dll" $true
-        # EAF is not linked yet (Future Work); stage it best-effort for parity.
-        Stage "EAF_focuser.lib" "EAFFocuser.lib" $false
-        Stage "EAF_focuser.dll" "EAFFocuser.dll" $false
+        # Linked by zwo-focuser, same as ASICamera2/EFWFilter above.
+        Stage "EAF_focuser.lib" "EAFFocuser.lib" $true
+        Stage "EAF_focuser.dll" "EAFFocuser.dll" $true
 
         # libzwo-sys' Windows branch links by name and relies on ZWO_SDK_LIB_DIR
         # for the search path; the DLLs must be on PATH at test runtime.

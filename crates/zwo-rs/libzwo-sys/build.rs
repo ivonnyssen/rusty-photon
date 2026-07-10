@@ -3,7 +3,8 @@
 //! 1. Generates raw FFI bindings with `bindgen` from the vendored MIT headers in
 //!    `sdk/include/` (parsed as C++ for the EFW/EAF `bool`).
 //! 2. Emits the link directives for the system-installed ZWO SDK
-//!    (`libASICamera2`, `libEFWFilter`) + `libusb-1.0` + the C++ runtime.
+//!    (`libASICamera2`, `libEFWFilter`, `libEAFFocuser`) + `libusb-1.0` + the C++
+//!    runtime.
 //!
 //! Mirrors `libqhyccd-sys`'s system-installed-SDK model: by default the link is
 //! emitted, so building/linking (`cargo build`/`test`) requires the SDK on the
@@ -88,6 +89,7 @@ fn emit_link_directives() {
             }
             println!("cargo:rustc-link-lib=dylib=ASICamera2");
             println!("cargo:rustc-link-lib=dylib=EFWFilter");
+            println!("cargo:rustc-link-lib=dylib=EAFFocuser");
             // libASICamera2 is C++; pull in libc++ and libusb.
             println!("cargo:rustc-link-lib=dylib=c++");
             println!("cargo:rustc-link-lib=dylib=usb-1.0");
@@ -100,12 +102,14 @@ fn emit_link_directives() {
             // search path (or set via ZWO_SDK_LIB_DIR).
             println!("cargo:rustc-link-lib=dylib=ASICamera2");
             println!("cargo:rustc-link-lib=dylib=EFWFilter");
+            println!("cargo:rustc-link-lib=dylib=EAFFocuser");
         }
         _ => {
             // Linux and other Unix-like systems.
             println!("cargo:rustc-link-search=native=/usr/local/lib");
             println!("cargo:rustc-link-lib=dylib=ASICamera2");
             println!("cargo:rustc-link-lib=dylib=EFWFilter");
+            println!("cargo:rustc-link-lib=dylib=EAFFocuser");
             // libASICamera2 is C++; pull in libstdc++ and libusb.
             println!("cargo:rustc-link-lib=dylib=stdc++");
             println!("cargo:rustc-link-lib=dylib=usb-1.0");
@@ -113,8 +117,4 @@ fn emit_link_directives() {
             println!("cargo:rustc-link-lib=dylib=udev");
         }
     }
-
-    // EAF focuser (libEAFFocuser): bindings are generated above, but the library
-    // is only linked when the focuser is implemented (Camera → EFW → EAF). The
-    // unreferenced extern declarations do not force the linker to resolve it.
 }
