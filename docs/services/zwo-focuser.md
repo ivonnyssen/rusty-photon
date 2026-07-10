@@ -1,5 +1,19 @@
 # ZWO EAF Focuser Service Design
 
+> **Status: v0 implemented (2026-07-09), pending real-hardware validation.**
+> The full `Device` + `Focuser` surface is built over a new `zwo_rs::Focuser`
+> FFI handle (the `libEAFFocuser` link directive, previously deliberately
+> omitted, now lands alongside it). 25 unit tests + 26 BDD scenarios (3
+> feature files) are green against the `zwo-rs` simulation backend; the full
+> local quality gate (`bazel build //... && bazel test //...`, `cargo fmt`,
+> `cargo clippy --all-targets --all-features -- -D warnings`) passes clean
+> across the whole workspace, including the sibling `zwo-camera` (no
+> regression from the shared `zwo-rs` changes). The ConformU harness is wired
+> and skips cleanly without `CONFORMU_PATH`. Manually verified end-to-end over
+> real Alpaca HTTP (connect, move, is-moving settle, position, temperature,
+> range rejection) against the simulation backend. **Not yet exercised against
+> a real EAF** — see *Real-hardware validation* below.
+
 ## Overview
 
 The `zwo-focuser` service is an ASCOM Alpaca **Focuser** driver for the ZWO EAF
@@ -346,10 +360,38 @@ cargo run -p zwo-focuser --features simulation
 Unlike the ASI camera and EFW filter wheel (both validated against real ZWO
 hardware before `zwo-camera` shipped), **no real EAF has exercised this driver in
 this codebase before now** — the `zwo-rs` EAF simulation backend is hand-fabricated
-with no prior-art timing model to check it against. This section will be updated
-with findings once validated against the user's physical EAF (position/moving
-cadence, actual `MaxStep`, serial-number support, and link verification on the
-dev box's OS/arch).
+with no prior-art timing model to check it against. This is the single biggest
+remaining risk and must happen before considering v0 done; it could not be
+performed from the sandboxed environment this code was developed in (no USB
+passthrough to the physical device).
+
+**To validate, on a machine with the EAF plugged in:**
+
+```sh
+cargo build -p zwo-focuser   # real build, no --features simulation
+cargo run -p zwo-focuser -- --log-level debug
+```
+
+Then, in another terminal, drive it over the Alpaca HTTP API (or point an
+Alpaca client such as NINA/ASCOM's device tester at it) and confirm:
+
+- The service links (`libEAFFocuser` resolves — the one genuinely new
+  cross-platform-link risk this phase adds) and enumerates the real device
+  (`GET /api/v1/focuser/0/name` or similar after connecting).
+- The real `MaxStep` for this unit (`GET /api/v1/focuser/0/maxstep`) — the
+  simulation's `7000` is illustrative only, not this hardware's actual value.
+- `EAFGetSerialNumber` actually returns a serial (exercise the `noserial-0`
+  fallback if this firmware doesn't support it — check the `warn!` log line).
+- Real `EAFIsMoving` polling cadence for a move across a meaningful distance —
+  does `IsMoving` settle in one poll like the simulation, or does it need
+  several? If it needs several, the ASCOM contract still holds (`IsMoving`
+  simply stays `true` longer), but note it here.
+- `EAFStop` actually halts a real in-progress move.
+- `Temperature` returns a plausible reading (compare to ambient).
+
+Feed any surprises back into this design doc (CLAUDE.md rule 2) and, if the
+simulation's timing model was materially wrong, into
+`crates/zwo-rs/src/focuser.rs`'s simulation backend.
 
 ## Packaging
 

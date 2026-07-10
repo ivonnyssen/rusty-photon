@@ -3,21 +3,26 @@
 ## Status
 
 **Implemented through Phase G — full ASCOM Camera landed; ConformU passes and is
-wired into CI. Phase F (EFW `FilterWheel`) and Phase H (EAF focuser, below)
-remain.**
+wired into CI. Phase F (EFW `FilterWheel`) remains; Phase H (EAF focuser) is
+v0-implemented pending real-hardware validation.**
 
-**Phase H — EAF focuser (`zwo-focuser` service) — in progress (2026-07-09).**
-The EAF phase this plan named from the start ("Camera → EFW filter wheel → EAF
-focuser later") is now underway as its own service, `zwo-focuser` (port 11124),
-built on the same `zwo-rs` FFI seam as `zwo-camera` rather than the serial
-`rusty-photon-shared-transport` pattern `qhy-focuser`/`pa-scops-oag` use — the
-EAF is a native-SDK USB device, not USB-CDC/FTDI serial. `EAF_focuser.h` was
-already vendored alongside `ASICamera2.h`/`EFW_filter.h` and its bindgen
-allowlist already covered `EAF*` symbols; what Phase H adds is the
-`libEAFFocuser` link directive (deliberately omitted until now), a safe
-`zwo_rs::Focuser` wrapper, and the `zwo-focuser` ASCOM service itself. See
-[`docs/services/zwo-focuser.md`](../services/zwo-focuser.md) for the full
-design.
+**Phase H — EAF focuser (`zwo-focuser` service) — v0 implemented, pending
+real-hardware validation (2026-07-09).** The EAF phase this plan named from
+the start ("Camera → EFW filter wheel → EAF focuser later") landed as its own
+service, `zwo-focuser` (port 11124), built on the same `zwo-rs` FFI seam as
+`zwo-camera` rather than the serial `rusty-photon-shared-transport` pattern
+`qhy-focuser`/`pa-scops-oag` use — the EAF is a native-SDK USB device, not
+USB-CDC/FTDI serial. `EAF_focuser.h` was already vendored alongside
+`ASICamera2.h`/`EFW_filter.h` and its bindgen allowlist already covered `EAF*`
+symbols; Phase H added the `libEAFFocuser` link directive (deliberately
+omitted until now), a safe `zwo_rs::Focuser` wrapper, and the `zwo-focuser`
+ASCOM service itself: full `Device` + `Focuser` surface (absolute move,
+position, is-moving, halt, live temperature), config actions, serial-derived
+identity, 25 unit + 26 BDD scenarios green, ConformU harness wired, full local
+quality gate green workspace-wide (including no regression in `zwo-camera`
+from the shared `zwo-rs` changes). **Not yet validated against a real EAF** —
+see [`docs/services/zwo-focuser.md`](../services/zwo-focuser.md) "Real-hardware
+validation" for the remaining step and how to run it.
 The `zwo-rs` + `libzwo-sys` FFI crates are now **vendored first-party** at
 `crates/zwo-rs/` (ADR-010 / [vendor-zwo-rs.md](vendor-zwo-rs.md); the standalone
 [github.com/ivonnyssen/zwo-rs](https://github.com/ivonnyssen/zwo-rs) repo,
@@ -45,8 +50,8 @@ two new author-maintained FFI crates: **`zwo-rs`** (safe wrapper) and
 **`libzwo-sys`** (raw bindgen), siblings to `qhyccd-rs`/`libqhyccd-sys`.
 
 Scope sequence: **Camera first → EFW filter wheel fast-follow → EAF focuser
-(Phase H, in progress).** Developed **standalone** (the parallel `qhy-camera`
-work is tracked separately).
+(Phase H, v0 landed, pending real-hardware validation).** Developed
+**standalone** (the parallel `qhy-camera` work is tracked separately).
 
 ## Motivation
 
@@ -300,13 +305,17 @@ it, leaning on the `sky-survey-camera` + `qhy-camera` scaffolding.
   real-clock-deadline bug (fixed in `backend.rs`). The Bazel real/sim two-variant
   build superseded the `crate.annotation` plan (ADR-010). *Remaining tail:* the
   `rp` `CameraConfig` consumer.
-- **Phase H — EAF focuser (`zwo-focuser` service):** 🚧 *in progress
-  (2026-07-09).* New service, port 11124, built on the `zwo-rs`/`zwo-camera`
-  native-SDK pattern (not the serial `rusty-photon-shared-transport` pattern).
-  Adds the `libEAFFocuser` link directive to `libzwo-sys/build.rs` (headers +
-  bindgen bindings already existed) and a new `zwo_rs::Focuser` safe wrapper
-  (structural clone of `efw.rs`). See
-  [`docs/services/zwo-focuser.md`](../services/zwo-focuser.md).
+- **Phase H — EAF focuser (`zwo-focuser` service):** ✅ *v0 landed
+  (2026-07-09), pending real-hardware validation.* New service, port 11124,
+  built on the `zwo-rs`/`zwo-camera` native-SDK pattern (not the serial
+  `rusty-photon-shared-transport` pattern). Added the `libEAFFocuser` link
+  directive to `libzwo-sys/build.rs` (headers + bindgen bindings already
+  existed) and a new `zwo_rs::Focuser` safe wrapper (structural clone of
+  `efw.rs`), plus the full `zwo-focuser` ASCOM `Device`+`Focuser` service:
+  25 unit + 26 BDD scenarios green, ConformU wired, full quality gate green.
+  *Remaining:* validate against the user's physical EAF (no real-hardware
+  prior art exists yet for this device family's timing/polling behaviour).
+  See [`docs/services/zwo-focuser.md`](../services/zwo-focuser.md).
 
 ## Concurrency
 
