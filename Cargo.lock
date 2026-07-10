@@ -6859,6 +6859,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "zwo-focuser"
+version = "0.1.0"
+dependencies = [
+ "ascom-alpaca",
+ "async-trait",
+ "axum",
+ "bdd-infra",
+ "clap",
+ "cucumber",
+ "derive_more",
+ "parking_lot",
+ "rp-tls",
+ "rusty-photon-config",
+ "rusty-photon-driver",
+ "rusty-photon-service-lifecycle",
+ "schemars 1.2.1",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-test",
+ "tracing",
+ "tracing-subscriber",
+ "zwo-rs",
+]
+
+[[package]]
 name = "zwo-rs"
 version = "0.1.0"
 dependencies = [

@@ -62,10 +62,10 @@ jobs:
           # service unconditionally; there is no PR base to diff against
           # and the whole point of the run is to catch drift across the
           # full surface.
-          # zwo-camera is a full ConformU citizen. The conformu jobs provision
-          # the native ZWO SDK via ./.github/actions/install-zwo-sdk (the
-          # "provision, don't exclude" principle — ADR-008), so it builds and
-          # runs here like every other service. No `select(.name != ...)` filter.
+          # zwo-camera and zwo-focuser are full ConformU citizens. The conformu
+          # jobs provision the native ZWO SDK via ./.github/actions/install-zwo-sdk
+          # (the "provision, don't exclude" principle — ADR-008), so they build
+          # and run here like every other service. No `select(.name != ...)` filter.
           SERVICES=$(cargo metadata --format-version 1 --no-deps 2>/dev/null | \
             jq -c '[.packages[] | select(.metadata.conformu.command) | {name: .name, command: .metadata.conformu.command}]')
 
@@ -120,8 +120,9 @@ jobs:
       # qhy-camera's ConformU build uses `--features conformu` (-> simulation), and
       # the --workspace pre-build runs with QHYCCD_SKIP_NATIVE_LINK (workflow env),
       # so the QHYCCD SDK link is omitted — no SDK / libusb / dylib-loader setup.
-      # zwo-camera (and the vendored zwo-rs/libzwo-sys members) DO link the native
-      # ZWO SDK; provision it so the full-workspace pre-build links — no exclusion.
+      # zwo-camera and zwo-focuser (and the vendored zwo-rs/libzwo-sys members)
+      # DO link the native ZWO SDK; provision it so the full-workspace pre-build
+      # links — no exclusion.
       - name: Install ZWO SDK
         uses: ./.github/actions/install-zwo-sdk
 
@@ -215,9 +216,10 @@ jobs:
 
       # qhy-camera's ConformU build uses `--features conformu` (-> simulation) with
       # QHYCCD_SKIP_NATIVE_LINK (workflow env), so no QHYCCD SDK is provisioned.
-      # Per-service matrix, so only zwo-camera needs the native ZWO SDK on Windows.
+      # Per-service matrix, so only the zwo-* services need the native ZWO SDK
+      # on Windows.
       - name: Install ZWO SDK
-        if: matrix.service.name == 'zwo-camera'
+        if: matrix.service.name == 'zwo-camera' || matrix.service.name == 'zwo-focuser'
         uses: ./.github/actions/install-zwo-sdk
 
       - name: Pre-build

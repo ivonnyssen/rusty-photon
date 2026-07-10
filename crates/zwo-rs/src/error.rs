@@ -1,9 +1,10 @@
 //! Error types for the safe `zwo-rs` API.
 //!
 //! The SDK reports failures as small integer codes (`ASI_ERROR_CODE` /
-//! `EFW_ERROR_CODE`). We map them to typed errors **by numeric value** (the
-//! values are fixed by the vendored headers) rather than by the generated
-//! `bindgen` constant names, so the mapping is stable across bindgen versions.
+//! `EFW_ERROR_CODE` / `EAF_ERROR_CODE`). We map them to typed errors **by
+//! numeric value** (the values are fixed by the vendored headers) rather than
+//! by the generated `bindgen` constant names, so the mapping is stable across
+//! bindgen versions.
 
 use thiserror::Error;
 
@@ -20,6 +21,9 @@ pub enum Error {
     /// An EFW filter-wheel SDK call returned a non-success code.
     #[error("EFW filter-wheel SDK error: {0}")]
     Efw(#[from] EfwError),
+    /// An EAF focuser SDK call returned a non-success code.
+    #[error("EAF focuser SDK error: {0}")]
+    Eaf(#[from] EafError),
 }
 
 /// ASI camera SDK error codes (`ASI_ERROR_CODE`), mapped from the raw `int`.
@@ -193,6 +197,75 @@ impl EfwError {
     }
 }
 
+/// EAF focuser SDK error codes (`EAF_ERROR_CODE`), mapped from the raw `int`.
+///
+/// `0` is `EAF_SUCCESS`; handle it via [`eaf_check`]. The BLE-specific codes
+/// (`EAF_BLE_*`, starting at 50) are out of scope for this driver (see
+/// `docs/services/zwo-focuser.md` "MVP scope") and fold into [`Self::Unknown`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[non_exhaustive]
+pub enum EafError {
+    /// `EAF_ERROR_INVALID_INDEX`.
+    #[error("invalid index")]
+    InvalidIndex,
+    /// `EAF_ERROR_INVALID_ID`.
+    #[error("invalid ID")]
+    InvalidId,
+    /// `EAF_ERROR_INVALID_VALUE`.
+    #[error("invalid value")]
+    InvalidValue,
+    /// `EAF_ERROR_REMOVED` — failed to find the focuser; it may have been
+    /// unplugged.
+    #[error("focuser removed")]
+    Removed,
+    /// `EAF_ERROR_MOVING` — the focuser is moving.
+    #[error("focuser is moving")]
+    Moving,
+    /// `EAF_ERROR_ERROR_STATE`.
+    #[error("focuser is in error state")]
+    ErrorState,
+    /// `EAF_ERROR_GENERAL_ERROR`.
+    #[error("general error")]
+    GeneralError,
+    /// `EAF_ERROR_NOT_SUPPORTED`.
+    #[error("operation not supported by the firmware")]
+    NotSupported,
+    /// `EAF_ERROR_CLOSED` — the focuser was not opened.
+    #[error("focuser not open")]
+    Closed,
+    /// `EAF_ERROR_BATTER_INFO` (the header's own spelling).
+    #[error("battery info error")]
+    BatteryInfo,
+    /// `EAF_ERROR_INVALID_LENGTH`.
+    #[error("invalid length")]
+    InvalidLength,
+    /// A code outside the range known to this binding's vendored header
+    /// (includes the out-of-scope `EAF_BLE_*` codes, 50+).
+    #[error("unknown EAF error code {0}")]
+    Unknown(i32),
+}
+
+impl EafError {
+    /// Map a raw non-zero `EAF_ERROR_CODE` to a typed error.
+    #[must_use]
+    pub fn from_code(code: i32) -> Self {
+        match code {
+            1 => Self::InvalidIndex,
+            2 => Self::InvalidId,
+            3 => Self::InvalidValue,
+            4 => Self::Removed,
+            5 => Self::Moving,
+            6 => Self::ErrorState,
+            7 => Self::GeneralError,
+            8 => Self::NotSupported,
+            9 => Self::Closed,
+            10 => Self::BatteryInfo,
+            11 => Self::InvalidLength,
+            other => Self::Unknown(other),
+        }
+    }
+}
+
 /// Convert a raw `ASI_ERROR_CODE` into `Result<()>` — `0` is success.
 ///
 /// # Errors
@@ -214,5 +287,17 @@ pub fn efw_check(code: i32) -> Result<()> {
         Ok(())
     } else {
         Err(Error::Efw(EfwError::from_code(code)))
+    }
+}
+
+/// Convert a raw `EAF_ERROR_CODE` into `Result<()>` — `0` is success.
+///
+/// # Errors
+/// Returns [`Error::Eaf`] for any non-zero code.
+pub fn eaf_check(code: i32) -> Result<()> {
+    if code == 0 {
+        Ok(())
+    } else {
+        Err(Error::Eaf(EafError::from_code(code)))
     }
 }

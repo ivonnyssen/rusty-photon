@@ -9,6 +9,7 @@ lcov.info
 # `cargo deb` runs; downloaded from the pinned indi-3rdparty ref, never
 # committed (ADR-013).
 services/zwo-camera/pkg/lib/
+services/zwo-focuser/pkg/lib/
 
 # Package build output of scripts/build-packages.sh (deb/rpm + SHA256SUMS).
 /dist/

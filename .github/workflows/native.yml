@@ -13,10 +13,11 @@
 #   `InitQHYCCDResource` path. No `cargo test` smoke: qhyccd-rs swaps a mockall
 #   mock for the FFI under `#[cfg(test)]`, so `cargo test` would exercise the mock.
 #
-# - **zwo-camera / zwo-rs / libzwo-sys** take the opposite approach: the rest of
-#   CI (test/conformu/safety) builds the `simulation` path with
-#   ZWO_SKIP_NATIVE_LINK=1 and never links the SDK at all. So this is the ONLY
-#   job that links + loads the real ZWO SDK, and it adds a Linux runtime smoke.
+# - **zwo-camera / zwo-focuser / zwo-rs / libzwo-sys** take the opposite
+#   approach: the rest of CI (test/conformu/safety) builds the `simulation`
+#   path with ZWO_SKIP_NATIVE_LINK=1 and never links the SDK at all. So this is
+#   the ONLY job that links + loads the real ZWO SDK, and it adds a Linux
+#   runtime smoke.
 #
 # (Bazel's real qhyccd-rs/zwo-rs variants build-enforce the lib halves; the Pi
 # nightly covers linux-arm64.)
@@ -39,6 +40,7 @@ on:
       - "services/qhy-camera/**"
       - "crates/zwo-rs/**"
       - "services/zwo-camera/**"
+      - "services/zwo-focuser/**"
       - ".github/actions/install-zwo-sdk/**"
       - ".github/workflows/native.yml"
 concurrency:
@@ -100,11 +102,12 @@ jobs:
           cargo build --locked -p qhy-camera
           cargo build --locked -p qhyccd-rs -p libqhyccd-sys --all-targets
 
-      # zwo: same shape — no simulation, no ZWO_SKIP_NATIVE_LINK, service without
+      # zwo: same shape — no simulation, no ZWO_SKIP_NATIVE_LINK, services without
       # --all-targets, binding crates with it.
       - name: cargo build (zwo, real, no simulation)
         run: |
           cargo build --locked -p zwo-camera
+          cargo build --locked -p zwo-focuser
           cargo build --locked -p zwo-rs -p libzwo-sys --all-targets
 
       # Linux runtime smoke (zwo only): zwo-rs's non-`simulation` tests call the

@@ -13,8 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   FFI), sibling to `qhyccd-rs`.
 - `libzwo-sys`: `bindgen`-generated bindings (build-time) from the vendored MIT
   ZWO SDK headers (`ASICamera2.h`, `EFW_filter.h`, `EAF_focuser.h`), parsed as
-  C++; per-OS link directives for `libASICamera2` + `libEFWFilter` + `libusb-1.0`.
-- `zwo-rs`: skeleton `Sdk` entry point + `simulation` feature scaffold.
+  C++; per-OS link directives for `libASICamera2` + `libEFWFilter` +
+  `libEAFFocuser` + `libusb-1.0`.
+- `zwo-rs`: `Sdk` entry point + `simulation` feature; ASI `Camera`, EFW
+  `FilterWheel`, and EAF `Focuser` handles (open/close, enumeration,
+  serial-derived identity, and per-device operations), backing the
+  `zwo-camera` and `zwo-focuser` ASCOM Alpaca drivers.
 - CI (`check`, `test`), Claude Code workflows, pre-commit hook (clippy + fmt),
   dual MIT/Apache-2.0 licensing.
 

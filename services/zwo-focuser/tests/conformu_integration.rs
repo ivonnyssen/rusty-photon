@@ -1,0 +1,61 @@
+//! ConformU compliance test for the zwo-focuser Focuser driver.
+//!
+//! Launches the production binary (built with `--features conformu`, which
+//! pulls in the `simulation` backend so the SDK yields one `EAF-Simulated`
+//! focuser) and runs the official ASCOM ConformU validator against it.
+//!
+//! Gated behind the `conformu` feature. When `CONFORMU_PATH` is unset the run
+//! is `Skipped` (so the test passes without ConformU installed); CI sets it.
+#![cfg(feature = "conformu")]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+// The serialization mutex is intentionally held across the ConformU awaits.
+#![allow(clippy::await_holding_lock)]
+
+use std::sync::Mutex;
+
+use bdd_infra::{ConformuRun, ServiceHandle};
+use tempfile::TempDir;
+
+/// Serialize ConformU runs (each binds its own port, but ConformU itself and
+/// the shared cache directory are global).
+static CONFORMU_LOCK: Mutex<()> = Mutex::new(());
+
+#[tokio::test]
+async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
+    let _lock = CONFORMU_LOCK.lock().unwrap();
+    let _ = tracing_subscriber::fmt::try_init();
+
+    let temp_dir = TempDir::new()?;
+    let config_path = temp_dir.path().join("zwo-focuser.json");
+    // Port 0 → OS-assigned.
+    let config = serde_json::json!({
+        "devices": {},
+        "server": { "port": 0 },
+    });
+    std::fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
+
+    let mut handle = ServiceHandle::try_start(
+        env!("CARGO_PKG_NAME"),
+        config_path
+            .to_str()
+            .expect("conformu temp path must be UTF-8"),
+    )
+    .await
+    .map_err(Box::<dyn std::error::Error>::from)?;
+
+    println!("::group::ConformU Compliance Test Results");
+    let focuser = bdd_infra::run_conformu("focuser", &handle.base_url, 0, None)
+        .await
+        .map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()));
+    println!("::endgroup::");
+
+    handle.stop().await;
+
+    match focuser? {
+        ConformuRun::Skipped => eprintln!("ConformU skipped (CONFORMU_PATH unset)"),
+        ConformuRun::Passed => eprintln!("ConformU focuser conformance passed"),
+    }
+
+    let _ = temp_dir.close();
+    Ok(())
+}
