@@ -200,10 +200,13 @@ if [ "$needs_zwo" = 1 ]; then
     echo "ZWO SDK blobs (indi-3rdparty $ZWO_SDK_REF) staged: ZWO_SDK_LIB_DIR=$ZWO_SDK_LIB_DIR"
 
     # zwo-focuser's own package payload (ADR-013) — only staged when selected.
+    # All three blobs, not just libEAFFocuser: libzwo-sys links all three
+    # unconditionally, so the zwo-focuser binary needs libASICamera2.so and
+    # libEFWFilter.so at runtime too, same as zwo-camera needs libEAFFocuser.so.
     case " $SERVICES " in
         *" zwo-focuser "*)
             mkdir -p services/zwo-focuser/pkg/lib
-            cp "$ZWO_CACHE/libEAFFocuser.so" services/zwo-focuser/pkg/lib/
+            cp "$ZWO_CACHE/libASICamera2.so" "$ZWO_CACHE/libEFWFilter.so" "$ZWO_CACHE/libEAFFocuser.so" services/zwo-focuser/pkg/lib/
             ;;
     esac
 fi

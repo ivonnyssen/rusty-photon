@@ -410,11 +410,14 @@ Packaged as `rusty-photon-zwo-focuser` (`.deb`/`.rpm`) per
 a separate file so both packages can install their udev rule on the same host
 without a filename collision).
 
-The native `libEAFFocuser.so` (MIT-licensed) ships **inside the package**,
-staged at build time by `scripts/build-packages.sh` from the same pinned
-indi-3rdparty ref `.github/actions/install-zwo-sdk` uses, alongside the SDK
-license. ZWO EAFs keep their firmware in onboard flash, so there is no
-firmware-install helper.
+All three native SDK blobs (MIT-licensed `libASICamera2.so`, `libEFWFilter.so`,
+`libEAFFocuser.so`) ship **inside the package**, staged at build time by
+`scripts/build-packages.sh` from the same pinned indi-3rdparty ref
+`.github/actions/install-zwo-sdk` uses, alongside the SDK license — all three
+are required even though this service only talks to the EAF, because
+`libzwo-sys` links them unconditionally (one build script serves both
+`zwo-camera` and `zwo-focuser`). ZWO EAFs keep their firmware in onboard
+flash, so there is no firmware-install helper.
 
 ## Future Work
 
