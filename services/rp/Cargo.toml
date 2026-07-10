@@ -29,6 +29,7 @@ base64 = { workspace = true }
 rp-auth = { workspace = true }
 rp-catalog = { workspace = true }
 rp-ephemeris = { workspace = true }
+rp-guider = { workspace = true }
 rp-plate-solver = { workspace = true }
 rp-tls = { workspace = true }
 rpassword = { workspace = true }
@@ -99,6 +100,7 @@ mockall = { workspace = true }
 # mcp.rs can build against MockPlateSolveClient. The non-test build
 # pulls the same crate without the feature, keeping mockall out of
 # the production binary.
+rp-guider = { workspace = true, features = ["mock"] }
 rp-plate-solver = { workspace = true, features = ["mock"] }
 tokio-test = { workspace = true }
 cargo-husky = { workspace = true }

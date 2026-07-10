@@ -1,9 +1,11 @@
 //! Safety enforcement (rp.md § Safety): poll every configured ASCOM
 //! SafetyMonitor, and on the overall safe → unsafe transition gate the
 //! `/mcp` endpoint, terminate all open MCP sessions (cancelling in-flight
-//! tool calls), interrupt the active session, and abort in-progress
-//! exposures. On unsafe → safe, lift the gate and resume the interrupted
-//! session by re-invoking the orchestrator with recovery context.
+//! tool calls), interrupt the active session, abort in-progress
+//! exposures, stop guiding (emitting `guide_stopped` with
+//! `reason: "safety"`), and park the mount. On unsafe → safe, lift the
+//! gate and resume the interrupted session by re-invoking the
+//! orchestrator with recovery context.
 //!
 //! Readings are **fail-unsafe**: a monitor that is disconnected or
 //! errors counts as unsafe, and conditions are safe only while *all*
@@ -11,9 +13,6 @@
 //! `safety_changed` event; the assumed baseline is safe, so a monitor
 //! that starts out safe emits nothing at startup while one that starts
 //! out unsafe announces itself.
-//!
-//! Not yet implemented on unsafe: stopping guiding and parking the
-//! mount (no guider integration in rp yet; parking lands with it).
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -63,6 +62,10 @@ pub struct SafetyEnforcer<P: SafetyProbe> {
     session: Arc<SessionManager>,
     mcp_sessions: Arc<LocalSessionManager>,
     equipment: Arc<EquipmentRegistry>,
+    /// Guider-service client shared with `McpHandler`; the unsafe
+    /// transition stops guiding through it. `None` when no `guider`
+    /// block is configured — the step is skipped.
+    guider: Option<Arc<dyn rp_guider::GuiderClient>>,
     /// Read by the `/mcp` gate in `routes`: `false` rejects every MCP
     /// request with 503 while conditions are unsafe.
     safety_ok: Arc<AtomicBool>,
@@ -79,6 +82,7 @@ impl SafetyEnforcer<AlpacaSafetyProbe> {
         session: Arc<SessionManager>,
         mcp_sessions: Arc<LocalSessionManager>,
         safety_ok: Arc<AtomicBool>,
+        guider: Option<Arc<dyn rp_guider::GuiderClient>>,
         poll_interval: Duration,
     ) -> Option<Self> {
         if equipment.safety_monitors.is_empty() {
@@ -100,6 +104,7 @@ impl SafetyEnforcer<AlpacaSafetyProbe> {
             session,
             mcp_sessions,
             equipment,
+            guider,
             safety_ok,
         })
     }
@@ -174,13 +179,18 @@ impl<P: SafetyProbe> SafetyEnforcer<P> {
     }
 
     /// Overall safe → unsafe: gate first so nothing new gets in, then
-    /// tear down the workflow's transport and stop the hardware.
+    /// tear down the workflow's transport and stop the hardware —
+    /// abort exposures, stop guiding, park the mount, in that order
+    /// (the mount must not move under an exposing camera or an active
+    /// guide loop).
     async fn on_unsafe(&self) {
         warn!("conditions unsafe; cancelling the active workflow");
         self.safety_ok.store(false, Ordering::SeqCst);
         let interrupted = self.session.interrupt().await;
         close_all_mcp_sessions(&self.mcp_sessions).await;
         abort_exposures(&self.equipment).await;
+        stop_guiding(self.guider.as_ref(), &self.event_bus).await;
+        park_mount(&self.equipment).await;
         if interrupted {
             info!("session interrupted; awaiting safe conditions to resume");
         }
@@ -227,6 +237,61 @@ async fn abort_exposures(equipment: &EquipmentRegistry) {
                 debug!(camera = %camera.id, error = %e, "abort_exposure failed");
             }
         }
+    }
+}
+
+/// Upper bound on how long the unsafe transition waits for stop-guiding
+/// to confirm before moving on to parking regardless. The guider
+/// service's own `stop_timeout` config defaults to 10 s
+/// (`phd2-guider.md` § "POST /api/v1/guiding/stop"), so this leaves
+/// margin for a normal confirmed stop to land without letting a wedged
+/// guider service (or an operator-configured `guider.timeout` far
+/// longer than the client call would otherwise honor) delay parking —
+/// the safety-critical step — for the client's full HTTP timeout.
+const SAFETY_STOP_GUIDING_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Best-effort stop-guiding through the shared guider client — the
+/// guide loop must not keep dragging the mount while conditions are
+/// unsafe. Emits `guide_stopped` with `reason: "safety"` on a
+/// confirmed stop; a failure (service down, PHD2 gone) or a stop that
+/// doesn't confirm within [`SAFETY_STOP_GUIDING_TIMEOUT`] is logged and
+/// swallowed so the park below still runs promptly.
+async fn stop_guiding(guider: Option<&Arc<dyn rp_guider::GuiderClient>>, event_bus: &EventBus) {
+    let Some(client) = guider else {
+        return;
+    };
+    match tokio::time::timeout(SAFETY_STOP_GUIDING_TIMEOUT, client.stop_guiding()).await {
+        Ok(Ok(())) => {
+            debug!("guiding stopped on unsafe transition");
+            event_bus.emit("guide_stopped", serde_json::json!({ "reason": "safety" }));
+        }
+        Ok(Err(e)) => {
+            debug!(error = %e, "stop_guiding failed during unsafe transition");
+        }
+        Err(_) => {
+            debug!(
+                timeout = ?SAFETY_STOP_GUIDING_TIMEOUT,
+                "stop_guiding did not confirm in time during unsafe transition; proceeding to park"
+            );
+        }
+    }
+}
+
+/// Best-effort park on the configured mount — fire-and-forget like
+/// [`abort_exposures`]: the Alpaca `Park` is issued and logged, but
+/// the enforcer does not block on `AtPark` (Sentinel's watchdog owns
+/// escalation if the mount never gets there).
+async fn park_mount(equipment: &EquipmentRegistry) {
+    let Some(mount) = &equipment.mount else {
+        return;
+    };
+    let Some(device) = &mount.device else {
+        debug!("mount not connected; skipping park on unsafe transition");
+        return;
+    };
+    match device.park().await {
+        Ok(()) => debug!("mount park commanded on unsafe transition"),
+        Err(e) => debug!(error = %e, "mount park failed during unsafe transition"),
     }
 }
 
@@ -292,8 +357,21 @@ mod tests {
             session,
             mcp_sessions: Arc::new(LocalSessionManager::default()),
             equipment: empty_registry(),
+            guider: None,
             safety_ok: Arc::new(AtomicBool::new(true)),
         }
+    }
+
+    /// [`enforcer_with`] plus a mock guider client on the enforcer.
+    fn enforcer_with_guider(
+        probes: Vec<ScriptedProbe>,
+        configure: impl FnOnce(&mut rp_guider::MockGuiderClient),
+    ) -> SafetyEnforcer<ScriptedProbe> {
+        let mut mock = rp_guider::MockGuiderClient::new();
+        configure(&mut mock);
+        let mut enforcer = enforcer_with(probes);
+        enforcer.guider = Some(Arc::new(mock));
+        enforcer
     }
 
     #[tokio::test]
@@ -399,6 +477,132 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unsafe_transition_stops_guiding_and_emits_the_safety_stop_event() {
+        let enforcer =
+            enforcer_with_guider(vec![ScriptedProbe::new("sm", vec![Ok(false)])], |mock| {
+                mock.expect_stop_guiding().times(1).returning(|| Ok(()));
+            });
+        let mut events = enforcer.event_bus.subscribe();
+
+        let mut state = HashMap::new();
+        enforcer.poll_once(&mut state, true).await;
+
+        let changed = events.recv().await.unwrap();
+        assert_eq!(changed.event, "safety_changed");
+        let stopped = events.recv().await.unwrap();
+        assert_eq!(stopped.event, "guide_stopped");
+        assert_eq!(stopped.payload["reason"], "safety");
+    }
+
+    /// A guider that cannot be stopped (service down, PHD2 gone) must
+    /// not derail the rest of the unsafe handling — and must not
+    /// pretend guiding stopped by emitting the event.
+    #[tokio::test]
+    async fn stop_guiding_failure_is_swallowed_without_an_event() {
+        let enforcer =
+            enforcer_with_guider(vec![ScriptedProbe::new("sm", vec![Ok(false)])], |mock| {
+                mock.expect_stop_guiding().times(1).returning(|| {
+                    Err(rp_guider::GuiderError::ServiceUnreachable(
+                        "connection refused".to_string(),
+                    ))
+                });
+            });
+        let mut events = enforcer.event_bus.subscribe();
+
+        let mut state = HashMap::new();
+        enforcer.poll_once(&mut state, true).await;
+
+        assert!(
+            !enforcer.safety_ok.load(Ordering::SeqCst),
+            "gate must close regardless of the guider outcome"
+        );
+        let changed = events.recv().await.unwrap();
+        assert_eq!(changed.event, "safety_changed");
+        assert!(
+            events.try_recv().is_err(),
+            "no guide_stopped event when the stop was not confirmed"
+        );
+    }
+
+    /// No configured guider ⇒ the stop step is skipped silently (no
+    /// event, no error) and the transition still gates.
+    #[tokio::test]
+    async fn unsafe_without_a_guider_skips_the_stop_step() {
+        let enforcer = enforcer_with(vec![ScriptedProbe::new("sm", vec![Ok(false)])]);
+        let mut events = enforcer.event_bus.subscribe();
+
+        let mut state = HashMap::new();
+        enforcer.poll_once(&mut state, true).await;
+
+        assert!(!enforcer.safety_ok.load(Ordering::SeqCst));
+        let changed = events.recv().await.unwrap();
+        assert_eq!(changed.event, "safety_changed");
+        assert!(events.try_recv().is_err());
+    }
+
+    /// A `GuiderClient` whose `stop_guiding` never resolves — stands in
+    /// for a wedged guider service (process hung, not just PHD2) to
+    /// prove `stop_guiding`'s timeout wrapper actually engages instead
+    /// of blocking the unsafe transition indefinitely.
+    struct HangingGuiderClient;
+
+    #[async_trait::async_trait]
+    impl rp_guider::GuiderClient for HangingGuiderClient {
+        async fn start_guiding(
+            &self,
+            _request: rp_guider::StartGuidingRequest,
+        ) -> Result<rp_guider::SettledOutcome, rp_guider::GuiderError> {
+            unreachable!("not exercised by this test")
+        }
+
+        async fn stop_guiding(&self) -> Result<(), rp_guider::GuiderError> {
+            std::future::pending().await
+        }
+
+        async fn pause_guiding(&self, _full: bool) -> Result<(), rp_guider::GuiderError> {
+            unreachable!("not exercised by this test")
+        }
+
+        async fn resume_guiding(&self) -> Result<(), rp_guider::GuiderError> {
+            unreachable!("not exercised by this test")
+        }
+
+        async fn dither(
+            &self,
+            _request: rp_guider::DitherRequest,
+        ) -> Result<rp_guider::SettledOutcome, rp_guider::GuiderError> {
+            unreachable!("not exercised by this test")
+        }
+
+        async fn guiding_stats(&self) -> Result<rp_guider::GuidingStats, rp_guider::GuiderError> {
+            unreachable!("not exercised by this test")
+        }
+    }
+
+    /// A guider service that never confirms the stop must not delay
+    /// parking indefinitely — `SAFETY_STOP_GUIDING_TIMEOUT` bounds the
+    /// wait, and no `guide_stopped` event fires since the stop was
+    /// never confirmed. Paused time makes the 15 s bound resolve
+    /// instantly instead of slowing down the test suite.
+    #[tokio::test(start_paused = true)]
+    async fn stop_guiding_gives_up_after_the_safety_timeout_when_the_service_is_wedged() {
+        let mut enforcer = enforcer_with(vec![ScriptedProbe::new("sm", vec![Ok(false)])]);
+        enforcer.guider = Some(Arc::new(HangingGuiderClient));
+        let mut events = enforcer.event_bus.subscribe();
+
+        let mut state = HashMap::new();
+        enforcer.poll_once(&mut state, true).await;
+
+        assert!(!enforcer.safety_ok.load(Ordering::SeqCst));
+        let changed = events.recv().await.unwrap();
+        assert_eq!(changed.event, "safety_changed");
+        assert!(
+            events.try_recv().is_err(),
+            "no guide_stopped event when the stop never confirmed"
+        );
+    }
+
+    #[tokio::test]
     async fn unsafe_without_a_session_still_gates() {
         let enforcer = enforcer_with(vec![ScriptedProbe::new("sm", vec![Ok(false)])]);
         let mut state = HashMap::new();
@@ -475,9 +679,116 @@ mod tests {
             session,
             Arc::new(LocalSessionManager::default()),
             Arc::new(AtomicBool::new(true)),
+            None,
             Duration::from_secs(10),
         );
         assert!(enforcer.is_none());
+    }
+
+    /// The unsafe transition parks a connected mount: a registry with
+    /// a real (stubbed-Alpaca) mount must receive `PUT park`.
+    #[tokio::test]
+    async fn unsafe_transition_parks_the_connected_mount() {
+        use axum::routing::{get, put};
+        use axum::{Json, Router};
+
+        let park_called = Arc::new(AtomicBool::new(false));
+        let park_flag = park_called.clone();
+        let app = Router::new()
+            .route(
+                "/management/v1/configureddevices",
+                get(|| async {
+                    Json(serde_json::json!({
+                        "Value": [
+                            {
+                                "DeviceName": "Telescope 0",
+                                "DeviceType": "Telescope",
+                                "DeviceNumber": 0,
+                                "UniqueID": "test-scope-uid"
+                            }
+                        ],
+                        "ErrorNumber": 0,
+                        "ErrorMessage": ""
+                    }))
+                }),
+            )
+            .route(
+                "/api/v1/telescope/0/connected",
+                put(|| async { Json(serde_json::json!({"ErrorNumber": 0, "ErrorMessage": ""})) }),
+            )
+            .route(
+                "/api/v1/telescope/0/park",
+                put(move || {
+                    let park_flag = park_flag.clone();
+                    async move {
+                        park_flag.store(true, Ordering::SeqCst);
+                        Json(serde_json::json!({"ErrorNumber": 0, "ErrorMessage": ""}))
+                    }
+                }),
+            );
+        let stub = crate::equipment::test_support::spawn_stub(app).await;
+
+        let equipment_cfg = crate::config::EquipmentConfig {
+            cameras: vec![],
+            mount: Some(crate::config::MountConfig {
+                alpaca_url: stub.url(),
+                device_number: 0,
+                settle_after_slew: None,
+                slew_rate_arcsec_per_sec: Default::default(),
+                auth: None,
+            }),
+            focusers: vec![],
+            filter_wheels: vec![],
+            cover_calibrators: vec![],
+            safety_monitors: vec![],
+        };
+        let equipment = Arc::new(EquipmentRegistry::new(&equipment_cfg).await);
+        assert!(
+            equipment.mount.as_ref().is_some_and(|m| m.connected),
+            "test setup: the stubbed mount must connect"
+        );
+
+        let mut enforcer = enforcer_with(vec![ScriptedProbe::new("sm", vec![Ok(false)])]);
+        enforcer.equipment = equipment;
+
+        let mut state = HashMap::new();
+        enforcer.poll_once(&mut state, true).await;
+
+        assert!(
+            park_called.load(Ordering::SeqCst),
+            "the unsafe transition must command Park on the connected mount"
+        );
+    }
+
+    /// A configured-but-unreachable mount is skipped without error —
+    /// the transition still gates.
+    #[tokio::test]
+    async fn park_skips_a_disconnected_mount() {
+        let equipment_cfg = crate::config::EquipmentConfig {
+            cameras: vec![],
+            mount: Some(crate::config::MountConfig {
+                // Client construction fails instantly on a bad URL, so
+                // the entry is disconnected without any retry delay.
+                alpaca_url: "not-a-url".to_string(),
+                device_number: 0,
+                settle_after_slew: None,
+                slew_rate_arcsec_per_sec: Default::default(),
+                auth: None,
+            }),
+            focusers: vec![],
+            filter_wheels: vec![],
+            cover_calibrators: vec![],
+            safety_monitors: vec![],
+        };
+        let equipment = Arc::new(EquipmentRegistry::new(&equipment_cfg).await);
+
+        let mut enforcer = enforcer_with(vec![ScriptedProbe::new("sm", vec![Ok(false)])]);
+        enforcer.equipment = equipment;
+
+        let mut state = HashMap::new();
+        enforcer.poll_once(&mut state, true).await;
+
+        assert!(!enforcer.safety_ok.load(Ordering::SeqCst));
     }
 
     /// Build the enforcer from a real registry so the production
@@ -610,6 +921,7 @@ mod tests {
             session,
             Arc::new(LocalSessionManager::default()),
             Arc::new(AtomicBool::new(true)),
+            None,
             Duration::from_millis(1),
         )
         .expect("monitors are configured");

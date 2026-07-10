@@ -4170,6 +4170,7 @@ dependencies = [
  "rp-catalog",
  "rp-ephemeris",
  "rp-fits",
+ "rp-guider",
  "rp-plate-solver",
  "rp-tls",
  "rpassword",
@@ -4235,6 +4236,22 @@ dependencies = [
  "fitsrs",
  "tempfile",
  "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "rp-guider"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "humantime-serde",
+ "mockall",
+ "reqwest 0.13.4",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
  "tracing",
 ]
 

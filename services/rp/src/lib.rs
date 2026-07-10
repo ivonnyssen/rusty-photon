@@ -152,6 +152,24 @@ impl ServerBuilder {
             None => (None, None),
         };
 
+        // Build the guider HTTP client when the operator configured
+        // one — same aborts-loud posture as the plate solver. The
+        // client Arc is shared between the MCP tools and the safety
+        // enforcer's stop-guiding-on-unsafe step.
+        let (guider_client, guider_defaults) = match &config.guider {
+            Some(g_cfg) => {
+                let client = rp_guider::GuiderServiceClient::new(g_cfg.url.clone(), g_cfg.timeout)
+                    .map_err(|e| {
+                        crate::error::RpError::Config(format!(
+                            "guider: failed to build HTTP client: {e}"
+                        ))
+                    })?;
+                let arc: Arc<dyn rp_guider::GuiderClient> = Arc::new(client);
+                (Some(arc), g_cfg.defaults())
+            }
+            None => (None, crate::config::GuiderDefaults::default()),
+        };
+
         let mcp = McpHandler::new(
             equipment.clone(),
             event_bus.clone(),
@@ -162,6 +180,7 @@ impl ServerBuilder {
         .with_planner_config(targets, default_min_alt)
         .with_progress_store(planner_progress)
         .with_plate_solver(plate_solver_client, plate_solver_default_radius)
+        .with_guider(guider_client.clone(), guider_defaults)
         .with_centering_config(config.centering.clone());
 
         // Cancellation token for in-flight SSE streams
@@ -184,6 +203,7 @@ impl ServerBuilder {
             session.clone(),
             mcp_sessions.clone(),
             safety_ok.clone(),
+            guider_client,
             config.safety.poll_interval,
         );
 

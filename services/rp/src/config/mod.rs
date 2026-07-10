@@ -4,7 +4,8 @@
 //! Each domain-specific block lives in a sibling module:
 //! [`session`], [`site`], [`equipment`] (plus the per-device-type
 //! configs [`camera`], [`focuser`], [`mount`], [`filter_wheel`],
-//! [`cover_calibrator`]), [`imaging`], [`plate_solver`], [`server`].
+//! [`cover_calibrator`]), [`imaging`], [`plate_solver`], [`guider`],
+//! [`server`].
 //! The submodules' public types are re-exported here so existing
 //! `crate::config::CameraConfig` callsites keep working unchanged.
 
@@ -14,6 +15,7 @@ pub mod cover_calibrator;
 pub mod equipment;
 pub mod filter_wheel;
 pub mod focuser;
+pub mod guider;
 pub mod imaging;
 pub mod mount;
 pub mod plate_solver;
@@ -29,6 +31,7 @@ pub use cover_calibrator::CoverCalibratorConfig;
 pub use equipment::EquipmentConfig;
 pub use filter_wheel::FilterWheelConfig;
 pub use focuser::FocuserConfig;
+pub use guider::{GuiderConfig, GuiderDefaults};
 pub use imaging::ImagingConfig;
 pub use mount::MountConfig;
 pub use plate_solver::PlateSolverConfig;
@@ -80,6 +83,13 @@ pub struct Config {
     /// infrastructure, not part of the equipment surface.
     #[serde(default)]
     pub plate_solver: Option<PlateSolverConfig>,
+    /// Optional guider service. When `None`, the guiding MCP tools
+    /// (`start_guiding`, `stop_guiding`, `dither`, ...) return
+    /// `guider not configured` and the safety enforcer skips its
+    /// stop-guiding step. Same optional-infrastructure shape as
+    /// `plate_solver`.
+    #[serde(default)]
+    pub guider: Option<GuiderConfig>,
     pub server: ServerConfig,
 }
 

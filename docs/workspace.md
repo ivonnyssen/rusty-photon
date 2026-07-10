@@ -93,6 +93,7 @@ listed here.
 | [rusty-photon-service-lifecycle](../crates/rusty-photon-service-lifecycle/) | `crates/rusty-photon-service-lifecycle` | Unified service lifecycle: tokio runtime + signal handlers + optional Windows SCM, exposing a single `Shutdown` handle across the workspace. See [`docs/crates/rusty-photon-service-lifecycle.md`](crates/rusty-photon-service-lifecycle.md). |
 | [rp-fits](../crates/rp-fits/) | `crates/rp-fits` | FITS reader/writer wrapper (pure-Rust `fitsrs`) for Rusty Photon services. See [ADR-001](decisions/001-fits-file-support.md). |
 | [rp-plate-solver](../crates/rp-plate-solver/) | `crates/rp-plate-solver` | HTTP client for the `plate-solver` rp-managed service, used by `rp`'s `plate_solve` MCP tool. See [ADR-005](decisions/005-plate-solver.md). |
+| [rp-guider](../crates/rp-guider/) | `crates/rp-guider` | HTTP client for the guider rp-managed service (`phd2-guider serve`), used by `rp`'s guiding MCP tools and the safety enforcer's stop-guiding-on-unsafe step. |
 | [qhyccd-rs](../crates/qhyccd-rs/) | `crates/qhyccd-rs` (+ nested `libqhyccd-sys`) | Vendored first-party safe bindings for the proprietary QHYCCD SDK; `libqhyccd-sys` holds the raw FFI. Used by `qhy-camera`. See [ADR-009](decisions/009-vendor-qhyccd-rs.md). |
 | [zwo-rs](../crates/zwo-rs/) | `crates/zwo-rs` (+ nested `libzwo-sys`) | Vendored first-party safe bindings for the ZWO ASI camera + EFW filter-wheel + EAF focuser SDK (MIT); `libzwo-sys` holds the raw FFI. Used by `zwo-camera` and `zwo-focuser`. See [ADR-008](decisions/008-zwo-camera-native-sdk-ffi.md) + [ADR-010](decisions/010-vendor-zwo-rs.md). |
 
@@ -355,7 +356,8 @@ worked example.
   → `MockQhyTransportFactory`). Declared by `ppba-driver`, `qhy-focuser`,
   `pa-falcon-rotator`, `dsd-fp2`, `star-adventurer-gti`, `sky-survey-camera`
   (`mock = []`), the camera drivers `qhy-camera` / `zwo-camera`
-  (`mock = ["simulation"]`), and `rp-plate-solver` (`mock = ["dep:mockall"]`).
+  (`mock = ["simulation"]`), and `rp-plate-solver` / `rp-guider`
+  (`mock = ["dep:mockall"]`).
 
 ## Build Notes
 

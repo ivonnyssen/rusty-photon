@@ -3,9 +3,10 @@
 //! `rp` exposes its action surface as MCP tools over rmcp's
 //! streamable-HTTP transport. The handler [`McpHandler`] owns shared
 //! state (equipment registry, event bus, session config, image cache,
-//! observer site, planner targets, plate-solver client) and exposes 41
-//! tools across 9 categories: camera, imaging, filter wheel,
-//! cover/calibrator, focuser, mount, auto_focus, plate_solve, planner.
+//! observer site, planner targets, plate-solver client, guider
+//! client) and exposes 50 tools across 11 categories: camera,
+//! imaging, filter wheel, cover/calibrator, focuser, mount,
+//! auto_focus, plate_solve, guider, center_on_target, planner.
 //!
 //! ## Layout
 //!

@@ -11,6 +11,7 @@ pub mod center_on_target;
 pub mod cover_calibrator;
 pub mod filter_wheel;
 pub mod focuser;
+pub mod guider;
 pub mod imaging;
 pub mod mount;
 pub mod planner;
