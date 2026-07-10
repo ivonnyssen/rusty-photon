@@ -32,7 +32,7 @@ for pkgdir in services/*/pkg; do
             || err "$svc: ExecStart must be exactly /usr/bin/$name (config is XDG-resolved; no --config flag)"
         # Reload-capable services (ServiceRunner::with_reload) expose SIGHUP.
         case "$svc" in
-            filemonitor|ppba-driver|qhy-focuser|sky-survey-camera|pa-falcon-rotator|pa-scops-oag|dsd-fp2|star-adventurer-gti|qhy-camera|zwo-camera)
+            filemonitor|ppba-driver|qhy-focuser|sky-survey-camera|pa-falcon-rotator|pa-scops-oag|dsd-fp2|star-adventurer-gti|qhy-camera|zwo-camera|zwo-focuser)
                 grep -q '^ExecReload=/bin/kill -HUP \$MAINPID$' "$unit" \
                     || err "$svc: reload-capable service must have ExecReload=/bin/kill -HUP \$MAINPID"
                 ;;
@@ -48,12 +48,17 @@ for pkgdir in services/*/pkg; do
     fi
 
     # postrm is byte-identical everywhere. postinst is byte-identical too,
-    # except the camera packages: theirs must equal postinst.common with the
-    # canonical udev stanza inserted before #DEBHELPER# (still deterministic).
+    # except the udev-shipping packages: theirs must equal postinst.common
+    # with the canonical udev stanza inserted before #DEBHELPER# (still
+    # deterministic). zwo-focuser reuses the same camera-class stanza even
+    # though its firmware lives in onboard flash (like the ASI camera and
+    # EFW) — the stanza's fw_helper check is a harmless no-op for it (the
+    # package name doesn't end in "-camera", so the helper path can never
+    # exist), and a byte-identical shared file beats a third variant.
     cmp -s "packaging/postrm.common" "$pkgdir/postrm" \
         || err "$svc: pkg/postrm differs from packaging/postrm.common"
     case "$svc" in
-        qhy-camera|zwo-camera)
+        qhy-camera|zwo-camera|zwo-focuser)
             expected=$(mktemp)
             awk '/^#DEBHELPER#/ { while ((getline line < "packaging/postinst.udev-stanza") > 0) print line } { print }' \
                 packaging/postinst.common > "$expected"
@@ -77,6 +82,13 @@ for pkgdir in services/*/pkg; do
         zwo-camera)
             [ -f "$pkgdir/90-rusty-photon-zwo.rules" ] \
                 || err "$svc: missing pkg/90-rusty-photon-zwo.rules"
+            ;;
+        zwo-focuser)
+            # Uniquely named (not zwo-camera's 90-rusty-photon-zwo.rules) so
+            # both packages can install their udev rule on the same host
+            # without a dpkg/rpm filename collision.
+            [ -f "$pkgdir/90-rusty-photon-zwo-focuser.rules" ] \
+                || err "$svc: missing pkg/90-rusty-photon-zwo-focuser.rules"
             ;;
     esac
 
@@ -110,10 +122,12 @@ fi
 # The packaged ZWO SDK license must match the copy vendored with the SDK
 # headers (single upstream source; the pkg/ copy exists only because cargo-deb
 # assets should stay inside the crate directory).
-zl=services/zwo-camera/pkg/ZWO-SDK-LICENSE.txt
 zv=crates/zwo-rs/libzwo-sys/sdk/include/license.txt
-cmp -s "$zv" "$zl" \
-    || err "zwo-camera: pkg/ZWO-SDK-LICENSE.txt differs from $zv"
+for svc in zwo-camera zwo-focuser; do
+    zl="services/$svc/pkg/ZWO-SDK-LICENSE.txt"
+    cmp -s "$zv" "$zl" \
+        || err "$svc: pkg/ZWO-SDK-LICENSE.txt differs from $zv"
+done
 
 # The ZWO blob ref is pinned in two places once the build script exists:
 # build-packages.sh (stages pkg/lib/ for the deb) and the CI action's default

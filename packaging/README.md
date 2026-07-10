@@ -18,21 +18,27 @@ Every packaged daemon owns a `services/<svc>/pkg/` directory containing:
 
 The maintainer scripts are deliberately service-agnostic: they derive the
 service name from `$DPKG_MAINTSCRIPT_PACKAGE`, so the copies never diverge.
-The camera packages (`qhy-camera`, `zwo-camera`) are the one sanctioned
-variant: their `postinst` must be exactly `postinst.common` with
-[`postinst.udev-stanza`](postinst.udev-stanza) inserted before the
+The camera packages (`qhy-camera`, `zwo-camera`) plus `zwo-focuser` are the
+udev-shipping variant: their `postinst` must be exactly `postinst.common`
+with [`postinst.udev-stanza`](postinst.udev-stanza) inserted before the
 `#DEBHELPER#` line (they ship udev rules). The checker verifies that exact
 construction, byte for byte. The stanza also prints a pointer to
 `/usr/sbin/<pkg-minus-camera>-firmware-install` when the package ships one
 (qhy-camera does — proprietary firmware is downloaded by the operator, never
-packaged, per ADR-013; zwo-camera bundles its MIT blobs instead, so the
-pointer is a no-op there). Camera `pkg/` dirs additionally hold the udev
-rule file and the per-camera native-SDK payload pieces, all listed as plain
-`assets` in the metadata blocks: qhy-camera the firmware helper; zwo-camera
-the committed `ZWO-SDK-LICENSE.txt` (checker-`cmp`'d against the copy
-vendored with the libzwo-sys headers) plus a gitignored `lib/` dir into
-which `scripts/build-packages.sh` stages the MIT SDK blobs right before
-`cargo deb` runs.
+packaged, per ADR-013; zwo-camera and zwo-focuser bundle their MIT blobs
+instead, so the pointer is a no-op for both — `zwo-focuser`'s package name
+doesn't even end in `-camera`, so the substitution leaves the helper path
+unchanged and permanently missing, which is exactly the desired no-op).
+These `pkg/` dirs additionally hold the udev rule file and the native-SDK
+payload pieces, all listed as plain `assets` in the metadata blocks:
+qhy-camera the firmware helper; zwo-camera and zwo-focuser each their own
+committed `ZWO-SDK-LICENSE.txt` (checker-`cmp`'d against the copy vendored
+with the libzwo-sys headers) plus a gitignored `lib/` dir into which
+`scripts/build-packages.sh` stages the relevant MIT SDK blob(s) right before
+`cargo deb` runs — libzwo-sys links `ASICamera2` + `EFWFilter` + `EAFFocuser`
+unconditionally, so building either zwo-* service stages all three into
+zwo-camera's `lib/` (the shared link-search dir), while each service's own
+`lib/` only carries the blob(s) its Cargo.toml assets reference.
 
 `scripts/check-pkg-assets.sh` enforces all of this — run it after touching
 anything under `packaging/` or a service's `pkg/` directory. It discovers

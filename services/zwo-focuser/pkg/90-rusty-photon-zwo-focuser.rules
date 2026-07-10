@@ -1,0 +1,12 @@
+# Rusty Photon ZWO EAF access (installed by rusty-photon-zwo-focuser).
+#
+# ZWO EAF focusers (VID 03c3) ship their firmware in onboard flash — no
+# upload step, no vendor udev rules required — so this is the only rule
+# file the package needs: make the devices group-accessible to plugdev
+# instead of relying on ZWO's world-writable MODE="0666" rules.
+#
+# Named uniquely (not 90-rusty-photon-zwo.rules, zwo-camera's file) so
+# both packages can install their udev rule on the same host without a
+# dpkg/rpm filename collision — both files carry identical VID-matching
+# content otherwise.
+SUBSYSTEMS=="usb", ATTRS{idVendor}=="03c3", GROUP="plugdev", MODE="0660"
