@@ -19,5 +19,31 @@
 )]
 // Generated bindings are not idiomatic Rust; do not lint them.
 #![allow(clippy::all, clippy::pedantic, clippy::nursery)]
+// `zwo_keep_udev` is a custom cfg emitted by build.rs, not a Cargo feature;
+// it predates this crate's MSRV supporting `cargo:rustc-check-cfg`, so the
+// lint (and, on old toolchains, the lint's own name) is allowed instead.
+#![allow(unknown_lints)]
+#![allow(unexpected_cfgs)]
 
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
+
+/// Keeps `libudev` in the consumer binary's `DT_NEEDED`.
+///
+/// The INDI-vendored EFW/EAF blobs reference `udev_*` symbols **without**
+/// declaring libudev in their own `DT_NEEDED` (verified with
+/// `nm -D --undefined-only` on the x64 + armv8 blobs), so the *consumer
+/// binary* must carry the libudev dependency for the loader to resolve them.
+/// The `-ludev` directive from `build.rs` is not sufficient: the linker's
+/// as-needed default drops a library no regular object references. This
+/// `#[used]` function-pointer static is that regular-object reference. The
+/// `zwo_keep_udev` cfg is emitted by `build.rs` exactly when the udev link
+/// directive is (Linux, `efw`/`focuser` features, not `ZWO_SKIP_NATIVE_LINK`).
+#[cfg(zwo_keep_udev)]
+mod udev_keepalive {
+    extern "C" {
+        fn udev_new() -> *mut std::os::raw::c_void;
+    }
+    #[used]
+    #[no_mangle]
+    static ZWO_SYS_KEEP_UDEV: unsafe extern "C" fn() -> *mut std::os::raw::c_void = udev_new;
+}

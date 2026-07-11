@@ -17,49 +17,73 @@
 //! the rusty-photon `docs/plans/zwo-driver.md` plan. Scope order: **Camera →
 //! EFW filter wheel → EAF focuser**.
 //!
+//! ## Device features (`camera` / `efw` / `focuser`)
+//!
+//! The three ZWO device SDKs are independent libraries with no shared handle,
+//! so each device surface is its own additive feature that compiles the matching
+//! module ([`Camera`], [`FilterWheel`], [`Focuser`]) and forwards to the
+//! matching `libzwo-sys` link feature. **Default = all three** (the pre-split
+//! behaviour); narrow consumers (e.g. rusty-photon's `zwo-camera` /
+//! `zwo-focuser` services) use `default-features = false` and pick one, so a
+//! camera-only binary never links `libEFWFilter`/`libEAFFocuser` and vice
+//! versa.
+//!
 //! ## `simulation` feature
 //!
 //! Mirrors qhyccd-rs: enables a hardware-free, in-Rust simulated environment for
 //! development and tests. Note (as with qhyccd-rs) the SDK is still *linked* when
 //! this feature is enabled — it removes the hardware, not the link. With the
 //! feature on, the SDK is never called: enumeration reports the fixed simulated
-//! device counts ([`SIM_CAMERA_COUNT`], [`SIM_FILTER_WHEEL_COUNT`]).
+//! device counts (`SIM_CAMERA_COUNT`, `SIM_FILTER_WHEEL_COUNT`,
+//! `SIM_FOCUSER_COUNT` — each present only with its device feature).
 //!
 //! ## Build requirements
 //!
 //! - **libclang** — `libzwo-sys` runs `bindgen` at build time (needed for
 //!   `check`/`clippy`/build; *not* the SDK).
-//! - **The ZWO ASI SDK** (`libASICamera2`, `libEFWFilter`) + **libusb-1.0** on
-//!   the link path — needed to *link* (i.e. `build`/`test`), even with the
+//! - **The enabled ZWO SDK libraries** (`libASICamera2` for `camera` — plus
+//!   **libusb-1.0** —, `libEFWFilter` for `efw`, `libEAFFocuser` for `focuser`)
+//!   on the link path — needed to *link* (i.e. `build`/`test`), even with the
 //!   `simulation` feature. See the README.
 
 /// Raw, unsafe FFI bindings (`bindgen`). Prefer the safe API in this crate.
 pub use libzwo_sys as sys;
 
+#[cfg(feature = "camera")]
 mod camera;
+#[cfg(feature = "efw")]
 mod efw;
 mod error;
-#[cfg(not(feature = "simulation"))]
+// Only needed by the real-FFI path of the per-device modules; compiled out
+// under `simulation` and when no device feature is enabled.
+#[cfg(all(
+    not(feature = "simulation"),
+    any(feature = "camera", feature = "efw", feature = "focuser")
+))]
 mod ffi_util;
+#[cfg(feature = "focuser")]
 mod focuser;
+#[cfg(feature = "camera")]
 pub use camera::{
     BayerPattern, Camera, CameraInfo, ControlCaps, ControlType, ControlValue, ExposureStatus,
     GuideDirection, ImageType, RoiFormat,
 };
+#[cfg(feature = "efw")]
 pub use efw::{FilterWheel, FilterWheelInfo};
 pub use error::{asi_check, eaf_check, efw_check, AsiError, EafError, EfwError, Error, Result};
+#[cfg(feature = "focuser")]
 pub use focuser::{Focuser, FocuserInfo};
 
 /// Number of simulated ASI cameras presented when the `simulation` feature is on.
-#[cfg(feature = "simulation")]
+#[cfg(all(feature = "simulation", feature = "camera"))]
 pub const SIM_CAMERA_COUNT: usize = 1;
 
 /// Number of simulated EFW filter wheels presented when `simulation` is on.
-#[cfg(feature = "simulation")]
+#[cfg(all(feature = "simulation", feature = "efw"))]
 pub const SIM_FILTER_WHEEL_COUNT: usize = 1;
 
 /// Number of simulated EAF focusers presented when `simulation` is on.
-#[cfg(feature = "simulation")]
+#[cfg(all(feature = "simulation", feature = "focuser"))]
 pub const SIM_FOCUSER_COUNT: usize = 1;
 
 /// Entry point to the ZWO SDK.
@@ -87,6 +111,7 @@ impl Sdk {
     ///
     /// # Errors
     /// Infallible today; returns [`Result`] for forward compatibility.
+    #[cfg(feature = "camera")]
     pub fn camera_count(&self) -> Result<usize> {
         #[cfg(feature = "simulation")]
         let count = SIM_CAMERA_COUNT;
@@ -105,6 +130,7 @@ impl Sdk {
     ///
     /// # Errors
     /// Infallible today; returns [`Result`] for forward compatibility.
+    #[cfg(feature = "efw")]
     pub fn filter_wheel_count(&self) -> Result<usize> {
         #[cfg(feature = "simulation")]
         let count = SIM_FILTER_WHEEL_COUNT;
@@ -122,6 +148,7 @@ impl Sdk {
     ///
     /// # Errors
     /// Infallible today; returns [`Result`] for forward compatibility.
+    #[cfg(feature = "camera")]
     pub fn asi_version(&self) -> Result<String> {
         #[cfg(feature = "simulation")]
         let version = "simulation".to_owned();
@@ -139,6 +166,7 @@ impl Sdk {
     ///
     /// # Errors
     /// Infallible today; returns [`Result`] for forward compatibility.
+    #[cfg(feature = "efw")]
     pub fn efw_version(&self) -> Result<String> {
         #[cfg(feature = "simulation")]
         let version = "simulation".to_owned();
@@ -156,6 +184,7 @@ impl Sdk {
     ///
     /// # Errors
     /// Infallible today; returns [`Result`] for forward compatibility.
+    #[cfg(feature = "focuser")]
     pub fn focuser_count(&self) -> Result<usize> {
         #[cfg(feature = "simulation")]
         let count = SIM_FOCUSER_COUNT;
@@ -173,6 +202,7 @@ impl Sdk {
     ///
     /// # Errors
     /// Infallible today; returns [`Result`] for forward compatibility.
+    #[cfg(feature = "focuser")]
     pub fn eaf_version(&self) -> Result<String> {
         #[cfg(feature = "simulation")]
         let version = "simulation".to_owned();
@@ -189,7 +219,10 @@ impl Sdk {
 
 /// Read an SDK-owned, NUL-terminated C string into an owned [`String`]
 /// (lossy on invalid UTF-8). An empty string is returned for a null pointer.
-#[cfg(not(feature = "simulation"))]
+#[cfg(all(
+    not(feature = "simulation"),
+    any(feature = "camera", feature = "efw", feature = "focuser")
+))]
 fn version_string(ptr: *const std::os::raw::c_char) -> String {
     if ptr.is_null() {
         return String::new();
@@ -206,9 +239,9 @@ pub mod simulation {
     //! Hardware-free, in-Rust simulation backend (no SDK calls).
     //!
     //! Enumeration of the simulated environment is reported by [`crate::Sdk`]
-    //! via [`crate::SIM_CAMERA_COUNT`] / [`crate::SIM_FILTER_WHEEL_COUNT`].
-    //! Simulated frames and EFW motion land with the Camera and filter-wheel
-    //! device handles.
+    //! via `SIM_CAMERA_COUNT` / `SIM_FILTER_WHEEL_COUNT` / `SIM_FOCUSER_COUNT`
+    //! (each present only with its device feature). Simulated frames and EFW
+    //! motion land with the Camera and filter-wheel device handles.
     use rand::RngExt;
 
     /// One 16-bit noise sample — a placeholder for simulated sensor frames.
@@ -249,32 +282,60 @@ mod tests {
         Sdk::new().unwrap();
     }
 
+    // Per-device enumeration/version tests: each gated on its device feature
+    // (the Sdk surface itself is feature-gated per ADR-014). Without the
+    // simulation feature these call the real SDK; with no hardware attached the
+    // counts are zero, but the calls must not panic.
+
+    #[cfg(feature = "camera")]
     #[test]
-    fn enumeration_returns_a_count() {
+    fn camera_enumeration_returns_a_count() {
         let sdk = Sdk::new().unwrap();
         let cameras = sdk.camera_count().unwrap();
-        let wheels = sdk.filter_wheel_count().unwrap();
-        let focusers = sdk.focuser_count().unwrap();
         #[cfg(feature = "simulation")]
-        {
-            assert_eq!(cameras, SIM_CAMERA_COUNT);
-            assert_eq!(wheels, SIM_FILTER_WHEEL_COUNT);
-            assert_eq!(focusers, SIM_FOCUSER_COUNT);
-        }
-        // Without the simulation feature this calls the real SDK; with no
-        // hardware attached the counts are zero, but the call must not panic.
+        assert_eq!(cameras, SIM_CAMERA_COUNT);
         #[cfg(not(feature = "simulation"))]
-        {
-            let _ = (cameras, wheels, focusers);
-        }
+        let _ = cameras;
     }
 
+    #[cfg(feature = "efw")]
     #[test]
-    fn sdk_versions_are_non_empty() {
+    fn filter_wheel_enumeration_returns_a_count() {
         let sdk = Sdk::new().unwrap();
-        assert!(!sdk.asi_version().unwrap().is_empty());
-        assert!(!sdk.efw_version().unwrap().is_empty());
-        assert!(!sdk.eaf_version().unwrap().is_empty());
+        let wheels = sdk.filter_wheel_count().unwrap();
+        #[cfg(feature = "simulation")]
+        assert_eq!(wheels, SIM_FILTER_WHEEL_COUNT);
+        #[cfg(not(feature = "simulation"))]
+        let _ = wheels;
+    }
+
+    #[cfg(feature = "focuser")]
+    #[test]
+    fn focuser_enumeration_returns_a_count() {
+        let sdk = Sdk::new().unwrap();
+        let focusers = sdk.focuser_count().unwrap();
+        #[cfg(feature = "simulation")]
+        assert_eq!(focusers, SIM_FOCUSER_COUNT);
+        #[cfg(not(feature = "simulation"))]
+        let _ = focusers;
+    }
+
+    #[cfg(feature = "camera")]
+    #[test]
+    fn asi_sdk_version_is_non_empty() {
+        assert!(!Sdk::new().unwrap().asi_version().unwrap().is_empty());
+    }
+
+    #[cfg(feature = "efw")]
+    #[test]
+    fn efw_sdk_version_is_non_empty() {
+        assert!(!Sdk::new().unwrap().efw_version().unwrap().is_empty());
+    }
+
+    #[cfg(feature = "focuser")]
+    #[test]
+    fn eaf_sdk_version_is_non_empty() {
+        assert!(!Sdk::new().unwrap().eaf_version().unwrap().is_empty());
     }
 
     #[test]

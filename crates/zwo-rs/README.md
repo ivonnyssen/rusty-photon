@@ -36,17 +36,32 @@ The SDK headers are MIT-licensed (ZWO Company); their notice is vendored at
 [`libzwo-sys/sdk/include/license.txt`](libzwo-sys/sdk/include/license.txt). The
 SDK **binary** is *not* vendored — it is installed on the system (below).
 
+## Device features (`camera` / `efw` / `focuser`)
+
+The three ZWO device SDKs are independent libraries, so each device surface is
+its own additive feature: it compiles the matching module (`Camera` /
+`FilterWheel` / `Focuser`, plus the matching `Sdk` methods) and links the
+matching SDK library. **Default = all three** — a bare build behaves like the
+pre-split crate. Narrow consumers pick one:
+
+```toml
+zwo-rs = { version = "0.1", default-features = false, features = ["focuser"] }
+```
+
+links (and needs installed) only `libEAFFocuser`.
+
 ## Build requirements
 
 | Need | For | Notes |
 |---|---|---|
 | **libclang** | `bindgen` (so `check`/`clippy`/`doc`/`build`) | Set `LIBCLANG_PATH` if not auto-found — e.g. `/usr/lib/<triple>` (Debian) or `/usr/lib64` (Fedora). |
-| **ZWO ASI SDK** (`libASICamera2`, `libEFWFilter`, `libEAFFocuser`) + **libusb-1.0** | *linking* (`build`/`test`) | Required even with `--features simulation`. `cargo check`/`clippy` do **not** link. |
+| **The enabled ZWO SDK libraries** (`libASICamera2` + **libusb-1.0** for `camera`; `libEFWFilter` for `efw`; `libEAFFocuser` for `focuser`) | *linking* (`build`/`test`) | Required even with `--features simulation`. `cargo check`/`clippy` do **not** link. |
 | udev `99-asi.rules` | running against real hardware (Linux) | VID `03c3`, `MODE=0666`, `usbfs_memory_mb=200`. |
 
 Install the SDK from the INDI mirror (MIT) — Linux x86_64 = `x64`, aarch64 =
 `armv8`, macOS arm64 = `mac_arm64`. The ref is pinned to a commit SHA (not
-`master`) for reproducibility; bump it to adopt a newer SDK:
+`master`) for reproducibility; bump it to adopt a newer SDK (with narrowed
+device features you only need the libraries those features link):
 
 ```sh
 ARCH=x64   # aarch64 → armv8, macOS arm64 → mac_arm64

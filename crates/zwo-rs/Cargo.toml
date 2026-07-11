@@ -38,14 +38,26 @@ skip-link-env = "ZWO_SKIP_NATIVE_LINK"
 needs-libclang = true
 
 [features]
-default = []
+# Default to the full device surface so a bare/external build behaves like the
+# pre-split crate; rusty-photon's services narrow to their own device via
+# `default-features = false` (ADR-014).
+default = ["camera", "efw", "focuser"]
+# Per-device surface + native link (ADR-014): each feature compiles this crate's
+# module for that device and forwards to the matching libzwo-sys link feature.
+# The three ZWO SDKs are independent libraries, so a camera-only consumer never
+# links (nor ships) libEFWFilter/libEAFFocuser, and vice versa.
+camera = ["libzwo-sys/camera"]
+efw = ["libzwo-sys/efw"]
+focuser = ["libzwo-sys/focuser"]
 # Mirrors qhyccd-rs: a hardware-free, in-Rust simulated environment for
 # development and tests. NOTE: like qhyccd-rs, this removes the *camera*, not the
 # SDK *link* — the native SDK is still linked when this feature is enabled.
 simulation = ["rand", "rayon"]
 
 [dependencies]
-libzwo-sys = { version = "0.1.0", path = "libzwo-sys" }
+# default-features = false: the device features above forward explicitly, so a
+# narrow zwo-rs build yields an equally narrow libzwo-sys link.
+libzwo-sys = { version = "0.1.0", path = "libzwo-sys", default-features = false }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 # rand/rayon are simulation-only (behind the `simulation` feature) and shared with

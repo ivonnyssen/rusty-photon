@@ -1,15 +1,18 @@
 //! Build script for `libzwo-sys`.
 //!
 //! 1. Generates raw FFI bindings with `bindgen` from the vendored MIT headers in
-//!    `sdk/include/` (parsed as C++ for the EFW/EAF `bool`).
-//! 2. Emits the link directives for the system-installed ZWO SDK
-//!    (`libASICamera2`, `libEFWFilter`, `libEAFFocuser`) + `libusb-1.0` + the C++
-//!    runtime.
+//!    `sdk/include/` (parsed as C++ for the EFW/EAF `bool`). The bindings always
+//!    cover the whole header set — bare extern declarations force no linkage, so
+//!    generation is not feature-gated.
+//! 2. Emits the link directives for the system-installed ZWO SDK, **gated per
+//!    device feature** (ADR-014): `camera` → `libASICamera2` (+ `libusb-1.0`),
+//!    `efw` → `libEFWFilter`, `focuser` → `libEAFFocuser`, plus the C++ runtime
+//!    whenever any device SDK is linked.
 //!
-//! Mirrors `libqhyccd-sys`'s system-installed-SDK model: by default the link is
-//! emitted, so building/linking (`cargo build`/`test`) requires the SDK on the
-//! link path — even with the `simulation` feature. `cargo check`/`clippy` (no
-//! link step) only need libclang for bindgen.
+//! Mirrors `libqhyccd-sys`'s system-installed-SDK model: with a device feature
+//! on, the link is emitted, so building/linking (`cargo build`/`test`) requires
+//! that SDK on the link path — even with the `simulation` feature. `cargo
+//! check`/`clippy` (no link step) only need libclang for bindgen.
 //!
 //! Two env overrides:
 //! - `ZWO_SDK_LIB_DIR=/path/to/lib` — add an SDK search path.
@@ -54,20 +57,33 @@ fn main() {
 
 fn emit_link_directives() {
     // Allow the native link to be suppressed entirely. A `simulation` build
-    // references no ASI/EFW symbols — the real FFI calls are
+    // references no ASI/EFW/EAF symbols — the real FFI calls are
     // `#[cfg(not(feature = "simulation"))]`, and bare `extern` declarations do
     // not force the linker to resolve a library — so with these directives
     // omitted the crate links with no native SDK present. Used by the sanitizer
     // CI job, which exercises only the pure-Rust simulation path and provisions
     // no SDK. Env-gated, *not* feature-gated: a Cargo feature would be turned on
     // by `--all-features` everywhere and silently stop every such build from
-    // linking the real SDK.
+    // linking the real SDK. (The per-device `camera`/`efw`/`focuser` features
+    // below are safe as features because they are additive: `--all-features`
+    // simply links every SDK, the pre-split behaviour.)
     println!("cargo:rerun-if-env-changed=ZWO_SKIP_NATIVE_LINK");
     if env::var_os("ZWO_SKIP_NATIVE_LINK").is_some() {
         println!(
             "cargo:warning=ZWO_SKIP_NATIVE_LINK set — omitting ZWO SDK link directives; \
              this is a simulation-only build that links no native SDK"
         );
+        return;
+    }
+
+    // Per-device link gates (ADR-014). Each ZWO device SDK is an independent
+    // library with no shared handle, so a consumer links only what it talks to:
+    // zwo-camera builds with `camera`, zwo-focuser with `focuser`. With no
+    // device feature on there is nothing to link at all.
+    let camera = env::var_os("CARGO_FEATURE_CAMERA").is_some();
+    let efw = env::var_os("CARGO_FEATURE_EFW").is_some();
+    let focuser = env::var_os("CARGO_FEATURE_FOCUSER").is_some();
+    if !(camera || efw || focuser) {
         return;
     }
 
@@ -79,6 +95,14 @@ fn emit_link_directives() {
         println!("cargo:rustc-link-search=native={dir}");
     }
 
+    // Support-library map, from the blobs' undefined-symbol tables (nm -D
+    // --undefined-only; verified on the x86_64 + aarch64 INDI blobs,
+    // 2026-07-10). DT_NEEDED alone is NOT the ground truth here: the EFW/EAF
+    // blobs reference udev_* symbols WITHOUT declaring libudev in their
+    // DT_NEEDED, so the executable must link -ludev itself or the final link
+    // fails with --no-allow-shlib-undefined. libASICamera2 references
+    // libusb_* (and does declare it); the HID-family blobs (EFW/EAF)
+    // reference udev only.
     match target_os.as_str() {
         "macos" => {
             println!("cargo:rustc-link-search=native=/usr/local/lib");
@@ -87,34 +111,64 @@ fn emit_link_directives() {
             if arch == "aarch64" {
                 println!("cargo:rustc-link-search=native=/opt/homebrew/lib");
             }
-            println!("cargo:rustc-link-lib=dylib=ASICamera2");
-            println!("cargo:rustc-link-lib=dylib=EFWFilter");
-            println!("cargo:rustc-link-lib=dylib=EAFFocuser");
-            // libASICamera2 is C++; pull in libc++ and libusb.
+            if camera {
+                println!("cargo:rustc-link-lib=dylib=ASICamera2");
+                println!("cargo:rustc-link-lib=dylib=usb-1.0");
+            }
+            if efw {
+                println!("cargo:rustc-link-lib=dylib=EFWFilter");
+            }
+            if focuser {
+                println!("cargo:rustc-link-lib=dylib=EAFFocuser");
+            }
+            // The SDK dylibs are C++; the EFW/EAF USB-HID path uses
+            // IOKit/CoreFoundation on macOS (frameworks are always present, so
+            // emitting them for any device is harmless).
             println!("cargo:rustc-link-lib=dylib=c++");
-            println!("cargo:rustc-link-lib=dylib=usb-1.0");
-            // libEFWFilter (USB-HID) uses IOKit/CoreFoundation on macOS.
             println!("cargo:rustc-link-lib=framework=IOKit");
             println!("cargo:rustc-link-lib=framework=CoreFoundation");
         }
         "windows" => {
             // ZWO ships per-arch import libs; assume the SDK lib dir is on the
             // search path (or set via ZWO_SDK_LIB_DIR).
-            println!("cargo:rustc-link-lib=dylib=ASICamera2");
-            println!("cargo:rustc-link-lib=dylib=EFWFilter");
-            println!("cargo:rustc-link-lib=dylib=EAFFocuser");
+            if camera {
+                println!("cargo:rustc-link-lib=dylib=ASICamera2");
+            }
+            if efw {
+                println!("cargo:rustc-link-lib=dylib=EFWFilter");
+            }
+            if focuser {
+                println!("cargo:rustc-link-lib=dylib=EAFFocuser");
+            }
         }
         _ => {
             // Linux and other Unix-like systems.
             println!("cargo:rustc-link-search=native=/usr/local/lib");
-            println!("cargo:rustc-link-lib=dylib=ASICamera2");
-            println!("cargo:rustc-link-lib=dylib=EFWFilter");
-            println!("cargo:rustc-link-lib=dylib=EAFFocuser");
-            // libASICamera2 is C++; pull in libstdc++ and libusb.
+            if camera {
+                println!("cargo:rustc-link-lib=dylib=ASICamera2");
+                println!("cargo:rustc-link-lib=dylib=usb-1.0");
+            }
+            if efw {
+                println!("cargo:rustc-link-lib=dylib=EFWFilter");
+            }
+            if focuser {
+                println!("cargo:rustc-link-lib=dylib=EAFFocuser");
+            }
+            if efw || focuser {
+                println!("cargo:rustc-link-lib=dylib=udev");
+                // `-ludev` alone is not enough: the linker's as-needed default
+                // records a DT_NEEDED only for libraries that satisfy a
+                // reference from a REGULAR object, and only the blobs (other
+                // DSOs) reference udev. Without a DT_NEEDED on the consumer
+                // binary the loader never loads libudev, and resolving the
+                // blob's udev_* symbols fails at process start (BIND_NOW) —
+                // exactly what scripts/verify-packages.sh caught. This cfg
+                // turns on the `#[used]` keep-alive reference in src/lib.rs,
+                // giving the linker that regular-object reference.
+                println!("cargo:rustc-cfg=zwo_keep_udev");
+            }
+            // All three SDK blobs are C++.
             println!("cargo:rustc-link-lib=dylib=stdc++");
-            println!("cargo:rustc-link-lib=dylib=usb-1.0");
-            // libEFWFilter (USB-HID) depends on libudev on Linux.
-            println!("cargo:rustc-link-lib=dylib=udev");
         }
     }
 }
