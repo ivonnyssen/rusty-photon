@@ -311,35 +311,57 @@ impl AppState {
     }
 }
 
+/// Why [`resolve_service`] found no usable driver behind a `/config/{service}`
+/// key. Each cause renders its own honest card ([`pages::resolve_failure_card`])
+/// — an unreachable rp or an unusable roster entry must not masquerade as
+/// "no such driver".
+#[derive(Debug)]
+pub(crate) enum ResolveError {
+    /// No static entry, and the key names nothing in the roster (also: not a
+    /// roster key at all, or no rp target is configured).
+    Unknown,
+    /// The key names a roster device but rp's config could not be fetched.
+    RpUnreachable(String),
+    /// The roster entry exists but no client could be built from it (e.g. a
+    /// malformed or credentialed `alpaca_url`).
+    BadRosterEntry(String),
+}
+
 /// Resolve a `/config/{service}` key to its driver handle: a static entry from
 /// the config's `drivers` map (or the reserved `rp` entry), else a
 /// **roster-derived** `rp:{kind}:{id}` target synthesized from rp's config —
 /// the device's `alpaca_url`/number from its roster entry, the ASCOM type from
 /// its kind, called without credentials (rp redacts per-device auth; an authed
 /// device needs its own static `drivers` entry).
-async fn resolve_service(state: &AppState, service: &str) -> Option<DriverHandle> {
+async fn resolve_service(state: &AppState, service: &str) -> Result<DriverHandle, ResolveError> {
     if let Some(handle) = state.drivers.get(service) {
-        return Some(handle.clone());
+        return Ok(handle.clone());
     }
-    let (kind, id) = roster::parse_service_key(service)?;
-    let rp = state.rp()?;
-    let resp = rp.config_client.get_config().await.ok()?;
-    let entry = roster::find_entry(&resp.config, kind, id)?;
+    let (kind, id) = roster::parse_service_key(service).ok_or(ResolveError::Unknown)?;
+    let rp = state.rp().ok_or(ResolveError::Unknown)?;
+    let resp = rp
+        .config_client
+        .get_config()
+        .await
+        .map_err(|e| ResolveError::RpUnreachable(e.to_string()))?;
+    let entry = roster::find_entry(&resp.config, kind, id).ok_or(ResolveError::Unknown)?;
     let http = build_http_client(
         "roster device",
         &entry.alpaca_url,
         None,
         rp.ca_cert_path.as_deref(),
     )
-    .map_err(|e| tracing::debug!("roster-derived client for {service} failed: {e}"))
-    .ok()?;
+    .map_err(|e| {
+        tracing::debug!("roster-derived client for {service} failed: {e}");
+        ResolveError::BadRosterEntry(e.to_string())
+    })?;
     let client = AlpacaConfigClient::new(
         http,
         &entry.alpaca_url,
         kind.ascom_type(),
         entry.device_number,
     );
-    Some(DriverHandle {
+    Ok(DriverHandle {
         title: entry.display_name().to_string(),
         subtitle: format!("{} · {} (via rp roster)", entry.id, kind.ascom_type()),
         client: Arc::new(client),
@@ -477,8 +499,15 @@ async fn config_get(
     headers: HeaderMap,
 ) -> Response {
     let title = page_title(&service);
-    let Some(handle) = resolve_service(&state, &service).await else {
-        return respond(pages::unknown_service_card(&service), &headers, &title);
+    let handle = match resolve_service(&state, &service).await {
+        Ok(handle) => handle,
+        Err(err) => {
+            return respond(
+                pages::resolve_failure_card(&service, &err),
+                &headers,
+                &title,
+            )
+        }
     };
     let card = render_form(&handle, &service, query.unlock.as_deref(), None).await;
     respond(card, &headers, &title)
@@ -491,8 +520,15 @@ async fn config_post(
     Form(form): Form<HashMap<String, String>>,
 ) -> Response {
     let title = page_title(&service);
-    let Some(handle) = resolve_service(&state, &service).await else {
-        return respond(pages::unknown_service_card(&service), &headers, &title);
+    let handle = match resolve_service(&state, &service).await {
+        Ok(handle) => handle,
+        Err(err) => {
+            return respond(
+                pages::resolve_failure_card(&service, &err),
+                &headers,
+                &title,
+            )
+        }
     };
 
     // The schema is needed both to coerce the submission and to render any
@@ -579,9 +615,9 @@ async fn config_status(
     Path(service): Path<String>,
     Query(query): Query<UnlockQuery>,
 ) -> Markup {
-    let Some(handle) = resolve_service(&state, &service).await else {
-        // Unknown service mid-poll: a benign reconnecting fragment keeps the page
-        // from erroring; the user can navigate away.
+    let Ok(handle) = resolve_service(&state, &service).await else {
+        // Any resolve failure mid-poll: a benign reconnecting fragment keeps the
+        // page from erroring; the user can navigate away.
         return pages::reconnecting_card(&service);
     };
     // The reconnect poll renders the refreshed form once the driver answers
@@ -756,6 +792,74 @@ mod tests {
         .await;
         let html = body_of(response).await;
         assert!(html.contains("No configured driver named"), "{html}");
+    }
+
+    fn rp_state_with_config_client(config_client: Arc<dyn ConfigClient>) -> AppState {
+        AppState::with_rp_parts(
+            config_client,
+            Arc::new(rp_client::MockRpApi::new()),
+            Arc::new(probe::MockProbeHttp::new()),
+        )
+    }
+
+    #[tokio::test]
+    async fn config_get_roster_key_with_unreachable_rp_says_so() {
+        // `NonConfigDriver::get_config` errors — resolving a roster key must
+        // say rp could not be read, not pretend the driver is unconfigured.
+        let state = rp_state_with_config_client(Arc::new(NonConfigDriver));
+        let response = config_get(
+            State(state),
+            Path("rp:cameras:main-cam".to_string()),
+            Query(UnlockQuery::default()),
+            HeaderMap::new(),
+        )
+        .await;
+        let html = body_of(response).await;
+        assert!(html.contains("Could not read rp's roster"), "{html}");
+        assert!(!html.contains("No configured driver named"), "{html}");
+    }
+
+    /// A roster whose one entry has a credentialed `alpaca_url` —
+    /// [`build_http_client`] rejects it deterministically, no network involved.
+    struct BadEntryRoster;
+
+    #[async_trait::async_trait]
+    impl ConfigClient for BadEntryRoster {
+        async fn get_config(&self) -> Result<ConfigGetResponse, ConfigClientError> {
+            Ok(ConfigGetResponse {
+                config: json!({ "equipment": { "cover_calibrators": [{
+                    "id": "flat",
+                    "alpaca_url": "http://obs:secret@127.0.0.1:11119",
+                    "device_number": 0
+                }]}}),
+                overrides: vec![],
+            })
+        }
+        async fn get_schema(&self) -> Result<ConfigSchemaResponse, ConfigClientError> {
+            unreachable!("resolve fails before any schema fetch")
+        }
+        async fn apply_config(
+            &self,
+            _config: &Value,
+        ) -> Result<ConfigApplyResponse, ConfigClientError> {
+            unreachable!("apply is not exercised by this test")
+        }
+    }
+
+    #[tokio::test]
+    async fn config_get_unusable_roster_entry_points_at_the_equipment_page() {
+        let state = rp_state_with_config_client(Arc::new(BadEntryRoster));
+        let response = config_get(
+            State(state),
+            Path("rp:cover_calibrators:flat".to_string()),
+            Query(UnlockQuery::default()),
+            HeaderMap::new(),
+        )
+        .await;
+        let html = body_of(response).await;
+        assert!(html.contains("roster entry can't be used"), "{html}");
+        assert!(html.contains(r#"href="/equipment""#), "{html}");
+        assert!(!html.contains("No configured driver named"), "{html}");
     }
 
     /// A `ConfigClient` returning a fixed schema + config — enough to render the

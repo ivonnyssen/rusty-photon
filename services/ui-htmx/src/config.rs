@@ -260,6 +260,20 @@ mod tests {
     }
 
     #[test]
+    fn rp_target_default_impl_matches_the_serde_defaults() {
+        // `RpTarget::default()` and `serde_json::from_str("{}")` must agree —
+        // both paths hand out the same scaffold.
+        let d = RpTarget::default();
+        assert_eq!(d.base_url, "http://127.0.0.1:11115");
+        assert!(d.auth.is_none());
+        assert!(d.ca_cert_path.is_none());
+        // And an rp target round-trips through serialization unchanged.
+        let json = serde_json::to_string(&d).unwrap();
+        let back: RpTarget = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.base_url, d.base_url);
+    }
+
+    #[test]
     fn driver_auth_password_redacted_in_debug() {
         let auth = DriverAuth {
             username: "obs".to_string(),
