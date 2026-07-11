@@ -2,15 +2,33 @@
 
 ## Overview
 
-`ui-htmx` is the browser-facing, **server-rendered configuration UI** for
-rusty-photon — the first concrete slice of the web UI described in
+`ui-htmx` is the browser-facing, **server-rendered web UI** for rusty-photon —
+the web UI described in
 [`docs/plans/ui-design/config-actions.md`](../plans/ui-design/config-actions.md)
-and the chosen visual direction in
+with the chosen visual direction in
 [`docs/plans/ui-design/mocks/README.md`](../plans/ui-design/mocks/README.md). It
 is a **standalone backend-for-frontend (BFF)**: a client of the rest of the
 system that holds no UI logic inside `rp` (`rp.md` tenet 7). The service renders
 HTML on the server with [axum] + [Maud] and adds interactivity with [HTMX]; there
 is no npm, no WASM, no client-side framework.
+
+It serves three surfaces, one nav:
+
+1. **Configuration pages** (`/config/{service}`, index at `/`) — a
+   schema-driven config form for any rusty-photon driver (Phases 2–3), for
+   `rp` itself over its REST config API, and for devices discovered from
+   `rp`'s equipment roster (Phase 5).
+2. **Equipment page** (`/equipment`) — `rp`'s equipment roster: live
+   connection state, a managed/foreign capability tier per device, and
+   add / edit / remove of roster entries by editing `rp`'s config over REST.
+3. **Activity stream** (`/stream`) — the live session narrative from the
+   [`7-stream-fold.html`](../plans/ui-design/mocks/7-stream-fold.html) mock:
+   `rp`'s real-time event stream rendered server-side and pushed to the
+   browser over SSE.
+
+The equipment and stream surfaces exist only when the BFF config carries an
+[`rp` target](#configuration); without one, `ui-htmx` is the pure driver-config
+UI it was in Phase 3.
 
 **JavaScript (htmx) is required.** The UI does not carry a no-JS fallback: the
 form submits via `hx-post` (no `method`/`action`), and the unlock/lock/retry
@@ -161,16 +179,37 @@ in no driver's serial/transport dependencies.
 ## Routes
 
 The config routes are **service-scoped** (`{service}` is the driver's key in the
-BFF config's `drivers` map), so one BFF serves every configured driver.
+BFF config's `drivers` map, the literal `rp`, or a roster-derived
+`rp:{kind}:{id}` key — see [Config-page targets](#config-page-targets)), so one
+BFF serves every configured driver.
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| `GET`  | `/` | Index: links to every configured driver (`/config/{service}`). |
+| `GET`  | `/` | Index: links to every configured driver (`/config/{service}`), the `rp` config page, and roster-derived devices when an `rp` target is configured. |
 | `GET`  | `/config/{service}` | Call `config.schema` + `config.get`; render the form generated from the schema, filled with current values. An optional `?unlock=<field>` query renders one locked/identity field (e.g. a device `unique_id`) editable — the read-only-by-default escape hatch. An unknown `{service}` renders an error card. |
 | `POST` | `/config/{service}` | Re-fetch `config.schema` to coerce the form back into the full Config, call `config.apply`; render the result state (see below). |
 | `GET`  | `/config/{service}/status` | HTMX poll target during reconnect: try `config.schema` + `config.get`; when the driver answers, swap in the refreshed form. Honours the same optional `?unlock=` query. |
+| `GET`  | `/equipment` | The [equipment page](#equipment-page-equipment): rp's roster with live connection LEDs, capability tiers, and add/edit/remove affordances. |
+| `GET`  | `/equipment/{kind}/new` | Schema-generated "add device" form for one equipment kind (`cameras`, `filter_wheels`, `cover_calibrators`, `focusers`, `safety_monitors`, `mount`). |
+| `POST` | `/equipment/{kind}/new` | Insert the new entry into rp's config (`GET /api/config` → splice → `PUT /api/config`); render the roster with the apply outcome. |
+| `GET`  | `/equipment/{kind}/{id}/edit` | Edit form for one roster entry, prefilled from rp's config (the singular `mount` uses the fixed id `mount`). |
+| `POST` | `/equipment/{kind}/{id}/edit` | Replace that entry in rp's config and apply. |
+| `POST` | `/equipment/{kind}/{id}/delete` | Remove that entry from rp's config and apply. |
+| `GET`  | `/stream` | The [activity stream](#activity-stream-stream) page. |
+| `GET`  | `/stream/events` | The SSE proxy: rp's event stream rendered as HTML fragments (see [SSE proxy](#the-sse-proxy-streamevents)). |
+| `GET`  | `/stream/equipment` | Fold-panel equipment-LED fragment; the panel re-fetches it on an htmx timer. |
 | `GET`  | `/health` | Liveness; returns `OK`. |
-| `GET`  | `/assets/app.css`, `/assets/htmx.min.js` | Embedded static assets (`include_str!`). |
+| `GET`  | `/assets/app.css`, `/assets/htmx.min.js`, `/assets/htmx-ext-sse.js` | Embedded static assets (`include_str!`). The SSE extension ([htmx-ext-sse] 2.2.3, vendored) is loaded only by pages that stream. |
+
+[htmx-ext-sse]: https://github.com/bigskysoftware/htmx-extensions/tree/main/src/sse
+
+Every page shares the [`layout`] shell, whose top nav carries the three
+surfaces — **Activity** (`/stream`), **Equipment** (`/equipment`),
+**Configuration** (`/`) — with the active tab highlighted, plus the mock's
+pure-CSS **night-vision toggle** (a page-level red filter preserving dark
+adaptation; no JavaScript).
+
+[`layout`]: ../../services/ui-htmx/src/pages/mod.rs
 
 ### Schema-driven rendering (`FieldModel`)
 
@@ -278,6 +317,40 @@ locked/identity field that the user unlocked.
   forged config and is the driver's job to reject — driver-side identity
   validation lands separately.)
 
+## Config-page targets
+
+`/config/{service}` resolves its target in three ways; the page machinery
+(schema walk, tiers, merge, apply states) is identical for all three:
+
+1. **Static driver** — `{service}` is a key in the BFF config's `drivers` map;
+   the client is `AlpacaConfigClient` speaking the ASCOM action protocol.
+2. **`rp` itself** — the literal key `rp`, present when the BFF config carries
+   an [`rp` target](#configuration); the client is `RestConfigClient` speaking
+   the same protocol as plain REST (`GET /api/config`, `GET /api/config/schema`,
+   `PUT /api/config` — see [`config-actions.md`](config-actions.md) "REST
+   transport"). A static `drivers` entry named `rp` is rejected at startup to
+   keep the key unambiguous. Because rp classifies every change as
+   `restart_required` (it has no in-process reload), the apply result renders
+   the **restart callout** instead of the reconnect poll: "Saved — restart rp
+   to apply:" plus the changed paths. (Phase 4 will attach the "Restart via
+   Sentinel" affordance here.) rp's equipment arrays are `oneOf`-free but
+   *array-typed*, which the schema walker skips — so on the rp config page they
+   round-trip untouched via the hidden blob, and are edited on the
+   [equipment page](#equipment-page-equipment) instead. rp's optional blocks
+   (`site`, `guider`, `plate_solver`, `planner`) blob-round-trip the same way
+   under the standard composite-skip rule; the page edits the scalar leaves
+   (`session`, `safety`, `imaging`, `centering`, `server`).
+3. **Roster-derived device** — a key of the form `rp:{kind}:{id}` (e.g.
+   `rp:cameras:main-cam`, `rp:mount:mount`), synthesized on demand from rp's
+   config: the device's `alpaca_url` + device number come from its roster
+   entry, and the ASCOM device type from which array it sits in
+   (`cameras`→`camera`, `filter_wheels`→`filterwheel`,
+   `cover_calibrators`→`covercalibrator`, `focusers`→`focuser`,
+   `safety_monitors`→`safetymonitor`, `mount`→`telescope`). The BFF calls the
+   device **without credentials** (rp redacts per-device auth, rightly), so a
+   driver behind auth renders the transport-error banner with a hint to add a
+   static `drivers` entry carrying credentials.
+
 ## Behavioral contracts
 
 ### Rendering the page (`GET /config/{service}`)
@@ -308,7 +381,11 @@ locked/identity field that the user unlocked.
   This is the same brief blip a process restart would cause; the BFF treats it as
   expected (see the reload mechanics in the plan).
 - **`status:"ok"`** (persisted, nothing needed a reload): render "Saved." with the
-  refreshed form; no reconnect poll.
+  refreshed form; no reconnect poll. When `restart_required[]` is non-empty
+  (the `rp` target — `ApplyDisposition::Restart`), the banner becomes the
+  **restart callout**: "Saved — restart rp to apply:" with the changed paths
+  listed; the form re-renders from the *running* (pre-restart) config, which is
+  honest about what is currently in effect.
 - **`status:"invalid"`** (validation failed, file unchanged): re-render the form
   with each `errors[]` entry shown next to its field (`path` → field), preserving
   the submitted values so the user can correct them in place.
@@ -322,13 +399,144 @@ locked/identity field that the user unlocked.
   reconnecting fragment so HTMX keeps polling. The blip is normally well under a
   second; the poll is bounded only by the user leaving the page.
 
+## Equipment page (`/equipment`)
+
+The roster view of the observatory, per the
+[federated-roster design](../plans/ui-design/config-actions.md#federated-roster-managed-own-vs-foreign-devices).
+Its two data sources are joined by device `id`:
+
+- **`GET /api/config`** (rp) — the authoritative device list: every equipment
+  entry with its `alpaca_url`, device number, and settings (secrets redacted).
+- **`GET /api/equipment`** (rp) — live state: `{ id, connected }` per device
+  (the singular mount has no id).
+
+Per device the page renders: name/id, kind, address, a **connected LED**, the
+**capability tier**, and Edit / Remove / Configure affordances. The tier comes
+from a bounded, concurrent **capability probe** against the device's own Alpaca
+server (short per-probe timeout, all devices probed in parallel at render
+time):
+
+| Probe result | Tier | Affordance |
+|---|---|---|
+| `supportedactions` lists `config.get` | **Managed** | "Configure" → `/config/rp:{kind}:{id}` |
+| 2xx but no `config.*`; `/setup/v1/{type}/{n}/setup` reachable | **Setup page** | external link to the device's own setup UI |
+| 2xx but no `config.*`, no setup page | **Control only** | badge |
+| 401/403 | **Auth required** | badge + hint to add a static `drivers` entry with credentials |
+| transport error / timeout | **Unreachable** | badge |
+
+Because `config.*` is self-advertising, any third-party server adopting the
+convention auto-upgrades to *Managed* — the probe is the capability detection,
+not a hardcoded table.
+
+**Editing the roster edits rp's config.** Add / edit / remove perform a
+read-modify-write on the equipment arrays: `GET /api/config` → splice the entry
+→ `PUT /api/config`, surfacing the apply outcome (validation errors render
+field-level, re-anchored from rp's absolute paths onto the entry form; success
+renders the restart callout, since roster changes take effect on the next rp
+start). **The list always shows the roster rp is *running***: `GET /api/config`
+returns the effective config, so a just-persisted entry appears (or a removed
+one disappears) only after rp's next start — the callout names the pending
+paths, which is the honest state until Phase 4's restart affordance lands. An
+empty form input means "unset — rp's default applies"; it is never sent as an
+empty string (which would fail rp's typed parses, e.g. a humantime
+`poll_interval`). The add/edit forms are **schema-generated per
+kind**: the field list comes from walking that kind's item subschema inside
+`GET /api/config/schema` (the same `FieldModel` walker the config pages use,
+entered at the array's item definition), so a new field on, say,
+`CameraConfig` appears on the form with **no BFF change**. Composite leaves
+(e.g. a device's optional `auth` block) follow the same rule as config pages —
+skipped by the walker, preserved on edit, absent on add — and are edited in
+rp's config file when needed. The mount is singular: "add" is offered only
+when `mount` is `null`, and its routes use the fixed id `mount`.
+
+**Deferred:** per-device **connect/disconnect** buttons — rp's registry is
+built once at startup and has no runtime connect/disconnect endpoints yet
+(marked *(planned)* in [`rp.md`](rp.md)); the LEDs show live truth and the
+roster edits the config, which is what exists today. ASCOM UDP discovery
+pre-fill remains low-priority per the plan.
+
+**rp unreachable:** the page renders the same error banner + retry as a config
+page whose driver is down; roster mutations are disabled with the banner shown.
+
+## Activity stream (`/stream`)
+
+The narrative session view from the chosen mock
+([`7-stream-fold.html`](../plans/ui-design/mocks/7-stream-fold.html)):
+a single-column **event feed** telling the session's story newest-first, a
+sticky **status strip** under the nav, and a **fold panel** (the CSS Grid
+`0fr → 1fr` checkbox trick — no JavaScript) holding the equipment LED list.
+All live behaviour arrives over one SSE connection driven by the vendored
+[htmx-ext-sse] extension: the page declares `hx-ext="sse"
+sse-connect="/stream/events"` once, and named `sse-swap` regions receive
+server-rendered fragments — no hand-written JavaScript, exactly the pattern the
+`test-sse` spike proved.
+
+- **The feed** (`sse-swap="feed"` with `hx-swap="afterbegin"`): every rp event
+  envelope renders as one card — severity dot (`*_failed` and
+  `safety_changed:unsafe` are bad; `*_complete`/`*_settled` ok; `*_started`
+  live; `stream_gap` warn), event title, payload-specific detail line (target
+  coordinates, exposure duration, HFR, RMS error, error messages, …),
+  monospace timestamp, and the operation duration when `elapsed_ms` is
+  present. Unknown event types render a generic card (event name + compact
+  payload) so new rp events degrade gracefully rather than vanish.
+- **The status strip** (`sse-swap` slots): the current-operation label
+  (updated on `*_started` / terminal events), the last guide RMS (updated on
+  `guide_settled`/`dither_settled`), and the session-state chip (updated on
+  `session_started`/`session_stopped`/`safety_changed`). Slots are updated
+  from **each event's own payload alone** — the proxy is stateless, so a slot
+  a given event doesn't describe simply keeps its previous content.
+- **The fold panel**: the equipment LED list, fetched from `/stream/equipment`
+  at render and re-fetched on an htmx timer (`hx-trigger="every 10s"`) — there
+  are no device-connectivity events to push yet. The mock's guider graph and
+  trend-chart cards need telemetry history rp does not expose; they are
+  deferred (see [MVP scope](#mvp-scope)).
+- **Initial state**: the page renders the strip from `GET /api/session/status`
+  (`idle` / `active` / `interrupted`) and the LED panel from
+  `GET /api/equipment`; the feed starts empty and fills from the SSE replay.
+- **rp unreachable at page load**: the shell renders with an error banner in
+  the hero; the SSE connection keeps retrying (below), so the page heals
+  without a manual reload.
+
+### The SSE proxy (`/stream/events`)
+
+The browser never talks to rp (BFF pattern; rp also serves no CORS). The BFF
+terminates the browser's `EventSource` and holds its own connection to rp's
+`GET /api/events/subscribe`, translating JSON envelopes into HTML fragments:
+
+- **Cursor passthrough.** The proxy forwards the browser's `Last-Event-ID`
+  (set automatically by `EventSource` on reconnect) to rp as its
+  `last-event-id`; a fresh page (no header) subscribes from cursor `0`, so
+  rp's retained history (512 events) replays and populates the feed. The
+  BFF keeps **no** stream state of its own — reconnect/replay correctness
+  lives in rp, where it is already implemented and tested.
+- **Frames.** Each rp envelope becomes up to two BFF frames: `event: feed`
+  (the card) and the strip-slot frames it warrants. The **final** frame of
+  each envelope group carries `id:` = the envelope's `event_seq`, so the
+  browser's cursor only advances past an envelope it has fully received —
+  a torn delivery replays that envelope (at-least-once; a duplicated feed
+  card in that rare race is preferred over a silently missing one).
+- **`stream_gap`** (rp signalling replay loss or a lagging consumer) renders
+  as a feed divider card ("events were missed"), with no `id`, mirroring rp.
+- **rp connection loss** (initial failure or mid-stream): the proxy pushes a
+  status-slot fragment ("rp unreachable — retrying"), then **ends the BFF
+  stream**. The browser's `EventSource` auto-reconnects with its cursor, so
+  retry/backoff and replay come from the platform + rp rather than BFF state.
+- **Keep-alive** every 15 s (axum `KeepAlive`), independent of rp's.
+- **Shutdown.** Open SSE responses do not end on axum's graceful-shutdown
+  signal (axum #2673 — the hazard the `test-sse` spike pinned), so the proxy
+  select!s each stream against a service-wide cancellation token wired to the
+  `ServiceRunner` shutdown — the same `sse_shutdown` pattern rp uses. The BFF
+  therefore shuts down promptly (and flushes coverage in BDD) even with
+  browsers connected.
+
 ## Configuration
 
 The BFF has its own small config (it is not an ASCOM device). The `drivers` map
 is keyed by service id (the `{service}` path segment); add an entry per driver.
 The default config carries a single local `dsd-fp2` so `cargo run` works with no
-config file. Later the list is also derivable from `rp`'s equipment roster or
-ASCOM discovery (see [Deferred](#deferred)).
+config file. The optional `rp` target switches on the equipment page, the
+activity stream, the `/config/rp` page, and the roster-derived config targets;
+without it those routes render a "no rp configured" card.
 
 ```jsonc
 {
@@ -349,6 +557,11 @@ ASCOM discovery (see [Deferred](#deferred)).
       "base_url": "http://127.0.0.1:11113",
       "device_type": "focuser"
     }
+  },
+  "rp": {                                    // optional — enables /equipment, /stream, /config/rp
+    "base_url": "http://127.0.0.1:11115",    // rp's REST base URL
+    "auth": null,                            // optional Basic credentials for rp
+    "ca_cert_path": null                     // optional PEM CA for a TLS-enabled rp
   }
 }
 ```
@@ -363,11 +576,14 @@ ASCOM discovery (see [Deferred](#deferred)).
 
 ## Security
 
-- **The BFF holds driver credentials**, in its own config, never in the page. It
-  authenticates to a driver with HTTP Basic auth and trusts the Rusty Photon CA
-  via `rp-tls` — the same client construction `sentinel` uses. Config actions are
-  protected by whatever server-wide `rp-auth`/`rp-tls` the driver runs; the BFF is
-  just an authorised client (see the plan's Security section).
+- **The BFF holds driver credentials** (and rp's, for the `rp` target), in its
+  own config, never in the page. It authenticates with HTTP Basic auth and
+  trusts the Rusty Photon CA via `rp-tls` — the same client construction
+  `sentinel` uses. Config actions are protected by whatever server-wide
+  `rp-auth`/`rp-tls` the target runs; the BFF is just an authorised client (see
+  the plan's Security section). Roster-derived config targets are called
+  without credentials (rp redacts per-device auth) — an authed device needs its
+  own static `drivers` entry.
 - **Secrets are already redacted** by `config.get` (`********`), so they never
   reach the browser; the round-trip sentinel keeps them unchanged on apply.
 - **Binds loopback by default; BFF-side TLS/auth is deferred.** The default
@@ -394,28 +610,45 @@ ASCOM discovery (see [Deferred](#deferred)).
   from the driver's `config.get`/`config.schema`, with the "unlock to edit"
   escape hatch.
 - Driver-unreachable / non-config-driver / unknown-service error states.
+- **The `rp` config page** over REST (`RestConfigClient`), with the
+  restart-callout apply result.
+- **The equipment page**: roster from rp's config joined with live
+  `GET /api/equipment` state, capability tiers via probe, roster-derived
+  config targets (`rp:{kind}:{id}`), and schema-generated add/edit/remove of
+  roster entries via `PUT /api/config`.
+- **The activity stream**: the feed + status strip + fold panel from the
+  chosen mock, live over the SSE proxy with cursor passthrough, `stream_gap`
+  rendering, rp-unreachable self-healing, and the shared-nav night-vision
+  toggle.
 - Dark theme reusing the mock CSS tokens; assets embedded via `include_str!`
-  (CSS + the HTMX bundle); no npm, no WASM.
+  (CSS + the HTMX bundle + the SSE extension); no npm, no WASM.
 - Plain-axum lifecycle under `rusty-photon-service-lifecycle::ServiceRunner` with
-  graceful shutdown; prints `bound_addr=<host>:<port>` on bind (for BDD port
-  discovery).
+  graceful shutdown (SSE streams end on the shutdown token); prints
+  `bound_addr=<host>:<port>` on bind (for BDD port discovery).
 
 ### Deferred
 
-- **Equipment-roster-driven driver list.** The `drivers` map is configured by
-  hand today; deriving it from `rp`'s `GET /api/equipment` or ASCOM discovery is
-  Phase 5.
+- **Roster connect/disconnect buttons** — rp has no runtime
+  connect/disconnect endpoints yet (its registry is built once at startup;
+  the endpoints are *(planned)* in `rp.md`). The LEDs show live state.
+- **ASCOM UDP discovery pre-fill** for the roster (low-priority per the plan;
+  manual entry is the primary path).
+- **Telemetry charts** — the mock's guider graph and HFR/temp/sky/dew trend
+  cards need telemetry history rp does not expose; the fold panel ships with
+  the equipment LEDs, and the strip carries the last guide RMS from
+  `guide_settled`/`dither_settled` events.
+- **Image thumbnails in the feed** — `exposure_complete` links a document id;
+  rendering pixels (`GET /api/images/{id}/pixels` ImageBytes → browser image)
+  is a follow-up.
 - **Composite-field rendering.** The schema walker skips `oneOf`/`anyOf`/`enum`
   subtrees (tagged enums like `star-adventurer`'s `transport`, optional nested
-  structs), so those fields round-trip read-only via the hidden blob rather than
-  rendering an editable discriminated form. A generic `oneOf`/enum renderer (and
-  a dedicated password input for redacted-secret leaves) is a follow-up; until
-  then such fields are edited in the driver's config file.
-- **Live telemetry + the activity stream.** The SSE-driven stream UI
-  (`7-stream-fold.html`) follows on a separate track once `rp` has a real-time
-  event stream.
+  structs — including a roster entry's optional `auth` block), so those fields
+  round-trip read-only via the hidden blob rather than rendering an editable
+  discriminated form. A generic `oneOf`/enum renderer (and a dedicated password
+  input for redacted-secret leaves) is a follow-up; until then such fields are
+  edited in the config file.
 - **Sentinel `service.restart` affordance** and the `restart_required` escalation
-  (Phase 4).
+  button (Phase 4 — the restart callout is where it will attach).
 - **BFF-side TLS/auth**, the **LCARS theme**, and **i18n**.
 
 ## Testing Strategy
@@ -601,6 +834,35 @@ call end to end. Scenarios:
 - One BFF exposes the driver under two service ids: the index links to both and
   each `/config/{service}` route renders independently (multi-driver routing).
 
+### Phase 5 BDD (`equipment_page.feature`, `rp_config_page.feature`, `stream_page.feature`)
+
+The rp-backed surfaces follow the same real-binaries rule: scenarios spawn the
+real `ui-htmx`, a real **`rp`** (via `bdd_infra::rp_harness` —
+`RpConfigBuilder` + `start_rp`), and where the roster needs a live device, a
+real mock-mode `dsd-fp2` registered in rp's config as a `cover_calibrator`
+entry — an all-first-party stack with **no OmniSim dependency**, so these
+suites run everywhere the existing one does. Coverage:
+
+- `rp_config_page.feature`: `/config/rp` renders rp's config over REST
+  (secrets redacted, `server.port` read-only); an edit persists to rp's config
+  file and renders the restart callout listing the changed paths; an invalid
+  edit renders the driver-side field error with the file untouched; rp down →
+  error banner.
+- `equipment_page.feature`: the roster lists rp's devices with live
+  connected LEDs (the dsd-fp2-backed entry probes as **Managed** and links to
+  `/config/rp:cover_calibrators:{id}`, which renders that device's real
+  schema-driven form end to end); add / edit / remove splice rp's config and
+  render the restart callout; an entry pointing nowhere shows **Unreachable**;
+  no rp configured → the "no rp configured" card.
+- `stream_page.feature`: drives `/stream/events` directly over HTTP (SSE is
+  server bytes — no browser needed for P1): a session start/stop against rp
+  produces `session_started`/`session_stopped` envelopes that arrive as
+  rendered feed-card frames with `id:` = the envelope seq; reconnecting with
+  `Last-Event-ID` replays only the missed tail; rp down → the
+  "rp unreachable" status frame and stream end. The BDD client drops its SSE
+  connection before stopping the BFF (testing.md §5.4). Browser-level SSE
+  swap behaviour stays proven by the existing `@browser` `sse.feature` spike.
+
 ### Unit Tests
 
 - `driver_client.rs`: `AlpacaConfigClient` shapes the `PUT .../action` request
@@ -622,20 +884,43 @@ call end to end. Scenarios:
   leaves; redacted-secret round-trip); the locked/identity tier (disabled by
   default, editable when `__unlocked`/`?unlock=` names it, pinned still wins, a
   forged `__unlocked` can't unlock a non-locked field); the index listing.
-- `config.rs`: defaults (single dsd-fp2), the multi-driver map, and JSON load.
+- `config.rs`: defaults (single dsd-fp2), the multi-driver map, the optional
+  `rp` target, and JSON load.
 - `io.rs`: `ReqwestHttpClient` connection-refused error path (mirrors sentinel).
+- `driver_client.rs` (`RestConfigClient`): REST request shaping, 200-body
+  parsing, 400/500 mapping — mocked `HttpClient`.
+- `pages/stream.rs`: table-driven `EventEnvelope → Markup` renderers — one case
+  per event family from the rp catalog (started/terminal/failed payload
+  fields, severity classes, elapsed formatting, unknown-event fallback,
+  `stream_gap` divider).
+- `sse_proxy.rs`: the incremental SSE frame parser (frames split across
+  chunks, CRLF, multi-line `data:`, comment lines, missing `id:`), and the
+  proxy against an in-test axum stub serving a canned rp stream (ADR-004's
+  escape hatch — streaming is beyond mockall): cursor forwarding, frame `id`
+  placement, gap + disconnect translation.
+- `probe.rs`: tier classification per probe outcome (mocked responses),
+  timeout → Unreachable, 401 → Auth required.
+- `pages/equipment.rs`: roster join (config ⨝ status by id, mount pairing),
+  config surgery (insert/replace/remove per kind incl. the singular mount),
+  and the per-kind subschema field generation.
 
 ## Module Structure
 
 | Module | Description |
 |--------|-------------|
-| `config.rs` | `Config`, `ServerConfig`, the `Drivers` map + `DriverTarget` + defaults + JSON load. |
+| `config.rs` | `Config`, `ServerConfig`, the `Drivers` map + `DriverTarget`, the optional `RpTarget`, defaults + JSON load. |
 | `io.rs` | `HttpClient` trait (`#[cfg_attr(test, mockall::automock)]`) + `ReqwestHttpClient` (rp-tls CA trust + optional Basic auth). |
-| `driver_client.rs` | `ConfigClient` trait + `AlpacaConfigClient`: `config.get`/`config.schema`/`config.apply` request shaping, Alpaca-envelope parsing, error mapping. Re-exports the shared wire types from `rusty_photon_config::actions`. |
-| `pages/mod.rs` | The schema-driven renderer: `FieldModel` (schema walker + `FieldKind`), `config_card`/`index`/fragment templates, and the schema-driven `merge_form` form ⇆ Config coercion. |
-| `assets.rs` | `include_str!` of `assets/app.css` + `assets/htmx.min.js`; asset routes. |
-| `lib.rs` | `build_router`, multi-driver `AppState`, the `/config/{service}` handlers, public exports. |
-| `main.rs` | CLI (clap) + tracing init; lifecycle owned by `ServiceRunner` (plain axum + graceful shutdown). |
+| `driver_client.rs` | `ConfigClient` trait + `AlpacaConfigClient` (ASCOM action transport) + `RestConfigClient` (rp's plain-REST transport): request shaping, envelope parsing, error mapping. Re-exports the shared wire types from `rusty_photon_config::actions`. |
+| `rp_client.rs` | The non-config rp surface: `RpApi` trait (`equipment_status`, `session_status`) + its reqwest impl — the seam the equipment page and stream shell render from. |
+| `roster.rs` | The roster domain: `EquipKind` (kind ⇄ ASCOM-type mapping), `parse_roster` over rp's config value, the `rp:{kind}:{id}` key codec, and the insert/replace/remove config surgery with duplicate-id/singular-mount guards. |
+| `pages/mod.rs` | The schema-driven renderer: `FieldModel` (schema walker + `FieldKind`, incl. the array-item subschema entry point), `config_card`/`index`/fragment templates, the schema-driven `merge_form` coercion, and the shared `layout` shell (nav tabs + night-vision toggle). |
+| `pages/equipment.rs` | The equipment page: roster join, tier badges, add/edit/remove forms, roster mutation via config surgery. |
+| `pages/stream.rs` | The activity stream page shell + per-event feed-card and strip-slot fragment renderers (pure `EventEnvelope → Markup` functions). |
+| `probe.rs` | The capability probe: bounded concurrent `supportedactions`/setup-page checks → tier. |
+| `sse_proxy.rs` | `/stream/events`: rp SSE client (incremental frame parser), envelope→fragment translation, cursor passthrough, shutdown token. |
+| `assets.rs` | `include_str!` of `assets/app.css` + `assets/htmx.min.js` + `assets/htmx-ext-sse.js`; asset routes. |
+| `lib.rs` | `build_router`, multi-driver `AppState` (+ rp target), the `/config/{service}`, `/equipment*`, `/stream*` handlers, public exports. |
+| `main.rs` | CLI (clap) + tracing init; lifecycle owned by `ServiceRunner` (plain axum + graceful shutdown; SSE shutdown token). |
 
 ## References
 

@@ -68,6 +68,21 @@ pub struct UiWorld {
     pub orphan_survivors: Vec<u32>,
     /// The absolute screenshot + page-source paths captured before the reap.
     pub artifacts: Option<(PathBuf, PathBuf)>,
+    /// The rp orchestrator the Phase-5 suites spawn (rp config page, equipment
+    /// roster, activity stream). Absent for the driver-only scenarios.
+    pub rp: Option<ServiceHandle>,
+    /// rp's OS-assigned port (rp binds `:0`).
+    pub rp_port: u16,
+    /// rp's temp config file — the roster mutations persist here, and the
+    /// on-disk assertions read it back.
+    pub rp_config_path: Option<PathBuf>,
+    /// A live reader of the BFF's `/stream/events` SSE proxy. Dropped in the
+    /// `after` hook **before** the BFF stops (testing.md §5.4 — an open stream
+    /// blocks graceful shutdown and silently loses subprocess coverage).
+    pub sse: Option<crate::sse_client::StreamEventsClient>,
+    /// The SSE `id` of the first feed frame, captured for the replay-cursor
+    /// scenario.
+    pub sse_cursor: Option<u64>,
 }
 
 impl UiWorld {
@@ -292,6 +307,118 @@ impl UiWorld {
         );
     }
 
+    // --- the rp orchestrator (Phase-5 suites) --------------------------------
+
+    /// Spawn a real rp from the given harness builder, remembering its config
+    /// path for on-disk assertions. rp binds `:0`; readiness is `/health`.
+    pub async fn start_rp(&mut self, builder: &bdd_infra::rp_harness::RpConfigBuilder) {
+        let config = builder.build();
+        let path = self.temp_path("rp.json");
+        std::fs::write(
+            &path,
+            serde_json::to_string_pretty(&config).expect("serialize rp config"),
+        )
+        .expect("failed to write rp config");
+        let handle = ServiceHandle::start("rp", path.to_str().unwrap()).await;
+        assert!(
+            bdd_infra::rp_harness::wait_for_rp_healthy(&handle.base_url).await,
+            "rp did not become healthy"
+        );
+        self.rp_port = handle.port;
+        self.rp = Some(handle);
+        self.rp_config_path = Some(path);
+    }
+
+    /// Spawn rp with an empty roster (site configured so site-field validation
+    /// scenarios have something to reject).
+    pub async fn start_rp_with_empty_roster(&mut self) {
+        let mut builder = bdd_infra::rp_harness::RpConfigBuilder::new();
+        builder.with_site(47.6, -122.3);
+        self.start_rp(&builder).await;
+    }
+
+    /// Spawn a real dsd-fp2 (mock hardware), then rp with that driver in its
+    /// roster as cover calibrator `id` — the all-first-party managed-device
+    /// stack (no OmniSim).
+    pub async fn start_driver_and_rp_with_cover_calibrator(&mut self, id: &str) {
+        let config_path = self.write_driver_config("/dev/ttyACM0", 4096);
+        let handle = ServiceHandle::start("dsd-fp2", &config_path).await;
+        self.driver_port = handle.port;
+        self.driver = Some(handle);
+        self.wait_for_driver_ready().await;
+        let mut builder = bdd_infra::rp_harness::RpConfigBuilder::new();
+        builder.add_cover_calibrator(bdd_infra::rp_harness::CoverCalibratorConfig {
+            id: id.to_string(),
+            alpaca_url: format!("http://127.0.0.1:{}", self.driver_port),
+            device_number: 0,
+            poll_interval: Some(Duration::from_millis(100)),
+        });
+        self.start_rp(&builder).await;
+    }
+
+    /// Spawn a BFF whose config carries only an `rp` target at the given port.
+    pub async fn start_bff_with_rp_at(&mut self, rp_port: u16) {
+        let config = json!({
+            "server": { "bind": "127.0.0.1", "port": 0 },
+            "drivers": {},
+            "rp": { "base_url": format!("http://127.0.0.1:{rp_port}") }
+        });
+        let path = self.temp_path("ui-htmx.json");
+        std::fs::write(&path, config.to_string()).expect("failed to write BFF config");
+        let handle = ServiceHandle::start("ui-htmx", path.to_str().unwrap()).await;
+        self.ui = Some(handle);
+    }
+
+    /// Spawn a BFF pointed at the running rp.
+    pub async fn start_bff_with_rp(&mut self) {
+        assert!(self.rp.is_some(), "start rp before the BFF");
+        self.start_bff_with_rp_at(self.rp_port).await;
+    }
+
+    /// Spawn a BFF pointed at an rp that is not running.
+    pub async fn start_bff_with_unreachable_rp(&mut self) {
+        self.start_bff_with_rp_at(UNREACHABLE_PORT).await;
+    }
+
+    /// Spawn a BFF with **no** rp target (the default dsd-fp2 drivers entry
+    /// only) — the "rp-backed surfaces unavailable" state.
+    pub async fn start_bff_without_rp(&mut self) {
+        self.start_bff_pointing_at(UNREACHABLE_PORT).await;
+    }
+
+    /// The rp config file as currently persisted on disk.
+    pub fn rp_config_on_disk(&self) -> Value {
+        let path = self
+            .rp_config_path
+            .as_ref()
+            .expect("rp config path unknown");
+        let raw = std::fs::read_to_string(path).expect("failed to read rp config");
+        serde_json::from_str(&raw).expect("rp config on disk is not JSON")
+    }
+
+    /// POST an rp session-lifecycle endpoint directly (the operator action that
+    /// emits `session_started` / `session_stopped` events).
+    pub async fn rp_session(&self, action: &str) {
+        let rp = self.rp.as_ref().expect("rp not started");
+        let url = format!("{}/api/session/{action}", rp.base_url);
+        let resp = reqwest::Client::new()
+            .post(&url)
+            .send()
+            .await
+            .expect("rp session request failed");
+        assert!(
+            resp.status().is_success(),
+            "POST {url} answered {}",
+            resp.status()
+        );
+    }
+
+    /// Connect a reader to the BFF's `/stream/events` SSE proxy.
+    pub async fn connect_stream_events(&mut self, last_event_id: Option<u64>) {
+        let url = self.ui_url("/stream/events");
+        self.sse = Some(crate::sse_client::StreamEventsClient::connect(&url, last_event_id).await);
+    }
+
     // --- driving the BFF over HTTP ----------------------------------------
 
     fn ui_url(&self, path: &str) -> String {
@@ -374,8 +501,34 @@ impl UiWorld {
     /// them, so read-only/locked fields round-trip from the hidden blob — no
     /// side-channel `config.get` is consulted.
     pub async fn submit_form(&mut self, changes: &[(&str, &str)]) {
+        self.submit_form_at("/config/dsd-fp2", changes).await;
+    }
+
+    /// Render the page at `path` and submit its form the way htmx would: the
+    /// rendered hidden blobs + enabled controls, with the operator's edits
+    /// replacing (or adding) the named values. Works for any single-form page
+    /// (config pages, the equipment entry forms).
+    pub async fn submit_form_at(&mut self, path: &str, changes: &[(&str, &str)]) {
         // Render the form first so the submission is built from real page output.
-        self.get("/config/dsd-fp2").await;
+        self.get(path).await;
+        self.submit_rendered_form(changes).await;
+    }
+
+    /// POST an htmx affordance URL directly (e.g. the equipment Remove button
+    /// after the operator confirms) and capture the swapped fragment.
+    pub async fn post_htmx(&mut self, path: &str) {
+        let resp = reqwest::Client::new()
+            .post(self.ui_url(path))
+            .headers(self.hx_headers())
+            .send()
+            .await
+            .expect("BFF POST failed");
+        self.last_body = resp.text().await.unwrap_or_default();
+    }
+
+    /// Submit the form in the **already-rendered** `last_body` (used when a
+    /// prior step navigated to the form, e.g. the add-equipment flow).
+    pub async fn submit_rendered_form(&mut self, changes: &[(&str, &str)]) {
         let action =
             dom::form_post_url(&self.last_body).expect("rendered page has no <form hx-post>");
         let mut pairs = dom::successful_controls(&self.last_body);

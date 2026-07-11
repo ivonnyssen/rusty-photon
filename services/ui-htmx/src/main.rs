@@ -50,7 +50,12 @@ fn main() -> ServiceResult {
     info!("Starting ui-htmx configuration UI");
 
     ServiceRunner::new("ui-htmx").run(move |shutdown| async move {
-        let state = AppState::from_config(&config)?;
+        // Open SSE proxy streams do not end on axum's graceful-shutdown signal
+        // alone (axum #2673): give the state a cancellation token and fire it
+        // the moment shutdown starts, so `/stream/events` streams close and
+        // axum's connection drain can complete promptly.
+        let sse_token = tokio_util::sync::CancellationToken::new();
+        let state = AppState::from_config(&config)?.with_sse_shutdown(sse_token.clone());
         let app = build_router(state);
 
         let addr = format!("{}:{}", config.server.bind, config.server.port);
@@ -62,7 +67,10 @@ fn main() -> ServiceResult {
         info!("ui-htmx listening; bound_addr={bound}");
 
         axum::serve(listener, app)
-            .with_graceful_shutdown(shutdown.cancelled())
+            .with_graceful_shutdown(async move {
+                shutdown.cancelled().await;
+                sse_token.cancel();
+            })
             .await?;
         Ok(())
     })

@@ -7,6 +7,7 @@ pub mod camera_info_steps;
 pub mod catalog_steps;
 pub mod center_on_target_steps;
 pub mod compute_snr_steps;
+pub mod config_rest_steps;
 pub mod cover_calibrator_steps;
 pub mod detect_stars_steps;
 pub mod document_http_api_steps;

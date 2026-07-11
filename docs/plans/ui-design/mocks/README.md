@@ -4,12 +4,14 @@ Static HTML mocks exploring the user-facing UI for rusty-photon. Each file is fu
 
 These are **reference artifacts only** — no production code yet. They exist to lock in the chosen UX paradigm, visual direction, and implementation approach before any code is written, so future implementation work can be evaluated against a concrete target rather than re-derived from scratch.
 
-> **Implementation has begun at the configuration end.** The
-> [config-actions plan](../config-actions.md) builds the settings/equipment
-> surface first; it now ships as the **`ui-htmx`** BFF service
-> ([`docs/services/ui-htmx.md`](../../../services/ui-htmx.md)), reusing this
-> direction's dark-theme tokens and the axum + Maud + HTMX stack chosen below.
-> The activity-stream UI follows on a separate track.
+> **Implementation status.** The [config-actions plan](../config-actions.md)
+> built the settings surface first (Phases 1–3); Phase 5 ports **this chosen
+> direction** (`7-stream-fold.html`) into the **`ui-htmx`** BFF service
+> ([`docs/services/ui-htmx.md`](../../../services/ui-htmx.md)) as the live
+> `/stream` page — the narrative feed, the sticky fold strip/panel, and the
+> night-vision toggle — fed by rp's real SSE event stream, alongside the
+> `/equipment` roster page. The guider graph and trend-chart cards await a
+> telemetry-history source and remain mock-only for now.
 
 ## Files
 

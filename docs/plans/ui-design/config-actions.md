@@ -458,15 +458,37 @@ along the natural driver ⇆ BFF fault line.
   affordance and the `restart_required` escalation. (Coordinate with the watchdog
   plan.)
 
-**Phase 5 — `rp` config + equipment roster, then the activity stream.**
-- `rp` gains `GET/PUT /api/config` (same get/apply shape, REST). Build the rp
-  equipment-roster page driven by **manual `IP:port` entry** (the primary path),
-  carrying the managed/foreign tier per device (see
-  [Federated roster](#federated-roster-managed-own-vs-foreign-devices)). ASCOM UDP
-  discovery is a low-priority, best-effort **pre-fill** only, merged into the
-  roster by `UniqueID` (see [Decisions](#decisions-2026-05-27)) — never a
-  prerequisite. The activity-stream UI follows on a separate track (it needs
-  `rp`'s real-time event stream, which is not yet implemented — see `rp.md:2846`).
+**Phase 5 — `rp` config + equipment roster + the activity stream. ⏳ In progress
+(single PR).** Scope as built (details in
+[`ui-htmx.md`](../../services/ui-htmx.md) and [`rp.md`](../../services/rp.md)):
+- ✅ *(this PR)* `rp` gains `GET/PUT /api/config` + `GET /api/config/schema` —
+  the same bodies as the driver actions, as plain REST, implemented on the
+  shared `rusty_photon_config::actions` core (extended with **wildcard secret
+  pointers** for the per-device auth arrays and an **`ApplyDisposition`** knob:
+  rp has no in-process reload, so changes classify as `restart_required` /
+  `status:"ok"` — honest until Phase 4 turns the callout into a Sentinel
+  restart button).
+- ✅ *(this PR)* The BFF gains the `rp` target: `/config/rp` reuses the whole
+  schema-driven form machinery through a `RestConfigClient`; the **equipment
+  page** (`/equipment`) joins rp's config (authoritative roster + addresses)
+  with `GET /api/equipment` (live `{id, connected}`) and carries the
+  managed/foreign **capability tier per device** via a live `supportedactions`
+  probe (managed devices get roster-derived config pages at
+  `/config/rp:{kind}:{id}` — no hand-added BFF entry needed). **Manual entry**
+  (the primary path) is add/edit/remove of roster entries, schema-generated
+  per kind, persisted by config surgery over `PUT /api/config`.
+- ✅ *(this PR)* The **activity-stream UI** (`/stream`): the
+  `7-stream-fold.html` direction rendered live — a stateless BFF **SSE proxy**
+  over rp's `GET /api/events/subscribe` (which landed after this plan was
+  written: 512-event replay, `Last-Event-ID` cursor, `stream_gap`) pushing
+  server-rendered feed cards + status-strip slots into htmx `sse-swap`
+  regions, on the pattern the `test-sse` spike proved.
+- Deviations from the original sketch: the join is by config `id` (not ASCOM
+  `UniqueID` — rp's roster is the source of truth and already id-keyed;
+  `UniqueID` keying returns with discovery pre-fill); per-device
+  connect/disconnect buttons are deferred until rp grows those endpoints
+  (its registry is startup-static — the endpoints are *(planned)* in `rp.md`);
+  ASCOM UDP discovery pre-fill stays deferred as designed.
 
 ## Open questions
 

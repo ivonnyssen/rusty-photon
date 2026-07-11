@@ -4,8 +4,9 @@
 //! **map of drivers** keyed by service id (`dsd-fp2`, `qhy-focuser`, …); each
 //! entry says how to reach that driver's Alpaca config actions. The default
 //! config carries a single local `dsd-fp2` entry so `cargo run` works with no
-//! config file. Later the device list is derived from `rp`'s equipment roster
-//! (see `docs/services/ui-htmx.md`).
+//! config file. The optional [`RpTarget`] additionally enables the rp-backed
+//! surfaces — `/config/rp`, `/equipment`, `/stream`, and the roster-derived
+//! config targets (see `docs/services/ui-htmx.md`).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -19,6 +20,12 @@ pub struct Config {
     pub server: ServerConfig,
     #[serde(default)]
     pub drivers: Drivers,
+    /// The rp orchestrator, when one is running. Enables the `/config/rp` page,
+    /// the `/equipment` roster, the `/stream` activity feed, and roster-derived
+    /// device config pages. `None` (the default) leaves the BFF a pure
+    /// driver-config UI.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rp: Option<RpTarget>,
 }
 
 /// Where the BFF itself listens.
@@ -73,6 +80,35 @@ pub struct DriverAuth {
     /// in logs or test output.
     #[debug("<redacted>")]
     pub password: String,
+}
+
+/// How to reach the rp orchestrator's REST API (`/api/config`, `/api/equipment`,
+/// `/api/events/subscribe`, …).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RpTarget {
+    #[serde(default = "default_rp_base_url")]
+    pub base_url: String,
+    /// Optional HTTP Basic credentials for an auth-enabled rp.
+    #[serde(default)]
+    pub auth: Option<DriverAuth>,
+    /// Optional PEM CA path for a TLS-enabled rp (trusted via `rp-tls`).
+    #[serde(default)]
+    pub ca_cert_path: Option<PathBuf>,
+}
+
+impl Default for RpTarget {
+    fn default() -> Self {
+        Self {
+            base_url: default_rp_base_url(),
+            auth: None,
+            ca_cert_path: None,
+        }
+    }
+}
+
+fn default_rp_base_url() -> String {
+    // rp's default server port (services/rp/src/config/server.rs).
+    "http://127.0.0.1:11115".to_string()
 }
 
 fn default_bind() -> String {
@@ -198,6 +234,29 @@ mod tests {
     #[test]
     fn load_config_missing_file_errors() {
         load_config(Path::new("/tmp/ui_htmx_nonexistent_4242.json")).unwrap_err();
+    }
+
+    #[test]
+    fn rp_target_is_absent_by_default_and_parses_when_present() {
+        let c = Config::default();
+        assert!(c.rp.is_none());
+
+        let json = r#"{
+            "rp": {
+                "base_url": "https://pi.local:11115",
+                "auth": { "username": "obs", "password": "secret" }
+            }
+        }"#;
+        let c: Config = serde_json::from_str(json).unwrap();
+        let rp = c.rp.unwrap();
+        assert_eq!(rp.base_url, "https://pi.local:11115");
+        assert_eq!(rp.auth.unwrap().username, "obs");
+    }
+
+    #[test]
+    fn rp_target_defaults_base_url_to_rp_port() {
+        let c: Config = serde_json::from_str(r#"{ "rp": {} }"#).unwrap();
+        assert_eq!(c.rp.unwrap().base_url, "http://127.0.0.1:11115");
     }
 
     #[test]

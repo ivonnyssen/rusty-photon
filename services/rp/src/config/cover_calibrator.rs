@@ -1,8 +1,9 @@
 use std::time::Duration;
 
-use serde::Deserialize;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CoverCalibratorConfig {
     pub id: String,
     pub alpaca_url: String,
@@ -13,6 +14,7 @@ pub struct CoverCalibratorConfig {
         default = "default_cover_calibrator_poll_interval",
         with = "humantime_serde"
     )]
+    #[schemars(with = "String")]
     pub poll_interval: Duration,
     /// Optional HTTP Basic Auth credentials for connecting to auth-enabled Alpaca services
     #[serde(default)]
