@@ -449,17 +449,22 @@ impl SessionManager {
         };
 
         // Restore the planner's counters first — the re-invoked
-        // orchestrator's dispatch reads them immediately.
+        // orchestrator's dispatch reads them immediately. The store is
+        // assigned unconditionally: the file is the source of truth, so
+        // missing (`null`) or unreadable persisted counters overwrite
+        // whatever is in memory with a zeroed slate rather than
+        // trusting the caller to have constructed the store empty.
         if let Some(store) = &self.planner_progress {
-            if !persisted.progress.is_null() {
-                match serde_json::from_value(persisted.progress) {
-                    Ok(restored) => {
-                        *store.lock().unwrap_or_else(|e| e.into_inner()) = restored;
-                    }
-                    Err(e) => warn!(error = %e,
-                        "persisted progress counters are unreadable; resuming with zeroed counters"),
-                }
-            }
+            let restored = if persisted.progress.is_null() {
+                crate::planner::progress::SessionProgress::default()
+            } else {
+                serde_json::from_value(persisted.progress).unwrap_or_else(|e| {
+                    warn!(error = %e,
+                        "persisted progress counters are unreadable; resuming with zeroed counters");
+                    crate::planner::progress::SessionProgress::default()
+                })
+            };
+            *store.lock().unwrap_or_else(|e| e.into_inner()) = restored;
         }
 
         let restored_status = if conditions_safe {
@@ -1158,6 +1163,40 @@ mod tests {
         // The corrupt file is left in place for the operator; the next
         // session start overwrites it.
         assert!(path.exists());
+    }
+
+    #[tokio::test]
+    async fn recover_startup_zeroes_stale_counters_when_progress_is_unreadable_or_absent() {
+        // The log promises "resuming with zeroed counters" — a store
+        // that already holds counts (a reused manager) must not leak
+        // them into the recovered session.
+        for progress in [json!("garbage"), Value::Null] {
+            let stub = spawn_invoke_stub(vec![StatusCode::OK]).await;
+            let dir = tempfile::tempdir().unwrap();
+            let path = state_path(&dir);
+            std::fs::write(
+                &path,
+                serde_json::to_vec(&json!({
+                    "session_id": "s-1",
+                    "workflow_id": "w-1",
+                    "status": "active",
+                    "started_at": "2026-07-11T00:00:00Z",
+                    "progress": progress,
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+
+            let (manager, store) = manager_with_state(&stub.url, path.clone());
+            store.lock().unwrap().record("M31", Some("Red"));
+
+            assert!(manager.recover_startup(true).await);
+            assert_eq!(
+                store.lock().unwrap().completed_for("M31", Some("Red")),
+                0,
+                "progress {progress} must overwrite stale in-memory counters"
+            );
+        }
     }
 
     #[tokio::test]
