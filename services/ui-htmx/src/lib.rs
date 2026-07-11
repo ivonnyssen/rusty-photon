@@ -894,6 +894,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn config_get_roster_key_without_rp_target_is_unknown() {
+        // A roster-shaped key on a BFF with no rp target: nothing to resolve
+        // against — the plain unknown-driver card, not an rp error.
+        let state = AppState::with_client("dsd-fp2", Arc::new(NonConfigDriver));
+        let response = config_get(
+            State(state),
+            Path("rp:cameras:main-cam".to_string()),
+            Query(UnlockQuery::default()),
+            HeaderMap::new(),
+        )
+        .await;
+        let html = body_of(response).await;
+        assert!(html.contains("No configured driver named"), "{html}");
+    }
+
+    #[tokio::test]
+    async fn config_get_roster_key_absent_from_roster_is_unknown() {
+        // rp answers, but no entry matches the id — honestly "no such driver".
+        let state = rp_state_with_config_client(Arc::new(BadEntryRoster));
+        let response = config_get(
+            State(state),
+            Path("rp:cover_calibrators:no-such-id".to_string()),
+            Query(UnlockQuery::default()),
+            HeaderMap::new(),
+        )
+        .await;
+        let html = body_of(response).await;
+        assert!(html.contains("No configured driver named"), "{html}");
+    }
+
+    #[tokio::test]
+    async fn config_post_resolve_failure_renders_the_same_cards() {
+        // The POST path shares resolve_service — its error arm must render
+        // the same honest card as GET.
+        let state = rp_state_with_config_client(Arc::new(NonConfigDriver));
+        let response = config_post(
+            State(state),
+            Path("rp:cameras:main-cam".to_string()),
+            HeaderMap::new(),
+            Form(HashMap::new()),
+        )
+        .await;
+        let html = body_of(response).await;
+        assert!(html.contains("Could not read rp's roster"), "{html}");
+    }
+
+    #[tokio::test]
+    async fn config_status_resolve_failure_stays_a_benign_reconnect() {
+        // Mid-poll resolve failures keep the page politely retrying rather
+        // than flashing an error card.
+        let state = rp_state_with_config_client(Arc::new(NonConfigDriver));
+        let markup = config_status(
+            State(state),
+            Path("rp:cameras:main-cam".to_string()),
+            Query(UnlockQuery::default()),
+        )
+        .await;
+        assert!(markup.into_string().contains("Reconnecting"));
+    }
+
+    #[tokio::test]
     async fn unusable_roster_entry_card_never_echoes_url_credentials() {
         // The URL-parse failure path must not leak the raw URL (it can carry
         // embedded credentials) into the rendered card.
