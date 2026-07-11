@@ -394,8 +394,15 @@ impl SessionManager {
     /// (rp.md § Write Strategy: at most one frame's progress is lost to
     /// a power failure). A no-op while idle — an idle session has no
     /// file — or when persistence is not configured.
+    ///
+    /// Takes the **write** lock despite not mutating: `RwLock` admits
+    /// concurrent readers, so a read lock would let two overlapping
+    /// `record_exposure` calls race `persist()` and land their atomic
+    /// renames out of order — regressing the file to older counters
+    /// (a repeated frame after a restart). The write lock upholds the
+    /// writer-serialization invariant `persist()` documents.
     pub async fn persist_progress(&self) {
-        let state = self.state.read().await;
+        let state = self.state.write().await;
         self.persist(&state).await;
     }
 
@@ -509,8 +516,8 @@ impl SessionManager {
     /// bookkeeping must not end an otherwise healthy night (rp.md
     /// § Write Strategy).
     ///
-    /// Callers hold the state lock (they pass the value they just
-    /// stored in it) **across the write on purpose**: it serializes
+    /// Callers hold the state **write** lock (they pass the value they
+    /// just stored in it) **across the write on purpose**: it serializes
     /// concurrent writers so the file can never regress to an older
     /// state, and it makes the delete-then-recreate race with `stop()`
     /// impossible (a `persist_progress` landing after a stop would
