@@ -46,6 +46,9 @@ bdd_infra::bdd_main! {
                     if let Some(ui) = world.ui.as_mut() {
                         ui.stop().await;
                     }
+                    if let Some(sentinel) = world.sentinel.as_mut() {
+                        sentinel.stop().await;
+                    }
                     if let Some(driver) = world.driver.as_mut() {
                         driver.stop().await;
                     }

@@ -13,6 +13,7 @@ pub mod io;
 pub mod monitor;
 pub mod notifier;
 pub mod pushover;
+pub mod restart;
 pub mod state;
 pub mod watchdog;
 
@@ -105,16 +106,15 @@ impl Config {
             Some(watchdog) => {
                 let source: Arc<dyn WatchdogEventSource> =
                     Arc::new(HttpWatchdogEventSource::new(&watchdog.rp_url));
-                let corrective: Arc<dyn Corrective> = Arc::new(CorrectiveLadder::http(
-                    Arc::clone(http),
-                    watchdog.max_restart_duration,
-                ));
+                let corrective: Arc<dyn Corrective> =
+                    Arc::new(CorrectiveLadder::http(Arc::clone(http)));
                 let monitor = OperationDeadlineMonitor::new(
                     "Operation Watchdog",
                     source,
                     notifiers.to_vec(),
                     Arc::clone(state),
                     watchdog.clone(),
+                    self.services.clone(),
                     corrective,
                 );
                 vec![Arc::new(monitor)]
@@ -255,6 +255,10 @@ impl SentinelBuilder {
         let dashboard_tls = config.dashboard.tls.clone();
         let dashboard_auth = config.dashboard.auth.clone();
 
+        // The Service Restart API's engine, over the top-level supervised-
+        // services registry. Commands run through the platform shell.
+        let restarts = Arc::new(restart::RestartManager::shell(config.services.clone()));
+
         Ok(Sentinel {
             engine,
             state,
@@ -262,6 +266,7 @@ impl SentinelBuilder {
             dashboard_listener,
             dashboard_tls,
             dashboard_auth,
+            restarts,
         })
     }
 }
@@ -274,6 +279,7 @@ pub struct Sentinel {
     dashboard_listener: Option<tokio::net::TcpListener>,
     dashboard_tls: Option<rp_tls::config::TlsConfig>,
     dashboard_auth: Option<rp_auth::config::AuthConfig>,
+    restarts: Arc<restart::RestartManager>,
 }
 
 impl Sentinel {
@@ -298,6 +304,7 @@ impl Sentinel {
             let cancel_for_dashboard = cancel.clone();
             let dashboard_tls = self.dashboard_tls;
             let dashboard_auth = self.dashboard_auth;
+            let restarts = Arc::clone(&self.restarts);
 
             let addr = listener.local_addr()?;
             let scheme = if dashboard_tls.is_some() {
@@ -309,7 +316,7 @@ impl Sentinel {
             println!("Sentinel dashboard bound_addr={}", addr);
 
             tokio::spawn(async move {
-                let router = dashboard::build_router(dashboard_state);
+                let router = dashboard::build_router(dashboard_state, restarts);
 
                 // Layer authentication if configured
                 let router = match &dashboard_auth {

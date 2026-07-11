@@ -288,6 +288,9 @@ fn entry_form(
         service: "equipment",
         title: &heading,
         subtitle: kind_key,
+        // Equipment forms edit roster entries in rp's config — there is no
+        // process here for Sentinel to restart.
+        can_restart: false,
     };
     let ctx = super::FieldCtx {
         model,
