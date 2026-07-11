@@ -526,9 +526,12 @@ pub fn config_card(
             @if page.can_restart {
                 div.card-footer {
                     div.hint {
-                        "Configuration changes apply via an in-process reload — no "
-                        "restart needed. Sentinel can restart the driver's process: "
-                        "the recovery hammer for a wedged driver."
+                        (format!(
+                            "Sentinel can restart {}'s process — the recovery hammer \
+                             for a wedged service, and how saved changes that need a \
+                             process restart take effect.",
+                            page.service
+                        ))
                     }
                     (restart_button(page))
                 }

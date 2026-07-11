@@ -1365,7 +1365,10 @@ mod tests {
         let state = AppState::with_client_and_sentinel(
             "dsd-fp2",
             Arc::new(StaticConfigDriver),
-            Arc::clone(&sentinel) as Arc<StubSentinel>,
+            // Method-call clone: `Arc::clone(&sentinel)` would infer
+            // `T = dyn SentinelClient` from the parameter and fail on the
+            // concrete `&Arc<StubSentinel>`.
+            sentinel.clone(),
         );
         let html = post_restart(state).await;
         assert!(html.contains("Restart requested via Sentinel"), "{html}");
