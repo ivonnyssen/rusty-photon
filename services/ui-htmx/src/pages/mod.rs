@@ -638,6 +638,28 @@ pub fn unknown_service_card(service: &str) -> Markup {
     }
 }
 
+/// The card for a `/config/{service}` key that resolved to no usable driver.
+/// Each [`crate::ResolveError`] cause gets its own honest message — an
+/// unreachable rp or an unusable roster entry is not "no such driver".
+pub(crate) fn resolve_failure_card(service: &str, err: &crate::ResolveError) -> Markup {
+    match err {
+        crate::ResolveError::Unknown => unknown_service_card(service),
+        crate::ResolveError::RpUnreachable(e) => error_card_with_message(
+            service,
+            &format!("Could not read rp's roster to resolve \"{service}\": {e}"),
+        ),
+        crate::ResolveError::BadRosterEntry(e) => html! {
+            div #config-card.card {
+                div class="banner error" {
+                    span.dot {}
+                    span { (format!("This device's roster entry can't be used: {e}")) }
+                }
+                p { a href="/equipment" { "Fix it on the Equipment page" } }
+            }
+        },
+    }
+}
+
 fn error_card_with_message(service: &str, message: &str) -> Markup {
     let retry = format!("/config/{service}");
     html! {

@@ -3069,7 +3069,8 @@ implemented** — the router serves only the unmarked ones.
   in `restart_required[]` with `status:"ok"`, and the persisted file takes
   effect on the next rp start. Validation failure → HTTP 200
   `status:"invalid"` + field-level `errors[]`, file untouched; a malformed
-  JSON body → HTTP 400. The config endpoints are covered by the
+  JSON body → HTTP 400; a body over axum's default 2 MiB request limit →
+  HTTP 413 (a valid config is a few KiB). The config endpoints are covered by the
   server-wide auth/TLS and are **not** behind the `/mcp` safety gate —
   configuration must stay editable while the system is unsafe.
 
