@@ -20,8 +20,13 @@ use crate::error::ZwoCameraError;
 pub const DEFAULT_PORT: u16 = 11122;
 
 /// Effective service configuration.
+///
+/// `deny_unknown_fields` (as in zwo-focuser and the other newer services) so
+/// typoed or removed keys fail loudly at load instead of being silently
+/// ignored — in particular the pre-ADR-014 `filterwheel` section, which is no
+/// longer valid here (the EFW belongs to a future separate service).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Config {
     /// Optional per-device overrides keyed by SDK serial (Phase E+).
     pub devices: BTreeMap<String, DeviceOverride>,
@@ -31,7 +36,7 @@ pub struct Config {
 
 /// Friendly overrides for a specific device, keyed by its SDK serial.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct DeviceOverride {
     /// Display name override.
     pub name: Option<String>,
@@ -41,7 +46,7 @@ pub struct DeviceOverride {
 
 /// HTTP server settings.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ServerConfig {
     /// The listening port (one port hosts every enumerated device).
     #[serde(default = "default_port")]
@@ -135,6 +140,26 @@ mod tests {
     fn a_server_object_without_a_port_keeps_the_default() {
         let config: Config = serde_json::from_str(r#"{"server": {}}"#).unwrap();
         assert_eq!(config.server.port, 11122);
+    }
+
+    #[test]
+    fn a_legacy_filterwheel_section_is_rejected_loudly() {
+        // Pre-ADR-014 configs carried a `filterwheel` section; the EFW moved
+        // to its own future service, so the key must fail at load rather than
+        // be silently ignored.
+        let err = serde_json::from_str::<Config>(r#"{"filterwheel": {"enabled": false}}"#)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("filterwheel"), "{err}");
+    }
+
+    #[test]
+    fn a_typoed_device_override_field_is_rejected_loudly() {
+        let err =
+            serde_json::from_str::<Config>(r#"{"devices": {"ASI-1": {"descripton": "oops"}}}"#)
+                .unwrap_err()
+                .to_string();
+        assert!(err.contains("descripton"), "{err}");
     }
 
     #[test]

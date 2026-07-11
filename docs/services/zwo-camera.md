@@ -402,8 +402,11 @@ supplies `ConfigurableDriver for ZwoCameraDriver`:
   follow the rebind).
 - **Editable fields:** the `devices` map (per-serial `name` / `description`).
 - **Validation** at load (parse-don't-validate): `devices` keys are free-form
-  serial strings; the override values are free-form display strings, so v0 has
-  nothing further to validate.
+  serial strings and the override values are free-form display strings, so v0
+  has nothing semantic to validate — but unknown keys are **rejected at
+  deserialize** (`deny_unknown_fields`, as in zwo-focuser), so typos and
+  removed keys (notably a pre-ADR-014 `filterwheel` section) fail loudly at
+  load instead of being silently ignored.
 
 `config.apply` persists atomically, returns `status:"applying"` when a field
 changed, and fires the in-process reload (`main.rs` runs under
