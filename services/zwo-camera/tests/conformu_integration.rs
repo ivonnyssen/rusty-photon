@@ -27,11 +27,10 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
 
     let temp_dir = TempDir::new()?;
     let config_path = temp_dir.path().join("zwo-camera.json");
-    // The EFW filter wheel is Phase F, so v0 runs ConformU against the camera
-    // only. Port 0 → OS-assigned.
+    // Camera only: EFW filter wheels belong to a future separate service
+    // (ADR-014). Port 0 → OS-assigned.
     let config = serde_json::json!({
         "devices": {},
-        "filterwheel": { "enabled": false },
         "server": { "port": 0 },
     });
     std::fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;

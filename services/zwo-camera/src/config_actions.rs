@@ -4,12 +4,10 @@
 //!
 //! Editability tiers:
 //! - **Locked (identity):** none. ASCOM `UniqueID`s are derived from the
-//!   camera/EFW SDK serial (see `docs/services/zwo-camera.md` "Device identity"),
+//!   camera SDK serial (see `docs/services/zwo-camera.md` "Device identity"),
 //!   not minted into config, so there is no identity field to lock.
-//! - **Hard read-only:** `server.port` (a BFF could not follow the rebind) and
-//!   `filterwheel.enabled` (toggling adds/removes endpoints → restart-required).
-//! - **Editable:** the per-serial `devices` map (`name` / `description` /
-//!   `filter_names`).
+//! - **Hard read-only:** `server.port` (a BFF could not follow the rebind).
+//! - **Editable:** the per-serial `devices` map (`name` / `description`).
 
 use rusty_photon_config::actions::{ConfigurableDriver, FieldError};
 
@@ -26,21 +24,11 @@ impl ConfigurableDriver for ZwoCameraDriver {
 
     fn normalize(_config: &mut Config) {}
 
-    fn validate(config: &Config) -> Vec<FieldError> {
-        let mut errors = Vec::new();
-        for (serial, device) in &config.devices {
-            if let Some(names) = &device.filter_names {
-                for (index, name) in names.iter().enumerate() {
-                    if name.trim().is_empty() {
-                        errors.push(FieldError {
-                            path: format!("devices.{serial}.filter_names.{index}"),
-                            msg: "filter name must not be empty".to_string(),
-                        });
-                    }
-                }
-            }
-        }
-        errors
+    /// Nothing to validate in v0: the per-serial overrides are free-form
+    /// name/description strings. (The former `filter_names` validation left
+    /// with the EFW config surface — ADR-014.)
+    fn validate(_config: &Config) -> Vec<FieldError> {
+        Vec::new()
     }
 
     /// No secrets in v0 (TLS / auth are Future Work).
@@ -60,7 +48,7 @@ impl ConfigurableDriver for ZwoCameraDriver {
     // hardware-derived UniqueID means there is no locked identity field.
 
     fn read_only_paths() -> &'static [&'static str] {
-        &["server.port", "filterwheel.enabled"]
+        &["server.port"]
     }
 }
 
@@ -72,21 +60,6 @@ mod tests {
     use crate::config::DeviceOverride;
 
     #[test]
-    fn empty_filter_name_is_rejected() {
-        let mut config = Config::default();
-        config.devices.insert(
-            "EFW-1".to_string(),
-            DeviceOverride {
-                filter_names: Some(vec!["L".to_string(), "  ".to_string()]),
-                ..Default::default()
-            },
-        );
-        let errors = ZwoCameraDriver::validate(&config);
-        assert_eq!(errors.len(), 1, "{errors:?}");
-        assert_eq!(errors[0].path, "devices.EFW-1.filter_names.1");
-    }
-
-    #[test]
     fn valid_config_has_no_errors() {
         let mut config = Config::default();
         config.devices.insert(
@@ -94,7 +67,6 @@ mod tests {
             DeviceOverride {
                 name: Some("Main".to_string()),
                 description: Some("desc".to_string()),
-                filter_names: None,
             },
         );
         assert!(ZwoCameraDriver::validate(&config).is_empty());
@@ -106,10 +78,8 @@ mod tests {
     }
 
     #[test]
-    fn port_and_filterwheel_toggle_are_read_only() {
-        let read_only = ZwoCameraDriver::read_only_paths();
-        assert!(read_only.contains(&"server.port"));
-        assert!(read_only.contains(&"filterwheel.enabled"));
+    fn port_is_read_only() {
+        assert_eq!(ZwoCameraDriver::read_only_paths(), &["server.port"]);
     }
 
     #[test]

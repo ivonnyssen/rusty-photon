@@ -3,9 +3,9 @@
 //! `ServerConfig::port` binds the listener; the `devices` override map (keyed by
 //! SDK serial — applied to each `ZwoCamera` at registration) is live as of
 //! Phase E, and the whole `Config` is exposed through the
-//! `config.get`/`apply`/`schema` actions (see `config_actions.rs`). The
-//! `filterwheel.enabled` toggle is carried and validated now; the EFW devices it
-//! gates are registered in Phase F.
+//! `config.get`/`apply`/`schema` actions (see `config_actions.rs`). EFW filter
+//! wheels are out of scope: they belong to a future separate service
+//! (ADR-014), so there is no filter-wheel config surface here.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -25,8 +25,6 @@ pub const DEFAULT_PORT: u16 = 11122;
 pub struct Config {
     /// Optional per-device overrides keyed by SDK serial (Phase E+).
     pub devices: BTreeMap<String, DeviceOverride>,
-    /// Filter-wheel registration toggle (Phase F).
-    pub filterwheel: FilterWheelConfig,
     /// HTTP server settings.
     pub server: ServerConfig,
 }
@@ -39,16 +37,6 @@ pub struct DeviceOverride {
     pub name: Option<String>,
     /// Description override.
     pub description: Option<String>,
-    /// Per-slot filter names (EFW only).
-    pub filter_names: Option<Vec<String>>,
-}
-
-/// Whether discovered EFW filter wheels are registered as ASCOM devices.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
-#[serde(default)]
-pub struct FilterWheelConfig {
-    /// Register discovered EFWs as FilterWheel devices when `true`.
-    pub enabled: bool,
 }
 
 /// HTTP server settings.
@@ -140,7 +128,6 @@ mod tests {
     fn default_config_uses_the_reserved_port() {
         let config = Config::default();
         assert_eq!(config.server.port, 11122);
-        assert!(!config.filterwheel.enabled);
         assert!(config.devices.is_empty());
     }
 

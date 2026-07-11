@@ -14,9 +14,10 @@
 //!
 //! ## Native dependency
 //!
-//! `zwo-rs`'s `libzwo-sys` links the ZWO ASI/EFW/EAF SDK **unconditionally**, so
-//! this package must be compiled on a machine with the SDK installed — even
-//! with the `simulation` feature, which removes the *focuser*, not the *link*.
+//! `zwo-rs` is built with only its `focuser` feature (ADR-014), so this binary
+//! links exactly `libEAFFocuser` — machines compiling this package need that
+//! SDK installed, even with the `simulation` feature, which removes the
+//! *focuser*, not the *link*.
 
 pub mod backend;
 mod config;
