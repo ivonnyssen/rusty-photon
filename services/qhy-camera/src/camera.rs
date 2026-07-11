@@ -436,8 +436,10 @@ fn to_image_array(image: &ImageData) -> Result<ImageArray, String> {
                 return Err("16-bit buffer too small for frame".to_string());
             }
             let pixels: Vec<u16> = image.data[..needed]
-                .chunks_exact(2)
-                .map(|c| u16::from_ne_bytes([c[0], c[1]]))
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|c| u16::from_ne_bytes(*c))
                 .collect();
             let arr = Array2::from_shape_vec((h, w), pixels).map_err(|e| e.to_string())?;
             Ok(ImageArray::from(arr.reversed_axes()))

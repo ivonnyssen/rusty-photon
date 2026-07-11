@@ -11,7 +11,7 @@ use zwo_camera::{load_effective_config, CliOverrides, ServerBuilder};
 
 #[derive(Parser)]
 #[command(name = "zwo-camera")]
-#[command(about = "ASCOM Alpaca driver for ZWO ASI cameras (and EFW filter wheels)")]
+#[command(about = "ASCOM Alpaca driver for ZWO ASI cameras")]
 #[command(version)]
 struct Args {
     /// Path to the JSON config file. When omitted, resolves to the per-user
@@ -54,7 +54,7 @@ fn main() -> ServiceResult {
     let simulation_empty = args.simulation_empty;
     debug!(config = ?config_path, "starting zwo-camera");
 
-    // No materialize_identity: ASCOM UniqueIDs are derived from the camera/EFW
+    // No materialize_identity: ASCOM UniqueIDs are derived from the camera
     // SDK serials at enumeration, not minted into config (see the design doc
     // "Device identity").
 

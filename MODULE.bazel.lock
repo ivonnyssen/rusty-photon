@@ -477,7 +477,7 @@
           "REPO_MAPPING:rules_rust+,rules_cc rules_cc+",
           "REPO_MAPPING:rules_rust+,rules_rust rules_rust+",
           "FILE:@@//Cargo.lock fe9dbbdfda107f47c76e379570ddd2e11ff1b5bfa7abb4f0abd41d9b4d5b8c12",
-          "FILE:@@//Cargo.toml 0827c42b28e8336c2e94893f0649851eca3d4765a2dc1346fe96fed758941b84",
+          "FILE:@@//Cargo.toml 0cddcb067f55d34464854570a5fb4f11527bca5901f40925c4a40a49cc067ddd",
           "FILE:@@//crates/bdd-infra/Cargo.toml 6a7638b854127d1c9ac384dbb127a29c7431b2007e31c0fe773e84d8526ede0b",
           "FILE:@@//crates/rp-ephemeris/Cargo.toml 369a140fbf9adf6f30ff21d30aae33071efa14caa7de62098817eee0b1fcc191",
           "FILE:@@//crates/rp-fits/Cargo.toml fcf7285ab4a8a0844e191ddfc197aad4ee5c2fe663056d1896a22a1b96be28a5",
@@ -511,10 +511,10 @@
           "FILE:@@//services/sky-survey-camera/Cargo.toml bc9d2161ff86be9a331ab3a87b2732930faedb8e60b4155aa4943829e8a3ae46",
           "FILE:@@//services/star-adventurer-gti/Cargo.toml c2aab0c72d29c451a7dd1cc0258d275728015fdd6b4060de1087ddc127ff8d92",
           "FILE:@@//services/ui-htmx/Cargo.toml c9685675fa5dca25c7a617d027b4e42b0a45e5750f37defc9351680d1c197a0f",
-          "FILE:@@//services/zwo-camera/Cargo.toml 6c38ad055dd6a8f2f38eb459888f65d43ea4acff571d8689bd9b1f116035696b",
-          "FILE:@@//crates/zwo-rs/Cargo.toml a4f99ac35a86cdaba4bba12510f9b4af888c8a7d9121217783da4473136ba8da",
-          "FILE:@@//crates/zwo-rs/libzwo-sys/Cargo.toml d68308c71d4e93213fec5789007950c150c5e2946d2939ef9f510cb76305346f",
-          "FILE:@@//services/zwo-focuser/Cargo.toml 3a7a6cf555c1b1a7d3e9d015a4377eddca811ecb0d9048ad6d1b880c32d6cf5e",
+          "FILE:@@//services/zwo-camera/Cargo.toml 7e308f5ad9eeb9e52315941d64148974737346c8712270bc03b25a490ba21a3c",
+          "FILE:@@//crates/zwo-rs/Cargo.toml db2ea5caedaa2f3c1a0e38b46500b01096c08d981b697802b4351cbe1e638fe2",
+          "FILE:@@//crates/zwo-rs/libzwo-sys/Cargo.toml f0965db57a80672ee47a295c8c4e2ea363c75944a14b1e25caeac3c9bd208293",
+          "FILE:@@//services/zwo-focuser/Cargo.toml de4fc82590dcd370622b57836f97ba916ef07a2b20ac1cb81ecfe60afb7e82a5",
           "FILE:@@//tests/operation-watchdog-e2e/Cargo.toml a59e56c17d83db43704bb3cdd2c6b685b2ef18f5cea3e317ffa31bdf78f769ce"
         ],
         "generatedRepoSpecs": {

@@ -3,9 +3,9 @@
 //! `ServerConfig::port` binds the listener; the `devices` override map (keyed by
 //! SDK serial — applied to each `ZwoCamera` at registration) is live as of
 //! Phase E, and the whole `Config` is exposed through the
-//! `config.get`/`apply`/`schema` actions (see `config_actions.rs`). The
-//! `filterwheel.enabled` toggle is carried and validated now; the EFW devices it
-//! gates are registered in Phase F.
+//! `config.get`/`apply`/`schema` actions (see `config_actions.rs`). EFW filter
+//! wheels are out of scope: they belong to a future separate service
+//! (ADR-014), so there is no filter-wheel config surface here.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -20,40 +20,33 @@ use crate::error::ZwoCameraError;
 pub const DEFAULT_PORT: u16 = 11122;
 
 /// Effective service configuration.
+///
+/// `deny_unknown_fields` (as in zwo-focuser and the other newer services) so
+/// typoed or removed keys fail loudly at load instead of being silently
+/// ignored — in particular the pre-ADR-014 `filterwheel` section, which is no
+/// longer valid here (the EFW belongs to a future separate service).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Config {
     /// Optional per-device overrides keyed by SDK serial (Phase E+).
     pub devices: BTreeMap<String, DeviceOverride>,
-    /// Filter-wheel registration toggle (Phase F).
-    pub filterwheel: FilterWheelConfig,
     /// HTTP server settings.
     pub server: ServerConfig,
 }
 
 /// Friendly overrides for a specific device, keyed by its SDK serial.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct DeviceOverride {
     /// Display name override.
     pub name: Option<String>,
     /// Description override.
     pub description: Option<String>,
-    /// Per-slot filter names (EFW only).
-    pub filter_names: Option<Vec<String>>,
-}
-
-/// Whether discovered EFW filter wheels are registered as ASCOM devices.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
-#[serde(default)]
-pub struct FilterWheelConfig {
-    /// Register discovered EFWs as FilterWheel devices when `true`.
-    pub enabled: bool,
 }
 
 /// HTTP server settings.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ServerConfig {
     /// The listening port (one port hosts every enumerated device).
     #[serde(default = "default_port")]
@@ -140,7 +133,6 @@ mod tests {
     fn default_config_uses_the_reserved_port() {
         let config = Config::default();
         assert_eq!(config.server.port, 11122);
-        assert!(!config.filterwheel.enabled);
         assert!(config.devices.is_empty());
     }
 
@@ -148,6 +140,26 @@ mod tests {
     fn a_server_object_without_a_port_keeps_the_default() {
         let config: Config = serde_json::from_str(r#"{"server": {}}"#).unwrap();
         assert_eq!(config.server.port, 11122);
+    }
+
+    #[test]
+    fn a_legacy_filterwheel_section_is_rejected_loudly() {
+        // Pre-ADR-014 configs carried a `filterwheel` section; the EFW moved
+        // to its own future service, so the key must fail at load rather than
+        // be silently ignored.
+        let err = serde_json::from_str::<Config>(r#"{"filterwheel": {"enabled": false}}"#)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("filterwheel"), "{err}");
+    }
+
+    #[test]
+    fn a_typoed_device_override_field_is_rejected_loudly() {
+        let err =
+            serde_json::from_str::<Config>(r#"{"devices": {"ASI-1": {"descripton": "oops"}}}"#)
+                .unwrap_err()
+                .to_string();
+        assert!(err.contains("descripton"), "{err}");
     }
 
     #[test]

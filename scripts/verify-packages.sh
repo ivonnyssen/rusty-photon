@@ -7,10 +7,12 @@
 # exceptions: ConditionPathExists-gated services (sky-survey-camera,
 # plate-solver, calibrator-flats) verify enabled-but-inactive-and-not-failed;
 # serial drivers verify config + handshake-attempted instead of active (see
-# is_serial); the cameras and phd2-guider never self-create a config (see
-# self_creates_config); phd2-guider's /health legitimately answers 503 in
-# the container (no PHD2), so its probe accepts 200 or 503. Runs natively
-# on arm64 (the rig) and x86_64 (dev box).
+# is_serial); the cameras, zwo-focuser, and phd2-guider never self-create a
+# config (see self_creates_config); phd2-guider's /health legitimately
+# answers 503 in the container (no PHD2), so its probe accepts 200 or 503.
+# The zwo services additionally prove via ldd that each binary resolves
+# exactly its own bundled SDK blob through the RUNPATH (ADR-014). Runs
+# natively on arm64 (the rig) and x86_64 (dev box).
 #
 # Rootless-container caveat (docs/plans/service-packaging.md): rootless
 # podman cannot apply the units' sandboxing across the User= switch
@@ -101,6 +103,7 @@ port_of() {
         qhy-camera) echo 11121 ;;
         zwo-camera) echo 11122 ;;
         pa-scops-oag) echo 11123 ;;
+        zwo-focuser) echo 11124 ;;
         phd2-guider) echo 11130 ;;
         plate-solver) echo 11131 ;;
         calibrator-flats) echo 11170 ;;
@@ -139,14 +142,14 @@ is_serial() {
 }
 
 self_creates_config() {
-    # The cameras deliberately do NOT materialize a config on start (no
-    # materialize_identity — ASCOM UniqueIDs derive from camera serials;
-    # they run on defaults until config.apply / an operator writes a file).
-    # phd2-guider likewise runs on built-in defaults and never writes one.
-    # Gated services never start without one.
+    # The cameras and zwo-focuser deliberately do NOT materialize a config on
+    # start (no materialize_identity — ASCOM UniqueIDs derive from SDK
+    # serials; they run on defaults until config.apply / an operator writes a
+    # file). phd2-guider likewise runs on built-in defaults and never writes
+    # one. Gated services never start without one.
     if is_gated "$1"; then return 1; fi
     case "$1" in
-        qhy-camera|zwo-camera|phd2-guider) return 1 ;;
+        qhy-camera|zwo-camera|zwo-focuser|phd2-guider) return 1 ;;
         *) return 0 ;;
     esac
 }
@@ -345,10 +348,23 @@ for s in $SERVICES; do
     fi
 
     if [ "$s" = zwo-camera ]; then
-        # RUNPATH proof: the SONAME-less bundled blobs resolve from the
-        # package's private lib dir, not from a global path.
+        # RUNPATH proof: the SONAME-less bundled blob resolves from the shared
+        # /usr/lib/rusty-photon dir — and ONLY the camera SDK is needed
+        # (ADR-014: per-device link features; the EFW/EAF SDKs belong to other
+        # services and are not shipped by this package).
         cx sh -c "ldd /usr/bin/rusty-photon-zwo-camera | grep -q /usr/lib/rusty-photon/libASICamera2.so" \
             || fail "$s" "libASICamera2.so does not resolve to /usr/lib/rusty-photon (RUNPATH)"
+        if cx sh -c "ldd /usr/bin/rusty-photon-zwo-camera | grep -qE 'libEFWFilter|libEAFFocuser'"; then
+            fail "$s" "binary links EFW/EAF SDKs it must not (ADR-014 per-device link)"
+        fi
+    fi
+    if [ "$s" = zwo-focuser ]; then
+        # Same proof for the focuser: exactly its own blob, nothing else.
+        cx sh -c "ldd /usr/bin/rusty-photon-zwo-focuser | grep -q /usr/lib/rusty-photon/libEAFFocuser.so" \
+            || fail "$s" "libEAFFocuser.so does not resolve to /usr/lib/rusty-photon (RUNPATH)"
+        if cx sh -c "ldd /usr/bin/rusty-photon-zwo-focuser | grep -qE 'libASICamera2|libEFWFilter'"; then
+            fail "$s" "binary links ASI/EFW SDKs it must not (ADR-014 per-device link)"
+        fi
     fi
     echo "== $s: OK (active, config, port $port)"
 done

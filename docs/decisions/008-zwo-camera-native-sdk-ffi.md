@@ -70,6 +70,13 @@ names are confirmed available on crates.io.
 
 ### 2. Unconditional native link (`simulation` is camera-free, not SDK-free)
 
+> **Superseded by [ADR-014](014-zwo-per-device-services-and-link-features.md)
+> (2026-07-10):** the link directives are now gated per device by additive
+> Cargo features (`camera` / `efw` / `focuser`, default = all), so each
+> service links only its own SDK. The paragraph below records the original
+> decision; its second half — `simulation` removes the *camera*, never the
+> *link* — still holds unchanged.
+
 `libzwo-sys`'s `build.rs` emits the link for `ASICamera2` + `EFWFilter` +
 `dylib=usb-1.0` (plus `stdc++`/`c++`, `udev`/IOKit) **with no feature/cfg gate**,
 mirroring `libqhyccd-sys`. The `simulation` feature removes the *camera*
