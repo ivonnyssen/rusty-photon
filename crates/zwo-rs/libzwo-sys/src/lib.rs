@@ -19,11 +19,6 @@
 )]
 // Generated bindings are not idiomatic Rust; do not lint them.
 #![allow(clippy::all, clippy::pedantic, clippy::nursery)]
-// `zwo_keep_udev` is a custom cfg emitted by build.rs, not a Cargo feature;
-// it predates this crate's MSRV supporting `cargo:rustc-check-cfg`, so the
-// lint (and, on old toolchains, the lint's own name) is allowed instead.
-#![allow(unknown_lints)]
-#![allow(unexpected_cfgs)]
 
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 

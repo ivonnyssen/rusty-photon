@@ -512,7 +512,7 @@
           "FILE:@@//services/star-adventurer-gti/Cargo.toml c2aab0c72d29c451a7dd1cc0258d275728015fdd6b4060de1087ddc127ff8d92",
           "FILE:@@//services/ui-htmx/Cargo.toml 6816163a63844190ac338a0c475ae5ff1788135ff17dad5f704a8ac19db53909",
           "FILE:@@//services/zwo-camera/Cargo.toml 7e308f5ad9eeb9e52315941d64148974737346c8712270bc03b25a490ba21a3c",
-          "FILE:@@//crates/zwo-rs/Cargo.toml 319eb25a32c6d3168d009a747bf1b2157f3ed075c545efc5382611bc6e5ed69a",
+          "FILE:@@//crates/zwo-rs/Cargo.toml db2ea5caedaa2f3c1a0e38b46500b01096c08d981b697802b4351cbe1e638fe2",
           "FILE:@@//crates/zwo-rs/libzwo-sys/Cargo.toml f0965db57a80672ee47a295c8c4e2ea363c75944a14b1e25caeac3c9bd208293",
           "FILE:@@//services/zwo-focuser/Cargo.toml de4fc82590dcd370622b57836f97ba916ef07a2b20ac1cb81ecfe60afb7e82a5",
           "FILE:@@//tests/operation-watchdog-e2e/Cargo.toml a59e56c17d83db43704bb3cdd2c6b685b2ef18f5cea3e317ffa31bdf78f769ce"

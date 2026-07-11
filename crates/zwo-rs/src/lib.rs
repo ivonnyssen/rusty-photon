@@ -1,4 +1,4 @@
-//! # zwo-rs — safe Rust bindings for the ZWO ASI camera & EFW filter wheel SDK
+//! # zwo-rs — safe Rust bindings for the ZWO ASI camera, EFW filter wheel & EAF focuser SDK
 //!
 //! Sibling crate to [`qhyccd-rs`](https://crates.io/crates/qhyccd-rs). It wraps
 //! the raw FFI in [`libzwo-sys`](https://crates.io/crates/libzwo-sys) — generated

@@ -19,7 +19,7 @@ readme = "README.md"
 repository = "https://github.com/ivonnyssen/rusty-photon"
 documentation = "https://docs.rs/zwo-rs"
 homepage = "https://github.com/ivonnyssen/rusty-photon"
-description = "Safe Rust bindings for the ZWO ASI camera and EFW filter wheel SDK"
+description = "Safe Rust bindings for the ZWO ASI camera, EFW filter wheel, and EAF focuser SDK"
 keywords = ["zwo", "asi", "astronomy", "camera", "filter-wheel"]
 categories = ["api-bindings", "hardware-support"]
 # Vendored into the rusty-photon workspace as a first-party, dual-homed member
