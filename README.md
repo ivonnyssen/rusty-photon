@@ -25,7 +25,8 @@ Coverage comes from the `bazel coverage` job (`.github/workflows/bazel-coverage.
 | [ui-htmx](services/ui-htmx) | Web config UI (BFF) | 11120 | [![coverage][cov-ui-htmx]][cov-ui-htmx-link] | Server-rendered configuration UI (axum + Maud + HTMX); edits any driver's config via its `config.get`/`config.apply` actions |
 | [plate-solver](services/plate-solver) | rp-managed HTTP service | 11131 | [![coverage][cov-plate-solver]][cov-plate-solver-link] | Wraps the ASTAP CLI for plate solving in a supervised, crash-isolated process |
 | [qhy-camera](services/qhy-camera) | ASCOM Camera (+ FilterWheel) | 11121 | [![coverage][cov-qhy-camera]][cov-qhy-camera-link] | Driver for QHYCCD cameras + filter wheels (vendored `qhyccd-rs` bindings; links the proprietary SDK unless `QHYCCD_SKIP_NATIVE_LINK=1`) |
-| [zwo-camera](services/zwo-camera) | ASCOM Camera | 11122 | [![coverage][cov-zwo-camera]][cov-zwo-camera-link] | Driver for ZWO ASI cameras (vendored `zwo-rs` bindings, MIT SDK; links the SDK unless `ZWO_SKIP_NATIVE_LINK=1`); EFW filter-wheel support in progress |
+| [zwo-camera](services/zwo-camera) | ASCOM Camera | 11122 | [![coverage][cov-zwo-camera]][cov-zwo-camera-link] | Driver for ZWO ASI cameras (vendored `zwo-rs` bindings, MIT SDK; links only the camera SDK — ADR-014 — unless `ZWO_SKIP_NATIVE_LINK=1`); the EFW filter wheel is a future separate service |
+| [zwo-focuser](services/zwo-focuser) | ASCOM Focuser | 11124 | [![coverage][cov-zwo-focuser]][cov-zwo-focuser-link] | Driver for the ZWO EAF (vendored `zwo-rs` bindings, MIT SDK; links only the focuser SDK — ADR-014 — unless `ZWO_SKIP_NATIVE_LINK=1`) |
 
 ### RP (Main Application)
 
@@ -111,7 +112,11 @@ ASCOM Alpaca **Camera (+ FilterWheel)** driver for real QHYCCD hardware, built n
 
 ### ZWO Camera
 
-ASCOM Alpaca **Camera** driver for ZWO ASI hardware, built natively on the vendored first-party `zwo-rs` bindings crate (ADR-008 / ADR-010). The MIT ZWO SDK itself is not vendored — it is provisioned at build time and linked unless `ZWO_SKIP_NATIVE_LINK=1` is set (the simulation-only path CI uses). Exposes the full `Device + Camera` surface — exposure state machine, ROI/binning, gain/offset, cooling, readout modes, and ST4 pulse guiding — and passes ConformU. EFW filter-wheel support is the next phase. See [docs/services/zwo-camera.md](docs/services/zwo-camera.md) for design documentation.
+ASCOM Alpaca **Camera** driver for ZWO ASI hardware, built natively on the vendored first-party `zwo-rs` bindings crate (ADR-008 / ADR-010). The MIT ZWO SDK itself is not vendored — it is provisioned at build time; per ADR-014 this binary links only the camera SDK (`libASICamera2`), unless `ZWO_SKIP_NATIVE_LINK=1` is set (the simulation-only path CI uses). Exposes the full `Device + Camera` surface — exposure state machine, ROI/binning, gain/offset, cooling, readout modes, and ST4 pulse guiding — and passes ConformU. Per ADR-014, each independently usable ZWO device gets its own service: the EAF focuser is `zwo-focuser` below, and EFW filter-wheel support will be a separate `zwo-filterwheel` service. See [docs/services/zwo-camera.md](docs/services/zwo-camera.md) for design documentation.
+
+### ZWO Focuser
+
+ASCOM Alpaca **Focuser** driver for the ZWO EAF, built on the same vendored `zwo-rs` crate (its `focuser` feature — the binary links only the focuser SDK, `libEAFFocuser`; ADR-014) rather than the serial transport pattern the other focusers use. Exposes the full `Device + Focuser` surface (absolute move, halt, live temperature) and passes ConformU against the simulation backend; real-hardware validation is pending. See [docs/services/zwo-focuser.md](docs/services/zwo-focuser.md) for design documentation.
 
 ## Getting Started
 
@@ -120,7 +125,7 @@ ASCOM Alpaca **Camera** driver for ZWO ASI hardware, built natively on the vendo
 - **Rust** (edition 2021, MSRV 1.94.1 — inherited by all workspace members)
 - **[Bazel](https://bazel.build/)** via bazelisk (version pinned by `.bazelversion`) — the local build/test loop and the per-PR CI gate
 - **[cargo-nextest](https://nexte.st/)** (`cargo install cargo-nextest --locked`) — optional; used by the nightly Cargo safety net (`act` / raw-cargo fallback)
-- **Vendor camera SDKs** (ZWO ASI/EFW + QHYCCD) — **required**: `bazel build //...` includes the `zwo-camera` / `qhy-camera` packages, which link the native SDKs. Install them per [`services/zwo-camera/README.md`](services/zwo-camera/README.md) and [`services/qhy-camera`](services/qhy-camera/) (the same SDKs CI provisions).
+- **Vendor camera SDKs** (ZWO ASI/EFW/EAF + QHYCCD) — **required**: `bazel build //...` includes the `zwo-camera` / `zwo-focuser` / `qhy-camera` packages, which link the native SDKs (the shared Bazel `zwo-rs` targets build the union of device features, so all three ZWO blobs are needed there; per-service cargo builds link only their own — ADR-014). Install them per [`services/zwo-camera/README.md`](services/zwo-camera/README.md) and [`services/qhy-camera`](services/qhy-camera/) (the same SDKs CI provisions).
 
 ### Building
 
@@ -218,7 +223,7 @@ rusty-photon/
     rusty-photon-shared-transport/   Refcounted multi-client transport scaffolding (serial + UDP)
     skywatcher-motor-protocol/       Sky-Watcher motor-controller wire protocol codec (USB + UDP)
     qhyccd-rs/                       Vendored QHYCCD SDK bindings + nested libqhyccd-sys FFI (ADR-009)
-    zwo-rs/                          Vendored ZWO ASI/EFW SDK bindings + nested libzwo-sys FFI (ADR-008/010)
+    zwo-rs/                          Vendored ZWO ASI/EFW/EAF SDK bindings + nested libzwo-sys FFI (ADR-008/010/014)
   services/
     rp/                    Main application: equipment gateway, event bus, safety enforcer
     filemonitor/           ASCOM SafetyMonitor (file-based)
@@ -231,6 +236,7 @@ rusty-photon/
     sky-survey-camera/     ASCOM Camera simulator backed by NASA SkyView
     qhy-camera/            ASCOM Camera + FilterWheel — QHYCCD hardware (implemented v0; vendored qhyccd-rs bindings)
     zwo-camera/            ASCOM Camera — ZWO ASI hardware (implemented; vendored zwo-rs bindings, MIT SDK)
+    zwo-focuser/           ASCOM Focuser — ZWO EAF (implemented; vendored zwo-rs bindings, MIT SDK)
     phd2-guider/           PHD2 client library (TCP/JSON RPC)
     sentinel/              Monitoring service (HTTP consumer)
     calibrator-flats/      Flat-field calibration orchestrator plugin (CoverCalibrator)
@@ -299,3 +305,5 @@ Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT L
 [cov-qhy-camera-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=qhy-camera
 [cov-zwo-camera]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=zwo-camera
 [cov-zwo-camera-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=zwo-camera
+[cov-zwo-focuser]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=zwo-focuser
+[cov-zwo-focuser-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=zwo-focuser

@@ -28,7 +28,9 @@ workspace = true
 # `client` is NOT enabled here — the production server never builds an Alpaca
 # client; only the BDD harness does, so it lives in [dev-dependencies] below.
 ascom-alpaca = { workspace = true, features = ["server", "focuser"] }
-zwo-rs = { workspace = true }
+# `focuser` only (ADR-014): this binary links libEAFFocuser and nothing else —
+# the ASI/EFW SDKs belong to their own services.
+zwo-rs = { workspace = true, features = ["focuser"] }
 rp-tls = { workspace = true }
 rusty-photon-config = { workspace = true }
 rusty-photon-driver = { workspace = true }
@@ -51,29 +53,31 @@ command = "cargo test -p zwo-focuser --features conformu --test conformu_integra
 [package.metadata.deb]
 name = "rusty-photon-zwo-focuser"
 maintainer = "Igor von Nyssen <igor@vonnyssen.com>"
-extended-description = "ASCOM Alpaca Focuser driver for the ZWO EAF. Bundles ZWO's MIT-licensed SDK libraries (libASICamera2, libEFWFilter, libEAFFocuser) under /usr/lib/rusty-photon; no separate SDK install is needed."
+extended-description = "ASCOM Alpaca Focuser driver for the ZWO EAF. Bundles ZWO's MIT-licensed focuser SDK library (libEAFFocuser) under /usr/lib/rusty-photon; no separate SDK install is needed."
 section = "science"
 priority = "optional"
-# Explicit list, NOT "$auto": the bundled SDK blobs carry no SONAME, so
-# dpkg-shlibdeps cannot map the binary's bare libASICamera2.so/libEFWFilter.so/
-# libEAFFocuser.so NEEDED entries to any package and would fail. libzwo-sys
-# links all three unconditionally (one build script serves both zwo-camera and
-# zwo-focuser), so this binary needs all three at runtime even though it only
-# talks to the EAF. These are the direct runtime needs (glibc, libgcc, C++
-# runtime for libASICamera2, libusb, libudev for libEFWFilter); adduser is used
-# by postinst.
-depends = "libc6, libgcc-s1, libstdc++6, libusb-1.0-0, libudev1, adduser"
+# Explicit list, NOT "$auto": the bundled SDK blob carries no SONAME, so
+# dpkg-shlibdeps cannot map the binary's bare libEAFFocuser.so NEEDED entry to
+# any package and would fail. The binary links only the focuser SDK (zwo-rs's
+# `focuser` feature, ADR-014), so libEAFFocuser.so is the only blob it needs —
+# and ships (the ASI/EFW SDKs belong to their own services). Direct runtime
+# needs: glibc, libgcc + the C++ runtime for libEAFFocuser, plus libudev — the
+# EAF blob references udev_* symbols without declaring libudev in its
+# DT_NEEDED, so our binary links (and the process loads) it on the blob's
+# behalf. No libusb (the EAF is HID/udev, not libusb). adduser is used by
+# postinst.
+depends = "libc6, libgcc-s1, libstdc++6, libudev1, adduser"
 assets = [
     ["target/release/zwo-focuser", "usr/bin/rusty-photon-zwo-focuser", "755"],
     ["pkg/90-rusty-photon-zwo-focuser.rules", "usr/lib/udev/rules.d/90-rusty-photon-zwo-focuser.rules", "644"],
-    # MIT SDK blobs: staged into gitignored pkg/lib/ by scripts/build-packages.sh
+    # MIT SDK blob: staged into gitignored pkg/lib/ by scripts/build-packages.sh
     # from the pinned indi-3rdparty ref (same pin as .github/actions/install-zwo-sdk),
-    # never committed (ADR-013). The blobs have no SONAME, so the binary finds them
-    # via the RUNPATH build-packages.sh injects (-Wl,-rpath,/usr/lib/rusty-photon).
-    ["pkg/lib/libASICamera2.so", "usr/lib/rusty-photon/libASICamera2.so", "644"],
-    ["pkg/lib/libEFWFilter.so", "usr/lib/rusty-photon/libEFWFilter.so", "644"],
+    # never committed (ADR-013). Exactly the one SDK this binary links (ADR-014) —
+    # co-installing zwo-camera is conflict-free because each package owns only
+    # its own blob. No SONAME, so the binary finds it via the RUNPATH
+    # build-packages.sh injects (-Wl,-rpath,/usr/lib/rusty-photon).
     ["pkg/lib/libEAFFocuser.so", "usr/lib/rusty-photon/libEAFFocuser.so", "644"],
-    # The license must travel with the redistributed blobs (checker asserts this
+    # The license must travel with the redistributed blob (checker asserts this
     # copy matches the one vendored with the SDK headers in libzwo-sys).
     ["pkg/ZWO-SDK-LICENSE.txt", "usr/share/doc/rusty-photon-zwo-focuser/ZWO-SDK-LICENSE.txt", "644"],
 ]
@@ -96,16 +100,13 @@ assets = [
     { source = "target/release/zwo-focuser", dest = "/usr/bin/rusty-photon-zwo-focuser", mode = "755" },
     { source = "pkg/rusty-photon-zwo-focuser.service", dest = "/usr/lib/systemd/system/rusty-photon-zwo-focuser.service", mode = "644" },
     { source = "pkg/90-rusty-photon-zwo-focuser.rules", dest = "/usr/lib/udev/rules.d/90-rusty-photon-zwo-focuser.rules", mode = "644" },
-    { source = "pkg/lib/libASICamera2.so", dest = "/usr/lib/rusty-photon/libASICamera2.so", mode = "644" },
-    { source = "pkg/lib/libEFWFilter.so", dest = "/usr/lib/rusty-photon/libEFWFilter.so", mode = "644" },
     { source = "pkg/lib/libEAFFocuser.so", dest = "/usr/lib/rusty-photon/libEAFFocuser.so", mode = "644" },
     { source = "pkg/ZWO-SDK-LICENSE.txt", dest = "/usr/share/doc/rusty-photon-zwo-focuser/ZWO-SDK-LICENSE.txt", mode = "644" },
 ]
-# rpm's dependency generator would emit requires on the SONAME-less bundled
-# blobs (libASICamera2.so, libEFWFilter.so, libEAFFocuser.so) that no package
-# provides, making the rpm uninstallable. Disable it; the deb `depends` list
-# above is the canonical statement of runtime needs (rpm builds are an x86_64
-# dev-box convenience
+# rpm's dependency generator would emit a requires on the SONAME-less bundled
+# blob (libEAFFocuser.so) that no package provides, making the rpm
+# uninstallable. Disable it; the deb `depends` list above is the canonical
+# statement of runtime needs (rpm builds are an x86_64 dev-box convenience
 # pre-1.0, per the plan).
 auto-req = "disabled"
 post_install_script = """

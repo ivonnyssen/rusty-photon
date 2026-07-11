@@ -53,11 +53,24 @@ Scope sequence: **Camera first → EFW filter wheel fast-follow → EAF focuser
 (Phase H, v0 landed, pending real-hardware validation).** Developed
 **standalone** (the parallel `qhy-camera` work is tracked separately).
 
+> **Topology re-scope (2026-07-10,
+> [ADR-014](../decisions/014-zwo-per-device-services-and-link-features.md)):**
+> the EFW filter wheel is **no longer planned inside `zwo-camera`** — it will
+> be its own `zwo-filterwheel` service, the same shape as `zwo-focuser`
+> (Phase H). One service per independently usable device; ZWO's SDKs are
+> independent libraries, so nothing forces co-hosting (contrast QHY's CFW,
+> which shares the camera's SDK handle and stays bundled). Alongside that,
+> `libzwo-sys`/`zwo-rs` link per device via additive Cargo features
+> (`camera` / `efw` / `focuser`), so each service binary links — and its
+> package ships — exactly one SDK blob. Phase F below is re-scoped
+> accordingly; `zwo-camera`'s `filterwheel.enabled` toggle and
+> `filter_names` override were removed with it.
+
 ## Motivation
 
 rusty-photon needs a first-class ASCOM Alpaca driver for ZWO ASI cameras (and ZWO
 EFW filter wheels), exposing exposures, ROI/binning, gain/offset, cooling,
-readout, and filter selection over Alpaca on a fixed port so the `rp`
+readout, and filter selection over Alpaca on fixed ports so the `rp`
 orchestrator and any Alpaca client (NINA, SharpCap) can drive them like any other
 device. This mirrors what `qhy-camera` does for QHYCCD hardware, reusing the same
 `ascom-alpaca` server framework and the `sky-survey-camera` (simulator camera) /
@@ -78,7 +91,7 @@ adversarially fact-checked.
 |---|---|---|
 | **SDK license** | Closed/proprietary; redistribution terms *unresolved* → forced onto an authenticated internal cache tier | **MIT** ("Copyright 2015, ZWO Company") → blob may be cached/redistributed; can live on the **public** R2 cache mirror |
 | **Rust FFI layer** | Mature published `qhyccd-rs`/`libqhyccd-sys` already exist; the driver just writes the device layer on top | **No usable equivalent** → we also build & maintain `zwo-rs` + `libzwo-sys` |
-| **Build/link gating** | Native lib links at compile time on *every* machine | **Same constraint** (the `-sys` `build.rs` links unconditionally; the SDK must be present at link time even for `--features simulation`) |
+| **Build/link gating** | Native lib links at compile time on *every* machine | **Same constraint**, per enabled device feature since ADR-014 (the `-sys` `build.rs` links each SDK its `camera`/`efw`/`focuser` feature enables; the enabled SDK must be present at link time even for `--features simulation`) |
 
 Net: ZWO is **legally much easier** (MIT, redistributable, all target arches
 shipped) but **mechanically more work up front** (we build the FFI that QHY got
@@ -98,7 +111,8 @@ and more ASCOM features map natively (see *ASCOM mapping*).
   `libASICamera2` V1.41** (2026-01-12), **EFW `libEFWFilter` V1.8.4**
   (2025-12-01), **EAF `libEAFFocuser` V1.8.1** (2026-03-18), CAA rotator V1.5.9.
   Camera and EFW are **separate libraries with no shared handle** → co-hosting
-  both in one service is a free choice, not a constraint.
+  both in one service is a free choice, not a constraint. (ADR-014 later
+  resolved that free choice the other way: one service per device.)
 - **License = MIT** (verbatim `license.txt`, "Copyright (c) 2015, ZWO Company"),
   confirmed via the INDI/Debian redistribution. Caveats: ZWO's own archive ships
   no `LICENSE` file (only a README), so the attribution comes from packagers; the
@@ -193,6 +207,15 @@ EFW → `IFilterWheelV2`: `EFWGetNum → EFWGetID → EFWOpen → EFWGetProperty
 | **Dev model** | **Lockstep** (driver tracks the crate via git rev; publish `zwo-rs`/`libzwo-sys` 0.1.0 + pin before merge). |
 | **Sequencing** | Standalone in this track; **Camera → EFW → EAF**. |
 | **Branch discipline** | All work on a feature branch (never `main`). |
+
+> **Superseded (2026-07-10,
+> [ADR-014](../decisions/014-zwo-per-device-services-and-link-features.md)).**
+> Two more rows above were later reversed: **SDK delivery / link** — the link
+> is now gated per device by additive Cargo features (`camera`/`efw`/`focuser`,
+> default = all) instead of unconditional; and **Service shape** — the combined
+> Camera + FilterWheel service became one service per device (`zwo-camera` =
+> Camera only; the EFW FilterWheel is a future separate `zwo-filterwheel`
+> service, re-scoped Phase F).
 
 > **Superseded (2026-06-17, [ADR-010](../decisions/010-vendor-zwo-rs.md)).** The
 > **Canonical home**, **Dev model**, **Bazel wiring**, and "Monorepo integration
@@ -292,9 +315,19 @@ it, leaning on the `sky-survey-camera` + `qhy-camera` scaffolding.
   (ROI/bin, gain/offset, cooling, readout, exposure state machine, abort +
   graceful stop, PulseGuide, sensor type), config-actions, serial identity,
   `spawn_blocking` bridge, `backend.rs` mock seam. 45 unit + 57 BDD scenarios
-  green; six camera feature files live (`filter_wheel.feature` `@wip` for Phase F).
-- **Phase F — EFW `FilterWheel`** fast-follow (4-method trait, position/moving/
-  names/offsets), config toggle, BDD/ConformU.
+  green; six camera feature files live. (A seventh, `filter_wheel.feature`
+  `@wip`, rode along for the then-planned in-camera Phase F and was removed
+  by the ADR-014 re-scope.)
+- **Phase F — EFW `FilterWheel`: a separate `zwo-filterwheel` service**
+  (re-scoped 2026-07-10 by
+  [ADR-014](../decisions/014-zwo-per-device-services-and-link-features.md);
+  not started). Same shape as Phase H's `zwo-focuser`: own port, own config,
+  own package shipping only `libEFWFilter.so`, built on `zwo-rs`'s existing
+  `FilterWheel` handle behind the `efw` feature. The 4-method ASCOM trait
+  (position/moving/names/offsets), per-serial `filter_names` overrides, and
+  the BDD scenarios from the removed `@wip` `filter_wheel.feature` move here.
+  Not folded into `zwo-camera`: the EFW is an independently usable device on
+  its own SDK; nothing forces co-hosting (see the ADR).
 - **Phase G — test + gate + consumer:** ✅ *mostly landed.* BDD + ConformU on the
   sim backend; `cargo rail run --profile commit` + `cargo fmt` green; ConformU
   **wired into `conformu.yml`** (per-service matrix with `install-zwo-sdk`

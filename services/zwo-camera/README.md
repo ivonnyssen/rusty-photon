@@ -1,9 +1,10 @@
 # zwo-camera
 
-ASCOM Alpaca **Camera** (and, later, **FilterWheel**) driver for ZWO ASI
-hardware, served on port **11122**. It is the ZWO analogue of `qhy-camera`,
-built on the author-maintained [`zwo-rs`](https://github.com/ivonnyssen/zwo-rs)
-FFI crate.
+ASCOM Alpaca **Camera** driver for ZWO ASI hardware, served on port
+**11122**. It is the ZWO analogue of `qhy-camera`, built on the vendored
+first-party [`zwo-rs`](../../crates/zwo-rs) FFI crate. Other ZWO devices are
+separate services (ADR-014): the EAF focuser is `zwo-focuser`, and the EFW
+filter wheel is a future `zwo-filterwheel` service.
 
 See [`docs/services/zwo-camera.md`](../../docs/services/zwo-camera.md) for the
 full design, [`docs/plans/zwo-driver.md`](../../docs/plans/zwo-driver.md) for the
@@ -24,24 +25,27 @@ identity and the `config.get`/`apply`/`schema` actions. Validated by **45 unit
 tests** (against the in-crate mock seam), **57 BDD scenarios**, and a full
 **ConformU** pass (both `alpacaprotocol` and `conformance` suites). Roadmap:
 
-- **Phase F** — EFW `FilterWheel` (gated on `filterwheel.enabled`).
+- **Phase F** — re-scoped by ADR-014 to a future separate `zwo-filterwheel`
+  service (not part of this crate).
 - **Phase G** — mostly done: ConformU is wired into `conformu.yml` (per-service
   matrix, native ZWO SDK provisioned via `install-zwo-sdk`), and the nightly
   `native.yml` builds the real linked path on Linux/macOS/Windows. Remaining
   tail: the `rp` `CameraConfig` consumer.
 
-The six camera BDD feature files under `tests/features/` are live;
-`filter_wheel.feature` stays `@wip` for Phase F.
+The six camera BDD feature files under `tests/features/` are live.
 
 ## Native dependency (the crux)
 
-`zwo-rs`'s `libzwo-sys` links the ZWO ASI/EFW SDK (`libASICamera2` +
-`libEFWFilter` + `libusb-1.0`) **unconditionally**. Consequences:
+`zwo-rs` is built with only its `camera` feature (ADR-014), so this binary
+links exactly the ASI camera SDK (`libASICamera2` + `libusb-1.0`).
+Consequences:
 
-- **Every machine that compiles this package needs the SDK installed** — dev
+- **Every machine that compiles this package needs that SDK installed** — dev
   laptops, CI runners, Bazel actions — not just machines with a camera attached.
+  (The shared Bazel `zwo-rs` targets build the union of device features, so
+  Bazel actions provision all three ZWO blobs.)
 - The `simulation` feature makes the build **camera-free, not SDK-free**: it
-  fabricates frames/EFW state at runtime, but the native SDK is still linked.
+  fabricates frames at runtime, but the native SDK is still linked.
 - The build **fails to link without the SDK**, so **install it before building**
   (see below). `bazel build //...` includes this package, so the SDK is a required
   local-dev prerequisite — CI and the Bazel actions install it the same way.
@@ -64,8 +68,12 @@ for h in ASICamera2.h EFW_filter.h EAF_focuser.h license.txt; do
   sudo curl -fsSL "$BASE/$h" -o "/usr/local/include/$h"
 done
 # Shared libraries (INDI's .bin == ZWO's upstream .so), under the linker name.
+# `cargo build -p zwo-camera` links only libASICamera2 (ADR-014), but
+# `bazel build //...` builds the shared zwo-rs targets with the union of
+# device features, so install all three for a full local dev setup.
 sudo curl -fsSL "$BASE/x64/libASICamera2.bin" -o /usr/local/lib/libASICamera2.so
 sudo curl -fsSL "$BASE/x64/libEFWFilter.bin"  -o /usr/local/lib/libEFWFilter.so
+sudo curl -fsSL "$BASE/x64/libEAFFocuser.bin" -o /usr/local/lib/libEAFFocuser.so
 sudo ldconfig
 
 # 2. bindgen needs libclang; point LIBCLANG_PATH at it if not auto-found
@@ -88,8 +96,7 @@ cargo run  -p zwo-camera --features simulation -- --port 11122
 
 ```jsonc
 {
-  "devices": {},          // per-serial name/description/filter_names overrides
-  "filterwheel": { "enabled": false },  // register discovered EFWs (Phase F)
+  "devices": {},          // per-serial name/description overrides
   "server": { "port": 11122 }
 }
 ```

@@ -1,21 +1,23 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
-//! # zwo-camera — ASCOM Alpaca driver for ZWO ASI cameras (and EFW filter wheels)
+//! # zwo-camera — ASCOM Alpaca driver for ZWO ASI cameras
 //!
 //! The service enumerates every connected ASI camera via [`zwo_rs`] and registers
 //! each as an ASCOM [`ZwoCamera`] device on one port, with a serial-derived
 //! `UniqueID`. Each device implements the full `Device` + `Camera` surface
 //! (exposure state machine, ROI/binning, gain/offset, cooling, readout, ST4
-//! pulse-guiding) over the [`backend::CameraHandle`] SDK seam. The EFW
-//! `FilterWheel` is Phase F.
+//! pulse-guiding) over the [`backend::CameraHandle`] SDK seam. EFW filter
+//! wheels and EAF focusers are separate services (ADR-014): each independently
+//! usable ZWO device gets its own driver process.
 //!
 //! See `docs/services/zwo-camera.md` for the full design and
 //! `docs/plans/zwo-driver.md` for the decision record.
 //!
 //! ## Native dependency
 //!
-//! `zwo-rs`'s `libzwo-sys` links the ZWO ASI/EFW SDK **unconditionally**, so this
-//! package must be compiled on a machine with the SDK installed — even with the
-//! `simulation` feature, which removes the *camera*, not the *link*.
+//! `zwo-rs` is built with only its `camera` feature (ADR-014), so this binary
+//! links exactly `libASICamera2` (+ `libusb-1.0`) — machines compiling this
+//! package need that SDK installed, even with the `simulation` feature, which
+//! removes the *camera*, not the *link*.
 
 pub mod backend;
 mod camera;
