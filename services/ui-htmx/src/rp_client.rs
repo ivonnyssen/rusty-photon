@@ -1,0 +1,219 @@
+//! rp's non-config REST surface: live equipment status and session state.
+//!
+//! The equipment page joins `GET /api/equipment` (live `{id, connected}` per
+//! device) with rp's *config* (the authoritative roster, read through the
+//! [`ConfigClient`](crate::driver_client::ConfigClient) REST transport); the
+//! stream page seeds its status strip from `GET /api/session/status`. This
+//! module owns the wire mirror of those two endpoints (`rp.md` "REST
+//! Endpoints") behind the mockable [`RpApi`] trait.
+
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use serde::Deserialize;
+
+use crate::driver_client::ConfigClientError;
+use crate::io::HttpClient;
+
+/// Live status of one configured device — the per-entry shape of
+/// `GET /api/equipment` (`rp.md`): the operator-supplied config `id` plus the
+/// connection state. Addresses and settings live in rp's config, not here.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DeviceStatus {
+    pub id: String,
+    pub connected: bool,
+}
+
+/// The singular mount's status — no `id` (rp's mount is one-per-observatory).
+#[derive(Debug, Clone, Deserialize)]
+pub struct MountStatus {
+    pub connected: bool,
+}
+
+/// `GET /api/equipment`: live connection state per configured device, mirroring
+/// the config's equipment shape. All six keys are always present; `mount` is
+/// `null` when none is configured.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct EquipmentStatus {
+    #[serde(default)]
+    pub cameras: Vec<DeviceStatus>,
+    #[serde(default)]
+    pub filter_wheels: Vec<DeviceStatus>,
+    #[serde(default)]
+    pub cover_calibrators: Vec<DeviceStatus>,
+    #[serde(default)]
+    pub focusers: Vec<DeviceStatus>,
+    #[serde(default)]
+    pub safety_monitors: Vec<DeviceStatus>,
+    #[serde(default)]
+    pub mount: Option<MountStatus>,
+}
+
+impl EquipmentStatus {
+    /// The live `connected` flag for a device by equipment kind + config id
+    /// (`None` when rp doesn't know the device — e.g. a roster entry added to
+    /// the config after rp last started).
+    pub fn connected(&self, kind_key: &str, id: &str) -> Option<bool> {
+        if kind_key == "mount" {
+            return self.mount.as_ref().map(|m| m.connected);
+        }
+        let list = match kind_key {
+            "cameras" => &self.cameras,
+            "filter_wheels" => &self.filter_wheels,
+            "cover_calibrators" => &self.cover_calibrators,
+            "focusers" => &self.focusers,
+            "safety_monitors" => &self.safety_monitors,
+            _ => return None,
+        };
+        list.iter().find(|d| d.id == id).map(|d| d.connected)
+    }
+}
+
+/// `GET /api/session/status` body: `{"status": "idle" | "active" | "interrupted"}`.
+#[derive(Debug, Clone, Deserialize)]
+struct SessionStatusBody {
+    status: String,
+}
+
+/// rp's non-config REST surface, behind a trait so page handlers can be unit
+/// tested with canned responses (mirrors the `ConfigClient` seam).
+#[async_trait]
+#[cfg_attr(test, mockall::automock)]
+pub trait RpApi: Send + Sync {
+    /// `GET /api/equipment` — live connection state of the configured roster.
+    async fn equipment_status(&self) -> Result<EquipmentStatus, ConfigClientError>;
+
+    /// `GET /api/session/status` — the session state string
+    /// (`idle` / `active` / `interrupted`).
+    async fn session_status(&self) -> Result<String, ConfigClientError>;
+}
+
+/// Production [`RpApi`] over the shared [`HttpClient`] (rp-tls CA trust +
+/// optional Basic auth — the same client the `RestConfigClient` uses).
+pub struct RestRpApi {
+    http: Arc<dyn HttpClient>,
+    base_url: String,
+}
+
+impl RestRpApi {
+    pub fn new(http: Arc<dyn HttpClient>, base_url: &str) -> Self {
+        Self {
+            http,
+            base_url: base_url.trim_end_matches('/').to_string(),
+        }
+    }
+
+    async fn get_json<T: serde::de::DeserializeOwned>(
+        &self,
+        path: &str,
+    ) -> Result<T, ConfigClientError> {
+        let url = format!("{}{path}", self.base_url);
+        let response = self
+            .http
+            .get(&url)
+            .await
+            .map_err(|e| ConfigClientError::Transport(e.to_string()))?;
+        if !(200..300).contains(&response.status) {
+            let detail = response.body.chars().take(200).collect::<String>();
+            return Err(ConfigClientError::Transport(format!(
+                "HTTP {} from {url}: {detail}",
+                response.status
+            )));
+        }
+        serde_json::from_str(&response.body).map_err(|e| ConfigClientError::Decode(e.to_string()))
+    }
+}
+
+#[async_trait]
+impl RpApi for RestRpApi {
+    async fn equipment_status(&self) -> Result<EquipmentStatus, ConfigClientError> {
+        self.get_json("/api/equipment").await
+    }
+
+    async fn session_status(&self) -> Result<String, ConfigClientError> {
+        let body: SessionStatusBody = self.get_json("/api/session/status").await?;
+        Ok(body.status)
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+mod tests {
+    use super::*;
+    use crate::io::{HttpResponse, MockHttpClient};
+    use serde_json::json;
+
+    fn api_returning(url_suffix: &'static str, body: serde_json::Value) -> RestRpApi {
+        let mut http = MockHttpClient::new();
+        http.expect_get()
+            .withf(move |url| url.ends_with(url_suffix))
+            .returning(move |_| {
+                let body = body.to_string();
+                Box::pin(async move { Ok(HttpResponse { status: 200, body }) })
+            });
+        RestRpApi::new(Arc::new(http), "http://rp:11115/")
+    }
+
+    #[tokio::test]
+    async fn equipment_status_parses_all_kinds_and_null_mount() {
+        let api = api_returning(
+            "/api/equipment",
+            json!({
+                "cameras": [ { "id": "main-cam", "connected": true } ],
+                "filter_wheels": [],
+                "cover_calibrators": [ { "id": "flat", "connected": false } ],
+                "focusers": [],
+                "safety_monitors": [],
+                "mount": null
+            }),
+        );
+        let status = api.equipment_status().await.unwrap();
+        assert_eq!(status.connected("cameras", "main-cam"), Some(true));
+        assert_eq!(status.connected("cover_calibrators", "flat"), Some(false));
+        assert_eq!(status.connected("cameras", "unknown"), None);
+        assert_eq!(status.connected("mount", "mount"), None);
+    }
+
+    #[tokio::test]
+    async fn equipment_status_maps_the_singular_mount() {
+        let api = api_returning(
+            "/api/equipment",
+            json!({
+                "cameras": [], "filter_wheels": [], "cover_calibrators": [],
+                "focusers": [], "safety_monitors": [],
+                "mount": { "connected": true }
+            }),
+        );
+        let status = api.equipment_status().await.unwrap();
+        assert_eq!(status.connected("mount", "anything"), Some(true));
+    }
+
+    #[tokio::test]
+    async fn session_status_unwraps_the_status_field() {
+        let api = api_returning("/api/session/status", json!({ "status": "active" }));
+        assert_eq!(api.session_status().await.unwrap(), "active");
+    }
+
+    #[tokio::test]
+    async fn non_2xx_is_a_transport_error() {
+        let mut http = MockHttpClient::new();
+        http.expect_get().returning(|_| {
+            Box::pin(async {
+                Ok(HttpResponse {
+                    status: 503,
+                    body: "unavailable".to_string(),
+                })
+            })
+        });
+        let api = RestRpApi::new(Arc::new(http), "http://rp:11115");
+        let err = api.equipment_status().await.unwrap_err();
+        assert!(matches!(err, ConfigClientError::Transport(_)), "{err:?}");
+    }
+
+    #[test]
+    fn unknown_kind_key_is_none() {
+        let status = EquipmentStatus::default();
+        assert_eq!(status.connected("rotators", "x"), None);
+    }
+}

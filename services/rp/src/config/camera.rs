@@ -1,10 +1,10 @@
 use std::time::Duration;
 
-use serde::Deserialize;
+use rusty_photon_config::actions::FieldError;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
-use crate::error::{Result, RpError};
-
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CameraConfig {
     pub id: String,
     #[serde(default)]
@@ -44,6 +44,7 @@ pub struct CameraConfig {
     /// Accepts a humantime string (e.g. `"8s"`). See `docs/services/rp.md`
     /// §"Event Envelope".
     #[serde(default, with = "humantime_serde")]
+    #[schemars(with = "Option<String>")]
     pub readout_time_estimate: Option<Duration>,
     /// Optional HTTP Basic Auth credentials for connecting to auth-enabled Alpaca services
     #[serde(default)]
@@ -51,21 +52,29 @@ pub struct CameraConfig {
 }
 
 impl CameraConfig {
-    /// Range-validate the camera, returning a [`RpError::Config`] with a
-    /// message naming the offending field on failure. Today the only
-    /// validated field is `focal_length_mm` — must be strictly positive
-    /// when supplied — but the impl exists so future fields land in one
-    /// canonical place.
-    pub fn validate(&self) -> Result<()> {
+    /// Range-validate the camera as field-level errors (empty = valid),
+    /// with `index` naming its position in `equipment.cameras`. Shared by
+    /// `load_config` (which aborts startup on the first error) and the REST
+    /// `PUT /api/config` validation. Paths are dotted with the index
+    /// (`equipment.cameras.0.focal_length_mm`) so a UI can map each error
+    /// onto its field; the message names the camera id for humans. Today
+    /// the only validated field is `focal_length_mm` — must be strictly
+    /// positive when supplied — but the impl exists so future fields land
+    /// in one canonical place.
+    pub fn field_errors(&self, index: usize) -> Vec<FieldError> {
+        let mut errors = Vec::new();
         if let Some(f) = self.focal_length_mm {
             if !(f > 0.0 && f.is_finite()) {
-                return Err(RpError::Config(format!(
-                    "equipment.cameras['{}'].focal_length_mm must be a positive finite number; got {}",
-                    self.id, f
-                )));
+                errors.push(FieldError {
+                    path: format!("equipment.cameras.{index}.focal_length_mm"),
+                    msg: format!(
+                        "must be a positive finite number; got {f} (camera '{}')",
+                        self.id
+                    ),
+                });
             }
         }
-        Ok(())
+        errors
     }
 }
 

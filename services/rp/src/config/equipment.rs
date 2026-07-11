@@ -1,4 +1,5 @@
-use serde::Deserialize;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
 use super::camera::CameraConfig;
 use super::cover_calibrator::CoverCalibratorConfig;
@@ -7,7 +8,7 @@ use super::focuser::FocuserConfig;
 use super::mount::MountConfig;
 use super::safety_monitor::SafetyMonitorConfig;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct EquipmentConfig {
     #[serde(default)]
     pub cameras: Vec<CameraConfig>,

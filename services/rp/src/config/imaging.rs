@@ -1,7 +1,8 @@
-use serde::Deserialize;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
 /// Image cache + future analysis-tool tuning. Pi-5-friendly defaults.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ImagingConfig {
     #[serde(default = "default_cache_max_mib")]
     pub cache_max_mib: usize,

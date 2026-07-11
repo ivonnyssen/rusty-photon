@@ -1,6 +1,7 @@
 use std::time::Duration;
 
-use serde::Deserialize;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
 /// HTTP-client connection to the `plate-solver` rp-managed service.
 /// `timeout` is the connection-side outer timeout (the
@@ -12,11 +13,12 @@ use serde::Deserialize;
 /// when the per-call MCP parameter is omitted; per-call overrides
 /// for loaded-from-disk images where the configured rig default
 /// may not match.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PlateSolverConfig {
     pub url: String,
     #[serde(default = "default_plate_solver_timeout", with = "humantime_serde")]
+    #[schemars(with = "String")]
     pub timeout: Duration,
     #[serde(default)]
     pub default_search_radius_deg: Option<f64>,

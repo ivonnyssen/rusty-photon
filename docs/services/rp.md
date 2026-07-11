@@ -3038,29 +3038,59 @@ application logic.
 
 ### REST Endpoints
 
+Endpoints marked *(planned)* are part of the target design but **not yet
+implemented** — the router serves only the unmarked ones.
+
 #### Equipment
-- `GET /api/equipment` — current equipment status (connected, device info)
-- `PUT /api/equipment/{device_id}/connect` — connect to a device
-- `PUT /api/equipment/{device_id}/disconnect` — disconnect from a device
+- `GET /api/equipment` — live connection status per configured device. The
+  response mirrors the config's equipment shape: six fixed keys
+  (`cameras`, `filter_wheels`, `cover_calibrators`, `focusers`,
+  `safety_monitors` — arrays of `{ "id", "connected" }` — and `mount`, a
+  `{ "connected" }` object or `null`). The `id` is the operator-supplied
+  config id; the mount is singular and has none. Device *addresses and
+  settings* are not repeated here — they live in the config, readable via
+  `GET /api/config`, and a UI joins the two by `id`.
+- `PUT /api/equipment/{device_id}/connect` — connect to a device *(planned;
+  the registry is built once at startup and holds no runtime
+  connect/disconnect path yet)*
+- `PUT /api/equipment/{device_id}/disconnect` — disconnect from a device *(planned)*
+
+#### Configuration
+- `GET /api/config` — the effective configuration, secrets redacted, plus
+  CLI-override-pinned paths. Same `{ config, overrides }` body as the
+  drivers' `config.get`, as plain REST (no Alpaca envelope). See
+  [`config-actions.md`](config-actions.md) "REST transport".
+- `GET /api/config/schema` — JSON Schema for the config plus editability
+  tiers (`{ schema, locked_fields, read_only_fields }`; `server.port` is
+  hard read-only — the self-lockout guard).
+- `PUT /api/config` — validate and atomically persist a full Config
+  (body = the Config JSON; response = the `config.apply` classification
+  body). **rp has no in-process reload**: every changed field is reported
+  in `restart_required[]` with `status:"ok"`, and the persisted file takes
+  effect on the next rp start. Validation failure → HTTP 200
+  `status:"invalid"` + field-level `errors[]`, file untouched; a malformed
+  JSON body → HTTP 400. The config endpoints are covered by the
+  server-wide auth/TLS and are **not** behind the `/mcp` safety gate —
+  configuration must stay editable while the system is unsafe.
 
 #### Targets
-- `GET /api/targets` — list all targets with progress
-- `POST /api/targets` — add a target
-- `PUT /api/targets/{id}` — update a target
-- `DELETE /api/targets/{id}` — remove a target
+- `GET /api/targets` — list all targets with progress *(planned)*
+- `POST /api/targets` — add a target *(planned)*
+- `PUT /api/targets/{id}` — update a target *(planned)*
+- `DELETE /api/targets/{id}` — remove a target *(planned)*
 
 #### Session
 - `POST /api/session/start` — start a new session (or resume existing)
 - `POST /api/session/stop` — stop the session gracefully (finish current
   exposures, park)
 - `POST /api/session/abort` — abort immediately (discard in-progress exposures,
-  park)
+  park) *(planned)*
 - `GET /api/session/status` — current session state, active target, progress
 - `GET /api/session/plan` — planner's current evaluation (why it chose the
-  current target, upcoming decisions)
+  current target, upcoming decisions) *(planned)*
 
 #### Documents
-- `GET /api/documents` — list recent exposure documents
+- `GET /api/documents` — list recent exposure documents *(planned)*
 - `GET /api/documents/{id}` — full document with all sections. Returns
   the same JSON written to the sidecar. Resolves through the cache with
   on-disk fallback; returns `404` only when neither cache nor disk has
@@ -3068,7 +3098,8 @@ application logic.
   [Document Resolution](#document-resolution).
 - `POST /api/documents/{id}/sections` — add/update a section (plugin
   endpoint). Requires the document be resolvable; persists the sidecar
-  atomically.
+  atomically. *(planned — plugins deliver sections through
+  `POST /api/plugins/{id}/complete` today)*
 
 #### Images
 - `GET /api/images/{document_id}` — image metadata (width, height, bitpix,
@@ -3156,6 +3187,14 @@ default port, `session.data_directory` under `/var/lib/rusty-photon/rp/`)
 is written on first start if the file is absent. An explicit `--config`
 naming a missing file stays a hard error. Equipment is listed with Alpaca
 connection details. Plugins register their webhook URLs and command endpoints.
+
+The running config is readable and editable over REST — `GET /api/config`,
+`GET /api/config/schema`, `PUT /api/config` (see
+[Configuration endpoints](#configuration) above): rp implements the shared
+config-actions protocol ([`config-actions.md`](config-actions.md)) with
+`ApplyDisposition::Restart`, so an applied change is persisted atomically to
+this file and reported as `restart_required` — it takes effect on the next rp
+start. This is what the `ui-htmx` equipment page edits.
 
 The `mount` field is singular: exactly one mount is the typical
 deployment. Piggyback rigs share that one mount across multiple optical

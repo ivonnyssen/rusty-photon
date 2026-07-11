@@ -33,6 +33,10 @@ pub trait HttpClient: Send + Sync {
     /// `PUT` with `Action` / `Parameters` form fields.
     async fn put_form(&self, url: &str, params: &[(&str, &str)])
         -> Result<HttpResponse, HttpError>;
+
+    /// Send a PUT request with a JSON body. rp's REST config endpoint
+    /// (`PUT /api/config`) takes the full Config JSON directly.
+    async fn put_json(&self, url: &str, body: &str) -> Result<HttpResponse, HttpError>;
 }
 
 /// Production HTTP client using `reqwest`, with optional CA trust and Basic auth.
@@ -120,6 +124,32 @@ impl HttpClient for ReqwestHttpClient {
         tracing::debug!("PUT {url} -> {status} ({} bytes)", body.len());
         Ok(HttpResponse { status, body })
     }
+
+    async fn put_json(&self, url: &str, body: &str) -> Result<HttpResponse, HttpError> {
+        tracing::debug!("PUT {url} (json)");
+        // `Connection: close` for the same reason as `get` — a fresh connection
+        // per request survives the target restarting between calls.
+        let mut request = self
+            .client
+            .put(url)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .header(reqwest::header::CONNECTION, "close")
+            .body(body.to_string());
+        if let Some((user, pass)) = &self.auth {
+            request = request.basic_auth(user, Some(pass));
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|e| HttpError(format!("PUT {url} failed: {e}")))?;
+        let status = response.status().as_u16();
+        let body = response
+            .text()
+            .await
+            .map_err(|e| HttpError(format!("reading response body: {e}")))?;
+        tracing::debug!("PUT {url} -> {status} ({} bytes)", body.len());
+        Ok(HttpResponse { status, body })
+    }
 }
 
 #[cfg(test)]
@@ -145,6 +175,13 @@ mod tests {
             .put_form(UNREACHABLE_URL, &[("Action", "config.get")])
             .await
             .unwrap_err();
+        assert!(err.0.starts_with("PUT "), "{}", err.0);
+    }
+
+    #[tokio::test]
+    async fn put_json_connection_refused_is_an_error() {
+        let client = ReqwestHttpClient::new(None).unwrap();
+        let err = client.put_json(UNREACHABLE_URL, "{}").await.unwrap_err();
         assert!(err.0.starts_with("PUT "), "{}", err.0);
     }
 }

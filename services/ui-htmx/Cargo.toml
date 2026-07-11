@@ -20,13 +20,13 @@ workspace = true
 test-fixtures = []
 # Test-only Server-Sent-Events fixture routes for the @browser SSE spike
 # (UI-testing plan §9 Tier 2). Same shape as `test-fixtures` — OFF by default,
-# `#[coverage(off)]`, spawned only by the BDD suite — but kept a *separate* gate
-# because it pulls a streaming dependency (`async-stream`) and a vendored htmx SSE
-# extension that the rest of the BFF has no need for. It proves async server-pushed
-# DOM updates are browser-observable and that an open SSE stream (which never closes
-# on the shutdown signal — axum #2673) still allows a graceful, coverage-flushing
-# shutdown when the browser is quit first.
-test-sse = ["dep:async-stream"]
+# `#[coverage(off)]`, spawned only by the BDD suite. It proves async
+# server-pushed DOM updates are browser-observable and that an open SSE stream
+# (which never closes on the shutdown signal — axum #2673) still allows a
+# graceful, coverage-flushing shutdown when the browser is quit first. (Its
+# `async-stream` dependency became unconditional when the production SSE proxy
+# landed in Phase 5, so this gate now only scopes the fixture routes.)
+test-sse = []
 
 [dependencies]
 axum = { workspace = true }
@@ -36,6 +36,9 @@ reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
+# CancellationToken for ending open SSE proxy streams on shutdown (axum #2673),
+# mirroring rp's `sse_shutdown` pattern.
+tokio-util = { workspace = true }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
@@ -43,11 +46,9 @@ clap = { workspace = true }
 rp-tls = { workspace = true }
 rusty-photon-config = { workspace = true }
 rusty-photon-service-lifecycle = { workspace = true }
-# Optional, enabled only by the `test-sse` feature: ergonomic async stream
-# construction for the test-only SSE fixture endpoint. Never compiled into the
-# real binary (the feature is off by default). Already in the workspace graph
-# (services/rp uses it), so this only adds an edge.
-async-stream = { workspace = true, optional = true }
+# Async stream construction for the production SSE proxy (`/stream/events`,
+# Phase 5) and the test-only SSE fixture endpoint.
+async-stream = { workspace = true }
 
 [package.metadata.deb]
 name = "rusty-photon-ui-htmx"
@@ -94,7 +95,9 @@ post_uninstall_script = "systemctl daemon-reload"
 require-sh = true
 
 [dev-dependencies]
-bdd-infra = { workspace = true }
+# rp-harness: the Phase-5 suites spawn a real rp (RpConfigBuilder + launcher)
+# alongside the BFF and dsd-fp2 — an all-first-party stack, no OmniSim.
+bdd-infra = { workspace = true, features = ["rp-harness"] }
 mockall = { workspace = true }
 cucumber = { workspace = true }
 tempfile = { workspace = true }

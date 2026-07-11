@@ -60,7 +60,9 @@ async fn open_index(world: &mut UiWorld) {
     world.get("/").await;
 }
 
-#[when(regex = r#"^I open the config page for "([\w-]+)"$"#)]
+// The service key may be a static drivers-map id (`dsd-fp2`), the reserved
+// `rp`, or a roster-derived `rp:{kind}:{id}` key — hence the `:` in the class.
+#[when(regex = r#"^I open the config page for "([\w:-]+)"$"#)]
 async fn open_named_config_page(world: &mut UiWorld, service: String) {
     world.get(&format!("/config/{service}")).await;
 }

@@ -43,12 +43,14 @@ pub use site::SiteConfig;
 
 use std::path::Path;
 
-use serde::Deserialize;
+use rusty_photon_config::actions::FieldError;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::{Result, RpError};
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Config {
     pub session: SessionConfig,
     pub equipment: EquipmentConfig,
@@ -106,6 +108,22 @@ pub fn default_scaffold() -> serde_json::Value {
     })
 }
 
+/// Domain validation shared by startup ([`load_config`]) and the REST
+/// `PUT /api/config` endpoint (via [`crate::config_actions::RpConfigDriver`]).
+/// Empty result means valid. Paths are dotted with array indices
+/// (`equipment.cameras.0.focal_length_mm`) so a UI can render each error
+/// next to its field; messages name the device id where one exists.
+pub fn validate_config(config: &Config) -> Vec<FieldError> {
+    let mut errors = Vec::new();
+    if let Some(site) = config.site.as_ref() {
+        errors.extend(site.field_errors());
+    }
+    for (index, cam) in config.equipment.cameras.iter().enumerate() {
+        errors.extend(cam.field_errors(index));
+    }
+    errors
+}
+
 pub fn load_config(path: &Path) -> Result<Config> {
     let contents = std::fs::read_to_string(path).map_err(|e| {
         RpError::Config(format!(
@@ -121,11 +139,10 @@ pub fn load_config(path: &Path) -> Result<Config> {
             e
         ))
     })?;
-    if let Some(site) = config.site.as_ref() {
-        site.validate()?;
-    }
-    for cam in &config.equipment.cameras {
-        cam.validate()?;
+    // Same field validation as `PUT /api/config`; startup keeps its
+    // pre-REST behaviour of aborting on the first offending field.
+    if let Some(err) = validate_config(&config).into_iter().next() {
+        return Err(RpError::Config(format!("{} {}", err.path, err.msg)));
     }
     Ok(config)
 }
@@ -187,5 +204,181 @@ mod tests {
 
         let err = load_config(&path).unwrap_err();
         assert!(err.to_string().contains("failed to parse config file"));
+    }
+
+    #[test]
+    fn validate_config_flags_site_and_camera_fields_with_dotted_paths() {
+        let mut config: Config = serde_json::from_value(default_scaffold()).unwrap();
+        config.site = Some(crate::config::SiteConfig {
+            latitude_degrees: 91.0,
+            longitude_degrees: 181.0,
+        });
+        config.equipment.cameras = vec![
+            serde_json::from_value(serde_json::json!({
+                "id": "bad-cam",
+                "alpaca_url": "http://localhost:11120",
+                "focal_length_mm": -1.0
+            }))
+            .unwrap(),
+            serde_json::from_value(serde_json::json!({
+                "id": "good-cam",
+                "alpaca_url": "http://localhost:11121"
+            }))
+            .unwrap(),
+        ];
+
+        let errors = validate_config(&config);
+        let paths: Vec<&str> = errors.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(
+            paths,
+            vec![
+                "site.latitude_degrees",
+                "site.longitude_degrees",
+                "equipment.cameras.0.focal_length_mm",
+            ]
+        );
+        assert!(
+            errors[2].msg.contains("bad-cam"),
+            "camera errors name the device id for humans: {:?}",
+            errors[2]
+        );
+    }
+
+    #[test]
+    fn validate_config_accepts_scaffold() {
+        let config: Config = serde_json::from_value(default_scaffold()).unwrap();
+        assert_eq!(validate_config(&config), vec![]);
+    }
+
+    /// Serialize → deserialize → serialize must be a fixed point: the REST
+    /// `PUT /api/config` path re-parses the serialized value it persists
+    /// (`rusty_photon_config::actions::config_apply`), so any asymmetric
+    /// field would corrupt the persisted config.
+    fn assert_value_round_trips(config: &Config) -> serde_json::Value {
+        let value = serde_json::to_value(config).unwrap();
+        let back: Config = serde_json::from_value(value.clone()).unwrap();
+        let again = serde_json::to_value(&back).unwrap();
+        assert_eq!(again, value, "Config JSON round-trip must be stable");
+        value
+    }
+
+    #[test]
+    fn config_json_round_trips_default_scaffold() {
+        let config: Config = serde_json::from_value(default_scaffold()).unwrap();
+        assert_value_round_trips(&config);
+    }
+
+    #[test]
+    fn config_json_round_trips_fully_populated_sample() {
+        // Every block populated, including all humantime-serde Duration
+        // fields (which serialize as humantime strings) and both secret
+        // shapes (server auth hash + per-device client auth password).
+        let sample = serde_json::json!({
+            "session": {
+                "data_directory": "/data/lights",
+                "session_state_file": "/data/session_state.json",
+                "file_naming_pattern": "{target}_{filter}"
+            },
+            "site": { "latitude_degrees": 47.6062, "longitude_degrees": -122.3321 },
+            "equipment": {
+                "cameras": [{
+                    "id": "main-cam",
+                    "name": "Main",
+                    "alpaca_url": "https://localhost:11120",
+                    "device_type": "camera",
+                    "device_number": 0,
+                    "cooler_target_c": -10.0,
+                    "gain": 100,
+                    "offset": 50,
+                    "focal_length_mm": 1000.0,
+                    "readout_time_estimate": "8s",
+                    "auth": { "username": "observatory", "password": "secret" }
+                }],
+                "mount": {
+                    "alpaca_url": "http://localhost:11122",
+                    "device_number": 0,
+                    "settle_after_slew": "3s",
+                    "slew_rate_arcsec_per_sec": 7200.0,
+                    "auth": { "username": "observatory", "password": "secret" }
+                },
+                "focusers": [{
+                    "id": "main-focuser",
+                    "camera_id": "main-cam",
+                    "alpaca_url": "http://localhost:11113",
+                    "device_number": 0,
+                    "min_position": 0,
+                    "max_position": 100000,
+                    "steps_per_sec": 1200.0,
+                    "auth": { "username": "observatory", "password": "secret" }
+                }],
+                "filter_wheels": [{
+                    "id": "main-fw",
+                    "camera_id": "main-cam",
+                    "alpaca_url": "http://localhost:11123",
+                    "device_number": 0,
+                    "filters": ["L", "R", "G", "B"],
+                    "auth": { "username": "observatory", "password": "secret" }
+                }],
+                "cover_calibrators": [{
+                    "id": "flat-panel",
+                    "alpaca_url": "http://localhost:11125",
+                    "device_number": 0,
+                    "poll_interval": "3s",
+                    "auth": { "username": "observatory", "password": "secret" }
+                }],
+                "safety_monitors": [{
+                    "id": "weather-watcher",
+                    "alpaca_url": "http://localhost:11111",
+                    "device_number": 0,
+                    "auth": { "username": "observatory", "password": "secret" }
+                }]
+            },
+            "plugins": [{ "name": "image-analyzer", "type": "event" }],
+            "targets": [{ "name": "M31", "ra_hours": 0.712, "dec_degrees": 41.27 }],
+            "planner": { "min_altitude_degrees": 20 },
+            "safety": { "poll_interval": "10s" },
+            "imaging": { "cache_max_mib": 1024, "cache_max_images": 8 },
+            "centering": { "solve_time_estimate": "30s", "slew_overhead_estimate": "10s" },
+            "plate_solver": { "url": "http://localhost:11131", "timeout": "1m", "default_search_radius_deg": 3.0 },
+            "guider": {
+                "url": "http://localhost:11130",
+                "timeout": "90s",
+                "settle_pixels": 0.8,
+                "settle_time": "10s",
+                "settle_timeout": "1m",
+                "dither_pixels": 5.0
+            },
+            "server": {
+                "port": 11115,
+                "bind_address": "127.0.0.1",
+                "tls": { "cert": "/etc/pki/rp.pem", "key": "/etc/pki/rp-key.pem" },
+                "auth": { "username": "observatory", "password_hash": "$argon2id$v=19$m=19456,t=2,p=1$abc" }
+            }
+        });
+
+        let config: Config = serde_json::from_value(sample).unwrap();
+        let value = assert_value_round_trips(&config);
+
+        // humantime-serde fields serialize as humantime strings, not
+        // `{secs, nanos}` objects — the wire shape the schema declares.
+        for (pointer, expected) in [
+            ("/equipment/cameras/0/readout_time_estimate", "8s"),
+            ("/equipment/mount/settle_after_slew", "3s"),
+            ("/equipment/cover_calibrators/0/poll_interval", "3s"),
+            ("/safety/poll_interval", "10s"),
+            ("/centering/solve_time_estimate", "30s"),
+            ("/centering/slew_overhead_estimate", "10s"),
+            ("/plate_solver/timeout", "1m"),
+            ("/guider/timeout", "1m 30s"),
+            ("/guider/settle_time", "10s"),
+            ("/guider/settle_timeout", "1m"),
+        ] {
+            assert_eq!(
+                value.pointer(pointer).and_then(Value::as_str),
+                Some(expected),
+                "expected humantime string at {pointer}, got {:?}",
+                value.pointer(pointer)
+            );
+        }
     }
 }

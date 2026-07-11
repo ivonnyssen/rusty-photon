@@ -62,6 +62,21 @@ impl ConfigAction {
     }
 }
 
+/// How a driver's persisted config changes take effect: via in-process reload
+/// (the default) or only on the next process start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApplyDisposition {
+    /// Changed fields apply via in-process reload: [`config_apply`] classifies
+    /// them into `reload[]` and returns `status:"applying"`; the driver fires
+    /// its `ReloadSignal` after the response flushes.
+    Reload,
+    /// The process has no in-process reload (e.g. rp, which runs under
+    /// `ServiceRunner::run`): changed fields are classified into
+    /// `restart_required[]` and `status` stays `"ok"` — the persisted file
+    /// takes effect on the next process start.
+    Restart,
+}
+
 /// Per-driver configuration metadata. All invariant protocol logic lives in the
 /// free functions below ([`config_get`], [`config_apply`], [`config_schema`]),
 /// generic over this trait; an implementor supplies only what *varies* per
@@ -85,6 +100,12 @@ pub trait ConfigurableDriver {
     /// RFC-6901 JSON pointers to secret leaves, redacted by `config.get` and
     /// carried forward (rather than overwritten with the sentinel) by
     /// `config.apply`. Empty slice if the driver stores no secrets.
+    ///
+    /// A pointer segment may be the wildcard `*`, matching every element of
+    /// the array (or every value of the object) at that position — e.g.
+    /// `/equipment/cameras/*/auth/password` names that leaf in every camera
+    /// entry. See [`expand_secret_pointer`] for the expansion semantics and
+    /// the array-reordering limitation.
     fn secret_pointers() -> &'static [&'static str];
 
     /// Dotted paths currently pinned by a CLI override; surfaced in
@@ -106,6 +127,14 @@ pub trait ConfigurableDriver {
     /// `server.port` the BFF could not follow across a rebind).
     fn read_only_paths() -> &'static [&'static str] {
         &[]
+    }
+
+    /// How this driver's persisted changes take effect. The default —
+    /// [`ApplyDisposition::Reload`] — matches the Alpaca drivers, which run
+    /// under `ServiceRunner::run_with_reload`; services with no in-process
+    /// reload (rp) override to [`ApplyDisposition::Restart`].
+    fn apply_disposition() -> ApplyDisposition {
+        ApplyDisposition::Reload
     }
 }
 
@@ -142,7 +171,8 @@ pub struct ConfigSchemaResponse {
 pub enum ApplyStatus {
     /// Persisted and an in-process reload is in flight.
     Applying,
-    /// Persisted; nothing needed a reload.
+    /// Persisted; no reload is in flight — nothing changed, or every change
+    /// is `restart_required` ([`ApplyDisposition::Restart`] drivers).
     Ok,
     /// Validation failed; the file is unchanged.
     Invalid,
@@ -155,9 +185,12 @@ pub struct ConfigApplyResponse {
     pub status: ApplyStatus,
     /// Took effect live, no reload. Unused while every changed field reloads.
     pub applied: Vec<String>,
-    /// Applied via in-process reload.
+    /// Applied via in-process reload ([`ApplyDisposition::Reload`] drivers).
     pub reload: Vec<String>,
-    /// Would need a Sentinel process restart. Unused today.
+    /// Persisted, but takes effect only on the next process start
+    /// ([`ApplyDisposition::Restart`] services, e.g. rp — no in-process
+    /// reload). Until that restart, re-applying the same value keeps listing
+    /// the path here: it still differs from the running process.
     pub restart_required: Vec<String>,
     /// Submitted but not persisted because the field is CLI-override-pinned.
     pub skipped_override: Vec<String>,
@@ -233,10 +266,14 @@ pub fn config_schema<D: ConfigurableDriver>() -> ConfigSchemaResponse {
 /// `config.apply`: parse → normalize → validate → layer-aware persist → classify.
 ///
 /// Returns `Ok(ConfigApplyResponse)` for both success (`applying`/`ok`) and
-/// validation failure (`invalid`, file untouched). The `reload` field lists the
-/// changed effective-config paths; when it is non-empty (`status:"applying"`)
-/// the caller fires the in-process reload **after** flushing the response. Hard
-/// failures (bad JSON, corrupt file, persist error) come back as [`ApplyError`].
+/// validation failure (`invalid`, file untouched). The changed effective-config
+/// paths are classified per [`ConfigurableDriver::apply_disposition`]:
+/// [`ApplyDisposition::Reload`] lists them in `reload` — when non-empty
+/// (`status:"applying"`) the caller fires the in-process reload **after**
+/// flushing the response — while [`ApplyDisposition::Restart`] lists them in
+/// `restart_required` with `status:"ok"` (persisted; takes effect on the next
+/// process start). Hard failures (bad JSON, corrupt file, persist error) come
+/// back as [`ApplyError`].
 pub fn config_apply<D: ConfigurableDriver>(
     path: &Path,
     overrides: &D::Overrides,
@@ -261,15 +298,20 @@ pub fn config_apply<D: ConfigurableDriver>(
 
     // The redaction sentinel means "keep the stored secret unchanged"; with
     // nothing stored there is nothing to keep, so honouring it would bake the
-    // sentinel in as the real secret. Reject as a domain error.
-    for ptr in D::secret_pointers() {
-        if redacted_secret_without_prior(&submitted_value, &file_current, ptr) {
-            errors.push(FieldError {
-                path: pointer_to_dotted(ptr),
-                msg:
-                    "cannot keep an unchanged secret when none is stored; provide the password hash"
-                        .to_string(),
-            });
+    // sentinel in as the real secret. Reject as a domain error. Wildcard
+    // patterns expand against the *submitted* value, and each concrete
+    // pointer is looked up at the same position in the file (positional
+    // pairing — see [`expand_secret_pointer`] on array reordering).
+    for pattern in D::secret_pointers() {
+        for ptr in expand_secret_pointer(pattern, &submitted_value) {
+            if redacted_secret_without_prior(&submitted_value, &file_current, &ptr) {
+                errors.push(FieldError {
+                    path: pointer_to_dotted(&ptr),
+                    msg:
+                        "cannot keep an unchanged secret when none is stored; provide the password hash"
+                            .to_string(),
+                });
+            }
         }
     }
 
@@ -295,17 +337,27 @@ pub fn config_apply<D: ConfigurableDriver>(
 
     save(path, &to_persist).map_err(ApplyError::Persist)?;
 
-    let status = if changed.is_empty() {
-        ApplyStatus::Ok
-    } else {
-        ApplyStatus::Applying
+    // Classify the changed effective paths per the driver's disposition:
+    // in-process reload (`reload[]`, `applying` when non-empty) or process
+    // restart (`restart_required[]`, status stays `ok` — persisted, takes
+    // effect on the next start).
+    let (status, reload, restart_required) = match D::apply_disposition() {
+        ApplyDisposition::Reload => {
+            let status = if changed.is_empty() {
+                ApplyStatus::Ok
+            } else {
+                ApplyStatus::Applying
+            };
+            (status, changed, Vec::new())
+        }
+        ApplyDisposition::Restart => (ApplyStatus::Ok, Vec::new(), changed),
     };
 
     Ok(ConfigApplyResponse {
         status,
         applied: Vec::new(),
-        reload: changed,
-        restart_required: Vec::new(),
+        reload,
+        restart_required,
         skipped_override: skipped,
         persisted_to: Some(path.display().to_string()),
         errors: Vec::new(),
@@ -314,12 +366,83 @@ pub fn config_apply<D: ConfigurableDriver>(
 
 // --- pure helpers (driver-agnostic) --------------------------------------------
 
-/// Redact each secret leaf in a serialized config `Value`, in place.
+/// Expand a secret-pointer *pattern* against a concrete `Value` into the
+/// RFC-6901 pointers that resolve in that value.
+///
+/// A pattern is an RFC-6901 pointer whose segments may be the wildcard `*`,
+/// meaning "every element of the array (or every value of the object) at this
+/// position" — e.g. `/equipment/cameras/*/auth/password` names that leaf in
+/// every camera entry that has one. Non-`*` segments resolve with exact
+/// [`Value::pointer`] semantics (RFC-6901 `~0`/`~1` escapes, strict array
+/// indices), so a pattern without `*` expands to itself when the pointer
+/// resolves and to nothing otherwise.
+///
+/// **Array-reordering limitation (accepted):** wildcard matches over arrays
+/// are positional. `config_apply` expands patterns against the
+/// submitted/to-write value and looks each concrete pointer up **by the same
+/// index** in the on-disk file, so reordering array entries between
+/// `config.get` and `config.apply` pairs secrets with the wrong prior entry.
+/// A reorder that matters must resubmit real secrets instead of sentinels.
+pub fn expand_secret_pointer(pattern: &str, value: &Value) -> Vec<String> {
+    if pattern.is_empty() {
+        // `Value::pointer("")` resolves to the root.
+        return vec![String::new()];
+    }
+    if !pattern.starts_with('/') {
+        // Matches `Value::pointer`: a non-empty pointer must start with `/`.
+        return Vec::new();
+    }
+    let segments: Vec<&str> = pattern.split('/').skip(1).collect();
+    let mut matches = Vec::new();
+    expand_into(value, &segments, String::new(), &mut matches);
+    matches
+}
+
+fn expand_into(current: &Value, segments: &[&str], prefix: String, out: &mut Vec<String>) {
+    let Some((segment, rest)) = segments.split_first() else {
+        out.push(prefix);
+        return;
+    };
+    if *segment == "*" {
+        match current {
+            Value::Array(items) => {
+                for (index, item) in items.iter().enumerate() {
+                    expand_into(item, rest, format!("{prefix}/{index}"), out);
+                }
+            }
+            Value::Object(map) => {
+                for (key, child) in map {
+                    let token = escape_pointer_token(key);
+                    expand_into(child, rest, format!("{prefix}/{token}"), out);
+                }
+            }
+            // A wildcard over a scalar / null matches nothing.
+            _ => {}
+        }
+    } else if let Some(child) = current.pointer(&format!("/{segment}")) {
+        // Delegate single-segment resolution to `Value::pointer` so escapes
+        // and array-index strictness match serde_json exactly; keep the
+        // original (escaped) segment in the emitted pointer string.
+        expand_into(child, rest, format!("{prefix}/{segment}"), out);
+    }
+}
+
+/// Escape a map key for embedding in an RFC-6901 pointer (`~` → `~0`, then
+/// `/` → `~1`).
+fn escape_pointer_token(key: &str) -> String {
+    key.replace('~', "~0").replace('/', "~1")
+}
+
+/// Redact each secret leaf in a serialized config `Value`, in place. Entries
+/// in `secret_pointers` may be wildcard patterns (see
+/// [`expand_secret_pointer`]).
 fn redact_value(value: &mut Value, secret_pointers: &[&str]) {
-    for ptr in secret_pointers {
-        if let Some(secret) = value.pointer_mut(ptr) {
-            if secret.is_string() {
-                *secret = Value::String(REDACTED.to_string());
+    for pattern in secret_pointers {
+        for ptr in expand_secret_pointer(pattern, value) {
+            if let Some(secret) = value.pointer_mut(&ptr) {
+                if secret.is_string() {
+                    *secret = Value::String(REDACTED.to_string());
+                }
             }
         }
     }
@@ -375,17 +498,22 @@ fn build_persist_value(
         }
     }
 
-    for secret_pointer in secret_pointers {
-        let is_sentinel = to_write
-            .pointer(secret_pointer)
-            .and_then(Value::as_str)
-            .is_some_and(|s| s == REDACTED);
-        if is_sentinel {
-            if let (Some(file_secret), Some(slot)) = (
-                file_current.pointer(secret_pointer).cloned(),
-                to_write.pointer_mut(secret_pointer),
-            ) {
-                *slot = file_secret;
+    // Wildcard patterns expand against the to-write value; each concrete
+    // sentinel is restored from the same pointer in the file (positional
+    // pairing — see `expand_secret_pointer` on array reordering).
+    for pattern in secret_pointers {
+        for secret_pointer in expand_secret_pointer(pattern, &to_write) {
+            let is_sentinel = to_write
+                .pointer(&secret_pointer)
+                .and_then(Value::as_str)
+                .is_some_and(|s| s == REDACTED);
+            if is_sentinel {
+                if let (Some(file_secret), Some(slot)) = (
+                    file_current.pointer(&secret_pointer).cloned(),
+                    to_write.pointer_mut(&secret_pointer),
+                ) {
+                    *slot = file_secret;
+                }
             }
         }
     }
@@ -898,6 +1026,351 @@ mod tests {
         let before = json!({ "a": { "x": 1, "y": 2 }, "b": 3 });
         let after = json!({ "a": { "x": 1, "y": 9 }, "b": 3 });
         assert_eq!(diff_paths(&before, &after), vec!["a.y".to_string()]);
+    }
+
+    // --- wildcard secret pointers ---------------------------------------------
+
+    #[test]
+    fn expand_secret_pointer_over_array_elements() {
+        let value = json!({
+            "cameras": [
+                { "id": "a", "auth": { "password": "p0" } },
+                { "id": "b", "auth": { "password": "p1" } }
+            ]
+        });
+        assert_eq!(
+            expand_secret_pointer("/cameras/*/auth/password", &value),
+            vec![
+                "/cameras/0/auth/password".to_string(),
+                "/cameras/1/auth/password".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn expand_secret_pointer_skips_array_elements_missing_the_leaf() {
+        // Element 1 has no auth block; only element 0 resolves.
+        let value = json!({
+            "cameras": [
+                { "id": "a", "auth": { "password": "p0" } },
+                { "id": "b", "auth": null },
+                { "id": "c" }
+            ]
+        });
+        assert_eq!(
+            expand_secret_pointer("/cameras/*/auth/password", &value),
+            vec!["/cameras/0/auth/password".to_string()]
+        );
+    }
+
+    #[test]
+    fn expand_secret_pointer_over_object_values() {
+        let value = json!({
+            "clients": {
+                "alpha": { "password": "pa" },
+                "beta": { "password": "pb" }
+            }
+        });
+        // serde_json::Map preserves insertion order from the json! literal.
+        assert_eq!(
+            expand_secret_pointer("/clients/*/password", &value),
+            vec![
+                "/clients/alpha/password".to_string(),
+                "/clients/beta/password".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn expand_secret_pointer_escapes_object_keys() {
+        // A key containing `/` must come back RFC-6901-escaped so the emitted
+        // pointer resolves via `Value::pointer`.
+        let value = json!({ "clients": { "a/b": { "password": "p" } } });
+        let expanded = expand_secret_pointer("/clients/*/password", &value);
+        assert_eq!(expanded, vec!["/clients/a~1b/password".to_string()]);
+        assert_eq!(
+            value.pointer(&expanded[0]).and_then(Value::as_str),
+            Some("p")
+        );
+    }
+
+    #[test]
+    fn expand_secret_pointer_missing_path_matches_nothing() {
+        let value = json!({ "server": { "port": 1 } });
+        assert!(expand_secret_pointer("/cameras/*/auth/password", &value).is_empty());
+    }
+
+    #[test]
+    fn expand_secret_pointer_wildcard_over_scalar_matches_nothing() {
+        let value = json!({ "cameras": "oops" });
+        assert!(expand_secret_pointer("/cameras/*/password", &value).is_empty());
+        let value = json!({ "cameras": null });
+        assert!(expand_secret_pointer("/cameras/*/password", &value).is_empty());
+    }
+
+    #[test]
+    fn expand_secret_pointer_without_wildcard_is_exact() {
+        // Present → expands to itself; absent → nothing (mirrors today's
+        // exact-pointer no-op behaviour byte for byte).
+        let value = json!({ "server": { "auth": { "password_hash": "h" } } });
+        assert_eq!(
+            expand_secret_pointer("/server/auth/password_hash", &value),
+            vec!["/server/auth/password_hash".to_string()]
+        );
+        assert!(expand_secret_pointer("/server/auth/missing", &value).is_empty());
+    }
+
+    #[test]
+    fn expand_secret_pointer_invalid_or_root_pointer() {
+        let value = json!({ "a": 1 });
+        // Empty pattern resolves to the root, like `Value::pointer("")`.
+        assert_eq!(expand_secret_pointer("", &value), vec![String::new()]);
+        // A non-empty pointer must start with `/`, like `Value::pointer`.
+        assert!(expand_secret_pointer("a", &value).is_empty());
+    }
+
+    // A driver whose secrets live inside an array, exercising wildcard
+    // redaction, per-element carry-forward, and per-element sentinel rejection.
+
+    #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+    struct FleetAuth {
+        username: String,
+        password: String,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+    struct FleetCamera {
+        id: String,
+        #[serde(default)]
+        auth: Option<FleetAuth>,
+    }
+
+    #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+    struct FleetConfig {
+        cameras: Vec<FleetCamera>,
+        name: String,
+    }
+
+    struct FleetDriver;
+
+    impl ConfigurableDriver for FleetDriver {
+        type Config = FleetConfig;
+        type Overrides = ();
+
+        fn normalize(_config: &mut Self::Config) {}
+
+        fn validate(_config: &Self::Config) -> Vec<FieldError> {
+            Vec::new()
+        }
+
+        fn secret_pointers() -> &'static [&'static str] {
+            &["/cameras/*/auth/password"]
+        }
+
+        fn override_paths(_overrides: &Self::Overrides) -> Vec<String> {
+            Vec::new()
+        }
+
+        fn apply_overrides(_config: &mut Self::Config, _overrides: &Self::Overrides) {}
+    }
+
+    fn fleet_config(passwords: &[Option<&str>]) -> FleetConfig {
+        FleetConfig {
+            cameras: passwords
+                .iter()
+                .enumerate()
+                .map(|(i, pw)| FleetCamera {
+                    id: format!("cam-{i}"),
+                    auth: pw.map(|p| FleetAuth {
+                        username: "obs".to_string(),
+                        password: p.to_string(),
+                    }),
+                })
+                .collect(),
+            name: "fleet".to_string(),
+        }
+    }
+
+    #[test]
+    fn config_get_redacts_every_array_element_secret() {
+        let cfg = fleet_config(&[Some("p0"), None, Some("p2")]);
+        let resp = config_get::<FleetDriver>(&cfg, &()).unwrap();
+        assert_eq!(
+            resp.config
+                .pointer("/cameras/0/auth/password")
+                .and_then(Value::as_str),
+            Some(REDACTED)
+        );
+        assert!(resp
+            .config
+            .pointer("/cameras/1/auth")
+            .is_some_and(Value::is_null));
+        assert_eq!(
+            resp.config
+                .pointer("/cameras/2/auth/password")
+                .and_then(Value::as_str),
+            Some(REDACTED)
+        );
+        // Non-secret leaves are untouched.
+        assert_eq!(
+            resp.config
+                .pointer("/cameras/0/auth/username")
+                .and_then(Value::as_str),
+            Some("obs")
+        );
+    }
+
+    #[test]
+    fn config_apply_carries_forward_sentinel_per_array_element() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.json");
+        let file_cfg = fleet_config(&[Some("stored-0"), Some("stored-1")]);
+        save(&path, &serde_json::to_value(&file_cfg).unwrap()).unwrap();
+
+        // Element 0 round-trips the sentinel (keep); element 1 submits a new
+        // real password (overwrite).
+        let mut submitted_cfg = file_cfg.clone();
+        submitted_cfg.cameras[0].auth.as_mut().unwrap().password = REDACTED.to_string();
+        submitted_cfg.cameras[1].auth.as_mut().unwrap().password = "new-1".to_string();
+        let submitted = serde_json::to_string(&submitted_cfg).unwrap();
+
+        let resp = config_apply::<FleetDriver>(&path, &(), &file_cfg, &submitted).unwrap();
+        assert_eq!(resp.errors, vec![]);
+
+        let on_disk: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            on_disk
+                .pointer("/cameras/0/auth/password")
+                .and_then(Value::as_str),
+            Some("stored-0"),
+            "sentinel at element 0 must keep the stored secret"
+        );
+        assert_eq!(
+            on_disk
+                .pointer("/cameras/1/auth/password")
+                .and_then(Value::as_str),
+            Some("new-1"),
+            "a real submission at element 1 must overwrite"
+        );
+    }
+
+    #[test]
+    fn config_apply_rejects_sentinel_per_array_element_without_prior() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.json");
+        // The file stores a secret for element 0 only.
+        let file_cfg = fleet_config(&[Some("stored-0"), None]);
+        save(&path, &serde_json::to_value(&file_cfg).unwrap()).unwrap();
+
+        // Element 1 newly gains an auth block carrying the sentinel — there is
+        // no stored secret to keep, so this is a per-element domain error.
+        let mut submitted_cfg = file_cfg.clone();
+        submitted_cfg.cameras[0].auth.as_mut().unwrap().password = REDACTED.to_string();
+        submitted_cfg.cameras[1].auth = Some(FleetAuth {
+            username: "obs".to_string(),
+            password: REDACTED.to_string(),
+        });
+        let submitted = serde_json::to_string(&submitted_cfg).unwrap();
+
+        let resp = config_apply::<FleetDriver>(&path, &(), &file_cfg, &submitted).unwrap();
+
+        assert_eq!(resp.status, ApplyStatus::Invalid);
+        assert_eq!(
+            resp.errors,
+            vec![FieldError {
+                path: "cameras.1.auth.password".to_string(),
+                msg:
+                    "cannot keep an unchanged secret when none is stored; provide the password hash"
+                        .to_string(),
+            }],
+            "only element 1 (no prior) errors; element 0's sentinel is fine"
+        );
+    }
+
+    // --- apply disposition ------------------------------------------------------
+
+    /// Same config shape as [`TestDriver`], but with no in-process reload:
+    /// every changed field is classified `restart_required`.
+    struct RestartDriver;
+
+    impl ConfigurableDriver for RestartDriver {
+        type Config = TestConfig;
+        type Overrides = TestOverrides;
+
+        fn normalize(config: &mut Self::Config) {
+            TestDriver::normalize(config);
+        }
+
+        fn validate(config: &Self::Config) -> Vec<FieldError> {
+            TestDriver::validate(config)
+        }
+
+        fn secret_pointers() -> &'static [&'static str] {
+            TestDriver::secret_pointers()
+        }
+
+        fn override_paths(overrides: &Self::Overrides) -> Vec<String> {
+            TestDriver::override_paths(overrides)
+        }
+
+        fn apply_overrides(config: &mut Self::Config, overrides: &Self::Overrides) {
+            TestDriver::apply_overrides(config, overrides);
+        }
+
+        fn apply_disposition() -> ApplyDisposition {
+            ApplyDisposition::Restart
+        }
+    }
+
+    #[test]
+    fn default_apply_disposition_is_reload() {
+        assert_eq!(TestDriver::apply_disposition(), ApplyDisposition::Reload);
+    }
+
+    #[test]
+    fn config_apply_restart_disposition_classifies_changes_as_restart_required() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.json");
+        let before = valid_config();
+        save(&path, &serde_json::to_value(&before).unwrap()).unwrap();
+
+        let mut changed = valid_config();
+        changed.serial.baud_rate = 9600;
+        let submitted = serde_json::to_string(&changed).unwrap();
+
+        let resp =
+            config_apply::<RestartDriver>(&path, &TestOverrides::default(), &before, &submitted)
+                .unwrap();
+
+        // Persisted; takes effect on the next process start — status stays ok.
+        assert_eq!(resp.status, ApplyStatus::Ok);
+        assert_eq!(resp.restart_required, vec!["serial.baud_rate".to_string()]);
+        assert!(resp.reload.is_empty());
+        assert_eq!(resp.persisted_to, Some(path.display().to_string()));
+        let on_disk: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            on_disk.pointer("/serial/baud_rate").and_then(Value::as_u64),
+            Some(9600)
+        );
+    }
+
+    #[test]
+    fn config_apply_restart_disposition_no_change_is_ok_and_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.json");
+        let before = valid_config();
+        save(&path, &serde_json::to_value(&before).unwrap()).unwrap();
+
+        let submitted = serde_json::to_string(&valid_config()).unwrap();
+        let resp =
+            config_apply::<RestartDriver>(&path, &TestOverrides::default(), &before, &submitted)
+                .unwrap();
+
+        assert_eq!(resp.status, ApplyStatus::Ok);
+        assert!(resp.restart_required.is_empty());
+        assert!(resp.reload.is_empty());
     }
 
     #[test]

@@ -1,4 +1,5 @@
-use serde::Deserialize;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
 /// Conservative default focuser step rate: 500 steps/sec. Deliberately
 /// slower than a typical EAF/Q-Focuser so the predicted move duration
@@ -14,7 +15,9 @@ const DEFAULT_FOCUSER_STEPS_PER_SEC: f64 = 500.0;
 /// Validated at load (parse-don't-validate): a non-finite or non-positive
 /// rate is rejected during deserialization, so a bad config fails at
 /// startup rather than at move time.
-#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+/// Serializes transparently as the inner `f64` (and the JSON Schema is a
+/// plain number), matching the `try_from = "f64"` deserialization.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(try_from = "f64")]
 pub struct FocuserStepsPerSec(f64);
 
@@ -50,7 +53,7 @@ impl TryFrom<f64> for FocuserStepsPerSec {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct FocuserConfig {
     pub id: String,
     #[serde(default)]

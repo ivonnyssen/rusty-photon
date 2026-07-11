@@ -1,6 +1,7 @@
 use std::time::Duration;
 
-use serde::Deserialize;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
 /// Conservative default GoTo slew rate: 2°/s = 7200 arcsec/s. Deliberately
 /// slower than real GoTo mounts (3–4°/s) so the predicted slew duration
@@ -15,7 +16,9 @@ const DEFAULT_SLEW_RATE_ARCSEC_PER_SEC: f64 = 7200.0;
 /// Validated at load (parse-don't-validate): a non-finite or non-positive
 /// rate is rejected during deserialization, so a bad config fails at
 /// startup rather than at slew time.
-#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+/// Serializes transparently as the inner `f64` (and the JSON Schema is a
+/// plain number), matching the `try_from = "f64"` deserialization.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(try_from = "f64")]
 pub struct SlewRateArcsecPerSec(f64);
 
@@ -56,7 +59,7 @@ impl TryFrom<f64> for SlewRateArcsecPerSec {
 /// filter wheels). Multi-mount support is in `rp.md` Future
 /// Considerations. The singular `Option` reflects that contract in the
 /// type; `None` is valid for camera-only / flats-rig configurations.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct MountConfig {
     pub alpaca_url: String,
     #[serde(default)]
@@ -67,6 +70,7 @@ pub struct MountConfig {
     /// `settle_after` on `slew` overrides this value (including
     /// `"0s"` to skip).
     #[serde(default, with = "humantime_serde")]
+    #[schemars(with = "Option<String>")]
     pub settle_after_slew: Option<Duration>,
     /// Assumed mount GoTo slew rate (arcsec/sec) used to size the
     /// predictive slew deadline. Defaults to 7200 (2°/s), a conservative

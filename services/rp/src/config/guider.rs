@@ -1,6 +1,7 @@
 use std::time::Duration;
 
-use serde::Deserialize;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
 /// HTTP-client connection to the guider rp-managed service (the
 /// `phd2-guider` binary's `serve` mode), plus per-rig guiding
@@ -23,17 +24,20 @@ use serde::Deserialize;
 /// `dither_pixels` is the default `dither` amount when the per-call
 /// `pixels` parameter is omitted. How *often* to dither is workflow
 /// policy (Tenet 7) and deliberately not configured here.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct GuiderConfig {
     pub url: String,
     #[serde(default = "default_guider_timeout", with = "humantime_serde")]
+    #[schemars(with = "String")]
     pub timeout: Duration,
     #[serde(default)]
     pub settle_pixels: Option<f64>,
     #[serde(default, with = "humantime_serde::option")]
+    #[schemars(with = "Option<String>")]
     pub settle_time: Option<Duration>,
     #[serde(default, with = "humantime_serde::option")]
+    #[schemars(with = "Option<String>")]
     pub settle_timeout: Option<Duration>,
     #[serde(default)]
     pub dither_pixels: Option<f64>,
