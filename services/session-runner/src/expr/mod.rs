@@ -6,7 +6,7 @@
 //! § Expressions; this module implements it exactly. Anything the parser
 //! accepts becomes de-facto format, so the grammar is enforced by
 //! construction: a hand-rolled lexer + Pratt parser (chosen by the Phase B
-//! spike, see `docs/plans/workflow-dsl.md`) with a targeted diagnostic for
+//! spike, see `docs/plans/archive/workflow-dsl.md`) with a targeted diagnostic for
 //! every out-of-language construct.
 //!
 //! Entry points:

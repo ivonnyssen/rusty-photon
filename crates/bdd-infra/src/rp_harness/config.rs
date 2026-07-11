@@ -205,6 +205,12 @@ pub struct RpConfigBuilder {
     /// generates a fresh per-call path. The cross-restart BDD scenarios
     /// need to pin the same path across two `start_rp` calls.
     pub data_directory: Option<String>,
+    /// Override `session.session_state_file`. When `None`, the builder
+    /// generates a fresh per-call path, so an rp respawn never finds a
+    /// stale session registry by accident. The startup-recovery BDD
+    /// scenarios pin this so the restarted rp reads the state its
+    /// predecessor persisted.
+    pub session_state_file: Option<String>,
     /// Override `imaging.cache_max_mib` / `cache_max_images`. When `None`,
     /// rp's defaults apply (1024 MiB / 8 images).
     pub imaging_overrides: Option<(usize, usize)>,
@@ -304,6 +310,14 @@ impl RpConfigBuilder {
     /// pointing at the same on-disk archive.
     pub fn with_data_directory(&mut self, path: impl Into<String>) -> &mut Self {
         self.data_directory = Some(path.into());
+        self
+    }
+
+    /// Pin `session.session_state_file` to an explicit path. Used by the
+    /// startup-recovery BDD scenarios to keep two consecutive rp
+    /// processes reading and writing the same session registry.
+    pub fn with_session_state_file(&mut self, path: impl Into<String>) -> &mut Self {
+        self.session_state_file = Some(path.into());
         self
     }
 
@@ -431,6 +445,13 @@ impl RpConfigBuilder {
                 .to_string()
         });
 
+        let session_state_file = self.session_state_file.clone().unwrap_or_else(|| {
+            std::env::temp_dir()
+                .join(format!("rp-test-session-{}-{}.json", pid, seq))
+                .to_string_lossy()
+                .to_string()
+        });
+
         let mount_value: Value = match &self.mount {
             Some(m) => {
                 let mut obj = serde_json::json!({
@@ -448,10 +469,7 @@ impl RpConfigBuilder {
         let mut config = serde_json::json!({
             "session": {
                 "data_directory": data_directory,
-                "session_state_file": std::env::temp_dir()
-                    .join(format!("rp-test-session-{}-{}.json", pid, seq))
-                    .to_string_lossy()
-                    .to_string(),
+                "session_state_file": session_state_file,
                 "file_naming_pattern": "{target}_{filter}_{duration}s_{sequence:04}"
             },
             "equipment": {

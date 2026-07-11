@@ -1919,6 +1919,315 @@ async fn test_golden_calibrator_flats_rejects_a_zero_target_adu_before_moving_an
     assert_eq!(tools.call_names(), vec!["get_camera_info"]);
 }
 
+/// `rp`-faithful mock tool surface for the sky-flat document: scripted
+/// per-frame medians, an LST reading, and status objects for the mount
+/// and wheel tools.
+fn sky_flat_tools(medians: Vec<u32>) -> MockTools {
+    let medians = Mutex::new(VecDeque::from(medians));
+    MockTools::new(move |_, tool, _| match tool {
+        "get_camera_info" => Ok(json!({
+            "camera_id": "cam",
+            "max_adu": 65535,
+            "exposure_min": "1ms",
+            "exposure_max": "60s"
+        })),
+        "get_local_sidereal_time" => Ok(json!({ "lst_hours": 23.75 })),
+        "capture" => Ok(json!({ "image_path": "/tmp/flat.fits", "document_id": "doc-1" })),
+        "compute_image_stats" => Ok(json!({
+            "median_adu": medians
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("unexpected compute_image_stats call")
+        })),
+        _ => Ok(json!({ "status": "ok" })),
+    })
+}
+
+fn sky_flat_params(doc: &Document, overrides: Value) -> Value {
+    let mut supplied = json!({
+        "camera_id": "cam",
+        "filter_wheel_id": "fw",
+        "filters": [{ "name": "L", "count": 2 }, { "name": "R", "count": 1 }],
+        "site_latitude_degrees": 47.5,
+        "ra_offset_hours": 0.5
+    });
+    if let (Some(base), Some(extra)) = (supplied.as_object_mut(), overrides.as_object()) {
+        for (key, value) in extra {
+            base.insert(key.clone(), value.clone());
+        }
+    }
+    bind_parameters(&doc.parameters, Some(&supplied)).unwrap()
+}
+
+#[track_caller]
+fn capture_durations(tools: &MockTools) -> Vec<Value> {
+    tools
+        .calls()
+        .into_iter()
+        .filter(|(name, _)| name == "capture")
+        .map(|(_, args)| args["duration"].clone())
+        .collect()
+}
+
+#[tokio::test]
+async fn test_golden_sky_flat_points_at_the_zenith_and_rescales_every_frame() {
+    let doc = make_doc(crate::document::corpus::golden_sky_flat());
+    let params = sky_flat_params(&doc, json!({}));
+    // target_adu = 32767.5, tolerance 0.1 → band [29490.75, 36044.25].
+    // All three medians are in-band, so every frame counts — and unlike
+    // the panel flats, EVERY frame rescales (the sky keeps changing).
+    let tools = sky_flat_tools(vec![32000, 33000, 32767]);
+    let dir = tempfile::tempdir().unwrap();
+    let (outcome, session) = run_in(&dir, &doc, &params, &tools, &MockClock::new()).await;
+
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert_eq!(
+        tools.call_names(),
+        vec![
+            "get_camera_info",
+            "unpark",
+            "set_tracking", // on — slew requires it
+            "get_local_sidereal_time",
+            "slew",         // to (LST + offset, site latitude)
+            "set_tracking", // off — flats trail deliberately
+            "set_filter",   // L
+            "capture",      // L flat 1
+            "compute_image_stats",
+            "capture", // L flat 2
+            "compute_image_stats",
+            "set_filter", // R
+            "capture",    // R flat 1
+            "compute_image_stats",
+            "park",
+        ]
+    );
+
+    // Zenith pointing: RA = (23.75 + 0.5) mod 24, dec = the latitude.
+    let slew_args = &tools.calls()[4].1;
+    assert_eq!(*slew_args, json!({ "ra": 0.25, "dec": 47.5 }));
+    let tracking: Vec<Value> = tools
+        .calls()
+        .into_iter()
+        .filter(|(name, _)| name == "set_tracking")
+        .map(|(_, args)| args["enabled"].clone())
+        .collect();
+    assert_eq!(tracking, vec![json!(true), json!(false)]);
+
+    // Rescale-always: the second frame's duration differs from the
+    // first's, and R inherits L's last rescaled duration rather than
+    // resetting to initial_duration — the sky at hand, not a constant,
+    // is the best predictor.
+    let durations = capture_durations(&tools);
+    assert_eq!(durations[0], json!("1s"));
+    assert_ne!(durations[1], durations[0], "frame 2 must be rescaled");
+    assert_ne!(durations[2], json!("1s"), "R must inherit L's duration");
+
+    assert_eq!(session["report"]["total_frames"], json!(3.0));
+    assert_eq!(session["report"]["window_over"], json!(false));
+    assert_eq!(session["filter_index"], json!(2.0));
+}
+
+#[tokio::test]
+async fn test_golden_sky_flat_discards_an_out_of_band_frame_and_recaptures() {
+    let doc = make_doc(crate::document::corpus::golden_sky_flat());
+    let params = sky_flat_params(&doc, json!({ "filters": [{ "name": "L", "count": 1 }] }));
+    // 16000 is far below the band → discarded, but still drives the
+    // rescale that brings the retry in-band.
+    let tools = sky_flat_tools(vec![16000, 32767]);
+    let dir = tempfile::tempdir().unwrap();
+    let (outcome, session) = run_in(&dir, &doc, &params, &tools, &MockClock::new()).await;
+
+    assert_eq!(outcome, RunOutcome::Completed);
+    let durations = capture_durations(&tools);
+    assert_eq!(durations.len(), 2, "one discard, one counted frame");
+    assert_ne!(durations[1], durations[0]);
+    assert_eq!(session["report"]["total_frames"], json!(1.0));
+    assert_eq!(session["report"]["window_over"], json!(false));
+}
+
+#[tokio::test]
+async fn test_golden_sky_flat_dusk_ends_the_run_when_a_ceiling_frame_is_still_dark() {
+    let doc = make_doc(crate::document::corpus::golden_sky_flat());
+    let params = sky_flat_params(&doc, json!({ "max_exposure": "2s" }));
+    // A very dark 1 s frame is NOT enough to close the window — the
+    // 2 s operator ceiling has only been pointed at by the rescale's
+    // clamp, not tested. The retry at the ceiling reads dark too: now
+    // the window is over — the run completes with a partial report and
+    // the remaining filters are skipped (the sky only gets darker).
+    let tools = sky_flat_tools(vec![1000, 1000]);
+    let dir = tempfile::tempdir().unwrap();
+    let (outcome, session) = run_in(&dir, &doc, &params, &tools, &MockClock::new()).await;
+
+    assert_eq!(outcome, RunOutcome::Completed);
+    let names = tools.call_names();
+    assert_eq!(
+        names.iter().filter(|n| *n == "capture").count(),
+        2,
+        "one frame to reach the ceiling, one to test it — then no more"
+    );
+    let durations = capture_durations(&tools);
+    assert_eq!(durations[1], json!("2s"), "the ceiling itself was tested");
+    assert_eq!(
+        names.iter().filter(|n| *n == "set_filter").count(),
+        1,
+        "the R filter is never mounted"
+    );
+    assert!(names.contains(&"park".to_owned()), "shutdown still parks");
+    assert_eq!(session["report"]["total_frames"], json!(0.0));
+    assert_eq!(session["report"]["window_over"], json!(true));
+}
+
+#[tokio::test]
+async fn test_golden_sky_flat_dusk_waits_for_a_bright_sky_to_dim_at_the_floor() {
+    let doc = make_doc(crate::document::corpus::golden_sky_flat());
+    let params = sky_flat_params(
+        &doc,
+        json!({
+            "filters": [{ "name": "L", "count": 1 }],
+            "min_exposure": "500ms",
+            "initial_duration": "500ms"
+        }),
+    );
+    // A saturated frame captured AT the 500 ms floor: at dusk the sky
+    // is still dimming toward the window, so the document waits 30 s
+    // and re-tests.
+    let tools = sky_flat_tools(vec![65535, 32767]);
+    let clock = MockClock::new();
+    let dir = tempfile::tempdir().unwrap();
+    let (outcome, session) = run_in(&dir, &doc, &params, &tools, &clock).await;
+
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert!(
+        clock.sleeps().contains(&Duration::from_secs(30)),
+        "the bright-sky wait never slept: {:?}",
+        clock.sleeps()
+    );
+    let durations = capture_durations(&tools);
+    assert_eq!(durations.len(), 2);
+    assert_eq!(durations[1], json!("500ms"), "retry at the clamped floor");
+    assert_eq!(session["report"]["total_frames"], json!(1.0));
+}
+
+#[tokio::test]
+async fn test_golden_sky_flat_dawn_ends_the_run_when_a_floor_frame_is_still_bright() {
+    let doc = make_doc(crate::document::corpus::golden_sky_flat());
+    let params = sky_flat_params(
+        &doc,
+        json!({
+            "filters": [{ "name": "L", "count": 1 }],
+            "dawn": true,
+            "min_exposure": "500ms",
+            "initial_duration": "500ms"
+        }),
+    );
+    // The same saturated-at-the-floor frame that dusk waits out means
+    // the window is OVER at dawn — the sky only gets brighter.
+    let tools = sky_flat_tools(vec![65535]);
+    let clock = MockClock::new();
+    let dir = tempfile::tempdir().unwrap();
+    let (outcome, session) = run_in(&dir, &doc, &params, &tools, &clock).await;
+
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert!(
+        !clock.sleeps().contains(&Duration::from_secs(30)),
+        "dawn must not wait for a brightening sky"
+    );
+    assert_eq!(capture_durations(&tools).len(), 1);
+    assert_eq!(session["report"]["total_frames"], json!(0.0));
+    assert_eq!(session["report"]["window_over"], json!(true));
+}
+
+#[tokio::test]
+async fn test_golden_sky_flat_dawn_waits_for_a_dark_sky_to_brighten_at_the_ceiling() {
+    let doc = make_doc(crate::document::corpus::golden_sky_flat());
+    let params = sky_flat_params(
+        &doc,
+        json!({
+            "filters": [{ "name": "L", "count": 1 }],
+            "dawn": true,
+            "max_exposure": "2s",
+            "initial_duration": "2s"
+        }),
+    );
+    // A dark frame captured AT the 2 s ceiling: at dawn the sky is
+    // still brightening toward the window, so the document waits 30 s
+    // and re-tests — the mirror of the dusk floor wait.
+    let tools = sky_flat_tools(vec![1000, 32767]);
+    let clock = MockClock::new();
+    let dir = tempfile::tempdir().unwrap();
+    let (outcome, session) = run_in(&dir, &doc, &params, &tools, &clock).await;
+
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert!(
+        clock.sleeps().contains(&Duration::from_secs(30)),
+        "the dark-sky wait never slept: {:?}",
+        clock.sleeps()
+    );
+    assert_eq!(capture_durations(&tools).len(), 2);
+    assert_eq!(session["report"]["total_frames"], json!(1.0));
+    assert_eq!(session["report"]["window_over"], json!(false));
+}
+
+#[tokio::test]
+async fn test_golden_sky_flat_treats_an_exhausted_attempt_budget_as_a_closed_window() {
+    let doc = make_doc(crate::document::corpus::golden_sky_flat());
+    let params = sky_flat_params(
+        &doc,
+        json!({ "filters": [{ "name": "L", "count": 1 }], "max_extra_attempts": 1 }),
+    );
+    // Two out-of-band frames away from either rail exhaust the
+    // 1 + 1 attempt budget without a counted flat: the run ends with a
+    // partial report instead of failing — partial flats are usable.
+    let tools = sky_flat_tools(vec![20000, 20000]);
+    let dir = tempfile::tempdir().unwrap();
+    let (outcome, session) = run_in(&dir, &doc, &params, &tools, &MockClock::new()).await;
+
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert_eq!(capture_durations(&tools).len(), 2);
+    assert_eq!(session["report"]["total_frames"], json!(0.0));
+    assert_eq!(session["report"]["window_over"], json!(true));
+}
+
+#[tokio::test]
+async fn test_golden_sky_flat_resumes_the_current_filter_without_recapturing() {
+    let doc = make_doc(crate::document::corpus::golden_sky_flat());
+    let params = sky_flat_params(&doc, json!({ "filters": [{ "name": "L", "count": 2 }] }));
+    let dir = tempfile::tempdir().unwrap();
+
+    // First life: one counted frame, then the next capture dies with
+    // the run (an rp-outage-shaped failure). The blackboard keeps
+    // flat_count = 1 under the L index marker.
+    let first = MockTools::scripted(vec![
+        Ok(json!({ "max_adu": 65535, "exposure_min": "1ms", "exposure_max": "60s" })),
+        Ok(json!({ "status": "ok" })),                         // unpark
+        Ok(json!({ "status": "ok" })),                         // set_tracking on
+        Ok(json!({ "lst_hours": 23.75 })),                     // get_local_sidereal_time
+        Ok(json!({ "status": "ok" })),                         // slew
+        Ok(json!({ "status": "ok" })),                         // set_tracking off
+        Ok(json!({ "status": "ok" })),                         // set_filter L
+        Ok(json!({ "document_id": "doc-1" })),                 // capture 1
+        Ok(json!({ "median_adu": 32767 })),                    // in-band → counted
+        Err(ToolCallError::Failed("rp went away".to_owned())), // capture 2
+    ]);
+    let (outcome, session) = run_in(&dir, &doc, &params, &first, &MockClock::new()).await;
+    assert!(matches!(outcome, RunOutcome::Failed(_)));
+    assert_eq!(session["flat_count"], json!(1.0));
+
+    // Second life, same blackboard: the pointing re-runs idempotently,
+    // and the index marker keeps the count — exactly one more frame is
+    // captured, not two.
+    let second = sky_flat_tools(vec![32767]);
+    let (outcome, session) = run_in(&dir, &doc, &params, &second, &MockClock::new()).await;
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert_eq!(
+        capture_durations(&second).len(),
+        1,
+        "the resumed run must not repeat the counted frame"
+    );
+    assert_eq!(session["report"]["total_frames"], json!(2.0));
+}
+
 fn deep_sky_params(doc: &Document, overrides: Value) -> Value {
     let mut supplied = json!({ "camera_id": "cam" });
     if let (Some(base), Some(extra)) = (supplied.as_object_mut(), overrides.as_object()) {

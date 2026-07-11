@@ -603,6 +603,12 @@ impl McpHandler {
             let mut store = self.progress.lock().unwrap_or_else(|e| e.into_inner());
             store.record(&target.name, params.filter.as_deref())
         };
+        // The counters are the resume payload of the session state file
+        // (rp.md § Write Strategy): re-persist after every recorded
+        // frame so a power failure loses at most one frame's progress.
+        if let Some(session_manager) = &self.session_manager {
+            session_manager.persist_progress().await;
+        }
         let goal = crate::planner::progress::SessionProgress::goal_for(target, &key);
         Ok(tool_success!({
             "target": target.name,

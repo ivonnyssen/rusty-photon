@@ -14,7 +14,7 @@ requested number of flat frames at that duration.
 > see [`session-runner.md`](session-runner.md) § Example Documents), with
 > this service's behavior as the oracle its tests pin. This Rust service
 > remains first-class; retiring it is a separate decision after the port
-> has real-world mileage (`docs/plans/workflow-dsl.md`).
+> has real-world mileage (`docs/plans/archive/workflow-dsl.md`).
 
 ### Tenets
 

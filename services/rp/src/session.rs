@@ -12,13 +12,24 @@
 //! fails the session returns to `Idle` and a `session_stopped` event
 //! with `reason: "orchestrator_invoke_failed"` is emitted — a session
 //! never sits active with an orchestrator that was never reached.
+//!
+//! The registry is persisted (rp.md § Session Persistence): every
+//! transition — and, via [`SessionManager::persist_progress`], every
+//! recorded exposure — rewrites the session state file atomically, and
+//! every transition to `Idle` deletes it. On startup
+//! [`SessionManager::recover_startup`] reads the file back: a live
+//! session is restored (counters included) and the orchestrator is
+//! re-invoked with `recovery.reason = "rp_restart"`. Persistence
+//! failures are logged at `warn!`, never raised — bookkeeping must not
+//! end an otherwise healthy night.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::Value;
 use tokio::sync::RwLock;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::events::EventBus;
@@ -41,6 +52,9 @@ enum SessionState {
     Active {
         session_id: String,
         workflow_id: String,
+        /// RFC 3339 wall-clock start, minted at `start()` and carried
+        /// through interrupts and restarts into the state file.
+        started_at: String,
     },
     /// A safety event interrupted the workflow; the ids are kept so the
     /// safe transition can re-invoke the orchestrator for the same
@@ -49,7 +63,33 @@ enum SessionState {
     Interrupted {
         session_id: String,
         workflow_id: String,
+        started_at: String,
     },
+}
+
+/// The `status` field of the persisted session state file.
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum PersistedStatus {
+    Active,
+    Interrupted,
+}
+
+/// The on-disk shape of the session state file (rp.md § Session
+/// Persistence): the registry plus the planner's progress counters.
+/// An idle session has no file.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct PersistedSession {
+    session_id: String,
+    workflow_id: String,
+    status: PersistedStatus,
+    started_at: String,
+    /// The serialized [`crate::planner::progress::SessionProgress`]
+    /// store; kept as raw JSON here so persisting never needs to clone
+    /// the store — it is serialized under its own lock. `null` when no
+    /// progress store is wired (tests).
+    #[serde(default)]
+    progress: Value,
 }
 
 pub struct SessionManager {
@@ -67,6 +107,10 @@ pub struct SessionManager {
     /// resumed session keeps its progress. `None` in tests that don't
     /// exercise the planner.
     planner_progress: Option<Arc<std::sync::Mutex<crate::planner::progress::SessionProgress>>>,
+    /// Where the session state file lives (rp.md § Session
+    /// Persistence). `None` disables persistence entirely — tests that
+    /// only exercise the state machine.
+    state_path: Option<PathBuf>,
 }
 
 impl SessionManager {
@@ -89,6 +133,7 @@ impl SessionManager {
             orchestrator_config,
             mcp_base_url: RwLock::new(String::new()),
             planner_progress: None,
+            state_path: None,
         }
     }
 
@@ -99,6 +144,13 @@ impl SessionManager {
         store: Arc<std::sync::Mutex<crate::planner::progress::SessionProgress>>,
     ) -> Self {
         self.planner_progress = Some(store);
+        self
+    }
+
+    /// Enable session-state persistence at the given path (rp.md
+    /// § Session Persistence).
+    pub fn with_state_path(mut self, path: PathBuf) -> Self {
+        self.state_path = Some(path);
         self
     }
 
@@ -123,21 +175,25 @@ impl SessionManager {
 
         let session_id = Uuid::new_v4().to_string();
         let workflow_id = Uuid::new_v4().to_string();
+        let started_at = chrono::Utc::now().to_rfc3339();
 
         *state = SessionState::Active {
             session_id: session_id.clone(),
             workflow_id: workflow_id.clone(),
+            started_at,
         };
-        drop(state);
 
         // A fresh session is a fresh night: reset the planner's
-        // record_exposure counters. The safety interrupt/resume path
-        // re-invokes the orchestrator without passing through here,
-        // so a resumed session keeps its progress.
+        // record_exposure counters *before* persisting, so the state
+        // file starts the night at zero. The safety interrupt/resume
+        // path re-invokes the orchestrator without passing through
+        // here, so a resumed session keeps its progress.
         if let Some(progress) = &self.planner_progress {
             progress.lock().unwrap_or_else(|e| e.into_inner()).clear();
             debug!("planner progress counters cleared for the fresh session");
         }
+        self.persist(&state).await;
+        drop(state);
 
         debug!(session_id = %session_id, workflow_id = %workflow_id, "session started");
 
@@ -164,21 +220,23 @@ impl SessionManager {
     /// only the bookkeeping half.
     pub async fn interrupt(&self) -> bool {
         let mut state = self.state.write().await;
-        match &*state {
-            SessionState::Active {
-                session_id,
-                workflow_id,
-            } => {
-                debug!(session_id = %session_id, workflow_id = %workflow_id,
-                       "session interrupted by safety event");
-                *state = SessionState::Interrupted {
-                    session_id: session_id.clone(),
-                    workflow_id: workflow_id.clone(),
-                };
-                true
-            }
-            _ => false,
-        }
+        let SessionState::Active {
+            session_id,
+            workflow_id,
+            started_at,
+        } = &*state
+        else {
+            return false;
+        };
+        debug!(session_id = %session_id, workflow_id = %workflow_id,
+               "session interrupted by safety event");
+        *state = SessionState::Interrupted {
+            session_id: session_id.clone(),
+            workflow_id: workflow_id.clone(),
+            started_at: started_at.clone(),
+        };
+        self.persist(&state).await;
+        true
     }
 
     /// Resume an interrupted session (safety safe transition): mark it
@@ -189,15 +247,19 @@ impl SessionManager {
         let SessionState::Interrupted {
             session_id,
             workflow_id,
+            started_at,
         } = &*state
         else {
             return false;
         };
-        let (session_id, workflow_id) = (session_id.clone(), workflow_id.clone());
+        let (session_id, workflow_id, started_at) =
+            (session_id.clone(), workflow_id.clone(), started_at.clone());
         *state = SessionState::Active {
             session_id: session_id.clone(),
             workflow_id: workflow_id.clone(),
+            started_at,
         };
+        self.persist(&state).await;
         drop(state);
 
         debug!(session_id = %session_id, workflow_id = %workflow_id,
@@ -255,6 +317,7 @@ impl SessionManager {
         warn!(workflow_id = %failed_workflow_id,
               "orchestrator could not be invoked; session returns to idle");
         *state = SessionState::Idle;
+        self.delete_state_file().await;
         drop(state);
 
         self.event_bus.emit(
@@ -269,6 +332,8 @@ impl SessionManager {
     pub async fn stop(&self) -> Result<(), String> {
         let mut state = self.state.write().await;
         *state = SessionState::Idle;
+        self.delete_state_file().await;
+        drop(state);
 
         debug!("session stopped");
 
@@ -310,6 +375,7 @@ impl SessionManager {
         if matches {
             debug!(workflow_id = %workflow_id, "workflow completed, session ending");
             *state = SessionState::Idle;
+            self.delete_state_file().await;
 
             self.event_bus.emit(
                 "session_stopped",
@@ -320,6 +386,215 @@ impl SessionManager {
             );
         } else {
             debug!(workflow_id = %workflow_id, "workflow_complete received but no matching active session");
+        }
+    }
+
+    /// Re-persist the state file with the current planner counters.
+    /// Called by the `record_exposure` tool after each recorded frame
+    /// (rp.md § Write Strategy: at most one frame's progress is lost to
+    /// a power failure). A no-op while idle — an idle session has no
+    /// file — or when persistence is not configured.
+    ///
+    /// Takes the **write** lock despite not mutating: `RwLock` admits
+    /// concurrent readers, so a read lock would let two overlapping
+    /// `record_exposure` calls race `persist()` and land their atomic
+    /// renames out of order — regressing the file to older counters
+    /// (a repeated frame after a restart). The write lock upholds the
+    /// writer-serialization invariant `persist()` documents.
+    pub async fn persist_progress(&self) {
+        let state = self.state.write().await;
+        self.persist(&state).await;
+    }
+
+    /// Startup recovery (rp.md § Recovery Behavior): read the session
+    /// state file back and, when a session was live, restore the
+    /// registry and the planner's counters. Under safe conditions
+    /// (`conditions_safe`, read from the `/mcp` gate after the safety
+    /// poller's inline first pass — `BoundServer::start`) the
+    /// orchestrator is re-invoked with `recovery.reason = "rp_restart"`;
+    /// under unsafe ones the session is restored **interrupted** with
+    /// no invocation, and the ordinary unsafe → safe machinery resumes
+    /// it when conditions clear. Returns whether a session was
+    /// restored. Called once, immediately before the server starts
+    /// serving.
+    ///
+    /// The persisted status itself gates nothing — conditions may have
+    /// flipped either way while rp was down, so the current poll, not
+    /// the file, decides. An unreadable or corrupt file is never fatal:
+    /// rp starts idle with a `warn!`, because refusing to start over
+    /// unreadable bookkeeping would be worse than losing one resume.
+    pub async fn recover_startup(self: &Arc<Self>, conditions_safe: bool) -> bool {
+        let Some(path) = self.state_path.clone() else {
+            return false;
+        };
+        let bytes = match tokio::fs::read(&path).await {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                debug!("no session state file; starting idle");
+                return false;
+            }
+            Err(e) => {
+                warn!(path = %path.display(), error = %e,
+                      "cannot read the session state file; starting idle");
+                return false;
+            }
+        };
+        let persisted: PersistedSession = match serde_json::from_slice(&bytes) {
+            Ok(persisted) => persisted,
+            Err(e) => {
+                warn!(path = %path.display(), error = %e,
+                      "session state file is corrupt; starting idle");
+                return false;
+            }
+        };
+
+        // Restore the planner's counters first — the re-invoked
+        // orchestrator's dispatch reads them immediately. The store is
+        // assigned unconditionally: the file is the source of truth, so
+        // missing (`null`) or unreadable persisted counters overwrite
+        // whatever is in memory with a zeroed slate rather than
+        // trusting the caller to have constructed the store empty.
+        if let Some(store) = &self.planner_progress {
+            let restored = if persisted.progress.is_null() {
+                crate::planner::progress::SessionProgress::default()
+            } else {
+                serde_json::from_value(persisted.progress).unwrap_or_else(|e| {
+                    warn!(error = %e,
+                        "persisted progress counters are unreadable; resuming with zeroed counters");
+                    crate::planner::progress::SessionProgress::default()
+                })
+            };
+            *store.lock().unwrap_or_else(|e| e.into_inner()) = restored;
+        }
+
+        let restored_status = if conditions_safe {
+            PersistedStatus::Active
+        } else {
+            PersistedStatus::Interrupted
+        };
+        let mut state = self.state.write().await;
+        *state = match restored_status {
+            PersistedStatus::Active => SessionState::Active {
+                session_id: persisted.session_id.clone(),
+                workflow_id: persisted.workflow_id.clone(),
+                started_at: persisted.started_at.clone(),
+            },
+            PersistedStatus::Interrupted => SessionState::Interrupted {
+                session_id: persisted.session_id.clone(),
+                workflow_id: persisted.workflow_id.clone(),
+                started_at: persisted.started_at.clone(),
+            },
+        };
+        // Normalize the on-disk status to what was restored. When it
+        // already matches, the rewrite would reproduce the bytes just
+        // read — skip it (the pre-serve path should not pay a needless
+        // fsync).
+        if !matches!(
+            (persisted.status, restored_status),
+            (PersistedStatus::Active, PersistedStatus::Active)
+                | (PersistedStatus::Interrupted, PersistedStatus::Interrupted)
+        ) {
+            self.persist(&state).await;
+        }
+        drop(state);
+
+        if !conditions_safe {
+            info!(session_id = %persisted.session_id, workflow_id = %persisted.workflow_id,
+                  persisted_status = ?persisted.status,
+                  "restored the persisted session as interrupted — conditions are unsafe; \
+                   the orchestrator will be re-invoked on the safe transition");
+            return true;
+        }
+
+        info!(session_id = %persisted.session_id, workflow_id = %persisted.workflow_id,
+              persisted_status = ?persisted.status, started_at = %persisted.started_at,
+              "restored the persisted session; re-invoking the orchestrator with recovery context");
+        let recovery = serde_json::json!({ "reason": "rp_restart" });
+        self.spawn_invoke(persisted.workflow_id, persisted.session_id, Some(recovery))
+            .await;
+        true
+    }
+
+    /// Serialize the given registry state + current counters and write
+    /// the state file atomically (a no-op for `Idle` — an idle session
+    /// has no file). Failures are logged at `warn!`, never raised —
+    /// bookkeeping must not end an otherwise healthy night (rp.md
+    /// § Write Strategy).
+    ///
+    /// Callers hold the state **write** lock (they pass the value they
+    /// just stored in it) **across the write on purpose**: it serializes
+    /// concurrent writers so the file can never regress to an older
+    /// state, and it makes the delete-then-recreate race with `stop()`
+    /// impossible (a `persist_progress` landing after a stop would
+    /// otherwise resurrect a stale file that a later restart resumes).
+    /// The fsync held under the lock is the accepted cost — transitions
+    /// are rare and `record_exposure` runs at frame cadence.
+    async fn persist(&self, state: &SessionState) {
+        let Some(path) = self.state_path.clone() else {
+            return;
+        };
+        let (session_id, workflow_id, status, started_at) = match state {
+            SessionState::Active {
+                session_id,
+                workflow_id,
+                started_at,
+            } => (session_id, workflow_id, PersistedStatus::Active, started_at),
+            SessionState::Interrupted {
+                session_id,
+                workflow_id,
+                started_at,
+            } => (
+                session_id,
+                workflow_id,
+                PersistedStatus::Interrupted,
+                started_at,
+            ),
+            SessionState::Idle => return,
+        };
+        let progress = match &self.planner_progress {
+            Some(store) => {
+                let store = store.lock().unwrap_or_else(|e| e.into_inner());
+                serde_json::to_value(&*store).unwrap_or(Value::Null)
+            }
+            None => Value::Null,
+        };
+        let persisted = PersistedSession {
+            session_id: session_id.clone(),
+            workflow_id: workflow_id.clone(),
+            status,
+            started_at: started_at.clone(),
+            progress,
+        };
+        let body = match serde_json::to_vec_pretty(&persisted) {
+            Ok(body) => body,
+            Err(e) => {
+                warn!(error = %e, "cannot serialize the session state; skipping the write");
+                return;
+            }
+        };
+        let write_path = path.clone();
+        let result =
+            tokio::task::spawn_blocking(move || rp_fits::atomic::write_atomic(&write_path, &body))
+                .await;
+        match result {
+            Ok(Ok(())) => debug!(path = %path.display(), "session state persisted"),
+            Ok(Err(e)) => warn!(path = %path.display(), error = %e,
+                                "failed to write the session state file; continuing"),
+            Err(e) => warn!(error = %e, "session state write task failed; continuing"),
+        }
+    }
+
+    /// Delete the state file — every transition to idle. Missing is
+    /// fine (persistence may be disabled, or nothing was ever written).
+    async fn delete_state_file(&self) {
+        let Some(path) = &self.state_path else {
+            return;
+        };
+        match tokio::fs::remove_file(path).await {
+            Ok(()) => debug!(path = %path.display(), "session state file deleted"),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => warn!(path = %path.display(), error = %e,
+                            "failed to delete the session state file"),
         }
     }
 }
@@ -631,6 +906,308 @@ mod tests {
         assert!(!manager.interrupt().await);
         assert!(!manager.resume().await);
         assert_eq!(manager.status().await, "idle");
+    }
+
+    // --- Session-state persistence (rp.md § Session Persistence) ---
+
+    fn state_path(dir: &tempfile::TempDir) -> std::path::PathBuf {
+        dir.path().join("session_state.json")
+    }
+
+    fn manager_with_state(
+        invoke_url: &str,
+        path: std::path::PathBuf,
+    ) -> (
+        Arc<SessionManager>,
+        Arc<std::sync::Mutex<crate::planner::progress::SessionProgress>>,
+    ) {
+        let event_bus = Arc::new(EventBus::from_config(&[]));
+        let plugins = vec![json!({
+            "name": "test-orchestrator",
+            "type": "orchestrator",
+            "invoke_url": invoke_url,
+            "config": {"workflow": "w"},
+        })];
+        let progress = Arc::new(std::sync::Mutex::new(
+            crate::planner::progress::SessionProgress::default(),
+        ));
+        let manager = Arc::new(
+            SessionManager::new(event_bus, &plugins)
+                .with_progress_store(progress.clone())
+                .with_state_path(path),
+        );
+        (manager, progress)
+    }
+
+    fn read_state(path: &std::path::Path) -> Value {
+        let bytes = std::fs::read(path).expect("no session state file");
+        serde_json::from_slice(&bytes).expect("session state file is not JSON")
+    }
+
+    #[tokio::test]
+    async fn start_persists_the_state_file_and_stop_deletes_it() {
+        let stub = spawn_invoke_stub(vec![StatusCode::OK]).await;
+        let dir = tempfile::tempdir().unwrap();
+        let path = state_path(&dir);
+        let (manager, _) = manager_with_state(&stub.url, path.clone());
+
+        let response = manager.start().await.unwrap();
+        let persisted = read_state(&path);
+        assert_eq!(persisted["status"], "active");
+        assert_eq!(persisted["session_id"], response["session_id"]);
+        assert_eq!(persisted["workflow_id"], response["workflow_id"]);
+        assert!(
+            persisted["started_at"]
+                .as_str()
+                .is_some_and(|s| { chrono::DateTime::parse_from_rfc3339(s).is_ok() }),
+            "started_at is not RFC 3339: {}",
+            persisted["started_at"]
+        );
+
+        manager.stop().await.unwrap();
+        assert!(!path.exists(), "stop must delete the session state file");
+    }
+
+    #[tokio::test]
+    async fn interrupt_and_resume_rewrite_the_persisted_status() {
+        let stub = spawn_invoke_stub(vec![StatusCode::OK]).await;
+        let dir = tempfile::tempdir().unwrap();
+        let path = state_path(&dir);
+        let (manager, _) = manager_with_state(&stub.url, path.clone());
+        manager.start().await.unwrap();
+        let started_at = read_state(&path)["started_at"].clone();
+
+        manager.interrupt().await;
+        let persisted = read_state(&path);
+        assert_eq!(persisted["status"], "interrupted");
+        assert_eq!(
+            persisted["started_at"], started_at,
+            "the start time survives the interrupt"
+        );
+
+        manager.resume().await;
+        assert_eq!(read_state(&path)["status"], "active");
+    }
+
+    #[tokio::test]
+    async fn workflow_complete_deletes_the_state_file() {
+        let stub = spawn_invoke_stub(vec![StatusCode::OK]).await;
+        let dir = tempfile::tempdir().unwrap();
+        let path = state_path(&dir);
+        let (manager, _) = manager_with_state(&stub.url, path.clone());
+        manager.start().await.unwrap();
+        assert!(wait_for_hits(&stub, 1).await);
+        let workflow_id = stub.bodies.read().await[0]["workflow_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        manager.workflow_complete(&workflow_id).await;
+        assert!(
+            !path.exists(),
+            "workflow completion must delete the session state file"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_invocation_deletes_the_state_file() {
+        let stub = spawn_invoke_stub(vec![StatusCode::BAD_REQUEST]).await;
+        let dir = tempfile::tempdir().unwrap();
+        let path = state_path(&dir);
+        let (manager, _) = manager_with_state(&stub.url, path.clone());
+
+        manager.start().await.unwrap();
+        assert!(wait_for_status(&manager, "idle").await);
+        assert!(
+            !path.exists(),
+            "the invoke-failure transition to idle must delete the state file"
+        );
+    }
+
+    #[tokio::test]
+    async fn persist_progress_rewrites_the_counters_and_is_a_noop_when_idle() {
+        let stub = spawn_invoke_stub(vec![StatusCode::OK]).await;
+        let dir = tempfile::tempdir().unwrap();
+        let path = state_path(&dir);
+        let (manager, progress) = manager_with_state(&stub.url, path.clone());
+
+        // Idle: no session, no file — even with counters recorded.
+        progress.lock().unwrap().record("M31", Some("Red"));
+        manager.persist_progress().await;
+        assert!(!path.exists(), "an idle session must have no state file");
+
+        manager.start().await.unwrap();
+        // start() cleared the counters; the persisted store is empty.
+        assert_eq!(read_state(&path)["progress"]["completed"], json!({}));
+
+        progress.lock().unwrap().record("M31", Some("Red"));
+        progress.lock().unwrap().record("M31", Some("Red"));
+        manager.persist_progress().await;
+        let persisted = read_state(&path);
+        assert_eq!(persisted["progress"]["completed"]["M31"]["Red"], 2);
+        assert_eq!(persisted["progress"]["last_filter_key"], "Red");
+    }
+
+    #[tokio::test]
+    async fn recover_startup_restores_the_session_and_reinvokes_with_rp_restart() {
+        let stub = spawn_invoke_stub(vec![StatusCode::OK]).await;
+        let dir = tempfile::tempdir().unwrap();
+        let path = state_path(&dir);
+
+        // First life: a session with two recorded frames, then a crash
+        // (the manager is simply dropped — nothing deletes the file).
+        let (first, progress) = manager_with_state(&stub.url, path.clone());
+        first.start().await.unwrap();
+        assert!(wait_for_hits(&stub, 1).await);
+        progress.lock().unwrap().record("M31", Some("Red"));
+        progress.lock().unwrap().record("M31", Some("Red"));
+        first.persist_progress().await;
+        drop(first);
+
+        // Second life: a fresh manager over the same path.
+        let (second, fresh_progress) = manager_with_state(&stub.url, path.clone());
+        assert!(
+            second.recover_startup(true).await,
+            "no session was restored"
+        );
+        assert_eq!(second.status().await, "active");
+        assert_eq!(
+            fresh_progress
+                .lock()
+                .unwrap()
+                .completed_for("M31", Some("Red")),
+            2,
+            "the planner counters must be restored from the state file"
+        );
+
+        assert!(wait_for_hits(&stub, 2).await, "no recovery re-invocation");
+        let bodies = stub.bodies.read().await;
+        assert_eq!(bodies[1]["recovery"], json!({"reason": "rp_restart"}));
+        assert_eq!(bodies[1]["workflow_id"], bodies[0]["workflow_id"]);
+        assert_eq!(bodies[1]["session_id"], bodies[0]["session_id"]);
+        assert_eq!(bodies[1]["config"], json!({"workflow": "w"}));
+    }
+
+    #[tokio::test]
+    async fn recover_startup_restores_an_interrupted_session_as_active() {
+        let stub = spawn_invoke_stub(vec![StatusCode::OK]).await;
+        let dir = tempfile::tempdir().unwrap();
+        let path = state_path(&dir);
+        let (first, _) = manager_with_state(&stub.url, path.clone());
+        first.start().await.unwrap();
+        first.interrupt().await;
+        assert_eq!(read_state(&path)["status"], "interrupted");
+        drop(first);
+
+        let (second, _) = manager_with_state(&stub.url, path.clone());
+        assert!(second.recover_startup(true).await);
+        // Conditions are safe, so the poll — not the file — decides:
+        // restored active and re-persisted as such.
+        assert_eq!(second.status().await, "active");
+        assert_eq!(read_state(&path)["status"], "active");
+    }
+
+    #[tokio::test]
+    async fn recover_startup_under_unsafe_conditions_restores_interrupted_without_invoking() {
+        let stub = spawn_invoke_stub(vec![StatusCode::OK]).await;
+        let dir = tempfile::tempdir().unwrap();
+        let path = state_path(&dir);
+        let (first, _) = manager_with_state(&stub.url, path.clone());
+        first.start().await.unwrap();
+        assert!(wait_for_hits(&stub, 1).await);
+        drop(first);
+
+        let (second, _) = manager_with_state(&stub.url, path.clone());
+        assert!(second.recover_startup(false).await);
+        // Unsafe conditions: no re-invocation — the ordinary
+        // unsafe → safe machinery resumes the session when they clear.
+        assert_eq!(second.status().await, "interrupted");
+        assert_eq!(read_state(&path)["status"], "interrupted");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(
+            stub.hits.load(Ordering::SeqCst),
+            1,
+            "an unsafe restore must not re-invoke the orchestrator"
+        );
+
+        assert!(second.resume().await, "the safe transition resumes it");
+        assert!(wait_for_hits(&stub, 2).await, "resume never re-invoked");
+        assert_eq!(
+            stub.bodies.read().await[1]["recovery"],
+            json!({"reason": "safety_interruption"})
+        );
+    }
+
+    #[tokio::test]
+    async fn recover_startup_is_a_noop_without_a_state_file() {
+        let stub = spawn_invoke_stub(vec![StatusCode::OK]).await;
+        let dir = tempfile::tempdir().unwrap();
+        let (manager, _) = manager_with_state(&stub.url, state_path(&dir));
+
+        assert!(!manager.recover_startup(true).await);
+        assert_eq!(manager.status().await, "idle");
+        assert_eq!(stub.hits.load(Ordering::SeqCst), 0, "nothing to re-invoke");
+    }
+
+    #[tokio::test]
+    async fn recover_startup_with_a_corrupt_file_starts_idle() {
+        let stub = spawn_invoke_stub(vec![StatusCode::OK]).await;
+        let dir = tempfile::tempdir().unwrap();
+        let path = state_path(&dir);
+        std::fs::write(&path, b"{ not json").unwrap();
+        let (manager, _) = manager_with_state(&stub.url, path.clone());
+
+        assert!(!manager.recover_startup(true).await);
+        assert_eq!(manager.status().await, "idle");
+        assert_eq!(stub.hits.load(Ordering::SeqCst), 0);
+        // The corrupt file is left in place for the operator; the next
+        // session start overwrites it.
+        assert!(path.exists());
+    }
+
+    #[tokio::test]
+    async fn recover_startup_zeroes_stale_counters_when_progress_is_unreadable_or_absent() {
+        // The log promises "resuming with zeroed counters" — a store
+        // that already holds counts (a reused manager) must not leak
+        // them into the recovered session.
+        for progress in [json!("garbage"), Value::Null] {
+            let stub = spawn_invoke_stub(vec![StatusCode::OK]).await;
+            let dir = tempfile::tempdir().unwrap();
+            let path = state_path(&dir);
+            std::fs::write(
+                &path,
+                serde_json::to_vec(&json!({
+                    "session_id": "s-1",
+                    "workflow_id": "w-1",
+                    "status": "active",
+                    "started_at": "2026-07-11T00:00:00Z",
+                    "progress": progress,
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+
+            let (manager, store) = manager_with_state(&stub.url, path.clone());
+            store.lock().unwrap().record("M31", Some("Red"));
+
+            assert!(manager.recover_startup(true).await);
+            assert_eq!(
+                store.lock().unwrap().completed_for("M31", Some("Red")),
+                0,
+                "progress {progress} must overwrite stale in-memory counters"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_manager_without_a_state_path_never_writes_a_file() {
+        let stub = spawn_invoke_stub(vec![StatusCode::OK]).await;
+        let manager = manager_for(&stub.url);
+        manager.start().await.unwrap();
+        manager.persist_progress().await;
+        // Nothing observable to assert beyond "no panic" — the manager
+        // has no path to write to; recover_startup is equally inert.
+        assert!(!manager.recover_startup(true).await);
     }
 
     #[tokio::test]

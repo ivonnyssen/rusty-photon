@@ -12,7 +12,7 @@ remain first-class citizens of the unchanged plugin protocol; the DSL is an
 addition, not a replacement.
 
 Decision record and phase plan:
-[`docs/plans/workflow-dsl.md`](../plans/workflow-dsl.md).
+[`docs/plans/archive/workflow-dsl.md`](../plans/archive/workflow-dsl.md).
 
 ### Tenets
 
@@ -1094,11 +1094,12 @@ the document simplifies when it lands:
   integration goal. rp's counters survive a safety interrupt/resume
   (same `rp` process), so a resumed dispatch continues where the
   night left off; they reset when a fresh session starts.
-- **No guiding, no dithering.** `rp` has no guider integration
-  (`start_guiding` / `stop_guiding` / `dither` are unimplemented), and
-  catalog validation rightly rejects a document naming unknown tools.
-  The capture loop runs unguided; the guide/dither steps join the
-  document when the tools land.
+- **No guiding, no dithering — yet.** When the document was written,
+  `rp` had no guider integration and catalog validation rightly
+  rejects a document naming unknown tools. The guider tools have since
+  landed (`start_guiding` / `stop_guiding` / `dither`, rp PR #475);
+  adopting them in this document is the remaining slice of rp issue
+  #464. Until it lands, the capture loop runs unguided.
 - **Dawn belongs to the planner.** `get_next_target` distinguishes dusk
   from dawn by the Sun's trend (rp issue #465, closed): `end_of_session`
   when the sky is bright and the Sun is rising, `wait_for_twilight` when
@@ -1147,6 +1148,79 @@ and filter re-assert their state), and a recovery invocation nulls
 re-center, re-focus — before capturing again, regardless of what the
 interruption did to the mount.
 
+### `sky_flat.json` (the twilight-adaptation document)
+
+Twilight sky flats: point the mount at the zenith, and per filter capture
+flats while re-scaling the exposure after **every** frame against the
+changing sky. This is the expression layer's stress test (the plan's
+"convergence-loop ceiling"): unlike `calibrator_flats.json`'s
+find-then-capture shape — a panel that holds still, so the search loop
+runs once and the converged duration is reused — the sky brightens or
+dims continuously, so there is no separate search: every pass is
+capture → measure → keep-if-in-band → rescale regardless. The full
+document lives in `workflows/sky_flat.json`; the load-bearing decisions:
+
+- **Pointing is computed, not configured.** Zenith right ascension is
+  the local sidereal time (`get_local_sidereal_time`, plus an optional
+  `ra_offset_hours`, normalized with the
+  `((x % 24) + 24) % 24` idiom because `%` follows the dividend's
+  sign); zenith declination is the site latitude — which no `rp` tool
+  exposes, so it is a required parameter (`site_latitude_degrees`).
+  `slew` requires tracking, so the order is unpark → tracking on →
+  slew → tracking **off** (stars trail through untracked flats and
+  median-combine away in the stack).
+- **The exposure window belongs to the operator.** `min_exposure` /
+  `max_exposure` parameters are intersected with the camera's own
+  limits from `get_camera_info` (`max(...)` / `min(...)`, with a
+  fail-fast guard when the intersection is empty) — real flats have
+  tighter floors (shutter and banding artifacts) and ceilings (star
+  trails, window length) than the sensor does.
+- **Every frame rescales; in-band frames count.** A frame whose median
+  lands within `tolerance` of `target_adu` increments the filter's
+  count (`session.flat_count`) and the report total; an out-of-band
+  frame is logged and discarded (the file stays on disk — the stacking
+  software selects by the report, not the engine). Either way the next
+  duration is `clamp(duration × target/median, exp_min, exp_max)` —
+  with the `median == 0 ? duration × 2` guard from the flats port.
+- **The twilight window closes; the document notices when a frame
+  captured *at* a rail is still out of band.** The window checks run
+  **before** the rescale, so `session.duration` still holds the
+  duration the measured frame was actually captured at — a rail must
+  be tested by a real frame before it can close the window (checking
+  after the rescale would end the run a frame early: a mid-range frame
+  whose rescale merely *clamps* to the ceiling says nothing about what
+  a ceiling-length frame would read). At dusk (`dawn: false`, the
+  default) a frame at the floor that is still too bright means the
+  window hasn't opened yet — `wait` 30 s and re-test; a frame at the
+  ceiling that is still too dark means the window is over — set
+  `session.window_over`, which ends the frame loop *and* gates the
+  filter loop (later filters would only be darker). At dawn
+  (`dawn: true`) the two reactions swap. Exhausting the frame loop's
+  budget (`count + max_extra_attempts` passes, a `$expr` bound) without
+  reaching the count is treated the same as a closed window — logged at
+  `info!` and ended with a partial report rather than failed: partial
+  flats are usable, and the session-level report
+  (`session.report.total_frames`, `session.report.window_over`) says
+  what happened.
+- **Re-entrancy without a recovery branch.** The pointing steps are
+  idempotent and simply re-run on resume (a fresh LST, a fresh slew —
+  wherever the safety park left the mount); `session.filter_index` is
+  the totals-traversal cursor; the per-filter frame counter resets via
+  an **index marker** (`session.counting_index`) instead of
+  unconditionally, so a resumed run continues the current filter's
+  count rather than recapturing it; and `session.duration` carries
+  across filters and across resume (the previous filter's converged
+  duration is a better starting point than `initial_duration`). The
+  frame loop is a `while` (checked before each pass), so a resume that
+  lands after a filter's count is already met captures nothing extra.
+
+The adaptation math cannot be pinned against OmniSim — the simulator's
+image content does not track exposure duration — so, as with the flats
+port, the engine's exec tests run the shipped document against scripted
+medians (convergence, discard-and-rescale, both window closures, the
+budget fallback), and the BDD scenario pins the plumbing end-to-end
+(zenith slew from live LST, per-filter captures, park).
+
 ## Error Handling Summary
 
 | Failure | Behavior |
@@ -1171,8 +1245,8 @@ interruption did to the mount.
 semantics above; `event` / `poll` / `correction_requested` triggers with
 `when`/`while`/`once`/`cooldown`; blackboard persistence + re-derive resume;
 schema + catalog + parameter validation and `/validate`; SSE consumption
-with replay; the two shipped documents (`calibrator_flats.json`,
-`deep_sky.json`).
+with replay; the three shipped documents (`calibrator_flats.json`,
+`deep_sky.json`, `sky_flat.json`).
 
 **Deferred:** Luau `script` nodes (schema key reserved); container-scoped
 triggers (use `while` gates); parallel containers; sub-workflow
@@ -1234,16 +1308,21 @@ Full three-process topology (OmniSim + `rp` + `session-runner`) via
 | Flats port equivalence | `flat_calibration.feature` | the scenarios from `calibrator-flats`' suite, run against the document — same events, frame counts, cleanup-on-failure |
 | Event subscription | `events.feature` | an `until_event` wait satisfied by an event emitted during an earlier instruction (pins subscription-from-run-start); a wait whose event never arrives fails the session at its timeout rather than hanging |
 | Triggers | `triggers.feature` | a trigger action lands between exposures, never during one (proved by SSE seq order); `once` fires exactly once across three captures; cooldown suppresses firings inside its window; a poll trigger fires through its `when` gate |
-| Resume | `recovery.feature` | SIGKILL the engine mid-capture-loop → restart → re-invoke with recovery → progress continues without repeated frames (exposure totals prove it); `once` marker not re-run (`filter_switch` count proves it); an rp outage terminates the run (service stays healthy, blackboard kept) and the session resumes against the restarted rp |
+| Resume | `recovery.feature` | SIGKILL the engine mid-capture-loop → restart → re-invoke with recovery → progress continues without repeated frames (exposure totals prove it); `once` marker not re-run (`filter_switch` count proves it); an rp outage terminates the run (service stays healthy, blackboard kept) and the session resumes against the restarted rp; an rp restart with a pinned `session_state_file` re-invokes the engine **by itself** (`recovery.reason = "rp_restart"` — rp startup recovery) and the session completes with no repeated frames |
 | Safety | `recovery.feature` | a SafetyMonitor unsafe reading interrupts the session end-to-end through rp's own machinery (rp terminates the MCP session, the run terminates keeping its blackboard) and the safe transition re-invokes the engine with `recovery.reason = "safety_interruption"` — the resumed run captures exactly the remaining frames, the once marker is not re-run, and the completion deletes the blackboard. rp-side specifics (session `interrupted` status, `/mcp` 503 gate, `safety_changed` events) are pinned in rp's own `safety.feature` |
 | Deep-sky document | `deep_sky.feature` | the shipped `deep_sky.json` against a computed night sky (site + planner targets placed so a candidate is viable at test time): the full cycle completes (unpark → slew → center → capture ×N → park); the planner's exposure plan drives the capture duration (a 2 s plan finishes a session the 300 s parameter default could not); a target whose plan carries a `count` ends the session through `record_exposure` → exhaustion → `end_of_session` with exactly the goal's frame count and no `max_frames` budget; a session started after dawn (a computed morning site — Sun risen and climbing) ends on the planner's `end_of_session` with zero slews and zero frames; a target sinking below its per-target altitude floor switches the dispatch loop to the second target (a second slew, frames on both sides of it); `refocus_every` fires `auto_focus` from the trigger overlay (`focus_started` count proves it); a due meridian flip re-slews between exposures, never during one; a safety interruption resumes with re-acquisition (two `centering_complete`). Mid-plan filter rotation is pinned by `rp`'s own planner BDD plus the engine golden tests (no simulated filter wheel in the deep-sky harness) |
+| Sky-flat document | `sky_flat.feature` | the shipped `sky_flat.json` end-to-end against OmniSim: a computed night site with the mount taught the site and synced near the zenith → the session slews to the zenith from live LST, captures exactly the plan's flats through both filters, and parks (a 0.5 target fraction with 1.0 tolerance makes every OmniSim frame in-band, so the counts are deterministic — the simulator's image content does not track exposure). The adaptation math (rescale-always, discard-and-recapture, both window closures, the budget fallback) is pinned by engine exec tests running the shipped document against scripted medians |
 
-The safety scenario exercises rp's real recovery re-invocation. The
-engine-kill and rp-outage scenarios POST `/invoke` directly — same ids,
-the registration's forwarded `config`, a non-null `recovery` object —
-standing in for rp-side *startup* recovery (rp's session registry is
-in-memory; re-invocation after an rp or engine process loss is designed
-but not implemented — `rp.md` § Recovery Behavior).
+The safety scenario exercises rp's real recovery re-invocation, and the
+rp-restart scenario exercises rp's *startup* recovery (rp persists its
+session registry and re-invokes on restart with
+`recovery.reason = "rp_restart"` — `rp.md` § Recovery Behavior; the
+harness pins rp's `session_state_file` across the restart). The
+engine-kill and rp-outage scenarios still POST `/invoke` directly —
+same ids, the registration's forwarded `config`, a non-null `recovery`
+object — because they pin the *engine's* recovery contract in
+isolation: what the engine does with a recovery invocation, independent
+of who sends it.
 
 Scenarios that need a document the shipped set doesn't provide (a
 targeted `until_event` wait, resume fixtures) execute purpose-built
@@ -1271,7 +1350,9 @@ what the unit suites pin.
   expression condition-builder.
 - **Sub-workflow composition** (`{"call": "…"}`) once shipped documents
   show real duplication.
-- **Sky-flat document** — the stress test for the expression layer's
-  ceiling (per-frame exposure adaptation against a brightening/darkening
-  sky); if it doesn't fit the bounded expressions, it becomes the motivating
-  case for `script` nodes rather than for growing the expression language.
+
+The sky-flat document — once listed here as the stress test for the
+expression layer's ceiling — shipped as `sky_flat.json` (§ Example
+Documents): the per-frame exposure adaptation fits the bounded
+expressions, so it did not become the motivating case for `script`
+nodes.

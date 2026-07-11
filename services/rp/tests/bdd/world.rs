@@ -188,6 +188,14 @@ pub struct RpWorld {
     /// keep it alive for the scenario's duration.
     pub pinned_data_directory: Option<String>,
     pub pinned_data_dir_holder: Option<tempfile::TempDir>,
+    /// Pinned `session.session_state_file` across rp lifecycle. The
+    /// startup-recovery scenarios need the restarted rp to read the
+    /// session registry its predecessor persisted; without the pin the
+    /// config builder generates a fresh path per build. The `TempDir`
+    /// holding the file is kept alive by
+    /// `pinned_session_state_holder`.
+    pub pinned_session_state_file: Option<String>,
+    pub pinned_session_state_holder: Option<tempfile::TempDir>,
     /// Override the imaging cache budgets via `RpConfigBuilder::with_imaging`.
     /// `(cache_max_mib, cache_max_images)`.
     pub pinned_imaging_overrides: Option<(usize, usize)>,
@@ -312,6 +320,9 @@ impl RpWorld {
         }
         if let Some(dir) = &self.pinned_data_directory {
             builder.with_data_directory(dir.clone());
+        }
+        if let Some(path) = &self.pinned_session_state_file {
+            builder.with_session_state_file(path.clone());
         }
         if let Some((mib, images)) = self.pinned_imaging_overrides {
             builder.with_imaging(mib, images);

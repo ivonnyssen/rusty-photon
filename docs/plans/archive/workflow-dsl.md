@@ -2,14 +2,34 @@
 
 ## Status
 
-**Design stage.** Direction decided 2026-07-01 after a research pass over the
+**Status: COMPLETE (archived 2026-07-10).** Delivered across Phases A–F:
+design + schema PR #424; expression layer PRs #428 (spike) and #433;
+engine core + `calibrator_flats.json` port PRs #439, #442, #445, #447,
+#449; triggers/events/resume PRs #451, #453, #458 (+ rp safety recovery
+PR #459); `deep_sky.json` PR #461 (planner gaps closed by rp PRs #466,
+#468, #471; multi-instance OmniSim #470); Phase F (the
+`workflow-documents.md` authoring guide, the `rp.md` § Orchestration
+rewrite, `sky_flat.json`) together with rp-side startup recovery in the
+archiving PR #486. Deliberately deferred, recorded below and in
+`session-runner.md` § MVP Scope: Luau `script` nodes, container-scoped
+triggers, parallel containers, sub-workflow imports, the `ui-htmx`
+editor, typed array-element declarations, and retiring the Rust
+`calibrator-flats` service (a separate decision after the port has
+mileage); `deep_sky.json`'s guide/dither adoption tracks rp issue #464.
+
+Direction decided 2026-07-01 after a research pass over the
 astrophotography-automation ecosystem and the Rust workflow/DSL solution
-space. The service design doc is
-[`docs/services/session-runner.md`](../services/session-runner.md); this plan
+space; Phases A–F all delivered (A/B design + expression layer, C engine
+core + flats port, D triggers/events/resume, E deep-sky document, F
+polish/adoption — the
+[`workflow-documents.md`](../../references/workflow-documents.md) authoring
+guide, the `rp.md` § Orchestration rewrite, and the `sky_flat.json` third
+document). The rp-side *startup* recovery Phase D left deferred is also
+implemented (`rp.md` § Session Persistence). The service design doc is
+[`docs/services/session-runner.md`](../../services/session-runner.md); this plan
 is the decision record and phase breakdown behind it, per the design → BDD →
 implementation flow in
-[`docs/skills/development-workflow.md`](../skills/development-workflow.md).
-No code exists yet.
+[`docs/skills/development-workflow.md`](../../skills/development-workflow.md).
 
 ## Motivation
 
@@ -139,14 +159,14 @@ expression-language critique
 ## Phases
 
 Phase boundaries follow design → BDD → implementation per
-[`development-workflow.md`](../skills/development-workflow.md). Each phase is
+[`development-workflow.md`](../../skills/development-workflow.md). Each phase is
 committable on its own.
 
 ### Phase A — Design + document schema *(this PR)*
 
 - [x] Research passes (ecosystem + Rust solution space) and decisions above.
 - [x] Service design doc
-      [`docs/services/session-runner.md`](../services/session-runner.md):
+      [`docs/services/session-runner.md`](../../services/session-runner.md):
       document format, instruction/trigger vocabulary, expression semantics,
       blackboard + re-entrancy contract, validation, configuration, MVP
       boundary.
@@ -394,9 +414,18 @@ committable on its own.
       (`session_stopped` / `orchestrator_invoke_failed`) instead of
       wedging it active. `recovery.feature` gained the end-to-end safety
       interruption + resume scenario through rp's real machinery; rp's own
-      `safety.feature` pins the rp-side contract. Still deferred: rp-side
-      *startup* recovery (session registry is in-memory; rp.md § Recovery
-      Behavior).
+      `safety.feature` pins the rp-side contract.
+
+      **Follow-up (2026-07-10):** rp-side *startup* recovery is now
+      implemented too (with Phase F, same PR): the session registry +
+      planner counters persist to `session.session_state_file`
+      (atomically, on every transition and after every
+      `record_exposure`), and on startup rp restores them and
+      re-invokes the orchestrator with `recovery.reason = "rp_restart"`
+      (rp.md § Session Persistence). Pinned by rp's
+      `startup_recovery.feature` and, end-to-end against a real engine,
+      by the rp-restart scenario in `session-runner`'s
+      `recovery.feature`.
 
 ### Phase E — Deep-sky workflow
 
@@ -456,14 +485,47 @@ committable on its own.
 
 ### Phase F — Polish and adoption
 
-- [ ] Authoring documentation (`docs/references/workflow-documents.md`):
+- [x] Authoring documentation (`docs/references/workflow-documents.md`):
       the format, the expression grammar, the re-entrancy contract, worked
       examples.
-- [ ] Update `rp.md` § Orchestration to describe `session-runner` as the
+
+      **Done (2026-07-10):** the author-facing reference — how a
+      document runs, the instruction vocabulary, trigger contract, the
+      expression rules that bite (null loudness, no truthiness,
+      non-chaining comparisons, the mod-24 idiom), the re-entrancy
+      idioms (guarded init, totals-traversal, index-marker reset,
+      recovery branching), `/validate` as the authoring loop, and the
+      three shipped documents dissected as worked examples, closing
+      with an authoring checklist. Indexed in `workspace.md`
+      § References.
+- [x] Update `rp.md` § Orchestration to describe `session-runner` as the
       home of the deep-sky and sky-flat workflow documents (the Phase A
       edit only cross-references the plan there).
-- [ ] Example documents beyond the two v1 workflows (sky-flat is the natural
+
+      **Done (2026-07-10):** the orchestrator table now says what each
+      workflow *ships as* (deep-sky and sky-flat as documents,
+      calibrator-flats as both the Rust service and its document port,
+      planetary unbuilt), and the "how orchestrators are built" prose
+      names `session-runner` as the home of the first-party documents,
+      linking the authoring guide. The lifecycle diagram gained the
+      rp-restart recovery stanza alongside the safety one.
+- [x] Example documents beyond the two v1 workflows (sky-flat is the natural
       third: it exercises the expression layer's convergence-loop ceiling).
+
+      **Done (2026-07-10):** `workflows/sky_flat.json` — twilight sky
+      flats at the zenith (RA from `get_local_sidereal_time`, dec from a
+      `site_latitude_degrees` parameter), per-frame rescale-always
+      adaptation with in-band accept/discard, operator exposure bounds
+      intersected with the camera's, dusk/dawn twilight-window closure
+      at the clamp rails, and graceful partial completion
+      (`report.window_over`). The adaptation fits the bounded
+      expressions — the sky-flat ceiling test passed without needing
+      `script` nodes. Design in `session-runner.md` § `sky_flat.json`;
+      pinned by seven engine exec tests against scripted medians
+      (rescale-always, discard, both window closures, budget fallback,
+      index-marker resume) plus `sky_flat.feature` end-to-end against
+      OmniSim (zenith slew from live LST, exact frame counts, park),
+      and embedded in the validation corpus like its siblings.
 
 ### Deferred (explicitly out of scope for v1)
 

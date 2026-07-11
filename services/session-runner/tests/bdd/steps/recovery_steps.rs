@@ -5,12 +5,14 @@
 //! repeating recorded work.
 //!
 //! The safety scenario exercises `rp`'s own recovery re-invocation
-//! end-to-end (unsafe terminates the run, safe re-invokes). The other
-//! two interrupt the session in ways `rp` cannot recover from yet — an
-//! engine kill and an `rp` restart both need `rp`-side startup recovery,
-//! which is designed but not implemented — so their steps POST `/invoke`
-//! directly, standing in for it: same ids, same forwarded `config`, a
-//! non-null `recovery` object.
+//! end-to-end (unsafe terminates the run, safe re-invokes), and the
+//! startup-recovery scenario exercises `rp`'s restart path the same way
+//! (a pinned `session_state_file` lets the restarted `rp` re-invoke the
+//! engine by itself — rp.md § Recovery Behavior). The engine-kill and
+//! rp-outage scenarios POST `/invoke` directly instead — same ids, same
+//! forwarded `config`, a non-null `recovery` object — pinning the
+//! engine's side of the recovery contract independent of who sends the
+//! invocation.
 
 use std::time::Duration;
 
@@ -137,6 +139,19 @@ async fn rp_is_killed(world: &mut SessionRunnerWorld) {
     world.sse_client = None;
 }
 
+#[given("rp's session state file survives restarts")]
+fn pin_rp_session_state_file(world: &mut SessionRunnerWorld) {
+    let dir =
+        tempfile::tempdir().expect("failed to create tempdir for rp's pinned session state file");
+    world.pinned_rp_session_state_file = Some(
+        dir.path()
+            .join("session_state.json")
+            .to_string_lossy()
+            .into_owned(),
+    );
+    world.pinned_rp_session_state_holder = Some(dir);
+}
+
 #[when("rp is restarted")]
 async fn rp_is_restarted(world: &mut SessionRunnerWorld) {
     assert!(
@@ -144,9 +159,11 @@ async fn rp_is_restarted(world: &mut SessionRunnerWorld) {
         "restart follows a kill — the previous instance is still recorded as running"
     );
     // Same accumulated config (equipment + the orchestrator registration),
-    // fresh process on a fresh port. rp's session state is in-memory, so
-    // the restarted instance knows nothing of the interrupted session —
-    // exactly the outage being simulated.
+    // fresh process on a fresh port. Unless the scenario pinned rp's
+    // session state file, the restarted instance gets a fresh one and so
+    // knows nothing of the interrupted session — the direct-/invoke
+    // scenarios rely on that; the startup-recovery scenario pins the
+    // file and relies on the opposite.
     start_rp_service(world).await;
 }
 
@@ -231,6 +248,30 @@ async fn blackboard_deleted_within(world: &mut SessionRunnerWorld, seconds: u64)
     panic!(
         "the blackboard still exists after {seconds}s — the session did not complete \
          (or the completion was not acknowledged)"
+    );
+}
+
+#[then(
+    expr = "the test webhook receiver should have received between {int} and {int} {string} events"
+)]
+async fn webhook_received_between(
+    world: &mut SessionRunnerWorld,
+    minimum: usize,
+    maximum: usize,
+    event_type: String,
+) {
+    // Wait for the floor, settle briefly so a straggler past the ceiling
+    // would be observed, then bound the count.
+    assert!(
+        world.wait_for_events(&event_type, minimum).await,
+        "expected at least {minimum} '{event_type}' event(s) within timeout"
+    );
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let events = world.received_events.read().await;
+    let count = events.iter().filter(|e| e.event_type == event_type).count();
+    assert!(
+        (minimum..=maximum).contains(&count),
+        "expected between {minimum} and {maximum} '{event_type}' events, saw {count}"
     );
 }
 

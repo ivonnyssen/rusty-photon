@@ -8,7 +8,7 @@
 //! two seams so unit tests need no `rp`: a [`ToolClient`] (the real MCP
 //! client arrives with the Phase C service wiring) and a [`Clock`].
 //!
-//! Phase boundary (`docs/plans/workflow-dsl.md`): the Phase C engine core
+//! Phase boundary (`docs/plans/archive/workflow-dsl.md`): the Phase C engine core
 //! plus the Phase D event intake (`wait` `until_event` against the SSE
 //! stream) and trigger engine — the safe-point pump, `when`/`while`
 //! gates, `once`/`cooldown` bookkeeping, poll sources, and synthetic

@@ -83,6 +83,14 @@ pub struct SessionRunnerWorld {
     /// re-invocation — the resumed run must capture exactly
     /// `plan - frames_before_resume` more exposures.
     pub frames_before_resume: Option<u64>,
+    /// Pinned `session.session_state_file` for rp, so a restarted rp
+    /// reads the session registry its predecessor persisted (rp-side
+    /// startup recovery). `None` — the default — gives every rp build a
+    /// fresh path, keeping rp-side recovery out of the scenarios that
+    /// POST /invoke themselves. The `TempDir` holding the file is kept
+    /// alive by the holder field.
+    pub pinned_rp_session_state_file: Option<String>,
+    pub pinned_rp_session_state_holder: Option<tempfile::TempDir>,
 
     // --- Webhook state ---
     pub received_events: Arc<RwLock<Vec<ReceivedEvent>>>,
@@ -150,6 +158,9 @@ impl SessionRunnerWorld {
         }
         for plugin in &self.plugin_configs {
             builder.add_plugin(plugin.clone());
+        }
+        if let Some(path) = &self.pinned_rp_session_state_file {
+            builder.with_session_state_file(path.clone());
         }
         builder.build()
     }

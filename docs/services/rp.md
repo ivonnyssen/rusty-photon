@@ -842,10 +842,15 @@ hours, `dec` is degrees. See
 
 **Session**
 
-| Action | Parameters | Returns | Description |
-|--------|-----------|---------|-------------|
-| `save_session_state` | — | — | Persist current session state to disk |
-| `get_session_state` | — | session state JSON | Read persisted session state |
+There are no session-state tools: persistence is automatic (the
+registry and planner counters are written on every transition and
+every `record_exposure` — see [Session
+Persistence](#session-persistence)), and an orchestrator's own resume
+state is its own concern (`session-runner`'s blackboard). An earlier
+design sketched `save_session_state` / `get_session_state` tools; they
+were dropped — no orchestrator had a use for them that the automatic
+persistence and the planner's `get_session_progress` don't already
+cover.
 
 All built-in tools validate parameters before execution. `move_focuser`
 checks position bounds. `capture` checks that the camera is connected and
@@ -1823,22 +1828,29 @@ tools.
 
 Different imaging types use different orchestrators:
 
-| Orchestrator | Workflow |
-|-------------|----------|
-| `deep-sky-orchestrator` | slew → center → focus → guide → capture loop, with dithering, meridian flips, target switching |
-| `planetary-orchestrator` | slew → focus → high-fps capture, no guiding or plate solving |
-| `calibrator-flats` | close cover → calibrator on → per-filter: find exposure time iteratively → capture N flats → calibrator off → open cover |
-| `sky-flat` | point at clear sky → per-filter during twilight: capture with per-frame exposure adjustment → handle changing sky brightness |
+| Workflow | Shape | Ships as |
+|----------|-------|----------|
+| deep-sky | slew → center → focus → capture loop, with refocus triggers, meridian flips, planner-driven target switching | `session-runner` document `deep_sky.json` (guide/dither steps join it as the remaining slice of the guider integration, issue #464) |
+| calibrator-flats | close cover → calibrator on → per-filter: find exposure time iteratively → capture N flats → calibrator off → open cover | the Rust `calibrator-flats` service **and** its `session-runner` document port `calibrator_flats.json` (behavioral equivalence proven against the Rust suite; retiring the Rust service is a separate decision) |
+| sky-flat | point at the zenith → per-filter during twilight: capture with per-frame exposure adaptation against the changing sky | `session-runner` document `sky_flat.json` |
+| planetary | slew → focus → high-fps capture, no guiding or plate solving | not yet built |
 
-> **How orchestrators are built.** An orchestrator can be a hand-written
-> service in any language (like `calibrator-flats`, Rust) **or** a
-> declarative **workflow document** executed by the generic
-> [`session-runner`](session-runner.md) plugin (see
-> [`docs/plans/workflow-dsl.md`](../plans/workflow-dsl.md)). The
-> `deep-sky-orchestrator` row above ships as `session-runner`'s
-> `deep_sky.json` document (as does a port of `calibrator-flats`);
-> `sky-flat` is planned as a document too. `rp` cannot tell the
-> difference — both shapes follow the same plugin protocol.
+**How orchestrators are built.** An orchestrator can be a hand-written
+service in any language (like `calibrator-flats`, Rust) **or** a
+declarative **workflow document** executed by the generic
+[`session-runner`](session-runner.md) plugin. `session-runner` is the
+home of the first-party workflow documents: `deep_sky.json`,
+`calibrator_flats.json`, and `sky_flat.json` ship in
+`services/session-runner/workflows/` and install with that service —
+one registered orchestrator (`session-runner`) runs whichever document
+its registration's `config.workflow` names. `rp` cannot tell the
+difference between the two shapes — both follow the same plugin
+protocol, and hand-written services remain first-class (decision D2 in
+[`workflow-dsl.md`](../plans/archive/workflow-dsl.md)). Authoring documents is
+covered in
+[`docs/references/workflow-documents.md`](../references/workflow-documents.md);
+the format and engine are specified in
+[`session-runner.md`](session-runner.md).
 
 ### What `rp` Owns vs. What the Orchestrator Owns
 
@@ -1852,8 +1864,11 @@ Different imaging types use different orchestrators:
   transition, `rp` cancels the active orchestrator workflow, aborts
   exposures, stops guiding, parks the mount, and persists session state.
   The orchestrator cannot prevent or delay this.
-- **Session persistence** — provides tools for saving and loading
-  session state. Also persists automatically on safety events.
+- **Session persistence** — the session registry and planner progress
+  counters are persisted automatically on every transition and every
+  `record_exposure`, and an `rp` restart re-invokes the orchestrator
+  with recovery context (see [Session
+  Persistence](#session-persistence)).
 
 **The orchestrator owns** (implemented as plugin logic):
 
@@ -1888,6 +1903,13 @@ Safety event (unsafe transition)
   → the session is marked interrupted; the orchestrator's own persisted
     state (e.g. session-runner's blackboard) survives
   → on safe transition: rp re-invokes the orchestrator with recovery context
+
+rp restarts mid-session (crash, power failure, systemd restart)
+  → rp restores the session registry + planner counters from the
+    session state file (see Session Persistence)
+  → rp re-invokes the orchestrator with recovery context
+    ({"reason": "rp_restart"}) and the same ids
+  → the orchestrator resumes from its own persisted state
 
 Session ends (orchestrator completes, user stops, or dawn)
   → orchestrator disconnects from MCP
@@ -2854,73 +2876,113 @@ whose plan is missing or entirely invalid still recommends, with
 
 ## Session Persistence
 
-The session state is persisted to disk after every significant state change.
-The application must survive power failures and resume from where it left off.
+The session registry is persisted to disk on every state transition so an
+`rp` restart mid-night (crash, power failure, systemd restart) can resume
+the interrupted session. `rp` persists only what `rp` owns — which
+session was running and the planner's progress counters; the
+orchestrator persists its own workflow state (for `session-runner`, the
+blackboard, keyed by the unchanged `session_id`).
 
 ### Persisted State
 
+One JSON file — `session.session_state_file` in the configuration,
+defaulting to `<session.data_directory>/session_state.json` when unset
+or empty:
+
 ```json
 {
-  "session_id": "session-2026-03-01",
-  "started_at": "2026-03-01T22:00:00Z",
-  "targets": [ "...target list with progress..." ],
-  "equipment_config": { "...device addresses, camera assignments..." },
+  "session_id": "0d5c4a4e-7c2f-4c53-9b1e-2f6d1a3c9e10",
+  "workflow_id": "8f0f7a5e-4b1d-4e2a-b6c3-5d9e8f7a6b5c",
+  "status": "active",
+  "started_at": "2026-07-10T04:12:00Z",
   "progress": {
-    "M31": {
-      "Luminance": { "completed": 12, "goal": 40 },
-      "Red": { "completed": 5, "goal": 20 }
-    }
-  },
-  "last_completed_exposure": {
-    "document_id": "...",
-    "timestamp": "2026-03-02T03:45:00Z"
-  },
-  "mount_state": {
-    "last_target": "M31",
-    "side_of_pier": "east",
-    "tracking": true
+    "completed": { "M31": { "Luminance": 12, "": 3 } },
+    "last_filter_key": "Luminance"
   }
 }
 ```
 
+- `status` is `"active"` or `"interrupted"` (the safety-interrupted
+  state — § Safety). An idle session has no file: every transition to
+  idle (manual stop, workflow completion, invocation failure) deletes
+  it.
+- `progress` is the planner's `record_exposure` counter store (target →
+  filter key → completed count; the empty-string key is the unfiltered
+  slot, `last_filter_key` feeds the plan-rotation tie-breaking) —
+  exactly what `get_next_target` uses to rotate plans, balance targets,
+  and reach `end_of_session`. Goals are not persisted; they derive from
+  the `targets[]` config on every read.
+- Device addresses, camera assignments, and mount state are **not**
+  persisted: equipment comes from the config file, and pointing is
+  re-derived by the orchestrator on resume (a recovery invocation
+  re-acquires the target — the re-entrancy contract in
+  [`session-runner.md`](session-runner.md)).
+
 ### Recovery Behavior
 
-> **Status:** designed, not yet implemented. `rp`'s session registry is
-> in-memory today, so an `rp` restart orphans an interrupted session —
-> the orchestrator's own persisted state (e.g. `session-runner`'s
-> blackboard) survives and the session can be resumed by re-invoking
-> the orchestrator, but `rp` does not yet do so on startup. The
-> safety-event recovery path (terminate on unsafe, re-invoke on safe
-> within one `rp` process) **is** implemented — see § Safety. The
-> `progress` map **is** implemented, in-memory: the `record_exposure`
-> counters are shared across MCP connections within one `rp` process,
-> survive a safety interrupt/resume (the re-invoked orchestrator sees
-> the same counters — its dispatch continues where the night left
-> off), and are cleared when a fresh session starts (a new
-> `session_id` is a new night). Only the state-*file* write and the
-> startup read-back remain unimplemented.
+On startup — equipment connected, tool catalog built, immediately before
+the listener starts serving — `rp` checks the session state file:
 
-On startup, `rp` checks for an existing session state file:
+1. **No file** (or an unreadable/corrupt one, logged at `warn!`): start
+   idle and wait for a session-start command. A corrupt file is never
+   fatal — refusing to start over unreadable bookkeeping would be worse
+   than losing one resume.
+2. **File present**: restore the planner progress counters, mark the
+   session active with the persisted ids, and re-invoke the
+   orchestrator with recovery context `{"reason": "rp_restart"}` and
+   the same `workflow_id`/`session_id`/`config` — identical
+   retry/failure semantics to § Orchestrator Invocation Protocol (all
+   attempts failed → the session returns to idle, the state file is
+   deleted, and `session_stopped` with
+   `reason: "orchestrator_invoke_failed"` is emitted).
 
-1. If no session file exists, start fresh (wait for user to start a session).
-2. If a session file exists and the session is still valid (nighttime, targets
-   remaining), reconnect to all equipment and re-invoke the orchestrator with
-   recovery context (the persisted session state and the reason for
-   interruption). The orchestrator decides how to resume — verify mount
-   position, re-acquire guiding, continue from the last target, etc.
-3. If a session file exists but conditions have changed (daytime, all targets
-   complete), mark the session as finished and archive the state file.
+Startup recovery is **ordered behind the safety poller's first pass**:
+when safety monitors are configured, `rp` completes one poll — setting
+the `/mcp` gate to reality and, on an unsafe reading, securing the
+equipment — *before* it reads the state file, so a re-invoked
+orchestrator can never move hardware into unknown conditions. Under a
+safe reading (or with no monitors configured) the restored session is
+re-invoked as above; under an unsafe one it is restored as
+**interrupted** with no invocation, and the ordinary unsafe → safe
+machinery (§ Safety) resumes it — with
+`recovery.reason = "safety_interruption"` — when conditions clear. The
+persisted status itself gates nothing: conditions may have flipped
+either way while `rp` was down, so a file that says `interrupted`
+restores active-and-reinvoked under a safe sky, and a file that says
+`active` restores interrupted under an unsafe one — the poll, not the
+file, decides.
+
+There is deliberately no "conditions have changed" (daytime /
+all-goals-met) check in `rp` — deciding whether the night is over is
+planner work, not registry work. A session recovered after dawn simply
+asks `get_next_target`, receives `end_of_session` (the sun-trend rule —
+§ Dynamic Planner), and completes normally, deleting the state file.
+(An earlier revision of this design had `rp` archive stale sessions
+itself; it was dropped when the planner gained `end_of_session` —
+decision D6 in [`workflow-dsl.md`](../plans/archive/workflow-dsl.md): choice
+lives in the planner, not the registry.)
 
 ### Write Strategy
 
-Session state is written to a temp file and renamed (atomic on POSIX). Writes
-happen:
-- After each exposure completes
-- After each target switch
-- After session start/stop
-- Before any mount operation (slew, flip, park)
+The state file is written atomically (sibling temp file, fsync, rename,
+fsync parent directory — the workspace pattern, as for exposure
+documents) on:
 
-This ensures at most one exposure is lost on power failure.
+- session start (status `active`, fresh ids, counters cleared),
+- safety interrupt (status `interrupted`) and resume (back to
+  `active`),
+- every successful `record_exposure` — the counters are the resume
+  payload, so at most one frame's progress is lost to a power failure.
+
+It is deleted on every transition to idle (manual stop, workflow
+completion, invocation failure). A failed state write is logged at
+`warn!` and the session continues — bookkeeping must not end an
+otherwise healthy night, and the cost is bounded: at worst a stale file
+resumes an already-finished session, which the planner ends
+immediately.
+
+A process shutdown (SIGTERM) deliberately does **not** delete the file:
+a systemd restart is exactly the outage the file exists to survive.
 
 ## Safety
 
@@ -3646,9 +3708,12 @@ Behavioral specifications for `rp`'s responsibilities:
   `services/session-runner/tests/features/recovery.feature`)
 - MCP tool validation and safety guardrails
 - Event delivery to webhook endpoints
-- Power failure recovery (re-invoke orchestrator with recovery context
-  on `rp` restart — designed, not yet implemented; see § Recovery
-  Behavior)
+- Power failure recovery (`startup_recovery.feature`: an rp restart
+  mid-session re-invokes the orchestrator with recovery context from
+  the persisted state file, planner counters survive, and completed or
+  stopped sessions leave nothing to recover — see § Recovery Behavior;
+  the end-to-end restart against a real engine lives in
+  `services/session-runner/tests/features/recovery.feature`)
 
 Note: orchestration workflow tests (capture loops, target switching,
 meridian flips) belong to the orchestrator plugin, not to `rp`. For

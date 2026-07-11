@@ -42,7 +42,18 @@ pub struct McpHandler {
     /// fresh session begins. Lock with
     /// `.lock().unwrap_or_else(|e| e.into_inner())` (the event-bus
     /// convention) and never hold it across an `.await`.
+    ///
+    /// Invariant: the counters are part of rp's persisted session
+    /// state, so every *mutation* of this store must be followed by
+    /// `SessionManager::persist_progress` (drop the guard first) —
+    /// otherwise a restart restores stale counters and the resumed
+    /// dispatch silently re-shoots completed goals.
     pub progress: Arc<std::sync::Mutex<crate::planner::progress::SessionProgress>>,
+    /// The session manager, for re-persisting the session state file
+    /// after every `record_exposure` (rp.md § Write Strategy — the
+    /// counters are the resume payload). `None` in tests that only
+    /// exercise the tools.
+    pub session_manager: Option<Arc<crate::session::SessionManager>>,
     /// Optional plate-solver HTTP client. `None` ⇒ `plate_solve`
     /// MCP tool returns "plate solver not configured". Wired by
     /// `with_plate_solver` from the `plate_solver` block in rp
@@ -94,6 +105,7 @@ impl McpHandler {
             progress: Arc::new(std::sync::Mutex::new(
                 crate::planner::progress::SessionProgress::default(),
             )),
+            session_manager: None,
             plate_solver: None,
             plate_solver_default_search_radius_deg: None,
             guider: None,
@@ -143,6 +155,17 @@ impl McpHandler {
         store: Arc<std::sync::Mutex<crate::planner::progress::SessionProgress>>,
     ) -> Self {
         self.progress = store;
+        self
+    }
+
+    /// Wire the session manager so `record_exposure` can re-persist
+    /// the session state file after each recorded frame (rp.md
+    /// § Write Strategy).
+    pub fn with_session_manager(
+        mut self,
+        session_manager: Arc<crate::session::SessionManager>,
+    ) -> Self {
+        self.session_manager = Some(session_manager);
         self
     }
 

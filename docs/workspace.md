@@ -25,7 +25,7 @@ belong in any single service design doc.
 | [zwo-focuser](services/zwo-focuser.md) | Focuser | 11124 | `docs/services/zwo-focuser.md` (ZWO EAF — native SDK FFI via `zwo-rs`, mirrors `zwo-camera`'s architecture rather than the serial shared-transport pattern; v0 implemented 2026-07-09 — 25 unit + 26 BDD scenarios green, full quality gate green, ConformU wired; pending real-hardware validation) |
 | [dsd-fp2](services/dsd-fp2.md) | CoverCalibrator | 11119 | `docs/services/dsd-fp2.md` (first adopter of `rusty-photon-shared-transport`) |
 | [ui-htmx](services/ui-htmx.md) | — (web config UI / BFF, not an ASCOM device) | 11120 | `docs/services/ui-htmx.md` |
-| [session-runner](services/session-runner.md) | — (generic workflow-orchestrator plugin) | 11171 | `docs/services/session-runner.md` (design stage; service not yet built — executes declarative JSON workflow documents against `rp`'s MCP tools; see [workflow-dsl.md](plans/workflow-dsl.md)) |
+| [session-runner](services/session-runner.md) | — (generic workflow-orchestrator plugin) | 11171 | `docs/services/session-runner.md` (implemented — executes declarative JSON workflow documents against `rp`'s MCP tools: expression layer, trigger overlay, blackboard resume; ships `deep_sky.json`, `calibrator_flats.json`, `sky_flat.json`; authoring guide: [workflow-documents.md](references/workflow-documents.md)) |
 
 ## Documentation Index
 
@@ -50,6 +50,7 @@ belong in any single service design doc.
 | [docs/references/skywatcher-motor-controller-command-set.md](references/skywatcher-motor-controller-command-set.md) | Sky-Watcher motor-controller wire protocol (USB + UDP/11880) — used by `star-adventurer-gti` |
 | [docs/references/omnisim.md](references/omnisim.md) | OmniSim (ASCOM Alpaca Simulators) reference — used by BDD/integration tests |
 | [docs/references/qhyccd-sdk-manual.md](references/qhyccd-sdk-manual.md) | QHYCCD SDK manual (unofficial English translation, V2.1) — used by `qhy-camera` |
+| [docs/references/workflow-documents.md](references/workflow-documents.md) | Authoring guide for `session-runner` workflow documents: the format, the expression grammar, the re-entrancy contract, worked examples |
 | [docs/services/config-actions.md](services/config-actions.md) | Cross-driver configuration protocol: the `config.get` / `config.apply` / `config.schema` ASCOM actions shared by every driver and consumed by `ui-htmx` |
 | **Decisions** (Architecture Decision Records — see [docs/decisions/](decisions/)) | |
 | [ADR-001](decisions/001-fits-file-support.md) | FITS file support |
@@ -69,7 +70,6 @@ belong in any single service design doc.
 | **Plans** (in-flight initiatives — see [docs/plans/](plans/)) | |
 | [service-packaging.md](plans/service-packaging.md) | `.deb`/`.rpm` packages for every service (15 daemons — phd2-guider became one with its #464 HTTP service mode): shared `rusty-photon` user, hardened unit classes, QHY firmware downloader, ZWO blob bundling, on-rig arm64 builds. Behind [ADR-012](decisions/012-service-packaging-architecture.md)/[ADR-013](decisions/013-native-sdk-payload-policy.md) |
 | [i18n.md](plans/i18n.md) | Workspace internationalization: scope, tech-stack, and translation-sourcing options |
-| [workflow-dsl.md](plans/workflow-dsl.md) | Imaging workflow DSL: declarative JSON workflow documents executed by the generic `session-runner` orchestrator plugin (CEL-style bounded expressions, trigger overlay, re-derive resume); decision record + phases behind [`docs/services/session-runner.md`](services/session-runner.md) |
 | [ui-testing.md](plans/ui-testing.md) | ui-htmx UI-behavior testing strategy: BDD-embedded `scraper` DOM assertions + cross-OS `insta` snapshots + an advisory `thirtyfour` browser layer, with an anticipatory spike plan; Bazel-primary aware; Gherkin stays the source of truth |
 | [zwo-driver.md](plans/zwo-driver.md) | ZWO ASI camera + EFW filter-wheel Alpaca driver (`zwo-camera`, port 11122) + author-maintained `zwo-rs`/`libzwo-sys` FFI; the ZWO analogue of `qhy-camera` (MIT SDK → public cache, but no pre-existing Rust FFI). See [`docs/services/zwo-camera.md`](services/zwo-camera.md) + [ADR-008](decisions/008-zwo-camera-native-sdk-ffi.md) |
 
