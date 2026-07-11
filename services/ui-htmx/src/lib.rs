@@ -137,8 +137,12 @@ fn build_http_client(
     auth: Option<&config::DriverAuth>,
     ca_cert_path: Option<&std::path::Path>,
 ) -> Result<Arc<dyn HttpClient>, Box<dyn std::error::Error + Send + Sync>> {
-    let parsed = reqwest::Url::parse(base_url)
-        .map_err(|e| format!("invalid base_url {base_url:?} for {what}: {e}"))?;
+    // Deliberately no `{base_url}` echo: a malformed URL can carry embedded
+    // credentials, and this message reaches rendered error cards (e.g. the
+    // unusable-roster-entry card) and logs. `what` names the target; the
+    // parse error says why; the operator has the URL in their own config.
+    let parsed =
+        reqwest::Url::parse(base_url).map_err(|e| format!("invalid base_url for {what}: {e}"))?;
     if !parsed.username().is_empty() || parsed.password().is_some() {
         return Err(format!(
             "{what} base_url must not contain credentials \
@@ -860,6 +864,50 @@ mod tests {
         assert!(html.contains("roster entry can't be used"), "{html}");
         assert!(html.contains(r#"href="/equipment""#), "{html}");
         assert!(!html.contains("No configured driver named"), "{html}");
+    }
+
+    /// A roster entry whose `alpaca_url` is malformed AND carries embedded
+    /// credentials — `Url::parse` fails before the credential check can.
+    struct MalformedUrlRoster;
+
+    #[async_trait::async_trait]
+    impl ConfigClient for MalformedUrlRoster {
+        async fn get_config(&self) -> Result<ConfigGetResponse, ConfigClientError> {
+            Ok(ConfigGetResponse {
+                config: json!({ "equipment": { "cover_calibrators": [{
+                    "id": "flat",
+                    "alpaca_url": "http://obs:hunter2@[oops",
+                    "device_number": 0
+                }]}}),
+                overrides: vec![],
+            })
+        }
+        async fn get_schema(&self) -> Result<ConfigSchemaResponse, ConfigClientError> {
+            unreachable!("resolve fails before any schema fetch")
+        }
+        async fn apply_config(
+            &self,
+            _config: &Value,
+        ) -> Result<ConfigApplyResponse, ConfigClientError> {
+            unreachable!("apply is not exercised by this test")
+        }
+    }
+
+    #[tokio::test]
+    async fn unusable_roster_entry_card_never_echoes_url_credentials() {
+        // The URL-parse failure path must not leak the raw URL (it can carry
+        // embedded credentials) into the rendered card.
+        let state = rp_state_with_config_client(Arc::new(MalformedUrlRoster));
+        let response = config_get(
+            State(state),
+            Path("rp:cover_calibrators:flat".to_string()),
+            Query(UnlockQuery::default()),
+            HeaderMap::new(),
+        )
+        .await;
+        let html = body_of(response).await;
+        assert!(html.contains("roster entry can't be used"), "{html}");
+        assert!(!html.contains("hunter2"), "{html}");
     }
 
     /// A `ConfigClient` returning a fixed schema + config — enough to render the
