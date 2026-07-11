@@ -132,7 +132,10 @@ ascom-alpaca = { git = "https://github.com/ivonnyssen/ascom-alpaca-rs.git", bran
 # docs/plans/vendor-zwo-rs.md) — the monorepo is now the canonical development
 # home; edits are in-tree (no git-rev bump). Still published to crates.io from
 # the vendored subdir for outside consumers.
-zwo-rs = { path = "crates/zwo-rs" }
+# default-features = false: the device SDKs link per feature (ADR-014), and
+# each service enables only its own device (`camera` / `focuser`) so its binary
+# links — and its package ships — only the SDK blob it talks to.
+zwo-rs = { path = "crates/zwo-rs", default-features = false }
 axum = "0.8"
 tower = "0.5"
 reqwest = { version = "0.13.4", features = ["form", "json"] }

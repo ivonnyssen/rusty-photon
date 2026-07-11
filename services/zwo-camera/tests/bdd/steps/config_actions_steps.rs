@@ -30,13 +30,13 @@ async fn call_config_schema(world: &mut CameraWorld) {
     world.call_action("config.schema", "").await;
 }
 
-#[then("the schema should describe the devices, filterwheel, and server sections")]
+#[then("the schema should describe the devices and server sections")]
 async fn schema_describes_sections(world: &mut CameraWorld) {
     let response = world.last_response.as_ref().expect("no response stashed");
     let props = response["schema"]["properties"]
         .as_object()
         .expect("schema.properties is an object");
-    for section in ["devices", "filterwheel", "server"] {
+    for section in ["devices", "server"] {
         assert!(
             props.contains_key(section),
             "schema missing section {section}"
@@ -107,16 +107,13 @@ async fn apply_device_name(world: &mut CameraWorld, serial: String, name: String
     world.call_action("config.apply", &config.to_string()).await;
 }
 
-#[when("config.apply sets a filter_names entry to an empty string")]
-async fn apply_empty_filter_name(world: &mut CameraWorld) {
+#[when("config.apply sets a devices override name to a number")]
+async fn apply_malformed_device_name(world: &mut CameraWorld) {
     let mut config = world.config_get().await;
     config["devices"]
         .as_object_mut()
         .expect("config.devices is an object")
-        .insert(
-            "EFW-test".to_string(),
-            serde_json::json!({ "filter_names": [""] }),
-        );
+        .insert("ASI-test".to_string(), serde_json::json!({ "name": 42 }));
     world.call_action("config.apply", &config.to_string()).await;
 }
 
@@ -138,11 +135,12 @@ async fn reload_list_includes(world: &mut CameraWorld, section: String) {
     );
 }
 
-#[then("the response should contain validation errors")]
-async fn response_has_errors(world: &mut CameraWorld) {
-    let response = world.last_response.as_ref().expect("no response stashed");
-    let errors = response["errors"].as_array().expect("errors is an array");
-    assert!(!errors.is_empty(), "expected validation errors");
+#[then("the call should fail with an invalid-value error")]
+async fn call_invalid_value(world: &mut CameraWorld) {
+    assert_eq!(
+        world.last_error_code,
+        Some(ASCOMErrorCode::INVALID_VALUE.raw())
+    );
 }
 
 #[when(regex = r#"^the action "([^"]+)" is called on camera device (\d+)$"#)]

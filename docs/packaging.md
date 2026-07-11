@@ -37,8 +37,9 @@ doubles as the PHD2 CLI via subcommands.)
 | dsd-fp2 | 11119 | serial (dialout) |
 | ui-htmx | 11120 | web config UI |
 | qhy-camera | 11121 | USB camera; needs the firmware helper (below) |
-| zwo-camera | 11122 | USB camera; SDK blobs bundled |
+| zwo-camera | 11122 | USB camera; its SDK blob bundled |
 | pa-scops-oag | 11123 | serial (dialout) |
+| zwo-focuser | 11124 | USB focuser; its SDK blob bundled |
 | phd2-guider | 11130 | guider service wrapping PHD2 (PHD2 installed separately) |
 | plate-solver | 11131 | config-gated; needs ASTAP (below) |
 | calibrator-flats | 11170 | config-gated |
@@ -61,10 +62,12 @@ scripts/build-packages.sh --skip-sdk-staging   # offline rebuild from cache
 ```
 
 The script installs apt build prerequisites, stages the pinned native
-camera SDKs into `~/.cache/rusty-photon-pkg/` (QHYCCD static lib for the
-link; ZWO MIT blobs, which also become package payload per ADR-013), builds
-everything in one release pass with the RUNPATH the zwo-camera package
-needs, then runs `cargo deb` (and `cargo generate-rpm` with `--rpm`) per
+SDKs into `~/.cache/rusty-photon-pkg/` (QHYCCD static lib for the
+link; per zwo service its ONE MIT blob, which also becomes that package's
+payload per ADR-013 + ADR-014), then release-builds with the RUNPATH the
+zwo packages need — the two zwo services each in their own cargo
+invocation, so feature unification cannot re-union their per-device SDK
+links — and runs `cargo deb` (and `cargo generate-rpm` with `--rpm`) per
 service. Artifacts land in `dist/<version>/` with a `SHA256SUMS.txt`.
 
 The QHY SDK version/sha256 pins and the ZWO blob ref are pinned in the
@@ -140,10 +143,10 @@ cold camera is flashed immediately (the helper re-emits udev add events);
 otherwise firmware uploads on the next plug-in. Offline installs work; the
 camera just stays unusable until the helper has run.
 
-**zwo-camera** — nothing to do: the MIT-licensed SDK blobs are bundled at
-`/usr/lib/rusty-photon/` (license in
-`/usr/share/doc/rusty-photon-zwo-camera/`). ZWO cameras keep firmware in
-onboard flash.
+**zwo-camera / zwo-focuser** — nothing to do: each package bundles its own
+MIT-licensed SDK blob at `/usr/lib/rusty-photon/` (`libASICamera2.so` /
+`libEAFFocuser.so`; license in the package docdir), so the two co-install
+cleanly (ADR-014). ZWO devices keep firmware in onboard flash.
 
 Both camera packages install a udev rule granting the `plugdev` group
 access to their USB VID (the service user is in `plugdev` via the unit's
@@ -182,17 +185,18 @@ Runs a podman `--systemd=always` debian:trixie container and, per package:
 install → unit active → config self-created → HTTP probe → remove (config
 survives) → purge (config and state gone, shared pieces stay). Gated
 services verify enabled-but-inactive-and-not-failed instead; zwo-camera
-additionally proves via `ldd` that the bundled blobs resolve through the
-binary's RUNPATH. Rootless podman cannot apply the units' sandboxing, so
+additionally proves via `ldd` that each zwo binary resolves exactly its own
+bundled blob through the RUNPATH — and does not link the other services'
+SDKs (ADR-014). Rootless podman cannot apply the units' sandboxing, so
 the script resets the hardening inside the container — hardening is
 verified on real hosts with `systemd-analyze security
 rusty-photon-<svc>.service`.
 
 Expected `lintian` findings (accepted, not bugs):
 `custom-library-search-path` on every package (the RUNPATH is injected
-uniformly; only zwo-camera uses it); `no-changelog` / `no-manual-page` /
+uniformly; only the zwo packages use it); `no-changelog` / `no-manual-page` /
 `copyright-without-copyright-notice` pre-1.0; `unstripped-binary-or-object`
-and `hardening-no-relro` on the two vendored ZWO blobs (shipped exactly as
+and `hardening-no-relro` on the vendored ZWO blobs (shipped exactly as
 published); `embedded-library` on qhy-camera's statically linked SDK;
 `appstream-metadata-missing-modalias-provide` on the camera packages' udev
 rules; `empty-field Depends` and `unstripped-binary` on our own binaries

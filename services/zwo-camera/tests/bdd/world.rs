@@ -36,7 +36,6 @@ impl CameraWorld {
     fn write_config(&mut self) -> String {
         let config = serde_json::json!({
             "devices": {},
-            "filterwheel": { "enabled": false },
             // Port 0 → OS-assigned; the real port is read from the `bound_addr=`
             // line on stdout by ServiceHandle.
             "server": { "port": 0 },

@@ -18,11 +18,31 @@ description = "Raw FFI bindings (bindgen) for the ZWO ASI / EFW / EAF SDK"
 keywords = ["zwo", "asi", "efw", "ffi", "astronomy"]
 categories = ["external-ffi-bindings", "hardware-support"]
 # `links` is a uniqueness marker for the native ZWO SDK libraries this crate
-# links (libASICamera2 + libEFWFilter, +libEAFFocuser later). Requires build.rs.
+# links (libASICamera2 / libEFWFilter / libEAFFocuser, per feature). Requires
+# build.rs.
 links = "zwo"
 # Vendored MIT ZWO SDK headers live under sdk/include/ (ZWO's own MIT notice is
 # in sdk/include/license.txt). bindgen reads them at build time. The SDK *binary*
 # is NOT vendored — it must be installed on the system (see the workspace README).
+
+[features]
+# The three ZWO device SDKs are independent libraries with no shared handle, so
+# each link directive is gated by its own feature (ADR-014): a consumer links
+# only the SDK(s) it talks to. The features are purely ADDITIVE link surface —
+# `--all-features` yields the full link, i.e. exactly the pre-split behaviour —
+# so they don't reintroduce the silent-simulation footgun that keeps
+# ZWO_SKIP_NATIVE_LINK env-gated (see build.rs). Bindings are always generated
+# for the whole vendored header set; bare extern declarations force no linkage.
+# Default = everything, so a bare/external `cargo build` behaves exactly like
+# the pre-split crate; rusty-photon's services narrow via
+# `default-features = false`.
+default = ["camera", "efw", "focuser"]
+# Link libASICamera2 (ASI cameras; pulls libusb-1.0).
+camera = []
+# Link libEFWFilter (EFW filter wheels).
+efw = []
+# Link libEAFFocuser (EAF focusers).
+focuser = []
 
 [dependencies]
 

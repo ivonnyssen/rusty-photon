@@ -25,9 +25,25 @@ cargo_toml_env_vars(
     src = "Cargo.toml",
 )
 
+# The link directives are feature-gated per device (ADR-014: `camera` /
+# `efw` / `focuser`), read by build.rs via CARGO_FEATURE_*. Bazel builds the
+# UNION of what the workspace's services need — the packaging path (cargo,
+# scripts/build-packages.sh) is where per-service narrowing happens; keeping
+# the union here means one shared libzwo-sys/zwo-rs target set (no per-service
+# variant explosion) and keeps every SDK's link path continuously verified in
+# CI, which stages all the blobs anyway (install-zwo-sdk).
+_DEVICE_FEATURES = [
+    "camera",
+    "efw",
+    "focuser",
+]
+
 cargo_build_script(
     name = "build_script",
     srcs = ["build.rs"],
+    # Feature env vars (CARGO_FEATURE_CAMERA, ...) must be set on the build
+    # script itself — that is where build.rs reads them to gate link directives.
+    crate_features = _DEVICE_FEATURES,
     # The vendored MIT SDK headers + the bindgen aggregate header are read by
     # build.rs at action time (via CARGO_MANIFEST_DIR), so they must be in the
     # build script's sandbox. wrapper.h is named explicitly (a constant has no
@@ -35,8 +51,8 @@ cargo_build_script(
     data = ["wrapper.h"] + glob(["sdk/include/**"]),
     edition = "2021",
     # `links = "zwo"` marks this build script as the single provider of the
-    # native ZWO SDK linkage (libASICamera2 / libEFWFilter + libusb/udev/c++),
-    # mirroring the crate's `links = "zwo"` manifest key.
+    # native ZWO SDK linkage (libASICamera2 / libEFWFilter / libEAFFocuser +
+    # libusb/udev/c++), mirroring the crate's `links = "zwo"` manifest key.
     links = "zwo",
     rustc_env_files = [":cargo_toml_env_vars"],
     visibility = ["//visibility:private"],
@@ -47,6 +63,7 @@ cargo_build_script(
 rust_library(
     name = "libzwo-sys",
     srcs = glob(["src/**/*.rs"]),
+    crate_features = _DEVICE_FEATURES,
     crate_name = "libzwo_sys",
     edition = "2021",
     rustc_env_files = [":cargo_toml_env_vars"],

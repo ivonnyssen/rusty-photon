@@ -10,6 +10,10 @@
 #   - clippy (beta): early warning of new beta-channel lints
 #   - hack:          cargo-hack feature-powerset (feature additivity)
 #   - msrv:          verify the declared workspace MSRV
+#
+# notify-clippy-failure opens (or comments on) a `check-nightly`-labeled
+# tracking issue when the scheduled clippy run fails, same pattern as
+# safety.yml / conformu.yml / install-astap.yml / plate-solver-smoke.yml.
 permissions:
   contents: read
 # fmt + clippy run on every PR and on push to main. The heavier nightly jobs
@@ -67,6 +71,69 @@ jobs:
           save-if: ${{ matrix.toolchain == 'beta' }}
       - name: cargo clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
+  notify-clippy-failure:
+    # Open or update a tracking issue when the nightly clippy run fails so a
+    # new stable or (more likely) beta-channel lint surfaces without depending
+    # on someone reading scheduled-workflow logs. Skipped on push,
+    # pull_request, and workflow_dispatch so manual debugging runs and
+    # required-PR-gate failures (already visible in the PR itself) don't
+    # churn an issue.
+    needs: clippy
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Open or update tracking issue
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const title = `nightly: check clippy failing`;
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = [
+              `The nightly check workflow's clippy job failed on the stable and/or`,
+              `beta toolchain.`,
+              ``,
+              `Likely cause: a new lint landed in the beta-channel clippy (the`,
+              `whole point of running that leg nightly is to catch these before`,
+              `they hit stable) or a warning was newly emitted by a stable toolchain`,
+              `bump. Inspect the failed matrix leg in the linked run for the lint.`,
+              ``,
+              `Run: ${runUrl}`,
+              ``,
+              `This issue was opened automatically by a scheduled run that`,
+              `failed. While it stays open, each subsequent scheduled failure`,
+              `is appended here as a comment linking its own run. Closing it`,
+              `marks the failure handled — it is never re-opened; the next`,
+              `scheduled failure opens a fresh issue instead.`,
+            ].join("\n");
+            // Search only OPEN issues. While a tracking issue is open each
+            // failure appends a comment; once it is closed the failure is
+            // considered handled, so the next scheduled failure opens a
+            // fresh issue rather than resurrecting the closed one.
+            const existing = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: "open",
+              labels: "check-nightly",
+            });
+            const match = existing.find(i => i.title === title);
+            if (match) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: match.number,
+                body: `Failed again — run: ${runUrl}`,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ["check-nightly", "ci-flake"],
+              });
+            }
   hack:
     # cargo-hack checks combinations of feature flags to ensure that features are
     # all additive (required for feature unification). Bazel is the per-PR build
