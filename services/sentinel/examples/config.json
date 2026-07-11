@@ -40,5 +40,13 @@
     "enabled": true,
     "port": 11114,
     "history_size": 100
+  },
+  "services": {
+    "dsd-fp2": {
+      "base_url": "http://localhost:11119/api/v1",
+      "restart_command": "systemctl --user restart dsd-fp2",
+      "health_command": "systemctl --user is-active dsd-fp2",
+      "max_restart_duration": "60s"
+    }
   }
 }

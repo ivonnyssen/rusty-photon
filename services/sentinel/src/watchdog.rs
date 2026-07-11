@@ -20,7 +20,7 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
-use crate::config::{OnExpiry, OperationWatchdogConfig};
+use crate::config::{OnExpiry, OperationWatchdogConfig, ServiceConfig};
 use crate::corrective::{Corrective, CorrectiveTarget};
 use crate::notifier::{Notification, NotificationRecord, Notifier};
 use crate::state::StateHandle;
@@ -226,6 +226,9 @@ pub struct OperationDeadlineMonitor {
     notifiers: Vec<Arc<dyn Notifier>>,
     state: StateHandle,
     config: OperationWatchdogConfig,
+    /// The top-level supervised-services registry (`Config::services`), which
+    /// `operations.<family>.service` references.
+    services: std::collections::HashMap<String, ServiceConfig>,
     /// Corrective-action ladder, run on expiry for `abort_then_restart`
     /// families. Never invoked for `notify_only` or liveness triggers.
     corrective: Arc<dyn Corrective>,
@@ -238,6 +241,7 @@ impl OperationDeadlineMonitor {
         notifiers: Vec<Arc<dyn Notifier>>,
         state: StateHandle,
         config: OperationWatchdogConfig,
+        services: std::collections::HashMap<String, ServiceConfig>,
         corrective: Arc<dyn Corrective>,
     ) -> Self {
         Self {
@@ -246,16 +250,18 @@ impl OperationDeadlineMonitor {
             notifiers,
             state,
             config,
+            services,
             corrective,
         }
     }
 
     /// Resolve the corrective target for a family: its configured `service`
-    /// must exist in the `services` map. `None` for unconfigured / mismatched
-    /// families (the caller degrades to notify-only).
+    /// must exist in the top-level `services` registry. `None` for
+    /// unconfigured / mismatched families (the caller degrades to
+    /// notify-only).
     fn resolve_target(&self, family: &str) -> Option<CorrectiveTarget> {
         let service_name = self.config.operations.get(family)?.service.as_deref()?;
-        let service = self.config.services.get(service_name)?;
+        let service = self.services.get(service_name)?;
         Some(CorrectiveTarget::new(service_name, family, service))
     }
 
@@ -857,6 +863,19 @@ mod tests {
         Arc<Mutex<Vec<String>>>,
         Arc<RecordingCorrective>,
     ) {
+        build_monitor_with_services(source, config, std::collections::HashMap::new())
+    }
+
+    /// [`build_monitor`] plus a top-level `services` registry (ladder tests).
+    fn build_monitor_with_services(
+        source: Arc<MockSource>,
+        config: OperationWatchdogConfig,
+        services: std::collections::HashMap<String, ServiceConfig>,
+    ) -> (
+        OperationDeadlineMonitor,
+        Arc<Mutex<Vec<String>>>,
+        Arc<RecordingCorrective>,
+    ) {
         let messages = Arc::new(Mutex::new(Vec::new()));
         let notifier = Arc::new(RecordingNotifier {
             messages: Arc::clone(&messages),
@@ -869,6 +888,7 @@ mod tests {
             vec![notifier],
             state,
             config,
+            services,
             Arc::clone(&corrective) as Arc<dyn Corrective>,
         );
         (monitor, messages, corrective)
@@ -1058,12 +1078,17 @@ mod tests {
             "message_template": "{operation}/{operation_id} {reason} after {elapsed}{action}",
             "operations": {
                 "slew": { "buffer": "0s", "on_expiry": "abort_then_restart", "service": "mount" }
-            },
-            "services": {
-                "mount": { "base_url": "http://mount/api/v1", "restart_command": null }
             }
         }"#;
         serde_json::from_str(json).unwrap()
+    }
+
+    /// The top-level `services` registry [`ladder_config`]'s `slew` references.
+    fn ladder_services() -> std::collections::HashMap<String, ServiceConfig> {
+        serde_json::from_str(
+            r#"{ "mount": { "base_url": "http://mount/api/v1", "restart_command": null } }"#,
+        )
+        .unwrap()
     }
 
     #[tokio::test(start_paused = true)]
@@ -1074,7 +1099,8 @@ mod tests {
             Some("op-1"),
             Some(5000),
         )])]);
-        let (monitor, messages, corrective) = build_monitor(source, ladder_config());
+        let (monitor, messages, corrective) =
+            build_monitor_with_services(source, ladder_config(), ladder_services());
         let cancel = CancellationToken::new();
         let cancel2 = cancel.clone();
         let handle = tokio::spawn(async move { monitor.run(cancel2).await });
@@ -1114,7 +1140,8 @@ mod tests {
             Some("op-1"),
             Some(5000),
         )])]);
-        let (monitor, messages, corrective) = build_monitor(source, config);
+        let (monitor, messages, corrective) =
+            build_monitor_with_services(source, config, ladder_services());
         let cancel = CancellationToken::new();
         let cancel2 = cancel.clone();
         let handle = tokio::spawn(async move { monitor.run(cancel2).await });

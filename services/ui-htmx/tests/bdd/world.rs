@@ -36,6 +36,10 @@ pub struct UiWorld {
     pub driver: Option<ServiceHandle>,
     /// The BFF under test.
     pub ui: Option<ServiceHandle>,
+    /// A real sentinel the BFF's restart affordance calls (restart scenarios only).
+    pub sentinel: Option<ServiceHandle>,
+    /// Marker file sentinel's scripted restart command writes — proof it ran.
+    pub restart_marker: Option<PathBuf>,
     temp_dir: Option<TempDir>,
     /// The port the driver bound — OS-assigned (the driver binds `:0`),
     /// discovered from its stdout. The reload-reconnect scenario pins this into
@@ -167,7 +171,9 @@ impl UiWorld {
     }
 
     /// Spawn a BFF configured with the given `(service id, driver port)` entries,
-    /// all on loopback. The same real driver can appear under several ids.
+    /// all on loopback. The same real driver can appear under several ids. When a
+    /// sentinel is running (restart scenarios), its URL is carried in the BFF's
+    /// `sentinel` block so the restart affordances render.
     async fn start_bff_with_drivers(&mut self, drivers: &[(&str, u16)]) {
         let mut map = serde_json::Map::new();
         for (service, port) in drivers {
@@ -180,14 +186,65 @@ impl UiWorld {
                 }),
             );
         }
-        let config = json!({
+        let mut config = json!({
             "server": { "bind": "127.0.0.1", "port": 0 },
             "drivers": Value::Object(map),
         });
+        if let Some(sentinel) = &self.sentinel {
+            config["sentinel"] = json!({
+                "base_url": format!("http://127.0.0.1:{}", sentinel.port)
+            });
+        }
         let path = self.temp_path("ui-htmx.json");
         std::fs::write(&path, config.to_string()).expect("failed to write BFF config");
         let handle = ServiceHandle::start("ui-htmx", path.to_str().unwrap()).await;
         self.ui = Some(handle);
+    }
+
+    // --- the sentinel the restart affordance calls --------------------------
+
+    /// Path of the marker file sentinel's scripted restart command writes —
+    /// recorded so the Then-step can assert the command actually ran.
+    pub fn restart_marker_path(&mut self) -> PathBuf {
+        let path = self.temp_path("restart-marker.txt");
+        self.restart_marker = Some(path.clone());
+        path
+    }
+
+    /// Spawn a real sentinel supervising the given `services` map (its top-level
+    /// registry), then **replace** the already-running BFF with one whose config
+    /// carries a `sentinel` block — the sentinel URL is only known once it has
+    /// bound, and the driver Given has already started the first BFF.
+    pub async fn start_sentinel_and_rewire_bff(&mut self, services: Value) {
+        let config = json!({
+            "dashboard": { "enabled": true, "port": 0, "history_size": 100 },
+            "services": services,
+        });
+        let path = self.temp_path("sentinel.json");
+        std::fs::write(&path, config.to_string()).expect("failed to write sentinel config");
+        let handle = ServiceHandle::start("sentinel", path.to_str().unwrap()).await;
+        self.sentinel = Some(handle);
+        if let Some(mut ui) = self.ui.take() {
+            ui.stop().await;
+        }
+        let port = self.driver_port;
+        self.start_bff_with_drivers(&[("dsd-fp2", port)]).await;
+    }
+
+    /// Follow the page's own "Restart via Sentinel" affordance the way htmx
+    /// would: render the page, read the button's rendered `hx-post` URL, and
+    /// POST it with htmx's headers (the affordance carries no form fields).
+    pub async fn request_restart(&mut self) {
+        self.get("/config/dsd-fp2").await;
+        let url = dom::attr(&self.last_body, "button.restart-sentinel", "hx-post")
+            .unwrap_or_else(|| panic!("no restart affordance in:\n{}", self.last_body));
+        let resp = reqwest::Client::new()
+            .post(self.ui_url(&url))
+            .headers(self.hx_headers())
+            .send()
+            .await
+            .expect("BFF restart POST failed");
+        self.last_body = resp.text().await.unwrap_or_default();
     }
 
     fn write_driver_config(&mut self, serial_port: &str, max_brightness: u32) -> String {

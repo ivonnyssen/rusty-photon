@@ -24,6 +24,13 @@ pub struct Config {
     /// Path to CA certificate for trusting TLS-enabled services
     #[serde(default)]
     pub ca_cert: Option<String>,
+    /// Supervised services, keyed by an operator-chosen name. The registry has
+    /// two consumers: the dashboard's `POST /api/services/{name}/restart`
+    /// endpoint and the operation watchdog's corrective ladder
+    /// (`operations.<family>.service` references keys here). See
+    /// [`ServiceConfig`].
+    #[serde(default)]
+    pub services: std::collections::HashMap<String, ServiceConfig>,
     /// Optional push-based operation watchdog. Absent means safety polling
     /// only (today's behavior). See [`OperationWatchdogConfig`].
     #[serde(default)]
@@ -204,11 +211,6 @@ pub struct OperationWatchdogConfig {
     /// explicit `operations` entry.
     #[serde(default = "default_watchdog_buffer", with = "humantime_serde")]
     pub default_buffer: Duration,
-    /// Time budget for a `restart_command` to exit *and* the restarted
-    /// service to become responsive again (the corrective ladder's restart
-    /// rung). See [`ServiceConfig::restart_command`].
-    #[serde(default = "default_max_restart_duration", with = "humantime_serde")]
-    pub max_restart_duration: Duration,
     /// Which notifier `type`s receive escalations. Empty means every
     /// configured notifier.
     #[serde(default)]
@@ -220,12 +222,10 @@ pub struct OperationWatchdogConfig {
     pub message_template: String,
     /// Per-operation-family policy overrides, keyed by family (the event
     /// name with its `_started` / `_complete` / `_failed` suffix stripped).
+    /// `operations.<family>.service` references the **top-level**
+    /// [`Config::services`] map.
     #[serde(default)]
     pub operations: std::collections::HashMap<String, OperationPolicy>,
-    /// Services the corrective ladder can health-check, abort, and restart,
-    /// keyed by a name that `operations.<family>.service` references.
-    #[serde(default)]
-    pub services: std::collections::HashMap<String, ServiceConfig>,
 }
 
 /// Per-operation-family watchdog policy.
@@ -260,22 +260,40 @@ pub enum OnExpiry {
     AbortThenRestart,
 }
 
-/// A service the corrective ladder can health-check, abort, and restart.
+/// One supervised service: how the watchdog ladder probes/aborts it and how
+/// both the ladder and the restart endpoint restart it. Commands run through
+/// the platform shell (`sh -c` on unix, `cmd /C` on windows).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServiceConfig {
     /// Alpaca API base of the service, e.g. `http://host:port/api/v1`. The
-    /// ladder appends `{device-type}/{device_number}/connected` (health) or
-    /// the family's abort verb to it.
-    pub base_url: String,
+    /// watchdog ladder appends `{device-type}/{device_number}/connected`
+    /// (health) or the family's abort verb to it. Optional so non-Alpaca
+    /// services (e.g. `rp`) can be restart-only entries; without it the
+    /// ladder cannot probe or abort and falls through to restart.
+    #[serde(default)]
+    pub base_url: Option<String>,
     /// Alpaca device number for the health-check / abort URLs.
     #[serde(default)]
     pub device_number: u32,
-    /// Shell command (`sh -c`) that restarts the service. `null` marks the
-    /// service as not restartable (the ladder stops at abort) — the canonical
-    /// example is a remote MCU we cannot `systemctl`.
+    /// Shell command that restarts the service. `null` marks the service as
+    /// not restartable (the ladder stops at abort; the restart endpoint
+    /// answers 409) — the canonical example is a remote MCU we cannot
+    /// `systemctl`.
     #[serde(default)]
     pub restart_command: Option<String>,
+    /// Shell command whose exit 0 means the service is healthy (e.g.
+    /// `systemctl --user is-active dsd-fp2`). When set, the restart endpoint
+    /// polls it after `restart_command` to confirm recovery; when absent,
+    /// recovery confirmation is skipped. Not used by the watchdog ladder
+    /// (which probes over HTTP via `base_url`).
+    #[serde(default)]
+    pub health_command: Option<String>,
+    /// Time budget for `restart_command` to exit *and* the service to become
+    /// healthy/responsive again — one budget for both phases, used by the
+    /// restart endpoint and the watchdog ladder's restart rung.
+    #[serde(default = "default_max_restart_duration", with = "humantime_serde")]
+    pub max_restart_duration: Duration,
 }
 
 /// Dashboard configuration
@@ -700,25 +718,26 @@ mod tests {
     #[test]
     fn parse_operation_watchdog_full() {
         let json = r#"{
+            "services": {
+                "mount": {
+                    "base_url": "http://localhost:11112/api/v1",
+                    "device_number": 2,
+                    "restart_command": "systemctl restart mount",
+                    "health_command": "systemctl is-active mount",
+                    "max_restart_duration": "45s"
+                },
+                "camera": { "base_url": "http://localhost:11111/api/v1" }
+            },
             "operation_watchdog": {
                 "rp_url": "http://localhost:8080",
                 "reconnect_max_attempts": 3,
                 "reconnect_backoff": "2s",
                 "default_buffer": "15s",
-                "max_restart_duration": "45s",
                 "notifiers": ["pushover"],
                 "message_template": "{operation} stuck",
                 "operations": {
                     "slew": { "buffer": "5s", "on_expiry": "abort_then_restart", "service": "mount" },
                     "park": { "on_expiry": "notify_only" }
-                },
-                "services": {
-                    "mount": {
-                        "base_url": "http://localhost:11112/api/v1",
-                        "device_number": 2,
-                        "restart_command": "systemctl restart mount"
-                    },
-                    "camera": { "base_url": "http://localhost:11111/api/v1" }
                 }
             }
         }"#;
@@ -728,7 +747,6 @@ mod tests {
         assert_eq!(wd.reconnect_max_attempts, 3);
         assert_eq!(wd.reconnect_backoff, Duration::from_secs(2));
         assert_eq!(wd.default_buffer, Duration::from_secs(15));
-        assert_eq!(wd.max_restart_duration, Duration::from_secs(45));
         assert_eq!(wd.notifiers, vec!["pushover".to_string()]);
         assert_eq!(wd.message_template, "{operation} stuck");
 
@@ -742,19 +760,36 @@ mod tests {
         assert_eq!(park.on_expiry, OnExpiry::NotifyOnly);
         assert_eq!(park.service, None);
 
-        let mount = wd.services.get("mount").unwrap();
-        assert_eq!(mount.base_url, "http://localhost:11112/api/v1");
+        let mount = config.services.get("mount").unwrap();
+        assert_eq!(
+            mount.base_url.as_deref(),
+            Some("http://localhost:11112/api/v1")
+        );
         assert_eq!(mount.device_number, 2);
         assert_eq!(
             mount.restart_command.as_deref(),
             Some("systemctl restart mount")
         );
+        assert_eq!(
+            mount.health_command.as_deref(),
+            Some("systemctl is-active mount")
+        );
+        assert_eq!(mount.max_restart_duration, Duration::from_secs(45));
 
-        let camera = wd.services.get("camera").unwrap();
+        let camera = config.services.get("camera").unwrap();
         assert_eq!(camera.device_number, 0, "device_number defaults to 0");
         assert_eq!(
             camera.restart_command, None,
             "restart_command defaults to null"
+        );
+        assert_eq!(
+            camera.health_command, None,
+            "health_command defaults to null"
+        );
+        assert_eq!(
+            camera.max_restart_duration,
+            Duration::from_secs(60),
+            "max_restart_duration defaults to 60s"
         );
     }
 
@@ -764,39 +799,54 @@ mod tests {
             "operation_watchdog": { "rp_url": "http://rp:9000" }
         }"#;
         let config: Config = serde_json::from_str(json).unwrap();
+        assert!(config.services.is_empty());
         let wd = config.operation_watchdog.unwrap();
         assert_eq!(wd.reconnect_max_attempts, 5);
         assert_eq!(wd.reconnect_backoff, Duration::from_secs(5));
         assert_eq!(wd.default_buffer, Duration::from_secs(10));
-        assert_eq!(wd.max_restart_duration, Duration::from_secs(60));
         assert!(wd.notifiers.is_empty());
         assert!(wd.operations.is_empty());
-        assert!(wd.services.is_empty());
         assert!(wd.message_template.contains("{operation}"));
     }
 
     #[test]
     fn service_config_rejects_unknown_field() {
         let json = r#"{
-            "operation_watchdog": {
-                "rp_url": "http://rp",
-                "services": { "mount": { "base_url": "http://x", "bogus": 1 } }
-            }
+            "services": { "mount": { "base_url": "http://x", "bogus": 1 } }
         }"#;
         let err = serde_json::from_str::<Config>(json).unwrap_err();
         assert!(err.to_string().contains("bogus"), "{err}");
     }
 
     #[test]
-    fn service_config_requires_base_url() {
+    fn service_config_base_url_is_optional() {
+        // A restart-only entry (e.g. a non-Alpaca service like rp) needs no
+        // Alpaca base URL; the ladder degrades and the restart endpoint never
+        // uses it.
+        let json = r#"{
+            "services": { "rp": { "restart_command": "systemctl --user restart rp" } }
+        }"#;
+        let config: Config = serde_json::from_str(json).unwrap();
+        let rp = config.services.get("rp").unwrap();
+        assert_eq!(rp.base_url, None);
+        assert_eq!(
+            rp.restart_command.as_deref(),
+            Some("systemctl --user restart rp")
+        );
+    }
+
+    #[test]
+    fn operation_watchdog_rejects_nested_services() {
+        // The registry moved to the top level; a config still nesting it inside
+        // the watchdog block must fail loudly, not be silently ignored.
         let json = r#"{
             "operation_watchdog": {
                 "rp_url": "http://rp",
-                "services": { "mount": { "device_number": 0 } }
+                "services": { "mount": { "base_url": "http://x" } }
             }
         }"#;
         let err = serde_json::from_str::<Config>(json).unwrap_err();
-        assert!(err.to_string().contains("base_url"), "{err}");
+        assert!(err.to_string().contains("services"), "{err}");
     }
 
     #[test]
