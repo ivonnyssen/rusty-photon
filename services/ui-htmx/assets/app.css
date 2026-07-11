@@ -52,8 +52,8 @@ a:hover { text-decoration: underline; }
 .nav-tabs a:hover { color: var(--text); text-decoration: none; }
 .nav-tabs a.active { color: #fff; background: rgba(255, 255, 255, .05); }
 
-/* Night-vision toggle (from the chosen mock): a hidden checkbox in the nav; the
- * :has() selector below applies a page-level red filter. Pure CSS, no JS. */
+/* Night-vision toggle (from the chosen mock): a visually-hidden checkbox in the
+ * nav; the :has() selector below applies a page-level red filter. Pure CSS. */
 .night-toggle {
   display: flex; align-items: center; gap: 8px;
   padding: 5px 10px; border-radius: 6px; box-shadow: inset 0 0 0 1px var(--edge);
@@ -61,6 +61,11 @@ a:hover { text-decoration: underline; }
   transition: color .15s, background .15s;
 }
 .night-toggle:hover { color: #fff; background: rgba(255, 255, 255, .05); }
+/* The checkbox is visually hidden, so its keyboard focus shows on the label. */
+.night-toggle:has(input:focus-visible) {
+  outline: 2px solid var(--accent-a);
+  outline-offset: 2px;
+}
 .night-toggle .nv-icon { font-size: 13px; line-height: 1; opacity: .75; }
 .night-toggle .nv-dot {
   width: 8px; height: 8px; border-radius: 999px;
@@ -81,6 +86,18 @@ body:has(#night-vision:checked) {
 }
 
 .container { max-width: 720px; margin: 0 auto; padding: 28px 20px 64px; }
+
+/* Visually hidden but still focusable — for the checkboxes behind the pure-CSS
+ * toggles. `display:none`/`hidden` would drop them from the tab order and the
+ * accessibility tree, making the toggles mouse-only. */
+.visually-hidden {
+  position: absolute;
+  width: 1px; height: 1px;
+  margin: -1px; padding: 0; border: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
 
 h1 { font-size: 22px; margin: 0 0 4px; }
 .subtitle { color: var(--dim); margin: 0 0 24px; font-size: 14px; }
@@ -232,7 +249,12 @@ button.link.danger { color: var(--bad); }
  * JavaScript), the equipment LED list, the feed cards, and the strip chips —
  * adapted to the existing tokens and the 720px container. */
 
-.fold-state { display: none; }
+/* The fold checkbox is `.visually-hidden` (not display:none) so it stays
+ * keyboard-focusable; its focus shows on the strip it controls. */
+.fold-state:focus-visible ~ .fold-strip {
+  outline: 2px solid var(--accent-a);
+  outline-offset: -2px;
+}
 
 /* The sticky strip: pinned just under the sticky top nav. */
 .fold-strip {

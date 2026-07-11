@@ -92,7 +92,9 @@ pub fn layout_with_nav(title: &str, active: NavTab, body: Markup) -> Markup {
                     }
                     span.grow {}
                     label.night-toggle title="Toggle red night-vision mode" {
-                        input type="checkbox" id="night-vision" hidden;
+                        // Visually hidden, not `hidden`: the checkbox must stay
+                        // focusable so the toggle works from the keyboard.
+                        input type="checkbox" id="night-vision" class="visually-hidden";
                         span.nv-icon { "☾" }
                         span.nv-lbl { "Night vision" }
                         span.nv-dot {}

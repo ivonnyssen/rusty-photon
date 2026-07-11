@@ -611,8 +611,14 @@ fn shell(session: Option<&str>, equipment: Option<&EquipmentStatus>) -> Markup {
         script src="/assets/htmx-ext-sse.js" {}
         div #stream-page hx-ext="sse" sse-connect="/stream/events" {
             // The fold: a checkbox + label drive the CSS Grid 0fr→1fr panel
-            // animation — no JavaScript (the chosen mock's pattern).
-            input type="checkbox" id="fold-state" class="fold-state" hidden;
+            // animation — no JavaScript (the chosen mock's pattern). Visually
+            // hidden, not `hidden`, so it stays keyboard-focusable; the
+            // aria-label names it (the label's text is the whole status strip).
+            input
+                type="checkbox"
+                id="fold-state"
+                class="fold-state visually-hidden"
+                aria-label="Toggle the equipment panel";
             label for="fold-state" class="fold-strip" {
                 span.strip-pulse {}
                 div #status-strip {
