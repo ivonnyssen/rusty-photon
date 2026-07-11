@@ -4,6 +4,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SessionConfig {
     pub data_directory: String,
     /// Where the session state file lives (rp.md § Session
@@ -58,6 +59,30 @@ mod tests {
         assert!(
             config.session.file_naming_pattern.is_none(),
             "omitted file_naming_pattern must deserialize to None"
+        );
+    }
+
+    #[test]
+    fn an_unknown_session_key_fails_loud() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "session": {
+                    "data_directory": "/tmp/rp-test",
+                    "session_state_flie": "/tmp/typo.json"
+                },
+                "equipment": {},
+                "server": {}
+            }"#,
+        )
+        .unwrap();
+
+        let error = load_config(&path).unwrap_err().to_string();
+        assert!(
+            error.contains("session_state_flie"),
+            "a typo'd session key must be rejected, not silently ignored: {error}"
         );
     }
 
