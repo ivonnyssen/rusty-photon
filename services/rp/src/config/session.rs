@@ -1,8 +1,9 @@
 use std::path::PathBuf;
 
-use serde::Deserialize;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SessionConfig {
     pub data_directory: String,
     /// Where the session state file lives (rp.md § Session

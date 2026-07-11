@@ -163,6 +163,7 @@ fn run_serve(config: Option<PathBuf>) -> ServiceResult {
 
         rp::ServerBuilder::new()
             .with_config(config)
+            .with_config_path(config_path)
             .build()
             .await?
             .start(shutdown.cancelled())

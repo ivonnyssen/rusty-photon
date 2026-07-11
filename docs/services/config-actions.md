@@ -29,8 +29,26 @@ pub trait ConfigurableDriver {
     fn apply_overrides(config: &mut Self::Config, overrides: &Self::Overrides);
     fn locked_paths() -> &'static [&'static str] { &[] }     // identity fields (unlock-to-edit)
     fn read_only_paths() -> &'static [&'static str] { &[] }  // hard read-only (self-lockout)
+    fn apply_disposition() -> ApplyDisposition { ApplyDisposition::Reload } // how changes take effect
 }
 ```
+
+Two details of the trait surface:
+
+- **Wildcard secret pointers.** A secret pointer segment may be `*`, meaning
+  "every element of the array (or key of the object) at this position" — e.g.
+  `/equipment/cameras/*/auth/password` redacts the password of every configured
+  camera. Patterns are expanded against the concrete config value at
+  redact/persist time; exact (no-`*`) pointers behave as before. (Entries are
+  paired by index between the submitted and on-disk values, so a submission
+  that *reorders* an array pairs secrets positionally — acceptable because the
+  UI always round-trips the whole config.)
+- **`ApplyDisposition`.** `Reload` (the default, used by all six drivers) means
+  changed fields take effect via in-process reload: they are reported in
+  `reload[]` with `status:"applying"`. `Restart` is for services with **no**
+  reload path (`rp`): changed fields are reported in `restart_required[]` with
+  `status:"ok"` — persisted, honest that they only take effect on the next
+  process start.
 
 The generic functions — `config_get::<D>`, `config_apply::<D>`, `config_schema::<D>`
 — implement the invariant protocol: secret redaction, layer-aware persist,
@@ -96,6 +114,30 @@ transport, and the loop rebuilds from the freshly-persisted file — rebinding t
 same port. The BFF treats `status:"applying"` as "expect a brief blip; reconnect
 and re-`config.get`".
 
+## REST transport (`rp`)
+
+`rp` is not an ASCOM device, so it exposes the **same three operations as plain
+REST** on its existing axum router — same request/response bodies, no Alpaca
+envelope (the body is the JSON directly, not a JSON string inside `Value`):
+
+```
+GET  /api/config          → 200  ConfigGetResponse    { config, overrides }
+GET  /api/config/schema   → 200  ConfigSchemaResponse { schema, locked_fields, read_only_fields }
+PUT  /api/config  <body = full Config JSON>
+                          → 200  ConfigApplyResponse  { status, …, restart_required[], … }
+                          → 400  (malformed JSON body — the transport-error equivalent
+                                  of the drivers' ASCOM INVALID_VALUE)
+```
+
+`rp` implements `ConfigurableDriver` with `ApplyDisposition::Restart`: it has no
+in-process reload, so every changed field lands in `restart_required[]` with
+`status:"ok"` and takes effect on the next `rp` start. Secrets (per-device
+`auth` credentials across the equipment arrays, the server auth hash) are
+redacted with wildcard pointers. The endpoints are covered by rp's server-wide
+auth/TLS like every other route, and are **not** behind the `/mcp` safety gate —
+config must stay editable while the system is unsafe. See
+[`rp.md`](rp.md) "Configuration API".
+
 ## Editability tiers
 
 JSON Schema cannot express identity/read-only intent, so `config.schema` returns
@@ -125,6 +167,7 @@ UI can't edit away its own reachability.
 | `pa-scops-oag` | Focuser | auth password hash | single device; FTDI serial focuser, no temperature sensor |
 | `sky-survey-camera` | Camera | follow-mode client passwords | `Overrides = ()`; cross-field validation |
 | `star-adventurer-gti` | Telescope | auth password hash | config actions alongside the `ApPark` actions; `transport` block read-only |
+| `rp` | — (REST transport) | per-device `auth` passwords across the equipment arrays (wildcards) + server auth hash | `ApplyDisposition::Restart` — no reload; `server.port` read-only |
 
 ## The web UI
 

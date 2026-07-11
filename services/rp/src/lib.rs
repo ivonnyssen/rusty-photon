@@ -1,5 +1,6 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 pub mod config;
+pub mod config_actions;
 pub mod equipment;
 pub mod error;
 pub mod events;
@@ -41,15 +42,26 @@ use crate::session::{SessionConfig, SessionManager};
 /// (e.g. `listen_addr()`) before calling `start()`.
 pub struct ServerBuilder {
     config: Option<Config>,
+    config_path: Option<std::path::PathBuf>,
 }
 
 impl ServerBuilder {
     pub fn new() -> Self {
-        Self { config: None }
+        Self {
+            config: None,
+            config_path: None,
+        }
     }
 
     pub fn with_config(mut self, config: Config) -> Self {
         self.config = Some(config);
+        self
+    }
+
+    /// The resolved config-file path the server was loaded from.
+    /// `PUT /api/config` persists to it.
+    pub fn with_config_path(mut self, path: std::path::PathBuf) -> Self {
+        self.config_path = Some(path);
         self
     }
 
@@ -60,6 +72,16 @@ impl ServerBuilder {
                     .to_string(),
             )
         })?;
+        let config_path = self.config_path.ok_or_else(|| {
+            crate::error::RpError::Config(
+                "ServerBuilder::build: config path is required \u{2014} call .with_config_path(...) first"
+                    .to_string(),
+            )
+        })?;
+        // The effective running config: rp has no config-overriding CLI
+        // flags, so this is exactly the loaded file. Served by
+        // `GET /api/config` and diffed against by `PUT /api/config`.
+        let effective_config = Arc::new(config.clone());
         let bind_addr = format!("{}:{}", config.server.bind_address, config.server.port);
 
         debug!("initializing equipment registry");
@@ -217,6 +239,8 @@ impl ServerBuilder {
             sse_shutdown: sse_shutdown.clone(),
             safety_ok: safety_ok.clone(),
             mcp_sessions,
+            config: effective_config,
+            config_path: Arc::new(config_path),
         };
 
         let router = build_router(state);

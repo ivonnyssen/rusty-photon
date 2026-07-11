@@ -15,6 +15,9 @@
 //! reconnect poll return a fresh `#config-card` fragment that HTMX swaps in by
 //! `outerHTML`.
 
+pub mod equipment;
+pub mod stream;
+
 use std::collections::HashMap;
 
 use maud::{html, Markup, DOCTYPE};
@@ -31,18 +34,43 @@ pub struct Page<'a> {
 }
 
 /// A status banner rendered above the form.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum Banner {
     /// `config.apply` returned `status:"ok"` — persisted, no reload needed.
     Saved,
+    /// `config.apply` returned `status:"ok"` with `restart_required[]` paths:
+    /// persisted, but the listed changes only take effect on the target's next
+    /// process start (`ApplyDisposition::Restart` — rp, which has no in-process
+    /// reload). The restart callout; Phase 4's "Restart via Sentinel" affordance
+    /// attaches here.
+    SavedRestartRequired(Vec<String>),
     /// `config.apply` returned `status:"invalid"`.
     Invalid,
     /// The reconnect poll found the driver back after a reload.
     Reconnected,
 }
 
-/// The full HTML shell: dark theme, embedded CSS + HTMX, top nav.
+/// Which top-nav tab a page belongs to (highlighted as active in the shell).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NavTab {
+    /// The activity stream (`/stream`).
+    Activity,
+    /// The equipment roster (`/equipment`).
+    Equipment,
+    /// The config pages (`/`, `/config/{service}`).
+    Configuration,
+}
+
+/// The full HTML shell: dark theme, embedded CSS + HTMX, and the top nav — the
+/// three surface tabs plus the mock's pure-CSS night-vision toggle (a page-level
+/// red filter via `body:has(#night-vision:checked)`; no JavaScript).
 pub fn layout(title: &str, body: Markup) -> Markup {
+    layout_with_nav(title, NavTab::Configuration, body)
+}
+
+/// [`layout`] with an explicit active tab (the config-page shell defaults to
+/// [`NavTab::Configuration`]).
+pub fn layout_with_nav(title: &str, active: NavTab, body: Markup) -> Markup {
     html! {
         (DOCTYPE)
         html lang="en" {
@@ -57,7 +85,20 @@ pub fn layout(title: &str, body: Markup) -> Markup {
                 nav.topnav {
                     div.logo {}
                     span.title { "rusty-photon" }
-                    span.crumb { "· configuration" }
+                    div.nav-tabs {
+                        a .active[active == NavTab::Activity] href="/stream" { "Activity" }
+                        a .active[active == NavTab::Equipment] href="/equipment" { "Equipment" }
+                        a .active[active == NavTab::Configuration] href="/" { "Configuration" }
+                    }
+                    span.grow {}
+                    label.night-toggle title="Toggle red night-vision mode" {
+                        // Visually hidden, not `hidden`: the checkbox must stay
+                        // focusable so the toggle works from the keyboard.
+                        input type="checkbox" id="night-vision" class="visually-hidden";
+                        span.nv-icon { "☾" }
+                        span.nv-lbl { "Night vision" }
+                        span.nv-dot {}
+                    }
                 }
                 main.container { (body) }
             }
@@ -71,8 +112,35 @@ pub struct DriverLink {
     pub title: String,
 }
 
-/// The index: links to every configurable driver the BFF knows about.
-pub fn index_page(drivers: &[DriverLink]) -> Markup {
+/// The roster-derived section of the index (devices from rp's config, each
+/// with a synthesized `/config/rp:{kind}:{id}` page).
+pub enum RosterLinks {
+    /// No `rp` target in the BFF config — the section is not rendered.
+    NotConfigured,
+    /// rp did not answer; the section renders a note instead of links.
+    Unreachable(String),
+    /// The roster entries (possibly empty).
+    Entries(Vec<DriverLink>),
+}
+
+fn service_links(drivers: &[DriverLink]) -> Markup {
+    html! {
+        ul.service-list {
+            @for d in drivers {
+                li {
+                    a href=(format!("/config/{}", d.service)) {
+                        span { (d.title) }
+                        span.svc-id { (d.service) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The index: links to every configurable driver the BFF knows about, plus the
+/// devices in rp's equipment roster when an rp target is configured.
+pub fn index_page(drivers: &[DriverLink], roster: &RosterLinks) -> Markup {
     layout(
         "rusty-photon · configuration",
         html! {
@@ -84,14 +152,23 @@ pub fn index_page(drivers: &[DriverLink]) -> Markup {
             @if drivers.is_empty() {
                 p.subtitle { "No drivers are configured. Add them to the BFF config file." }
             } @else {
-                ul.service-list {
-                    @for d in drivers {
-                        li {
-                            a href=(format!("/config/{}", d.service)) {
-                                span { (d.title) }
-                                span.svc-id { (d.service) }
-                            }
+                (service_links(drivers))
+            }
+            @match roster {
+                RosterLinks::NotConfigured => {}
+                RosterLinks::Unreachable(err) => {
+                    h2.section-head { "From rp's roster" }
+                    p.subtitle { "rp did not answer: " (err) }
+                }
+                RosterLinks::Entries(entries) => {
+                    h2.section-head { "From rp's roster" }
+                    @if entries.is_empty() {
+                        p.subtitle {
+                            "rp has no equipment configured yet — add devices on the "
+                            a href="/equipment" { "Equipment" } " page."
                         }
+                    } @else {
+                        (service_links(entries))
                     }
                 }
             }
@@ -162,12 +239,77 @@ impl FieldModel {
         }
     }
 
+    /// Build the model for **one equipment entry** of `kind_key` from rp's
+    /// config schema: navigate `properties.equipment.properties.{kind_key}`,
+    /// step into `items` for the list kinds, unwrap the optional wrapper
+    /// (`Option<MountConfig>` renders as an `anyOf` with a null branch), and
+    /// walk that entry object as the root — field names come out relative
+    /// (`alpaca_url`, not `equipment.cameras.0.alpaca_url`). The editability
+    /// tiers don't apply inside an entry, so they are empty. `None` when the
+    /// schema doesn't carry that kind (an rp older than the roster page).
+    pub fn from_item_schema(resp: &ConfigSchemaResponse, kind_key: &str) -> Option<Self> {
+        let root = &resp.schema;
+        let equipment = resolve(root.get("properties")?.get("equipment")?, root);
+        let kind_node = resolve(equipment.get("properties")?.get(kind_key)?, root);
+        let entry_node = match kind_node.get("items") {
+            // A list kind: the entry shape is the array's item schema.
+            Some(items) => resolve(items, root),
+            // The singular mount: the property itself (optional-wrapped).
+            None => kind_node,
+        };
+        let entry_node = unwrap_optional(entry_node, root)?;
+        let mut fields = Vec::new();
+        walk_schema(entry_node, root, "", &mut fields);
+        if fields.is_empty() {
+            return None;
+        }
+        Some(Self {
+            fields,
+            locked: Vec::new(),
+            read_only: Vec::new(),
+        })
+    }
+
     fn is_locked(&self, name: &str) -> bool {
         self.locked.iter().any(|n| n == name)
     }
 
     fn is_read_only(&self, name: &str) -> bool {
         self.read_only.iter().any(|n| n == name)
+    }
+
+    /// The ordered scalar leaves — for renderers in sibling page modules.
+    pub(crate) fn field_specs(&self) -> &[FieldSpec] {
+        &self.fields
+    }
+}
+
+impl FieldSpec {
+    /// The RFC-6901 pointer segments (used to build add-form skeletons).
+    pub(crate) fn pointer_segments(&self) -> Vec<&str> {
+        self.pointer.trim_start_matches('/').split('/').collect()
+    }
+}
+
+/// Unwrap an `Option<T>` schema node: schemars renders it as an
+/// `anyOf`/`oneOf` whose branches are `T` and `{"type":"null"}` — return the
+/// resolved non-null branch. A node that is not such a wrapper is returned
+/// as-is; `None` when the wrapper has no single non-null branch.
+fn unwrap_optional<'a>(node: &'a Value, root: &'a Value) -> Option<&'a Value> {
+    let branches = node
+        .get("anyOf")
+        .or_else(|| node.get("oneOf"))
+        .and_then(Value::as_array);
+    let Some(branches) = branches else {
+        return Some(node);
+    };
+    let non_null: Vec<&Value> = branches
+        .iter()
+        .filter(|b| b.get("type").and_then(Value::as_str) != Some("null"))
+        .collect();
+    match non_null.as_slice() {
+        [only] => Some(resolve(only, root)),
+        _ => None,
     }
 }
 
@@ -346,7 +488,7 @@ pub fn config_card(
     let action = format!("/config/{}", page.service);
     html! {
         div #config-card.card {
-            @if let Some(b) = banner { (banner_markup(b)) }
+            @if let Some(b) = banner { (banner_markup(page.service, &b)) }
             h1 { (page.title) }
             p.subtitle { (page.subtitle) }
             // htmx-driven, JavaScript-required: the form submits via `hx-post`.
@@ -510,20 +652,34 @@ fn error_card_with_message(service: &str, message: &str) -> Markup {
     }
 }
 
-fn banner_markup(banner: Banner) -> Markup {
-    let (kind, text) = match banner {
-        Banner::Saved => ("ok", "Saved. No reload was needed."),
-        Banner::Invalid => (
+fn simple_banner(kind: &str, text: &str) -> Markup {
+    html! {
+        div class=(format!("banner {kind}")) { span.dot {} span { (text) } }
+    }
+}
+
+fn banner_markup(service: &str, banner: &Banner) -> Markup {
+    match banner {
+        // The restart callout lists the pending paths — persisted, but only in
+        // effect after the target's next process start.
+        Banner::SavedRestartRequired(paths) => html! {
+            div class="banner warn" {
+                span.dot {}
+                span {
+                    (format!("Saved. These changes take effect when {service} is restarted: "))
+                    span.mono { (paths.join(", ")) }
+                }
+            }
+        },
+        Banner::Saved => simple_banner("ok", "Saved. No reload was needed."),
+        Banner::Invalid => simple_banner(
             "error",
             "Some values were rejected. Fix the highlighted fields and apply again.",
         ),
-        Banner::Reconnected => (
+        Banner::Reconnected => simple_banner(
             "ok",
             "Reconnected. The driver reloaded with the new configuration.",
         ),
-    };
-    html! {
-        div class=(format!("banner {kind}")) { span.dot {} span { (text) } }
     }
 }
 
@@ -834,6 +990,86 @@ mod tests {
         FieldModel::from_schema(&sample_schema())
     }
 
+    /// An rp-shaped config schema: `equipment` with an array kind (`cameras`,
+    /// items behind a `$ref`) and the optional singular `mount`
+    /// (`anyOf [$ref, null]` — the `Option<MountConfig>` shape schemars emits).
+    fn rp_like_schema() -> ConfigSchemaResponse {
+        ConfigSchemaResponse {
+            schema: json!({
+                "$defs": {
+                    "CameraConfig": {
+                        "type": "object",
+                        "properties": {
+                            "id": { "type": "string" },
+                            "alpaca_url": { "type": "string" },
+                            "device_number": { "type": "integer", "format": "uint32", "minimum": 0 },
+                            "gain": { "type": "integer", "format": "uint32", "minimum": 0 },
+                            "auth": { "anyOf": [ { "$ref": "#/$defs/DeviceAuth" }, { "type": "null" } ] },
+                        },
+                    },
+                    "DeviceAuth": {
+                        "type": "object",
+                        "properties": { "username": { "type": "string" }, "password": { "type": "string" } },
+                    },
+                    "MountConfig": {
+                        "type": "object",
+                        "properties": {
+                            "alpaca_url": { "type": "string" },
+                            "device_number": { "type": "integer", "format": "uint32", "minimum": 0 },
+                        },
+                    },
+                    "EquipmentConfig": {
+                        "type": "object",
+                        "properties": {
+                            "cameras": { "type": "array", "items": { "$ref": "#/$defs/CameraConfig" } },
+                            "mount": { "anyOf": [ { "$ref": "#/$defs/MountConfig" }, { "type": "null" } ] },
+                        },
+                    },
+                },
+                "type": "object",
+                "properties": {
+                    "equipment": { "$ref": "#/$defs/EquipmentConfig" },
+                    "server": { "type": "object", "properties": { "port": { "type": "integer" } } },
+                },
+            }),
+            locked_fields: vec![],
+            read_only_fields: vec!["server.port".to_string()],
+        }
+    }
+
+    #[test]
+    fn from_item_schema_walks_an_array_kind_with_relative_names() {
+        let model =
+            FieldModel::from_item_schema(&rp_like_schema(), "cameras").expect("cameras item model");
+        let names: Vec<&str> = model.fields.iter().map(|f| f.name.as_str()).collect();
+        // Relative, sorted leaf names; the optional `auth` subtree is skipped
+        // (anyOf) exactly like on the config pages.
+        assert_eq!(names, vec!["alpaca_url", "device_number", "gain", "id"]);
+        // Item models carry no tiers — the entry form has no read-only fields.
+        assert!(model.locked.is_empty());
+        assert!(model.read_only.is_empty());
+    }
+
+    #[test]
+    fn from_item_schema_unwraps_the_optional_singular_mount() {
+        let model =
+            FieldModel::from_item_schema(&rp_like_schema(), "mount").expect("mount item model");
+        let names: Vec<&str> = model.fields.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, vec!["alpaca_url", "device_number"]);
+    }
+
+    #[test]
+    fn from_item_schema_unknown_kind_is_none() {
+        assert!(FieldModel::from_item_schema(&rp_like_schema(), "rotators").is_none());
+        // A schema without an equipment block at all.
+        let bare = ConfigSchemaResponse {
+            schema: json!({ "type": "object", "properties": {} }),
+            locked_fields: vec![],
+            read_only_fields: vec![],
+        };
+        assert!(FieldModel::from_item_schema(&bare, "cameras").is_none());
+    }
+
     fn sample_config() -> Value {
         json!({
             "serial": { "port": "/dev/ttyACM0", "baud_rate": 115200, "polling_interval": "500ms", "timeout": "3s" },
@@ -1102,10 +1338,38 @@ mod tests {
                 title: "QHY Focuser".to_string(),
             },
         ];
-        let markup = index_page(&drivers).into_string();
+        let markup = index_page(&drivers, &RosterLinks::NotConfigured).into_string();
         assert!(markup.contains(r#"href="/config/dsd-fp2""#), "{markup}");
         assert!(markup.contains(r#"href="/config/qhy-focuser""#), "{markup}");
         assert!(markup.contains("QHY Focuser"), "{markup}");
+        // Without an rp target the roster section is absent entirely.
+        assert!(!markup.contains("From rp's roster"), "{markup}");
+    }
+
+    #[test]
+    fn index_page_renders_roster_links_and_states() {
+        let drivers = vec![DriverLink {
+            service: "dsd-fp2".to_string(),
+            title: "Deep Sky Dad FP2".to_string(),
+        }];
+        let entries = RosterLinks::Entries(vec![DriverLink {
+            service: "rp:cameras:main-cam".to_string(),
+            title: "Main Camera".to_string(),
+        }]);
+        let markup = index_page(&drivers, &entries).into_string();
+        assert!(markup.contains("From rp's roster"), "{markup}");
+        assert!(
+            markup.contains(r#"href="/config/rp:cameras:main-cam""#),
+            "{markup}"
+        );
+
+        let down = RosterLinks::Unreachable("connection refused".to_string());
+        let markup = index_page(&drivers, &down).into_string();
+        assert!(markup.contains("rp did not answer"), "{markup}");
+
+        let empty = RosterLinks::Entries(vec![]);
+        let markup = index_page(&drivers, &empty).into_string();
+        assert!(markup.contains("no equipment configured yet"), "{markup}");
     }
 
     // --- merge_form ----------------------------------------------------------

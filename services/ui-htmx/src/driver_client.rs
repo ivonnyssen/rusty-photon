@@ -40,6 +40,12 @@ pub enum ConfigClientError {
     /// auth/TLS layer refused us).
     #[error("could not reach the driver: {0}")]
     Transport(String),
+    /// The target answered but refused the request — a REST 4xx (e.g. rp's
+    /// 400 for a config body its types cannot parse). Distinct from
+    /// [`ConfigClientError::Transport`] so the page doesn't claim an
+    /// answering service is unreachable.
+    #[error("the request was rejected: {0}")]
+    Rejected(String),
     /// The action returned an ASCOM error (`ErrorNumber != 0`).
     #[error("driver returned ASCOM error {code}: {message}")]
     Ascom { code: i32, message: String },
@@ -165,6 +171,83 @@ impl ConfigClient for AlpacaConfigClient {
             serde_json::to_string(config).map_err(|e| ConfigClientError::Decode(e.to_string()))?;
         let inner = self.call_action("config.apply", &parameters).await?;
         serde_json::from_value(inner).map_err(|e| ConfigClientError::Decode(e.to_string()))
+    }
+}
+
+/// `ConfigClient` backed by rp's plain-REST config endpoints — the same three
+/// operations and bodies as the ASCOM actions, without the Alpaca envelope
+/// (`docs/services/config-actions.md` "REST transport"):
+/// `GET /api/config`, `GET /api/config/schema`, `PUT /api/config`.
+pub struct RestConfigClient {
+    http: Arc<dyn HttpClient>,
+    base_url: String,
+}
+
+impl RestConfigClient {
+    pub fn new(http: Arc<dyn HttpClient>, base_url: &str) -> Self {
+        Self {
+            http,
+            base_url: base_url.trim_end_matches('/').to_string(),
+        }
+    }
+
+    fn url(&self, path: &str) -> String {
+        format!("{}{path}", self.base_url)
+    }
+
+    /// Map a REST response to its parsed body. Unlike the action transport
+    /// there is no envelope: a 2xx body IS the payload; a 4xx is a rejection
+    /// carrying rp's message (e.g. the 400 for a malformed apply body); any
+    /// other status is a transport error.
+    fn parse<T: serde::de::DeserializeOwned>(
+        url: &str,
+        response: crate::io::HttpResponse,
+    ) -> Result<T, ConfigClientError> {
+        if !(200..300).contains(&response.status) {
+            let detail = response.body.chars().take(200).collect::<String>();
+            let message = format!("HTTP {} from {url}: {detail}", response.status);
+            return Err(if (400..500).contains(&response.status) {
+                ConfigClientError::Rejected(message)
+            } else {
+                ConfigClientError::Transport(message)
+            });
+        }
+        serde_json::from_str(&response.body).map_err(|e| ConfigClientError::Decode(e.to_string()))
+    }
+}
+
+#[async_trait]
+impl ConfigClient for RestConfigClient {
+    async fn get_config(&self) -> Result<ConfigGetResponse, ConfigClientError> {
+        let url = self.url("/api/config");
+        let response = self
+            .http
+            .get(&url)
+            .await
+            .map_err(|e| ConfigClientError::Transport(e.to_string()))?;
+        Self::parse(&url, response)
+    }
+
+    async fn get_schema(&self) -> Result<ConfigSchemaResponse, ConfigClientError> {
+        let url = self.url("/api/config/schema");
+        let response = self
+            .http
+            .get(&url)
+            .await
+            .map_err(|e| ConfigClientError::Transport(e.to_string()))?;
+        Self::parse(&url, response)
+    }
+
+    async fn apply_config(&self, config: &Value) -> Result<ConfigApplyResponse, ConfigClientError> {
+        let url = self.url("/api/config");
+        let body =
+            serde_json::to_string(config).map_err(|e| ConfigClientError::Decode(e.to_string()))?;
+        let response = self
+            .http
+            .put_json(&url, &body)
+            .await
+            .map_err(|e| ConfigClientError::Transport(e.to_string()))?;
+        Self::parse(&url, response)
     }
 }
 
@@ -329,5 +412,140 @@ mod tests {
             client.action_url,
             "http://driver:11119/api/v1/covercalibrator/0/action"
         );
+    }
+
+    // --- RestConfigClient (rp's plain-REST transport) ---------------------------
+
+    #[tokio::test]
+    async fn rest_get_config_hits_api_config_and_parses_the_body() {
+        let mut http = MockHttpClient::new();
+        http.expect_get()
+            .withf(|url| url == "http://rp:11115/api/config")
+            .returning(|_| {
+                Box::pin(async {
+                    Ok(HttpResponse {
+                        status: 200,
+                        body: json!({
+                            "config": { "server": { "port": 11115 } },
+                            "overrides": []
+                        })
+                        .to_string(),
+                    })
+                })
+            });
+        let client = RestConfigClient::new(Arc::new(http), "http://rp:11115/");
+        let resp = client.get_config().await.unwrap();
+        assert_eq!(
+            resp.config.pointer("/server/port").and_then(Value::as_u64),
+            Some(11115)
+        );
+        assert!(resp.overrides.is_empty());
+    }
+
+    #[tokio::test]
+    async fn rest_get_schema_hits_api_config_schema() {
+        let mut http = MockHttpClient::new();
+        http.expect_get()
+            .withf(|url| url == "http://rp:11115/api/config/schema")
+            .returning(|_| {
+                Box::pin(async {
+                    Ok(HttpResponse {
+                        status: 200,
+                        body: json!({
+                            "schema": { "type": "object" },
+                            "locked_fields": [],
+                            "read_only_fields": ["server.port"]
+                        })
+                        .to_string(),
+                    })
+                })
+            });
+        let client = RestConfigClient::new(Arc::new(http), "http://rp:11115");
+        let resp = client.get_schema().await.unwrap();
+        assert_eq!(resp.read_only_fields, vec!["server.port".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn rest_apply_puts_the_config_json_and_parses_restart_required() {
+        let mut http = MockHttpClient::new();
+        http.expect_put_json()
+            .withf(|url, body| url == "http://rp:11115/api/config" && body.contains("\"site\""))
+            .returning(|_, _| {
+                Box::pin(async {
+                    Ok(HttpResponse {
+                        status: 200,
+                        body: json!({
+                            "status": "ok",
+                            "applied": [],
+                            "reload": [],
+                            "restart_required": ["site.latitude_degrees"],
+                            "skipped_override": [],
+                            "persisted_to": "/tmp/rp.json"
+                        })
+                        .to_string(),
+                    })
+                })
+            });
+        let client = RestConfigClient::new(Arc::new(http), "http://rp:11115");
+        let resp = client
+            .apply_config(&json!({ "site": { "latitude_degrees": 47.6 } }))
+            .await
+            .unwrap();
+        assert_eq!(resp.status, ApplyStatus::Ok);
+        assert_eq!(
+            resp.restart_required,
+            vec!["site.latitude_degrees".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn rest_4xx_is_a_rejection_carrying_the_body() {
+        let mut http = MockHttpClient::new();
+        http.expect_put_json().returning(|_, _| {
+            Box::pin(async {
+                Ok(HttpResponse {
+                    status: 400,
+                    body: "invalid config JSON: expected value at line 1".to_string(),
+                })
+            })
+        });
+        let client = RestConfigClient::new(Arc::new(http), "http://rp:11115");
+        let err = client.apply_config(&json!({})).await.unwrap_err();
+        match err {
+            ConfigClientError::Rejected(msg) => {
+                assert!(msg.contains("HTTP 400"), "{msg}");
+                assert!(msg.contains("invalid config JSON"), "{msg}");
+            }
+            other => panic!("expected Rejected, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn rest_5xx_is_a_transport_error() {
+        let mut http = MockHttpClient::new();
+        http.expect_get().returning(|_| {
+            Box::pin(async {
+                Ok(HttpResponse {
+                    status: 502,
+                    body: "bad gateway".to_string(),
+                })
+            })
+        });
+        let client = RestConfigClient::new(Arc::new(http), "http://rp:11115");
+        let err = client.get_config().await.unwrap_err();
+        assert!(matches!(err, ConfigClientError::Transport(_)), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn rest_connection_failure_is_a_transport_error() {
+        let mut http = MockHttpClient::new();
+        http.expect_get().returning(|_| {
+            Box::pin(async {
+                Err::<HttpResponse, _>(crate::io::HttpError("connection refused".to_string()))
+            })
+        });
+        let client = RestConfigClient::new(Arc::new(http), "http://rp:11115");
+        let err = client.get_config().await.unwrap_err();
+        assert!(matches!(err, ConfigClientError::Transport(_)), "{err:?}");
     }
 }

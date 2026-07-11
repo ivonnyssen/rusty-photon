@@ -1,6 +1,7 @@
 use std::time::Duration;
 
-use serde::Deserialize;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
 /// Per-rig estimates feeding the predictive `center_on_target` deadline
 /// (§2.5 of the predictive-deadlines plan). The watchdog tracks only the
@@ -18,7 +19,7 @@ use serde::Deserialize;
 /// nor per-iteration slew+settle overhead is knowable from an ASCOM property.
 /// The deadline is **advisory** — rp does not enforce it; it rides the
 /// envelope for the Sentinel watchdog. Omitted block → both defaults apply.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CenteringConfig {
     /// Expected wall-clock time for one plate solve, feeding the centering
@@ -27,11 +28,13 @@ pub struct CenteringConfig {
     /// the hard per-solve ceiling. Defaults to 30 s (a conservative ASTAP
     /// blind-ish solve); set per-rig. Accepts a humantime string.
     #[serde(default = "default_solve_time_estimate", with = "humantime_serde")]
+    #[schemars(with = "String")]
     pub solve_time_estimate: Duration,
     /// Expected per-iteration slew + settle overhead, feeding the centering
     /// deadline. A centering correction slew is small, so this is short;
     /// defaults to 10 s. Accepts a humantime string.
     #[serde(default = "default_slew_overhead_estimate", with = "humantime_serde")]
+    #[schemars(with = "String")]
     pub slew_overhead_estimate: Duration,
 }
 

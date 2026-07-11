@@ -1,13 +1,13 @@
-use serde::Deserialize;
-
-use crate::error::{Result, RpError};
+use rusty_photon_config::actions::FieldError;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
 /// Observer site location. Validated at config-load time: latitude
 /// must be in [-90, 90] and longitude in [-180, 180]. The IANA
 /// timezone is derived from these coordinates at startup via
 /// `rp-ephemeris`; elevation is intentionally omitted (see
 /// `docs/services/rp.md` §"Site Configuration").
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SiteConfig {
     pub latitude_degrees: f64,
@@ -15,22 +15,24 @@ pub struct SiteConfig {
 }
 
 impl SiteConfig {
-    /// Range-validate the site, returning a [`RpError::Config`] with a
-    /// message naming the offending field on failure.
-    pub fn validate(&self) -> Result<()> {
+    /// Range-validate the site as field-level errors (empty = valid).
+    /// Shared by `load_config` (which aborts startup on the first error)
+    /// and the REST `PUT /api/config` validation.
+    pub fn field_errors(&self) -> Vec<FieldError> {
+        let mut errors = Vec::new();
         if !(-90.0..=90.0).contains(&self.latitude_degrees) {
-            return Err(RpError::Config(format!(
-                "site.latitude_degrees must be in [-90, 90]; got {}",
-                self.latitude_degrees
-            )));
+            errors.push(FieldError {
+                path: "site.latitude_degrees".to_string(),
+                msg: format!("must be in [-90, 90]; got {}", self.latitude_degrees),
+            });
         }
         if !(-180.0..=180.0).contains(&self.longitude_degrees) {
-            return Err(RpError::Config(format!(
-                "site.longitude_degrees must be in [-180, 180]; got {}",
-                self.longitude_degrees
-            )));
+            errors.push(FieldError {
+                path: "site.longitude_degrees".to_string(),
+                msg: format!("must be in [-180, 180]; got {}", self.longitude_degrees),
+            });
         }
-        Ok(())
+        errors
     }
 }
 

@@ -1,15 +1,17 @@
 use std::time::Duration;
 
-use serde::Deserialize;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
 /// Safety-enforcement settings (rp.md § Safety). The monitors themselves
 /// are equipment (`equipment.safety_monitors`); this block holds the
 /// enforcement knobs shared across them.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SafetyConfig {
     /// How often every configured SafetyMonitor is polled (default `"10s"`).
     #[serde(default = "default_safety_poll_interval", with = "humantime_serde")]
+    #[schemars(with = "String")]
     pub poll_interval: Duration,
 }
 

@@ -52,10 +52,8 @@ rust_binary(
 # pattern as dsd-fp2's `:dsd-fp2_mock`. Both fixture modules are `#[coverage(off)]`,
 # so spawning this (instead of `:ui-htmx`) from the `bdd` target adds the routes
 # without perturbing coverage (its covmap equals `:ui-htmx_lib`'s; the fixtures code
-# is excluded). The `test-sse` feature pulls `async-stream`, which is an OPTIONAL
-# dep that `all_crate_deps(normal = True)` OMITS — so both fixture targets must name
-# `@cr//:async-stream` explicitly in their deps (see the comments there); without it
-# the compile fails E0432 (unresolved `async_stream`).
+# is excluded). (`async-stream` became an unconditional dependency with the Phase-5
+# SSE proxy, so `all_crate_deps(normal = True)` now carries it for every variant.)
 rust_library(
     name = "ui-htmx_lib_fixtures",
     srcs = glob(
@@ -71,11 +69,7 @@ rust_library(
     crate_name = "ui_htmx",
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
-    # `async-stream` is an OPTIONAL dep (enabled only by `test-sse`), and
-    # `all_crate_deps(normal = True)` omits optional deps, so it must be named
-    # explicitly here for the feature-on fixtures variant (the proc-macro half,
-    # async-stream-impl, comes in transitively).
-    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True) + ["@cr//:async-stream"],
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
 
 rust_binary(
@@ -92,8 +86,7 @@ rust_binary(
     # target name "ui-htmx_fixtures"), so logs/service naming match `:ui-htmx`.
     rustc_env = {"CARGO_PKG_NAME": "ui-htmx"},
     visibility = ["//visibility:public"],
-    # See `:ui-htmx_lib_fixtures` re: the explicit `async-stream` (optional dep).
-    deps = [":ui-htmx_lib_fixtures"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True) + ["@cr//:async-stream"],
+    deps = [":ui-htmx_lib_fixtures"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
 
 rust_test(
@@ -117,16 +110,18 @@ rust_test(
     ),
 )
 
-# BDD cucumber test. Spawns the real ui-htmx binary plus a real dsd-fp2 (mock
-# hardware) driver per scenario, so both binaries are runtime data and their
-# bdd-infra discovery vars ({PKG}_BINARY) point at their rootpaths. harness=false
-# (custom cucumber main via bdd_main!) → use_libtest_harness must be False;
-# BDD_PACKAGE_DIR chdirs from the runfiles root into the package dir so relative
-# paths (`tests/features`, `./Cargo.toml`) behave as under `cargo test`.
+# BDD cucumber test. Spawns the real ui-htmx binary plus, per suite, a real
+# dsd-fp2 (mock hardware) driver and/or a real rp orchestrator (the Phase-5
+# rp-config / equipment / stream suites — an all-first-party stack, no OmniSim),
+# so all three binaries are runtime data and their bdd-infra discovery vars
+# ({PKG}_BINARY) point at their rootpaths. harness=false (custom cucumber main
+# via bdd_main!) → use_libtest_harness must be False; BDD_PACKAGE_DIR chdirs
+# from the runfiles root into the package dir so relative paths
+# (`tests/features`, `./Cargo.toml`) behave as under `cargo test`.
 rust_test(
     name = "bdd",
-    # Spawns two processes per scenario plus a reload-reconnect poll; large gives
-    # the most timeout headroom.
+    # Spawns up to three processes per scenario plus reconnect polls; large
+    # gives the most timeout headroom.
     size = "large",
     srcs = ["tests/bdd.rs"] + glob(["tests/bdd/**/*.rs"]),
     aliases = aliases(
@@ -142,6 +137,7 @@ rust_test(
         # modules are #[coverage(off)]).
         ":ui-htmx_fixtures",
         "//services/dsd-fp2:dsd-fp2_mock",
+        "//services/rp",
     ] + glob(["tests/features/**"]) +
     # insta goldens (UI-testing plan Layer B): the committed .snap files must
     # reach the runfiles tree so the snapshot-path resolver can read them under
@@ -153,8 +149,9 @@ rust_test(
     env = {
         "BDD_PACKAGE_DIR": "services/ui-htmx",
         "DSD_FP2_BINARY": "$(rootpath //services/dsd-fp2:dsd-fp2_mock)",
+        "RP_BINARY": "$(rootpath //services/rp:rp)",
         "UI_HTMX_BINARY": "$(rootpath :ui-htmx_fixtures)",
-        "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath //services/dsd-fp2:dsd-fp2_mock):$(rootpath :ui-htmx_fixtures)",
+        "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath //services/dsd-fp2:dsd-fp2_mock):$(rootpath :ui-htmx_fixtures):$(rootpath //services/rp:rp)",
         # Bazel does not propagate CI, so force insta to compare-only / fail on
         # mismatch (the sandbox is read-only; goldens are updated Cargo-locally).
         "INSTA_UPDATE": "no",
@@ -175,7 +172,9 @@ rust_test(
         # fixtures merge) hash-mismatch in the coverage merge. The test crate does
         # not use the fixtures module, so the variant is otherwise transparent.
         ":ui-htmx_lib_fixtures",
-        "//crates/bdd-infra",
+        # The rp-harness variant: the Phase-5 suites use RpConfigBuilder + the
+        # launcher (no OmniSim scenarios here — the roster device is dsd-fp2).
+        "//crates/bdd-infra:bdd-infra_rp_harness",
     ] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
         normal = True,
         normal_dev = True,
