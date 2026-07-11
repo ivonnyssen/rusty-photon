@@ -147,6 +147,9 @@ impl RestartManager {
     /// Poll `health_command` until it exits 0 or the remaining `budget` runs
     /// out. Mirrors the corrective ladder's `await_recovery`: the whole phase —
     /// probe runs *and* the sleeps between them — sits under one outer timeout.
+    /// Each probe gets only its per-attempt slice of the budget, so one probe
+    /// that hangs (e.g. a check blocking while the service is half-up) is
+    /// killed and retried instead of monopolizing the whole phase.
     async fn await_healthy(&self, name: &str, command: &str, budget: Duration) -> bool {
         if budget.is_zero() {
             return false;
@@ -154,7 +157,7 @@ impl RestartManager {
         let interval = budget.checked_div(RECOVERY_ATTEMPTS).unwrap_or(budget);
         let poll = async {
             for attempt in 0..RECOVERY_ATTEMPTS {
-                match self.runner.restart(command, budget).await {
+                match self.runner.restart(command, interval).await {
                     Ok(()) => return true,
                     Err(e) => debug!("service '{name}' health probe not yet passing: {e}"),
                 }
@@ -210,6 +213,8 @@ mod tests {
         /// Commands that succeed; everything else errors.
         succeeds: Vec<String>,
         calls: Mutex<Vec<String>>,
+        /// The per-call budget each command was given.
+        budgets: Mutex<Vec<Duration>>,
         /// When set, the runner blocks on this notification before returning
         /// (used to hold a restart in flight).
         hold: Option<Arc<tokio::sync::Notify>>,
@@ -226,8 +231,9 @@ mod tests {
 
     #[async_trait]
     impl Restarter for ScriptedRunner {
-        async fn restart(&self, command: &str, _budget: Duration) -> crate::Result<()> {
+        async fn restart(&self, command: &str, budget: Duration) -> crate::Result<()> {
             self.calls.lock().unwrap().push(command.to_string());
+            self.budgets.lock().unwrap().push(budget);
             if let Some(hold) = &self.hold {
                 hold.notified().await;
             }
@@ -342,6 +348,30 @@ mod tests {
         assert_eq!(report.recovery, Some(Recovery::Timeout));
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn health_probes_get_a_per_attempt_slice_of_the_budget() {
+        let svc = service(
+            Some("restart-cmd"),
+            Some("health-cmd"),
+            Duration::from_millis(50),
+        );
+        let runner = ScriptedRunner::succeeding(&["restart-cmd"]);
+        let (m, runner) = manager(&[("svc", svc)], runner);
+        m.restart("svc").await.unwrap();
+        let budgets = runner.budgets.lock().unwrap();
+        assert_eq!(
+            budgets[0],
+            Duration::from_millis(50),
+            "the restart command gets the full budget"
+        );
+        assert!(budgets.len() > 1, "health probes must have run");
+        for probe_budget in &budgets[1..] {
+            // budget / RECOVERY_ATTEMPTS: one hanging probe is killed after its
+            // slice instead of monopolizing the phase and foreclosing retries.
+            assert_eq!(*probe_budget, Duration::from_millis(10), "{budgets:?}");
+        }
+    }
+
     #[tokio::test]
     async fn failing_restart_command_reports_failed_with_detail() {
         let svc = service(
@@ -371,8 +401,8 @@ mod tests {
         let notify = Arc::new(tokio::sync::Notify::new());
         let runner = ScriptedRunner {
             succeeds: vec!["restart-cmd".to_string()],
-            calls: Mutex::new(Vec::new()),
             hold: Some(Arc::clone(&notify)),
+            ..ScriptedRunner::default()
         };
         let svc = service(Some("restart-cmd"), None, Duration::from_secs(5));
         let (m, _) = manager(&[("svc", svc)], runner);

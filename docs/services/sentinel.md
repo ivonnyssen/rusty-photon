@@ -400,7 +400,9 @@ POST /api/services/{name}/restart
 or own the processes — it shells out to the service's configured
 `restart_command` (the OS supervisor owns relaunch), then, when a
 `health_command` is configured, polls it until it exits 0 or the service's
-`max_restart_duration` budget elapses. The endpoint is the manual "recovery
+`max_restart_duration` budget elapses (each probe is bounded to its
+per-attempt slice of the budget, so one hanging probe is killed and retried
+rather than consuming the whole phase). The endpoint is the manual "recovery
 hammer" the web UI's *Restart via Sentinel* affordance calls (see
 [`ui-htmx.md`](ui-htmx.md)), and the escalation target for `config.apply`
 fields classified `restart_required`.

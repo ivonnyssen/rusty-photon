@@ -171,19 +171,18 @@ impl SentinelWorld {
             // abort ladder against it (responsive service + abort verb => the
             // ladder stops at a clean abort, so `restart_command` stays null and
             // the BDD never shells out). The service lives in the top-level
-            // `services` map (shared with the restart endpoint); its restart
-            // budget is per-service, kept tight so a regression that reaches the
-            // restart rung fails fast.
+            // `services` map (shared with the restart endpoint) — inserted, not
+            // assigned, so `supervised_services` entries added by restart-API
+            // steps survive; its restart budget is per-service, kept tight so a
+            // regression that reaches the restart rung fails fast.
             if let Some(svc_url) = &self.mount_service_url {
                 watchdog["operations"]["slew"]["on_expiry"] =
                     serde_json::json!("abort_then_restart");
                 watchdog["operations"]["slew"]["service"] = serde_json::json!("mount");
-                config["services"] = serde_json::json!({
-                    "mount": {
-                        "base_url": svc_url,
-                        "restart_command": null,
-                        "max_restart_duration": "2s"
-                    }
+                config["services"]["mount"] = serde_json::json!({
+                    "base_url": svc_url,
+                    "restart_command": null,
+                    "max_restart_duration": "2s"
                 });
             }
             config["operation_watchdog"] = watchdog;
