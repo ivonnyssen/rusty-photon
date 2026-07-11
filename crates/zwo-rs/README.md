@@ -48,7 +48,8 @@ pre-split crate. Narrow consumers pick one:
 zwo-rs = { version = "0.1", default-features = false, features = ["focuser"] }
 ```
 
-links (and needs installed) only `libEAFFocuser`.
+links (and needs installed) only `libEAFFocuser` of the three SDKs — plus, on
+Linux, **libudev** (see the build-requirements table below).
 
 ## Build requirements
 
@@ -56,6 +57,7 @@ links (and needs installed) only `libEAFFocuser`.
 |---|---|---|
 | **libclang** | `bindgen` (so `check`/`clippy`/`doc`/`build`) | Set `LIBCLANG_PATH` if not auto-found — e.g. `/usr/lib/<triple>` (Debian) or `/usr/lib64` (Fedora). |
 | **The enabled ZWO SDK libraries** (`libASICamera2` + **libusb-1.0** for `camera`; `libEFWFilter` for `efw`; `libEAFFocuser` for `focuser`) | *linking* (`build`/`test`) | Required even with `--features simulation`. `cargo check`/`clippy` do **not** link. |
+| **libudev** (Linux, `efw`/`focuser` only) | *linking* + runtime | The EFW/EAF blobs reference `udev_*` symbols without declaring libudev in their own `DT_NEEDED`, so the consumer binary links it on their behalf: `libudev-dev` (Debian/Ubuntu) / `systemd-devel` (Fedora) at build time, `libudev1` at runtime. |
 | udev `99-asi.rules` | running against real hardware (Linux) | VID `03c3`, `MODE=0666`, `usbfs_memory_mb=200`. |
 
 Install the SDK from the INDI mirror (MIT) — Linux x86_64 = `x64`, aarch64 =

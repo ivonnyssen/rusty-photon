@@ -44,7 +44,11 @@
 //! - **The enabled ZWO SDK libraries** (`libASICamera2` for `camera` — plus
 //!   **libusb-1.0** —, `libEFWFilter` for `efw`, `libEAFFocuser` for `focuser`)
 //!   on the link path — needed to *link* (i.e. `build`/`test`), even with the
-//!   `simulation` feature. See the README.
+//!   `simulation` feature.
+//! - **libudev** (Linux, `efw`/`focuser` only) — the EFW/EAF blobs reference
+//!   `udev_*` symbols without declaring libudev in their own `DT_NEEDED`, so
+//!   the consumer binary links it on their behalf (`libudev-dev` on
+//!   Debian/Ubuntu, `systemd-devel` on Fedora). See the README.
 
 /// Raw, unsafe FFI bindings (`bindgen`). Prefer the safe API in this crate.
 pub use libzwo_sys as sys;

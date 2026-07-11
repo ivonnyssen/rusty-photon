@@ -15,9 +15,13 @@
 //! ## Native dependency
 //!
 //! `zwo-rs` is built with only its `focuser` feature (ADR-014), so this binary
-//! links exactly `libEAFFocuser` — machines compiling this package need that
-//! SDK installed, even with the `simulation` feature, which removes the
-//! *focuser*, not the *link*.
+//! links exactly `libEAFFocuser` (+ `libudev` on Linux) — machines compiling
+//! this package need that SDK installed, even with the `simulation` feature,
+//! which removes the *focuser*, not the *link*. The libudev link is
+//! deliberate: the EAF blob references `udev_*` symbols without declaring
+//! libudev in its own `DT_NEEDED`, so this binary must carry the dependency
+//! for the loader to resolve them at startup — `libudev-dev`/`systemd-devel`
+//! at build time, `libudev1` at runtime (see ADR-014).
 
 pub mod backend;
 mod config;
