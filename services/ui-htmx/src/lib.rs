@@ -184,18 +184,13 @@ impl AppState {
     pub fn from_config(config: &Config) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let sentinel: Option<Arc<dyn SentinelClient>> = match &config.sentinel {
             Some(target) => {
-                let reqwest_client = match &target.auth {
-                    Some(auth) => ReqwestHttpClient::with_auth(
-                        target.ca_cert_path.as_deref(),
-                        auth.username.clone(),
-                        auth.password.clone(),
-                    )?,
-                    None => ReqwestHttpClient::new(target.ca_cert_path.as_deref())?,
-                };
-                Some(Arc::new(HttpSentinelClient::new(
-                    Arc::new(reqwest_client),
+                let http = build_http_client(
+                    "sentinel",
                     &target.base_url,
-                )))
+                    target.auth.as_ref(),
+                    target.ca_cert_path.as_deref(),
+                )?;
+                Some(Arc::new(HttpSentinelClient::new(http, &target.base_url)))
             }
             None => None,
         };
@@ -815,6 +810,22 @@ mod tests {
             state.drivers.get("qhy-focuser").unwrap().subtitle,
             "qhy-focuser · focuser"
         );
+    }
+
+    #[test]
+    fn from_config_rejects_sentinel_url_credentials() {
+        // The sentinel target goes through the same `build_http_client`
+        // validation as drivers/rp: embedded credentials would leak into
+        // error strings and request-URL debug logs.
+        let json = r#"{ "sentinel": { "base_url": "http://obs:secret@127.0.0.1:11114" } }"#;
+        let config: Config = serde_json::from_str(json).unwrap();
+        match AppState::from_config(&config) {
+            Ok(_) => panic!("expected from_config to reject credentials in sentinel base_url"),
+            Err(e) => assert!(
+                e.to_string().contains("must not contain credentials"),
+                "{e}"
+            ),
+        }
     }
 
     #[test]

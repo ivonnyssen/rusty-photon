@@ -265,9 +265,15 @@ fn shell_command(command: &str) -> tokio::process::Command {
 
 #[cfg(windows)]
 fn shell_command(command: &str) -> tokio::process::Command {
-    let mut c = tokio::process::Command::new("cmd");
-    c.arg("/C").arg(command);
-    c
+    use std::os::windows::process::CommandExt;
+    // `cmd` does not understand backslash-escaped quotes, so std's default
+    // argv encoding (quote the whole argument, escape its inner quotes as
+    // `\"`) mangles any command containing quotes — e.g. a redirect target
+    // like `echo ok > "C:\path\marker.txt"` exits 1. Hand `cmd` the line
+    // verbatim instead.
+    let mut c = std::process::Command::new("cmd");
+    c.raw_arg(format!("/C {command}"));
+    tokio::process::Command::from(c)
 }
 
 #[async_trait]
@@ -917,7 +923,8 @@ mod tests {
         aborter.abort(&target(None)).await.unwrap();
     }
 
-    // ---- shell restarter (unix only; CI Windows lacks `sh`) -----------
+    // ---- shell restarter (exit-code tests unix only — they use `sh`
+    //      built-ins; the quoted-path test runs on both platforms) ------
 
     #[cfg(unix)]
     #[tokio::test]
@@ -946,5 +953,21 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("exceeded"), "{err}");
+    }
+
+    // Cross-platform (the command shape the BDD marker commands use). On
+    // Windows this regression-tests the `raw_arg` invocation: std's default
+    // argv encoding escapes the inner quotes as `\"`, which `cmd` does not
+    // parse — the space in the file name makes the quotes load-bearing.
+    #[tokio::test]
+    async fn shell_restart_preserves_quoted_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("restart marker.txt");
+        let command = format!("echo ok > \"{}\"", marker.display());
+        ShellRestarter
+            .restart(&command, Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert!(marker.exists(), "`{command}` did not write the marker");
     }
 }
