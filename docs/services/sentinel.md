@@ -36,7 +36,7 @@ Dashboard (axum + hand-rolled HTML) --- web UI w/ JS polling
 - **`Monitor`** — `poll() -> MonitorState`, `connect()`, `disconnect()`, `polling_interval() -> Duration`. A **pull-based** monitor the engine polls on a fixed interval. First implementation: `AlpacaSafetyMonitor`.
 - **`EventMonitor`** — `name()`, `run(cancel)`. A **push-based** monitor that owns a long-lived connection and reacts to a stream of events rather than being polled. It runs until the cancellation token fires. First implementation: `OperationDeadlineMonitor` (see [Operation Watchdog](#operation-watchdog)). Added because the watchdog's natural interface is "react to each event as it arrives", which a `poll() -> State` shape cannot express; the engine spawns a parallel task per `EventMonitor` alongside the per-`Monitor` poll loops.
 - **`Notifier`** — `notify(notification)`. First implementation: `PushoverNotifier`. The watchdog reuses this dispatch path — an expiry or liveness escalation is just another notification.
-- **`Corrective`** / **`HealthChecker`** / **`Aborter`** / **`Restarter`** — the watchdog's corrective-action ladder for `abort_then_restart` operations. `CorrectiveLadder` composes the three rung traits (health → abort → restart) behind the single `Corrective::run` seam the watchdog calls; HTTP and shell default impls live in `corrective.rs`. See [Operation Watchdog](#operation-watchdog).
+- **`Corrective`** / **`HealthChecker`** / **`Aborter`** / **`Restarter`** — the watchdog's corrective-action ladder for `abort_then_restart` operations. `CorrectiveLadder` composes the three rung traits (health → abort → restart) behind the single `Corrective::run` seam the watchdog calls; HTTP and shell default impls live in `corrective.rs`. See [Operation Watchdog](#operation-watchdog). `Restarter` (run a shell command bounded by a budget, `Ok` iff it exits 0 in time) is also the seam behind the [Service Restart API](#service-restart-api): the REST endpoint runs both `restart_command` and the `health_command` recovery poll through it, so tests inject a recording stub.
 - **`HttpClient`** — wraps `reqwest` for testability (mockall in tests). Used by monitors, notifiers, and the corrective health-check / abort rungs.
 
 ### Dependency Injection
@@ -58,6 +58,48 @@ For custom monitors/notifiers (e.g. in an astrophotography app), use `with_monit
 Configuration is loaded from a JSON file. All sections are optional with sensible defaults.
 
 See `examples/config.json` for a complete example.
+
+### Supervised services (`services`)
+
+The optional top-level `services` map is sentinel's registry of the services it
+can supervise, keyed by a name of the operator's choosing (conventionally the
+systemd unit / package name). It has **two consumers**: the
+[REST restart endpoint](#service-restart-api) and the operation watchdog's
+[corrective ladder](#escalation-corrective-action-ladder)
+(`operations.<family>.service` references keys in this map). Configuring the
+watchdog is *not* required to use the restart endpoint, and vice versa.
+
+```json
+{
+  "services": {
+    "dsd-fp2": {
+      "base_url": "http://localhost:11119/api/v1",
+      "device_number": 0,
+      "restart_command": "systemctl --user restart dsd-fp2",
+      "health_command": "systemctl --user is-active dsd-fp2",
+      "max_restart_duration": "60s"
+    },
+    "rp": { "restart_command": "systemctl --user restart rp" }
+  }
+}
+```
+
+| Field | Default | Meaning |
+|---|---|---|
+| `base_url` | *(none)* | Alpaca API base of the service, e.g. `http://host:port/api/v1`. Used only by the watchdog ladder's HTTP health-check and abort rungs; optional so non-Alpaca services (e.g. `rp`) can still be restart-only entries. |
+| `device_number` | `0` | Alpaca device number for the ladder's health-check / abort URLs. |
+| `restart_command` | `null` | Shell command that restarts the service; `null` = not restartable (the ladder stops at abort; the REST endpoint answers 409). |
+| `health_command` | `null` | Shell command whose **exit 0 means healthy**. When set, the REST restart endpoint polls it after the restart command to confirm recovery; when absent, recovery confirmation is skipped. |
+| `max_restart_duration` | `60s` | Per-service time budget (humantime) for the restart command *and* the recovery wait together. Used by both the REST endpoint and the watchdog ladder. |
+
+Commands run through the platform shell (`sh -c` on Unix, `cmd /C` on
+Windows), so follow each platform's best practice:
+
+| Platform | `restart_command` | `health_command` |
+|---|---|---|
+| Linux (systemd user unit) | `systemctl --user restart dsd-fp2` | `systemctl --user is-active dsd-fp2` (exit 0 iff active) |
+| Linux (system unit) | `systemctl restart dsd-fp2` | `systemctl is-active dsd-fp2` |
+| Windows (SCM service) | `powershell -Command "Restart-Service dsd-fp2"` | `sc query dsd-fp2 \| findstr RUNNING` |
 
 ### Monitor Types
 
@@ -230,7 +272,7 @@ operation family's `on_expiry` policy:
      on the stream, which clears its tracking entry.
   3. **Restart** — if the service is unresponsive, the abort failed, or the
      family has no abort verb (e.g. the compound `centering`), and a
-     `restart_command` is configured, run it (bounded by
+     `restart_command` is configured, run it (bounded by the service's
      `max_restart_duration`) and then poll the health check until the
      service is responsive again or the budget elapses.
      `restart_command: null` marks a service as **not restartable** (a
@@ -241,9 +283,13 @@ operation family's `on_expiry` policy:
      `{action}` placeholder).
 
 A family configured `abort_then_restart` whose `service` cannot be
-resolved (no `service` set, or a name absent from `services`) **degrades
-safely to `notify_only`** with a logged warning — a config mistake never
+resolved (no `service` set, or a name absent from the top-level
+[`services`](#supervised-services-services) map) **degrades safely to
+`notify_only`** with a logged warning — a config mistake never
 aborts the wrong device or wedges the watchdog (tenet #2, robustness).
+A resolvable service with no `base_url` cannot be health-checked or
+aborted (health reports *unknown*, abort is skipped), so the ladder falls
+through to the restart rung.
 
 > **End-to-end coverage.** The ladder's rungs are unit-tested
 > (`services/sentinel/src/corrective.rs`) and the watchdog's policy branching +
@@ -272,16 +318,22 @@ aborts the wrong device or wedges the watchdog (tenet #2, robustness).
 ### Configuration
 
 The watchdog is configured by an optional top-level `operation_watchdog`
-block:
+block. Services it can health-check, abort, and restart are declared in the
+**top-level [`services`](#supervised-services-services) map** (shared with the
+REST restart endpoint), referenced by `operations.<family>.service`:
 
 ```json
 {
+  "services": {
+    "star-adventurer": { "base_url": "http://localhost:11117/api/v1", "restart_command": null },
+    "qhyccd-alpaca":   { "base_url": "http://localhost:11111/api/v1", "device_number": 0, "restart_command": "systemctl --user restart qhyccd-alpaca" },
+    "qhy-focuser":     { "base_url": "http://localhost:11113/api/v1", "restart_command": "systemctl --user restart qhy-focuser", "max_restart_duration": "45s" }
+  },
   "operation_watchdog": {
     "rp_url": "http://localhost:8080",
     "reconnect_max_attempts": 5,
     "reconnect_backoff": "5s",
     "default_buffer": "10s",
-    "max_restart_duration": "60s",
     "notifiers": ["pushover"],
     "message_template": "Operation {operation} ({operation_id}) {reason} after {elapsed}{action}",
     "operations": {
@@ -290,11 +342,6 @@ block:
       "exposure":     { "buffer": "30s", "on_expiry": "abort_then_restart", "service": "qhyccd-alpaca"   },
       "centering":    { "buffer": "0s",  "on_expiry": "notify_only"        },
       "move_focuser": { "buffer": "5s",  "on_expiry": "abort_then_restart", "service": "qhy-focuser"     }
-    },
-    "services": {
-      "star-adventurer": { "base_url": "http://localhost:11117/api/v1", "restart_command": null },
-      "qhyccd-alpaca":   { "base_url": "http://localhost:11111/api/v1", "device_number": 0, "restart_command": "systemctl --user restart qhyccd-alpaca" },
-      "qhy-focuser":     { "base_url": "http://localhost:11113/api/v1", "restart_command": "systemctl --user restart qhy-focuser" }
     }
   }
 }
@@ -306,15 +353,15 @@ block:
 | `reconnect_max_attempts` | `5` | How many consecutive reconnect attempts before escalating "rp unresponsive". |
 | `reconnect_backoff` | `5s` | Delay between reconnect attempts (humantime). |
 | `default_buffer` | `10s` | Buffer added to `max_duration_ms` for families with no `operations` entry. |
-| `max_restart_duration` | `60s` | Time budget for a `restart_command` to exit *and* the service to become responsive again. |
 | `notifiers` | *(all)* | Which notifier `type`s receive escalations; omitted means every configured notifier. |
 | `message_template` | built-in | Escalation message; placeholders `{operation}`, `{operation_id}`, `{elapsed}`, `{reason}`, `{action}` (the corrective-action summary, empty for `notify_only`). |
 | `operations.<family>.buffer` | `default_buffer` | Buffer for this operation family. |
 | `operations.<family>.on_expiry` | `notify_only` | Corrective-action policy: `notify_only`, or `abort_then_restart` (runs the ladder against `service`). |
-| `operations.<family>.service` | *(none)* | Service (key into `services`) that owns this family. Required for `abort_then_restart`; ignored otherwise. |
-| `services.<name>.base_url` | *(required)* | Alpaca API base of the service, e.g. `http://host:port/api/v1`; used for the health-check and abort calls. |
-| `services.<name>.device_number` | `0` | Alpaca device number for the health-check / abort URLs. |
-| `services.<name>.restart_command` | `null` | Shell command (`sh -c`) to restart the service; `null` = not restartable (ladder stops at abort). |
+| `operations.<family>.service` | *(none)* | Service (key into the top-level `services` map) that owns this family. Required for `abort_then_restart`; ignored otherwise. |
+
+The restart rung's time budget is the referenced service's
+`max_restart_duration` (default `60s`) — there is no watchdog-global budget;
+each service declares how long its restart may take.
 
 `reconnect_max_attempts` of `0` means "never give up reconnecting" (the
 watchdog keeps retrying without ever escalating an unresponsive rp), and a
@@ -329,6 +376,7 @@ watchdog keeps retrying without ever escalating an unresponsive rp), and a
 | Expiry, `abort_then_restart`, service responsive | Health check passes → abort verb `PUT`; ladder stops; notification reports `abort=ok`. |
 | Expiry, `abort_then_restart`, service unresponsive | Abort skipped → `restart_command` run (if set) → recovery awaited up to `max_restart_duration`; notification reports the restart outcome. |
 | Expiry, `abort_then_restart`, family has no abort verb (`centering`, `plate_solve`) | Abort skipped; restart attempted if configured, else notify-only. |
+| Expiry, `abort_then_restart`, service has no `base_url` | Health reports unknown, abort skipped; restart attempted if configured. |
 | Expiry, `abort_then_restart`, `service` unset or unknown | Degrades to `notify_only` with a logged warning. |
 | `*_started` without `max_duration_ms` | Tracked open, no timer; clears on completion or on a liveness escalation. |
 | Stream drops, reconnect succeeds within `reconnect_max_attempts` | Replays buffered events, resumes tracking. No escalation unless a `stream_gap` is reported. |
@@ -336,12 +384,61 @@ watchdog keeps retrying without ever escalating an unresponsive rp), and a
 | rp unreachable for `reconnect_max_attempts` reconnects | "rp unresponsive" escalation. |
 | `operation_watchdog` block absent | Watchdog disabled; sentinel runs safety polling only. |
 
-## Dashboard
+## Service Restart API
 
-The web dashboard runs on port 11114 (configurable) and provides:
+Sentinel owns **process restart** for the rest of the stack (`rp.md`
+§Sentinel Watchdog Integration; the config-actions plan's service-lifecycle
+split: drivers reload *themselves* via `config.apply`, sentinel restarts
+*processes*). The dashboard router exposes one endpoint:
+
+```
+POST /api/services/{name}/restart
+```
+
+`{name}` is a key in the top-level
+[`services`](#supervised-services-services) map. Sentinel does **not** spawn
+or own the processes — it shells out to the service's configured
+`restart_command` (the OS supervisor owns relaunch), then, when a
+`health_command` is configured, polls it until it exits 0 or the service's
+`max_restart_duration` budget elapses. The endpoint is the manual "recovery
+hammer" the web UI's *Restart via Sentinel* affordance calls (see
+[`ui-htmx.md`](ui-htmx.md)), and the escalation target for `config.apply`
+fields classified `restart_required`.
+
+### Behavioral contract
+
+| Condition | Response |
+|---|---|
+| Restart command exits 0; `health_command` set and exits 0 within the remaining budget | `200` `{"service":"<name>","status":"ok","recovery":"healthy"}` |
+| Restart command exits 0; `health_command` set but never exits 0 in budget | `200` `{"service":"<name>","status":"ok","recovery":"timeout"}` |
+| Restart command exits 0; no `health_command` | `200` `{"service":"<name>","status":"ok","recovery":"skipped"}` |
+| Restart command exits non-zero, fails to spawn, or exceeds the budget | `200` `{"service":"<name>","status":"failed","detail":"…"}` (no recovery poll) |
+| `{name}` not in the `services` map | `404` `{"error":"no configured service named '<name>'"}` |
+| Service configured with `restart_command: null` | `409` `{"error":"service '<name>' is not restartable"}` |
+| A restart for `{name}` is already in flight | `409` `{"error":"a restart of '<name>' is already in flight"}` |
+
+- **`status` reports the action's outcome, not the transport's** — a failed
+  restart command is a domain result (HTTP 200 with `status:"failed"`),
+  mirroring the config-actions protocol's `status:"invalid"` convention.
+  4xx is reserved for addressing errors (unknown / not restartable / busy).
+- **One restart per service at a time.** Concurrent POSTs for the same
+  service are rejected with `409` while the first is running; different
+  services restart independently.
+- **The request blocks** until the command (and recovery poll, if any)
+  completes — bounded by the service's `max_restart_duration`, so the
+  response always arrives within that budget plus scheduling noise.
+- **Same protection as the rest of the dashboard.** The endpoint sits on the
+  dashboard router, behind the same optional `dashboard.auth` Basic-auth and
+  TLS layers — there is no separate gate. Deploying without dashboard auth
+  leaves it (like the JSON API) open; the restart commands themselves come
+  only from sentinel's own config file, never from the request.
+- A user-initiated restart is logged (`info!`) but does **not** dispatch
+  notifications and is not recorded in the notification history — the
+  operator who pressed the button already knows.
 
 - **Web UI**: Server-rendered HTML with JavaScript polling (auto-refreshes every 5 seconds)
 - **JSON API**: `/api/status` (monitor statuses), `/api/history` (notification history)
+- **Service restart**: `POST /api/services/{name}/restart` (see [Service Restart API](#service-restart-api))
 - **Health check**: `/health` returns 200 OK
 
 The dashboard is server-rendered HTML with vanilla JavaScript, built with `format!()` in `services/sentinel/src/dashboard.rs`. (An experimental `sentinel-app` Leptos/WASM frontend was scaffolded and later abandoned; it was removed in 2026-06 — see [docs/plans/archive/sentinel-app-leptos-dashboard.md](../plans/archive/sentinel-app-leptos-dashboard.md).)
@@ -359,6 +456,7 @@ services/sentinel/src/
   alpaca_client.rs     AlpacaSafetyMonitor (Monitor impl)
   watchdog.rs          EventMonitor trait + OperationDeadlineMonitor + SSE event source + deadline tracking
   corrective.rs        Corrective-action ladder: HealthChecker/Aborter/Restarter traits + HTTP/shell impls + CorrectiveLadder
+  restart.rs           RestartManager: services registry + in-flight guard + restart/recovery orchestration for the REST endpoint
   notifier.rs          Notifier trait + Notification types
   pushover.rs          PushoverNotifier (Notifier impl)
   engine.rs            Engine: polling loops + transition matching + dispatch

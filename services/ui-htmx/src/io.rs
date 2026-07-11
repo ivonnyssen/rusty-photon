@@ -37,6 +37,10 @@ pub trait HttpClient: Send + Sync {
     /// Send a PUT request with a JSON body. rp's REST config endpoint
     /// (`PUT /api/config`) takes the full Config JSON directly.
     async fn put_json(&self, url: &str, body: &str) -> Result<HttpResponse, HttpError>;
+
+    /// Send a POST request with an empty body. Sentinel's REST restart
+    /// endpoint (`POST /api/services/{name}/restart`) takes no body.
+    async fn post(&self, url: &str) -> Result<HttpResponse, HttpError>;
 }
 
 /// Production HTTP client using `reqwest`, with optional CA trust and Basic auth.
@@ -150,6 +154,30 @@ impl HttpClient for ReqwestHttpClient {
         tracing::debug!("PUT {url} -> {status} ({} bytes)", body.len());
         Ok(HttpResponse { status, body })
     }
+
+    async fn post(&self, url: &str) -> Result<HttpResponse, HttpError> {
+        tracing::debug!("POST {url}");
+        // `Connection: close` for the same reason as `get` — a restart tears
+        // processes down, so a pooled connection would go stale.
+        let mut request = self
+            .client
+            .post(url)
+            .header(reqwest::header::CONNECTION, "close");
+        if let Some((user, pass)) = &self.auth {
+            request = request.basic_auth(user, Some(pass));
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|e| HttpError(format!("POST {url} failed: {e}")))?;
+        let status = response.status().as_u16();
+        let body = response
+            .text()
+            .await
+            .map_err(|e| HttpError(format!("reading response body: {e}")))?;
+        tracing::debug!("POST {url} -> {status} ({} bytes)", body.len());
+        Ok(HttpResponse { status, body })
+    }
 }
 
 #[cfg(test)]
@@ -183,5 +211,12 @@ mod tests {
         let client = ReqwestHttpClient::new(None).unwrap();
         let err = client.put_json(UNREACHABLE_URL, "{}").await.unwrap_err();
         assert!(err.0.starts_with("PUT "), "{}", err.0);
+    }
+
+    #[tokio::test]
+    async fn post_connection_refused_is_an_error() {
+        let client = ReqwestHttpClient::new(None).unwrap();
+        let err = client.post(UNREACHABLE_URL).await.unwrap_err();
+        assert!(err.0.starts_with("POST "), "{}", err.0);
     }
 }

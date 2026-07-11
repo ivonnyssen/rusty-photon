@@ -54,6 +54,11 @@ pub struct SentinelWorld {
     // config. Present only for the abort scenario.
     pub mount_stub: Option<MountServiceStub>,
     pub mount_service_url: Option<String>,
+
+    // Service restart API: entries for the top-level `services` map, plus the
+    // marker file the scripted restart command writes (proof it ran).
+    pub supervised_services: serde_json::Map<String, serde_json::Value>,
+    pub restart_marker: Option<PathBuf>,
 }
 
 impl SentinelWorld {
@@ -143,6 +148,12 @@ impl SentinelWorld {
             }
         }
 
+        // The top-level supervised-services map (the restart endpoint's and the
+        // corrective ladder's shared registry).
+        if !self.supervised_services.is_empty() {
+            config["services"] = serde_json::Value::Object(self.supervised_services.clone());
+        }
+
         // Wire the operation watchdog when a watched rp URL is set. Buffers are
         // zeroed so the tracked deadline equals the operation's
         // `max_duration_ms` exactly, keeping the BDD fast and deterministic;
@@ -153,20 +164,26 @@ impl SentinelWorld {
                 "reconnect_max_attempts": 2,
                 "reconnect_backoff": "1s",
                 "default_buffer": "0s",
-                "max_restart_duration": "2s",
                 "notifiers": ["pushover"],
                 "operations": { "slew": { "buffer": "0s" } }
             });
             // When a corrective service stub is configured, make `slew` run the
             // abort ladder against it (responsive service + abort verb => the
             // ladder stops at a clean abort, so `restart_command` stays null and
-            // the BDD never shells out).
+            // the BDD never shells out). The service lives in the top-level
+            // `services` map (shared with the restart endpoint); its restart
+            // budget is per-service, kept tight so a regression that reaches the
+            // restart rung fails fast.
             if let Some(svc_url) = &self.mount_service_url {
                 watchdog["operations"]["slew"]["on_expiry"] =
                     serde_json::json!("abort_then_restart");
                 watchdog["operations"]["slew"]["service"] = serde_json::json!("mount");
-                watchdog["services"] = serde_json::json!({
-                    "mount": { "base_url": svc_url, "restart_command": null }
+                config["services"] = serde_json::json!({
+                    "mount": {
+                        "base_url": svc_url,
+                        "restart_command": null,
+                        "max_restart_duration": "2s"
+                    }
                 });
             }
             config["operation_watchdog"] = watchdog;
@@ -202,6 +219,51 @@ impl SentinelWorld {
             "device_number": 0,
             "polling_interval": "1s"
         }));
+    }
+
+    /// Absolute path of the marker file the scripted restart command writes —
+    /// recorded so the Then-step can assert the command actually ran.
+    pub fn restart_marker_path(&mut self) -> PathBuf {
+        let dir = self
+            .temp_dir
+            .get_or_insert_with(|| TempDir::new().expect("failed to create temp dir"));
+        let path = dir.path().join("restart-marker.txt");
+        self.restart_marker = Some(path.clone());
+        path
+    }
+
+    /// Add an entry to the top-level `services` map (the restart endpoint's
+    /// registry). `restart_command: None` serializes as `null` (not restartable).
+    pub fn add_supervised_service(
+        &mut self,
+        name: &str,
+        restart_command: Option<String>,
+        health_command: Option<String>,
+        max_restart_duration: Option<&str>,
+    ) {
+        let mut entry = serde_json::json!({ "restart_command": restart_command });
+        if let Some(health) = health_command {
+            entry["health_command"] = serde_json::json!(health);
+        }
+        if let Some(budget) = max_restart_duration {
+            entry["max_restart_duration"] = serde_json::json!(budget);
+        }
+        self.supervised_services.insert(name.to_string(), entry);
+    }
+
+    /// POST a dashboard endpoint (empty body) and capture status + body.
+    pub async fn http_post(&mut self, path: &str) {
+        let client = reqwest::Client::new();
+        let url = self.dashboard_url(path);
+        match client.post(&url).send().await {
+            Ok(resp) => {
+                self.last_status_code = Some(resp.status().as_u16());
+                self.last_response_body = Some(resp.text().await.unwrap_or_default());
+            }
+            Err(e) => {
+                self.last_error = Some(e.to_string());
+            }
+        }
     }
 
     /// Start a local stub that mimics the Pushover API, replying 200 to any

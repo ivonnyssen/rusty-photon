@@ -64,10 +64,15 @@ pub fn alpaca_binding(family: &str) -> Option<AlpacaBinding> {
 #[derive(Debug, Clone)]
 pub struct CorrectiveTarget {
     pub service_name: String,
-    pub base_url: String,
+    /// Alpaca API base. `None` for a service with no Alpaca surface (a
+    /// restart-only entry): no probe, no abort — the ladder falls through to
+    /// restart.
+    pub base_url: Option<String>,
     pub device_number: u32,
     pub binding: Option<AlpacaBinding>,
     pub restart_command: Option<String>,
+    /// The service's own budget for the restart command + recovery wait.
+    pub max_restart_duration: Duration,
 }
 
 impl CorrectiveTarget {
@@ -75,30 +80,36 @@ impl CorrectiveTarget {
     pub fn new(service_name: &str, family: &str, service: &ServiceConfig) -> Self {
         Self {
             service_name: service_name.to_string(),
-            base_url: service.base_url.trim_end_matches('/').to_string(),
+            base_url: service
+                .base_url
+                .as_deref()
+                .map(|u| u.trim_end_matches('/').to_string()),
             device_number: service.device_number,
             binding: alpaca_binding(family),
             restart_command: service.restart_command.clone(),
+            max_restart_duration: service.max_restart_duration,
         }
     }
 
     /// `{base}/{device-type}/{n}/connected`, or `None` when the family has no
-    /// Alpaca device to probe.
+    /// Alpaca device to probe or the service no Alpaca base URL.
     fn connected_url(&self) -> Option<String> {
+        let base = self.base_url.as_deref()?;
         let b = self.binding?;
         Some(format!(
             "{}/{}/{}/connected",
-            self.base_url, b.device_type, self.device_number
+            base, b.device_type, self.device_number
         ))
     }
 
     /// `{base}/{device-type}/{n}/{verb}`, or `None` when the family has no
-    /// abort verb.
+    /// abort verb or the service no Alpaca base URL.
     fn abort_url(&self) -> Option<String> {
+        let base = self.base_url.as_deref()?;
         let b = self.binding?;
         Some(format!(
             "{}/{}/{}/{}",
-            self.base_url, b.device_type, self.device_number, b.abort_verb
+            base, b.device_type, self.device_number, b.abort_verb
         ))
     }
 }
@@ -323,7 +334,6 @@ pub struct CorrectiveLadder {
     health: Arc<dyn HealthChecker>,
     aborter: Arc<dyn Aborter>,
     restarter: Arc<dyn Restarter>,
-    max_restart_duration: Duration,
 }
 
 impl CorrectiveLadder {
@@ -331,24 +341,21 @@ impl CorrectiveLadder {
         health: Arc<dyn HealthChecker>,
         aborter: Arc<dyn Aborter>,
         restarter: Arc<dyn Restarter>,
-        max_restart_duration: Duration,
     ) -> Self {
         Self {
             health,
             aborter,
             restarter,
-            max_restart_duration,
         }
     }
 
     /// Production ladder: HTTP health-check + abort over a shared client, shell
     /// restarter.
-    pub fn http(http: Arc<dyn HttpClient>, max_restart_duration: Duration) -> Self {
+    pub fn http(http: Arc<dyn HttpClient>) -> Self {
         Self::new(
             Arc::new(HttpHealthChecker::new(Arc::clone(&http))),
             Arc::new(HttpAborter::new(http)),
             Arc::new(ShellRestarter),
-            max_restart_duration,
         )
     }
 
@@ -362,18 +369,15 @@ impl CorrectiveLadder {
             outcome.push("restart=skipped(not restartable)");
             return;
         };
-        // `max_restart_duration` is one budget for the command *and* the
-        // recovery wait — measure what the command spends so recovery gets only
-        // the remainder (rather than a second full budget).
+        // The service's `max_restart_duration` is one budget for the command
+        // *and* the recovery wait — measure what the command spends so recovery
+        // gets only the remainder (rather than a second full budget).
+        let budget = target.max_restart_duration;
         let started = Instant::now();
-        match self
-            .restarter
-            .restart(command, self.max_restart_duration)
-            .await
-        {
+        match self.restarter.restart(command, budget).await {
             Ok(()) => {
                 outcome.push("restart=ran");
-                let remaining = self.max_restart_duration.saturating_sub(started.elapsed());
+                let remaining = budget.saturating_sub(started.elapsed());
                 if self.await_recovery(target, remaining).await {
                     outcome.push("recovery=responsive");
                 } else {
@@ -462,29 +466,27 @@ mod tests {
 
     use crate::io::{HttpResponse, MockHttpClient};
 
+    /// The tight per-service budget every mock-ladder test target carries, so
+    /// recovery polling resolves in milliseconds.
+    const TEST_BUDGET: Duration = Duration::from_millis(20);
+
+    fn service(restart_command: Option<&str>) -> ServiceConfig {
+        ServiceConfig {
+            base_url: Some("http://svc/api/v1".to_string()),
+            device_number: 0,
+            restart_command: restart_command.map(String::from),
+            health_command: None,
+            max_restart_duration: TEST_BUDGET,
+        }
+    }
+
     fn target(restart_command: Option<&str>) -> CorrectiveTarget {
-        CorrectiveTarget::new(
-            "mount",
-            "slew",
-            &ServiceConfig {
-                base_url: "http://svc/api/v1".to_string(),
-                device_number: 0,
-                restart_command: restart_command.map(String::from),
-            },
-        )
+        CorrectiveTarget::new("mount", "slew", &service(restart_command))
     }
 
     fn compound_target(restart_command: Option<&str>) -> CorrectiveTarget {
         // `centering` has no Alpaca binding.
-        CorrectiveTarget::new(
-            "rp",
-            "centering",
-            &ServiceConfig {
-                base_url: "http://svc/api/v1".to_string(),
-                device_number: 0,
-                restart_command: restart_command.map(String::from),
-            },
-        )
+        CorrectiveTarget::new("rp", "centering", &service(restart_command))
     }
 
     // ---- mock rungs ----------------------------------------------------
@@ -574,7 +576,7 @@ mod tests {
         aborter: Arc<MockAbort>,
         restarter: Arc<MockRestart>,
     ) -> CorrectiveLadder {
-        CorrectiveLadder::new(health, aborter, restarter, Duration::from_millis(20))
+        CorrectiveLadder::new(health, aborter, restarter)
     }
 
     // ---- ladder orchestration -----------------------------------------
@@ -721,9 +723,11 @@ mod tests {
             "mount",
             "exposure",
             &ServiceConfig {
-                base_url: "http://svc:11111/api/v1/".to_string(),
+                base_url: Some("http://svc:11111/api/v1/".to_string()),
                 device_number: 3,
                 restart_command: None,
+                health_command: None,
+                max_restart_duration: TEST_BUDGET,
             },
         );
         assert_eq!(
@@ -739,6 +743,25 @@ mod tests {
     #[test]
     fn target_with_no_binding_has_no_urls() {
         let t = compound_target(None);
+        assert!(t.connected_url().is_none());
+        assert!(t.abort_url().is_none());
+    }
+
+    #[test]
+    fn target_without_base_url_has_no_urls() {
+        // A restart-only service (no Alpaca surface): even a family with an
+        // abort verb cannot be probed or aborted.
+        let t = CorrectiveTarget::new(
+            "rp",
+            "slew",
+            &ServiceConfig {
+                base_url: None,
+                device_number: 0,
+                restart_command: Some("restart".to_string()),
+                health_command: None,
+                max_restart_duration: TEST_BUDGET,
+            },
+        );
         assert!(t.connected_url().is_none());
         assert!(t.abort_url().is_none());
     }

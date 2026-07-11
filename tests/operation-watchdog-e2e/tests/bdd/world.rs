@@ -158,33 +158,36 @@ impl WatchdogE2eWorld {
             }],
             "transitions": [],
             "dashboard": { "enabled": true, "port": 0, "history_size": 100 },
+            // The top-level supervised-services registry (shared by the
+            // watchdog ladder and the restart endpoint). `centering` has no
+            // Alpaca binding, so the ladder skips health/abort and goes
+            // straight to this restart command. base_url is unused for a
+            // binding-less family. The command is a trivial cross-shell
+            // `exit 0` (works under both `sh -c` and `cmd /C`, no
+            // path/quoting/redirection to mis-parse); the `restart=ran` token
+            // the test asserts on is emitted only after the real
+            // ShellRestarter spawns it and it exits 0, which is the
+            // end-to-end proof the restart rung executed. The restart budget
+            // is per-service.
+            "services": {
+                "rp": {
+                    "base_url": "http://127.0.0.1:1/api/v1",
+                    "device_number": 0,
+                    "restart_command": "exit 0",
+                    "max_restart_duration": "2s",
+                }
+            },
             "operation_watchdog": {
                 "rp_url": rp_url,
                 "reconnect_max_attempts": 2,
                 "reconnect_backoff": "1s",
                 "default_buffer": "0s",
-                "max_restart_duration": "2s",
                 "notifiers": ["pushover"],
                 "operations": {
                     "centering": {
                         "buffer": "0s",
                         "on_expiry": "abort_then_restart",
                         "service": "rp",
-                    }
-                },
-                "services": {
-                    // `centering` has no Alpaca binding, so the ladder skips
-                    // health/abort and goes straight to this restart command.
-                    // base_url is unused for a binding-less family. The command
-                    // is a trivial cross-shell `exit 0` (works under both `sh -c`
-                    // and `cmd /C`, no path/quoting/redirection to mis-parse);
-                    // the `restart=ran` token the test asserts on is emitted only
-                    // after the real ShellRestarter spawns it and it exits 0,
-                    // which is the end-to-end proof the restart rung executed.
-                    "rp": {
-                        "base_url": "http://127.0.0.1:1/api/v1",
-                        "device_number": 0,
-                        "restart_command": "exit 0",
                     }
                 }
             }

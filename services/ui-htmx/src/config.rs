@@ -26,6 +26,11 @@ pub struct Config {
     /// driver-config UI.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rp: Option<RpTarget>,
+    /// Where Sentinel's dashboard/REST API lives. Absent (the default) means
+    /// no restart affordances are rendered anywhere — Sentinel is optional
+    /// infrastructure. See `docs/services/ui-htmx.md` §Restart via Sentinel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sentinel: Option<SentinelTarget>,
 }
 
 /// Where the BFF itself listens.
@@ -68,6 +73,25 @@ pub struct DriverTarget {
     #[serde(default)]
     pub auth: Option<DriverAuth>,
     /// Optional PEM CA path for a TLS-enabled driver (trusted via `rp-tls`).
+    #[serde(default)]
+    pub ca_cert_path: Option<PathBuf>,
+    /// This driver's name in Sentinel's `services` map (the `{name}` in
+    /// `POST /api/services/{name}/restart`). Defaults to the driver's own
+    /// service id — the convention — so it only needs setting when the two
+    /// differ. Meaningful only when the top-level `sentinel` block is present.
+    #[serde(default)]
+    pub sentinel_service: Option<String>,
+}
+
+/// How to reach Sentinel's dashboard/REST API (the restart endpoint).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SentinelTarget {
+    #[serde(default = "default_sentinel_base_url")]
+    pub base_url: String,
+    /// Optional HTTP Basic credentials for an auth-enabled dashboard.
+    #[serde(default)]
+    pub auth: Option<DriverAuth>,
+    /// Optional PEM CA path for a TLS-enabled dashboard (trusted via `rp-tls`).
     #[serde(default)]
     pub ca_cert_path: Option<PathBuf>,
 }
@@ -123,6 +147,10 @@ fn default_base_url() -> String {
     "http://127.0.0.1:11119".to_string()
 }
 
+fn default_sentinel_base_url() -> String {
+    "http://127.0.0.1:11114".to_string()
+}
+
 fn default_device_type() -> String {
     "covercalibrator".to_string()
 }
@@ -145,6 +173,7 @@ impl Default for DriverTarget {
             device_number: 0,
             auth: None,
             ca_cert_path: None,
+            sentinel_service: None,
         }
     }
 }
@@ -220,6 +249,52 @@ mod tests {
         let c = load_config(&path).unwrap();
         assert_eq!(c.server.port, 11120);
         assert!(c.drivers.0.contains_key("dsd-fp2"));
+    }
+
+    #[test]
+    fn sentinel_block_absent_by_default() {
+        let c = Config::default();
+        assert!(c.sentinel.is_none());
+        assert!(c
+            .drivers
+            .0
+            .get("dsd-fp2")
+            .unwrap()
+            .sentinel_service
+            .is_none());
+    }
+
+    #[test]
+    fn deserialises_sentinel_block_and_service_override() {
+        let json = r#"{
+            "drivers": {
+                "dsd-fp2": { "sentinel_service": "dsd-fp2-unit" }
+            },
+            "sentinel": {
+                "base_url": "http://127.0.0.1:19114",
+                "auth": { "username": "obs", "password": "secret" }
+            }
+        }"#;
+        let c: Config = serde_json::from_str(json).unwrap();
+        let sentinel = c.sentinel.unwrap();
+        assert_eq!(sentinel.base_url, "http://127.0.0.1:19114");
+        assert_eq!(sentinel.auth.unwrap().username, "obs");
+        assert_eq!(
+            c.drivers
+                .0
+                .get("dsd-fp2")
+                .unwrap()
+                .sentinel_service
+                .as_deref(),
+            Some("dsd-fp2-unit")
+        );
+    }
+
+    #[test]
+    fn sentinel_base_url_defaults_to_dashboard_port() {
+        let json = r#"{ "sentinel": {} }"#;
+        let c: Config = serde_json::from_str(json).unwrap();
+        assert_eq!(c.sentinel.unwrap().base_url, "http://127.0.0.1:11114");
     }
 
     #[test]

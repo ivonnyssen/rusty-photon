@@ -1,12 +1,16 @@
 //! Web dashboard with JSON API endpoints (hand-rolled HTML + JS polling)
+//! plus the Service Restart API (`POST /api/services/{name}/restart`).
 
+use std::sync::Arc;
 use std::time::Duration;
 
-use axum::extract::State;
-use axum::response::{Html, IntoResponse};
-use axum::routing::get;
+use axum::extract::{Path, State};
+use axum::http::StatusCode;
+use axum::response::{Html, IntoResponse, Response};
+use axum::routing::{get, post};
 use axum::Router;
 
+use crate::restart::{RestartError, RestartManager};
 use crate::state::StateHandle;
 
 /// Flatten a `Duration` to integer milliseconds for the dashboard JS, which
@@ -25,16 +29,20 @@ fn duration_to_ms_for_js(d: Duration) -> u64 {
 #[derive(Clone)]
 pub struct DashboardState {
     pub state: StateHandle,
+    /// The Service Restart API's engine (the supervised-services registry +
+    /// shell seam). See `docs/services/sentinel.md` §Service Restart API.
+    pub restarts: Arc<RestartManager>,
 }
 
 /// Build the dashboard axum router
-pub fn build_router(state: StateHandle) -> Router {
-    let dashboard_state = DashboardState { state };
+pub fn build_router(state: StateHandle, restarts: Arc<RestartManager>) -> Router {
+    let dashboard_state = DashboardState { state, restarts };
 
     Router::new()
         .route("/", get(index_handler))
         .route("/api/status", get(status_handler))
         .route("/api/history", get(history_handler))
+        .route("/api/services/{name}/restart", post(restart_handler))
         .route("/health", get(health_handler))
         .with_state(dashboard_state)
 }
@@ -235,6 +243,32 @@ async fn history_handler(State(dashboard): State<DashboardState>) -> impl IntoRe
     axum::Json(history)
 }
 
+/// `POST /api/services/{name}/restart`: run the service's configured restart
+/// command (and health-confirmation poll). The command's outcome is a domain
+/// result on HTTP 200; addressing errors map to 404 (unknown name) or 409
+/// (not restartable / already in flight).
+async fn restart_handler(
+    State(dashboard): State<DashboardState>,
+    Path(name): Path<String>,
+) -> Response {
+    match dashboard.restarts.restart(&name).await {
+        Ok(report) => (StatusCode::OK, axum::Json(report)).into_response(),
+        Err(e) => {
+            let code = match e {
+                RestartError::UnknownService(_) => StatusCode::NOT_FOUND,
+                RestartError::NotRestartable(_) | RestartError::AlreadyInFlight(_) => {
+                    StatusCode::CONFLICT
+                }
+            };
+            (
+                code,
+                axum::Json(serde_json::json!({ "error": e.to_string() })),
+            )
+                .into_response()
+        }
+    }
+}
+
 async fn health_handler() -> impl IntoResponse {
     "OK"
 }
@@ -251,6 +285,11 @@ mod tests {
     use crate::monitor::MonitorState;
     use crate::notifier::NotificationRecord;
     use crate::state::new_state_handle;
+
+    /// Router with an empty supervised-services registry (non-restart tests).
+    fn router(state: StateHandle) -> Router {
+        build_router(state, Arc::new(RestartManager::shell(Default::default())))
+    }
 
     #[test]
     fn duration_to_ms_zero_stays_zero() {
@@ -288,7 +327,7 @@ mod tests {
     #[tokio::test]
     async fn health_returns_ok() {
         let state = setup_state();
-        let app = build_router(state);
+        let app = router(state);
         let response = app
             .oneshot(
                 Request::builder()
@@ -308,7 +347,7 @@ mod tests {
             let mut s = state.write().await;
             s.update_monitor("Test Monitor", MonitorState::Safe, 1000);
         }
-        let app = build_router(state);
+        let app = router(state);
         let response = app
             .oneshot(
                 Request::builder()
@@ -344,7 +383,7 @@ mod tests {
                 timestamp_epoch_ms: 1000,
             });
         }
-        let app = build_router(state);
+        let app = router(state);
         let response = app
             .oneshot(
                 Request::builder()
@@ -368,7 +407,7 @@ mod tests {
     #[tokio::test]
     async fn index_returns_html() {
         let state = setup_state();
-        let app = build_router(state);
+        let app = router(state);
         let response = app
             .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
             .await
@@ -384,10 +423,83 @@ mod tests {
         assert!(html.contains("Next Check"));
     }
 
+    /// A [`crate::corrective::Restarter`] that accepts every command — the
+    /// restart-handler tests only assert the HTTP mapping, not the shell.
+    #[derive(Debug)]
+    struct AlwaysOkRunner;
+
+    #[async_trait::async_trait]
+    impl crate::corrective::Restarter for AlwaysOkRunner {
+        async fn restart(&self, _command: &str, _budget: Duration) -> crate::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn restart_router(services_json: &str) -> Router {
+        let services = serde_json::from_str(services_json).unwrap();
+        build_router(
+            setup_state(),
+            Arc::new(RestartManager::new(services, Arc::new(AlwaysOkRunner))),
+        )
+    }
+
+    async fn post_restart(app: Router, name: &str) -> (StatusCode, serde_json::Value) {
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/services/{name}/restart"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, serde_json::from_slice(&body).unwrap())
+    }
+
+    #[tokio::test]
+    async fn restart_unknown_service_is_404() {
+        let app = restart_router("{}");
+        let (status, body) = post_restart(app, "nope").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .contains("no configured service named 'nope'"),
+            "{body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn restart_not_restartable_service_is_409() {
+        let app = restart_router(r#"{ "mount": { "restart_command": null } }"#);
+        let (status, body) = post_restart(app, "mount").await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert!(
+            body["error"].as_str().unwrap().contains("not restartable"),
+            "{body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn restart_ok_reports_domain_outcome_on_200() {
+        let app = restart_router(r#"{ "svc": { "restart_command": "restart-cmd" } }"#);
+        let (status, body) = post_restart(app, "svc").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["service"], "svc");
+        assert_eq!(body["status"], "ok");
+        assert_eq!(body["recovery"], "skipped");
+    }
+
     #[tokio::test]
     async fn status_empty_monitors() {
         let state = new_state_handle(vec![], 10);
-        let app = build_router(state);
+        let app = router(state);
         let response = app
             .oneshot(
                 Request::builder()

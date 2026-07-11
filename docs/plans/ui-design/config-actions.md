@@ -7,7 +7,11 @@ reload). Phase 2 **landed** — the BFF skeleton + dsd-fp2 config page ship as t
 across **all six** drivers via the shared `rusty-photon-config::actions` module (see
 [`docs/services/config-actions.md`](../../services/config-actions.md)), and the
 `ui-htmx` BFF now renders **any** driver's form generically from `config.schema`,
-routing every configured driver under `/config/{service}`. Key protocol decisions
+routing every configured driver under `/config/{service}`. Phase 4 **landed** —
+Sentinel's `POST /api/services/{name}/restart` (driven by the new top-level
+`services` registry) plus the BFF's "Restart via Sentinel" button and
+`restart_required` escalation; decisions resolved 2026-07-10 — see
+[Decisions (2026-07-10)](#decisions-2026-07-10). Key protocol decisions
 resolved 2026-05-24 — see [Resolved](#resolved-2026-05-24).
 **Companion to:** [`mocks/README.md`](mocks/README.md) (the chosen UI direction and stack).
 
@@ -452,11 +456,27 @@ along the natural driver ⇆ BFF fault line.
 - Future: promote the shared helper to a standalone vendor-neutral crate once it
   has settled (see [Decisions](#decisions-2026-05-27)).
 
-**Phase 4 — Sentinel `service.restart`.**
-- Implement the `Restarter` + per-service `restart_command` config; expose
-  `POST /api/services/{name}/restart`. Wire the BFF "Restart (via Sentinel)"
-  affordance and the `restart_required` escalation. (Coordinate with the watchdog
-  plan.)
+**Phase 4 — Sentinel `service.restart`. ✅ Landed.**
+- ✅ Sentinel exposes `POST /api/services/{name}/restart` on the dashboard
+  router (behind the same `dashboard.auth`/TLS layers), reusing the watchdog
+  ladder's already-implemented `Restarter`/`ShellRestarter`. The per-service
+  registry is the **new top-level `services` map** (moved out of
+  `operation_watchdog.services`, which is gone — the watchdog references the
+  shared map), with `base_url` now optional so non-Alpaca services can be
+  restart-only entries, a new optional shell `health_command` (exit 0 =
+  healthy; polled after the restart to confirm recovery), and a per-service
+  `max_restart_duration` (default 60s) replacing the watchdog-global knob.
+  See [`docs/services/sentinel.md`](../../services/sentinel.md)
+  §Service Restart API for the endpoint contract (200 ok/failed + recovery,
+  404 unknown, 409 not-restartable / in-flight).
+- ✅ The BFF renders a "Restart via Sentinel" button on every driver card when
+  its config has a `sentinel` block (`{base_url, auth, ca_cert_path}`; each
+  driver's Sentinel-side name comes from `sentinel_service`, defaulting to the
+  service id), and escalates a non-empty `restart_required[]` from
+  `config.apply` with an inline banner + the same button. A restart that
+  Sentinel accepts flows into the existing reconnecting/poll fragment.
+  See [`docs/services/ui-htmx.md`](../../services/ui-htmx.md)
+  §Restart via Sentinel.
 
 **Phase 5 — `rp` config + equipment roster + the activity stream. ⏳ In progress
 (single PR).** Scope as built (details in
@@ -559,10 +579,39 @@ Calls made while scoping the [federated roster](#federated-roster-managed-own-vs
   auto-detect as *managed*. Timing: only after the pattern has settled across a few
   of our own drivers — don't publish a moving target.
 
+### Decisions (2026-07-10)
+
+Calls made while implementing Phase 4:
+
+- **One supervised-services registry, top-level.** The restart endpoint must
+  not require configuring the watchdog (whose block demands `rp_url`), and two
+  maps carrying `restart_command` would drift — so `operation_watchdog.services`
+  moved to a **top-level `services` map** consumed by both. Breaking config
+  change, sanctioned pre-1.0.
+- **Recovery confirmation is a shell command, symmetric with the restart.**
+  Since `restart_command` is a shell command, the recovery probe is the
+  optional per-service `health_command` (exit 0 = healthy) rather than an HTTP
+  Alpaca probe — it works for non-Alpaca services and needs no device-type
+  config. Follow platform best practice: `systemctl --user is-active <svc>` on
+  unix, `sc query <svc> | findstr RUNNING` on Windows. The watchdog ladder's
+  HTTP probe (device `connected`) is unchanged.
+- **The restart budget is per-service.** `max_restart_duration` (default 60s)
+  lives on each `services` entry and bounds command + recovery together, for
+  both consumers; the watchdog-global `max_restart_duration` is removed — one
+  knob per service.
+- **Domain outcomes are HTTP 200.** A failed restart command is
+  `{"status":"failed"}` on a 200 (mirroring `config.apply`'s
+  `status:"invalid"` convention); 4xx is reserved for addressing errors
+  (404 unknown name, 409 not-restartable / already in flight).
+- **Manual restarts notify no one.** The endpoint logs, but does not dispatch
+  notifiers or write notification history — the operator pressing the button
+  already knows.
+
 ## Doc impact (CLAUDE.md rule 2)
 
 When implementing: add a "Config actions" section to `docs/services/dsd-fp2.md`
 (done); create `docs/services/ui-htmx.md` for the BFF (done); extend
 `docs/services/sentinel.md` with
-`service.restart` (Phase 4); note any `ReloadSignal` trigger addition in
+`service.restart` (Phase 4 — done: §Service Restart API + the top-level
+`services` registry); note any `ReloadSignal` trigger addition in
 `docs/skills/service-lifecycle.md`; and link this plan from `mocks/README.md`.

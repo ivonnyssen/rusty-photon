@@ -31,6 +31,17 @@ pub struct Page<'a> {
     pub service: &'a str,
     pub title: &'a str,
     pub subtitle: &'a str,
+    /// Whether the "Restart via Sentinel" affordances render: true only when
+    /// the BFF has a `sentinel` block configured (the driver then has a
+    /// Sentinel-side service name to target).
+    pub can_restart: bool,
+}
+
+impl Page<'_> {
+    /// The BFF route the restart affordances post to.
+    fn restart_url(&self) -> String {
+        format!("/config/{}/restart", self.service)
+    }
 }
 
 /// A status banner rendered above the form.
@@ -41,8 +52,9 @@ pub enum Banner {
     /// `config.apply` returned `status:"ok"` with `restart_required[]` paths:
     /// persisted, but the listed changes only take effect on the target's next
     /// process start (`ApplyDisposition::Restart` — rp, which has no in-process
-    /// reload). The restart callout; Phase 4's "Restart via Sentinel" affordance
-    /// attaches here.
+    /// reload — or a driver field classified restart-required). The restart
+    /// callout; when a Sentinel is configured, the "Restart via Sentinel"
+    /// affordance attaches inline.
     SavedRestartRequired(Vec<String>),
     /// `config.apply` returned `status:"invalid"`.
     Invalid,
@@ -488,7 +500,7 @@ pub fn config_card(
     let action = format!("/config/{}", page.service);
     html! {
         div #config-card.card {
-            @if let Some(b) = banner { (banner_markup(page.service, &b)) }
+            @if let Some(b) = banner { (banner_markup(page, &b)) }
             h1 { (page.title) }
             p.subtitle { (page.subtitle) }
             // htmx-driven, JavaScript-required: the form submits via `hx-post`.
@@ -507,6 +519,35 @@ pub fn config_card(
                 }
                 div.actions { button.primary type="submit" { "Apply" } }
             }
+            // The recovery hammer (config-actions plan Phase 4): Sentinel owns
+            // process restart; this posts to the BFF's restart route, which
+            // calls Sentinel's REST API. Outside the form so the POST carries
+            // no form data, and rendered only when a Sentinel is configured.
+            @if page.can_restart {
+                div.card-footer {
+                    div.hint {
+                        "Configuration changes apply via an in-process reload — no "
+                        "restart needed. Sentinel can restart the driver's process: "
+                        "the recovery hammer for a wedged driver."
+                    }
+                    (restart_button(page))
+                }
+            }
+        }
+    }
+}
+
+/// The "Restart via Sentinel" htmx button (JS-required, plan §7). The native
+/// `hx-confirm` prompt guards against a stray click bouncing a healthy driver.
+fn restart_button(page: &Page<'_>) -> Markup {
+    let confirm = format!(
+        "Restart {}'s process via Sentinel? In-flight operations are lost.",
+        page.service
+    );
+    html! {
+        button.restart-sentinel type="button" hx-post=(page.restart_url())
+            hx-target="#config-card" hx-swap="outerHTML" hx-confirm=(confirm) {
+            "Restart via Sentinel"
         }
     }
 }
@@ -598,13 +639,34 @@ fn field_hints(
 /// The "applying — reconnecting" fragment: polls `…/status` once a second until
 /// the driver answers and the poll swaps in a fresh card.
 pub fn reconnecting_card(service: &str) -> Markup {
+    polling_card(service, "Saved — the driver is reloading. Reconnecting…")
+}
+
+/// The restart-accepted fragment: Sentinel ran the restart command, so the
+/// driver's process is coming back — same poll wiring as the reload flow.
+/// `recovery_timed_out` adds that Sentinel's own health check never confirmed
+/// recovery within its budget (the poll may still succeed — the budget is
+/// Sentinel's, not the driver's).
+pub fn restarting_card(service: &str, recovery_timed_out: bool) -> Markup {
+    let message = if recovery_timed_out {
+        "Restart requested via Sentinel, but its health check did not confirm \
+         recovery within the budget. Reconnecting anyway…"
+    } else {
+        "Restart requested via Sentinel — the driver is restarting. Reconnecting…"
+    };
+    polling_card(service, message)
+}
+
+/// Shared skeleton of the reconnect-polling fragments: polls `…/status` once a
+/// second until the driver answers and the poll swaps in a fresh card.
+fn polling_card(service: &str, message: &str) -> Markup {
     let status_url = format!("/config/{service}/status");
     html! {
         div #config-card.card hx-get=(status_url) hx-trigger="every 1s"
             hx-swap="outerHTML" hx-target="this" {
             div class="banner applying" {
                 span.dot {}
-                span { "Saved — the driver is reloading. Reconnecting…" }
+                span { (message) }
             }
         }
     }
@@ -680,16 +742,19 @@ fn simple_banner(kind: &str, text: &str) -> Markup {
     }
 }
 
-fn banner_markup(service: &str, banner: &Banner) -> Markup {
+fn banner_markup(page: &Page<'_>, banner: &Banner) -> Markup {
     match banner {
         // The restart callout lists the pending paths — persisted, but only in
-        // effect after the target's next process start.
+        // effect after the target's next process start. When a Sentinel is
+        // configured, the restart affordance attaches inline so the operator
+        // can act on the callout directly.
         Banner::SavedRestartRequired(paths) => html! {
             div class="banner warn" {
                 span.dot {}
                 span {
-                    (format!("Saved. These changes take effect when {service} is restarted: "))
+                    (format!("Saved. These changes take effect when {} is restarted: ", page.service))
                     span.mono { (paths.join(", ")) }
+                    @if page.can_restart { " " (restart_button(page)) }
                 }
             }
         },
@@ -1105,6 +1170,7 @@ mod tests {
             service: "dsd-fp2",
             title: "Deep Sky Dad FP2",
             subtitle: "dsd-fp2 · covercalibrator",
+            can_restart: false,
         }
     }
 

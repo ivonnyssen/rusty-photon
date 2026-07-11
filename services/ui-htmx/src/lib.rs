@@ -24,6 +24,7 @@ pub mod pages;
 pub mod probe;
 pub mod roster;
 pub mod rp_client;
+pub mod sentinel_client;
 /// Test-only Server-Sent-Events fixture routes (UI-testing plan §9 Tier 2) —
 /// compiled ONLY under the `test-sse` cargo feature, so they ship nothing in the
 /// real binary. `#[coverage(off)]` keeps this test-only code (and the streaming
@@ -51,6 +52,9 @@ pub use driver_client::{
     ConfigGetResponse, ConfigSchemaResponse, FieldError, RestConfigClient,
 };
 pub use io::{HttpClient, ReqwestHttpClient};
+pub use sentinel_client::{
+    HttpSentinelClient, RestartOutcome, SentinelClient, SentinelClientError,
+};
 
 use pages::{Banner, DriverLink, FieldModel, Page};
 
@@ -61,6 +65,10 @@ struct DriverHandle {
     title: String,
     subtitle: String,
     client: Arc<dyn ConfigClient>,
+    /// This driver's name in Sentinel's `services` map. `Some` only when the
+    /// BFF has a `sentinel` block configured (then it defaults to the driver's
+    /// own service id) — it gates every restart affordance.
+    sentinel_service: Option<String>,
 }
 
 impl DriverHandle {
@@ -69,6 +77,7 @@ impl DriverHandle {
             service,
             title: &self.title,
             subtitle: &self.subtitle,
+            can_restart: self.sentinel_service.is_some(),
         }
     }
 }
@@ -95,11 +104,13 @@ pub struct RpState {
 }
 
 /// Shared handler state: every configured driver, keyed by service id, plus
-/// the optional rp-backed surface state.
+/// the optional rp-backed surface state and the optional Sentinel restart
+/// client the restart affordances call.
 #[derive(Clone)]
 pub struct AppState {
     drivers: Arc<BTreeMap<String, DriverHandle>>,
     rp: Option<Arc<RpState>>,
+    sentinel: Option<Arc<dyn SentinelClient>>,
     /// Ends open SSE proxy streams on service shutdown — axum's graceful
     /// shutdown does not close them on its own (axum #2673); `main` links this
     /// to the `ServiceRunner` shutdown (the same pattern as rp's `sse_shutdown`).
@@ -168,8 +179,27 @@ impl AppState {
     /// Build the production state: an `AlpacaConfigClient` over a `reqwest`-backed
     /// `HttpClient` (CA trust + optional Basic auth) for every configured driver,
     /// plus — when an `rp` target is configured — a `RestConfigClient` under the
-    /// reserved `rp` key for rp's own config page.
+    /// reserved `rp` key for rp's own config page, plus an `HttpSentinelClient`
+    /// when a `sentinel` block is configured.
     pub fn from_config(config: &Config) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let sentinel: Option<Arc<dyn SentinelClient>> = match &config.sentinel {
+            Some(target) => {
+                let reqwest_client = match &target.auth {
+                    Some(auth) => ReqwestHttpClient::with_auth(
+                        target.ca_cert_path.as_deref(),
+                        auth.username.clone(),
+                        auth.password.clone(),
+                    )?,
+                    None => ReqwestHttpClient::new(target.ca_cert_path.as_deref())?,
+                };
+                Some(Arc::new(HttpSentinelClient::new(
+                    Arc::new(reqwest_client),
+                    &target.base_url,
+                )))
+            }
+            None => None,
+        };
+
         let mut drivers = BTreeMap::new();
         for (service, target) in &config.drivers.0 {
             // `rp` is reserved for the rp target so `/config/rp` is unambiguous.
@@ -192,12 +222,21 @@ impl AppState {
                 &target.device_type,
                 target.device_number,
             );
+            // The restart affordances render only with a Sentinel to call;
+            // the Sentinel-side name defaults to the driver's own service id.
+            let sentinel_service = sentinel.as_ref().map(|_| {
+                target
+                    .sentinel_service
+                    .clone()
+                    .unwrap_or_else(|| service.clone())
+            });
             drivers.insert(
                 service.clone(),
                 DriverHandle {
                     title: target.name.clone().unwrap_or_else(|| service.clone()),
                     subtitle: format!("{service} · {}", target.device_type),
                     client: Arc::new(client),
+                    sentinel_service,
                 },
             );
         }
@@ -217,6 +256,10 @@ impl AppState {
                     title: "rp".to_string(),
                     subtitle: "rp · orchestrator (REST)".to_string(),
                     client: Arc::clone(&config_client),
+                    // rp has no in-process reload — every apply is
+                    // restart-required — so the Sentinel affordance matters
+                    // most here. Sentinel-side name: the `rp` convention.
+                    sentinel_service: sentinel.as_ref().map(|_| RP_SERVICE.to_string()),
                 },
             );
             rp_state = Some(Arc::new(RpState {
@@ -239,6 +282,7 @@ impl AppState {
         Ok(Self {
             drivers: Arc::new(drivers),
             rp: rp_state,
+            sentinel,
             sse_shutdown: tokio_util::sync::CancellationToken::new(),
         })
     }
@@ -252,11 +296,38 @@ impl AppState {
                 title: service.to_string(),
                 subtitle: service.to_string(),
                 client,
+                sentinel_service: None,
             },
         );
         Self {
             drivers: Arc::new(drivers),
             rp: None,
+            sentinel: None,
+            sse_shutdown: tokio_util::sync::CancellationToken::new(),
+        }
+    }
+
+    /// [`AppState::with_client`] plus a Sentinel client (tests inject stubs for
+    /// both), with the Sentinel-side name defaulting to the service id.
+    pub fn with_client_and_sentinel(
+        service: &str,
+        client: Arc<dyn ConfigClient>,
+        sentinel: Arc<dyn SentinelClient>,
+    ) -> Self {
+        let mut drivers = BTreeMap::new();
+        drivers.insert(
+            service.to_string(),
+            DriverHandle {
+                title: service.to_string(),
+                subtitle: service.to_string(),
+                client,
+                sentinel_service: Some(service.to_string()),
+            },
+        );
+        Self {
+            drivers: Arc::new(drivers),
+            rp: None,
+            sentinel: Some(sentinel),
             sse_shutdown: tokio_util::sync::CancellationToken::new(),
         }
     }
@@ -276,10 +347,12 @@ impl AppState {
                 title: "rp".to_string(),
                 subtitle: "rp · orchestrator (REST)".to_string(),
                 client: Arc::clone(&config_client),
+                sentinel_service: None,
             },
         );
         Self {
             drivers: Arc::new(drivers),
+            sentinel: None,
             rp: Some(Arc::new(RpState {
                 config_client,
                 api,
@@ -369,6 +442,9 @@ async fn resolve_service(state: &AppState, service: &str) -> Result<DriverHandle
         title: entry.display_name().to_string(),
         subtitle: format!("{} · {} (via rp roster)", entry.id, kind.ascom_type()),
         client: Arc::new(client),
+        // Roster devices are hardware rp manages, not OS services Sentinel
+        // supervises — no restart affordance.
+        sentinel_service: None,
     })
 }
 
@@ -378,6 +454,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/", get(index))
         .route("/config/{service}", get(config_get).post(config_post))
         .route("/config/{service}/status", get(config_status))
+        .route(
+            "/config/{service}/restart",
+            axum::routing::post(config_restart),
+        )
         .route("/equipment", get(pages::equipment::page))
         .route(
             "/equipment/{kind}/new",
@@ -643,6 +723,50 @@ async fn config_status(
         &[],
         Some(Banner::Reconnected),
     )
+}
+
+/// Ask Sentinel to restart the driver's process (the "Restart via Sentinel"
+/// affordances post here), then render the outcome: an accepted restart swaps
+/// in the reconnect-polling fragment; everything else is an error card naming
+/// the reason. See `docs/services/ui-htmx.md` §Restart via Sentinel.
+async fn config_restart(
+    State(state): State<AppState>,
+    Path(service): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let title = page_title(&service);
+    let Some(handle) = state.drivers.get(&service) else {
+        return respond(pages::unknown_service_card(&service), &headers, &title);
+    };
+    let (Some(sentinel), Some(name)) = (&state.sentinel, &handle.sentinel_service) else {
+        // The affordances that post here only render with a Sentinel
+        // configured, so this answers only hand-crafted requests.
+        return respond(
+            pages::message_error_card(
+                &service,
+                "No Sentinel is configured, so the BFF cannot restart this driver.",
+            ),
+            &headers,
+            &title,
+        );
+    };
+    let card = match sentinel.restart(name).await {
+        Ok(outcome) if outcome.is_ok() => {
+            pages::restarting_card(&service, outcome.recovery_timed_out())
+        }
+        Ok(outcome) => pages::message_error_card(
+            &service,
+            &format!(
+                "Sentinel could not restart the driver: {}",
+                outcome
+                    .detail
+                    .as_deref()
+                    .unwrap_or("the restart command failed")
+            ),
+        ),
+        Err(err) => pages::message_error_card(&service, &err.to_string()),
+    };
+    respond(card, &headers, &title)
 }
 
 #[cfg(test)]
@@ -1149,5 +1273,247 @@ mod tests {
         );
         assert!(html.contains("site.latitude_degrees"), "{html}");
         assert!(html.contains("banner warn"), "{html}");
+    }
+
+    // --- Restart via Sentinel (config-actions plan Phase 4) -----------------
+
+    /// A `SentinelClient` returning a canned outcome, recording the Sentinel-
+    /// side service name it was asked to restart.
+    struct StubSentinel {
+        result: Result<RestartOutcome, SentinelClientError>,
+        last_service: std::sync::Mutex<Option<String>>,
+    }
+
+    impl StubSentinel {
+        fn new(result: Result<RestartOutcome, SentinelClientError>) -> Arc<Self> {
+            Arc::new(Self {
+                result,
+                last_service: std::sync::Mutex::new(None),
+            })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SentinelClient for StubSentinel {
+        async fn restart(&self, service: &str) -> Result<RestartOutcome, SentinelClientError> {
+            *self.last_service.lock().unwrap() = Some(service.to_string());
+            self.result.clone()
+        }
+    }
+
+    fn outcome(status: &str, recovery: Option<&str>, detail: Option<&str>) -> RestartOutcome {
+        RestartOutcome {
+            status: status.to_string(),
+            recovery: recovery.map(String::from),
+            detail: detail.map(String::from),
+        }
+    }
+
+    async fn post_restart(state: AppState) -> String {
+        let response =
+            config_restart(State(state), Path("dsd-fp2".to_string()), HeaderMap::new()).await;
+        body_of(response).await
+    }
+
+    #[tokio::test]
+    async fn config_get_offers_restart_only_with_sentinel_configured() {
+        let without = AppState::with_client("dsd-fp2", Arc::new(StaticConfigDriver));
+        let html = body_of(
+            config_get(
+                State(without),
+                Path("dsd-fp2".to_string()),
+                Query(UnlockQuery::default()),
+                HeaderMap::new(),
+            )
+            .await,
+        )
+        .await;
+        assert!(
+            !html.contains("restart-sentinel"),
+            "restart affordance rendered with no sentinel configured:\n{html}"
+        );
+
+        let sentinel = StubSentinel::new(Ok(outcome("ok", Some("healthy"), None)));
+        let with =
+            AppState::with_client_and_sentinel("dsd-fp2", Arc::new(StaticConfigDriver), sentinel);
+        let html = body_of(
+            config_get(
+                State(with),
+                Path("dsd-fp2".to_string()),
+                Query(UnlockQuery::default()),
+                HeaderMap::new(),
+            )
+            .await,
+        )
+        .await;
+        assert!(
+            html.contains(r#"hx-post="/config/dsd-fp2/restart""#),
+            "missing restart affordance:\n{html}"
+        );
+    }
+
+    #[tokio::test]
+    async fn config_restart_without_sentinel_is_an_error_card() {
+        let state = AppState::with_client("dsd-fp2", Arc::new(StaticConfigDriver));
+        let html = post_restart(state).await;
+        assert!(html.contains("No Sentinel is configured"), "{html}");
+    }
+
+    #[tokio::test]
+    async fn config_restart_accepted_renders_reconnect_poll() {
+        let sentinel = StubSentinel::new(Ok(outcome("ok", Some("healthy"), None)));
+        let state = AppState::with_client_and_sentinel(
+            "dsd-fp2",
+            Arc::new(StaticConfigDriver),
+            Arc::clone(&sentinel) as Arc<StubSentinel>,
+        );
+        let html = post_restart(state).await;
+        assert!(html.contains("Restart requested via Sentinel"), "{html}");
+        assert!(
+            html.contains(r#"hx-get="/config/dsd-fp2/status""#),
+            "restarting card must poll the status route:\n{html}"
+        );
+        assert_eq!(
+            sentinel.last_service.lock().unwrap().as_deref(),
+            Some("dsd-fp2"),
+            "the Sentinel-side name defaults to the service id"
+        );
+    }
+
+    #[tokio::test]
+    async fn config_restart_recovery_timeout_warns() {
+        let sentinel = StubSentinel::new(Ok(outcome("ok", Some("timeout"), None)));
+        let state =
+            AppState::with_client_and_sentinel("dsd-fp2", Arc::new(StaticConfigDriver), sentinel);
+        let html = post_restart(state).await;
+        assert!(
+            html.contains("did not confirm recovery"),
+            "missing recovery-timeout warning:\n{html}"
+        );
+        assert!(
+            html.contains(r#"hx-get="/config/dsd-fp2/status""#),
+            "the poll still runs — the budget is Sentinel's, not the driver's:\n{html}"
+        );
+    }
+
+    #[tokio::test]
+    async fn config_restart_failed_command_shows_detail() {
+        let sentinel = StubSentinel::new(Ok(outcome(
+            "failed",
+            None,
+            Some("restart `x` exited with 1"),
+        )));
+        let state =
+            AppState::with_client_and_sentinel("dsd-fp2", Arc::new(StaticConfigDriver), sentinel);
+        let html = post_restart(state).await;
+        assert!(
+            html.contains("could not restart the driver: restart `x` exited with 1"),
+            "{html}"
+        );
+    }
+
+    #[tokio::test]
+    async fn config_restart_unsupervised_names_the_reason() {
+        let sentinel = StubSentinel::new(Err(SentinelClientError::UnknownService(
+            "no configured service named 'dsd-fp2'".to_string(),
+        )));
+        let state =
+            AppState::with_client_and_sentinel("dsd-fp2", Arc::new(StaticConfigDriver), sentinel);
+        let html = post_restart(state).await;
+        assert!(html.contains("does not supervise"), "{html}");
+        assert!(html.contains("no configured service named"), "{html}");
+    }
+
+    /// Renders like [`StaticConfigDriver`]; `config.apply` reports the change
+    /// persisted but needing a process restart — the classification no real
+    /// driver emits today, so this arm is unit-driven.
+    struct RestartRequiredDriver;
+
+    #[async_trait::async_trait]
+    impl ConfigClient for RestartRequiredDriver {
+        async fn get_config(&self) -> Result<ConfigGetResponse, ConfigClientError> {
+            StaticConfigDriver.get_config().await
+        }
+        async fn get_schema(&self) -> Result<ConfigSchemaResponse, ConfigClientError> {
+            StaticConfigDriver.get_schema().await
+        }
+        async fn apply_config(
+            &self,
+            _config: &Value,
+        ) -> Result<ConfigApplyResponse, ConfigClientError> {
+            Ok(ConfigApplyResponse {
+                status: ApplyStatus::Ok,
+                applied: Vec::new(),
+                reload: Vec::new(),
+                restart_required: vec!["server.port".to_string()],
+                skipped_override: Vec::new(),
+                persisted_to: None,
+                errors: Vec::new(),
+            })
+        }
+    }
+
+    /// Submit the static driver's own config back through `config_post` (the
+    /// hidden blobs plus every enabled field, as a browser would send them).
+    async fn submit_static_form(state: AppState) -> String {
+        let config = StaticConfigDriver.get_config().await.unwrap().config;
+        let mut form = HashMap::new();
+        form.insert(
+            "__config".to_string(),
+            serde_json::to_string(&config).unwrap(),
+        );
+        form.insert("__overrides".to_string(), "[]".to_string());
+        form.insert("__unlocked".to_string(), "[]".to_string());
+        for (name, value) in [
+            ("serial.port", "/dev/ttyACM0"),
+            ("serial.baud_rate", "115200"),
+            ("server.discovery_port", "32227"),
+            ("cover_calibrator.name", "FP2"),
+            ("cover_calibrator.max_brightness", "4096"),
+        ] {
+            form.insert(name.to_string(), value.to_string());
+        }
+        let response = config_post(
+            State(state),
+            Path("dsd-fp2".to_string()),
+            HeaderMap::new(),
+            Form(form),
+        )
+        .await;
+        body_of(response).await
+    }
+
+    #[tokio::test]
+    async fn apply_with_restart_required_escalates_to_sentinel() {
+        let sentinel = StubSentinel::new(Ok(outcome("ok", Some("skipped"), None)));
+        let state = AppState::with_client_and_sentinel(
+            "dsd-fp2",
+            Arc::new(RestartRequiredDriver),
+            sentinel,
+        );
+        let html = submit_static_form(state).await;
+        assert!(
+            html.contains("take effect when dsd-fp2 is restarted"),
+            "missing restart callout:\n{html}"
+        );
+        assert!(html.contains("server.port"), "{html}");
+        assert!(
+            html.contains(r#"hx-post="/config/dsd-fp2/restart""#),
+            "the callout must offer the Sentinel restart:\n{html}"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_with_restart_required_without_sentinel_has_no_button() {
+        let state = AppState::with_client("dsd-fp2", Arc::new(RestartRequiredDriver));
+        let html = submit_static_form(state).await;
+        assert!(
+            html.contains("take effect when dsd-fp2 is restarted"),
+            "missing restart callout:\n{html}"
+        );
+        assert!(
+            !html.contains("restart-sentinel"),
+            "no restart button without a sentinel:\n{html}"
+        );
     }
 }
