@@ -271,6 +271,8 @@ mod tests {
         let json = serde_json::to_string(&d).unwrap();
         let back: RpTarget = serde_json::from_str(&json).unwrap();
         assert_eq!(back.base_url, d.base_url);
+        assert!(back.auth.is_none());
+        assert!(back.ca_cert_path.is_none());
     }
 
     #[test]
