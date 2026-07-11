@@ -10,7 +10,7 @@ PR #459); `deep_sky.json` PR #461 (planner gaps closed by rp PRs #466,
 #468, #471; multi-instance OmniSim #470); Phase F (the
 `workflow-documents.md` authoring guide, the `rp.md` § Orchestration
 rewrite, `sky_flat.json`) together with rp-side startup recovery in the
-archiving PR. Deliberately deferred, recorded below and in
+archiving PR #486. Deliberately deferred, recorded below and in
 `session-runner.md` § MVP Scope: Luau `script` nodes, container-scoped
 triggers, parallel containers, sub-workflow imports, the `ui-htmx`
 editor, typed array-element declarations, and retiring the Rust
