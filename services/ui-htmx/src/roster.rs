@@ -230,7 +230,6 @@ pub fn insert_entry(
             submitted_id.to_string(),
         ));
     }
-    let id = submitted_id.to_string();
     let equipment = equipment_mut(config)?;
     let list = equipment
         .entry(kind.config_key().to_string())
@@ -239,7 +238,6 @@ pub fn insert_entry(
         return Err(SurgeryError::MalformedConfig);
     };
     items.push(entry);
-    let _ = id;
     Ok(error_prefix(kind, Some(items.len() - 1)))
 }
 

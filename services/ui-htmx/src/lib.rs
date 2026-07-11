@@ -660,10 +660,11 @@ mod tests {
         let config: Config = serde_json::from_str(json).unwrap();
         match AppState::from_config(&config) {
             Ok(_) => panic!("expected from_config to reject a driver named rp"),
-            Err(e) => {
-                assert!(e.to_string().contains("must not contain"), "{e}");
-                assert!(e.to_string().contains("rp"), "{e}");
-            }
+            Err(e) => assert!(
+                e.to_string()
+                    .contains(r#"must not contain an entry named "rp""#),
+                "{e}"
+            ),
         }
     }
 
