@@ -1182,11 +1182,17 @@ document lives in `workflows/sky_flat.json`; the load-bearing decisions:
   software selects by the report, not the engine). Either way the next
   duration is `clamp(duration × target/median, exp_min, exp_max)` —
   with the `median == 0 ? duration × 2` guard from the flats port.
-- **The twilight window closes; the document notices at the clamp
-  rails.** At dusk (`dawn: false`, the default) a sky still too bright
-  with the duration pinned at the floor means the window hasn't opened
-  yet — `wait` 30 s and re-test; a sky too dark with the duration
-  pinned at the ceiling means the window is over — set
+- **The twilight window closes; the document notices when a frame
+  captured *at* a rail is still out of band.** The window checks run
+  **before** the rescale, so `session.duration` still holds the
+  duration the measured frame was actually captured at — a rail must
+  be tested by a real frame before it can close the window (checking
+  after the rescale would end the run a frame early: a mid-range frame
+  whose rescale merely *clamps* to the ceiling says nothing about what
+  a ceiling-length frame would read). At dusk (`dawn: false`, the
+  default) a frame at the floor that is still too bright means the
+  window hasn't opened yet — `wait` 30 s and re-test; a frame at the
+  ceiling that is still too dark means the window is over — set
   `session.window_over`, which ends the frame loop *and* gates the
   filter loop (later filters would only be darker). At dawn
   (`dawn: true`) the two reactions swap. Exhausting the frame loop's

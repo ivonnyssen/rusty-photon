@@ -16,26 +16,31 @@ pub async fn ensure_omnisim(world: &mut SessionRunnerWorld) {
     }
 }
 
-/// The default equipment set: one camera, one filter wheel, one cover
-/// calibrator, all on OmniSim device 0. Scenarios that need less simply
-/// don't reference the rest.
-pub async fn configure_default_equipment(world: &mut SessionRunnerWorld) {
-    ensure_omnisim(world).await;
-    let alpaca_url = world.omnisim_url();
+// --- Per-device rig primitives -------------------------------------------
+//
+// One `ensure_*` per device class, each idempotent and pinned to OmniSim
+// device 0 with the suite's fixed ids — so every feature's composed
+// equipment set (flats, deep-sky, sky-flat) is built from the same
+// blocks and cannot drift. Callers `ensure_omnisim` first (these read
+// its URL).
 
+pub fn ensure_camera(world: &mut SessionRunnerWorld) {
     if world.cameras.is_empty() {
         world.cameras.push(bdd_infra::rp_harness::CameraConfig {
             id: "main-cam".to_string(),
-            alpaca_url: alpaca_url.clone(),
+            alpaca_url: world.omnisim_url(),
             device_number: 0,
         });
     }
+}
+
+pub fn ensure_filter_wheel(world: &mut SessionRunnerWorld) {
     if world.filter_wheels.is_empty() {
         world
             .filter_wheels
             .push(bdd_infra::rp_harness::FilterWheelConfig {
                 id: "main-fw".to_string(),
-                alpaca_url: alpaca_url.clone(),
+                alpaca_url: world.omnisim_url(),
                 device_number: 0,
                 filters: vec![
                     "Luminance".to_string(),
@@ -45,16 +50,51 @@ pub async fn configure_default_equipment(world: &mut SessionRunnerWorld) {
                 ],
             });
     }
+}
+
+pub fn ensure_cover_calibrator(world: &mut SessionRunnerWorld) {
     if world.cover_calibrators.is_empty() {
         world
             .cover_calibrators
             .push(bdd_infra::rp_harness::CoverCalibratorConfig {
                 id: "flat-panel".to_string(),
-                alpaca_url,
+                alpaca_url: world.omnisim_url(),
                 device_number: 0,
                 poll_interval: Some(std::time::Duration::from_millis(100)),
             });
     }
+}
+
+pub fn ensure_mount(world: &mut SessionRunnerWorld) {
+    if world.mount.is_none() {
+        world.mount = Some(bdd_infra::rp_harness::MountConfig {
+            alpaca_url: world.omnisim_url(),
+            device_number: 0,
+            settle_after_slew: None,
+        });
+    }
+}
+
+pub fn ensure_focuser(world: &mut SessionRunnerWorld) {
+    if world.focusers.is_empty() {
+        world.focusers.push(bdd_infra::rp_harness::FocuserConfig {
+            id: "main-focuser".to_string(),
+            alpaca_url: world.omnisim_url(),
+            device_number: 0,
+            min_position: None,
+            max_position: None,
+        });
+    }
+}
+
+/// The default equipment set: one camera, one filter wheel, one cover
+/// calibrator, all on OmniSim device 0. Scenarios that need less simply
+/// don't reference the rest.
+pub async fn configure_default_equipment(world: &mut SessionRunnerWorld) {
+    ensure_omnisim(world).await;
+    ensure_camera(world);
+    ensure_filter_wheel(world);
+    ensure_cover_calibrator(world);
 }
 
 /// Start the session-runner service under test: an ephemeral port, a

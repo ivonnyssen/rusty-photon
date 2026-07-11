@@ -12,10 +12,11 @@
 use cucumber::gherkin::Step;
 use cucumber::given;
 
-use bdd_infra::rp_harness::{CameraConfig, ComputedSky, FilterWheelConfig, MountConfig};
+use bdd_infra::rp_harness::ComputedSky;
 
 use crate::steps::infrastructure::{
-    ensure_omnisim, register_orchestrator, start_rp_service, start_session_runner_service,
+    ensure_camera, ensure_filter_wheel, ensure_mount, ensure_omnisim, register_orchestrator,
+    start_rp_service, start_session_runner_service,
 };
 use crate::world::SessionRunnerWorld;
 
@@ -55,35 +56,9 @@ async fn rp_with_camera_mount_filter_wheel_and_workflow(
 /// filter wheel, all on OmniSim device 0.
 async fn configure_sky_flat_equipment(world: &mut SessionRunnerWorld) {
     ensure_omnisim(world).await;
-    let alpaca_url = world.omnisim_url();
-
-    if world.cameras.is_empty() {
-        world.cameras.push(CameraConfig {
-            id: "main-cam".to_string(),
-            alpaca_url: alpaca_url.clone(),
-            device_number: 0,
-        });
-    }
-    if world.mount.is_none() {
-        world.mount = Some(MountConfig {
-            alpaca_url: alpaca_url.clone(),
-            device_number: 0,
-            settle_after_slew: None,
-        });
-    }
-    if world.filter_wheels.is_empty() {
-        world.filter_wheels.push(FilterWheelConfig {
-            id: "main-fw".to_string(),
-            alpaca_url,
-            device_number: 0,
-            filters: vec![
-                "Luminance".to_string(),
-                "Red".to_string(),
-                "Green".to_string(),
-                "Blue".to_string(),
-            ],
-        });
-    }
+    ensure_camera(world);
+    ensure_mount(world);
+    ensure_filter_wheel(world);
 }
 
 /// Register the shipped sky_flat document as the orchestrator's

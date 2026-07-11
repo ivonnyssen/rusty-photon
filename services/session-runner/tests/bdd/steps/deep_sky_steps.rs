@@ -25,8 +25,8 @@ use cucumber::gherkin::Step;
 use cucumber::{given, then, when};
 
 use bdd_infra::rp_harness::{
-    CameraConfig, CannedWcs, ComputedSky, ExposurePlanConfig, FocuserConfig, MountConfig,
-    OmniSimHandle, PlannerTargetConfig, PlateSolverConfig, PlateSolverStub, StubBehavior,
+    CannedWcs, ComputedSky, ExposurePlanConfig, OmniSimHandle, PlannerTargetConfig,
+    PlateSolverConfig, PlateSolverStub, StubBehavior,
 };
 
 use crate::steps::infrastructure::{
@@ -358,30 +358,10 @@ async fn sse_shows_at_least(world: &mut SessionRunnerWorld, minimum: usize, even
 /// (if any), so `set_filter` never runs.
 async fn configure_deep_sky_equipment(world: &mut SessionRunnerWorld, with_focuser: bool) {
     ensure_omnisim(world).await;
-    let alpaca_url = world.omnisim_url();
-
-    if world.cameras.is_empty() {
-        world.cameras.push(CameraConfig {
-            id: "main-cam".to_string(),
-            alpaca_url: alpaca_url.clone(),
-            device_number: 0,
-        });
-    }
-    if world.mount.is_none() {
-        world.mount = Some(MountConfig {
-            alpaca_url: alpaca_url.clone(),
-            device_number: 0,
-            settle_after_slew: None,
-        });
-    }
-    if with_focuser && world.focusers.is_empty() {
-        world.focusers.push(FocuserConfig {
-            id: "main-focuser".to_string(),
-            alpaca_url,
-            device_number: 0,
-            min_position: None,
-            max_position: None,
-        });
+    crate::steps::infrastructure::ensure_camera(world);
+    crate::steps::infrastructure::ensure_mount(world);
+    if with_focuser {
+        crate::steps::infrastructure::ensure_focuser(world);
     }
 }
 

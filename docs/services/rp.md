@@ -2936,15 +2936,21 @@ the listener starts serving — `rp` checks the session state file:
    deleted, and `session_stopped` with
    `reason: "orchestrator_invoke_failed"` is emitted).
 
-A persisted `"interrupted"` status is restored as **active** and
-re-invoked all the same: conditions may have flipped either way while
-`rp` was down, and the safety poller's first pass — which runs
-immediately at startup — re-interrupts the session (gating `/mcp`,
-securing the equipment) if conditions are still unsafe. The
-re-invocation and the first safety poll race harmlessly: an engine
-invoked into unsafe conditions fails its first tool call against the
-gated `/mcp`, exits keeping its state, and is re-invoked on the safe
-transition.
+Startup recovery is **ordered behind the safety poller's first pass**:
+when safety monitors are configured, `rp` completes one poll — setting
+the `/mcp` gate to reality and, on an unsafe reading, securing the
+equipment — *before* it reads the state file, so a re-invoked
+orchestrator can never move hardware into unknown conditions. Under a
+safe reading (or with no monitors configured) the restored session is
+re-invoked as above; under an unsafe one it is restored as
+**interrupted** with no invocation, and the ordinary unsafe → safe
+machinery (§ Safety) resumes it — with
+`recovery.reason = "safety_interruption"` — when conditions clear. The
+persisted status itself gates nothing: conditions may have flipped
+either way while `rp` was down, so a file that says `interrupted`
+restores active-and-reinvoked under a safe sky, and a file that says
+`active` restores interrupted under an unsafe one — the poll, not the
+file, decides.
 
 There is deliberately no "conditions have changed" (daytime /
 all-goals-met) check in `rp` — deciding whether the night is over is

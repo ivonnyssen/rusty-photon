@@ -2047,14 +2047,15 @@ async fn test_golden_sky_flat_discards_an_out_of_band_frame_and_recaptures() {
 }
 
 #[tokio::test]
-async fn test_golden_sky_flat_dusk_ends_the_run_when_the_sky_outruns_the_ceiling() {
+async fn test_golden_sky_flat_dusk_ends_the_run_when_a_ceiling_frame_is_still_dark() {
     let doc = make_doc(crate::document::corpus::golden_sky_flat());
     let params = sky_flat_params(&doc, json!({ "max_exposure": "2s" }));
-    // A very dark frame pins the rescale at the 2 s operator ceiling
-    // while the median sits far below the band: at dusk that means the
-    // window is over — the run completes with a partial report and the
-    // remaining filters are skipped (the sky only gets darker).
-    let tools = sky_flat_tools(vec![1000]);
+    // A very dark 1 s frame is NOT enough to close the window — the
+    // 2 s operator ceiling has only been pointed at by the rescale's
+    // clamp, not tested. The retry at the ceiling reads dark too: now
+    // the window is over — the run completes with a partial report and
+    // the remaining filters are skipped (the sky only gets darker).
+    let tools = sky_flat_tools(vec![1000, 1000]);
     let dir = tempfile::tempdir().unwrap();
     let (outcome, session) = run_in(&dir, &doc, &params, &tools, &MockClock::new()).await;
 
@@ -2062,9 +2063,11 @@ async fn test_golden_sky_flat_dusk_ends_the_run_when_the_sky_outruns_the_ceiling
     let names = tools.call_names();
     assert_eq!(
         names.iter().filter(|n| *n == "capture").count(),
-        1,
-        "no further attempts after the window closes"
+        2,
+        "one frame to reach the ceiling, one to test it — then no more"
     );
+    let durations = capture_durations(&tools);
+    assert_eq!(durations[1], json!("2s"), "the ceiling itself was tested");
     assert_eq!(
         names.iter().filter(|n| *n == "set_filter").count(),
         1,
@@ -2080,11 +2083,15 @@ async fn test_golden_sky_flat_dusk_waits_for_a_bright_sky_to_dim_at_the_floor() 
     let doc = make_doc(crate::document::corpus::golden_sky_flat());
     let params = sky_flat_params(
         &doc,
-        json!({ "filters": [{ "name": "L", "count": 1 }], "min_exposure": "500ms" }),
+        json!({
+            "filters": [{ "name": "L", "count": 1 }],
+            "min_exposure": "500ms",
+            "initial_duration": "500ms"
+        }),
     );
-    // A saturated frame pins the rescale at the 500 ms floor while the
-    // median sits above the band: at dusk the sky is still dimming
-    // toward the window, so the document waits 30 s and re-tests.
+    // A saturated frame captured AT the 500 ms floor: at dusk the sky
+    // is still dimming toward the window, so the document waits 30 s
+    // and re-tests.
     let tools = sky_flat_tools(vec![65535, 32767]);
     let clock = MockClock::new();
     let dir = tempfile::tempdir().unwrap();
@@ -2103,17 +2110,18 @@ async fn test_golden_sky_flat_dusk_waits_for_a_bright_sky_to_dim_at_the_floor() 
 }
 
 #[tokio::test]
-async fn test_golden_sky_flat_dawn_swaps_the_window_reactions() {
+async fn test_golden_sky_flat_dawn_ends_the_run_when_a_floor_frame_is_still_bright() {
     let doc = make_doc(crate::document::corpus::golden_sky_flat());
     let params = sky_flat_params(
         &doc,
         json!({
             "filters": [{ "name": "L", "count": 1 }],
             "dawn": true,
-            "min_exposure": "500ms"
+            "min_exposure": "500ms",
+            "initial_duration": "500ms"
         }),
     );
-    // The same saturated-at-the-floor reading that dusk waits out means
+    // The same saturated-at-the-floor frame that dusk waits out means
     // the window is OVER at dawn — the sky only gets brighter.
     let tools = sky_flat_tools(vec![65535]);
     let clock = MockClock::new();
@@ -2128,6 +2136,37 @@ async fn test_golden_sky_flat_dawn_swaps_the_window_reactions() {
     assert_eq!(capture_durations(&tools).len(), 1);
     assert_eq!(session["report"]["total_frames"], json!(0.0));
     assert_eq!(session["report"]["window_over"], json!(true));
+}
+
+#[tokio::test]
+async fn test_golden_sky_flat_dawn_waits_for_a_dark_sky_to_brighten_at_the_ceiling() {
+    let doc = make_doc(crate::document::corpus::golden_sky_flat());
+    let params = sky_flat_params(
+        &doc,
+        json!({
+            "filters": [{ "name": "L", "count": 1 }],
+            "dawn": true,
+            "max_exposure": "2s",
+            "initial_duration": "2s"
+        }),
+    );
+    // A dark frame captured AT the 2 s ceiling: at dawn the sky is
+    // still brightening toward the window, so the document waits 30 s
+    // and re-tests — the mirror of the dusk floor wait.
+    let tools = sky_flat_tools(vec![1000, 32767]);
+    let clock = MockClock::new();
+    let dir = tempfile::tempdir().unwrap();
+    let (outcome, session) = run_in(&dir, &doc, &params, &tools, &clock).await;
+
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert!(
+        clock.sleeps().contains(&Duration::from_secs(30)),
+        "the dark-sky wait never slept: {:?}",
+        clock.sleeps()
+    );
+    assert_eq!(capture_durations(&tools).len(), 2);
+    assert_eq!(session["report"]["total_frames"], json!(1.0));
+    assert_eq!(session["report"]["window_over"], json!(false));
 }
 
 #[tokio::test]

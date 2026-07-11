@@ -113,21 +113,34 @@ impl SafetyEnforcer<AlpacaSafetyProbe> {
 impl<P: SafetyProbe> SafetyEnforcer<P> {
     /// Poll until cancelled (rp shutdown).
     pub async fn run(self, cancel: CancellationToken) {
+        // Assumed-safe baselines: transitions are relative to these, so
+        // a monitor that starts out safe is quiet and one that starts
+        // out unsafe announces itself on the first poll. Poll before
+        // sleeping: a monitor that is unsafe (or unreadable) at startup
+        // must gate immediately, not after the first interval elapses.
+        // (The production path in `BoundServer::start` runs this first
+        // poll inline instead — before startup recovery — and continues
+        // via `run_from`.)
+        let mut per_monitor: HashMap<String, bool> = HashMap::new();
+        let overall = self.poll_once(&mut per_monitor, true).await;
+        self.run_from(cancel, per_monitor, overall).await;
+    }
+
+    /// Continue polling from a known state — the per-monitor baselines
+    /// and the overall reading an inline first poll produced. Sleeps
+    /// before each pass (the first pass already happened).
+    pub async fn run_from(
+        self,
+        cancel: CancellationToken,
+        mut per_monitor: HashMap<String, bool>,
+        mut overall: bool,
+    ) {
         info!(
             monitors = self.probes.len(),
             interval = ?self.poll_interval,
             "safety monitoring started"
         );
-        // Assumed-safe baselines: transitions are relative to these, so
-        // a monitor that starts out safe is quiet and one that starts
-        // out unsafe announces itself on the first poll.
-        let mut per_monitor: HashMap<String, bool> = HashMap::new();
-        let mut overall = true;
         loop {
-            // Poll before sleeping: a monitor that is unsafe (or
-            // unreadable) at startup must gate immediately, not after
-            // the first interval elapses.
-            overall = self.poll_once(&mut per_monitor, overall).await;
             tokio::select! {
                 () = cancel.cancelled() => {
                     debug!("safety monitoring stopped");
@@ -135,13 +148,18 @@ impl<P: SafetyProbe> SafetyEnforcer<P> {
                 }
                 () = tokio::time::sleep(self.poll_interval) => {}
             }
+            overall = self.poll_once(&mut per_monitor, overall).await;
         }
     }
 
     /// One polling pass: read every probe, emit per-monitor
     /// `safety_changed` events, and act when the overall state flips.
     /// Returns the new overall state.
-    async fn poll_once(&self, per_monitor: &mut HashMap<String, bool>, prev_overall: bool) -> bool {
+    pub(crate) async fn poll_once(
+        &self,
+        per_monitor: &mut HashMap<String, bool>,
+        prev_overall: bool,
+    ) -> bool {
         let mut overall = true;
         for probe in &self.probes {
             let reading = match probe.is_safe().await {

@@ -14,8 +14,9 @@ Feature: Resume (the re-entrancy contract)
   with recovery reason "rp_restart". The engine-kill and rp-outage
   scenarios POST /invoke directly instead — they pin the engine's side
   of the recovery contract in isolation, independent of who sends the
-  invocation (their restarted rp gets a fresh session state file, so
-  rp-side recovery stays out of the way). The fixture document
+  invocation (the engine-kill scenario never restarts rp at all, and
+  the rp-outage scenario's restarted rp gets a fresh session state
+  file, so rp-side recovery stays out of the way). The fixture document
   (recovery_capture_loop, tests/fixtures/workflows/) plans 4 frames of
   2s each; its progress counter lives in session.frames.
 
@@ -58,7 +59,12 @@ Feature: Resume (the re-entrancy contract)
     When rp is restarted
     Then the blackboard is deleted within 60 seconds
     And rp reports the session as "idle" within 10 seconds
-    And the test webhook receiver should have received between 4 and 5 "exposure_complete" events
+    # Between 3 and 5 for a 4-frame plan: the SIGKILL can eat the
+    # webhook delivery of an already-recorded frame (floor = plan - 1),
+    # and a frame that completed in flight but was never recorded is
+    # legitimately re-shot by the resumed run (ceiling = plan + 1). The
+    # ceiling is the no-repeated-frames invariant.
+    And the test webhook receiver should have received between 3 and 5 "exposure_complete" events
 
   Scenario: A safety interruption pauses the session and rp resumes it once conditions are safe
     Given a running Alpaca simulator

@@ -136,11 +136,6 @@
                 ]
               },
               {
-                "set": {
-                  "session.duration": "clamp(session.median_adu == 0 ? session.duration * 2 : session.duration * (session.target_adu / session.median_adu), session.exp_min, session.exp_max)"
-                }
-              },
-              {
                 "id": "sky-too-bright",
                 "if": "session.median_adu > session.target_adu * (1 + params.tolerance) && session.duration <= session.exp_min",
                 "then": [
@@ -183,6 +178,11 @@
                     ]
                   }
                 ]
+              },
+              {
+                "set": {
+                  "session.duration": "clamp(session.median_adu == 0 ? session.duration * 2 : session.duration * (session.target_adu / session.median_adu), session.exp_min, session.exp_max)"
+                }
               }
             ]
           },

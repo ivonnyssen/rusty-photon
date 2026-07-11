@@ -84,18 +84,10 @@ impl ServerBuilder {
         let planner_progress = Arc::new(std::sync::Mutex::new(
             crate::planner::progress::SessionProgress::default(),
         ));
-        // The session state file (rp.md § Session Persistence):
-        // `session.session_state_file`, defaulting to
-        // `<data_directory>/session_state.json` when unset.
-        let session_state_path = if config.session.session_state_file.is_empty() {
-            std::path::Path::new(&config.session.data_directory).join("session_state.json")
-        } else {
-            std::path::PathBuf::from(&config.session.session_state_file)
-        };
         let session = Arc::new(
             SessionManager::new(event_bus.clone(), &config.plugins)
                 .with_progress_store(planner_progress.clone())
-                .with_state_path(session_state_path),
+                .with_state_path(config.session.session_state_path()),
         );
 
         let session_config = SessionConfig {
@@ -223,7 +215,7 @@ impl ServerBuilder {
             session: session.clone(),
             image_cache,
             sse_shutdown: sse_shutdown.clone(),
-            safety_ok,
+            safety_ok: safety_ok.clone(),
             mcp_sessions,
         };
 
@@ -267,6 +259,7 @@ impl ServerBuilder {
             sse_shutdown,
             safety,
             session,
+            safety_ok,
         })
     }
 }
@@ -293,6 +286,9 @@ pub struct BoundServer {
     /// Kept so `start()` can run startup recovery (rp.md § Recovery
     /// Behavior) once the server is about to serve.
     session: Arc<SessionManager>,
+    /// The `/mcp` gate flag, read by `start()` after the inline first
+    /// safety poll to decide whether startup recovery may re-invoke.
+    safety_ok: Arc<AtomicBool>,
 }
 
 impl BoundServer {
@@ -301,12 +297,37 @@ impl BoundServer {
     }
 
     pub async fn start(self, shutdown: impl Future<Output = ()> + Send + 'static) -> Result<()> {
+        // Safety before recovery (rp.md § Recovery Behavior): with
+        // monitors configured, complete one poll inline so the `/mcp`
+        // gate reflects reality — and unsafe conditions already secured
+        // the equipment — before any orchestrator is re-invoked. The
+        // loop then continues from that state. The lifecycle shutdown
+        // is chained below.
+        let safety_cancel = CancellationToken::new();
+        let safety_task = match self.safety {
+            Some(enforcer) => {
+                let mut per_monitor = std::collections::HashMap::new();
+                let overall = enforcer.poll_once(&mut per_monitor, true).await;
+                let cancel = safety_cancel.clone();
+                Some(tokio::spawn(enforcer.run_from(
+                    cancel,
+                    per_monitor,
+                    overall,
+                )))
+            }
+            None => None,
+        };
+
         // Startup recovery (rp.md § Recovery Behavior): restore a
-        // persisted session and re-invoke the orchestrator with
-        // recovery context. The listener is already bound, so the
-        // re-invoked orchestrator's immediate connect-back queues in
-        // the accept backlog until `axum::serve` below starts draining.
-        self.session.recover_startup().await;
+        // persisted session — re-invoking the orchestrator only under
+        // safe conditions; under unsafe ones the session is restored
+        // interrupted and the safe transition resumes it. The listener
+        // is already bound, so the re-invoked orchestrator's immediate
+        // connect-back queues in the accept backlog until `axum::serve`
+        // below starts draining.
+        self.session
+            .recover_startup(self.safety_ok.load(std::sync::atomic::Ordering::SeqCst))
+            .await;
 
         // Chain the lifecycle shutdown to the SSE cancellation token: when the
         // signal fires, cancel in-flight `/api/events/subscribe` streams first
@@ -314,11 +335,6 @@ impl BoundServer {
         // shutdown drain the remaining connections. Without this, a connected
         // SSE consumer would keep the server from ever shutting down. The
         // safety polling loop rides the same signal.
-        let safety_cancel = CancellationToken::new();
-        let safety_task = self.safety.map(|enforcer| {
-            let cancel = safety_cancel.clone();
-            tokio::spawn(enforcer.run(cancel))
-        });
         let sse_shutdown = self.sse_shutdown;
         let graceful = async move {
             shutdown.await;

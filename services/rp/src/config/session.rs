@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -7,7 +9,9 @@ pub struct SessionConfig {
     /// Persistence): the session registry + planner progress counters,
     /// written on every transition and read back for startup recovery.
     /// Empty (the default) resolves to
-    /// `<data_directory>/session_state.json`.
+    /// `<data_directory>/session_state.json` — see
+    /// [`Self::session_state_path`], the one place that derivation
+    /// lives.
     #[serde(default)]
     pub session_state_file: String,
     /// Optional template for capture filenames. `None` is the default and
@@ -21,6 +25,19 @@ pub struct SessionConfig {
     /// `docs/plans/archive/image-evaluation-tools.md`.
     #[serde(default)]
     pub file_naming_pattern: Option<String>,
+}
+
+impl SessionConfig {
+    /// The resolved session-state-file path: `session_state_file` when
+    /// set, else `<data_directory>/session_state.json`. Kept on the
+    /// config type so every consumer derives the same path.
+    pub fn session_state_path(&self) -> PathBuf {
+        if self.session_state_file.is_empty() {
+            PathBuf::from(&self.data_directory).join("session_state.json")
+        } else {
+            PathBuf::from(&self.session_state_file)
+        }
+    }
 }
 
 #[cfg(test)]
