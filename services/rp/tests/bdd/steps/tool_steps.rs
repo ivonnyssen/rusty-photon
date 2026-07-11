@@ -31,7 +31,10 @@ async fn rp_running_with_camera_and_filter_wheel(world: &mut RpWorld) {
     start_rp(world).await;
 }
 
+// Also a `when`: the startup-recovery scenarios reconnect a fresh MCP
+// client to the restarted rp mid-scenario.
 #[given("an MCP client connected to rp")]
+#[when("an MCP client connected to rp")]
 async fn mcp_client_connected(world: &mut RpWorld) {
     ensure_mcp_client(world).await;
 }

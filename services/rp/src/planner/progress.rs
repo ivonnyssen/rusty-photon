@@ -8,9 +8,10 @@
 //! `Arc<Mutex<SessionProgress>>` lives on `McpHandler` (one per rp
 //! process — counters survive across MCP connections and orchestrator
 //! re-invocations, and `SessionManager::start` clears them when a
-//! fresh session begins). The rp.md §"Session Persistence" state-file
-//! write and startup read-back are still unimplemented — see the
-//! status callout there.
+//! fresh session begins). The counters are also part of rp's persisted
+//! session state (rp.md §"Session Persistence"): `SessionManager`
+//! serializes the store into the session state file and restores it on
+//! startup recovery — hence the serde derives.
 //!
 //! Counters are keyed by target name and *filter key*: the filter
 //! name, with `None` / `""` (an unfiltered rig) normalised to the
@@ -31,7 +32,7 @@ pub fn filter_key(filter: Option<&str>) -> String {
 
 /// The in-memory `record_exposure` counters plus the last recorded
 /// filter (rp.md §"Dynamic Planner" bullet 4's "previous frame").
-#[derive(Debug, Default)]
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct SessionProgress {
     /// target name → filter key → completed frame count.
     completed: HashMap<String, HashMap<String, u32>>,

@@ -3,7 +3,7 @@
 //! orchestrator plugin).
 //!
 //! Design: `docs/services/session-runner.md`; delivery plan:
-//! `docs/plans/workflow-dsl.md`. This crate ships the expression layer
+//! `docs/plans/archive/workflow-dsl.md`. This crate ships the expression layer
 //! ([`expr`]), the document layer ([`document`]: model, validation layers
 //! 1–2, parameter binding), the engine ([`engine`] + [`blackboard`],
 //! triggers included), the SSE event client ([`events`]), and the service

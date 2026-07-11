@@ -1,0 +1,244 @@
+{
+  "version": 1,
+  "name": "sky-flat",
+  "description": "Twilight sky flats at the zenith: slew to the local sidereal time (declination = site latitude), stop tracking, then per filter capture flats while re-scaling the exposure after every frame against the measured median — the sky, unlike a flat panel, keeps changing. In-band frames count toward the filter's plan; a sky pinned against the operator's exposure bounds drives the twilight-window logic (at dusk a too-bright sky at the floor waits for the sky to dim, a too-dark sky at the ceiling ends the run; at dawn the reactions swap) and the session completes with a partial report rather than failing — partial flats are usable. See docs/services/session-runner.md § sky_flat.json.",
+  "parameters": {
+    "camera_id": { "type": "string", "required": true },
+    "filter_wheel_id": { "type": "string", "required": true },
+    "filters": { "type": "array", "required": true },
+    "site_latitude_degrees": { "type": "number", "required": true },
+    "ra_offset_hours": { "type": "number", "default": 0 },
+    "dawn": { "type": "boolean", "default": false },
+    "target_adu_fraction": { "type": "number", "default": 0.5 },
+    "tolerance": { "type": "number", "default": 0.1 },
+    "initial_duration": { "type": "duration", "default": "1s" },
+    "min_exposure": { "type": "duration", "default": "100ms" },
+    "max_exposure": { "type": "duration", "default": "30s" },
+    "max_extra_attempts": { "type": "integer", "default": 30 },
+    "park_on_finish": { "type": "boolean", "default": true }
+  },
+  "estimated_duration": "30m",
+  "max_duration": "2h",
+  "triggers": [],
+  "root": {
+    "sequence": [
+      {
+        "id": "camera-info",
+        "tool": "get_camera_info",
+        "args": { "camera_id": { "$expr": "params.camera_id" } }
+      },
+      {
+        "set": {
+          "session.target_adu": "result.max_adu * params.target_adu_fraction",
+          "session.exp_min": "max(seconds(params.min_exposure), seconds(result.exposure_min))",
+          "session.exp_max": "min(seconds(params.max_exposure), seconds(result.exposure_max))",
+          "session.filter_index": "has(session.filter_index) ? session.filter_index : 0",
+          "session.window_over": "has(session.window_over) ? session.window_over : false",
+          "session.report.total_frames": "has(session.report.total_frames) ? session.report.total_frames : 0"
+        }
+      },
+      {
+        "set": {
+          "session.duration": "clamp(has(session.duration) ? session.duration : seconds(params.initial_duration), session.exp_min, session.exp_max)"
+        }
+      },
+      {
+        "id": "target-adu-guard",
+        "if": "session.target_adu <= 0",
+        "then": [
+          { "fail": { "message": "'target_adu is not positive (max_adu * target_adu_fraction) — check get_camera_info and target_adu_fraction'" } }
+        ]
+      },
+      {
+        "id": "exposure-window-guard",
+        "if": "session.exp_min > session.exp_max",
+        "then": [
+          { "fail": { "message": "'the exposure window is empty — min_exposure/max_exposure do not overlap the camera limits'" } }
+        ]
+      },
+      { "tool": "unpark", "args": {} },
+      { "tool": "set_tracking", "args": { "enabled": true } },
+      { "tool": "get_local_sidereal_time", "args": {} },
+      {
+        "set": {
+          "session.flat_ra": "((result.lst_hours + params.ra_offset_hours) % 24 + 24) % 24"
+        }
+      },
+      {
+        "id": "point-at-zenith",
+        "tool": "slew",
+        "args": {
+          "ra": { "$expr": "session.flat_ra" },
+          "dec": { "$expr": "params.site_latitude_degrees" }
+        }
+      },
+      { "tool": "set_tracking", "args": { "enabled": false } },
+      {
+        "id": "filter-plan",
+        "repeat": {
+          "while": "session.window_over != true && has(params.filters[session.filter_index])",
+          "max_iterations": 64
+        },
+        "body": [
+          {
+            "tool": "set_filter",
+            "args": {
+              "filter_wheel_id": { "$expr": "params.filter_wheel_id" },
+              "filter_name": { "$expr": "params.filters[session.filter_index].name" }
+            }
+          },
+          {
+            "set": {
+              "session.flat_count": "has(session.flat_count) && session.counting_index == session.filter_index ? session.flat_count : 0",
+              "session.counting_index": "session.filter_index"
+            }
+          },
+          {
+            "id": "flat-frames",
+            "repeat": {
+              "while": "session.window_over != true && session.flat_count < params.filters[session.filter_index].count",
+              "max_iterations": { "$expr": "params.filters[session.filter_index].count + params.max_extra_attempts" }
+            },
+            "body": [
+              {
+                "tool": "capture",
+                "args": {
+                  "camera_id": { "$expr": "params.camera_id" },
+                  "duration": { "$expr": "humantime(session.duration)" }
+                }
+              },
+              {
+                "tool": "compute_image_stats",
+                "args": { "document_id": { "$expr": "result.document_id" } }
+              },
+              { "set": { "session.median_adu": "result.median_adu" } },
+              {
+                "if": "abs(session.median_adu - session.target_adu) / session.target_adu <= params.tolerance",
+                "then": [
+                  {
+                    "set": {
+                      "session.flat_count": "session.flat_count + 1",
+                      "session.report.total_frames": "session.report.total_frames + 1"
+                    }
+                  }
+                ],
+                "else": [
+                  {
+                    "log": {
+                      "message": "sky flat outside the ADU band — discarded",
+                      "values": {
+                        "median_adu": "session.median_adu",
+                        "target_adu": "session.target_adu",
+                        "duration": "humantime(session.duration)"
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "set": {
+                  "session.duration": "clamp(session.median_adu == 0 ? session.duration * 2 : session.duration * (session.target_adu / session.median_adu), session.exp_min, session.exp_max)"
+                }
+              },
+              {
+                "id": "sky-too-bright",
+                "if": "session.median_adu > session.target_adu * (1 + params.tolerance) && session.duration <= session.exp_min",
+                "then": [
+                  {
+                    "if": "params.dawn == true",
+                    "then": [
+                      {
+                        "log": {
+                          "level": "info",
+                          "message": "the brightening sky has outrun the exposure floor — the twilight window is over"
+                        }
+                      },
+                      { "set": { "session.window_over": "true" } }
+                    ],
+                    "else": [
+                      { "log": { "message": "sky still too bright at the exposure floor — waiting for it to dim" } },
+                      { "wait": { "duration": "30s" } }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "sky-too-dark",
+                "if": "session.median_adu < session.target_adu * (1 - params.tolerance) && session.duration >= session.exp_max",
+                "then": [
+                  {
+                    "if": "params.dawn == true",
+                    "then": [
+                      { "log": { "message": "sky still too dark at the exposure ceiling — waiting for it to brighten" } },
+                      { "wait": { "duration": "30s" } }
+                    ],
+                    "else": [
+                      {
+                        "log": {
+                          "level": "info",
+                          "message": "the darkening sky has outrun the exposure ceiling — the twilight window is over"
+                        }
+                      },
+                      { "set": { "session.window_over": "true" } }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "flat-budget",
+            "if": "result.converged == false && session.window_over != true",
+            "then": [
+              {
+                "log": {
+                  "level": "info",
+                  "message": "flat attempt budget exhausted before the plan count — ending the run",
+                  "values": {
+                    "filter": "params.filters[session.filter_index].name",
+                    "captured": "session.flat_count"
+                  }
+                }
+              },
+              { "set": { "session.window_over": "true" } }
+            ]
+          },
+          { "set": { "session.filter_index": "session.filter_index + 1" } }
+        ]
+      },
+      {
+        "id": "filter-budget",
+        "if": "result.converged == false",
+        "then": [
+          { "fail": { "message": "'the filter plan exceeds the 64-filter loop budget'" } }
+        ]
+      },
+      { "set": { "session.report.window_over": "session.window_over" } },
+      {
+        "if": "session.window_over == true",
+        "then": [
+          {
+            "log": {
+              "level": "info",
+              "message": "the twilight window closed before the plan completed",
+              "values": { "total_frames": "session.report.total_frames" }
+            }
+          }
+        ],
+        "else": [
+          {
+            "log": {
+              "level": "info",
+              "message": "sky-flat plan complete",
+              "values": { "total_frames": "session.report.total_frames" }
+            }
+          }
+        ]
+      },
+      {
+        "if": "params.park_on_finish == true",
+        "then": [{ "tool": "park", "args": {} }]
+      }
+    ]
+  }
+}

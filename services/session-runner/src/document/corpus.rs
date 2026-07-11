@@ -221,6 +221,7 @@ pub(super) fn cases() -> Vec<Case> {
         ),
         valid("shipped_calibrator_flats", golden_calibrator_flats()),
         valid("shipped_deep_sky", golden_deep_sky()),
+        valid("shipped_sky_flat", golden_sky_flat()),
         // ---- invalid: document level -----------------------------------
         invalid(
             "document_not_an_object",
@@ -820,4 +821,15 @@ pub(crate) fn golden_calibrator_flats() -> serde_json::Value {
 pub(crate) fn golden_deep_sky() -> serde_json::Value {
     serde_json::from_str(include_str!("../../workflows/deep_sky.json"))
         .expect("workflows/deep_sky.json is not valid JSON")
+}
+
+/// The shipped `sky_flat.json` first-party document — the
+/// adaptive-convergence golden case: per-frame exposure rescaling
+/// against a changing sky, the dusk/dawn twilight-window branches, a
+/// `wait` inside a loop, and the index-marker re-entrancy idiom.
+/// Embedded verbatim like its siblings: the suites pin the shipped
+/// artifact, not a copy.
+pub(crate) fn golden_sky_flat() -> serde_json::Value {
+    serde_json::from_str(include_str!("../../workflows/sky_flat.json"))
+        .expect("workflows/sky_flat.json is not valid JSON")
 }

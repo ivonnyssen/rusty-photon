@@ -150,8 +150,10 @@ async fn morning_sky_with_one_unviable_target(world: &mut SessionRunnerWorld) {
     world.night_targets.push(target);
 }
 
+// `pub`: the sky-flat suite re-points the same machinery at the zenith
+// spot it pushed as its only computed target.
 #[given("the simulated mount matches the site and points at the first target")]
-async fn mount_matches_site_and_target(world: &mut SessionRunnerWorld) {
+pub async fn mount_matches_site_and_target(world: &mut SessionRunnerWorld) {
     ensure_omnisim(world).await;
     let (lat, lon) = world
         .site
@@ -414,7 +416,7 @@ fn register_deep_sky(
     register_orchestrator(world, workflow, Some(parameters));
 }
 
-fn coerce_parameter(value: &str) -> serde_json::Value {
+pub fn coerce_parameter(value: &str) -> serde_json::Value {
     if let Ok(b) = value.parse::<bool>() {
         return serde_json::json!(b);
     }

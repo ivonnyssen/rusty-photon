@@ -27,5 +27,6 @@ pub mod safety_steps;
 pub mod session_steps;
 pub mod sky_survey_camera_steps;
 pub mod sse_steps;
+pub mod startup_recovery_steps;
 pub mod tls_steps;
 pub mod tool_steps;

@@ -84,9 +84,18 @@ impl ServerBuilder {
         let planner_progress = Arc::new(std::sync::Mutex::new(
             crate::planner::progress::SessionProgress::default(),
         ));
+        // The session state file (rp.md § Session Persistence):
+        // `session.session_state_file`, defaulting to
+        // `<data_directory>/session_state.json` when unset.
+        let session_state_path = if config.session.session_state_file.is_empty() {
+            std::path::Path::new(&config.session.data_directory).join("session_state.json")
+        } else {
+            std::path::PathBuf::from(&config.session.session_state_file)
+        };
         let session = Arc::new(
             SessionManager::new(event_bus.clone(), &config.plugins)
-                .with_progress_store(planner_progress.clone()),
+                .with_progress_store(planner_progress.clone())
+                .with_state_path(session_state_path),
         );
 
         let session_config = SessionConfig {
@@ -179,6 +188,7 @@ impl ServerBuilder {
         )
         .with_planner_config(targets, default_min_alt)
         .with_progress_store(planner_progress)
+        .with_session_manager(session.clone())
         .with_plate_solver(plate_solver_client, plate_solver_default_radius)
         .with_guider(guider_client.clone(), guider_defaults)
         .with_centering_config(config.centering.clone());
@@ -256,6 +266,7 @@ impl ServerBuilder {
             tls,
             sse_shutdown,
             safety,
+            session,
         })
     }
 }
@@ -279,6 +290,9 @@ pub struct BoundServer {
     /// Safety polling loop, spawned by `start()` and cancelled on shutdown.
     /// `None` when no safety monitors are configured.
     safety: Option<SafetyEnforcer<AlpacaSafetyProbe>>,
+    /// Kept so `start()` can run startup recovery (rp.md § Recovery
+    /// Behavior) once the server is about to serve.
+    session: Arc<SessionManager>,
 }
 
 impl BoundServer {
@@ -287,6 +301,13 @@ impl BoundServer {
     }
 
     pub async fn start(self, shutdown: impl Future<Output = ()> + Send + 'static) -> Result<()> {
+        // Startup recovery (rp.md § Recovery Behavior): restore a
+        // persisted session and re-invoke the orchestrator with
+        // recovery context. The listener is already bound, so the
+        // re-invoked orchestrator's immediate connect-back queues in
+        // the accept backlog until `axum::serve` below starts draining.
+        self.session.recover_startup().await;
+
         // Chain the lifecycle shutdown to the SSE cancellation token: when the
         // signal fires, cancel in-flight `/api/events/subscribe` streams first
         // so their long-lived response bodies end, then let axum's graceful

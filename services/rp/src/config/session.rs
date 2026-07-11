@@ -3,6 +3,11 @@ use serde::Deserialize;
 #[derive(Debug, Clone, Deserialize)]
 pub struct SessionConfig {
     pub data_directory: String,
+    /// Where the session state file lives (rp.md § Session
+    /// Persistence): the session registry + planner progress counters,
+    /// written on every transition and read back for startup recovery.
+    /// Empty (the default) resolves to
+    /// `<data_directory>/session_state.json`.
     #[serde(default)]
     pub session_state_file: String,
     /// Optional template for capture filenames. `None` is the default and
