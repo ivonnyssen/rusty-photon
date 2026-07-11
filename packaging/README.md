@@ -34,11 +34,12 @@ payload pieces, all listed as plain `assets` in the metadata blocks:
 qhy-camera the firmware helper; zwo-camera and zwo-focuser each their own
 committed `ZWO-SDK-LICENSE.txt` (checker-`cmp`'d against the copy vendored
 with the libzwo-sys headers) plus a gitignored `lib/` dir into which
-`scripts/build-packages.sh` stages the relevant MIT SDK blob(s) right before
-`cargo deb` runs — libzwo-sys links `ASICamera2` + `EFWFilter` + `EAFFocuser`
-unconditionally, so building either zwo-* service stages all three into
-zwo-camera's `lib/` (the shared link-search dir), while each service's own
-`lib/` only carries the blob(s) its Cargo.toml assets reference.
+`scripts/build-packages.sh` stages that service's ONE MIT SDK blob right
+before `cargo deb` runs — libzwo-sys links per device feature (ADR-014), so
+zwo-camera's `lib/` carries exactly `libASICamera2.so` and zwo-focuser's
+exactly `libEAFFocuser.so` (the link-search dir during the build is the
+blob cache itself, not a pkg/lib dir). No blob appears in two packages, so
+the zwo debs co-install without file conflicts.
 
 `scripts/check-pkg-assets.sh` enforces all of this — run it after touching
 anything under `packaging/` or a service's `pkg/` directory. It discovers

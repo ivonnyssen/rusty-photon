@@ -14,13 +14,18 @@
 > camera lock is released during the integration so concurrent reads (and the
 > in-flight-exposure check) are not blocked. It is gate-green: **45 unit tests**
 > (against the mock seam), the **57 BDD scenarios** across the six camera feature
-> files (now live; `filter_wheel.feature` stays `@wip` for Phase F), a full
+> files (now live), a full
 > **ConformU** pass (both suites), clippy
 > `--all-features`, and **Bazel** (`lib`/`binary`/
 > `unit_test` are first-class `//...` targets verified on Linux; the `bdd` /
 > `conformu_integration` suites run under Bazel (tagged `bdd` / `conformu`),
 > mirroring qhy-camera; `MODULE.bazel.lock`
-> repinned). The **EFW `FilterWheel` is Phase F**.
+> repinned). **EFW filter wheels are out of scope** — re-planned as a future
+> separate `zwo-filterwheel` service by
+> [ADR-014](../decisions/014-zwo-per-device-services-and-link-features.md)
+> (2026-07-10), which also narrowed this binary's native link to the camera
+> SDK only (zwo-rs `camera` feature) and removed the `filterwheel.enabled`
+> config toggle + `filter_names` override this doc previously specified.
 >
 > **ConformU — passes.** The `tests/conformu_integration.rs` harness is wired
 > (gated on the `conformu` feature; skipped without `CONFORMU_PATH`). Both ConformU
@@ -77,12 +82,14 @@
 
 ## Overview
 
-The `zwo-camera` service is an ASCOM Alpaca **Camera** (and optional
-**FilterWheel**) driver for real ZWO hardware — ASI cameras and EFW filter
-wheels. It exposes a connected ASI camera — exposures, ROI/binning, gain/offset,
-cooling, readout, ST4 pulse-guiding — and a connected EFW over ASCOM Alpaca on a
+The `zwo-camera` service is an ASCOM Alpaca **Camera** driver for real ZWO ASI
+hardware. It exposes a connected ASI camera — exposures, ROI/binning,
+gain/offset, cooling, readout, ST4 pulse-guiding — over ASCOM Alpaca on a
 fixed port so the `rp` orchestrator (and any Alpaca client: NINA, SGPro,
-SharpCap) can drive them like any other device.
+SharpCap) can drive it like any other device. Other ZWO device families are
+separate services (ADR-014): the EAF focuser is
+[`zwo-focuser`](zwo-focuser.md), and the EFW filter wheel is a future
+`zwo-filterwheel` service.
 
 It is the ZWO analogue of the in-design [`qhy-camera`](qhy-camera.md) service and
 reuses the same `ascom-alpaca` server framework and the
@@ -107,7 +114,7 @@ the same:
 |---|---|---|
 | **SDK license** | Closed/proprietary; redistribution unresolved → authenticated/internal cache tier | **MIT** ("Copyright 2015, ZWO Company") → blob may be cached/redistributed on the **public** R2 cache mirror |
 | **Rust FFI layer** | Published `qhyccd-rs`/`libqhyccd-sys` already exist; driver just writes the device layer | **No usable equivalent** → we also build & maintain `zwo-rs` + `libzwo-sys` |
-| **Build/link gating** | Native lib links at compile time on *every* machine | **Same constraint** (`libzwo-sys` `build.rs` links unconditionally; SDK required at link time even with `--features simulation`) |
+| **Build/link gating** | Native lib links at compile time on *every* machine | **Same constraint**, per device feature since ADR-014 (`libzwo-sys` `build.rs` links each SDK its feature enables — this service builds with `camera` only; that SDK is required at link time even with `--features simulation`) |
 
 Net: ZWO is **legally much easier** but **mechanically more work up front** (we
 build the FFI QHY got for free). The device-trait layer is *easier* than QHY — a
@@ -123,14 +130,17 @@ full decision record.
 This is the single most consequential fact about this service and the reason it
 is delivered in two tracks.
 
-- The imaging path is `zwo-camera → zwo-rs → libzwo-sys → ` the **ZWO ASI/EFW
-  SDK** (a source-less native binary) **+ libusb-1.0**.
-- `libzwo-sys`'s `build.rs` emits `cargo:rustc-link-lib` for `ASICamera2` +
-  `EFWFilter` + `dylib=usb-1.0` (plus `stdc++`/`c++`, `udev`/IOKit) **with no
-  feature/cfg gate** on the link — mirroring `libqhyccd-sys`.
+- The imaging path is `zwo-camera → zwo-rs → libzwo-sys → ` the **ZWO ASI
+  camera SDK** (`libASICamera2`, a source-less native binary) **+ libusb-1.0**.
+- `libzwo-sys`'s `build.rs` emits `cargo:rustc-link-lib` per enabled device
+  feature (ADR-014); this service builds `zwo-rs` with `camera` only, so the
+  link is `ASICamera2` + `dylib=usb-1.0` (plus `stdc++`/`c++`) — the EFW/EAF
+  SDKs are linked (and shipped) by their own services.
 - **Consequence:** *every machine that compiles this package* — dev laptops, CI
-  runners, Bazel actions — needs the ZWO SDK installed and discoverable, plus
-  `libusb-1.0` dev headers. Not just machines with a camera attached.
+  runners, Bazel actions — needs the ASI camera SDK installed and discoverable,
+  plus `libusb-1.0` dev headers. Not just machines with a camera attached.
+  (Bazel builds the shared `zwo-rs` targets with the union of device features,
+  so Bazel actions provision all the blobs — see the ADR.)
 - The `zwo-rs` **`simulation` feature** (which this service forwards as its own
   `simulation` feature) makes the build **camera-free, NOT SDK-free**: it
   fabricates fake frames (and EFW position/moving) at runtime. The native SDK is
@@ -184,12 +194,10 @@ fixing before linking (INDI automates this).
 graph TD;
     A[ASCOM Client: rp / NINA / SharpCap] -->|Alpaca HTTP :11122| B[ascom-alpaca Server];
     B --> C[ZwoCameraDevice<br/>impl Device + Camera];
-    B --> FW[ZwoFilterWheelDevice<br/>impl Device + FilterWheel];
     C --> BB[Blocking bridge<br/>tokio::task::spawn_blocking];
-    FW --> BB;
-    BB --> RS[zwo-rs Sdk/Camera/Efw];
-    RS -->|FFI| SDK[libzwo-sys → ZWO ASI/EFW SDK];
-    SDK -->|libusb-1.0| HW[ASI camera / EFW over USB];
+    BB --> RS[zwo-rs Sdk/Camera];
+    RS -->|FFI| SDK[libzwo-sys → ZWO ASI camera SDK];
+    SDK -->|libusb-1.0| HW[ASI camera over USB];
     C --> CA[config_actions.rs<br/>config.get/apply/schema];
     M[main.rs<br/>ServiceRunner] --> B;
 ```
@@ -201,7 +209,7 @@ graph TD;
   [`service-lifecycle.md`](../skills/service-lifecycle.md). No hand-rolled signal
   handling, no `materialize_identity` (identities are hardware-derived).
 - **`lib.rs`** — `ServerBuilder` that, on `build()`, opens the SDK and
-  **enumerates every connected ASI camera** (and EFW when `filterwheel.enabled`),
+  **enumerates every connected ASI camera**,
   registering each as an ASCOM device (index 0, 1, 2, …) with its serial-derived
   UniqueID. Because `ASIGetSerialNumber` requires an *open* camera (see *Device
   identity*), enumeration opens each camera briefly to mint its identity, then
@@ -221,8 +229,6 @@ graph TD;
   ~26-megapixel `u16`→`i32` widen+transpose), which runs in the same
   `spawn_blocking` closure as the SDK download, never on a Tokio worker and never
   while holding `result_lock` (held only for the cheap commit).
-- **`filterwheel.rs`** — `ZwoFilterWheelDevice` (one per discovered EFW)
-  implementing `Device` + `FilterWheel` (registered when `filterwheel.enabled`).
 - **`config.rs`** — typed `Config` with parse-don't-validate newtypes.
 - **`config_actions.rs`** — `ConfigurableDriver` impl + the `dispatch` the
   devices delegate to (`config.get`/`config.apply`/`config.schema`).
@@ -257,14 +263,14 @@ within their response-time targets (see *Testing*).
 ## MVP scope
 
 The MVP boundary drives BDD scenario selection (Phase 2). Grounded in what the
-ASI/EFW C API exposes and what `zwo-rs` will wrap.
+ASI C API exposes and what `zwo-rs` will wrap.
 
 **In scope (v0)**
 
 - ASCOM Camera ICameraV3 for **every enumerated ASI camera** (each registered as
   a device on the one port), 16-bit (`ASI_IMG_RAW16`) monochrome **and**
   one-shot-colour (Bayer) sensors.
-- Startup enumeration registers all discovered cameras (+ EFWs when enabled);
+- Startup enumeration registers all discovered cameras;
   per-device connect/disconnect lifecycle: open → `ASIInitCamera` → RAW16
   transfer → snap mode → cache `ASI_CAMERA_INFO` (geometry, pixel size, bit
   depth, cooler/colour/ST4 flags, `ElecPerADU`) and control caps.
@@ -316,10 +322,8 @@ ASI/EFW C API exposes and what `zwo-rs` will wrap.
   the frame differs only in metadata). So `HasShutter = false` and darks/bias
   work on every model (a divergence from `qhy-camera`, which rejects darks on
   shutterless models).
-- **FilterWheel** as a second ASCOM device on the same port (when present):
-  `Names`, `Position` (with moving state), `set_position`, `FocusOffsets`.
 - `config.get`/`config.apply`/`config.schema` actions; hardware-derived
-  `UniqueID` (camera/EFW SDK serial); in-process reload.
+  `UniqueID` (camera SDK serial); in-process reload.
 - ConformU integration test driven against the `zwo-rs` `simulation` backend
   (SDK installed in CI, no physical camera).
 
@@ -327,8 +331,9 @@ ASI/EFW C API exposes and what `zwo-rs` will wrap.
 
 - **Video mode** (`ASIStartVideoCapture`) — the high-FPS guiding/planetary path;
   v0 is snap-mode only (snap and video are mutually exclusive).
-- **EAF focuser** (`libEAFFocuser` → ASCOM `IFocuserV3`) — a later addition after
-  the camera + EFW (see *Future Work*).
+- **EFW filter wheel** and **EAF focuser** — separate services per ADR-014:
+  the EAF is [`zwo-focuser`](zwo-focuser.md) (landed); the EFW is a future
+  `zwo-filterwheel` service (`docs/plans/zwo-driver.md` Phase F).
 - **CAA rotator** (`CAA_API.h`) — only if a ZWO rotator is ever in scope.
 - Per-serial connect-time tuning (gain/offset/target-temperature defaults).
 - `FullWellCapacity` (no native ASI field; supply a placeholder only if ConformU
@@ -341,30 +346,23 @@ ASI/EFW C API exposes and what `zwo-rs` will wrap.
 
 ## Configuration
 
-The service **enumerates every connected ASI camera** (and EFW, when enabled) at
-startup and registers each as an ASCOM device (camera / filter-wheel index
-0, 1, 2, …) on the one port. The hardware is the source of truth — there is no
-per-camera *binding* in config. Each device's UniqueID comes from its SDK serial;
-config carries only optional per-serial display overrides plus a global EFW
-toggle and the port.
+The service **enumerates every connected ASI camera** at startup and registers
+each as an ASCOM device (camera index 0, 1, 2, …) on the one port. The hardware
+is the source of truth — there is no per-camera *binding* in config. Each
+device's UniqueID comes from its SDK serial; config carries only optional
+per-serial display overrides plus the port.
 
 ```jsonc
 {
   // Optional per-device overrides, keyed by SDK serial. A device with no entry
-  // uses SDK-derived defaults (name from model+serial; EFW filter names
-  // "Filter0".."FilterN"). Named `devices` (not `overrides`) to avoid colliding
-  // with the config.get response's own `overrides[]` (CLI-pinned paths) field.
+  // uses SDK-derived defaults (name from model+serial). Named `devices` (not
+  // `overrides`) to avoid colliding with the config.get response's own
+  // `overrides[]` (CLI-pinned paths) field.
   "devices": {
     "ASI2600MM-0A1B2C3D4E5F6071": {
       "name": "Main Imaging",
       "description": "ASI2600MM-Pro @ 1000mm"
-    },
-    "EFW-1122334455667788": {
-      "filter_names": ["L", "R", "G", "B", "Ha", "OIII", "SII"]
     }
-  },
-  "filterwheel": {
-    "enabled": true                  // register discovered EFWs as FilterWheel devices
   },
   "server": {
     "port": 11122
@@ -375,18 +373,19 @@ toggle and the port.
 Sections:
 
 - **devices** — Optional per-device override map keyed by **SDK serial** (the
-  16-hex `ASIGetSerialNumber` / `EFWGetSerialNumber` value). Lets an operator give
-  a friendly `name`/`description` to a specific camera and human `filter_names` to
-  a specific EFW. Any device without an entry uses SDK-derived defaults. v0 does
-  **not** carry per-camera connect-time tuning (gain/offset/target temperature) —
-  with heterogeneous cameras those are per-serial concerns and clients set them
-  over ASCOM; per-serial defaults are deferred (see *Future Work*).
-- **filterwheel.enabled** — Global toggle: when `true`, discovered EFWs are
-  registered as FilterWheel devices alongside the cameras. Hard read-only
-  (toggling adds/removes endpoints → restart-required, not a live apply).
+  16-hex `ASIGetSerialNumber` value). Lets an operator give a friendly
+  `name`/`description` to a specific camera. Any device without an entry uses
+  SDK-derived defaults. v0 does **not** carry per-camera connect-time tuning
+  (gain/offset/target temperature) — with heterogeneous cameras those are
+  per-serial concerns and clients set them over ASCOM; per-serial defaults are
+  deferred (see *Future Work*).
 - **server.port** — Listening port (**11122**, next free in the 1112x family;
   11121 is `qhy-camera`). One port hosts all enumerated devices. Hard read-only
   (self-lockout: a port change would make the BFF lose the devices).
+
+*(The former `filterwheel.enabled` toggle and per-serial `filter_names`
+override left with the EFW re-scope — ADR-014; they will reappear in the
+future `zwo-filterwheel` service's own config.)*
 
 ### Config actions
 
@@ -399,13 +398,12 @@ supplies `ConfigurableDriver for ZwoCameraDriver`:
 - **Locked (identity) fields:** none — UniqueIDs are hardware-derived and not
   stored in config, so there is no identity field to lock (a deliberate
   divergence from the `materialize_identity` convention; see *Device identity*).
-- **Hard read-only fields:** `/server/port`, `/filterwheel/enabled` (enabling
-  /disabling adds/removes registered endpoints → restart-required, not a live
-  apply).
-- **Editable fields:** the `devices` map (per-serial `name` / `description` /
-  `filter_names`).
-- **Validation** at load (parse-don't-validate): `filter_names` entries are
-  non-empty strings; `devices` keys are free-form serial strings.
+- **Hard read-only fields:** `/server/port` (self-lockout — a BFF could not
+  follow the rebind).
+- **Editable fields:** the `devices` map (per-serial `name` / `description`).
+- **Validation** at load (parse-don't-validate): `devices` keys are free-form
+  serial strings; the override values are free-form display strings, so v0 has
+  nothing further to validate.
 
 `config.apply` persists atomically, returns `status:"applying"` when a field
 changed, and fires the in-process reload (`main.rs` runs under
@@ -414,8 +412,8 @@ changed, and fires the in-process reload (`main.rs` runs under
 ### Device identity (UniqueID)
 
 ASCOM requires a globally-unique, never-changing `UniqueID`. **This service
-derives the UniqueID from the camera's hardware serial** and the EFW's from the
-EFW serial — the same scheme as `qhy-camera`.
+derives the UniqueID from the camera's hardware serial** — the same scheme as
+`qhy-camera`.
 
 A **ZWO-specific wrinkle:** `ASIGetSerialNumber` (the stable 8-byte → 16-hex id,
 available only since ASI SDK driver V1.14.0227) requires the camera to be
@@ -427,7 +425,7 @@ briefly to read its serial, then closes it. The fallback chain is:
    cameras that report no serial.
 3. Otherwise the device is **refused** and logged at `warn!` (no stable identity).
 
-`EFWGetSerialNumber` provides the EFW UniqueID. Consequences (same as
+Consequences (same as
 `qhy-camera`): **no `unique_id` field in config**, **no `materialize_identity`
 call** in `main.rs`, and **no locked identity field** in the config-actions
 tiers. Two identical-model cameras are naturally distinguished by serial.
@@ -441,7 +439,8 @@ except where a contract notes a unit-tested branch (e.g. E9, and PG2's no-ST4
 path). ASCOM error names per [`docs/references/ascom-alpaca.md`](../references/ascom-alpaca.md).
 Values are grounded in the `zwo-rs`-backed implementation; the `simulation`
 backend presents one **ASI2600MM-Pro-Simulated** camera (6248×4176, monochrome,
-16-bit, cooled, ST4 present) and one **7-position EFW-Simulated** wheel.
+16-bit, cooled, ST4 present). (`zwo-rs`'s sim also fabricates an EFW and an
+EAF; those belong to the other zwo services.)
 
 > The simulator's capability set (cooler + ST4 + 16-bit) is chosen so the BDD
 > suite exercises the **full** ASCOM surface from a single device. ST4 on a
@@ -451,8 +450,8 @@ backend presents one **ASI2600MM-Pro-Simulated** camera (6248×4176, monochrome,
 
 ### Enumeration & connection lifecycle
 
-- **C0.** At startup `build()` enumerates all connected ASI cameras (and EFWs when
-  `filterwheel.enabled`) and registers each as an ASCOM device with its
+- **C0.** At startup `build()` enumerates all connected ASI cameras
+  and registers each as an ASCOM device with its
   serial-derived UniqueID (opening each camera briefly to read the serial). Zero
   discovered cameras is **not** a hard failure — the service starts with no Camera
   devices, logged at `warn!`; a later reload re-enumerates.
@@ -562,17 +561,14 @@ backend presents one **ASI2600MM-Pro-Simulated** camera (6248×4176, monochrome,
   covered by unit tests, since the `simulation` backend always reports ST4
   present.)*
 
-### FilterWheel (when `filterwheel.enabled = true`)
+### FilterWheel — moved to the future `zwo-filterwheel` service
 
-- **FW1.** `Names` lists `filter_names` (or generated `Filter0..N`); `Position`
-  returns the current slot, or the ASCOM moving sentinel while target ≠ actual.
-  *(`EFWGetPosition` returns `EFW_SUCCESS` and writes `-1` into its out-parameter
-  while moving — distinct from the `EFW_ERROR_MOVING` enum — which maps directly
-  onto ASCOM `Position`'s own `-1` moving sentinel.)*
-- **FW2.** `set_position` validates `index < filter_count` and commands the SDK;
-  out-of-range returns `INVALID_VALUE`.
-- **FW3.** `FocusOffsets` returns zeros per filter in v0 (the EFW SDK exposes no
-  per-slot focus offsets).
+The FW1–FW3 contracts (Names/Position with the `-1` moving sentinel,
+`set_position` range validation, zero `FocusOffsets`) that this section
+previously specified move verbatim to the future separate `zwo-filterwheel`
+service (ADR-014; `docs/plans/zwo-driver.md` Phase F), along with the
+`filter_names` overrides and the removed `@wip` `filter_wheel.feature`
+scenarios.
 
 ---
 
@@ -618,7 +614,7 @@ fn main() -> ServiceResult {
     rusty_photon_service_lifecycle::init_tracing(args.log_level);
 
     let config_path = rusty_photon_config::resolve_config_path("zwo-camera", args.config);
-    // No materialize_identity: ASCOM UniqueIDs are derived from the camera/EFW
+    // No materialize_identity: ASCOM UniqueIDs are derived from the camera
     // SDK serials at enumeration (see "Device identity"), not minted into config.
 
     ServiceRunner::new("zwo-camera")
@@ -662,10 +658,10 @@ and **57 BDD scenarios** (all green), plus a full **ConformU** pass.
   mid-exposure Error transition is unit-tested), gain/offset/readout (GO1–RM1),
   cooling (K1–K4), sensor type & signal (ST1–ST3), pulse-guiding (PG1–PG2), and
   config actions, driven against the `zwo-rs` `simulation` backend.
-  FilterWheel (FW1–FW3) is Phase F (`filter_wheel.feature` stays `@wip`).
+  (FilterWheel FW1–FW3 moved to the future `zwo-filterwheel` service — ADR-014.)
 - **ConformU** (`tests/conformu_integration.rs`, gated by the `conformu` feature)
   — launches the production binary with `--features simulation` and runs
-  `bdd_infra::run_conformu("camera", …)` (the EFW is Phase F). Skipped when
+  `bdd_infra::run_conformu("camera", …)`. Skipped when
   `CONFORMU_PATH` is unset. **Passes both suites** (`alpacaprotocol` +
   `conformance`) against the simulation backend: *"no errors, warnings or issues
   found"*, all members within their response-time targets. Three fixes got it
@@ -731,9 +727,10 @@ real SDK serial (ASI178MM, ASI120MC-S) are order-independent.
 
 > **CI caveat (critical):** the `simulation` feature removes the *camera*
 > requirement, **not the SDK**. All build/test/ConformU jobs for this package
-> still link `ASICamera2` + `EFWFilter`, so CI must install the SDK first (see
-> *Gating plan*). Only `cargo check`/clippy jobs (which don't invoke the linker)
-> can skip the SDK.
+> still link `ASICamera2` (this service's device feature — ADR-014; the shared
+> Bazel `zwo-rs` targets link the full union), so CI must install the SDK first
+> (see *Gating plan*). Only `cargo check`/clippy jobs (which don't invoke the
+> linker) can skip the SDK.
 
 ---
 
@@ -747,7 +744,8 @@ driver itself). The FFI crate is the long pole (~40–50% of effort); once
 [`docs/plans/zwo-driver.md`](../plans/zwo-driver.md):
 
 - **Phase A — `libzwo-sys`** *(skeleton stood up)*. `bindgen` over `ASICamera2.h`
-  + `EFW_filter.h` + `EAF_focuser.h`; `build.rs` unconditional system-link. Green
+  + `EFW_filter.h` + `EAF_focuser.h`; `build.rs` unconditional system-link
+  (per-device features since ADR-014). Green
   `check` + `test` on Linux x86_64, built + tested locally on aarch64.
   *Remaining:* confirm green link on Pi 5 aarch64 CI + macOS arm64.
 - **Phase B — `zwo-rs`** *(skeleton stood up)*. Safe `Sdk`/`Error` surface +
@@ -765,9 +763,12 @@ driver itself). The FFI crate is the long pole (~40–50% of effort); once
   graceful stop, PulseGuide, sensor type), config-actions, serial identity,
   `spawn_blocking` bridge (camera lock released during integration), `backend.rs`
   mock seam. 45 unit tests + 57 BDD scenarios green (ConformU passes); the six camera feature files
-  are live (`filter_wheel.feature` stays `@wip` for Phase F).
-- **Phase F — EFW `FilterWheel`** fast-follow (position/moving/names/offsets),
-  config toggle, BDD/ConformU.
+  are live.
+- **Phase F — EFW `FilterWheel`: re-scoped to a future separate
+  `zwo-filterwheel` service** (ADR-014, 2026-07-10) — see
+  [`docs/plans/zwo-driver.md`](../plans/zwo-driver.md) Phase F. Not part of
+  this service; the `@wip` `filter_wheel.feature` and the `filterwheel.enabled`
+  config toggle were removed with the re-scope.
 - **Phase G — test + gate + consumer.** BDD landed (Phase E). **ConformU passes
   both suites** against the simulation backend (verified locally) after the
   `zwo-rs` rev `3c32e59` sim fixes plus the aligned-`CameraXSize` (R4) and
@@ -780,10 +781,6 @@ driver itself). The FFI crate is the long pole (~40–50% of effort); once
 
 ## Future Work
 
-- **EAF focuser** (`EAF_focuser.h` / `libEAFFocuser`) → ASCOM `IFocuserV3`
-  (absolute + temperature; `EAFIsMoving` is cleaner than the EFW `-1` trick).
-  Could eventually supersede the serial [`qhy-focuser`](qhy-focuser.md) pattern
-  for ZWO users.
 - **Video mode** (`ASIStartVideoCapture`) as a high-FPS guiding/planetary path.
 - **CAA rotator** (`CAA_API.h`) if a ZWO rotator is ever in scope.
 - **Vendoring the SDK** into `libzwo-sys` (MIT permits) to drop external
@@ -806,16 +803,15 @@ rule `90-rusty-photon-zwo.rules` granting `plugdev` members access to
 enumerated ZWO devices (VID `03c3`) plus the usbfs memory bump.
 
 Unlike qhy-camera, the native SDK ships **inside the package**: ZWO's
-blobs are MIT-licensed, so `libASICamera2.so` + `libEFWFilter.so` +
-`libEAFFocuser.so` (downloaded at package-build time by
-`scripts/build-packages.sh` from the same pinned indi-3rdparty commit
-`.github/actions/install-zwo-sdk` uses) are installed at
-`/usr/lib/rusty-photon/`, with the SDK license at
-`/usr/share/doc/rusty-photon-zwo-camera/ZWO-SDK-LICENSE.txt`. All three
-blobs are required even though this service never talks to the EAF,
-because `libzwo-sys` links them unconditionally (one build script serves
-both `zwo-camera` and `zwo-focuser`). The blobs carry no SONAME, so the
-packaged binary locates them via a RUNPATH
+blobs are MIT-licensed, so `libASICamera2.so` — **exactly the one SDK this
+binary links** (zwo-rs `camera` feature, ADR-014) — is downloaded at
+package-build time by `scripts/build-packages.sh` from the same pinned
+indi-3rdparty commit `.github/actions/install-zwo-sdk` uses, and installed
+at `/usr/lib/rusty-photon/`, with the SDK license at
+`/usr/share/doc/rusty-photon-zwo-camera/ZWO-SDK-LICENSE.txt`. Because each
+zwo package owns only its own blob, this package co-installs cleanly with
+`rusty-photon-zwo-focuser` (which ships `libEAFFocuser.so`). The blob
+carries no SONAME, so the packaged binary locates it via a RUNPATH
 (`-Wl,-rpath,/usr/lib/rusty-photon`) injected by the build script — no
 `ldconfig`, no `/usr/local` spill, no external SDK install step for the
 operator. ZWO cameras keep their firmware in onboard flash, so there is

@@ -46,11 +46,16 @@ header (`EAF_focuser.h`) already vendored alongside the ASI/EFW headers in
 Identical posture to `zwo-camera` (see `docs/services/zwo-camera.md` "Native
 dependency & build gating" for the full rationale) — summarized here:
 
-- The chain is `zwo-focuser → zwo-rs → libzwo-sys →` the ZWO SDK (`libEAFFocuser`)
-  `+ libusb-1.0`.
-- `libzwo-sys`'s `build.rs` links `EAFFocuser` unconditionally alongside
-  `ASICamera2`/`EFWFilter` (no feature/cfg gate) — every machine that compiles
-  `libzwo-sys` needs the SDK installed and discoverable, same as `zwo-camera`.
+- The chain is `zwo-focuser → zwo-rs → libzwo-sys →` the ZWO SDK
+  (`libEAFFocuser`).
+- `libzwo-sys`'s `build.rs` links per device feature
+  ([ADR-014](../decisions/014-zwo-per-device-services-and-link-features.md));
+  this service builds `zwo-rs` with `focuser` only, so its link is exactly
+  `EAFFocuser` (+ the C++ runtime and `libudev`, whose `udev_*` symbols the
+  EAF blob references without declaring) — machines compiling this package
+  need that SDK installed and discoverable. (The shared Bazel `zwo-rs`
+  targets build the union of device features, so Bazel actions still
+  provision all the blobs.)
 - The `simulation` feature makes the build **hardware-free, not SDK-free**: it
   fabricates a fake EAF (position/moving/temperature) at runtime; the native SDK
   is still required at link time. `ZWO_SKIP_NATIVE_LINK=1` omits the link
@@ -410,14 +415,15 @@ Packaged as `rusty-photon-zwo-focuser` (`.deb`/`.rpm`) per
 a separate file so both packages can install their udev rule on the same host
 without a filename collision).
 
-All three native SDK blobs (MIT-licensed `libASICamera2.so`, `libEFWFilter.so`,
-`libEAFFocuser.so`) ship **inside the package**, staged at build time by
+The MIT-licensed `libEAFFocuser.so` — **exactly the one SDK this binary links**
+(zwo-rs `focuser` feature,
+[ADR-014](../decisions/014-zwo-per-device-services-and-link-features.md)) —
+ships **inside the package**, staged at build time by
 `scripts/build-packages.sh` from the same pinned indi-3rdparty ref
-`.github/actions/install-zwo-sdk` uses, alongside the SDK license — all three
-are required even though this service only talks to the EAF, because
-`libzwo-sys` links them unconditionally (one build script serves both
-`zwo-camera` and `zwo-focuser`). ZWO EAFs keep their firmware in onboard
-flash, so there is no firmware-install helper.
+`.github/actions/install-zwo-sdk` uses, alongside the SDK license. Because
+each zwo package owns only its own blob, this package co-installs cleanly
+with `rusty-photon-zwo-camera` (which ships `libASICamera2.so`). ZWO EAFs
+keep their firmware in onboard flash, so there is no firmware-install helper.
 
 ## Future Work
 
