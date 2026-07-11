@@ -9,15 +9,19 @@
 #      cargo-generate-rpm only with --rpm),
 #   2. stage the native camera SDKs into ~/.cache/rusty-photon-pkg/:
 #      QHYCCD's static libqhyccd.a for the link (exported as
-#      QHYCCD_SDK_DIR), and the ZWO MIT blobs (ASICamera2, EFWFilter,
-#      EAFFocuser — libzwo-sys links all three unconditionally) into the
-#      gitignored services/zwo-camera/pkg/lib/ — used both for the link
-#      (ZWO_SDK_LIB_DIR) and as zwo-camera's package payload (ADR-013);
-#      zwo-focuser's own EAFFocuser payload copy is staged separately into
-#      services/zwo-focuser/pkg/lib/,
-#   3. one release build of every selected service with the RUNPATH the
-#      zwo-* packages need (-Wl,-rpath,/usr/lib/rusty-photon;
-#      uniform across binaries, harmless where unused), then strip,
+#      QHYCCD_SDK_DIR), and the ZWO MIT blobs each service links (ADR-014:
+#      per-device SDK features — zwo-camera → libASICamera2, zwo-focuser →
+#      libEAFFocuser). The cache dir doubles as the link path
+#      (ZWO_SDK_LIB_DIR); each service's own blob is also copied into its
+#      gitignored services/<svc>/pkg/lib/ as that package's payload
+#      (ADR-013) — no blob is shared between packages, so the zwo debs
+#      co-install without file conflicts,
+#   3. release-build the selected services with the RUNPATH the zwo-*
+#      packages need (-Wl,-rpath,/usr/lib/rusty-photon; uniform across
+#      binaries, harmless where unused), then strip. The two zwo services
+#      each build in their OWN cargo invocation: cargo unifies features
+#      per invocation, so batching them would re-union the per-device
+#      libzwo-sys links and both binaries would need every blob again,
 #   4. per service: cargo deb --no-build --no-strip (a rebuild would lose
 #      the staged env/RUSTFLAGS); with --rpm also cargo generate-rpm,
 #   5. collect artifacts into dist/<version>/ + SHA256SUMS.txt.
@@ -92,12 +96,13 @@ else
 fi
 
 needs_qhy=0
-needs_zwo=0
+needs_zwo_camera=0
+needs_zwo_focuser=0
 case " $SERVICES " in *" qhy-camera "*) needs_qhy=1 ;; esac
-# libzwo-sys's build.rs links ASICamera2 + EFWFilter + EAFFocuser
-# unconditionally (regardless of which zwo-* service is being built), so
-# either service selected requires staging all three blobs.
-case " $SERVICES " in *" zwo-camera "*|*" zwo-focuser "*) needs_zwo=1 ;; esac
+# libzwo-sys links per device feature (ADR-014): zwo-camera needs only
+# libASICamera2, zwo-focuser only libEAFFocuser.
+case " $SERVICES " in *" zwo-camera "*) needs_zwo_camera=1 ;; esac
+case " $SERVICES " in *" zwo-focuser "*) needs_zwo_focuser=1 ;; esac
 
 case "$(uname -m)" in
     x86_64)
@@ -179,36 +184,40 @@ if [ "$needs_qhy" = 1 ]; then
     echo "QHYCCD SDK $QHY_SDK_VERSION staged: QHYCCD_SDK_DIR=$QHYCCD_SDK_DIR"
 fi
 
-if [ "$needs_zwo" = 1 ]; then
+if [ "$needs_zwo_camera" = 1 ] || [ "$needs_zwo_focuser" = 1 ]; then
     ZWO_CACHE="$CACHE/zwo-$ZWO_SDK_REF-$ZWO_ARCH"
     mkdir -p "$ZWO_CACHE"
     ZWO_BASE="https://github.com/indilib/indi-3rdparty/raw/$ZWO_SDK_REF/libasi"
-    for blob in libASICamera2 libEFWFilter libEAFFocuser; do
+    zwo_blobs=""
+    [ "$needs_zwo_camera" = 1 ] && zwo_blobs="$zwo_blobs libASICamera2"
+    [ "$needs_zwo_focuser" = 1 ] && zwo_blobs="$zwo_blobs libEAFFocuser"
+    for blob in $zwo_blobs; do
         if [ ! -f "$ZWO_CACHE/$blob.so" ]; then
             [ "$SKIP_STAGING" = 0 ] || die "--skip-sdk-staging set but $ZWO_CACHE/$blob.so is missing"
             fetch "$ZWO_BASE/$ZWO_ARCH/$blob.bin" "$ZWO_CACHE/$blob.so"
         fi
     done
-    # The link-search dir needs every blob regardless of which zwo-* service
-    # is selected (libzwo-sys links all three unconditionally); reuse
-    # zwo-camera's pkg/lib as that shared dir, harmless even when zwo-camera
-    # itself isn't selected this run (gitignored scratch space).
-    mkdir -p services/zwo-camera/pkg/lib
-    cp "$ZWO_CACHE/libASICamera2.so" "$ZWO_CACHE/libEFWFilter.so" "$ZWO_CACHE/libEAFFocuser.so" services/zwo-camera/pkg/lib/
-    ZWO_SDK_LIB_DIR="$(pwd)/services/zwo-camera/pkg/lib"
+    # The cache dir is the link-search path: it holds (at least) every blob
+    # the selected services link, and libzwo-sys's per-device features
+    # (ADR-014) mean each service's isolated build looks for exactly its own.
+    ZWO_SDK_LIB_DIR="$ZWO_CACHE"
     export ZWO_SDK_LIB_DIR
-    echo "ZWO SDK blobs (indi-3rdparty $ZWO_SDK_REF) staged: ZWO_SDK_LIB_DIR=$ZWO_SDK_LIB_DIR"
+    echo "ZWO SDK blobs (indi-3rdparty $ZWO_SDK_REF) staged:$zwo_blobs; ZWO_SDK_LIB_DIR=$ZWO_SDK_LIB_DIR"
 
-    # zwo-focuser's own package payload (ADR-013) — only staged when selected.
-    # All three blobs, not just libEAFFocuser: libzwo-sys links all three
-    # unconditionally, so the zwo-focuser binary needs libASICamera2.so and
-    # libEFWFilter.so at runtime too, same as zwo-camera needs libEAFFocuser.so.
-    case " $SERVICES " in
-        *" zwo-focuser "*)
-            mkdir -p services/zwo-focuser/pkg/lib
-            cp "$ZWO_CACHE/libASICamera2.so" "$ZWO_CACHE/libEFWFilter.so" "$ZWO_CACHE/libEAFFocuser.so" services/zwo-focuser/pkg/lib/
-            ;;
-    esac
+    # Per-service package payload (ADR-013 + ADR-014): each package ships only
+    # the one blob its binary links, so the zwo debs never overlap on a file.
+    # Stale extra blobs from pre-ADR-014 runs are removed so pkg/lib/ is
+    # exactly the payload.
+    if [ "$needs_zwo_camera" = 1 ]; then
+        mkdir -p services/zwo-camera/pkg/lib
+        rm -f services/zwo-camera/pkg/lib/libEFWFilter.so services/zwo-camera/pkg/lib/libEAFFocuser.so
+        cp "$ZWO_CACHE/libASICamera2.so" services/zwo-camera/pkg/lib/
+    fi
+    if [ "$needs_zwo_focuser" = 1 ]; then
+        mkdir -p services/zwo-focuser/pkg/lib
+        rm -f services/zwo-focuser/pkg/lib/libASICamera2.so services/zwo-focuser/pkg/lib/libEFWFilter.so
+        cp "$ZWO_CACHE/libEAFFocuser.so" services/zwo-focuser/pkg/lib/
+    fi
 fi
 
 # ---- build ----------------------------------------------------------------
@@ -219,13 +228,31 @@ fi
 RUSTFLAGS="-C link-arg=-Wl,-rpath,/usr/lib/rusty-photon"
 export RUSTFLAGS
 
+# The zwo services build in their own cargo invocations: cargo unifies
+# features per invocation, so batching zwo-camera (zwo-rs/camera) with
+# zwo-focuser (zwo-rs/focuser) would union the per-device libzwo-sys link
+# features (ADR-014) and both binaries would link — and need at runtime —
+# every SDK blob again. Everything else batches into one invocation.
 build_args=""
 for s in $SERVICES; do
-    build_args="$build_args -p $s"
+    case "$s" in
+        zwo-camera | zwo-focuser) ;;
+        *) build_args="$build_args -p $s" ;;
+    esac
 done
-echo "Building release binaries:$build_args"
-# shellcheck disable=SC2086 # word-splitting the -p list is intended
-cargo build --release $build_args
+if [ -n "$build_args" ]; then
+    echo "Building release binaries:$build_args"
+    # shellcheck disable=SC2086 # word-splitting the -p list is intended
+    cargo build --release $build_args
+fi
+if [ "$needs_zwo_camera" = 1 ]; then
+    echo "Building release binaries: -p zwo-camera (isolated: per-device SDK link)"
+    cargo build --release -p zwo-camera
+fi
+if [ "$needs_zwo_focuser" = 1 ]; then
+    echo "Building release binaries: -p zwo-focuser (isolated: per-device SDK link)"
+    cargo build --release -p zwo-focuser
+fi
 
 # Same reasoning as the curl check in fetch(): make a missing binutils on a
 # non-apt host fail with an actionable message, not a bare `strip: not found`.
