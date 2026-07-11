@@ -9,7 +9,8 @@ Feature: Plain-REST configuration endpoints
   "restart_required" and the apply status stays "ok" — the persisted file
   takes effect on the next rp start. Validation failures are HTTP 200 with
   status "invalid" and errors[], leaving the file untouched; a malformed
-  JSON body is HTTP 400. Secrets are redacted to the sentinel "********";
+  JSON body is HTTP 400; a body over axum's default 2 MiB request limit is
+  HTTP 413. Secrets are redacted to the sentinel "********";
   submitting the sentinel back means "keep the stored secret unchanged".
   These endpoints spawn rp with a temp config only — no simulator needed.
 
@@ -67,6 +68,14 @@ Feature: Plain-REST configuration endpoints
     And I remember the config file bytes
     When I PUT /api/config with body "this is not json"
     Then the config response status should be 400
+    And the config file bytes should be unchanged
+
+  Scenario: PUT /api/config with an oversized body is rejected before parsing
+    Given a temp rp config with no equipment
+    And rp is started with that config file
+    And I remember the config file bytes
+    When I PUT /api/config with a body just over the 2 MiB request limit
+    Then the config response status should be 413
     And the config file bytes should be unchanged
 
   Scenario: A redacted device password round-trips PUT unchanged on disk

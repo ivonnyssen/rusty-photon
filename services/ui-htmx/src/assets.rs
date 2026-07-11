@@ -38,3 +38,58 @@ pub async fn htmx_sse_js() -> impl IntoResponse {
         HTMX_SSE_JS,
     )
 }
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use axum::response::IntoResponse;
+
+    /// The content-type is what makes the browser apply/execute an asset —
+    /// pin it (and that the embedded bytes are the expected artifact).
+    async fn assert_asset(response: axum::response::Response, content_type: &str, marker: &str) {
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::CONTENT_TYPE)
+                .unwrap(),
+            content_type
+        );
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(body.contains(marker), "asset lacks marker {marker:?}");
+    }
+
+    #[tokio::test]
+    async fn app_css_is_served_as_css() {
+        assert_asset(
+            super::app_css().await.into_response(),
+            "text/css; charset=utf-8",
+            ":root",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn htmx_js_is_served_as_javascript() {
+        assert_asset(
+            super::htmx_js().await.into_response(),
+            "application/javascript; charset=utf-8",
+            "htmx",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn htmx_sse_extension_is_served_as_javascript() {
+        assert_asset(
+            super::htmx_sse_js().await.into_response(),
+            "application/javascript; charset=utf-8",
+            "sse",
+        )
+        .await;
+    }
+}

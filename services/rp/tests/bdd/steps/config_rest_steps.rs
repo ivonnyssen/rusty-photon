@@ -182,6 +182,13 @@ async fn put_config_unchanged(world: &mut RpWorld) {
     send_put_config(world, config.to_string()).await;
 }
 
+#[when("I PUT /api/config with a body just over the 2 MiB request limit")]
+async fn put_config_oversized_body(world: &mut RpWorld) {
+    // Just over axum's default `DefaultBodyLimit` (2 MiB). If the limit were
+    // ever disabled, this body would reach the parser and fail 400, not 413.
+    send_put_config(world, "x".repeat(2 * 1024 * 1024 + 4096)).await;
+}
+
 #[when(expr = "I PUT \\/api\\/config with body {string}")]
 async fn put_config_raw_body(world: &mut RpWorld, body: String) {
     send_put_config(world, body).await;

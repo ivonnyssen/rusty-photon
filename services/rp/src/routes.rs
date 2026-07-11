@@ -1120,6 +1120,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn config_put_persist_failure_is_500() {
+        // The config path is a *directory*: validation passes, the atomic
+        // persist fails — the handler's internal-error branch.
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_app_state_with_config(
+            ImageCache::new(64, 4, PathBuf::from("/tmp")),
+            scaffold_config(),
+            dir.path().to_path_buf(),
+        );
+        let mut submitted = serde_json::to_value(&*state.config).unwrap();
+        submitted["imaging"]["cache_max_mib"] = serde_json::json!(512);
+
+        let response = put_config(State(state), submitted.to_string()).await;
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
     async fn config_put_sentinel_round_trip_keeps_stored_password_on_disk() {
         let (state, _dir, path) = config_test_state(config_with_camera_password("hunter2"));
         // Submit what GET /api/config returned: the password redacted.
