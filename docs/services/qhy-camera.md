@@ -314,7 +314,10 @@ supplies `ConfigurableDriver for QhyCameraDriver`:
 - **Editable fields:** the `devices` map (per-serial `name` / `description` /
   `filter_names`).
 - **Validation** at load (parse-don't-validate): `filter_names` entries are
-  non-empty strings; `devices` keys are free-form serial strings.
+  non-empty strings; `devices` keys are free-form serial strings. Unknown keys
+  are **rejected at deserialize** (`deny_unknown_fields`, as in zwo-camera and
+  the other newer services), so typos and removed keys fail loudly at load
+  instead of being silently ignored.
 
 `config.apply` persists atomically, returns `status:"applying"` when a field
 changed, and fires the in-process reload (`main.rs` runs under
