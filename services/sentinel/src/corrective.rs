@@ -21,6 +21,7 @@ use tracing::{debug, warn};
 
 use crate::config::ServiceConfig;
 use crate::io::HttpClient;
+use crate::restart::RestartGate;
 
 /// Health-check probe timeout (the design's 2 s cap).
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(2);
@@ -340,6 +341,10 @@ pub struct CorrectiveLadder {
     health: Arc<dyn HealthChecker>,
     aborter: Arc<dyn Aborter>,
     restarter: Arc<dyn Restarter>,
+    /// Shared one-restart-per-service gate: the restart rung holds the
+    /// service's slot across the command and the recovery wait, so it never
+    /// races the REST endpoint or health supervision.
+    gate: RestartGate,
 }
 
 impl CorrectiveLadder {
@@ -347,21 +352,24 @@ impl CorrectiveLadder {
         health: Arc<dyn HealthChecker>,
         aborter: Arc<dyn Aborter>,
         restarter: Arc<dyn Restarter>,
+        gate: RestartGate,
     ) -> Self {
         Self {
             health,
             aborter,
             restarter,
+            gate,
         }
     }
 
     /// Production ladder: HTTP health-check + abort over a shared client, shell
-    /// restarter.
-    pub fn http(http: Arc<dyn HttpClient>) -> Self {
+    /// restarter, restarts coordinated through the shared `gate`.
+    pub fn http(http: Arc<dyn HttpClient>, gate: RestartGate) -> Self {
         Self::new(
             Arc::new(HttpHealthChecker::new(Arc::clone(&http))),
             Arc::new(HttpAborter::new(http)),
             Arc::new(ShellRestarter),
+            gate,
         )
     }
 
@@ -373,6 +381,14 @@ impl CorrectiveLadder {
                 target.service_name
             );
             outcome.push("restart=skipped(not restartable)");
+            return;
+        };
+        let Some(_slot) = self.gate.try_acquire(&target.service_name) else {
+            debug!(
+                "ladder '{}': restart already in flight elsewhere, skipping",
+                target.service_name
+            );
+            outcome.push("restart=skipped(already in flight)");
             return;
         };
         // The service's `max_restart_duration` is one budget for the command
@@ -483,6 +499,7 @@ mod tests {
             restart_command: restart_command.map(String::from),
             health_command: None,
             max_restart_duration: TEST_BUDGET,
+            health: None,
         }
     }
 
@@ -582,7 +599,7 @@ mod tests {
         aborter: Arc<MockAbort>,
         restarter: Arc<MockRestart>,
     ) -> CorrectiveLadder {
-        CorrectiveLadder::new(health, aborter, restarter)
+        CorrectiveLadder::new(health, aborter, restarter, RestartGate::default())
     }
 
     // ---- ladder orchestration -----------------------------------------
@@ -647,6 +664,49 @@ mod tests {
 
         assert!(outcome.rungs.contains(&"restart=ran".to_string()));
         assert!(outcome.rungs.contains(&"recovery=timeout".to_string()));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn ladder_skips_restart_when_gate_held() {
+        let health = MockHealth::new(Healthiness::Unresponsive, vec![]);
+        let aborter = MockAbort::new(true);
+        let restarter = MockRestart::new(true);
+        let gate = RestartGate::default();
+        let l = CorrectiveLadder::new(health, aborter, restarter.clone(), gate.clone());
+
+        // Another restart path (REST endpoint / health supervision) holds the
+        // target service's slot.
+        let _slot = gate.try_acquire("mount").unwrap();
+        let outcome = l.run(&target(Some("restart"))).await;
+
+        assert_eq!(
+            restarter.calls.load(Ordering::SeqCst),
+            0,
+            "the restart rung must not run while the slot is held"
+        );
+        assert!(
+            outcome
+                .rungs
+                .contains(&"restart=skipped(already in flight)".to_string()),
+            "{:?}",
+            outcome.rungs
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn ladder_releases_gate_after_run() {
+        let health = MockHealth::new(Healthiness::Unresponsive, vec![]);
+        let aborter = MockAbort::new(true);
+        let restarter = MockRestart::new(true);
+        let gate = RestartGate::default();
+        let l = CorrectiveLadder::new(health, aborter, restarter, gate.clone());
+
+        l.run(&target(Some("restart"))).await;
+
+        assert!(
+            gate.try_acquire("mount").is_some(),
+            "the slot must be free once the ladder finishes"
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -734,6 +794,7 @@ mod tests {
                 restart_command: None,
                 health_command: None,
                 max_restart_duration: TEST_BUDGET,
+                health: None,
             },
         );
         assert_eq!(
@@ -766,6 +827,7 @@ mod tests {
                 restart_command: Some("restart".to_string()),
                 health_command: None,
                 max_restart_duration: TEST_BUDGET,
+                health: None,
             },
         );
         assert!(t.connected_url().is_none());

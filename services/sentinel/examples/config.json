@@ -47,6 +47,17 @@
       "restart_command": "systemctl --user restart dsd-fp2",
       "health_command": "systemctl --user is-active dsd-fp2",
       "max_restart_duration": "60s"
+    },
+    "plate-solver": {
+      "restart_command": "systemctl --user restart plate-solver",
+      "max_restart_duration": "30s",
+      "health": {
+        "url": "http://localhost:11131/health",
+        "poll_interval": "30s",
+        "failure_threshold": 3,
+        "restart_backoff": "1m",
+        "restart_backoff_max": "15m"
+      }
     }
   }
 }

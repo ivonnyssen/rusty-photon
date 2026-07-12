@@ -67,8 +67,45 @@ pub struct RestartReport {
     pub detail: Option<String>,
 }
 
-/// The supervised-services registry plus the shell seam and the one-restart-
-/// per-service in-flight guard.
+/// One-restart-per-service gate, shared by every restart path — the REST
+/// endpoint, the watchdog corrective ladder, and health supervision. Clones
+/// share the same in-flight set, so whichever path acquires a service's slot
+/// first excludes the others until the slot drops.
+#[derive(Debug, Clone, Default)]
+pub struct RestartGate(Arc<Mutex<HashSet<String>>>);
+
+impl RestartGate {
+    /// Claim `name`'s slot. `None` means a restart of that service is already
+    /// in flight somewhere.
+    pub fn try_acquire(&self, name: &str) -> Option<RestartSlot> {
+        let mut in_flight = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        if !in_flight.insert(name.to_string()) {
+            return None;
+        }
+        Some(RestartSlot {
+            set: Arc::clone(&self.0),
+            name: name.to_string(),
+        })
+    }
+}
+
+/// RAII slot in the gate's in-flight set: dropping releases it, so a restart
+/// that panics or is cancelled never wedges its service's slot.
+#[derive(Debug)]
+pub struct RestartSlot {
+    set: Arc<Mutex<HashSet<String>>>,
+    name: String,
+}
+
+impl Drop for RestartSlot {
+    fn drop(&mut self) {
+        let mut in_flight = self.set.lock().unwrap_or_else(|p| p.into_inner());
+        in_flight.remove(&self.name);
+    }
+}
+
+/// The supervised-services registry plus the shell seam and the shared
+/// [`RestartGate`].
 #[derive(derive_more::Debug)]
 pub struct RestartManager {
     services: HashMap<String, ServiceConfig>,
@@ -77,7 +114,7 @@ pub struct RestartManager {
     /// `Ok` iff it exits 0 in time — is exactly what both need.
     #[debug(skip)]
     runner: Arc<dyn Restarter>,
-    in_flight: Mutex<HashSet<String>>,
+    gate: RestartGate,
 }
 
 impl RestartManager {
@@ -85,13 +122,19 @@ impl RestartManager {
         Self {
             services,
             runner,
-            in_flight: Mutex::new(HashSet::new()),
+            gate: RestartGate::default(),
         }
     }
 
     /// Production manager: commands run through the platform shell.
     pub fn shell(services: HashMap<String, ServiceConfig>) -> Self {
         Self::new(services, Arc::new(ShellRestarter))
+    }
+
+    /// A clone of the shared gate, for wiring into the other restart paths
+    /// (the corrective ladder) so they exclude this manager's restarts.
+    pub fn gate(&self) -> RestartGate {
+        self.gate.clone()
     }
 
     /// Restart `name`: run its `restart_command`, then confirm recovery via
@@ -106,7 +149,10 @@ impl RestartManager {
             .restart_command
             .as_deref()
             .ok_or_else(|| RestartError::NotRestartable(name.to_string()))?;
-        let _guard = InFlightGuard::acquire(&self.in_flight, name)?;
+        let _slot = self
+            .gate
+            .try_acquire(name)
+            .ok_or_else(|| RestartError::AlreadyInFlight(name.to_string()))?;
 
         let budget = service.max_restart_duration;
         info!("restarting service '{name}' (budget {budget:?})");
@@ -171,34 +217,6 @@ impl RestartManager {
     }
 }
 
-/// RAII entry in the in-flight set: acquiring an already-present name fails,
-/// dropping removes it — so a restart that panics or is cancelled never wedges
-/// its service's slot.
-struct InFlightGuard<'a> {
-    set: &'a Mutex<HashSet<String>>,
-    name: String,
-}
-
-impl<'a> InFlightGuard<'a> {
-    fn acquire(set: &'a Mutex<HashSet<String>>, name: &str) -> Result<Self, RestartError> {
-        let mut in_flight = set.lock().unwrap_or_else(|p| p.into_inner());
-        if !in_flight.insert(name.to_string()) {
-            return Err(RestartError::AlreadyInFlight(name.to_string()));
-        }
-        Ok(Self {
-            set,
-            name: name.to_string(),
-        })
-    }
-}
-
-impl Drop for InFlightGuard<'_> {
-    fn drop(&mut self) {
-        let mut in_flight = self.set.lock().unwrap_or_else(|p| p.into_inner());
-        in_flight.remove(&self.name);
-    }
-}
-
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
@@ -258,6 +276,7 @@ mod tests {
             restart_command: restart_command.map(String::from),
             health_command: health_command.map(String::from),
             max_restart_duration: budget,
+            health: None,
         }
     }
 
@@ -394,6 +413,48 @@ mod tests {
             vec!["restart-cmd".to_string()],
             "a failed restart must not probe health"
         );
+    }
+
+    #[test]
+    fn gate_second_acquire_fails_until_slot_dropped() {
+        let gate = RestartGate::default();
+        let slot = gate.try_acquire("svc").expect("first acquire must succeed");
+        assert!(gate.try_acquire("svc").is_none(), "slot is held");
+        assert!(
+            gate.try_acquire("other").is_some(),
+            "different services are independent"
+        );
+        drop(slot);
+        assert!(gate.try_acquire("svc").is_some(), "drop releases the slot");
+    }
+
+    #[test]
+    fn gate_clones_share_the_set() {
+        let gate = RestartGate::default();
+        let clone = gate.clone();
+        let _slot = clone.try_acquire("svc").unwrap();
+        assert!(
+            gate.try_acquire("svc").is_none(),
+            "a slot held via a clone must block the original"
+        );
+    }
+
+    #[tokio::test]
+    async fn manager_gate_accessor_shares_in_flight_set() {
+        let svc = service(Some("restart-cmd"), None, Duration::from_secs(1));
+        let (m, runner) = manager(
+            &[("svc", svc)],
+            ScriptedRunner::succeeding(&["restart-cmd"]),
+        );
+        let slot = m.gate().try_acquire("svc").unwrap();
+        let err = m.restart("svc").await.unwrap_err();
+        assert_eq!(err, RestartError::AlreadyInFlight("svc".to_string()));
+        assert!(
+            runner.calls.lock().unwrap().is_empty(),
+            "no command may run while the gate slot is held externally"
+        );
+        drop(slot);
+        assert_eq!(m.restart("svc").await.unwrap().status, "ok");
     }
 
     #[tokio::test]

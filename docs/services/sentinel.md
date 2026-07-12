@@ -2,7 +2,7 @@
 
 ## Overview
 
-Sentinel is an observatory monitoring and notification service. It polls ASCOM Alpaca devices via their HTTP API, detects state transitions (safe/unsafe), and sends notifications through configurable channels. It also provides a web dashboard for real-time status viewing.
+Sentinel is an observatory monitoring and notification service. It polls ASCOM Alpaca devices via their HTTP API, detects state transitions (safe/unsafe), and sends notifications through configurable channels. It supervises the health of HTTP services (periodic `GET` health probes with autonomous restart, see [Service Health Supervision](#service-health-supervision)) and provides a web dashboard for real-time status viewing.
 
 Unlike other services in this workspace, sentinel is **not** an ASCOM Alpaca server — it is a client/consumer that monitors other ASCOM devices.
 
@@ -34,7 +34,7 @@ Dashboard (axum + hand-rolled HTML) --- web UI w/ JS polling
 ### Key Traits
 
 - **`Monitor`** — `poll() -> MonitorState`, `connect()`, `disconnect()`, `polling_interval() -> Duration`. A **pull-based** monitor the engine polls on a fixed interval. First implementation: `AlpacaSafetyMonitor`.
-- **`EventMonitor`** — `name()`, `run(cancel)`. A **push-based** monitor that owns a long-lived connection and reacts to a stream of events rather than being polled. It runs until the cancellation token fires. First implementation: `OperationDeadlineMonitor` (see [Operation Watchdog](#operation-watchdog)). Added because the watchdog's natural interface is "react to each event as it arrives", which a `poll() -> State` shape cannot express; the engine spawns a parallel task per `EventMonitor` alongside the per-`Monitor` poll loops.
+- **`EventMonitor`** — `name()`, `run(cancel)`. A **self-driving** monitor task that owns its own lifecycle — a long-lived connection it reacts to, or a poll loop it paces itself — and runs until the cancellation token fires. Added because some monitors cannot be expressed as the engine-paced `poll() -> State` shape; the engine spawns a parallel task per `EventMonitor` alongside the per-`Monitor` poll loops. Implementations: `OperationDeadlineMonitor` (see [Operation Watchdog](#operation-watchdog)) and `ServiceHealthSupervisor` (see [Service Health Supervision](#service-health-supervision)).
 - **`Notifier`** — `notify(notification)`. First implementation: `PushoverNotifier`. The watchdog reuses this dispatch path — an expiry or liveness escalation is just another notification.
 - **`Corrective`** / **`HealthChecker`** / **`Aborter`** / **`Restarter`** — the watchdog's corrective-action ladder for `abort_then_restart` operations. `CorrectiveLadder` composes the three rung traits (health → abort → restart) behind the single `Corrective::run` seam the watchdog calls; HTTP and shell default impls live in `corrective.rs`. See [Operation Watchdog](#operation-watchdog). `Restarter` (run a shell command bounded by a budget, `Ok` iff it exits 0 in time) is also the seam behind the [Service Restart API](#service-restart-api): the REST endpoint runs both `restart_command` and the `health_command` recovery poll through it, so tests inject a recording stub.
 - **`HttpClient`** — wraps `reqwest` for testability (mockall in tests). Used by monitors, notifiers, and the corrective health-check / abort rungs.
@@ -58,9 +58,10 @@ For custom monitors/notifiers (e.g. in an astrophotography app), use `with_monit
 Configuration is loaded from a JSON file. All sections are optional with sensible defaults.
 Every section (the top-level `Config` plus each nested block —
 `MonitorConfig`, `NotifierConfig`, `TransitionConfig`, `DashboardConfig`,
-`OperationWatchdogConfig`, `OperationPolicy`, `ServiceConfig`) rejects unknown
-keys at deserialize (`deny_unknown_fields`), so a typo or a key removed by a
-schema change fails loudly at load instead of being silently ignored.
+`OperationWatchdogConfig`, `OperationPolicy`, `ServiceConfig`, `HealthConfig`)
+rejects unknown keys at deserialize (`deny_unknown_fields`), so a typo or a
+key removed by a schema change fails loudly at load instead of being silently
+ignored.
 
 See `examples/config.json` for a complete example.
 
@@ -68,11 +69,13 @@ See `examples/config.json` for a complete example.
 
 The optional top-level `services` map is sentinel's registry of the services it
 can supervise, keyed by a name of the operator's choosing (conventionally the
-systemd unit / package name). It has **two consumers**: the
-[REST restart endpoint](#service-restart-api) and the operation watchdog's
+systemd unit / package name). It has **three consumers**: the
+[REST restart endpoint](#service-restart-api), the operation watchdog's
 [corrective ladder](#escalation-corrective-action-ladder)
-(`operations.<family>.service` references keys in this map). Configuring the
-watchdog is *not* required to use the restart endpoint, and vice versa.
+(`operations.<family>.service` references keys in this map), and
+[service health supervision](#service-health-supervision) (entries with a
+`health` block). Each consumer is independent — none requires the others to be
+configured.
 
 ```json
 {
@@ -95,7 +98,8 @@ watchdog is *not* required to use the restart endpoint, and vice versa.
 | `device_number` | `0` | Alpaca device number for the ladder's health-check / abort URLs. |
 | `restart_command` | `null` | Shell command that restarts the service; `null` = not restartable (the ladder stops at abort; the REST endpoint answers 409). |
 | `health_command` | `null` | Shell command whose **exit 0 means healthy**. When set, the REST restart endpoint polls it after the restart command to confirm recovery; when absent, recovery confirmation is skipped. |
-| `max_restart_duration` | `60s` | Per-service time budget (humantime) for the restart command *and* the recovery wait together. Used by both the REST endpoint and the watchdog ladder. |
+| `max_restart_duration` | `60s` | Per-service time budget (humantime) for the restart command *and* the recovery wait together. Used by the REST endpoint, the watchdog ladder, and health supervision. |
+| `health` | *(none)* | Optional block that opts the service into [HTTP health supervision](#service-health-supervision): periodic `GET` probes with autonomous restart on consecutive failures. |
 
 Commands run through the platform shell (`sh -c` on Unix, `cmd /C` on
 Windows), so follow each platform's best practice:
@@ -282,7 +286,11 @@ operation family's `on_expiry` policy:
      service is responsive again or the budget elapses.
      `restart_command: null` marks a service as **not restartable** (a
      remote MCU such as the star-adventurer-gti is the canonical example) —
-     the ladder stops at abort.
+     the ladder stops at abort. The rung first acquires the service's slot in
+     the [shared restart gate](#the-shared-restart-gate); if another restart
+     of the same service is already in flight (REST endpoint or health
+     supervision), the rung is skipped and the escalation message reports
+     `restart=skipped(already in flight)`.
   4. **Notify** — always, through the `Notifier` chain, with a message that
      reports which rungs ran and their outcome (rendered into the
      `{action}` placeholder).
@@ -389,6 +397,116 @@ watchdog keeps retrying without ever escalating an unresponsive rp), and a
 | rp unreachable for `reconnect_max_attempts` reconnects | "rp unresponsive" escalation. |
 | `operation_watchdog` block absent | Watchdog disabled; sentinel runs safety polling only. |
 
+## Service Health Supervision
+
+Health supervision is sentinel's third monitoring loop. Where the safety
+monitor answers "is the sky safe?" and the watchdog answers "is the running
+operation making progress?", health supervision answers **"is this service
+process alive right now?"** — and restarts it autonomously when it is not.
+It closes the gap the plate-solver plan deferred (see
+[`plate-solver.md` §Supervision and recovery](plate-solver.md#supervision-and-recovery)):
+a service that SIGSEGVs is relaunched by the OS supervisor, but a service
+that *hangs* — process alive, HTTP dead — previously needed an external
+`/health`-polling watchdog. This loop is that watchdog.
+
+Each `services` entry with a `health` block gets its own
+`ServiceHealthSupervisor` (an `EventMonitor`, one tokio task per service):
+
+```json
+{
+  "services": {
+    "plate-solver": {
+      "restart_command": "systemctl --user restart plate-solver",
+      "max_restart_duration": "30s",
+      "health": {
+        "url": "http://localhost:11131/health",
+        "poll_interval": "30s",
+        "failure_threshold": 3,
+        "restart_backoff": "1m",
+        "restart_backoff_max": "15m"
+      }
+    }
+  }
+}
+```
+
+| Field | Default | Meaning |
+|---|---|---|
+| `url` | *(required)* | Health URL probed with `GET`. Only a clean `200` counts as alive; any other status, a timeout, or a connection error counts as a failed probe. The response body is never parsed (health bodies are not uniform across services). |
+| `poll_interval` | `30s` | Probe cadence (humantime). Probing continues at this cadence during outages and backoff — only *restarting* is throttled. |
+| `failure_threshold` | `3` | Consecutive failed probes before the first autonomous restart. |
+| `restart_backoff` | `1m` | Wait before a second restart attempt when the first did not cure the service (humantime). |
+| `restart_backoff_max` | `15m` | Ceiling for the doubling backoff (humantime). |
+
+Each probe is bounded by a hardcoded **2 s timeout** (the same bound as the
+watchdog ladder's health rung). The probed endpoint should therefore be cheap;
+`plate-solver`'s `/health` (two filesystem stats, no subprocess) is the
+reference shape.
+
+### Behavior
+
+- **Detection.** After `failure_threshold` consecutive failed probes, the
+  supervisor runs the service's `restart_command` through the same
+  [`RestartManager`](#service-restart-api) engine the REST endpoint uses —
+  bounded by `max_restart_duration`, with the `health_command` recovery poll
+  if one is configured, and holding the service's slot in the shared
+  restart gate (below).
+- **Backoff.** Each restart attempt schedules the *next* allowed attempt
+  `restart_backoff` later, doubling after every attempt up to
+  `restart_backoff_max`. Probing never stops and the supervisor **never gives
+  up** — a service that stays broken is retried at the capped cadence until
+  it recovers or an operator intervenes.
+- **Recovery.** One successful probe ends the outage: the failure counter,
+  the backoff, and the restart schedule all reset. Recovery is visible on the
+  dashboard but is deliberately **not** notified.
+- **Not restartable.** A `health` block on a service with
+  `restart_command: null` degrades to probe-and-notify: a single notification
+  fires when the threshold is crossed (once per outage) and no restart is
+  attempted — the same degrade-with-warning posture as the watchdog ladder
+  (tenet #2, robustness).
+
+### Notifications
+
+Autonomous restarts — unlike [manual REST restarts](#service-restart-api),
+which are silent — always notify through the full `Notifier` chain and are
+recorded in the dashboard notification history:
+
+| Trigger | Priority | Message shape |
+|---|---|---|
+| First restart of an outage | `0` | Service unhealthy after N consecutive failed probes; restarted autonomously, with the restart outcome (`status` / `recovery`). |
+| Every later restart of the same outage | `1` (escalated) | Service **still unhealthy** after K autonomous restarts, with the latest outcome and the next-attempt time. |
+| Threshold crossed on a non-restartable service | `1` | Service unhealthy and has no `restart_command`; manual intervention required. |
+
+Notification volume is bounded by construction: at most one notification per
+restart attempt, and attempts are backoff-throttled (at the `15m` default cap,
+at most one escalation per 15 minutes per service). There is no separate
+dedup or cooldown mechanism.
+
+### The shared restart gate
+
+All three restart paths — the REST endpoint, the watchdog ladder's restart
+rung, and health supervision — acquire the same per-service in-flight slot
+(`RestartGate` in `restart.rs`) before running a `restart_command`, so at most
+one restart of a given service runs at any time:
+
+- REST endpoint blocked by the gate → `409` (already in flight), unchanged.
+- Watchdog ladder blocked by the gate → skips its restart rung; the
+  escalation message reports `restart=skipped(already in flight)`.
+- Health supervision blocked by the gate → logs at debug and keeps probing;
+  no notification, no counter or backoff change. Whatever restart is already
+  running will show its effect in the next probes.
+
+### Edge cases
+
+| Scenario | Behavior |
+|----------|----------|
+| Sentinel starts before a supervised service finishes booting | First probes fail but nothing restarts until `failure_threshold × poll_interval` (90 s by default) has elapsed — natural startup grace. A restart of a still-booting service is harmless for `systemctl restart`-style commands. |
+| Manual restart (REST/UI) during an outage | The autonomous attempt finds the gate held and skips silently; if the manual restart cures the service, the next successful probe resets the outage. |
+| Restart command fails (non-zero, spawn failure, over budget) | Counts as an attempt: notification carries the failure detail, backoff advances, probing continues. |
+| Service flaps (recovers, fails again) | Each recovery fully resets the state machine; a new outage starts at `failure_threshold` fresh failures and the initial `restart_backoff`. |
+| Shutdown during an in-flight autonomous restart | The supervisor returns immediately (restart await is raced against the cancellation token); the gate slot is released and the shell child runs to completion detached. |
+| `health` block absent | The service is restart-on-demand only — exactly today's behavior. |
+
 ## Service Restart API
 
 Sentinel owns **process restart** for the rest of the stack (`rp.md`
@@ -430,7 +548,10 @@ fields classified `restart_required`.
   4xx is reserved for addressing errors (unknown / not restartable / busy).
 - **One restart per service at a time.** Concurrent POSTs for the same
   service are rejected with `409` while the first is running; different
-  services restart independently.
+  services restart independently. The in-flight slot is the
+  [shared restart gate](#the-shared-restart-gate), so a `409` can also mean an
+  autonomous restart (health supervision) or a watchdog-ladder restart is
+  currently running for that service.
 - **The request blocks** until the command (and recovery poll, if any)
   completes — bounded by the service's `max_restart_duration`, so the
   response always arrives within that budget plus scheduling noise.
@@ -443,10 +564,35 @@ fields classified `restart_required`.
   notifications and is not recorded in the notification history — the
   operator who pressed the button already knows.
 
-- **Web UI**: Server-rendered HTML with JavaScript polling (auto-refreshes every 5 seconds)
-- **JSON API**: `/api/status` (monitor statuses), `/api/history` (notification history)
+- **Web UI**: Server-rendered HTML with JavaScript polling (auto-refreshes every 5 seconds). Shows monitor statuses, a *Supervised Services* health table, and the notification history.
+- **JSON API**: `/api/status` (monitor statuses), `/api/services` (supervised-service health, below), `/api/history` (notification history)
 - **Service restart**: `POST /api/services/{name}/restart` (see [Service Restart API](#service-restart-api))
 - **Health check**: `/health` returns 200 OK
+
+### `GET /api/services`
+
+Returns one entry per supervised service (a `services` entry with a `health`
+block), sorted by name — an empty array when nothing is supervised:
+
+```json
+[{
+  "name": "plate-solver",
+  "health": "up",
+  "last_probe_epoch_ms": 1760000000000,
+  "consecutive_failures": 0,
+  "restarts_in_outage": 0,
+  "total_restarts": 3,
+  "next_restart_epoch_ms": null,
+  "poll_interval_ms": 30000
+}]
+```
+
+- `health` is `"unknown"` (never probed yet), `"up"`, or `"down"`.
+- `last_probe_epoch_ms` is `0` until the first probe completes.
+- `restarts_in_outage` counts autonomous restarts in the current outage
+  (resets on recovery); `total_restarts` counts them since sentinel started.
+- `next_restart_epoch_ms` is the backoff-scheduled earliest next autonomous
+  restart, or `null` when none is scheduled.
 
 The dashboard is server-rendered HTML with vanilla JavaScript, built with `format!()` in `services/sentinel/src/dashboard.rs`. (An experimental `sentinel-app` Leptos/WASM frontend was scaffolded and later abandoned; it was removed in 2026-06 — see [docs/plans/archive/sentinel-app-leptos-dashboard.md](../plans/archive/sentinel-app-leptos-dashboard.md).)
 
@@ -463,7 +609,8 @@ services/sentinel/src/
   alpaca_client.rs     AlpacaSafetyMonitor (Monitor impl)
   watchdog.rs          EventMonitor trait + OperationDeadlineMonitor + SSE event source + deadline tracking
   corrective.rs        Corrective-action ladder: HealthChecker/Aborter/Restarter traits + HTTP/shell impls + CorrectiveLadder
-  restart.rs           RestartManager: services registry + in-flight guard + restart/recovery orchestration for the REST endpoint
+  restart.rs           RestartManager: services registry + shared RestartGate + restart/recovery orchestration
+  health.rs            ServiceHealthSupervisor (EventMonitor impl): periodic health probes + autonomous restart with backoff
   notifier.rs          Notifier trait + Notification types
   pushover.rs          PushoverNotifier (Notifier impl)
   engine.rs            Engine: polling loops + transition matching + dispatch

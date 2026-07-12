@@ -31,6 +31,8 @@ bdd_infra::bdd_main! {
                     world.rp_event_stub = None;
                     // Shut down the corrective-ladder mount service stub, if any.
                     world.mount_stub = None;
+                    // Shut down the flippable health stub, if any.
+                    world.health_stub = None;
                 }
             })
         })

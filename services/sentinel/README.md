@@ -1,6 +1,6 @@
 # Sentinel
 
-Observatory monitoring and notification service. Polls ASCOM Alpaca SafetyMonitor devices, detects safe/unsafe state transitions, sends push notifications, and serves a live web dashboard.
+Observatory monitoring and notification service. Polls ASCOM Alpaca SafetyMonitor devices, detects safe/unsafe state transitions, sends push notifications, supervises the health of HTTP services (periodic `GET` probes with autonomous restart), and serves a live web dashboard.
 
 Unlike other services in this workspace, sentinel is **not** an ASCOM Alpaca server — it is a client that monitors other ASCOM devices.
 
@@ -39,7 +39,7 @@ If no config file is provided, sentinel starts with an empty default configurati
 
 ## Configuration
 
-Configuration is a JSON file with four optional sections. See [`examples/config.json`](examples/config.json) for a complete example.
+Configuration is a JSON file where every section is optional. The sections below cover monitoring and notification; the `services` map (supervised services: restart commands, and per-service `health` blocks for autonomous health supervision) and the `operation_watchdog` block are documented in the [design document](../../docs/services/sentinel.md). See [`examples/config.json`](examples/config.json) for a complete example.
 
 ### Monitors
 
@@ -151,9 +151,11 @@ When the dashboard is enabled, the following endpoints are available:
 
 | Endpoint | Description |
 |----------|-------------|
-| `GET /` | Web UI showing monitor statuses and notification history (auto-refreshes every 5s). |
+| `GET /` | Web UI showing monitor statuses, supervised-service health, and notification history (auto-refreshes every 5s). |
 | `GET /api/status` | JSON array of monitor statuses. |
+| `GET /api/services` | JSON array of supervised-service health statuses. |
 | `GET /api/history` | JSON array of recent notification records. |
+| `POST /api/services/{name}/restart` | Run a supervised service's configured restart command. |
 | `GET /health` | Returns `200 OK` — useful for health checks. |
 
 ## Design Documentation

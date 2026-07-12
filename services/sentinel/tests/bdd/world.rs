@@ -59,6 +59,10 @@ pub struct SentinelWorld {
     // marker file the scripted restart command writes (proof it ran).
     pub supervised_services: serde_json::Map<String, serde_json::Value>,
     pub restart_marker: Option<PathBuf>,
+
+    // Service health supervision: a stub HTTP service whose /health answer is
+    // flippable between 200 and 503 at runtime.
+    pub health_stub: Option<FlippableHealthStub>,
 }
 
 impl SentinelWorld {
@@ -444,6 +448,144 @@ impl SentinelWorld {
         let stub = MountServiceStub::start().await;
         self.mount_service_url = Some(format!("{}/api/v1", stub.base_url()));
         self.mount_stub = Some(stub);
+    }
+
+    /// Start the flippable health stub answering 200 (healthy) or 503.
+    pub async fn start_health_stub(&mut self, healthy: bool) {
+        self.health_stub = Some(FlippableHealthStub::start(healthy).await);
+    }
+
+    /// Add a `services` entry supervised by health polling at the running
+    /// health stub. Fast timings (200ms cadence, threshold 2, 1s..2s backoff)
+    /// keep the scenarios well under their wait ceilings.
+    pub fn add_health_supervised_service(&mut self, name: &str, restart_command: Option<String>) {
+        let stub = self.health_stub.as_ref().expect("health stub not started");
+        self.supervised_services.insert(
+            name.to_string(),
+            serde_json::json!({
+                "restart_command": restart_command,
+                "max_restart_duration": "2s",
+                "health": {
+                    "url": stub.health_url(),
+                    "poll_interval": "200ms",
+                    "failure_threshold": 2,
+                    "restart_backoff": "1s",
+                    "restart_backoff_max": "2s"
+                }
+            }),
+        );
+    }
+
+    /// GET /api/services and parse as JSON array.
+    pub async fn get_services(&self) -> Vec<serde_json::Value> {
+        let client = reqwest::Client::new();
+        let url = self.dashboard_url("/api/services");
+        let resp = client
+            .get(&url)
+            .send()
+            .await
+            .expect("failed to GET /api/services");
+        resp.json().await.expect("failed to parse services JSON")
+    }
+
+    /// Poll `/api/services` until `name` reports `expected` health, or ~15s
+    /// elapses. Returns the last observed health for the assertion message.
+    pub async fn wait_for_service_health(&self, name: &str, expected: &str) -> Option<String> {
+        let mut last = None;
+        for _ in 0..60 {
+            for service in self.get_services().await {
+                if service["name"].as_str() == Some(name) {
+                    let health = service["health"].as_str().map(str::to_string);
+                    if health.as_deref() == Some(expected) {
+                        return health;
+                    }
+                    last = health;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        last
+    }
+
+    /// Poll the restart marker file until it holds at least `min` lines (one
+    /// per restart-command run) or `ceiling` elapses. Returns the final count.
+    pub async fn wait_for_marker_lines(&self, min: usize, ceiling: Duration) -> usize {
+        let marker = self.restart_marker.as_ref().expect("no marker path");
+        let deadline = tokio::time::Instant::now() + ceiling;
+        loop {
+            let count = std::fs::read_to_string(marker)
+                .map(|c| c.lines().count())
+                .unwrap_or(0);
+            if count >= min || tokio::time::Instant::now() >= deadline {
+                return count;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+}
+
+/// A stub HTTP service whose `GET /health` answer flips between 200 (healthy)
+/// and 503 at runtime — the supervised target for the health-supervision BDD.
+#[derive(Debug)]
+pub struct FlippableHealthStub {
+    base_url: String,
+    healthy: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    handle: tokio::task::JoinHandle<()>,
+}
+
+impl FlippableHealthStub {
+    pub async fn start(initially_healthy: bool) -> Self {
+        use axum::http::StatusCode;
+        use axum::routing::get;
+        use axum::{Json, Router};
+        use std::sync::atomic::Ordering;
+
+        let healthy = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(initially_healthy));
+        let flag = std::sync::Arc::clone(&healthy);
+        let app = Router::new().route(
+            "/health",
+            get(move || {
+                let flag = std::sync::Arc::clone(&flag);
+                async move {
+                    if flag.load(Ordering::SeqCst) {
+                        (StatusCode::OK, Json(serde_json::json!({ "status": "ok" })))
+                    } else {
+                        (
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            Json(serde_json::json!({ "status": "error" })),
+                        )
+                    }
+                }
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("failed to bind health stub");
+        let addr = listener.local_addr().expect("health stub has no addr");
+        let handle = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        Self {
+            base_url: format!("http://{addr}"),
+            healthy,
+            handle,
+        }
+    }
+
+    pub fn health_url(&self) -> String {
+        format!("{}/health", self.base_url)
+    }
+
+    pub fn set_healthy(&self, healthy: bool) {
+        self.healthy
+            .store(healthy, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+impl Drop for FlippableHealthStub {
+    fn drop(&mut self) {
+        self.handle.abort();
     }
 }
 

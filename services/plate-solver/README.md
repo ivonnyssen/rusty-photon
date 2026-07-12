@@ -73,24 +73,24 @@ Graceful shutdown: SIGTERM and SIGINT on Unix, Ctrl-C on Windows.
 
 ## Process-supervisor recipes
 
-Phase 5 documents the operator's recovery mechanism: an OS-level
-process supervisor that restarts the wrapper on **crash / non-zero
-exit**. Today this is the canonical answer — automated Sentinel-driven
-restart of rp-managed services is forward work and is **not** wired
-into the current Sentinel design (see [Sentinel integration](#sentinel-integration)
-below).
+An OS-level process supervisor restarts the wrapper on **crash /
+non-zero exit**. It pairs with Sentinel's health supervision (see
+[Sentinel integration](#sentinel-integration) below): the supervisor
+owns relaunch-on-exit, and its restart command (`systemctl restart …`,
+`launchctl kickstart -k …`, `nssm restart …`) is exactly what Sentinel
+shells out to when probes fail.
 
-> **Hang recovery is *not* covered by these recipes.** systemd
+> **Hang recovery is *not* covered by these recipes alone.** systemd
 > `Restart=on-failure`, launchd `KeepAlive`, and NSSM's auto-restart
 > all fire on process exit, not on a hung-but-still-alive wrapper.
 > A wedged wrapper that's still bound to its port will keep the
-> supervisor happy. Hangs would need an external `/health`-polling
-> watchdog (Prometheus blackbox exporter, Nagios, a small cron-driven
-> probe) that kills the wrapper when `/health` stops returning 200 —
-> tracked as forward work under [Sentinel integration](#sentinel-integration)
-> below. The wrapper does not hang waiting for `astap_cli`: every
-> request is bounded by a wall-clock deadline that escalates to
-> SIGKILL / TerminateProcess after a 2-second grace.
+> supervisor happy. Hangs are covered by Sentinel's `/health`-polling
+> supervision ([Sentinel integration](#sentinel-integration) below),
+> or by any other external `/health` watchdog (Prometheus blackbox
+> exporter, Nagios, a small cron-driven probe). The wrapper does not
+> hang waiting for `astap_cli`: every request is bounded by a
+> wall-clock deadline that escalates to SIGKILL / TerminateProcess
+> after a 2-second grace.
 
 ### Linux / systemd
 
@@ -175,19 +175,36 @@ Tail logs (PowerShell): `Get-Content -Wait C:\ProgramData\plate-solver\stderr.lo
 
 ## Sentinel integration
 
-The wrapper exposes `GET /health` as the standard HTTP health-probe
-pattern. Today, **automated Sentinel-driven restart of rp-managed
-services is not implemented** — Sentinel's existing design
-([`docs/services/sentinel.md`](../../docs/services/sentinel.md)) covers
-ASCOM Alpaca SafetyMonitor polling and Pushover notification, not
-generic HTTP service supervision. The "Sentinel watchdog integration"
-section in `docs/services/rp.md` is a forward-looking design.
+Sentinel supervises this wrapper through its
+[service health supervision](../../docs/services/sentinel.md#service-health-supervision):
+a `health` block on the wrapper's entry in Sentinel's `services` map
+polls `GET /health` and, after a configurable number of consecutive
+failures (non-200, timeout, or connection refused), runs the
+configured restart command — with doubling backoff between attempts
+and a Pushover notification for every autonomous restart. This covers
+both crashes and hangs; the OS process supervisor (recipes above)
+remains the relaunch mechanism the restart command drives.
 
-Until Sentinel is extended:
+A minimal Sentinel config supervising this service (Linux user unit):
 
-- The operator's process supervisor (systemd / launchd / NSSM, recipes
-  above) is the recovery mechanism. It restarts the wrapper on
-  non-zero exit (config-validation failure, panic, etc.).
+```json
+{
+  "services": {
+    "plate-solver": {
+      "restart_command": "systemctl --user restart plate-solver",
+      "max_restart_duration": "30s",
+      "health": {
+        "url": "http://localhost:11131/health",
+        "poll_interval": "30s",
+        "failure_threshold": 3
+      }
+    }
+  }
+}
+```
+
+Defense in depth around it:
+
 - Hangs in the *child* `astap_cli` process are bounded by the
   wrapper's per-request deadline; the wrapper itself doesn't hang on
   a wedged solve.
@@ -195,10 +212,6 @@ Until Sentinel is extended:
   (`plate_solver.timeout_secs` in rp config) — even if the wrapper's
   internal deadline regresses, rp does not hang on a `plate_solve`
   call.
-
-When future work extends Sentinel with HTTP `/health` polling and a
-configurable per-service restart command, that mechanism will sit on
-top of the same `/health` endpoint this service already exposes.
 
 ## Coordinates and units
 
