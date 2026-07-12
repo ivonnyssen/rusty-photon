@@ -43,6 +43,13 @@ async fn apply_invalid_baud_rate(world: &mut Fp2World) {
     world.call_config_apply(config).await;
 }
 
+#[when("config.apply is called with min_brightness above max_brightness")]
+async fn apply_invalid_min_brightness(world: &mut Fp2World) {
+    let mut config = world.current_config().await;
+    config["cover_calibrator"]["min_brightness"] = serde_json::json!(9999);
+    world.call_config_apply(config).await;
+}
+
 #[when(regex = r"^config\.apply pins the bound port and sets max_brightness to (\d+)$")]
 async fn apply_pin_port_and_brightness(world: &mut Fp2World, value: u32) {
     // Pin the (OS-assigned) bound port into the file so the reload rebinds the

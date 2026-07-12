@@ -105,6 +105,22 @@ What is **not** in this crate (because the shared-transport crate owns it):
   Targets outside the bounds are rejected by the firmware.
 - **Brightness range**: 12-bit, `0..=4096` (inclusive at both ends per the
   INDI reference driver).
+- **Brightness linearity**: the EL panel's optical output is not linear
+  across the full `0..=4096` range. A central-quarter-frame photometric
+  sweep against a cooled QHY178M (gain 0, non-saturating exposure, 5
+  repeats/level, 2026-07-12) found a hard dead zone at raw brightness 1-2
+  (no measurable light above the sensor's bias level), a steep sub-linear
+  ramp through roughly 3-100, and a crossover into the ASCOM spec's ±5%
+  linearity band at approximately raw brightness 110, with a small
+  residual bias lingering until ~250. From 250-4096 the response is
+  linear (R² > 0.9999, residuals ≤ 1.8%). `cover_calibrator.min_brightness`
+  (default `250`, see [Configuration](#configuration)) rejects non-zero
+  `calibrator_on` requests below this floor rather than silently
+  delivering an unreliable flat; `0` (the ASCOM "on at zero" state — see
+  [Validation](#validation)) is always accepted regardless of the floor.
+  The measurement was taken on one physical panel — EL turn-on thresholds
+  can vary unit to unit, which is why the floor is a config field rather
+  than a hardcoded constant.
 - **No halt-cover support**: the FP2 protocol does not expose a
   cover-motion abort opcode; once started, a move runs to completion.
   The driver therefore returns `MethodNotImplementedException`
@@ -224,7 +240,7 @@ without any driver-specific code.
 | `open_cover()`                | `[STRG0]` → `(OK)` ; `[SMOV]` → `(OK)`  | Asynchronous; `cover_state` reports `Moving` until polled `[GMOV]→(0)`.                              |
 | `close_cover()`               | `[STRG270]` → `(OK)` ; `[SMOV]` → `(OK)` | Same as above.                                                                                      |
 | `halt_cover()`                | — (returns `MethodNotImplementedException`) | The FP2 firmware has no halt-motion opcode; per the ASCOM spec, `HaltCover` MUST throw `MethodNotImplementedException` when cover movement cannot be interrupted. |
-| `calibrator_on(brightness)`   | `[SLBR<NNNN>]` → `(OK)` ; `[SLON1]` → `(OK)` | Clamp `brightness` to `0..=4096`; pad to 4 digits. Sending brightness even when already on keeps the call idempotent. |
+| `calibrator_on(brightness)`   | `[SLBR<NNNN>]` → `(OK)` ; `[SLON1]` → `(OK)` | Reject `brightness` outside the effective `0..=max_brightness` range with `ASCOMError::INVALID_VALUE` (no clamping); pad the accepted value to 4 digits. Reject non-zero `brightness < config.min_brightness` (see [Brightness linearity](#hardware-constraints)). Sending brightness even when already on keeps the call idempotent. |
 | `calibrator_off()`            | `[SLON0]` → `(OK)`                      | Does not change brightness; subsequent `calibrator_on(brightness)` reuses the prior commanded value if any. |
 | `interface_version()`         | — (default)                             | Returns `2` (ICoverCalibratorV2).                                                                    |
 | `cover_moving()`              | — (default)                             | Returns `cover_state == Moving`.                                                                     |
@@ -240,8 +256,24 @@ without any driver-specific code.
   Zero is accepted and forwarded unchanged (the device treats
   `[SLBR0000]` + `[SLON1]` as "on at zero", which is what the spec calls
   for).
+- `calibrator_on(brightness)`: also validated against
+  `config.min_brightness` (default `250`) — a non-zero brightness below
+  this floor is rejected with `ASCOMError::INVALID_VALUE` rather than
+  silently driving the panel into its measured non-linear range (see
+  [Brightness linearity](#hardware-constraints)). `0` is always accepted
+  regardless of the floor, since it is the ASCOM "on at zero" state, not
+  a dim request. `config.apply` rejects `min_brightness > max_brightness`
+  (see [Validation rules](#validation-rules)), but a hand-edited config
+  file loaded at startup isn't validated, so this inconsistent state is
+  still reachable; when it is, the rejection message names it as a driver
+  misconfiguration instead of suggesting an unreachable "raise the
+  brightness" remediation.
 - All writes (open/close, calibrator on/off, brightness changes) require
   `connected == true`; otherwise the driver returns `ASCOMError::NOT_CONNECTED`.
+  `calibrator_on`'s brightness checks (max and min, above) run *before* the
+  connection check, so an out-of-range or under-floor brightness returns
+  `ASCOMError::INVALID_VALUE` even while disconnected — the value is invalid
+  on its own terms regardless of hardware state.
 
 ## Connection Lifecycle
 
@@ -295,10 +327,18 @@ service can later expose a Switch device (heater control) without redesign.
     "unique_id": "0c8d6f1a-3b2e-4a7c-9f1d-2e5b8c4a6d3f",
     "description": "Deep Sky Dad Flat Panel 2 (motorised flat field panel)",
     "enabled": true,
-    "max_brightness": 4096
+    "max_brightness": 4096,
+    "min_brightness": 250
   }
 }
 ```
+
+`min_brightness` (default `250`) is the floor below which `calibrator_on`
+rejects a non-zero brightness — see [Brightness
+linearity](#hardware-constraints) and [Validation](#validation). It was
+measured on one physical panel; a different unit's EL turn-on threshold
+may differ, so re-measure and adjust this value if flat quality looks off
+near the floor on a different panel.
 
 `serial.port` accepts either `/dev/ttyACM0`-style paths or the more
 durable `/dev/serial/by-id/...-if00` form. Prefer the `by-id` form in
@@ -452,6 +492,7 @@ pre-config-actions driver, which ignored any file when `--config` was omitted.)
 | `serial.polling_interval` | `> 0` |
 | `serial.timeout` | `> 0` |
 | `cover_calibrator.max_brightness` | `<= 4096` (hardware ceiling, `MAX_BRIGHTNESS`) |
+| `cover_calibrator.min_brightness` | `<= cover_calibrator.max_brightness` |
 | `cover_calibrator.unique_id` | non-empty (the device's stable ASCOM `UniqueID`; see [Device identity](#device-identity-uniqueid)) |
 | `server.port` | any `u16` (`0` = OS-assigned, used in tests) |
 
@@ -554,10 +595,15 @@ once-per-lifecycle messages (server bound, port opened, port closed) use
   (`Off`, `On`, `OnWhenFlapOpenOrLed`) could be added in a follow-up.
 - **Halt cover.** The FP2 firmware exposes no abort; users wanting this
   should bring it up with Deep Sky Dad.
-- **Brightness ramp profiles.** EL panels have non-linear perceived
-  brightness; a calibration LUT could be applied between the ASCOM
-  0..MaxBrightness scale and the device's raw 0..4096. Out of scope until
-  there is evidence the linear mapping is not good enough.
+- **Brightness ramp profiles.** A 2026-07-12 photometric sweep (issue
+  #284) found the linear mapping is *not* good enough below raw
+  brightness ~250 (see [Brightness linearity](#hardware-constraints)) —
+  the driver now floors that range via `cover_calibrator.min_brightness`
+  rather than mapping it through a LUT, on the reasoning that no current
+  consumer (`calibrator-flats` defaults to `max_brightness` and adjusts
+  exposure time, not brightness) has a reason to run the panel that low.
+  A full calibration LUT across `0..MaxBrightness` remains future work if
+  a use case for low-brightness flats emerges.
 - **i18n.** The driver uses plain English log messages; the workspace
   i18n facility (`rusty-photon-i18n`) is only used by services that need
   localised CLI help (e.g. `ppba-driver`).
@@ -574,8 +620,9 @@ Four feature files cover the MVP behaviour:
   disconnect.
 - `cover_control.feature` — open, close, state transitions, errors when
   disconnected.
-- `calibrator_control.feature` — turn on at brightness, turn off,
-  reject out-of-range brightness, state after disconnect.
+- `calibrator_control.feature` — turn on at brightness, turn off, reject
+  brightness above max or below the configured minimum (zero still
+  accepted), state after disconnect.
 - `config_actions.feature` — `supportedactions` lists the config actions;
   `config.get` returns the effective config and marks overrides (over the wire,
   while disconnected); `config.apply` with a valid change returns

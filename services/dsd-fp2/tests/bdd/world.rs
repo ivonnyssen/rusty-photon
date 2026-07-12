@@ -52,7 +52,8 @@ impl Fp2World {
                 "unique_id": "dsd-fp2-bdd",
                 "description": "BDD test instance",
                 "enabled": true,
-                "max_brightness": 4096
+                "max_brightness": 4096,
+                "min_brightness": 250
             }
         });
 

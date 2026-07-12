@@ -75,6 +75,17 @@ pub struct CoverCalibratorConfig {
     pub enabled: bool,
     #[serde(default = "default_max_brightness")]
     pub max_brightness: u32,
+    /// Floor below which `calibrator_on` rejects a non-zero brightness. The
+    /// FP2's EL panel response is non-linear below this value (dead zone at
+    /// 1-2, sub-linear ramp through roughly 3-100, still outside the ASCOM
+    /// spec's linearity expectation up to ~250) — see
+    /// `docs/services/dsd-fp2.md` "Hardware Constraints". The default was
+    /// measured on one physical panel; a different unit's EL turn-on
+    /// threshold may differ, hence this is configurable rather than a
+    /// hardcoded constant. `0` is always accepted regardless (the ASCOM
+    /// "on at zero" state).
+    #[serde(default = "default_min_brightness")]
+    pub min_brightness: u32,
 }
 
 fn default_baud_rate() -> u32 {
@@ -95,6 +106,10 @@ fn default_true() -> bool {
 
 fn default_max_brightness() -> u32 {
     4096
+}
+
+fn default_min_brightness() -> u32 {
+    250
 }
 
 /// Platform-dependent default serial port. Both values are placeholders the
@@ -136,6 +151,7 @@ impl Default for CoverCalibratorConfig {
             description: "Deep Sky Dad Flat Panel 2 (motorised flat field panel)".to_string(),
             enabled: true,
             max_brightness: default_max_brightness(),
+            min_brightness: default_min_brightness(),
         }
     }
 }
@@ -237,6 +253,7 @@ mod tests {
         assert_eq!(c.server.port, 11119);
         assert!(c.cover_calibrator.enabled);
         assert_eq!(c.cover_calibrator.max_brightness, 4096);
+        assert_eq!(c.cover_calibrator.min_brightness, 250);
         assert_eq!(c.cover_calibrator.name, "Deep Sky Dad FP2");
         // The id is no longer a hardcoded literal; it is minted as a UUIDv4 on
         // first run by `materialize_identity`, so the default is empty.
@@ -284,6 +301,7 @@ mod tests {
         assert_eq!(c.serial.polling_interval, Duration::from_millis(500));
         assert_eq!(c.server.port, 9000);
         assert_eq!(c.cover_calibrator.max_brightness, 4096);
+        assert_eq!(c.cover_calibrator.min_brightness, 250);
         assert!(c.cover_calibrator.enabled);
     }
 
@@ -304,7 +322,8 @@ mod tests {
                 "unique_id": "tfp-1",
                 "description": "test",
                 "enabled": false,
-                "max_brightness": 2048
+                "max_brightness": 2048,
+                "min_brightness": 200
             }
         }"#;
         let c: Config = serde_json::from_str(json).unwrap();
@@ -315,6 +334,7 @@ mod tests {
         assert_eq!(c.server.port, 12345);
         assert!(!c.cover_calibrator.enabled);
         assert_eq!(c.cover_calibrator.max_brightness, 2048);
+        assert_eq!(c.cover_calibrator.min_brightness, 200);
     }
 
     #[test]

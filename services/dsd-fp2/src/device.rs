@@ -210,7 +210,40 @@ impl CoverCalibrator for DsdFp2Device {
         if brightness > effective_max {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_VALUE,
-                format!("brightness {brightness} exceeds configured max {effective_max}"),
+                format!("brightness {brightness} exceeds effective max brightness {effective_max}"),
+            ));
+        }
+        // Below `min_brightness` the panel's EL output is non-linear/unreliable
+        // (see docs/services/dsd-fp2.md "Hardware Constraints"); reject it so a
+        // caller picks either 0 (the ASCOM on-at-zero state) or a value in the
+        // panel's usable range. Zero is exempt: it's on-at-zero, not a dim
+        // request, so calibrator_state still reports Ready — call
+        // calibrator_off() to actually turn the light off.
+        let min_brightness = self.config.min_brightness;
+        if brightness != 0 && brightness < min_brightness {
+            // config.apply rejects min_brightness > max_brightness (see
+            // config_actions.rs), but a hand-edited config file loaded at
+            // startup isn't validated — so effective_max can still be below
+            // min_brightness here. Don't suggest an unreachable remediation
+            // ("a value >= min_brightness") when no such value exists.
+            let remediation = if min_brightness > effective_max {
+                format!(
+                    "cover_calibrator.min_brightness ({min_brightness}) exceeds the effective \
+                     max brightness ({effective_max}) — this is a driver misconfiguration; fix \
+                     it via config.apply"
+                )
+            } else {
+                format!(
+                    "use 0 for the ASCOM on-at-zero state, calibrator_off() to turn the light \
+                     off, or a value >= {min_brightness}"
+                )
+            };
+            return Err(ASCOMError::new(
+                ASCOMErrorCode::INVALID_VALUE,
+                format!(
+                    "brightness {brightness} is below the configured minimum {min_brightness} \
+                     (panel output is non-linear below this value); {remediation}"
+                ),
             ));
         }
         let value = FlatPanelManager::validate_brightness(brightness)?;
@@ -388,6 +421,17 @@ mod mock_tests {
         (device, factory)
     }
 
+    fn make_device_with_min(floor: u32) -> (DsdFp2Device, MockTransportFactory) {
+        let factory = MockTransportFactory::default();
+        let manager = FlatPanelManager::new(test_config(), Arc::new(factory.clone()));
+        let cc_config = CoverCalibratorConfig {
+            min_brightness: floor,
+            ..test_cover_calibrator()
+        };
+        let device = DsdFp2Device::new(cc_config, manager);
+        (device, factory)
+    }
+
     #[tokio::test]
     async fn device_starts_disconnected() {
         let (device, _) = make_device();
@@ -489,7 +533,9 @@ mod mock_tests {
         assert_eq!(err.code, ascom_alpaca::ASCOMErrorCode::NOT_CONNECTED);
         let err = device.close_cover().await.unwrap_err();
         assert_eq!(err.code, ascom_alpaca::ASCOMErrorCode::NOT_CONNECTED);
-        let err = device.calibrator_on(100).await.unwrap_err();
+        // Above the min_brightness floor (250) so this exercises the
+        // not-connected path rather than the brightness-floor rejection.
+        let err = device.calibrator_on(2048).await.unwrap_err();
         assert_eq!(err.code, ascom_alpaca::ASCOMErrorCode::NOT_CONNECTED);
         let err = device.calibrator_off().await.unwrap_err();
         assert_eq!(err.code, ascom_alpaca::ASCOMErrorCode::NOT_CONNECTED);
@@ -520,6 +566,61 @@ mod mock_tests {
         // promise isn't violated.
         let err = device.calibrator_on(2049).await.unwrap_err();
         assert_eq!(err.code, ascom_alpaca::ASCOMErrorCode::INVALID_VALUE);
+
+        device.set_connected(false).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn calibrator_on_rejects_brightness_below_configured_min() {
+        let (device, _) = make_device_with_min(250);
+        device.set_connected(true).await.unwrap();
+
+        // Below the floor — rejected.
+        let err = device.calibrator_on(100).await.unwrap_err();
+        assert_eq!(err.code, ascom_alpaca::ASCOMErrorCode::INVALID_VALUE);
+
+        // At the floor — allowed.
+        device.calibrator_on(250).await.unwrap();
+        assert_eq!(device.brightness().await.unwrap(), 250);
+
+        device.set_connected(false).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn calibrator_on_accepts_zero_even_below_configured_min() {
+        let (device, _) = make_device_with_min(250);
+        device.set_connected(true).await.unwrap();
+
+        // Zero is the ASCOM "on at zero" state, not a dim request — the
+        // floor must not reject it even though 0 < min_brightness.
+        device.calibrator_on(0).await.unwrap();
+        assert_eq!(device.brightness().await.unwrap(), 0);
+
+        device.set_connected(false).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn calibrator_on_reports_misconfiguration_when_min_exceeds_max() {
+        // config.apply rejects min_brightness > max_brightness (config_actions
+        // tests), but a device built straight from a hand-edited config file
+        // isn't validated — so this inconsistent state is reachable at
+        // runtime. The error message must not suggest an unreachable
+        // remediation ("a value >= min_brightness" when no such value fits
+        // under max_brightness).
+        let factory = MockTransportFactory::default();
+        let manager = FlatPanelManager::new(test_config(), Arc::new(factory));
+        let cc_config = CoverCalibratorConfig {
+            min_brightness: 3000,
+            max_brightness: 2048,
+            ..test_cover_calibrator()
+        };
+        let device = DsdFp2Device::new(cc_config, manager);
+        device.set_connected(true).await.unwrap();
+
+        let err = device.calibrator_on(100).await.unwrap_err();
+        assert_eq!(err.code, ascom_alpaca::ASCOMErrorCode::INVALID_VALUE);
+        assert!(err.message.contains("misconfiguration"), "{}", err.message);
+        assert!(!err.message.contains(">= 3000"), "{}", err.message);
 
         device.set_connected(false).await.unwrap();
     }
