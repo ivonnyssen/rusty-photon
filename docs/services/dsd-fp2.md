@@ -308,6 +308,10 @@ COM port name instead. The built-in default is platform-dependent —
 `/dev/ttyACM0` on Unix, `COM3` on Windows — and is a placeholder either
 way: the operator edits it to the real port.
 
+Every block (`Config` and each nested config struct) rejects unknown keys at
+deserialize (`deny_unknown_fields`), so a typo or a key removed by a schema
+change fails loudly at load instead of being silently ignored.
+
 ### Device identity (UniqueID)
 
 ASCOM requires each device's `UniqueID` to be **globally unique** and to

@@ -5,7 +5,11 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// Top-level service configuration.
+///
+/// `deny_unknown_fields` so typoed or removed keys fail loudly at load
+/// instead of being silently ignored.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     pub serial: SerialConfig,
     pub server: ServerConfig,
@@ -13,7 +17,11 @@ pub struct Config {
 }
 
 /// Serial port configuration.
+///
+/// `deny_unknown_fields` so typoed or removed keys fail loudly at load
+/// instead of being silently ignored.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SerialConfig {
     pub port: String,
     #[serde(default = "default_baud_rate")]
@@ -30,7 +38,11 @@ pub struct SerialConfig {
 }
 
 /// Server configuration.
+///
+/// `deny_unknown_fields` so typoed or removed keys fail loudly at load
+/// instead of being silently ignored.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ServerConfig {
     pub port: u16,
     /// Alpaca UDP discovery responder port (normally 32227). Absent/`null` —
@@ -46,7 +58,11 @@ pub struct ServerConfig {
 }
 
 /// CoverCalibrator device configuration.
+///
+/// `deny_unknown_fields` so typoed or removed keys fail loudly at load
+/// instead of being silently ignored.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct CoverCalibratorConfig {
     pub name: String,
     /// Stable ASCOM `UniqueID`. Defaults to empty: a spec-compliant UUIDv4 is
@@ -336,6 +352,42 @@ mod tests {
         let path = dir.path().join("bad.json");
         std::fs::write(&path, "not json").unwrap();
         load_config(&path).unwrap_err();
+    }
+
+    #[test]
+    fn a_typoed_config_field_is_rejected_loudly() {
+        let err = serde_json::from_str::<Config>(r#"{"typoed_key": 1}"#)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("typoed_key"), "{err}");
+    }
+
+    #[test]
+    fn a_typoed_serial_field_is_rejected_loudly() {
+        let err =
+            serde_json::from_str::<SerialConfig>(r#"{"port": "/dev/ttyACM0", "baudrate": 9600}"#)
+                .unwrap_err()
+                .to_string();
+        assert!(err.contains("baudrate"), "{err}");
+    }
+
+    #[test]
+    fn a_typoed_server_field_is_rejected_loudly() {
+        let err =
+            serde_json::from_str::<ServerConfig>(r#"{"port": 11119, "discoveryport": 32227}"#)
+                .unwrap_err()
+                .to_string();
+        assert!(err.contains("discoveryport"), "{err}");
+    }
+
+    #[test]
+    fn a_typoed_cover_calibrator_field_is_rejected_loudly() {
+        let err = serde_json::from_str::<CoverCalibratorConfig>(
+            r#"{"name": "FP2", "description": "x", "max_brightnes": 4096}"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("max_brightnes"), "{err}");
     }
 
     #[test]
