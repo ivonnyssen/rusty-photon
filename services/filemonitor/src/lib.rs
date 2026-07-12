@@ -14,7 +14,10 @@ use tokio::time::{interval, Duration};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
+/// `deny_unknown_fields` so typoed or removed keys fail loudly at load
+/// instead of being silently ignored.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     pub device: DeviceConfig,
     pub file: FileConfig,
@@ -22,27 +25,39 @@ pub struct Config {
     pub server: ServerConfig,
 }
 
+/// `deny_unknown_fields` so typoed or removed keys fail loudly at load
+/// instead of being silently ignored.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DeviceConfig {
     pub name: String,
     pub unique_id: String,
     pub description: String,
 }
 
+/// `deny_unknown_fields` so typoed or removed keys fail loudly at load
+/// instead of being silently ignored.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FileConfig {
     pub path: PathBuf,
     #[serde(with = "humantime_serde")]
     pub polling_interval: Duration,
 }
 
+/// `deny_unknown_fields` so typoed or removed keys fail loudly at load
+/// instead of being silently ignored.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ParsingConfig {
     pub rules: Vec<ParsingRule>,
     pub case_sensitive: bool,
 }
 
+/// `deny_unknown_fields` so typoed or removed keys fail loudly at load
+/// instead of being silently ignored.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ParsingRule {
     #[serde(rename = "type")]
     pub rule_type: RuleType,
@@ -50,6 +65,9 @@ pub struct ParsingRule {
     pub safe: bool,
 }
 
+// Unit-variant-only enum deserialized from a bare string (e.g. `"contains"`),
+// not a JSON object — `deny_unknown_fields` has no meaningful effect here, so
+// it is intentionally omitted.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RuleType {
@@ -57,7 +75,10 @@ pub enum RuleType {
     Regex,
 }
 
+/// `deny_unknown_fields` so typoed or removed keys fail loudly at load
+/// instead of being silently ignored.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ServerConfig {
     pub port: u16,
     /// Alpaca UDP discovery responder port (normally 32227). Absent/`null` —
@@ -808,5 +829,55 @@ mod default_config_tests {
             "{:?}",
             config.file.path
         );
+    }
+
+    #[test]
+    fn a_typoed_top_level_field_is_rejected_loudly() {
+        let err = serde_json::from_str::<Config>(r#"{"typoed_key": 1}"#)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("typoed_key"), "{err}");
+    }
+
+    #[test]
+    fn a_typoed_device_field_is_rejected_loudly() {
+        let err = serde_json::from_str::<DeviceConfig>(r#"{"nmae": "oops"}"#)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("nmae"), "{err}");
+    }
+
+    #[test]
+    fn a_typoed_file_field_is_rejected_loudly() {
+        let err = serde_json::from_str::<FileConfig>(r#"{"paht": "/tmp/x.txt"}"#)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("paht"), "{err}");
+    }
+
+    #[test]
+    fn a_typoed_parsing_field_is_rejected_loudly() {
+        let err = serde_json::from_str::<ParsingConfig>(r#"{"rulez": []}"#)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("rulez"), "{err}");
+    }
+
+    #[test]
+    fn a_typoed_parsing_rule_field_is_rejected_loudly() {
+        let err = serde_json::from_str::<ParsingRule>(
+            r#"{"type": "contains", "paterns": "OPEN", "safe": true}"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("paterns"), "{err}");
+    }
+
+    #[test]
+    fn a_typoed_server_field_is_rejected_loudly() {
+        let err = serde_json::from_str::<ServerConfig>(r#"{"prot": 1234}"#)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("prot"), "{err}");
     }
 }
