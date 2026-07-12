@@ -221,7 +221,9 @@ mod scm_file {
     /// composition as [`init_tracing`], with the fmt layer writing to the
     /// rolling file (ANSI off — these are plain-text log files). Falls back
     /// to the stderr subscriber if the log file cannot be opened, so a
-    /// mis-ACLed ProgramData never blocks service startup.
+    /// mis-ACLed ProgramData never blocks service startup. Idempotent like
+    /// [`init_tracing`]: a redundant call keeps the already-installed
+    /// subscriber and returns an inert guard (see [`guard_for`]).
     pub(super) fn init(
         service_name: &str,
         default_level: Level,
@@ -230,7 +232,7 @@ mod scm_file {
         crate::runner::install_error_reporting();
         match build_rolling_writer(service_name, log_dir) {
             Ok((writer, worker)) => {
-                let _ = tracing_subscriber::registry()
+                let installed = tracing_subscriber::registry()
                     .with(build_env_filter(default_level))
                     .with(
                         tracing_subscriber::fmt::layer()
@@ -238,10 +240,9 @@ mod scm_file {
                             .with_ansi(false),
                     )
                     .with(tracing_error::ErrorLayer::default())
-                    .try_init();
-                super::TracingGuard {
-                    _worker: Some(worker),
-                }
+                    .try_init()
+                    .is_ok();
+                guard_for(worker, installed)
             }
             Err(e) => {
                 // Nowhere good to report this: stderr is dead under SCM.
@@ -255,6 +256,28 @@ mod scm_file {
                 );
                 super::TracingGuard::inert()
             }
+        }
+    }
+
+    /// Keep the non-blocking writer's worker only when the SCM subscriber
+    /// actually became the global default. On a redundant call `try_init`
+    /// fails (a global subscriber is already installed), so no events route
+    /// to this writer — keeping the worker would leak one live background
+    /// thread per call and hand the caller a guard unrelated to the active
+    /// subscriber. Dropping the
+    /// [`WorkerGuard`](tracing_appender::non_blocking::WorkerGuard) stops the
+    /// worker, keeping [`init`] idempotent like [`init_tracing`].
+    fn guard_for(
+        worker: tracing_appender::non_blocking::WorkerGuard,
+        installed: bool,
+    ) -> super::TracingGuard {
+        if installed {
+            super::TracingGuard {
+                _worker: Some(worker),
+            }
+        } else {
+            drop(worker);
+            super::TracingGuard::inert()
         }
     }
 
@@ -333,15 +356,16 @@ mod scm_file {
         }
 
         #[test]
-        fn init_returns_active_guard_and_creates_log_file() {
+        fn init_creates_log_file() {
             let tmp = tempfile::tempdir().unwrap();
             let log_dir = tmp.path().join("logs");
 
-            // The global subscriber may already be installed by a sibling
-            // test (`try_init` tolerates that); the writer, log file, and
-            // guard are created regardless.
-            let guard = init("init-svc", Level::INFO, &log_dir);
-            assert!(guard._worker.is_some(), "expected an active worker guard");
+            // Whether this call wins the global-subscriber install race
+            // against sibling tests is nondeterministic (the guard state for
+            // both outcomes is covered by the `guard_for` tests and the
+            // deterministic second-call test below); the log file is created
+            // eagerly by the writer either way.
+            let _guard = init("init-svc", Level::INFO, &log_dir);
 
             let entries: Vec<_> = std::fs::read_dir(&log_dir)
                 .unwrap()
@@ -352,6 +376,48 @@ mod scm_file {
                     .iter()
                     .any(|n| n.starts_with("init-svc.") && n.ends_with(".log")),
                 "expected init-svc.<date>.log in {entries:?}"
+            );
+        }
+
+        #[test]
+        fn guard_for_keeps_worker_when_subscriber_installed() {
+            let tmp = tempfile::tempdir().unwrap();
+            let (_writer, worker) =
+                build_rolling_writer("keep-svc", &tmp.path().join("logs")).unwrap();
+
+            let guard = guard_for(worker, true);
+            assert!(
+                guard._worker.is_some(),
+                "install succeeded: the worker guard must be kept for main to hold"
+            );
+        }
+
+        #[test]
+        fn guard_for_drops_worker_when_subscriber_not_installed() {
+            let tmp = tempfile::tempdir().unwrap();
+            let (_writer, worker) =
+                build_rolling_writer("drop-svc", &tmp.path().join("logs")).unwrap();
+
+            let guard = guard_for(worker, false);
+            assert!(
+                guard._worker.is_none(),
+                "install failed: keeping the worker would leak its thread"
+            );
+        }
+
+        #[test]
+        fn init_when_global_subscriber_already_set_returns_inert_guard() {
+            // Guarantee a global subscriber exists (init_tracing is
+            // idempotent; whoever installed it first, one is set after this
+            // line), so init's try_init deterministically fails here — the
+            // redundant-call path must not keep a worker thread alive.
+            init_tracing(Level::INFO);
+
+            let tmp = tempfile::tempdir().unwrap();
+            let guard = init("second-svc", Level::INFO, &tmp.path().join("logs"));
+            assert!(
+                guard._worker.is_none(),
+                "a redundant init must return an inert guard, not a live worker"
             );
         }
 

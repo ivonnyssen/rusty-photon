@@ -234,10 +234,14 @@ mode — that's the whole point. Service binaries call
 guard as `let _tracing_guard = ...` — a bare `let _ =` drops it
 immediately and loses the buffered final log lines.
 
-Each service's `BUILD.bazel` mirrors the Cargo target-gating with a
-`select`: the `rusty-photon-service-lifecycle_scm` library variant on
-Windows, the feature-free one everywhere else. Copy the block from any
-existing service.
+No special Bazel wiring is needed in the service's `BUILD.bazel` — just
+the plain `//crates/rusty-photon-service-lifecycle` dep. The lifecycle
+library target itself enables the `scm` feature via a `crate_features`
+`select()` on Windows, so every consumer — direct or transitive (e.g.
+via `rusty-photon-driver`) — shares one crate instantiation per
+platform. Do not add a per-consumer feature variant: two instantiations
+of the crate in one binary's graph stop its types (`ReloadSignal`,
+`Shutdown`) from unifying (E0308).
 
 On a run-closure error under SCM, the runner reports `SERVICE_STOPPED`
 with a non-zero exit code so SCM (with the installer-configured failure

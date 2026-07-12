@@ -290,10 +290,17 @@ passing their `--service` flag value:
   in `main` until process exit** (`let _tracing_guard = ...`) so the
   final shutdown-path lines flush on SCM Stop. If the log file cannot
   be opened (unusable ProgramData ACL), init falls back to the stderr
-  subscriber instead of failing service startup.
+  subscriber instead of failing service startup. Idempotent like
+  [`init_tracing`]: a redundant call (a global subscriber is already
+  installed) keeps the existing subscriber and returns an *inert*
+  guard — the freshly built writer's worker is dropped rather than
+  leaked, since no events would ever route to it.
 
 The filter/`ErrorLayer` composition is identical in both modes; only
-the writer differs.
+the writer differs. A run-closure error that ends an SCM service is
+rendered (full `source()` chain) into the rolling file via
+`tracing::error!` before the runner returns it from `main` — the
+`Report` that `main` prints goes to stderr, which is dead under SCM.
 
 ### Why the runner owns the runtime
 
@@ -452,10 +459,15 @@ fn main() -> ServiceResult {
 
 (The flag is deliberately *not* `#[cfg(windows)]`-gated: it parses — and
 is a documented no-op — everywhere, so the CLI surface is identical
-across platforms.) The service's `BUILD.bazel` selects the
-`rusty-photon-service-lifecycle_scm` library variant on Windows and the
-feature-free one elsewhere — copy the `select` block any existing
-service uses.
+across platforms.) No per-service Bazel wiring is needed: the service's
+`BUILD.bazel` depends on the plain
+`//crates/rusty-photon-service-lifecycle` label, and the lifecycle
+library target itself enables the `scm` feature via a `crate_features`
+`select()` on Windows. That keeps a single crate instantiation per
+platform across every consumer, direct or transitive — a per-consumer
+`_scm` library variant was tried and reverted because two
+instantiations in one binary's graph stop the crate's types
+(`ReloadSignal`, `Shutdown`) from unifying (E0308 on Windows).
 
 That's the whole adoption cost. The SCM control-handler glue and the
 rolling-file logging live in the crate; the service binary just opts in.

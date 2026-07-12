@@ -366,7 +366,13 @@ mod scm {
             .map_err(|_| color_eyre::eyre::eyre!("ServiceRunner SCM run-error mutex poisoned"))?
             .take()
         {
-            return Err(report_from_boxed(e));
+            let report = report_from_boxed(e);
+            // Returning the Report renders it to stderr from `main` — a dead
+            // handle under SCM. Emit the full rendered source() chain through
+            // tracing too, so it lands in the rolling log file while the
+            // service's TracingGuard is still held (it flushes on exit).
+            tracing::error!("{name}: service run failed:\n{report:?}");
+            return Err(report);
         }
         Ok(())
     }
