@@ -30,7 +30,9 @@ RIG_HOST="${RIG_HOST:-rig}"
 CONFIG_DIR=/var/lib/rusty-photon/.config/rusty-photon
 
 usage() {
-    sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'
+    # Print the header comment block (everything from line 2 to the first
+    # non-comment line), so the help text can never desync from the header.
+    awk 'NR < 2 { next } !/^#/ { exit } { sub(/^# ?/, ""); print }' "$0"
     exit "${1:-0}"
 }
 
@@ -75,7 +77,12 @@ case "$cmd" in
         dest="${1:-$HOME/.config/rusty-photon-rig}"
         # The address as reachable from this machine, taken from ssh's own
         # resolution of the alias — keeps it out of the repo.
-        addr=$(ssh -G "$RIG_HOST" | awk '/^hostname /{print $2}')
+        addr=$(ssh -G "$RIG_HOST" 2>/dev/null | awk '/^hostname /{print $2}')
+        if [ -z "$addr" ]; then
+            echo "fetch-configs: ssh could not resolve an address for '$RIG_HOST'" >&2
+            echo "add a 'Host $RIG_HOST' entry to ~/.ssh/config or set RIG_HOST" >&2
+            exit 1
+        fi
         mkdir -p "$dest"
         ssh -T "$RIG_HOST" "sudo tar -C '$CONFIG_DIR' -cf - ." | tar -C "$dest" -xf -
         for f in "$dest"/*.json; do
