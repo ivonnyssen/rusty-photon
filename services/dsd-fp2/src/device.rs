@@ -210,7 +210,7 @@ impl CoverCalibrator for DsdFp2Device {
         if brightness > effective_max {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_VALUE,
-                format!("brightness {brightness} exceeds configured max {effective_max}"),
+                format!("brightness {brightness} exceeds effective max brightness {effective_max}"),
             ));
         }
         // Below `min_brightness` the panel's EL output is non-linear/unreliable
@@ -228,9 +228,9 @@ impl CoverCalibrator for DsdFp2Device {
             // ("a value >= min_brightness") when no such value exists.
             let remediation = if min_brightness > effective_max {
                 format!(
-                    "cover_calibrator.min_brightness ({min_brightness}) exceeds \
-                     cover_calibrator.max_brightness ({effective_max}) — this is a driver \
-                     misconfiguration; fix it via config.apply"
+                    "cover_calibrator.min_brightness ({min_brightness}) exceeds the effective \
+                     max brightness ({effective_max}) — this is a driver misconfiguration; fix \
+                     it via config.apply"
                 )
             } else {
                 format!(
