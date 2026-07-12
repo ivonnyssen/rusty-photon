@@ -92,7 +92,8 @@ fn default_watch_path() -> PathBuf {
 /// non-empty, else the fixed `C:\ProgramData` fallback. A private copy of the
 /// same rule `rusty-photon-config` applies to the config path (each crate
 /// keeps its own — see the W2 note in `docs/plans/windows-packaging.md`);
-/// compiled on every platform so it is unit-testable on non-Windows hosts.
+/// compiled on Windows and in test builds on every platform, so the logic
+/// is unit-testable on non-Windows hosts.
 #[cfg(any(windows, test))]
 fn program_data_root(program_data: Option<std::ffi::OsString>) -> PathBuf {
     match program_data {

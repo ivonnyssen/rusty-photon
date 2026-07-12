@@ -81,8 +81,8 @@ fn default_config_dir() -> Result<PathBuf, ConfigError> {
 
 /// Pure resolution of the Windows `ProgramData` root from the value of the `ProgramData`
 /// environment variable: the value verbatim when present and non-empty, else the fixed
-/// `C:\ProgramData` fallback. Parameterized over the env value (and compiled on every platform)
-/// so the logic is unit-testable on non-Windows hosts.
+/// `C:\ProgramData` fallback. Parameterized over the env value, and compiled on Windows and in
+/// test builds on every platform, so the logic is unit-testable on non-Windows hosts.
 #[cfg(any(windows, test))]
 fn program_data_root(program_data: Option<std::ffi::OsString>) -> PathBuf {
     match program_data {
