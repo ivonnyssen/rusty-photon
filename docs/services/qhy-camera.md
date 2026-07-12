@@ -584,8 +584,12 @@ Runs in `main.rs` on Windows real-SDK builds only, **before any SDK call**:
   every 5 s — the same contract as a missing serial device: the unit comes up
   by itself once the pack is installed. (`scripts/verify-msi.ps1`, plan W4,
   asserts this line on a DLL-less runner.)
-- **PF5.** `simulation` builds skip the preflight entirely (no native SDK is
-  linked); non-Windows builds have no preflight.
+- **PF5.** `simulation` builds skip the preflight entirely: the real FFI is
+  `cfg`'d out, so no SDK call is ever made and `qhyccd.dll` is not required
+  at runtime. (The SDK *link* itself is only omitted under
+  `QHYCCD_SKIP_NATIVE_LINK` — see *Native dependency & build gating*; the
+  preflight keys off runtime behavior, not linkage.) Non-Windows builds have
+  no preflight.
 
 ### `doctor` subcommand (interactive diagnostic)
 

@@ -61,7 +61,8 @@ impl SdkVersionFinding {
 /// are pure functions of this data.
 #[derive(Debug)]
 pub struct DoctorReport {
-    /// `true` on a `simulation` build: no native SDK is linked at all (DR5).
+    /// `true` on a `simulation` build: the real FFI is `cfg`'d out, so no SDK
+    /// call is ever made and no `qhyccd.dll` is required at runtime (DR5).
     pub simulation: bool,
     /// How `qhyccd.dll` resolved; `None` when not applicable (simulation).
     pub dll: Option<DllResolution>,
@@ -103,8 +104,8 @@ impl DoctorReport {
         if self.simulation {
             let _ = writeln!(
                 out,
-                "Build             : simulation backend — no native QHYCCD SDK is linked \
-                 and no qhyccd.dll is required."
+                "Build             : simulation backend — no SDK calls are made and no \
+                 qhyccd.dll is required at runtime."
             );
         } else {
             match &self.dll {
@@ -283,7 +284,8 @@ fn gather() -> DoctorReport {
 
     #[cfg(feature = "simulation")]
     {
-        // DR5: the simulation backend is pure Rust — no DLL involved.
+        // DR5: the simulation backend makes no SDK calls — qhyccd.dll is not
+        // required at runtime.
         DoctorReport {
             simulation: true,
             dll: None,
@@ -520,7 +522,16 @@ mod tests {
         let rendered = report.render();
         assert!(report.healthy());
         assert_eq!(report.exit_code(), 0);
-        assert!(rendered.contains("simulation backend"), "{rendered}");
+        // Runtime-accurate phrasing: `simulation` cfg's out the SDK *calls*;
+        // it does not by itself remove the SDK *link* (that is
+        // QHYCCD_SKIP_NATIVE_LINK's job) — the report must not claim it does.
+        assert!(
+            rendered.contains(
+                "simulation backend — no SDK calls are made and no qhyccd.dll is \
+                 required at runtime."
+            ),
+            "{rendered}"
+        );
         assert!(
             rendered.contains("no known install roots to check"),
             "{rendered}"

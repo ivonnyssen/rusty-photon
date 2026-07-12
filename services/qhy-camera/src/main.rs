@@ -78,8 +78,9 @@ fn main() -> ServiceResult {
 
     // Windows real-SDK builds delay-load qhyccd.dll (see build.rs): resolve it
     // BEFORE any SDK call and keep it resident, or exit non-zero with the one
-    // distinctive, actionable error (PF1–PF4). Simulation builds link no
-    // native SDK and skip this (PF5).
+    // distinctive, actionable error (PF1–PF4). Simulation builds skip this:
+    // their real FFI is cfg'd out, so nothing would ever call into qhyccd.dll
+    // and it is not required at runtime (PF5).
     #[cfg(all(windows, not(feature = "simulation")))]
     qhy_camera::preflight::ensure_qhyccd_dll()?;
 
