@@ -14,7 +14,7 @@ use tracing::Level;
 #[command(about = "Observatory monitoring and notification service")]
 #[command(version)]
 struct Args {
-    /// Path to configuration file. Defaults to the per-user platform config
+    /// Path to configuration file. Defaults to the platform config
     /// directory (e.g. `~/.config/rusty-photon/sentinel.json` on Linux);
     /// created with defaults on first start if absent.
     #[arg(short, long)]

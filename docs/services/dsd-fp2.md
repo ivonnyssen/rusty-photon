@@ -303,7 +303,10 @@ service can later expose a Switch device (heater control) without redesign.
 `serial.port` accepts either `/dev/ttyACM0`-style paths or the more
 durable `/dev/serial/by-id/...-if00` form. Prefer the `by-id` form in
 production configs so that re-enumeration of other USB devices does not
-shuffle the FP2 onto a different `ttyACM*`.
+shuffle the FP2 onto a different `ttyACM*`. On Windows the field takes a
+COM port name instead. The built-in default is platform-dependent —
+`/dev/ttyACM0` on Unix, `COM3` on Windows — and is a placeholder either
+way: the operator edits it to the real port.
 
 ### Device identity (UniqueID)
 
@@ -336,7 +339,7 @@ is recoverable: the next startup re-mints a fresh one.
 
 | Argument | Description |
 |----------|-------------|
-| `-c, --config`     | Path to configuration file. If omitted, the driver resolves the per-user platform config dir (e.g. `~/.config/rusty-photon/dsd-fp2.json` on Linux; macOS/Windows differ) (read if present; created by `config.apply`). |
+| `-c, --config`     | Path to configuration file. If omitted, the driver resolves the platform default (e.g. `~/.config/rusty-photon/dsd-fp2.json` on Linux, `%PROGRAMDATA%\rusty-photon\dsd-fp2.json` on Windows) (read if present; created by `config.apply`). |
 | `--port`           | Serial port path (overrides `serial.port`; pins it as a CLI override) |
 | `--server-port`    | Server port (overrides `server.port`; pins it as a CLI override) |
 | `-l, --log-level`  | Log level: trace, debug, info, warn, error |
@@ -368,11 +371,14 @@ without first connecting to the thing the bad port blocks connecting to.
 A persist target is **always** resolvable, in priority order:
 
 1. `--config <path>` if given on the CLI, else
-2. the per-user **platform config directory** (`directories::ProjectDirs`) —
+2. the **platform default** (via `rusty_photon_config::resolve_config_path`) —
+   the per-user config directory on Unix:
    `~/.config/rusty-photon/dsd-fp2.json` on Linux (XDG;
    `$XDG_CONFIG_HOME/rusty-photon/...` when set),
-   `~/Library/Application Support/rusty-photon/...` on macOS, and
-   `%APPDATA%\rusty-photon\...` on Windows.
+   `~/Library/Application Support/rusty-photon/...` on macOS — and the
+   machine-wide `%PROGRAMDATA%\rusty-photon\dsd-fp2.json` on Windows
+   (`ProgramData` env var, `C:\ProgramData` fallback; a Windows service
+   account's per-user profile is hidden, see ADR-015).
 
 Startup and reload **read** this path when the file exists, falling back to
 `Config::default()` otherwise. `config.apply` **writes** it, creating parent

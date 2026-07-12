@@ -1,6 +1,6 @@
 //! plate-solver service binary.
 //!
-//! Reads a JSON config file (`--config`, or when omitted the per-user
+//! Reads a JSON config file (`--config`, or when omitted the
 //! platform config path — `~/.config/rusty-photon/plate-solver.json` on
 //! Linux), validates it, builds the HTTP server, prints
 //! `bound_addr=<host>:<port>` to stdout (so `bdd-infra::ServiceHandle`
@@ -20,7 +20,7 @@ use tracing::Level;
     about = "rp-managed plate solver service"
 )]
 struct Cli {
-    /// Path to the JSON config file. Defaults to the per-user platform
+    /// Path to the JSON config file. Defaults to the platform
     /// config directory (e.g. `~/.config/rusty-photon/plate-solver.json`
     /// on Linux). There is no built-in default config: the file must
     /// exist (`astap_binary_path` / `astap_db_directory` are mandatory).

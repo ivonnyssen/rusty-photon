@@ -96,16 +96,48 @@ pub struct Config {
 }
 
 /// Minimal runnable scaffold `rp` writes on first start when no config
-/// exists at the XDG default path: no equipment, default server, session
-/// data under the packaged unit's `StateDirectory`
-/// (`/var/lib/rusty-photon/rp/`). Must stay deserializable into
-/// [`Config`] — the packaged first-start contract depends on it.
+/// exists at the platform default path: no equipment, default server,
+/// session data under a platform-dependent directory — the packaged unit's
+/// `StateDirectory` (`/var/lib/rusty-photon/rp/`) on Unix,
+/// `%PROGRAMDATA%\rusty-photon\rp\` on Windows (ADR-015). Must stay
+/// deserializable into [`Config`] — the packaged first-start contract
+/// depends on it.
 pub fn default_scaffold() -> serde_json::Value {
     serde_json::json!({
-        "session": { "data_directory": "/var/lib/rusty-photon/rp/data" },
+        "session": { "data_directory": default_data_directory() },
         "equipment": {},
         "server": {}
     })
+}
+
+/// The scaffold's platform-dependent `session.data_directory` default.
+#[cfg(not(windows))]
+fn default_data_directory() -> String {
+    "/var/lib/rusty-photon/rp/data".to_string()
+}
+#[cfg(windows)]
+fn default_data_directory() -> String {
+    program_data_root(std::env::var_os("ProgramData"))
+        .join("rusty-photon")
+        .join("rp")
+        .join("data")
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// Pure resolution of the Windows `ProgramData` root from the value of the
+/// `ProgramData` environment variable: the value verbatim when present and
+/// non-empty, else the fixed `C:\ProgramData` fallback. A private copy of the
+/// same rule `rusty-photon-config` applies to the config path (each crate
+/// keeps its own — see the W2 note in `docs/plans/windows-packaging.md`);
+/// compiled on Windows and in test builds on every platform, so the logic
+/// is unit-testable on non-Windows hosts.
+#[cfg(any(windows, test))]
+fn program_data_root(program_data: Option<std::ffi::OsString>) -> std::path::PathBuf {
+    match program_data {
+        Some(v) if !v.is_empty() => std::path::PathBuf::from(v),
+        _ => std::path::PathBuf::from(r"C:\ProgramData"),
+    }
 }
 
 /// Domain validation shared by startup ([`load_config`]) and the REST
@@ -167,13 +199,45 @@ mod tests {
     #[test]
     fn default_scaffold_deserializes_into_config() {
         let config: Config = serde_json::from_value(default_scaffold()).unwrap();
+        #[cfg(not(windows))]
         assert_eq!(
             config.session.data_directory,
             "/var/lib/rusty-photon/rp/data"
         );
+        #[cfg(windows)]
+        assert!(
+            config
+                .session
+                .data_directory
+                .ends_with(r"\rusty-photon\rp\data"),
+            "{}",
+            config.session.data_directory
+        );
         assert!(config.equipment.cameras.is_empty());
         assert!(config.site.is_none());
         assert_eq!(config.server.port, 11115);
+    }
+
+    #[test]
+    fn program_data_root_uses_env_value_verbatim() {
+        let root = program_data_root(Some(std::ffi::OsString::from(r"D:\CustomData")));
+        assert_eq!(root, std::path::PathBuf::from(r"D:\CustomData"));
+    }
+
+    #[test]
+    fn program_data_root_falls_back_when_env_absent() {
+        assert_eq!(
+            program_data_root(None),
+            std::path::PathBuf::from(r"C:\ProgramData")
+        );
+    }
+
+    #[test]
+    fn program_data_root_falls_back_when_env_empty() {
+        assert_eq!(
+            program_data_root(Some(std::ffi::OsString::new())),
+            std::path::PathBuf::from(r"C:\ProgramData")
+        );
     }
 
     #[test]

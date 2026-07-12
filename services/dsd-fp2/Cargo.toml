@@ -43,7 +43,6 @@ rusty-photon-driver = { workspace = true }
 rp-tls = { workspace = true }
 rp-auth = { workspace = true }
 axum = { workspace = true }
-directories = { workspace = true }
 tempfile = { workspace = true }
 
 # Enable the Windows Service Control Manager dispatch only on Windows;

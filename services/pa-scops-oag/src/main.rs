@@ -76,7 +76,7 @@ fn main() -> ServiceResult {
         server_port: args.server_port,
     };
 
-    // Resolve the config path (explicit --config, else the per-user platform
+    // Resolve the config path (explicit --config, else the platform
     // config dir) and ensure the focuser has a persisted, spec-compliant
     // `UniqueID`. `materialize_identity` mints a UUIDv4 on first run, writes the
     // default scaffold if the file is absent, and never overwrites an existing

@@ -86,10 +86,18 @@ fn default_max_step() -> u32 {
     64_000
 }
 
+/// Platform-dependent default serial port. Both values are placeholders the
+/// operator replaces with the real device path: the driver restart-loops
+/// until then, on Windows (`COM3`) exactly as on Unix (`/dev/ttyACM0`).
+#[cfg(windows)]
+const DEFAULT_SERIAL_PORT: &str = "COM3";
+#[cfg(not(windows))]
+const DEFAULT_SERIAL_PORT: &str = "/dev/ttyACM0";
+
 impl Default for SerialConfig {
     fn default() -> Self {
         Self {
-            port: "/dev/ttyACM0".to_string(),
+            port: DEFAULT_SERIAL_PORT.to_string(),
             baud_rate: default_baud_rate(),
             polling_interval: default_polling_interval(),
             timeout: default_timeout(),
@@ -203,7 +211,10 @@ mod tests {
         assert_eq!(config.focuser.speed, 0);
         assert!(!config.focuser.reverse);
 
+        #[cfg(not(windows))]
         assert_eq!(config.serial.port, "/dev/ttyACM0");
+        #[cfg(windows)]
+        assert_eq!(config.serial.port, "COM3");
         assert_eq!(config.serial.baud_rate, 9600);
         assert_eq!(config.serial.polling_interval, Duration::from_millis(1000));
         assert_eq!(config.serial.timeout, Duration::from_secs(2));
@@ -230,7 +241,10 @@ mod tests {
     fn serial_config_default() {
         let config = SerialConfig::default();
 
+        #[cfg(not(windows))]
         assert_eq!(config.port, "/dev/ttyACM0");
+        #[cfg(windows)]
+        assert_eq!(config.port, "COM3");
         assert_eq!(config.baud_rate, 9600);
         assert_eq!(config.polling_interval, Duration::from_millis(1000));
         assert_eq!(config.timeout, Duration::from_secs(2));
@@ -249,7 +263,10 @@ mod tests {
         let json = serde_json::to_string(&config).unwrap();
 
         assert!(json.contains("QHY Q-Focuser"));
+        #[cfg(not(windows))]
         assert!(json.contains("/dev/ttyACM0"));
+        #[cfg(windows)]
+        assert!(json.contains("COM3"));
         assert!(json.contains("9600"));
         assert!(json.contains("11113"));
     }

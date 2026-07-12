@@ -24,7 +24,7 @@ Feature: Configuration actions
     And the schema should mark server.port as a read-only field
 
   Scenario: Read the current configuration while disconnected
-    Given a running focuser service
+    Given a running focuser service configured with serial.port /dev/ttyACM0
     When config.get is called
     Then the config should report serial.port as /dev/ttyACM0
     And the config should report no overrides

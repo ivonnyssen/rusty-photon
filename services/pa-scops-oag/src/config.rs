@@ -90,10 +90,18 @@ fn default_max_step() -> u32 {
     22_000
 }
 
+/// Platform-dependent default serial port. Both values are placeholders the
+/// operator replaces with the real device path: the driver restart-loops
+/// until then, on Windows (`COM3`) exactly as on Unix (`/dev/ttyUSB0`).
+#[cfg(windows)]
+const DEFAULT_SERIAL_PORT: &str = "COM3";
+#[cfg(not(windows))]
+const DEFAULT_SERIAL_PORT: &str = "/dev/ttyUSB0";
+
 impl Default for SerialConfig {
     fn default() -> Self {
         Self {
-            port: "/dev/ttyUSB0".to_string(),
+            port: DEFAULT_SERIAL_PORT.to_string(),
             baud_rate: default_baud_rate(),
             polling_interval: default_polling_interval(),
             timeout: default_timeout(),
@@ -203,7 +211,10 @@ mod tests {
         assert!(config.focuser.enabled);
         assert_eq!(config.focuser.max_step, 22_000);
 
+        #[cfg(not(windows))]
         assert_eq!(config.serial.port, "/dev/ttyUSB0");
+        #[cfg(windows)]
+        assert_eq!(config.serial.port, "COM3");
         assert_eq!(config.serial.baud_rate, 19200);
         assert_eq!(config.serial.polling_interval, Duration::from_millis(1000));
         assert_eq!(config.serial.timeout, Duration::from_secs(2));
@@ -228,7 +239,10 @@ mod tests {
     fn serial_config_default_uses_19200() {
         let config = SerialConfig::default();
 
+        #[cfg(not(windows))]
         assert_eq!(config.port, "/dev/ttyUSB0");
+        #[cfg(windows)]
+        assert_eq!(config.port, "COM3");
         // The Scops OAG only responds at 19200 — guard the default against
         // regression to the DMFC doc's "try 9600" footnote.
         assert_eq!(config.baud_rate, 19200);
@@ -248,7 +262,10 @@ mod tests {
         let json = serde_json::to_string(&config).unwrap();
 
         assert!(json.contains("Pegasus Scops OAG"));
+        #[cfg(not(windows))]
         assert!(json.contains("/dev/ttyUSB0"));
+        #[cfg(windows)]
+        assert!(json.contains("COM3"));
         assert!(json.contains("19200"));
         assert!(json.contains("11123"));
     }

@@ -74,7 +74,7 @@ fn main() -> ServiceResult {
     );
 
     // Resolve a real config-file path up front: the explicit `--config`
-    // path if given, else the per-user platform config dir
+    // path if given, else the platform config dir
     // (`~/.config/rusty-photon/star-adventurer-gti.json` on Linux). A
     // path is *always* resolvable now, so identity persistence and park
     // persistence are never disabled merely for lack of a `--config`

@@ -14,7 +14,7 @@ use zwo_camera::{load_effective_config, CliOverrides, ServerBuilder};
 #[command(about = "ASCOM Alpaca driver for ZWO ASI cameras")]
 #[command(version)]
 struct Args {
-    /// Path to the JSON config file. When omitted, resolves to the per-user
+    /// Path to the JSON config file. When omitted, resolves to the
     /// platform config path (e.g. `~/.config/rusty-photon/zwo-camera.json` on
     /// Linux) via `rusty_photon_config::resolve_config_path`.
     #[arg(short, long)]

@@ -76,10 +76,18 @@ fn default_true() -> bool {
     true
 }
 
+/// Platform-dependent default serial port. Both values are placeholders the
+/// operator replaces with the real device path: the driver restart-loops
+/// until then, on Windows (`COM3`) exactly as on Unix (`/dev/ttyUSB0`).
+#[cfg(windows)]
+const DEFAULT_SERIAL_PORT: &str = "COM3";
+#[cfg(not(windows))]
+const DEFAULT_SERIAL_PORT: &str = "/dev/ttyUSB0";
+
 impl Default for SerialConfig {
     fn default() -> Self {
         Self {
-            port: "/dev/ttyUSB0".to_string(),
+            port: DEFAULT_SERIAL_PORT.to_string(),
             baud_rate: default_baud_rate(),
             timeout: default_timeout(),
         }
@@ -198,7 +206,10 @@ mod tests {
         assert!(config.switch.unique_id.is_empty());
         assert!(config.switch.enabled);
 
+        #[cfg(not(windows))]
         assert_eq!(config.serial.port, "/dev/ttyUSB0");
+        #[cfg(windows)]
+        assert_eq!(config.serial.port, "COM3");
         assert_eq!(config.serial.baud_rate, 9600);
         assert_eq!(config.serial.timeout, Duration::from_secs(2));
 
@@ -234,7 +245,10 @@ mod tests {
     #[test]
     fn serial_config_default() {
         let config = SerialConfig::default();
+        #[cfg(not(windows))]
         assert_eq!(config.port, "/dev/ttyUSB0");
+        #[cfg(windows)]
+        assert_eq!(config.port, "COM3");
         assert_eq!(config.baud_rate, 9600);
         assert_eq!(config.timeout, Duration::from_secs(2));
     }
@@ -252,7 +266,10 @@ mod tests {
 
         assert!(json.contains("Pegasus Falcon Rotator"));
         assert!(json.contains("Pegasus Falcon Status"));
+        #[cfg(not(windows))]
         assert!(json.contains("/dev/ttyUSB0"));
+        #[cfg(windows)]
+        assert!(json.contains("COM3"));
         assert!(json.contains("9600"));
         assert!(json.contains("11118"));
     }
@@ -323,7 +340,10 @@ mod tests {
         std::fs::write(&path, json).unwrap();
 
         let loaded = load_config(&path).unwrap();
+        #[cfg(not(windows))]
         assert_eq!(loaded.serial.port, "/dev/ttyUSB0");
+        #[cfg(windows)]
+        assert_eq!(loaded.serial.port, "COM3");
         assert_eq!(loaded.server.port, 11118);
         assert_eq!(loaded.rotator.name, "Pegasus Falcon Rotator");
         assert_eq!(loaded.switch.name, "Pegasus Falcon Status");

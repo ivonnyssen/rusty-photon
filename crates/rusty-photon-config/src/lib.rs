@@ -2,9 +2,10 @@
 //!
 //! ASCOM Alpaca requires every device's `UniqueID` to be **globally unique** and to **never
 //! change**, but the protocol enforces neither — uniqueness has to come from how the id is
-//! generated. This crate gives each driver a spec-compliant identity: it resolves a per-user
-//! config path, and [`materialize_identity`] mints a UUIDv4 for each device on first run,
-//! persists it atomically, and never overwrites an id that already exists.
+//! generated. This crate gives each driver a spec-compliant identity: it resolves a platform
+//! config path (per-user on Unix, machine-wide `%PROGRAMDATA%` on Windows), and
+//! [`materialize_identity`] mints a UUIDv4 for each device on first run, persists it atomically,
+//! and never overwrites an id that already exists.
 //!
 //! The helpers operate on `serde_json::Value` + JSON pointers so they apply uniformly across the
 //! heterogeneous driver config shapes (one device or several, at different pointers).
@@ -15,7 +16,6 @@ pub mod actions;
 
 use std::path::{Path, PathBuf};
 
-use directories::ProjectDirs;
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -45,9 +45,15 @@ pub enum ConfigError {
     },
 }
 
-/// Resolve the config-file path: the explicit `--config` path if given, else the per-user platform
-/// config directory (e.g. `~/.config/rusty-photon/<service>.json` on Linux). A path is always
-/// resolvable, so config persistence is never disabled for lack of one.
+/// Resolve the config-file path: the explicit `--config` path if given, else the platform
+/// default — the per-user config directory on Unix (e.g.
+/// `~/.config/rusty-photon/<service>.json` on Linux), or the machine-wide
+/// `%PROGRAMDATA%\rusty-photon\<service>.json` on Windows. A path is always resolvable, so
+/// config persistence is never disabled for lack of one.
+///
+/// Windows deliberately does **not** use the per-user profile (ADR-015): the services run under
+/// service accounts whose profile is buried in `...\systemprofile\AppData\Roaming`, so the
+/// default must live in the one obvious, operator-editable machine-wide folder.
 pub fn resolve_config_path(
     service: &str,
     explicit: Option<PathBuf>,
@@ -55,8 +61,34 @@ pub fn resolve_config_path(
     if let Some(path) = explicit {
         return Ok(path);
     }
-    let dirs = ProjectDirs::from("", "", "rusty-photon").ok_or(ConfigError::NoConfigDir)?;
-    Ok(dirs.config_dir().join(format!("{service}.json")))
+    Ok(default_config_dir()?.join(format!("{service}.json")))
+}
+
+/// The per-user platform config directory on non-Windows platforms
+/// (`directories::ProjectDirs`, e.g. `~/.config/rusty-photon` on Linux).
+#[cfg(not(windows))]
+fn default_config_dir() -> Result<PathBuf, ConfigError> {
+    let dirs =
+        directories::ProjectDirs::from("", "", "rusty-photon").ok_or(ConfigError::NoConfigDir)?;
+    Ok(dirs.config_dir().to_path_buf())
+}
+
+/// The machine-wide config directory on Windows: `%PROGRAMDATA%\rusty-photon`.
+#[cfg(windows)]
+fn default_config_dir() -> Result<PathBuf, ConfigError> {
+    Ok(program_data_root(std::env::var_os("ProgramData")).join("rusty-photon"))
+}
+
+/// Pure resolution of the Windows `ProgramData` root from the value of the `ProgramData`
+/// environment variable: the value verbatim when present and non-empty, else the fixed
+/// `C:\ProgramData` fallback. Parameterized over the env value, and compiled on Windows and in
+/// test builds on every platform, so the logic is unit-testable on non-Windows hosts.
+#[cfg(any(windows, test))]
+fn program_data_root(program_data: Option<std::ffi::OsString>) -> PathBuf {
+    match program_data {
+        Some(v) if !v.is_empty() => PathBuf::from(v),
+        _ => PathBuf::from(r"C:\ProgramData"),
+    }
 }
 
 /// Read the file at `path` as a JSON `Value`; a missing file yields a clone of `default`, while a
@@ -141,7 +173,7 @@ pub fn init_file_if_absent(path: &Path, default: &Value) -> Result<bool, ConfigE
 }
 
 /// The canonical startup bootstrap: resolve the config path and, when it is
-/// the XDG default (no explicit `--config`), persist `default` there on
+/// the platform default (no explicit `--config`), persist `default` there on
 /// first start so a packaged install materializes an editable file.
 ///
 /// An explicit path is returned untouched even if no file exists there —
@@ -262,6 +294,36 @@ mod tests {
         let p = resolve_config_path("dsd-fp2", None).unwrap();
         assert!(p.ends_with("dsd-fp2.json"), "{p:?}");
         assert!(p.to_string_lossy().contains("rusty-photon"), "{p:?}");
+    }
+
+    #[test]
+    fn program_data_root_uses_env_value_verbatim() {
+        let p = program_data_root(Some(std::ffi::OsString::from(r"D:\CustomData")));
+        assert_eq!(p, PathBuf::from(r"D:\CustomData"));
+    }
+
+    #[test]
+    fn program_data_root_falls_back_when_env_absent() {
+        assert_eq!(program_data_root(None), PathBuf::from(r"C:\ProgramData"));
+    }
+
+    #[test]
+    fn program_data_root_falls_back_when_env_empty() {
+        assert_eq!(
+            program_data_root(Some(std::ffi::OsString::new())),
+            PathBuf::from(r"C:\ProgramData")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolve_defaults_to_machine_wide_program_data_on_windows() {
+        let p = resolve_config_path("dsd-fp2", None).unwrap();
+        assert!(p.ends_with(r"rusty-photon\dsd-fp2.json"), "{p:?}");
+        assert!(p.is_absolute(), "{p:?}");
+        // The per-user profile must never be the service default (ADR-015):
+        // under a service account it lands in the hidden systemprofile dir.
+        assert!(!p.to_string_lossy().contains("AppData"), "{p:?}");
     }
 
     #[test]
