@@ -209,7 +209,10 @@ explicitly; when omitted, the path resolves to the platform default
 `rusty-photon-config`. There is no built-in default plan —
 the file must exist (`camera_id`, `filter_wheel_id`, `calibrator_id`,
 `filters` are mandatory), so the packaged systemd unit gates on it with
-`ConditionPathExists` instead of crash-looping on a fresh install. The plan is part of `rp`'s plugin configuration:
+`ConditionPathExists` instead of crash-looping on a fresh install. Both
+`FlatPlan` and `FilterPlan` reject unknown keys at deserialize
+(`deny_unknown_fields`), so a typo or a key removed by a schema change
+fails loudly at load instead of being silently ignored. The plan is part of `rp`'s plugin configuration:
 
 ```json
 {

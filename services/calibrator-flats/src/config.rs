@@ -7,6 +7,7 @@ use crate::error::{CalibratorFlatsError, Result};
 
 /// Filter plan entry: which filter, how many frames.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FilterPlan {
     pub name: String,
     pub count: u32,
@@ -14,6 +15,7 @@ pub struct FilterPlan {
 
 /// Flat calibration plan passed via the orchestrator plugin config.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FlatPlan {
     pub camera_id: String,
     pub filter_wheel_id: String,
@@ -155,5 +157,25 @@ mod tests {
 
         let err = load_config(&path).unwrap_err();
         assert!(err.to_string().contains("failed to parse config file"));
+    }
+
+    #[test]
+    fn flat_plan_rejects_unknown_field() {
+        let json = r#"{
+            "camera_id": "main-cam",
+            "filter_wheel_id": "main-fw",
+            "calibrator_id": "flat-panel",
+            "filters": [{"name": "Luminance", "count": 20}],
+            "dither_pixels": 5.0
+        }"#;
+        let err = serde_json::from_str::<FlatPlan>(json).unwrap_err();
+        assert!(err.to_string().contains("dither_pixels"), "{err}");
+    }
+
+    #[test]
+    fn filter_plan_rejects_unknown_field() {
+        let json = r#"{"name": "Luminance", "count": 20, "binning": 2}"#;
+        let err = serde_json::from_str::<FilterPlan>(json).unwrap_err();
+        assert!(err.to_string().contains("binning"), "{err}");
     }
 }
