@@ -28,10 +28,10 @@ jobs:
     # (main) is checked out, so this records main's @browser health.
     runs-on: ubuntu-latest
     # A warm run is a few minutes; the COLD first run (empty rust-cache) compiles
-    # ui-htmx + dsd-fp2 and their dep tree (axum/reqwest/thirtyfour/cucumber) plus
-    # the Firefox download, so the cap sits at 30 — scheduled.yml's cold-Rust
-    # budget. It only bites a hung WebDriver session, backstopping GitHub's
-    # 360-min default (plan §8).
+    # ui-htmx + dsd-fp2 + rp + sentinel and their dep tree (axum/reqwest/
+    # thirtyfour/cucumber) plus the Firefox download, so the cap sits at 30 —
+    # scheduled.yml's cold-Rust budget. It only bites a hung WebDriver session,
+    # backstopping GitHub's 360-min default (plan §8).
     timeout-minutes: 30
     name: nightly / ubuntu / ui-htmx @browser
     steps:
@@ -70,14 +70,18 @@ jobs:
       - name: cargo generate-lockfile
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
-      # Pre-build the BFF and the driver it spawns: bdd-infra discovers the
-      # binaries in target/ and no longer compiles them on the fly (test.yml's
-      # windows-bdd pattern). ui-htmx's BDD spawns dsd-fp2 (mock hardware) only —
-      # no OmniSim or native SDKs are involved, so nothing else to provision.
-      - name: cargo build (ui-htmx + dsd-fp2)
+      # Pre-build the BFF and every process its BDD suite spawns: bdd-infra
+      # discovers binaries in target/ and no longer compiles them on the fly
+      # (test.yml's windows-bdd pattern). ui-htmx's BDD spawns dsd-fp2 (mock
+      # hardware), rp (Phase-5 rp-config/equipment/stream suites), and sentinel
+      # (restart.feature, via its Service Restart API) — an all-first-party
+      # stack, no OmniSim or native SDKs involved, so nothing else to provision.
+      - name: cargo build (ui-htmx + dsd-fp2 + rp + sentinel)
         run: |
           cargo build --locked --package ui-htmx --all-features --all-targets
           cargo build --locked --package dsd-fp2 --all-features --all-targets
+          cargo build --locked --package rp --all-features --all-targets
+          cargo build --locked --package sentinel --all-features --all-targets
       # Run the BDD suite with the browser layer enabled. UI_BROWSER_TESTS=1
       # un-filters the @browser scenarios (tests/bdd.rs); the 9 server-bytes
       # scenarios run too, so the whole suite is exercised with Firefox attached.
