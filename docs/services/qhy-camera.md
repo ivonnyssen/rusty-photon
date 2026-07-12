@@ -510,7 +510,7 @@ fn main() -> ServiceResult {
 ```
 
 `info!("Service started successfully …")` only after the bind succeeds; everything
-else is `debug!` (CLAUDE.md Rule 9).
+else is `debug!` ([AGENTS.md](../AGENTS.md) Rule 9).
 
 In addition to the plain service invocation, `main.rs` exposes one subcommand:
 `rusty-photon-qhy-camera doctor` — the interactive Windows installation

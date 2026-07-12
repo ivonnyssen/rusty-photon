@@ -91,7 +91,7 @@ fn main() -> ServiceResult {
     #[cfg(feature = "simulation")]
     let simulation_empty = args.simulation_empty;
 
-    // Startup chatter stays at debug! per CLAUDE.md Rule 9; the user-facing
+    // Startup chatter stays at debug! per AGENTS.md Rule 9; the user-facing
     // "Service started successfully on <addr>" info! lives in lib.rs.
     debug!("Starting QHY camera driver");
     #[cfg(feature = "simulation")]
