@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  rusty-photon-zwo-camera — Windows service fragment (suite MSI; ADR-015).
+  Port 11122/tcp. The fragment contract (service name, exe rename,
+  failure actions + failure-actions flag, firewall port, demand-start set) is
+  asserted by scripts/check-pkg-assets.sh.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util"
+     xmlns:fw="http://wixtoolset.org/schemas/v4/wxs/firewall">
+  <Fragment>
+    <ComponentGroup Id="ZwoCameraComponents" Directory="INSTALLFOLDER">
+      <Component Id="ZwoCameraExe">
+        <File Id="ZwoCameraExeFile" Name="rusty-photon-zwo-camera.exe" Source="!(bindpath.bin)\zwo-camera.exe" KeyPath="yes" />
+        <ServiceInstall Id="ZwoCameraService"
+                        Name="rusty-photon-zwo-camera"
+                        DisplayName="rusty-photon-zwo-camera"
+                        Description="ASCOM Alpaca Camera driver for ZWO ASI cameras. Bundles ZWO's MIT-licensed camera SDK (ASICamera2.dll)."
+                        Start="auto"
+                        Type="ownProcess"
+                        ErrorControl="normal"
+                        Account="LocalSystem"
+                        Arguments="--service"
+                        Vital="yes">
+          <!-- systemd Restart=on-failure / RestartSec=5 translation (ADR-015
+               decision 2): restart after 5 s on every failure, indefinitely
+               (failure count resets daily). -->
+          <util:ServiceConfig FirstFailureActionType="restart"
+                              SecondFailureActionType="restart"
+                              ThirdFailureActionType="restart"
+                              RestartServiceDelayInSeconds="5"
+                              ResetPeriodInDays="1" />
+          <!-- SERVICE_CONFIG_FAILURE_ACTIONS_FLAG: the SCM wrapper reports a
+               failed run closure as SERVICE_STOPPED + ServiceSpecific(1) (see
+               rusty-photon-service-lifecycle runner.rs), which only counts as
+               a failure — and triggers the restart actions above — with this
+               flag set. Without it the serial drivers' eager-validation exits
+               would stop the service permanently. -->
+          <ServiceConfig FailureActionsWhen="failedToStopOrReturnedError"
+                         OnInstall="yes"
+                         OnReinstall="yes" />
+        </ServiceInstall>
+        <ServiceControl Id="ZwoCameraServiceControl"
+                        Name="rusty-photon-zwo-camera"
+                        Start="install"
+                        Stop="both"
+                        Remove="uninstall"
+                        Wait="yes" />
+        <!-- Alpaca/HTTP over the LAN is the service's whole point; Windows
+             Firewall blocks inbound by default. Scope=any, not localSubnet:
+             multi-subnet observatory networks are the norm here (Linux ships
+             no firewall config at all — parity is "reachable"). -->
+        <fw:FirewallException Id="ZwoCameraFirewall"
+                              Name="rusty-photon-zwo-camera"
+                              Description="Inbound TCP for the rusty-photon-zwo-camera service (port 11122)"
+                              Port="11122"
+                              Protocol="tcp"
+                              Scope="any" />
+      </Component>
+      <!-- ADR-013/ADR-014: the MIT camera SDK DLL ships next to the exe (the
+           loader finds same-directory DLLs first); one DLL per service, so
+           co-install with zwo-focuser is conflict-free. -->
+      <Component Id="ZwoCameraSdkDll">
+        <File Id="ZwoCameraSdkDllFile" Name="ASICamera2.dll" Source="!(bindpath.zwo)\ASICamera2.dll" KeyPath="yes" />
+      </Component>
+      <ComponentGroupRef Id="ZwoSdkLicense" />
+    </ComponentGroup>
+  </Fragment>
+</Wix>

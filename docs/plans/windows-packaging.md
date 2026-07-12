@@ -21,9 +21,9 @@ untouched.
 |-------|-------------|--------|-------------|
 | W0 | This plan + ADR-015 | Merged | #490 |
 | W1 | SCM enablement: rolling-file logging in service mode (lifecycle crate) + `scm` feature / `--service` flag in the 17 remaining services | Merged | #493 |
-| W2 | Platform-dependent defaults: config path → `%PROGRAMDATA%` on Windows, serial `COM` defaults, rp data dir | In review | #492 |
+| W2 | Platform-dependent defaults: config path → `%PROGRAMDATA%` on Windows, serial `COM` defaults, rp data dir | Merged | #492 |
 | W3 | qhy-camera Windows: `/DELAYLOAD` + startup preflight + `doctor` subcommand | Merged | #491 |
-| W4 | WiX v5 suite (`installer/`), `scripts/build-msi.ps1` + `scripts/verify-msi.ps1`, `check-pkg-assets.sh` Windows assertions; ui-htmx driver-map seeding | Not started | |
+| W4 | WiX v5 suite (`installer/`), `scripts/build-msi.ps1` + `scripts/verify-msi.ps1`, `check-pkg-assets.sh` Windows assertions; ui-htmx driver-map seeding; `msi.yml` on-demand CI harness | In review | `feature/windows-packaging-w4` |
 | W5 | `release.yml` suite-MSI job + install-smoke gate + nightly verify; retire filemonitor `wix/` + cargo-wix; `docs/packaging-windows.md` | Not started | |
 
 W1–W3 are pure code PRs (cross-platform, Linux behavior unchanged) and are
@@ -224,6 +224,16 @@ service per ADR-014.
   `util:ServiceConfig` failure actions, `fw:FirewallException` for its
   port). Plain committed files, no generator — same explicitness rule as
   `services/<svc>/pkg/` (`git grep` must not lie).
+  **As built (W4):** the failure-actions-on-error flag needs no custom
+  action — the *native* WiX `ServiceConfig` element expresses
+  `SERVICE_CONFIG_FAILURE_ACTIONS_FLAG` declaratively
+  (`FailureActionsWhen="failedToStopOrReturnedError"`, paired with
+  `util:ServiceConfig` for the restart actions; the WIX1149 advisory on the
+  native element is suppressed with rationale in `build-msi.ps1`). And
+  zwo-focuser's bundled DLL must keep ZWO's original name
+  `EAF_focuser.dll`: an import library embeds the DLL name it was generated
+  from, so the exe's import table asks the loader for that exact name — the
+  `EAFFocuser.lib` rename exists only for the `-lEAFFocuser` link directive.
 - `scripts/check-pkg-assets.sh` grows Windows assertions: every packaged
   service has a fragment; fragment service name = `rusty-photon-<dir>`;
   exe rename mapping matches; port in the firewall rule matches the
@@ -239,6 +249,15 @@ service per ADR-014.
   with an entry per selected driver feature (fixed localhost ports —
   fully deterministic). Only-if-absent preserves the self-creation /
   `config.apply` ownership model; upgrades never touch it.
+  **As built (W4):** a deferred custom action (after `InstallFiles`, before
+  `StartServices` — ui-htmx would otherwise self-create its default first)
+  runs `installer/seed-ui-htmx-config.ps1`, whose ground truth is the
+  installed `rusty-photon-*.exe` set — the transaction's end state — so no
+  feature-state property plumbing is needed. Each entry seeds `base_url` +
+  `device_type` (ui-htmx's `device_type` default is `covercalibrator`,
+  wrong for everything else). A Core-only install seeds an empty map
+  (honest, unlike the phantom dsd-fp2 default), and a co-installed rp
+  feature seeds the `rp` target, enabling `/equipment` and `/stream`.
 - `scripts/build-msi.ps1` (runs on a dev box or CI, mirrors
   `build-packages.sh`): stage pinned SDKs into the package cache (QHY
   `sdk_win64_<ver>.zip` for `qhyccd.lib`; ZWO DLLs from the pinned ref);
@@ -300,12 +319,19 @@ service per ADR-014.
       `ServiceExitCode::ServiceSpecific(1)`; the installer must set
       `SERVICE_CONFIG_FAILURE_ACTIONS_FLAG` (now a W4 requirement, verified
       by the kill-and-observe check).
-- [ ] (W4) Whether the vendor DLLs (ZWO; QHY's at runtime) require the VC++
-      redistributable on a clean Windows install — if so, add the merge
-      module to the MSI.
-- [ ] (W4) Whether ZWO's EAF needs the vendor driver installer or
-      enumerates as plain HID — determines whether the prerequisite doc
-      line covers cameras only.
+- [x] (W4) Whether the vendor DLLs require the VC++ redistributable:
+      resolved — **no merge module needed**. All three
+      (`ASICamera2.dll`, `EAF_focuser.dll`, `qhyccd.dll` 26.06.04) import
+      only inbox system DLLs (no `VCRUNTIME140`/`MSVCP140`/ucrt apiset
+      imports — statically linked CRTs). Note: `qhyccd.dll` also imports
+      `OpenCL.dll`, which ships with GPU drivers, not Windows — on a
+      GPU-driver-less box the preflight's `LoadLibrary` fails even with the
+      All-in-One installed, and the doctor is the tool that makes that
+      visible.
+- [x] (W4) Whether ZWO's EAF needs the vendor driver installer: resolved —
+      `EAF_focuser.dll` imports `HID.DLL` (+ SetupAPI), i.e. the EAF speaks
+      inbox HID and needs no vendor driver; the prerequisite doc line covers
+      cameras only. (Re-confirm incidentally during the real-hardware pass.)
 - [ ] (W1→W4) Std-handle behavior under SCM: design-resolved (all 18
       `bound_addr=` handshake sites gated on `is_scm_service()`; Rust sinks
       NULL handles, so the risk was lost output, not a panic) — the

@@ -1,0 +1,193 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Rusty Photon suite MSI (ADR-015, docs/plans/windows-packaging.md W4).
+
+  One installer for the whole family: Core (required: sentinel + ui-htmx),
+  Drivers (optional, one sub-feature per device driver), Automation (optional:
+  rp + friends). Every per-service fragment lives in fragments/<svc>.wxs —
+  plain committed files, no generator (same explicitness rule as the Linux
+  services/<svc>/pkg/ dirs); scripts/check-pkg-assets.sh asserts the fragment
+  set and its invariants. Build via scripts/build-msi.ps1 (bindpaths: bin =
+  target\release, zwo = staged ZWO SDK DLLs, repo = repo root).
+
+  Silent installs pick features with ADDLOCAL, e.g.
+    msiexec /qn /i rusty-photon-<version>-x64.msi ADDLOCAL=Core,Drivers,ZwoCamera
+  (list parent features explicitly; ADDLOCAL=ALL installs everything).
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+  <Package Name="Rusty Photon"
+           Manufacturer="Igor von Nyssen"
+           Version="$(var.Version)"
+           UpgradeCode="D582A281-5779-4EEB-A882-182ADC9B7389"
+           Scope="perMachine"
+           Compressed="yes"
+           Language="1033">
+
+    <SummaryInformation Description="Rusty Photon observatory service suite" />
+
+    <!-- Stable UpgradeCode + major upgrades; MigrateFeatures is the element's
+         default, so an upgrade keeps the operator's feature selection. -->
+    <MajorUpgrade DowngradeErrorMessage="A newer version of [ProductName] is already installed. Setup will now exit." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Property Id="ARPHELPLINK" Value="https://github.com/ivonnyssen/rusty-photon" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/ivonnyssen/rusty-photon" />
+
+    <ui:WixUI Id="WixUI_FeatureTree" />
+    <WixVariable Id="WixUILicenseRtf" Value="installer\License.rtf" />
+
+    <!-- Flat install layout (docs/plans/windows-packaging.md): every selected
+         rusty-photon-<svc>.exe plus the ZWO DLLs and licenses in one folder.
+         No PATH manipulation (the old filemonitor WXS's PATH component is
+         deliberately not carried over). -->
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="rusty-photon" />
+    </StandardDirectory>
+
+    <!-- %ProgramData%\rusty-photon: the operator folder for self-created
+         configs (W2 default config path) and \logs for the SCM rolling log
+         files (W1). Pre-created empty so the first service start never races
+         directory creation; LocalSystem-writable by ProgramData's default
+         ACL. Configs and logs are self-created (untracked by the MSI), so
+         upgrade and uninstall leave them behind — deb `remove` parity; full
+         purge is a documented manual step. -->
+    <StandardDirectory Id="CommonAppDataFolder">
+      <Directory Id="RustyPhotonDataFolder" Name="rusty-photon">
+        <Directory Id="RustyPhotonLogsFolder" Name="logs" />
+      </Directory>
+    </StandardDirectory>
+
+    <!-- Start-Menu folder (currently: the QHY doctor shortcut, see
+         fragments/qhy-camera.wxs). -->
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="RustyPhotonMenuFolder" Name="Rusty Photon" />
+    </StandardDirectory>
+
+    <ComponentGroup Id="CoreComponents">
+      <!-- Explicit GUIDs: WiX cannot auto-generate for directory-keypath
+           (CreateFolder-only) components. -->
+      <Component Id="ProgramDataDir" Directory="RustyPhotonDataFolder" Guid="675394DB-55BF-408F-A27C-2057FEC13E4A">
+        <CreateFolder />
+      </Component>
+      <Component Id="ProgramDataLogsDir" Directory="RustyPhotonLogsFolder" Guid="93DCA4CB-A732-4378-9BF3-C3631F11154D">
+        <CreateFolder />
+      </Component>
+      <Component Id="SeedUiHtmxConfigScript" Directory="INSTALLFOLDER">
+        <File Id="SeedUiHtmxConfigScriptFile" Name="seed-ui-htmx-config.ps1" Source="installer\seed-ui-htmx-config.ps1" KeyPath="yes" />
+      </Component>
+      <Component Id="LicenseMit" Directory="INSTALLFOLDER">
+        <File Id="LicenseMitFile" Name="LICENSE-MIT.txt" Source="!(bindpath.repo)\LICENSE-MIT" KeyPath="yes" />
+      </Component>
+      <Component Id="LicenseApache" Directory="INSTALLFOLDER">
+        <File Id="LicenseApacheFile" Name="LICENSE-APACHE.txt" Source="!(bindpath.repo)\LICENSE-APACHE" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <!-- ui-htmx driver-map seeding (W4): ui-htmx discovers drivers only via
+         the static `drivers` map in its own config (no discovery), and its
+         self-created default lists a lone dsd-fp2 — wrong for almost every
+         install. The MSI uniquely knows the selection, so after InstallFiles
+         (and before StartServices, or ui-htmx would self-create its default
+         first) a deferred elevated action runs the seed script, which writes
+         %ProgramData%\rusty-photon\ui-htmx.json from the installed
+         rusty-photon-*.exe set — ONLY if the file does not exist, preserving
+         the self-creation / config.apply ownership model. Upgrades, repairs
+         and modifies re-run it harmlessly (the config exists → no-op). -->
+    <SetProperty Id="SeedUiHtmxConfig"
+                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]seed-ui-htmx-config.ps1&quot;"
+                 Sequence="execute"
+                 Before="SeedUiHtmxConfig" />
+    <CustomAction Id="SeedUiHtmxConfig"
+                  BinaryRef="Wix4UtilCA_X64"
+                  DllEntry="WixQuietExec64"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="check" />
+    <InstallExecuteSequence>
+      <Custom Action="SeedUiHtmxConfig" After="InstallFiles" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />
+    </InstallExecuteSequence>
+
+    <!-- Feature tree. Level 1 = installed by default (Core is also
+         non-deselectable); Level 2 = off by default, selectable in the
+         feature tree / via ADDLOCAL. Feature Ids are the check-pkg-assets.sh
+         PascalCase mapping of the service directory names. -->
+    <Feature Id="Core"
+             Title="Core"
+             Description="Always installed: sentinel (watchdog + notifications, port 11114) and the web config UI (port 11120)."
+             Level="1"
+             AllowAbsent="no"
+             AllowAdvertise="no"
+             Display="expand">
+      <ComponentGroupRef Id="CoreComponents" />
+      <ComponentGroupRef Id="SentinelComponents" />
+      <ComponentGroupRef Id="UiHtmxComponents" />
+    </Feature>
+
+    <Feature Id="Drivers"
+             Title="Drivers"
+             Description="ASCOM Alpaca hardware drivers — pick per device."
+             Level="1"
+             AllowAdvertise="no"
+             Display="expand">
+      <Feature Id="Filemonitor" Title="filemonitor (SafetyMonitor)" Description="File-content SafetyMonitor (port 11111)." Level="2" AllowAdvertise="no">
+        <ComponentGroupRef Id="FilemonitorComponents" />
+      </Feature>
+      <Feature Id="PpbaDriver" Title="ppba-driver (Pegasus Powerbox)" Description="Pegasus Astro Pocket Powerbox Advance Gen2: Switch + ObservingConditions (port 11112)." Level="2" AllowAdvertise="no">
+        <ComponentGroupRef Id="PpbaDriverComponents" />
+      </Feature>
+      <Feature Id="QhyFocuser" Title="qhy-focuser (QHY Q-Focuser)" Description="QHY Q-Focuser electronic auto-focuser (port 11113)." Level="2" AllowAdvertise="no">
+        <ComponentGroupRef Id="QhyFocuserComponents" />
+      </Feature>
+      <Feature Id="SkySurveyCamera" Title="sky-survey-camera (simulator)" Description="Camera simulator backed by NASA SkyView; demand-start, needs a hand-written config (port 11116)." Level="2" AllowAdvertise="no">
+        <ComponentGroupRef Id="SkySurveyCameraComponents" />
+      </Feature>
+      <Feature Id="StarAdventurerGti" Title="star-adventurer-gti (SW GTi mount)" Description="Sky-Watcher Star Adventurer GTi mount (port 11117)." Level="2" AllowAdvertise="no">
+        <ComponentGroupRef Id="StarAdventurerGtiComponents" />
+      </Feature>
+      <Feature Id="PaFalconRotator" Title="pa-falcon-rotator (Pegasus Falcon)" Description="Pegasus Astro Falcon Rotator (port 11118)." Level="2" AllowAdvertise="no">
+        <ComponentGroupRef Id="PaFalconRotatorComponents" />
+      </Feature>
+      <Feature Id="DsdFp2" Title="dsd-fp2 (DSD Flat Panel 2)" Description="Deep Sky Dad Flat Panel 2 CoverCalibrator (port 11119)." Level="2" AllowAdvertise="no">
+        <ComponentGroupRef Id="DsdFp2Components" />
+      </Feature>
+      <Feature Id="QhyCamera" Title="qhy-camera (QHYCCD cameras)" Description="QHYCCD Camera + FilterWheel; requires QHY's All-in-One driver pack (port 11121)." Level="2" AllowAdvertise="no">
+        <ComponentGroupRef Id="QhyCameraComponents" />
+      </Feature>
+      <Feature Id="ZwoCamera" Title="zwo-camera (ZWO ASI cameras)" Description="ZWO ASI Camera; bundles the MIT camera SDK DLL (port 11122)." Level="2" AllowAdvertise="no">
+        <ComponentGroupRef Id="ZwoCameraComponents" />
+      </Feature>
+      <Feature Id="PaScopsOag" Title="pa-scops-oag (Pegasus Scops OAG)" Description="Pegasus Astro Scops OAG focuser (port 11123)." Level="2" AllowAdvertise="no">
+        <ComponentGroupRef Id="PaScopsOagComponents" />
+      </Feature>
+      <Feature Id="ZwoFocuser" Title="zwo-focuser (ZWO EAF)" Description="ZWO EAF focuser; bundles the MIT focuser SDK DLL (port 11124)." Level="2" AllowAdvertise="no">
+        <ComponentGroupRef Id="ZwoFocuserComponents" />
+      </Feature>
+    </Feature>
+
+    <Feature Id="Automation"
+             Title="Automation"
+             Description="The rp orchestrator and its companion services."
+             Level="1"
+             AllowAdvertise="no"
+             Display="expand">
+      <Feature Id="Rp" Title="rp (orchestrator)" Description="Equipment gateway, event bus, and safety enforcer (port 11115)." Level="2" AllowAdvertise="no">
+        <ComponentGroupRef Id="RpComponents" />
+      </Feature>
+      <Feature Id="SessionRunner" Title="session-runner (workflow runner)" Description="Executes declarative JSON imaging workflows against rp (port 11171)." Level="2" AllowAdvertise="no">
+        <ComponentGroupRef Id="SessionRunnerComponents" />
+      </Feature>
+      <Feature Id="PlateSolver" Title="plate-solver (ASTAP wrapper)" Description="HTTP plate solver wrapping the ASTAP CLI; demand-start, needs a hand-written config; ASTAP is a separate install (port 11131)." Level="2" AllowAdvertise="no">
+        <ComponentGroupRef Id="PlateSolverComponents" />
+      </Feature>
+      <Feature Id="Phd2Guider" Title="phd2-guider (PHD2 client)" Description="Guider service wrapping PHD2; PHD2 is a separate install (port 11130)." Level="2" AllowAdvertise="no">
+        <ComponentGroupRef Id="Phd2GuiderComponents" />
+      </Feature>
+      <Feature Id="CalibratorFlats" Title="calibrator-flats (flat capture)" Description="Flat-field capture orchestrator; demand-start, needs a hand-written config (port 11170)." Level="2" AllowAdvertise="no">
+        <ComponentGroupRef Id="CalibratorFlatsComponents" />
+      </Feature>
+    </Feature>
+
+  </Package>
+</Wix>
