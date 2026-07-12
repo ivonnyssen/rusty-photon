@@ -7,6 +7,10 @@ Accepted (2026-07-04); implementation tracked by
 Supersedes the per-service packaging decisions embodied in
 [`docs/plans/archive/filemonitor-packaging.md`](../plans/archive/filemonitor-packaging.md)
 (package/binary/unit naming, conffile config, per-service user).
+Amended by [ADR-015](015-windows-packaging-architecture.md) (2026-07-11):
+the "MSI and Homebrew remain filemonitor-only" formats clause is superseded
+for Windows — the family ships a single suite MSI. Homebrew/macOS remains
+deferred.
 
 ## Context
 
