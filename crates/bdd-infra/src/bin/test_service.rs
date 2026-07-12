@@ -57,7 +57,7 @@ fn main() {
 /// handling. On non-Unix there is no SIGTERM to await and the probe writes
 /// until the process is terminated — the regression tests are Unix-gated.
 fn run_probe_mode(marker: String) {
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
 
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -71,6 +71,7 @@ fn run_probe_mode(marker: String) {
     rt.block_on(async move {
         #[cfg(unix)]
         {
+            use std::sync::atomic::Ordering;
             use tokio::signal::unix::{signal, SignalKind};
             let mut term = signal(SignalKind::terminate()).expect("install SIGTERM handler");
             term.recv().await;
