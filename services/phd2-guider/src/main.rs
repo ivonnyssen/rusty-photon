@@ -31,6 +31,11 @@ struct Args {
     #[arg(short, long, default_value = "info", value_parser = clap::value_parser!(Level))]
     log_level: Level,
 
+    /// Run as a Windows service (used by the service control manager).
+    /// No-op on non-Windows targets.
+    #[arg(long, hide = true)]
+    service: bool,
+
     /// Subcommand; running with none starts the HTTP service (the
     /// packaged systemd unit invokes the bare binary).
     #[command(subcommand)]
@@ -131,106 +136,115 @@ enum Commands {
 fn main() -> ServiceResult {
     let args = Args::parse();
 
-    rusty_photon_service_lifecycle::init_tracing(args.log_level);
+    // In Windows SCM service mode logs go to the rolling file under
+    // %PROGRAMDATA%\rusty-photon\logs\; hold the guard until process exit so
+    // the final lines flush on SCM Stop. Console mode logs to stderr as before.
+    let _tracing_guard = rusty_photon_service_lifecycle::init_service_tracing(
+        "phd2-guider",
+        args.log_level,
+        args.service,
+    );
 
     debug!(
         "Parsed command line arguments: host={}, port={}, log_level={:?}",
         args.host, args.port, args.log_level
     );
 
-    ServiceRunner::new("phd2-guider").run(move |shutdown| async move {
-        // No subcommand = serve (the packaged systemd unit invokes the
-        // bare binary).
-        let command = args.command.unwrap_or(Commands::Serve);
+    ServiceRunner::new("phd2-guider")
+        .scm_mode(args.service)
+        .run(move |shutdown| async move {
+            // No subcommand = serve (the packaged systemd unit invokes the
+            // bare binary).
+            let command = args.command.unwrap_or(Commands::Serve);
 
-        // Build configuration from CLI args or config file. An explicit
-        // --config must load; without one, `serve` also picks up the
-        // per-user platform config path when the file exists there
-        // (systemd passes no arguments), and every mode falls back to
-        // defaults with the --host/--port flags applied.
-        let config = if let Some(config_path) = &args.config {
-            debug!("Loading configuration from {:?}", config_path);
-            load_config(config_path)?
-        } else {
-            let default_path = matches!(command, Commands::Serve)
-                .then(|| rusty_photon_config::resolve_config_path("phd2-guider", None).ok())
-                .flatten()
-                .filter(|p| p.exists());
-            match default_path {
-                Some(path) => {
-                    debug!("Loading configuration from default path {:?}", path);
-                    load_config(&path)?
-                }
-                None => Config {
-                    phd2: Phd2Config {
-                        host: args.host,
-                        port: args.port,
+            // Build configuration from CLI args or config file. An explicit
+            // --config must load; without one, `serve` also picks up the
+            // per-user platform config path when the file exists there
+            // (systemd passes no arguments), and every mode falls back to
+            // defaults with the --host/--port flags applied.
+            let config = if let Some(config_path) = &args.config {
+                debug!("Loading configuration from {:?}", config_path);
+                load_config(config_path)?
+            } else {
+                let default_path = matches!(command, Commands::Serve)
+                    .then(|| rusty_photon_config::resolve_config_path("phd2-guider", None).ok())
+                    .flatten()
+                    .filter(|p| p.exists());
+                match default_path {
+                    Some(path) => {
+                        debug!("Loading configuration from default path {:?}", path);
+                        load_config(&path)?
+                    }
+                    None => Config {
+                        phd2: Phd2Config {
+                            host: args.host,
+                            port: args.port,
+                            ..Default::default()
+                        },
                         ..Default::default()
                     },
-                    ..Default::default()
-                },
+                }
+            };
+
+            if let Commands::Serve = command {
+                return run_serve(config, shutdown).await;
             }
-        };
 
-        if let Commands::Serve = command {
-            return run_serve(config, shutdown).await;
-        }
+            let client = Phd2Client::new(config.phd2);
 
-        let client = Phd2Client::new(config.phd2);
-
-        match command {
-            // Handled by the early return above; kept for match
-            // exhaustiveness.
-            Commands::Serve => {}
-            Commands::Status => run_status(&client).await?,
-            Commands::Monitor => run_monitor(&client, shutdown).await?,
-            Commands::Connect => run_connect(&client).await?,
-            Commands::Disconnect => run_disconnect(&client).await?,
-            Commands::Profiles => run_profiles(&client).await?,
-            Commands::Guide {
-                recalibrate,
-                settle_pixels,
-                settle_time,
-                settle_timeout,
-                roi,
-            } => {
-                run_guide(
-                    &client,
+            match command {
+                // Handled by the early return above; kept for match
+                // exhaustiveness.
+                Commands::Serve => {}
+                Commands::Status => run_status(&client).await?,
+                Commands::Monitor => run_monitor(&client, shutdown).await?,
+                Commands::Connect => run_connect(&client).await?,
+                Commands::Disconnect => run_disconnect(&client).await?,
+                Commands::Profiles => run_profiles(&client).await?,
+                Commands::Guide {
                     recalibrate,
                     settle_pixels,
                     settle_time,
                     settle_timeout,
                     roi,
-                )
-                .await?;
-            }
-            Commands::StopGuiding => run_stop_guiding(&client).await?,
-            Commands::StopCapture => run_stop_capture(&client).await?,
-            Commands::Loop => run_loop(&client).await?,
-            Commands::Pause { full } => run_pause(&client, full).await?,
-            Commands::Resume => run_resume(&client).await?,
-            Commands::IsPaused => run_is_paused(&client).await?,
-            Commands::Dither {
-                amount,
-                ra_only,
-                settle_pixels,
-                settle_time,
-                settle_timeout,
-            } => {
-                run_dither(
-                    &client,
+                } => {
+                    run_guide(
+                        &client,
+                        recalibrate,
+                        settle_pixels,
+                        settle_time,
+                        settle_timeout,
+                        roi,
+                    )
+                    .await?;
+                }
+                Commands::StopGuiding => run_stop_guiding(&client).await?,
+                Commands::StopCapture => run_stop_capture(&client).await?,
+                Commands::Loop => run_loop(&client).await?,
+                Commands::Pause { full } => run_pause(&client, full).await?,
+                Commands::Resume => run_resume(&client).await?,
+                Commands::IsPaused => run_is_paused(&client).await?,
+                Commands::Dither {
                     amount,
                     ra_only,
                     settle_pixels,
                     settle_time,
                     settle_timeout,
-                )
-                .await?;
+                } => {
+                    run_dither(
+                        &client,
+                        amount,
+                        ra_only,
+                        settle_pixels,
+                        settle_time,
+                        settle_timeout,
+                    )
+                    .await?;
+                }
             }
-        }
 
-        Ok(())
-    })
+            Ok(())
+        })
 }
 
 /// Run the rp-managed guider HTTP service until shutdown.

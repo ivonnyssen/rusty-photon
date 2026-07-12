@@ -6,14 +6,22 @@ exports_files(
     visibility = ["//visibility:public"],
 )
 
+# service-lifecycle: this service enables its `scm` feature under
+# [target.'cfg(windows)'.dependencies], which compiles the Windows Service
+# Control Manager path (mod scm + SCM rolling-file logging) and pulls in the
+# windows-service / tracing-appender crates. crate_features is compile-time in
+# Bazel, so select the scm-feature library variant on Windows and the
+# feature-free one everywhere else (matching `cargo build` per platform).
 _INTRA_WORKSPACE_DEPS = [
     "//crates/rusty-photon-config:rusty-photon-config",
     "//crates/rusty-photon-driver:rusty-photon-driver",
     "//crates/rp-auth:rp-auth",
     "//crates/rp-tls:rp-tls",
-    "//crates/rusty-photon-service-lifecycle:rusty-photon-service-lifecycle",
     "//crates/rusty-photon-shared-transport:rusty-photon-shared-transport",
-]
+] + select({
+    "@platforms//os:windows": ["//crates/rusty-photon-service-lifecycle:rusty-photon-service-lifecycle_scm"],
+    "//conditions:default": ["//crates/rusty-photon-service-lifecycle:rusty-photon-service-lifecycle"],
+})
 
 rust_library(
     name = "dsd-fp2_lib",

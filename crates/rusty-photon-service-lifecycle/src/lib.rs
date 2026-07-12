@@ -26,7 +26,13 @@
 //!   SCM mode. On Windows console mode it never fires.
 //! * [`init_tracing`] — installs the shared tracing subscriber: logs to stderr
 //!   (stdout is reserved for the `bound_addr=` handshake), filtered by `RUST_LOG`
-//!   or a fallback level. Every service binary calls this at startup.
+//!   or a fallback level.
+//! * [`init_service_tracing`] — what every service binary calls at startup:
+//!   [`init_tracing`] in console mode, but in Windows SCM service mode
+//!   (`--service`, `scm` feature) it writes to a rolling log file under
+//!   `%PROGRAMDATA%\rusty-photon\logs\` instead of the dead stderr handle.
+//!   Returns a [`TracingGuard`] that `main` must hold until process exit so
+//!   the final lines flush on SCM Stop.
 //!
 //! * [`ServiceResult`] — the result type service `main`s return. Its error
 //!   side is [`Report`], so startup failures and fatal exits print a readable
@@ -78,7 +84,7 @@ mod reload;
 mod runner;
 mod shutdown;
 
-pub use logging::init_tracing;
+pub use logging::{init_service_tracing, init_tracing, TracingGuard};
 pub use reload::ReloadSignal;
 pub use runner::{report_from_boxed, RunError, RunResult, ServiceResult, ServiceRunner};
 pub use shutdown::Shutdown;

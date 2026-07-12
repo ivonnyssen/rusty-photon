@@ -152,6 +152,7 @@ installation); otherwise leave it empty and let the service generate one.
 | `--port` | Serial port path (overrides config) |
 | `--server-port` | Server port (overrides config) |
 | `-l, --log-level` | Log level: trace, debug, info, warn, error |
+| `--service` | Hidden: run as a Windows service (passed by the Windows service control manager; no-op on other platforms) |
 
 ### Config actions
 

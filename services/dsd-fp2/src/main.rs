@@ -34,6 +34,11 @@ struct Args {
     /// Log level
     #[arg(short, long, default_value = "info", value_parser = parse_log_level)]
     log_level: Level,
+
+    /// Run as a Windows service (used by the service control manager).
+    /// No-op on non-Windows targets.
+    #[arg(long, hide = true)]
+    service: bool,
 }
 
 fn parse_log_level(s: &str) -> Result<Level, String> {
@@ -48,7 +53,14 @@ fn parse_log_level(s: &str) -> Result<Level, String> {
 fn main() -> ServiceResult {
     let args = Args::parse();
 
-    rusty_photon_service_lifecycle::init_tracing(args.log_level);
+    // In Windows SCM service mode logs go to the rolling file under
+    // %PROGRAMDATA%\rusty-photon\logs\; hold the guard until process exit so
+    // the final lines flush on SCM Stop. Console mode logs to stderr as before.
+    let _tracing_guard = rusty_photon_service_lifecycle::init_service_tracing(
+        "dsd-fp2",
+        args.log_level,
+        args.service,
+    );
 
     debug!(
         "Parsed command line arguments: config={:?}, port={:?}, server_port={:?}, log_level={:?}",
@@ -90,8 +102,10 @@ fn main() -> ServiceResult {
 
     // `config.apply` triggers an in-process reload rather than a process bounce:
     // each loop iteration re-reads the effective config and rebuilds the server.
-    ServiceRunner::new("dsd-fp2").with_reload().run_with_reload(
-        move |shutdown, reload| async move {
+    ServiceRunner::new("dsd-fp2")
+        .with_reload()
+        .scm_mode(args.service)
+        .run_with_reload(move |shutdown, reload| async move {
             loop {
                 let config = load_effective_config(&config_path, &overrides)?;
                 debug!(
@@ -144,6 +158,5 @@ fn main() -> ServiceResult {
                 }
                 return Ok(());
             }
-        },
-    )
+        })
 }

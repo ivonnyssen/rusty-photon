@@ -56,6 +56,11 @@ struct Args {
     #[arg(short, long, default_value = "info", value_parser = parse_log_level)]
     #[localized(help = "cli-help-log-level")]
     log_level: Level,
+
+    /// Run as a Windows service (used by the service control manager).
+    /// No-op on non-Windows targets. Hidden, so deliberately not localized.
+    #[arg(long, hide = true)]
+    service: bool,
 }
 
 fn parse_log_level(s: &str) -> Result<Level, String> {
@@ -74,8 +79,14 @@ fn main() -> ServiceResult {
     let (loader, i18n_status) = rusty_photon_i18n::init(fluent_language_loader!(), &Localizations);
     let args = Args::parse_localized(&loader);
 
-    // Setup tracing
-    rusty_photon_service_lifecycle::init_tracing(args.log_level);
+    // Setup tracing. In Windows SCM service mode logs go to the rolling file
+    // under %PROGRAMDATA%\rusty-photon\logs\; hold the guard until process exit
+    // so the final lines flush on SCM Stop. Console mode logs to stderr as before.
+    let _tracing_guard = rusty_photon_service_lifecycle::init_service_tracing(
+        "ppba-driver",
+        args.log_level,
+        args.service,
+    );
 
     match i18n_status {
         Ok(()) => {}
@@ -155,6 +166,7 @@ fn main() -> ServiceResult {
     // drains HTTP and releases the serial port before the rebuilt one binds.
     ServiceRunner::new("ppba-driver")
         .with_reload()
+        .scm_mode(args.service)
         .run_with_reload(move |shutdown, reload| async move {
             loop {
                 let config = load_effective_config(&config_path, &overrides)?;

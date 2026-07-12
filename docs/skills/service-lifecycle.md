@@ -40,20 +40,24 @@ optional SCM behind a cargo feature.
 For any new service binary, this is the shape:
 
 ```rust
-use rusty_photon_service_lifecycle::{init_tracing, ServiceResult, ServiceRunner};
+use rusty_photon_service_lifecycle::{init_service_tracing, ServiceResult, ServiceRunner};
 
 fn main() -> ServiceResult {
     let args = Args::parse();
-    init_tracing(args.log_level);
+    // stderr in console mode; a rolling file in Windows SCM service mode.
+    // Hold the guard until process exit (see the SCM section below).
+    let _tracing_guard = init_service_tracing("my-service", args.log_level, args.service);
 
-    ServiceRunner::new("my-service").run(move |shutdown| async move {
-        let bound = ServerBuilder::new()
-            .with_config(args.config)
-            .build()
-            .await?;
-        bound.start(shutdown.cancelled()).await?;
-        Ok(())
-    })
+    ServiceRunner::new("my-service")
+        .scm_mode(args.service)
+        .run(move |shutdown| async move {
+            let bound = ServerBuilder::new()
+                .with_config(args.config)
+                .build()
+                .await?;
+            bound.start(shutdown.cancelled()).await?;
+            Ok(())
+        })
 }
 ```
 
@@ -150,8 +154,8 @@ constructs a fresh future that observes the same cancellation.
 
 ## Reload (SIGHUP / SCM ParamChange)
 
-Only `filemonitor` uses reload today. Enable it with `.with_reload()`
-and use `run_with_reload`:
+Reload-capable services (filemonitor and the `config.apply` drivers)
+enable it with `.with_reload()` and use `run_with_reload`:
 
 ```rust
 ServiceRunner::new("my-service")
@@ -177,10 +181,15 @@ resolving future.
 ## Windows Service Control Manager mode
 
 SCM dispatch is opt-in per service via the `scm` cargo feature, and is
-a no-op on non-Windows targets. To adopt SCM for a new service:
+a no-op on non-Windows targets. **Every service binary in `services/`
+has it** (windows-packaging plan, W1 — ADR-015). The uniform shape:
 
 ```toml
 # services/<name>/Cargo.toml
+# Enable the Windows Service Control Manager dispatch only on Windows;
+# on Unix the `scm` feature would pull in `windows-service` for no
+# runtime benefit.
+[target.'cfg(windows)'.dependencies]
 rusty-photon-service-lifecycle = { workspace = true, features = ["scm"] }
 ```
 
@@ -188,14 +197,24 @@ rusty-photon-service-lifecycle = { workspace = true, features = ["scm"] }
 // services/<name>/src/main.rs
 #[derive(Parser)]
 struct Args {
-    /// Run as a Windows service (used by the service control manager)
-    #[cfg(windows)]
+    // ... existing args ...
+
+    /// Run as a Windows service (used by the service control manager).
+    /// No-op on non-Windows targets.
     #[arg(long, hide = true)]
     service: bool,
 }
 
 fn main() -> ServiceResult {
     let args = Args::parse();
+    // SCM mode logs to a rolling file (%PROGRAMDATA%\rusty-photon\logs\);
+    // console mode logs to stderr unchanged. Hold the guard until process
+    // exit so the final lines flush on SCM Stop.
+    let _tracing_guard = rusty_photon_service_lifecycle::init_service_tracing(
+        "my-service",
+        args.log_level,
+        args.service,
+    );
 
     ServiceRunner::new("my-service")
         .scm_mode(args.service)   // no-op on non-Windows targets
@@ -206,8 +225,27 @@ fn main() -> ServiceResult {
 ```
 
 The `scm_mode` builder is always available; the `cfg(windows)` /
-feature check happens inside the crate. The user closure runs
-identically under SCM and console mode — that's the whole point.
+feature check happens inside the crate. (The `--service` flag itself is
+*not* `#[cfg(windows)]`-gated — it parses everywhere and is a
+documented no-op off Windows, keeping the CLI surface identical across
+platforms.) The user closure runs identically under SCM and console
+mode — that's the whole point. Service binaries call
+`init_service_tracing` (not plain `init_tracing`) and bind the returned
+guard as `let _tracing_guard = ...` — a bare `let _ =` drops it
+immediately and loses the buffered final log lines.
+
+Each service's `BUILD.bazel` mirrors the Cargo target-gating with a
+`select`: the `rusty-photon-service-lifecycle_scm` library variant on
+Windows, the feature-free one everywhere else. Copy the block from any
+existing service.
+
+On a run-closure error under SCM, the runner reports `SERVICE_STOPPED`
+with a non-zero exit code so SCM (with the installer-configured failure
+actions + failure-actions flag) counts the stop as a failure and
+restarts the service — the Windows translation of systemd's
+`Restart=on-failure` that the serial drivers' eager-validation exits
+rely on. Details in the
+[crate design](../crates/rusty-photon-service-lifecycle.md).
 
 The worked example is [`services/filemonitor`](../services/filemonitor.md);
 its `main.rs` is the canonical reference for what an SCM-enabled
@@ -221,10 +259,11 @@ These are deliberate boundaries (see the crate design's "Out of scope"
 section for the full list):
 
 - **Initialize logging automatically.** The runner never calls
-  `init_tracing` itself. The crate *provides* the shared subscriber
-  (`init_tracing` — stderr, `RUST_LOG`/fallback filtering, `ErrorLayer`
+  `init_tracing` / `init_service_tracing` itself. The crate *provides*
+  the shared subscriber (`init_service_tracing` — stderr in console mode,
+  a rolling file in SCM mode; `RUST_LOG`/fallback filtering, `ErrorLayer`
   for span context in panic reports), but the service binary must call it,
-  before the runner, passing its own `--log-level` value.
+  before the runner, passing its own `--log-level` and `--service` values.
 - **Parse CLI arguments.** Services keep `clap`. The runner takes a
   static name and a closure, nothing else.
 - **Define what graceful shutdown means for your server.** It just

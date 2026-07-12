@@ -13,13 +13,21 @@ exports_files(
 # services that mount HTTPS in front of the ASCOM Alpaca surface;
 # v0 is plain HTTP.
 
+# service-lifecycle: this service enables its `scm` feature under
+# [target.'cfg(windows)'.dependencies], which compiles the Windows Service
+# Control Manager path (mod scm + SCM rolling-file logging) and pulls in the
+# windows-service / tracing-appender crates. crate_features is compile-time in
+# Bazel, so select the scm-feature library variant on Windows and the
+# feature-free one everywhere else (matching `cargo build` per platform).
 _INTRA_WORKSPACE_DEPS = [
     "//crates/rp-auth:rp-auth",
     "//crates/rp-fits:rp-fits",
     "//crates/rusty-photon-config:rusty-photon-config",
     "//crates/rusty-photon-driver:rusty-photon-driver",
-    "//crates/rusty-photon-service-lifecycle:rusty-photon-service-lifecycle",
-]
+] + select({
+    "@platforms//os:windows": ["//crates/rusty-photon-service-lifecycle:rusty-photon-service-lifecycle_scm"],
+    "//conditions:default": ["//crates/rusty-photon-service-lifecycle:rusty-photon-service-lifecycle"],
+})
 
 rust_library(
     name = "sky-survey-camera_lib",

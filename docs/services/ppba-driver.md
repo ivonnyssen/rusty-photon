@@ -192,6 +192,7 @@ cargo run -p ppba-switch -- -c config.json -l debug
 | `--port <PORT>` | Serial port (overrides config) |
 | `--server-port <PORT>` | Server port (overrides config) |
 | `-l, --log-level <LEVEL>` | Log level (trace, debug, info, warn, error) |
+| `--service` | Hidden: run as a Windows service (passed by the Windows service control manager; no-op on other platforms) |
 
 ### Localised CLI help
 

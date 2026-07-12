@@ -1541,6 +1541,7 @@ behind a future config flag if hardware sessions show it's needed.
 | `--baud <RATE>` | Override `transport.baud_rate` (USB only) |
 | `--server-port <PORT>` | Override `server.port` |
 | `-l, --log-level <LEVEL>` | `trace` / `debug` / `info` / `warn` / `error` |
+| `--service` | Hidden: run as a Windows service (passed by the Windows service control manager; no-op on other platforms) |
 
 ### Config actions
 

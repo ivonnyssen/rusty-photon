@@ -26,13 +26,21 @@ this doc covers the crate's own design.
 - Cooperative-shutdown propagation: the handle is a
   `CancellationToken`-backed clone, so spawned subtasks observe the
   same cancellation as the main loop.
-- Install the shared tracing subscriber ([`init_tracing`]): logs go to
-  stderr (stdout is reserved for the `bound_addr=` handshake the BDD
-  harness parses), filtered by `RUST_LOG` when set, otherwise at a
-  caller-supplied fallback level. Idempotent. Every service binary calls
-  this once at startup so logging is configured identically everywhere.
-  The subscriber carries a `tracing_error::ErrorLayer` so panic reports
-  include the active span stack.
+- Install the shared tracing subscriber ([`init_tracing`] /
+  [`init_service_tracing`]): logs go to stderr (stdout is reserved for the
+  `bound_addr=` handshake the BDD harness parses), filtered by `RUST_LOG`
+  when set, otherwise at a caller-supplied fallback level. Idempotent.
+  Every service binary calls this once at startup so logging is configured
+  identically everywhere. The subscriber carries a
+  `tracing_error::ErrorLayer` so panic reports include the active span
+  stack.
+- SCM-mode rolling-file logging ([`init_service_tracing`], cargo feature
+  `scm`): when a service runs under the Windows Service Control Manager
+  (`--service`), both std handles are dead, so the stderr writer is swapped
+  for a `tracing-appender` rolling file
+  `%PROGRAMDATA%\rusty-photon\logs\<svc>.<date>.log` (daily rotation,
+  14 files retained). Console mode is byte-for-byte unchanged. See
+  [ADR-015](../decisions/015-windows-packaging-architecture.md).
 - Own top-level error & panic reporting ([ADR-011](../decisions/011-error-reporting-layers.md)):
   the runner installs the `color-eyre` hooks once per process, so panics
   print formatted reports with span context on every service; run-closure
@@ -62,9 +70,9 @@ Out of scope:
 
 ## Public API
 
-Three types, three result/error aliases, and two free functions
-([`init_tracing`], [`report_from_boxed`]), plus the type-only
-`color_eyre::Report` re-export.
+Four types, three result/error aliases, and three free functions
+([`init_tracing`], [`init_service_tracing`], [`report_from_boxed`]), plus
+the type-only `color_eyre::Report` re-export.
 [`Shutdown`] is constructed only by the runner.
 [`ReloadSignal`] has a public constructor so integration tests can
 drive a service's run loop with synthetic reload events, and so
@@ -87,6 +95,13 @@ ReloadSignal::notify(&self)                   // wake one waiter
 ReloadSignal::recv(&self) -> impl Future<Output = ()> + '_
 
 init_tracing(default_level: tracing::Level)   // stderr + RUST_LOG/EnvFilter subscriber + ErrorLayer; idempotent
+
+init_service_tracing(service_name: &str, default_level: tracing::Level, scm_mode: bool)
+    -> TracingGuard
+    // what service binaries call: init_tracing in console mode; in SCM mode
+    // (Windows + `scm` feature + scm_mode=true) a rolling-file subscriber.
+    // `main` must hold the guard (`let _tracing_guard = ...`) until process
+    // exit so the non-blocking writer flushes its final lines on SCM Stop.
 
 type ServiceResult = Result<(), color_eyre::Report>   // what main returns
 type RunError      = Box<dyn Error + Send + Sync>     // what run closures return (error side)
@@ -222,13 +237,63 @@ enabled, `run` / `run_with_reload` take a different path:
    the abstraction.
 6. On the closure's return, report `ServiceState::Stopped`. The
    `exit_code` field reflects the closure's outcome: `Win32(0)` on
-   `Ok(())`, `ServiceSpecific(1)` on `Err`. Reporting `0` on every
-   stop would let crashes look like clean shutdowns in `services.msc`
-   and any supervisor reading SCM's stop record.
+   `Ok(())`, `ServiceSpecific(1)` on `Err` (i.e. `dwWin32ExitCode =
+   ERROR_SERVICE_SPECIFIC_ERROR`, `dwServiceSpecificExitCode = 1`).
+   Reporting `0` on every stop would let crashes look like clean
+   shutdowns in `services.msc` and any supervisor reading SCM's stop
+   record. A closure error is additionally logged (under SCM the
+   rolling log file is often the only visible trace) and stashed so
+   `dispatch` can return it from `main` once
+   `service_dispatcher::start` unblocks — SCM mode keeps console
+   mode's "`main` returns the closure's error" contract.
+
+**Failure visibility / restart contract (ADR-015, windows-packaging
+W1).** The non-zero exit code on `Err` is the pinned mechanism for
+making a deliberate service exit (e.g. a serial driver's
+eager-validation failure) count as a *failure* to SCM: the installer
+configures SCM failure actions (restart after 5 s) **and** sets
+`SERVICE_CONFIG_FAILURE_ACTIONS_FLAG` (failure actions on non-crash
+failures), so a `SERVICE_STOPPED` report with a non-zero exit code
+triggers the configured restart — reproducing the systemd
+`Restart=on-failure`/`RestartSec=5` contract. The alternative
+(exiting the process without reporting `SERVICE_STOPPED`) was
+rejected: it works without the failure-actions flag, but the SCM
+record then carries no exit code and every deliberate exit shows up
+as a crash (event 7034) instead of a clean stop record with a cause
+(event 7024). Clean stops (`Ok(())` — e.g. after an SCM Stop
+request) report `Win32(0)` and trigger no restart.
 
 When `scm_mode(false)` (or the `scm` feature is off, or the target
 is not Windows), the runner falls through to the OS-signal path
 unchanged.
+
+### SCM-mode rolling-file logging (`init_service_tracing`)
+
+Under SCM both std handles are absent, so a service-mode process
+logging to stderr logs into the void. Service binaries therefore call
+[`init_service_tracing`] (not plain [`init_tracing`]) at startup,
+passing their `--service` flag value:
+
+- **Console mode** (`scm_mode = false`, or any non-Windows target, or
+  the `scm` feature off): behaves exactly like [`init_tracing`] —
+  stderr, `RUST_LOG`/fallback filtering, `ErrorLayer`. Byte-for-byte
+  unchanged output.
+- **SCM mode** (`cfg(all(windows, feature = "scm"))` and
+  `scm_mode = true`): the fmt layer writes to a `tracing-appender`
+  rolling file `%PROGRAMDATA%\rusty-photon\logs\<svc>.<date>.log` —
+  daily rotation, 14 files retained, ANSI disabled. The ProgramData
+  root resolves from the `ProgramData` environment variable with a
+  `C:\ProgramData` fallback (the resolver is private to this crate;
+  `rusty-photon-config` grows its own for the W2 config path —
+  dedup is a noted follow-up). The writer is non-blocking: the
+  returned [`TracingGuard`] owns the worker guard and **must be held
+  in `main` until process exit** (`let _tracing_guard = ...`) so the
+  final shutdown-path lines flush on SCM Stop. If the log file cannot
+  be opened (unusable ProgramData ACL), init falls back to the stderr
+  subscriber instead of failing service startup.
+
+The filter/`ErrorLayer` composition is identical in both modes; only
+the writer differs.
 
 ### Why the runner owns the runtime
 
@@ -327,7 +392,9 @@ SCM control manager passes via `binPath`), and use
 ```rust
 fn main() -> ServiceResult {
     let args = Args::parse();
-    init_tracing(args.log_level);
+    // SCM mode: rolling file under %PROGRAMDATA%\rusty-photon\logs\.
+    // Console mode: stderr, unchanged. Hold the guard until process exit.
+    let _tracing_guard = init_service_tracing("filemonitor", args.log_level, args.service);
 
     ServiceRunner::new("filemonitor")
         .with_reload()
@@ -346,10 +413,15 @@ fn main() -> ServiceResult {
 
 ### Enabling SCM in a new service
 
-Two changes:
+Every service binary in `services/` already has this (windows-packaging
+plan, W1). For a new one, three changes:
 
 ```toml
 # services/<name>/Cargo.toml
+# Enable the Windows Service Control Manager dispatch only on Windows;
+# on Unix the `scm` feature would pull in `windows-service` for no
+# runtime benefit.
+[target.'cfg(windows)'.dependencies]
 rusty-photon-service-lifecycle = { workspace = true, features = ["scm"] }
 ```
 
@@ -359,14 +431,16 @@ rusty-photon-service-lifecycle = { workspace = true, features = ["scm"] }
 struct Args {
     // ... existing args ...
 
-    /// Run as a Windows service (used by the service control manager)
-    #[cfg(windows)]
+    /// Run as a Windows service (used by the service control manager).
+    /// No-op on non-Windows targets.
     #[arg(long, hide = true)]
     service: bool,
 }
 
 fn main() -> ServiceResult {
     let args = Args::parse();
+    let _tracing_guard =
+        init_service_tracing("my-service", args.log_level, args.service);
 
     ServiceRunner::new("my-service")
         .scm_mode(args.service)   // no-op on non-Windows targets
@@ -376,15 +450,25 @@ fn main() -> ServiceResult {
 }
 ```
 
-That's the whole adoption cost. The SCM control-handler glue lives
-in the crate; the service binary just opts in.
+(The flag is deliberately *not* `#[cfg(windows)]`-gated: it parses — and
+is a documented no-op — everywhere, so the CLI surface is identical
+across platforms.) The service's `BUILD.bazel` selects the
+`rusty-photon-service-lifecycle_scm` library variant on Windows and the
+feature-free one elsewhere — copy the `select` block any existing
+service uses.
+
+That's the whole adoption cost. The SCM control-handler glue and the
+rolling-file logging live in the crate; the service binary just opts in.
 
 ## Module Layout
 
 ```
 crates/rusty-photon-service-lifecycle/src/
 ├── lib.rs       # crate root: //! docs, module decls, re-exports
-├── logging.rs   # init_tracing — shared stderr + EnvFilter subscriber
+├── logging.rs   # init_tracing / init_service_tracing + TracingGuard;
+│                # `mod scm_file` (feature `scm`) holds the rolling-file
+│                # writer + ProgramData/log-dir resolution — compiled on
+│                # every OS so its helpers are unit-tested cross-platform
 ├── shutdown.rs  # Shutdown — thin wrapper over CancellationToken
 ├── reload.rs    # ReloadSignal — thin wrapper over Arc<Notify>
 └── runner.rs    # ServiceRunner — builder + run/run_with_reload
@@ -429,7 +513,20 @@ If the SCM glue grows past ~100 LOC it gets its own module.
   succeeds when invoked by the actual SCM (it returns
   `ERROR_FAILED_SERVICE_CONTROLLER_CONNECT` otherwise). SCM mode is
   manually validated via filemonitor's existing Windows install/run
-  procedure on each release.
+  procedure on each release; the windows-packaging plan's
+  `verify-msi.ps1` (W4/W5) adds an installed-service smoke including
+  a kill-and-observe restart check.
+- **SCM logging** — the rolling-file helpers in `mod scm_file` are
+  gated on the `scm` feature alone (not `cfg(windows)`), so their
+  unit tests run cross-platform: ProgramData resolution is
+  parameterized over the env value (set / unset / empty), the rolling
+  writer is exercised against a temp dir (file named
+  `<svc>.<date>.log`, content flushed on guard drop), and the
+  fallback path is provoked by pointing the log dir under a regular
+  file. Under Bazel these run via the
+  `rusty-photon-service-lifecycle_scm_unit_test` target (all three CI
+  OSes); under Cargo via
+  `cargo test -p rusty-photon-service-lifecycle --features scm`.
 - **No `coverage(off)` exclusions.** Per workspace policy, production
   code is covered or it isn't shipped. The dead-code arms in the
   no-panic signal-install path (`std::future::pending` fallbacks)
@@ -448,15 +545,20 @@ If the SCM glue grows past ~100 LOC it gets its own module.
 | `tracing-subscriber` | `init_tracing` subscriber (fmt + `EnvFilter`) |
 | `color-eyre` | panic hook + `Report` formatting at the binary boundary (ADR-011) |
 | `tracing-error` | `ErrorLayer` so panic reports carry the active `SpanTrace` |
+| `tracing-appender` (opt, feature `scm`) | SCM-mode rolling log file + non-blocking writer |
 | `windows-service` (opt, feature `scm`) | Windows Service Control Manager dispatch + control handler |
 
 Workspace-pinned versions live in the workspace `Cargo.toml` — except
-`color-eyre` and `tracing-error`, which are **deliberately crate-local**:
-this crate being their sole owner is the structural guardrail that keeps
-`eyre!`-style ad-hoc errors out of the `thiserror`-typed library/device
-code (see [ADR-011](../decisions/011-error-reporting-layers.md) §3.4 of
-the plan). The `scm` feature is opt-in per consumer; non-adopters get zero
-`windows-service` content in their dep tree.
+`color-eyre`, `tracing-error`, and `tracing-appender`, which are
+**deliberately crate-local**: this crate is the sole owner of top-level
+error/panic reporting (the structural guardrail that keeps `eyre!`-style
+ad-hoc errors out of the `thiserror`-typed library/device code — see
+[ADR-011](../decisions/011-error-reporting-layers.md) §3.4 of the plan)
+and of the SCM rolling-file writer (no service touches `tracing-appender`
+directly). The `scm` feature is opt-in per consumer — every service
+binary enables it, but only under
+`[target.'cfg(windows)'.dependencies]`, so Unix builds get zero
+`windows-service`/`tracing-appender` content in their dep tree.
 
 `windows-service` is `windows-service = "0.8"` — the Mullvad-
 maintained Rust wrapper around the Windows Service Control API.

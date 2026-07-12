@@ -17,13 +17,16 @@ rust_library(
     deps = all_crate_deps(normal = True),
 )
 
-# Windows SCM variant. filemonitor enables this crate's `scm` feature under
-# [target.'cfg(windows)'.dependencies], which gates `mod scm` (Windows Service
-# Control Manager dispatch) behind `cfg(all(windows, feature = "scm"))` and pulls
-# in the windows-service crate. crate_features is compile-time in Bazel, so this
-# is a second library compiled with `scm` on; filemonitor's BUILD selects it on
-# Windows. windows-service is added only on Windows (on other targets `mod scm`
-# stays cfg-excluded, so the feature flag is harmless and the crate isn't linked).
+# Windows SCM variant. Every service binary enables this crate's `scm` feature
+# under [target.'cfg(windows)'.dependencies], which gates `mod scm` (Windows
+# Service Control Manager dispatch) behind `cfg(all(windows, feature = "scm"))`
+# and pulls in the windows-service crate. crate_features is compile-time in
+# Bazel, so this is a second library compiled with `scm` on; each service's
+# BUILD selects it on Windows. windows-service is added only on Windows (on
+# other targets `mod scm` stays cfg-excluded, so the feature flag is harmless
+# and the crate isn't linked). tracing-appender backs the SCM-mode rolling-file
+# logging (`mod scm_file` in logging.rs), which is gated on the feature alone —
+# compiled (and unit-tested) on every OS — so it is a dep on all platforms.
 rust_library(
     name = "rusty-photon-service-lifecycle_scm",
     srcs = glob(["src/**/*.rs"]),
@@ -33,7 +36,7 @@ rust_library(
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = ["//visibility:public"],
-    deps = all_crate_deps(normal = True) + select({
+    deps = all_crate_deps(normal = True) + ["@cr//:tracing-appender"] + select({
         "@platforms//os:windows": ["@cr//:windows-service"],
         "//conditions:default": [],
     }),
@@ -55,6 +58,33 @@ rust_test(
         normal = True,
         normal_dev = True,
     ),
+)
+
+# Unit tests for the `scm`-feature variant: covers the SCM rolling-file logging
+# helpers (ProgramData/log-dir resolution, rolling-writer construction, stderr
+# fallback), which are compiled cross-platform behind the feature so this
+# target runs on every OS — including the Windows CI runner, where the
+# `cfg(all(windows, feature = "scm"))` dispatch code is also compiled in.
+rust_test(
+    name = "rusty-photon-service-lifecycle_scm_unit_test",
+    size = "small",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate = ":rusty-photon-service-lifecycle_scm",
+    crate_features = ["scm"],
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ) + ["@cr//:tracing-appender"] + select({
+        "@platforms//os:windows": ["@cr//:windows-service"],
+        "//conditions:default": [],
+    }),
 )
 
 # Doctests. rusty-photon-service-lifecycle is the only workspace crate with

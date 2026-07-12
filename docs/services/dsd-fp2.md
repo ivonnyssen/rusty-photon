@@ -340,6 +340,7 @@ is recoverable: the next startup re-mints a fresh one.
 | `--port`           | Serial port path (overrides `serial.port`; pins it as a CLI override) |
 | `--server-port`    | Server port (overrides `server.port`; pins it as a CLI override) |
 | `-l, --log-level`  | Log level: trace, debug, info, warn, error |
+| `--service`        | Hidden: run as a Windows service (passed by the Windows service control manager; no-op on other platforms) |
 
 ## Config Actions
 

@@ -341,6 +341,13 @@ mod scm {
 
     static SCM_CONFIG: OnceLock<ScmConfig> = OnceLock::new();
 
+    /// The run closure's error, captured by the SCM service thread
+    /// ([`run_service`]) so [`dispatch`] can return it from the main thread
+    /// once `service_dispatcher::start` unblocks. Keeps `ServiceRunner::run`'s
+    /// "returns the error from `run_fn`" contract identical in SCM and console
+    /// modes (non-zero process exit code, `Report` rendered from `main`).
+    static SCM_RUN_ERROR: Mutex<Option<RunError>> = Mutex::new(None);
+
     pub(super) fn dispatch(name: &'static str, run_fn: BoxedRunFn) -> ServiceResult {
         SCM_CONFIG
             .set(ScmConfig {
@@ -350,6 +357,17 @@ mod scm {
             .map_err(|_| color_eyre::eyre::eyre!("ServiceRunner SCM config already initialised"))?;
 
         windows_service::service_dispatcher::start(name, ffi_service_main)?;
+
+        // The service thread stores the closure's error rather than
+        // returning it through the `extern "system"` boundary; surface it
+        // here so SCM mode matches the console path's contract.
+        if let Some(e) = SCM_RUN_ERROR
+            .lock()
+            .map_err(|_| color_eyre::eyre::eyre!("ServiceRunner SCM run-error mutex poisoned"))?
+            .take()
+        {
+            return Err(report_from_boxed(e));
+        }
         Ok(())
     }
 
@@ -422,14 +440,25 @@ mod scm {
             BoxedRunFn::WithReload(f) => rt.block_on(f(shutdown, reload)),
         };
 
-        // Surface the closure's outcome to SCM. Reporting Win32(0) on
-        // every stop made failures look like clean shutdowns to ops
-        // tooling (services.msc, supervisors). On Err we report a
-        // service-specific non-zero code so the SCM stop record
-        // matches reality; the closure's error is also logged by
-        // service_main() and returned from run_service() for parity
-        // with the console path.
-        let exit_code = if result.is_ok() {
+        // Surface the closure's outcome to SCM. This is the failure-visibility
+        // mechanism ADR-015 / windows-packaging W1 pins: on Err we still
+        // report SERVICE_STOPPED, but with a non-zero exit code —
+        // dwWin32ExitCode = ERROR_SERVICE_SPECIFIC_ERROR with
+        // dwServiceSpecificExitCode = 1. The installer configures restart
+        // failure actions *and* sets SERVICE_CONFIG_FAILURE_ACTIONS_FLAG
+        // (failure actions on non-crash failures), so SCM counts a stop with
+        // a non-zero exit code as a failure and runs the configured restart —
+        // restoring the systemd `Restart=on-failure` contract the serial
+        // drivers' eager-validation exits rely on. Reporting Win32(0) on
+        // every stop would make failures look like clean shutdowns (no
+        // restart, and ops tooling like services.msc shown a clean stop).
+        let run_error = result.err();
+        if let Some(e) = &run_error {
+            // Under SCM the rolling log file is often the only place this
+            // failure is visible besides the SCM stop record.
+            tracing::error!("{}: service run failed: {e}", cfg.name);
+        }
+        let exit_code = if run_error.is_none() {
             ServiceExitCode::Win32(0)
         } else {
             ServiceExitCode::ServiceSpecific(1)
@@ -445,7 +474,14 @@ mod scm {
             process_id: None,
         })?;
 
-        result.map_err(report_from_boxed)
+        // Stash the closure's error for dispatch() (on the main thread) to
+        // return once the dispatcher unblocks, mirroring the console path.
+        if let Some(e) = run_error {
+            *SCM_RUN_ERROR.lock().map_err(|_| {
+                color_eyre::eyre::eyre!("ServiceRunner SCM run-error mutex poisoned")
+            })? = Some(e);
+        }
+        Ok(())
     }
 }
 

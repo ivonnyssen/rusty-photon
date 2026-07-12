@@ -8,7 +8,7 @@
 
 use clap::Parser;
 use plate_solver::{load_config, ServerBuilder};
-use rusty_photon_service_lifecycle::{init_tracing, ServiceRunner};
+use rusty_photon_service_lifecycle::{init_service_tracing, ServiceRunner};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use tracing::Level;
@@ -30,12 +30,20 @@ struct Cli {
     /// Log level (trace, debug, info, warn, error)
     #[arg(long, default_value = "info", value_parser = clap::value_parser!(Level))]
     log_level: Level,
+
+    /// Run as a Windows service (used by the service control manager).
+    /// No-op on non-Windows targets.
+    #[arg(long, hide = true)]
+    service: bool,
 }
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
-    init_tracing(cli.log_level);
+    // In Windows SCM service mode logs go to the rolling file under
+    // %PROGRAMDATA%\rusty-photon\logs\; hold the guard until process exit so
+    // the final lines flush on SCM Stop. Console mode logs to stderr as before.
+    let _tracing_guard = init_service_tracing("plate-solver", cli.log_level, cli.service);
 
     // Path resolution and config load share one failure arm: both are
     // startup config errors (exit 2). `resolve_config_path` fails only
@@ -53,26 +61,30 @@ fn main() -> ExitCode {
         }
     };
 
-    let result = ServiceRunner::new("plate-solver").run(move |shutdown| async move {
-        let server = ServerBuilder::new()
-            .with_config(config)
-            .build()
-            .await
-            .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
-                Box::from(format!("build: {e}"))
-            })?;
+    let result = ServiceRunner::new("plate-solver")
+        .scm_mode(cli.service)
+        .run(move |shutdown| async move {
+            let server = ServerBuilder::new()
+                .with_config(config)
+                .build()
+                .await
+                .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
+                    Box::from(format!("build: {e}"))
+                })?;
 
-        let addr = server.listen_addr();
-        // `bound_addr=` is parsed by `bdd-infra::parse_bound_port` to
-        // discover the test-spawned service's port. Must be on stdout.
-        println!("bound_addr={addr}");
-        tracing::info!(%addr, "plate-solver listening");
+            let addr = server.listen_addr();
+            // `bound_addr=` is parsed by `bdd-infra::parse_bound_port` to
+            // discover the test-spawned service's port. Must be on stdout.
+            println!("bound_addr={addr}");
+            tracing::info!(%addr, "plate-solver listening");
 
-        server.start(shutdown.cancelled()).await.map_err(
-            |e| -> Box<dyn std::error::Error + Send + Sync> { Box::from(format!("server: {e}")) },
-        )?;
-        Ok(())
-    });
+            server.start(shutdown.cancelled()).await.map_err(
+                |e| -> Box<dyn std::error::Error + Send + Sync> {
+                    Box::from(format!("server: {e}"))
+                },
+            )?;
+            Ok(())
+        });
 
     match result {
         Ok(()) => ExitCode::SUCCESS,

@@ -28,29 +28,43 @@ struct Cli {
     /// Log level (trace, debug, info, warn, error)
     #[arg(long, default_value = "info", value_parser = clap::value_parser!(Level))]
     log_level: Level,
+
+    /// Run as a Windows service (used by the service control manager).
+    /// No-op on non-Windows targets.
+    #[arg(long, hide = true)]
+    service: bool,
 }
 
 fn main() -> ServiceResult {
     let cli = Cli::parse();
 
-    rusty_photon_service_lifecycle::init_tracing(cli.log_level);
+    // In Windows SCM service mode logs go to the rolling file under
+    // %PROGRAMDATA%\rusty-photon\logs\; hold the guard until process exit so
+    // the final lines flush on SCM Stop. Console mode logs to stderr as before.
+    let _tracing_guard = rusty_photon_service_lifecycle::init_service_tracing(
+        "calibrator-flats",
+        cli.log_level,
+        cli.service,
+    );
 
     let config_path = rusty_photon_config::resolve_config_path("calibrator-flats", cli.config)?;
     let (port, bind_address) = (cli.port, cli.bind_address);
 
-    ServiceRunner::new("calibrator-flats").run(move |shutdown| async move {
-        debug!(config_path = %config_path.display(), "loading configuration");
-        let plan = calibrator_flats::config::load_config(&config_path)?;
+    ServiceRunner::new("calibrator-flats")
+        .scm_mode(cli.service)
+        .run(move |shutdown| async move {
+            debug!(config_path = %config_path.display(), "loading configuration");
+            let plan = calibrator_flats::config::load_config(&config_path)?;
 
-        calibrator_flats::ServerBuilder::new()
-            .with_plan(plan)
-            .with_port(port)
-            .with_bind_address(bind_address)
-            .build()
-            .await?
-            .start(shutdown.cancelled())
-            .await?;
+            calibrator_flats::ServerBuilder::new()
+                .with_plan(plan)
+                .with_port(port)
+                .with_bind_address(bind_address)
+                .build()
+                .await?
+                .start(shutdown.cancelled())
+                .await?;
 
-        Ok(())
-    })
+            Ok(())
+        })
 }
