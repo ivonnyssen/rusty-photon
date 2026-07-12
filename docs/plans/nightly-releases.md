@@ -59,7 +59,7 @@ independent afterwards. N3 is gated only on W5; N4 has synergy with PR-7
   |--------|-----------------|-----------|
   | Debian `.deb` | `0.1.0+nightly.20260712.gabc1234` | dpkg sorts `+…` above `0.1.0`, below `0.1.1`; `apt` upgrades over an on-demand `0.1.0-1` install |
   | Fedora `.rpm` | `0.1.0^20260712.gabc1234` | rpm forbids `+` in Version; `^` is rpm's post-release snapshot operator with the same ordering |
-  | Windows MSI | ProductVersion `0.1.0.<YYDDD>` | MSI versions are numeric `x.y.z[.w]` and ignore the 4th field in upgrade comparisons, so nightlies pair it with `MajorUpgrade AllowSameVersionUpgrades="yes"`; the full string travels in the filename and ARP comments. `YYDDD` = 2-digit year × 1000 + day-of-year (fits the 65535 cap through 2065) |
+  | Windows MSI | ProductVersion `0.1.0.<YYDDD>` | Windows Installer compares only the first three ProductVersion fields; a 4th field is legal to author and **display-only** — it shows as the version in ARP, which is why we keep it (a plain `0.1.0` would render the stable release and every nightly identically there). Upgrade logic thus sees every nightly as `0.1.0`, hence `MajorUpgrade AllowSameVersionUpgrades="yes"`; the full string travels in the filename and ARP comments. `YYDDD` = 2-digit year × 1000 + day-of-year (within the 65535 per-field authoring cap through 2065). The date deliberately does NOT ride in the *compared* third field — `0.1.<YYDDD>` would sort above every future release |
   | macOS | full string in the tarball filename + tap formula `version` | no installer database; Homebrew compares formula versions (see flagged unknowns for the `+` tokenization check) |
 
   Known caveat (Debian): once a machine runs nightlies, a plain on-demand
@@ -203,7 +203,9 @@ the `msi` leg of `nightly-packages.yml` — not as a scheduler of its own
 (coordination note recorded in that plan).
 
 - `build-msi.ps1` gains a version-stamp parameter (ProductVersion
-  `0.1.0.<YYDDD>` + the full nightly string for the filename).
+  `0.1.0.<YYDDD>` — the 4th field is display-only in ARP, invisible to
+  upgrade logic, which sees `0.1.0`; see the version-dialect table — plus
+  the full nightly string for the filename).
 - `installer/Package.wxs`: `MajorUpgrade AllowSameVersionUpgrades="yes"`
   (required for nightly-over-nightly, harmless for releases) and the full
   nightly string in ARP comments so Programs & Features can tell
