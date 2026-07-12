@@ -250,6 +250,9 @@ pub fn run() -> i32 {
              that QHY's All-in-One pack provides. On this platform the QHYCCD SDK is \
              linked statically at build time — nothing to check."
         );
+        // `main` terminates via `std::process::exit`, which bypasses
+        // destructors — flush explicitly so buffered stdout cannot be lost.
+        let _ = std::io::stdout().flush();
         0
     }
 }
@@ -258,6 +261,10 @@ pub fn run() -> i32 {
 fn run_windows() -> i32 {
     let report = gather();
     print!("{}", report.render());
+    // `main` terminates via `std::process::exit`, which bypasses destructors:
+    // flush so the report is fully out before the prompt (and cannot be lost
+    // when stdout is buffered/non-interactive).
+    let _ = std::io::stdout().flush();
 
     // DR2: offer the download page when something needs the operator's
     // attention — missing/broken DLL or a version skew.
@@ -268,6 +275,8 @@ fn run_windows() -> i32 {
             open_download_page();
         }
     }
+    // Same rationale: the "Opening …" line must not vanish at process::exit.
+    let _ = std::io::stdout().flush();
     report.exit_code()
 }
 
