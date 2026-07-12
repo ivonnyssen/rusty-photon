@@ -97,6 +97,10 @@ Configuration is provided via a JSON file:
 }
 ```
 
+Every block (`Config` and each nested config struct) rejects unknown keys at
+deserialize (`deny_unknown_fields`), so a typo or a key removed by a schema
+change fails loudly at load instead of being silently ignored.
+
 ### Configuration Options
 
 | Section | Field | Description | Default |
