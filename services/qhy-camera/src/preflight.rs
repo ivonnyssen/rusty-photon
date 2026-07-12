@@ -522,10 +522,31 @@ mod tests {
             }
             DllResolution::FoundByName => {}
             DllResolution::NotFound { probed, failures } => {
-                // The exe dir candidate is always present, and the by-name
-                // fallback failure is always recorded.
-                assert!(!probed.is_empty());
-                assert!(!failures.is_empty());
+                // Only structural invariants: `probed` may legitimately be
+                // empty (`resolve_and_load` tolerates a failing
+                // `current_exe()` and missing `ProgramFiles*` env vars), so
+                // its length is environment-dependent — do not assert on it.
+                //
+                // The by-name fallback failure is always recorded last, as
+                // the bare DLL name (structural, not environmental).
+                let last = failures.last().unwrap();
+                assert_eq!(last.path, PathBuf::from(QHY_DLL_NAME));
+                // Every attempt targets the DLL by its canonical name, and
+                // every candidate-derived attempt (all but the by-name one)
+                // came from a probed directory.
+                for failure in &failures[..failures.len() - 1] {
+                    assert!(
+                        failure.path.ends_with(QHY_DLL_NAME),
+                        "{}",
+                        failure.path.display()
+                    );
+                    let dir = failure.path.parent().unwrap();
+                    assert!(
+                        probed.iter().any(|candidate| candidate == dir),
+                        "attempted {} outside the probed candidates {probed:?}",
+                        failure.path.display()
+                    );
+                }
             }
         }
     }
