@@ -83,8 +83,11 @@ function Fail([string]$svc, [string]$msg) {
         Get-Content $svcLog.FullName -Tail 40
     }
     if (Test-Path $installLog) {
-        Write-Host "--- last 40 lines of the msiexec log ---"
-        Get-Content $installLog -Tail 40
+        # The verbose log is huge; the failure signal is the action(s) that
+        # ended with "Return value 3" plus any Error-coded lines.
+        Write-Host "--- msiexec log: failed actions + error lines ---"
+        Select-String -Path $installLog -Pattern 'Return value 3|^Error \d+|error 1\d{3}|CustomAction .+ returned actual error|failed to start|could not be|MainEngineThread is returning' |
+            Select-Object -Last 30 | ForEach-Object { Write-Host $_.Line }
     }
     exit 1
 }
@@ -143,7 +146,7 @@ foreach ($svc in $allServices) {
         Fail $svc "SERVICE_CONFIG_FAILURE_ACTIONS_FLAG not set:`n$($qff | Out-String)"
     }
 }
-Write-Host "== static: 18 services installed, start types + failure actions OK"
+Write-Host "== static: $($allServices.Count) services installed, start types + failure actions OK"
 
 # ---- gated trio: installed but never started, no config -------------------
 foreach ($svc in $gated) {

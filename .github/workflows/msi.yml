@@ -43,13 +43,20 @@ jobs:
           name: rusty-photon-msi
           path: dist/**/*.msi
           retention-days: 14
+      - name: Stage failure logs
+        if: failure()
+        shell: pwsh
+        # upload-artifact cannot span drive roots (workspace on D:, ProgramData
+        # on C:), so collect everything into one workspace dir first.
+        run: |
+          New-Item -ItemType Directory -Force -Path failure-logs | Out-Null
+          Copy-Item "$env:TEMP\rusty-photon-msi-install.log" failure-logs\ -ErrorAction SilentlyContinue
+          Copy-Item "$env:ProgramData\rusty-photon\logs\*" failure-logs\ -ErrorAction SilentlyContinue
       - name: Upload install + service logs (on failure)
         if: failure()
         uses: actions/upload-artifact@v7
         with:
           name: msi-verify-logs
-          path: |
-            ${{ runner.temp }}/rusty-photon-msi-install.log
-            C:/ProgramData/rusty-photon/logs/
+          path: failure-logs/
           if-no-files-found: ignore
           retention-days: 14
