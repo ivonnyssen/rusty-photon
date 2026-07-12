@@ -83,12 +83,16 @@ case "$cmd" in
             echo "add a 'Host $RIG_HOST' entry to ~/.ssh/config or set RIG_HOST" >&2
             exit 1
         fi
+        # An IPv6 literal must be bracketed in URLs; also escape sed
+        # replacement metacharacters (defensive — valid hosts have none).
+        case "$addr" in *:*) addr="[$addr]" ;; esac
+        addr_esc=$(printf '%s' "$addr" | sed 's/[\\&|]/\\&/g')
         mkdir -p "$dest"
         ssh -T "$RIG_HOST" "sudo tar -C '$CONFIG_DIR' -cf - ." | tar -C "$dest" -xf -
         for f in "$dest"/*.json; do
             [ -e "$f" ] || continue
-            sed -e "s|http://127\.0\.0\.1:|http://$addr:|g" \
-                -e "s|http://localhost:|http://$addr:|g" \
+            sed -e "s|http://127\.0\.0\.1:|http://$addr_esc:|g" \
+                -e "s|http://localhost:|http://$addr_esc:|g" \
                 "$f" > "$f.tmp" && mv "$f.tmp" "$f"
         done
         echo "rig configs written to $dest (driver endpoints -> $addr)"
