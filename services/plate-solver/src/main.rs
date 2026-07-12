@@ -56,7 +56,10 @@ fn main() -> ExitCode {
     {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("plate-solver: {e}");
+            // Through tracing, not eprintln!: in console mode the subscriber
+            // writes to stderr anyway, and in Windows SCM service mode stderr
+            // is a dead handle — tracing is what lands in the rolling log file.
+            tracing::error!("plate-solver: {e}");
             return ExitCode::from(2);
         }
     };
@@ -75,7 +78,12 @@ fn main() -> ExitCode {
             let addr = server.listen_addr();
             // `bound_addr=` is parsed by `bdd-infra::parse_bound_port` to
             // discover the test-spawned service's port. Must be on stdout.
-            println!("bound_addr={addr}");
+            // Console mode only: stdout is a dead handle under the Windows SCM,
+            // and the only stdout consumer (bdd-infra's port parser) never runs
+            // services with --service.
+            if !rusty_photon_service_lifecycle::is_scm_service() {
+                println!("bound_addr={addr}");
+            }
             tracing::info!(%addr, "plate-solver listening");
 
             server.start(shutdown.cancelled()).await.map_err(
@@ -92,8 +100,11 @@ fn main() -> ExitCode {
             let msg = e.to_string();
             // `{e:?}` on the runner's `Report` prints the full multi-line
             // error chain (ADR-011), matching what the other services get
-            // by returning `ServiceResult` from `main`.
-            eprintln!("plate-solver: {e:?}");
+            // by returning `ServiceResult` from `main`. Through tracing, not
+            // eprintln!: console mode reaches stderr via the subscriber, and
+            // in SCM service mode this lands in the rolling log file instead
+            // of a dead handle.
+            tracing::error!("plate-solver: {e:?}");
             // Preserve the prior split: config / build failures returned
             // 2, runtime errors returned 1. The closure surfaces both via
             // the runner's `Report`; we recover the distinction by tagging

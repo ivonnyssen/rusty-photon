@@ -142,6 +142,10 @@ pub fn init_service_tracing(
 ) -> TracingGuard {
     #[cfg(all(windows, feature = "scm"))]
     if scm_mode {
+        // Mark the process as service-mode first, so is_scm_service() is
+        // accurate for everything that runs after tracing init (e.g. the
+        // gated `bound_addr=` stdout handshake).
+        crate::runner::set_scm_service();
         return scm_file::init(service_name, default_level, &scm_file::default_log_dir());
     }
 

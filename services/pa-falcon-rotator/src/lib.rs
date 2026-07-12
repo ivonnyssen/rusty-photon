@@ -209,7 +209,12 @@ impl ServerBuilder {
                 rusty_photon_driver::discovery::bind(local_addr, self.config.server.discovery_port)
                     .await?;
 
-            println!("Bound Alpaca server bound_addr={}", local_addr);
+            // Console mode only: stdout is a dead handle under the Windows SCM,
+            // and the only stdout consumer (bdd-infra's port parser) never runs
+            // services with --service.
+            if !rusty_photon_service_lifecycle::is_scm_service() {
+                println!("Bound Alpaca server bound_addr={}", local_addr);
+            }
             info!("Bound Alpaca server bound_addr={}", local_addr);
 
             Ok(BoundServer {

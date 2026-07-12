@@ -70,9 +70,10 @@ Out of scope:
 
 ## Public API
 
-Four types, three result/error aliases, and three free functions
-([`init_tracing`], [`init_service_tracing`], [`report_from_boxed`]), plus
-the type-only `color_eyre::Report` re-export.
+Four types, three result/error aliases, and four free functions
+([`init_tracing`], [`init_service_tracing`], [`is_scm_service`],
+[`report_from_boxed`]), plus the type-only `color_eyre::Report`
+re-export.
 [`Shutdown`] is constructed only by the runner.
 [`ReloadSignal`] has a public constructor so integration tests can
 drive a service's run loop with synthetic reload events, and so
@@ -102,6 +103,13 @@ init_service_tracing(service_name: &str, default_level: tracing::Level, scm_mode
     // (Windows + `scm` feature + scm_mode=true) a rolling-file subscriber.
     // `main` must hold the guard (`let _tracing_guard = ...`) until process
     // exit so the non-blocking writer flushes its final lines on SCM Stop.
+
+is_scm_service() -> bool
+    // true once SCM mode has engaged (sticky, process-global; always false
+    // in console mode / off Windows). Gates the raw std-handle writes that
+    // remain on the service path — notably the stdout `bound_addr=`
+    // handshake: `if !is_scm_service() { println!("... bound_addr={addr}") }`.
+    // The BDD harness never passes --service, so port discovery is unaffected.
 
 type ServiceResult = Result<(), color_eyre::Report>   // what main returns
 type RunError      = Box<dyn Error + Send + Sync>     // what run closures return (error side)
@@ -301,6 +309,27 @@ the writer differs. A run-closure error that ends an SCM service is
 rendered (full `source()` chain) into the rolling file via
 `tracing::error!` before the runner returns it from `main` — the
 `Report` that `main` prints goes to stderr, which is dead under SCM.
+
+**Raw std-handle writes are gated on [`is_scm_service`].** SCM mode is
+recorded in a sticky process-global flag (set by `init_service_tracing`
+and, belt-and-braces, by the SCM dispatch itself). Anything a service
+still writes to a raw std handle on its service path checks it:
+
+- every service's stdout `bound_addr=` handshake is wrapped in
+  `if !is_scm_service() { println!(...) }` — the only stdout consumer
+  is `bdd-infra`'s port parser, which never runs services with
+  `--service`, so console/BDD port discovery is unaffected;
+- pre-runner error prints go through `tracing::error!` instead of
+  `eprintln!` (plate-solver's startup-config failure is the precedent):
+  in console mode the subscriber writes to stderr anyway, in SCM mode
+  the message lands in the rolling file instead of a dead handle.
+
+In the common case a dead-handle write would merely sink (Rust's
+Windows stdio treats absent handles as successful sinks) — but sunk
+means *lost diagnostics*, and gating is also belt-and-braces against a
+genuinely invalid (non-NULL, closed) handle. Confirming benign
+std-handle behavior under a real SCM stays a `verify-msi.ps1` smoke
+item (windows-packaging plan, W4/W5).
 
 ### Why the runner owns the runtime
 

@@ -272,7 +272,12 @@ impl ServerBuilder {
 
         // This println is parsed by BDD tests to discover the bound port.
         // It must go to stdout (not tracing/stderr) so the subprocess output can be read.
-        println!("Bound rp server bound_addr={}", local_addr);
+        // Console mode only: stdout is a dead handle under the Windows SCM,
+        // and the only stdout consumer (bdd-infra's port parser) never runs
+        // services with --service.
+        if !rusty_photon_service_lifecycle::is_scm_service() {
+            println!("Bound rp server bound_addr={}", local_addr);
+        }
         info!("rp service bound on {}", local_addr);
 
         Ok(BoundServer {

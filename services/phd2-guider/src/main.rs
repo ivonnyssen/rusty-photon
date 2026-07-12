@@ -257,7 +257,12 @@ async fn run_serve(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let bound = ServerBuilder::new().with_config(config).build().await?;
     // Parsed by test harnesses; keep the exact format.
-    println!("bound_addr={}", bound.listen_addr());
+    // Console mode only: stdout is a dead handle under the Windows SCM,
+    // and the only stdout consumer (bdd-infra's port parser) never runs
+    // services with --service.
+    if !rusty_photon_service_lifecycle::is_scm_service() {
+        println!("bound_addr={}", bound.listen_addr());
+    }
     info!("guider service listening on {}", bound.listen_addr());
     bound.start(shutdown.cancelled()).await?;
     Ok(())

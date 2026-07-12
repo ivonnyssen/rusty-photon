@@ -77,7 +77,12 @@ fn main() -> ServiceResult {
             let bound = listener.local_addr()?;
             // Print to stdout (not just `info!`) so port discovery works regardless
             // of log level/output — matching the drivers' `bound_addr=` line.
-            println!("Bound ui-htmx server bound_addr={bound}");
+            // Console mode only: stdout is a dead handle under the Windows SCM,
+            // and the only stdout consumer (bdd-infra's port parser) never runs
+            // services with --service.
+            if !rusty_photon_service_lifecycle::is_scm_service() {
+                println!("Bound ui-htmx server bound_addr={bound}");
+            }
             info!("ui-htmx listening; bound_addr={bound}");
 
             axum::serve(listener, app)

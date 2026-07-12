@@ -92,6 +92,46 @@ pub(crate) fn install_error_reporting() {
     });
 }
 
+/// Process-global "running as a Windows service" flag. Set (never cleared)
+/// when SCM mode engages: by [`init_service_tracing`](crate::init_service_tracing)
+/// as soon as it sees `scm_mode = true`, and again — belt and braces — by the
+/// runner's SCM dispatch path.
+static SCM_SERVICE_MODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// True when this process is running as a Windows service (SCM mode).
+///
+/// Under SCM both std handles are absent: raw `println!`/`eprintln!` output
+/// is silently lost (dead-handle writes sink in the common case, and a
+/// genuinely invalid handle would error), so diagnostics belong in `tracing`
+/// — which [`init_service_tracing`](crate::init_service_tracing) points at
+/// the rolling log file in SCM mode. Use this accessor to gate the raw
+/// std-handle writes that remain on the service path, most notably the
+/// `bound_addr=` stdout handshake `bdd-infra`'s port parser reads. The BDD
+/// harness never passes `--service`, so gating never breaks port discovery:
+///
+/// ```no_run
+/// # let local_addr = "127.0.0.1:0";
+/// // stdout handshake for bdd-infra's port parser (console mode only).
+/// if !rusty_photon_service_lifecycle::is_scm_service() {
+///     println!("Bound Alpaca server bound_addr={local_addr}");
+/// }
+/// ```
+///
+/// Always `false` on non-Windows targets and in console mode.
+pub fn is_scm_service() -> bool {
+    SCM_SERVICE_MODE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Mark this process as running under the Windows SCM. Called from the SCM
+/// branches of [`init_service_tracing`](crate::init_service_tracing) and the
+/// runner's dispatch; never cleared — service mode is a process-lifetime
+/// property. Compiled on every target so the flag contract stays
+/// unit-testable cross-platform.
+#[cfg_attr(not(all(windows, feature = "scm")), allow(dead_code))]
+pub(crate) fn set_scm_service() {
+    SCM_SERVICE_MODE.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Builder for a Rusty Photon service binary's lifecycle.
 ///
 /// Owns the tokio runtime, installs OS signal handlers (or dispatches to the
@@ -349,6 +389,10 @@ mod scm {
     static SCM_RUN_ERROR: Mutex<Option<RunError>> = Mutex::new(None);
 
     pub(super) fn dispatch(name: &'static str, run_fn: BoxedRunFn) -> ServiceResult {
+        // Authoritative setter: SCM mode is engaging now. (init_service_tracing
+        // normally set it already, from the same --service flag.)
+        super::set_scm_service();
+
         SCM_CONFIG
             .set(ScmConfig {
                 name,
@@ -507,6 +551,23 @@ mod tests {
     // Signal-install tests share global per-process signal state; serialize them
     // so concurrent runs do not steal each other's deliveries.
     static SIGNAL_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn scm_service_flag_defaults_false_and_set_flips_it_sticky() {
+        // One test for both states: the flag is process-global and sticky
+        // (never cleared), so the default-false and post-set assertions must
+        // live in a single test — split across two, their outcome would
+        // depend on test scheduling order. No other test may set the flag.
+        assert!(
+            !is_scm_service(),
+            "SCM service flag must default to false (console mode)"
+        );
+        set_scm_service();
+        assert!(
+            is_scm_service(),
+            "SCM service flag must read true once service mode engaged"
+        );
+    }
 
     #[test]
     fn run_invokes_closure_exactly_once_and_returns_ok() {

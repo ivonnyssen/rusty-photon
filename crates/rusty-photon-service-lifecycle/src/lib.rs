@@ -86,7 +86,9 @@ mod shutdown;
 
 pub use logging::{init_service_tracing, init_tracing, TracingGuard};
 pub use reload::ReloadSignal;
-pub use runner::{report_from_boxed, RunError, RunResult, ServiceResult, ServiceRunner};
+pub use runner::{
+    is_scm_service, report_from_boxed, RunError, RunResult, ServiceResult, ServiceRunner,
+};
 pub use shutdown::Shutdown;
 
 /// Re-exported so services can *name* the error type in signatures (e.g.

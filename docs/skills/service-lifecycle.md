@@ -234,6 +234,26 @@ mode — that's the whole point. Service binaries call
 guard as `let _tracing_guard = ...` — a bare `let _ =` drops it
 immediately and loses the buffered final log lines.
 
+**No raw std-handle writes on the service path.** Under SCM both std
+handles are dead — output there is lost. Diagnostics and errors go
+through `tracing` (never `eprintln!`; in console mode the subscriber
+writes to stderr anyway, in SCM mode the rolling file gets them). The
+one legitimate stdout write — the `bound_addr=` handshake `bdd-infra`'s
+port parser reads — must be gated:
+
+```rust
+// Console mode only: stdout is a dead handle under the Windows SCM,
+// and the only stdout consumer (bdd-infra's port parser) never runs
+// services with --service.
+if !rusty_photon_service_lifecycle::is_scm_service() {
+    println!("Bound Alpaca server bound_addr={local_addr}");
+}
+```
+
+`is_scm_service()` is a sticky process-global set when SCM mode
+engages; it is always `false` in console mode and off Windows, so the
+BDD harness contract (port discovery via stdout) is untouched.
+
 No special Bazel wiring is needed in the service's `BUILD.bazel` — just
 the plain `//crates/rusty-photon-service-lifecycle` dep. The lifecycle
 library target itself enables the `scm` feature via a `crate_features`
