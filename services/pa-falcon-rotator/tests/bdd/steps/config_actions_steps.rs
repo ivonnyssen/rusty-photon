@@ -13,7 +13,7 @@ use cucumber::{given, then, when};
 
 use crate::world::FalconRotatorWorld;
 
-#[given(expr = "a running pa-falcon-rotator service configured with serial.port {word}")]
+#[given(regex = r"^a running pa-falcon-rotator service configured with serial\.port (\S+)$")]
 async fn running_service_with_port(world: &mut FalconRotatorWorld, port: String) {
     // Pin the serial port so the scenario's config.get round-trip is
     // deterministic on every platform (the built-in default is

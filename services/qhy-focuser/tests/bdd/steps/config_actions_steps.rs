@@ -9,7 +9,7 @@ use cucumber::{given, then, when};
 
 use crate::world::QhyFocuserWorld;
 
-#[given(expr = "a running focuser service configured with serial.port {word}")]
+#[given(regex = r"^a running focuser service configured with serial\.port (\S+)$")]
 async fn running_focuser_service_with_port(world: &mut QhyFocuserWorld, port: String) {
     // Pin the serial port so the scenario's config.get round-trip is
     // deterministic on every platform (the built-in default is
