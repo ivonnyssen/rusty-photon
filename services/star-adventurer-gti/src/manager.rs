@@ -1376,7 +1376,12 @@ mod tests {
         let mapped = StarAdvError::from(err);
         match mapped {
             StarAdvError::WrongDevice { port, reason } => {
+                // Default `UsbConfig` port path is platform-dependent (see
+                // `config.rs::UsbConfig::default`).
+                #[cfg(not(windows))]
                 assert_eq!(port, "/dev/ttyACM0");
+                #[cfg(windows)]
+                assert_eq!(port, "COM3");
                 // The path is unambiguous: `Response::decode` for
                 // `InquireMotorBoardVersion` returns
                 // `Err(ProtocolError::PayloadError("expected 6-hex-byte
@@ -1457,7 +1462,12 @@ mod tests {
         let mapped = StarAdvError::from(err);
         match mapped {
             StarAdvError::WrongDevice { port, reason } => {
+                // Default `UsbConfig` port path is platform-dependent (see
+                // `config.rs::UsbConfig::default`).
+                #[cfg(not(windows))]
                 assert_eq!(port, "/dev/ttyACM0");
+                #[cfg(windows)]
+                assert_eq!(port, "COM3");
                 // The reason carries the underlying ProtocolError
                 // stringification — `MountError(UnknownCommand)` formats
                 // as "mount error: UnknownCommand" per its `thiserror`

@@ -117,10 +117,12 @@ fn default_data_directory() -> String {
 }
 #[cfg(windows)]
 fn default_data_directory() -> String {
-    format!(
-        r"{}\rusty-photon\rp\data",
-        program_data_root(std::env::var_os("ProgramData"))
-    )
+    program_data_root(std::env::var_os("ProgramData"))
+        .join("rusty-photon")
+        .join("rp")
+        .join("data")
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// Pure resolution of the Windows `ProgramData` root from the value of the
@@ -131,10 +133,10 @@ fn default_data_directory() -> String {
 /// compiled on Windows and in test builds on every platform, so the logic
 /// is unit-testable on non-Windows hosts.
 #[cfg(any(windows, test))]
-fn program_data_root(program_data: Option<std::ffi::OsString>) -> String {
+fn program_data_root(program_data: Option<std::ffi::OsString>) -> std::path::PathBuf {
     match program_data {
-        Some(v) if !v.is_empty() => v.to_string_lossy().into_owned(),
-        _ => r"C:\ProgramData".to_string(),
+        Some(v) if !v.is_empty() => std::path::PathBuf::from(v),
+        _ => std::path::PathBuf::from(r"C:\ProgramData"),
     }
 }
 
@@ -219,19 +221,22 @@ mod tests {
     #[test]
     fn program_data_root_uses_env_value_verbatim() {
         let root = program_data_root(Some(std::ffi::OsString::from(r"D:\CustomData")));
-        assert_eq!(root, r"D:\CustomData");
+        assert_eq!(root, std::path::PathBuf::from(r"D:\CustomData"));
     }
 
     #[test]
     fn program_data_root_falls_back_when_env_absent() {
-        assert_eq!(program_data_root(None), r"C:\ProgramData");
+        assert_eq!(
+            program_data_root(None),
+            std::path::PathBuf::from(r"C:\ProgramData")
+        );
     }
 
     #[test]
     fn program_data_root_falls_back_when_env_empty() {
         assert_eq!(
             program_data_root(Some(std::ffi::OsString::new())),
-            r"C:\ProgramData"
+            std::path::PathBuf::from(r"C:\ProgramData")
         );
     }
 

@@ -84,7 +84,9 @@ fn default_watch_path() -> PathBuf {
 #[cfg(windows)]
 fn default_watch_path() -> PathBuf {
     program_data_root(std::env::var_os("ProgramData"))
-        .join(r"rusty-photon\filemonitor\RoofStatusFile.txt")
+        .join("rusty-photon")
+        .join("filemonitor")
+        .join("RoofStatusFile.txt")
 }
 
 /// Pure resolution of the Windows `ProgramData` root from the value of the
