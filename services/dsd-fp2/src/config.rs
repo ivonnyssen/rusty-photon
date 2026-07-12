@@ -179,9 +179,7 @@ impl CliOverrides {
 pub fn resolve_config_path(
     explicit: Option<PathBuf>,
 ) -> std::result::Result<PathBuf, Box<dyn std::error::Error + Send + Sync>> {
-    Ok(rusty_photon_config::resolve_config_path(
-        "dsd-fp2", explicit,
-    )?)
+    rusty_photon_config::resolve_config_path("dsd-fp2", explicit).map_err(Into::into)
 }
 
 /// Load the effective config: the file at `path` if it exists, else
