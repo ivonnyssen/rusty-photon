@@ -297,6 +297,8 @@ Either path is a follow-up PR. The MVP just exposes the raw count.
 | `switch` | `description` | Switch description | `"Pegasus Falcon Rotator status sensors (voltage + limit-hit)"` |
 | `switch` | `enabled` | Whether to register the Switch device | `true` |
 
+Every block (`Config` and each nested config struct) rejects unknown keys at deserialize (`deny_unknown_fields`), so a typo or a key removed by a schema change fails loudly at load instead of being silently ignored.
+
 ### Device identity (UniqueID)
 
 Each device's `unique_id` is its stable ASCOM **UniqueID**. The driver mints a

@@ -5,7 +5,11 @@ use std::path::Path;
 use std::time::Duration;
 
 /// Main configuration structure
+///
+/// `deny_unknown_fields` so typoed or removed keys fail loudly at load
+/// instead of being silently ignored.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     pub serial: SerialConfig,
     pub server: ServerConfig,
@@ -14,7 +18,11 @@ pub struct Config {
 }
 
 /// Serial port configuration
+///
+/// `deny_unknown_fields` so typoed or removed keys fail loudly at load
+/// instead of being silently ignored.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SerialConfig {
     pub port: String,
     #[serde(default = "default_baud_rate")]
@@ -27,7 +35,11 @@ pub struct SerialConfig {
 }
 
 /// Server configuration
+///
+/// `deny_unknown_fields` so typoed or removed keys fail loudly at load
+/// instead of being silently ignored.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ServerConfig {
     pub port: u16,
     /// Alpaca UDP discovery responder port (normally 32227). Absent/`null` —
@@ -43,7 +55,11 @@ pub struct ServerConfig {
 }
 
 /// Rotator device configuration
+///
+/// `deny_unknown_fields` so typoed or removed keys fail loudly at load
+/// instead of being silently ignored.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct RotatorConfig {
     pub name: String,
     #[serde(default)]
@@ -54,7 +70,11 @@ pub struct RotatorConfig {
 }
 
 /// Status Switch device configuration
+///
+/// `deny_unknown_fields` so typoed or removed keys fail loudly at load
+/// instead of being silently ignored.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SwitchConfig {
     pub name: String,
     #[serde(default)]
@@ -383,5 +403,52 @@ mod tests {
         assert!(debug_str.contains("ServerConfig"));
         assert!(debug_str.contains("RotatorConfig"));
         assert!(debug_str.contains("SwitchConfig"));
+    }
+
+    #[test]
+    fn config_rejects_unknown_top_level_field() {
+        let err = serde_json::from_str::<Config>(r#"{"typoed_key": 1}"#)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("typoed_key"), "{err}");
+    }
+
+    #[test]
+    fn serial_config_rejects_unknown_field() {
+        let err = serde_json::from_str::<SerialConfig>(
+            r#"{"port": "/dev/ttyUSB0", "baud_rate": 9600, "timeout": "2s", "flow_control": "none"}"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("flow_control"), "{err}");
+    }
+
+    #[test]
+    fn server_config_rejects_unknown_field() {
+        let err =
+            serde_json::from_str::<ServerConfig>(r#"{"port": 11118, "bind_address": "0.0.0.0"}"#)
+                .unwrap_err()
+                .to_string();
+        assert!(err.contains("bind_address"), "{err}");
+    }
+
+    #[test]
+    fn rotator_config_rejects_unknown_field() {
+        let err = serde_json::from_str::<RotatorConfig>(
+            r#"{"name": "T", "description": "T", "enable": true}"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("enable"), "{err}");
+    }
+
+    #[test]
+    fn switch_config_rejects_unknown_field() {
+        let err = serde_json::from_str::<SwitchConfig>(
+            r#"{"name": "T", "description": "T", "enable": true}"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("enable"), "{err}");
     }
 }
