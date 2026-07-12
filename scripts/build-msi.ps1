@@ -255,7 +255,10 @@ if (Test-Path $sums) {
     $lines = Get-Content $sums | Where-Object { $_ -notmatch [regex]::Escape($msiName) }
 }
 $lines += "$hash  $msiName"
-Set-Content -Path $sums -Value $lines
+# Explicit encoding: the file must be sha256sum-compatible plain ASCII on
+# every host (Windows PowerShell 5.1's Set-Content default is ANSI, pwsh 7's
+# is UTF-8 — pin it instead of depending on the invoking shell).
+Set-Content -Path $sums -Value $lines -Encoding ascii
 
 Write-Host ""
 Write-Host "Package in ${dist}:"

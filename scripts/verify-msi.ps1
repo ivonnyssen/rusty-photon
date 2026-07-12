@@ -193,8 +193,12 @@ foreach ($svc in $active) {
             $true
         } catch {
             # No PHD2 on a verify box: phd2-guider's /health legitimately
-            # answers 503 (listener up, guider not connected).
-            $svc -eq 'phd2-guider' -and $_.Exception.Response.StatusCode.value__ -eq 503
+            # answers 503 (listener up, guider not connected). Non-HTTP
+            # failures (connection refused while the service is coming up)
+            # carry no Response — treat those as "not yet" and keep polling.
+            $resp = $_.Exception.PSObject.Properties['Response']
+            $status = if ($resp -and $resp.Value) { [int]$resp.Value.StatusCode } else { 0 }
+            $svc -eq 'phd2-guider' -and $status -eq 503
         }
     }
     Write-Host "== ${svc}: OK (running, port $port$path)"
