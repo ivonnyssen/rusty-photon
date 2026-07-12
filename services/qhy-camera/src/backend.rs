@@ -507,6 +507,12 @@ pub(crate) mod mock {
             self.params.lock().insert(control, value);
             self
         }
+        /// Read back a parameter value as last written via `set_parameter`
+        /// (test introspection, e.g. to assert which cooler control a call
+        /// wrote to).
+        pub fn param(&self, control: Control) -> Option<f64> {
+            self.params.lock().get(&control).copied()
+        }
         pub fn set_single_frame_delay(&self, delay: Duration) {
             *self.single_frame_delay.lock() = delay;
         }

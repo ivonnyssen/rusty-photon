@@ -430,8 +430,14 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   supported.
 - **K3.** `set_set_ccd_temperature` validates `[-273.15, 80]` and sets the target;
   `SetCCDTemperature` reads it back.
-- **K4.** `CoolerOn`/`set_cooler_on` map to the SDK PWM controls; `CoolerPower`
-  is the normalized PWM percent.
+- **K4.** `set_cooler_on(true)` (re-)engages the SDK's auto-regulation by
+  writing `Control::Cooler` to the stored `SetCCDTemperature` target (falling
+  back to the current `CCDTemperature` if no target has been set yet);
+  `set_cooler_on(false)` writes `Control::ManualPWM = 0`. `CoolerOn` reports
+  the last-commanded on/off state (tracked independently of the PWM readback,
+  since neither real hardware nor the simulation backend updates `CurPWM`
+  synchronously when `Control::Cooler` is asserted). `CoolerPower` remains the
+  normalized `CurPWM` percent.
 
 ### Sensor type
 
@@ -811,10 +817,13 @@ the "how" decisions made while building.
   simulation backend (`backend::conn_tests`). *This supersedes the v0 plan, which
   used independent handles "as the reference `qhyccd-alpaca` does" and deferred
   the refcount as Future Work pending hardware.*
-- **Cooling model.** `set_cooler_on(true)` engages a nominal 1% *manual* PWM
-  (matching the reference), which on real hardware is distinct from the automatic
-  target-temperature regulation `SetCCDTemperature` drives. Unifying the two
-  (re-asserting the stored target on `CoolerOn = true`) is Future Work.
+- **Cooling model.** v0 had `set_cooler_on(true)` engage a nominal 1% *manual*
+  PWM (matching the reference), distinct from the automatic target-temperature
+  regulation `SetCCDTemperature` drives — a real ASCOM client sequence of
+  `SetCCDTemperature` then `CoolerOn(true)` left the cooler pinned near 1%
+  power (issue #497, confirmed on real hardware). `set_cooler_on(true)` now
+  re-asserts `Control::Cooler` with the stored target instead; see
+  [Cooling contract K4](#cooling).
 
 ## Future Work
 
