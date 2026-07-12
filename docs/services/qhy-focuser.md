@@ -122,6 +122,10 @@ Responses are JSON objects terminated by `}` (no newline). Commands are sent as 
 a UUIDv4 on first run and persists it (see [Device identity
 (UniqueID)](#device-identity-uniqueid) below).
 
+Every block (`Config` and each nested config struct) rejects unknown keys at
+deserialize (`deny_unknown_fields`), so a typo or a key removed by a schema
+change fails loudly at load instead of being silently ignored.
+
 ### Device identity (UniqueID)
 
 The focuser's ASCOM `UniqueID` is **minted on first run** rather than shipped
