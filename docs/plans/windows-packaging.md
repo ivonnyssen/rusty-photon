@@ -19,11 +19,11 @@ untouched.
 
 | Phase | Description | Status | Branch / PR |
 |-------|-------------|--------|-------------|
-| W0 | This plan + ADR-015 | In review | `feature/windows-packaging-plan` |
-| W1 | SCM enablement: rolling-file logging in service mode (lifecycle crate) + `scm` feature / `--service` flag in the 17 remaining services | Not started | |
-| W2 | Platform-dependent defaults: config path → `%PROGRAMDATA%` on Windows, serial `COM` defaults, rp data dir | Not started | |
-| W3 | qhy-camera Windows: `/DELAYLOAD` + startup preflight + `doctor` subcommand | Not started | |
-| W4 | WiX v5 suite (`installer/`), `scripts/build-msi.ps1` + `scripts/verify-msi.ps1`, `check-pkg-assets.sh` Windows assertions | Not started | |
+| W0 | This plan + ADR-015 | Merged | #490 |
+| W1 | SCM enablement: rolling-file logging in service mode (lifecycle crate) + `scm` feature / `--service` flag in the 17 remaining services | Merged | #493 |
+| W2 | Platform-dependent defaults: config path → `%PROGRAMDATA%` on Windows, serial `COM` defaults, rp data dir | In review | #492 |
+| W3 | qhy-camera Windows: `/DELAYLOAD` + startup preflight + `doctor` subcommand | Merged | #491 |
+| W4 | WiX v5 suite (`installer/`), `scripts/build-msi.ps1` + `scripts/verify-msi.ps1`, `check-pkg-assets.sh` Windows assertions; ui-htmx driver-map seeding | Not started | |
 | W5 | `release.yml` suite-MSI job + install-smoke gate + nightly verify; retire filemonitor `wix/` + cargo-wix; `docs/packaging-windows.md` | Not started | |
 
 W1–W3 are pure code PRs (cross-platform, Linux behavior unchanged) and are
@@ -129,12 +129,14 @@ All 18 services get what filemonitor already has:
 - **Failure actions** (WiX `util:ServiceConfig`): first/second/third failure
   = restart, 5 s delay, reset period 1 day. This restores the systemd
   `Restart=on-failure`/`RestartSec=5` contract the serial drivers'
-  eager-exit design requires. Implementation detail to pin in W1: on a run
-  error the SCM wrapper must make the stop *look like* a failure to SCM —
-  either exit the service process without reporting `SERVICE_STOPPED`, or
-  report a nonzero exit code **and** set the failure-actions-on-error flag
-  (`sc.exe failureflag` / `SERVICE_CONFIG_FAILURE_ACTIONS_FLAG`). Verify
-  with a kill-and-observe test in `verify-msi.ps1`.
+  eager-exit design requires. **As built (W1):** on a run-closure error the
+  SCM wrapper reports `SERVICE_STOPPED` with
+  `ServiceExitCode::ServiceSpecific(1)` — deterministic, keeps the real
+  cause in the SCM stop record — so the installer MUST pair the restart
+  failure actions with the failure-actions-on-error flag
+  (`SERVICE_CONFIG_FAILURE_ACTIONS_FLAG`; `sc.exe failureflag` or a small
+  custom action if `util:ServiceConfig` cannot express it). Verify with a
+  kill-and-observe test in `verify-msi.ps1`.
 - **Demand-start gating:** `sky-survey-camera`, `plate-solver`,
   `calibrator-flats` install with `Start='demand'` and (unlike the rest) no
   `ServiceControl` start on install. `docs/packaging-windows.md` documents:
@@ -144,10 +146,17 @@ All 18 services get what filemonitor already has:
   for a `tracing-appender` rolling file
   (`%PROGRAMDATA%\rusty-photon\logs\<svc>.log`, daily rotation, keep 14
   files), with a non-blocking writer whose guard is held to process exit so
-  the final lines flush on Stop. Console mode is byte-for-byte unchanged
-  (stdout stays reserved for the `bound_addr=` handshake; under SCM both
-  std handles are absent, which Rust's stdlib sinks harmlessly — W1 adds a
-  service-mode smoke to confirm).
+  the final lines flush on Stop. Console mode is byte-for-byte unchanged.
+  **As built (W1):** the crate exposes a sticky process-global
+  `is_scm_service()`, and all 18 `bound_addr=` stdout-handshake sites (15
+  service libs + 3 mains) are gated on it; raw stderr error prints on
+  service-mode paths were routed through tracing. Rust's Windows stdio
+  sinks absent/NULL std handles without panicking, so this is about not
+  *losing* diagnostics; the real-SCM std-handle smoke stays a
+  `verify-msi.ps1` item. Bazel-side, the lifecycle crate is ONE library
+  target whose `crate_features` selects `scm` on Windows — per-consumer
+  `_scm` variants caused dual crate instantiation (E0308) on Windows and
+  must not be reintroduced.
 
 ### Platform-dependent defaults (W2)
 
@@ -175,8 +184,16 @@ The operator installs QHY's All-in-One pack regardless (it carries the
 signed device driver); it also provides the DLL. To make the missing-DLL
 case diagnosable instead of a pre-`main` loader failure:
 
-- `libqhyccd-sys/build.rs` (Windows, real variant): add
-  `-C link-arg=/DELAYLOAD:qhyccd.dll -C link-arg=delayimp.lib`.
+- Delay-load link args (`/DELAYLOAD:qhyccd.dll` + `delayimp.lib`), Windows
+  msvc real-variant only. **As built (W3 finding): these live in
+  `services/qhy-camera/build.rs` — the binary crate — NOT in
+  `libqhyccd-sys/build.rs` as this plan originally said.**
+  `cargo:rustc-link-arg` applies only to the emitting package's own link
+  targets and does not propagate from a dependency's build script to the
+  final binary (verified empirically; rules_rust likewise forwards only
+  `-l`/`-L`). The hand-written BUILD.bazel mirrors the flags via
+  `rustc_flags` selects on the real-SDK targets; a pointer comment in
+  libqhyccd-sys's Windows arm guards against moving them back.
 - Startup preflight (service + console): probe the All-in-One's known
   install directories (enumerated during W3 on a real Windows box — flagged
   unknown below) plus the exe's own directory, `AddDllDirectory` the first
@@ -212,6 +229,15 @@ service per ADR-014.
   service's documented port; demand-start on exactly the gated three; the
   QHY SDK version pinned for the Windows build matches the Linux pins; the
   ZWO blob ref matches `install-zwo-sdk`'s default.
+- **ui-htmx driver-map seeding** (post-W0 finding): ui-htmx discovers
+  drivers only through the static `drivers` map in its own config — no
+  discovery — and its self-created default lists a single `dsd-fp2`
+  entry, so a fresh install would show none of the actually-selected
+  drivers. The MSI uniquely knows the selection: on install, **iff**
+  `%PROGRAMDATA%\rusty-photon\ui-htmx.json` does not exist, write one
+  with an entry per selected driver feature (fixed localhost ports —
+  fully deterministic). Only-if-absent preserves the self-creation /
+  `config.apply` ownership model; upgrades never touch it.
 - `scripts/build-msi.ps1` (runs on a dev box or CI, mirrors
   `build-packages.sh`): stage pinned SDKs into the package cache (QHY
   `sdk_win64_<ver>.zip` for `qhyccd.lib`; ZWO DLLs from the pinned ref);
@@ -224,8 +250,9 @@ service per ADR-014.
   Windows box / `windows-latest`): silent install with all features →
   every auto-start service `RUNNING` (`sc query`), gated three present but
   stopped → configs self-created in `%PROGRAMDATA%` with minted
-  `unique_id`s → HTTP port probes (`/management/apiversions` for Alpaca
-  services) → log files appearing under `...\logs\` → kill one service
+  `unique_id`s → the seeded `ui-htmx.json` `drivers` map matches the
+  installed feature set → HTTP port probes (`/management/apiversions` for
+  Alpaca services) → log files appearing under `...\logs\` → kill one service
   process and observe SCM restart it (failure-actions proof) → feature
   remove → full uninstall: services gone, Program Files clean, configs and
   logs still present (documented "purge by hand" step deletes them).
@@ -268,17 +295,20 @@ service per ADR-014.
       it adds itself to the system PATH) — enumerate the probe list on a
       real Windows machine; the preflight's known-locations list is seeded
       from that.
-- [ ] (W1) Exact SCM failure-actions mechanics for our deliberate
-      eager-validation exits: process-exit-without-`SERVICE_STOPPED` vs.
-      `failureflag` — pick whichever makes the kill-and-observe verify pass.
+- [x] (W1) SCM failure-actions mechanics: resolved — `SERVICE_STOPPED` +
+      `ServiceExitCode::ServiceSpecific(1)`; the installer must set
+      `SERVICE_CONFIG_FAILURE_ACTIONS_FLAG` (now a W4 requirement, verified
+      by the kill-and-observe check).
 - [ ] (W4) Whether the vendor DLLs (ZWO; QHY's at runtime) require the VC++
       redistributable on a clean Windows install — if so, add the merge
       module to the MSI.
 - [ ] (W4) Whether ZWO's EAF needs the vendor driver installer or
       enumerates as plain HID — determines whether the prerequisite doc
       line covers cameras only.
-- [ ] (W1) Confirm std-handle behavior under SCM (no panic, `bound_addr=`
-      handshake harmlessly sunk) with a service-mode smoke.
+- [ ] (W1→W4) Std-handle behavior under SCM: design-resolved (all 18
+      `bound_addr=` handshake sites gated on `is_scm_service()`; Rust sinks
+      NULL handles, so the risk was lost output, not a panic) — the
+      remaining item is the real-SCM smoke in `verify-msi.ps1`.
 
 ## Future considerations
 
