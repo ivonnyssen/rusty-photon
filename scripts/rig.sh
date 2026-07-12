@@ -41,6 +41,15 @@ unit_name() {
     esac
 }
 
+# Single-quote each argument for the remote shell (ssh concatenates its
+# command arguments and the remote shell re-parses them, so boundaries and
+# metacharacters survive only if we quote here): abc -> 'abc', don't -> 'don'\''t'.
+quote_args() {
+    for a in "$@"; do
+        printf " '%s'" "$(printf '%s' "$a" | sed "s/'/'\\\\''/g")"
+    done
+}
+
 [ $# -ge 1 ] || usage 1
 cmd=$1
 shift
@@ -55,7 +64,7 @@ case "$cmd" in
         shift
         # -t: keep colors; journalctl needs the adm group or sudo — use sudo
         # since the rig user has it passwordless anyway.
-        ssh -t "$RIG_HOST" "sudo journalctl -u '$svc' $*"
+        ssh -t "$RIG_HOST" "sudo journalctl -u '$svc'$(quote_args "$@")"
         ;;
     restart | start | stop)
         [ $# -eq 1 ] || { echo "$cmd: exactly one service name required" >&2; exit 1; }
