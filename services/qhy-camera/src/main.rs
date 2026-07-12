@@ -64,7 +64,7 @@ fn main() -> ServiceResult {
     // In Windows SCM service mode logs go to the rolling file under
     // %PROGRAMDATA%\rusty-photon\logs\; hold the guard until process exit so
     // the final lines flush on SCM Stop. Console mode logs to stderr as before.
-    let _tracing_guard = rusty_photon_service_lifecycle::init_service_tracing(
+    let tracing_guard = rusty_photon_service_lifecycle::init_service_tracing(
         "qhy-camera",
         args.log_level,
         args.service,
@@ -73,7 +73,13 @@ fn main() -> ServiceResult {
     if let Some(Command::Doctor) = args.command {
         // Interactive diagnostic — never starts the server. The exit code
         // reflects overall health (DR3).
-        std::process::exit(qhy_camera::doctor::run());
+        let code = qhy_camera::doctor::run();
+        // process::exit bypasses destructors, so drop the tracing guard
+        // explicitly to flush buffered log lines first — inert in console
+        // mode, but `--service doctor` is expressible and the guard then
+        // owns the rolling-file writer.
+        drop(tracing_guard);
+        std::process::exit(code);
     }
 
     // Windows real-SDK builds delay-load qhyccd.dll (see build.rs): resolve it
