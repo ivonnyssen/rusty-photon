@@ -40,7 +40,6 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + S
                     "safe": true
                 }
             ],
-            "default_safe": false,
             "case_sensitive": false
         },
         "server": {
