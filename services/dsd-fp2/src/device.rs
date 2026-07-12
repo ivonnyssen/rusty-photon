@@ -215,16 +215,19 @@ impl CoverCalibrator for DsdFp2Device {
         }
         // Below `min_brightness` the panel's EL output is non-linear/unreliable
         // (see docs/services/dsd-fp2.md "Hardware Constraints"); reject it so a
-        // caller picks either 0 (off) or a value in the panel's usable range.
-        // Zero is exempt: it is the ASCOM "on at zero" state, not a dim request.
+        // caller picks either 0 (the ASCOM on-at-zero state) or a value in the
+        // panel's usable range. Zero is exempt: it's on-at-zero, not a dim
+        // request, so calibrator_state still reports Ready — call
+        // calibrator_off() to actually turn the light off.
         let min_brightness = self.config.min_brightness;
         if brightness != 0 && brightness < min_brightness {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_VALUE,
                 format!(
                     "brightness {brightness} is below the configured minimum {min_brightness} \
-                     (panel output is non-linear below this value); use 0 to turn the light off \
-                     or a value >= {min_brightness}"
+                     (panel output is non-linear below this value); use 0 for the ASCOM \
+                     on-at-zero state, calibrator_off() to turn the light off, or a value >= \
+                     {min_brightness}"
                 ),
             ));
         }

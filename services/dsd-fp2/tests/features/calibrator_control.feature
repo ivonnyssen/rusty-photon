@@ -6,7 +6,8 @@ Feature: Calibrator control
   brightness reported through ASCOM is `4096`. Below the configured
   `min_brightness` (default 250) the panel's EL output is non-linear, so a
   non-zero brightness under that floor is also rejected with
-  `INVALID_VALUE`; `0` (light off) is always accepted regardless.
+  `INVALID_VALUE`; `0` (the ASCOM "on at zero" state — the light stays
+  logically on, at zero brightness) is always accepted regardless.
 
   Scenario: Calibrator on then off
     Given a connected FP2 device

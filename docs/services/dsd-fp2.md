@@ -116,10 +116,11 @@ What is **not** in this crate (because the shared-transport crate owns it):
   linear (R² > 0.9999, residuals ≤ 1.8%). `cover_calibrator.min_brightness`
   (default `250`, see [Configuration](#configuration)) rejects non-zero
   `calibrator_on` requests below this floor rather than silently
-  delivering an unreliable flat; `0` (light off) is always accepted. The
-  measurement was taken on one physical panel — EL turn-on thresholds can
-  vary unit to unit, which is why the floor is a config field rather than
-  a hardcoded constant.
+  delivering an unreliable flat; `0` (the ASCOM "on at zero" state — see
+  [Validation](#validation)) is always accepted regardless of the floor.
+  The measurement was taken on one physical panel — EL turn-on thresholds
+  can vary unit to unit, which is why the floor is a config field rather
+  than a hardcoded constant.
 - **No halt-cover support**: the FP2 protocol does not expose a
   cover-motion abort opcode; once started, a move runs to completion.
   The driver therefore returns `MethodNotImplementedException`
@@ -264,6 +265,10 @@ without any driver-specific code.
   a dim request.
 - All writes (open/close, calibrator on/off, brightness changes) require
   `connected == true`; otherwise the driver returns `ASCOMError::NOT_CONNECTED`.
+  `calibrator_on`'s brightness checks (max and min, above) run *before* the
+  connection check, so an out-of-range or under-floor brightness returns
+  `ASCOMError::INVALID_VALUE` even while disconnected — the value is invalid
+  on its own terms regardless of hardware state.
 
 ## Connection Lifecycle
 
