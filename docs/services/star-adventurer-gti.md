@@ -886,9 +886,10 @@ of the target — the check uses the celestial `HA = LST − RA`, so it is
 the same for both pier sides of a flip-planned slew.
 
 This replaced the earlier rectangular celestial-Dec envelope
-(`dec_limits`, removed 2026-07-01; a config file still carrying
-`dec_limits` keeps loading — serde ignores unknown fields — but the
-field has no effect). The rectangle was the
+(`dec_limits`, removed 2026-07-01; `MountConfig`'s `deny_unknown_fields`
+(#484) means a config file still carrying `dec_limits` now fails to load
+with the field named, rather than being silently ignored). The rectangle
+was the
 wrong shape for what operators mean by "don't slew there": the local
 horizon is a tilted great circle on the celestial sphere, so a
 rectangle is simultaneously too loose (accepts below-horizon targets at
@@ -1158,6 +1159,11 @@ must be `(0, 0.95]`; `tracking_guard_margin_hours` `[0, 1.0]`; an active
 `min_altitude_degrees` must be finite in `[-90, 90]`. (This
 replaced the former runtime `MountConfig::validate` / `FlipPolicy::validate`
 — see [ADR-006](../decisions/006-typed-physical-quantities-for-mount-pointing.md).)
+Every genuinely-operator-config struct (`Config`, `UsbConfig`, `UdpConfig`,
+`ServerConfig`, `MountConfig`, `FlipPolicy`, and the `cw_exclusion_zone` wire
+shape) additionally rejects unknown keys at deserialize
+(`deny_unknown_fields`), so a typo or a key removed by a schema change fails
+loudly at load instead of being silently ignored.
 
 ```json
 {
@@ -1260,8 +1266,8 @@ Notes:
   `[-90, 90]`. Negative values permit below-horizon pointing and are
   logged `info!` at startup; `-90` effectively disables the check. See
   [§Altitude floor](#altitude-floor). (Replaced the rectangular
-  `dec_limits` envelope 2026-07-01; a stale `dec_limits` key is
-  ignored on load.)
+  `dec_limits` envelope 2026-07-01; a stale `dec_limits` key is now
+  rejected loudly at load, per `deny_unknown_fields` (#484).)
 - `park_ra_ticks` / `park_dec_ticks` are written by `SetPark` and read
   on every connect; absent (or `null`) at first run, populated once
   `SetPark` is called. Operators may set them by hand to pin a known
