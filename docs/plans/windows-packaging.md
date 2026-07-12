@@ -23,7 +23,7 @@ untouched.
 | W1 | SCM enablement: rolling-file logging in service mode (lifecycle crate) + `scm` feature / `--service` flag in the 17 remaining services | Merged | #493 |
 | W2 | Platform-dependent defaults: config path → `%PROGRAMDATA%` on Windows, serial `COM` defaults, rp data dir | Merged | #492 |
 | W3 | qhy-camera Windows: `/DELAYLOAD` + startup preflight + `doctor` subcommand | Merged | #491 |
-| W4 | WiX v5 suite (`installer/`), `scripts/build-msi.ps1` + `scripts/verify-msi.ps1`, `check-pkg-assets.sh` Windows assertions; ui-htmx driver-map seeding; `msi.yml` on-demand CI harness | In review | `feature/windows-packaging-w4` |
+| W4 | WiX v5 suite (`installer/`), `scripts/build-msi.ps1` + `scripts/verify-msi.ps1`, `check-pkg-assets.sh` Windows assertions; ui-htmx driver-map seeding; `msi.yml` on-demand CI harness | In review | #499 |
 | W5 | `release.yml` suite-MSI job + install-smoke gate + nightly verify; retire filemonitor `wix/` + cargo-wix; `docs/packaging-windows.md` | Not started | |
 
 W1–W3 are pure code PRs (cross-platform, Linux behavior unchanged) and are
