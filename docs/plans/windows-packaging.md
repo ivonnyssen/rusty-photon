@@ -96,7 +96,7 @@ rusty-photon-<version>-x64.msi
 │   └── sky-survey-camera   :11116   simulator; demand-start (gated)
 └── Automation (optional, off by default)
     ├── rp                  :11115   orchestrator
-    ├── session-runner      :11171   workflow-DSL runner
+    ├── session-runner      :11171   workflow-DSL runner; demand-start (gated)
     ├── plate-solver        :11131   demand-start (gated); needs ASTAP
     ├── phd2-guider         :11130   needs PHD2
     └── calibrator-flats    :11170   demand-start (gated)
@@ -142,6 +142,12 @@ All 18 services get what filemonitor already has:
   `ServiceControl` start on install. `docs/packaging-windows.md` documents:
   write `%PROGRAMDATA%\rusty-photon\<svc>.json`, then
   `sc start rusty-photon-<svc>` (or Services.msc).
+  **As built (W4): `session-runner` is the fourth gated service** — its
+  `workflows_dir`/`state_dir` are required config fields with no usable
+  defaults (`docs/services/session-runner.md`), which nothing had surfaced
+  before because it has no Linux package; the first full `verify-msi.ps1`
+  run caught it crash-looping on the missing config. Its future Linux `.deb`
+  gets the matching `ConditionPathExists=` unit.
 - **Logging:** in SCM mode the lifecycle crate's `init_service_tracing`
   (new in W1; console mode delegates to the unchanged `init_tracing`) swaps
   stderr for a `tracing-appender` rolling file

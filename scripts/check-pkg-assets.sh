@@ -204,9 +204,11 @@ if [ -f "$pkg_wxs" ]; then
             || err "$svc: firewall exception port must be $port"
         # Demand-start on exactly the no-defaultable-config services (the
         # ConditionPathExists= translation); everything else auto-starts on
-        # install.
+        # install. session-runner joins the Linux-gated three: workflows_dir/
+        # state_dir are required config fields with no usable defaults (it has
+        # no Linux package yet, so no ConditionPathExists= unit to mirror).
         case "$svc" in
-            sky-survey-camera | plate-solver | calibrator-flats)
+            sky-survey-camera | plate-solver | calibrator-flats | session-runner)
                 grep -q 'Start="demand"' "$frag" \
                     || err "$svc: gated service must install with Start=\"demand\""
                 grep -q 'Start="install"' "$frag" \

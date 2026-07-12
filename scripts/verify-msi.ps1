@@ -57,16 +57,18 @@ $ports = @{
     'session-runner' = 11171
 }
 $allServices = $ports.Keys | Sort-Object
-$gated = @('sky-survey-camera', 'plate-solver', 'calibrator-flats')
+# session-runner is gated like the Linux-gated three: its workflows_dir/
+# state_dir are required config fields with no usable defaults.
+$gated = @('sky-survey-camera', 'plate-solver', 'calibrator-flats', 'session-runner')
 $serial = @('ppba-driver', 'qhy-focuser', 'pa-falcon-rotator', 'pa-scops-oag',
     'dsd-fp2', 'star-adventurer-gti')
-$active = @('sentinel', 'ui-htmx', 'filemonitor', 'rp', 'session-runner',
+$active = @('sentinel', 'ui-htmx', 'filemonitor', 'rp',
     'phd2-guider', 'zwo-camera', 'zwo-focuser')
 # Plain-HTTP services expose /health; Alpaca services answer the management
 # API. The cameras, zwo-focuser, phd2-guider and session-runner never
 # self-create a config (SDK-derived identity / built-in defaults); ui-htmx's
 # config comes from the MSI seed action, asserted separately.
-$healthProbe = @('sentinel', 'rp', 'ui-htmx', 'phd2-guider', 'session-runner')
+$healthProbe = @('sentinel', 'rp', 'ui-htmx', 'phd2-guider')
 $selfCreatesConfig = @('sentinel', 'rp', 'filemonitor') + $serial
 
 $dataDir = Join-Path $env:ProgramData 'rusty-photon'

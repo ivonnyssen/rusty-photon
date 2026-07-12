@@ -59,10 +59,11 @@ different audience and a different platform:
    crate's `scm` feature and a `--service` flag. SCM failure actions
    (restart after 5 s, indefinitely) reproduce the systemd
    `Restart=on-failure`/`RestartSec=5` contract the serial drivers' eager
-   hardware validation depends on. The three no-defaultable-config services
-   (`sky-survey-camera`, `plate-solver`, `calibrator-flats`) install with
-   `Start='demand'` — the Windows translation of `ConditionPathExists=`
-   gating. Reload-capable services keep working via SCM `ParamChange`
+   hardware validation depends on. The no-defaultable-config services
+   (`sky-survey-camera`, `plate-solver`, `calibrator-flats`, and — found
+   during W4, since it had never been packaged anywhere before —
+   `session-runner`) install with `Start='demand'` — the Windows translation
+   of `ConditionPathExists=` gating. Reload-capable services keep working via SCM `ParamChange`
    (already translated to `ReloadSignal` by the crate).
 3. **Services run as LocalSystem.** Deliberately the opposite of the Linux
    hardening posture, accepted for the hobby-rig stage: sentinel's
