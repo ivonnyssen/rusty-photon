@@ -66,12 +66,12 @@ case "$cmd" in
         shift
         # -t: keep colors; journalctl needs the adm group or sudo — use sudo
         # since the rig user has it passwordless anyway.
-        ssh -t "$RIG_HOST" "sudo journalctl -u '$svc'$(quote_args "$@")"
+        ssh -t "$RIG_HOST" "sudo journalctl -u$(quote_args "$svc")$(quote_args "$@")"
         ;;
     restart | start | stop)
         [ $# -eq 1 ] || { echo "$cmd: exactly one service name required" >&2; exit 1; }
         svc=$(unit_name "$1")
-        ssh "$RIG_HOST" "sudo systemctl $cmd '$svc' && systemctl --no-pager --plain list-units --type=service --all '$svc'"
+        ssh "$RIG_HOST" "sudo systemctl $cmd$(quote_args "$svc") && systemctl --no-pager --plain list-units --type=service --all$(quote_args "$svc")"
         ;;
     fetch-configs)
         dest="${1:-$HOME/.config/rusty-photon-rig}"
