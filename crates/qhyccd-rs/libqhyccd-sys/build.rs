@@ -76,6 +76,16 @@ fn main() {
             println!("cargo:rustc-link-lib=dylib=usb-1.0");
         }
         "windows" => {
+            // NOTE (delay-load): on Windows `qhyccd.lib` is an IMPORT library
+            // for the proprietary qhyccd.dll (never redistributed, ADR-013).
+            // The `/DELAYLOAD:qhyccd.dll` + `delayimp.lib` link args that keep
+            // a missing DLL from killing the process pre-`main` live in
+            // services/qhy-camera/build.rs (and its BUILD.bazel), NOT here:
+            // `cargo:rustc-link-arg` applies only to the emitting package's
+            // own link targets and does not propagate from a dependency's
+            // build script to the final binary (rules_rust likewise
+            // propagates only `-l`/`-L`). See docs/services/qhy-camera.md
+            // § "Windows: qhyccd.dll resolution".
             let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap();
             let arch_dir = match arch.as_str() {
                 "x86_64" => "x64",

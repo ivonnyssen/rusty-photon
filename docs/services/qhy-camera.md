@@ -178,6 +178,9 @@ graph TD;
 - **`mock.rs`** (feature `simulation`/`mock`) — the hardware-free test backend
   (the `qhyccd-rs` `simulation` camera + a tiny in-crate trait seam over the SDK
   for unit tests).
+- **`preflight.rs` / `doctor.rs`** — Windows `qhyccd.dll` resolution (startup
+  preflight for the delay-loaded SDK DLL) and the interactive `doctor`
+  subcommand; see *Windows: qhyccd.dll resolution* below.
 
 **Concurrency.** The QHY SDK is blocking C FFI and is **not** safe to call from
 arbitrary threads concurrently for a single device. Device state (current ROI,
@@ -507,7 +510,130 @@ fn main() -> ServiceResult {
 ```
 
 `info!("Service started successfully …")` only after the bind succeeds; everything
-else is `debug!` (CLAUDE.md Rule 9).
+else is `debug!` ([AGENTS.md](../AGENTS.md) Rule 9).
+
+In addition to the plain service invocation, `main.rs` exposes one subcommand:
+`rusty-photon-qhy-camera doctor` — the interactive Windows installation
+diagnostic specified in *Windows: qhyccd.dll resolution* below. Running with no
+subcommand starts the driver exactly as before.
+
+---
+
+## Windows: qhyccd.dll resolution (delay-load · preflight · doctor)
+
+On Windows the QHYCCD SDK's `qhyccd.lib` is an **import library** for the
+proprietary `qhyccd.dll` — the exe needs the DLL at runtime, and
+[ADR-013](../decisions/013-native-sdk-payload-policy.md) forbids
+redistributing it. Per
+[ADR-015](../decisions/015-windows-packaging-architecture.md) (decision 6)
+the operator installs QHY's **All-in-One pack** (required for the signed
+device driver anyway), which also provides the DLL. Without intervention a
+missing DLL kills the process **in the Windows loader before `main`** — no
+log line, just an error dialog. Three layers make that failure mode
+diagnosable instead:
+
+### Delay-load (build layer)
+
+- **WD1.** Windows **MSVC real-SDK** builds (not `simulation`, not
+  `QHYCCD_SKIP_NATIVE_LINK`) link the qhy-camera binary — and the package's
+  test binaries — with `/DELAYLOAD:qhyccd.dll` + `delayimp.lib`. The DLL is
+  no longer needed at process start; the first SDK call binds it.
+- **WD2.** The link args are emitted by **`services/qhy-camera/build.rs`**,
+  *not* by `libqhyccd-sys/build.rs`: `cargo:rustc-link-arg` applies only to
+  the emitting package's own link targets and does **not** propagate from a
+  dependency's build script to the final binary (verified empirically; under
+  Bazel/rules_rust likewise only `-l`/`-L` propagate from dep build scripts).
+  The hand-written `BUILD.bazel` mirrors the flags on the real-SDK binary and
+  unit-test targets via a `rustc_flags` `select()` for CI parity; the
+  *shipped* exe comes from the Cargo path (`scripts/build-msi.ps1`, plan W4).
+- **WD3.** `simulation` builds take **no** delay-load args: the real FFI is
+  `cfg`'d out, so no `qhyccd.dll` imports exist to delay (and `/DELAYLOAD`
+  with zero imports draws linker warning LNK4199).
+
+### Startup preflight (service + console modes)
+
+Runs in `main.rs` on Windows real-SDK builds only, **before any SDK call**:
+
+- **PF1.** Probe an **ordered candidate list** of directories for
+  `qhyccd.dll`: (1) the exe's own directory, then (2) a **best-effort seed**
+  of known All-in-One install locations under `%ProgramFiles%` /
+  `%ProgramFiles(x86)%` (`QHYCCD\AllInOne\sdk\x64`, `QHYCCD\AllInOne\sdk`).
+  The exact All-in-One layout is a flagged unknown of the Windows packaging
+  plan — the list is confirmed/extended on a real Windows box and is trivially
+  extendable in `preflight::candidate_dirs`.
+- **PF2.** **Every existing candidate is attempted in order; the first
+  successful load wins.** Each attempt uses `LOAD_WITH_ALTERED_SEARCH_PATH`
+  (so the DLL's own same-directory dependencies resolve), and the winning
+  handle is deliberately **leaked** — the module stays resident for the life
+  of the process, and the delay-load helper's later
+  `LoadLibrary("qhyccd.dll")` binds to the already-loaded module by base name
+  instead of re-searching. A candidate that **exists but fails to load** (a
+  stale or broken copy, e.g. next to the exe) is logged at `debug!`,
+  recorded, and **skipped** — it must never mask a later, usable All-in-One
+  install (note the by-name fallback of PF3 alone would not recover from
+  this: the exe dir is first in the default search order too).
+- **PF3.** All candidates exhausted → fall back to a plain load **by name**
+  using the default Windows DLL search order (exe dir, System32, `PATH`),
+  catching installs that put the DLL on `PATH`. The resolution outcome is
+  logged at `debug!`.
+- **PF4.** Everything misses → **one distinctive, actionable `error!`**
+  naming the QHY All-in-One download URL (<https://www.qhyccd.com/download/>),
+  the probed directories, and **every failed load attempt with the loader's
+  reason** (the 2 a.m. log says both *what* was tried and *why* it failed),
+  then a clean non-zero exit. SCM/systemd failure actions restart the service
+  every 5 s — the same contract as a missing serial device: the unit comes up
+  by itself once the pack is installed. (`scripts/verify-msi.ps1`, plan W4,
+  asserts this line on a DLL-less runner.)
+- **PF5.** `simulation` builds skip the preflight entirely: the real FFI is
+  `cfg`'d out, so no SDK call is ever made and `qhyccd.dll` is not required
+  at runtime. (The SDK *link* itself is only omitted under
+  `QHYCCD_SKIP_NATIVE_LINK` — see *Native dependency & build gating*; the
+  preflight keys off runtime behavior, not linkage.) Non-Windows builds have
+  no preflight.
+
+### `doctor` subcommand (interactive diagnostic)
+
+`rusty-photon-qhy-camera doctor` — compiled on every platform, useful on
+Windows (planned Start-Menu shortcut, plan W4). It can do what a session-0
+service cannot: talk to the operator and open a browser.
+
+- **DR1.** On Windows real-SDK builds it reports: **(a)** `qhyccd.dll`
+  resolution — found at which probed path / found via the default search
+  order / missing (with the probed list **and every failed load attempt with
+  its loader error**); **(b)** the **loaded** SDK version
+  via `GetQHYCCDSDKVersion` vs. the **pinned build-time** SDK version
+  (26.06.04), with an explicit warning when they differ — ABI skew against
+  whatever the All-in-One ships is an accepted risk (ADR-015), surfaced here;
+  **(c)** the number of cameras the loaded SDK enumerates; **(d)** best-effort
+  driver-pack presence (existence of the known `QHYCCD` install roots);
+  **(e)** the download URL. The SDK is only called when the DLL actually
+  resolved (calling into a delay-loaded DLL that is missing would trip the
+  delay-load helper). Known limitation: if the installed DLL is old enough to
+  *lack* a symbol the pinned import library carries, the delay-load helper
+  faults on that call — the doctor surfaces version skew, not symbol-level
+  skew.
+- **DR2.** When the report is unhealthy **or** version-skewed, the doctor
+  offers to open the QHY download page in the default browser
+  (`[y/N]` prompt on stdin; opened via `cmd /C start` — no extra dependency).
+  Non-interactive stdin (EOF) counts as "No".
+- **DR3.** Exit code reflects overall health: **0** = healthy (DLL resolved
+  *and* SDK version readable — version skew alone still exits 0, it is a
+  surfaced warning, not a failure); **1** = unhealthy (DLL missing, or DLL
+  present but SDK init / version query failed).
+- **DR4.** On non-Windows platforms the doctor prints that it is
+  Windows-only (Unix builds link the SDK statically — there is nothing to
+  resolve) and exits 0.
+- **DR5.** On `simulation` builds it reports that the simulation backend
+  needs no `qhyccd.dll` and exits 0.
+
+The pinned build-time SDK version constant lives in `preflight.rs`, kept in
+lockstep with the SDK pin in `crates/qhyccd-rs/libqhyccd-sys/build.rs` and the
+CI workflows; the Windows packaging plan's `check-pkg-assets.sh` assertions
+(W4) will assert that parity.
+
+zwo-camera / zwo-focuser need none of this: their MIT DLLs ship in the MSI
+next to the exes (ADR-013/014), and the loader finds same-directory DLLs
+first.
 
 ---
 
@@ -520,6 +646,14 @@ Layered per [`testing.md`](../skills/testing.md).
   gain/offset range checks, cooling gating, Bayer-offset mapping — against an
   in-crate trait seam over the SDK (mockall doubles), so unit tests need **neither
   hardware nor the SDK linked** where possible.
+- **Windows DLL resolution** — the preflight's candidate ordering/selection are
+  pure functions with **injected** environment and fs-existence checkers, and
+  the doctor's report rendering / exit-code mapping / prompt parsing are pure
+  over plain data — all unit-tested **cross-platform**. The real
+  `LoadLibrary` path is exercised by `#[cfg(windows)]` unit tests on the
+  Windows CI legs (and by plan-W4's on-Windows verification pass). No BDD
+  scenarios: the BDD suite drives the `simulation` binary, which deliberately
+  skips this whole layer (PF5/DR5).
 - **BDD** (`bdd-infra::ServiceHandle`) — connection lifecycle (C1–C4), ROI/bin
   validation (R1–R2, B1–B3), exposure happy-path + error paths (E1–E9),
   gain/offset/readout (GO1–RM1), cooling (K1–K4), and FilterWheel (FW1–FW3 when

@@ -3634,6 +3634,7 @@ dependencies = [
  "clap",
  "cucumber",
  "derive_more",
+ "libloading",
  "ndarray",
  "parking_lot",
  "qhyccd-rs",
