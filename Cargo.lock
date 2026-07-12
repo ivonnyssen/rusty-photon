@@ -1161,7 +1161,6 @@ dependencies = [
  "clap",
  "cucumber",
  "derive_more",
- "directories",
  "humantime-serde",
  "reqwest 0.13.4",
  "rp-auth",

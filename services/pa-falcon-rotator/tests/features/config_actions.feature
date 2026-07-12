@@ -24,7 +24,7 @@ Feature: Configuration actions
     And the schema should mark rotator.unique_id and switch.unique_id as locked fields
 
   Scenario: Read the current configuration
-    Given a running pa-falcon-rotator service
+    Given a running pa-falcon-rotator service configured with serial.port /dev/ttyUSB0
     When config.get is called on the rotator device
     Then the config should report serial.port as /dev/ttyUSB0
     And the config should report no overrides

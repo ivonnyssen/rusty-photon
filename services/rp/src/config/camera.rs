@@ -5,6 +5,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct CameraConfig {
     pub id: String,
     #[serde(default)]
@@ -196,6 +197,32 @@ mod tests {
                 .is_none(),
             "omitted readout_time_estimate must deserialize to None (the do_capture default applies)"
         );
+    }
+
+    #[test]
+    fn camera_config_rejects_unknown_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "session": {"data_directory": "/tmp/rp-test"},
+                "equipment": {
+                    "cameras": [
+                        {
+                            "id": "main-cam",
+                            "alpaca_url": "http://localhost:11120",
+                            "colour": "mono"
+                        }
+                    ]
+                },
+                "server": {}
+            }"#,
+        )
+        .unwrap();
+
+        let err = load_config(&path).unwrap_err().to_string();
+        assert!(err.contains("colour"), "{err}");
     }
 
     #[test]

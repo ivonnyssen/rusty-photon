@@ -5,7 +5,11 @@ use std::path::Path;
 use std::time::Duration;
 
 /// Main configuration structure
+///
+/// `deny_unknown_fields` so typoed or removed keys fail loudly at load instead
+/// of being silently ignored.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     pub serial: SerialConfig,
     pub server: ServerConfig,
@@ -13,7 +17,11 @@ pub struct Config {
 }
 
 /// Serial port configuration
+///
+/// `deny_unknown_fields` so typoed or removed keys fail loudly at load instead
+/// of being silently ignored.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SerialConfig {
     pub port: String,
     #[serde(default = "default_baud_rate")]
@@ -29,7 +37,11 @@ pub struct SerialConfig {
 }
 
 /// Server configuration
+///
+/// `deny_unknown_fields` so typoed or removed keys fail loudly at load instead
+/// of being silently ignored.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ServerConfig {
     pub port: u16,
     /// Alpaca UDP discovery responder port (normally 32227). Absent/`null` —
@@ -45,7 +57,11 @@ pub struct ServerConfig {
 }
 
 /// Focuser device configuration
+///
+/// `deny_unknown_fields` so typoed or removed keys fail loudly at load instead
+/// of being silently ignored.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct FocuserConfig {
     pub name: String,
     /// ASCOM `UniqueID`. Minted as a UUIDv4 on first run by
@@ -90,10 +106,18 @@ fn default_max_step() -> u32 {
     22_000
 }
 
+/// Platform-dependent default serial port. Both values are placeholders the
+/// operator replaces with the real device path: the driver restart-loops
+/// until then, on Windows (`COM3`) exactly as on Unix (`/dev/ttyUSB0`).
+#[cfg(windows)]
+const DEFAULT_SERIAL_PORT: &str = "COM3";
+#[cfg(not(windows))]
+const DEFAULT_SERIAL_PORT: &str = "/dev/ttyUSB0";
+
 impl Default for SerialConfig {
     fn default() -> Self {
         Self {
-            port: "/dev/ttyUSB0".to_string(),
+            port: DEFAULT_SERIAL_PORT.to_string(),
             baud_rate: default_baud_rate(),
             polling_interval: default_polling_interval(),
             timeout: default_timeout(),
@@ -203,7 +227,10 @@ mod tests {
         assert!(config.focuser.enabled);
         assert_eq!(config.focuser.max_step, 22_000);
 
+        #[cfg(not(windows))]
         assert_eq!(config.serial.port, "/dev/ttyUSB0");
+        #[cfg(windows)]
+        assert_eq!(config.serial.port, "COM3");
         assert_eq!(config.serial.baud_rate, 19200);
         assert_eq!(config.serial.polling_interval, Duration::from_millis(1000));
         assert_eq!(config.serial.timeout, Duration::from_secs(2));
@@ -228,7 +255,10 @@ mod tests {
     fn serial_config_default_uses_19200() {
         let config = SerialConfig::default();
 
+        #[cfg(not(windows))]
         assert_eq!(config.port, "/dev/ttyUSB0");
+        #[cfg(windows)]
+        assert_eq!(config.port, "COM3");
         // The Scops OAG only responds at 19200 — guard the default against
         // regression to the DMFC doc's "try 9600" footnote.
         assert_eq!(config.baud_rate, 19200);
@@ -248,7 +278,10 @@ mod tests {
         let json = serde_json::to_string(&config).unwrap();
 
         assert!(json.contains("Pegasus Scops OAG"));
+        #[cfg(not(windows))]
         assert!(json.contains("/dev/ttyUSB0"));
+        #[cfg(windows)]
+        assert!(json.contains("COM3"));
         assert!(json.contains("19200"));
         assert!(json.contains("11123"));
     }
@@ -367,6 +400,42 @@ mod tests {
         let path = std::path::PathBuf::from("/tmp/pa_scops_oag_nonexistent_config_12345.json");
         let result = load_config(&path);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn a_typoed_top_level_field_is_rejected_loudly() {
+        let err = serde_json::from_str::<Config>(r#"{"typoed_key": 1}"#)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("typoed_key"), "{err}");
+    }
+
+    #[test]
+    fn a_typoed_serial_field_is_rejected_loudly() {
+        let err =
+            serde_json::from_str::<SerialConfig>(r#"{"port": "/dev/ttyUSB0", "baud_rat": 19200}"#)
+                .unwrap_err()
+                .to_string();
+        assert!(err.contains("baud_rat"), "{err}");
+    }
+
+    #[test]
+    fn a_typoed_server_field_is_rejected_loudly() {
+        let err =
+            serde_json::from_str::<ServerConfig>(r#"{"port": 11123, "discoveryport": 32227}"#)
+                .unwrap_err()
+                .to_string();
+        assert!(err.contains("discoveryport"), "{err}");
+    }
+
+    #[test]
+    fn a_typoed_focuser_field_is_rejected_loudly() {
+        let err = serde_json::from_str::<FocuserConfig>(
+            r#"{"name": "Scops", "description": "d", "max_stap": 22000}"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("max_stap"), "{err}");
     }
 
     #[test]

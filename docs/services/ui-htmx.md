@@ -575,7 +575,10 @@ is keyed by service id (the `{service}` path segment); add an entry per driver.
 The default config carries a single local `dsd-fp2` so `cargo run` works with no
 config file. The optional `rp` target switches on the equipment page, the
 activity stream, the `/config/rp` page, and the roster-derived config targets;
-without it those routes render a "no rp configured" card.
+without it those routes render a "no rp configured" card. Every block
+(`Config` and each nested target/auth struct) rejects unknown keys at
+deserialize (`deny_unknown_fields`), so a typo or a key removed by a schema
+change fails loudly at load instead of being silently ignored.
 
 ```jsonc
 {
@@ -623,7 +626,7 @@ wiring is needed. A name Sentinel does not know simply surfaces Sentinel's
 
 | Argument | Description |
 |----------|-------------|
-| `-c, --config`     | Path to the BFF configuration file. If omitted, the path resolves to the per-user platform config directory (`~/.config/rusty-photon/ui-htmx.json` on Linux) and is created with `Config::default()` on first start (binds `127.0.0.1:11120`, with a single `dsd-fp2` driver at `http://127.0.0.1:11119`). An explicit `--config` naming a missing file stays a hard error. |
+| `-c, --config`     | Path to the BFF configuration file. If omitted, the path resolves to the platform config directory (`~/.config/rusty-photon/ui-htmx.json` on Linux, `%PROGRAMDATA%\rusty-photon\ui-htmx.json` on Windows) and is created with `Config::default()` on first start (binds `127.0.0.1:11120`, with a single `dsd-fp2` driver at `http://127.0.0.1:11119`). An explicit `--config` naming a missing file stays a hard error. |
 | `--port`           | BFF listen port (overrides `server.port`). |
 | `-l, --log-level`  | Log level: trace, debug, info, warn, error. |
 | `--service`        | Hidden: run as a Windows service (passed by the Windows service control manager; no-op on other platforms). |

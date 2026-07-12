@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 /// Top-level configuration deserialised from the JSON config file.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     pub transport: TransportConfig,
     pub server: ServerConfig,
@@ -55,6 +56,7 @@ impl TransportConfig {
 
 /// USB-CDC serial transport config.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct UsbConfig {
     pub port: String,
     #[serde(default = "default_baud_rate")]
@@ -69,6 +71,7 @@ pub struct UsbConfig {
 
 /// UDP/WiFi transport config.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct UdpConfig {
     pub address: IpAddr,
     #[serde(default = "default_udp_port")]
@@ -85,6 +88,7 @@ pub struct UdpConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ServerConfig {
     pub port: u16,
     /// Alpaca UDP discovery responder port (normally 32227). Absent/`null` —
@@ -100,6 +104,7 @@ pub struct ServerConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct MountConfig {
     pub name: String,
     /// Spec-compliant ASCOM `UniqueID`. Ships **empty** so that
@@ -201,8 +206,10 @@ pub struct MountConfig {
     /// negative values permit below-horizon pointing (dust-cap
     /// operations, closed-roof flats) and are logged `info!` at
     /// startup; `-90` never rejects anything. Replaced the rectangular
-    /// `dec_limits` Dec envelope (2026-07-01); a stale `dec_limits`
-    /// key in an existing config file is ignored on load. See the
+    /// `dec_limits` Dec envelope (2026-07-01); `MountConfig`'s
+    /// `deny_unknown_fields` (#484) means a stale `dec_limits` key in
+    /// an existing config file is now rejected loudly at load, naming
+    /// the field, rather than being silently ignored. See the
     /// design doc's
     /// [§Altitude floor](../../../docs/services/star-adventurer-gti.md#altitude-floor).
     #[serde(default)]
@@ -277,6 +284,7 @@ pub struct MountConfig {
 /// `2 × flip_range_hours`. See the design doc for the full decision
 /// tree and the per-side safety envelopes.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct FlipPolicy {
     /// Master switch. Defaults `false` until the first real-hardware
     /// meridian flip on a GTi has been verified.
@@ -420,6 +428,7 @@ pub struct ActiveZone {
 }
 
 #[derive(Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct ActiveZoneWire {
     min_hours: f64,
     max_hours: f64,
@@ -958,10 +967,18 @@ where
     Ok(park)
 }
 
+/// Platform-dependent default serial port. Both values are placeholders the
+/// operator replaces with the real device path: the driver restart-loops
+/// until then, on Windows (`COM3`) exactly as on Unix (`/dev/ttyACM0`).
+#[cfg(windows)]
+const DEFAULT_SERIAL_PORT: &str = "COM3";
+#[cfg(not(windows))]
+const DEFAULT_SERIAL_PORT: &str = "/dev/ttyACM0";
+
 impl Default for UsbConfig {
     fn default() -> Self {
         Self {
-            port: "/dev/ttyACM0".to_string(),
+            port: DEFAULT_SERIAL_PORT.to_string(),
             baud_rate: default_baud_rate(),
             command_timeout: default_command_timeout(),
             polling_interval: default_polling_interval(),
@@ -1164,6 +1181,23 @@ mod tests {
         let m: MountConfig = serde_json::from_str(json).expect("deserialise");
         assert_eq!(m.park_ra_ticks, None);
         assert_eq!(m.park_dec_ticks, None);
+    }
+
+    #[test]
+    fn mount_config_rejects_a_stale_dec_limits_key() {
+        // dec_limits was replaced by min_altitude_degrees on 2026-07-01;
+        // before deny_unknown_fields (#484) it was silently ignored. It
+        // must now fail loudly at load, naming the field.
+        let json = r#"{
+            "name": "T",
+            "unique_id": "t-001",
+            "description": "T",
+            "site_latitude_deg": 0.0,
+            "site_longitude_deg": 0.0,
+            "dec_limits": { "min_dec_deg": -20.0, "max_dec_deg": 80.0 }
+        }"#;
+        let err = serde_json::from_str::<MountConfig>(json).unwrap_err();
+        assert!(err.to_string().contains("dec_limits"), "{err}");
     }
 
     #[test]
@@ -1752,5 +1786,66 @@ mod tests {
             }
             other => panic!("expected Udp, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn config_rejects_unknown_top_level_field() {
+        let json = r#"{
+            "transport": {"kind": "usb", "port": "/dev/ttyACM0"},
+            "server": {"port": 11117},
+            "mount": {
+                "name": "T", "unique_id": "t-001", "description": "T",
+                "site_latitude_deg": 0.0, "site_longitude_deg": 0.0
+            },
+            "plugins": []
+        }"#;
+        let err = serde_json::from_str::<Config>(json).unwrap_err();
+        assert!(err.to_string().contains("plugins"), "{err}");
+    }
+
+    #[test]
+    fn transport_config_usb_variant_rejects_unknown_field() {
+        // The real operator-facing shape goes through the internally
+        // tagged `TransportConfig` wrapper, not `UsbConfig` directly —
+        // confirm deny_unknown_fields still applies once the "kind" tag
+        // is stripped and the rest is handed to `UsbConfig::deserialize`.
+        let json = r#"{"kind": "usb", "port": "/dev/ttyACM0", "flow_control": "none"}"#;
+        let err = serde_json::from_str::<TransportConfig>(json).unwrap_err();
+        assert!(err.to_string().contains("flow_control"), "{err}");
+    }
+
+    #[test]
+    fn usb_config_rejects_unknown_field() {
+        let json = r#"{"port": "/dev/ttyACM0", "flow_control": "none"}"#;
+        let err = serde_json::from_str::<UsbConfig>(json).unwrap_err();
+        assert!(err.to_string().contains("flow_control"), "{err}");
+    }
+
+    #[test]
+    fn udp_config_rejects_unknown_field() {
+        let json = r#"{"address": "192.168.4.1", "bind_address": "192.168.4.2", "mtu": 1500}"#;
+        let err = serde_json::from_str::<UdpConfig>(json).unwrap_err();
+        assert!(err.to_string().contains("mtu"), "{err}");
+    }
+
+    #[test]
+    fn server_config_rejects_unknown_field() {
+        let json = r#"{"port": 11117, "bind_address": "0.0.0.0"}"#;
+        let err = serde_json::from_str::<ServerConfig>(json).unwrap_err();
+        assert!(err.to_string().contains("bind_address"), "{err}");
+    }
+
+    #[test]
+    fn flip_policy_rejects_unknown_field() {
+        let json = r#"{"enabled": true, "hysteresis_hours": 0.1}"#;
+        let err = serde_json::from_str::<FlipPolicy>(json).unwrap_err();
+        assert!(err.to_string().contains("hysteresis_hours"), "{err}");
+    }
+
+    #[test]
+    fn cw_exclusion_zone_rejects_unknown_field() {
+        let json = r#"{"min_hours": 0.95, "max_hours": 11.05, "margin_hours": 0.1}"#;
+        let err = serde_json::from_str::<CwExclusionZone>(json).unwrap_err();
+        assert!(err.to_string().contains("margin_hours"), "{err}");
     }
 }

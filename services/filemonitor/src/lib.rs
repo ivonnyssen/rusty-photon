@@ -14,7 +14,10 @@ use tokio::time::{interval, Duration};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
+/// `deny_unknown_fields` so typoed or removed keys fail loudly at load
+/// instead of being silently ignored.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     pub device: DeviceConfig,
     pub file: FileConfig,
@@ -22,27 +25,39 @@ pub struct Config {
     pub server: ServerConfig,
 }
 
+/// `deny_unknown_fields` so typoed or removed keys fail loudly at load
+/// instead of being silently ignored.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DeviceConfig {
     pub name: String,
     pub unique_id: String,
     pub description: String,
 }
 
+/// `deny_unknown_fields` so typoed or removed keys fail loudly at load
+/// instead of being silently ignored.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FileConfig {
     pub path: PathBuf,
     #[serde(with = "humantime_serde")]
     pub polling_interval: Duration,
 }
 
+/// `deny_unknown_fields` so typoed or removed keys fail loudly at load
+/// instead of being silently ignored.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ParsingConfig {
     pub rules: Vec<ParsingRule>,
     pub case_sensitive: bool,
 }
 
+/// `deny_unknown_fields` so typoed or removed keys fail loudly at load
+/// instead of being silently ignored.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ParsingRule {
     #[serde(rename = "type")]
     pub rule_type: RuleType,
@@ -50,6 +65,9 @@ pub struct ParsingRule {
     pub safe: bool,
 }
 
+// Unit-variant-only enum deserialized from a bare string (e.g. `"contains"`),
+// not a JSON object — `deny_unknown_fields` has no meaningful effect here, so
+// it is intentionally omitted.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RuleType {
@@ -57,7 +75,10 @@ pub enum RuleType {
     Regex,
 }
 
+/// `deny_unknown_fields` so typoed or removed keys fail loudly at load
+/// instead of being silently ignored.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ServerConfig {
     pub port: u16,
     /// Alpaca UDP discovery responder port (normally 32227). Absent/`null` —
@@ -72,6 +93,38 @@ pub struct ServerConfig {
     pub auth: Option<rp_auth::config::AuthConfig>,
 }
 
+/// The packaged first-start default watch path, under the service's
+/// platform-dependent state directory: the packaged unit's `StateDirectory`
+/// on Unix, `%PROGRAMDATA%\rusty-photon\filemonitor\` on Windows (ADR-015).
+/// A placeholder either way — the operator points it at the real roof-status
+/// file.
+#[cfg(not(windows))]
+fn default_watch_path() -> PathBuf {
+    PathBuf::from("/var/lib/rusty-photon/filemonitor/RoofStatusFile.txt")
+}
+#[cfg(windows)]
+fn default_watch_path() -> PathBuf {
+    program_data_root(std::env::var_os("ProgramData"))
+        .join("rusty-photon")
+        .join("filemonitor")
+        .join("RoofStatusFile.txt")
+}
+
+/// Pure resolution of the Windows `ProgramData` root from the value of the
+/// `ProgramData` environment variable: the value verbatim when present and
+/// non-empty, else the fixed `C:\ProgramData` fallback. A private copy of the
+/// same rule `rusty-photon-config` applies to the config path (each crate
+/// keeps its own — see the W2 note in `docs/plans/windows-packaging.md`);
+/// compiled on Windows and in test builds on every platform, so the logic
+/// is unit-testable on non-Windows hosts.
+#[cfg(any(windows, test))]
+fn program_data_root(program_data: Option<std::ffi::OsString>) -> PathBuf {
+    match program_data {
+        Some(v) if !v.is_empty() => PathBuf::from(v),
+        _ => PathBuf::from(r"C:\ProgramData"),
+    }
+}
+
 impl Default for Config {
     /// The packaged first-start default: watch a roof-status file under the
     /// service's state directory and fail safe (no readable status = unsafe).
@@ -83,7 +136,7 @@ impl Default for Config {
                 description: "ASCOM Alpaca SafetyMonitor that monitors file content".to_string(),
             },
             file: FileConfig {
-                path: PathBuf::from("/var/lib/rusty-photon/filemonitor/RoofStatusFile.txt"),
+                path: default_watch_path(),
                 polling_interval: Duration::from_secs(60),
             },
             parsing: ParsingConfig {
@@ -731,5 +784,100 @@ mod property_tests {
             // Should never panic, even with arbitrary regex patterns
             let _result = device.evaluate_safety(&content);
         }
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+mod default_config_tests {
+    use super::*;
+
+    #[test]
+    fn program_data_root_uses_env_value_verbatim() {
+        let root = program_data_root(Some(std::ffi::OsString::from(r"D:\CustomData")));
+        assert_eq!(root, PathBuf::from(r"D:\CustomData"));
+    }
+
+    #[test]
+    fn program_data_root_falls_back_when_env_absent() {
+        assert_eq!(program_data_root(None), PathBuf::from(r"C:\ProgramData"));
+    }
+
+    #[test]
+    fn program_data_root_falls_back_when_env_empty() {
+        assert_eq!(
+            program_data_root(Some(std::ffi::OsString::new())),
+            PathBuf::from(r"C:\ProgramData")
+        );
+    }
+
+    #[test]
+    fn default_watch_path_is_platform_dependent() {
+        let config = Config::default();
+        #[cfg(not(windows))]
+        assert_eq!(
+            config.file.path,
+            PathBuf::from("/var/lib/rusty-photon/filemonitor/RoofStatusFile.txt")
+        );
+        #[cfg(windows)]
+        assert!(
+            config
+                .file
+                .path
+                .ends_with(r"rusty-photon\filemonitor\RoofStatusFile.txt"),
+            "{:?}",
+            config.file.path
+        );
+    }
+
+    #[test]
+    fn a_typoed_top_level_field_is_rejected_loudly() {
+        let err = serde_json::from_str::<Config>(r#"{"typoed_key": 1}"#)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("typoed_key"), "{err}");
+    }
+
+    #[test]
+    fn a_typoed_device_field_is_rejected_loudly() {
+        let err = serde_json::from_str::<DeviceConfig>(r#"{"nmae": "oops"}"#)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("nmae"), "{err}");
+    }
+
+    #[test]
+    fn a_typoed_file_field_is_rejected_loudly() {
+        let err = serde_json::from_str::<FileConfig>(r#"{"paht": "/tmp/x.txt"}"#)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("paht"), "{err}");
+    }
+
+    #[test]
+    fn a_typoed_parsing_field_is_rejected_loudly() {
+        let err = serde_json::from_str::<ParsingConfig>(r#"{"rulez": []}"#)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("rulez"), "{err}");
+    }
+
+    #[test]
+    fn a_typoed_parsing_rule_field_is_rejected_loudly() {
+        let err = serde_json::from_str::<ParsingRule>(
+            r#"{"type": "contains", "paterns": "OPEN", "safe": true}"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("paterns"), "{err}");
+    }
+
+    #[test]
+    fn a_typoed_server_field_is_rejected_loudly() {
+        let err = serde_json::from_str::<ServerConfig>(r#"{"prot": 1234}"#)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("prot"), "{err}");
     }
 }

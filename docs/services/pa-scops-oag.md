@@ -163,12 +163,17 @@ port (opt-in; normally `32227`). Absent/`null` — the default — disables
 discovery: many rusty-photon servers on one host would collide on the shared
 discovery port, so it is a per-host opt-in for single-driver deployments.
 
+Every block (`Config` and each nested config struct) rejects unknown keys at
+deserialize (`deny_unknown_fields`), so a typo or a key removed by a schema
+change fails loudly at load instead of being silently ignored.
+
 ### Device identity (UniqueID)
 
 The focuser's ASCOM `UniqueID` is **minted on first run** rather than shipped as
 a hardcoded literal. On startup the service resolves the config path (the
-`--config` path if given, otherwise the per-user platform config dir — e.g.
-`~/.config/rusty-photon/pa-scops-oag.json` on Linux) and calls
+`--config` path if given, otherwise the platform default — e.g.
+`~/.config/rusty-photon/pa-scops-oag.json` on Linux,
+`%PROGRAMDATA%\rusty-photon\pa-scops-oag.json` on Windows) and calls
 `rusty_photon_config::materialize_identity` with the JSON pointer
 `/focuser/unique_id`. That helper mints a spec-compliant UUIDv4 if the id is
 absent/empty, never overwrites a non-empty id, writes the default scaffold if the

@@ -56,6 +56,11 @@ For custom monitors/notifiers (e.g. in an astrophotography app), use `with_monit
 ## Configuration
 
 Configuration is loaded from a JSON file. All sections are optional with sensible defaults.
+Every section (the top-level `Config` plus each nested block —
+`MonitorConfig`, `NotifierConfig`, `TransitionConfig`, `DashboardConfig`,
+`OperationWatchdogConfig`, `OperationPolicy`, `ServiceConfig`) rejects unknown
+keys at deserialize (`deny_unknown_fields`), so a typo or a key removed by a
+schema change fails loudly at load instead of being silently ignored.
 
 See `examples/config.json` for a complete example.
 
@@ -492,8 +497,9 @@ cargo run -p sentinel -- -c config.json --dashboard-port 8080
 cargo run -p sentinel -- -c config.json -l debug
 ```
 
-Without `-c`, the config path resolves to the per-user platform config
-directory (`~/.config/rusty-photon/sentinel.json` on Linux) and a default
+Without `-c`, the config path resolves to the platform config
+directory (`~/.config/rusty-photon/sentinel.json` on Linux,
+`%PROGRAMDATA%\rusty-photon\sentinel.json` on Windows) and a default
 config file is created there on first start if none exists — the same
 convention as the driver services (see
 [ADR-012](../decisions/012-service-packaging-architecture.md)).

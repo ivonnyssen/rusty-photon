@@ -14,7 +14,12 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 /// Top-level service configuration.
+///
+/// `deny_unknown_fields` (as in zwo-camera and the other newer services) so
+/// typoed or removed keys fail loudly at load instead of being silently
+/// ignored.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     /// Optional per-device overrides keyed by **SDK serial**. A device with no
     /// entry uses SDK-derived defaults. Named `devices` (not `overrides`) to
@@ -28,6 +33,7 @@ pub struct Config {
 
 /// Per-device override, keyed by SDK serial in [`Config::devices`].
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct DeviceOverride {
     /// Friendly camera name (overrides the SDK-derived default).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -45,7 +51,8 @@ pub struct DeviceOverride {
 // `#[serde(default)]` so a partial `{"server": {}}` keeps the default port
 // (missing fields fall back to `ServerConfig::default()`), consistent with the
 // top-level `Config`'s tolerance of an absent `server` key and with zwo-camera.
-#[serde(default)]
+// `deny_unknown_fields` rejects typoed/removed keys at load.
+#[serde(default, deny_unknown_fields)]
 pub struct ServerConfig {
     /// Listening port. One port hosts all enumerated devices. Hard read-only
     /// (a port change would make the BFF lose the devices).
@@ -162,6 +169,31 @@ mod tests {
                 .unwrap(),
             &vec!["L", "R", "G", "B"]
         );
+    }
+
+    #[test]
+    fn a_typoed_top_level_field_is_rejected_loudly() {
+        let err = serde_json::from_str::<Config>(r#"{"devcies": {}}"#)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("devcies"), "{err}");
+    }
+
+    #[test]
+    fn a_typoed_device_override_field_is_rejected_loudly() {
+        let err =
+            serde_json::from_str::<Config>(r#"{"devices": {"QHY600M-01": {"descripton": "x"}}}"#)
+                .unwrap_err()
+                .to_string();
+        assert!(err.contains("descripton"), "{err}");
+    }
+
+    #[test]
+    fn a_typoed_server_field_is_rejected_loudly() {
+        let err = serde_json::from_str::<Config>(r#"{"server": {"prot": 12000}}"#)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("prot"), "{err}");
     }
 
     #[test]

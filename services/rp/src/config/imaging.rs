@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 
 /// Image cache + future analysis-tool tuning. Pi-5-friendly defaults.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ImagingConfig {
     #[serde(default = "default_cache_max_mib")]
     pub cache_max_mib: usize,
@@ -51,5 +52,24 @@ mod tests {
         let config = load_config(&path).unwrap();
         assert_eq!(config.imaging.cache_max_mib, 256);
         assert_eq!(config.imaging.cache_max_images, 4);
+    }
+
+    #[test]
+    fn imaging_config_rejects_unknown_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "session": {"data_directory": "/tmp/rp-test"},
+                "equipment": {},
+                "imaging": {"cache_max_mib": 256, "cache_ttl_secs": 60},
+                "server": {}
+            }"#,
+        )
+        .unwrap();
+
+        let err = load_config(&path).unwrap_err().to_string();
+        assert!(err.contains("cache_ttl_secs"), "{err}");
     }
 }

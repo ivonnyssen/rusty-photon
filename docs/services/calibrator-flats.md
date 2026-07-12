@@ -203,12 +203,16 @@ but does not mask the original error.
 
 The plugin reads its configuration from the invocation payload or from
 its own config file. Run standalone, `--config` names the flat-plan file
-explicitly; when omitted, the path resolves to the per-user platform
-config directory (`~/.config/rusty-photon/calibrator-flats.json` on
-Linux) via `rusty-photon-config`. There is no built-in default plan —
+explicitly; when omitted, the path resolves to the platform default
+(`~/.config/rusty-photon/calibrator-flats.json` on Linux,
+`%PROGRAMDATA%\rusty-photon\calibrator-flats.json` on Windows) via
+`rusty-photon-config`. There is no built-in default plan —
 the file must exist (`camera_id`, `filter_wheel_id`, `calibrator_id`,
 `filters` are mandatory), so the packaged systemd unit gates on it with
-`ConditionPathExists` instead of crash-looping on a fresh install. The plan is part of `rp`'s plugin configuration:
+`ConditionPathExists` instead of crash-looping on a fresh install. Both
+`FlatPlan` and `FilterPlan` reject unknown keys at deserialize
+(`deny_unknown_fields`), so a typo or a key removed by a schema change
+fails loudly at load instead of being silently ignored. The plan is part of `rp`'s plugin configuration:
 
 ```json
 {

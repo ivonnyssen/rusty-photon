@@ -54,6 +54,7 @@ impl TryFrom<f64> for FocuserStepsPerSec {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct FocuserConfig {
     pub id: String,
     #[serde(default)]
@@ -229,6 +230,32 @@ mod tests {
             err.contains("steps_per_sec must be a finite positive number"),
             "expected the validation message, got: {err}"
         );
+    }
+
+    #[test]
+    fn focuser_config_rejects_unknown_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "session": {"data_directory": "/tmp/rp-test"},
+                "equipment": {
+                    "focusers": [
+                        {
+                            "id": "main-focuser",
+                            "alpaca_url": "http://localhost:11113",
+                            "backlash": 50
+                        }
+                    ]
+                },
+                "server": {}
+            }"#,
+        )
+        .unwrap();
+
+        let err = load_config(&path).unwrap_err().to_string();
+        assert!(err.contains("backlash"), "{err}");
     }
 
     #[test]

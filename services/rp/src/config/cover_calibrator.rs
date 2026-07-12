@@ -4,6 +4,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct CoverCalibratorConfig {
     pub id: String,
     pub alpaca_url: String,
@@ -23,4 +24,37 @@ pub struct CoverCalibratorConfig {
 
 fn default_cover_calibrator_poll_interval() -> Duration {
     Duration::from_secs(3)
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+mod tests {
+    use crate::config::load_config;
+
+    #[test]
+    fn cover_calibrator_config_rejects_unknown_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "session": {"data_directory": "/tmp/rp-test"},
+                "equipment": {
+                    "cover_calibrators": [
+                        {
+                            "id": "flat-panel",
+                            "alpaca_url": "http://localhost:11125",
+                            "brightness": 100
+                        }
+                    ]
+                },
+                "server": {}
+            }"#,
+        )
+        .unwrap();
+
+        let err = load_config(&path).unwrap_err().to_string();
+        assert!(err.contains("brightness"), "{err}");
+    }
 }

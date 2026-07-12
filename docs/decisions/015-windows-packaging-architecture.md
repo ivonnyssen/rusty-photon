@@ -82,7 +82,7 @@ different audience and a different platform:
    follow the same rule: serial device paths (`COM3` vs `/dev/ttyUSB0`),
    rp's data directory, log locations.
 5. **Service-mode logging goes to rolling files.** In SCM mode the lifecycle
-   crate writes `%PROGRAMDATA%\rusty-photon\logs\<svc>.log` (daily rotation,
+   crate writes `%PROGRAMDATA%\rusty-photon\logs\<svc>.<date>.log` (daily rotation,
    bounded retention) instead of the dead stderr handle. Console mode is
    unchanged.
 6. **Native SDK payloads (ADR-013 applied to Windows):**

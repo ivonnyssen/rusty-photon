@@ -10,7 +10,7 @@ use tracing::{debug, Level};
     about = "Calibrator flat field orchestrator - iterative exposure optimization"
 )]
 struct Cli {
-    /// Path to the flat-plan configuration file. Defaults to the per-user
+    /// Path to the flat-plan configuration file. Defaults to the
     /// platform config directory (e.g.
     /// `~/.config/rusty-photon/calibrator-flats.json` on Linux). There is
     /// no built-in default plan: the file must exist.

@@ -3243,13 +3243,20 @@ every other route.
 All configuration is in a single JSON file. `rp serve --config <path>`
 (or the `rp --config <path>` shorthand) names it explicitly; when omitted
 — including a bare `rp`, which serves (that is what the packaged
-`rusty-photon-rp` unit runs) — the path resolves to the per-user platform
-config directory (`~/.config/rusty-photon/rp.json` on Linux) via
+`rusty-photon-rp` unit runs) — the path resolves to the platform default
+(`~/.config/rusty-photon/rp.json` on Linux,
+`%PROGRAMDATA%\rusty-photon\rp.json` on Windows) via
 `rusty-photon-config`, and a minimal runnable scaffold (no equipment,
-default port, `session.data_directory` under `/var/lib/rusty-photon/rp/`)
+default port, `session.data_directory` under the platform-dependent state
+directory — `/var/lib/rusty-photon/rp/` on Unix,
+`%PROGRAMDATA%\rusty-photon\rp\` on Windows)
 is written on first start if the file is absent. An explicit `--config`
 naming a missing file stays a hard error. Equipment is listed with Alpaca
 connection details. Plugins register their webhook URLs and command endpoints.
+Every block (top-level `Config` and each equipment/service sub-config) rejects
+unknown keys at deserialize (`deny_unknown_fields`), so a typo or a key
+removed by a schema change fails loudly at load instead of being silently
+ignored.
 
 The running config is readable and editable over REST — `GET /api/config`,
 `GET /api/config/schema`, `PUT /api/config` (see

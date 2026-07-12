@@ -1,12 +1,15 @@
 //! Configuration types for the Deep Sky Dad FP2 driver.
 
-use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// Top-level service configuration.
+///
+/// `deny_unknown_fields` so typoed or removed keys fail loudly at load
+/// instead of being silently ignored.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     pub serial: SerialConfig,
     pub server: ServerConfig,
@@ -14,7 +17,11 @@ pub struct Config {
 }
 
 /// Serial port configuration.
+///
+/// `deny_unknown_fields` so typoed or removed keys fail loudly at load
+/// instead of being silently ignored.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SerialConfig {
     pub port: String,
     #[serde(default = "default_baud_rate")]
@@ -31,7 +38,11 @@ pub struct SerialConfig {
 }
 
 /// Server configuration.
+///
+/// `deny_unknown_fields` so typoed or removed keys fail loudly at load
+/// instead of being silently ignored.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ServerConfig {
     pub port: u16,
     /// Alpaca UDP discovery responder port (normally 32227). Absent/`null` —
@@ -47,7 +58,11 @@ pub struct ServerConfig {
 }
 
 /// CoverCalibrator device configuration.
+///
+/// `deny_unknown_fields` so typoed or removed keys fail loudly at load
+/// instead of being silently ignored.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct CoverCalibratorConfig {
     pub name: String,
     /// Stable ASCOM `UniqueID`. Defaults to empty: a spec-compliant UUIDv4 is
@@ -97,10 +112,18 @@ fn default_min_brightness() -> u32 {
     250
 }
 
+/// Platform-dependent default serial port. Both values are placeholders the
+/// operator replaces with the real device path: the driver restart-loops
+/// until then, on Windows (`COM3`) exactly as on Unix (`/dev/ttyACM0`).
+#[cfg(windows)]
+const DEFAULT_SERIAL_PORT: &str = "COM3";
+#[cfg(not(windows))]
+const DEFAULT_SERIAL_PORT: &str = "/dev/ttyACM0";
+
 impl Default for SerialConfig {
     fn default() -> Self {
         Self {
-            port: "/dev/ttyACM0".to_string(),
+            port: DEFAULT_SERIAL_PORT.to_string(),
             baud_rate: default_baud_rate(),
             polling_interval: default_polling_interval(),
             timeout: default_timeout(),
@@ -179,20 +202,16 @@ impl CliOverrides {
 }
 
 /// Resolve the config-file path: the explicit `--config` path if given, else the
-/// per-user platform config directory (`directories::ProjectDirs::config_dir`) —
+/// platform default via [`rusty_photon_config::resolve_config_path`] —
 /// e.g. `~/.config/rusty-photon/dsd-fp2.json` on Linux (XDG),
 /// `~/Library/Application Support/rusty-photon/dsd-fp2.json` on macOS,
-/// `%APPDATA%\rusty-photon\dsd-fp2.json` on Windows. A path is *always*
+/// `%PROGRAMDATA%\rusty-photon\dsd-fp2.json` on Windows (machine-wide, because a
+/// Windows service account's per-user profile is hidden). A path is *always*
 /// resolvable, so config editing is never disabled for lack of one.
 pub fn resolve_config_path(
     explicit: Option<PathBuf>,
 ) -> std::result::Result<PathBuf, Box<dyn std::error::Error + Send + Sync>> {
-    if let Some(path) = explicit {
-        return Ok(path);
-    }
-    let dirs = ProjectDirs::from("", "", "rusty-photon")
-        .ok_or("could not determine a platform config directory for the default config path")?;
-    Ok(dirs.config_dir().join("dsd-fp2.json"))
+    rusty_photon_config::resolve_config_path("dsd-fp2", explicit).map_err(Into::into)
 }
 
 /// Load the effective config: the file at `path` if it exists, else
@@ -224,7 +243,10 @@ mod tests {
     #[test]
     fn defaults_match_spec() {
         let c = Config::default();
+        #[cfg(not(windows))]
         assert_eq!(c.serial.port, "/dev/ttyACM0");
+        #[cfg(windows)]
+        assert_eq!(c.serial.port, "COM3");
         assert_eq!(c.serial.baud_rate, 115_200);
         assert_eq!(c.serial.polling_interval, Duration::from_millis(500));
         assert_eq!(c.serial.timeout, Duration::from_secs(3));
@@ -242,7 +264,10 @@ mod tests {
     fn config_serialises_to_json() {
         let c = Config::default();
         let json = serde_json::to_string(&c).unwrap();
+        #[cfg(not(windows))]
         assert!(json.contains("/dev/ttyACM0"));
+        #[cfg(windows)]
+        assert!(json.contains("COM3"));
         assert!(json.contains("115200"));
         assert!(json.contains("11119"));
         assert!(json.contains("Deep Sky Dad FP2"));
@@ -347,6 +372,42 @@ mod tests {
         let path = dir.path().join("bad.json");
         std::fs::write(&path, "not json").unwrap();
         load_config(&path).unwrap_err();
+    }
+
+    #[test]
+    fn a_typoed_config_field_is_rejected_loudly() {
+        let err = serde_json::from_str::<Config>(r#"{"typoed_key": 1}"#)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("typoed_key"), "{err}");
+    }
+
+    #[test]
+    fn a_typoed_serial_field_is_rejected_loudly() {
+        let err =
+            serde_json::from_str::<SerialConfig>(r#"{"port": "/dev/ttyACM0", "baudrate": 9600}"#)
+                .unwrap_err()
+                .to_string();
+        assert!(err.contains("baudrate"), "{err}");
+    }
+
+    #[test]
+    fn a_typoed_server_field_is_rejected_loudly() {
+        let err =
+            serde_json::from_str::<ServerConfig>(r#"{"port": 11119, "discoveryport": 32227}"#)
+                .unwrap_err()
+                .to_string();
+        assert!(err.contains("discoveryport"), "{err}");
+    }
+
+    #[test]
+    fn a_typoed_cover_calibrator_field_is_rejected_loudly() {
+        let err = serde_json::from_str::<CoverCalibratorConfig>(
+            r#"{"name": "FP2", "description": "x", "max_brightnes": 4096}"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("max_brightnes"), "{err}");
     }
 
     #[test]

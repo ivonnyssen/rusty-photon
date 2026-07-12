@@ -364,7 +364,7 @@ Every property/method on `ITelescopeV3`, what the driver returns, and why.
 | `CanFindHome` | `false` | no hardware home position |
 | `CanPark` | `true` | implemented (software park) |
 | `CanUnpark` | `true` | implemented |
-| `CanSetPark` | effectively `true` by default | The driver now always resolves a config-file path at startup (the `--config <path>` argument if given, else the per-user platform config dir — see [§Device identity (UniqueID)](#device-identity-uniqueid)), so it always has a path to persist `SetPark` writes to. At the library layer `CanSetPark` still keys on whether a config path was supplied to `MountDevice`; only `MountDevice::new` (no path) reports `false`, which the binary never does. See [§Park persistence](#park-persistence) |
+| `CanSetPark` | effectively `true` by default | The driver now always resolves a config-file path at startup (the `--config <path>` argument if given, else the platform config dir — see [§Device identity (UniqueID)](#device-identity-uniqueid)), so it always has a path to persist `SetPark` writes to. At the library layer `CanSetPark` still keys on whether a config path was supplied to `MountDevice`; only `MountDevice::new` (no path) reports `false`, which the binary never does. See [§Park persistence](#park-persistence) |
 | `CanSetPierSide` | runtime-determined | `true` when `flip_policy.enabled` is set on a hardware-validated mount; `false` otherwise (`SetSideOfPier` returns `NOT_IMPLEMENTED`). See [§Meridian flip](#meridian-flip) |
 | `DoesRefraction` | `false` | mount applies no refraction model; host (rp) provides refracted coords |
 | `TrackingRates` | `[Sidereal]` | sidereal only in MVP |
@@ -570,7 +570,7 @@ Concretely:
 
 1. **Capability gate.** The driver now always resolves a config-file
    path at startup — the `--config <path>` argument if given, else the
-   per-user platform config dir (see
+   platform config dir (see
    [§Device identity (UniqueID)](#device-identity-uniqueid)). That path
    is the one `SetPark` persists to, so **`CanSetPark` is effectively
    `true` by default**: park persistence works out-of-the-box, even on
@@ -886,9 +886,10 @@ of the target — the check uses the celestial `HA = LST − RA`, so it is
 the same for both pier sides of a flip-planned slew.
 
 This replaced the earlier rectangular celestial-Dec envelope
-(`dec_limits`, removed 2026-07-01; a config file still carrying
-`dec_limits` keeps loading — serde ignores unknown fields — but the
-field has no effect). The rectangle was the
+(`dec_limits`, removed 2026-07-01; `MountConfig`'s `deny_unknown_fields`
+(#484) means a config file still carrying `dec_limits` now fails to load
+with the field named, rather than being silently ignored). The rectangle
+was the
 wrong shape for what operators mean by "don't slew there": the local
 horizon is a tilted great circle on the celestial sphere, so a
 rectangle is simultaneously too loose (accepts below-horizon targets at
@@ -1158,6 +1159,11 @@ must be `(0, 0.95]`; `tracking_guard_margin_hours` `[0, 1.0]`; an active
 `min_altitude_degrees` must be finite in `[-90, 90]`. (This
 replaced the former runtime `MountConfig::validate` / `FlipPolicy::validate`
 — see [ADR-006](../decisions/006-typed-physical-quantities-for-mount-pointing.md).)
+Every genuinely-operator-config struct (`Config`, `UsbConfig`, `UdpConfig`,
+`ServerConfig`, `MountConfig`, `FlipPolicy`, and the `cw_exclusion_zone` wire
+shape) additionally rejects unknown keys at deserialize
+(`deny_unknown_fields`), so a typo or a key removed by a schema change fails
+loudly at load instead of being silently ignored.
 
 ```json
 {
@@ -1260,8 +1266,8 @@ Notes:
   `[-90, 90]`. Negative values permit below-horizon pointing and are
   logged `info!` at startup; `-90` effectively disables the check. See
   [§Altitude floor](#altitude-floor). (Replaced the rectangular
-  `dec_limits` envelope 2026-07-01; a stale `dec_limits` key is
-  ignored on load.)
+  `dec_limits` envelope 2026-07-01; a stale `dec_limits` key is now
+  rejected loudly at load, per `deny_unknown_fields` (#484).)
 - `park_ra_ticks` / `park_dec_ticks` are written by `SetPark` and read
   on every connect; absent (or `null`) at first run, populated once
   `SetPark` is called. Operators may set them by hand to pin a known
@@ -1317,14 +1323,16 @@ which collided across every install).
 On startup, before loading its configuration, the driver:
 
 1. **Resolves a config-file path.** The `--config <path>` argument if
-   given, else the per-user platform config directory — e.g.
-   `~/.config/rusty-photon/star-adventurer-gti.json` on Linux (XDG),
-   `~/Library/Application Support/rusty-photon/star-adventurer-gti.json`
-   on macOS, `%APPDATA%\rusty-photon\star-adventurer-gti.json` on
-   Windows (via `directories::ProjectDirs`). A path is *always*
-   resolvable, so identity and park persistence are never disabled for
-   lack of a `--config` flag. This is the same path used for
-   [§Park persistence](#park-persistence).
+   given, else the platform default — the per-user config directory on
+   Unix: `~/.config/rusty-photon/star-adventurer-gti.json` on Linux
+   (XDG), `~/Library/Application Support/rusty-photon/star-adventurer-gti.json`
+   on macOS (via `directories::ProjectDirs`) — and the machine-wide
+   `%PROGRAMDATA%\rusty-photon\star-adventurer-gti.json` on Windows
+   (`ProgramData` env var, `C:\ProgramData` fallback; a Windows service
+   account's per-user profile is hidden, see ADR-015). A path is
+   *always* resolvable, so identity and park persistence are never
+   disabled for lack of a `--config` flag. This is the same path used
+   for [§Park persistence](#park-persistence).
 2. **Materializes the identity.** Via
    `rusty_photon_config::materialize_identity` against the JSON pointer
    `/mount/unique_id`. If that pointer is absent, `null`, non-string, or

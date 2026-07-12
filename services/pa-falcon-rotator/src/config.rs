@@ -5,7 +5,11 @@ use std::path::Path;
 use std::time::Duration;
 
 /// Main configuration structure
+///
+/// `deny_unknown_fields` so typoed or removed keys fail loudly at load
+/// instead of being silently ignored.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     pub serial: SerialConfig,
     pub server: ServerConfig,
@@ -14,7 +18,11 @@ pub struct Config {
 }
 
 /// Serial port configuration
+///
+/// `deny_unknown_fields` so typoed or removed keys fail loudly at load
+/// instead of being silently ignored.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SerialConfig {
     pub port: String,
     #[serde(default = "default_baud_rate")]
@@ -27,7 +35,11 @@ pub struct SerialConfig {
 }
 
 /// Server configuration
+///
+/// `deny_unknown_fields` so typoed or removed keys fail loudly at load
+/// instead of being silently ignored.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ServerConfig {
     pub port: u16,
     /// Alpaca UDP discovery responder port (normally 32227). Absent/`null` —
@@ -43,7 +55,11 @@ pub struct ServerConfig {
 }
 
 /// Rotator device configuration
+///
+/// `deny_unknown_fields` so typoed or removed keys fail loudly at load
+/// instead of being silently ignored.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct RotatorConfig {
     pub name: String,
     #[serde(default)]
@@ -54,7 +70,11 @@ pub struct RotatorConfig {
 }
 
 /// Status Switch device configuration
+///
+/// `deny_unknown_fields` so typoed or removed keys fail loudly at load
+/// instead of being silently ignored.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SwitchConfig {
     pub name: String,
     #[serde(default)]
@@ -76,10 +96,18 @@ fn default_true() -> bool {
     true
 }
 
+/// Platform-dependent default serial port. Both values are placeholders the
+/// operator replaces with the real device path: the driver restart-loops
+/// until then, on Windows (`COM3`) exactly as on Unix (`/dev/ttyUSB0`).
+#[cfg(windows)]
+const DEFAULT_SERIAL_PORT: &str = "COM3";
+#[cfg(not(windows))]
+const DEFAULT_SERIAL_PORT: &str = "/dev/ttyUSB0";
+
 impl Default for SerialConfig {
     fn default() -> Self {
         Self {
-            port: "/dev/ttyUSB0".to_string(),
+            port: DEFAULT_SERIAL_PORT.to_string(),
             baud_rate: default_baud_rate(),
             timeout: default_timeout(),
         }
@@ -198,7 +226,10 @@ mod tests {
         assert!(config.switch.unique_id.is_empty());
         assert!(config.switch.enabled);
 
+        #[cfg(not(windows))]
         assert_eq!(config.serial.port, "/dev/ttyUSB0");
+        #[cfg(windows)]
+        assert_eq!(config.serial.port, "COM3");
         assert_eq!(config.serial.baud_rate, 9600);
         assert_eq!(config.serial.timeout, Duration::from_secs(2));
 
@@ -234,7 +265,10 @@ mod tests {
     #[test]
     fn serial_config_default() {
         let config = SerialConfig::default();
+        #[cfg(not(windows))]
         assert_eq!(config.port, "/dev/ttyUSB0");
+        #[cfg(windows)]
+        assert_eq!(config.port, "COM3");
         assert_eq!(config.baud_rate, 9600);
         assert_eq!(config.timeout, Duration::from_secs(2));
     }
@@ -252,7 +286,10 @@ mod tests {
 
         assert!(json.contains("Pegasus Falcon Rotator"));
         assert!(json.contains("Pegasus Falcon Status"));
+        #[cfg(not(windows))]
         assert!(json.contains("/dev/ttyUSB0"));
+        #[cfg(windows)]
+        assert!(json.contains("COM3"));
         assert!(json.contains("9600"));
         assert!(json.contains("11118"));
     }
@@ -323,7 +360,10 @@ mod tests {
         std::fs::write(&path, json).unwrap();
 
         let loaded = load_config(&path).unwrap();
+        #[cfg(not(windows))]
         assert_eq!(loaded.serial.port, "/dev/ttyUSB0");
+        #[cfg(windows)]
+        assert_eq!(loaded.serial.port, "COM3");
         assert_eq!(loaded.server.port, 11118);
         assert_eq!(loaded.rotator.name, "Pegasus Falcon Rotator");
         assert_eq!(loaded.switch.name, "Pegasus Falcon Status");
@@ -363,5 +403,52 @@ mod tests {
         assert!(debug_str.contains("ServerConfig"));
         assert!(debug_str.contains("RotatorConfig"));
         assert!(debug_str.contains("SwitchConfig"));
+    }
+
+    #[test]
+    fn config_rejects_unknown_top_level_field() {
+        let err = serde_json::from_str::<Config>(r#"{"typoed_key": 1}"#)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("typoed_key"), "{err}");
+    }
+
+    #[test]
+    fn serial_config_rejects_unknown_field() {
+        let err = serde_json::from_str::<SerialConfig>(
+            r#"{"port": "/dev/ttyUSB0", "baud_rate": 9600, "timeout": "2s", "flow_control": "none"}"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("flow_control"), "{err}");
+    }
+
+    #[test]
+    fn server_config_rejects_unknown_field() {
+        let err =
+            serde_json::from_str::<ServerConfig>(r#"{"port": 11118, "bind_address": "0.0.0.0"}"#)
+                .unwrap_err()
+                .to_string();
+        assert!(err.contains("bind_address"), "{err}");
+    }
+
+    #[test]
+    fn rotator_config_rejects_unknown_field() {
+        let err = serde_json::from_str::<RotatorConfig>(
+            r#"{"name": "T", "description": "T", "enable": true}"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("enable"), "{err}");
+    }
+
+    #[test]
+    fn switch_config_rejects_unknown_field() {
+        let err = serde_json::from_str::<SwitchConfig>(
+            r#"{"name": "T", "description": "T", "enable": true}"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("enable"), "{err}");
     }
 }

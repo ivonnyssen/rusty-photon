@@ -8,7 +8,7 @@ use tracing::{debug, Level};
 #[command(name = "filemonitor")]
 #[command(about = "ASCOM Alpaca SafetyMonitor that monitors file content")]
 struct Args {
-    /// Path to configuration file. Defaults to the per-user platform config
+    /// Path to configuration file. Defaults to the platform config
     /// directory (e.g. `~/.config/rusty-photon/filemonitor.json` on Linux);
     /// created with defaults on first start if absent.
     #[arg(short, long)]
