@@ -15,8 +15,10 @@ pub mod backend;
 pub mod camera;
 pub mod config;
 pub mod config_actions;
+pub mod doctor;
 pub mod error;
 pub mod filterwheel;
+pub mod preflight;
 
 pub use camera::QhyCameraDevice;
 pub use config::{load_effective_config, CliOverrides, Config, DeviceOverride};

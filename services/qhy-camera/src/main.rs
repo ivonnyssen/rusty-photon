@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use qhy_camera::{load_effective_config, CliOverrides, ServerBuilder};
 use rusty_photon_service_lifecycle::{ServiceResult, ServiceRunner};
 use tracing::{debug, Level};
@@ -38,6 +38,20 @@ struct Args {
     #[cfg(feature = "simulation")]
     #[arg(long, hide = true)]
     simulation_empty: bool,
+
+    /// Subcommand; running with none starts the ASCOM Alpaca driver.
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Diagnose the QHYCCD Windows installation: qhyccd.dll resolution, the
+    /// loaded SDK version vs. the pinned build-time version, and All-in-One
+    /// driver-pack presence (see docs/services/qhy-camera.md § "Windows:
+    /// qhyccd.dll resolution"). Windows-focused; on other platforms it only
+    /// prints a note.
+    Doctor,
 }
 
 fn parse_log_level(s: &str) -> std::result::Result<Level, String> {
@@ -55,6 +69,19 @@ fn main() -> ServiceResult {
         args.log_level,
         args.service,
     );
+
+    if let Some(Command::Doctor) = args.command {
+        // Interactive diagnostic — never starts the server. The exit code
+        // reflects overall health (DR3).
+        std::process::exit(qhy_camera::doctor::run());
+    }
+
+    // Windows real-SDK builds delay-load qhyccd.dll (see build.rs): resolve it
+    // BEFORE any SDK call and keep it resident, or exit non-zero with the one
+    // distinctive, actionable error (PF1–PF4). Simulation builds link no
+    // native SDK and skip this (PF5).
+    #[cfg(all(windows, not(feature = "simulation")))]
+    qhy_camera::preflight::ensure_qhyccd_dll()?;
 
     let config_path = rusty_photon_config::resolve_config_path("qhy-camera", args.config)?;
     let overrides = CliOverrides {
