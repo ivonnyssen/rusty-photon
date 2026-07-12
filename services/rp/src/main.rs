@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 use rusty_photon_service_lifecycle::{
-    init_tracing, report_from_boxed, ServiceResult, ServiceRunner, Shutdown,
+    init_service_tracing, init_tracing, report_from_boxed, ServiceResult, ServiceRunner, Shutdown,
 };
 use tracing::{debug, Level};
 
@@ -25,6 +25,11 @@ struct Cli {
     /// Log level (trace, debug, info, warn, error)
     #[arg(long, default_value = "info", value_parser = clap::value_parser!(Level))]
     log_level: Level,
+
+    /// Run as a Windows service (used by the service control manager).
+    /// No-op on non-Windows targets.
+    #[arg(long, hide = true)]
+    service: bool,
 }
 
 #[derive(Subcommand)]
@@ -40,6 +45,11 @@ enum Commands {
         /// Log level (trace, debug, info, warn, error)
         #[arg(long, default_value = "info", value_parser = clap::value_parser!(Level))]
         log_level: Level,
+
+        /// Run as a Windows service (used by the service control manager).
+        /// No-op on non-Windows targets.
+        #[arg(long, hide = true)]
+        service: bool,
     },
     /// Hash a password for use in service auth configuration
     HashPassword {
@@ -99,9 +109,17 @@ fn main() -> ServiceResult {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Commands::Serve { config, log_level }) => {
-            init_tracing(log_level);
-            run_serve(config)
+        Some(Commands::Serve {
+            config,
+            log_level,
+            service,
+        }) => {
+            // In Windows SCM service mode logs go to the rolling file under
+            // %PROGRAMDATA%\rusty-photon\logs\; hold the guard until process
+            // exit so the final lines flush on SCM Stop. Console mode logs to
+            // stderr as before.
+            let _tracing_guard = init_service_tracing("rp", log_level, service);
+            run_serve(config, service)
         }
         Some(Commands::HashPassword { log_level, stdin }) => {
             init_tracing(log_level);
@@ -144,31 +162,34 @@ fn main() -> ServiceResult {
         }
         None => {
             // No subcommand serves (packaged units run a bare
-            // `/usr/bin/rusty-photon-rp`); `rp --config <path>` still works
+            // `/usr/bin/rusty-photon-rp`; the Windows MSI's ServiceInstall
+            // passes just `--service`); `rp --config <path>` still works
             // as a shorthand for `rp serve --config <path>`.
-            init_tracing(cli.log_level);
-            run_serve(cli.config)
+            let _tracing_guard = init_service_tracing("rp", cli.log_level, cli.service);
+            run_serve(cli.config, cli.service)
         }
     }
 }
 
-fn run_serve(config: Option<PathBuf>) -> ServiceResult {
+fn run_serve(config: Option<PathBuf>, service_mode: bool) -> ServiceResult {
     // Self-creation applies only to the XDG default path — an explicit
     // `--config` naming a missing file stays a hard error.
     let config_path =
         rusty_photon_config::resolve_and_init("rp", config, &rp::config::default_scaffold())?;
-    ServiceRunner::new("rp").run(move |shutdown: Shutdown| async move {
-        debug!(config_path = %config_path.display(), "loading configuration");
-        let config = rp::config::load_config(&config_path)?;
+    ServiceRunner::new("rp")
+        .scm_mode(service_mode)
+        .run(move |shutdown: Shutdown| async move {
+            debug!(config_path = %config_path.display(), "loading configuration");
+            let config = rp::config::load_config(&config_path)?;
 
-        rp::ServerBuilder::new()
-            .with_config(config)
-            .with_config_path(config_path)
-            .build()
-            .await?
-            .start(shutdown.cancelled())
-            .await?;
+            rp::ServerBuilder::new()
+                .with_config(config)
+                .with_config_path(config_path)
+                .build()
+                .await?
+                .start(shutdown.cancelled())
+                .await?;
 
-        Ok(())
-    })
+            Ok(())
+        })
 }

@@ -169,7 +169,12 @@ pub async fn run_with_client_ctx(
     let discovery = rusty_photon_driver::discovery::bind(local, config.server.discovery_port)
         .await
         .map_err(|e| SkySurveyCameraError::Bind(format!("alpaca discovery responder: {e}")))?;
-    println!("bound_addr={local}");
+    // Console mode only: stdout is a dead handle under the Windows SCM,
+    // and the only stdout consumer (bdd-infra's port parser) never runs
+    // services with --service.
+    if !rusty_photon_service_lifecycle::is_scm_service() {
+        println!("bound_addr={local}");
+    }
     tracing::info!(address = %local, "sky-survey-camera serving");
 
     // Graceful shutdown on Ctrl+C / SIGTERM. Required so coverage

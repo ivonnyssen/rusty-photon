@@ -226,7 +226,10 @@ dispatches via the shared `rusty-photon-service-lifecycle` crate (see
 [`docs/crates/rusty-photon-service-lifecycle.md`](../crates/rusty-photon-service-lifecycle.md)).
 SCM `Stop` is translated to graceful shutdown; `ParamChange` is translated
 to a reload signal that re-reads the config file without restarting the
-process. SIGHUP on Unix triggers the same reload path.
+process. SIGHUP on Unix triggers the same reload path. In SCM mode logs go
+to a rolling file `%PROGRAMDATA%\rusty-photon\logs\filemonitor.<date>.log`
+(daily rotation, 14 files retained) instead of the dead stderr handle;
+console mode logs to stderr unchanged.
 
 **Installer-side registration:** Not yet implemented for macOS (launchd)
 or Windows (Windows Service). The MSI installer places the binary but

@@ -183,7 +183,12 @@ impl ServerBuilder {
         // handshake that `bdd-infra::parse_bound_port` waits on for port
         // discovery; every peer service emits it. Logs go to stderr, so this
         // stays parseable.
-        println!("Bound Alpaca server bound_addr={local_addr}");
+        // Console mode only: stdout is a dead handle under the Windows SCM,
+        // and the only stdout consumer (bdd-infra's port parser) never runs
+        // services with --service.
+        if !rusty_photon_service_lifecycle::is_scm_service() {
+            println!("Bound Alpaca server bound_addr={local_addr}");
+        }
         info!(focusers = focusers.len(), address = %local_addr, "Service started successfully");
         Ok(BoundServer {
             listener,

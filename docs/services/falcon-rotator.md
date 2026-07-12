@@ -316,6 +316,7 @@ minted; set it explicitly only to migrate a known id.
 | `--port` | Serial port path (overrides config) |
 | `--server-port` | Server port (overrides config) |
 | `-l, --log-level` | Log level: `trace`, `debug`, `info`, `warn`, `error` |
+| `--service` | Hidden: run as a Windows service (passed by the Windows service control manager; no-op on other platforms) |
 
 ### Config actions
 

@@ -27,7 +27,14 @@ struct Args {
 fn main() -> ServiceResult {
     let args = Args::parse();
 
-    rusty_photon_service_lifecycle::init_tracing(args.log_level);
+    // In Windows SCM service mode logs go to the rolling file under
+    // %PROGRAMDATA%\rusty-photon\logs\; hold the guard until process exit so
+    // the final lines flush on SCM Stop. Console mode logs to stderr as before.
+    let _tracing_guard = rusty_photon_service_lifecycle::init_service_tracing(
+        "filemonitor",
+        args.log_level,
+        args.service,
+    );
 
     debug!(
         "Parsed command line arguments: config={:?}, log_level={:?}, service={}",

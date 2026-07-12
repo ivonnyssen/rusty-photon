@@ -27,6 +27,12 @@ libc = { workspace = true }
 fitsrs = { workspace = true }
 wcs = { workspace = true }
 
+# Enable the Windows Service Control Manager dispatch only on Windows;
+# on Unix the `scm` feature would pull in `windows-service` for no
+# runtime benefit.
+[target.'cfg(windows)'.dependencies]
+rusty-photon-service-lifecycle = { workspace = true, features = ["scm"] }
+
 [[bin]]
 name = "mock_astap"
 path = "src/bin/mock_astap.rs"

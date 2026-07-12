@@ -183,6 +183,7 @@ file is absent, and persists atomically (the on-disk file only — a transient
 | `--port` | Serial port path (overrides config) |
 | `--server-port` | Server port (overrides config) |
 | `-l, --log-level` | Log level: trace, debug, info, warn, error |
+| `--service` | Hidden: run as a Windows service (passed by the Windows service control manager; no-op on other platforms) |
 
 ### Config actions
 

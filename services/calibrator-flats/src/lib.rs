@@ -59,7 +59,12 @@ impl ServerBuilder {
         let local_addr = listener.local_addr()?;
 
         // This println is parsed by BDD tests to discover the bound port.
-        println!("Bound calibrator-flats server bound_addr={}", local_addr);
+        // Console mode only: stdout is a dead handle under the Windows SCM,
+        // and the only stdout consumer (bdd-infra's port parser) never runs
+        // services with --service.
+        if !rusty_photon_service_lifecycle::is_scm_service() {
+            println!("Bound calibrator-flats server bound_addr={}", local_addr);
+        }
         info!("calibrator-flats service bound on {}", local_addr);
 
         Ok(BoundServer {

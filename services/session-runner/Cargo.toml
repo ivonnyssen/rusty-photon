@@ -33,6 +33,12 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 
+# Enable the Windows Service Control Manager dispatch only on Windows;
+# on Unix the `scm` feature would pull in `windows-service` for no
+# runtime benefit.
+[target.'cfg(windows)'.dependencies]
+rusty-photon-service-lifecycle = { workspace = true, features = ["scm"] }
+
 [dev-dependencies]
 bdd-infra = { workspace = true, features = ["rp-harness"] }
 cucumber = { workspace = true }

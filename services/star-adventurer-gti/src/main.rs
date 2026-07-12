@@ -44,6 +44,11 @@ struct Args {
     /// Log level (trace / debug / info / warn / error)
     #[arg(short, long, default_value = "info", value_parser = parse_log_level)]
     log_level: Level,
+
+    /// Run as a Windows service (used by the service control manager).
+    /// No-op on non-Windows targets.
+    #[arg(long, hide = true)]
+    service: bool,
 }
 
 fn parse_log_level(s: &str) -> Result<Level, String> {
@@ -54,7 +59,14 @@ fn parse_log_level(s: &str) -> Result<Level, String> {
 fn main() -> ServiceResult {
     let args = Args::parse();
 
-    rusty_photon_service_lifecycle::init_tracing(args.log_level);
+    // In Windows SCM service mode logs go to the rolling file under
+    // %PROGRAMDATA%\rusty-photon\logs\; hold the guard until process exit so
+    // the final lines flush on SCM Stop. Console mode logs to stderr as before.
+    let _tracing_guard = rusty_photon_service_lifecycle::init_service_tracing(
+        "star-adventurer-gti",
+        args.log_level,
+        args.service,
+    );
 
     debug!(
         "Parsed command line arguments: config={:?}, transport={:?}, port={:?}, server_port={:?}, log_level={:?}",
@@ -109,6 +121,7 @@ fn main() -> ServiceResult {
     // awaiting `start()` to completion so the old server drains before rebind.
     ServiceRunner::new("star-adventurer-gti")
         .with_reload()
+        .scm_mode(args.service)
         .run_with_reload(move |shutdown, reload| async move {
             loop {
                 // The file always exists (materialize wrote the scaffold on
@@ -231,6 +244,7 @@ mod tests {
             baud: None,
             server_port: None,
             log_level: Level::INFO,
+            service: false,
         }
     }
 

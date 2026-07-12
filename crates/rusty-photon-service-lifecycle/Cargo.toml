@@ -20,17 +20,24 @@ color-eyre = "0.6.5"
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
+# tracing-appender is deliberately crate-local too: only this crate builds the
+# SCM-mode rolling-file writer (`init_service_tracing`); no service touches it
+# directly. Optional so non-`scm` consumers get zero extra dependency content.
+tracing-appender = { version = "0.2.3", optional = true }
 tracing-error = "0.2.1"
 tracing-subscriber = { workspace = true }
 windows-service = { version = "0.8", optional = true }
 
 [features]
 default = []
-# Enables Windows Service Control Manager dispatch via `ServiceRunner::scm_mode(true)`.
-# Pulls in the `windows-service` crate. Adopters: filemonitor (Phase 1).
-scm = ["dep:windows-service"]
+# Enables Windows Service Control Manager dispatch via `ServiceRunner::scm_mode(true)`
+# and the SCM-mode rolling-file logging in `init_service_tracing`. Pulls in the
+# `windows-service` and `tracing-appender` crates. Adopters: every service binary,
+# via `[target.'cfg(windows)'.dependencies]` (see any service's Cargo.toml).
+scm = ["dep:windows-service", "dep:tracing-appender"]
 
 [dev-dependencies]
+tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "test-util", "time"] }
 
 # Signal-install integration tests self-raise SIGTERM / SIGHUP via libc::raise.

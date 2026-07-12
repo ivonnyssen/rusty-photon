@@ -41,6 +41,12 @@ rp-tls = { workspace = true }
 rp-auth = { workspace = true }
 axum = { workspace = true }
 
+# Enable the Windows Service Control Manager dispatch only on Windows;
+# on Unix the `scm` feature would pull in `windows-service` for no
+# runtime benefit.
+[target.'cfg(windows)'.dependencies]
+rusty-photon-service-lifecycle = { workspace = true, features = ["scm"] }
+
 [package.metadata.conformu]
 command = "cargo test -p qhy-focuser --features conformu --test conformu_integration -- --nocapture"
 

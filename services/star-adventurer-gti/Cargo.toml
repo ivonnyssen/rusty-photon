@@ -71,6 +71,12 @@ tempfile = { workspace = true }
 # run ConformU manually — see
 # `docs/services/star-adventurer-gti.md` §"Running ConformU manually".
 
+# Enable the Windows Service Control Manager dispatch only on Windows;
+# on Unix the `scm` feature would pull in `windows-service` for no
+# runtime benefit.
+[target.'cfg(windows)'.dependencies]
+rusty-photon-service-lifecycle = { workspace = true, features = ["scm"] }
+
 [package.metadata.deb]
 name = "rusty-photon-star-adventurer-gti"
 maintainer = "Igor von Nyssen <igor@vonnyssen.com>"

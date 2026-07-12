@@ -313,7 +313,12 @@ impl Sentinel {
                 "http"
             };
             tracing::info!("Dashboard listening on {scheme}://{}", addr);
-            println!("Sentinel dashboard bound_addr={}", addr);
+            // Console mode only: stdout is a dead handle under the Windows SCM,
+            // and the only stdout consumer (bdd-infra's port parser) never runs
+            // services with --service.
+            if !rusty_photon_service_lifecycle::is_scm_service() {
+                println!("Sentinel dashboard bound_addr={}", addr);
+            }
 
             tokio::spawn(async move {
                 let router = dashboard::build_router(dashboard_state, restarts);

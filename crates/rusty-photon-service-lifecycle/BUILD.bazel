@@ -6,35 +6,36 @@ exports_files(
     visibility = ["//visibility:public"],
 )
 
+# The `scm` cargo feature (Windows Service Control Manager dispatch + SCM
+# rolling-file logging) is enabled by a select() on this ONE library target:
+# Windows compiles with `scm` on, everything else without — matching what
+# Cargo resolves per platform (every service enables the feature under
+# [target.'cfg(windows)'.dependencies], and Cargo feature-unification applies
+# it to the single lifecycle instance in any binary's graph). Do NOT
+# reintroduce a second `_scm` library variant: with two instantiations, a
+# service lib selecting the variant while a transitive dep (e.g.
+# rusty-photon-driver) referenced the plain target linked BOTH copies of the
+# crate on Windows, and cross-crate types (ReloadSignal, Shutdown) stopped
+# unifying (E0308 "expected ReloadSignal, found a different ReloadSignal").
+# windows-service (SCM API) and tracing-appender (rolling-file writer) are
+# only pulled in where the feature is on.
 rust_library(
     name = "rusty-photon-service-lifecycle",
     srcs = glob(["src/**/*.rs"]),
     aliases = aliases(),
-    crate_name = "rusty_photon_service_lifecycle",
-    edition = "2021",
-    proc_macro_deps = all_crate_deps(proc_macro = True),
-    visibility = ["//visibility:public"],
-    deps = all_crate_deps(normal = True),
-)
-
-# Windows SCM variant. filemonitor enables this crate's `scm` feature under
-# [target.'cfg(windows)'.dependencies], which gates `mod scm` (Windows Service
-# Control Manager dispatch) behind `cfg(all(windows, feature = "scm"))` and pulls
-# in the windows-service crate. crate_features is compile-time in Bazel, so this
-# is a second library compiled with `scm` on; filemonitor's BUILD selects it on
-# Windows. windows-service is added only on Windows (on other targets `mod scm`
-# stays cfg-excluded, so the feature flag is harmless and the crate isn't linked).
-rust_library(
-    name = "rusty-photon-service-lifecycle_scm",
-    srcs = glob(["src/**/*.rs"]),
-    aliases = aliases(),
-    crate_features = ["scm"],
+    crate_features = select({
+        "@platforms//os:windows": ["scm"],
+        "//conditions:default": [],
+    }),
     crate_name = "rusty_photon_service_lifecycle",
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = ["//visibility:public"],
     deps = all_crate_deps(normal = True) + select({
-        "@platforms//os:windows": ["@cr//:windows-service"],
+        "@platforms//os:windows": [
+            "@cr//:tracing-appender",
+            "@cr//:windows-service",
+        ],
         "//conditions:default": [],
     }),
 )
@@ -55,6 +56,38 @@ rust_test(
         normal = True,
         normal_dev = True,
     ),
+)
+
+# Unit tests with the `scm` feature on EVERY platform (the library target
+# above only enables it on Windows), so the SCM rolling-file logging helpers —
+# gated on the feature alone, not cfg(windows) — are unit-tested on Linux and
+# macOS CI too. Deliberately a standalone test compilation (srcs, not
+# `crate = ...`): test binaries are graph leaves, so this second feature
+# combination can never collide with the library instantiation the way a
+# second library variant did (see the comment above).
+rust_test(
+    name = "rusty-photon-service-lifecycle_scm_unit_test",
+    size = "small",
+    srcs = glob(["src/**/*.rs"]),
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate_features = ["scm"],
+    crate_name = "rusty_photon_service_lifecycle",
+    crate_root = "src/lib.rs",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ) + ["@cr//:tracing-appender"] + select({
+        "@platforms//os:windows": ["@cr//:windows-service"],
+        "//conditions:default": [],
+    }),
 )
 
 # Doctests. rusty-photon-service-lifecycle is the only workspace crate with

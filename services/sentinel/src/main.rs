@@ -27,12 +27,24 @@ struct Args {
     /// Log level
     #[arg(short, long, default_value = "info")]
     log_level: Level,
+
+    /// Run as a Windows service (used by the service control manager).
+    /// No-op on non-Windows targets.
+    #[arg(long, hide = true)]
+    service: bool,
 }
 
 fn main() -> ServiceResult {
     let args = Args::parse();
 
-    rusty_photon_service_lifecycle::init_tracing(args.log_level);
+    // In Windows SCM service mode logs go to the rolling file under
+    // %PROGRAMDATA%\rusty-photon\logs\; hold the guard until process exit so
+    // the final lines flush on SCM Stop. Console mode logs to stderr as before.
+    let _tracing_guard = rusty_photon_service_lifecycle::init_service_tracing(
+        "sentinel",
+        args.log_level,
+        args.service,
+    );
 
     tracing::debug!(
         "Parsed command line arguments: config={:?}, dashboard_port={:?}, log_level={:?}",
@@ -63,13 +75,15 @@ fn main() -> ServiceResult {
         config.transitions.len()
     );
 
-    ServiceRunner::new("sentinel").run(move |shutdown| async move {
-        SentinelBuilder::new(config)
-            .with_cancellation_token(shutdown.token())
-            .build()
-            .await?
-            .start()
-            .await?;
-        Ok(())
-    })
+    ServiceRunner::new("sentinel")
+        .scm_mode(args.service)
+        .run(move |shutdown| async move {
+            SentinelBuilder::new(config)
+                .with_cancellation_token(shutdown.token())
+                .build()
+                .await?
+                .start()
+                .await?;
+            Ok(())
+        })
 }
