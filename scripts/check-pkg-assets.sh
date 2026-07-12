@@ -192,7 +192,7 @@ if [ -f "$pkg_wxs" ]; then
         fi
         grep -q "Name=\"rusty-photon-$svc\"$" "$frag" \
             || err "$svc: fragment ServiceInstall/ServiceControl name must be rusty-photon-$svc"
-        grep -q "Name=\"rusty-photon-$svc.exe\" Source=\"!(bindpath.bin)\\\\$svc.exe\"" "$frag" \
+        grep -Fq "Name=\"rusty-photon-$svc.exe\" Source=\"!(bindpath.bin)\\$svc.exe\"" "$frag" \
             || err "$svc: fragment must install bindpath.bin\\$svc.exe as rusty-photon-$svc.exe"
         grep -q 'Arguments="--service"' "$frag" \
             || err "$svc: ServiceInstall must pass --service (SCM mode)"

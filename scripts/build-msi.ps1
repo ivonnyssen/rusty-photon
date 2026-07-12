@@ -210,11 +210,24 @@ foreach ($svc in $allServices + @("zwo-camera", "zwo-focuser")) {
 }
 
 # ---- package -----------------------------------------------------------
-if (-not (Get-Command wix -ErrorAction SilentlyContinue)) {
+# Require the PINNED wix version: a stray wix of another major on PATH would
+# build with mismatched extension versions (or different authoring rules).
+$wixOk = $false
+if (Get-Command wix -ErrorAction SilentlyContinue) {
+    $v = "$(wix --version 2>$null)"
+    $wixOk = ($LASTEXITCODE -eq 0) -and $v.StartsWith($WixVersion)
+    if (-not $wixOk) { Write-Host "build-msi: wix on PATH is '$v', need $WixVersion" }
+}
+if (-not $wixOk) {
     Write-Host "Installing the wix CLI ($WixVersion)"
     dotnet tool install --global wix --version $WixVersion
-    if ($LASTEXITCODE -ne 0) { Die "dotnet tool install wix failed" }
-    # The dotnet tools dir may not be on PATH yet in this session.
+    if ($LASTEXITCODE -ne 0) {
+        # Already installed as a global tool at another version.
+        dotnet tool update --global wix --version $WixVersion
+        if ($LASTEXITCODE -ne 0) { Die "dotnet tool install/update wix $WixVersion failed" }
+    }
+    # The dotnet tools dir may not be on (the front of) PATH yet; it must win
+    # over whatever wix was found above.
     $env:PATH = "$env:USERPROFILE\.dotnet\tools;$env:PATH"
 }
 foreach ($ext in "WixToolset.Util.wixext", "WixToolset.Firewall.wixext", "WixToolset.UI.wixext") {
@@ -228,12 +241,13 @@ $msi = Join-Path $dist "rusty-photon-$version-x64.msi"
 
 $sources = @("installer\Package.wxs") + (Get-ChildItem "installer\fragments\*.wxs" | ForEach-Object { $_.FullName })
 Write-Host "wix build -> $msi"
-# -sw WIX1149: the native ServiceConfig element draws an advisory about MSI
+# -sw1149: the native ServiceConfig element draws an advisory about MSI
 # SDK caveats, but it is the only declarative way to set
 # SERVICE_CONFIG_FAILURE_ACTIONS_FLAG (util:ServiceConfig cannot), and
 # verify-msi.ps1 behaviorally proves the flag works (see installer/README.md).
+# (Joined -sw1149 form: `-sw <id>` parses the id as an input file.)
 wix build -arch x64 `
-    -sw WIX1149 `
+    -sw1149 `
     -d "Version=$version" `
     -ext WixToolset.Util.wixext `
     -ext WixToolset.Firewall.wixext `

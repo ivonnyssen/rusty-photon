@@ -99,9 +99,13 @@ function WaitFor([string]$svc, [string]$what, [scriptblock]$probe, [int]$timeout
 }
 
 function ServiceLogContent([string]$svc) {
-    $files = Get-ChildItem -Path $logsDir -Filter "$svc.*" -ErrorAction SilentlyContinue
-    if (-not $files) { return "" }
-    ($files | ForEach-Object { Get-Content $_.FullName -Raw }) -join "`n"
+    # Newest daily file only, tail-bounded: crash-looping services append
+    # every 5 s while WaitFor polls every second, so unbounded -Raw reads of
+    # every file would grow quadratically over a verification run.
+    $f = Get-ChildItem -Path $logsDir -Filter "$svc.*" -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime | Select-Object -Last 1
+    if (-not $f) { return "" }
+    (Get-Content $f.FullName -Tail 500) -join "`n"
 }
 
 function Msiexec([string[]]$msiArgs) {
