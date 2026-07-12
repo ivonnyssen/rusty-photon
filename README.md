@@ -265,6 +265,7 @@ rusty-photon/
 | [docs/skills/testing.md](docs/skills/testing.md) | Skill: writing and organizing tests |
 | [docs/skills/pre-push.md](docs/skills/pre-push.md) | Skill: running CI quality gates before pushing |
 | [docs/skills/raspberry-pi-runner.md](docs/skills/raspberry-pi-runner.md) | Skill: setting up the Pi 5 ARM64 nightly self-hosted runner |
+| [docs/skills/rig-development.md](docs/skills/rig-development.md) | Skill: fast dev loop against the telescope field rig |
 | [docs/references/ascom-alpaca.md](docs/references/ascom-alpaca.md) | ASCOM Alpaca protocol reference |
 | [docs/decisions/](docs/decisions/) | Architecture Decision Records |
 
