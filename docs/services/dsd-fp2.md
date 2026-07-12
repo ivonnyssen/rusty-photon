@@ -262,7 +262,12 @@ without any driver-specific code.
   silently driving the panel into its measured non-linear range (see
   [Brightness linearity](#hardware-constraints)). `0` is always accepted
   regardless of the floor, since it is the ASCOM "on at zero" state, not
-  a dim request.
+  a dim request. `config.apply` rejects `min_brightness > max_brightness`
+  (see [Validation rules](#validation-rules)), but a hand-edited config
+  file loaded at startup isn't validated, so this inconsistent state is
+  still reachable; when it is, the rejection message names it as a driver
+  misconfiguration instead of suggesting an unreachable "raise the
+  brightness" remediation.
 - All writes (open/close, calibrator on/off, brightness changes) require
   `connected == true`; otherwise the driver returns `ASCOMError::NOT_CONNECTED`.
   `calibrator_on`'s brightness checks (max and min, above) run *before* the
