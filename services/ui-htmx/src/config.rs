@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 
 /// Top-level BFF configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     #[serde(default)]
     pub server: ServerConfig,
@@ -35,6 +36,7 @@ pub struct Config {
 
 /// Where the BFF itself listens.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ServerConfig {
     #[serde(default = "default_bind")]
     pub bind: String,
@@ -59,6 +61,7 @@ impl Default for Drivers {
 
 /// How to reach one driver's Alpaca config actions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DriverTarget {
     /// Display name shown in the UI; falls back to the service id when absent.
     #[serde(default)]
@@ -85,6 +88,7 @@ pub struct DriverTarget {
 
 /// How to reach Sentinel's dashboard/REST API (the restart endpoint).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SentinelTarget {
     #[serde(default = "default_sentinel_base_url")]
     pub base_url: String,
@@ -98,6 +102,7 @@ pub struct SentinelTarget {
 
 /// HTTP Basic credentials the BFF presents to a driver.
 #[derive(Clone, Serialize, Deserialize, derive_more::Debug)]
+#[serde(deny_unknown_fields)]
 pub struct DriverAuth {
     pub username: String,
     /// Plaintext Basic-Auth password — redacted from `Debug` so it never lands
@@ -109,6 +114,7 @@ pub struct DriverAuth {
 /// How to reach the rp orchestrator's REST API (`/api/config`, `/api/equipment`,
 /// `/api/events/subscribe`, …).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RpTarget {
     #[serde(default = "default_rp_base_url")]
     pub base_url: String,
@@ -348,6 +354,46 @@ mod tests {
         assert_eq!(back.base_url, d.base_url);
         assert!(back.auth.is_none());
         assert!(back.ca_cert_path.is_none());
+    }
+
+    #[test]
+    fn config_rejects_unknown_top_level_field() {
+        let err = serde_json::from_str::<Config>(r#"{"plugins": []}"#).unwrap_err();
+        assert!(err.to_string().contains("plugins"), "{err}");
+    }
+
+    #[test]
+    fn server_config_rejects_unknown_field() {
+        let err = serde_json::from_str::<Config>(r#"{"server": {"tls": true}}"#).unwrap_err();
+        assert!(err.to_string().contains("tls"), "{err}");
+    }
+
+    #[test]
+    fn driver_target_rejects_unknown_field() {
+        let json = r#"{"drivers": {"dsd-fp2": {"poll_interval": "5s"}}}"#;
+        let err = serde_json::from_str::<Config>(json).unwrap_err();
+        assert!(err.to_string().contains("poll_interval"), "{err}");
+    }
+
+    #[test]
+    fn sentinel_target_rejects_unknown_field() {
+        let json = r#"{"sentinel": {"webhook_url": "http://x"}}"#;
+        let err = serde_json::from_str::<Config>(json).unwrap_err();
+        assert!(err.to_string().contains("webhook_url"), "{err}");
+    }
+
+    #[test]
+    fn driver_auth_rejects_unknown_field() {
+        let json = r#"{"rp": {"auth": {"username": "u", "password": "p", "realm": "x"}}}"#;
+        let err = serde_json::from_str::<Config>(json).unwrap_err();
+        assert!(err.to_string().contains("realm"), "{err}");
+    }
+
+    #[test]
+    fn rp_target_rejects_unknown_field() {
+        let json = r#"{"rp": {"discovery_port": 32227}}"#;
+        let err = serde_json::from_str::<Config>(json).unwrap_err();
+        assert!(err.to_string().contains("discovery_port"), "{err}");
     }
 
     #[test]
