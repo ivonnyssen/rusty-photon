@@ -142,11 +142,12 @@ All 18 services get what filemonitor already has:
   `ServiceControl` start on install. `docs/packaging-windows.md` documents:
   write `%PROGRAMDATA%\rusty-photon\<svc>.json`, then
   `sc start rusty-photon-<svc>` (or Services.msc).
-- **Logging:** in SCM mode the lifecycle crate's `init_tracing` swaps stderr
-  for a `tracing-appender` rolling file
-  (`%PROGRAMDATA%\rusty-photon\logs\<svc>.log`, daily rotation, keep 14
-  files), with a non-blocking writer whose guard is held to process exit so
-  the final lines flush on Stop. Console mode is byte-for-byte unchanged.
+- **Logging:** in SCM mode the lifecycle crate's `init_service_tracing`
+  (new in W1; console mode delegates to the unchanged `init_tracing`) swaps
+  stderr for a `tracing-appender` rolling file
+  (`%PROGRAMDATA%\rusty-photon\logs\<svc>.<date>.log` — daily rotation adds
+  the date component; keep 14 files), with a non-blocking writer whose
+  guard is held to process exit so the final lines flush on Stop. Console mode is byte-for-byte unchanged.
   **As built (W1):** the crate exposes a sticky process-global
   `is_scm_service()`, and all 18 `bound_addr=` stdout-handshake sites (15
   service libs + 3 mains) are gated on it; raw stderr error prints on
