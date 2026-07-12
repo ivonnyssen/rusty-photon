@@ -25,7 +25,8 @@ the GitHub Releases page. The installer presents a feature tree:
 
 Every selected service installs
 `%ProgramFiles%\rusty-photon\rusty-photon-<svc>.exe` and registers a
-Windows service named `rusty-photon-<svc>` (LocalSystem, auto-start)
+Windows service named `rusty-photon-<svc>` (LocalSystem; auto-start,
+except the config-gated four, which install as *Manual* — see below)
 with restart-after-5s failure actions — the systemd
 `Restart=on-failure`/`RestartSec=5` parity the serial drivers' eager
 hardware validation depends on — plus an inbound firewall exception on
