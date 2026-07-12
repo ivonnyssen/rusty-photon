@@ -355,7 +355,7 @@ The driver exposes its own configuration over HTTP as two vendor ASCOM
 `Action`s, so a host-agnostic UI (the BFF) can read and write config without a
 bespoke endpoint. This is the `dsd-fp2` instance of the cross-driver protocol
 defined in
-[`docs/plans/ui-design/config-actions.md`](../plans/ui-design/config-actions.md).
+[`docs/plans/archive/config-actions.md`](../plans/archive/config-actions.md).
 
 ### Supported actions
 

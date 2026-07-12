@@ -159,7 +159,7 @@ wrapper's dependency resolves on crates.io.
    release. The crates declare explicit lower MSRVs (`libzwo-sys` 1.70.0, `zwo-rs`
    1.87.0 — the latter pending an `is_multiple_of` refactor to reach ~1.70); if a
    change raises a floor, bump that crate's `rust-version`. See
-   [docs/plans/publish-readiness-checks.md](../plans/publish-readiness-checks.md).
+   [docs/plans/archive/publish-readiness-checks.md](../plans/archive/publish-readiness-checks.md).
 2. Bump `version` in `crates/zwo-rs/libzwo-sys/Cargo.toml` and/or
    `crates/zwo-rs/Cargo.toml` as needed; update each crate's `CHANGELOG.md`.
 3. If the wrapper's `version` changed, bump the `libzwo-sys = { version = "…" }`

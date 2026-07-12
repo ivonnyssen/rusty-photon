@@ -4,7 +4,7 @@
 
 `ui-htmx` is the browser-facing, **server-rendered web UI** for rusty-photon —
 the web UI described in
-[`docs/plans/ui-design/config-actions.md`](../plans/ui-design/config-actions.md)
+[`docs/plans/archive/config-actions.md`](../plans/archive/config-actions.md)
 with the chosen visual direction in
 [`docs/plans/ui-design/mocks/README.md`](../plans/ui-design/mocks/README.md). It
 is a **standalone backend-for-frontend (BFF)**: a client of the rest of the
@@ -439,7 +439,7 @@ Outcome rendering (the Sentinel wire contract is
 ## Equipment page (`/equipment`)
 
 The roster view of the observatory, per the
-[federated-roster design](../plans/ui-design/config-actions.md#federated-roster-managed-own-vs-foreign-devices).
+[federated-roster design](../plans/archive/config-actions.md#federated-roster-managed-own-vs-foreign-devices).
 Its two data sources are joined by device `id`:
 
 - **`GET /api/config`** (rp) — the authoritative device list: every equipment
@@ -743,7 +743,7 @@ hidden `__config` blob). The request helpers drive the BFF the way htmx would:
 form and POSTs them with the `HX-*` header set (disabled fields are omitted, just
 as a browser omits them); the unlock step follows the page's own rendered
 `hx-get` link; and the reconnect poll matches the refreshed input's `value`. This
-is Layer A of the [UI-testing plan](../plans/ui-testing.md), proving the page's
+is Layer A of the [UI-testing plan](../plans/archive/ui-testing.md), proving the page's
 markup and `hx-*` wiring are correct (obligation P1) without a browser; `scraper`
 is a test-only dev-dependency and is never compiled into the shipped binary.
 
@@ -801,7 +801,7 @@ browser flake never reddens a PR; the per-PR P1/P2 layers carry correctness.
 
 `browser.feature` carries four scenarios. Two prove htmx executes — a smoke render
 (proves `htmx.min.js` loads) and an unlock-click `outerHTML` swap. Two are Tier 0
-robustness checks from the [UI-testing plan](../plans/ui-testing.md) §9 that harden
+robustness checks from the [UI-testing plan](../plans/archive/ui-testing.md) §9 that harden
 teardown so BDD subprocess coverage is never silently lost (the §5.4 hazard in
 [`testing.md`](../skills/testing.md)):
 
@@ -1007,7 +1007,7 @@ suites run everywhere the existing one does. Coverage:
 
 ## References
 
-- Design plan: [`docs/plans/ui-design/config-actions.md`](../plans/ui-design/config-actions.md)
+- Design plan: [`docs/plans/archive/config-actions.md`](../plans/archive/config-actions.md)
 - Chosen UI direction + stack: [`docs/plans/ui-design/mocks/README.md`](../plans/ui-design/mocks/README.md)
 - Driver config-action protocol (Phase 1): [`dsd-fp2.md`](dsd-fp2.md) "Config Actions"
 - HTTP-client / mockall pattern: [`sentinel.md`](sentinel.md)

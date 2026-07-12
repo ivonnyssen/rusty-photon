@@ -1,5 +1,5 @@
 //! Real headless-browser session for the `@browser` BDD scenarios — Layer C of
-//! the UI-testing plan ([`docs/plans/ui-testing.md`] §6/§9, obligation P3).
+//! the UI-testing plan ([`docs/plans/archive/ui-testing.md`] §6/§9, obligation P3).
 //!
 //! geckodriver is treated as an external **system tool** (like OmniSim/ConformU):
 //! discovered via `GECKODRIVER_BINARY`, else `geckodriver` on `PATH`. It is
@@ -23,7 +23,7 @@
 //! connections to the BFF open, which would block the BFF's graceful shutdown and
 //! cost it its `.profraw` coverage flush — see `docs/skills/testing.md` §5.4).
 //!
-//! [`docs/plans/ui-testing.md`]: ../../../../docs/plans/ui-testing.md
+//! [`docs/plans/archive/ui-testing.md`]: ../../../../docs/plans/archive/ui-testing.md
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};

@@ -70,7 +70,6 @@ belong in any single service design doc.
 | **Plans** (in-flight initiatives — see [docs/plans/](plans/)) | |
 | [service-packaging.md](plans/service-packaging.md) | `.deb`/`.rpm` packages for every service (15 daemons — phd2-guider became one with its #464 HTTP service mode): shared `rusty-photon` user, hardened unit classes, QHY firmware downloader, ZWO blob bundling, on-rig arm64 builds. Behind [ADR-012](decisions/012-service-packaging-architecture.md)/[ADR-013](decisions/013-native-sdk-payload-policy.md) |
 | [i18n.md](plans/i18n.md) | Workspace internationalization: scope, tech-stack, and translation-sourcing options |
-| [ui-testing.md](plans/ui-testing.md) | ui-htmx UI-behavior testing strategy: BDD-embedded `scraper` DOM assertions + cross-OS `insta` snapshots + an advisory `thirtyfour` browser layer, with an anticipatory spike plan; Bazel-primary aware; Gherkin stays the source of truth |
 | [zwo-driver.md](plans/zwo-driver.md) | ZWO ASI camera + EFW filter-wheel Alpaca driver (`zwo-camera`, port 11122) + author-maintained `zwo-rs`/`libzwo-sys` FFI; the ZWO analogue of `qhy-camera` (MIT SDK → public cache, but no pre-existing Rust FFI). See [`docs/services/zwo-camera.md`](services/zwo-camera.md) + [ADR-008](decisions/008-zwo-camera-native-sdk-ffi.md) |
 
 Completed plans move to [`docs/plans/archive/`](plans/archive/) and are no longer

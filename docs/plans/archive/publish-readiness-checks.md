@@ -1,11 +1,13 @@
 # Publish-readiness checks for the dual-homed FFI crates
 
-**Status:** Implemented (2026-06-22) on `feature/publish-readiness-checks`. The
-verification machinery (explicit per-crate MSRVs, `scripts/verify-publishable-crate.sh`,
-`.github/workflows/publish-readiness.yml`) is in place and **dogfooded green on
-both families locally**. It is a **prerequisite** for the first crates.io publish
-deferred by [`vendor-qhyccd-rs.md`](vendor-qhyccd-rs.md) and
-[`vendor-zwo-rs.md`](vendor-zwo-rs.md).
+**Status: COMPLETE (archived 2026-07-12).** Implemented on
+`feature/publish-readiness-checks`; the verification machinery (explicit
+per-crate MSRVs, `scripts/verify-publishable-crate.sh`,
+`.github/workflows/publish-readiness.yml`) is live and has run green on every
+nightly `publish-readiness.yml` cron since 2026-06-22 (10/10 most recent runs
+verified). It remains a **prerequisite** for the first crates.io publish
+deferred by [`vendor-qhyccd-rs.md`](../vendor-qhyccd-rs.md) and
+[`vendor-zwo-rs.md`](../vendor-zwo-rs.md), neither of which has published yet.
 **Author:** drafted 2026-06-22.
 **Scope:** the **four dual-homed FFI crates only** — `qhyccd-rs` + `libqhyccd-sys`
 (ADR-009) and `zwo-rs` + `libzwo-sys` (ADR-010). Nothing else in the workspace is
@@ -171,7 +173,7 @@ it with `cargo install cargo-docs-rs --locked` rather than the action shorthand.
 
 The first crates.io publish (deferred by the two vendoring plans) is now gated on a
 **green nightly publish-readiness run** for the crate being released. Recorded in
-[`crates/qhyccd-rs/RELEASING.md`](../../crates/qhyccd-rs/RELEASING.md) and ADR-010's
+[`crates/qhyccd-rs/RELEASING.md`](../../../crates/qhyccd-rs/RELEASING.md) and ADR-010's
 release runbook.
 
 ## "Lowest possible", maintained

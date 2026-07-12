@@ -3,7 +3,7 @@
 //! Every scenario drives the real BFF over HTTP against a real dsd-fp2 driver
 //! (see [`crate::world::UiWorld`]); the Then-steps assert on the HTML the BFF
 //! actually renders using CSS-selector DOM checks (see [`crate::dom`]) — Layer A
-//! of the UI-testing plan (docs/plans/ui-testing.md §4).
+//! of the UI-testing plan (docs/plans/archive/ui-testing.md §4).
 
 use cucumber::{given, then, when};
 

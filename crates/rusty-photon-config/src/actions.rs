@@ -7,7 +7,7 @@
 //! trait that each driver implements for its own `Config` type. The cross-driver
 //! protocol and editability tiers are documented in
 //! [`docs/services/config-actions.md`] and the plan
-//! [`docs/plans/ui-design/config-actions.md`].
+//! [`docs/plans/archive/config-actions.md`].
 //!
 //! The generic functions return plain values / [`ConfigError`]-flavoured errors;
 //! the per-driver `device.rs` wraps those into `ascom_alpaca::ASCOMResult`, so
@@ -15,7 +15,7 @@
 //!
 //! [`Action`]: https://ascom-standards.org/api/
 //! [`docs/services/config-actions.md`]: ../../../docs/services/config-actions.md
-//! [`docs/plans/ui-design/config-actions.md`]: ../../../docs/plans/ui-design/config-actions.md
+//! [`docs/plans/archive/config-actions.md`]: ../../../docs/plans/archive/config-actions.md
 
 use std::collections::BTreeSet;
 use std::path::Path;

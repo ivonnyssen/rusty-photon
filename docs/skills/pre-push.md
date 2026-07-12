@@ -161,7 +161,7 @@ in-workspace **msrv** job (`check.yml`) **skips** those four (the wrapper plus i
 `sys-crate`, discovered from `[package.metadata.publish-readiness]`) and verifies
 only the workspace-MSRV members. The four are instead checked out-of-tree by the
 nightly **publish-readiness** workflow — see below and
-[docs/plans/publish-readiness-checks.md](../plans/publish-readiness-checks.md).
+[docs/plans/archive/publish-readiness-checks.md](../plans/archive/publish-readiness-checks.md).
 
 ### test.yml
 
@@ -269,7 +269,7 @@ the in-workspace `check`/`test` jobs cannot give. Nightly cron (02:30 UTC) +
 upstream release, not the PR under review). Families are discovered dynamically via
 `[package.metadata.publish-readiness]`. A green run is a **release prerequisite**
 (see each crate's release runbook). Full design:
-[docs/plans/publish-readiness-checks.md](../plans/publish-readiness-checks.md).
+[docs/plans/archive/publish-readiness-checks.md](../plans/archive/publish-readiness-checks.md).
 
 | CI Job | Local Command | Prerequisites | Required? |
 |--------|---------------|---------------|-----------|

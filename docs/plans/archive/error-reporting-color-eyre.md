@@ -1,20 +1,21 @@
 # Adopt `color-eyre` for top-level error & panic reporting
 
-**Status:** Implemented on `feature/color-eyre-error-reporting` (2026-07-01);
-decision recorded in
-[ADR-011](../decisions/011-error-reporting-layers.md). The §4 spike selected
+**Status: COMPLETE (archived 2026-07-12).** Landed via PR #420 (commit
+`65496bc`) on `feature/color-eyre-error-reporting`; decision recorded in
+[ADR-011](../../decisions/011-error-reporting-layers.md). The §4 spike selected
 **mechanism (b)** (closures keep returning a boxed `Send + Sync` error; the
 runner converts to `Report` at its boundary) because `eyre::Report` has no
 `From` impl for boxed trait objects, so mechanism (a) would have broken every
-`?` on the services' boxed-error helpers. Archive this plan after the PR
-merges to `main` (see docs/skills/archiving-plans.md).
+`?` on the services' boxed-error helpers. All in-scope phases (0-3) shipped;
+the optional Phase 4 clippy tripwire was never built (explicitly optional, not
+a gap).
 **Author:** drafted 2026-06-27 on `docs/plan-color-eyre-error-reporting`.
 **Scope:** the binary boundary only — `main()` return formatting and the process
 panic hook. `thiserror` remains the workspace's error-*definition* mechanism
 everywhere; this plan does **not** touch the ~46 structured error types, the
 `driver_error!` macro, or the ASCOM/HTTP classification path.
-**Decision record:** if accepted, land an ADR (`docs/decisions/011-error-reporting-layers.md`)
-capturing the layered-error policy below; this plan is the implementation plan, the
+**Decision record:** [ADR-011](../../decisions/011-error-reporting-layers.md)
+captures the layered-error policy; this plan is the implementation plan, the
 ADR is the durable "why".
 
 ---
