@@ -21,18 +21,31 @@ concurrency:
   group: ${{ github.workflow }}
   cancel-in-progress: true
 name: ui-htmx browser nightly
+env:
+  # Same escape hatch as test.yml (see there for the full rationale): building
+  # the WHOLE workspace (below) would otherwise force native link directives
+  # for the QHY/ZWO camera crates, which this job never provisions the SDKs
+  # for. Set at workflow level (not just the build step) because build.rs
+  # reruns on env-var change — if the later `cargo test` step didn't see the
+  # same vars, cargo would detect the "change" and redo the native-link probe.
+  ZWO_SKIP_NATIVE_LINK: "1"
+  QHYCCD_SKIP_NATIVE_LINK: "1"
 jobs:
   browser-bdd:
     # Schedule/dispatch only — never on push/PR (that is the whole point: keep
     # browser flake off the required gate). On a schedule the default branch
     # (main) is checked out, so this records main's @browser health.
     runs-on: ubuntu-latest
-    # A warm run is a few minutes; the COLD first run (empty rust-cache) compiles
-    # ui-htmx + dsd-fp2 + rp + sentinel and their dep tree (axum/reqwest/
-    # thirtyfour/cucumber) plus the Firefox download, so the cap sits at 30 —
-    # scheduled.yml's cold-Rust budget. It only bites a hung WebDriver session,
-    # backstopping GitHub's 360-min default (plan §8).
-    timeout-minutes: 30
+    # A warm run is a few minutes; the COLD first run (empty rust-cache) builds
+    # the full workspace (below) plus the Firefox download. In practice the
+    # rust-cache below shares test.yml's key, and test.yml rebuilds on every
+    # push to main, so this is rarely truly cold — but size the cap for a true
+    # cold run anyway: test.yml's own full-workspace budget is 45 min for
+    # build+nextest+bdd combined, and this job only builds once then runs a
+    # single package's bdd, so 40 min is generous headroom. It only bites a
+    # hung WebDriver session or a genuine cache miss, backstopping GitHub's
+    # 360-min default (plan §8).
+    timeout-minutes: 40
     name: nightly / ubuntu / ui-htmx @browser
     steps:
       - uses: actions/checkout@v7
@@ -64,24 +77,30 @@ jobs:
           geckodriver --version
       - name: Install stable
         uses: dtolnay/rust-toolchain@stable
+      # Shared-key MATCHES test.yml's ubuntu job on purpose: test.yml rebuilds
+      # the full workspace (same flags, same toolchain) on every push to main
+      # plus its own nightly schedule, so this job rides on that already-warm
+      # cache instead of paying for its own separate one. Correctness is safe
+      # to share since both jobs build the identical (workspace, flags,
+      # toolchain) combination — divergence would show up as normal
+      # incremental recompilation, not a cache-poisoning risk.
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ui-htmx-browser
+          shared-key: linux-stable
       - name: cargo generate-lockfile
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
-      # Pre-build the BFF and every process its BDD suite spawns: bdd-infra
-      # discovers binaries in target/ and no longer compiles them on the fly
-      # (test.yml's windows-bdd pattern). ui-htmx's BDD spawns dsd-fp2 (mock
-      # hardware), rp (Phase-5 rp-config/equipment/stream suites), and sentinel
-      # (restart.feature, via its Service Restart API) — an all-first-party
-      # stack, no OmniSim or native SDKs involved, so nothing else to provision.
-      - name: cargo build (ui-htmx + dsd-fp2 + rp + sentinel)
-        run: |
-          cargo build --locked --package ui-htmx --all-features --all-targets
-          cargo build --locked --package dsd-fp2 --all-features --all-targets
-          cargo build --locked --package rp --all-features --all-targets
-          cargo build --locked --package sentinel --all-features --all-targets
+      # Build the FULL workspace rather than hand-picking the packages the BDD
+      # suite spawns: bdd-infra discovers binaries in target/ and no longer
+      # compiles them on the fly (test.yml's windows-bdd pattern), and a
+      # hand-picked list silently goes stale as new suites spawn new processes
+      # (that's exactly how issue #494 broke — Phase 4/5 added scenarios that
+      # spawn rp/sentinel and this list wasn't updated). Building everything
+      # means main's Rust build health is verified here too, which is a
+      # feature: main must never be broken, and this job (like test.yml) now
+      # catches that regardless of whether the break is browser-related.
+      - name: cargo build (full workspace)
+        run: cargo build --locked --workspace --all-features --all-targets
       # Run the BDD suite with the browser layer enabled. UI_BROWSER_TESTS=1
       # un-filters the @browser scenarios (tests/bdd.rs); the 9 server-bytes
       # scenarios run too, so the whole suite is exercised with Firefox attached.
@@ -140,9 +159,14 @@ jobs:
               ``,
               `Likely causes: a browser/geckodriver regression or version-pair`,
               `incompatibility, a Firefox upgrade changing behavior or orphan`,
-              `handling (UI-testing plan §10), an htmx-contract regression, or`,
-              `genuine browser-layer flake. Inspect the failed run; failure-triage`,
-              `artifacts (screenshot + page source) are uploaded on the run.`,
+              `handling (UI-testing plan §10), an htmx-contract regression,`,
+              `genuine browser-layer flake, OR a full-workspace \`cargo build\``,
+              `failure unrelated to the browser layer (this job now builds the`,
+              `whole workspace, same as test.yml, so a broken main surfaces here`,
+              `too — check the run log's build step before assuming a browser`,
+              `regression). Inspect the failed run; failure-triage artifacts`,
+              `(screenshot + page source) are uploaded on the run when the`,
+              `failure got as far as the browser scenarios.`,
               ``,
               `Run: ${runUrl}`,
               ``,
