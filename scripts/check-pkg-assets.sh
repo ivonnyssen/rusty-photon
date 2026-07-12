@@ -190,8 +190,17 @@ if [ -f "$pkg_wxs" ]; then
             err "$svc: missing $frag"
             continue
         fi
-        grep -q "Name=\"rusty-photon-$svc\"$" "$frag" \
-            || err "$svc: fragment ServiceInstall/ServiceControl name must be rusty-photon-$svc"
+        # The element's own Name is the first Name= attribute line after the
+        # opener (the fragments put one attribute per line; Id sits on the
+        # opener). A bare Name= grep would also match fw:FirewallException.
+        for elem in ServiceInstall ServiceControl; do
+            got=$(awk -v elem="<$elem " '
+                index($0, elem) { in_elem = 1; next }
+                in_elem && /Name="/ { sub(/^ */, ""); print; exit }
+            ' "$frag")
+            [ "$got" = "Name=\"rusty-photon-$svc\"" ] \
+                || err "$svc: $elem name must be rusty-photon-$svc (got: ${got:-none})"
+        done
         grep -Fq "Name=\"rusty-photon-$svc.exe\" Source=\"!(bindpath.bin)\\$svc.exe\"" "$frag" \
             || err "$svc: fragment must install bindpath.bin\\$svc.exe as rusty-photon-$svc.exe"
         grep -q 'Arguments="--service"' "$frag" \
