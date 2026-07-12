@@ -56,6 +56,11 @@ For custom monitors/notifiers (e.g. in an astrophotography app), use `with_monit
 ## Configuration
 
 Configuration is loaded from a JSON file. All sections are optional with sensible defaults.
+Every section (the top-level `Config` plus each nested block —
+`MonitorConfig`, `NotifierConfig`, `TransitionConfig`, `DashboardConfig`,
+`OperationWatchdogConfig`, `OperationPolicy`, `ServiceConfig`) rejects unknown
+keys at deserialize (`deny_unknown_fields`), so a typo or a key removed by a
+schema change fails loudly at load instead of being silently ignored.
 
 See `examples/config.json` for a complete example.
 
