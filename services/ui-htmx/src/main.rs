@@ -12,7 +12,7 @@ use ui_htmx::{build_router, load_config, AppState, Config};
 #[command(about = "Server-rendered web configuration UI (BFF) for rusty-photon")]
 #[command(version)]
 struct Args {
-    /// Path to the BFF configuration file. Defaults to the per-user platform
+    /// Path to the BFF configuration file. Defaults to the platform
     /// config directory (e.g. `~/.config/rusty-photon/ui-htmx.json` on
     /// Linux); created with defaults on first start if absent (binds
     /// 127.0.0.1:11120, targets dsd-fp2 at http://127.0.0.1:11119).

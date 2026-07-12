@@ -1288,8 +1288,11 @@ mod tests {
         match mapped {
             StarAdvError::WrongDevice { port, reason } => {
                 // Default `UsbConfig` port path is documented in
-                // `config.rs::UsbConfig::default`.
+                // `config.rs::UsbConfig::default` (platform-dependent).
+                #[cfg(not(windows))]
                 assert_eq!(port, "/dev/ttyACM0", "wrong port in diagnostic");
+                #[cfg(windows)]
+                assert_eq!(port, "COM3", "wrong port in diagnostic");
                 assert!(
                     reason.contains("0xFF"),
                     "reason must quote the rejected byte; got {reason:?}"

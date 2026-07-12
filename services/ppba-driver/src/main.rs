@@ -122,7 +122,7 @@ fn main() -> ServiceResult {
         args.log_level
     );
 
-    // Resolve the config path (explicit `--config`, else the per-user platform
+    // Resolve the config path (explicit `--config`, else the platform
     // config directory) and mint a UUIDv4 `UniqueID` for each device on first
     // run. `materialize_identity` is idempotent: it only fills empty/absent ids,
     // never overwrites an existing one, and persists atomically. When the file

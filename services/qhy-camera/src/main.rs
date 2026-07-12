@@ -14,7 +14,7 @@ use tracing::{debug, Level};
 #[command(about = "ASCOM Alpaca Camera (+ FilterWheel) driver for QHYCCD hardware")]
 #[command(version)]
 struct Args {
-    /// Path to configuration file. Defaults to the per-user platform config
+    /// Path to configuration file. Defaults to the platform config
     /// directory (e.g. `~/.config/rusty-photon/qhy-camera.json` on Linux).
     #[arg(short, long)]
     config: Option<PathBuf>,

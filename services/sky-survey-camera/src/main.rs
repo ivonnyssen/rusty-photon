@@ -9,7 +9,7 @@ use tracing::{debug, Level};
 #[command(about = "ASCOM Alpaca Camera simulator backed by NASA SkyView")]
 struct Args {
     /// Path to the JSON config file. When omitted, resolves to the
-    /// per-user XDG config path (`~/.config/rusty-photon/sky-survey-camera.json`
+    /// platform config path (`~/.config/rusty-photon/sky-survey-camera.json`
     /// on Linux) via `rusty_photon_config::resolve_config_path`. Pass
     /// `--config config.json` to keep the previous CWD-relative default.
     #[arg(short, long)]

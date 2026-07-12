@@ -72,6 +72,35 @@ pub struct ServerConfig {
     pub auth: Option<rp_auth::config::AuthConfig>,
 }
 
+/// The packaged first-start default watch path, under the service's
+/// platform-dependent state directory: the packaged unit's `StateDirectory`
+/// on Unix, `%PROGRAMDATA%\rusty-photon\filemonitor\` on Windows (ADR-015).
+/// A placeholder either way — the operator points it at the real roof-status
+/// file.
+#[cfg(not(windows))]
+fn default_watch_path() -> PathBuf {
+    PathBuf::from("/var/lib/rusty-photon/filemonitor/RoofStatusFile.txt")
+}
+#[cfg(windows)]
+fn default_watch_path() -> PathBuf {
+    program_data_root(std::env::var_os("ProgramData"))
+        .join(r"rusty-photon\filemonitor\RoofStatusFile.txt")
+}
+
+/// Pure resolution of the Windows `ProgramData` root from the value of the
+/// `ProgramData` environment variable: the value verbatim when present and
+/// non-empty, else the fixed `C:\ProgramData` fallback. A private copy of the
+/// same rule `rusty-photon-config` applies to the config path (each crate
+/// keeps its own — see the W2 note in `docs/plans/windows-packaging.md`);
+/// compiled on every platform so it is unit-testable on non-Windows hosts.
+#[cfg(any(windows, test))]
+fn program_data_root(program_data: Option<std::ffi::OsString>) -> PathBuf {
+    match program_data {
+        Some(v) if !v.is_empty() => PathBuf::from(v),
+        _ => PathBuf::from(r"C:\ProgramData"),
+    }
+}
+
 impl Default for Config {
     /// The packaged first-start default: watch a roof-status file under the
     /// service's state directory and fail safe (no readable status = unsafe).
@@ -83,7 +112,7 @@ impl Default for Config {
                 description: "ASCOM Alpaca SafetyMonitor that monitors file content".to_string(),
             },
             file: FileConfig {
-                path: PathBuf::from("/var/lib/rusty-photon/filemonitor/RoofStatusFile.txt"),
+                path: default_watch_path(),
                 polling_interval: Duration::from_secs(60),
             },
             parsing: ParsingConfig {
@@ -731,5 +760,50 @@ mod property_tests {
             // Should never panic, even with arbitrary regex patterns
             let _result = device.evaluate_safety(&content);
         }
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+mod default_config_tests {
+    use super::*;
+
+    #[test]
+    fn program_data_root_uses_env_value_verbatim() {
+        let root = program_data_root(Some(std::ffi::OsString::from(r"D:\CustomData")));
+        assert_eq!(root, PathBuf::from(r"D:\CustomData"));
+    }
+
+    #[test]
+    fn program_data_root_falls_back_when_env_absent() {
+        assert_eq!(program_data_root(None), PathBuf::from(r"C:\ProgramData"));
+    }
+
+    #[test]
+    fn program_data_root_falls_back_when_env_empty() {
+        assert_eq!(
+            program_data_root(Some(std::ffi::OsString::new())),
+            PathBuf::from(r"C:\ProgramData")
+        );
+    }
+
+    #[test]
+    fn default_watch_path_is_platform_dependent() {
+        let config = Config::default();
+        #[cfg(not(windows))]
+        assert_eq!(
+            config.file.path,
+            PathBuf::from("/var/lib/rusty-photon/filemonitor/RoofStatusFile.txt")
+        );
+        #[cfg(windows)]
+        assert!(
+            config
+                .file
+                .path
+                .ends_with(r"rusty-photon\filemonitor\RoofStatusFile.txt"),
+            "{:?}",
+            config.file.path
+        );
     }
 }

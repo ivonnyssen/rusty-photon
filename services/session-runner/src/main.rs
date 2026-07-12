@@ -11,7 +11,7 @@ use tracing::{debug, Level};
              documents against rp's tool catalog"
 )]
 struct Cli {
-    /// Path to the configuration file. Defaults to the per-user platform
+    /// Path to the configuration file. Defaults to the platform
     /// config directory (e.g. `~/.config/rusty-photon/session-runner.json`
     /// on Linux). There are no usable built-in defaults for
     /// `workflows_dir` / `state_dir`: the file must exist.

@@ -958,10 +958,18 @@ where
     Ok(park)
 }
 
+/// Platform-dependent default serial port. Both values are placeholders the
+/// operator replaces with the real device path: the driver restart-loops
+/// until then, on Windows (`COM3`) exactly as on Unix (`/dev/ttyACM0`).
+#[cfg(windows)]
+const DEFAULT_SERIAL_PORT: &str = "COM3";
+#[cfg(not(windows))]
+const DEFAULT_SERIAL_PORT: &str = "/dev/ttyACM0";
+
 impl Default for UsbConfig {
     fn default() -> Self {
         Self {
-            port: "/dev/ttyACM0".to_string(),
+            port: DEFAULT_SERIAL_PORT.to_string(),
             baud_rate: default_baud_rate(),
             command_timeout: default_command_timeout(),
             polling_interval: default_polling_interval(),

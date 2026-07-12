@@ -281,7 +281,7 @@ Either path is a follow-up PR. The MVP just exposes the raw count.
 
 | Section | Field | Description | Default |
 |---|---|---|---|
-| `serial` | `port` | Serial port path | `"/dev/ttyUSB0"` |
+| `serial` | `port` | Serial port path | `"/dev/ttyUSB0"` on Unix, `"COM3"` on Windows (placeholder — edit to the real port) |
 | `serial` | `baud_rate` | Baud rate | `9600` |
 | `serial` | `timeout` | Serial read/write timeout (`humantime`) | `"2s"` |
 | `server` | `port` | HTTP server port | `11118` |
@@ -304,8 +304,10 @@ fresh **UUIDv4** for the rotator and for the status switch on first run (via the
 shared `rusty-photon-config` crate), persists them to the resolved config file,
 and **never overwrites** an existing id — so identities are globally unique and
 stable across restarts, as the ASCOM spec requires. First run now **creates the
-config file** (at `--config`, else `~/.config/rusty-photon/pa-falcon-rotator.json`
-on Linux) if it is absent. Leave `unique_id` empty (or omit it) to have one
+config file** (at `--config`, else the platform default —
+`~/.config/rusty-photon/pa-falcon-rotator.json` on Linux,
+`%PROGRAMDATA%\rusty-photon\pa-falcon-rotator.json` on Windows) if it is
+absent. Leave `unique_id` empty (or omit it) to have one
 minted; set it explicitly only to migrate a known id.
 
 ### CLI Arguments

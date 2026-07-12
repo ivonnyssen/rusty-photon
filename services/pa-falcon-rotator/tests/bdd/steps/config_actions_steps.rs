@@ -9,9 +9,20 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ascom_alpaca::ASCOMErrorCode;
-use cucumber::{then, when};
+use cucumber::{given, then, when};
 
 use crate::world::FalconRotatorWorld;
+
+#[given(expr = "a running pa-falcon-rotator service configured with serial.port {word}")]
+async fn running_service_with_port(world: &mut FalconRotatorWorld, port: String) {
+    // Pin the serial port so the scenario's config.get round-trip is
+    // deterministic on every platform (the built-in default is
+    // platform-dependent: a /dev path on Unix, COM3 on Windows).
+    let mut config = pa_falcon_rotator::Config::default();
+    config.serial.port = port;
+    world.config = Some(config);
+    world.start_service().await;
+}
 
 #[when("the supported actions are queried on the rotator device")]
 async fn query_supported_actions_rotator(world: &mut FalconRotatorWorld) {

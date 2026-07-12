@@ -222,9 +222,9 @@ identical across the rusty-photon drivers.
 > defaulted to the CWD-relative string `config.json`. It is now an
 > optional argument: when omitted, the path is resolved via
 > `rusty_photon_config::resolve_config_path("sky-survey-camera", …)`
-> to the per-user XDG config directory
-> (`~/.config/rusty-photon/sky-survey-camera.json` on Linux, the
-> platform equivalent elsewhere). **Operators who relied on a
+> to the platform config directory
+> (`~/.config/rusty-photon/sky-survey-camera.json` on Linux,
+> `%PROGRAMDATA%\rusty-photon\sky-survey-camera.json` on Windows). **Operators who relied on a
 > CWD-local `config.json` must now pass `--config config.json`
 > explicitly.**
 

@@ -364,7 +364,7 @@ Every property/method on `ITelescopeV3`, what the driver returns, and why.
 | `CanFindHome` | `false` | no hardware home position |
 | `CanPark` | `true` | implemented (software park) |
 | `CanUnpark` | `true` | implemented |
-| `CanSetPark` | effectively `true` by default | The driver now always resolves a config-file path at startup (the `--config <path>` argument if given, else the per-user platform config dir — see [§Device identity (UniqueID)](#device-identity-uniqueid)), so it always has a path to persist `SetPark` writes to. At the library layer `CanSetPark` still keys on whether a config path was supplied to `MountDevice`; only `MountDevice::new` (no path) reports `false`, which the binary never does. See [§Park persistence](#park-persistence) |
+| `CanSetPark` | effectively `true` by default | The driver now always resolves a config-file path at startup (the `--config <path>` argument if given, else the platform config dir — see [§Device identity (UniqueID)](#device-identity-uniqueid)), so it always has a path to persist `SetPark` writes to. At the library layer `CanSetPark` still keys on whether a config path was supplied to `MountDevice`; only `MountDevice::new` (no path) reports `false`, which the binary never does. See [§Park persistence](#park-persistence) |
 | `CanSetPierSide` | runtime-determined | `true` when `flip_policy.enabled` is set on a hardware-validated mount; `false` otherwise (`SetSideOfPier` returns `NOT_IMPLEMENTED`). See [§Meridian flip](#meridian-flip) |
 | `DoesRefraction` | `false` | mount applies no refraction model; host (rp) provides refracted coords |
 | `TrackingRates` | `[Sidereal]` | sidereal only in MVP |
@@ -570,7 +570,7 @@ Concretely:
 
 1. **Capability gate.** The driver now always resolves a config-file
    path at startup — the `--config <path>` argument if given, else the
-   per-user platform config dir (see
+   platform config dir (see
    [§Device identity (UniqueID)](#device-identity-uniqueid)). That path
    is the one `SetPark` persists to, so **`CanSetPark` is effectively
    `true` by default**: park persistence works out-of-the-box, even on
@@ -1317,14 +1317,16 @@ which collided across every install).
 On startup, before loading its configuration, the driver:
 
 1. **Resolves a config-file path.** The `--config <path>` argument if
-   given, else the per-user platform config directory — e.g.
-   `~/.config/rusty-photon/star-adventurer-gti.json` on Linux (XDG),
-   `~/Library/Application Support/rusty-photon/star-adventurer-gti.json`
-   on macOS, `%APPDATA%\rusty-photon\star-adventurer-gti.json` on
-   Windows (via `directories::ProjectDirs`). A path is *always*
-   resolvable, so identity and park persistence are never disabled for
-   lack of a `--config` flag. This is the same path used for
-   [§Park persistence](#park-persistence).
+   given, else the platform default — the per-user config directory on
+   Unix: `~/.config/rusty-photon/star-adventurer-gti.json` on Linux
+   (XDG), `~/Library/Application Support/rusty-photon/star-adventurer-gti.json`
+   on macOS (via `directories::ProjectDirs`) — and the machine-wide
+   `%PROGRAMDATA%\rusty-photon\star-adventurer-gti.json` on Windows
+   (`ProgramData` env var, `C:\ProgramData` fallback; a Windows service
+   account's per-user profile is hidden, see ADR-015). A path is
+   *always* resolvable, so identity and park persistence are never
+   disabled for lack of a `--config` flag. This is the same path used
+   for [§Park persistence](#park-persistence).
 2. **Materializes the identity.** Via
    `rusty_photon_config::materialize_identity` against the JSON pointer
    `/mount/unique_id`. If that pointer is absent, `null`, non-string, or

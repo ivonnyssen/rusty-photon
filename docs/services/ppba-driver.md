@@ -101,7 +101,7 @@ Configuration is provided via a JSON file:
 
 | Section | Field | Description | Default |
 |---------|-------|-------------|---------|
-| serial | port | Serial port path | "/dev/ttyUSB0" |
+| serial | port | Serial port path | "/dev/ttyUSB0" on Unix, "COM3" on Windows (placeholder — edit to the real port) |
 | serial | baud_rate | Baud rate | 9600 |
 | serial | polling_interval | Status poll interval (humantime, e.g. `"5s"`, `"500ms"`) | `"5s"` |
 | serial | timeout | Serial timeout (humantime) | `"2s"` |
@@ -134,8 +134,8 @@ same identity across restarts. The defaults for both `unique_id` fields are
 therefore the empty string, which signals "mint me on first run".
 
 The config path is resolved from `--config` if given, otherwise from the
-per-user platform config directory (e.g.
-`~/.config/rusty-photon/ppba-driver.json` on Linux). Because identity must be
+platform default (e.g. `~/.config/rusty-photon/ppba-driver.json` on Linux,
+`%PROGRAMDATA%\rusty-photon\ppba-driver.json` on Windows). Because identity must be
 persisted, **first run now writes the config file if it is absent**, seeding it
 with the default scaffold and the two freshly-minted UUIDs. CLI overrides
 (`--port`, `--server-port`, `--enable-switch`, `--enable-observingconditions`)

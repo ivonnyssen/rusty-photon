@@ -36,7 +36,7 @@ struct Cli {
 enum Commands {
     /// Start the rp server
     Serve {
-        /// Path to configuration file. Defaults to the per-user platform
+        /// Path to configuration file. Defaults to the platform
         /// config directory (e.g. `~/.config/rusty-photon/rp.json` on
         /// Linux); created with a minimal scaffold on first start if absent.
         #[arg(long)]

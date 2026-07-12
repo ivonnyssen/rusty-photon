@@ -910,8 +910,9 @@ rejected — it names the blackboard file.
 
 Unknown configuration keys are rejected at load — a misspelled field must
 not silently fall back to a default. CLI: `--config <path>` (default: the
-per-user platform config directory, e.g.
-`~/.config/rusty-photon/session-runner.json`), `--port` (overrides the
+platform config directory, e.g.
+`~/.config/rusty-photon/session-runner.json` on Linux,
+`%PROGRAMDATA%\rusty-photon\session-runner.json` on Windows), `--port` (overrides the
 file's `port`; `--port 0` binds an ephemeral port, printed at startup),
 `--bind-address` (default `127.0.0.1`), `--log-level`.
 

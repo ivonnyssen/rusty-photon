@@ -17,7 +17,7 @@ use dsd_fp2::MockTransportFactory;
 #[command(about = "ASCOM Alpaca CoverCalibrator driver for the Deep Sky Dad FP2")]
 #[command(version)]
 struct Args {
-    /// Path to configuration file. Defaults to the per-user platform config
+    /// Path to configuration file. Defaults to the platform config
     /// directory (e.g. `~/.config/rusty-photon/dsd-fp2.json` on Linux) — read if
     /// present, created by config.apply.
     #[arg(short, long)]

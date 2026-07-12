@@ -159,7 +159,7 @@ fn main() -> ServiceResult {
 
             // Build configuration from CLI args or config file. An explicit
             // --config must load; without one, `serve` also picks up the
-            // per-user platform config path when the file exists there
+            // platform config path when the file exists there
             // (systemd passes no arguments), and every mode falls back to
             // defaults with the --host/--port flags applied.
             let config = if let Some(config_path) = &args.config {
