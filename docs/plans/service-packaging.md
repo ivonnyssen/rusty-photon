@@ -548,8 +548,13 @@ rebuilt from `main` and upgraded in place:
 - PR-7: generalize `release.yml` to a service matrix (x86_64 deb/rpm),
   rename tarballs/Homebrew formula (`Formula/rusty-photon-filemonitor.rb`,
   class `RustyPhotonFilemonitor`); finish the tap setup carried over from
-  the superseded plan.
-- CI-built arm64 packages (Pi runner or cross with staged arm64 SDKs).
+  the superseded plan. Much of its machinery (version-parameterized
+  `build-packages.sh`, per-service Homebrew formula generation) now
+  arrives via [nightly-releases.md](nightly-releases.md) (N1/N4), leaving
+  PR-7 thin.
+- CI-built arm64 packages: designed in
+  [nightly-releases.md](nightly-releases.md) (hosted `ubuntu-24.04-arm`
+  runners; Orange Pi contingency settled by its N0 spike).
 - An apt repository (and/or dnf copr) instead of GitHub-release attachments.
 - `sky-survey-camera` and other simulators could later split into a
   `-simulators` meta-package if rig installs want to exclude them.

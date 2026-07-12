@@ -299,9 +299,12 @@ service per ADR-014.
   as the gate, then attach the MSI + checksums to the release. Delete
   `services/filemonitor/wix/` and the cargo-wix install step. The Linux
   matrix and the deferred Homebrew items (PR-7) are untouched.
-- Nightly: run `build-msi.ps1` + `verify-msi.ps1` on a schedule (alongside
-  the existing nightly safety nets) so Windows packaging rot surfaces
-  between releases, plus `workflow_dispatch` for on-demand runs.
+- Nightly: the scheduled `build-msi.ps1` + `verify-msi.ps1` run lands as
+  the `msi` leg of `nightly-packages.yml` (phase N3 of
+  [nightly-releases.md](nightly-releases.md)), not as a scheduler of its
+  own — W5 delivers the scripts and the release-tag job; N3 wires the
+  nightly leg, version stamping (`AllowSameVersionUpgrades`), and the
+  nightly-over-nightly upgrade check.
 - `docs/packaging-windows.md` (operator guide, `docs/packaging.md` gets a
   pointer): install/upgrade/remove, feature selection incl. silent
   `ADDLOCAL` recipes, prerequisites (QHY All-in-One, ZWO camera driver,
