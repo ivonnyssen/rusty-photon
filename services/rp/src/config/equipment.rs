@@ -9,6 +9,7 @@ use super::mount::MountConfig;
 use super::safety_monitor::SafetyMonitorConfig;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct EquipmentConfig {
     #[serde(default)]
     pub cameras: Vec<CameraConfig>,
@@ -22,4 +23,29 @@ pub struct EquipmentConfig {
     pub cover_calibrators: Vec<CoverCalibratorConfig>,
     #[serde(default)]
     pub safety_monitors: Vec<SafetyMonitorConfig>,
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+mod tests {
+    use crate::config::load_config;
+
+    #[test]
+    fn equipment_config_rejects_unknown_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "session": {"data_directory": "/tmp/rp-test"},
+                "equipment": {"rotator": {}},
+                "server": {}
+            }"#,
+        )
+        .unwrap();
+
+        let err = load_config(&path).unwrap_err().to_string();
+        assert!(err.contains("rotator"), "{err}");
+    }
 }

@@ -103,7 +103,6 @@ impl SentinelWorld {
             },
             "server": {
                 "port": 0,
-                "device_number": 0,
                 "discovery_port": null
             }
         })

@@ -102,6 +102,10 @@ second backend (e.g. CDS `hips2fits`) is added; see *Future Work*.
 }
 ```
 
+Every block above (`Config` and each nested config struct) rejects unknown
+keys at deserialize (`deny_unknown_fields`), so a typo or a key removed by a
+schema change fails loudly at load instead of being silently ignored.
+
 Configuration sections:
 
 - **device** — ASCOM device metadata.

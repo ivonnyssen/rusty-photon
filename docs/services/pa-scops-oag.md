@@ -163,6 +163,10 @@ port (opt-in; normally `32227`). Absent/`null` — the default — disables
 discovery: many rusty-photon servers on one host would collide on the shared
 discovery port, so it is a per-host opt-in for single-driver deployments.
 
+Every block (`Config` and each nested config struct) rejects unknown keys at
+deserialize (`deny_unknown_fields`), so a typo or a key removed by a schema
+change fails loudly at load instead of being silently ignored.
+
 ### Device identity (UniqueID)
 
 The focuser's ASCOM `UniqueID` is **minted on first run** rather than shipped as

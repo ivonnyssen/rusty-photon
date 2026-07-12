@@ -60,6 +60,7 @@ impl TryFrom<f64> for SlewRateArcsecPerSec {
 /// Considerations. The singular `Option` reflects that contract in the
 /// type; `None` is valid for camera-only / flats-rig configurations.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct MountConfig {
     pub alpaca_url: String,
     #[serde(default)]
@@ -233,6 +234,29 @@ mod tests {
         assert!(SlewRateArcsecPerSec::try_new(-1.0).is_err());
         assert!(SlewRateArcsecPerSec::try_new(f64::NAN).is_err());
         assert!(SlewRateArcsecPerSec::try_new(f64::INFINITY).is_err());
+    }
+
+    #[test]
+    fn mount_config_rejects_unknown_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "session": {"data_directory": "/tmp/rp-test"},
+                "equipment": {
+                    "mount": {
+                        "alpaca_url": "http://localhost:11122",
+                        "park_on_disconnect": true
+                    }
+                },
+                "server": {}
+            }"#,
+        )
+        .unwrap();
+
+        let err = load_config(&path).unwrap_err().to_string();
+        assert!(err.contains("park_on_disconnect"), "{err}");
     }
 
     #[test]

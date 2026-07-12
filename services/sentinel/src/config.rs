@@ -11,7 +11,11 @@ const PUSHOVER_API_TOKEN_ENV: &str = "PUSHOVER_API_TOKEN";
 const PUSHOVER_USER_KEY_ENV: &str = "PUSHOVER_USER_KEY";
 
 /// Main configuration structure
+///
+/// `deny_unknown_fields` so typoed or removed top-level keys fail loudly at
+/// load instead of being silently ignored.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     #[serde(default)]
     pub monitors: Vec<MonitorConfig>,
@@ -94,7 +98,7 @@ impl Config {
 
 /// Monitor configuration with tagged enum for extensibility
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
+#[serde(tag = "type", deny_unknown_fields)]
 pub enum MonitorConfig {
     #[serde(rename = "alpaca_safety_monitor")]
     AlpacaSafetyMonitor {
@@ -134,7 +138,7 @@ impl MonitorConfig {
 
 /// Notifier configuration with tagged enum for extensibility
 #[derive(Clone, Serialize, Deserialize, derive_more::Debug)]
-#[serde(tag = "type")]
+#[serde(tag = "type", deny_unknown_fields)]
 pub enum NotifierConfig {
     #[serde(rename = "pushover")]
     Pushover {
@@ -168,6 +172,7 @@ impl NotifierConfig {
 
 /// Transition rule configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TransitionConfig {
     pub monitor_name: String,
     pub direction: TransitionDirection,
@@ -298,6 +303,7 @@ pub struct ServiceConfig {
 
 /// Dashboard configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DashboardConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -874,6 +880,59 @@ mod tests {
     #[test]
     fn on_expiry_defaults_to_notify_only() {
         assert_eq!(OnExpiry::default(), OnExpiry::NotifyOnly);
+    }
+
+    #[test]
+    fn config_rejects_unknown_top_level_field() {
+        let json = r#"{ "webhooks": [] }"#;
+        let err = serde_json::from_str::<Config>(json).unwrap_err();
+        assert!(err.to_string().contains("webhooks"), "{err}");
+    }
+
+    #[test]
+    fn monitor_config_rejects_unknown_field() {
+        let json = r#"{
+            "monitors": [{
+                "type": "alpaca_safety_monitor",
+                "name": "Test",
+                "timeout": "5s"
+            }]
+        }"#;
+        let err = serde_json::from_str::<Config>(json).unwrap_err();
+        assert!(err.to_string().contains("timeout"), "{err}");
+    }
+
+    #[test]
+    fn notifier_config_rejects_unknown_field() {
+        let json = r#"{
+            "notifiers": [{
+                "type": "pushover",
+                "webhook_url": "http://example.invalid"
+            }]
+        }"#;
+        let err = serde_json::from_str::<Config>(json).unwrap_err();
+        assert!(err.to_string().contains("webhook_url"), "{err}");
+    }
+
+    #[test]
+    fn transition_config_rejects_unknown_field() {
+        let json = r#"{
+            "transitions": [{
+                "monitor_name": "Test",
+                "direction": "both",
+                "notifiers": ["pushover"],
+                "cooldown": "1m"
+            }]
+        }"#;
+        let err = serde_json::from_str::<Config>(json).unwrap_err();
+        assert!(err.to_string().contains("cooldown"), "{err}");
+    }
+
+    #[test]
+    fn dashboard_config_rejects_unknown_field() {
+        let json = r#"{ "dashboard": { "theme": "dark" } }"#;
+        let err = serde_json::from_str::<Config>(json).unwrap_err();
+        assert!(err.to_string().contains("theme"), "{err}");
     }
 
     #[test]

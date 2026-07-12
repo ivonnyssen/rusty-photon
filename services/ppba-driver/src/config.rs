@@ -6,6 +6,7 @@ use std::time::Duration;
 
 /// Main configuration structure
 #[derive(Debug, Clone, Serialize, Deserialize, Default, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     pub serial: SerialConfig,
     pub server: ServerConfig,
@@ -15,6 +16,7 @@ pub struct Config {
 
 /// Serial port configuration
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SerialConfig {
     pub port: String,
     #[serde(default = "default_baud_rate")]
@@ -31,6 +33,7 @@ pub struct SerialConfig {
 
 /// Server configuration
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ServerConfig {
     pub port: u16,
     /// Alpaca UDP discovery responder port (normally 32227). Absent/`null` —
@@ -47,6 +50,7 @@ pub struct ServerConfig {
 
 /// Switch device configuration
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SwitchConfig {
     pub name: String,
     /// ASCOM `UniqueID`. Minted as a UUIDv4 on first run and persisted by
@@ -61,6 +65,7 @@ pub struct SwitchConfig {
 
 /// ObservingConditions device configuration
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ObservingConditionsConfig {
     pub name: String,
     /// ASCOM `UniqueID`. Minted as a UUIDv4 on first run and persisted by
@@ -155,6 +160,7 @@ impl Default for ObservingConditionsConfig {
 
 /// Legacy DeviceConfig for backward compatibility during migration
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DeviceConfig {
     pub name: String,
     pub unique_id: String,
@@ -417,6 +423,47 @@ mod tests {
         assert_eq!(config.switch.name, cloned.switch.name);
         assert_eq!(config.serial.port, cloned.serial.port);
         assert_eq!(config.server.port, cloned.server.port);
+    }
+
+    #[test]
+    fn config_rejects_unknown_top_level_field() {
+        let json = r#"{
+            "serial": {"port": "/dev/ttyUSB0"},
+            "server": {"port": 11112},
+            "switch": {"name": "n", "description": "d"},
+            "observingconditions": {"name": "n", "description": "d"},
+            "plugins": []
+        }"#;
+        let err = serde_json::from_str::<Config>(json).unwrap_err();
+        assert!(err.to_string().contains("plugins"), "{err}");
+    }
+
+    #[test]
+    fn serial_config_rejects_unknown_field() {
+        let json = r#"{"port": "/dev/ttyUSB0", "flow_control": "none"}"#;
+        let err = serde_json::from_str::<SerialConfig>(json).unwrap_err();
+        assert!(err.to_string().contains("flow_control"), "{err}");
+    }
+
+    #[test]
+    fn server_config_rejects_unknown_field() {
+        let json = r#"{"port": 11112, "bind_address": "0.0.0.0"}"#;
+        let err = serde_json::from_str::<ServerConfig>(json).unwrap_err();
+        assert!(err.to_string().contains("bind_address"), "{err}");
+    }
+
+    #[test]
+    fn switch_config_rejects_unknown_field() {
+        let json = r#"{"name": "n", "description": "d", "channels": 4}"#;
+        let err = serde_json::from_str::<SwitchConfig>(json).unwrap_err();
+        assert!(err.to_string().contains("channels"), "{err}");
+    }
+
+    #[test]
+    fn observingconditions_config_rejects_unknown_field() {
+        let json = r#"{"name": "n", "description": "d", "sample_rate": "10s"}"#;
+        let err = serde_json::from_str::<ObservingConditionsConfig>(json).unwrap_err();
+        assert!(err.to_string().contains("sample_rate"), "{err}");
     }
 
     #[test]

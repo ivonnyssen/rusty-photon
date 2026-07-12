@@ -26,7 +26,6 @@
         "safe": true
       }
     ],
-    "default_safe": false,
     "case_sensitive": false
   },
   "server": {

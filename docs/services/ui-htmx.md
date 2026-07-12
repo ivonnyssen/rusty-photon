@@ -575,7 +575,10 @@ is keyed by service id (the `{service}` path segment); add an entry per driver.
 The default config carries a single local `dsd-fp2` so `cargo run` works with no
 config file. The optional `rp` target switches on the equipment page, the
 activity stream, the `/config/rp` page, and the roster-derived config targets;
-without it those routes render a "no rp configured" card.
+without it those routes render a "no rp configured" card. Every block
+(`Config` and each nested target/auth struct) rejects unknown keys at
+deserialize (`deny_unknown_fields`), so a typo or a key removed by a schema
+change fails loudly at load instead of being silently ignored.
 
 ```jsonc
 {
