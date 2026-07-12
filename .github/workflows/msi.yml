@@ -1,0 +1,62 @@
+# Windows suite MSI — build + lifecycle verify (windows-packaging W4).
+#
+# Runs scripts/build-msi.ps1 (SDK staging, CRT-static release build, wix
+# build) and scripts/verify-msi.ps1 (silent install -> per-service-class
+# checks -> failure-actions proofs -> feature remove -> uninstall) on
+# windows-latest. On-demand via workflow_dispatch, plus on PRs that touch the
+# packaging inputs — the W4 iteration loop. W5 wires the same two scripts
+# into release.yml (release gate) and the nightly schedule.
+permissions:
+  contents: read
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - installer/**
+      - scripts/build-msi.ps1
+      - scripts/verify-msi.ps1
+      - .github/workflows/msi.yml
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+name: msi
+jobs:
+  build-verify:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install stable
+        uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-msi
+      - name: Build the suite MSI
+        shell: pwsh
+        run: scripts\build-msi.ps1
+      - name: Verify the MSI lifecycle
+        shell: pwsh
+        run: scripts\verify-msi.ps1
+      - name: Upload the MSI
+        uses: actions/upload-artifact@v7
+        with:
+          name: rusty-photon-msi
+          path: dist/**/*.msi
+          retention-days: 14
+      - name: Stage failure logs
+        if: failure()
+        shell: pwsh
+        # upload-artifact cannot span drive roots (workspace on D:, ProgramData
+        # on C:), so collect everything into one workspace dir first.
+        run: |
+          New-Item -ItemType Directory -Force -Path failure-logs | Out-Null
+          Copy-Item "$env:TEMP\rusty-photon-msi-install.log" failure-logs\ -ErrorAction SilentlyContinue
+          Copy-Item "$env:ProgramData\rusty-photon\logs\*" failure-logs\ -ErrorAction SilentlyContinue
+      - name: Upload install + service logs (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: msi-verify-logs
+          path: failure-logs/
+          if-no-files-found: ignore
+          retention-days: 14

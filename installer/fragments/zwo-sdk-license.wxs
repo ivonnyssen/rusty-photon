@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Shared ZWO SDK license (MIT) — referenced by the ZwoCamera and ZwoFocuser
+  features; one component so co-installs never collide on the filename.
+  Source of truth: crates/zwo-rs/libzwo-sys/sdk/include/license.txt (the same
+  file the Linux debs ship; check-pkg-assets.sh asserts the deb copies match).
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Fragment>
+    <ComponentGroup Id="ZwoSdkLicense" Directory="INSTALLFOLDER">
+      <Component Id="ZwoSdkLicenseFile">
+        <File Id="ZwoSdkLicenseTxt" Name="ZWO-SDK-LICENSE.txt" Source="!(bindpath.repo)\crates\zwo-rs\libzwo-sys\sdk\include\license.txt" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+</Wix>

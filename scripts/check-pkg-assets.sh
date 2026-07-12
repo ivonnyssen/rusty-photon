@@ -142,6 +142,174 @@ if [ -f "$bp" ] && [ -f "$act" ]; then
     fi
 fi
 
+# ---- Windows suite MSI (installer/, ADR-015) --------------------------------
+# The Windows package set is the Linux one (services/*/pkg) plus
+# session-runner, which ships on Windows from day one while its Linux .deb
+# remains an open follow-up (docs/plans/windows-packaging.md).
+WIN_SERVICES="$(for d in services/*/pkg; do [ -d "$d" ] && basename "$(dirname "$d")"; done | tr '\n' ' ')session-runner"
+
+# Documented family ports (mirrors verify-packages.sh port_of + session-runner).
+win_port_of() {
+    case "$1" in
+        filemonitor) echo 11111 ;;
+        ppba-driver) echo 11112 ;;
+        qhy-focuser) echo 11113 ;;
+        sentinel) echo 11114 ;;
+        rp) echo 11115 ;;
+        sky-survey-camera) echo 11116 ;;
+        star-adventurer-gti) echo 11117 ;;
+        pa-falcon-rotator) echo 11118 ;;
+        dsd-fp2) echo 11119 ;;
+        ui-htmx) echo 11120 ;;
+        qhy-camera) echo 11121 ;;
+        zwo-camera) echo 11122 ;;
+        pa-scops-oag) echo 11123 ;;
+        zwo-focuser) echo 11124 ;;
+        phd2-guider) echo 11130 ;;
+        plate-solver) echo 11131 ;;
+        calibrator-flats) echo 11170 ;;
+        session-runner) echo 11171 ;;
+        *) echo "" ;;
+    esac
+}
+
+# Feature/component-group ids are the PascalCase service dir name.
+win_feature_id() {
+    echo "$1" | awk -F- '{ for (i = 1; i <= NF; i++) printf "%s%s", toupper(substr($i, 1, 1)), substr($i, 2) }'
+}
+
+pkg_wxs=installer/Package.wxs
+seed_ps1=installer/seed-ui-htmx-config.ps1
+if [ -f "$pkg_wxs" ]; then
+    for svc in $WIN_SERVICES; do
+        frag="installer/fragments/$svc.wxs"
+        feat=$(win_feature_id "$svc")
+        port=$(win_port_of "$svc")
+        [ -n "$port" ] || { err "$svc: no Windows port mapping — extend win_port_of()"; continue; }
+        if [ ! -f "$frag" ]; then
+            err "$svc: missing $frag"
+            continue
+        fi
+        # The element's own Name is the first Name= attribute line after the
+        # opener (the fragments put one attribute per line; Id sits on the
+        # opener). A bare Name= grep would also match fw:FirewallException.
+        for elem in ServiceInstall ServiceControl; do
+            got=$(awk -v elem="<$elem " '
+                index($0, elem) { in_elem = 1; next }
+                in_elem && /Name="/ { sub(/^ */, ""); print; exit }
+            ' "$frag")
+            [ "$got" = "Name=\"rusty-photon-$svc\"" ] \
+                || err "$svc: $elem name must be rusty-photon-$svc (got: ${got:-none})"
+        done
+        grep -Fq "Name=\"rusty-photon-$svc.exe\" Source=\"!(bindpath.bin)\\$svc.exe\"" "$frag" \
+            || err "$svc: fragment must install bindpath.bin\\$svc.exe as rusty-photon-$svc.exe"
+        grep -q 'Arguments="--service"' "$frag" \
+            || err "$svc: ServiceInstall must pass --service (SCM mode)"
+        grep -q 'RestartServiceDelayInSeconds="5"' "$frag" \
+            || err "$svc: util:ServiceConfig must restart after 5 s (systemd RestartSec=5 parity)"
+        grep -q 'FailureActionsWhen="failedToStopOrReturnedError"' "$frag" \
+            || err "$svc: native ServiceConfig must set the failure-actions flag (ServiceSpecific(1) exits must count as failures)"
+        grep -q "Port=\"$port\"" "$frag" \
+            || err "$svc: firewall exception port must be $port"
+        # Demand-start on exactly the no-defaultable-config services (the
+        # ConditionPathExists= translation); everything else auto-starts on
+        # install. session-runner joins the Linux-gated three: workflows_dir/
+        # state_dir are required config fields with no usable defaults (it has
+        # no Linux package yet, so no ConditionPathExists= unit to mirror).
+        case "$svc" in
+            sky-survey-camera | plate-solver | calibrator-flats | session-runner)
+                grep -q 'Start="demand"' "$frag" \
+                    || err "$svc: gated service must install with Start=\"demand\""
+                grep -q 'Start="install"' "$frag" \
+                    && err "$svc: gated service must not be started by the installer"
+                ;;
+            *)
+                grep -q 'Start="auto"' "$frag" \
+                    || err "$svc: service must install with Start=\"auto\""
+                grep -q 'Start="install"' "$frag" \
+                    || err "$svc: ServiceControl must start the service on install"
+                ;;
+        esac
+        grep -q "ComponentGroupRef Id=\"${feat}Components\"" "$pkg_wxs" \
+            || err "$svc: Package.wxs does not reference ${feat}Components (missing feature wiring)"
+    done
+
+    # Every fragment belongs to a packaged service (or the shared-payload
+    # allowlist) — an orphan fragment would ship an unowned service.
+    for frag in installer/fragments/*.wxs; do
+        svc=$(basename "$frag" .wxs)
+        case " $WIN_SERVICES " in
+            *" $svc "*) ;;
+            *)
+                case "$svc" in
+                    zwo-sdk-license) ;; # shared by the two zwo features
+                    *) err "installer: orphan fragment $frag (no matching packaged service)" ;;
+                esac
+                ;;
+        esac
+    done
+
+    # The ui-htmx seed table must cover exactly the Drivers-tree services with
+    # the documented ports (the Automation/Core services never appear in the
+    # BFF's drivers map).
+    if [ -f "$seed_ps1" ]; then
+        for svc in $WIN_SERVICES; do
+            case "$svc" in
+                sentinel | ui-htmx | rp | session-runner | plate-solver | phd2-guider | calibrator-flats)
+                    grep -q "'$svc' *= *@{ port" "$seed_ps1" \
+                        && err "$svc: non-driver service must not appear in the ui-htmx seed table"
+                    ;;
+                *)
+                    grep -q "'$svc' *= *@{ port = $(win_port_of "$svc");" "$seed_ps1" \
+                        || err "$svc: ui-htmx seed table missing or wrong port (expected $(win_port_of "$svc"))"
+                    ;;
+            esac
+        done
+    else
+        err "installer: missing $seed_ps1"
+    fi
+fi
+
+# The QHY Windows pin lives in four shipped places; they must all match the
+# Linux pin (same SDK release linked and reported everywhere): build-msi.ps1,
+# libqhyccd-sys build.rs (sdk_win64_<ver> search path), and qhy-camera's
+# PINNED_SDK_VERSION (what the doctor reports as the build-time ABI).
+bm=scripts/build-msi.ps1
+if [ -f "$bp" ] && [ -f "$bm" ]; then
+    v1=$(sed -n 's/^QHY_SDK_VERSION="\(.*\)"$/\1/p' "$bp" | head -1)
+    vw=$(sed -n 's/^\$QhySdkVersion = "\(.*\)"$/\1/p' "$bm" | head -1)
+    if [ -z "$vw" ] || [ "$v1" != "$vw" ]; then
+        err "QHY SDK version pin mismatch: build-packages.sh='$v1' vs build-msi.ps1='$vw'"
+    fi
+    sysrs=crates/qhyccd-rs/libqhyccd-sys/build.rs
+    grep -q "sdk_win64_$v1" "$sysrs" \
+        || err "QHY SDK version pin mismatch: libqhyccd-sys build.rs has no sdk_win64_$v1 search path"
+    pf=services/qhy-camera/src/preflight.rs
+    vp=$(awk '/PINNED_SDK_VERSION: PinnedSdkVersion = / , /};/ {
+            if ($1 == "year:") y = $2 + 0
+            if ($1 == "month:") m = $2 + 0
+            if ($1 == "day:") d = $2 + 0
+        } END { if (y) printf "%02d.%02d.%02d", y, m, d }' "$pf")
+    if [ -z "$vp" ] || [ "$v1" != "$vp" ]; then
+        err "QHY SDK version pin mismatch: build-packages.sh='$v1' vs preflight PINNED_SDK_VERSION='$vp'"
+    fi
+fi
+
+# The ZWO Windows SDK URLs are pinned in two shipped places (rolling CDN
+# "latest" — no commit ref exists for Windows, so URL identity is the whole
+# reproducibility statement): the CI action defaults and build-msi.ps1.
+if [ -f "$bm" ] && [ -f "$act" ]; then
+    for pair in "windows_camera_sdk_url ZwoCameraSdkUrl" "windows_eaf_sdk_url ZwoEafSdkUrl"; do
+        input=${pair% *}
+        var=${pair#* }
+        u1=$(awk -v want="$input:" '$1 == want { in_input = 1 } in_input && $1 == "default:" { print $2; exit }' "$act")
+        u2=$(sed -n "s/^\\\$$var = \"\(.*\)\"\$/\1/p" "$bm" | head -1)
+        if [ -z "$u1" ] || [ "$u1" != "$u2" ]; then
+            err "ZWO Windows SDK URL mismatch ($input): install-zwo-sdk='$u1' vs build-msi.ps1='$u2'"
+        fi
+    done
+fi
+
 if [ "$fail" -eq 0 ]; then
     echo "check-pkg-assets: OK"
 fi

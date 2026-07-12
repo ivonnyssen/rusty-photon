@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  rusty-photon-zwo-focuser — Windows service fragment (suite MSI; ADR-015).
+  Port 11124/tcp. The fragment contract (service name, exe rename,
+  failure actions + failure-actions flag, firewall port, demand-start set) is
+  asserted by scripts/check-pkg-assets.sh.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util"
+     xmlns:fw="http://wixtoolset.org/schemas/v4/wxs/firewall">
+  <Fragment>
+    <ComponentGroup Id="ZwoFocuserComponents" Directory="INSTALLFOLDER">
+      <Component Id="ZwoFocuserExe">
+        <File Id="ZwoFocuserExeFile" Name="rusty-photon-zwo-focuser.exe" Source="!(bindpath.bin)\zwo-focuser.exe" KeyPath="yes" />
+        <ServiceInstall Id="ZwoFocuserService"
+                        Name="rusty-photon-zwo-focuser"
+                        DisplayName="rusty-photon-zwo-focuser"
+                        Description="ASCOM Alpaca Focuser driver for the ZWO EAF. Bundles ZWO's MIT-licensed focuser SDK (EAF_focuser.dll)."
+                        Start="auto"
+                        Type="ownProcess"
+                        ErrorControl="normal"
+                        Account="LocalSystem"
+                        Arguments="--service"
+                        Vital="yes">
+          <!-- systemd Restart=on-failure / RestartSec=5 translation (ADR-015
+               decision 2): restart after 5 s on every failure, indefinitely
+               (failure count resets daily). -->
+          <util:ServiceConfig FirstFailureActionType="restart"
+                              SecondFailureActionType="restart"
+                              ThirdFailureActionType="restart"
+                              RestartServiceDelayInSeconds="5"
+                              ResetPeriodInDays="1" />
+          <!-- SERVICE_CONFIG_FAILURE_ACTIONS_FLAG: the SCM wrapper reports a
+               failed run closure as SERVICE_STOPPED + ServiceSpecific(1) (see
+               rusty-photon-service-lifecycle runner.rs), which only counts as
+               a failure — and triggers the restart actions above — with this
+               flag set. Without it the serial drivers' eager-validation exits
+               would stop the service permanently. -->
+          <ServiceConfig FailureActionsWhen="failedToStopOrReturnedError"
+                         OnInstall="yes"
+                         OnReinstall="yes" />
+        </ServiceInstall>
+        <ServiceControl Id="ZwoFocuserServiceControl"
+                        Name="rusty-photon-zwo-focuser"
+                        Start="install"
+                        Stop="both"
+                        Remove="uninstall"
+                        Wait="yes" />
+        <!-- Alpaca/HTTP over the LAN is the service's whole point; Windows
+             Firewall blocks inbound by default. Scope=any, not localSubnet:
+             multi-subnet observatory networks are the norm here (Linux ships
+             no firewall config at all — parity is "reachable"). -->
+        <fw:FirewallException Id="ZwoFocuserFirewall"
+                              Name="rusty-photon-zwo-focuser"
+                              Description="Inbound TCP for the rusty-photon-zwo-focuser service (port 11124)"
+                              Port="11124"
+                              Protocol="tcp"
+                              Scope="any" />
+      </Component>
+      <!-- ADR-013/ADR-014: the MIT focuser SDK DLL ships next to the exe.
+           The file MUST keep ZWO's original name EAF_focuser.dll: the link
+           uses a lib renamed to EAFFocuser.lib (install-zwo-sdk normalises it
+           for the -lEAFFocuser directive), but an import library embeds the
+           DLL name it was generated from, so the exe's import table asks the
+           loader for EAF_focuser.dll — a renamed DLL would never resolve.
+           (Verified against EAF_Windows_SDK_V1.8.1: `strings EAF_focuser.lib`
+           shows only EAF_focuser.dll.) -->
+      <Component Id="ZwoFocuserSdkDll">
+        <File Id="ZwoFocuserSdkDllFile" Name="EAF_focuser.dll" Source="!(bindpath.zwo)\EAF_focuser.dll" KeyPath="yes" />
+      </Component>
+      <ComponentGroupRef Id="ZwoSdkLicense" />
+    </ComponentGroup>
+  </Fragment>
+</Wix>
