@@ -91,8 +91,9 @@ fn main() -> ServiceResult {
     #[cfg(feature = "simulation")]
     let simulation_empty = args.simulation_empty;
 
-    // Startup chatter stays at debug! per AGENTS.md Rule 9; the user-facing
-    // "Service started successfully on <addr>" info! lives in lib.rs.
+    // Startup chatter stays at debug! per docs/AGENTS.md Rule 9; the
+    // user-facing "Service started successfully on <addr>" info! lives in
+    // lib.rs.
     debug!("Starting QHY camera driver");
     #[cfg(feature = "simulation")]
     debug!("Using the qhyccd-rs SIMULATION backend");
