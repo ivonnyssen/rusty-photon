@@ -10,9 +10,10 @@
 //! binds to the already-loaded module. Behavioral contracts PF1–PF5 in
 //! `docs/services/qhy-camera.md` § "Windows: qhyccd.dll resolution".
 //!
-//! The candidate-ordering and selection logic is pure (environment and
-//! fs-existence are injected) so it is unit-testable on every platform; only
-//! the actual `LoadLibrary` calls are `#[cfg(windows)]`.
+//! The candidate ordering, selection, and failed-load skip logic is pure
+//! (environment, fs-existence, and the loader are injected) so it is
+//! unit-testable on every platform; only the actual `LoadLibrary` calls are
+//! `#[cfg(windows)]`.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -92,13 +93,45 @@ pub fn candidate_dirs(
     dirs
 }
 
-/// First candidate directory whose `qhyccd.dll` exists, as the full DLL path.
-/// Pure: the fs-existence check is injected.
-pub fn select_dll(candidates: &[PathBuf], exists: impl Fn(&Path) -> bool) -> Option<PathBuf> {
-    candidates
-        .iter()
-        .map(|dir| dir.join(QHY_DLL_NAME))
-        .find(|dll| exists(dll))
+/// One DLL that existed (or was searched by name) but could not be loaded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoadFailure {
+    /// The DLL path (or bare name for the default-search-order attempt).
+    pub path: PathBuf,
+    /// The loader's error text — the "why" for the 2 a.m. log.
+    pub error: String,
+}
+
+impl fmt::Display for LoadFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} ({})", self.path.display(), self.error)
+    }
+}
+
+/// Attempt every candidate directory's `qhyccd.dll` in order; the first
+/// successful load wins (PF2). A candidate that exists but fails to load — a
+/// stale or broken copy, e.g. next to the exe — must NOT mask a later, usable
+/// install: it is recorded as a [`LoadFailure`] and the probe continues. On
+/// exhaustion the failures are returned for the error report.
+///
+/// Pure: fs-existence and the loader are injected, so the ordering and skip
+/// logic is unit-testable cross-platform.
+pub fn try_candidates(
+    candidates: &[PathBuf],
+    exists: impl Fn(&Path) -> bool,
+    mut load: impl FnMut(&Path) -> Result<(), String>,
+) -> Result<PathBuf, Vec<LoadFailure>> {
+    let mut failures = Vec::new();
+    for dll in candidates.iter().map(|dir| dir.join(QHY_DLL_NAME)) {
+        if !exists(&dll) {
+            continue;
+        }
+        match load(&dll) {
+            Ok(()) => return Ok(dll),
+            Err(error) => failures.push(LoadFailure { path: dll, error }),
+        }
+    }
+    Err(failures)
 }
 
 /// Outcome of resolving `qhyccd.dll`.
@@ -107,13 +140,16 @@ pub enum DllResolution {
     /// Loaded from an explicit probed candidate; the module handle was leaked
     /// so it stays resident for the life of the process (PF2).
     FoundAt(PathBuf),
-    /// Not in any probed candidate, but the default Windows loader search
-    /// order (exe dir, System32, `PATH`, …) found it by name (PF3).
+    /// Not loadable from any probed candidate, but the default Windows loader
+    /// search order (exe dir, System32, `PATH`, …) found it by name (PF3).
     FoundByName,
     /// Nowhere: neither the probed candidates nor the default search order.
     NotFound {
         /// The candidate directories that were probed, for the error report.
         probed: Vec<PathBuf>,
+        /// Every load that was attempted and why it failed (existing
+        /// candidates + the final by-name attempt), for the error report.
+        failures: Vec<LoadFailure>,
     },
 }
 
@@ -129,10 +165,14 @@ pub enum PreflightError {
          DLL. Install QHY's 'All-in-One' pack (it also carries the required signed device \
          driver) from {QHY_ALL_IN_ONE_URL} and restart this service; it retries on every \
          start until the DLL appears. Probed: {}; plus the standard Windows DLL search \
-         order (exe directory, System32, PATH)",
-        display_probed(.probed)
+         order (exe directory, System32, PATH).{}",
+        display_probed(.probed),
+        display_failures(.failures)
     )]
-    DllNotFound { probed: Vec<PathBuf> },
+    DllNotFound {
+        probed: Vec<PathBuf>,
+        failures: Vec<LoadFailure>,
+    },
 }
 
 fn display_probed(probed: &[PathBuf]) -> String {
@@ -146,7 +186,22 @@ fn display_probed(probed: &[PathBuf]) -> String {
         .join("; ")
 }
 
-/// Probe the candidates, load the first hit, and keep it resident (PF1–PF3).
+fn display_failures(failures: &[LoadFailure]) -> String {
+    if failures.is_empty() {
+        return String::new();
+    }
+    format!(
+        " Load attempts failed: {}",
+        failures
+            .iter()
+            .map(LoadFailure::to_string)
+            .collect::<Vec<_>>()
+            .join("; ")
+    )
+}
+
+/// Probe the candidates, attempt each existing one in order, and keep the
+/// first successful load resident (PF1–PF3).
 ///
 /// The winning module is deliberately **leaked** (`std::mem::forget`): the
 /// delay-load helper's later `LoadLibrary("qhyccd.dll")` then binds to the
@@ -162,31 +217,41 @@ pub fn resolve_and_load() -> DllResolution {
         .and_then(|exe| exe.parent().map(Path::to_path_buf));
     let candidates = candidate_dirs(exe_dir.as_deref(), |var| std::env::var(var).ok());
 
-    if let Some(dll) = select_dll(&candidates, |p| p.is_file()) {
-        // LOAD_WITH_ALTERED_SEARCH_PATH: dependencies of qhyccd.dll resolve
-        // from ITS directory first, matching how the All-in-One lays out any
-        // companion DLLs.
-        //
-        // SAFETY: loading a DLL runs its DllMain / initializers. qhyccd.dll is
-        // the exact SDK this binary already links (delay-loaded) — the first
-        // SDK call would run the same code; loading it eagerly is not a new
-        // hazard.
-        match unsafe { Library::load_with_flags(&dll, LOAD_WITH_ALTERED_SEARCH_PATH) } {
+    // LOAD_WITH_ALTERED_SEARCH_PATH: dependencies of qhyccd.dll resolve from
+    // ITS directory first, matching how the All-in-One lays out any companion
+    // DLLs.
+    //
+    // SAFETY: loading a DLL runs its DllMain / initializers. qhyccd.dll is the
+    // exact SDK this binary already links (delay-loaded) — the first SDK call
+    // would run the same code; loading it eagerly is not a new hazard.
+    let load = |dll: &Path| -> Result<(), String> {
+        match unsafe { Library::load_with_flags(dll, LOAD_WITH_ALTERED_SEARCH_PATH) } {
             Ok(lib) => {
                 std::mem::forget(lib); // keep resident: delay-load binds to this module
-                return DllResolution::FoundAt(dll);
+                Ok(())
             }
             Err(error) => {
+                // PF2: a stale/broken copy (e.g. next to the exe) must not
+                // mask a later, usable install — record, log, and continue.
                 debug!(
                     "candidate {} exists but failed to load: {error}",
                     dll.display()
                 );
+                Err(error.to_string())
             }
         }
-    }
+    };
+
+    let mut failures = match try_candidates(&candidates, |p| p.is_file(), load) {
+        Ok(dll) => return DllResolution::FoundAt(dll),
+        Err(failures) => failures,
+    };
 
     // Fallback: the default loader search order (exe dir, System32, PATH)
-    // catches All-in-One installs that put the DLL on PATH.
+    // catches All-in-One installs that put the DLL on PATH. Note the exe dir
+    // is first in that order too, so a broken copy there can also break this
+    // fallback — which is exactly why the explicit candidates were each
+    // attempted above.
     //
     // SAFETY: same as above — this is the SDK DLL the binary links against.
     match unsafe { Library::new(QHY_DLL_NAME) } {
@@ -196,7 +261,14 @@ pub fn resolve_and_load() -> DllResolution {
         }
         Err(error) => {
             debug!("default-search-order load of {QHY_DLL_NAME} failed: {error}");
-            DllResolution::NotFound { probed: candidates }
+            failures.push(LoadFailure {
+                path: PathBuf::from(QHY_DLL_NAME),
+                error: format!("default Windows DLL search order: {error}"),
+            });
+            DllResolution::NotFound {
+                probed: candidates,
+                failures,
+            }
         }
     }
 }
@@ -215,9 +287,10 @@ pub fn ensure_qhyccd_dll() -> Result<DllResolution, PreflightError> {
         DllResolution::FoundByName => {
             debug!("qhyccd.dll resolved via the default Windows DLL search order");
         }
-        DllResolution::NotFound { probed } => {
+        DllResolution::NotFound { probed, failures } => {
             let failure = PreflightError::DllNotFound {
                 probed: probed.clone(),
+                failures: failures.clone(),
             };
             // The one distinctive, actionable error (PF4) — deliberately
             // error!, not debug!: this is the line an operator (and plan-W4's
@@ -308,29 +381,79 @@ mod tests {
     }
 
     #[test]
-    fn select_dll_returns_first_existing_candidate_as_full_dll_path() {
+    fn try_candidates_loads_first_existing_candidate_as_full_dll_path() {
         let candidates = vec![
             PathBuf::from("first"),
             PathBuf::from("second"),
             PathBuf::from("third"),
         ];
         let hit = PathBuf::from("second").join(QHY_DLL_NAME);
-        let selected = select_dll(&candidates, |p| p == hit).unwrap();
-        assert_eq!(selected, hit);
+        let loaded = try_candidates(&candidates, |p| p == hit, |_| Ok(())).unwrap();
+        assert_eq!(loaded, hit);
     }
 
     #[test]
-    fn select_dll_prefers_earlier_candidates() {
+    fn try_candidates_prefers_earlier_candidates() {
         let candidates = vec![PathBuf::from("first"), PathBuf::from("second")];
-        // Both exist: the first must win.
-        let selected = select_dll(&candidates, |_| true).unwrap();
-        assert_eq!(selected, PathBuf::from("first").join(QHY_DLL_NAME));
+        // Both exist and both load: the first must win.
+        let loaded = try_candidates(&candidates, |_| true, |_| Ok(())).unwrap();
+        assert_eq!(loaded, PathBuf::from("first").join(QHY_DLL_NAME));
     }
 
     #[test]
-    fn select_dll_none_when_no_candidate_exists() {
+    fn try_candidates_skips_a_broken_candidate_and_loads_a_later_one() {
+        // The Copilot-flagged case: a stale/broken qhyccd.dll next to the exe
+        // must not mask a valid All-in-One install in a later candidate.
+        let candidates = vec![
+            PathBuf::from("exe-dir"),
+            PathBuf::from("not-installed"),
+            PathBuf::from("all-in-one"),
+        ];
+        let broken = PathBuf::from("exe-dir").join(QHY_DLL_NAME);
+        let good = PathBuf::from("all-in-one").join(QHY_DLL_NAME);
+
+        let mut attempted: Vec<PathBuf> = Vec::new();
+        let loaded = try_candidates(
+            &candidates,
+            |p| p == broken || p == good, // "not-installed" has no DLL
+            |dll| {
+                attempted.push(dll.to_path_buf());
+                if dll == broken {
+                    Err("wrong architecture".to_string())
+                } else {
+                    Ok(())
+                }
+            },
+        )
+        .unwrap();
+
+        assert_eq!(loaded, good);
+        // Both existing candidates were attempted, in candidate order; the
+        // non-existing one was never handed to the loader.
+        assert_eq!(attempted, vec![broken, good]);
+    }
+
+    #[test]
+    fn try_candidates_reports_every_failed_attempt_in_order() {
+        let candidates = vec![PathBuf::from("first"), PathBuf::from("second")];
+        let failures = try_candidates(
+            &candidates,
+            |_| true,
+            |dll| Err(format!("cannot load {}", dll.display())),
+        )
+        .unwrap_err();
+
+        assert_eq!(failures.len(), 2);
+        assert_eq!(failures[0].path, PathBuf::from("first").join(QHY_DLL_NAME));
+        assert_eq!(failures[1].path, PathBuf::from("second").join(QHY_DLL_NAME));
+        assert!(failures[0].error.contains("cannot load"), "{failures:?}");
+    }
+
+    #[test]
+    fn try_candidates_no_existing_candidate_yields_no_failures() {
         let candidates = vec![PathBuf::from("first")];
-        assert_eq!(select_dll(&candidates, |_| false), None);
+        let failures = try_candidates(&candidates, |_| false, |_| Ok(())).unwrap_err();
+        assert!(failures.is_empty());
     }
 
     #[test]
@@ -339,12 +462,16 @@ mod tests {
     }
 
     #[test]
-    fn preflight_error_names_the_url_and_the_probed_dirs() {
+    fn preflight_error_names_the_url_probed_dirs_and_failed_attempts() {
         let failure = PreflightError::DllNotFound {
             probed: vec![
                 PathBuf::from(r"C:\Program Files\rusty-photon"),
                 PathBuf::from(r"C:\Program Files\QHYCCD\AllInOne\sdk\x64"),
             ],
+            failures: vec![LoadFailure {
+                path: PathBuf::from(r"C:\Program Files\rusty-photon").join(QHY_DLL_NAME),
+                error: "wrong architecture".to_string(),
+            }],
         };
         let message = failure.to_string();
         assert!(message.starts_with("qhyccd.dll not found"), "{message}");
@@ -357,11 +484,27 @@ mod tests {
             message.contains(r"C:\Program Files\QHYCCD\AllInOne\sdk\x64"),
             "{message}"
         );
+        // The 2 a.m. log names what was attempted and why it failed (PF4).
+        assert!(message.contains("Load attempts failed:"), "{message}");
+        assert!(message.contains("wrong architecture"), "{message}");
+    }
+
+    #[test]
+    fn preflight_error_without_failed_attempts_omits_that_clause() {
+        let failure = PreflightError::DllNotFound {
+            probed: vec![PathBuf::from(r"C:\Program Files\rusty-photon")],
+            failures: vec![],
+        };
+        let message = failure.to_string();
+        assert!(!message.contains("Load attempts failed:"), "{message}");
     }
 
     #[test]
     fn preflight_error_with_no_candidates_still_renders() {
-        let failure = PreflightError::DllNotFound { probed: vec![] };
+        let failure = PreflightError::DllNotFound {
+            probed: vec![],
+            failures: vec![],
+        };
         let message = failure.to_string();
         assert!(message.contains("(no candidate directories)"), "{message}");
     }
@@ -378,9 +521,11 @@ mod tests {
                 assert!(dll.ends_with(QHY_DLL_NAME), "{}", dll.display());
             }
             DllResolution::FoundByName => {}
-            DllResolution::NotFound { probed } => {
-                // The exe dir candidate is always present.
+            DllResolution::NotFound { probed, failures } => {
+                // The exe dir candidate is always present, and the by-name
+                // fallback failure is always recorded.
                 assert!(!probed.is_empty());
+                assert!(!failures.is_empty());
             }
         }
     }

@@ -561,22 +561,29 @@ Runs in `main.rs` on Windows real-SDK builds only, **before any SDK call**:
   The exact All-in-One layout is a flagged unknown of the Windows packaging
   plan — the list is confirmed/extended on a real Windows box and is trivially
   extendable in `preflight::candidate_dirs`.
-- **PF2.** The first candidate whose `qhyccd.dll` exists is loaded with
-  `LOAD_WITH_ALTERED_SEARCH_PATH` (so the DLL's own same-directory
-  dependencies resolve) and the handle is deliberately **leaked** — the module
-  stays resident for the life of the process, and the delay-load helper's
-  later `LoadLibrary("qhyccd.dll")` binds to the already-loaded module by base
-  name instead of re-searching.
-- **PF3.** No candidate hit → fall back to a plain load **by name** using the
-  default Windows DLL search order (exe dir, System32, `PATH`), catching
-  installs that put the DLL on `PATH`. The resolution outcome is logged at
-  `debug!`.
-- **PF4.** Both miss → **one distinctive, actionable `error!`** naming the
-  QHY All-in-One download URL (<https://www.qhyccd.com/download/>) and the
-  probed directories, then a clean non-zero exit. SCM/systemd failure actions
-  restart the service every 5 s — the same contract as a missing serial
-  device: the unit comes up by itself once the pack is installed.
-  (`scripts/verify-msi.ps1`, plan W4, asserts this line on a DLL-less runner.)
+- **PF2.** **Every existing candidate is attempted in order; the first
+  successful load wins.** Each attempt uses `LOAD_WITH_ALTERED_SEARCH_PATH`
+  (so the DLL's own same-directory dependencies resolve), and the winning
+  handle is deliberately **leaked** — the module stays resident for the life
+  of the process, and the delay-load helper's later
+  `LoadLibrary("qhyccd.dll")` binds to the already-loaded module by base name
+  instead of re-searching. A candidate that **exists but fails to load** (a
+  stale or broken copy, e.g. next to the exe) is logged at `debug!`,
+  recorded, and **skipped** — it must never mask a later, usable All-in-One
+  install (note the by-name fallback of PF3 alone would not recover from
+  this: the exe dir is first in the default search order too).
+- **PF3.** All candidates exhausted → fall back to a plain load **by name**
+  using the default Windows DLL search order (exe dir, System32, `PATH`),
+  catching installs that put the DLL on `PATH`. The resolution outcome is
+  logged at `debug!`.
+- **PF4.** Everything misses → **one distinctive, actionable `error!`**
+  naming the QHY All-in-One download URL (<https://www.qhyccd.com/download/>),
+  the probed directories, and **every failed load attempt with the loader's
+  reason** (the 2 a.m. log says both *what* was tried and *why* it failed),
+  then a clean non-zero exit. SCM/systemd failure actions restart the service
+  every 5 s — the same contract as a missing serial device: the unit comes up
+  by itself once the pack is installed. (`scripts/verify-msi.ps1`, plan W4,
+  asserts this line on a DLL-less runner.)
 - **PF5.** `simulation` builds skip the preflight entirely (no native SDK is
   linked); non-Windows builds have no preflight.
 
@@ -588,7 +595,8 @@ service cannot: talk to the operator and open a browser.
 
 - **DR1.** On Windows real-SDK builds it reports: **(a)** `qhyccd.dll`
   resolution — found at which probed path / found via the default search
-  order / missing (with the probed list); **(b)** the **loaded** SDK version
+  order / missing (with the probed list **and every failed load attempt with
+  its loader error**); **(b)** the **loaded** SDK version
   via `GetQHYCCDSDKVersion` vs. the **pinned build-time** SDK version
   (26.06.04), with an explicit warning when they differ — ABI skew against
   whatever the All-in-One ships is an accepted risk (ADR-015), surfaced here;

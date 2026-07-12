@@ -118,7 +118,7 @@ impl DoctorReport {
                          order (exe directory, System32, PATH)"
                     );
                 }
-                Some(DllResolution::NotFound { probed }) => {
+                Some(DllResolution::NotFound { probed, failures }) => {
                     let _ = writeln!(out, "qhyccd.dll        : NOT FOUND");
                     for dir in probed {
                         let _ = writeln!(out, "  probed          : {}", dir.display());
@@ -128,6 +128,14 @@ impl DoctorReport {
                         "  ...plus the standard Windows DLL search order (exe directory, \
                          System32, PATH)"
                     );
+                    for failure in failures {
+                        let _ = writeln!(
+                            out,
+                            "  load failed     : {} — {}",
+                            failure.path.display(),
+                            failure.error
+                        );
+                    }
                 }
                 None => {
                     let _ = writeln!(out, "qhyccd.dll        : not checked");
@@ -435,7 +443,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_dll_renders_probed_dirs_and_url_and_exits_one() {
+    fn missing_dll_renders_probed_dirs_failed_attempts_and_url_and_exits_one() {
         let report = DoctorReport {
             simulation: false,
             dll: Some(DllResolution::NotFound {
@@ -443,6 +451,10 @@ mod tests {
                     PathBuf::from(r"C:\Program Files\rusty-photon"),
                     PathBuf::from(r"C:\Program Files\QHYCCD\AllInOne\sdk\x64"),
                 ],
+                failures: vec![crate::preflight::LoadFailure {
+                    path: PathBuf::from(r"C:\Program Files\rusty-photon\qhyccd.dll"),
+                    error: "wrong architecture".to_string(),
+                }],
             }),
             sdk_version: SdkVersionFinding::Skipped,
             cameras: None,
@@ -454,6 +466,12 @@ mod tests {
         assert!(rendered.contains("NOT FOUND"), "{rendered}");
         assert!(
             rendered.contains(r"probed          : C:\Program Files\rusty-photon"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains(
+                r"load failed     : C:\Program Files\rusty-photon\qhyccd.dll — wrong architecture"
+            ),
             "{rendered}"
         );
         assert!(rendered.contains(QHY_ALL_IN_ONE_URL), "{rendered}");
