@@ -46,6 +46,12 @@ Feature: Configuration actions
     Then the apply status should be invalid
     And the response should contain validation errors
 
+  Scenario: A min_brightness above max_brightness is rejected and not persisted
+    Given a running FP2 service
+    When config.apply is called with min_brightness above max_brightness
+    Then the apply status should be invalid
+    And the response should contain validation errors
+
   Scenario: An unknown action is not implemented
     Given a running FP2 service
     When the action "config.frobnicate" is called

@@ -213,6 +213,21 @@ impl CoverCalibrator for DsdFp2Device {
                 format!("brightness {brightness} exceeds configured max {effective_max}"),
             ));
         }
+        // Below `min_brightness` the panel's EL output is non-linear/unreliable
+        // (see docs/services/dsd-fp2.md "Hardware Constraints"); reject it so a
+        // caller picks either 0 (off) or a value in the panel's usable range.
+        // Zero is exempt: it is the ASCOM "on at zero" state, not a dim request.
+        let min_brightness = self.config.min_brightness;
+        if brightness != 0 && brightness < min_brightness {
+            return Err(ASCOMError::new(
+                ASCOMErrorCode::INVALID_VALUE,
+                format!(
+                    "brightness {brightness} is below the configured minimum {min_brightness} \
+                     (panel output is non-linear below this value); use 0 to turn the light off \
+                     or a value >= {min_brightness}"
+                ),
+            ));
+        }
         let value = FlatPanelManager::validate_brightness(brightness)?;
         let slot = self.session.read().await;
         let session = slot.as_ref().ok_or(ASCOMError::NOT_CONNECTED)?;
@@ -388,6 +403,17 @@ mod mock_tests {
         (device, factory)
     }
 
+    fn make_device_with_min(floor: u32) -> (DsdFp2Device, MockTransportFactory) {
+        let factory = MockTransportFactory::default();
+        let manager = FlatPanelManager::new(test_config(), Arc::new(factory.clone()));
+        let cc_config = CoverCalibratorConfig {
+            min_brightness: floor,
+            ..test_cover_calibrator()
+        };
+        let device = DsdFp2Device::new(cc_config, manager);
+        (device, factory)
+    }
+
     #[tokio::test]
     async fn device_starts_disconnected() {
         let (device, _) = make_device();
@@ -489,7 +515,9 @@ mod mock_tests {
         assert_eq!(err.code, ascom_alpaca::ASCOMErrorCode::NOT_CONNECTED);
         let err = device.close_cover().await.unwrap_err();
         assert_eq!(err.code, ascom_alpaca::ASCOMErrorCode::NOT_CONNECTED);
-        let err = device.calibrator_on(100).await.unwrap_err();
+        // Above the min_brightness floor (250) so this exercises the
+        // not-connected path rather than the brightness-floor rejection.
+        let err = device.calibrator_on(2048).await.unwrap_err();
         assert_eq!(err.code, ascom_alpaca::ASCOMErrorCode::NOT_CONNECTED);
         let err = device.calibrator_off().await.unwrap_err();
         assert_eq!(err.code, ascom_alpaca::ASCOMErrorCode::NOT_CONNECTED);
@@ -520,6 +548,35 @@ mod mock_tests {
         // promise isn't violated.
         let err = device.calibrator_on(2049).await.unwrap_err();
         assert_eq!(err.code, ascom_alpaca::ASCOMErrorCode::INVALID_VALUE);
+
+        device.set_connected(false).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn calibrator_on_rejects_brightness_below_configured_min() {
+        let (device, _) = make_device_with_min(250);
+        device.set_connected(true).await.unwrap();
+
+        // Below the floor — rejected.
+        let err = device.calibrator_on(100).await.unwrap_err();
+        assert_eq!(err.code, ascom_alpaca::ASCOMErrorCode::INVALID_VALUE);
+
+        // At the floor — allowed.
+        device.calibrator_on(250).await.unwrap();
+        assert_eq!(device.brightness().await.unwrap(), 250);
+
+        device.set_connected(false).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn calibrator_on_accepts_zero_even_below_configured_min() {
+        let (device, _) = make_device_with_min(250);
+        device.set_connected(true).await.unwrap();
+
+        // Zero is the ASCOM "on at zero" state, not a dim request — the
+        // floor must not reject it even though 0 < min_brightness.
+        device.calibrator_on(0).await.unwrap();
+        assert_eq!(device.brightness().await.unwrap(), 0);
 
         device.set_connected(false).await.unwrap();
     }

@@ -68,6 +68,12 @@ impl ConfigurableDriver for DsdFp2Driver {
                 msg: format!("must be <= {MAX_BRIGHTNESS} (hardware ceiling)"),
             });
         }
+        if config.cover_calibrator.min_brightness > config.cover_calibrator.max_brightness {
+            errors.push(FieldError {
+                path: "cover_calibrator.min_brightness".to_string(),
+                msg: "must be <= cover_calibrator.max_brightness".to_string(),
+            });
+        }
         if config.cover_calibrator.unique_id.trim().is_empty() {
             errors.push(FieldError {
                 path: "cover_calibrator.unique_id".to_string(),
@@ -204,6 +210,41 @@ mod tests {
             ..Config::default()
         };
         assert!(DsdFp2Driver::validate(&config).is_empty());
+    }
+
+    #[test]
+    fn validate_rejects_min_brightness_above_max_brightness() {
+        let config = Config {
+            cover_calibrator: CoverCalibratorConfig {
+                min_brightness: 3000,
+                max_brightness: 2048,
+                unique_id: "dsd-fp2-test-id".to_string(),
+                ..CoverCalibratorConfig::default()
+            },
+            ..Config::default()
+        };
+        let errors = DsdFp2Driver::validate(&config);
+        let err = errors
+            .iter()
+            .find(|e| e.path == "cover_calibrator.min_brightness")
+            .unwrap_or_else(|| panic!("expected a min_brightness error, got {errors:?}"));
+        assert_eq!(err.msg, "must be <= cover_calibrator.max_brightness");
+    }
+
+    #[test]
+    fn validate_accepts_min_brightness_equal_to_max_brightness() {
+        let config = Config {
+            cover_calibrator: CoverCalibratorConfig {
+                min_brightness: 2048,
+                max_brightness: 2048,
+                unique_id: "dsd-fp2-test-id".to_string(),
+                ..CoverCalibratorConfig::default()
+            },
+            ..Config::default()
+        };
+        assert!(DsdFp2Driver::validate(&config)
+            .iter()
+            .all(|e| e.path != "cover_calibrator.min_brightness"));
     }
 
     #[test]
