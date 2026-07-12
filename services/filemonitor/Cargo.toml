@@ -47,9 +47,6 @@ command = "cargo test -p filemonitor --features conformu --test conformu_integra
 [package.metadata.miri]
 command = "cargo miri test -p filemonitor"
 
-[package.metadata.wix]
-eula = false
-
 [package.metadata.deb]
 name = "rusty-photon-filemonitor"
 maintainer = "Igor von Nyssen <igor@vonnyssen.com>"

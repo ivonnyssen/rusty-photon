@@ -13,6 +13,9 @@ Deployment is native packages by explicit decision — the drivers' USB /
 udev / firmware needs and ASCOM Alpaca's UDP discovery defeat containers
 (ADR-012).
 
+Windows ships as one suite MSI instead of per-service packages — see
+[docs/packaging-windows.md](packaging-windows.md) (ADR-015).
+
 ## What gets installed
 
 Every package is named `rusty-photon-<svc>` and installs
