@@ -1,13 +1,15 @@
 Feature: Calibrator control
   The calibrator light responds to `calibrator_on(brightness)` and
   `calibrator_off()` by sending `[SLBR<NNNN>] + [SLON1]` and `[SLON0]`
-  respectively. Brightness must be between 0 and 4096 inclusive;
-  values above are rejected with `INVALID_VALUE`. The maximum
-  brightness reported through ASCOM is `4096`. Below the configured
-  `min_brightness` (default 250) the panel's EL output is non-linear, so a
-  non-zero brightness under that floor is also rejected with
-  `INVALID_VALUE`; `0` (the ASCOM "on at zero" state — the light stays
-  logically on, at zero brightness) is always accepted regardless.
+  respectively. Brightness must be within the effective range
+  `0..=max_brightness()` — the lower of the configured
+  `cover_calibrator.max_brightness` and the 4096 hardware ceiling; values
+  above are rejected with `INVALID_VALUE`. `max_brightness` reported
+  through ASCOM defaults to `4096` unless configured lower. Below the
+  configured `min_brightness` (default 250) the panel's EL output is
+  non-linear, so a non-zero brightness under that floor is also rejected
+  with `INVALID_VALUE`; `0` (the ASCOM "on at zero" state — the light
+  stays logically on, at zero brightness) is always accepted regardless.
 
   Scenario: Calibrator on then off
     Given a connected FP2 device
