@@ -3253,6 +3253,10 @@ directory — `/var/lib/rusty-photon/rp/` on Unix,
 is written on first start if the file is absent. An explicit `--config`
 naming a missing file stays a hard error. Equipment is listed with Alpaca
 connection details. Plugins register their webhook URLs and command endpoints.
+Every block (top-level `Config` and each equipment/service sub-config) rejects
+unknown keys at deserialize (`deny_unknown_fields`), so a typo or a key
+removed by a schema change fails loudly at load instead of being silently
+ignored.
 
 The running config is readable and editable over REST — `GET /api/config`,
 `GET /api/config/schema`, `PUT /api/config` (see

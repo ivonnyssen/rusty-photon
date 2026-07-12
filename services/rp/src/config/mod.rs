@@ -50,7 +50,10 @@ use serde_json::Value;
 
 use crate::error::{Result, RpError};
 
+/// `deny_unknown_fields` so typoed or removed top-level keys fail loudly at
+/// load instead of being silently ignored.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     pub session: SessionConfig,
     pub equipment: EquipmentConfig,
@@ -258,6 +261,25 @@ mod tests {
     fn load_config_missing_file() {
         let err = load_config(Path::new("/nonexistent/rp/config.json")).unwrap_err();
         assert!(err.to_string().contains("failed to read config file"));
+    }
+
+    #[test]
+    fn load_config_rejects_unknown_top_level_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "session": {"data_directory": "/tmp/rp-test"},
+                "equipment": {},
+                "server": {},
+                "workflows": []
+            }"#,
+        )
+        .unwrap();
+
+        let err = load_config(&path).unwrap_err().to_string();
+        assert!(err.contains("workflows"), "{err}");
     }
 
     #[test]
