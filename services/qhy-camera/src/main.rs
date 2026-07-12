@@ -82,14 +82,6 @@ fn main() -> ServiceResult {
         std::process::exit(code);
     }
 
-    // Windows real-SDK builds delay-load qhyccd.dll (see build.rs): resolve it
-    // BEFORE any SDK call and keep it resident, or exit non-zero with the one
-    // distinctive, actionable error (PF1–PF4). Simulation builds skip this:
-    // their real FFI is cfg'd out, so nothing would ever call into qhyccd.dll
-    // and it is not required at runtime (PF5).
-    #[cfg(all(windows, not(feature = "simulation")))]
-    qhy_camera::preflight::ensure_qhyccd_dll()?;
-
     let config_path = rusty_photon_config::resolve_config_path("qhy-camera", args.config)?;
     let overrides = CliOverrides {
         server_port: args.port,
@@ -111,6 +103,19 @@ fn main() -> ServiceResult {
         .with_reload()
         .scm_mode(args.service)
         .run_with_reload(move |shutdown, reload| async move {
+            // Windows real-SDK builds delay-load qhyccd.dll (see build.rs):
+            // resolve it BEFORE any SDK call and keep it resident, or fail
+            // with the one distinctive, actionable error (PF1–PF4). This
+            // runs INSIDE the run closure, not in main before the runner: in
+            // SCM mode the wrapper registers and reports Running before the
+            // closure, so a missing DLL becomes a clean ServiceSpecific(1)
+            // stop + 5 s restart (the missing-serial-device contract). An
+            // exit before SCM registration is a start FAILURE — msiexec
+            // aborts the whole install with error 1920 during StartServices.
+            // Simulation builds skip this: their real FFI is cfg'd out, so
+            // nothing ever calls into qhyccd.dll (PF5).
+            #[cfg(all(windows, not(feature = "simulation")))]
+            qhy_camera::preflight::ensure_qhyccd_dll()?;
             loop {
                 let config = load_effective_config(&config_path, &overrides)?;
                 debug!(

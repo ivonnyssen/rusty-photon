@@ -202,6 +202,12 @@ case diagnosable instead of a pre-`main` loader failure:
   naming the All-in-One download URL, then a clean non-zero exit (SCM
   restarts every 5 s — same contract as a missing serial device; the unit
   comes up by itself once the pack is installed).
+  **As built (W4 correction):** the preflight must run *inside* the
+  `ServiceRunner` run closure, not in `main` before dispatch — the SCM
+  wrapper reports `Running` before the closure, which is what makes the
+  exit clean; a pre-registration exit is an SCM start failure and aborts
+  the whole MSI install with error 1920 during `StartServices`
+  (W4's first full `verify-msi.ps1` run caught exactly this).
 - `rusty-photon-qhy-camera doctor` (interactive subcommand, Start-Menu
   shortcut): reports device-driver presence, DLL location and
   `GetQHYCCDSDKVersion` vs. the pinned build-time SDK version (ABI-skew is

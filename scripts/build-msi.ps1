@@ -94,9 +94,11 @@ $cache = Join-Path $env:LOCALAPPDATA "rusty-photon-pkg"
 New-Item -ItemType Directory -Force -Path $cache | Out-Null
 
 # Atomic download (no half-written file poisoning the cache).
+# -UseBasicParsing: no-op on pwsh 7+, but keeps Windows PowerShell 5.1 off
+# the IE COM parsing engine (hangs on Server Core / first-logon boxes).
 function Fetch([string]$url, [string]$dest) {
     Write-Host "Downloading $url"
-    Invoke-WebRequest -Uri $url -OutFile "$dest.part"
+    Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile "$dest.part"
     Move-Item -Force "$dest.part" $dest
 }
 

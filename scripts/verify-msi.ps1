@@ -74,6 +74,19 @@ $logsDir = Join-Path $dataDir 'logs'
 $installDir = Join-Path ${env:ProgramFiles} 'rusty-photon'
 $installLog = Join-Path $env:TEMP 'rusty-photon-msi-install.log'
 
+# Fresh-box preflight: the run asserts fresh-install invariants (gated
+# services have no config, the seeded ui-htmx map matches the feature set,
+# configs self-create), which leftovers from a prior install would corrupt —
+# fail fast with a pointer instead of failing (or passing) for the wrong
+# reason mid-run. CI runners are always fresh; on a dev box, uninstall and
+# delete %ProgramData%\rusty-photon (the documented manual purge) first.
+if (Get-Service -Name 'rusty-photon-*' -ErrorAction SilentlyContinue) {
+    Die "rusty-photon-* services already installed — msiexec /x the previous install first"
+}
+if (Test-Path $dataDir) {
+    Die "$dataDir already exists — delete it (manual purge) so fresh-install checks are meaningful"
+}
+
 function Fail([string]$svc, [string]$msg) {
     Write-Host "verify-msi: FAIL [$svc]: $msg" -ForegroundColor Red
     $svcLog = Get-ChildItem -Path $logsDir -Filter "$svc.*" -ErrorAction SilentlyContinue |

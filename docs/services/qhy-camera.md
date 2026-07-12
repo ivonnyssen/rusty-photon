@@ -552,7 +552,14 @@ diagnosable instead:
 
 ### Startup preflight (service + console modes)
 
-Runs in `main.rs` on Windows real-SDK builds only, **before any SDK call**:
+Runs on Windows real-SDK builds only, **before any SDK call**, as the first
+act of the `ServiceRunner` run closure in `main.rs`. Inside the closure, not
+before the runner, deliberately: in SCM service mode the wrapper registers
+with the SCM and reports `Running` before invoking the closure, so a
+missing-DLL failure is a clean `ServiceSpecific(1)` stop that the failure
+actions restart every 5 s — whereas a process exit before SCM registration
+is a start *failure*, which aborts an entire MSI install with error 1920
+during `StartServices` (found by `verify-msi.ps1`, plan W4):
 
 - **PF1.** Probe an **ordered candidate list** of directories for
   `qhyccd.dll`: (1) the exe's own directory, then (2) a **best-effort seed**
