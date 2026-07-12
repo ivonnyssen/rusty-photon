@@ -62,7 +62,7 @@ struct DeviceState {
     /// hardware nor the simulation backend updates `CurPWM` synchronously
     /// when `Control::Cooler` (auto-regulation) is (re-)asserted, and a
     /// settled regulation loop can legitimately read back 0% PWM while still
-    /// engaged (#497).
+    /// engaged.
     cooler_engaged: AtomicBool,
 
     exposure_in_flight: AtomicBool,
@@ -1058,10 +1058,10 @@ impl Camera for QhyCameraDevice {
             return Err(ASCOMError::NOT_IMPLEMENTED);
         }
         if cooler_on {
-            // Re-engage the SDK's target-temperature auto-regulation rather
-            // than stomping it with a fixed manual PWM (#497): re-assert
-            // Control::Cooler with the stored target, falling back to the
-            // current CCD temperature if SetCCDTemperature was never called.
+            // Engage the SDK's auto-regulation by writing Control::Cooler to
+            // the stored target (Control::ManualPWM instead pins a fixed duty
+            // cycle and does not regulate), falling back to the current CCD
+            // temperature if SetCCDTemperature was never called.
             let cached_target = *self.state.target_temperature.lock();
             let target = match cached_target {
                 Some(target) => target,
@@ -1537,9 +1537,6 @@ mod tests {
 
     #[tokio::test]
     async fn cooler_on_reasserts_target_not_manual_pwm() {
-        // #497: CoolerOn(true) must re-engage auto-regulation (Control::Cooler)
-        // toward the stored SetCCDTemperature target, not stomp it with a fixed
-        // manual PWM duty cycle.
         let mock = Arc::new(MockCameraHandle::default());
         let device = QhyCameraDevice::new(mock.clone(), None);
         device.set_connected(true).await.unwrap();
@@ -1548,11 +1545,10 @@ mod tests {
         device.set_cooler_on(true).await.unwrap();
 
         assert_eq!(mock.param(Control::Cooler), Some(-10.0));
-        assert_eq!(
-            mock.param(Control::ManualPWM),
-            None,
-            "set_cooler_on(true) must not write Control::ManualPWM"
-        );
+        // The mock mirrors a Control::ManualPWM write into CurPWM; it must
+        // stay at its untouched default, proving set_cooler_on(true) never
+        // wrote Control::ManualPWM.
+        assert_eq!(mock.param(Control::CurPWM), Some(0.0));
     }
 
     #[tokio::test]
@@ -1570,13 +1566,20 @@ mod tests {
 
     #[tokio::test]
     async fn cooler_off_clears_manual_pwm_and_engaged_state() {
-        let device = connected_device(MockCameraHandle::default());
+        // Seed CurPWM nonzero, as if the cooler had been actively regulating,
+        // so a subsequent drop to 0.0 is observable evidence of the
+        // Control::ManualPWM = 0.0 write (the mock mirrors ManualPWM into
+        // CurPWM; see MockCameraHandle::param).
+        let mock = Arc::new(MockCameraHandle::default().with_param(Control::CurPWM, 50.0));
+        let device = QhyCameraDevice::new(mock.clone(), None);
+        device.set_connected(true).await.unwrap();
         device.set_cooler_on(true).await.unwrap();
         assert!(device.cooler_on().await.unwrap());
 
         device.set_cooler_on(false).await.unwrap();
 
         assert!(!device.cooler_on().await.unwrap());
+        assert_eq!(mock.param(Control::CurPWM), Some(0.0));
     }
 
     #[tokio::test]

@@ -821,7 +821,7 @@ the "how" decisions made while building.
   PWM (matching the reference), distinct from the automatic target-temperature
   regulation `SetCCDTemperature` drives — a real ASCOM client sequence of
   `SetCCDTemperature` then `CoolerOn(true)` left the cooler pinned near 1%
-  power (issue #497, confirmed on real hardware). `set_cooler_on(true)` now
+  power (confirmed on real hardware). `set_cooler_on(true)` now
   re-asserts `Control::Cooler` with the stored target instead; see
   [Cooling contract K4](#cooling).
 

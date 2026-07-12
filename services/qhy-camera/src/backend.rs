@@ -509,7 +509,9 @@ pub(crate) mod mock {
         }
         /// Read back a parameter value as last written via `set_parameter`
         /// (test introspection, e.g. to assert which cooler control a call
-        /// wrote to).
+        /// wrote to). Note the routing above: a `Control::ManualPWM` write
+        /// lands under `Control::CurPWM`, not `Control::ManualPWM` — query
+        /// `CurPWM` to observe it.
         pub fn param(&self, control: Control) -> Option<f64> {
             self.params.lock().get(&control).copied()
         }
