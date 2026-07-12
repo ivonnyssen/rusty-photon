@@ -6,6 +6,7 @@ use std::time::Duration;
 use crate::error::SkySurveyCameraError;
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     pub device: DeviceConfig,
     pub optics: OpticsConfig,
@@ -15,6 +16,7 @@ pub struct Config {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct DeviceConfig {
     pub name: String,
     /// ASCOM `UniqueID`. Omitting it in the config file loads as an
@@ -29,6 +31,7 @@ pub struct DeviceConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct OpticsConfig {
     pub focal_length_mm: f64,
     pub pixel_size_x_um: f64,
@@ -38,6 +41,7 @@ pub struct OpticsConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct PointingConfig {
     pub initial_ra_deg: f64,
     pub initial_dec_deg: f64,
@@ -61,6 +65,7 @@ pub struct PointingConfig {
 
 /// Configuration for telescope-following mode. Absent in static mode.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct TelescopeFollowConfig {
     pub alpaca_url: String,
     #[serde(default)]
@@ -94,6 +99,7 @@ fn default_telescope_request_timeout() -> Duration {
 /// is read straight through to `rotation_deg`. Absent unless rotator
 /// support is wired up, and only valid alongside `telescope`.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct RotatorFollowConfig {
     pub alpaca_url: String,
     #[serde(default)]
@@ -113,6 +119,7 @@ fn default_rotator_request_timeout() -> Duration {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SurveyConfig {
     pub name: String,
     #[serde(with = "humantime_serde")]
@@ -131,6 +138,7 @@ fn default_survey_endpoint() -> String {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ServerConfig {
     pub port: u16,
     /// Alpaca UDP discovery responder port (normally 32227). Absent/`null` —
@@ -392,5 +400,69 @@ mod tests {
         }"#;
         let cfg: PointingConfig = serde_json::from_str(json).unwrap();
         assert!(cfg.rotator.is_none());
+    }
+
+    #[test]
+    fn config_rejects_unknown_top_level_field() {
+        let json = r#"{
+            "device": {"name": "n", "description": "d"},
+            "optics": {"focal_length_mm": 1000.0, "pixel_size_x_um": 3.76, "pixel_size_y_um": 3.76, "sensor_width_px": 100, "sensor_height_px": 100},
+            "pointing": {"initial_ra_deg": 0.0, "initial_dec_deg": 0.0},
+            "survey": {"name": "DSS2 Red", "request_timeout": "30s", "cache_dir": "/tmp"},
+            "server": {"port": 0},
+            "mock": true
+        }"#;
+        let err = serde_json::from_str::<Config>(json).unwrap_err();
+        assert!(err.to_string().contains("mock"), "{err}");
+    }
+
+    #[test]
+    fn device_config_rejects_unknown_field() {
+        let json = r#"{"name": "n", "description": "d", "vendor": "acme"}"#;
+        let err = serde_json::from_str::<DeviceConfig>(json).unwrap_err();
+        assert!(err.to_string().contains("vendor"), "{err}");
+    }
+
+    #[test]
+    fn optics_config_rejects_unknown_field() {
+        let json = r#"{"focal_length_mm": 1000.0, "pixel_size_x_um": 3.76, "pixel_size_y_um": 3.76, "sensor_width_px": 100, "sensor_height_px": 100, "aperture_mm": 200.0}"#;
+        let err = serde_json::from_str::<OpticsConfig>(json).unwrap_err();
+        assert!(err.to_string().contains("aperture_mm"), "{err}");
+    }
+
+    #[test]
+    fn pointing_config_rejects_unknown_field() {
+        let json = r#"{"initial_ra_deg": 0.0, "initial_dec_deg": 0.0, "flip": true}"#;
+        let err = serde_json::from_str::<PointingConfig>(json).unwrap_err();
+        assert!(err.to_string().contains("flip"), "{err}");
+    }
+
+    #[test]
+    fn telescope_follow_config_rejects_unknown_field() {
+        let json = r#"{"alpaca_url": "http://x/", "poll_interval": "1s"}"#;
+        let err = serde_json::from_str::<TelescopeFollowConfig>(json).unwrap_err();
+        assert!(err.to_string().contains("poll_interval"), "{err}");
+    }
+
+    #[test]
+    fn rotator_follow_config_rejects_unknown_field() {
+        let json = r#"{"alpaca_url": "http://x/", "poll_interval": "1s"}"#;
+        let err = serde_json::from_str::<RotatorFollowConfig>(json).unwrap_err();
+        assert!(err.to_string().contains("poll_interval"), "{err}");
+    }
+
+    #[test]
+    fn survey_config_rejects_unknown_field() {
+        let json =
+            r#"{"name": "DSS2 Red", "request_timeout": "30s", "cache_dir": "/tmp", "retries": 3}"#;
+        let err = serde_json::from_str::<SurveyConfig>(json).unwrap_err();
+        assert!(err.to_string().contains("retries"), "{err}");
+    }
+
+    #[test]
+    fn server_config_rejects_unknown_field() {
+        let json = r#"{"port": 0, "bind_address": "0.0.0.0"}"#;
+        let err = serde_json::from_str::<ServerConfig>(json).unwrap_err();
+        assert!(err.to_string().contains("bind_address"), "{err}");
     }
 }
