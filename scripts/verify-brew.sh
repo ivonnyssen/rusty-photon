@@ -250,12 +250,15 @@ fi
 # exist (a fresh runner's Homebrew prefix may not have var/log yet).
 mkdir -p "$PREFIX/var/log"
 
-GEN_ARGS=""
-[ -n "$ONLY_SERVICES" ] && GEN_ARGS="--services $ONLY_SERVICES"
-# shellcheck disable=SC2086 # word-splitting the optional flag is intended
-scripts/generate-brew-formulas.sh --channel "$CHANNEL" --version "$VERSION" \
-    --dist "$DIST_ABS" --url-base "file://$DIST_ABS" \
-    --output "$TAP_DIR/Formula" $GEN_ARGS
+if [ -n "$ONLY_SERVICES" ]; then
+    scripts/generate-brew-formulas.sh --channel "$CHANNEL" --version "$VERSION" \
+        --dist "$DIST_ABS" --url-base "file://$DIST_ABS" \
+        --output "$TAP_DIR/Formula" --services "$ONLY_SERVICES"
+else
+    scripts/generate-brew-formulas.sh --channel "$CHANNEL" --version "$VERSION" \
+        --dist "$DIST_ABS" --url-base "file://$DIST_ABS" \
+        --output "$TAP_DIR/Formula"
+fi
 
 fail() {
     svc="$1"
