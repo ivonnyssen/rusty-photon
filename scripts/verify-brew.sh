@@ -197,6 +197,9 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 mkdir -p "$TAP_DIR/Formula"
+# launchd only creates the log FILE; the service blocks' log_path parent must
+# exist (a fresh runner's Homebrew prefix may not have var/log yet).
+mkdir -p "$PREFIX/var/log"
 
 GEN_ARGS=""
 [ -n "$ONLY_SERVICES" ] && GEN_ARGS="--services $ONLY_SERVICES"
