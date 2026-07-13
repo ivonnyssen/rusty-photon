@@ -57,7 +57,7 @@ rusty-photon-service-lifecycle = { workspace = true, features = ["scm"] }
 # Windows-only and single-service, so a local dep (Rule 10); the version was
 # already in Cargo.lock as a transitive dep (bindgen), so this adds an edge,
 # not a new pin.
-libloading = "0.8"
+libloading = "0.9"
 
 [package.metadata.conformu]
 command = "cargo test -p qhy-camera --features conformu --test conformu_integration -- --nocapture"
