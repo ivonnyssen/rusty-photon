@@ -450,8 +450,14 @@ for s in $SERVICES; do
         # rpm has no purge lifecycle: erase behaves like dpkg remove. The
         # payload and unit go, the process is stopped (pre_uninstall), and
         # the runtime-created config + state SURVIVE — their deletion is
-        # the documented manual step in docs/packaging.md.
+        # the documented manual step in docs/packaging.md. Not every
+        # service materializes a state dir, so its survival is asserted
+        # only when it existed before the erase.
         echo "== $s: erase"
+        state_existed=0
+        if cx test -d "/var/lib/rusty-photon/$s"; then
+            state_existed=1
+        fi
         cx sh -c "dnf remove -y rusty-photon-$s" > /dev/null \
             || fail "$s" "dnf remove failed"
         cx test ! -e "/usr/bin/rusty-photon-$s" || fail "$s" "binary survived erase"
@@ -462,6 +468,10 @@ for s in $SERVICES; do
         fi
         if self_creates_config "$s"; then
             cx test -f "$cfg" || fail "$s" "config did not survive erase (rpm never purges)"
+        fi
+        if [ "$state_existed" = 1 ]; then
+            cx test -d "/var/lib/rusty-photon/$s" \
+                || fail "$s" "state dir did not survive erase (rpm never purges)"
         fi
     else
         echo "== $s: remove + purge"
