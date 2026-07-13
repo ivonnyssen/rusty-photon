@@ -203,6 +203,13 @@ if [ ! -d "$TAP_DIR" ]; then
     brew tap-new --no-git "$TAP" > /dev/null
 fi
 mkdir -p "$TAP_DIR/Formula"
+# Homebrew's tap-trust enforcement auto-trusts the formula named on the
+# command line but refuses to load its DEPENDENCIES from an untrusted tap —
+# which is exactly how the meta-formula pulls the family. Trust the scratch
+# tap wholesale (skipped where the command doesn't exist yet).
+if brew trust --help > /dev/null 2>&1; then
+    brew trust "$TAP" > /dev/null
+fi
 # launchd only creates the log FILE; the service blocks' log_path parent must
 # exist (a fresh runner's Homebrew prefix may not have var/log yet).
 mkdir -p "$PREFIX/var/log"
