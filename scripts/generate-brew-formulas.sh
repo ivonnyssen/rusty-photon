@@ -136,6 +136,17 @@ has_dylib_payload() {
     esac
 }
 
+# The formula license mirrors the PACKAGE license, not just the crate's: the
+# zwo tarballs bundle the MIT-only ZWO SDK dylib, so they carry the same
+# aggregate expression as their deb metadata ((MIT OR Apache-2.0) AND MIT).
+license_line_of() {
+    if has_dylib_payload "$1"; then
+        echo '  license all_of: [{ any_of: ["MIT", "Apache-2.0"] }, "MIT"]'
+    else
+        echo '  license any_of: ["MIT", "Apache-2.0"]'
+    fi
+}
+
 for s in $SERVICES; do
     tarball="rusty-photon-$s-$VERSION-aarch64-apple-darwin.tar.gz"
     [ -f "$DIST/$tarball" ] || die "$DIST/$tarball missing — run scripts/build-tarballs.sh first"
@@ -152,7 +163,9 @@ class $class < Formula
   desc "$desc"
   homepage "https://github.com/ivonnyssen/rusty-photon"
   version "$VERSION"
-  license any_of: ["MIT", "Apache-2.0"]
+EOF
+        license_line_of "$s"
+        cat <<EOF
   url "$URL_BASE/$tarball"
   sha256 "$sha"
 
