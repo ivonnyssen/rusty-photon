@@ -26,7 +26,7 @@ deliberately reusable so the deferred `release.yml` generalization
 |-------|-------------|--------|-------------|
 | N0 | Tech spike: hosted-arm64 verify, timings, asset naming, version dialects — settles the Orange Pi question | **Done** (2026-07-13; findings below — Orange Pi: no-go) | scratch branch `spike/n0-nightly-packaging` (deleted) |
 | N1 | Debian anchor: `nightly-packages.yml` shared spine + `.deb` legs (x86_64 + arm64), rolling release, docs | **Done** (2026-07-13; first publish = first post-merge run) | PR #508 |
-| N2 | Fedora: `.rpm` build on both arches + Fedora lifecycle verify leg | Not started | |
+| N2 | Fedora: `.rpm` build on both arches + Fedora lifecycle verify leg | In review | PR #513 |
 | N3 | Windows: suite-MSI leg (strictly after W5 of [windows-packaging.md](windows-packaging.md)) | Not started | |
 | N4 | macOS: per-service arm64 tarballs + Homebrew tap channel + `verify-brew.sh` | Not started | |
 
