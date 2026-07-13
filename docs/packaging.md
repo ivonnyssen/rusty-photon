@@ -136,8 +136,10 @@ the known-good commit on demand and install that with
 
 ```sh
 git checkout <known-good-sha>
-scripts/build-packages.sh --deb-version "0.1.0+nightly.<date>.g<short-sha>"
+scripts/build-packages.sh --deb-version "<base>+nightly.<date>.g<short-sha>"
 ```
+
+(`<base>` = the workspace version at that commit.)
 
 ## Installing
 

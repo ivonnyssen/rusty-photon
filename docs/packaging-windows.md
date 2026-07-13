@@ -145,8 +145,11 @@ and install it:
 
 ```powershell
 git checkout <known-good-sha>
-scripts\build-msi.ps1 -NightlyVersion "0.1.0+nightly.<date>.g<short-sha>"
+scripts\build-msi.ps1 -NightlyVersion "<base>+nightly.<date>.g<short-sha>"
 ```
+
+(`<base>` = the workspace version at that commit — the stamp's base must
+match it, the build refuses a mismatch.)
 
 ## Configuration
 
@@ -241,10 +244,14 @@ the .NET SDK:
 scripts\build-msi.ps1                    # stage SDKs, build, wix build
 scripts\build-msi.ps1 -SkipSdkStaging    # offline rebuild from cache
 scripts\build-msi.ps1 -SkipBuild         # re-run wix only (installer loop)
-scripts\build-msi.ps1 -NightlyVersion "0.1.0+nightly.<date>.g<sha>"
+scripts\build-msi.ps1 -NightlyVersion "<base>+nightly.<date>.g<sha>"
                                          # nightly stamp (see Nightly channel)
 scripts\verify-msi.ps1                   # elevated, on a disposable box
-scripts\verify-msi.ps1 -UpgradeFrom prior.msi   # + upgrade-over-prior proof
+scripts\verify-msi.ps1 -Msi dist\<fullversion>\rusty-photon-<fullversion>-x64.msi `
+    -UpgradeFrom prior.msi               # + upgrade-over-prior proof
+                                         # (nightly builds land under the FULL
+                                         # version; the -Msi default assumes a
+                                         # release build)
 ```
 
 `build-msi.ps1` stages the pinned native SDKs (QHYCCD import lib for the

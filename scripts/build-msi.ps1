@@ -17,7 +17,9 @@
 #      links and both binaries would need every blob again,
 #   3. wix build (WiX v5 + Util/Firewall/UI extensions) over
 #      installer/Package.wxs + installer/fragments/*.wxs,
-#   4. collect dist\<version>\rusty-photon-<version>-x64.msi + SHA256SUMS.txt.
+#   4. collect dist\<v>\rusty-photon-<v>-x64.msi + SHA256SUMS.txt, where <v>
+#      is the workspace version, or the full -NightlyVersion string on a
+#      nightly build.
 #
 # Usage: scripts\build-msi.ps1 [-SkipSdkStaging] [-SkipBuild]
 #                               [-NightlyVersion <v>]

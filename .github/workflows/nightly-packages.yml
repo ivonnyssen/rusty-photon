@@ -166,9 +166,11 @@ jobs:
           # empty channel (no release yet / no MSI asset yet — the leg's
           # first runs) skips the seed; a failed query or download FAILS,
           # so a transient error cannot silently drop the upgrade proof.
-          $names = gh release view nightly --json assets --jq '.assets[].name' 2>&1
+          $names = gh api 'repos/{owner}/{repo}/releases/tags/nightly' --jq '.assets[].name' 2>&1
           if ($LASTEXITCODE -ne 0) {
-            if ("$names" -match 'release not found') {
+            # HTTP 404 means exactly "the release does not exist"; anything
+            # else (auth, network, rate limit) must fail the leg.
+            if ("$names" -match 'HTTP 404') {
               Write-Host "no nightly release yet - skipping the upgrade seed"
               exit 0
             }
@@ -212,8 +214,10 @@ jobs:
 
   publish:
     needs: [plan, linux, msi]
-    # inputs.dry_run is empty on schedule events, so `!= true` keeps
-    # scheduled publishes unconditional.
+    # inputs.dry_run is a real boolean here: the typed `inputs` context
+    # preserves workflow_dispatch input types (unlike the string-typed
+    # github.event.inputs) and is empty on schedule events — so `!= true`
+    # publishes on schedule and on non-dry dispatches only.
     if: needs.plan.outputs.skip != 'true' && inputs.dry_run != true
     name: publish
     runs-on: ubuntu-latest
