@@ -44,6 +44,13 @@ $principal = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIde
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Die "must run elevated (msiexec /qn and service control need it)"
 }
+if (-not [Environment]::Is64BitProcess) {
+    # Under 32-bit PowerShell, WOW64 redirection points the registry
+    # provider (the ARP checks) and %ProgramFiles% (the install-dir
+    # checks) at the 32-bit views — wrong for this x64-only product
+    # (ADR-015).
+    Die "must run from 64-bit PowerShell"
+}
 if (-not (Test-Path "installer\Package.wxs")) { Die "run from the repo root" }
 
 if (-not $Msi) {
