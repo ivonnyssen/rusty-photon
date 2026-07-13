@@ -1,9 +1,22 @@
 ---
 allowed-tools:
   - Bash(gh:*)
-  - Bash(git:*)
-  - Bash(cargo:*)
-  - Bash(bazel:*)
+  - Bash(git status:*)
+  - Bash(git branch:*)
+  - Bash(git switch:*)
+  - Bash(git fetch:*)
+  - Bash(git merge:*)
+  - Bash(git add:*)
+  - Bash(git commit:*)
+  - Bash(git push:*)
+  - Bash(git diff:*)
+  - Bash(git log:*)
+  - Bash(cargo fmt:*)
+  - Bash(cargo build:*)
+  - Bash(cargo test:*)
+  - Bash(cargo clippy:*)
+  - Bash(bazel build:*)
+  - Bash(bazel test:*)
 ---
 
 Babysit a pull request to merge readiness: iterate with CI and Copilot

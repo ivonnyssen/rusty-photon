@@ -21,7 +21,8 @@ latest push:
 4. **No merge conflicts** (`gh pr view <n> --json mergeable`).
 
 Then report merge readiness and stop. Merging is the repo owner's
-decision and action — never merge, and never push to `main` (rule 5).
+decision and action — never merge the PR yourself, and all work stays
+on the feature branch, never on `main` (rule 5).
 
 ## The loop
 
@@ -29,7 +30,8 @@ Request the first Copilot round immediately after opening the PR, then
 iterate:
 
 1. **Watch** CI (`gh pr checks <n>`), mergeability, and new review
-   comments (`gh api repos/ivonnyssen/rusty-photon/pulls/<n>/comments`).
+   comments (`gh api 'repos/{owner}/{repo}/pulls/<n>/comments'` — gh
+   fills the `{owner}`/`{repo}` placeholders from the current repo).
 2. **CI failure** → reproduce and fix locally; run the full quality gate
    (rule 4) before every push.
 3. **Merge conflict** → merge `origin/main` into the branch (don't
@@ -49,14 +51,14 @@ iterate:
    declined — *before* requesting the next round:
 
    ```sh
-   gh api repos/ivonnyssen/rusty-photon/pulls/<n>/comments/<comment-id>/replies \
+   gh api 'repos/{owner}/{repo}/pulls/<n>/comments/<comment-id>/replies' \
        -X POST -f body="Fixed in <sha> — <what changed>."
    ```
 
 7. **Request the next Copilot round:**
 
    ```sh
-   gh api repos/ivonnyssen/rusty-photon/pulls/<n>/requested_reviewers \
+   gh api 'repos/{owner}/{repo}/pulls/<n>/requested_reviewers' \
        -X POST -f 'reviewers[]=copilot-pull-request-reviewer[bot]'
    ```
 
