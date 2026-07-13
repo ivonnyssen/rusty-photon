@@ -116,9 +116,19 @@ while kill -0 "$cmd_pid" 2>/dev/null; do
     stalled=1
     dump_hung_server
     # Kill the client and any children it spawned, so nothing lingers holding
-    # the step's output pipe open.
+    # the step's output pipe open. Escalate to SIGKILL after a short grace
+    # period: a client wedged hard enough to ignore TERM would otherwise park
+    # the `wait` below and the retry would never run.
     pkill -TERM -P "$cmd_pid" 2>/dev/null || true
     kill -TERM "$cmd_pid" 2>/dev/null || true
+    for _ in 1 2 3 4 5; do
+      kill -0 "$cmd_pid" 2>/dev/null || break
+      sleep 1
+    done
+    if kill -0 "$cmd_pid" 2>/dev/null; then
+      pkill -KILL -P "$cmd_pid" 2>/dev/null || true
+      kill -KILL "$cmd_pid" 2>/dev/null || true
+    fi
     break
   fi
 done
