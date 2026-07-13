@@ -97,8 +97,10 @@ $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.*)"$' |
     Select-Object -First 1).Matches[0].Groups[1].Value
 if (-not $version) { Die "could not read the workspace version from Cargo.toml" }
 if ($version -notmatch '^\d+\.\d+\.\d+$') {
-    # MSI ProductVersion must be numeric major.minor.build.
-    Die "workspace version '$version' is not a plain x.y.z (MSI ProductVersion requirement)"
+    # The base must be plain x.y.z: it becomes the MSI ProductVersion on
+    # releases, and the three compared fields of the nightly
+    # <base>.<YYDDD> stamp derived below.
+    Die "workspace version '$version' is not a plain x.y.z (the MSI ProductVersion base)"
 }
 
 # Release build: ProductVersion = the workspace version, and the "full"
