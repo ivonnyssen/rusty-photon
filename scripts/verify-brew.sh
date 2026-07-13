@@ -228,7 +228,37 @@ fail() {
     svc="$1"
     shift
     echo "verify-brew: FAIL [$svc]: $*" >&2
+    echo "--- service log tail ($PREFIX/var/log/rusty-photon-$svc.log)" >&2
     tail -n 40 "$PREFIX/var/log/rusty-photon-$svc.log" >&2 2> /dev/null || true
+    echo "--- brew services info" >&2
+    brew services info "rusty-photon-$svc$SUFFIX" --json >&2 2> /dev/null || true
+    # A direct foreground run surfaces what launchd cannot: dyld aborts print
+    # to stderr, a segfault shows as a signal exit with no output at all, a
+    # healthy start shows its startup lines.
+    if [ -x "$PREFIX/bin/rusty-photon-$svc" ]; then
+        echo "--- direct foreground run (8s)" >&2
+        direct_log=$(mktemp)
+        (
+            "$PREFIX/bin/rusty-photon-$svc" > "$direct_log" 2>&1 &
+            pid=$!
+            sleep 8
+            if kill -0 "$pid" 2> /dev/null; then
+                kill "$pid" 2> /dev/null || true
+                echo "direct run: still alive after 8s (killed)" >> "$direct_log"
+            else
+                wait "$pid" || echo "direct run: exited with status $?" >> "$direct_log"
+            fi
+        ) || true
+        tail -n 40 "$direct_log" >&2 || true
+        rm -f "$direct_log"
+    fi
+    echo "--- newest crash report (if any)" >&2
+    # shellcheck disable=SC2012 # newest-first ordering is what ls -t is for
+    newest=$(ls -t "$HOME/Library/Logs/DiagnosticReports/rusty-photon-$svc"* 2> /dev/null | head -1) || true
+    if [ -n "${newest:-}" ]; then
+        head -c 4000 "$newest" >&2 || true
+        echo >&2
+    fi
     exit 1
 }
 
