@@ -31,6 +31,11 @@
 
 set -uo pipefail
 
+if (($# == 0)); then
+  echo "usage: ${0##*/} <command> [args...]" >&2
+  exit 64
+fi
+
 STALL_SECS="${WATCHDOG_STALL_SECS:-300}"
 POLL_SECS="${WATCHDOG_POLL_SECS:-15}"
 LOG="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/bazel-watchdog-output.log"
@@ -62,6 +67,9 @@ dump_hung_server() {
     [[ -f "$pidfile" ]] || continue
     server_pid="$(<"$pidfile")"
     kill -0 "$server_pid" 2>/dev/null || continue
+    # Guard against a stale pidfile whose pid the OS has recycled: only touch
+    # a process that actually looks like a Bazel server JVM.
+    ps -o command= -p "$server_pid" 2>/dev/null | grep -Eq 'bazel|java|A-server\.jar' || continue
     output_base="$(dirname "$(dirname "$pidfile")")"
     echo "--- bazel server pid ${server_pid}, output base ${output_base} ---"
     if command -v jstack >/dev/null 2>&1; then
