@@ -35,6 +35,11 @@ on:
     # 05:07 UTC — after pi-nightly (04:00), before the 07:07 nightly cluster.
     - cron: "7 5 * * *"
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build + verify every leg but skip publish (validate a branch without touching the nightly channel)"
+        type: boolean
+        default: false
 
 # Don't cancel an in-flight nightly if a manual dispatch fires — losing a
 # scheduled run is worse than running two back-to-back (pi-nightly reasoning).
@@ -191,7 +196,9 @@ jobs:
 
   publish:
     needs: [plan, linux, msi]
-    if: needs.plan.outputs.skip != 'true'
+    # inputs.dry_run is empty on schedule events, so `!= true` keeps
+    # scheduled publishes unconditional.
+    if: needs.plan.outputs.skip != 'true' && inputs.dry_run != true
     name: publish
     runs-on: ubuntu-latest
     timeout-minutes: 15

@@ -96,7 +96,9 @@ independent afterwards. N3 is gated only on W5; N4 has synergy with PR-7
 ### Shared spine (`nightly-packages.yml`, built in N1)
 
 - Triggers: `schedule` (`7 5 * * *` — 05:07 UTC, after pi-nightly at
-  04:00, before the 07:07 nightly cluster) + `workflow_dispatch`.
+  04:00, before the 07:07 nightly cluster) + `workflow_dispatch` (added
+  in N3: a `dry_run` input that builds + verifies every leg but skips
+  publish, for validating a branch's legs without touching the channel).
   `concurrency` group without cancel-in-progress (same reasoning as
   pi-nightly: losing a scheduled run is worse than two back-to-back).
 - Job graph:
