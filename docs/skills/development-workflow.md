@@ -206,6 +206,8 @@ area at a time.
 4. **Run the full CI suite** — see docs/skills/pre-push.md
 5. **Update the design doc** if behavior changed during implementation
    (AGENTS.md Rule 2)
+6. **Open the PR and babysit it to merge readiness** — see
+   docs/skills/babysitting-prs.md
 
 ---
 
