@@ -899,12 +899,14 @@ mod tests {
         FlipPolicy {
             enabled: false,
             flip_range_hours: crate::config::FlipRangeHours::new(0.5),
+            ..Default::default()
         }
     }
     fn flip_enabled() -> FlipPolicy {
         FlipPolicy {
             enabled: true,
             flip_range_hours: crate::config::FlipRangeHours::new(0.5),
+            ..Default::default()
         }
     }
     const BINDING_ZONE: (f64, f64) = (6.95, 11.05);

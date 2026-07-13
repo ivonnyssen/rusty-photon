@@ -21,7 +21,8 @@ use skywatcher_motor_protocol::Axis;
 use tokio::sync::RwLock;
 
 use crate::config::{
-    ActiveZone, Config, CwExclusionZone, MinAltitudeDegrees, TrackingGuardMarginHours,
+    ActiveZone, Config, CwExclusionZone, FlipPolicy, FlipRangeHours, MinAltitudeDegrees,
+    TrackingGuardMarginHours,
 };
 use crate::coordinates::{ra_dec_to_alt_az, SIDEREAL_DEG_PER_SEC};
 use crate::error::StarAdvError;
@@ -34,7 +35,7 @@ use super::slew::{
     canonical_path_crosses_pole, check_non_flip_ra_path, flip_slew_dec_delta, flip_slew_ra_delta,
     pickup_reslew_axis, stop_axis_and_wait,
 };
-use super::tracking_guard::tracking_guard_tick;
+use super::tracking_guard::{auto_flip_tick, guard_loop_tick, tracking_guard_tick};
 use super::watchers::{watcher_poll_with_retry, watcher_should_abort};
 use super::*;
 
@@ -360,6 +361,186 @@ async fn tracking_guard_tick_leaves_tracking_set_when_stop_fails() {
     assert!(
         log_has_k1(&log),
         "the :K1 attempt should still reach the wire, log: {log:?}"
+    );
+}
+
+/// Build a device with auto-flip armed (flip_policy enabled +
+/// auto_flip_during_tracking) at the given meridian offset, the CW
+/// exclusion zone disabled, and the altitude floor neutralised (the
+/// flip target's apparent altitude depends on wallclock LST). The
+/// session is established directly — no background watcher; these
+/// tests drive [`auto_flip_tick`] / [`guard_loop_tick`] by hand.
+async fn auto_flip_device(
+    offset_hours: f64,
+) -> (MountDevice, Arc<tokio::sync::Mutex<MockMountState>>) {
+    let factory = CapturingMockFactory::new();
+    let mock = Arc::clone(&factory.state);
+    let mut cfg = Config::default();
+    cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
+    cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
+    cfg.mount.flip_policy = FlipPolicy {
+        enabled: true,
+        flip_range_hours: FlipRangeHours::new(0.5),
+        auto_flip_during_tracking: true,
+        auto_flip_at_meridian_offset_hours: offset_hours,
+    };
+    let manager = MountManager::new(cfg.clone(), Arc::new(factory));
+    let d = MountDevice::new(cfg.mount, manager);
+    let session = d.manager.transport().acquire().await.unwrap();
+    *d.session.write().await = Some(session);
+    (d, mock)
+}
+
+/// The through-wrap flip slew's RA goto: `:G1` mode `01` =
+/// Goto + Fast + CCW (matches the assertion meridian_flip.feature
+/// pins for `SetSideOfPier`).
+fn log_has_flip_goto(log: &[Vec<u8>]) -> bool {
+    log.iter().any(|f| f == b":G101\r")
+}
+
+#[tokio::test]
+async fn auto_flip_tick_starts_a_flip_at_the_meridian_offset() {
+    let (d, mock) = auto_flip_device(0.0).await;
+    seed_mech_ha(&d, &mock, 0.2).await; // just past the meridian
+    d.state.write().await.tracking_requested = true;
+
+    let attempted = auto_flip_tick(&d, 0.0, false).await;
+
+    assert!(attempted, "the tick should latch an attempt");
+    assert_eq!(
+        d.state.read().await.target_pier_side,
+        Some(PierSide::East),
+        "the flip slew must target the post-flip side"
+    );
+    let log = mock.lock().await.command_log.clone();
+    assert!(
+        log_has_flip_goto(&log),
+        "expected the CCW flip goto :G101, log: {log:?}"
+    );
+}
+
+#[tokio::test]
+async fn auto_flip_tick_rearms_below_the_offset() {
+    // East of the trigger the latch resets — this is what re-arms the
+    // watcher after a completed flip (post-flip mech_HA ≈ offset − 12)
+    // or a slew back east.
+    let (d, mock) = auto_flip_device(0.0).await;
+    seed_mech_ha(&d, &mock, -3.0).await;
+    d.state.write().await.tracking_requested = true;
+
+    let attempted = auto_flip_tick(&d, 0.0, true).await;
+
+    assert!(!attempted, "below the offset the latch must re-arm");
+    let log = mock.lock().await.command_log.clone();
+    assert!(!log_has_flip_goto(&log), "no flip expected, log: {log:?}");
+}
+
+#[tokio::test]
+async fn auto_flip_tick_does_not_retry_after_an_attempt() {
+    // One attempt per crossing: with the latch set and mech_HA still
+    // past the offset, the tick must not issue another flip.
+    let (d, mock) = auto_flip_device(0.0).await;
+    seed_mech_ha(&d, &mock, 0.2).await;
+    d.state.write().await.tracking_requested = true;
+
+    let attempted = auto_flip_tick(&d, 0.0, true).await;
+
+    assert!(attempted, "the latch must stay set past the offset");
+    let log = mock.lock().await.command_log.clone();
+    assert!(
+        !log_has_flip_goto(&log),
+        "no second flip expected, log: {log:?}"
+    );
+}
+
+#[tokio::test]
+async fn auto_flip_tick_is_noop_when_not_tracking() {
+    let (d, mock) = auto_flip_device(0.0).await;
+    seed_mech_ha(&d, &mock, 0.2).await;
+    // `tracking_requested` left false — auto-flip only acts while the
+    // client has tracking engaged.
+
+    let attempted = auto_flip_tick(&d, 0.0, false).await;
+
+    assert!(!attempted, "no attempt without tracking engaged");
+    let log = mock.lock().await.command_log.clone();
+    assert!(!log_has_flip_goto(&log), "no flip expected, log: {log:?}");
+}
+
+#[tokio::test]
+async fn auto_flip_tick_ignores_the_post_flip_side() {
+    // Only natural → flipped is automated. Seed the Dec encoder past
+    // the pole so side_of_pier reads the post-flip side.
+    let (d, mock) = auto_flip_device(0.0).await;
+    seed_mech_ha(&d, &mock, 0.2).await;
+    let cpr = d.manager.parameters().await.unwrap().cpr_dec as i32;
+    mock.lock().await.dec.position_ticks = cpr / 2;
+    d.manager.seed_dec_position(cpr / 2).await;
+    d.state.write().await.tracking_requested = true;
+
+    let attempted = auto_flip_tick(&d, 0.0, false).await;
+
+    assert!(!attempted, "no attempt on the post-flip side");
+    let log = mock.lock().await.command_log.clone();
+    assert!(!log_has_flip_goto(&log), "no flip expected, log: {log:?}");
+}
+
+#[tokio::test]
+async fn auto_flip_tick_latches_when_the_flip_fails() {
+    // A failed attempt must latch (no retry this crossing) and leave
+    // the in-memory Tracking flag reporting the wire truth — the
+    // stop-only guard remains the safety fallback.
+    let (d, mock) = auto_flip_device(0.0).await;
+    seed_mech_ha(&d, &mock, 0.2).await;
+    mock.lock().await.fail_command = Some(b'K'); // flip's pre-slew :K1 stop errors
+    d.state.write().await.tracking_requested = true;
+
+    let attempted = auto_flip_tick(&d, 0.0, false).await;
+
+    assert!(attempted, "a failed attempt still latches");
+    assert!(
+        d.state.read().await.tracking_requested,
+        "Tracking must stay set when the flip failed before the wire stop"
+    );
+    let log = mock.lock().await.command_log.clone();
+    assert!(!log_has_flip_goto(&log), "no goto after the failed stop");
+}
+
+#[tokio::test]
+async fn guard_loop_tick_prefers_the_guard_inside_the_band() {
+    // Inside the guarded band the stop-only guard fires and the tick
+    // must not also start a flip, even with auto-flip armed and the
+    // offset crossed.
+    let factory = CapturingMockFactory::new();
+    let mock = Arc::clone(&factory.state);
+    let mut cfg = Config::default();
+    cfg.mount.cw_exclusion_zone = CwExclusionZone::Active(ActiveZone::new(0.95, 11.05));
+    cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
+    cfg.mount.flip_policy = FlipPolicy {
+        enabled: true,
+        flip_range_hours: FlipRangeHours::new(0.5),
+        auto_flip_during_tracking: true,
+        auto_flip_at_meridian_offset_hours: 0.0,
+    };
+    let manager = MountManager::new(cfg.clone(), Arc::new(factory));
+    let d = MountDevice::new(cfg.mount, manager);
+    let session = d.manager.transport().acquire().await.unwrap();
+    *d.session.write().await = Some(session);
+    seed_mech_ha(&d, &mock, 3.0).await; // mid-zone
+    d.state.write().await.tracking_requested = true;
+
+    let latch = guard_loop_tick(&d, (0.95, 11.05), 0.05, true, 0.0, false).await;
+
+    assert!(!latch, "the guard fired; no flip attempt was made");
+    assert!(
+        !d.state.read().await.tracking_requested,
+        "the guard must have stopped tracking"
+    );
+    let log = mock.lock().await.command_log.clone();
+    assert!(log_has_k1(&log), "expected the guard's :K1, log: {log:?}");
+    assert!(
+        !log_has_flip_goto(&log),
+        "the guard must win over auto-flip, log: {log:?}"
     );
 }
 

@@ -791,8 +791,7 @@ implements on top of it.
 #### Flip policy
 
 `MountConfig::flip_policy` controls whether and when the driver plans
-a flip. Two fields in MVP (auto-flip-during-tracking knobs are
-deferred to Phase 2.5 — see [§Deferred](#deferred-not-in-mvp)):
+a flip. Four fields:
 
 - **`enabled: bool`** (default `false`) — master switch. With
   `enabled = false`: `CanSetPierSide = false`, `SetSideOfPier` returns
@@ -813,6 +812,18 @@ deferred to Phase 2.5 — see [§Deferred](#deferred-not-in-mvp)):
   counterweight-horizontal on the pre-flip side (Phase 1.1 hardware
   verification); a larger value would push the post-flip `mech_HA`
   into the unverified mirror of the CW exclusion zone.
+- **`auto_flip_during_tracking: bool`** (default `false`) — when
+  `true` (and `enabled` is `true`), the driver initiates a meridian
+  flip on its own once continuous tracking carries the target past
+  the configured meridian offset, instead of waiting for the host to
+  call `SetSideOfPier`. See
+  [§Auto-flip during tracking](#auto-flip-during-tracking).
+- **`auto_flip_at_meridian_offset_hours: f64`** (default `0.0`) —
+  target HA at which the auto-flip fires. Only consulted when
+  `auto_flip_during_tracking = true`. Must be finite and within
+  `[−flip_range_hours, +flip_range_hours]` (validated at config
+  load — a cross-field rule on the `flip_policy` block). See
+  [§Auto-flip during tracking](#auto-flip-during-tracking).
 
 #### Safety envelope (CW exclusion zone)
 
@@ -964,12 +975,67 @@ when `cw_exclusion_zone` is `null` (`Disabled`). Because
 guard is naturally dormant during slews and resumes once the
 completion watcher re-engages tracking on the new pose.
 
-Driver-planned auto-flip during tracking (Phase 2.5) — flipping ahead
-of the zone instead of just stopping — is a separate, larger change
-tracked as Part 2 of issue #259 and remains
-[deferred](#deferred-not-in-mvp). When it lands, this guard stays as the
-belt-and-suspenders fallback for when an auto-flip can't find a safe
-path.
+Driver-planned auto-flip during tracking — flipping ahead of the zone
+instead of just stopping — is available as an opt-in on top of this
+guard; see [§Auto-flip during tracking](#auto-flip-during-tracking).
+The guard stays as the belt-and-suspenders fallback for when an
+auto-flip attempt fails (and whenever auto-flip is disabled, which is
+the shipped default).
+
+#### Auto-flip during tracking
+
+With `flip_policy.enabled = true` **and**
+`flip_policy.auto_flip_during_tracking = true`, the same
+per-connection watcher that runs the tracking-time safety guard also
+initiates a driver-planned meridian flip on its own. While `Tracking =
+true` on the natural (pre-flip) pier side, the watcher compares the
+live encoder `mech_HA` — which equals the tracked target's celestial
+HA on that side — against
+`flip_policy.auto_flip_at_meridian_offset_hours`. Once `mech_HA`
+reaches the offset, the watcher issues the same through-wrap flip slew
+an explicit `SetSideOfPier(opposite)` would: tracking stops for the
+slew's duration, both axes route through their safe segments (see
+[§Through-wrap slew routing](#through-wrap-slew-routing)), and the
+slew-completion watcher re-engages tracking on the new pier side (the
+standard "if Tracking was on" branch of the slew lifecycle).
+
+Semantics and interactions:
+
+- **One attempt per meridian crossing.** A failed flip attempt (no
+  safe RA path, a wire error, a concurrent slew) logs a `warn!` and
+  is not retried; the stop-only safety guard remains the fallback and
+  stops the mount at the guarded band if tracking keeps drifting. The
+  attempt latch re-arms once `mech_HA` drops below the offset again —
+  a successful flip does that naturally (the post-flip encoder lands
+  near `offset − 12 h`), as does any slew back east of the offset.
+- **The guard has precedence.** When a tick finds `mech_HA` already
+  inside the guarded band (`zone ± margin`), the guard stops the
+  mount rather than attempting a flip — reaching the band means the
+  flip window has effectively been missed.
+- **Natural side only.** Only the natural → flipped direction is
+  automated. On the post-flip side, tracking drifts *away* from the
+  CW exclusion zone (`mech_HA` rising from ≈ `offset − 12`), so there
+  is no safety motivation to auto-flip back; flipping back is the
+  next slew's (or the operator's) decision, per the
+  [pier-side decision tree](#pier-side-decision-tree).
+- **Off by default.** Hosts like NINA / SGP / `rp` own flip timing
+  themselves via `SetSideOfPier`, and an unexpected mid-exposure
+  auto-flip breaks astrophotography frames and autoguiding. Operators
+  running fully unattended sessions without a flip-aware host opt in.
+  With `flip_policy.enabled = false`, `auto_flip_during_tracking` is
+  inert (the master switch disables every flip code path).
+- **Offset semantics.** `0.0` (the default) flips exactly at meridian
+  crossing. A small positive value (e.g. `+0.3`) waits until the
+  target is that far past the meridian — the common astrophotography
+  preference, letting the in-progress sub finish (matches NINA's
+  "delay meridian flip by N minutes" semantics). Must be finite and
+  within `[−flip_range_hours, +flip_range_hours]`, validated at
+  config load; outside that window the flipped state isn't reachable
+  and the flip slew would be refused anyway.
+- **Hosts observe the flip normally.** The flip is visible as
+  `Slewing = true` plus the subsequent `SideOfPier` change, exactly
+  like an explicit `SetSideOfPier` — guiding / imaging restart
+  coordination stays with the host.
 
 #### Pier-side decision tree
 
@@ -1156,7 +1222,10 @@ out-of-range value during `load_config`, with the offending field named,
 so a bad config fails at startup rather than mid-session. `flip_range_hours`
 must be `(0, 0.95]`; `tracking_guard_margin_hours` `[0, 1.0]`; an active
 `cw_exclusion_zone` must satisfy `-12 ≤ min_hours < max_hours ≤ 12`;
-`min_altitude_degrees` must be finite in `[-90, 90]`. (This
+`min_altitude_degrees` must be finite in `[-90, 90]`;
+`auto_flip_at_meridian_offset_hours` must be finite and within
+`±flip_range_hours` (a cross-field rule, checked on the `flip_policy`
+block). (This
 replaced the former runtime `MountConfig::validate` / `FlipPolicy::validate`
 — see [ADR-006](../decisions/006-typed-physical-quantities-for-mount-pointing.md).)
 Every genuinely-operator-config struct (`Config`, `UsbConfig`, `UdpConfig`,
@@ -1196,7 +1265,9 @@ loudly at load instead of being silently ignored.
     "park_dec_ticks": null,
     "flip_policy": {
       "enabled": false,
-      "flip_range_hours": 0.5
+      "flip_range_hours": 0.5,
+      "auto_flip_during_tracking": false,
+      "auto_flip_at_meridian_offset_hours": 0.0
     },
     "unpark_from_ap_position": "ap_park_0",
     "preferred_ap_park": "ap_park_3"
@@ -1289,6 +1360,17 @@ Notes:
   reachable. Valid range `(0, 0.95]`; the upper bound is the verified
   safe headroom past counterweight-horizontal on the pre-flip side.
   See [§Meridian flip](#meridian-flip).
+- `flip_policy.auto_flip_during_tracking` defaults `false`. When
+  `true` (and `flip_policy.enabled` is `true`), the tracking watcher
+  initiates a meridian flip on its own once tracking carries the
+  target past `auto_flip_at_meridian_offset_hours`, re-engaging
+  tracking on the new pier side afterwards. The stop-only tracking
+  guard remains the fallback when a flip attempt fails. See
+  [§Auto-flip during tracking](#auto-flip-during-tracking).
+- `flip_policy.auto_flip_at_meridian_offset_hours` defaults `0.0`
+  (flip exactly at meridian crossing; positive values delay the flip
+  past the meridian). Must be finite and within `±flip_range_hours` —
+  validated at load as a cross-field rule on the `flip_policy` block.
 - `unpark_from_ap_position` is **required** (no default in the schema
   sense, but the ship default is `"ap_park_0"`). Carries the
   operator's declared physical position assumption — one of
@@ -2170,6 +2252,9 @@ What's still outstanding from Phase 4:
   first-hardware verification — see [§Meridian flip](#meridian-flip))
 - Per-pier-side safety envelopes and through-wrap slew routing for
   flip slews (Phase 6, in progress)
+- Driver-planned auto-flip during tracking, opt-in via
+  `flip_policy.auto_flip_during_tracking` (default `false` — see
+  [§Auto-flip during tracking](#auto-flip-during-tracking))
 - Apparent-altitude floor on slew / sync targets
   (`min_altitude_degrees` — see [§Altitude floor](#altitude-floor))
 - `Slewing` poll
@@ -2191,7 +2276,6 @@ What's still outstanding from Phase 4:
 | Polar-alignment helpers, TPOINT, cone error | observational pointing model is the host's concern, not the driver's |
 | WiFi station mode (mount on a routed network) | AP-mode UDP is verified; station mode just changes the bind-address selection — straightforward to add once a station-mode test setup exists |
 | Multi-mount support on a single binary | `rp` assumes one mount per service; multi-mount is a separate concern |
-| Driver-planned auto-flip during tracking (Phase 2.5 / Part 2 of issue #259: `flip_policy.auto_flip_during_tracking` + `auto_flip_at_meridian_offset_hours`) | hosts like NINA / SGP / `rp` own flip timing themselves; mid-exposure auto-flip is a footgun for astrophotography and a separate state machine. The Part 1 tracking-time safety guard (stop-only, see [§Tracking-time safety guard](#tracking-time-safety-guard)) has landed; auto-flip would replace the stop with a flip slew and re-engage tracking on the new pier side |
 
 ## References
 

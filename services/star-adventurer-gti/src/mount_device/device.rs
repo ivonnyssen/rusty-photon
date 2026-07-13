@@ -8,7 +8,6 @@
 //! `session.close().await` on any error.
 
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 
 use ascom_alpaca::api::Device;
 use ascom_alpaca::ASCOMResult;
@@ -83,18 +82,16 @@ impl Device for MountDevice {
                     return Err(e);
                 }
                 *slot = Some(session);
-                // Start the tracking-time CW-exclusion-zone safety
-                // guard for this connection. It reads the cached
-                // snapshot the background poll loop refreshes and
-                // self-terminates when `set_connected(false)` clears
-                // the slot below. See [`super::tracking_guard`] and
+                // Start the tracking-time watcher (CW exclusion-zone
+                // safety guard + opt-in auto-flip) for this
+                // connection. It reads the cached snapshot the
+                // background poll loop refreshes and self-terminates
+                // when `set_connected(false)` clears the slot below.
+                // The clone shares this device's session slot, state,
+                // and manager. See [`super::tracking_guard`] and
                 // issue #259.
                 super::tracking_guard::spawn_tracking_guard(
-                    Arc::clone(&self.state),
-                    Arc::clone(&self.manager),
-                    Arc::clone(&self.session),
-                    Arc::clone(&self.slew_in_progress),
-                    self.config.clone(),
+                    self.clone(),
                     self.manager.polling_interval_for_watcher(),
                 );
             }

@@ -170,7 +170,12 @@ impl DriverState {
     }
 }
 
-#[derive(derive_more::Debug)]
+/// Cloning yields a second **handle to the same device**: the session
+/// slot, driver state, slew flag, and manager are shared `Arc`s, and
+/// the config is an immutable copy. Used to hand the tracking watcher
+/// ([`tracking_guard`]) its own handle so it can drive the full slew
+/// path (auto-flip) from a background task.
+#[derive(Clone, derive_more::Debug)]
 pub struct MountDevice {
     config: MountConfig,
     /// Optional config-file path. `Some` when the driver was started
