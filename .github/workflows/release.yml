@@ -1,9 +1,13 @@
 # This workflow runs when a version tag is pushed (e.g., v0.1.0).
 # It builds platform-specific packages and creates a GitHub Release:
 # - Linux: .deb, .rpm, and .tar.gz (x86_64 + aarch64)
-# - macOS: .tar.gz (Intel + Apple Silicon)
+# - macOS: per-service arm64 tarballs for the whole family, brew-verified
+#   (Intel is dropped — docs/plans/nightly-releases.md N4)
 # - Windows: one suite .msi for the whole family (x86_64, ADR-015)
-# - Homebrew: updates the tap formula with new checksums
+# - Homebrew: regenerates the tap's stable formulas (rusty-photon-<svc>.rb
+#   × every packaged service + the rusty-photon meta-formula) via
+#   scripts/generate-brew-formulas.sh — the same generator the nightly
+#   channel uses for the -nightly siblings
 permissions:
   contents: write
 on:
@@ -75,37 +79,40 @@ jobs:
             target/${{ matrix.target }}/generate-rpm/*.rpm
             filemonitor-*.tar.gz
 
+  # Per-service arm64 tarballs — the Homebrew formula payloads — built and
+  # verified by the same scripts the nightly macos leg runs. Passing the tag
+  # version to build-tarballs.sh doubles as the tag/workspace guard: the
+  # script refuses any version that is not the workspace version (or a
+  # +nightly stamp on it).
   build-macos:
     runs-on: macos-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: x86_64-apple-darwin
-          - target: aarch64-apple-darwin
-    name: macos / ${{ matrix.target }}
+    name: macos / arm64 tarballs
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
+      - name: Strip the v prefix off the tag
+        id: v
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
         with:
-          targets: ${{ matrix.target }}
-      - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }} -p filemonitor
-      - name: Strip binary
-        run: strip target/${{ matrix.target }}/release/filemonitor
-      - name: Create tarball
-        run: |
-          VERSION=${GITHUB_REF_NAME#v}
-          mkdir -p staging
-          cp target/${{ matrix.target }}/release/filemonitor staging/
-          cd staging
-          tar czf ../filemonitor-${VERSION}-${{ matrix.target }}.tar.gz filemonitor
+          shared-key: nightly-packages-macos
+      - name: Cache staged SDKs
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/rusty-photon-pkg
+          key: rusty-photon-pkg-macos-${{ hashFiles('scripts/build-tarballs.sh') }}
+      - name: Build the per-service tarballs
+        run: scripts/build-tarballs.sh --version '${{ steps.v.outputs.version }}'
+      - name: Verify via Homebrew (release gate)
+        run: scripts/verify-brew.sh --channel stable --dist 'dist/${{ steps.v.outputs.version }}'
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: macos-${{ matrix.target }}
-          path: filemonitor-*.tar.gz
+          name: macos-tarballs
+          path: dist/${{ steps.v.outputs.version }}/*.tar.gz
+          if-no-files-found: error
 
   # The suite MSI (ADR-015): every service in one installer, built by the same
   # scripts the msi workflow exercises on PRs. verify-msi.ps1 is the release
@@ -188,76 +195,43 @@ jobs:
     runs-on: ubuntu-latest
     name: update homebrew tap
     steps:
-      - name: Download tarball artifacts
+      - uses: actions/checkout@v7
+      - name: Download macOS tarballs
         uses: actions/download-artifact@v8
         with:
-          pattern: "*"
-          merge-multiple: true
+          name: macos-tarballs
           path: artifacts
-      - name: Compute SHA256 checksums
-        id: checksums
+      # The published release's checksum manifest is what the meta-formula
+      # downloads, so the generator needs it to stamp the sha256.
+      - name: Fetch the release checksum manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "$GITHUB_REF_NAME" --pattern SHA256SUMS.txt --dir artifacts
+      - name: Render the stable formulas
         run: |
-          VERSION=${GITHUB_REF_NAME#v}
-          echo "version=${VERSION}" >> $GITHUB_OUTPUT
-          for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-apple-darwin aarch64-apple-darwin; do
-            file="artifacts/filemonitor-${VERSION}-${target}.tar.gz"
-            if [ -f "$file" ]; then
-              sha=$(sha256sum "$file" | awk '{print $1}')
-              key=$(echo "$target" | tr '-' '_')
-              echo "sha_${key}=${sha}" >> $GITHUB_OUTPUT
-            fi
-          done
+          scripts/generate-brew-formulas.sh --channel stable \
+            --version "${GITHUB_REF_NAME#v}" \
+            --dist artifacts \
+            --url-base "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}" \
+            --output stable-formulas
       - name: Checkout Homebrew tap
         uses: actions/checkout@v7
         with:
           repository: ivonnyssen/homebrew-rusty-photon
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           path: homebrew-tap
-      - name: Update formula
+      - name: Commit and push the stable formulas
         run: |
-          VERSION=${{ steps.checksums.outputs.version }}
-
-          cat > homebrew-tap/Formula/filemonitor.rb << FORMULA
-          class Filemonitor < Formula
-            desc "ASCOM Alpaca SafetyMonitor for astrophotography"
-            homepage "https://github.com/ivonnyssen/rusty_photon"
-            version "${VERSION}"
-            license "MIT"
-
-            on_macos do
-              if Hardware::CPU.arm?
-                url "https://github.com/ivonnyssen/rusty_photon/releases/download/v${VERSION}/filemonitor-${VERSION}-aarch64-apple-darwin.tar.gz"
-                sha256 "${{ steps.checksums.outputs.sha_aarch64_apple_darwin }}"
-              else
-                url "https://github.com/ivonnyssen/rusty_photon/releases/download/v${VERSION}/filemonitor-${VERSION}-x86_64-apple-darwin.tar.gz"
-                sha256 "${{ steps.checksums.outputs.sha_x86_64_apple_darwin }}"
-              end
-            end
-
-            on_linux do
-              if Hardware::CPU.arm?
-                url "https://github.com/ivonnyssen/rusty_photon/releases/download/v${VERSION}/filemonitor-${VERSION}-aarch64-unknown-linux-gnu.tar.gz"
-                sha256 "${{ steps.checksums.outputs.sha_aarch64_unknown_linux_gnu }}"
-              else
-                url "https://github.com/ivonnyssen/rusty_photon/releases/download/v${VERSION}/filemonitor-${VERSION}-x86_64-unknown-linux-gnu.tar.gz"
-                sha256 "${{ steps.checksums.outputs.sha_x86_64_unknown_linux_gnu }}"
-              end
-            end
-
-            def install
-              bin.install "filemonitor"
-            end
-
-            test do
-              assert_match "filemonitor", shell_output("#{bin}/filemonitor --help")
-            end
-          end
-          FORMULA
-      - name: Commit and push formula update
-        run: |
+          # Replace the stable set wholesale: a dropped service must not
+          # linger, and this also retires the pre-N4 hand-stamped
+          # filemonitor.rb (renamed rusty-photon-filemonitor.rb per
+          # ADR-012). The -nightly siblings belong to nightly-packages.yml
+          # and are left alone.
+          find homebrew-tap/Formula -name '*.rb' ! -name '*-nightly.rb' -delete
+          cp stable-formulas/*.rb homebrew-tap/Formula/
           cd homebrew-tap
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Formula/filemonitor.rb
-          git commit -m "Update filemonitor to ${{ steps.checksums.outputs.version }}"
+          git add Formula
+          git commit -m "release: ${GITHUB_REF_NAME#v}"
           git push

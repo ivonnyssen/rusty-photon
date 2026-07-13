@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `libqhyccd-sys`'s `build.rs` honors a `QHYCCD_SDK_DIR` override on macOS
+  (the directory containing `libqhyccd.a`), mirroring the existing Windows
+  and Linux branches, so builds can link an SDK staged outside
+  `GITHUB_WORKSPACE` / `/usr/local/lib`.
+
 ### Changed
 
 - **BREAKING:** error handling is now fully typed. Fallible `Sdk` / `Camera` /

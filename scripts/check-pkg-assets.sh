@@ -142,6 +142,28 @@ if [ -f "$bp" ] && [ -f "$act" ]; then
     fi
 fi
 
+# ---- macOS tarballs (scripts/build-tarballs.sh, nightly-releases.md N4) -----
+# The mac build script carries its own copies of the SDK pins (its sha256
+# pins the mac arm64 archives specifically, so only the versions/refs are
+# shared): the QHY SDK version must match build-packages.sh (same release
+# linked on every OS) and the ZWO blob ref must match the CI action (shipped
+# dylibs and CI-linked dylibs from the same indi-3rdparty commit).
+bt=scripts/build-tarballs.sh
+if [ -f "$bp" ] && [ -f "$bt" ]; then
+    v1=$(sed -n 's/^QHY_SDK_VERSION="\(.*\)"$/\1/p' "$bp" | head -1)
+    vm=$(sed -n 's/^QHY_SDK_VERSION="\(.*\)"$/\1/p' "$bt" | head -1)
+    if [ -z "$vm" ] || [ "$v1" != "$vm" ]; then
+        err "QHY SDK version pin mismatch: build-packages.sh='$v1' vs build-tarballs.sh='$vm'"
+    fi
+fi
+if [ -f "$bt" ] && [ -f "$act" ]; then
+    z1=$(sed -n 's/^ZWO_SDK_REF="\(.*\)"$/\1/p' "$bt" | head -1)
+    z2=$(awk '$1 == "ref:" { in_ref = 1 } in_ref && $1 == "default:" { print $2; exit }' "$act")
+    if [ -z "$z1" ] || [ "$z1" != "$z2" ]; then
+        err "ZWO SDK ref pin mismatch: build-tarballs.sh='$z1' vs install-zwo-sdk default='$z2'"
+    fi
+fi
+
 # ---- Windows suite MSI (installer/, ADR-015) --------------------------------
 # The Windows package set is the Linux one (services/*/pkg) plus
 # session-runner, which ships on Windows from day one while its Linux .deb

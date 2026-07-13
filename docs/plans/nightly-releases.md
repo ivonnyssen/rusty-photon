@@ -28,7 +28,7 @@ deliberately reusable so the deferred `release.yml` generalization
 | N1 | Debian anchor: `nightly-packages.yml` shared spine + `.deb` legs (x86_64 + arm64), rolling release, docs | **Done** (2026-07-13; first publish = first post-merge run) | PR #508 |
 | N2 | Fedora: `.rpm` build on both arches + Fedora lifecycle verify leg | **Done** (2026-07-13) | PR #513 |
 | N3 | Windows: suite-MSI leg (strictly after W5 of [windows-packaging.md](windows-packaging.md)) | In review | PR #509 |
-| N4 | macOS: per-service arm64 tarballs + Homebrew tap channel + `verify-brew.sh` | Not started | |
+| N4 | macOS: per-service arm64 tarballs + Homebrew tap channel + `verify-brew.sh` | In review | branch `feature/n4-macos-homebrew-nightly` |
 
 N1 is the anchor (it builds the shared spine); N2, N3, N4 are mutually
 independent afterwards. N3 is gated only on W5; N4 has synergy with PR-7
@@ -440,6 +440,35 @@ in `bazel.yml`, so SDK provisioning is solved; the packaging-specific
 work is the zwo dylib payload/rpath and the QHY firmware story (flagged
 unknowns below).
 
+**As built (N4):** `scripts/build-tarballs.sh` (the build-packages.sh
+analogue: same services/*/pkg discovery, pinned SDK staging into the same
+cache dir, isolated zwo cargo invocations, `--version` validated against
+the workspace version — which doubles as release.yml's tag guard) +
+`scripts/generate-brew-formulas.sh` (one generator, both channels: the
+`--channel` flag picks the `-nightly` suffix; per-service metadata comes
+from committed sources — the pkg/ discovery and each crate's Cargo.toml
+`description`; the meta-formula's mandatory `url` downloads the channel's
+`SHA256SUMS.txt`) + `scripts/verify-brew.sh` (renders `file://` formulas
+into a scratch tap; installing the meta-formula is the dependency-wiring
+proof; per-service classes mirror verify-packages.sh). Findings that
+settled the flagged unknowns: the indi-3rdparty mac arm64 blobs already
+carry `@rpath/` install names (no `-id` fixup; binaries get
+`@loader_path/../lib` + `@loader_path/lib` rpaths, covering the keg and
+an untarred dir), libASICamera2 loads `@rpath/libusb-1.0.0.dylib`
+(rewritten at staging to Homebrew's libusb; `depends_on "libusb"` on
+zwo-camera + qhy-camera) while libEAFFocuser uses only system frameworks;
+`libqhyccd-sys`'s macOS branch gained the `QHYCCD_SDK_DIR` override so the
+staged SDK links outside `GITHUB_WORKSPACE`. Stable-channel synergy landed
+here as designed: `release.yml`'s macOS job builds the family's arm64
+tarballs (Intel dropped) with the same scripts, and `update-homebrew`
+regenerates all stable formulas via the generator, retiring the
+hand-stamped `filemonitor.rb` (renamed `rusty-photon-filemonitor.rb`; the
+formulas are macOS-arm64-only — Linux uses the deb/rpm channel, so the old
+`on_linux` branches are gone). Known wart, documented in
+docs/packaging-macos.md: rp's self-created config defaults
+`session.data_directory` to the Linux path (harmless at startup — the
+directory is only created when a session persists).
+
 ## Verification
 
 - Per-leg lifecycle gates (N1 `verify-packages.sh` both arches, N2 Fedora
@@ -480,17 +509,33 @@ unknowns below).
       `[package.metadata.generate-rpm]` sets `name = "rusty-photon-<svc>"`
       (checker-enforced), so the rpms were never crate-named. No override
       mechanism needed.
-- [ ] (N4) zwo dylib payload on macOS: `@loader_path`-relative rpath
-      instead of the Linux `/usr/lib/rusty-photon` RUNPATH; indi-3rdparty
-      publishes the mac dylibs.
-- [ ] (N4) qhy-camera firmware on macOS: the SDK uploads in-process
-      (no udev/fxload), but firmware images must live where the SDK looks
-      — likely a formula caveat + small helper; needs a real look.
-- [ ] (N4) What `rusty-photon-config` resolves on macOS (`~/.config` vs
-      `~/Library/Application Support`) — confirm and bless in docs; W2
-      only pinned down Windows.
-- [ ] (N4) sentinel's watchdog restart commands pointed at
-      `brew services restart` — should be pure config, but untested.
+- [x] (N4) zwo dylib payload on macOS — solved with `@loader_path/../lib`
+      (keg) + `@loader_path/lib` (untarred dir) rpaths on the binaries; the
+      indi-3rdparty mac_arm64 blobs already ship `@rpath/` install names,
+      so linking records exactly the reference those rpaths resolve. One
+      staging fixup: libASICamera2 loads `@rpath/libusb-1.0.0.dylib`,
+      rewritten to Homebrew's libusb (a formula dependency); libEAFFocuser
+      references only system frameworks.
+- [x] (N4) qhy-camera firmware on macOS — the real look found the mac SDK
+      ships **no firmware files at all**: the images are embedded in
+      `libqhyccd.a` behind in-process entry points
+      (`OSXInitQHYCCDFirmwareArray()` / path-based
+      `OSXInitQHYCCDFirmware`), which qhyccd-rs does not bind or call. So
+      there is no helper to write and nothing for a formula to install —
+      but a cold-plugged camera will not enumerate on a Mac until the
+      in-process upload is wired (formula caveat + docs; follow-up:
+      bind `OSXInitQHYCCDFirmwareArray` and call it on macOS init,
+      validated against a real cold camera).
+- [x] (N4) `rusty-photon-config` on macOS resolves
+      `~/Library/Application Support/rusty-photon/<svc>.json`
+      (`directories::ProjectDirs` — not `~/.config`); blessed in
+      docs/packaging-macos.md, including the `sudo brew services` variant
+      under `/var/root`.
+- [x] (N4) sentinel's watchdog restart on macOS — pure config as hoped:
+      `restart_command` is a free-form shell string, so
+      `brew services restart rusty-photon-<svc>` slots in (documented in
+      docs/packaging-macos.md); live validation rides the first
+      physical-Mac pass (Verification).
 
 ## Future considerations
 

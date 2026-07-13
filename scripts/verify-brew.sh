@@ -1,0 +1,353 @@
+#!/bin/sh
+# verify-brew.sh — lifecycle-verify the built macOS tarballs through the real
+# Homebrew machinery, pre-publish (docs/plans/nightly-releases.md N4). The
+# verify-packages.sh analogue: formulas are rendered with file:// URLs
+# pointing at the just-built tarballs into a scratch local tap, the
+# meta-formula install pulls the whole family (proving the dependency
+# wiring), and per service: `brew test` → `brew services start` → HTTP probe
+# → config self-created at ~/Library/Application Support/rusty-photon/<svc>.json
+# → `brew services stop` → uninstall clean (binary gone; config SURVIVES —
+# Homebrew never purges, the rpm-erase parity; manual cleanup is documented
+# in docs/packaging-macos.md).
+#
+# Class exceptions mirror verify-packages.sh: the no-defaultable-config
+# services (sky-survey-camera, plate-solver, calibrator-flats) are installed
+# but never started — macOS has no ConditionPathExists=; the gate is simply
+# not running `brew services start` until a config exists, and starting one
+# without a config would keep_alive-respawn-loop by design. The serial
+# drivers exit on their absent device, so they verify config +
+# handshake-attempted from the service log instead of a probe; the cameras,
+# zwo-focuser, and phd2-guider never self-create a config; phd2-guider's
+# /health legitimately answers 503 with no PHD2 around. The zwo services
+# additionally prove via otool that each binary loads exactly its own
+# bundled SDK dylib (ADR-014) — the probe answering is the runtime proof
+# that the @loader_path rpath actually resolves it.
+#
+# Usage: scripts/verify-brew.sh [--services a,b,c] [--dist DIR] [--channel C] [--keep]
+#   --services a,b,c  verify only these (default: every service with a
+#                     tarball in DIST); skips the meta-formula
+#   --dist DIR        tarball directory (default: dist/<workspace version>);
+#                     its basename is the version the tarballs are stamped with
+#   --channel C       stable or nightly (default: nightly) — which formula
+#                     flavor to render and exercise
+#   --keep            keep the scratch tap and installed formulas on exit
+#                     (debugging)
+
+set -eu
+
+die() { echo "verify-brew: $*" >&2; exit 1; }
+
+usage() {
+    sed -n '/^# Usage:/,/^$/{s/^# \{0,1\}//p}' "$0"
+}
+
+KEEP=0
+DIST=""
+ONLY_SERVICES=""
+CHANNEL=nightly
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --services)
+            shift
+            [ $# -gt 0 ] || die "--services needs a comma-separated list"
+            ONLY_SERVICES="$1"
+            ;;
+        --dist)
+            shift
+            [ $# -gt 0 ] || die "--dist needs a directory"
+            DIST="$1"
+            ;;
+        --channel)
+            shift
+            [ $# -gt 0 ] || die "--channel needs stable|nightly"
+            CHANNEL="$1"
+            ;;
+        --keep) KEEP=1 ;;
+        -h|--help) usage; exit 0 ;;
+        *) usage >&2; die "unknown option: $1" ;;
+    esac
+    shift
+done
+
+case "$CHANNEL" in
+    stable) SUFFIX="" ;;
+    nightly) SUFFIX="-nightly" ;;
+    *) die "--channel must be stable or nightly (got: $CHANNEL)" ;;
+esac
+
+[ "$(uname -s)" = Darwin ] || die "Homebrew formulas are verified on macOS only"
+[ -f packaging/postinst.common ] || die "run from the repo root"
+command -v brew > /dev/null 2>&1 || die "brew not found"
+
+# Non-interactive brew: no auto-update churn, no cleanup passes, no hints.
+HOMEBREW_NO_AUTO_UPDATE=1
+HOMEBREW_NO_INSTALL_CLEANUP=1
+HOMEBREW_NO_ENV_HINTS=1
+export HOMEBREW_NO_AUTO_UPDATE HOMEBREW_NO_INSTALL_CLEANUP HOMEBREW_NO_ENV_HINTS
+
+if [ -z "$DIST" ]; then
+    version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+    DIST="dist/$version"
+fi
+[ -d "$DIST" ] || die "$DIST not found — run scripts/build-tarballs.sh first"
+DIST_ABS=$(cd "$DIST" && pwd)
+# build-tarballs.sh names the dist dir after the version it stamps.
+VERSION=$(basename "$DIST_ABS")
+
+# Service list: from the tarballs actually present, or --services.
+if [ -n "$ONLY_SERVICES" ]; then
+    SERVICES=$(echo "$ONLY_SERVICES" | tr ',' ' ')
+else
+    SERVICES=$(for f in "$DIST_ABS"/rusty-photon-*-"$VERSION"-aarch64-apple-darwin.tar.gz; do
+        [ -e "$f" ] || continue
+        b=$(basename "$f")
+        b=${b#rusty-photon-}
+        echo "${b%-"$VERSION"-aarch64-apple-darwin.tar.gz}"
+    done | sort -u | tr '\n' ' ')
+fi
+[ -n "$SERVICES" ] || die "no rusty-photon-*-$VERSION-aarch64-apple-darwin.tar.gz in $DIST_ABS"
+echo "Verifying ($CHANNEL): $SERVICES"
+
+port_of() {
+    case "$1" in
+        filemonitor) echo 11111 ;;
+        ppba-driver) echo 11112 ;;
+        qhy-focuser) echo 11113 ;;
+        sentinel) echo 11114 ;;
+        rp) echo 11115 ;;
+        sky-survey-camera) echo 11116 ;;
+        star-adventurer-gti) echo 11117 ;;
+        pa-falcon-rotator) echo 11118 ;;
+        dsd-fp2) echo 11119 ;;
+        ui-htmx) echo 11120 ;;
+        qhy-camera) echo 11121 ;;
+        zwo-camera) echo 11122 ;;
+        pa-scops-oag) echo 11123 ;;
+        zwo-focuser) echo 11124 ;;
+        phd2-guider) echo 11130 ;;
+        plate-solver) echo 11131 ;;
+        calibrator-flats) echo 11170 ;;
+        *) echo "" ;;
+    esac
+}
+
+probe_path() {
+    # Alpaca services answer the management API; the plain-HTTP services
+    # expose /health.
+    case "$1" in
+        sentinel|rp|ui-htmx|phd2-guider) echo /health ;;
+        *) echo /management/apiversions ;;
+    esac
+}
+
+is_gated() {
+    # No defaultable config. There is no launchd ConditionPathExists=
+    # equivalent and none is needed: nothing runs until
+    # `brew services start`, so the gate is not starting them (a start
+    # without a config exits and keep_alive respawn-loops by design).
+    case "$1" in
+        sky-survey-camera|plate-solver|calibrator-flats) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+is_serial() {
+    # Serial drivers exit on the absent device (deliberate: never advertise
+    # a broken device); launchd keep_alive respawns them, the launchd
+    # equivalent of the systemd 5s retry loop.
+    case "$1" in
+        ppba-driver|qhy-focuser|pa-falcon-rotator|pa-scops-oag|dsd-fp2|star-adventurer-gti) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+self_creates_config() {
+    # Same contract as verify-packages.sh: the cameras, zwo-focuser, and
+    # phd2-guider run on built-in defaults and write no file; gated services
+    # never start without one.
+    if is_gated "$1"; then return 1; fi
+    case "$1" in
+        qhy-camera|zwo-camera|zwo-focuser|phd2-guider) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+# ---- scratch tap ----------------------------------------------------------
+TAP="local/rp-verify"
+TAP_DIR="$(brew --repository)/Library/Taps/local/homebrew-rp-verify"
+PREFIX=$(brew --prefix)
+# What rusty-photon-config resolves on macOS (directories::ProjectDirs).
+CFG_DIR="$HOME/Library/Application Support/rusty-photon"
+
+STARTED=""
+cleanup() {
+    if [ "$KEEP" = 1 ]; then
+        echo "Kept: tap $TAP (remove: brew untap $TAP) and any installed formulas"
+        return
+    fi
+    for s in $STARTED; do
+        brew services stop "rusty-photon-$s$SUFFIX" > /dev/null 2>&1 || true
+    done
+    for s in $SERVICES; do
+        brew uninstall --force "rusty-photon-$s$SUFFIX" > /dev/null 2>&1 || true
+    done
+    brew uninstall --force "rusty-photon$SUFFIX" > /dev/null 2>&1 || true
+    brew untap "$TAP" > /dev/null 2>&1 || true
+}
+trap cleanup EXIT INT TERM
+
+mkdir -p "$TAP_DIR/Formula"
+
+GEN_ARGS=""
+[ -n "$ONLY_SERVICES" ] && GEN_ARGS="--services $ONLY_SERVICES"
+# shellcheck disable=SC2086 # word-splitting the optional flag is intended
+scripts/generate-brew-formulas.sh --channel "$CHANNEL" --version "$VERSION" \
+    --dist "$DIST_ABS" --url-base "file://$DIST_ABS" \
+    --output "$TAP_DIR/Formula" $GEN_ARGS
+
+fail() {
+    svc="$1"
+    shift
+    echo "verify-brew: FAIL [$svc]: $*" >&2
+    tail -n 40 "$PREFIX/var/log/rusty-photon-$svc.log" >&2 2> /dev/null || true
+    exit 1
+}
+
+# ---- install ----------------------------------------------------------------
+if [ -n "$ONLY_SERVICES" ]; then
+    for s in $SERVICES; do
+        echo "== $s: install"
+        brew install "$TAP/rusty-photon-$s$SUFFIX" || fail "$s" "brew install failed"
+    done
+else
+    # The meta-formula pulls the whole family — this IS the proof that the
+    # channel's dependency wiring resolves.
+    echo "== rusty-photon$SUFFIX: install (meta — pulls the whole family)"
+    brew install "$TAP/rusty-photon$SUFFIX" || die "meta-formula install failed"
+fi
+
+# ---- per-service checks -----------------------------------------------------
+for s in $SERVICES; do
+    bin="$PREFIX/bin/rusty-photon-$s"
+    [ -x "$bin" ] || fail "$s" "$bin missing after install"
+
+    # The formula's own test block (--help probe).
+    brew test "$TAP/rusty-photon-$s$SUFFIX" || fail "$s" "brew test failed"
+
+    if [ "$s" = zwo-camera ]; then
+        # ADR-014: exactly its own SDK dylib, resolved keg-relative.
+        otool -L "$bin" | grep -q '@rpath/libASICamera2.dylib' \
+            || fail "$s" "binary does not load @rpath/libASICamera2.dylib"
+        if otool -L "$bin" | grep -qE 'libEFWFilter|libEAFFocuser'; then
+            fail "$s" "binary links EFW/EAF SDKs it must not (ADR-014 per-device link)"
+        fi
+        [ -e "$PREFIX/opt/rusty-photon-zwo-camera$SUFFIX/lib/libASICamera2.dylib" ] \
+            || fail "$s" "bundled libASICamera2.dylib missing from the keg"
+    fi
+    if [ "$s" = zwo-focuser ]; then
+        otool -L "$bin" | grep -q '@rpath/libEAFFocuser.dylib' \
+            || fail "$s" "binary does not load @rpath/libEAFFocuser.dylib"
+        if otool -L "$bin" | grep -qE 'libASICamera2|libEFWFilter'; then
+            fail "$s" "binary links ASI/EFW SDKs it must not (ADR-014 per-device link)"
+        fi
+        [ -e "$PREFIX/opt/rusty-photon-zwo-focuser$SUFFIX/lib/libEAFFocuser.dylib" ] \
+            || fail "$s" "bundled libEAFFocuser.dylib missing from the keg"
+    fi
+
+    cfg="$CFG_DIR/$s.json"
+    if is_gated "$s"; then
+        # Never started: no config may appear, and the binary must at least
+        # run (the brew test above proved --help).
+        [ ! -e "$cfg" ] || fail "$s" "config exists for a gated service that never ran"
+        echo "== $s: OK (installed; gated on config — not started)"
+        continue
+    fi
+
+    echo "== $s: brew services start"
+    rm -f "$PREFIX/var/log/rusty-photon-$s.log"
+    brew services start "rusty-photon-$s$SUFFIX" || fail "$s" "brew services start failed"
+    STARTED="$STARTED $s"
+
+    if is_serial "$s"; then
+        # Verifiable without hardware: the binary starts, self-creates its
+        # config, and fails on the absent device — not earlier (loader or
+        # config problems would die before the handshake).
+        i=0
+        until grep -q 'eager startup handshake' "$PREFIX/var/log/rusty-photon-$s.log" 2> /dev/null; do
+            i=$((i + 1))
+            [ "$i" -lt 30 ] || fail "$s" "no eager-handshake attempt in the service log"
+            sleep 1
+        done
+        i=0
+        until [ -s "$cfg" ]; do
+            i=$((i + 1))
+            [ "$i" -lt 15 ] || fail "$s" "config not self-created at $cfg"
+            sleep 1
+        done
+        brew services stop "rusty-photon-$s$SUFFIX" > /dev/null || fail "$s" "brew services stop failed"
+        echo "== $s: OK (config self-created; respawning on absent serial device)"
+        continue
+    fi
+
+    port=$(port_of "$s")
+    [ -n "$port" ] || fail "$s" "no port mapping — add $s to port_of()"
+    path=$(probe_path "$s")
+    if [ "$s" = phd2-guider ]; then
+        # No PHD2 on this machine: /health legitimately answers 503 (listener
+        # up, guider not connected).
+        i=0
+        while :; do
+            code=$(curl -sS -o /dev/null -w '%{http_code}' \
+                "http://127.0.0.1:$port$path" 2> /dev/null || echo 000)
+            [ "$code" = 200 ] || [ "$code" = 503 ] || {
+                i=$((i + 1))
+                [ "$i" -lt 30 ] || fail "$s" "no HTTP response on port $port ($path; last code $code)"
+                sleep 1
+                continue
+            }
+            break
+        done
+    else
+        i=0
+        until curl -fsS -o /dev/null "http://127.0.0.1:$port$path" 2> /dev/null; do
+            i=$((i + 1))
+            [ "$i" -lt 30 ] || fail "$s" "no HTTP response on port $port ($path)"
+            sleep 1
+        done
+    fi
+
+    if self_creates_config "$s"; then
+        i=0
+        until [ -s "$cfg" ]; do
+            i=$((i + 1))
+            [ "$i" -lt 15 ] || fail "$s" "config not self-created at $cfg"
+            sleep 1
+        done
+    fi
+
+    brew services stop "rusty-photon-$s$SUFFIX" > /dev/null || fail "$s" "brew services stop failed"
+    echo "== $s: OK (service, port $port)"
+done
+
+# ---- uninstall lifecycle ----------------------------------------------------
+# Uninstall the meta first (nothing depends on the services after that), then
+# every service. Homebrew refuses to uninstall a dependency of an installed
+# formula, so order matters.
+if [ -z "$ONLY_SERVICES" ]; then
+    brew uninstall "rusty-photon$SUFFIX" || die "meta-formula uninstall failed"
+fi
+for s in $SERVICES; do
+    echo "== $s: uninstall"
+    brew uninstall "rusty-photon-$s$SUFFIX" || fail "$s" "brew uninstall failed"
+    [ ! -e "$PREFIX/bin/rusty-photon-$s" ] || fail "$s" "binary survived uninstall"
+    if self_creates_config "$s"; then
+        # Homebrew never purges: config survives uninstall (rpm-erase
+        # parity); deleting ~/Library/Application Support/rusty-photon is
+        # the documented manual step.
+        [ -f "$CFG_DIR/$s.json" ] || fail "$s" "config did not survive uninstall (brew never purges)"
+    fi
+done
+
+STARTED=""
+echo ""
+echo "verify-brew: OK ($(echo "$SERVICES" | wc -w | tr -d ' ') $CHANNEL formulas)"
