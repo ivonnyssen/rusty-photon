@@ -275,6 +275,32 @@ two Ubuntu legs, both arches. The real work:
   consider a shallower verify leg (install + probe, skip the remove
   matrix) and note it here.
 
+**As built (N2):** `build-packages.sh --rpm --deb-version <stamp>`
+derives the rpm version from the canonical `+nightly.` stamp itself
+(`^` render via `--set-metadata`; thick script, same contract as the
+MSI leg — the workflow passes one string). Both carried unknowns
+resolved: the package names were already `rusty-photon-<svc>`
+(`[package.metadata.generate-rpm]` name, checker-enforced — no override
+needed), and dependency auto-resolution is adequate — the builtin
+resolver emits decorated soname requires that Fedora provides for the
+15 auto-req packages, while the two zwo packages (auto-req disabled;
+the SONAME-less blob would poison it) now declare explicit `requires`
+mirroring their deb `depends`. The Fedora leg (`verify-packages.sh
+--rpm`, fedora:44 systemd container) deliberately preinstalls no
+runtime libraries, so its `dnf install` doubles as the
+requires-resolution proof; it asserts the scriptlets'
+enabled-but-not-started contract before starting units itself, and
+verifies erase as remove-not-purge (config + state survive). Found and
+fixed on the way: the rpm scriptlets were unguarded — on upgrade the
+old `%preun` runs *after* the new `%post`, so every nightly upgrade
+would have left the service stopped and disabled; all 17 now carry
+`$1` guards (enable on first install only, stop/disable on final erase
+only, `try-restart` on upgrade — the deb restart-after-upgrade
+equivalent). The full verify leg was kept despite the missing Fedora
+consumer because the shallow variant would skip exactly the two proofs
+this phase exists for (requires resolution on install, scriptlet
+contracts on erase).
+
 ### Phase N3 — Windows (after W5)
 
 W5 of [windows-packaging.md](windows-packaging.md) delivers
@@ -403,9 +429,10 @@ unknowns below).
   enabled legs.
 - First post-merge validation per phase: consume the nightly on a real
   machine — apt-upgrade an arm64 box from `0.1.0-1` to a nightly (N1),
-  `brew install` + `brew services start` on a physical Mac (N4), install
-  a nightly MSI over the previous one on the Windows box (N3) — and
-  record results here.
+  dnf-upgrade a Fedora box from one nightly to the next (N2; proves the
+  guarded scriptlets on a real host), `brew install` + `brew services
+  start` on a physical Mac (N4), install a nightly MSI over the previous
+  one on the Windows box (N3) — and record results here.
 - The skip-if-unchanged path and the failure-tracking issue get exercised
   naturally within the first week of N1 being live; confirm both behaved
   and note it here.
@@ -429,7 +456,11 @@ unknowns below).
 - [x] (N2) `cargo-generate-rpm` Version override with the `^` dialect —
       `--set-metadata 'version = "…"'` stamps it verbatim; upgrade and
       downgrade-refusal proven with `rpm -U` (N0 findings).
-- [ ] (N2) rpm package-name override (carried from service-packaging.md).
+- [x] (N2) rpm package-name override (carried from service-packaging.md) —
+      already solved before N2: every service's
+      `[package.metadata.generate-rpm]` sets `name = "rusty-photon-<svc>"`
+      (checker-enforced), so the rpms were never crate-named. No override
+      mechanism needed.
 - [ ] (N4) zwo dylib payload on macOS: `@loader_path`-relative rpath
       instead of the Linux `/usr/lib/rusty-photon` RUNPATH; indi-3rdparty
       publishes the mac dylibs.

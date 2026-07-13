@@ -1,6 +1,7 @@
 #!/bin/sh
 # verify-packages.sh — lifecycle-verify the built .deb packages in a podman
-# systemd container (debian:trixie). Per service: install → unit active →
+# systemd container (debian:trixie), or with --rpm the built .rpm packages
+# in a Fedora one. Per service: install → unit active →
 # config self-created at /var/lib/rusty-photon/.config/rusty-photon/<svc>.json
 # → HTTP probe → remove (config survives) → purge (config + state gone; the
 # shared user, home dir, and /etc/rusty-photon symlink stay). Class
@@ -14,6 +15,16 @@
 # exactly its own bundled SDK blob through the RUNPATH (ADR-014). Runs
 # natively on arm64 (the rig) and x86_64 (dev box).
 #
+# The --rpm flavor differs where rpm's lifecycle genuinely differs:
+# the scriptlets enable units without starting them (Fedora convention —
+# asserted, then the script starts each unit itself), dnf must resolve the
+# packages' declared requires from the repos (the dependency-adequacy
+# proof: nothing is preinstalled to compensate), and erase behaves like
+# remove, never purge — config and state must SURVIVE removal (manual
+# cleanup is the documented story in docs/packaging.md). Everything after
+# unit start — config, probes, class exceptions, the zwo ldd proof — is
+# the same contract as the deb flavor.
+#
 # Rootless-container caveat (docs/plans/service-packaging.md): rootless
 # podman cannot apply the units' sandboxing across the User= switch
 # (217/USER, 226/NAMESPACE), so this script pre-installs a drop-in that
@@ -21,9 +32,11 @@
 # the packaging lifecycle; the hardening is verified on real hosts
 # (systemd-analyze security + an active unit on the rig).
 #
-# Usage: scripts/verify-packages.sh [--services a,b,c] [--dist DIR] [--keep]
-#   --services a,b,c  verify only these (default: every rusty-photon-*.deb in DIST)
+# Usage: scripts/verify-packages.sh [--services a,b,c] [--dist DIR] [--rpm] [--keep]
+#   --services a,b,c  verify only these (default: every rusty-photon-* package in DIST)
 #   --dist DIR        package directory (default: dist/<workspace version>)
+#   --rpm             verify the .rpm packages in a Fedora container instead
+#                     of the .deb packages in a Debian one
 #   --keep            keep the container on exit (debugging)
 
 set -eu
@@ -37,6 +50,7 @@ usage() {
 KEEP=0
 DIST=""
 ONLY_SERVICES=""
+FLAVOR=deb
 while [ $# -gt 0 ]; do
     case "$1" in
         --services)
@@ -49,6 +63,7 @@ while [ $# -gt 0 ]; do
             [ $# -gt 0 ] || die "--dist needs a directory"
             DIST="$1"
             ;;
+        --rpm) FLAVOR=rpm ;;
         --keep) KEEP=1 ;;
         -h|--help) usage; exit 0 ;;
         *) usage >&2; die "unknown option: $1" ;;
@@ -66,9 +81,20 @@ fi
 [ -d "$DIST" ] || die "$DIST not found — run scripts/build-packages.sh first"
 DIST_ABS=$(cd "$DIST" && pwd)
 
-# Service list: from the debs actually present, or --services.
+# Service list: from the packages actually present, or --services. The deb
+# name-version separator is `_`; rpm separates with `-`, which service names
+# also contain, so the version is recognized by its leading digit (no
+# service name has a `-<digit>` run — the checker-enforced names are the
+# crate names).
 if [ -n "$ONLY_SERVICES" ]; then
     SERVICES=$(echo "$ONLY_SERVICES" | tr ',' ' ')
+elif [ "$FLAVOR" = rpm ]; then
+    SERVICES=$(for f in "$DIST_ABS"/rusty-photon-*.rpm; do
+        [ -e "$f" ] || continue
+        b=$(basename "$f")
+        b=${b#rusty-photon-}
+        echo "$b" | sed 's/-[0-9].*//'
+    done | sort -u | tr '\n' ' ')
 else
     SERVICES=$(for f in "$DIST_ABS"/rusty-photon-*.deb; do
         [ -e "$f" ] || continue
@@ -77,16 +103,22 @@ else
         echo "${b%%_*}"
     done | sort -u | tr '\n' ' ')
 fi
-[ -n "$SERVICES" ] || die "no rusty-photon-*.deb packages in $DIST_ABS"
+[ -n "$SERVICES" ] || die "no rusty-photon-*.$FLAVOR packages in $DIST_ABS"
 for s in $SERVICES; do
-    # Exactly one deb per service: a multi-match glob (e.g. two revisions
+    # Exactly one package per service: a multi-match glob (e.g. two revisions
     # left over from an upgrade test) would make the in-container
-    # dpkg-deb/apt-get invocations below misbehave in confusing ways.
-    set -- "$DIST_ABS/rusty-photon-${s}_"*.deb
-    [ -e "$1" ] || die "no rusty-photon-${s}_*.deb in $DIST_ABS"
-    [ $# -eq 1 ] || die "multiple rusty-photon-${s}_*.deb in $DIST_ABS — remove stale builds first"
+    # install invocations below misbehave in confusing ways.
+    if [ "$FLAVOR" = rpm ]; then
+        set -- "$DIST_ABS/rusty-photon-${s}-"[0-9]*.rpm
+        [ -e "$1" ] || die "no rusty-photon-${s}-*.rpm in $DIST_ABS"
+        [ $# -eq 1 ] || die "multiple rusty-photon-${s}-*.rpm in $DIST_ABS — remove stale builds first"
+    else
+        set -- "$DIST_ABS/rusty-photon-${s}_"*.deb
+        [ -e "$1" ] || die "no rusty-photon-${s}_*.deb in $DIST_ABS"
+        [ $# -eq 1 ] || die "multiple rusty-photon-${s}_*.deb in $DIST_ABS — remove stale builds first"
+    fi
 done
-echo "Verifying: $SERVICES"
+echo "Verifying ($FLAVOR): $SERVICES"
 
 port_of() {
     case "$1" in
@@ -155,11 +187,25 @@ self_creates_config() {
 }
 
 # ---- container ----------------------------------------------------------
-IMG=localhost/rusty-photon-pkg-verify
+IMG="localhost/rusty-photon-pkg-verify-$FLAVOR"
 CNAME="rusty-photon-verify-$$"
 
 echo "Building the verification image ($IMG)..."
-podman build -q -t "$IMG" - <<'EOF' > /dev/null
+if [ "$FLAVOR" = rpm ]; then
+    # Deliberately NO runtime libraries here: dnf must pull every one of
+    # them from the packages' declared requires, or the verification fails —
+    # that is the dependency-adequacy proof. The installs are only what the
+    # lifecycle machinery itself needs: systemd as init, udevadm for the
+    # camera scriptlets, useradd/groupadd (shadow-utils) for the shared
+    # user, curl for the probes, pgrep (procps-ng) for the stopped-on-erase
+    # check.
+    podman build -q -t "$IMG" - <<'EOF' > /dev/null
+FROM registry.fedoraproject.org/fedora:44
+RUN dnf -y install systemd systemd-udev shadow-utils procps-ng curl && dnf clean all
+CMD ["/sbin/init"]
+EOF
+else
+    podman build -q -t "$IMG" - <<'EOF' > /dev/null
 FROM debian:trixie
 # The stock Debian image ships a policy-rc.d that exits 101, silently
 # blocking every unit start from maintainer scripts — exactly what this
@@ -169,6 +215,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -f /usr/sbin/policy-rc.d
 CMD ["/sbin/init"]
 EOF
+fi
 
 cleanup() {
     if [ "$KEEP" = 1 ]; then
@@ -229,33 +276,60 @@ UMask=0022
 EOF
 done
 
-echo "Refreshing apt package lists in the container..."
-cx sh -c "apt-get update -qq"
+if [ "$FLAVOR" = deb ]; then
+    echo "Refreshing apt package lists in the container..."
+    cx sh -c "apt-get update -qq"
 
-# Debs built on a non-Debian host carry an empty `$auto` Depends
-# (dpkg-shlibdeps needs Debian's shlibs database; cargo-deb warns and moves
-# on). Preinstall the known runtime libs so lifecycle verification still
-# works there; on Debian-host (rig) builds Depends is populated and apt
-# resolves it strictly, so this branch stays cold.
-compensate=0
-for s in $SERVICES; do
-    dep=$(cx sh -c "dpkg-deb -f /dist/rusty-photon-${s}_*.deb Depends" 2> /dev/null || true)
-    [ -n "$dep" ] || compensate=1
-done
-if [ "$compensate" = 1 ]; then
-    echo "verify-packages: WARNING: deb(s) with empty Depends (non-Debian-host build); preinstalling runtime libs"
-    cx sh -c "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libusb-1.0-0 libudev1 libstdc++6" > /dev/null
+    # Debs built on a non-Debian host carry an empty `$auto` Depends
+    # (dpkg-shlibdeps needs Debian's shlibs database; cargo-deb warns and moves
+    # on). Preinstall the known runtime libs so lifecycle verification still
+    # works there; on Debian-host (rig) builds Depends is populated and apt
+    # resolves it strictly, so this branch stays cold. The rpm flavor has no
+    # equivalent: cargo-generate-rpm's builtin resolver works on any host, so
+    # requires are always populated and always resolved strictly.
+    compensate=0
+    for s in $SERVICES; do
+        dep=$(cx sh -c "dpkg-deb -f /dist/rusty-photon-${s}_*.deb Depends" 2> /dev/null || true)
+        [ -n "$dep" ] || compensate=1
+    done
+    if [ "$compensate" = 1 ]; then
+        echo "verify-packages: WARNING: deb(s) with empty Depends (non-Debian-host build); preinstalling runtime libs"
+        cx sh -c "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libusb-1.0-0 libudev1 libstdc++6" > /dev/null
+    fi
 fi
 
 # ---- install + per-service checks ----------------------------------------
 for s in $SERVICES; do
     echo "== $s: install"
-    cx sh -c "DEBIAN_FRONTEND=noninteractive apt-get install -y /dist/rusty-photon-${s}_*.deb" \
-        > /dev/null || fail "$s" "apt-get install failed"
+    if [ "$FLAVOR" = rpm ]; then
+        # dnf resolves the rpm's declared requires from the Fedora repos —
+        # a resolution failure here means a package under-declares its
+        # runtime needs, which is exactly what this leg exists to catch.
+        cx sh -c "dnf install -y /dist/rusty-photon-${s}-[0-9]*.rpm" \
+            > /dev/null || fail "$s" "dnf install failed"
+    else
+        cx sh -c "DEBIAN_FRONTEND=noninteractive apt-get install -y /dist/rusty-photon-${s}_*.deb" \
+            > /dev/null || fail "$s" "apt-get install failed"
+    fi
 
     # Shared layout, created by the first daemon postinst and stable after.
     cx test -L /etc/rusty-photon || fail "$s" "/etc/rusty-photon symlink missing"
     cx sh -c "getent passwd rusty-photon > /dev/null" || fail "$s" "rusty-photon user missing"
+
+    if [ "$FLAVOR" = rpm ]; then
+        # The rpm scriptlets enable without starting (Fedora convention;
+        # the deb postinst starts). Assert that exact contract, then start
+        # the unit ourselves — from here the two flavors share the same
+        # per-class expectations. `|| true`: gated units start-succeed with
+        # an unmet condition, serial units die on the absent device; the
+        # class branches below hold each to its own contract.
+        cx systemctl is-enabled --quiet "rusty-photon-$s" \
+            || fail "$s" "unit not enabled by the rpm scriptlet"
+        if cx systemctl is-active --quiet "rusty-photon-$s"; then
+            fail "$s" "unit auto-started on rpm install (scriptlets enable only)"
+        fi
+        cx systemctl start "rusty-photon-$s" 2> /dev/null || true
+    fi
 
     cfg="/var/lib/rusty-photon/.config/rusty-photon/$s.json"
     if is_gated "$s"; then
@@ -371,22 +445,42 @@ done
 
 # ---- remove / purge lifecycle ---------------------------------------------
 for s in $SERVICES; do
-    echo "== $s: remove + purge"
-    cx sh -c "DEBIAN_FRONTEND=noninteractive apt-get remove -y rusty-photon-$s" > /dev/null \
-        || fail "$s" "apt-get remove failed"
     cfg="/var/lib/rusty-photon/.config/rusty-photon/$s.json"
-    if self_creates_config "$s"; then
-        cx test -f "$cfg" || fail "$s" "config did not survive remove (must only go on purge)"
+    if [ "$FLAVOR" = rpm ]; then
+        # rpm has no purge lifecycle: erase behaves like dpkg remove. The
+        # payload and unit go, the process is stopped (pre_uninstall), and
+        # the runtime-created config + state SURVIVE — their deletion is
+        # the documented manual step in docs/packaging.md.
+        echo "== $s: erase"
+        cx sh -c "dnf remove -y rusty-photon-$s" > /dev/null \
+            || fail "$s" "dnf remove failed"
+        cx test ! -e "/usr/bin/rusty-photon-$s" || fail "$s" "binary survived erase"
+        cx test ! -e "/usr/lib/systemd/system/rusty-photon-$s.service" \
+            || fail "$s" "unit file survived erase"
+        if cx pgrep -f "/usr/bin/rusty-photon-$s" > /dev/null 2>&1; then
+            fail "$s" "process still running after erase (pre_uninstall must stop it)"
+        fi
+        if self_creates_config "$s"; then
+            cx test -f "$cfg" || fail "$s" "config did not survive erase (rpm never purges)"
+        fi
+    else
+        echo "== $s: remove + purge"
+        cx sh -c "DEBIAN_FRONTEND=noninteractive apt-get remove -y rusty-photon-$s" > /dev/null \
+            || fail "$s" "apt-get remove failed"
+        if self_creates_config "$s"; then
+            cx test -f "$cfg" || fail "$s" "config did not survive remove (must only go on purge)"
+        fi
+        cx dpkg --purge "rusty-photon-$s" > /dev/null || fail "$s" "dpkg --purge failed"
+        cx test ! -e "$cfg" || fail "$s" "config survived purge"
+        cx test ! -e "/var/lib/rusty-photon/$s" || fail "$s" "state dir survived purge"
     fi
-    cx dpkg --purge "rusty-photon-$s" > /dev/null || fail "$s" "dpkg --purge failed"
-    cx test ! -e "$cfg" || fail "$s" "config survived purge"
-    cx test ! -e "/var/lib/rusty-photon/$s" || fail "$s" "state dir survived purge"
 done
 
-# The shared pieces are never removed (Debian convention; shared across pkgs).
-cx sh -c "getent passwd rusty-photon > /dev/null" || die "shared user removed by purge"
-cx test -d /var/lib/rusty-photon || die "shared home removed by purge"
-cx test -L /etc/rusty-photon || die "/etc/rusty-photon symlink removed by purge"
+# The shared pieces are never removed — shared across packages, so no
+# scriptlet of either flavor touches them (Debian convention for system users).
+cx sh -c "getent passwd rusty-photon > /dev/null" || die "shared user removed by uninstall"
+cx test -d /var/lib/rusty-photon || die "shared home removed by uninstall"
+cx test -L /etc/rusty-photon || die "/etc/rusty-photon symlink removed by uninstall"
 
 echo ""
-echo "verify-packages: OK ($(echo "$SERVICES" | wc -w | tr -d ' ') packages)"
+echo "verify-packages: OK ($(echo "$SERVICES" | wc -w | tr -d ' ') $FLAVOR packages)"

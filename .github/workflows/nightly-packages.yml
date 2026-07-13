@@ -11,8 +11,12 @@
 #              dialect of "sorts after 0.1.0, before 0.1.1".
 #   linux    — build + FULL lifecycle verification per leg, on hosted
 #              runners (the N0 spike closed the self-hosted contingency).
-#              Building without installing is not a gate: nothing publishes
-#              unless every enabled leg passed its verifier.
+#              Each leg builds the .deb AND .rpm set and verifies both:
+#              the debs through the Debian container lifecycle, the rpms
+#              through the Fedora one (which doubles as the proof that the
+#              rpms' declared requires resolve — N2). Building without
+#              installing is not a gate: nothing publishes unless every
+#              enabled leg passed its verifiers.
 #   publish  — all-or-nothing across the enabled legs, so the release is
 #              always one coherent SHA with a complete asset set.
 #   notify-on-failure — tracking issue on scheduled failures, label
@@ -93,8 +97,10 @@ jobs:
             arch: arm64
     name: linux / ${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
-    # N0 spike: ~12 min cold / ~8 min warm per leg (arm64 slightly faster).
-    timeout-minutes: 45
+    # N0 spike: ~12 min cold / ~8 min warm per leg (arm64 slightly faster);
+    # the Fedora rpm verification (N2) adds its container build plus a dnf
+    # dependency resolution per service on top.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
       - name: Install Rust toolchain
@@ -113,14 +119,20 @@ jobs:
           path: ~/.cache/rusty-photon-pkg
           key: rusty-photon-pkg-${{ matrix.arch }}-${{ hashFiles('scripts/build-packages.sh') }}
       - name: Build packages
-        run: scripts/build-packages.sh --deb-version '${{ needs.plan.outputs.deb_version }}'
-      - name: Verify packages (full install lifecycle)
+        # --rpm rides on the same release build; the script derives the rpm
+        # ^ dialect from the canonical +nightly stamp itself.
+        run: scripts/build-packages.sh --rpm --deb-version '${{ needs.plan.outputs.deb_version }}'
+      - name: Verify deb packages (full install lifecycle)
         run: scripts/verify-packages.sh --dist 'dist/${{ needs.plan.outputs.deb_version }}'
+      - name: Verify rpm packages (full install lifecycle, Fedora)
+        run: scripts/verify-packages.sh --rpm --dist 'dist/${{ needs.plan.outputs.deb_version }}'
       - name: Upload packages
         uses: actions/upload-artifact@v7
         with:
-          name: debs-${{ matrix.arch }}
-          path: dist/${{ needs.plan.outputs.deb_version }}/*.deb
+          name: packages-${{ matrix.arch }}
+          path: |
+            dist/${{ needs.plan.outputs.deb_version }}/*.deb
+            dist/${{ needs.plan.outputs.deb_version }}/*.rpm
           if-no-files-found: error
 
   publish:
@@ -138,14 +150,25 @@ jobs:
         with:
           path: assets
           merge-multiple: true
-      # One merged sums file across all legs. Generated AFTER any asset
-      # renaming (N2's rpm dot-render happens before this line lands here):
-      # GitHub rewrites `^` to `.` in asset names, so sums taken over
-      # to-be-renamed files would not verify after download (N0 findings).
+      # GitHub silently rewrites `^` to `.` in uploaded asset names (N0
+      # findings), so the rpm filenames are dot-rendered HERE, before the
+      # checksums — sums taken over the pre-rename names would never verify
+      # against a downloaded file. Only the filename changes: the rpm
+      # header keeps the true `^` version.
+      - name: Dot-render the rpm asset names
+        run: |
+          cd assets
+          for f in *^*.rpm; do
+            [ -e "$f" ] || continue
+            mv "$f" "$(printf '%s' "$f" | tr '^' '.')"
+          done
+          ls -1 *.rpm
+      # One merged sums file across all legs, generated AFTER the renaming
+      # above.
       - name: Merge checksums
         run: |
           cd assets
-          sha256sum *.deb > SHA256SUMS.txt
+          sha256sum *.deb *.rpm > SHA256SUMS.txt
           cat SHA256SUMS.txt
       - name: Force-move the nightly tag
         run: git push --force origin '${{ needs.plan.outputs.sha }}:refs/tags/nightly'
@@ -156,6 +179,10 @@ jobs:
           DATE: ${{ needs.plan.outputs.date }}
           DEB_VERSION: ${{ needs.plan.outputs.deb_version }}
         run: |
+          # Same rendering as build-packages.sh derives for the rpm headers:
+          # the body must state the true `^` version because the dot-rendered
+          # asset filenames cannot.
+          RPM_VERSION=$(printf '%s' "$DEB_VERSION" | sed 's/+nightly\./^/')
           {
             echo "Rolling nightly build of \`main\`. Assets are replaced on"
             echo "every publish — no dated history; fetch \`SHA256SUMS.txt\`"
@@ -165,6 +192,7 @@ jobs:
             echo "- **Source**: ${SHA}"
             echo "- **Built**: ${DATE} (UTC)"
             echo "- **Debian version**: \`${DEB_VERSION}\`"
+            echo "- **RPM version**: \`${RPM_VERSION}\` (\`rpm -q\` shows this; the asset filenames render the \`^\` as \`.\` because GitHub rewrites it at upload)"
             echo
             echo "| Asset | SHA-256 |"
             echo "|-------|---------|"
@@ -186,7 +214,7 @@ jobs:
             gh release create nightly --verify-tag --prerelease \
               --title "Nightly packages" --notes-file body.md
           fi
-          gh release upload nightly assets/*.deb assets/SHA256SUMS.txt
+          gh release upload nightly assets/*.deb assets/*.rpm assets/SHA256SUMS.txt
 
   notify-on-failure:
     # Tracking issue so a broken nightly channel surfaces without anyone

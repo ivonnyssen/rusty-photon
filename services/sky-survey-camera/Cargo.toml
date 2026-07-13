@@ -86,15 +86,31 @@ getent passwd rusty-photon > /dev/null || useradd -r -d /var/lib/rusty-photon -s
 install -d -m 0750 -o rusty-photon -g rusty-photon /var/lib/rusty-photon /var/lib/rusty-photon/.config /var/lib/rusty-photon/.config/rusty-photon
 [ -e /etc/rusty-photon ] || ln -s /var/lib/rusty-photon/.config/rusty-photon /etc/rusty-photon
 systemctl daemon-reload
-systemctl enable rusty-photon-sky-survey-camera.service
+if [ "$1" -eq 1 ]; then
+    systemctl enable rusty-photon-sky-survey-camera.service
+fi
 """
+# rpm scriptlet arg $1 = package instances remaining after the operation.
+# On upgrade the old %preun runs AFTER the new %post, so an unguarded
+# stop/disable would take the service down right after every upgrade.
+# Guarded: enable fires on first install only (upgrades keep the
+# operator's enable/disable choice), stop/disable on final erase only,
+# and try-restart hands a running service over to the upgraded binary
+# (the deb restart-after-upgrade equivalent).
 pre_uninstall_script = """
-systemctl stop rusty-photon-sky-survey-camera.service || true
-systemctl disable rusty-photon-sky-survey-camera.service || true
+if [ "$1" -eq 0 ]; then
+    systemctl stop rusty-photon-sky-survey-camera.service || true
+    systemctl disable rusty-photon-sky-survey-camera.service || true
+fi
 """
 # rpm has no purge lifecycle: erase preserves the runtime-created config and
 # state (removal is a documented manual step), matching dpkg remove-vs-purge.
-post_uninstall_script = "systemctl daemon-reload"
+post_uninstall_script = """
+systemctl daemon-reload
+if [ "$1" -ge 1 ]; then
+    systemctl try-restart rusty-photon-sky-survey-camera.service || true
+fi
+"""
 require-sh = true
 
 [dev-dependencies]

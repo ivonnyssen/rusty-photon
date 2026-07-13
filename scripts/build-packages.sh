@@ -28,14 +28,17 @@
 #
 # Usage: scripts/build-packages.sh [--services a,b,c] [--rpm] [--skip-sdk-staging] [--deb-version V]
 #   --services a,b,c    build only these services (default: every packaged one)
-#   --rpm               also build .rpm packages (x86_64 dev-box convenience)
+#   --rpm               also build .rpm packages (nightly channel + dev-box use)
 #   --skip-sdk-staging  offline rebuild: no downloads; requires the SDK
 #                       cache from a previous run
 #   --deb-version V     stamp V as the .deb version instead of the workspace
 #                       version (nightly channel: V like
 #                       0.1.0+nightly.20260712.gabc1234). cargo deb uses the
 #                       string verbatim — no -1 revision is appended.
-#                       Artifacts land in dist/V/.
+#                       With --rpm, the rpm version is derived from V by
+#                       rendering the +nightly. stamp as rpm's ^ snapshot
+#                       separator (0.1.0^20260712.gabc1234), so V must carry
+#                       one. Artifacts land in dist/V/.
 
 set -eu
 
@@ -87,6 +90,19 @@ done
 
 [ "$(uname -s)" = Linux ] || die "deb/rpm packages are Linux-only (see release.yml for the other targets)"
 [ -f packaging/postinst.common ] || die "run from the repo root"
+
+# The rpm version dialect is derived here, not passed in: the caller hands
+# over ONE canonical +nightly string and each packager renders its own
+# dialect (same contract as build-msi.ps1). rpm forbids `+` from sorting
+# usefully; its `^` separator means exactly "after <base>, before anything
+# else" (proven in the N0 spike). Header and filename carry the `^` verbatim.
+RPM_VERSION=""
+if [ "$RPM" = 1 ] && [ -n "$DEB_VERSION" ]; then
+    case "$DEB_VERSION" in
+        *+nightly.*) RPM_VERSION=$(printf '%s' "$DEB_VERSION" | sed 's/+nightly\./^/') ;;
+        *) die "--rpm with --deb-version needs a +nightly. stamp to derive the rpm version (got: $DEB_VERSION)" ;;
+    esac
+fi
 
 # ---- service selection --------------------------------------------------
 # Packaged services are exactly the crates with a pkg/ dir (same discovery
@@ -288,7 +304,12 @@ for s in $SERVICES; do
         cargo deb -p "$s" --no-build --no-strip --output "$DIST/"
     fi
     if [ "$RPM" = 1 ]; then
-        cargo generate-rpm -p "services/$s" -o "$DIST/"
+        if [ -n "$RPM_VERSION" ]; then
+            cargo generate-rpm -p "services/$s" -o "$DIST/" \
+                --set-metadata "version = \"$RPM_VERSION\""
+        else
+            cargo generate-rpm -p "services/$s" -o "$DIST/"
+        fi
     fi
 done
 
