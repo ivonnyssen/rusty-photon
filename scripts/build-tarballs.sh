@@ -125,20 +125,29 @@ command -v cargo > /dev/null 2>&1 || die "cargo not found (install Rust via rust
 for t in strip tar install_name_tool; do
     command -v "$t" > /dev/null 2>&1 || die "$t not found (install the Xcode command line tools)"
 done
-# macOS ships shasum (perl), not coreutils' sha256sum.
+# macOS ships shasum (perl), not coreutils' sha256sum. Check mode silences
+# the per-file OK line via redirection rather than a flag, so it reads the
+# same against either implementation; the exit code carries the verdict.
 sha256() { shasum -a 256 "$@"; }
+sha256_check() { sha256 -c - > /dev/null; }
 
 # Homebrew's libusb: linked by qhy-camera (`-lusb-1.0`) and loaded by the ZWO
-# camera blob; the formulas declare `depends_on "libusb"`. /opt/homebrew is
-# THE Homebrew prefix on Apple Silicon, and the opt path is the conventional
-# stable install-name prefix bottles use, so it is safe to hardcode for the
-# arm64-only target.
+# camera blob; the formulas declare `depends_on "libusb"`. This path is the
+# TARGET machines' contract, not a build-host detail — it is baked into the
+# shipped libASICamera2 load command, and /opt/homebrew is the only supported
+# Homebrew prefix on Apple Silicon (what `depends_on "libusb"` provides on
+# every standard install; the libqhyccd-sys/libzwo-sys build scripts assume
+# it too). Deriving it from the build host's `brew --prefix` would bake a
+# nonstandard host layout into the artifact — so a nonstandard host fails
+# loudly here instead.
 LIBUSB_OPT="/opt/homebrew/opt/libusb"
 if [ "$needs_qhy" = 1 ] || [ "$needs_zwo_camera" = 1 ]; then
     if [ ! -e "$LIBUSB_OPT/lib/libusb-1.0.0.dylib" ]; then
         command -v brew > /dev/null 2>&1 || die "Homebrew not found (needed for libusb)"
         echo "Installing libusb via Homebrew"
         brew install libusb
+        [ -e "$LIBUSB_OPT/lib/libusb-1.0.0.dylib" ] \
+            || die "libusb did not land at $LIBUSB_OPT — a default-prefix (/opt/homebrew) Homebrew is required (the path ships inside the zwo dylib)"
     fi
 fi
 
@@ -159,7 +168,7 @@ if [ "$needs_qhy" = 1 ]; then
     if [ ! -d "$QHY_EXTRACT" ]; then
         [ "$SKIP_STAGING" = 0 ] || die "--skip-sdk-staging set but $QHY_EXTRACT is missing"
         [ -f "$CACHE/$QHY_FILE" ] || fetch "$QHY_URL_BASE/$QHY_FILE" "$CACHE/$QHY_FILE"
-        echo "$QHY_SHA256_MAC_ARM64  $CACHE/$QHY_FILE" | sha256 -c --status - \
+        echo "$QHY_SHA256_MAC_ARM64  $CACHE/$QHY_FILE" | sha256_check \
             || die "sha256 mismatch for $QHY_FILE (expected $QHY_SHA256_MAC_ARM64)"
         tmp="$CACHE/extract.$$"
         mkdir -p "$tmp"
