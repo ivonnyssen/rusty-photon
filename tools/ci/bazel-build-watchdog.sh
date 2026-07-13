@@ -38,6 +38,13 @@ fi
 
 STALL_SECS="${WATCHDOG_STALL_SECS:-300}"
 POLL_SECS="${WATCHDOG_POLL_SECS:-15}"
+# A malformed override (e.g. "300s") would make the stall arithmetic error on
+# every poll and the watchdog silently never fire — the exact failure mode
+# this script exists to prevent. Fail loudly up front instead.
+if ! [[ "$STALL_SECS" =~ ^[1-9][0-9]*$ && "$POLL_SECS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "${0##*/}: WATCHDOG_STALL_SECS/WATCHDOG_POLL_SECS must be positive integers (got '$STALL_SECS' / '$POLL_SECS')" >&2
+  exit 64
+fi
 LOG="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/bazel-watchdog-output.log"
 
 # mtime that works with both GNU and BSD (macOS) stat, so the script stays
