@@ -5,7 +5,8 @@ installer on an imaging box. Architecture decisions live in
 [ADR-015](decisions/015-windows-packaging-architecture.md) (one MSI, service
 model, LocalSystem, config/log locations) and
 [ADR-013](decisions/013-native-sdk-payload-policy.md) /
-[ADR-014](decisions/014-zwo-per-device-split.md) (native camera-SDK
+[ADR-014](decisions/014-zwo-per-device-services-and-link-features.md)
+(native camera-SDK
 payloads); the full design in
 [docs/plans/windows-packaging.md](plans/windows-packaging.md); the WiX
 source contract in [installer/README.md](../installer/README.md). The Linux
