@@ -157,11 +157,12 @@ RUNPATH; ADR-014's one-blob-per-service split unchanged). `zwo-camera`
 additionally depends on Homebrew's `libusb`. No udev, no firmware
 uploads — macOS needs no device-permission setup for USB *cameras*.
 
-**zwo-focuser privacy grant** — the EAF is USB-HID, and the SDK
-enumerates it through macOS HID APIs that sit behind a privacy (TCC)
-grant. Under `brew services` without one, the service blocks inside
-discovery before it ever binds its port — alive, but silent (empty log,
-no HTTP). The same binary serves normally when run in a terminal. Grant
+**zwo-focuser privacy grant** — the EAF is USB-HID, and its SDK dylib
+touches macOS HID/Bluetooth frameworks that sit behind a privacy (TCC)
+grant. Under `brew services` without one, the process blocks *pre-main*,
+inside the dylib's static initializer (a stack sample shows it parked in
+dyld's initializer phase) — alive, but silent: empty log, port never
+bound. The same binary serves normally when run in a terminal. Grant
 the binary access under System Settings → Privacy & Security (Input
 Monitoring), or run `rusty-photon-zwo-focuser` once in a terminal to
 trigger the prompt, then `brew services restart rusty-photon-zwo-focuser`.
