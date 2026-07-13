@@ -62,10 +62,11 @@ scripts\verify-msi.ps1    # elevated: install -> class checks -> uninstall
 ```
 
 CI: the `msi` workflow (`.github/workflows/msi.yml`) runs both on
-`windows-latest` on PRs touching the packaging inputs, nightly (packaging
-rot surfaces between releases), and on demand; `release.yml` runs the same
-two scripts with `verify-msi.ps1` gating the release upload. Operator
-guide: `docs/packaging-windows.md`.
+`windows-latest` on PRs touching the packaging inputs and on demand;
+`release.yml` runs the same two scripts with `verify-msi.ps1` gating the
+release upload. The scheduled nightly leg lands with
+`docs/plans/nightly-releases.md` phase N3. Operator guide:
+`docs/packaging-windows.md`.
 
 On Linux, `wix build` (the `wix` dotnet tool + the same three extensions)
 compiles the sources far enough to catch schema errors, but fails the bind

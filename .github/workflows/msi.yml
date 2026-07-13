@@ -4,16 +4,14 @@
 # build) and scripts/verify-msi.ps1 (silent install -> per-service-class
 # checks -> failure-actions proofs -> feature remove -> uninstall) on
 # windows-latest. Triggers: PRs that touch the packaging inputs (the
-# iteration loop), a nightly schedule (Windows packaging rot — a vendor SDK
-# URL going stale, a windows-latest image change — surfaces between
-# releases, not on release day), and workflow_dispatch for on-demand runs.
-# release.yml runs the same two scripts as the release gate.
+# iteration loop) and workflow_dispatch for on-demand runs. release.yml
+# runs the same two scripts as the release gate; the scheduled nightly run
+# lands as the msi leg of nightly-packages.yml (phase N3 of
+# docs/plans/nightly-releases.md), not as a schedule trigger here.
 permissions:
   contents: read
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "20 5 * * *"
   pull_request:
     paths:
       - installer/**
@@ -65,66 +63,3 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-  notify-on-failure:
-    # Open or update a tracking issue when the nightly run fails, so Windows
-    # packaging rot surfaces without depending on someone reading scheduled-
-    # workflow logs (same pattern as scheduled.yml). Skipped on pull_request
-    # and workflow_dispatch so debugging runs don't churn an issue.
-    needs: [build-verify]
-    if: failure() && github.event_name == 'schedule'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      issues: write
-    steps:
-      - name: Open or update tracking issue
-        uses: actions/github-script@v9
-        with:
-          script: |
-            const title = `nightly: msi workflow failing`;
-            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const body = [
-              `The nightly Windows suite-MSI build/verify failed.`,
-              ``,
-              `Likely causes: a vendor SDK download going stale (the ZWO CDN`,
-              `URLs are rolling "latest"; the QHY zip is pinned by sha256), a`,
-              `windows-latest image change, or a service regression that only`,
-              `manifests under the SCM (see scripts/verify-msi.ps1 for what`,
-              `the lifecycle run proves). Inspect the linked run; the`,
-              `msi-verify-logs artifact has the msiexec + service logs.`,
-              ``,
-              `Run: ${runUrl}`,
-              ``,
-              `This issue was opened automatically by a scheduled run that`,
-              `failed. While it stays open, each subsequent scheduled failure`,
-              `is appended here as a comment linking its own run. Closing it`,
-              `marks the failure handled — it is never re-opened; the next`,
-              `scheduled failure opens a fresh issue instead.`,
-            ].join("\n");
-            // Search only OPEN issues. While a tracking issue is open each
-            // failure appends a comment; once it is closed the failure is
-            // considered handled, so the next scheduled failure opens a
-            // fresh issue rather than resurrecting the closed one.
-            const existing = await github.paginate(github.rest.issues.listForRepo, {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              state: "open",
-              labels: "msi-nightly",
-            });
-            const match = existing.find(i => i.title === title);
-            if (match) {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: match.number,
-                body: `Failed again — run: ${runUrl}`,
-              });
-            } else {
-              await github.rest.issues.create({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                title,
-                body,
-                labels: ["msi-nightly", "ci-flake"],
-              });
-            }

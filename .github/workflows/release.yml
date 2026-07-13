@@ -129,8 +129,15 @@ jobs:
         # binaries under a right-versioned tag.
         run: |
           $tag = $env:GITHUB_REF_NAME -replace '^v', ''
-          $workspace = (Select-String -Path Cargo.toml -Pattern '^version = "(.*)"$' |
-            Select-Object -First 1).Matches[0].Groups[1].Value
+          # Same first-match extraction as build-msi.ps1 — the guard must
+          # read the version the way the build does, or the two can drift.
+          $match = Select-String -Path Cargo.toml -Pattern '^version = "(.*)"$' |
+            Select-Object -First 1
+          if (-not $match) {
+            Write-Error "could not read the workspace version from Cargo.toml"
+            exit 1
+          }
+          $workspace = $match.Matches[0].Groups[1].Value
           if ($tag -ne $workspace) {
             Write-Error "tag version '$tag' != workspace version '$workspace'"
             exit 1

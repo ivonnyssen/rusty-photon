@@ -210,7 +210,9 @@ install, per-service-class checks, failure-actions proofs, feature
 remove, uninstall — and expects a box with no prior rusty-photon state
 (CI uses `windows-latest`; don't run it on your imaging box).
 
-CI runs both scripts in three places: the `msi` workflow on PRs touching
-the packaging inputs and nightly (packaging rot — a vendor SDK URL going
-stale, a runner image change — surfaces between releases), and
-`release.yml`, where `verify-msi.ps1` gates the release upload.
+CI runs both scripts in the `msi` workflow (PRs touching the packaging
+inputs, plus `workflow_dispatch`) and in `release.yml`, where
+`verify-msi.ps1` gates the release upload. A scheduled nightly leg — so
+packaging rot (a vendor SDK URL going stale, a runner image change)
+surfaces between releases — is planned as part of
+[docs/plans/nightly-releases.md](plans/nightly-releases.md) (phase N3).
