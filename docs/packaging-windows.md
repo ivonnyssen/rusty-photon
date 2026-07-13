@@ -112,9 +112,11 @@ are untouched. Downgrades are blocked by the installer.
 The MSI ships no config files. Daemons self-create their config on first
 start at `%ProgramData%\rusty-photon\<svc>.json` (the Windows analogue of
 the Linux `/etc/rusty-photon` path). Exceptions: the config-gated four
-(above) never write one, and the two cameras run on built-in defaults
-without writing a file until settings are saved (via ui-htmx
-`config.apply`) or one is created by hand. To change settings:
+(above) never write one; the two cameras, `zwo-focuser`, and
+`phd2-guider` run on built-in defaults without writing a file until
+settings are saved (via ui-htmx `config.apply`) or one is created by
+hand; and `ui-htmx`'s own config is seeded by the installer (below). To
+change settings:
 
 ```powershell
 notepad $env:ProgramData\rusty-photon\<svc>.json

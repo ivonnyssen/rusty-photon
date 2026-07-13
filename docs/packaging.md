@@ -113,9 +113,9 @@ Packages ship no config files. Daemons self-create their config on first
 start at `/var/lib/rusty-photon/.config/rusty-photon/<svc>.json` (the
 shared user's XDG path), reachable via the `/etc/rusty-photon` symlink.
 Exceptions: the config-gated three (above) never write one, and the two
-cameras run on built-in defaults without writing a file until settings
-are saved (via ui-htmx `config.apply`) or one is created by hand at that
-path. To change settings:
+cameras, zwo-focuser, and phd2-guider run on built-in defaults without
+writing a file until settings are saved (via ui-htmx `config.apply`) or
+one is created by hand at that path. To change settings:
 
 ```sh
 sudo -e /etc/rusty-photon/<svc>.json

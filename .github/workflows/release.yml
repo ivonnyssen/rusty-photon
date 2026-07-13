@@ -108,9 +108,9 @@ jobs:
           path: filemonitor-*.tar.gz
 
   # The suite MSI (ADR-015): every service in one installer, built by the same
-  # scripts the msi workflow exercises on PRs and nightly. verify-msi.ps1 is
-  # the release gate — the full install -> per-service-class checks ->
-  # feature-remove -> uninstall lifecycle must pass before the MSI can ship.
+  # scripts the msi workflow exercises on PRs. verify-msi.ps1 is the release
+  # gate — the full install -> per-service-class checks -> feature-remove ->
+  # uninstall lifecycle must pass before the MSI can ship.
   build-windows:
     runs-on: windows-latest
     name: windows / suite msi

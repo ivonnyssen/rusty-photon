@@ -24,7 +24,7 @@ untouched.
 | W2 | Platform-dependent defaults: config path → `%PROGRAMDATA%` on Windows, serial `COM` defaults, rp data dir | Merged | #492 |
 | W3 | qhy-camera Windows: `/DELAYLOAD` + startup preflight + `doctor` subcommand | Merged | #491 |
 | W4 | WiX v5 suite (`installer/`), `scripts/build-msi.ps1` + `scripts/verify-msi.ps1`, `check-pkg-assets.sh` Windows assertions; ui-htmx driver-map seeding; `msi.yml` on-demand CI harness | Merged | #499 |
-| W5 | `release.yml` suite-MSI job + install-smoke gate + nightly verify; retire filemonitor `wix/` + cargo-wix; `docs/packaging-windows.md` | In review | `feature/windows-packaging-w5` |
+| W5 | `release.yml` suite-MSI job + install-smoke gate; retire filemonitor `wix/` + cargo-wix; `docs/packaging-windows.md` (nightly verify moved to [nightly-releases.md](nightly-releases.md) N3) | In review | `feature/windows-packaging-w5` |
 
 W1–W3 are pure code PRs (cross-platform, Linux behavior unchanged) and are
 each independently useful; W4–W5 are the packaging layer. **W1–W3 can be
