@@ -36,11 +36,10 @@ graph LR
 ```
 
 Three independent processes, three independent failure domains.
-The operator's OS process supervisor restarts the wrapper and rp
-on exit; the wrapper supervises the ASTAP child via per-request
-deadlines. See [Supervision and recovery](#supervision-and-recovery)
-below for the detail and the path to future Sentinel-driven
-restart.
+Sentinel's health supervision (or the operator's OS process
+supervisor) restarts the wrapper and rp; the wrapper supervises the
+ASTAP child via per-request deadlines. See
+[Supervision and recovery](#supervision-and-recovery) below.
 
 ### Inputs and Outputs
 
@@ -151,12 +150,12 @@ The probe is intentionally cheap: two filesystem stats, no
 subprocess spawn. Sentinel (or any operational tooling) may probe
 at high frequency without costing wrapper performance.
 
-How Sentinel uses this endpoint — vs. relying purely on event-stream
-signals and the operator-configured restart command — is a
-Sentinel-side design question. The currently-documented Sentinel
-watchdog flow in `rp.md` only describes Alpaca service health
-probes; whether to extend it to non-Alpaca rp-managed services is
-addressed by the implementation plan's Phase 5.
+Sentinel consumes this endpoint through its
+[service health supervision](sentinel.md#service-health-supervision):
+a `health` block on the wrapper's `services` entry polls it on a
+configurable cadence and runs the configured restart command after
+consecutive failures. Anything else that speaks HTTP (Prometheus
+blackbox exporter, Nagios) can probe it too.
 
 ### Subprocess Supervision
 
@@ -468,22 +467,23 @@ filter snippet.
 ## Supervision and recovery
 
 The wrapper sits inside a layered supervision design with three
-distinct failure domains. **Today, the wrapper-and-rp domains are
-restarted by the operator's OS-level process supervisor** (systemd /
-launchd / NSSM); see the [README's per-OS recipes](../../services/plate-solver/README.md#process-supervisor-recipes).
-Automated Sentinel-driven restart of rp-managed services is a future
-design item — the current Sentinel
-([`docs/services/sentinel.md`](sentinel.md)) is an Alpaca
-SafetyMonitor poller and notifier, not a generic HTTP service
-supervisor. The "Sentinel Watchdog Integration" section in `rp.md` is
-a forward-looking design.
+distinct failure domains. **The preferred supervisor for this
+service is Sentinel's
+[service health supervision](sentinel.md#service-health-supervision)**:
+it polls `GET /health` on a configurable cadence and runs an
+operator-configured restart command after consecutive failures, which
+covers both crashes *and* hangs (a wedged wrapper whose process is
+still alive). The operator's OS-level process supervisor (systemd /
+launchd / NSSM) remains a documented alternative — and the natural
+executor of Sentinel's restart command; see the
+[README's per-OS recipes](../../services/plate-solver/README.md#process-supervisor-recipes).
 
 ### Failure Domains
 
-| Domain | Today's supervisor | Detection | Action |
-|--------|--------------------|-----------|--------|
-| `rp` (gateway) | Operator's process supervisor (systemd / launchd / NSSM) | Process exit (panic, OOM, etc.) | Supervisor restarts per its policy (`Restart=on-failure`, `KeepAlive`, etc.) |
-| `plate-solver` (this service) | Operator's process supervisor | Process exit; or external `/health` probe | Same as above. The wrapper exits non-zero on config-validation failure and on internal panic; the supervisor restarts it. |
+| Domain | Supervisor | Detection | Action |
+|--------|------------|-----------|--------|
+| `rp` (gateway) | Sentinel health supervision and/or the operator's process supervisor (systemd / launchd / NSSM) | Sentinel `GET /health` probes; process exit (panic, OOM, etc.) | Sentinel runs the configured restart command after consecutive failed probes (with backoff); the OS supervisor restarts on exit per its policy (`Restart=on-failure`, `KeepAlive`, etc.) |
+| `plate-solver` (this service) | Sentinel health supervision and/or the operator's process supervisor | Sentinel `GET /health` probes (crash **and** hang coverage); process exit | Same as above. The wrapper exits non-zero on config-validation failure and on internal panic; a hung-but-alive wrapper fails its probes and gets restarted by Sentinel. |
 | `astap_cli` (child) | This service | Per-request wall-clock deadline | Graceful signal → 2 s grace → force-kill. Unix: `SIGTERM` → `SIGKILL`. Windows: `CTRL_BREAK_EVENT` (with `CREATE_NEW_PROCESS_GROUP` at spawn) → `TerminateProcess`. |
 
 ### Belt-and-Suspenders Outer Timeout
@@ -502,14 +502,20 @@ transient error and may be retried by the orchestrator) and nothing
 else — no session state, no warm caches, no in-memory artifacts the
 operator cares about.
 
-### Forward work: Sentinel extension
+### Sentinel-driven supervision
 
-When Sentinel grows generic HTTP service supervision — periodic
-`GET /health` probes, configurable restart commands per service —
-this wrapper's `/health` endpoint and graceful-shutdown semantics are
-already shaped to fit. Until then, the operator's process supervisor
-is the sanctioned recovery mechanism, and `/health` is exposed for
-operational tooling (Prometheus blackbox exporter, Nagios, etc.).
+Sentinel's [service health supervision](sentinel.md#service-health-supervision)
+is the first-party answer: a `health` block on this service's entry
+in Sentinel's `services` map polls `GET /health` (typically every
+30–60 s), and after a configurable number of consecutive failures
+runs the configured restart command — backing off between attempts
+and notifying on every autonomous restart. The wrapper's
+graceful-shutdown semantics (SIGTERM handler) compose cleanly with
+`systemctl restart`-style commands. See the
+[README's Sentinel integration section](../../services/plate-solver/README.md#sentinel-integration)
+for a concrete config recipe. `/health` remains available to any
+other operational tooling (Prometheus blackbox exporter, Nagios,
+etc.).
 
 ## MVP Scope
 

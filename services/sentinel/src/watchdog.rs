@@ -25,10 +25,11 @@ use crate::corrective::{Corrective, CorrectiveTarget};
 use crate::notifier::{Notification, NotificationRecord, Notifier};
 use crate::state::StateHandle;
 
-/// A push-based monitor that owns a long-lived connection and reacts to a
-/// stream of events, rather than being polled on an interval. The engine
-/// spawns one task per `EventMonitor` and runs it until the cancellation
-/// token fires.
+/// A self-driving monitor task that owns its own lifecycle — a long-lived
+/// connection it reacts to (the operation watchdog), or a poll loop it paces
+/// itself (the service health supervisor) — rather than being polled by the
+/// engine on an interval. The engine spawns one task per `EventMonitor` and
+/// runs it until the cancellation token fires.
 #[async_trait]
 pub trait EventMonitor: Send + Sync + std::fmt::Debug {
     /// Display name (used in logs and notification history records).
@@ -881,7 +882,7 @@ mod tests {
             messages: Arc::clone(&messages),
         });
         let corrective = Arc::new(RecordingCorrective::default());
-        let state = new_state_handle(vec![], 100);
+        let state = new_state_handle(vec![], vec![], 100);
         let monitor = OperationDeadlineMonitor::new(
             "Test Watchdog",
             source,

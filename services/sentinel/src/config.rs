@@ -299,6 +299,37 @@ pub struct ServiceConfig {
     /// restart endpoint and the watchdog ladder's restart rung.
     #[serde(default = "default_max_restart_duration", with = "humantime_serde")]
     pub max_restart_duration: Duration,
+    /// Optional HTTP health supervision. Presence of this block opts the
+    /// service in: sentinel probes `health.url` on a cadence and autonomously
+    /// runs `restart_command` after consecutive failures.
+    #[serde(default)]
+    pub health: Option<HealthConfig>,
+}
+
+/// Per-service HTTP health supervision: sentinel GETs `url` every
+/// `poll_interval` and, after `failure_threshold` consecutive failures, runs
+/// the service's `restart_command` — backing off between attempts (doubling
+/// from `restart_backoff` up to `restart_backoff_max`) while probing
+/// continues at the same cadence. Only a clean 200 counts as alive; the
+/// response body is never parsed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HealthConfig {
+    /// Health URL probed with GET, e.g. `http://localhost:11131/health`.
+    pub url: String,
+    /// Probe cadence. Unchanged during outages — only restarting backs off.
+    #[serde(default = "default_health_poll_interval", with = "humantime_serde")]
+    pub poll_interval: Duration,
+    /// Consecutive failed probes before the first autonomous restart.
+    #[serde(default = "default_failure_threshold")]
+    pub failure_threshold: u32,
+    /// Wait before a second restart attempt when the first did not cure the
+    /// service; doubles after every attempt.
+    #[serde(default = "default_restart_backoff", with = "humantime_serde")]
+    pub restart_backoff: Duration,
+    /// Ceiling for the doubling backoff.
+    #[serde(default = "default_restart_backoff_max", with = "humantime_serde")]
+    pub restart_backoff_max: Duration,
 }
 
 /// Dashboard configuration
@@ -379,6 +410,22 @@ fn default_watchdog_buffer() -> Duration {
 
 fn default_max_restart_duration() -> Duration {
     Duration::from_secs(60)
+}
+
+fn default_health_poll_interval() -> Duration {
+    Duration::from_secs(30)
+}
+
+fn default_failure_threshold() -> u32 {
+    3
+}
+
+fn default_restart_backoff() -> Duration {
+    Duration::from_secs(60)
+}
+
+fn default_restart_backoff_max() -> Duration {
+    Duration::from_secs(900)
 }
 
 fn default_watchdog_message_template() -> String {
@@ -839,6 +886,77 @@ mod tests {
             rp.restart_command.as_deref(),
             Some("systemctl --user restart rp")
         );
+    }
+
+    #[test]
+    fn parse_service_health_full() {
+        let json = r#"{
+            "services": {
+                "plate-solver": {
+                    "restart_command": "systemctl restart plate-solver",
+                    "health": {
+                        "url": "http://localhost:11131/health",
+                        "poll_interval": "10s",
+                        "failure_threshold": 5,
+                        "restart_backoff": "30s",
+                        "restart_backoff_max": "5m"
+                    }
+                }
+            }
+        }"#;
+        let config: Config = serde_json::from_str(json).unwrap();
+        let health = config
+            .services
+            .get("plate-solver")
+            .unwrap()
+            .health
+            .as_ref()
+            .unwrap();
+        assert_eq!(health.url, "http://localhost:11131/health");
+        assert_eq!(health.poll_interval, Duration::from_secs(10));
+        assert_eq!(health.failure_threshold, 5);
+        assert_eq!(health.restart_backoff, Duration::from_secs(30));
+        assert_eq!(health.restart_backoff_max, Duration::from_secs(300));
+    }
+
+    #[test]
+    fn service_health_defaults() {
+        let json = r#"{
+            "services": { "svc": { "health": { "url": "http://x/health" } } }
+        }"#;
+        let config: Config = serde_json::from_str(json).unwrap();
+        let health = config.services.get("svc").unwrap().health.as_ref().unwrap();
+        assert_eq!(health.poll_interval, Duration::from_secs(30));
+        assert_eq!(health.failure_threshold, 3);
+        assert_eq!(health.restart_backoff, Duration::from_secs(60));
+        assert_eq!(health.restart_backoff_max, Duration::from_secs(900));
+    }
+
+    #[test]
+    fn service_health_absent_by_default() {
+        let json = r#"{
+            "services": { "svc": { "restart_command": "restart" } }
+        }"#;
+        let config: Config = serde_json::from_str(json).unwrap();
+        assert!(config.services.get("svc").unwrap().health.is_none());
+    }
+
+    #[test]
+    fn service_health_requires_url() {
+        let json = r#"{
+            "services": { "svc": { "health": { "poll_interval": "10s" } } }
+        }"#;
+        let err = serde_json::from_str::<Config>(json).unwrap_err();
+        assert!(err.to_string().contains("url"), "{err}");
+    }
+
+    #[test]
+    fn service_health_rejects_unknown_field() {
+        let json = r#"{
+            "services": { "svc": { "health": { "url": "http://x", "bogus": 1 } } }
+        }"#;
+        let err = serde_json::from_str::<Config>(json).unwrap_err();
+        assert!(err.to_string().contains("bogus"), "{err}");
     }
 
     #[test]

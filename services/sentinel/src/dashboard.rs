@@ -25,6 +25,17 @@ fn duration_to_ms_for_js(d: Duration) -> u64 {
     u64::try_from(rounded).unwrap_or(u64::MAX)
 }
 
+/// Escape a string for interpolation into server-rendered HTML. Names and
+/// messages originate from config keys and notification text, so they must
+/// not be treated as markup.
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
 /// Dashboard application state
 #[derive(Clone)]
 pub struct DashboardState {
@@ -42,6 +53,7 @@ pub fn build_router(state: StateHandle, restarts: Arc<RestartManager>) -> Router
         .route("/", get(index_handler))
         .route("/api/status", get(status_handler))
         .route("/api/history", get(history_handler))
+        .route("/api/services", get(services_handler))
         .route("/api/services/{name}/restart", post(restart_handler))
         .route("/health", get(health_handler))
         .with_state(dashboard_state)
@@ -85,7 +97,61 @@ async fn index_handler(State(dashboard): State<DashboardState>) -> impl IntoResp
                     <td style="padding: 0.5rem;">{}</td>
                     <td style="padding: 0.5rem;">{}</td>
                 </tr>"#,
-                m.name, color, bg, m.state, m.consecutive_errors, last_check, next_check
+                html_escape(&m.name),
+                color,
+                bg,
+                m.state,
+                m.consecutive_errors,
+                last_check,
+                next_check
+            )
+        })
+        .collect();
+
+    let service_rows: String = state
+        .services
+        .iter()
+        .map(|s| {
+            let (color, bg) = match s.health {
+                crate::state::ServiceHealth::Up => ("#155724", "#d4edda"),
+                crate::state::ServiceHealth::Down => ("#721c24", "#f8d7da"),
+                crate::state::ServiceHealth::Unknown => ("#383d41", "#e2e3e5"),
+            };
+            let last_probe = if s.last_probe_epoch_ms == 0 {
+                "Never".to_string()
+            } else {
+                format!(
+                    r#"<script>document.write(new Date({}).toLocaleTimeString())</script>"#,
+                    s.last_probe_epoch_ms
+                )
+            };
+            let next_restart = match s.next_restart_epoch_ms {
+                None => "&mdash;".to_string(),
+                Some(at) => format!(
+                    r#"<script>document.write(new Date({at}).toLocaleTimeString())</script>"#
+                ),
+            };
+            format!(
+                r#"<tr style="border-bottom: 1px solid #dee2e6;">
+                    <td style="padding: 0.5rem;">{}</td>
+                    <td style="padding: 0.5rem;">
+                        <span style="display: inline-block; padding: 0.25em 0.6em; border-radius: 0.25rem; font-size: 0.85em; font-weight: 600; color: {}; background-color: {};">{}</span>
+                    </td>
+                    <td style="padding: 0.5rem;">{}</td>
+                    <td style="padding: 0.5rem;">{}</td>
+                    <td style="padding: 0.5rem;">{}</td>
+                    <td style="padding: 0.5rem;">{}</td>
+                    <td style="padding: 0.5rem;">{}</td>
+                </tr>"#,
+                html_escape(&s.name),
+                color,
+                bg,
+                s.health,
+                s.consecutive_failures,
+                s.restarts_in_outage,
+                s.total_restarts,
+                last_probe,
+                next_restart
             )
         })
         .collect();
@@ -103,7 +169,10 @@ async fn index_handler(State(dashboard): State<DashboardState>) -> impl IntoResp
                     <td style="padding: 0.5rem;">{}</td>
                     <td style="padding: 0.5rem;">{}</td>
                 </tr>"#,
-                h.monitor_name, h.message, h.notifier_type, status
+                html_escape(&h.monitor_name),
+                html_escape(&h.message),
+                html_escape(&h.notifier_type),
+                status
             )
         })
         .collect();
@@ -116,6 +185,9 @@ async fn index_handler(State(dashboard): State<DashboardState>) -> impl IntoResp
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Sentinel Dashboard</title>
     <script>
+        function esc(v) {{
+            return String(v).replace(/[&<>"']/g, c => ({{'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}})[c]);
+        }}
         function refreshData() {{
             fetch('/api/status')
                 .then(r => r.json())
@@ -130,13 +202,39 @@ async fn index_handler(State(dashboard): State<DashboardState>) -> impl IntoResp
                         const lastCheck = m.last_poll_epoch_ms === 0 ? 'Never' : new Date(m.last_poll_epoch_ms).toLocaleTimeString();
                         const nextCheck = m.last_poll_epoch_ms === 0 ? 'Pending' : new Date(m.last_poll_epoch_ms + m.polling_interval_ms).toLocaleTimeString();
                         return `<tr style="border-bottom: 1px solid #dee2e6;">
-                            <td style="padding: 0.5rem;">${{m.name}}</td>
+                            <td style="padding: 0.5rem;">${{esc(m.name)}}</td>
                             <td style="padding: 0.5rem;">
                                 <span style="display: inline-block; padding: 0.25em 0.6em; border-radius: 0.25rem; font-size: 0.85em; font-weight: 600; color: ${{color}}; background-color: ${{bg}};">${{m.state}}</span>
                             </td>
                             <td style="padding: 0.5rem;">${{m.consecutive_errors}}</td>
                             <td style="padding: 0.5rem;">${{lastCheck}}</td>
                             <td style="padding: 0.5rem;">${{nextCheck}}</td>
+                        </tr>`;
+                    }}).join('');
+                }});
+            fetch('/api/services')
+                .then(r => r.json())
+                .then(data => {{
+                    const tbody = document.getElementById('service-body');
+                    tbody.innerHTML = data.map(s => {{
+                        const colors = {{
+                            'up': ['#155724', '#d4edda'],
+                            'down': ['#721c24', '#f8d7da'],
+                        }};
+                        const [color, bg] = colors[s.health] || ['#383d41', '#e2e3e5'];
+                        const label = s.health.charAt(0).toUpperCase() + s.health.slice(1);
+                        const lastProbe = s.last_probe_epoch_ms === 0 ? 'Never' : new Date(s.last_probe_epoch_ms).toLocaleTimeString();
+                        const nextRestart = s.next_restart_epoch_ms === null ? '—' : new Date(s.next_restart_epoch_ms).toLocaleTimeString();
+                        return `<tr style="border-bottom: 1px solid #dee2e6;">
+                            <td style="padding: 0.5rem;">${{esc(s.name)}}</td>
+                            <td style="padding: 0.5rem;">
+                                <span style="display: inline-block; padding: 0.25em 0.6em; border-radius: 0.25rem; font-size: 0.85em; font-weight: 600; color: ${{color}}; background-color: ${{bg}};">${{label}}</span>
+                            </td>
+                            <td style="padding: 0.5rem;">${{s.consecutive_failures}}</td>
+                            <td style="padding: 0.5rem;">${{s.restarts_in_outage}}</td>
+                            <td style="padding: 0.5rem;">${{s.total_restarts}}</td>
+                            <td style="padding: 0.5rem;">${{lastProbe}}</td>
+                            <td style="padding: 0.5rem;">${{nextRestart}}</td>
                         </tr>`;
                     }}).join('');
                 }});
@@ -147,9 +245,9 @@ async fn index_handler(State(dashboard): State<DashboardState>) -> impl IntoResp
                     tbody.innerHTML = data.reverse().map(h => {{
                         const status = h.success ? 'OK' : 'Failed';
                         return `<tr style="border-bottom: 1px solid #dee2e6;">
-                            <td style="padding: 0.5rem;">${{h.monitor_name}}</td>
-                            <td style="padding: 0.5rem;">${{h.message}}</td>
-                            <td style="padding: 0.5rem;">${{h.notifier_type}}</td>
+                            <td style="padding: 0.5rem;">${{esc(h.monitor_name)}}</td>
+                            <td style="padding: 0.5rem;">${{esc(h.message)}}</td>
+                            <td style="padding: 0.5rem;">${{esc(h.notifier_type)}}</td>
                             <td style="padding: 0.5rem;">${{status}}</td>
                         </tr>`;
                     }}).join('');
@@ -176,6 +274,23 @@ async fn index_handler(State(dashboard): State<DashboardState>) -> impl IntoResp
         </table>
     </section>
     <section>
+        <h2>Supervised Services</h2>
+        <table style="width: 100%; border-collapse: collapse;">
+            <thead>
+                <tr style="border-bottom: 2px solid #dee2e6;">
+                    <th style="padding: 0.5rem; text-align: left;">Name</th>
+                    <th style="padding: 0.5rem; text-align: left;">Health</th>
+                    <th style="padding: 0.5rem; text-align: left;">Failures</th>
+                    <th style="padding: 0.5rem; text-align: left;">Restarts (Outage)</th>
+                    <th style="padding: 0.5rem; text-align: left;">Restarts (Total)</th>
+                    <th style="padding: 0.5rem; text-align: left;">Last Probe</th>
+                    <th style="padding: 0.5rem; text-align: left;">Next Restart</th>
+                </tr>
+            </thead>
+            <tbody id="service-body">{service_rows}</tbody>
+        </table>
+    </section>
+    <section>
         <h2>Notification History</h2>
         <table style="width: 100%; border-collapse: collapse;">
             <thead>
@@ -192,6 +307,7 @@ async fn index_handler(State(dashboard): State<DashboardState>) -> impl IntoResp
 </body>
 </html>"#,
         monitor_rows = monitor_rows,
+        service_rows = service_rows,
         history_rows = history_rows,
     );
 
@@ -220,6 +336,34 @@ async fn status_handler(State(dashboard): State<DashboardState>) -> impl IntoRes
         .collect();
 
     axum::Json(statuses)
+}
+
+/// `GET /api/services`: one entry per health-supervised service (seeded from
+/// config, so entries exist before their first probe). Empty array when no
+/// `services` entry has a `health` block.
+async fn services_handler(State(dashboard): State<DashboardState>) -> impl IntoResponse {
+    let state = dashboard.state.read().await;
+
+    let services: Vec<serde_json::Value> = state
+        .services
+        .iter()
+        .map(|s| {
+            serde_json::json!({
+                "name": s.name,
+                // "unknown" | "up" | "down" (the enum's lowercase serde form).
+                "health": s.health,
+                "last_probe_epoch_ms": s.last_probe_epoch_ms,
+                "consecutive_failures": s.consecutive_failures,
+                "restarts_in_outage": s.restarts_in_outage,
+                "total_restarts": s.total_restarts,
+                "next_restart_epoch_ms": s.next_restart_epoch_ms,
+                // Integer ms on the wire, like polling_interval_ms above.
+                "poll_interval_ms": duration_to_ms_for_js(s.poll_interval),
+            })
+        })
+        .collect();
+
+    axum::Json(services)
 }
 
 async fn history_handler(State(dashboard): State<DashboardState>) -> impl IntoResponse {
@@ -314,12 +458,63 @@ mod tests {
         assert_eq!(duration_to_ms_for_js(Duration::MAX), u64::MAX);
     }
 
+    #[test]
+    fn html_escape_neutralizes_markup() {
+        assert_eq!(
+            html_escape(r#"<img src=x onerror="alert('&')">"#),
+            "&lt;img src=x onerror=&quot;alert(&#39;&amp;&#39;)&quot;&gt;"
+        );
+        assert_eq!(html_escape("plate-solver"), "plate-solver");
+    }
+
+    #[tokio::test]
+    async fn index_escapes_names_and_messages() {
+        let state = new_state_handle(
+            vec![("<b>mon</b>".to_string(), Duration::from_secs(30))],
+            vec![("<script>svc</script>".to_string(), Duration::from_secs(30))],
+            10,
+        );
+        {
+            let mut s = state.write().await;
+            s.add_notification(NotificationRecord {
+                monitor_name: "<script>svc</script>".to_string(),
+                notifier_type: "pushover".to_string(),
+                message: "restarted <autonomously>".to_string(),
+                success: true,
+                error: None,
+                timestamp_epoch_ms: 1000,
+            });
+        }
+        let app = router(state);
+        let response = app
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert!(!html.contains("<b>mon</b>"), "monitor name not escaped");
+        assert!(
+            !html.contains("<script>svc</script>"),
+            "service name not escaped"
+        );
+        assert!(
+            !html.contains("restarted <autonomously>"),
+            "history message not escaped"
+        );
+        assert!(html.contains("&lt;b&gt;mon&lt;/b&gt;"));
+        assert!(html.contains("&lt;script&gt;svc&lt;/script&gt;"));
+        assert!(html.contains("restarted &lt;autonomously&gt;"));
+    }
+
     fn setup_state() -> StateHandle {
         new_state_handle(
             vec![(
                 "Test Monitor".to_string(),
                 std::time::Duration::from_secs(30),
             )],
+            vec![],
             10,
         )
     }
@@ -421,6 +616,77 @@ mod tests {
         assert!(html.contains("Sentinel Dashboard"));
         assert!(html.contains("Last Check"));
         assert!(html.contains("Next Check"));
+        assert!(html.contains("Supervised Services"));
+        assert!(html.contains("Next Restart"));
+    }
+
+    #[tokio::test]
+    async fn services_returns_json() {
+        let state = new_state_handle(
+            vec![],
+            vec![("plate-solver".to_string(), Duration::from_secs(30))],
+            10,
+        );
+        {
+            let mut s = state.write().await;
+            s.set_service_health(crate::state::ServiceHealthStatus {
+                name: "plate-solver".to_string(),
+                health: crate::state::ServiceHealth::Up,
+                last_probe_epoch_ms: 1000,
+                consecutive_failures: 0,
+                restarts_in_outage: 0,
+                total_restarts: 3,
+                next_restart_epoch_ms: None,
+                poll_interval: Duration::from_secs(30),
+            });
+        }
+        let app = router(state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/services")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json.len(), 1);
+        assert_eq!(json[0]["name"], "plate-solver");
+        assert_eq!(json[0]["health"], "up");
+        assert_eq!(json[0]["last_probe_epoch_ms"], 1000);
+        assert_eq!(json[0]["consecutive_failures"], 0);
+        assert_eq!(json[0]["restarts_in_outage"], 0);
+        assert_eq!(json[0]["total_restarts"], 3);
+        assert_eq!(json[0]["next_restart_epoch_ms"], serde_json::Value::Null);
+        assert_eq!(json[0]["poll_interval_ms"], 30000);
+    }
+
+    #[tokio::test]
+    async fn services_empty_without_supervision() {
+        let state = setup_state();
+        let app = router(state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/services")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+        assert!(json.is_empty());
     }
 
     /// A [`crate::corrective::Restarter`] that accepts every command — the
@@ -498,7 +764,7 @@ mod tests {
 
     #[tokio::test]
     async fn status_empty_monitors() {
-        let state = new_state_handle(vec![], 10);
+        let state = new_state_handle(vec![], vec![], 10);
         let app = router(state);
         let response = app
             .oneshot(

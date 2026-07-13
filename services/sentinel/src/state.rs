@@ -22,17 +22,80 @@ pub struct MonitorStatus {
     pub polling_interval: Duration,
 }
 
+/// Health of a supervised service as seen by its health supervisor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ServiceHealth {
+    /// Not probed yet.
+    Unknown,
+    /// Last probe answered a clean 200.
+    Up,
+    /// Last probe failed (non-200, timeout, or connection error).
+    Down,
+}
+
+impl std::fmt::Display for ServiceHealth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ServiceHealth::Unknown => write!(f, "Unknown"),
+            ServiceHealth::Up => write!(f, "Up"),
+            ServiceHealth::Down => write!(f, "Down"),
+        }
+    }
+}
+
+/// Snapshot of one supervised service, published by its health supervisor
+/// after every probe (single writer per service).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServiceHealthStatus {
+    pub name: String,
+    pub health: ServiceHealth,
+    /// 0 until the first probe completes.
+    pub last_probe_epoch_ms: u64,
+    pub consecutive_failures: u32,
+    /// Autonomous restarts in the current outage; resets on recovery.
+    pub restarts_in_outage: u32,
+    /// Autonomous restarts since sentinel started.
+    pub total_restarts: u64,
+    /// Backoff-scheduled earliest next autonomous restart; `None` when none
+    /// is scheduled.
+    pub next_restart_epoch_ms: Option<u64>,
+    #[serde(with = "humantime_serde")]
+    pub poll_interval: Duration,
+}
+
+impl ServiceHealthStatus {
+    /// The unseeded/unprobed snapshot every supervised service starts from.
+    pub fn unknown(name: String, poll_interval: Duration) -> Self {
+        Self {
+            name,
+            health: ServiceHealth::Unknown,
+            last_probe_epoch_ms: 0,
+            consecutive_failures: 0,
+            restarts_in_outage: 0,
+            total_restarts: 0,
+            next_restart_epoch_ms: None,
+            poll_interval,
+        }
+    }
+}
+
 /// Shared state accessible by engine and dashboard
 #[derive(Debug)]
 pub struct SharedState {
     pub monitors: Vec<MonitorStatus>,
+    pub services: Vec<ServiceHealthStatus>,
     pub history: VecDeque<NotificationRecord>,
     pub history_max_size: usize,
     pub started_at: Instant,
 }
 
 impl SharedState {
-    pub fn new(monitors_with_intervals: Vec<(String, Duration)>, history_max_size: usize) -> Self {
+    pub fn new(
+        monitors_with_intervals: Vec<(String, Duration)>,
+        supervised_services: Vec<(String, Duration)>,
+        history_max_size: usize,
+    ) -> Self {
         let monitors = monitors_with_intervals
             .into_iter()
             .map(|(name, polling_interval)| MonitorStatus {
@@ -45,11 +108,27 @@ impl SharedState {
             })
             .collect();
 
+        let services = supervised_services
+            .into_iter()
+            .map(|(name, poll_interval)| ServiceHealthStatus::unknown(name, poll_interval))
+            .collect();
+
         Self {
             monitors,
+            services,
             history: VecDeque::with_capacity(history_max_size),
             history_max_size,
             started_at: Instant::now(),
+        }
+    }
+
+    /// Replace a supervised service's snapshot (matched by name). The
+    /// supervisor's local state machine is authoritative; this is push-only.
+    /// An unseeded name is inserted defensively.
+    pub fn set_service_health(&mut self, status: ServiceHealthStatus) {
+        match self.services.iter_mut().find(|s| s.name == status.name) {
+            Some(slot) => *slot = status,
+            None => self.services.push(status),
         }
     }
 
@@ -104,10 +183,12 @@ pub type StateHandle = Arc<RwLock<SharedState>>;
 
 pub fn new_state_handle(
     monitors_with_intervals: Vec<(String, Duration)>,
+    supervised_services: Vec<(String, Duration)>,
     history_max_size: usize,
 ) -> StateHandle {
     Arc::new(RwLock::new(SharedState::new(
         monitors_with_intervals,
+        supervised_services,
         history_max_size,
     )))
 }
@@ -125,6 +206,7 @@ mod tests {
                 ("m1".to_string(), Duration::from_secs(30)),
                 ("m2".to_string(), Duration::from_secs(60)),
             ],
+            vec![],
             10,
         );
         assert_eq!(state.monitors.len(), 2);
@@ -136,7 +218,11 @@ mod tests {
 
     #[test]
     fn update_monitor_returns_true_on_change() {
-        let mut state = SharedState::new(vec![("m1".to_string(), Duration::from_secs(30))], 10);
+        let mut state = SharedState::new(
+            vec![("m1".to_string(), Duration::from_secs(30))],
+            vec![],
+            10,
+        );
         let changed = state.update_monitor("m1", MonitorState::Safe, 1000);
         assert!(changed);
         assert_eq!(state.monitors[0].state, MonitorState::Safe);
@@ -145,7 +231,11 @@ mod tests {
 
     #[test]
     fn update_monitor_returns_false_on_same_state() {
-        let mut state = SharedState::new(vec![("m1".to_string(), Duration::from_secs(30))], 10);
+        let mut state = SharedState::new(
+            vec![("m1".to_string(), Duration::from_secs(30))],
+            vec![],
+            10,
+        );
         state.update_monitor("m1", MonitorState::Safe, 1000);
         let changed = state.update_monitor("m1", MonitorState::Safe, 2000);
         assert!(!changed);
@@ -155,7 +245,11 @@ mod tests {
 
     #[test]
     fn update_unknown_increments_error_count() {
-        let mut state = SharedState::new(vec![("m1".to_string(), Duration::from_secs(30))], 10);
+        let mut state = SharedState::new(
+            vec![("m1".to_string(), Duration::from_secs(30))],
+            vec![],
+            10,
+        );
         state.update_monitor("m1", MonitorState::Unknown, 1000);
         assert_eq!(state.monitors[0].consecutive_errors, 1);
         state.update_monitor("m1", MonitorState::Unknown, 2000);
@@ -164,7 +258,11 @@ mod tests {
 
     #[test]
     fn update_resets_error_count_on_recovery() {
-        let mut state = SharedState::new(vec![("m1".to_string(), Duration::from_secs(30))], 10);
+        let mut state = SharedState::new(
+            vec![("m1".to_string(), Duration::from_secs(30))],
+            vec![],
+            10,
+        );
         state.update_monitor("m1", MonitorState::Unknown, 1000);
         state.update_monitor("m1", MonitorState::Unknown, 2000);
         assert_eq!(state.monitors[0].consecutive_errors, 2);
@@ -174,14 +272,18 @@ mod tests {
 
     #[test]
     fn update_unknown_monitor_returns_false() {
-        let mut state = SharedState::new(vec![("m1".to_string(), Duration::from_secs(30))], 10);
+        let mut state = SharedState::new(
+            vec![("m1".to_string(), Duration::from_secs(30))],
+            vec![],
+            10,
+        );
         let changed = state.update_monitor("nonexistent", MonitorState::Safe, 1000);
         assert!(!changed);
     }
 
     #[test]
     fn history_respects_max_size() {
-        let mut state = SharedState::new(vec![], 2);
+        let mut state = SharedState::new(vec![], vec![], 2);
         for i in 0..5 {
             state.add_notification(NotificationRecord {
                 monitor_name: format!("m{}", i),
@@ -199,7 +301,11 @@ mod tests {
 
     #[test]
     fn get_monitor_state() {
-        let mut state = SharedState::new(vec![("m1".to_string(), Duration::from_secs(30))], 10);
+        let mut state = SharedState::new(
+            vec![("m1".to_string(), Duration::from_secs(30))],
+            vec![],
+            10,
+        );
         assert_eq!(state.get_monitor_state("m1"), Some(MonitorState::Unknown));
         state.update_monitor("m1", MonitorState::Safe, 1000);
         assert_eq!(state.get_monitor_state("m1"), Some(MonitorState::Safe));
@@ -208,7 +314,51 @@ mod tests {
 
     #[test]
     fn get_consecutive_errors_for_unknown_monitor_returns_zero() {
-        let state = SharedState::new(vec![("m1".to_string(), Duration::from_secs(30))], 10);
+        let state = SharedState::new(
+            vec![("m1".to_string(), Duration::from_secs(30))],
+            vec![],
+            10,
+        );
         assert_eq!(state.get_monitor_consecutive_errors("nonexistent"), 0);
+    }
+
+    #[test]
+    fn new_state_seeds_supervised_services_unknown() {
+        let state = SharedState::new(
+            vec![],
+            vec![("plate-solver".to_string(), Duration::from_secs(30))],
+            10,
+        );
+        assert_eq!(state.services.len(), 1);
+        let service = &state.services[0];
+        assert_eq!(service.name, "plate-solver");
+        assert_eq!(service.health, ServiceHealth::Unknown);
+        assert_eq!(service.last_probe_epoch_ms, 0);
+        assert_eq!(service.consecutive_failures, 0);
+        assert_eq!(service.restarts_in_outage, 0);
+        assert_eq!(service.total_restarts, 0);
+        assert_eq!(service.next_restart_epoch_ms, None);
+        assert_eq!(service.poll_interval, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn set_service_health_replaces_by_name() {
+        let mut state = SharedState::new(
+            vec![],
+            vec![("svc".to_string(), Duration::from_secs(30))],
+            10,
+        );
+        let mut status = ServiceHealthStatus::unknown("svc".to_string(), Duration::from_secs(30));
+        status.health = ServiceHealth::Down;
+        status.consecutive_failures = 2;
+        state.set_service_health(status);
+        assert_eq!(state.services.len(), 1, "replace, not append");
+        assert_eq!(state.services[0].health, ServiceHealth::Down);
+        assert_eq!(state.services[0].consecutive_failures, 2);
+
+        // An unseeded name is inserted defensively.
+        let other = ServiceHealthStatus::unknown("other".to_string(), Duration::from_secs(5));
+        state.set_service_health(other);
+        assert_eq!(state.services.len(), 2);
     }
 }
