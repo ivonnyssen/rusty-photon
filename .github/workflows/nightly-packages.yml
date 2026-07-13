@@ -17,13 +17,20 @@
 #              rpms' declared requires resolve — N2). Building without
 #              installing is not a gate: nothing publishes unless every
 #              enabled leg passed its verifiers.
+#   msi      — the Windows suite MSI (ADR-015) with the nightly version
+#              stamp; its verifier additionally installs over the
+#              previously PUBLISHED nightly MSI, proving the
+#              AllowSameVersionUpgrades in-place upgrade that release-tag
+#              testing never exercises (phase N3).
 #   publish  — all-or-nothing across the enabled legs, so the release is
 #              always one coherent SHA with a complete asset set.
 #   notify-on-failure — tracking issue on scheduled failures, label
 #              `nightly-packages` (same pattern as scheduled.yml).
 #
 # Thin workflow, thick scripts: the legs drive scripts/build-packages.sh +
-# scripts/verify-packages.sh, shared with on-demand builds on the rigs.
+# scripts/verify-packages.sh (shared with on-demand builds on the rigs) and
+# scripts/build-msi.ps1 + scripts/verify-msi.ps1 (shared with msi.yml and
+# release.yml).
 permissions:
   contents: read
 
@@ -32,6 +39,11 @@ on:
     # 05:07 UTC — after pi-nightly (04:00), before the 07:07 nightly cluster.
     - cron: "7 5 * * *"
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build + verify every leg but skip publish (validate a branch without touching the nightly channel)"
+        type: boolean
+        default: false
 
 # Don't cancel an in-flight nightly if a manual dispatch fires — losing a
 # scheduled run is worse than running two back-to-back (pi-nightly reasoning).
@@ -53,7 +65,11 @@ jobs:
       skip: ${{ steps.decide.outputs.skip }}
       sha: ${{ steps.decide.outputs.sha }}
       date: ${{ steps.version.outputs.date }}
-      deb_version: ${{ steps.version.outputs.deb_version }}
+      # The canonical +nightly string: the Debian version verbatim, the
+      # MSI filename/ARP-comments string (build-msi.ps1 renders the MSI
+      # ProductVersion from it), and the stamp build-packages.sh derives
+      # the rpm ^ dialect from.
+      nightly_version: ${{ steps.version.outputs.nightly_version }}
     steps:
       - uses: actions/checkout@v7
       - name: Skip if the published nightly already has this SHA
@@ -82,7 +98,7 @@ jobs:
           date=$(date -u +%Y%m%d)
           short=$(git rev-parse --short=7 HEAD)
           echo "date=$date" >> "$GITHUB_OUTPUT"
-          echo "deb_version=${base}+nightly.${date}.g${short}" >> "$GITHUB_OUTPUT"
+          echo "nightly_version=${base}+nightly.${date}.g${short}" >> "$GITHUB_OUTPUT"
 
   linux:
     needs: plan
@@ -121,23 +137,101 @@ jobs:
       - name: Build packages
         # --rpm rides on the same release build; the script derives the rpm
         # ^ dialect from the canonical +nightly stamp itself.
-        run: scripts/build-packages.sh --rpm --deb-version '${{ needs.plan.outputs.deb_version }}'
+        run: scripts/build-packages.sh --rpm --deb-version '${{ needs.plan.outputs.nightly_version }}'
       - name: Verify deb packages (full install lifecycle)
-        run: scripts/verify-packages.sh --dist 'dist/${{ needs.plan.outputs.deb_version }}'
+        run: scripts/verify-packages.sh --dist 'dist/${{ needs.plan.outputs.nightly_version }}'
       - name: Verify rpm packages (full install lifecycle, Fedora)
-        run: scripts/verify-packages.sh --rpm --dist 'dist/${{ needs.plan.outputs.deb_version }}'
+        run: scripts/verify-packages.sh --rpm --dist 'dist/${{ needs.plan.outputs.nightly_version }}'
       - name: Upload packages
         uses: actions/upload-artifact@v7
         with:
           name: packages-${{ matrix.arch }}
           path: |
-            dist/${{ needs.plan.outputs.deb_version }}/*.deb
-            dist/${{ needs.plan.outputs.deb_version }}/*.rpm
+            dist/${{ needs.plan.outputs.nightly_version }}/*.deb
+            dist/${{ needs.plan.outputs.nightly_version }}/*.rpm
+          if-no-files-found: error
+
+  msi:
+    needs: plan
+    if: needs.plan.outputs.skip != 'true'
+    name: windows / suite msi
+    runs-on: windows-latest
+    # Cold MSI builds on windows-latest run long (msi.yml precedent).
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      # Same shared-key as msi.yml/release.yml: all three build the same
+      # CRT-static release set, so they share one cache lineage.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-msi
+      - name: Fetch the previously published nightly MSI
+        id: prior
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The release still carries last night's assets at this point
+          # (publish replaces them later), so installing over this MSI is
+          # the real nightly-over-nightly upgrade path. Only a genuinely
+          # empty channel (no release yet / no MSI asset yet — the leg's
+          # first runs) skips the seed; a failed query or download FAILS,
+          # so a transient error cannot silently drop the upgrade proof.
+          $names = gh api 'repos/{owner}/{repo}/releases/tags/nightly' --jq '.assets[].name' 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            # HTTP 404 means exactly "the release does not exist"; anything
+            # else (auth, network, rate limit) must fail the leg.
+            if ("$names" -match 'HTTP 404') {
+              Write-Host "no nightly release yet - skipping the upgrade seed"
+              exit 0
+            }
+            Write-Error "querying the nightly release failed: $names"
+            exit 1
+          }
+          $priorName = @($names) -match '\.msi$' | Select-Object -First 1
+          if (-not $priorName) {
+            Write-Host "nightly release has no MSI asset yet - skipping the upgrade seed"
+            exit 0
+          }
+          New-Item -ItemType Directory -Force -Path prior-nightly | Out-Null
+          gh release download nightly --pattern '*.msi' --dir prior-nightly
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "downloading $priorName from the nightly release failed"
+            exit 1
+          }
+          $prior = Get-ChildItem prior-nightly -Filter '*.msi' | Select-Object -First 1
+          "path=$($prior.FullName)" >> $env:GITHUB_OUTPUT
+          Write-Host "upgrade seed: $($prior.Name)"
+          exit 0
+      - name: Build the suite MSI (nightly stamp)
+        shell: pwsh
+        run: scripts\build-msi.ps1 -NightlyVersion '${{ needs.plan.outputs.nightly_version }}'
+      - name: Verify the MSI lifecycle (incl. upgrade over the prior nightly)
+        shell: pwsh
+        run: |
+          $msi = 'dist\${{ needs.plan.outputs.nightly_version }}\rusty-photon-${{ needs.plan.outputs.nightly_version }}-x64.msi'
+          $prior = '${{ steps.prior.outputs.path }}'
+          if ($prior) {
+            scripts\verify-msi.ps1 -Msi $msi -UpgradeFrom $prior
+          } else {
+            scripts\verify-msi.ps1 -Msi $msi
+          }
+      - name: Upload the MSI
+        uses: actions/upload-artifact@v7
+        with:
+          name: msi
+          path: dist/${{ needs.plan.outputs.nightly_version }}/*.msi
           if-no-files-found: error
 
   publish:
-    needs: [plan, linux]
-    if: needs.plan.outputs.skip != 'true'
+    needs: [plan, linux, msi]
+    # inputs.dry_run is a real boolean here: the typed `inputs` context
+    # preserves workflow_dispatch input types (unlike the string-typed
+    # github.event.inputs) and is empty on schedule events — so `!= true`
+    # publishes on schedule and on non-dry dispatches only.
+    if: needs.plan.outputs.skip != 'true' && inputs.dry_run != true
     name: publish
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -168,7 +262,7 @@ jobs:
       - name: Merge checksums
         run: |
           cd assets
-          sha256sum *.deb *.rpm > SHA256SUMS.txt
+          sha256sum *.deb *.rpm *.msi > SHA256SUMS.txt
           cat SHA256SUMS.txt
       - name: Force-move the nightly tag
         run: git push --force origin '${{ needs.plan.outputs.sha }}:refs/tags/nightly'
@@ -177,21 +271,22 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ needs.plan.outputs.sha }}
           DATE: ${{ needs.plan.outputs.date }}
-          DEB_VERSION: ${{ needs.plan.outputs.deb_version }}
+          NIGHTLY_VERSION: ${{ needs.plan.outputs.nightly_version }}
         run: |
           # Same rendering as build-packages.sh derives for the rpm headers:
           # the body must state the true `^` version because the dot-rendered
           # asset filenames cannot.
-          RPM_VERSION=$(printf '%s' "$DEB_VERSION" | sed 's/+nightly\./^/')
+          RPM_VERSION=$(printf '%s' "$NIGHTLY_VERSION" | sed 's/+nightly\./^/')
           {
             echo "Rolling nightly build of \`main\`. Assets are replaced on"
             echo "every publish — no dated history; fetch \`SHA256SUMS.txt\`"
             echo "from this release for the current filenames. Install and"
-            echo "channel semantics: [docs/packaging.md](https://github.com/${GITHUB_REPOSITORY}/blob/${SHA}/docs/packaging.md#nightly-channel)."
+            echo "channel semantics: [docs/packaging.md](https://github.com/${GITHUB_REPOSITORY}/blob/${SHA}/docs/packaging.md#nightly-channel)"
+            echo "(Windows: [docs/packaging-windows.md](https://github.com/${GITHUB_REPOSITORY}/blob/${SHA}/docs/packaging-windows.md#nightly-channel))."
             echo
             echo "- **Source**: ${SHA}"
             echo "- **Built**: ${DATE} (UTC)"
-            echo "- **Debian version**: \`${DEB_VERSION}\`"
+            echo "- **Nightly version**: \`${NIGHTLY_VERSION}\` (Debian version and MSI filename; the MSI's Programs & Features version renders as \`${NIGHTLY_VERSION%%+*}.<YYDDD>\`)"
             echo "- **RPM version**: \`${RPM_VERSION}\` (\`rpm -q\` shows this; the asset filenames render the \`^\` as \`.\` because GitHub rewrites it at upload)"
             echo
             echo "| Asset | SHA-256 |"
@@ -214,13 +309,13 @@ jobs:
             gh release create nightly --verify-tag --prerelease \
               --title "Nightly packages" --notes-file body.md
           fi
-          gh release upload nightly assets/*.deb assets/*.rpm assets/SHA256SUMS.txt
+          gh release upload nightly assets/*.deb assets/*.rpm assets/*.msi assets/SHA256SUMS.txt
 
   notify-on-failure:
     # Tracking issue so a broken nightly channel surfaces without anyone
     # reading scheduled-workflow logs. Scheduled runs only: manual dispatches
     # are being watched by whoever dispatched them.
-    needs: [plan, linux, publish]
+    needs: [plan, linux, msi, publish]
     if: failure() && github.event_name == 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 10

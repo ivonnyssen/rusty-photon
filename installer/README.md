@@ -64,9 +64,19 @@ scripts\verify-msi.ps1    # elevated: install -> class checks -> uninstall
 CI: the `msi` workflow (`.github/workflows/msi.yml`) runs both on
 `windows-latest` on PRs touching the packaging inputs and on demand;
 `release.yml` runs the same two scripts with `verify-msi.ps1` gating the
-release upload. A scheduled nightly leg is planned in
-`docs/plans/nightly-releases.md` (phase N3); it does not exist yet.
+release upload; and the `msi` leg of `nightly-packages.yml` runs them
+nightly with `build-msi.ps1 -NightlyVersion` and
+`verify-msi.ps1 -UpgradeFrom` (`docs/plans/nightly-releases.md` N3).
 Operator guide: `docs/packaging-windows.md`.
+
+The build always defines two preprocessor variables: `Version` (the MSI
+ProductVersion — the workspace version, or `<base>.<YYDDD>` on a nightly,
+whose 4th field Windows Installer ignores when comparing) and
+`FullVersion` (the human string for ARP comments — the same value on a
+release, the full `+nightly.<date>.g<sha>` string on a nightly). That two-
+field split is why `Package.wxs` sets `AllowSameVersionUpgrades`: every
+nightly compares equal to its base release, so same-version upgrades must
+be in range for nightly-over-nightly installs to upgrade in place.
 
 On Linux, `wix build` (the `wix` dotnet tool + the same three extensions)
 compiles the sources far enough to catch schema errors, but fails the bind

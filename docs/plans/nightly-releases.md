@@ -26,8 +26,8 @@ deliberately reusable so the deferred `release.yml` generalization
 |-------|-------------|--------|-------------|
 | N0 | Tech spike: hosted-arm64 verify, timings, asset naming, version dialects — settles the Orange Pi question | **Done** (2026-07-13; findings below — Orange Pi: no-go) | scratch branch `spike/n0-nightly-packaging` (deleted) |
 | N1 | Debian anchor: `nightly-packages.yml` shared spine + `.deb` legs (x86_64 + arm64), rolling release, docs | **Done** (2026-07-13; first publish = first post-merge run) | PR #508 |
-| N2 | Fedora: `.rpm` build on both arches + Fedora lifecycle verify leg | In review | PR #513 |
-| N3 | Windows: suite-MSI leg (strictly after W5 of [windows-packaging.md](windows-packaging.md)) | Not started | |
+| N2 | Fedora: `.rpm` build on both arches + Fedora lifecycle verify leg | **Done** (2026-07-13) | PR #513 |
+| N3 | Windows: suite-MSI leg (strictly after W5 of [windows-packaging.md](windows-packaging.md)) | In review | PR #509 |
 | N4 | macOS: per-service arm64 tarballs + Homebrew tap channel + `verify-brew.sh` | Not started | |
 
 N1 is the anchor (it builds the shared spine); N2, N3, N4 are mutually
@@ -96,7 +96,9 @@ independent afterwards. N3 is gated only on W5; N4 has synergy with PR-7
 ### Shared spine (`nightly-packages.yml`, built in N1)
 
 - Triggers: `schedule` (`7 5 * * *` — 05:07 UTC, after pi-nightly at
-  04:00, before the 07:07 nightly cluster) + `workflow_dispatch`.
+  04:00, before the 07:07 nightly cluster) + `workflow_dispatch` (added
+  in N3: a `dry_run` input that builds + verifies every leg but skips
+  publish, for validating a branch's legs without touching the channel).
   `concurrency` group without cancel-in-progress (same reasoning as
   pi-nightly: losing a scheduled run is worse than two back-to-back).
 - Job graph:
@@ -325,6 +327,23 @@ the `msi` leg of `nightly-packages.yml` — not as a scheduler of its own
   install it, then install the freshly built MSI over it — proving the
   `AllowSameVersionUpgrades` upgrade path that release-tag testing never
   exercises. Skip gracefully when no prior nightly exists.
+
+**As built (N3):** `build-msi.ps1 -NightlyVersion <full string>`
+validates the stamp against the workspace version and renders the
+`<base>.<YYDDD>` ProductVersion itself (thick script; the workflow only
+passes the canonical string through — the plan job's output was renamed
+`deb_version` → `nightly_version` accordingly, deb consuming it
+verbatim). Both preprocessor variables are always defined (`Version` +
+`FullVersion`), so releases author their ARP comments the same way. The
+upgrade proof lives in `verify-msi.ps1 -UpgradeFrom <prior msi>`: it
+installs the prior MSI first, lets the main install run as the in-place
+upgrade, then asserts exactly one ARP entry survives and its comments
+match the MSI under test; the rest of the lifecycle then runs against
+the upgraded install (its invariants match a fresh one — the gated
+services still have no config, the ui-htmx seed no-ops on the existing
+file). The workflow downloads the prior MSI (`gh release download`)
+rather than the script, keeping the script network-free; the step skips
+gracefully while the channel has no MSI asset.
 
 ### Phase N4 — macOS (Homebrew)
 

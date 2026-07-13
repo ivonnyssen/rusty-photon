@@ -15,14 +15,22 @@
 #   - qhy-camera: without QHY's All-in-One pack the delay-load preflight must
 #     log its distinctive pointer and exit cleanly (not a loader crash)
 #
-# Usage: scripts\verify-msi.ps1 [-Msi <path>] [-Keep]
-#   -Msi   the MSI to verify (default: dist\<workspace version>\...)
-#   -Keep  leave the product installed on exit (debugging)
+# Usage: scripts\verify-msi.ps1 [-Msi <path>] [-Keep] [-UpgradeFrom <path>]
+#   -Msi          the MSI to verify (default: dist\<workspace version>\...)
+#   -Keep         leave the product installed on exit (debugging)
+#   -UpgradeFrom  a previously published MSI to install FIRST, so the main
+#                 install runs as an in-place upgrade over it. The nightly
+#                 channel's AllowSameVersionUpgrades path (every nightly
+#                 authors the same compared ProductVersion) is exercised
+#                 only this way — release-tag testing never sees it. The
+#                 rest of the lifecycle then runs against the upgraded
+#                 install, whose invariants match a fresh one.
 
 [CmdletBinding()]
 param(
     [string]$Msi,
-    [switch]$Keep
+    [switch]$Keep,
+    [string]$UpgradeFrom
 )
 
 $ErrorActionPreference = 'Stop'
@@ -35,6 +43,13 @@ function Die([string]$msg) {
 $principal = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Die "must run elevated (msiexec /qn and service control need it)"
+}
+if (-not [Environment]::Is64BitProcess) {
+    # Under 32-bit PowerShell, WOW64 redirection points the registry
+    # provider (the ARP checks) and %ProgramFiles% (the install-dir
+    # checks) at the 32-bit views — wrong for this x64-only product
+    # (ADR-015).
+    Die "must run from 64-bit PowerShell"
 }
 if (-not (Test-Path "installer\Package.wxs")) { Die "run from the repo root" }
 
@@ -131,10 +146,80 @@ function Msiexec([string[]]$msiArgs) {
     return $p.ExitCode
 }
 
+# The product's Programs & Features registrations (x64 MSI -> native hive).
+function ArpEntries {
+    Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall' |
+        ForEach-Object { Get-ItemProperty $_.PSPath } |
+        Where-Object { $_.DisplayName -eq 'Rusty Photon' }
+}
+
+# ---- optional upgrade seed (nightly-over-nightly proof) --------------------
+if ($UpgradeFrom) {
+    if (-not (Test-Path $UpgradeFrom)) { Die "-UpgradeFrom $UpgradeFrom not found" }
+    $UpgradeFrom = (Resolve-Path $UpgradeFrom).Path
+    $priorLog = Join-Path $env:TEMP 'rusty-photon-msi-prior-install.log'
+    Write-Host "== upgrade seed: installing the prior MSI ($(Split-Path -Leaf $UpgradeFrom))"
+    $code = Msiexec @('/i', "`"$UpgradeFrom`"", '/qn', '/norestart', "/l*v", "`"$priorLog`"", 'ADDLOCAL=ALL')
+    if ($code -ne 0) {
+        # Fail's msiexec-log excerpt must come from the install that
+        # actually failed (the script exits inside Fail; the main install
+        # never runs, so repointing is safe).
+        $installLog = $priorLog
+        Fail 'msiexec' "prior-MSI install exited $code (log: $priorLog)"
+    }
+    if (-not (Get-Service -Name 'rusty-photon-sentinel' -ErrorAction SilentlyContinue)) {
+        $installLog = $priorLog
+        Fail 'msiexec' "prior MSI installed no services — the upgrade proof would be vacuous"
+    }
+    # The seeded services have been running and logging, and the lifecycle
+    # asserts below grep those same daily log files — pre-upgrade output
+    # could satisfy them vacuously. Disable first (a failure-actions
+    # restart already scheduled by a crash-looping serial driver cannot
+    # start a disabled service), stop everything, and clear the logs, so
+    # every log-based check reflects the upgraded install only. Configs
+    # stay — surviving the upgrade is part of the contract — and the
+    # upgrade reinstalls the services fresh, so the disabling cannot leak
+    # into the new product.
+    foreach ($svc in (Get-Service -Name 'rusty-photon-*')) {
+        sc.exe config $svc.Name start= disabled | Out-Null
+    }
+    Get-Service -Name 'rusty-photon-*' | Where-Object { $_.Status -ne 'Stopped' } |
+        Stop-Service -Force -ErrorAction SilentlyContinue
+    WaitFor 'msiexec' "all seeded services stopped" {
+        -not (Get-Service -Name 'rusty-photon-*' | Where-Object { $_.Status -ne 'Stopped' })
+    } 60
+    Remove-Item -Recurse -Force $logsDir -ErrorAction SilentlyContinue
+    Write-Host "== upgrade seed: prior services stopped + logs cleared (asserts now reflect the upgraded install)"
+}
+
 # ---- install (all features) ----------------------------------------------
 Write-Host "== install: msiexec /qn ADDLOCAL=ALL"
 $code = Msiexec @('/i', "`"$Msi`"", '/qn', '/norestart', "/l*v", "`"$installLog`"", 'ADDLOCAL=ALL')
 if ($code -ne 0) { Fail 'msiexec' "silent install exited $code (log: $installLog)" }
+
+if ($UpgradeFrom) {
+    # The install above ran over the seeded product: prove it upgraded in
+    # place (RemoveExistingProducts consumed the old registration) rather
+    # than installing side by side — the failure mode
+    # AllowSameVersionUpgrades exists to prevent.
+    $entries = @(ArpEntries)
+    if ($entries.Count -ne 1) {
+        Fail 'msiexec' "expected exactly one Rusty Photon ARP entry after the upgrade, found $($entries.Count) (side-by-side install?)"
+    }
+    # ARPCOMMENTS carries the full version string, and the MSI under test
+    # always authors it; the filename is rusty-photon-<fullversion>-x64.msi,
+    # so this pins the surviving entry to the MSI just installed. A filename
+    # that cannot be parsed fails outright — silently skipping the pin would
+    # leave "the surviving entry is the OLD product" undetected.
+    if ((Split-Path -Leaf $Msi) -notmatch '^rusty-photon-(.+)-x64\.msi$') {
+        Fail 'msiexec' "cannot pin the surviving ARP entry: '$(Split-Path -Leaf $Msi)' is not named rusty-photon-<version>-x64.msi"
+    }
+    $expected = "rusty-photon $($Matches[1])"
+    if ($entries[0].Comments -ne $expected) {
+        Fail 'msiexec' "surviving ARP entry comments '$($entries[0].Comments)' != '$expected' (old product survived the upgrade?)"
+    }
+    Write-Host "== upgrade: OK (single ARP entry after installing over the prior MSI)"
+}
 
 # ---- static asserts: services, start types, failure actions ---------------
 foreach ($svc in $allServices) {

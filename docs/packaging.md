@@ -93,10 +93,11 @@ CI publishes a rolling **`nightly` prerelease** built from the HEAD of
 (`.github/workflows/nightly-packages.yml`): every packaged service as a
 `.deb` *and* `.rpm` for both amd64/x86_64 and arm64/aarch64, each
 package lifecycle-verified in a systemd container (Debian for the debs,
-Fedora for the rpms) before anything is published — all-or-nothing
-across the architectures, so the release is always one coherent commit
-with a complete asset set. There is one release and one tag; assets are
-replaced on each publish, with no dated history.
+Fedora for the rpms) before anything is published, plus the Windows
+suite MSI ([docs/packaging-windows.md](packaging-windows.md#nightly-channel))
+— all-or-nothing across the legs, so the release is always one coherent
+commit with a complete asset set. There is one release and one tag;
+assets are replaced on each publish, with no dated history.
 
 Nightly debs carry the version `<base>+nightly.<date>.g<sha>` (e.g.
 `0.1.0+nightly.20260712.gba09dc9`), which dpkg sorts above the plain
@@ -153,8 +154,10 @@ install that the same downgrade way:
 
 ```sh
 git checkout <known-good-sha>
-scripts/build-packages.sh --deb-version "0.1.0+nightly.<date>.g<short-sha>"
+scripts/build-packages.sh --deb-version "<base>+nightly.<date>.g<short-sha>"
 ```
+
+(`<base>` = the workspace version at that commit.)
 
 ## Installing
 
