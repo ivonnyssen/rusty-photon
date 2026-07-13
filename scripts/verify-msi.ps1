@@ -171,6 +171,25 @@ if ($UpgradeFrom) {
         $installLog = $priorLog
         Fail 'msiexec' "prior MSI installed no services — the upgrade proof would be vacuous"
     }
+    # The seeded services have been running and logging, and the lifecycle
+    # asserts below grep those same daily log files — pre-upgrade output
+    # could satisfy them vacuously. Disable first (a failure-actions
+    # restart already scheduled by a crash-looping serial driver cannot
+    # start a disabled service), stop everything, and clear the logs, so
+    # every log-based check reflects the upgraded install only. Configs
+    # stay — surviving the upgrade is part of the contract — and the
+    # upgrade reinstalls the services fresh, so the disabling cannot leak
+    # into the new product.
+    foreach ($svc in (Get-Service -Name 'rusty-photon-*')) {
+        sc.exe config $svc.Name start= disabled | Out-Null
+    }
+    Get-Service -Name 'rusty-photon-*' | Where-Object { $_.Status -ne 'Stopped' } |
+        Stop-Service -Force -ErrorAction SilentlyContinue
+    WaitFor 'msiexec' "all seeded services stopped" {
+        -not (Get-Service -Name 'rusty-photon-*' | Where-Object { $_.Status -ne 'Stopped' })
+    } 60
+    Remove-Item -Recurse -Force $logsDir -ErrorAction SilentlyContinue
+    Write-Host "== upgrade seed: prior services stopped + logs cleared (asserts now reflect the upgraded install)"
 }
 
 # ---- install (all features) ----------------------------------------------
