@@ -233,5 +233,11 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Formula
-          git commit -m "release: ${GITHUB_REF_NAME#v}"
-          git push
+          # A re-run for the same tag regenerates identical formulas; an
+          # empty commit would fail the job (same guard as the nightly push).
+          if git diff --cached --quiet; then
+            echo "tap already current"
+          else
+            git commit -m "release: ${GITHUB_REF_NAME#v}"
+            git push
+          fi
