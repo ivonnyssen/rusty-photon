@@ -25,7 +25,7 @@ deliberately reusable so the deferred `release.yml` generalization
 | Phase | Description | Status | Branch / PR |
 |-------|-------------|--------|-------------|
 | N0 | Tech spike: hosted-arm64 verify, timings, asset naming, version dialects — settles the Orange Pi question | **Done** (2026-07-13; findings below — Orange Pi: no-go) | scratch branch `spike/n0-nightly-packaging` (deleted) |
-| N1 | Debian anchor: `nightly-packages.yml` shared spine + `.deb` legs (x86_64 + arm64), rolling release, docs | Not started | |
+| N1 | Debian anchor: `nightly-packages.yml` shared spine + `.deb` legs (x86_64 + arm64), rolling release, docs | **Done** (2026-07-13; first publish = first post-merge run) | PR #508 |
 | N2 | Fedora: `.rpm` build on both arches + Fedora lifecycle verify leg | Not started | |
 | N3 | Windows: suite-MSI leg (strictly after W5 of [windows-packaging.md](windows-packaging.md)) | Not started | |
 | N4 | macOS: per-service arm64 tarballs + Homebrew tap channel + `verify-brew.sh` | Not started | |
@@ -235,6 +235,19 @@ Orange Pi stays out of the nightly path.
 - `session-runner` remains the one unpackaged daemon (tracked in
   [service-packaging.md](service-packaging.md)); the nightly ships
   whatever has a `pkg/` dir, so it joins automatically once packaged.
+
+**As built (2026-07-13, PR #508).** Mechanics worth knowing: the publish
+job *replaces* assets by deleting all existing ones and re-uploading
+(a dropped package must not linger; the brief empty-asset window is
+accepted on this channel), and regenerates the merged `SHA256SUMS.txt`
+from the downloaded artifacts — the ordering that keeps the N2 rpm
+rename ahead of checksumming. The SDK stage cache is keyed on
+`hashFiles('scripts/build-packages.sh')` (the script embeds the pins).
+The `nightly` tag is pushed lightweight; the skip check peels `^{}` to
+also survive a manually created annotated tag. The first post-merge run
+(dispatch it manually) creates the release + tag; docs/packaging.md
+§Nightly channel documents install/upgrade/rollback, with
+`SHA256SUMS.txt` as the stable-URL index to the versioned filenames.
 
 ### Phase N2 — Fedora
 
