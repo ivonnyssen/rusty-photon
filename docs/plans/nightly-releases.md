@@ -24,8 +24,8 @@ deliberately reusable so the deferred `release.yml` generalization
 
 | Phase | Description | Status | Branch / PR |
 |-------|-------------|--------|-------------|
-| N0 | Tech spike: hosted-arm64 verify, timings, asset naming, version dialects — settles the Orange Pi question | **Done** (2026-07-13; findings below — Orange Pi: no-go; asset naming moved to N1) | scratch branch `spike/n0-nightly-packaging` (deleted) |
-| N1 | Debian anchor: `nightly-packages.yml` shared spine + `.deb` legs (x86_64 + arm64), rolling release, docs | Not started | |
+| N0 | Tech spike: hosted-arm64 verify, timings, asset naming, version dialects — settles the Orange Pi question | **Done** (2026-07-13; findings below — Orange Pi: no-go) | scratch branch `spike/n0-nightly-packaging` (deleted) |
+| N1 | Debian anchor: `nightly-packages.yml` shared spine + `.deb` legs (x86_64 + arm64), rolling release, docs | **Done** (2026-07-13; first publish = first post-merge run) | PR #508 |
 | N2 | Fedora: `.rpm` build on both arches + Fedora lifecycle verify leg | Not started | |
 | N3 | Windows: suite-MSI leg (strictly after W5 of [windows-packaging.md](windows-packaging.md)) | Not started | |
 | N4 | macOS: per-service arm64 tarballs + Homebrew tap channel + `verify-brew.sh` | Not started | |
@@ -177,9 +177,22 @@ lands on `main`, so this does not affect it.
    | `ubuntu-24.04-arm` | ~11 min | ~7 min | 479 s / 289 s | 117 s / 126 s |
 
    Observed queue latency ≤ 5 s on both legs in both runs.
-3. **Asset naming: the one item still open** — it needs a scratch
-   release on the repo, which the spike session could not create;
-   moved to N1, where the first real publish settles it.
+3. **Asset naming: settled** (scratch draft release, published
+   briefly for the anonymous-curl check, then deleted with its tag).
+   `+` survives verbatim in asset names: the API stores the deb
+   filename unchanged, the download URL percent-encodes it as `%2B`,
+   and anonymous `curl` returns 200 for both the literal-`+` and
+   `%2B` forms. `^` does **not** survive: GitHub silently rewrites it
+   to `.` at upload (the rpm uploaded as `…-0.1.0^<date>…` was stored
+   as `…-0.1.0.<date>…`; the original `^` URL 404s).
+   `gh release download` round-trips by stored name with contents
+   intact. **Convention**: deb filenames keep `+` as-is; the rpm
+   *asset filename* uses the dot rendering `0.1.0.<date>.g<sha>`
+   while the rpm *header* keeps the true `^` dialect (rpm/dnf read
+   the header, not the filename). The rename must happen in the
+   publish path **before** `SHA256SUMS.txt` is generated — otherwise
+   the sums file records the `^` name and `sha256sum -c` fails
+   against the GitHub-renamed asset.
 4. **deb dialect + `--deb-version`: proven** (locally, debian:trixie
    container): dpkg orders `0.1.0-1 < 0.1.0+nightly.<date>.g<sha> <
    0.1.1-1` with monotonic dates; `apt` upgrades a `0.1.0-1` install to
@@ -223,15 +236,31 @@ Orange Pi stays out of the nightly path.
   [service-packaging.md](service-packaging.md)); the nightly ships
   whatever has a `pkg/` dir, so it joins automatically once packaged.
 
+**As built (2026-07-13, PR #508).** Mechanics worth knowing: the publish
+job *replaces* assets by deleting all existing ones and re-uploading
+(a dropped package must not linger; the brief empty-asset window is
+accepted on this channel), and regenerates the merged `SHA256SUMS.txt`
+from the downloaded artifacts — the ordering that keeps the N2 rpm
+rename ahead of checksumming. The SDK stage cache is keyed on
+`hashFiles('scripts/build-packages.sh')` (the script embeds the pins).
+The `nightly` tag is pushed lightweight; the skip check peels `^{}` to
+also survive a manually created annotated tag. The first post-merge run
+(dispatch it manually) creates the release + tag; docs/packaging.md
+§Nightly channel documents install/upgrade/rollback, with
+`SHA256SUMS.txt` as the stable-URL index to the versioned filenames.
+
 ### Phase N2 — Fedora
 
 Building is nearly free — `cargo generate-rpm` is pure Rust and already
 wired behind `build-packages.sh --rpm`, so the `.rpm`s build on the same
 two Ubuntu legs, both arches. The real work:
 
-- **Versioning**: confirm `cargo-generate-rpm` can override Version with
-  the `^` dialect (`--set-metadata` or equivalent); if it cannot, that is
-  an upstream gap to work around or file.
+- **Versioning**: proven in N0 — `cargo generate-rpm --set-metadata
+  'version = "…"'` stamps the `^` dialect into header and filename
+  verbatim. The *asset filename* must then be dot-rendered
+  (`0.1.0.<date>.g<sha>`) before `SHA256SUMS.txt` is generated, because
+  GitHub rewrites `^` to `.` in asset names (N0 findings, item 3); the
+  rpm header keeps the true `^` version.
 - **Verification**: `verify-packages.sh` is Debian-only today. Add a
   Fedora leg — podman systemd container on a Fedora image, `dnf install`
   → unit active → config self-created → HTTP probe → remove. rpm has no
@@ -386,9 +415,12 @@ unknowns below).
 - [x] (N0) podman `--systemd=always` viability on the `ubuntu-24.04-arm`
       hosted image — **works unmodified**; podman 4.9.3 preinstalled
       (N0 findings, item 1).
-- [ ] (N0→N1) `+` / `^` in GitHub release asset filenames vs `gh`/`curl`
-      URL-encoding → final filename convention. The one N0 item left
-      open (needs a scratch release); N1's first publish settles it.
+- [x] (N0) `+` / `^` in GitHub release asset filenames vs `gh`/`curl` —
+      `+` survives verbatim (curl OK literal and `%2B`); `^` is silently
+      rewritten to `.` by GitHub at upload. Convention: deb names keep
+      `+`; rpm asset filenames dot-render (`0.1.0.<date>.g<sha>`) while
+      the rpm header keeps `^`; rename before `SHA256SUMS.txt`
+      (N0 findings, item 3).
 - [x] (N0) Homebrew version comparison of the nightly dialect — orders
       correctly as-is; the dot-render fallback is unnecessary
       (N0 findings, item 5).

@@ -53,15 +53,18 @@ clients (N.I.N.A. etc.) at `host:port` directly using the table above.
 
 ## Building packages
 
-Packages are built natively on the target architecture — arm64 directly on
-the rig, x86_64 on a dev box (CI packaging for arm64 is deferred; see the
-plan). From a repo checkout on a Debian-family machine with Rust installed:
+Packages are built natively on the target architecture — nightly in CI on
+hosted x86_64 + arm64 runners (see [Nightly channel](#nightly-channel)),
+or on demand directly on the rig / a dev box. From a repo checkout on a
+Debian-family machine with Rust installed:
 
 ```sh
 scripts/build-packages.sh                  # all services, .deb only
 scripts/build-packages.sh --rpm            # also .rpm (dev-box convenience)
 scripts/build-packages.sh --services qhy-camera,filemonitor
 scripts/build-packages.sh --skip-sdk-staging   # offline rebuild from cache
+scripts/build-packages.sh --deb-version 0.1.0+nightly.20260712.gba09dc9
+                                           # nightly version stamp (CI / rollback builds)
 ```
 
 The script installs apt build prerequisites, stages the pinned native
@@ -77,6 +80,63 @@ The QHY SDK version/sha256 pins and the ZWO blob ref are pinned in the
 script and cross-checked by `scripts/check-pkg-assets.sh` against the
 firmware helper and the CI SDK action, so shipped and CI-linked SDK bits
 cannot drift apart.
+
+## Nightly channel
+
+CI publishes a rolling **`nightly` prerelease** built from the HEAD of
+`main` whenever it has changed since the last publish
+(`.github/workflows/nightly-packages.yml`): every packaged service as a
+`.deb` for both amd64 and arm64, each package lifecycle-verified in a
+systemd container before anything is published — all-or-nothing across
+the architectures, so the release is always one coherent commit with a
+complete asset set. There is one release and one tag; assets are
+replaced on each publish, with no dated history.
+
+Nightly debs carry the version `<base>+nightly.<date>.g<sha>` (e.g.
+`0.1.0+nightly.20260712.gba09dc9`), which dpkg sorts above the plain
+`<base>` release and below the next patch release — `apt` upgrades a
+release install to a nightly in place, and the next release upgrades
+over any nightly.
+
+Filenames change nightly (they carry the version), so use
+`SHA256SUMS.txt` — the one asset with a stable URL — as the index:
+
+```sh
+curl -fsSL https://github.com/ivonnyssen/rusty-photon/releases/download/nightly/SHA256SUMS.txt
+# pick the file for your service + arch, then:
+curl -fLO "https://github.com/ivonnyssen/rusty-photon/releases/download/nightly/<file>"
+sha256sum -c --ignore-missing SHA256SUMS.txt
+sudo apt-get install "./<file>"
+```
+
+or, with the GitHub CLI:
+
+```sh
+gh release download nightly --repo ivonnyssen/rusty-photon \
+    --pattern 'rusty-photon-<svc>_*_arm64.deb'
+sudo apt-get install ./rusty-photon-<svc>_*_arm64.deb
+```
+
+Upgrading is installing a newer nightly the same way; the unit is
+restarted and the config untouched, as with any package upgrade.
+
+**Downgrades.** Once a machine runs nightlies, anything older is a
+downgrade for apt — an on-demand build stamped with the plain workspace
+version, or an older nightly — and needs:
+
+```sh
+sudo apt-get install --allow-downgrades ./rusty-photon-<svc>_0.1.0-1_arm64.deb
+```
+
+**Rolling back.** The channel keeps no history. To return to a
+known-good state, downgrade to the plain release as above, or rebuild
+the known-good commit on demand and install that with
+`--allow-downgrades`:
+
+```sh
+git checkout <known-good-sha>
+scripts/build-packages.sh --deb-version "0.1.0+nightly.<date>.g<short-sha>"
+```
 
 ## Installing
 
