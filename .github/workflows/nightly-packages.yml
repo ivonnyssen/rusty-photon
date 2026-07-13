@@ -1,0 +1,247 @@
+# Nightly rolling-release packaging (docs/plans/nightly-releases.md).
+#
+# Builds installable packages from the HEAD of main and publishes them to
+# ONE rolling `nightly` prerelease: the tag is force-moved to the packaged
+# commit, all assets are replaced, no dated history. The tag deliberately
+# does not match `v*` (that pattern triggers release.yml).
+#
+# Structure (the "shared spine"):
+#   plan     — skip-if-unchanged (HEAD vs the published nightly tag) and
+#              one version computation; each packager renders its own
+#              dialect of "sorts after 0.1.0, before 0.1.1".
+#   linux    — build + FULL lifecycle verification per leg, on hosted
+#              runners (the N0 spike closed the self-hosted contingency).
+#              Building without installing is not a gate: nothing publishes
+#              unless every enabled leg passed its verifier.
+#   publish  — all-or-nothing across the enabled legs, so the release is
+#              always one coherent SHA with a complete asset set.
+#   notify-on-failure — tracking issue on scheduled failures, label
+#              `nightly-packages` (same pattern as scheduled.yml).
+#
+# Thin workflow, thick scripts: the legs drive scripts/build-packages.sh +
+# scripts/verify-packages.sh, shared with on-demand builds on the rigs.
+permissions:
+  contents: read
+
+on:
+  schedule:
+    # 05:07 UTC — after pi-nightly (04:00), before the 07:07 nightly cluster.
+    - cron: "7 5 * * *"
+  workflow_dispatch:
+
+# Don't cancel an in-flight nightly if a manual dispatch fires — losing a
+# scheduled run is worse than running two back-to-back (pi-nightly reasoning).
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+name: nightly-packages
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  plan:
+    name: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      skip: ${{ steps.decide.outputs.skip }}
+      sha: ${{ steps.decide.outputs.sha }}
+      date: ${{ steps.version.outputs.date }}
+      deb_version: ${{ steps.version.outputs.deb_version }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Skip if the published nightly already has this SHA
+        id: decide
+        run: |
+          sha=$(git rev-parse HEAD)
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          # The nightly tag is pushed lightweight, so ls-remote's hash IS the
+          # commit; the ^{} peel covers a manually created annotated tag.
+          peeled=$(git ls-remote origin 'refs/tags/nightly^{}' | cut -f1)
+          plain=$(git ls-remote origin refs/tags/nightly | cut -f1)
+          published=${peeled:-$plain}
+          if [ "$published" = "$sha" ]; then
+            echo "Nightly tag already at $sha — nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Publishing $sha (nightly tag: ${published:-none})."
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Compute the version dialects
+        id: version
+        if: steps.decide.outputs.skip != 'true'
+        run: |
+          base=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          [ -n "$base" ] || { echo "could not read the workspace version" >&2; exit 1; }
+          date=$(date -u +%Y%m%d)
+          short=$(git rev-parse --short=7 HEAD)
+          echo "date=$date" >> "$GITHUB_OUTPUT"
+          echo "deb_version=${base}+nightly.${date}.g${short}" >> "$GITHUB_OUTPUT"
+
+  linux:
+    needs: plan
+    if: needs.plan.outputs.skip != 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    name: linux / ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    # N0 spike: ~12 min cold / ~8 min warm per leg (arm64 slightly faster).
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      # cache-bin (rust-cache's default) also keeps the cargo-installed
+      # cargo-deb binary, so build-packages.sh skips the install when warm.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: nightly-packages-${{ matrix.arch }}
+      # Keyed on the script because it embeds the SDK pins: the cache
+      # invalidates exactly when a pin (or the staging logic) changes,
+      # keeping qhyccd.com off the nightly critical path.
+      - name: Cache staged SDKs
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/rusty-photon-pkg
+          key: rusty-photon-pkg-${{ matrix.arch }}-${{ hashFiles('scripts/build-packages.sh') }}
+      - name: Build packages
+        run: scripts/build-packages.sh --deb-version '${{ needs.plan.outputs.deb_version }}'
+      - name: Verify packages (full install lifecycle)
+        run: scripts/verify-packages.sh --dist 'dist/${{ needs.plan.outputs.deb_version }}'
+      - name: Upload packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: debs-${{ matrix.arch }}
+          path: dist/${{ needs.plan.outputs.deb_version }}/*.deb
+          if-no-files-found: error
+
+  publish:
+    needs: [plan, linux]
+    if: needs.plan.outputs.skip != 'true'
+    name: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Download package artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: assets
+          merge-multiple: true
+      # One merged sums file across all legs. Generated AFTER any asset
+      # renaming (N2's rpm dot-render happens before this line lands here):
+      # GitHub rewrites `^` to `.` in asset names, so sums taken over
+      # to-be-renamed files would not verify after download (N0 findings).
+      - name: Merge checksums
+        run: |
+          cd assets
+          sha256sum *.deb > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+      - name: Force-move the nightly tag
+        run: git push --force origin '${{ needs.plan.outputs.sha }}:refs/tags/nightly'
+      - name: Publish the rolling prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ needs.plan.outputs.sha }}
+          DATE: ${{ needs.plan.outputs.date }}
+          DEB_VERSION: ${{ needs.plan.outputs.deb_version }}
+        run: |
+          {
+            echo "Rolling nightly build of \`main\`. Assets are replaced on"
+            echo "every publish — no dated history; fetch \`SHA256SUMS.txt\`"
+            echo "from this release for the current filenames. Install and"
+            echo "channel semantics: [docs/packaging.md](https://github.com/${GITHUB_REPOSITORY}/blob/${SHA}/docs/packaging.md#nightly-channel)."
+            echo
+            echo "- **Source**: ${SHA}"
+            echo "- **Built**: ${DATE} (UTC)"
+            echo "- **Debian version**: \`${DEB_VERSION}\`"
+            echo
+            echo "| Asset | SHA-256 |"
+            echo "|-------|---------|"
+            while read -r sum file; do
+              echo "| \`${file}\` | \`${sum}\` |"
+            done < assets/SHA256SUMS.txt
+          } > body.md
+          if gh release view nightly --json id --jq .id > /dev/null 2>&1; then
+            # Replace, don't accumulate: a package dropped from the set must
+            # not linger as a stale asset, so delete everything first. The
+            # brief empty-asset window is acceptable on this channel.
+            gh release view nightly --json assets --jq '.assets[].name' |
+              while read -r name; do
+                gh release delete-asset nightly "$name" --yes
+              done
+            gh release edit nightly --prerelease --title "Nightly packages" \
+              --notes-file body.md
+          else
+            gh release create nightly --verify-tag --prerelease \
+              --title "Nightly packages" --notes-file body.md
+          fi
+          gh release upload nightly assets/*.deb assets/SHA256SUMS.txt
+
+  notify-on-failure:
+    # Tracking issue so a broken nightly channel surfaces without anyone
+    # reading scheduled-workflow logs. Scheduled runs only: manual dispatches
+    # are being watched by whoever dispatched them.
+    needs: [plan, linux, publish]
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      issues: write
+    steps:
+      - name: Open or update tracking issue
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const title = `nightly-packages: nightly packaging failing`;
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = [
+              `The nightly packaging workflow failed on at least one job, so no`,
+              `nightly was published tonight (the channel publishes all-or-nothing;`,
+              `the previous nightly release is untouched).`,
+              ``,
+              `Likely causes: a build or lifecycle-verification failure on one of`,
+              `the package legs, an SDK download failing its pin, or the publish`,
+              `step. Inspect the failed jobs in the linked run.`,
+              ``,
+              `Run: ${runUrl}`,
+              ``,
+              `This issue was opened automatically by a scheduled run that`,
+              `failed. While it stays open, each subsequent scheduled failure`,
+              `is appended here as a comment linking its own run. Closing it`,
+              `marks the failure handled — it is never re-opened; the next`,
+              `scheduled failure opens a fresh issue instead.`,
+            ].join("\n");
+            const existing = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: "open",
+              labels: "nightly-packages",
+            });
+            const match = existing.find(i => i.title === title);
+            if (match) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: match.number,
+                body: `Failed again — run: ${runUrl}`,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ["nightly-packages", "ci-flake"],
+              });
+            }

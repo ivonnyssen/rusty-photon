@@ -26,11 +26,16 @@
 #      the staged env/RUSTFLAGS); with --rpm also cargo generate-rpm,
 #   5. collect artifacts into dist/<version>/ + SHA256SUMS.txt.
 #
-# Usage: scripts/build-packages.sh [--services a,b,c] [--rpm] [--skip-sdk-staging]
+# Usage: scripts/build-packages.sh [--services a,b,c] [--rpm] [--skip-sdk-staging] [--deb-version V]
 #   --services a,b,c    build only these services (default: every packaged one)
 #   --rpm               also build .rpm packages (x86_64 dev-box convenience)
 #   --skip-sdk-staging  offline rebuild: no downloads; requires the SDK
 #                       cache from a previous run
+#   --deb-version V     stamp V as the .deb version instead of the workspace
+#                       version (nightly channel: V like
+#                       0.1.0+nightly.20260712.gabc1234). cargo deb uses the
+#                       string verbatim — no -1 revision is appended.
+#                       Artifacts land in dist/V/.
 
 set -eu
 
@@ -59,6 +64,7 @@ usage() {
 RPM=0
 SKIP_STAGING=0
 ONLY_SERVICES=""
+DEB_VERSION=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --services)
@@ -68,6 +74,11 @@ while [ $# -gt 0 ]; do
             ;;
         --rpm) RPM=1 ;;
         --skip-sdk-staging) SKIP_STAGING=1 ;;
+        --deb-version)
+            shift
+            [ $# -gt 0 ] || die "--deb-version needs a version string"
+            DEB_VERSION="$1"
+            ;;
         -h|--help) usage; exit 0 ;;
         *) usage >&2; die "unknown option: $1" ;;
     esac
@@ -264,14 +275,18 @@ done
 # ---- package -----------------------------------------------------------
 VERSION=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
 [ -n "$VERSION" ] || die "could not read the workspace version from Cargo.toml"
-DIST="dist/$VERSION"
+DIST="dist/${DEB_VERSION:-$VERSION}"
 mkdir -p "$DIST"
 
 for s in $SERVICES; do
     echo "Packaging $s"
     # --no-build: reusing the staged-env build above is essential; a rebuild
     # here would drop QHYCCD_SDK_DIR/ZWO_SDK_LIB_DIR/RUSTFLAGS.
-    cargo deb -p "$s" --no-build --no-strip --output "$DIST/"
+    if [ -n "$DEB_VERSION" ]; then
+        cargo deb -p "$s" --no-build --no-strip --deb-version "$DEB_VERSION" --output "$DIST/"
+    else
+        cargo deb -p "$s" --no-build --no-strip --output "$DIST/"
+    fi
     if [ "$RPM" = 1 ]; then
         cargo generate-rpm -p "services/$s" -o "$DIST/"
     fi
