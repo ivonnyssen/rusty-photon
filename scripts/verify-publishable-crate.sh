@@ -3,7 +3,7 @@
 # verify-publishable-crate.sh — isolated MSRV + minimal-versions publish-readiness
 # check for one dual-homed FFI crate family (a wrapper + its nested `*-sys`).
 #
-# WHY THIS EXISTS (see docs/plans/publish-readiness-checks.md):
+# WHY THIS EXISTS (see docs/plans/archive/publish-readiness-checks.md):
 #   These crates publish to crates.io independently, but neither their MSRV nor
 #   their minimal dependency versions can be verified *in* the workspace:
 #     - the root `[profile.dev] debug = "line-tables-only"` needs Rust >= 1.71, so
