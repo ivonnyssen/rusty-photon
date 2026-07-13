@@ -149,14 +149,26 @@ each supervised service's `restart_command` at brew:
 
 ## Camera specifics
 
-**zwo-camera / zwo-focuser** — nothing to do: each formula's tarball
-bundles its own MIT-licensed SDK dylib (`libASICamera2.dylib` /
-`libEAFFocuser.dylib`, license installed into the formula's docdir),
-resolved keg-relative via `@loader_path` rpaths (the macOS equivalent of
-the Linux packages' RUNPATH; ADR-014's one-blob-per-service split
-unchanged). `zwo-camera` additionally depends on Homebrew's `libusb`. No
-udev, no firmware uploads — macOS needs no device-permission setup for
-USB cameras.
+**zwo-camera / zwo-focuser** — each formula's tarball bundles its own
+MIT-licensed SDK dylib (`libASICamera2.dylib` / `libEAFFocuser.dylib`,
+license installed into the formula's docdir), resolved keg-relative via
+`@loader_path` rpaths (the macOS equivalent of the Linux packages'
+RUNPATH; ADR-014's one-blob-per-service split unchanged). `zwo-camera`
+additionally depends on Homebrew's `libusb`. No udev, no firmware
+uploads — macOS needs no device-permission setup for USB *cameras*.
+
+**zwo-focuser privacy grant** — the EAF is USB-HID, and the SDK
+enumerates it through macOS HID APIs that sit behind a privacy (TCC)
+grant. Under `brew services` without one, the service blocks inside
+discovery before it ever binds its port — alive, but silent (empty log,
+no HTTP). The same binary serves normally when run in a terminal. Grant
+the binary access under System Settings → Privacy & Security (Input
+Monitoring), or run `rusty-photon-zwo-focuser` once in a terminal to
+trigger the prompt, then `brew services restart rusty-photon-zwo-focuser`.
+The CI verify leg accordingly holds zwo-focuser to
+alive-under-launchd + a foreground serve proof instead of a launchd port
+probe; the exact grant UX is confirmed as part of the physical-Mac
+validation pass.
 
 **qhy-camera** — QHYCCD's proprietary SDK is linked statically (never
 redistributed as files; ADR-013 is satisfied differently here: the mac SDK

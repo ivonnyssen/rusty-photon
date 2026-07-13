@@ -213,6 +213,20 @@ EOF
   end
 EOF
         fi
+        if [ "$s" = zwo-focuser ]; then
+            cat <<'EOF'
+
+  def caveats
+    <<~EOS
+      EAF discovery uses macOS HID APIs that need a privacy grant for the
+      service binary; under `brew services` without one the service blocks
+      at startup without serving. Grant it under System Settings → Privacy
+      & Security (or run the binary once in a terminal), then restart the
+      service. Details: docs/packaging-macos.md in the rusty-photon repo.
+    EOS
+  end
+EOF
+        fi
         cat <<EOF
 
   test do

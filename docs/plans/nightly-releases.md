@@ -469,6 +469,21 @@ docs/packaging-macos.md: rp's self-created config defaults
 `session.data_directory` to the Linux path (harmless at startup — the
 directory is only created when a session persists).
 
+Dry-run finding (runs 29266671212/29267875377/29269314773 on the PR
+branch — the `dry_run` dispatch built and verified all four legs without
+publishing): 16 of 17 services pass the full Homebrew lifecycle on a
+hosted macos-latest runner, including `brew services` under launchd and
+both cameras serving with the real SDKs. The 17th, **zwo-focuser, blocks
+under launchd inside EAF HID discovery without a macOS privacy (TCC)
+grant** — process alive, log empty, port never bound; the identical
+binary run in the foreground discovers zero EAFs and serves within a
+second (diagnostics in the run logs). Headless CI cannot click a grant,
+so verify-brew.sh holds zwo-focuser to alive-under-launchd (a crash loop
+still fails) plus a foreground serve proof, the formula carries a
+caveat, and docs/packaging-macos.md documents the grant flow; the exact
+UX rides the physical-Mac validation pass. zwo-camera is unaffected
+(libusb, not HID).
+
 ## Verification
 
 - Per-leg lifecycle gates (N1 `verify-packages.sh` both arches, N2 Fedora

@@ -175,6 +175,19 @@ self_creates_config() {
     esac
 }
 
+is_hid_tcc_gated() {
+    # EAF discovery is USB-HID (IOHIDManager); under a launchd agent without
+    # a macOS privacy (TCC) grant it blocks before the server ever binds —
+    # the process sits alive with an empty log (proven in the N4 dry runs).
+    # Headless CI cannot click a grant, so the launchd probe is replaced by:
+    # alive-under-launchd (a crash loop is still a regression) + a foreground
+    # serve proof. zwo-camera is unaffected (libusb, not HID).
+    case "$1" in
+        zwo-focuser) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 # Verification needs a clean slate (the fresh-container parity): the scratch
 # formulas share keg names with the real channel's, so a pre-existing install
 # would be what gets verified — and uninstalled by cleanup — instead of the
@@ -247,7 +260,14 @@ fail() {
     echo "--- service log tail ($PREFIX/var/log/rusty-photon-$svc.log)" >&2
     tail -n 40 "$PREFIX/var/log/rusty-photon-$svc.log" >&2 2> /dev/null || true
     echo "--- brew services info" >&2
-    brew services info "rusty-photon-$svc$SUFFIX" --json >&2 2> /dev/null || true
+    svc_info=$(brew services info "rusty-photon-$svc$SUFFIX" --json 2> /dev/null || true)
+    printf '%s\n' "$svc_info" >&2
+    # A live-but-unresponsive process: sample where it is parked.
+    svc_pid=$(printf '%s' "$svc_info" | sed -n 's/.*"pid": \([0-9]*\).*/\1/p' | head -1)
+    if [ -n "$svc_pid" ] && command -v sample > /dev/null 2>&1; then
+        echo "--- stack sample (pid $svc_pid)" >&2
+        sample "$svc_pid" 1 2> /dev/null | sed -n '1,40p' >&2 || true
+    fi
     # A direct foreground run surfaces what launchd cannot: dyld aborts print
     # to stderr, a segfault shows as a signal exit with no output at all, a
     # healthy start shows its startup lines.
@@ -357,6 +377,38 @@ for s in $SERVICES; do
     port=$(port_of "$s")
     [ -n "$port" ] || fail "$s" "no port mapping — add $s to port_of()"
     path=$(probe_path "$s")
+
+    if is_hid_tcc_gated "$s"; then
+        # The launchd instance blocks in HID discovery without the privacy
+        # grant; hold it to alive-not-crashlooping, record where it parks
+        # (for the plan doc), then prove the binary serves in the foreground.
+        sleep 3
+        info=$(brew services info "rusty-photon-$s$SUFFIX" --json 2> /dev/null || true)
+        printf '%s' "$info" | grep -q '"running": true' \
+            || fail "$s" "launchd process not running (expected alive-but-blocked on the HID privacy grant)"
+        hid_pid=$(printf '%s' "$info" | sed -n 's/.*"pid": \([0-9]*\).*/\1/p' | head -1)
+        if [ -n "$hid_pid" ] && command -v sample > /dev/null 2>&1; then
+            echo "-- $s: launchd instance blocked pre-bind; stack sample of pid $hid_pid:"
+            sample "$hid_pid" 1 2> /dev/null | sed -n '1,40p' || true
+        fi
+        brew services stop "rusty-photon-$s$SUFFIX" > /dev/null || fail "$s" "brew services stop failed"
+        "$PREFIX/bin/rusty-photon-$s" >> "$PREFIX/var/log/rusty-photon-$s.log" 2>&1 &
+        fg_pid=$!
+        i=0
+        until curl -fsS -o /dev/null "http://127.0.0.1:$port$path" 2> /dev/null; do
+            i=$((i + 1))
+            if [ "$i" -ge 30 ]; then
+                kill "$fg_pid" 2> /dev/null || true
+                fail "$s" "no HTTP response on port $port ($path) even in a foreground run"
+            fi
+            sleep 1
+        done
+        kill "$fg_pid" 2> /dev/null || true
+        wait "$fg_pid" 2> /dev/null || true
+        echo "== $s: OK (foreground serve, port $port; launchd probe skipped — HID discovery needs a privacy grant, see docs/packaging-macos.md)"
+        continue
+    fi
+
     if [ "$s" = phd2-guider ]; then
         # No PHD2 on this machine: /health legitimately answers 503 (listener
         # up, guider not connected).
