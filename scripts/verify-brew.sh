@@ -205,10 +205,12 @@ cleanup() {
     for s in $STARTED; do
         brew services stop "rusty-photon-$s$SUFFIX" > /dev/null 2>&1 || true
     done
+    # Meta first: brew refuses to uninstall a dependency of an installed
+    # formula, so the services only come out after their dependent is gone.
+    brew uninstall --force "rusty-photon$SUFFIX" > /dev/null 2>&1 || true
     for s in $SERVICES; do
         brew uninstall --force "rusty-photon-$s$SUFFIX" > /dev/null 2>&1 || true
     done
-    brew uninstall --force "rusty-photon$SUFFIX" > /dev/null 2>&1 || true
     brew untap "$TAP" > /dev/null 2>&1 || rm -rf "$TAP_DIR"
 }
 trap cleanup EXIT INT TERM
