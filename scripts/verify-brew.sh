@@ -175,6 +175,20 @@ self_creates_config() {
     esac
 }
 
+# Verification needs a clean slate (the fresh-container parity): the scratch
+# formulas share keg names with the real channel's, so a pre-existing install
+# would be what gets verified — and uninstalled by cleanup — instead of the
+# just-built tarballs. Refuse up front; this also makes every uninstall below
+# provably target something this script installed.
+preinstalled=$(brew list --formula 2> /dev/null || true)
+for s in $SERVICES rusty-photon; do
+    name="rusty-photon-$s$SUFFIX"
+    [ "$s" = rusty-photon ] && name="rusty-photon$SUFFIX"
+    if printf '%s\n' "$preinstalled" | grep -qx "$name"; then
+        die "$name is already installed — uninstall the $CHANNEL channel before verifying (the scratch-tap formulas share its keg names)"
+    fi
+done
+
 # ---- scratch tap ----------------------------------------------------------
 TAP="local/rp-verify"
 TAP_DIR="$(brew --repository)/Library/Taps/local/homebrew-rp-verify"
