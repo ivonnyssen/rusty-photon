@@ -100,19 +100,35 @@ getent group plugdev > /dev/null || groupadd -r plugdev
 install -d -m 0750 -o rusty-photon -g rusty-photon /var/lib/rusty-photon /var/lib/rusty-photon/.config /var/lib/rusty-photon/.config/rusty-photon
 [ -e /etc/rusty-photon ] || ln -s /var/lib/rusty-photon/.config/rusty-photon /etc/rusty-photon
 systemctl daemon-reload
-systemctl enable rusty-photon-qhy-camera.service
+if [ "$1" -eq 1 ]; then
+    systemctl enable rusty-photon-qhy-camera.service
+fi
 udevadm control --reload-rules || true
 udevadm trigger || true
 echo "rusty-photon-qhy-camera: camera firmware is not bundled."
 echo "Run '/usr/sbin/rusty-photon-qhy-firmware-install' once as root before first use."
 """
+# rpm scriptlet arg $1 = package instances remaining after the operation.
+# On upgrade the old %preun runs AFTER the new %post, so an unguarded
+# stop/disable would take the service down right after every upgrade.
+# Guarded: enable fires on first install only (upgrades keep the
+# operator's enable/disable choice), stop/disable on final erase only,
+# and try-restart hands a running service over to the upgraded binary
+# (the deb restart-after-upgrade equivalent).
 pre_uninstall_script = """
-systemctl stop rusty-photon-qhy-camera.service || true
-systemctl disable rusty-photon-qhy-camera.service || true
+if [ "$1" -eq 0 ]; then
+    systemctl stop rusty-photon-qhy-camera.service || true
+    systemctl disable rusty-photon-qhy-camera.service || true
+fi
 """
 # rpm has no purge lifecycle: erase preserves the runtime-created config and
 # state (removal is a documented manual step), matching dpkg remove-vs-purge.
-post_uninstall_script = "systemctl daemon-reload"
+post_uninstall_script = """
+systemctl daemon-reload
+if [ "$1" -ge 1 ]; then
+    systemctl try-restart rusty-photon-qhy-camera.service || true
+fi
+"""
 require-sh = true
 
 [dev-dependencies]

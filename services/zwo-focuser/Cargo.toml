@@ -111,9 +111,10 @@ assets = [
 ]
 # rpm's dependency generator would emit a requires on the SONAME-less bundled
 # blob (libEAFFocuser.so) that no package provides, making the rpm
-# uninstallable. Disable it; the deb `depends` list above is the canonical
-# statement of runtime needs (rpm builds are an x86_64 dev-box convenience
-# pre-1.0, per the plan).
+# uninstallable. Disable it and declare the runtime needs explicitly in the
+# requires table below — the Fedora renderings of the deb `depends` list
+# above (the nightly rpm verify leg installs with dnf, which must resolve
+# exactly these).
 auto-req = "disabled"
 post_install_script = """
 getent passwd rusty-photon > /dev/null || useradd -r -d /var/lib/rusty-photon -s /sbin/nologin rusty-photon
@@ -121,18 +122,40 @@ getent group plugdev > /dev/null || groupadd -r plugdev
 install -d -m 0750 -o rusty-photon -g rusty-photon /var/lib/rusty-photon /var/lib/rusty-photon/.config /var/lib/rusty-photon/.config/rusty-photon
 [ -e /etc/rusty-photon ] || ln -s /var/lib/rusty-photon/.config/rusty-photon /etc/rusty-photon
 systemctl daemon-reload
-systemctl enable rusty-photon-zwo-focuser.service
+if [ "$1" -eq 1 ]; then
+    systemctl enable rusty-photon-zwo-focuser.service
+fi
 udevadm control --reload-rules || true
 udevadm trigger || true
 """
+# rpm scriptlet arg $1 = package instances remaining after the operation.
+# On upgrade the old %preun runs AFTER the new %post, so an unguarded
+# stop/disable would take the service down right after every upgrade.
+# Guarded: enable fires on first install only (upgrades keep the
+# operator's enable/disable choice), stop/disable on final erase only,
+# and try-restart hands a running service over to the upgraded binary
+# (the deb restart-after-upgrade equivalent).
 pre_uninstall_script = """
-systemctl stop rusty-photon-zwo-focuser.service || true
-systemctl disable rusty-photon-zwo-focuser.service || true
+if [ "$1" -eq 0 ]; then
+    systemctl stop rusty-photon-zwo-focuser.service || true
+    systemctl disable rusty-photon-zwo-focuser.service || true
+fi
 """
 # rpm has no purge lifecycle: erase preserves the runtime-created config and
 # state (removal is a documented manual step), matching dpkg remove-vs-purge.
-post_uninstall_script = "systemctl daemon-reload"
+post_uninstall_script = """
+systemctl daemon-reload
+if [ "$1" -ge 1 ]; then
+    systemctl try-restart rusty-photon-zwo-focuser.service || true
+fi
+"""
 require-sh = true
+
+[package.metadata.generate-rpm.requires]
+glibc = "*"
+libgcc = "*"
+"libstdc++" = "*"
+systemd-libs = "*"
 
 [dev-dependencies]
 # zwo-rs is a first-party member with explicit Bazel real (`//crates/zwo-rs:zwo-rs`)

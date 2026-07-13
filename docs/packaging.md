@@ -60,12 +60,17 @@ Debian-family machine with Rust installed:
 
 ```sh
 scripts/build-packages.sh                  # all services, .deb only
-scripts/build-packages.sh --rpm            # also .rpm (dev-box convenience)
+scripts/build-packages.sh --rpm            # also .rpm
 scripts/build-packages.sh --services qhy-camera,filemonitor
 scripts/build-packages.sh --skip-sdk-staging   # offline rebuild from cache
 scripts/build-packages.sh --deb-version 0.1.0+nightly.20260712.gba09dc9
                                            # nightly version stamp (CI / rollback builds)
 ```
+
+With `--rpm` and `--deb-version` together, the rpm version is derived
+from the deb stamp by rendering `+nightly.` as rpm's `^` snapshot
+separator (`0.1.0^20260712.gba09dc9`) — each packager renders its own
+dialect of "sorts after the base release, before the next one".
 
 The script installs apt build prerequisites, stages the pinned native
 SDKs into `~/.cache/rusty-photon-pkg/` (QHYCCD static lib for the
@@ -86,10 +91,11 @@ cannot drift apart.
 CI publishes a rolling **`nightly` prerelease** built from the HEAD of
 `main` whenever it has changed since the last publish
 (`.github/workflows/nightly-packages.yml`): every packaged service as a
-`.deb` for both amd64 and arm64, each package lifecycle-verified in a
-systemd container before anything is published — all-or-nothing across
-the architectures, so the release is always one coherent commit with a
-complete asset set. There is one release and one tag; assets are
+`.deb` *and* `.rpm` for both amd64/x86_64 and arm64/aarch64, each
+package lifecycle-verified in a systemd container (Debian for the debs,
+Fedora for the rpms) before anything is published — all-or-nothing
+across the architectures, so the release is always one coherent commit
+with a complete asset set. There is one release and one tag; assets are
 replaced on each publish, with no dated history.
 
 Nightly debs carry the version `<base>+nightly.<date>.g<sha>` (e.g.
@@ -97,6 +103,14 @@ Nightly debs carry the version `<base>+nightly.<date>.g<sha>` (e.g.
 `<base>` release and below the next patch release — `apt` upgrades a
 release install to a nightly in place, and the next release upgrades
 over any nightly.
+
+Nightly rpms carry `<base>^<date>.g<sha>` (e.g.
+`0.1.0^20260712.gba09dc9`); rpm's `^` separator sorts the same way, so
+`dnf` upgrades in place identically. One wrinkle: GitHub rewrites `^`
+to `.` in uploaded asset names, so the *file* is called
+`…-0.1.0.<date>.g<sha>-1.<arch>.rpm` while `rpm -q` after install shows
+the true `^` version. `SHA256SUMS.txt` lists the dot-rendered names, so
+checksums verify against the files as downloaded.
 
 Filenames change nightly (they carry the version), so use
 `SHA256SUMS.txt` — the one asset with a stable URL — as the index:
@@ -106,10 +120,12 @@ curl -fsSL https://github.com/ivonnyssen/rusty-photon/releases/download/nightly/
 # pick the file for your service + arch, then:
 curl -fLO "https://github.com/ivonnyssen/rusty-photon/releases/download/nightly/<file>"
 sha256sum -c --ignore-missing SHA256SUMS.txt
-sudo apt-get install "./<file>"
+sudo apt-get install "./<file>"     # Debian-family
+sudo dnf install "./<file>"         # Fedora
 ```
 
-or, with the GitHub CLI:
+or, with the GitHub CLI (rpms: `--pattern 'rusty-photon-<svc>-*.<arch>.rpm'`
+with `<arch>` = `x86_64` or `aarch64`):
 
 ```sh
 gh release download nightly --repo ivonnyssen/rusty-photon \
@@ -117,21 +133,23 @@ gh release download nightly --repo ivonnyssen/rusty-photon \
 sudo apt-get install ./rusty-photon-<svc>_*_arm64.deb
 ```
 
-Upgrading is installing a newer nightly the same way; the unit is
-restarted and the config untouched, as with any package upgrade.
+Upgrading is installing a newer nightly the same way; a running unit is
+restarted onto the new binary and the config untouched, as with any
+package upgrade.
 
 **Downgrades.** Once a machine runs nightlies, anything older is a
-downgrade for apt — an on-demand build stamped with the plain workspace
+downgrade — an on-demand build stamped with the plain workspace
 version, or an older nightly — and needs:
 
 ```sh
 sudo apt-get install --allow-downgrades ./rusty-photon-<svc>_0.1.0-1_arm64.deb
+sudo dnf downgrade ./rusty-photon-<svc>-0.1.0-1.<arch>.rpm      # Fedora
 ```
 
 **Rolling back.** The channel keeps no history. To return to a
 known-good state, downgrade to the plain release as above, or rebuild
-the known-good commit on demand and install that with
-`--allow-downgrades`:
+the known-good commit on demand (add `--rpm` for the rpm set) and
+install that the same downgrade way:
 
 ```sh
 git checkout <known-good-sha>
@@ -146,7 +164,16 @@ sudo apt-get install ./rusty-photon-<svc>_*.deb
 
 `apt-get install ./<file>` (not `dpkg -i`) resolves the runtime
 dependencies. The unit is enabled and started immediately; on upgrade it is
-restarted. Verify with:
+restarted. On Fedora:
+
+```sh
+sudo dnf install ./rusty-photon-<svc>-*.rpm
+sudo systemctl start rusty-photon-<svc>
+```
+
+The rpm enables the unit but — Fedora convention — does not start it:
+start it once by hand (or reboot); upgrades restart a running unit and
+leave a stopped one alone. Verify with:
 
 ```sh
 systemctl status rusty-photon-<svc>
@@ -241,12 +268,19 @@ to fully clean up after an erase, delete
 
 ```sh
 scripts/verify-packages.sh            # all debs in dist/<version>/
+scripts/verify-packages.sh --rpm      # the rpms, in a Fedora container
 scripts/verify-packages.sh --services filemonitor,zwo-camera --keep
 ```
 
 Runs a podman `--systemd=always` debian:trixie container and, per package:
 install → unit active → config self-created → HTTP probe → remove (config
-survives) → purge (config and state gone, shared pieces stay). Gated
+survives) → purge (config and state gone, shared pieces stay). The `--rpm`
+flavor runs the same per-service checks in a Fedora container, adjusted
+where rpm's lifecycle genuinely differs: it asserts the scriptlets'
+enabled-but-not-started contract before starting each unit itself, its
+`dnf install` doubles as the proof that every rpm's declared requires
+resolve (nothing is preinstalled to compensate), and erase is verified as
+remove-not-purge — config and state must survive. Gated
 services verify enabled-but-inactive-and-not-failed instead; zwo-camera
 additionally proves via `ldd` that each zwo binary resolves exactly its own
 bundled blob through the RUNPATH — and does not link the other services'
