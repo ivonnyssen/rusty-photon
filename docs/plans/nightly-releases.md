@@ -24,7 +24,7 @@ deliberately reusable so the deferred `release.yml` generalization
 
 | Phase | Description | Status | Branch / PR |
 |-------|-------------|--------|-------------|
-| N0 | Tech spike: hosted-arm64 verify, timings, asset naming, version dialects — settles the Orange Pi question | Not started | |
+| N0 | Tech spike: hosted-arm64 verify, timings, asset naming, version dialects — settles the Orange Pi question | **Done** (2026-07-13; findings below — Orange Pi: no-go; asset naming moved to N1) | scratch branch `spike/n0-nightly-packaging` (deleted) |
 | N1 | Debian anchor: `nightly-packages.yml` shared spine + `.deb` legs (x86_64 + arm64), rolling release, docs | Not started | |
 | N2 | Fedora: `.rpm` build on both arches + Fedora lifecycle verify leg | Not started | |
 | N3 | Windows: suite-MSI leg (strictly after W5 of [windows-packaging.md](windows-packaging.md)) | Not started | |
@@ -68,8 +68,9 @@ independent afterwards. N3 is gated only on W5; N4 has synergy with PR-7
 - **Build hosts: GitHub-hosted runners.** `ubuntu-latest` (x86_64) +
   `ubuntu-24.04-arm` (arm64; free on public repos, already used by
   `install-astap.yml`), `windows-latest`, `macos-latest` (Apple Silicon).
-  No self-hosted machines in the nightly path unless the N0 spike fails
-  the hosted-arm64 leg (see N0's Orange Pi criteria). Cross-compilation
+  No self-hosted machines in the nightly path — the N0 spike confirmed
+  the hosted-arm64 leg works and is fast (findings under Phase N0), so
+  the Orange Pi contingency is closed. Cross-compilation
   stays off the table (native-SDK linking is unproven cross-arch and
   buys nothing while hosted arm64 runners exist).
 - **Verification gate: the full lifecycle, per leg, pre-publish.**
@@ -154,12 +155,63 @@ main-pinned checkout), and it couples nightlies to home infrastructure
 being up. Default expectation: hosted wins; record the measured numbers
 here either way.
 
+**Findings (2026-07-13).** Ran as scratch workflow `spike-n0.yml` on
+branch `spike/n0-nightly-packaging` (Actions runs 29216267070 cold,
+29216728509 warm; branch deleted after these edits landed). One
+mechanical note for N1: a `workflow_dispatch` workflow that exists only
+on a non-default branch is not dispatchable — the spike used a
+branch-scoped `push` trigger as the dispatch. `nightly-packages.yml`
+lands on `main`, so this does not affect it.
+
+1. **Hosted arm64 verify: works.** `verify-packages.sh` (podman
+   `--systemd=always`, debian:trixie, the full 17-package
+   install → probe → remove → purge lifecycle) passed unmodified on
+   `ubuntu-24.04-arm`. podman 4.9.3 is preinstalled on both Linux
+   images; nothing to provision beyond the SDKs and cargo-deb.
+2. **Timings** (4-vCPU runners; warm = `Swatinem/rust-cache` restores
+   deps, workspace crates rebuild — the nightly steady state):
+
+   | Leg | Cold job total | Warm job total | `build-packages.sh` cold / warm | `verify-packages.sh` cold / warm |
+   |-----|---------------|----------------|--------------------------------|----------------------------------|
+   | `ubuntu-latest` | ~12 min | ~8 min | 565 s / 334 s | 93 s / 108 s |
+   | `ubuntu-24.04-arm` | ~11 min | ~7 min | 479 s / 289 s | 117 s / 126 s |
+
+   Observed queue latency ≤ 5 s on both legs in both runs.
+3. **Asset naming: the one item still open** — it needs a scratch
+   release on the repo, which the spike session could not create;
+   moved to N1, where the first real publish settles it.
+4. **deb dialect + `--deb-version`: proven** (locally, debian:trixie
+   container): dpkg orders `0.1.0-1 < 0.1.0+nightly.<date>.g<sha> <
+   0.1.1-1` with monotonic dates; `apt` upgrades a `0.1.0-1` install to
+   the nightly in place, refuses the downgrade without
+   `--allow-downgrades`, and rolls back cleanly with it. Note for N1:
+   `cargo deb --deb-version` uses the string **verbatim** — no `-1`
+   revision is appended, so the nightly deb version is revision-less
+   (harmless for ordering; keep it that way rather than faking a
+   revision).
+5. **Homebrew ordering: proven** on real brew (macOS runner): `Version`
+   orders the `+nightly` dialect correctly (base < nightly < next
+   patch, dates monotonic), so the dot-render fallback is unnecessary.
+
+Early N2 bonus, proven locally the same way: `cargo generate-rpm
+--set-metadata 'version = "0.1.0^<date>.g<sha>"'` stamps the `^`
+dialect into the rpm header and filename verbatim, and `rpm -U`
+upgrades `0.1.0-1` to it and refuses the downgrade ("which is newer
+... is already installed").
+
+**Orange Pi decision: NO-GO.** Hosted arm64 passes check 1 outright and
+beats the check-2 guideline by an order of magnitude (~11 min cold /
+~7 min warm against the 90-min line, with no observed queueing). The
+Orange Pi stays out of the nightly path.
+
 ### Phase N1 — Debian (the anchor)
 
 - `build-packages.sh` grows `--deb-version <v>` (pass-through to
-  `cargo deb --deb-version`; `dist/` path keyed on the full version).
+  `cargo deb --deb-version`, which uses the string verbatim — no `-1`
+  revision appended, per the N0 findings; `dist/` path keyed on the
+  full version).
 - `nightly-packages.yml` lands with the shared spine and two legs:
-  `ubuntu-latest` and `ubuntu-24.04-arm` (or the Orange Pi per N0), each
+  `ubuntu-latest` and `ubuntu-24.04-arm` (hosted, per N0), each
   running `build-packages.sh --deb-version …` then `verify-packages.sh`
   (the full install → probe → remove → purge lifecycle).
 - Publish job as described in the spine; 17 packages per arch +
@@ -331,14 +383,20 @@ unknowns below).
 
 ## Flagged unknowns (resolve during the noted phase)
 
-- [ ] (N0) podman `--systemd=always` viability on the `ubuntu-24.04-arm`
-      hosted image — the arm64 leg's load-bearing assumption.
-- [ ] (N0) `+` / `^` in GitHub release asset filenames vs `gh`/`curl`
-      URL-encoding → final filename convention.
-- [ ] (N0) Homebrew version comparison of the nightly dialect (fallback:
-      dot-rendered formula `version`).
-- [ ] (N0) Hosted arm64 wall-clock + queue numbers → Orange Pi go/no-go.
-- [ ] (N2) `cargo-generate-rpm` Version override with the `^` dialect.
+- [x] (N0) podman `--systemd=always` viability on the `ubuntu-24.04-arm`
+      hosted image — **works unmodified**; podman 4.9.3 preinstalled
+      (N0 findings, item 1).
+- [ ] (N0→N1) `+` / `^` in GitHub release asset filenames vs `gh`/`curl`
+      URL-encoding → final filename convention. The one N0 item left
+      open (needs a scratch release); N1's first publish settles it.
+- [x] (N0) Homebrew version comparison of the nightly dialect — orders
+      correctly as-is; the dot-render fallback is unnecessary
+      (N0 findings, item 5).
+- [x] (N0) Hosted arm64 wall-clock + queue numbers — ~11 min cold /
+      ~7 min warm, queue ≤ 5 s → **Orange Pi no-go** (N0 findings).
+- [x] (N2) `cargo-generate-rpm` Version override with the `^` dialect —
+      `--set-metadata 'version = "…"'` stamps it verbatim; upgrade and
+      downgrade-refusal proven with `rpm -U` (N0 findings).
 - [ ] (N2) rpm package-name override (carried from service-packaging.md).
 - [ ] (N4) zwo dylib payload on macOS: `@loader_path`-relative rpath
       instead of the Linux `/usr/lib/rusty-photon` RUNPATH; indi-3rdparty
