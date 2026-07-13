@@ -169,9 +169,19 @@ pub(super) async fn tracking_guard_tick(
 /// Takes and returns the once-per-crossing attempt latch: `true` means
 /// an attempt was already made for the current meridian crossing. The
 /// latch re-arms (returns to `false`) whenever the encoder `mech_HA`
-/// reads below the configured offset — a successful flip does that
-/// naturally (the post-flip encoder lands near `offset − 12 h`), as
-/// does any slew back east of the offset.
+/// reads below the configured offset. In the folded `[−12, +12)`
+/// encoder space a successful flip lands near `offset − 12 h` for a
+/// non-negative offset (re-arms immediately) but near `offset + 12 h`
+/// for a negative one — there the latch holds, inert (the pier-side
+/// gate below already makes the tick a no-op on the flipped side),
+/// until tracking folds past `+12 h` at most `|offset|` hours later or
+/// a slew lands back east of the offset. The raw `<` needs no fold
+/// handling of its own: on the natural side — the only side where the
+/// latch gates a flip — tracking moves `mech_HA` monotonically from
+/// the slew's landing point up toward the guard band without crossing
+/// a fold, and a folded-delta comparison would misread legitimate
+/// far-east pointings (`mech_HA` near `−12 h` with a positive offset)
+/// as west of the trigger.
 ///
 /// It is a no-op (latch unchanged) when the client has no tracking
 /// engaged, a slew is in flight, parameters aren't cached yet, or the

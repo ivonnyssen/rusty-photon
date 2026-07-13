@@ -421,9 +421,10 @@ async fn auto_flip_tick_starts_a_flip_at_the_meridian_offset() {
 
 #[tokio::test]
 async fn auto_flip_tick_rearms_below_the_offset() {
-    // East of the trigger the latch resets — this is what re-arms the
-    // watcher after a completed flip (post-flip mech_HA ≈ offset − 12)
-    // or a slew back east.
+    // East of the trigger the latch resets — this re-arms the watcher
+    // after a slew back east, or after a completed flip once the folded
+    // post-flip mech_HA reads below the offset (immediately for
+    // non-negative offsets; after the +12 h fold for negative ones).
     let (d, mock) = auto_flip_device(0.0).await;
     seed_mech_ha(&d, &mock, -3.0).await;
     d.state.write().await.tracking_requested = true;
@@ -481,6 +482,46 @@ async fn auto_flip_tick_ignores_the_post_flip_side() {
     let attempted = auto_flip_tick(&d, 0.0, false).await;
 
     assert!(!attempted, "no attempt on the post-flip side");
+    let log = mock.lock().await.command_log.clone();
+    assert!(!log_has_flip_goto(&log), "no flip expected, log: {log:?}");
+}
+
+#[tokio::test]
+async fn auto_flip_tick_stays_latched_at_the_post_flip_fold_with_a_negative_offset() {
+    // A flip fired at a negative offset lands the folded mech_HA near
+    // offset + 12 on the flipped side. The latch holds there (mech_HA
+    // is not below the offset) and is inert — the pier-side gate blocks
+    // any flip on the flipped side regardless of latch state.
+    let (d, mock) = auto_flip_device(-0.25).await;
+    seed_mech_ha(&d, &mock, 11.75).await;
+    let cpr = d.manager.parameters().await.unwrap().cpr_dec as i32;
+    mock.lock().await.dec.position_ticks = cpr / 2;
+    d.manager.seed_dec_position(cpr / 2).await;
+    d.state.write().await.tracking_requested = true;
+
+    let attempted = auto_flip_tick(&d, -0.25, true).await;
+
+    assert!(attempted, "the latch must hold at the fold position");
+    let log = mock.lock().await.command_log.clone();
+    assert!(!log_has_flip_goto(&log), "no flip expected, log: {log:?}");
+}
+
+#[tokio::test]
+async fn auto_flip_tick_rearms_after_the_fold_with_a_negative_offset() {
+    // Once tracking carries the post-flip encoder past +12 h the folded
+    // mech_HA reads near −12, below any valid offset — the latch
+    // re-arms while still on the flipped side, ready for the next
+    // natural-side crossing.
+    let (d, mock) = auto_flip_device(-0.25).await;
+    seed_mech_ha(&d, &mock, -11.9).await;
+    let cpr = d.manager.parameters().await.unwrap().cpr_dec as i32;
+    mock.lock().await.dec.position_ticks = cpr / 2;
+    d.manager.seed_dec_position(cpr / 2).await;
+    d.state.write().await.tracking_requested = true;
+
+    let attempted = auto_flip_tick(&d, -0.25, true).await;
+
+    assert!(!attempted, "past the fold the latch must re-arm");
     let log = mock.lock().await.command_log.clone();
     assert!(!log_has_flip_goto(&log), "no flip expected, log: {log:?}");
 }
