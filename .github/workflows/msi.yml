@@ -5,8 +5,8 @@
 # checks -> failure-actions proofs -> feature remove -> uninstall) on
 # windows-latest. Triggers: PRs that touch the packaging inputs (the
 # iteration loop) and workflow_dispatch for on-demand runs. release.yml
-# runs the same two scripts as the release gate; the scheduled nightly run
-# lands as the msi leg of nightly-packages.yml (phase N3 of
+# runs the same two scripts as the release gate; a scheduled nightly run
+# is planned as the msi leg of a future nightly-packages.yml (phase N3 of
 # docs/plans/nightly-releases.md), not as a schedule trigger here.
 permissions:
   contents: read
