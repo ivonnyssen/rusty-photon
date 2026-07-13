@@ -38,7 +38,7 @@ verifies each floor builds with minimal dependency versions, and its advisory
 `find` leg reports the true lowest. If a change raises the floor (a new std API, a
 dependency MSRV bump), **bump that crate's `rust-version`** to the value the check
 accepts; to keep it low, prefer APIs/deps available on the declared MSRV.
-See [docs/plans/publish-readiness-checks.md](../../docs/plans/publish-readiness-checks.md).
+See [docs/plans/archive/publish-readiness-checks.md](../../docs/plans/archive/publish-readiness-checks.md).
 
 ## Steps
 
@@ -54,7 +54,7 @@ bazel test //...                # build + test gate
 # published-in-isolation guarantees (MSRV, direct-minimal-versions, semver,
 # docs.rs) that the in-workspace checks cannot. Trigger it and confirm it passes:
 #   gh workflow run publish-readiness.yml      # or rely on the last green nightly
-# A red run BLOCKS the release. See docs/plans/publish-readiness-checks.md.
+# A red run BLOCKS the release. See docs/plans/archive/publish-readiness-checks.md.
 
 # 1. Bump versions + changelogs
 #    - crates/qhyccd-rs/libqhyccd-sys/Cargo.toml : version = "0.1.5" (etc.)

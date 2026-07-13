@@ -5,7 +5,7 @@ Every rusty-photon Alpaca driver exposes its own configuration over HTTP as thre
 so a single web UI can read, edit, and apply any driver's config without the
 driver-specific knowledge living in the UI. This is the generalisation of the
 Phase 1/2 `dsd-fp2` protocol (see
-[`docs/plans/ui-design/config-actions.md`](../plans/ui-design/config-actions.md))
+[`docs/plans/archive/config-actions.md`](../plans/archive/config-actions.md))
 to **all** drivers.
 
 The driver-agnostic machinery lives in the **`rusty-photon-config`** crate's
@@ -178,7 +178,7 @@ rendering and multi-driver routing.
 
 ## References
 
-- Protocol design + phasing: [`docs/plans/ui-design/config-actions.md`](../plans/ui-design/config-actions.md)
+- Protocol design + phasing: [`docs/plans/archive/config-actions.md`](../plans/archive/config-actions.md)
 - Protocol model (no ASCOM dep): [`crates/rusty-photon-config/src/actions.rs`](../../crates/rusty-photon-config/src/actions.rs)
 - ASCOM adapter (dispatch + `driver_error!` macro + error model): [`crates/rusty-photon-driver`](../../crates/rusty-photon-driver) — see [ADR-007](../decisions/007-rusty-photon-driver-shared-crate.md)
 - Reload lifecycle: [`docs/skills/service-lifecycle.md`](../skills/service-lifecycle.md)

@@ -5,6 +5,7 @@
 - Before writing any new tests (unit, BDD, or property-based)
 - Before adding a new feature to a service (see the checklist in Section 9)
 - Before migrating existing integration tests to BDD
+- Before writing tests for `ui-htmx` or any other browser-facing service (see Section 10)
 
 ## Prerequisites
 
@@ -967,8 +968,182 @@ When adding a new feature to a service:
 
 ---
 
+### 10. UI / Browser-Facing Service Testing (server-rendered HTMX apps)
+
+**Applies to:** `ui-htmx` and any future server-rendered, HTMX-based
+browser-facing service. The full design rationale (the Playwright evaluation,
+the cross-cutting gotchas, the anticipatory-spike history) lives in the
+archived [ui-htmx UI-testing plan](../plans/archive/ui-testing.md); this
+section is the durable how-to.
+
+#### 10.1 The model: three proof obligations, one BDD suite
+
+A server-rendered HTMX app has no client state machine, virtual DOM, or
+hand-written JavaScript — its interactivity is a thin, declarative contract:
+
+```
+browser-observable behavior = f( bytes the server sent , htmx.min.js , browser engine )
+```
+
+`htmx.min.js` is the same vendored file on every OS, and the browser engine is
+the end user's device. So behavior can differ across *server* OSes only if the
+*server's bytes* differ. That decomposes into three obligations, each with a
+different tool — and **all three live inside the same cucumber-rs BDD
+scenarios**, not a separate test type:
+
+| # | Obligation | Question | Tool |
+|---|---|---|---|
+| P1 | Output correctness | Does the server emit the *right* markup + `hx-*` wiring? | `scraper` DOM assertions (§10.2) |
+| P2 | Output OS-invariance | Is the output *identical* across OSes? | `insta` byte-equivalence snapshots (§10.3) |
+| P3 | Output → behavior | Does real htmx *execute* it — swap lands, poll terminates, click works? | `thirtyfour` browser layer (§10.4) |
+
+P3 establishes "this structure ⟹ this behavior" once; P2 establishes "every OS
+emits that structure"; transitively, behavior is correct on every OS without a
+browser on every OS. P1 independently proves the structure is *correct* (P2
+alone would pass if every OS were identically wrong).
+
+#### 10.2 Layer A — `scraper` DOM assertions (P1)
+
+The everyday suite: runs on every OS leg via BDD, deterministically, no
+browser. Replace `String::contains` substring checks with CSS-selector
+assertions — a substring match is false-positive-prone and blind to attribute
+order, boolean attributes, or malformed tags.
+
+- **`!Send` discipline is load-bearing.** `scraper::Html` is `!Send` (it holds
+  `Rc`s). Parse the borrowed HTML string, select, extract **owned** data, and
+  drop the parsed tree — all inside a synchronous helper function — before
+  returning to an `async` Then-step. Never store a parsed `Html`/`Selector` in
+  a `Send` World struct or hold one across an `.await`. See
+  `services/ui-htmx/tests/bdd/dom.rs` for the pattern: every helper takes
+  `&str`, returns owned `String`/`bool`/a small owned struct, and is fully
+  synchronous.
+- **Thin DOM-driven request helpers, not an htmx simulator.** Build helpers on
+  `reqwest` + `scraper` that *submit the rendered form* (read fields/hidden
+  inputs and the actual `hx-post` URL from the HTML), *follow the rendered
+  link* (its `hx-get` URL), and *poll* an endpoint discovered from the DOM —
+  never hardcode a URL the server happens to use today. Send htmx's full
+  request header set (`HX-Request`, `HX-Target`, `HX-Trigger`,
+  `HX-Trigger-Name`, `HX-Current-URL`) so captured fragments match what a
+  browser would actually send. Do **not** build a general model of
+  `hx-swap`/`hx-target`/`HX-*` semantics — that's "testing your simulator";
+  route real client-transformation behavior to Layer C instead.
+
+#### 10.3 Layer B — `insta` cross-OS snapshots (P2)
+
+Snapshot the **server response bytes** (full pages + `HX-Request` swap
+fragments) captured by the existing non-browser BDD path — the
+cross-OS-comparable artifact, since a browser DOM only runs on one OS and
+reserializes what it received.
+
+- **Explicit snapshot names.** `insta`'s auto-naming is murky inside a
+  cucumber step; always name snapshots explicitly (see
+  `services/ui-htmx/tests/bdd/snapshot.rs::assert_html`).
+- **External `.snap` files**, not inline, under `tests/snapshots/` — readable
+  diffs. Pin `*.snap text eol=lf` in `.gitattributes` (the CRLF hazard, not
+  fixed by insta filters).
+- **`add_filter` regexes scrub run-varying tokens** (ephemeral ports, temp
+  dirs, correlation IDs) so one committed golden compares on every OS. Skip
+  snapshotting output that is *inherently* OS-varying (e.g. an OS-specific
+  `os error N` string in a connection-refused banner) — that's what Layer A's
+  DOM check is for.
+- **Runtime snapshot-path resolver, not a static BUILD.bazel string.**
+  `INSTA_WORKSPACE_ROOT` can't be interpolated at Bazel analysis time. Resolve
+  the snapshot directory at runtime from `TEST_SRCDIR`/`TEST_WORKSPACE`
+  (Bazel runfiles) falling back to `$CARGO_MANIFEST_DIR/tests/snapshots`
+  (Cargo) — see `snapshot_dir()` in `services/ui-htmx/tests/bdd/snapshot.rs`,
+  which mirrors `services/ppba-driver/tests/translations.rs`'s
+  `locate_i18n_dir()`.
+- **Bazel wiring:** `data += glob(["tests/snapshots/**"])` on the `bdd`
+  target so goldens reach the runfiles tree, and `env += {"INSTA_UPDATE":
+  "no"}` — Bazel does not propagate `CI`, so compare-only must be forced
+  explicitly (the sandbox is read-only anyway).
+- **Updates are Cargo-local only.** `cargo insta review` / `accept`, then
+  commit — never attempt to update a snapshot under Bazel/CI.
+
+#### 10.4 Layer C — `thirtyfour` real-browser tests (P3)
+
+A **small**, advisory set of scenarios for behavior only a real browser can
+prove (a swap actually lands, a poller fires then terminates, streaming
+teardown doesn't zero out coverage).
+
+- **Gate with a cucumber tag + runtime env var, never a cargo feature.** Tag
+  scenarios `@browser` and filter them out of the default suite unless
+  `UI_BROWSER_TESTS=1` is set, in the same closure that filters `@wip` (see
+  `docs/skills/testing.md` §2.7 and `services/ui-htmx/tests/bdd.rs`). A cargo
+  feature would be flipped on by `--all-features` runs and drag browser flake
+  into the required gate; `thirtyfour` itself stays an always-compiled
+  dev-dep, which is harmless.
+- **geckodriver is an external system tool**, exactly like OmniSim/ConformU:
+  discover it via `GECKODRIVER_BINARY` (else `PATH`), spawn it on an
+  **ephemeral** port, in **its own process group** (`process_group(0)` on
+  unix) with `kill_on_drop`. The process group is what makes teardown
+  tractable — geckodriver leads it, Firefox and its content processes inherit
+  it, so the whole tree can be reaped with one `killpg` and an orphan check
+  can be scoped to *that group* (it can never match a developer's own
+  Firefox). See `services/ui-htmx/tests/bdd/browser.rs::BrowserSession`.
+- **Teardown ordering is load-bearing:
+  `driver.quit() → stop the service under test → stop its dependencies`.** A
+  live browser session holds an open connection to the server; stopping the
+  server first blocks its graceful shutdown, which costs the 5s SIGKILL grace
+  and skips `atexit` — meaning **no `.profraw` is written and BDD coverage is
+  silently lost** (the same hazard as §5.4, but the browser removes the
+  in-process escape hatch: `driver.quit()` is the only lever). This is
+  especially sharp for SSE/streaming endpoints, which never close on a
+  shutdown signal (axum issue #2673) — an open SSE connection can block
+  graceful shutdown for seconds where a plain request blocks for ~0.1s.
+- **Poll, never snapshot-once.** Set the WebDriver implicit wait to zero and
+  poll explicitly (bounded retries, no wall-clock `sleep` beyond the poll
+  interval) for every assertion that depends on an async htmx swap or SSE
+  push — a single point-in-time read races the swap. See `wait_present` /
+  `wait_enabled` / `wait_text_contains` in `browser.rs`.
+- **No async `Drop`.** `thirtyfour`'s `WebDriver` has none — always
+  `driver.quit().await` explicitly; relying on `Drop` can deadlock the async
+  executor mid-teardown.
+- **Capture failure artifacts (screenshot + page source) before any
+  reap/quit**, to an **absolute** path (Bazel's `TEST_UNDECLARED_OUTPUTS_DIR`
+  when set, else the OS temp dir) — a path relative to the original cwd
+  breaks under Bazel's package-dir chdir.
+- **Single browser, single OS, by design — not a gap.** Firefox headless on
+  Linux is the only environment exercised; cross-OS coverage rides Layer B
+  (identical server bytes ⇒ identical behavior), and the process-group
+  reaper/orphan scan is unix-only. Don't propose extending this to
+  macOS/Windows or another engine without a concrete new behavioral gap to
+  justify it.
+
+#### 10.5 Gating & CI
+
+- **Default/required suite** (Cargo + Bazel, every OS leg + the Pi): Layers A
+  + B only. Deterministic, no browser, full server-byte coverage.
+- **`@browser` stays advisory**, run on a dedicated nightly recording job
+  (`schedule` + `workflow_dispatch`, modeled on `scheduled.yml`'s Miri job)
+  with a `notify-on-failure` step that opens-or-updates a tracking issue
+  rather than reopening a closed one.
+- Promote a *specific* `@browser` behavior to required only once it's the
+  **sole** proof for something Layers A/B structurally cannot see (OOB swaps,
+  response-header retargeting, SSE) and it's been stable for a defined
+  sustained-green window — don't promote the whole layer wholesale.
+
+#### 10.6 What not to build
+
+- **A hand-rolled htmx simulator** modeling `hx-swap`/`hx-target`/`HX-*`
+  semantics — you'd be testing your simulator, with a re-validate-on-every-
+  htmx-bump tax. Keep Layer A's request helpers thin; route real
+  client-transformation behavior to Layer C.
+- **In-process unit-test snapshots** of rendered pages — a second test
+  re-rendering the page duplicates the behavioral contract and cuts against
+  BDD-as-source-of-truth. Snapshots ride the BDD scenarios (§10.3).
+- **Playwright** (or any browser runner requiring a Node.js toolchain) in this
+  Rust/Bazel/`crate_universe`-single-source-of-truth workspace — re-evaluate
+  only if an official, Node-free, v1.0+ Rust binding lands.
+- **A browser on every OS**, or a cross-engine matrix, absent a concrete
+  behavioral gap the single Linux/Firefox environment doesn't cover — see
+  §10.4's last point.
+
+---
+
 ## References
 
 - [AGENTS.md](../AGENTS.md) -- Rule 7 (prefer `unwrap()`) and Rule 8 (test smallest functionality)
 - [Pre-push skill](pre-push.md) -- Running the full CI quality-gate suite before pushing
 - [ASCOM Alpaca reference](../references/ascom-alpaca.md) -- Protocol details for ASCOM device tests
+- [ui-htmx UI-testing plan (archived)](../plans/archive/ui-testing.md) -- Full design rationale behind Section 10: the three-obligation model, the Playwright evaluation, the anticipatory-spike history

@@ -1,5 +1,5 @@
 //! `insta` byte-equivalence snapshots of the BFF's HTML output — Layer B of the
-//! UI-testing plan ([`docs/plans/ui-testing.md`] §5, obligation P2).
+//! UI-testing plan ([`docs/plans/archive/ui-testing.md`] §5, obligation P2).
 //!
 //! The server's response bytes are the **cross-OS-comparable** artifact: htmx
 //! swaps a fragment verbatim, so byte-identical output across OSes implies
@@ -19,7 +19,7 @@
 //!   golden is never written there. Updates are Cargo-local: `cargo insta
 //!   review` / `accept`, then commit.
 //!
-//! [`docs/plans/ui-testing.md`]: ../../../../docs/plans/ui-testing.md
+//! [`docs/plans/archive/ui-testing.md`]: ../../../../docs/plans/archive/ui-testing.md
 
 use std::path::{Path, PathBuf};
 

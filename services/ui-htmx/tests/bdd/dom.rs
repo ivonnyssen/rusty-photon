@@ -1,5 +1,5 @@
 //! Thin DOM helpers over [`scraper`] for the `ui-htmx` BDD suite — Layer A of the
-//! UI-testing plan ([`docs/plans/ui-testing.md`] §4).
+//! UI-testing plan ([`docs/plans/archive/ui-testing.md`] §4).
 //!
 //! Every function parses a borrowed HTML string, selects, extracts **owned**
 //! data, and drops the parsed tree before returning. `scraper::Html` is `!Send`
@@ -13,7 +13,7 @@
 //! `String::contains` substring assertions, which mishandled attribute order,
 //! boolean attributes, and HTML entity decoding.
 //!
-//! [`docs/plans/ui-testing.md`]: ../../../../docs/plans/ui-testing.md
+//! [`docs/plans/archive/ui-testing.md`]: ../../../../docs/plans/archive/ui-testing.md
 
 use scraper::{Html, Selector};
 

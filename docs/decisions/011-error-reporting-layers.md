@@ -3,7 +3,7 @@
 ## Status
 
 Accepted (2026-07-01); implemented by
-[`docs/plans/error-reporting-color-eyre.md`](../plans/error-reporting-color-eyre.md).
+[`docs/plans/archive/error-reporting-color-eyre.md`](../plans/archive/error-reporting-color-eyre.md).
 
 ## Context
 
@@ -108,7 +108,7 @@ call site would need a manual conversion. Keeping the closure's error boxed
 ## References
 
 - Plan (motivation, alternatives weighed, spike):
-  [`docs/plans/error-reporting-color-eyre.md`](../plans/error-reporting-color-eyre.md)
+  [`docs/plans/archive/error-reporting-color-eyre.md`](../plans/archive/error-reporting-color-eyre.md)
 - Owner crate design:
   [`docs/crates/rusty-photon-service-lifecycle.md`](../crates/rusty-photon-service-lifecycle.md)
 - Classification machinery that mandates typed errors:

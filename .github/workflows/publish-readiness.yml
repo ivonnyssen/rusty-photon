@@ -7,7 +7,7 @@
 # standalone repos had and that vendoring dropped:
 #   - MSRV + minimal-versions : each crate builds on its declared (lower) MSRV
 #       with a direct-minimal-versions lockfile — run OUT of the workspace by
-#       scripts/verify-publishable-crate.sh. See docs/plans/publish-readiness-checks.md.
+#       scripts/verify-publishable-crate.sh. See docs/plans/archive/publish-readiness-checks.md.
 #   - semver-checks           : the next version is a sound semver bump.
 #   - docs.rs build           : the crate's docs build the way docs.rs builds them.
 #   - find (advisory)         : reports the LOWEST MSRV each crate could declare,

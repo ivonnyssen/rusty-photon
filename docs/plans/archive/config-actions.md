@@ -1,19 +1,23 @@
 # Config actions + the BFF web UI
 
-**Status:** Phase 1 **landed** (dsd-fp2 `config.get`/`config.apply` + in-process
-reload). Phase 2 **landed** — the BFF skeleton + dsd-fp2 config page ship as the
-`ui-htmx` service ([`docs/services/ui-htmx.md`](../../services/ui-htmx.md)). Phase 3
-**landed** — the `config.get`/`config.apply`/`config.schema` protocol is generalised
-across **all six** drivers via the shared `rusty-photon-config::actions` module (see
-[`docs/services/config-actions.md`](../../services/config-actions.md)), and the
-`ui-htmx` BFF now renders **any** driver's form generically from `config.schema`,
-routing every configured driver under `/config/{service}`. Phase 4 **landed** —
-Sentinel's `POST /api/services/{name}/restart` (driven by the new top-level
-`services` registry) plus the BFF's "Restart via Sentinel" button and
-`restart_required` escalation; decisions resolved 2026-07-10 — see
-[Decisions (2026-07-10)](#decisions-2026-07-10). Key protocol decisions
-resolved 2026-05-24 — see [Resolved](#resolved-2026-05-24).
-**Companion to:** [`mocks/README.md`](mocks/README.md) (the chosen UI direction and stack).
+**Status: COMPLETE (archived 2026-07-12).** All 5 phases landed. Phase 1
+(dsd-fp2 `config.get`/`config.apply` + in-process reload) and Phase 2 (the BFF
+skeleton + dsd-fp2 config page as the `ui-htmx` service,
+[`docs/services/ui-htmx.md`](../../services/ui-htmx.md)) shipped via PR #305
+(`65ecc2d`). Phase 3 (the `config.get`/`config.apply`/`config.schema` protocol
+generalised across **all six** drivers via the shared `rusty-photon-config::actions`
+module, [`docs/services/config-actions.md`](../../services/config-actions.md),
+with the `ui-htmx` BFF rendering **any** driver's form generically from
+`config.schema` under `/config/{service}`) shipped via PR #344 (`1da776b`).
+Phase 4 (Sentinel's `POST /api/services/{name}/restart`, driven by the
+top-level `services` registry, plus the BFF's "Restart via Sentinel" button
+and `restart_required` escalation) shipped via PR #488 (`13280fb`); decisions
+resolved 2026-07-10 — see [Decisions (2026-07-10)](#decisions-2026-07-10).
+Phase 5 (rp config actions, the roster-derived `/equipment` page, and the
+`/stream` activity feed over an SSE proxy) shipped via PR #485 (`8665c9f`) and
+follow-up PR #487 (`736d768`). Key protocol decisions resolved 2026-05-24 —
+see [Resolved](#resolved-2026-05-24).
+**Companion to:** [`mocks/README.md`](../ui-design/mocks/README.md) (the chosen UI direction and stack).
 
 ## Summary
 
@@ -243,7 +247,7 @@ already-designed supervisor:
 > `rp.md:2759-2767`
 
 Implementation: expose the planned `Restarter` trait (see the watchdog plan,
-[`../archive/predictive-deadlines-and-watchdog.md`](../archive/predictive-deadlines-and-watchdog.md))
+[`predictive-deadlines-and-watchdog.md`](predictive-deadlines-and-watchdog.md))
 as a REST endpoint on Sentinel's
 existing dashboard router (e.g. `POST /api/services/{name}/restart`), driven by a
 per-service `restart_command` config entry. Sentinel does **not** spawn or own the

@@ -5,7 +5,7 @@ edition = "2021"
 # Explicit, lower-than-workspace MSRV: this crate is dual-homed to crates.io
 # (ADR-009), so its published floor must reflect what DOWNSTREAM consumers can
 # build on, NOT the workspace's unified 1.94.1. The floor is verified out-of-tree
-# by the nightly publish-readiness check (docs/plans/publish-readiness-checks.md),
+# by the nightly publish-readiness check (docs/plans/archive/publish-readiness-checks.md),
 # which copies the crate family out of the workspace and builds it on this
 # toolchain with a direct-minimal-versions lockfile — it cannot be verified
 # in-workspace because
@@ -30,7 +30,7 @@ categories = ["aerospace", "api-bindings"]
 homepage = "https://github.com/ivonnyssen/qhyccd-rs/wiki"
 
 # Marks this crate (+ its nested FFI sub-crate) for the nightly publish-readiness
-# check (docs/plans/publish-readiness-checks.md). Discovered via `cargo metadata`
+# check (docs/plans/archive/publish-readiness-checks.md). Discovered via `cargo metadata`
 # just like [package.metadata.conformu]/[package.metadata.miri]. ONLY the four
 # dual-homed FFI crates carry this; the rest of the workspace is never checked.
 # - sys-crate:     the nested build-script sub-crate to co-verify standalone.

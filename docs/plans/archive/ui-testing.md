@@ -1,15 +1,21 @@
 # Plan: ui-htmx UI testing strategy
 
+**Status: COMPLETE (archived 2026-07-12).** All three layers shipped: Layer A
+(P1 `scraper` DOM assertions), Layer B (P2 `insta` cross-OS snapshots), and
+Layer C (P3 `thirtyfour` browser tests) landed via PR #390 ("UI-testing plan
+Layers A, B & C", commit `b05e96e`); the §7 no-JS-affordance cleanup and the §9
+Tier 0-2 anticipatory spikes (fixtures, SSE streaming) landed in the same wave.
+Tier 3 (morph swaps, `hx-select`/`hx-preserve`/`hx-boost`) remains a
+deliberate reserve-only future obligation, not a gap — see §9. The durable
+how-to for writing `ui-htmx` UI tests moved to
+[`docs/skills/testing.md`](../../skills/testing.md) §10; this document is kept
+for the full design rationale (the three-obligation model in §2, the
+Playwright evaluation in §11, and the cross-cutting gotchas in §10).
+
 **Date:** 2026-06-14
 **Branch:** `worktree-research-ui-testing`
-**Parent design docs:** [`docs/workspace.md`](../workspace.md), [`docs/services/ui-htmx.md`](../services/ui-htmx.md), [`docs/skills/testing.md`](../skills/testing.md), [`docs/skills/pre-push.md`](../skills/pre-push.md), [`docs/plans/archive/bazel-migration.md`](archive/bazel-migration.md)
-**Closest precedent:** [ADR-004 — Testing strategy for HTTP-client error paths](../decisions/004-testing-strategy-for-http-client-error-paths.md)
-
-> **Status:** research-backed recommendation with a phased, **anticipatory** spike
-> plan. The model (§2), the build-system stance (§3), the layer design (§4–§6),
-> and the rejections (§11) are settled. The phasing (§10) is a proposal pending a
-> review pass. Crate versions and external facts were verified 2026-06-14 and will
-> drift — re-check before adopting a specific crate or pinning a workflow.
+**Parent design docs:** [`docs/workspace.md`](../../workspace.md), [`docs/services/ui-htmx.md`](../../services/ui-htmx.md), [`docs/skills/testing.md`](../../skills/testing.md), [`docs/skills/pre-push.md`](../../skills/pre-push.md), [`bazel-migration.md`](bazel-migration.md)
+**Closest precedent:** [ADR-004 — Testing strategy for HTTP-client error paths](../../decisions/004-testing-strategy-for-http-client-error-paths.md)
 
 ## 1. Background
 
@@ -17,7 +23,7 @@
 browser-facing surface in scope. It is a **proof-of-concept** config UI today; the
 intended trajectory is a full real-time astrophotography web interface (live mount
 telemetry, exposure progress, image preview, an SSE activity stream — see
-[`docs/plans/ui-design/`](ui-design/)). Leptos/WASM and the sentinel dashboard are
+[`docs/plans/ui-design/`](../ui-design/)). Leptos/WASM and the sentinel dashboard are
 out of scope.
 
 The current BDD suite (`services/ui-htmx/tests/bdd/`) spawns the real `ui-htmx` +
@@ -110,8 +116,8 @@ can't go green quickly, the browser layer stays cargo-only/system-dep (like the 
 > `HX-*` header set. `input_tag()` and the `String::contains` assertions are
 > gone. All 9 scenarios pass under Cargo. Layers B (§5) and C (§6) remain.
 
-[`tests/bdd/dom.rs`]: ../../services/ui-htmx/tests/bdd/dom.rs
-[`tests/bdd/world.rs`]: ../../services/ui-htmx/tests/bdd/world.rs
+[`tests/bdd/dom.rs`]: ../../../services/ui-htmx/tests/bdd/dom.rs
+[`tests/bdd/world.rs`]: ../../../services/ui-htmx/tests/bdd/world.rs
 
 The everyday suite. Runs on every OS leg via the BDD suite, deterministically, no
 browser.
@@ -148,8 +154,8 @@ browser.
 > connection-refused string, the canonical case where P1's DOM check stands in
 > for P2. Layer C (§6) remains.
 
-[`tests/snapshots/`]: ../../services/ui-htmx/tests/snapshots/
-[`tests/bdd/snapshot.rs`]: ../../services/ui-htmx/tests/bdd/snapshot.rs
+[`tests/snapshots/`]: ../../../services/ui-htmx/tests/snapshots/
+[`tests/bdd/snapshot.rs`]: ../../../services/ui-htmx/tests/bdd/snapshot.rs
 
 Snapshot the **server response bytes** (full pages + `HX-Request` swap fragments)
 captured by the existing non-browser BDD path. This is the cross-OS-comparable
@@ -251,10 +257,10 @@ header swaps/morph) the fragment bytes are byte-identical to what htmx swaps.
 > explicitly not built). The §7 no-JS-affordance cleanup is also **implemented**
 > (see §7), so the whole plan is realized except the reserve-only Tier 3.
 
-[`.github/workflows/ui-browser-nightly.yml`]: ../../.github/workflows/ui-browser-nightly.yml
+[`.github/workflows/ui-browser-nightly.yml`]: ../../../.github/workflows/ui-browser-nightly.yml
 
-[`tests/bdd.rs`]: ../../services/ui-htmx/tests/bdd.rs
-[`tests/bdd/browser.rs`]: ../../services/ui-htmx/tests/bdd/browser.rs
+[`tests/bdd.rs`]: ../../../services/ui-htmx/tests/bdd.rs
+[`tests/bdd/browser.rs`]: ../../../services/ui-htmx/tests/bdd/browser.rs
 
 A **small** set (≈3–5 scenarios, plus the spike scenarios in §9) for behaviors only a
 browser can prove.
@@ -281,7 +287,7 @@ browser can prove.
 > form fallback (keeps `hx-post`) and converted the unlock/lock/retry `<a hx-get>`
 > to `<button hx-get>` (link-styled via a new `button.link` CSS rule;
 > `type="button"` so the in-form unlock/lock buttons don't submit). The UI is now
-> documented as **JavaScript-required** in [`docs/services/ui-htmx.md`](../services/ui-htmx.md);
+> documented as **JavaScript-required** in [`docs/services/ui-htmx.md`](../../services/ui-htmx.md);
 > the `HX-Request` full-page-vs-fragment branch is kept. The BDD DOM helper
 > (`unlock_url`) and the browser unlock selector moved from `a[hx-get]` to
 > `button[hx-get]`; the four affected P2 goldens were regenerated. All suites green.
@@ -394,7 +400,7 @@ Firefox/geckodriver via `--test_env`, headless, geckodriver on an **ephemeral** 
 > nowhere. The optional `HX-Push-Url` leg is included (history observability); the
 > `HX-Redirect` leg is left for later (push-url already proves the navigation seam).
 
-[`tests/features/fixtures.feature`]: ../../services/ui-htmx/tests/features/fixtures.feature
+[`tests/features/fixtures.feature`]: ../../../services/ui-htmx/tests/features/fixtures.feature
 
 A feature-gated, test-only `/fixtures/*` route set (ships nothing) the `@browser`
 scenarios drive, each proving the harness can **observe a divergence P1/P2/§A cannot**:
@@ -437,7 +443,7 @@ scenarios drive, each proving the harness can **observe a divergence P1/P2/§A c
 > probe is left for later — the teardown proof already exercises the decisive
 > streaming risk.
 
-[`tests/features/sse.feature`]: ../../services/ui-htmx/tests/features/sse.feature
+[`tests/features/sse.feature`]: ../../../services/ui-htmx/tests/features/sse.feature
 
 A **minimal test-only axum `Sse`** endpoint (e.g. `#[cfg(feature = "test-sse")]`)
 emitting ≥2 named events on a timer + a fixture page with `hx-ext=sse` and two
@@ -562,9 +568,9 @@ emitting ≥2 named events on a timer + a fixture page with `hx-ext=sse` and two
 
 ## 14. References
 
-- [`docs/services/ui-htmx.md`](../services/ui-htmx.md) — service design + config-action wire contract.
-- [`docs/skills/testing.md`](../skills/testing.md) — test pyramid, BDD conventions, §5.4 (drop streaming clients before stop), §6.7 (mock strategy).
-- [`docs/plans/archive/bazel-migration.md`](archive/bazel-migration.md) — migration phases, cutover criteria, BDD-under-Bazel, runfiles/test-data handling.
-- [`docs/skills/pre-push.md`](../skills/pre-push.md) — CI quality gates.
-- [ADR-004](../decisions/004-testing-strategy-for-http-client-error-paths.md) — testing-strategy precedent.
+- [`docs/services/ui-htmx.md`](../../services/ui-htmx.md) — service design + config-action wire contract.
+- [`docs/skills/testing.md`](../../skills/testing.md) — test pyramid, BDD conventions, §5.4 (drop streaming clients before stop), §6.7 (mock strategy).
+- [`docs/plans/archive/bazel-migration.md`](bazel-migration.md) — migration phases, cutover criteria, BDD-under-Bazel, runfiles/test-data handling.
+- [`docs/skills/pre-push.md`](../../skills/pre-push.md) — CI quality gates.
+- [ADR-004](../../decisions/004-testing-strategy-for-http-client-error-paths.md) — testing-strategy precedent.
 - External (verified 2026-06-14): `scraper` 0.27, `insta` 1.48 (+`INSTA_PENDING_DIR` ≥1.46), `thirtyfour` 0.37.1, axum #2673 (SSE blocks graceful shutdown), Firefox 152 / bugzilla 1430064 (geckodriver SIGTERM quit), `rules_webtesting` archived (no Rust), Playwright `padamson/playwright-rust` pre-1.0 + MS #34213 (Node-free unimplemented).

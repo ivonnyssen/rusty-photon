@@ -1,5 +1,6 @@
 # Advisory nightly run of the ui-htmx @browser BDD scenarios — Layer C / P3 of the
-# UI-testing plan (docs/plans/ui-testing.md §6/§8/§9). These drive a REAL headless
+# UI-testing model (docs/skills/testing.md §10; full rationale in the archived
+# docs/plans/archive/ui-testing.md §6/§8/§9). These drive a REAL headless
 # Firefox via geckodriver to prove the vendored htmx.min.js loads and executes the
 # declared swaps — the one thing the server-bytes layers (P1/P2) cannot. They are
 # gated behind UI_BROWSER_TESTS=1 and kept OUT of the per-PR required gate (browser
