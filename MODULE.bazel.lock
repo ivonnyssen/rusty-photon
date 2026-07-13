@@ -495,7 +495,7 @@
           "FILE:@@//crates/rusty-photon-i18n/Cargo.toml bb80517f208b18c02a4b2b575d5eeffbf194aa968cc39ff24650138a4717191f",
           "FILE:@@//crates/rusty-photon-i18n-derive/Cargo.toml 700558289918989038dea4e6adcbf4c43874dae6062c2104684e52c2a7293089",
           "FILE:@@//crates/skywatcher-motor-protocol/Cargo.toml aecee2e63e73f0a9b9fe9cd7689add6b717bab24463de5130a4cd3e17c70d5fe",
-          "FILE:@@//services/filemonitor/Cargo.toml eeab0d7f8d700fab2b6ca33309ab31a014c85da882e1b5df1b6c515617541900",
+          "FILE:@@//services/filemonitor/Cargo.toml aeea938a26225f886e79a2e512dbea61d9e21bc8896559abb457a66026464429",
           "FILE:@@//services/pa-falcon-rotator/Cargo.toml 831c1c590149f0d33d5a953eccee3ccf10d2f7eb505f4b255be0bb97677dca68",
           "FILE:@@//services/pa-scops-oag/Cargo.toml 88f246708dca29186798ea5c560981fe328356c3f6588bc5551f04c17f64bb1e",
           "FILE:@@//services/phd2-guider/Cargo.toml 3eedaeef639e8faeb2524d7079fa3af249affa0f6536a87fd1408a197bfc1c6b",

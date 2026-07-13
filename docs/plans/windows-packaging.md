@@ -23,8 +23,8 @@ untouched.
 | W1 | SCM enablement: rolling-file logging in service mode (lifecycle crate) + `scm` feature / `--service` flag in the 17 remaining services | Merged | #493 |
 | W2 | Platform-dependent defaults: config path → `%PROGRAMDATA%` on Windows, serial `COM` defaults, rp data dir | Merged | #492 |
 | W3 | qhy-camera Windows: `/DELAYLOAD` + startup preflight + `doctor` subcommand | Merged | #491 |
-| W4 | WiX v5 suite (`installer/`), `scripts/build-msi.ps1` + `scripts/verify-msi.ps1`, `check-pkg-assets.sh` Windows assertions; ui-htmx driver-map seeding; `msi.yml` on-demand CI harness | In review | #499 |
-| W5 | `release.yml` suite-MSI job + install-smoke gate + nightly verify; retire filemonitor `wix/` + cargo-wix; `docs/packaging-windows.md` | Not started | |
+| W4 | WiX v5 suite (`installer/`), `scripts/build-msi.ps1` + `scripts/verify-msi.ps1`, `check-pkg-assets.sh` Windows assertions; ui-htmx driver-map seeding; `msi.yml` on-demand CI harness | Merged | #499 |
+| W5 | `release.yml` suite-MSI job + install-smoke gate; retire filemonitor `wix/` + cargo-wix; `docs/packaging-windows.md` (nightly verify moved to [nightly-releases.md](nightly-releases.md) N3) | In review | `feature/windows-packaging-w5` |
 
 W1–W3 are pure code PRs (cross-platform, Linux behavior unchanged) and are
 each independently useful; W4–W5 are the packaging layer. **W1–W3 can be
@@ -249,7 +249,7 @@ service per ADR-014.
 - `scripts/check-pkg-assets.sh` grows Windows assertions: every packaged
   service has a fragment; fragment service name = `rusty-photon-<dir>`;
   exe rename mapping matches; port in the firewall rule matches the
-  service's documented port; demand-start on exactly the gated three; the
+  service's documented port; demand-start on exactly the gated four; the
   QHY SDK version pinned for the Windows build matches the Linux pins; the
   ZWO blob ref matches `install-zwo-sdk`'s default.
 - **ui-htmx driver-map seeding** (post-W0 finding): ui-htmx discovers
@@ -280,7 +280,7 @@ service per ADR-014.
   SHA256SUMS entry.
 - `scripts/verify-msi.ps1` (the `verify-packages.sh` analogue, on any
   Windows box / `windows-latest`): silent install with all features →
-  every auto-start service `RUNNING` (`sc query`), gated three present but
+  every auto-start service `RUNNING` (`sc query`), gated four present but
   stopped → configs self-created in `%PROGRAMDATA%` with minted
   `unique_id`s → the seeded `ui-htmx.json` `drivers` map matches the
   installed feature set → HTTP port probes (`/management/apiversions` for
@@ -299,6 +299,16 @@ service per ADR-014.
   as the gate, then attach the MSI + checksums to the release. Delete
   `services/filemonitor/wix/` and the cargo-wix install step. The Linux
   matrix and the deferred Homebrew items (PR-7) are untouched.
+  **As built (W5):** the suite job also asserts the pushed tag matches the
+  workspace version (`build-msi.ps1` derives the MSI version from
+  `Cargo.toml`, so a mismatched tag would ship wrongly-versioned binaries
+  under a right-versioned tag). The artifact carries only the MSI — the
+  release job already computes a global `SHA256SUMS.txt` across all
+  platforms' artifacts; uploading the per-dist checksum file too would
+  collide with it. `[package.metadata.wix]` was removed from filemonitor's
+  Cargo.toml along with the `wix/` dir, and
+  `docs/services/filemonitor.md`'s Windows install/registration sections
+  now describe the suite MSI.
 - Nightly: the scheduled `build-msi.ps1` + `verify-msi.ps1` run lands as
   the `msi` leg of `nightly-packages.yml` (phase N3 of
   [nightly-releases.md](nightly-releases.md)), not as a scheduler of its

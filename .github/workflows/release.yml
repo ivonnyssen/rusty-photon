@@ -2,7 +2,7 @@
 # It builds platform-specific packages and creates a GitHub Release:
 # - Linux: .deb, .rpm, and .tar.gz (x86_64 + aarch64)
 # - macOS: .tar.gz (Intel + Apple Silicon)
-# - Windows: .msi (x86_64)
+# - Windows: one suite .msi for the whole family (x86_64, ADR-015)
 # - Homebrew: updates the tap formula with new checksums
 permissions:
   contents: write
@@ -107,34 +107,52 @@ jobs:
           name: macos-${{ matrix.target }}
           path: filemonitor-*.tar.gz
 
+  # The suite MSI (ADR-015): every service in one installer, built by the same
+  # scripts the msi workflow exercises on PRs. verify-msi.ps1 is the release
+  # gate — the full install -> per-service-class checks -> feature-remove ->
+  # uninstall lifecycle must pass before the MSI can ship.
   build-windows:
     runs-on: windows-latest
-    name: windows / x86_64
+    name: windows / suite msi
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-      - name: Install cargo-wix
-        run: cargo install cargo-wix
-      - name: Add WiX to PATH
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-msi
+      - name: Check tag matches the workspace version
         shell: pwsh
+        # build-msi.ps1 derives the MSI version from the workspace Cargo.toml;
+        # a tag/workspace mismatch would silently release wrongly-versioned
+        # binaries under a right-versioned tag.
         run: |
-          # WiX 3.14.x is pre-installed on windows-latest
-          $wixPath = Get-ChildItem "C:\Program Files (x86)\WiX Toolset*" -Directory |
+          $tag = $env:GITHUB_REF_NAME -replace '^v', ''
+          # Same first-match extraction as build-msi.ps1 — the guard must
+          # read the version the way the build does, or the two can drift.
+          $match = Select-String -Path Cargo.toml -Pattern '^version = "(.*)"$' |
             Select-Object -First 1
-          if ($wixPath) {
-            echo "$($wixPath.FullName)\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          } else {
-            Write-Error "WiX Toolset v3 not found"
+          if (-not $match) {
+            Write-Error "could not read the workspace version from Cargo.toml"
             exit 1
           }
-      - name: Build MSI
-        run: cargo wix -p filemonitor --nocapture
+          $workspace = $match.Matches[0].Groups[1].Value
+          if ($tag -ne $workspace) {
+            Write-Error "tag version '$tag' != workspace version '$workspace'"
+            exit 1
+          }
+      - name: Build the suite MSI
+        shell: pwsh
+        run: scripts\build-msi.ps1
+      - name: Verify the MSI lifecycle (release gate)
+        shell: pwsh
+        run: scripts\verify-msi.ps1
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
         with:
           name: windows-msi
-          path: target/wix/*.msi
+          path: dist/**/*.msi
 
   release:
     needs: [build-linux, build-macos, build-windows]

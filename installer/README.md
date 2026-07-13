@@ -27,7 +27,7 @@ sources, no generator — the same explicitness rule as the Linux
 
 `scripts/check-pkg-assets.sh` asserts the fragment contract (fragment per
 service, service name, exe rename, `--service`, failure actions + flag,
-firewall port, demand-start on exactly the gated three, seed-table parity,
+firewall port, demand-start on exactly the gated four, seed-table parity,
 QHY/ZWO pin parity). Run it after any edit here.
 
 ## Fragment contract notes
@@ -43,8 +43,9 @@ QHY/ZWO pin parity). Run it after any edit here.
   types); `build-msi.ps1` suppresses it — the util element cannot express
   the flag, and `verify-msi.ps1` behaviorally proves the combination works.
 - **Demand-start** (`Start="demand"`, no `Start="install"`) is the
-  `ConditionPathExists=` translation for the three no-defaultable-config
-  services: sky-survey-camera, plate-solver, calibrator-flats.
+  `ConditionPathExists=` translation for the four no-defaultable-config
+  services: sky-survey-camera, plate-solver, calibrator-flats,
+  session-runner.
 - **zwo-focuser's DLL keeps ZWO's original name** `EAF_focuser.dll`: the
   import library embeds the DLL name it was generated from, so the exe's
   import table asks the loader for that exact name (the `EAFFocuser.lib`
@@ -61,8 +62,11 @@ scripts\verify-msi.ps1    # elevated: install -> class checks -> uninstall
 ```
 
 CI: the `msi` workflow (`.github/workflows/msi.yml`) runs both on
-`windows-latest` on demand and on PRs touching the packaging inputs; W5
-wires the same scripts into the release gate and a nightly run.
+`windows-latest` on PRs touching the packaging inputs and on demand;
+`release.yml` runs the same two scripts with `verify-msi.ps1` gating the
+release upload. A scheduled nightly leg is planned in
+`docs/plans/nightly-releases.md` (phase N3); it does not exist yet.
+Operator guide: `docs/packaging-windows.md`.
 
 On Linux, `wix build` (the `wix` dotnet tool + the same three extensions)
 compiles the sources far enough to catch schema errors, but fails the bind

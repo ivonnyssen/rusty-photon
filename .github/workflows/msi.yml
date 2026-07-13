@@ -1,11 +1,13 @@
-# Windows suite MSI — build + lifecycle verify (windows-packaging W4).
+# Windows suite MSI — build + lifecycle verify (windows-packaging W4/W5).
 #
 # Runs scripts/build-msi.ps1 (SDK staging, CRT-static release build, wix
 # build) and scripts/verify-msi.ps1 (silent install -> per-service-class
 # checks -> failure-actions proofs -> feature remove -> uninstall) on
-# windows-latest. On-demand via workflow_dispatch, plus on PRs that touch the
-# packaging inputs — the W4 iteration loop. W5 wires the same two scripts
-# into release.yml (release gate) and the nightly schedule.
+# windows-latest. Triggers: PRs that touch the packaging inputs (the
+# iteration loop) and workflow_dispatch for on-demand runs. release.yml
+# runs the same two scripts as the release gate; a scheduled nightly run
+# is planned as the msi leg of a future nightly-packages.yml (phase N3 of
+# docs/plans/nightly-releases.md), not as a schedule trigger here.
 permissions:
   contents: read
 on:
@@ -60,3 +62,4 @@ jobs:
           path: failure-logs/
           if-no-files-found: ignore
           retention-days: 14
+

@@ -195,8 +195,14 @@ brew tap ivonnyssen/rusty-photon
 brew install filemonitor
 ```
 
-#### Windows — `.msi` installer
-Download `filemonitor-<version>-x86_64.msi` from the GitHub Releases page and run it. The installer places the binary in `Program Files` and adds it to the system PATH.
+#### Windows — suite `.msi` installer
+filemonitor ships as a feature of the family-wide
+`rusty-photon-<version>-x64.msi` (ADR-015) — select it under **Drivers** in
+the installer UI, or silently with
+`msiexec /qn /i rusty-photon-<version>-x64.msi ADDLOCAL=Core,Filemonitor`.
+It installs as the auto-start Windows service `rusty-photon-filemonitor`
+with crash-restart failure actions and a firewall exception on its port.
+See [docs/packaging-windows.md](../packaging-windows.md).
 
 #### From source (all platforms)
 ```bash
@@ -233,10 +239,11 @@ to a rolling file `%PROGRAMDATA%\rusty-photon\logs\filemonitor.<date>.log`
 (daily rotation, 14 files retained) instead of the dead stderr handle;
 console mode logs to stderr unchanged.
 
-**Installer-side registration:** Not yet implemented for macOS (launchd)
-or Windows (Windows Service). The MSI installer places the binary but
-does not invoke `sc create` / similar; service registration is a manual
-step today.
+**Installer-side registration:** On Windows the suite MSI registers the
+`rusty-photon-filemonitor` service (LocalSystem, auto-start, restart-on-
+failure actions) — see [docs/packaging-windows.md](../packaging-windows.md).
+macOS (launchd) registration is not implemented; running the binary
+directly is the supported mode there.
 
 ### Monorepo Structure
 
