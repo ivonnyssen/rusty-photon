@@ -42,8 +42,14 @@ fn main() {
 
     match target_os.as_str() {
         "macos" => {
-            // Check for SDK in workspace first (CI environment)
-            if let Ok(workspace) = env::var("GITHUB_WORKSPACE") {
+            // Explicit override first, mirroring the Windows/Linux branches:
+            // point QHYCCD_SDK_DIR at the directory containing libqhyccd.a
+            // (scripts/build-tarballs.sh stages the SDK outside the
+            // workspace). A set-but-empty value is treated as unset so the
+            // fallbacks below still apply.
+            if let Some(dir) = env::var("QHYCCD_SDK_DIR").ok().filter(|d| !d.is_empty()) {
+                println!("cargo:rustc-link-search=native={dir}");
+            } else if let Ok(workspace) = env::var("GITHUB_WORKSPACE") {
                 let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap();
                 // The qhyccd-sdk-install action extracts the macOS SDK under the
                 // workspace root using the upstream archive's top dir. The 26.x
