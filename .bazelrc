@@ -187,6 +187,18 @@ build:ci --show_timestamps
 build:ci --announce_rc
 build:ci --remote_download_outputs=toplevel  # build-without-the-bytes
 
+# No disk cache on CI. Runners are ephemeral — nothing persists
+# ~/.cache/bazel-disk-cache across jobs — and within a job one Bazel server
+# (in-memory analysis cache + output-base action cache) already spans every
+# step, so a disk cache contributes zero hits. It isn't free either: combined
+# with the HTTP cache it routes every remote hit through the combined-cache
+# write path, a suspect in the macOS bazel-build stall where every in-flight
+# cache download freezes at once with no output (see
+# tools/ci/bazel-build-watchdog.sh). The empty value disables the global
+# --disk_cache above for every --config=ci invocation (bazel.yml,
+# bazel-coverage.yml).
+build:ci --disk_cache=
+
 # DIAGNOSTIC (PR #474/#473): windows-latest's `bazel build //...` step
 # deterministically fails a couple of ppba-driver rust_test binaries with
 # rustc E0463 "can't find crate", varying WHICH target loses the race across
