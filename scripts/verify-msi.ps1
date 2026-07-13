@@ -175,12 +175,15 @@ if ($UpgradeFrom) {
     }
     # ARPCOMMENTS carries the full version string, and the MSI under test
     # always authors it; the filename is rusty-photon-<fullversion>-x64.msi,
-    # so this pins the surviving entry to the MSI just installed.
-    if ((Split-Path -Leaf $Msi) -match '^rusty-photon-(.+)-x64\.msi$') {
-        $expected = "rusty-photon $($Matches[1])"
-        if ($entries[0].Comments -ne $expected) {
-            Fail 'msiexec' "surviving ARP entry comments '$($entries[0].Comments)' != '$expected' (old product survived the upgrade?)"
-        }
+    # so this pins the surviving entry to the MSI just installed. A filename
+    # that cannot be parsed fails outright — silently skipping the pin would
+    # leave "the surviving entry is the OLD product" undetected.
+    if ((Split-Path -Leaf $Msi) -notmatch '^rusty-photon-(.+)-x64\.msi$') {
+        Fail 'msiexec' "cannot pin the surviving ARP entry: '$(Split-Path -Leaf $Msi)' is not named rusty-photon-<version>-x64.msi"
+    }
+    $expected = "rusty-photon $($Matches[1])"
+    if ($entries[0].Comments -ne $expected) {
+        Fail 'msiexec' "surviving ARP entry comments '$($entries[0].Comments)' != '$expected' (old product survived the upgrade?)"
     }
     Write-Host "== upgrade: OK (single ARP entry after installing over the prior MSI)"
 }
