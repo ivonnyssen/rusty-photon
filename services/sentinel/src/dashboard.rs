@@ -25,6 +25,17 @@ fn duration_to_ms_for_js(d: Duration) -> u64 {
     u64::try_from(rounded).unwrap_or(u64::MAX)
 }
 
+/// Escape a string for interpolation into server-rendered HTML. Names and
+/// messages originate from config keys and notification text, so they must
+/// not be treated as markup.
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
 /// Dashboard application state
 #[derive(Clone)]
 pub struct DashboardState {
@@ -86,7 +97,13 @@ async fn index_handler(State(dashboard): State<DashboardState>) -> impl IntoResp
                     <td style="padding: 0.5rem;">{}</td>
                     <td style="padding: 0.5rem;">{}</td>
                 </tr>"#,
-                m.name, color, bg, m.state, m.consecutive_errors, last_check, next_check
+                html_escape(&m.name),
+                color,
+                bg,
+                m.state,
+                m.consecutive_errors,
+                last_check,
+                next_check
             )
         })
         .collect();
@@ -126,7 +143,7 @@ async fn index_handler(State(dashboard): State<DashboardState>) -> impl IntoResp
                     <td style="padding: 0.5rem;">{}</td>
                     <td style="padding: 0.5rem;">{}</td>
                 </tr>"#,
-                s.name,
+                html_escape(&s.name),
                 color,
                 bg,
                 s.health,
@@ -152,7 +169,10 @@ async fn index_handler(State(dashboard): State<DashboardState>) -> impl IntoResp
                     <td style="padding: 0.5rem;">{}</td>
                     <td style="padding: 0.5rem;">{}</td>
                 </tr>"#,
-                h.monitor_name, h.message, h.notifier_type, status
+                html_escape(&h.monitor_name),
+                html_escape(&h.message),
+                html_escape(&h.notifier_type),
+                status
             )
         })
         .collect();
@@ -165,6 +185,9 @@ async fn index_handler(State(dashboard): State<DashboardState>) -> impl IntoResp
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Sentinel Dashboard</title>
     <script>
+        function esc(v) {{
+            return String(v).replace(/[&<>"']/g, c => ({{'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}})[c]);
+        }}
         function refreshData() {{
             fetch('/api/status')
                 .then(r => r.json())
@@ -179,7 +202,7 @@ async fn index_handler(State(dashboard): State<DashboardState>) -> impl IntoResp
                         const lastCheck = m.last_poll_epoch_ms === 0 ? 'Never' : new Date(m.last_poll_epoch_ms).toLocaleTimeString();
                         const nextCheck = m.last_poll_epoch_ms === 0 ? 'Pending' : new Date(m.last_poll_epoch_ms + m.polling_interval_ms).toLocaleTimeString();
                         return `<tr style="border-bottom: 1px solid #dee2e6;">
-                            <td style="padding: 0.5rem;">${{m.name}}</td>
+                            <td style="padding: 0.5rem;">${{esc(m.name)}}</td>
                             <td style="padding: 0.5rem;">
                                 <span style="display: inline-block; padding: 0.25em 0.6em; border-radius: 0.25rem; font-size: 0.85em; font-weight: 600; color: ${{color}}; background-color: ${{bg}};">${{m.state}}</span>
                             </td>
@@ -203,7 +226,7 @@ async fn index_handler(State(dashboard): State<DashboardState>) -> impl IntoResp
                         const lastProbe = s.last_probe_epoch_ms === 0 ? 'Never' : new Date(s.last_probe_epoch_ms).toLocaleTimeString();
                         const nextRestart = s.next_restart_epoch_ms === null ? '—' : new Date(s.next_restart_epoch_ms).toLocaleTimeString();
                         return `<tr style="border-bottom: 1px solid #dee2e6;">
-                            <td style="padding: 0.5rem;">${{s.name}}</td>
+                            <td style="padding: 0.5rem;">${{esc(s.name)}}</td>
                             <td style="padding: 0.5rem;">
                                 <span style="display: inline-block; padding: 0.25em 0.6em; border-radius: 0.25rem; font-size: 0.85em; font-weight: 600; color: ${{color}}; background-color: ${{bg}};">${{label}}</span>
                             </td>
@@ -222,9 +245,9 @@ async fn index_handler(State(dashboard): State<DashboardState>) -> impl IntoResp
                     tbody.innerHTML = data.reverse().map(h => {{
                         const status = h.success ? 'OK' : 'Failed';
                         return `<tr style="border-bottom: 1px solid #dee2e6;">
-                            <td style="padding: 0.5rem;">${{h.monitor_name}}</td>
-                            <td style="padding: 0.5rem;">${{h.message}}</td>
-                            <td style="padding: 0.5rem;">${{h.notifier_type}}</td>
+                            <td style="padding: 0.5rem;">${{esc(h.monitor_name)}}</td>
+                            <td style="padding: 0.5rem;">${{esc(h.message)}}</td>
+                            <td style="padding: 0.5rem;">${{esc(h.notifier_type)}}</td>
                             <td style="padding: 0.5rem;">${{status}}</td>
                         </tr>`;
                     }}).join('');
@@ -433,6 +456,56 @@ mod tests {
     fn duration_to_ms_saturates_on_overflow() {
         // Duration::MAX is ~5.85e11 years — far beyond u64 ms (~5.85e8 years).
         assert_eq!(duration_to_ms_for_js(Duration::MAX), u64::MAX);
+    }
+
+    #[test]
+    fn html_escape_neutralizes_markup() {
+        assert_eq!(
+            html_escape(r#"<img src=x onerror="alert('&')">"#),
+            "&lt;img src=x onerror=&quot;alert(&#39;&amp;&#39;)&quot;&gt;"
+        );
+        assert_eq!(html_escape("plate-solver"), "plate-solver");
+    }
+
+    #[tokio::test]
+    async fn index_escapes_names_and_messages() {
+        let state = new_state_handle(
+            vec![("<b>mon</b>".to_string(), Duration::from_secs(30))],
+            vec![("<script>svc</script>".to_string(), Duration::from_secs(30))],
+            10,
+        );
+        {
+            let mut s = state.write().await;
+            s.add_notification(NotificationRecord {
+                monitor_name: "<script>svc</script>".to_string(),
+                notifier_type: "pushover".to_string(),
+                message: "restarted <autonomously>".to_string(),
+                success: true,
+                error: None,
+                timestamp_epoch_ms: 1000,
+            });
+        }
+        let app = router(state);
+        let response = app
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert!(!html.contains("<b>mon</b>"), "monitor name not escaped");
+        assert!(
+            !html.contains("<script>svc</script>"),
+            "service name not escaped"
+        );
+        assert!(
+            !html.contains("restarted <autonomously>"),
+            "history message not escaped"
+        );
+        assert!(html.contains("&lt;b&gt;mon&lt;/b&gt;"));
+        assert!(html.contains("&lt;script&gt;svc&lt;/script&gt;"));
+        assert!(html.contains("restarted &lt;autonomously&gt;"));
     }
 
     fn setup_state() -> StateHandle {

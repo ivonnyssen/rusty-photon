@@ -114,7 +114,7 @@ impl ServiceHealthSupervisor {
         let now_ms = current_epoch_ms();
         let next_restart_epoch_ms = next_restart_at.map(|at| {
             let remaining = at.saturating_duration_since(Instant::now());
-            now_ms.saturating_add(remaining.as_millis() as u64)
+            project_epoch_ms(now_ms, remaining)
         });
         self.state
             .write()
@@ -357,6 +357,12 @@ fn current_epoch_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+/// Epoch-ms projection of a deadline `remaining` away from `now_ms`,
+/// saturating so absurdly large backoffs clamp instead of wrapping.
+fn project_epoch_ms(now_ms: u64, remaining: Duration) -> u64 {
+    now_ms.saturating_add(u64::try_from(remaining.as_millis()).unwrap_or(u64::MAX))
 }
 
 #[cfg(test)]
@@ -832,5 +838,21 @@ mod tests {
         let f = Fixture::spawn(ProbeAnswer::Ok200, true, RecordingRunner::default());
         run_until(Duration::from_millis(50)).await;
         f.stop().await; // stop() awaits the join handle — hangs if run() leaks
+    }
+
+    #[test]
+    fn project_epoch_ms_adds_remaining() {
+        assert_eq!(project_epoch_ms(1_000, Duration::from_millis(500)), 1_500);
+    }
+
+    #[test]
+    fn project_epoch_ms_saturates_instead_of_wrapping() {
+        // A remaining duration whose millisecond count exceeds u64::MAX.
+        let huge = Duration::new(u64::MAX, 0);
+        assert_eq!(project_epoch_ms(1_000, huge), u64::MAX);
+        assert_eq!(
+            project_epoch_ms(u64::MAX, Duration::from_millis(1)),
+            u64::MAX
+        );
     }
 }
