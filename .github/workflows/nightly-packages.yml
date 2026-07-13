@@ -22,15 +22,23 @@
 #              previously PUBLISHED nightly MSI, proving the
 #              AllowSameVersionUpgrades in-place upgrade that release-tag
 #              testing never exercises (phase N3).
+#   macos    — per-service arm64 tarballs (the Homebrew formula payloads),
+#              lifecycle-verified through real brew (install → services →
+#              probe → uninstall) before anything publishes (phase N4).
 #   publish  — all-or-nothing across the enabled legs, so the release is
-#              always one coherent SHA with a complete asset set.
+#              always one coherent SHA with a complete asset set. For macOS
+#              it also pushes the regenerated -nightly formulas to the
+#              ivonnyssen/homebrew-rusty-photon tap in the same job, so tap
+#              and assets move together.
 #   notify-on-failure — tracking issue on scheduled failures, label
 #              `nightly-packages` (same pattern as scheduled.yml).
 #
 # Thin workflow, thick scripts: the legs drive scripts/build-packages.sh +
-# scripts/verify-packages.sh (shared with on-demand builds on the rigs) and
+# scripts/verify-packages.sh (shared with on-demand builds on the rigs),
 # scripts/build-msi.ps1 + scripts/verify-msi.ps1 (shared with msi.yml and
-# release.yml).
+# release.yml), and scripts/build-tarballs.sh + scripts/verify-brew.sh +
+# scripts/generate-brew-formulas.sh (shared with release.yml's stable
+# Homebrew channel).
 permissions:
   contents: read
 
@@ -225,8 +233,41 @@ jobs:
           path: dist/${{ needs.plan.outputs.nightly_version }}/*.msi
           if-no-files-found: error
 
+  macos:
+    needs: plan
+    if: needs.plan.outputs.skip != 'true'
+    name: macos / arm64 tarballs
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: nightly-packages-macos
+      # Keyed on the script because it embeds the SDK pins (same contract as
+      # the linux legs): the cache invalidates exactly when a pin or the
+      # staging logic changes, keeping qhyccd.com off the nightly critical
+      # path.
+      - name: Cache staged SDKs
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/rusty-photon-pkg
+          key: rusty-photon-pkg-macos-${{ hashFiles('scripts/build-tarballs.sh') }}
+      - name: Build the per-service tarballs
+        run: scripts/build-tarballs.sh --version '${{ needs.plan.outputs.nightly_version }}'
+      - name: Verify via Homebrew (full install lifecycle)
+        run: scripts/verify-brew.sh --channel nightly --dist 'dist/${{ needs.plan.outputs.nightly_version }}'
+      - name: Upload tarballs
+        uses: actions/upload-artifact@v7
+        with:
+          name: tarballs-macos
+          path: dist/${{ needs.plan.outputs.nightly_version }}/*.tar.gz
+          if-no-files-found: error
+
   publish:
-    needs: [plan, linux, msi]
+    needs: [plan, linux, msi, macos]
     # inputs.dry_run is a real boolean here: the typed `inputs` context
     # preserves workflow_dispatch input types (unlike the string-typed
     # github.event.inputs) and is empty on schedule events — so `!= true`
@@ -262,8 +303,25 @@ jobs:
       - name: Merge checksums
         run: |
           cd assets
-          sha256sum *.deb *.rpm *.msi > SHA256SUMS.txt
+          sha256sum *.deb *.rpm *.msi *.tar.gz > SHA256SUMS.txt
           cat SHA256SUMS.txt
+      # Rendered from the merged assets (tarball sha256s + the manifest the
+      # meta-formula downloads), pushed to the tap only after the release
+      # assets are up — tap and assets move together, assets first, so the
+      # formulas never point at not-yet-uploaded files.
+      - name: Render the -nightly formulas
+        run: |
+          scripts/generate-brew-formulas.sh --channel nightly \
+            --version '${{ needs.plan.outputs.nightly_version }}' \
+            --dist assets \
+            --url-base "https://github.com/${GITHUB_REPOSITORY}/releases/download/nightly" \
+            --output nightly-formulas
+      - name: Checkout the Homebrew tap
+        uses: actions/checkout@v7
+        with:
+          repository: ivonnyssen/homebrew-rusty-photon
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
       - name: Force-move the nightly tag
         run: git push --force origin '${{ needs.plan.outputs.sha }}:refs/tags/nightly'
       - name: Publish the rolling prerelease
@@ -282,12 +340,14 @@ jobs:
             echo "every publish — no dated history; fetch \`SHA256SUMS.txt\`"
             echo "from this release for the current filenames. Install and"
             echo "channel semantics: [docs/packaging.md](https://github.com/${GITHUB_REPOSITORY}/blob/${SHA}/docs/packaging.md#nightly-channel)"
-            echo "(Windows: [docs/packaging-windows.md](https://github.com/${GITHUB_REPOSITORY}/blob/${SHA}/docs/packaging-windows.md#nightly-channel))."
+            echo "(Windows: [docs/packaging-windows.md](https://github.com/${GITHUB_REPOSITORY}/blob/${SHA}/docs/packaging-windows.md#nightly-channel),"
+            echo "macOS: [docs/packaging-macos.md](https://github.com/${GITHUB_REPOSITORY}/blob/${SHA}/docs/packaging-macos.md#nightly-channel))."
             echo
             echo "- **Source**: ${SHA}"
             echo "- **Built**: ${DATE} (UTC)"
-            echo "- **Nightly version**: \`${NIGHTLY_VERSION}\` (Debian version and MSI filename; the MSI's Programs & Features version renders as \`${NIGHTLY_VERSION%%+*}.<YYDDD>\`)"
+            echo "- **Nightly version**: \`${NIGHTLY_VERSION}\` (Debian version, MSI filename, and macOS tarball/formula version; the MSI's Programs & Features version renders as \`${NIGHTLY_VERSION%%+*}.<YYDDD>\`)"
             echo "- **RPM version**: \`${RPM_VERSION}\` (\`rpm -q\` shows this; the asset filenames render the \`^\` as \`.\` because GitHub rewrites it at upload)"
+            echo "- **macOS**: don't download the tarballs by hand — \`brew tap ivonnyssen/rusty-photon && brew install rusty-photon-nightly\` (the formulas point here)"
             echo
             echo "| Asset | SHA-256 |"
             echo "|-------|---------|"
@@ -309,13 +369,33 @@ jobs:
             gh release create nightly --verify-tag --prerelease \
               --title "Nightly packages" --notes-file body.md
           fi
-          gh release upload nightly assets/*.deb assets/*.rpm assets/*.msi assets/SHA256SUMS.txt
+          gh release upload nightly assets/*.deb assets/*.rpm assets/*.msi assets/*.tar.gz assets/SHA256SUMS.txt
+      - name: Push the -nightly formulas to the tap
+        env:
+          NIGHTLY_VERSION: ${{ needs.plan.outputs.nightly_version }}
+        run: |
+          # Replace, don't accumulate (the asset-replacement reasoning): a
+          # service dropped from the set must not linger as a stale formula.
+          # rusty-photon-nightly.rb (the meta) matches the glob too and is
+          # re-copied with the rest.
+          rm -f homebrew-tap/Formula/*-nightly.rb
+          cp nightly-formulas/*.rb homebrew-tap/Formula/
+          cd homebrew-tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula
+          if git diff --cached --quiet; then
+            echo "tap already current"
+          else
+            git commit -m "nightly: ${NIGHTLY_VERSION}"
+            git push
+          fi
 
   notify-on-failure:
     # Tracking issue so a broken nightly channel surfaces without anyone
     # reading scheduled-workflow logs. Scheduled runs only: manual dispatches
     # are being watched by whoever dispatched them.
-    needs: [plan, linux, msi, publish]
+    needs: [plan, linux, msi, macos, publish]
     if: failure() && github.event_name == 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 10

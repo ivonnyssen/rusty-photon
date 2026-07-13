@@ -32,7 +32,11 @@ while keeping host-level setup anyway (see ADR-012 Context).
 
 Carried over from the superseded plan (still open, now owned by PR-7):
 create the `ivonnyssen/homebrew-rusty-photon` tap content and add the
-`HOMEBREW_TAP_TOKEN` secret.
+`HOMEBREW_TAP_TOKEN` secret. **Update:** the tap content, the per-service
+formula generation (whole family + meta-formula, stable and nightly
+channels), and the Homebrew rename all landed via
+[nightly-releases.md](nightly-releases.md) N4 — what remains of PR-7 is
+only the `release.yml` deb/rpm service-matrix generalization.
 
 ## Decisions (fixed — see ADR-012 / ADR-013 for rationale)
 
@@ -64,8 +68,11 @@ create the `ivonnyssen/homebrew-rusty-photon` tap content and add the
   via the user. Enables the shared-home XDG config model and the
   rp ↔ plate-solver shared FITS tree, and keeps deb maintainer scripts
   byte-identical across packages.
-- **Formats:** `.deb` + `.rpm` only for the family. MSI and Homebrew remain
-  filemonitor-only until there is a real Windows/macOS deployment need.
+- **Formats:** `.deb` + `.rpm` only for the family — on Linux. (This
+  decision has since been superseded per-OS: the Windows suite MSI covers
+  the family per ADR-015 / [windows-packaging.md](windows-packaging.md),
+  and macOS ships family-wide Homebrew formulas per
+  [nightly-releases.md](nightly-releases.md) N4.)
 - **ARM64 packages are built natively on the rig for now** via
   `scripts/build-packages.sh`; CI packaging for arm64 is deferred (PR-7 keeps
   x86_64 in `release.yml`).
@@ -545,13 +552,12 @@ rebuilt from `main` and upgraded in place:
 - `session-runner` postdates this plan's service inventory and is the one
   unpackaged daemon (network-only class, no new pattern needed). Package it
   in a small follow-up PR once the workflow-DSL implementation stabilizes.
-- PR-7: generalize `release.yml` to a service matrix (x86_64 deb/rpm),
-  rename tarballs/Homebrew formula (`Formula/rusty-photon-filemonitor.rb`,
-  class `RustyPhotonFilemonitor`); finish the tap setup carried over from
-  the superseded plan. Much of its machinery (version-parameterized
-  `build-packages.sh`, per-service Homebrew formula generation) now
-  arrives via [nightly-releases.md](nightly-releases.md) (N1/N4), leaving
-  PR-7 thin.
+- PR-7: generalize `release.yml` to a service matrix (x86_64 deb/rpm).
+  The rest of its original scope arrived via
+  [nightly-releases.md](nightly-releases.md): version-parameterized
+  `build-packages.sh` (N1), and the Homebrew rename + per-service formula
+  generation + tap content (N4 — `release.yml`'s macOS/Homebrew jobs
+  already use the shared scripts), leaving PR-7 the Linux matrix only.
 - CI-built arm64 packages: designed in
   [nightly-releases.md](nightly-releases.md) (hosted `ubuntu-24.04-arm`
   runners; Orange Pi contingency settled by its N0 spike).

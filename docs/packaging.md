@@ -14,7 +14,9 @@ udev / firmware needs and ASCOM Alpaca's UDP discovery defeat containers
 (ADR-012).
 
 Windows ships as one suite MSI instead of per-service packages — see
-[docs/packaging-windows.md](packaging-windows.md) (ADR-015).
+[docs/packaging-windows.md](packaging-windows.md) (ADR-015). macOS ships
+per-service Homebrew formulas from the `ivonnyssen/homebrew-rusty-photon`
+tap — see [docs/packaging-macos.md](packaging-macos.md).
 
 ## What gets installed
 
@@ -95,6 +97,8 @@ CI publishes a rolling **`nightly` prerelease** built from the HEAD of
 package lifecycle-verified in a systemd container (Debian for the debs,
 Fedora for the rpms) before anything is published, plus the Windows
 suite MSI ([docs/packaging-windows.md](packaging-windows.md#nightly-channel))
+and the macOS arm64 tarballs with their regenerated `-nightly` Homebrew
+formulas ([docs/packaging-macos.md](packaging-macos.md#nightly-channel))
 — all-or-nothing across the legs, so the release is always one coherent
 commit with a complete asset set. There is one release and one tag;
 assets are replaced on each publish, with no dated history.
