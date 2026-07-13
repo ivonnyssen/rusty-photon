@@ -32,7 +32,7 @@
   + `flip_range_hours` config fields, and BDD coverage.
   §2.5 (auto-flip during tracking) and the
   `auto_flip_during_tracking` / `auto_flip_at_meridian_offset_hours`
-  config fields are deferred to a follow-up — hosts (NINA / SGP /
+  config fields were deferred to a follow-up — hosts (NINA / SGP /
   rp) own flip timing in MVP; explicit `SetSideOfPier` calls drive
   flips. §2.8 hardware validation completed at lat 32.7°N: end-to-end
   AP Park 1–5 traversal including the through-wrap saddle-east flip
@@ -40,6 +40,24 @@
   `flip_slew_ra_delta`) was caught mid-session and fixed in commit
   `072cc72`. `flip_policy.enabled` still defaults `false` — operators
   opt in once they've replayed the validation locally.
+- **Phase 2.5 — auto-flip during tracking: IMPLEMENTED (2026-07-12,
+  branch `worktree-issue-223`; Part 2 of issue #259).** The
+  `flip_policy.auto_flip_during_tracking` (default `false`) and
+  `auto_flip_at_meridian_offset_hours` (default `0.0`, cross-validated
+  to `±flip_range_hours` at config load) fields landed, wired into the
+  per-connection tracking watcher that already runs the Part 1
+  stop-only safety guard (issue #259 Part 1, PR #303). While tracking
+  on the natural pier side, the watcher triggers the same through-wrap
+  flip slew `SetSideOfPier` issues once the live encoder `mech_HA`
+  reaches the offset; the completion watcher re-engages tracking on
+  the new side. One attempt per meridian crossing — a failed attempt
+  warns and leaves the stop-only guard as the fallback, and the guard
+  takes precedence when `mech_HA` is already inside the guarded band.
+  Unlike §2.5's original sketch there is no separate state machine:
+  the existing slew-completion watcher already owned stop → slew →
+  re-engage, so auto-flip is one trigger decision per watcher tick.
+  Real-hardware validation of an unattended auto-flip session is
+  pending (same operator-supervised protocol as §2.8).
 - **Phase 3 — altitude-based safety floor: IMPLEMENTED (2026-07-01,
   branch `worktree-issue223`; PR #421).** Replaces the rectangular Dec
   envelope (the former `MountConfig::dec_limits: DecLimits` struct,
