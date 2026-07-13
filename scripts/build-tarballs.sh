@@ -205,12 +205,12 @@ if [ "$needs_zwo_camera" = 1 ] || [ "$needs_zwo_focuser" = 1 ]; then
     # resolve — no -id fixup needed. The one load-command fixup:
     # libASICamera2 references @rpath/libusb-1.0.0.dylib, which nothing on a
     # target machine provides under our rpaths; rewrite it to Homebrew's
-    # libusb (the formula dependency). A no-op when already rewritten, and
-    # for libEAFFocuser, which loads only system frameworks.
-    for blob in $zwo_blobs; do
+    # libusb (the formula dependency). A no-op on a cache that is already
+    # rewritten. libEAFFocuser loads only system frameworks — nothing to fix.
+    if [ "$needs_zwo_camera" = 1 ]; then
         install_name_tool -change @rpath/libusb-1.0.0.dylib \
-            "$LIBUSB_OPT/lib/libusb-1.0.0.dylib" "$ZWO_CACHE/$blob.dylib"
-    done
+            "$LIBUSB_OPT/lib/libusb-1.0.0.dylib" "$ZWO_CACHE/libASICamera2.dylib"
+    fi
     # The cache dir is the link-search path: it holds (at least) every blob
     # the selected services link, and libzwo-sys's per-device features
     # (ADR-014) mean each service's isolated build looks for exactly its own.

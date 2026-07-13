@@ -192,10 +192,16 @@ cleanup() {
         brew uninstall --force "rusty-photon-$s$SUFFIX" > /dev/null 2>&1 || true
     done
     brew uninstall --force "rusty-photon$SUFFIX" > /dev/null 2>&1 || true
-    brew untap "$TAP" > /dev/null 2>&1 || true
+    brew untap "$TAP" > /dev/null 2>&1 || rm -rf "$TAP_DIR"
 }
 trap cleanup EXIT INT TERM
 
+# A real tap, not a bare directory: tap-new lays out exactly the structure
+# Homebrew expects, so install/untap behave deterministically (--no-git —
+# nothing here outlives the run).
+if [ ! -d "$TAP_DIR" ]; then
+    brew tap-new --no-git "$TAP" > /dev/null
+fi
 mkdir -p "$TAP_DIR/Formula"
 # launchd only creates the log FILE; the service blocks' log_path parent must
 # exist (a fresh runner's Homebrew prefix may not have var/log yet).
