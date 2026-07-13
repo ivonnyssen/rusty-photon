@@ -103,6 +103,8 @@ impl ServiceHealthSupervisor {
     /// Publish this service's snapshot to the shared state. The supervisor's
     /// locals are authoritative; the epoch-ms conversion of the monotonic
     /// next-restart deadline happens only here, at the state boundary.
+    /// `last_probe_epoch_ms` is stamped by the caller when the probe
+    /// completes — a publish after a slow restart must not refresh it.
     async fn publish(
         &self,
         health: ServiceHealth,
@@ -110,6 +112,7 @@ impl ServiceHealthSupervisor {
         restarts_in_outage: u32,
         total_restarts: u64,
         next_restart_at: Option<Instant>,
+        last_probe_epoch_ms: u64,
     ) {
         let now_ms = current_epoch_ms();
         let next_restart_epoch_ms = next_restart_at.map(|at| {
@@ -122,7 +125,7 @@ impl ServiceHealthSupervisor {
             .set_service_health(ServiceHealthStatus {
                 name: self.name.clone(),
                 health,
-                last_probe_epoch_ms: now_ms,
+                last_probe_epoch_ms,
                 consecutive_failures,
                 restarts_in_outage,
                 total_restarts,
@@ -246,7 +249,9 @@ impl EventMonitor for ServiceHealthSupervisor {
                 return;
             }
 
-            if self.probe().await {
+            let up = self.probe().await;
+            let probed_at_ms = current_epoch_ms();
+            if up {
                 if restarts_in_outage > 0 || consecutive_failures > 0 {
                     info!(
                         "service '{}' is healthy again ({} autonomous restart(s) this outage)",
@@ -257,7 +262,7 @@ impl EventMonitor for ServiceHealthSupervisor {
                 restarts_in_outage = 0;
                 backoff = initial_backoff;
                 next_restart_at = None;
-                self.publish(ServiceHealth::Up, 0, 0, total_restarts, None)
+                self.publish(ServiceHealth::Up, 0, 0, total_restarts, None, probed_at_ms)
                     .await;
             } else {
                 consecutive_failures = consecutive_failures.saturating_add(1);
@@ -273,6 +278,7 @@ impl EventMonitor for ServiceHealthSupervisor {
                     restarts_in_outage,
                     total_restarts,
                     next_restart_at,
+                    probed_at_ms,
                 )
                 .await;
 
@@ -321,6 +327,7 @@ impl EventMonitor for ServiceHealthSupervisor {
                                 restarts_in_outage,
                                 total_restarts,
                                 next_restart_at,
+                                probed_at_ms,
                             )
                             .await;
                         }
@@ -838,6 +845,34 @@ mod tests {
         let f = Fixture::spawn(ProbeAnswer::Ok200, true, RecordingRunner::default());
         run_until(Duration::from_millis(50)).await;
         f.stop().await; // stop() awaits the join handle — hangs if run() leaks
+    }
+
+    #[tokio::test]
+    async fn publish_preserves_the_probe_timestamp() {
+        // The post-restart publish must not refresh the probe stamp: it
+        // reports restart bookkeeping, not a new probe.
+        let restarts = Arc::new(RestartManager::new(
+            HashMap::new(),
+            Arc::new(RecordingRunner::default()) as Arc<dyn Restarter>,
+        ));
+        let state = new_state_handle(
+            vec![],
+            vec![(SVC.to_string(), Duration::from_millis(100))],
+            100,
+        );
+        let supervisor = ServiceHealthSupervisor::new(
+            SVC.to_string(),
+            health_config(),
+            true,
+            ScriptedHttp::new(ProbeAnswer::Ok200) as Arc<dyn HttpClient>,
+            restarts,
+            vec![],
+            Arc::clone(&state),
+        );
+        supervisor
+            .publish(ServiceHealth::Down, 3, 1, 1, None, 12_345)
+            .await;
+        assert_eq!(state.read().await.services[0].last_probe_epoch_ms, 12_345);
     }
 
     #[test]
