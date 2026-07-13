@@ -52,14 +52,26 @@ dump_hung_server() {
   netstat -an 2>/dev/null | awk 'NR <= 2 || $0 ~ /[.:]443([^0-9]|$)/' || true
   # `bazel info output_base` would queue behind the wedged build command, so
   # locate the server through the on-disk pid files instead. The output base
-  # directory is named md5(<workspace path>), which pins this to OUR server —
-  # never another workspace's. The globbed roots cover the GitHub macOS
-  # runner location, the macOS default, and Linux.
-  local ws_hash pidfile server_pid output_base
+  # directory is named md5(<workspace root>) — the directory holding
+  # MODULE.bazel / WORKSPACE, found by walking up like Bazel does, so this
+  # works from a subdirectory too — which pins this to OUR server, never
+  # another workspace's. The globbed roots cover the GitHub macOS runner
+  # location, the macOS default, and Linux.
+  local ws_root ws_hash pidfile server_pid output_base
+  ws_root="$PWD"
+  while [[ "$ws_root" != "/" ]] &&
+    ! [[ -e "$ws_root/MODULE.bazel" || -e "$ws_root/WORKSPACE.bazel" || -e "$ws_root/WORKSPACE" ]]; do
+    ws_root="$(dirname "$ws_root")"
+  done
+  if [[ "$ws_root" == "/" ]]; then
+    echo "(no MODULE.bazel/WORKSPACE at or above $PWD — cannot locate the server's output base)"
+    echo "::endgroup::"
+    return
+  fi
   if command -v md5 >/dev/null 2>&1; then
-    ws_hash="$(md5 -q -s "$PWD")"
+    ws_hash="$(md5 -q -s "$ws_root")"
   else
-    ws_hash="$(printf '%s' "$PWD" | md5sum | cut -d' ' -f1)"
+    ws_hash="$(printf '%s' "$ws_root" | md5sum | cut -d' ' -f1)"
   fi
   for pidfile in "$HOME"/Library/Caches/bazel/_bazel_*/"$ws_hash"/server/server.pid.txt \
     /private/var/tmp/_bazel_*/"$ws_hash"/server/server.pid.txt \
