@@ -124,7 +124,8 @@ sudo apt-get install "./<file>"     # Debian-family
 sudo dnf install "./<file>"         # Fedora
 ```
 
-or, with the GitHub CLI (rpms: `--pattern 'rusty-photon-<svc>-*.x86_64.rpm'`):
+or, with the GitHub CLI (rpms: `--pattern 'rusty-photon-<svc>-*.<arch>.rpm'`
+with `<arch>` = `x86_64` or `aarch64`):
 
 ```sh
 gh release download nightly --repo ivonnyssen/rusty-photon \
@@ -142,7 +143,7 @@ version, or an older nightly — and needs:
 
 ```sh
 sudo apt-get install --allow-downgrades ./rusty-photon-<svc>_0.1.0-1_arm64.deb
-sudo dnf downgrade ./rusty-photon-<svc>-0.1.0-1.x86_64.rpm      # Fedora
+sudo dnf downgrade ./rusty-photon-<svc>-0.1.0-1.<arch>.rpm      # Fedora
 ```
 
 **Rolling back.** The channel keeps no history. To return to a
