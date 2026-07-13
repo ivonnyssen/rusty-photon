@@ -160,8 +160,15 @@ if ($UpgradeFrom) {
     $priorLog = Join-Path $env:TEMP 'rusty-photon-msi-prior-install.log'
     Write-Host "== upgrade seed: installing the prior MSI ($(Split-Path -Leaf $UpgradeFrom))"
     $code = Msiexec @('/i', "`"$UpgradeFrom`"", '/qn', '/norestart', "/l*v", "`"$priorLog`"", 'ADDLOCAL=ALL')
-    if ($code -ne 0) { Fail 'msiexec' "prior-MSI install exited $code (log: $priorLog)" }
+    if ($code -ne 0) {
+        # Fail's msiexec-log excerpt must come from the install that
+        # actually failed (the script exits inside Fail; the main install
+        # never runs, so repointing is safe).
+        $installLog = $priorLog
+        Fail 'msiexec' "prior-MSI install exited $code (log: $priorLog)"
+    }
     if (-not (Get-Service -Name 'rusty-photon-sentinel' -ErrorAction SilentlyContinue)) {
+        $installLog = $priorLog
         Fail 'msiexec' "prior MSI installed no services — the upgrade proof would be vacuous"
     }
 }
