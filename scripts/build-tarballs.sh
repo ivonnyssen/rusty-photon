@@ -176,6 +176,17 @@ if [ "$needs_qhy" = 1 ]; then
 fi
 
 if [ "$needs_zwo_camera" = 1 ] || [ "$needs_zwo_focuser" = 1 ]; then
+    # bindgen (libzwo-sys's build script) needs libclang. Mirror the
+    # install-zwo-sdk action: surface Homebrew's llvm via LIBCLANG_PATH,
+    # installing it only when neither it nor the Xcode CLT copy (which
+    # clang-sys finds on its own) is present.
+    if [ -z "${LIBCLANG_PATH:-}" ] && [ ! -e /Library/Developer/CommandLineTools/usr/lib/libclang.dylib ]; then
+        command -v brew > /dev/null 2>&1 || die "Homebrew not found (needed for llvm/libclang)"
+        [ -d "$(brew --prefix llvm)/lib" ] || { echo "Installing llvm via Homebrew (bindgen needs libclang)"; brew install llvm; }
+        LIBCLANG_PATH="$(brew --prefix llvm)/lib"
+        export LIBCLANG_PATH
+    fi
+
     ZWO_CACHE="$CACHE/zwo-$ZWO_SDK_REF-mac_arm64"
     mkdir -p "$ZWO_CACHE"
     ZWO_BASE="https://github.com/indilib/indi-3rdparty/raw/$ZWO_SDK_REF/libasi"
