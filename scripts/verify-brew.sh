@@ -76,6 +76,9 @@ case "$CHANNEL" in
 esac
 
 [ "$(uname -s)" = Darwin ] || die "Homebrew formulas are verified on macOS only"
+# Fail fast where build-tarballs.sh does: the formulas are arm64-only, so an
+# Intel Mac would only fail later inside brew install with a murkier error.
+[ "$(uname -m)" = arm64 ] || die "the formulas are arm64-only (Intel macOS is not a target)"
 [ -f packaging/postinst.common ] || die "run from the repo root"
 command -v brew > /dev/null 2>&1 || die "brew not found"
 
