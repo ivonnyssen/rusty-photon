@@ -108,6 +108,46 @@ Install the newer MSI — it performs a major upgrade: the old version is
 removed, feature selections carry over, and self-created configs and logs
 are untouched. Downgrades are blocked by the installer.
 
+## Nightly channel
+
+CI publishes a rolling **`nightly` prerelease** built from the HEAD of
+`main` whenever it has changed since the last publish; the suite MSI is
+one of its assets, alongside the Linux packages (channel semantics and
+the stable-URL `SHA256SUMS.txt` index:
+[docs/packaging.md](packaging.md#nightly-channel)). Before anything is
+published, the MSI passes the full lifecycle verification on a fresh
+Windows runner — including installing over the previously published
+nightly, so the upgrade path below is proven every night.
+
+```powershell
+gh release download nightly --repo ivonnyssen/rusty-photon --pattern '*.msi'
+msiexec /qn /i rusty-photon-<fullversion>-x64.msi ADDLOCAL=ALL
+```
+
+The MSI filename carries the full nightly version
+(`rusty-photon-<base>+nightly.<date>.g<sha>-x64.msi`), but Windows
+Installer's numeric ProductVersion cannot: nightlies author
+`<base>.<YYDDD>` (two-digit year × 1000 + day-of-year), and Windows
+Installer compares only the first three fields, so upgrade logic sees
+every nightly — and the `<base>` release — as the same version. The
+installer therefore allows same-version upgrades: any nightly installs
+in place over any other, over the `<base>` release, and vice versa,
+with feature selections and configs carried over as on any upgrade.
+Programs & Features shows the dated `<base>.<YYDDD>` as the version and
+the full nightly string in the entry's Comments — the Comments, not
+ProductVersion, tell nightlies apart.
+
+Unlike apt's nightly channel, returning to the stable release needs no
+special flag — same-version upgrades cut both ways, so the `<base>`
+release MSI installs straight over any nightly. Rolling back to a
+known-good nightly (the channel keeps no history): rebuild that commit
+and install it:
+
+```powershell
+git checkout <known-good-sha>
+scripts\build-msi.ps1 -NightlyVersion "0.1.0+nightly.<date>.g<short-sha>"
+```
+
 ## Configuration
 
 The MSI ships no config files. Daemons self-create their config on first
@@ -201,7 +241,10 @@ the .NET SDK:
 scripts\build-msi.ps1                    # stage SDKs, build, wix build
 scripts\build-msi.ps1 -SkipSdkStaging    # offline rebuild from cache
 scripts\build-msi.ps1 -SkipBuild         # re-run wix only (installer loop)
+scripts\build-msi.ps1 -NightlyVersion "0.1.0+nightly.<date>.g<sha>"
+                                         # nightly stamp (see Nightly channel)
 scripts\verify-msi.ps1                   # elevated, on a disposable box
+scripts\verify-msi.ps1 -UpgradeFrom prior.msi   # + upgrade-over-prior proof
 ```
 
 `build-msi.ps1` stages the pinned native SDKs (QHYCCD import lib for the
@@ -215,7 +258,8 @@ remove, uninstall — and expects a box with no prior rusty-photon state
 
 CI runs both scripts in the `msi` workflow (PRs touching the packaging
 inputs, plus `workflow_dispatch`) and in `release.yml`, where
-`verify-msi.ps1` gates the release upload. A scheduled nightly leg — so
-packaging rot (a vendor SDK URL going stale, a runner image change)
-surfaces between releases — is planned as part of
-[docs/plans/nightly-releases.md](plans/nightly-releases.md) (phase N3).
+`verify-msi.ps1` gates the release upload. The nightly channel's `msi`
+leg (`nightly-packages.yml`; see [Nightly channel](#nightly-channel))
+runs them on a schedule with the nightly version stamp — so packaging
+rot (a vendor SDK URL going stale, a runner image change) surfaces
+between releases rather than at the next one.

@@ -87,10 +87,11 @@ CI publishes a rolling **`nightly` prerelease** built from the HEAD of
 `main` whenever it has changed since the last publish
 (`.github/workflows/nightly-packages.yml`): every packaged service as a
 `.deb` for both amd64 and arm64, each package lifecycle-verified in a
-systemd container before anything is published — all-or-nothing across
-the architectures, so the release is always one coherent commit with a
-complete asset set. There is one release and one tag; assets are
-replaced on each publish, with no dated history.
+systemd container before anything is published, plus the Windows suite
+MSI ([docs/packaging-windows.md](packaging-windows.md#nightly-channel))
+— all-or-nothing across the legs, so the release is always one coherent
+commit with a complete asset set. There is one release and one tag;
+assets are replaced on each publish, with no dated history.
 
 Nightly debs carry the version `<base>+nightly.<date>.g<sha>` (e.g.
 `0.1.0+nightly.20260712.gba09dc9`), which dpkg sorts above the plain

@@ -28,12 +28,24 @@
     <SummaryInformation Description="Rusty Photon observatory service suite" />
 
     <!-- Stable UpgradeCode + major upgrades; MigrateFeatures is the element's
-         default, so an upgrade keeps the operator's feature selection. -->
-    <MajorUpgrade DowngradeErrorMessage="A newer version of [ProductName] is already installed. Setup will now exit." />
+         default, so an upgrade keeps the operator's feature selection.
+         AllowSameVersionUpgrades: nightly builds all author ProductVersion
+         <base>.<YYDDD>, and Windows Installer compares only the first three
+         fields — every nightly (and the same-base release) is "the same
+         version", so same-version upgrades must be in range for
+         nightly-over-nightly (and nightly<->release) installs to upgrade in
+         place instead of installing side by side. -->
+    <MajorUpgrade AllowSameVersionUpgrades="yes"
+                  DowngradeErrorMessage="A newer version of [ProductName] is already installed. Setup will now exit." />
     <MediaTemplate EmbedCab="yes" />
 
     <Property Id="ARPHELPLINK" Value="https://github.com/ivonnyssen/rusty-photon" />
     <Property Id="ARPURLINFOABOUT" Value="https://github.com/ivonnyssen/rusty-photon" />
+    <!-- The full version string (releases: x.y.z; nightlies: the
+         +nightly.<date>.g<sha> string). ProductVersion renders a nightly's
+         date as an opaque numeric 4th field, so this comment is what lets
+         Programs & Features tell nightlies apart. -->
+    <Property Id="ARPCOMMENTS" Value="rusty-photon $(var.FullVersion)" />
 
     <ui:WixUI Id="WixUI_FeatureTree" />
     <WixVariable Id="WixUILicenseRtf" Value="installer\License.rtf" />

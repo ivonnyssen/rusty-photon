@@ -20,15 +20,25 @@
 #   4. collect dist\<version>\rusty-photon-<version>-x64.msi + SHA256SUMS.txt.
 #
 # Usage: scripts\build-msi.ps1 [-SkipSdkStaging] [-SkipBuild]
+#                               [-NightlyVersion <v>]
 #   -SkipSdkStaging  offline rebuild: no downloads; requires the SDK cache
 #                    from a previous run
 #   -SkipBuild       reuse target\release binaries from a previous run and
 #                    only re-run wix (installer-authoring inner loop)
+#   -NightlyVersion  full nightly version string, e.g.
+#                    0.1.0+nightly.20260712.gabc1234 (base must equal the
+#                    workspace version). Names the MSI + dist dir and rides
+#                    in ARP comments; ProductVersion is rendered from it as
+#                    <base>.<YYDDD> — Windows Installer compares only the
+#                    first three fields, so the date field is display-only
+#                    and upgrade logic sees <base> (the nightly-channel
+#                    dialect, docs/plans/nightly-releases.md).
 
 [CmdletBinding()]
 param(
     [switch]$SkipSdkStaging,
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [string]$NightlyVersion
 )
 
 $ErrorActionPreference = 'Stop'
@@ -87,6 +97,32 @@ if (-not $version) { Die "could not read the workspace version from Cargo.toml" 
 if ($version -notmatch '^\d+\.\d+\.\d+$') {
     # MSI ProductVersion must be numeric major.minor.build.
     Die "workspace version '$version' is not a plain x.y.z (MSI ProductVersion requirement)"
+}
+
+# Release build: ProductVersion = the workspace version, and the "full"
+# version shown in ARP comments is the same string. A nightly build renders
+# the channel's MSI dialect instead (see -NightlyVersion in the usage above).
+$productVersion = $version
+$fullVersion = $version
+if ($NightlyVersion) {
+    $m = [regex]::Match($NightlyVersion, '^(\d+\.\d+\.\d+)\+nightly\.(\d{8})\.g[0-9a-f]{7,40}$')
+    if (-not $m.Success) {
+        Die "-NightlyVersion '$NightlyVersion' is not <x.y.z>+nightly.<yyyymmdd>.g<sha>"
+    }
+    if ($m.Groups[1].Value -ne $version) {
+        # Same drift guard as release.yml's tag check: the stamp must carry
+        # the version the build actually produces.
+        Die "-NightlyVersion base '$($m.Groups[1].Value)' != workspace version '$version'"
+    }
+    $day = [datetime]::ParseExact($m.Groups[2].Value, 'yyyyMMdd',
+        [Globalization.CultureInfo]::InvariantCulture)
+    # YYDDD: 2-digit year x 1000 + day-of-year. Fits the 65535 per-field
+    # authoring cap through 2065; fail loudly rather than truncate beyond it.
+    $yyddd = ($day.Year % 100) * 1000 + $day.DayOfYear
+    if ($yyddd -gt 65535) { Die "nightly date field $yyddd exceeds the MSI 65535 per-field cap" }
+    $productVersion = "$version.$yyddd"
+    $fullVersion = $NightlyVersion
+    Write-Host "build-msi: nightly stamp $fullVersion (ProductVersion $productVersion)"
 }
 
 # ---- SDK staging --------------------------------------------------------
@@ -237,9 +273,9 @@ foreach ($ext in "WixToolset.Util.wixext", "WixToolset.Firewall.wixext", "WixToo
     if ($LASTEXITCODE -ne 0) { Die "wix extension add $ext failed" }
 }
 
-$dist = "dist\$version"
+$dist = "dist\$fullVersion"
 New-Item -ItemType Directory -Force -Path $dist | Out-Null
-$msi = Join-Path $dist "rusty-photon-$version-x64.msi"
+$msi = Join-Path $dist "rusty-photon-$fullVersion-x64.msi"
 
 $sources = @("installer\Package.wxs") + (Get-ChildItem "installer\fragments\*.wxs" | ForEach-Object { $_.FullName })
 Write-Host "wix build -> $msi"
@@ -250,7 +286,8 @@ Write-Host "wix build -> $msi"
 # (Joined -sw1149 form: `-sw <id>` parses the id as an input file.)
 wix build -arch x64 `
     -sw1149 `
-    -d "Version=$version" `
+    -d "Version=$productVersion" `
+    -d "FullVersion=$fullVersion" `
     -ext WixToolset.Util.wixext `
     -ext WixToolset.Firewall.wixext `
     -ext WixToolset.UI.wixext `

@@ -15,14 +15,22 @@
 #   - qhy-camera: without QHY's All-in-One pack the delay-load preflight must
 #     log its distinctive pointer and exit cleanly (not a loader crash)
 #
-# Usage: scripts\verify-msi.ps1 [-Msi <path>] [-Keep]
-#   -Msi   the MSI to verify (default: dist\<workspace version>\...)
-#   -Keep  leave the product installed on exit (debugging)
+# Usage: scripts\verify-msi.ps1 [-Msi <path>] [-Keep] [-UpgradeFrom <path>]
+#   -Msi          the MSI to verify (default: dist\<workspace version>\...)
+#   -Keep         leave the product installed on exit (debugging)
+#   -UpgradeFrom  a previously published MSI to install FIRST, so the main
+#                 install runs as an in-place upgrade over it. The nightly
+#                 channel's AllowSameVersionUpgrades path (every nightly
+#                 authors the same compared ProductVersion) is exercised
+#                 only this way — release-tag testing never sees it. The
+#                 rest of the lifecycle then runs against the upgraded
+#                 install, whose invariants match a fresh one.
 
 [CmdletBinding()]
 param(
     [string]$Msi,
-    [switch]$Keep
+    [switch]$Keep,
+    [string]$UpgradeFrom
 )
 
 $ErrorActionPreference = 'Stop'
@@ -131,10 +139,51 @@ function Msiexec([string[]]$msiArgs) {
     return $p.ExitCode
 }
 
+# The product's Programs & Features registrations (x64 MSI -> native hive).
+function ArpEntries {
+    Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall' |
+        ForEach-Object { Get-ItemProperty $_.PSPath } |
+        Where-Object { $_.DisplayName -eq 'Rusty Photon' }
+}
+
+# ---- optional upgrade seed (nightly-over-nightly proof) --------------------
+if ($UpgradeFrom) {
+    if (-not (Test-Path $UpgradeFrom)) { Die "-UpgradeFrom $UpgradeFrom not found" }
+    $UpgradeFrom = (Resolve-Path $UpgradeFrom).Path
+    $priorLog = Join-Path $env:TEMP 'rusty-photon-msi-prior-install.log'
+    Write-Host "== upgrade seed: installing the prior MSI ($(Split-Path -Leaf $UpgradeFrom))"
+    $code = Msiexec @('/i', "`"$UpgradeFrom`"", '/qn', '/norestart', "/l*v", "`"$priorLog`"", 'ADDLOCAL=ALL')
+    if ($code -ne 0) { Fail 'msiexec' "prior-MSI install exited $code (log: $priorLog)" }
+    if (-not (Get-Service -Name 'rusty-photon-sentinel' -ErrorAction SilentlyContinue)) {
+        Fail 'msiexec' "prior MSI installed no services — the upgrade proof would be vacuous"
+    }
+}
+
 # ---- install (all features) ----------------------------------------------
 Write-Host "== install: msiexec /qn ADDLOCAL=ALL"
 $code = Msiexec @('/i', "`"$Msi`"", '/qn', '/norestart', "/l*v", "`"$installLog`"", 'ADDLOCAL=ALL')
 if ($code -ne 0) { Fail 'msiexec' "silent install exited $code (log: $installLog)" }
+
+if ($UpgradeFrom) {
+    # The install above ran over the seeded product: prove it upgraded in
+    # place (RemoveExistingProducts consumed the old registration) rather
+    # than installing side by side — the failure mode
+    # AllowSameVersionUpgrades exists to prevent.
+    $entries = @(ArpEntries)
+    if ($entries.Count -ne 1) {
+        Fail 'msiexec' "expected exactly one Rusty Photon ARP entry after the upgrade, found $($entries.Count) (side-by-side install?)"
+    }
+    # ARPCOMMENTS carries the full version string, and the MSI under test
+    # always authors it; the filename is rusty-photon-<fullversion>-x64.msi,
+    # so this pins the surviving entry to the MSI just installed.
+    if ((Split-Path -Leaf $Msi) -match '^rusty-photon-(.+)-x64\.msi$') {
+        $expected = "rusty-photon $($Matches[1])"
+        if ($entries[0].Comments -ne $expected) {
+            Fail 'msiexec' "surviving ARP entry comments '$($entries[0].Comments)' != '$expected' (old product survived the upgrade?)"
+        }
+    }
+    Write-Host "== upgrade: OK (single ARP entry after installing over the prior MSI)"
+}
 
 # ---- static asserts: services, start types, failure actions ---------------
 foreach ($svc in $allServices) {
