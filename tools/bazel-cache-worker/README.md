@@ -69,15 +69,34 @@ The Worker therefore **touches on read**: a GET of an object older than 2 days
 re-puts it under the same key (in `ctx.waitUntil`, off the response path),
 resetting its lifecycle clock. Net effect: age expiry becomes effective LRU —
 anything read within the window survives, genuinely unused entries age out.
-The nightly full build reads the complete action-cache set daily, so live
-entries are touched well before the 7-day deadline. Cost bound: at most one
-Class A write per read object per 2 days (~$1–4/mo at this repo's scale).
-Residue: blobs a hit-heavy build never GETs (build-without-the-bytes skips
-most intermediate downloads) still age out; entries are regenerable and
-Bazel 9's default eviction retries rebuild through it. If the lifecycle
-window changes, keep `TOUCH_AFTER_MS + CAS_EDGE_TTL_S` (src/cache.js)
-comfortably below it — the edge cache (next section) adds its TTL to the
-worst-case gap between an object's R2 touches.
+Cost bound: at most one Class A write per read object per 2 days (~$1–4/mo at
+this repo's scale). If the lifecycle window changes, keep
+`TOUCH_AFTER_MS + CAS_EDGE_TTL_S` (src/cache.js) comfortably below it — the
+edge cache (next section) adds its TTL to the worst-case gap between an
+object's R2 touches.
+
+**AC-referenced CAS touch.** Touch-on-read alone only touches a `/cas/` blob
+Bazel actually *downloads*. `--remote_download_outputs=toplevel`
+(build-without-the-bytes) means a hit-heavy build skips downloading most
+intermediate/tool outputs whenever nothing local needs the bytes — so a
+steady-state dependency (a build-script action nothing else forces a fresh
+compile of) stays "used" via its `/ac/` entry every day while the CAS content
+backing it quietly ages past the 7-day window underneath it. This bit
+2026-07-14: `aws-lc-sys`/`aws-lc-rs`'s build-script outputs went missing
+("Lost inputs no longer available remotely") ahead of a routine rustls
+0.23.42 bump, despite green daily builds, because nothing had forced a real
+download of that corner of the graph in over a week.
+
+The Worker closes this by touching an AC entry's *referenced* CAS digests on
+every read of the entry itself, regardless of whether Bazel downloads them:
+an `ActionResult`'s output `Digest.hash` fields are length-delimited UTF-8
+strings, so a lossless latin1 decode of the entry's raw bytes plus a
+64-hex-char regex recovers every digest it points to, without a full REAPI
+protobuf parser (see `touchReferencedCas` in `src/cache.js`). `/ac/` entries
+are small (a handful of output digests), so buffering one to scan it costs
+nothing next to the CAS blobs' own streaming path. Residual risk: Bazel 9's
+default eviction retries (rewind + rebuild) still backstop any digest this
+heuristic misses — entries are regenerable either way.
 
 ### Edge cache (`/cas/` reads)
 
