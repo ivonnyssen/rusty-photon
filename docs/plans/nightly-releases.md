@@ -10,6 +10,12 @@ Today packaging is on-demand only (`scripts/build-packages.sh` on a target
 machine; `release.yml` on a `v*` tag); the nightly channel gives the rigs
 and any test box an always-current, verified upgrade path between releases.
 
+N5 adds a second consumption path for the Linux legs: a real `apt`/`dnf`
+repository (Cloudflare R2-hosted) so a Debian/Fedora machine picks up
+nightlies via `apt upgrade`/`dnf upgrade` instead of a manual download —
+the GitHub-release assets stay as the `SHA256SUMS.txt`-indexed manual
+path, unchanged.
+
 This plan changes nothing in
 [ADR-012](../decisions/012-service-packaging-architecture.md)/
 [ADR-013](../decisions/013-native-sdk-payload-policy.md)/
@@ -29,10 +35,13 @@ deliberately reusable so the deferred `release.yml` generalization
 | N2 | Fedora: `.rpm` build on both arches + Fedora lifecycle verify leg | **Done** (2026-07-13; rpms first published by that day's scheduled run) | PR #513 |
 | N3 | Windows: suite-MSI leg (strictly after W5 of [windows-packaging.md](windows-packaging.md)) | **Done** (2026-07-13; first MSI publish = next scheduled run, whose msi job skips the upgrade seed gracefully — the run after proves MSI-over-MSI) | PR #509 |
 | N4 | macOS: per-service arm64 tarballs + Homebrew tap channel + `verify-brew.sh` | **Done** (2026-07-13; first macOS publish = next scheduled run) | PR #519 |
+| N5 | Debian/Fedora package repositories: Cloudflare R2-hosted `apt`/`dnf` channels for the N1/N2 `.deb`/`.rpm` legs | Not started | |
 
 N1 is the anchor (it builds the shared spine); N2, N3, N4 are mutually
 independent afterwards. N3 is gated only on W5; N4 has synergy with PR-7
 (stable-channel formula generation) and the two are best done as one arc.
+N5 depends only on N1+N2 (it repackages their already-verified `.deb`/
+`.rpm` output) and is otherwise independent of N3/N4.
 
 ## Decisions (fixed)
 
@@ -490,6 +499,169 @@ auto-trusts only the formula named on the command line, so the scratch
 verify tap needs an explicit `brew trust` before the meta-formula can
 pull its dependencies.
 
+### Phase N5 — Debian/Fedora package repositories (Cloudflare)
+
+Today's channel (N1/N2) ships `.deb`/`.rpm` as GitHub release assets: a
+machine upgrades by hand (`curl` + `sha256sum -c` +
+`apt-get install ./file.deb`, per docs/packaging.md). N5 adds a real
+`apt`/`dnf` binary **repository** — `apt update && apt upgrade` /
+`dnf upgrade` picks the nightly up automatically — built from the exact
+`.deb`/`.rpm` files the `linux` job already builds and
+lifecycle-verifies. (Deliberately not called a "source": that term reads
+as `deb-src`/source packages in Debian packaging, which this isn't — no
+source packages, binary `.deb`/`.rpm` only.) N5 adds no new
+package-building logic, only repackaging into repo form + hosting + a
+repo-level verification gate.
+
+**Scope: rolling-only, matching the channel's existing shape.** One apt
+suite (`nightly`) and one flat dnf repo per arch, always pointing at the
+single currently-published nightly version — no accumulating pool, no
+multi-version retention. This continues the "one rolling prerelease,
+assets replaced, no dated history" decision already fixed for N1-N4
+rather than opening a new design axis. It also means `reprepro`/`aptly`'s
+incremental-pool machinery buys nothing here: a full stateless regen of
+the repo tree from that night's just-built packages mirrors the
+"thin workflow, thick script" + "replace, don't accumulate" pattern
+`publish` already uses for release assets and the Homebrew tap. Real
+multi-version rollback (`apt install pkg=<version>`) is deferred — see
+Future considerations.
+
+**Hosting: an R2 bucket on a public custom domain, no Worker.** Unlike
+the Bazel remote cache (`tools/bazel-cache-worker/`), this needs no
+eviction/LRU logic and no edge-cached content-addressed blobs — just
+anonymous-GET static-file serving of a tree that's fully replaced once a
+night. R2's own custom-domain public-bucket feature (DNS-provisioning
+shape similar to the cache Worker's `routes` block, but attached directly
+to the bucket rather than to Worker code in front of it) serves this
+directly: `GET`/`HEAD`/`Range`/conditional requests all work natively
+against bucket objects, so there's no bespoke serving logic to write or
+maintain. New bucket `rusty-photon-packages`, domain
+`pkg.rustyphoton.space`, layout:
+
+```
+pkg.rustyphoton.space/
+  pubkey.asc                                  # repo signing key, public half
+  deb/
+    dists/nightly/InRelease
+    dists/nightly/Release
+    dists/nightly/Release.gpg
+    dists/nightly/main/binary-amd64/Packages(.gz)
+    dists/nightly/main/binary-arm64/Packages(.gz)
+    pool/main/*.deb
+  rpm/
+    x86_64/repodata/  (+ *.rpm)
+    aarch64/repodata/ (+ *.rpm)
+```
+
+Writes go straight from CI to R2 via `wrangler r2 object put --remote`
+(the same CLI already used to deploy the cache Worker), authenticated
+with a new Cloudflare API token scoped to Object Read & Write on just
+this bucket (`PACKAGES_R2_API_TOKEN`; the account is already known from
+the cache Worker setup). No custom Worker code, no new bearer-token
+scheme to invent — reads need no auth (public bucket), writes are gated
+purely by the scoped API token staying a CI secret. New
+`tools/rusty-photon-packages-r2/` (sibling to `tools/bazel-cache-worker/`)
+holds the bucket-provisioning `wrangler.toml` and a README documenting
+the one-time setup (create bucket, attach custom domain, mint the scoped
+token), matching that tool's own README shape.
+
+**Repo tooling.**
+
+- apt: `dpkg-scanpackages` (per arch, over a pool assembled from that
+  night's debs) + a generated `Release` file (`apt-ftparchive release` or
+  an equivalent short script — SHA256 of each `Packages`/`Packages.gz`,
+  `Suite: nightly`, `Codename: nightly`, `Components: main`,
+  `Architectures: amd64 arm64`), signed two ways: `gpg --clearsign` into
+  `InRelease` and `gpg --detach-sign --armor` into `Release.gpg` (ship
+  both — older `apt` only reads the detached form, current `apt` prefers
+  `InRelease`).
+- dnf: `createrepo_c` per arch directory, `repomd.xml` detached-signed
+  into `repomd.xml.asc`. Unlike apt (which always verifies `Release`/
+  `InRelease` against the configured key for any added source), dnf only
+  checks `repomd.xml`'s signature when the `.repo` file opts in — the
+  file clients install must set `repo_gpgcheck=1` (metadata signature;
+  what we sign) and `gpgcheck=0` (individual package signing, which N5
+  doesn't do — see the flagged unknown below) alongside `gpgkey=` at
+  `pkg.rustyphoton.space/pubkey.asc`. Without `repo_gpgcheck=1`, dnf
+  never checks the signature at all and the verify step's "signature
+  verifies" proof would not actually be exercising anything.
+- New scripts (thin-workflow-thick-script, same contract as
+  `build-packages.sh`/`build-tarballs.sh`): `scripts/build-apt-repo.sh`
+  (consumes the `linux` job's already-verified `.deb`s, emits the `deb/`
+  tree above) and `scripts/build-yum-repo.sh` (same for `.rpm`s → the
+  `rpm/` tree). Both take the repo-signing private key via env (imported
+  once with `gpg --batch --import`), never written to disk outside the
+  runner's ephemeral workspace.
+
+**GPG signing key.** One keypair, generated once, offline, no
+passphrase — consistent with every other CI credential in this plan
+being a bare secret rather than a secret-plus-passphrase pair; the
+GitHub secret store is the sole protection layer, the same trust model
+as `HOMEBREW_TAP_TOKEN`. Private key (armored) → new secret
+`PACKAGES_GPG_PRIVATE_KEY`. Public key to be committed at
+`packaging/gpg/pubkey.asc` (checked in, matching the
+`packaging/postinst.common`-style "plain committed files, explicitness
+over DRY" convention) *and* re-served byte-for-byte at
+`pkg.rustyphoton.space/pubkey.asc` for client convenience — one armored
+file, one name, everywhere it's referenced (repo layout, both `.repo`/
+`sources` client configs, this section); fingerprint recorded in
+docs/packaging.md#nightly-channel next to the existing install
+instructions. Key rotation is manual and rare (pre-1.0, single
+maintainer) — no automated rotation designed.
+
+**Workflow integration.** New job `repo` in `nightly-packages.yml`, needs
+`linux` (both arches' already-verified `.deb`/`.rpm` artifacts), runs
+`build-apt-repo.sh` + `build-yum-repo.sh` into a local `site/` tree, then
+the verify step below, then uploads `site/` as a build artifact —
+mirroring every other leg, it does **not** push to R2 itself. `publish`
+gains `repo` in its `needs` list (so a broken repo build blocks the
+release exactly like a broken MSI or a broken tap push today) and, after
+its existing GitHub-release + Homebrew-tap steps, a final step pushes
+`site/` to the bucket. Unlike the Bazel cache's content-addressed keys,
+`pool/`/`x86_64/`/`aarch64/` filenames carry the nightly version stamp
+(date + short SHA), so a plain put-every-night would leave every prior
+night's `.deb`/`.rpm` sitting in the bucket under a distinct key
+forever — `dpkg-scanpackages`/`createrepo_c` would then index all of
+them, silently turning "rolling" into "accumulating" and breaking the
+fixed rolling-only scope above. That still needs a delete pass, but
+**not** delete-then-upload: deleting the old tree before the new one is
+live would open a window where `apt update`/`dnf makecache` mid-publish
+either 404s or fetches a `Release`/`repomd.xml` whose referenced content
+partway exists (apt's "Hash Sum mismatch" class of failure). So the
+final step orders it upload-then-delete instead: `wrangler r2 object
+put --remote` the new `pool/`/`x86_64/`/`aarch64/` content and
+`pubkey.asc` first (additive — existing clients are still being served
+correctly by the still-live old metadata throughout), then the
+top-level metadata last (`Release*`/`InRelease`, `repomd.xml*`) as the
+single atomic "flip" moment, and only *after* that succeeds does it
+delete whatever's now stale (the previous night's pool/repodata
+objects) — the same "replace, don't accumulate" end state as the
+GitHub release assets (`gh release delete-asset` in a loop) and the
+Homebrew tap formulas (`rm -f homebrew-tap/Formula/*-nightly.rb`)
+earlier in this publish job, just reordered so nothing a client might
+be mid-fetching ever disappears out from under it. Adding or removing a
+service changes which files exist under `pool/`/`x86_64/`/`aarch64/` on
+the *next* clean build; `check-pkg-assets.sh` already asserts every
+service both plans agree exists.
+
+**Verification (pre-publish, matching the plan's fixed "full lifecycle,
+per leg" gate).** A new `scripts/verify-packages-repo.sh`, same shape as
+`verify-brew.sh`'s "render against `file://` before touching anything
+real": serve the freshly built `site/deb` and `site/rpm` over a local
+HTTP server inside the verify step (not yet on R2), import the *public*
+half of the signing key into a podman `debian:trixie` / `fedora:44`
+container, add the repo (a `sources.list.d` entry / a `.repo` file with
+`repo_gpgcheck=1`/`gpgcheck=0`, per the dnf note above) pointing at the
+local server, then `apt update && apt install rusty-photon-<svc>` /
+`dnf install rusty-photon-<svc>` for at least one service per arch —
+proving both that the signature verifies (a client holding only the
+public key accepts it — and, on the dnf side, actually checked it, since
+the container's `.repo` file carries the same `repo_gpgcheck=1` real
+clients would need) and that the package resolves and installs through
+the real resolver, not just that the files exist. This is the actual
+"does `apt upgrade` work" proof that today's manual curl-and-install
+testing never exercises.
+
 ## Verification
 
 - Per-leg lifecycle gates (N1 `verify-packages.sh` both arches, N2 Fedora
@@ -566,12 +738,35 @@ pull its dependencies.
       `brew services restart rusty-photon-<svc>` slots in (documented in
       docs/packaging-macos.md); live validation rides the first
       physical-Mac pass (Verification).
+- [ ] (N5) R2 custom-domain public-bucket provisioning mechanics via
+      `wrangler` (exact CLI/API surface — confirm during
+      implementation; the cache Worker's `routes` block is the closest
+      existing precedent but attaches a domain to a *Worker*, not to a
+      bucket directly).
+- [ ] (N5) Whether `apt-ftparchive release` alone is sufficient for the
+      `Release` file or a hand-rolled generator is cleaner given the
+      small, fixed `Components`/`Architectures` set — prototype before
+      committing, the way N0 prototyped the version dialects.
+- [ ] (N5) Per-*package* signing (`rpm --addsign`, `dpkg-sig`/`debsign`)
+      in addition to metadata signing — likely unnecessary, since the
+      signed `Release`/`repomd.xml` already covers package integrity via
+      embedded checksums, but worth a sanity check once real clients
+      consume the channel.
+- [ ] (N5) Whether apt's `signed-by=` wants `pubkey.asc` as-is or a
+      dearmored binary keyring — some apt versions expect the latter for
+      `Signed-By:`/`signed-by=`, which would mean a `gpg --dearmor` step
+      producing a second served file rather than the single armored
+      `pubkey.asc` described above; confirm against a real `apt update`
+      in `verify-packages-repo.sh` before committing to one file.
+- [ ] (N5) The exact `wrangler`/R2 mechanism for identifying and
+      deleting the now-stale objects under `deb/`/`rpm/` *after* the new
+      metadata is live — a pre-upload `wrangler r2 object list` snapshot
+      diffed against the freshly built tree (so only truly superseded
+      keys are pruned), per-object delete looped over the result, or an
+      equivalent bulk operation; confirm during implementation.
 
 ## Future considerations
 
-- An apt repository (and/or dnf copr) instead of release-asset downloads
-  — `apt upgrade` picking up nightlies automatically is the nicest end
-  state for the rigs; needs repo tooling + GPG signing + hosting.
 - A rig-update helper consuming the stable nightly asset URLs (the
   rolling-tag design exists partly to enable this).
 - Code signing / notarization post-1.0 (Developer ID, winget manifest —
@@ -579,3 +774,10 @@ pull its dependencies.
   `.pkg` could be revisited then, though the Homebrew model likely stays.
 - Dated nightly archives (a second, pruned channel) if bisecting old
   nightlies ever becomes a real need — deliberately excluded from v1.
+- Multi-version apt/dnf repositories (real `apt install pkg=<version>`
+  rollback) — N5 ships rolling-only; revisit if the on-demand-downgrade
+  caveat (N1 Decisions) becomes a real pain point.
+- A `stable` suite/repo on the same N5 infrastructure, populated by
+  `release.yml` on `v*` tags — N5 covers the nightly channel only; this
+  would be a PR-7-shaped follow-up reusing the same bucket, scripts, and
+  signing key.
