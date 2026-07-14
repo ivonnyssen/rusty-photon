@@ -38,10 +38,12 @@ const KEY_RE = /^(ac|cas)\/[0-9a-fA-F]+$/;
 // referenced outputs on every read of the entry itself, not just on download.
 const TOUCH_AFTER_MS = 2 * 24 * 60 * 60 * 1000;
 
-// Regex for a SHA-256 hex digest (64 lowercase hex chars). See
-// touchReferencedCas below for why this is the touch mechanism for CAS blobs
-// an AC hit never downloads.
-const DIGEST_RE = /[0-9a-f]{64}/g;
+// Regex for a SHA-256 hex digest (64 hex chars; case-insensitive, matching
+// KEY_RE's [0-9a-fA-F] -- REAPI digests are conventionally lowercase, but
+// nothing about the wire format forbids uppercase, and an unmatched digest
+// just silently keeps aging out). See touchReferencedCas below for why this
+// is the touch mechanism for CAS blobs an AC hit never downloads.
+const DIGEST_RE = /[0-9a-fA-F]{64}/g;
 
 // Edge-cache TTL for /cas/ reads. CAS keys are content hashes — a key's bytes
 // can never legitimately change — so serving them from Cloudflare's
@@ -82,6 +84,13 @@ async function touch(env, key, seenUploadedMs) {
   await env.CACHE.put(key, obj.body, { onlyIf: { etagMatches: obj.etag } });
 }
 
+// Re-puts an object whose body/etag the caller already fetched (no second
+// get()) -- the conditional write still closes the get->put race the same
+// way touch() does.
+async function touchObj(env, key, body, etag) {
+  await env.CACHE.put(key, body, { onlyIf: { etagMatches: etag } });
+}
+
 // Bazel checks the action cache on every action, hit or not -- but an AC hit
 // alone never reads (and so never touches) the CAS blobs its ActionResult
 // points to: build-without-the-bytes (--remote_download_outputs=toplevel)
@@ -94,22 +103,27 @@ async function touch(env, key, seenUploadedMs) {
 //
 // Close the gap without a full REAPI protobuf parser: an ActionResult's
 // output Digest.hash fields are length-delimited UTF-8 strings, so they
-// appear as literal 64-char lowercase-hex runs in the entry's raw wire
-// bytes. A lossless latin1 decode (byte N <-> char code N, no replacement)
-// plus DIGEST_RE recovers them. A false match would need 64 contiguous
-// bytes to each land in the 16-value [0-9a-f] range -- astronomically
-// unlikely in unrelated protobuf framing -- and the failure mode is benign
-// either way: a bogus key just misses in r2Get below and is skipped.
+// appear as literal 64-char hex runs in the entry's raw wire bytes. A
+// lossless latin1 decode (byte N <-> char code N, no replacement) plus
+// DIGEST_RE recovers them. A false match would need 64 contiguous bytes to
+// each land in the 32-value [0-9a-fA-F] range -- astronomically unlikely in
+// unrelated protobuf framing -- and the failure mode is benign either way:
+// a bogus key just misses in r2Get below and is skipped.
 async function touchReferencedCas(env, acBytes) {
   const text = new TextDecoder("latin1").decode(acBytes);
   const seen = new Set();
-  for (const [hash] of text.matchAll(DIGEST_RE)) {
+  for (const [rawHash] of text.matchAll(DIGEST_RE)) {
+    const hash = rawHash.toLowerCase();
     if (seen.has(hash)) continue;
     seen.add(hash);
     const casKey = `cas/${hash}`;
+    // r2Get already has the body + etag this touch needs -- unlike touch()
+    // above (called where the caller's own obj.body is already spoken for
+    // by the response stream), nothing else here reads this obj, so a
+    // direct touchObj skips a second, redundant get().
     const obj = await r2Get(env, casKey);
     if (obj && Date.now() - obj.uploaded.getTime() > TOUCH_AFTER_MS) {
-      await touch(env, casKey, obj.uploaded.getTime());
+      await touchObj(env, casKey, obj.body, obj.etag);
     }
   }
 }
@@ -139,21 +153,26 @@ export default {
         }
         const obj = await r2Get(env, key);
         if (!obj) return new Response(null, { status: 404 });
-        if (Date.now() - obj.uploaded.getTime() > TOUCH_AFTER_MS) {
-          ctx.waitUntil(touch(env, key, obj.uploaded.getTime()));
-        }
+        const stale = Date.now() - obj.uploaded.getTime() > TOUCH_AFTER_MS;
+
         // /ac/ entries are small ActionResult protos (a handful of output
         // digests), unlike /cas/ blobs which can be tens of MB and stream
-        // straight through -- so buffer them and scan for referenced-output
-        // digests to touch (touchReferencedCas above). This is the fix for
-        // the build-without-the-bytes touch gap: reading the metadata now
-        // also keeps the bytes it describes alive, regardless of whether
-        // Bazel itself ever downloads them.
+        // straight through -- so buffer them once and reuse it both to
+        // touch the entry itself (no second get(), unlike the /cas/ path
+        // below whose obj.body is already spoken for by the response
+        // stream) and to scan for referenced-output digests to touch
+        // (touchReferencedCas above). This is the fix for the
+        // build-without-the-bytes touch gap: reading the metadata now also
+        // keeps the bytes it describes alive, regardless of whether Bazel
+        // itself ever downloads them.
         if (key.startsWith("ac/")) {
           const bytes = await obj.arrayBuffer();
+          if (stale) ctx.waitUntil(touchObj(env, key, bytes, obj.etag));
           ctx.waitUntil(touchReferencedCas(env, bytes));
           return new Response(bytes, { status: 200, headers: { "Content-Length": String(obj.size) } });
         }
+
+        if (stale) ctx.waitUntil(touch(env, key, obj.uploaded.getTime()));
         // Content-Length gives Bazel a sized body instead of a chunked
         // stream; Cache-Control is what makes cache.put store the response.
         const headers = { "Content-Length": String(obj.size) };
