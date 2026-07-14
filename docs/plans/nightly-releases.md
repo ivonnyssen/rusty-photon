@@ -598,7 +598,7 @@ passphrase — consistent with every other CI credential in this plan
 being a bare secret rather than a secret-plus-passphrase pair; the
 GitHub secret store is the sole protection layer, the same trust model
 as `HOMEBREW_TAP_TOKEN`. Private key (armored) → new secret
-`PACKAGES_GPG_PRIVATE_KEY`. Public key committed at
+`PACKAGES_GPG_PRIVATE_KEY`. Public key to be committed at
 `packaging/gpg/pubkey.asc` (checked in, matching the
 `packaging/postinst.common`-style "plain committed files, explicitness
 over DRY" convention) *and* re-served byte-for-byte at
