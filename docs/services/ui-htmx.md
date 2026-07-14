@@ -227,10 +227,18 @@ list of scalar leaves:
   as editable inputs; it **round-trips untouched** through the hidden blob. This
   is exactly how redacted secrets (which live inside such optional structs) stay
   safe — they are never rendered, only carried through.
+- **One array shape renders: `array` whose `items` are an integer `enum`**
+  (e.g. rp's per-camera `cooler_targets_c` grid) becomes a **checkbox
+  group** — one checkbox per enumerated value, in the schema's `enum` order,
+  checked when the config array contains the value; submitted values are
+  written back in `enum` order. Nothing field-specific lives in the BFF: the
+  allowed values come from the schema. Every other array (arrays of objects,
+  `$ref` items) still skips and round-trips via the blob.
 - Each leaf's **`FieldKind`** is inferred from the schema: `string` → text,
-  `boolean` → checkbox, `integer`/`number` → numeric input, with the schema's
-  `minimum`/`maximum` and nullability (`type:["integer","null"]`) driving
-  coercion. Fields are grouped into a `<fieldset>` per top-level section.
+  `boolean` → checkbox, `integer`/`number` → numeric input, integer-enum
+  array → checkbox group, with the schema's `minimum`/`maximum` and
+  nullability (`type:["integer","null"]`) driving coercion. Fields are
+  grouped into a `<fieldset>` per top-level section.
 
 The form edits a subset of fields; the rest must round-trip unchanged so
 `config.apply` receives a complete `Config`. The page therefore carries the full
@@ -335,12 +343,14 @@ locked/identity field that the user unlocked.
    the **restart callout** instead of the reconnect poll: "Saved — restart rp
    to apply:" plus the changed paths. (Phase 4 will attach the "Restart via
    Sentinel" affordance here.) rp's equipment arrays are `oneOf`-free but
-   *array-typed*, which the schema walker skips — so on the rp config page they
-   round-trip untouched via the hidden blob, and are edited on the
-   [equipment page](#equipment-page-equipment) instead. rp's optional blocks
+   *array-typed* — arrays of objects, which the schema walker skips — so on
+   the rp config page they round-trip untouched via the hidden blob, and are
+   edited on the [equipment page](#equipment-page-equipment) instead (where a
+   camera entry's integer-enum `cooler_targets_c` array renders as a checkbox
+   group like any other walked field). rp's optional blocks
    (`site`, `guider`, `plate_solver`, `planner`) blob-round-trip the same way
    under the standard composite-skip rule; the page edits the scalar leaves
-   (`session`, `safety`, `imaging`, `centering`, `server`).
+   (`session`, `safety`, `imaging`, `centering`, `cooling`, `server`).
 3. **Roster-derived device** — a key of the form `rp:{kind}:{id}` (e.g.
    `rp:cameras:main-cam`, `rp:mount:mount`), synthesized on demand from rp's
    config: the device's `alpaca_url` + device number come from its roster
@@ -707,7 +717,10 @@ wiring is needed. A name Sentinel does not know simply surfaces Sentinel's
   round-trip read-only via the hidden blob rather than rendering an editable
   discriminated form. A generic `oneOf`/enum renderer (and a dedicated password
   input for redacted-secret leaves) is a follow-up; until then such fields are
-  edited in the config file.
+  edited in the config file. The array-of-integer-`enum` case is **no longer
+  deferred** — it renders as a checkbox group (see
+  [Schema-driven rendering](#schema-driven-rendering-fieldmodel)); scalar
+  `enum` leaves and `oneOf` forms remain follow-ups.
 - **BFF-side TLS/auth**, the **LCARS theme**, and **i18n**.
 
 ## Testing Strategy
@@ -960,10 +973,12 @@ suites run everywhere the existing one does. Coverage:
   each outcome (`ok`+recovery variants, `failed`+detail, 404, 409, transport
   error). Mocks `HttpClient`.
 - `pages`: the schema walker (`$ref` resolution, plain-object recursion,
-  `anyOf`/`oneOf` skipping, `FieldKind` inference); schema-driven form ⇆ Config
+  `anyOf`/`oneOf` skipping, `FieldKind` inference, the integer-enum-array →
+  checkbox-group case incl. object-array skipping); schema-driven form ⇆ Config
   reconstruction (hidden blob + editable overlay by JSON pointer; override-pinned
   and read-only not overlaid; numeric coercion against schema bounds; float
-  leaves; redacted-secret round-trip); the locked/identity tier (disabled by
+  leaves; multi-value checkbox-group merge incl. empty selection → empty array;
+  redacted-secret round-trip); the locked/identity tier (disabled by
   default, editable when `__unlocked`/`?unlock=` names it, pinned still wins, a
   forged `__unlocked` can't unlock a non-locked field); the index listing.
 - `config.rs`: defaults (single dsd-fp2), the multi-driver map, the optional
@@ -996,7 +1011,7 @@ suites run everywhere the existing one does. Coverage:
 | `sentinel_client.rs` | `SentinelClient` trait + `HttpSentinelClient`: `POST /api/services/{name}/restart` request shaping + outcome/404/409 parsing against Sentinel's REST API. |
 | `rp_client.rs` | The non-config rp surface: `RpApi` trait (`equipment_status`, `session_status`) + its reqwest impl — the seam the equipment page and stream shell render from. |
 | `roster.rs` | The roster domain: `EquipKind` (kind ⇄ ASCOM-type mapping), `parse_roster` over rp's config value, the `rp:{kind}:{id}` key codec, and the insert/replace/remove config surgery with duplicate-id/singular-mount guards. |
-| `pages/mod.rs` | The schema-driven renderer: `FieldModel` (schema walker + `FieldKind`, incl. the array-item subschema entry point), `config_card`/`index`/fragment templates, the schema-driven `merge_form` coercion, and the shared `layout` shell (nav tabs + night-vision toggle). |
+| `pages/mod.rs` | The schema-driven renderer: `FieldModel` (schema walker + `FieldKind`, incl. the integer-enum-array checkbox group and the array-item subschema entry point), `config_card`/`index`/fragment templates, the schema-driven `merge_form` coercion over duplicate-key-preserving form pairs, and the shared `layout` shell (nav tabs + night-vision toggle). |
 | `pages/equipment.rs` | The equipment page: roster join, tier badges, add/edit/remove forms, roster mutation via config surgery. |
 | `pages/stream.rs` | The activity stream page shell + per-event feed-card and strip-slot fragment renderers (pure `EventEnvelope → Markup` functions). |
 | `probe.rs` | The capability probe: bounded concurrent `supportedactions`/setup-page checks → tier. |

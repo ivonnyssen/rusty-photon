@@ -23,6 +23,7 @@ fn configured_with_camera(world: &mut RpWorld) {
         id: "main-cam".to_string(),
         alpaca_url: url,
         device_number: 0,
+        cooler_targets_c: Vec::new(),
     });
 }
 
@@ -48,6 +49,7 @@ fn configured_with_camera_at(world: &mut RpWorld, url: String, device_number: i3
         id: "main-cam".to_string(),
         alpaca_url: url,
         device_number: device_number as u32,
+        cooler_targets_c: Vec::new(),
     });
 }
 
@@ -73,6 +75,7 @@ fn configured_with_camera_at_simulator_device(world: &mut RpWorld, device_number
         id: "main-cam".to_string(),
         alpaca_url: url,
         device_number: device_number as u32,
+        cooler_targets_c: Vec::new(),
     });
 }
 

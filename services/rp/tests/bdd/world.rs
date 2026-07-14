@@ -87,6 +87,10 @@ pub struct RpWorld {
     /// Override rp's `safety.poll_interval`; safety scenarios pin this
     /// short so transitions are detected in test time.
     pub safety_poll_interval: Option<Duration>,
+    /// Override rp's `cooling` timing knobs; the camera-cooling
+    /// scenarios pin these short so a cooldown pass completes in
+    /// test time (camera_cooling.feature).
+    pub cooling_overrides: Option<bdd_infra::rp_harness::CoolingOverrides>,
     /// Plugin configs accumulated via Given steps
     pub plugin_configs: Vec<Value>,
 
@@ -314,6 +318,9 @@ impl RpWorld {
         }
         if let Some(interval) = self.safety_poll_interval {
             builder.with_safety_poll_interval(interval);
+        }
+        if let Some(cooling) = &self.cooling_overrides {
+            builder.with_cooling(cooling.clone());
         }
         for plugin in &self.plugin_configs {
             builder.add_plugin(plugin.clone());

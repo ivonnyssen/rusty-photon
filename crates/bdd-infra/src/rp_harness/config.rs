@@ -17,12 +17,15 @@ use serde_json::Value;
 /// on `idle`.
 static SESSION_SEQ: AtomicU64 = AtomicU64::new(0);
 
-/// Camera equipment entry.
+/// Camera equipment entry. `cooler_targets_c` is the dark-library
+/// setpoint ladder (rp.md § Camera Cooling); empty ⇒ rp never touches
+/// the camera's cooler, which is what almost every scenario wants.
 #[derive(Debug, Clone)]
 pub struct CameraConfig {
     pub id: String,
     pub alpaca_url: String,
     pub device_number: u32,
+    pub cooler_targets_c: Vec<i32>,
 }
 
 /// Filter wheel equipment entry.
@@ -168,6 +171,33 @@ impl GuiderConfig {
     }
 }
 
+/// Overrides for rp's top-level `cooling` block (rp.md § Camera
+/// Cooling → Tuning). `None` fields are omitted so rp's defaults
+/// apply; the BDD harness pins the timing knobs short so a cooldown
+/// pass completes in test time against the simulator's fast cooler.
+#[derive(Debug, Clone, Default)]
+pub struct CoolingOverrides {
+    pub poll_interval: Option<std::time::Duration>,
+    pub plateau_window: Option<std::time::Duration>,
+    pub warmup_step_interval: Option<std::time::Duration>,
+    pub max_cooldown: Option<std::time::Duration>,
+}
+
+impl CoolingOverrides {
+    /// The timing profile the camera-cooling scenarios use: 250 ms
+    /// polls, a 1 s plateau window (the simulator's curve updates
+    /// every few ms, so 1 s of quiet is a real plateau), 100 ms
+    /// warm-up steps, and a 30 s cooldown backstop.
+    pub fn fast() -> Self {
+        Self {
+            poll_interval: Some(std::time::Duration::from_millis(250)),
+            plateau_window: Some(std::time::Duration::from_secs(1)),
+            warmup_step_interval: Some(std::time::Duration::from_millis(100)),
+            max_cooldown: Some(std::time::Duration::from_secs(30)),
+        }
+    }
+}
+
 /// Accumulates equipment and plugin entries, then emits rp's JSON config.
 #[derive(Debug, Default, Clone)]
 pub struct RpConfigBuilder {
@@ -222,6 +252,10 @@ pub struct RpConfigBuilder {
     /// `max_attempts × (duration + solve_time_estimate +
     /// slew_overhead_estimate)`).
     pub centering: Option<(std::time::Duration, std::time::Duration)>,
+    /// Override the `cooling` block's timing knobs. When `None`, the
+    /// block is omitted and rp's defaults apply (10 s polls, 2 m
+    /// plateau window — far too slow for test scenarios).
+    pub cooling: Option<CoolingOverrides>,
 }
 
 impl RpConfigBuilder {
@@ -344,6 +378,14 @@ impl RpConfigBuilder {
         self
     }
 
+    /// Set the `cooling` block's timing overrides (overwrites any
+    /// prior call). When unset, the block is omitted and rp's
+    /// defaults apply.
+    pub fn with_cooling(&mut self, cooling: CoolingOverrides) -> &mut Self {
+        self.cooling = Some(cooling);
+        self
+    }
+
     /// Serialize into the JSON shape rp's config loader expects.
     pub fn build(&self) -> Value {
         let cameras: Vec<Value> = self
@@ -356,7 +398,7 @@ impl RpConfigBuilder {
                     "alpaca_url": c.alpaca_url,
                     "device_type": "camera",
                     "device_number": c.device_number,
-                    "cooler_target_c": -10,
+                    "cooler_targets_c": c.cooler_targets_c,
                     "gain": 100,
                     "offset": 50
                 })
@@ -584,6 +626,23 @@ impl RpConfigBuilder {
             });
         }
 
+        if let Some(cooling) = &self.cooling {
+            let mut block = serde_json::json!({});
+            if let Some(d) = cooling.poll_interval {
+                block["poll_interval"] = serde_json::json!(format!("{}ms", d.as_millis()));
+            }
+            if let Some(d) = cooling.plateau_window {
+                block["plateau_window"] = serde_json::json!(format!("{}ms", d.as_millis()));
+            }
+            if let Some(d) = cooling.warmup_step_interval {
+                block["warmup_step_interval"] = serde_json::json!(format!("{}ms", d.as_millis()));
+            }
+            if let Some(d) = cooling.max_cooldown {
+                block["max_cooldown"] = serde_json::json!(format!("{}ms", d.as_millis()));
+            }
+            config["cooling"] = block;
+        }
+
         config
     }
 }
@@ -658,6 +717,7 @@ mod tests {
             id: "imaging-cam".to_string(),
             alpaca_url: "http://127.0.0.1:1234".to_string(),
             device_number: 0,
+            cooler_targets_c: Vec::new(),
         });
         b.add_filter_wheel(FilterWheelConfig {
             id: "main-fw".to_string(),

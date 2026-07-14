@@ -1,6 +1,7 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 pub mod config;
 pub mod config_actions;
+pub mod cooling;
 pub mod equipment;
 pub mod error;
 pub mod events;
@@ -106,10 +107,21 @@ impl ServerBuilder {
         let planner_progress = Arc::new(std::sync::Mutex::new(
             crate::planner::progress::SessionProgress::default(),
         ));
+        // The camera-cooling controller (rp.md § Camera Cooling). The
+        // session manager drives its transitions (cooldown at start,
+        // warm-up at end, re-adopt on recovery); do_capture reads the
+        // held rung per frame.
+        let cooling = Arc::new(crate::cooling::CoolingController::new(
+            equipment.clone(),
+            event_bus.clone(),
+            config.cooling.clone(),
+        ));
+
         let session = Arc::new(
             SessionManager::new(event_bus.clone(), &config.plugins)
                 .with_progress_store(planner_progress.clone())
-                .with_state_path(config.session.session_state_path()),
+                .with_state_path(config.session.session_state_path())
+                .with_cooling(cooling.clone()),
         );
 
         let session_config = SessionConfig {
@@ -205,7 +217,8 @@ impl ServerBuilder {
         .with_session_manager(session.clone())
         .with_plate_solver(plate_solver_client, plate_solver_default_radius)
         .with_guider(guider_client.clone(), guider_defaults)
-        .with_centering_config(config.centering.clone());
+        .with_centering_config(config.centering.clone())
+        .with_cooling(cooling);
 
         // Cancellation token for in-flight SSE streams
         // (`/api/events/subscribe`). Cloned into AppState so the handler can

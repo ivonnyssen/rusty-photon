@@ -4,6 +4,36 @@ use rusty_photon_config::actions::FieldError;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+/// The dark-library setpoint grid: `cooler_targets_c` values must be
+/// multiples of [`COOLER_GRID_STEP_C`] within
+/// [`COOLER_GRID_MIN_C`]..=[`COOLER_GRID_MAX_C`] (rp.md § Camera
+/// Cooling). The same constants drive the JSON-Schema `enum` the web
+/// UI renders as a checkbox grid, so schema and validation cannot
+/// drift apart.
+pub const COOLER_GRID_MIN_C: i32 = -40;
+pub const COOLER_GRID_MAX_C: i32 = 15;
+pub const COOLER_GRID_STEP_C: i32 = 5;
+
+/// Every valid rung, ascending.
+pub fn cooler_grid() -> impl Iterator<Item = i32> {
+    (COOLER_GRID_MIN_C..=COOLER_GRID_MAX_C).step_by(COOLER_GRID_STEP_C as usize)
+}
+
+/// Schema for `cooler_targets_c`: an array whose items enumerate the
+/// 5 °C grid. Expressed as `items.enum` (not `minimum`/`maximum` +
+/// `multipleOf`) so a schema-driven UI can render one checkbox per
+/// allowed value without knowing the grid.
+fn cooler_targets_schema(_gen: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+        "type": "array",
+        "items": {
+            "type": "integer",
+            "enum": cooler_grid().collect::<Vec<_>>(),
+        },
+        "uniqueItems": true,
+    })
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CameraConfig {
@@ -15,8 +45,15 @@ pub struct CameraConfig {
     pub device_type: String,
     #[serde(default)]
     pub device_number: u32,
+    /// The dark-library setpoint ladder (rp.md § Camera Cooling):
+    /// exactly the sensor temperatures the operator maintains dark
+    /// libraries for, as unique integers on the 5 °C grid. At session
+    /// start rp selects the lowest rung the cooler can hold tonight
+    /// and regulates there for the whole session. Empty (the default)
+    /// means rp never touches this camera's cooler.
     #[serde(default)]
-    pub cooler_target_c: Option<f64>,
+    #[schemars(schema_with = "cooler_targets_schema")]
+    pub cooler_targets_c: Vec<i32>,
     #[serde(default)]
     pub gain: Option<i32>,
     #[serde(default)]
@@ -58,10 +95,7 @@ impl CameraConfig {
     /// `load_config` (which aborts startup on the first error) and the REST
     /// `PUT /api/config` validation. Paths are dotted with the index
     /// (`equipment.cameras.0.focal_length_mm`) so a UI can map each error
-    /// onto its field; the message names the camera id for humans. Today
-    /// the only validated field is `focal_length_mm` — must be strictly
-    /// positive when supplied — but the impl exists so future fields land
-    /// in one canonical place.
+    /// onto its field; the message names the camera id for humans.
     pub fn field_errors(&self, index: usize) -> Vec<FieldError> {
         let mut errors = Vec::new();
         if let Some(f) = self.focal_length_mm {
@@ -74,6 +108,41 @@ impl CameraConfig {
                     ),
                 });
             }
+        }
+        let off_grid: Vec<i32> = self
+            .cooler_targets_c
+            .iter()
+            .copied()
+            .filter(|t| {
+                !(COOLER_GRID_MIN_C..=COOLER_GRID_MAX_C).contains(t)
+                    || t.rem_euclid(COOLER_GRID_STEP_C) != 0
+            })
+            .collect();
+        if !off_grid.is_empty() {
+            errors.push(FieldError {
+                path: format!("equipment.cameras.{index}.cooler_targets_c"),
+                msg: format!(
+                    "must be multiples of {COOLER_GRID_STEP_C} within \
+                     {COOLER_GRID_MIN_C}..={COOLER_GRID_MAX_C}; got {off_grid:?} (camera '{}')",
+                    self.id
+                ),
+            });
+        }
+        let mut seen = std::collections::HashSet::new();
+        let duplicates: Vec<i32> = self
+            .cooler_targets_c
+            .iter()
+            .copied()
+            .filter(|t| !seen.insert(*t))
+            .collect();
+        if !duplicates.is_empty() {
+            errors.push(FieldError {
+                path: format!("equipment.cameras.{index}.cooler_targets_c"),
+                msg: format!(
+                    "must not contain duplicates; got {duplicates:?} (camera '{}')",
+                    self.id
+                ),
+            });
         }
         errors
     }
@@ -223,6 +292,174 @@ mod tests {
 
         let err = load_config(&path).unwrap_err().to_string();
         assert!(err.contains("colour"), "{err}");
+    }
+
+    #[test]
+    fn cooler_targets_on_the_grid_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "session": {"data_directory": "/tmp/rp-test"},
+                "equipment": {
+                    "cameras": [
+                        {
+                            "id": "main-cam",
+                            "alpaca_url": "http://localhost:11120",
+                            "cooler_targets_c": [-10, 5]
+                        }
+                    ]
+                },
+                "server": {}
+            }"#,
+        )
+        .unwrap();
+
+        let config = load_config(&path).unwrap();
+        assert_eq!(config.equipment.cameras[0].cooler_targets_c, vec![-10, 5]);
+    }
+
+    #[test]
+    fn cooler_targets_default_to_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "session": {"data_directory": "/tmp/rp-test"},
+                "equipment": {
+                    "cameras": [
+                        {
+                            "id": "main-cam",
+                            "alpaca_url": "http://localhost:11120"
+                        }
+                    ]
+                },
+                "server": {}
+            }"#,
+        )
+        .unwrap();
+
+        let config = load_config(&path).unwrap();
+        assert!(
+            config.equipment.cameras[0].cooler_targets_c.is_empty(),
+            "an omitted ladder must deserialize to empty (rp never touches the cooler)"
+        );
+    }
+
+    #[test]
+    fn cooler_targets_off_grid_value_is_rejected_at_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "session": {"data_directory": "/tmp/rp-test"},
+                "equipment": {
+                    "cameras": [
+                        {
+                            "id": "main-cam",
+                            "alpaca_url": "http://localhost:11120",
+                            "cooler_targets_c": [-12]
+                        }
+                    ]
+                },
+                "server": {}
+            }"#,
+        )
+        .unwrap();
+
+        let msg = load_config(&path).unwrap_err().to_string();
+        assert!(
+            msg.contains("cooler_targets_c") && msg.contains("main-cam") && msg.contains("-12"),
+            "expected grid diagnostic naming the camera and value, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn cooler_targets_out_of_range_value_is_rejected_at_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "session": {"data_directory": "/tmp/rp-test"},
+                "equipment": {
+                    "cameras": [
+                        {
+                            "id": "main-cam",
+                            "alpaca_url": "http://localhost:11120",
+                            "cooler_targets_c": [-45]
+                        }
+                    ]
+                },
+                "server": {}
+            }"#,
+        )
+        .unwrap();
+
+        let msg = load_config(&path).unwrap_err().to_string();
+        assert!(
+            msg.contains("cooler_targets_c") && msg.contains("-45"),
+            "expected range diagnostic, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn cooler_targets_duplicate_value_is_rejected_at_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "session": {"data_directory": "/tmp/rp-test"},
+                "equipment": {
+                    "cameras": [
+                        {
+                            "id": "main-cam",
+                            "alpaca_url": "http://localhost:11120",
+                            "cooler_targets_c": [-10, -10]
+                        }
+                    ]
+                },
+                "server": {}
+            }"#,
+        )
+        .unwrap();
+
+        let msg = load_config(&path).unwrap_err().to_string();
+        assert!(
+            msg.contains("cooler_targets_c") && msg.contains("duplicates"),
+            "expected duplicate diagnostic, got: {msg}"
+        );
+    }
+
+    /// The schema advertises the grid as `items.enum` so the web UI can
+    /// render one checkbox per rung without hardcoding the values
+    /// (docs/services/ui-htmx.md § Schema-driven rendering).
+    #[test]
+    fn cooler_targets_schema_enumerates_the_grid() {
+        let schema = schemars::schema_for!(crate::config::CameraConfig);
+        let value = serde_json::to_value(&schema).unwrap();
+        let field = value
+            .pointer("/properties/cooler_targets_c")
+            .expect("schema must carry the cooler_targets_c property");
+        assert_eq!(field.pointer("/type").unwrap(), "array");
+        assert_eq!(field.pointer("/items/type").unwrap(), "integer");
+        assert_eq!(field.pointer("/uniqueItems").unwrap(), true);
+        let grid: Vec<i64> = field
+            .pointer("/items/enum")
+            .and_then(|v| v.as_array())
+            .expect("items must enumerate the grid")
+            .iter()
+            .map(|v| v.as_i64().unwrap())
+            .collect();
+        assert_eq!(
+            grid,
+            vec![-40, -35, -30, -25, -20, -15, -10, -5, 0, 5, 10, 15],
+            "the enum must list every 5 °C rung from -40 to +15, ascending"
+        );
     }
 
     #[test]

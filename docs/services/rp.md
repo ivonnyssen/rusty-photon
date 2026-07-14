@@ -154,6 +154,8 @@ The document accumulates data as it flows through the system.
   "session_id": "session-2026-03-01",
   "sequence_number": 42,
   "max_adu": 65535,
+  "cooler_setpoint_c": -10,
+  "sensor_temperature_c": -9.8,
   "optics": {
     "focal_length_mm": 1000.0,
     "pixel_size_x_um": 3.76,
@@ -179,6 +181,14 @@ the `CachedPixels::U16` vs `I32` variant without needing the originating
 camera to be connected. `null` (omitted on serialize) when the connect-
 time read failed; in that case the cache insert is skipped on every
 capture from that camera and the entry serves from disk on demand.
+
+`cooler_setpoint_c` and `sensor_temperature_c` tie each frame to a dark
+library: the rung `rp` was regulating at when the frame was captured,
+and a best-effort `CCDTemperature` read at capture time. Both are
+omitted (absent, not `null`) when unavailable — no ladder configured,
+cooling skipped or unreachable, or the temperature read failed. See
+[Camera Cooling](#camera-cooling); like `optics`, both are auxiliary
+metadata, never gating capture.
 
 `optics` carries the camera + optical-train geometry that consumers
 need to interpret the frame without re-deriving it from a plate
@@ -371,6 +381,10 @@ emits only `_complete` / `_failed`, with no `_started`.) Point events
 | `dither_failed` | error | Dither or its settle failed |
 | `safety_changed` | monitor, new_state | SafetyMonitor transition |
 | `temperature_changed` | sensor, value | Significant temperature change |
+| `cooler_stabilized` | camera_id, target_c, floor_c (only when a floor was measured), power_pct (only when readable) | Cooldown selected and stabilized at a dark-library rung (§ Camera Cooling) |
+| `cooler_unreachable` | camera_id, floor_c, warmest_target_c | No configured rung reachable tonight; cooler switched off, session proceeds uncooled |
+| `cooler_warmup_started` | camera_id, from_c, target_c | Warm-up ramp begins at session end |
+| `cooler_warmup_complete` | camera_id | Warm-up ramp finished, cooler off |
 | `meridian_flip_started` | hour_angle | Flip initiated |
 | `meridian_flip_complete` | — | Flip and re-center done |
 | `target_switch` | old_target, new_target | Planner decided to switch targets |
@@ -1818,6 +1832,163 @@ Implementation sequencing is in
 Plugins and `rp` are assumed to share a filesystem (local paths
 work). Distributed deployments where plugins run on separate machines are a
 future concern and out of scope for the initial design.
+
+## Camera Cooling
+
+Dark frames only calibrate cleanly when lights and darks share the
+sensor temperature, so a cooled camera must be regulated at a *defined*
+temperature — not "wherever the cooler lands". `rp` manages cooling as
+part of the session lifecycle, driven by a per-camera **setpoint
+ladder**.
+
+### The setpoint ladder
+
+`equipment.cameras[].cooler_targets_c` lists exactly the temperatures
+the operator maintains dark libraries for — integers on a 5 °C grid
+(−40 … +15 °C), no duplicates, order irrelevant:
+
+```json
+"cooler_targets_c": [-10, 5]
+```
+
+An empty (or absent) list means `rp` never touches that camera's cooler
+(guide cameras, uncooled cameras). The governing invariant: **`rp` only
+ever regulates at a listed temperature.** A single absolute setpoint
+would waste winter cooling headroom (dark current roughly halves every
+5–6 °C); a relative-to-ambient target would drift night to night and
+never match a library.
+
+Off-grid values, duplicates, and out-of-range values are rejected at
+config load and `config.apply` with a field error naming
+`equipment.cameras.N.cooler_targets_c`. The field's JSON Schema is an
+`array` whose `items` enumerate the grid, so the web UI renders it as a
+checkbox grid without hardcoding the rungs — see
+[`ui-htmx.md`](ui-htmx.md) "Schema-driven rendering".
+
+### Selection at session start
+
+Session start spawns one background cooldown task per camera with a
+non-empty ladder; the orchestrator is invoked concurrently, so imaging
+preparation (slew, center, focus) is never blocked on thermal settling.
+Frames captured before stabilization record their actual sensor
+temperature (see [Per-frame recording](#per-frame-recording)), so they
+are identifiable afterwards.
+
+A camera reporting `CanSetCCDTemperature == false` (or whose capability
+read fails) is skipped with a `warn!` — a configured ladder on a
+cooler-less camera is a config mismatch worth surfacing, not a fatal
+error.
+
+The task runs a **single cooldown pass**:
+
+1. Command the **lowest** rung (`SetCCDTemperature`, then
+   `CoolerOn = true`) and poll `CCDTemperature` — plus `CoolerPower`
+   when `CanGetCoolerPower` — every `cooling.poll_interval`.
+2. **Stabilized** — the temperature has stayed within
+   `cooling.tolerance_c` of the commanded rung for a full
+   `cooling.plateau_window` and cooler power is at or below
+   `cooling.max_cooler_power_pct` (the power criterion is skipped when
+   power is unreadable): the rung is adopted for the session and
+   `cooler_stabilized` is emitted.
+3. **Floor detected** — the trajectory plateaus (total movement below
+   `cooling.plateau_threshold_c` across a full `plateau_window`) while
+   still warmer than rung + tolerance, *or* holds the rung only at
+   power above the threshold (a rung held at 98 % power has no
+   regulation authority left): the plateau temperature is tonight's
+   floor. Snap **up** to the lowest rung at or above
+   floor + `cooling.regulation_margin_c` and keep polling until
+   stabilized there. Selection only ever moves up.
+4. **No rung reachable** — even the warmest rung is below
+   floor + margin: the cooler is switched **off** (never regulate
+   off-grid), a `warn!` is logged, `cooler_unreachable` is emitted, and
+   the session proceeds uncooled with every frame recording its actual
+   temperature. Aborting the session instead is deliberately *not* the
+   default — an unattended rig keeps imaging and the operator decides
+   in the morning; an opt-in abort knob is a future consideration.
+5. `cooling.max_cooldown` bounds the whole pass: on expiry the current
+   temperature is treated as the floor and step 3/4 decides.
+
+The chosen rung is **held for the whole session** — re-selecting
+mid-session would split one night's lights across dark libraries, and
+selecting at dusk is conservative because ambient only falls until
+dawn. Transient `CCDTemperature`/`CoolerPower` read failures during the
+pass are retried like any idempotent Alpaca read and otherwise skip a
+sample; they never abort the pass.
+
+### Recovery across an rp restart
+
+The camera driver, not `rp`, is the source of truth for cooler state.
+When startup recovery restores an active (or interrupted) session, `rp`
+reads the camera's cooler state back: if the cooler is on and the
+current setpoint equals a configured rung, that rung is re-adopted
+as-is — no re-selection, no duplicate `cooler_stabilized`. Anything
+else (cooler off, off-grid setpoint, read failure) runs the normal
+cooldown pass.
+
+### Warm-up at session end
+
+Every transition to idle (manual stop, workflow completion,
+orchestrator invocation failure) starts a warm-up ramp per camera `rp`
+was cooling: `cooler_warmup_started` is emitted, the setpoint rises
++5 °C every `cooling.warmup_step_interval` until it reaches the warm
+target (`HeatSinkTemperature` when the camera implements it, else
+`cooling.warm_target_c`), then the cooler switches off and
+`cooler_warmup_complete` is emitted. The ramp avoids thermal shock and
+condensation/frost on the sensor window.
+
+A safety **interrupt** does not warm up: the session may resume, and a
+regulated cold sensor is not a hazard — the cooler holds its rung
+through the interruption. Starting a session during a warm-up cancels
+the ramp and begins a fresh cooldown pass; symmetrically, a stop that
+lands while the cooldown pass is still commanding the device takes it
+over — the commanded setpoint is recorded before the first mutating
+call, so the cooler is never left regulating with nobody driving.
+`rp` shutting down mid-ramp simply leaves the cooler at its last
+commanded setpoint — the driver keeps regulating, and the next
+session start or recovery takes over.
+
+### Per-frame recording
+
+`capture` stamps two fields on every exposure document (see
+[Exposure Document](#exposure-document)):
+
+- `cooler_setpoint_c` — the rung currently commanded for the capturing
+  camera; absent when `rp` is not cooling it (empty ladder, skipped,
+  or uncooled after `cooler_unreachable`).
+- `sensor_temperature_c` — a best-effort `CCDTemperature` read at
+  capture time; absent when the read fails or the camera does not
+  implement it. Read for every camera, ladder or not.
+
+A night where selection failed is thereby identifiable frame by frame
+instead of silently polluting stacks.
+
+### Cooling events
+
+Four point events (no `operation_id`) cover the lifecycle:
+`cooler_stabilized`, `cooler_unreachable`, `cooler_warmup_started`,
+`cooler_warmup_complete` — payloads in the [Events](#events) table.
+
+### Tuning
+
+The optional top-level `cooling` block tunes the controller; every
+field has a default and the block is normally omitted:
+
+| Field | Default | Meaning |
+|-------|---------|---------|
+| `poll_interval` | `"10s"` | Cadence of `CCDTemperature`/`CoolerPower` polling during cooldown |
+| `plateau_window` | `"2m"` | How long a trajectory must persist to count as stable/plateaued |
+| `plateau_threshold_c` | `0.5` | Movement below this across a full window = plateau |
+| `tolerance_c` | `1.0` | "At the rung" means within this of the setpoint |
+| `max_cooler_power_pct` | `90` | Stabilization requires power at or below this (regulation headroom) |
+| `regulation_margin_c` | `3.0` | Chosen rung must sit at least this far above the measured floor |
+| `max_cooldown` | `"20m"` | Hard bound on the whole selection pass |
+| `warmup_step_interval` | `"2m"` | Time between +5 °C warm-up steps |
+| `warm_target_c` | `10.0` | Warm-up endpoint when `HeatSinkTemperature` is unavailable |
+
+Ambient-aware preflight (skipping obviously unreachable rungs using an
+ObservingConditions device) and automated dark-library capture per rung
+are future considerations — see
+[Future Considerations](#future-considerations).
 
 ## Orchestration
 
@@ -3280,6 +3451,9 @@ finite positive number — a bad value is rejected at config load.
 `focuser.steps_per_sec` (default `500`, a conservative slow rate) feeds the
 predictive `move_focuser` deadline the same way — likewise a finite
 positive number rejected at load otherwise.
+`cameras[].cooler_targets_c` must hold unique integers on the 5 °C grid
+(−40 … +15); off-grid values are rejected at load with the offending
+field named (see [Camera Cooling](#camera-cooling)).
 
 The `site` block is required for the ephemeris and planner tools
 (`compute_alt_az`, `get_twilight`, `get_next_target`, …); when present
@@ -3307,7 +3481,7 @@ return a structured "site not configured" error.
         "alpaca_url": "https://localhost:11120",
         "device_type": "camera",
         "device_number": 0,
-        "cooler_target_c": -10,
+        "cooler_targets_c": [-10, 5],
         "gain": 100,
         "offset": 50,
         "focal_length_mm": 1000.0,
@@ -3323,7 +3497,7 @@ return a structured "site not configured" error.
         "alpaca_url": "http://localhost:11121",
         "device_type": "camera",
         "device_number": 0,
-        "cooler_target_c": -10,
+        "cooler_targets_c": [],
         "gain": 200,
         "offset": 30,
         "focal_length_mm": 200.0
@@ -3400,6 +3574,17 @@ return a structured "site not configured" error.
   "centering": {
     "solve_time_estimate": "30s",
     "slew_overhead_estimate": "10s"
+  },
+  "cooling": {
+    "poll_interval": "10s",
+    "plateau_window": "2m",
+    "plateau_threshold_c": 0.5,
+    "tolerance_c": 1.0,
+    "max_cooler_power_pct": 90,
+    "regulation_margin_c": 3.0,
+    "max_cooldown": "20m",
+    "warmup_step_interval": "2m",
+    "warm_target_c": 10.0
   },
   "plugins": [
     {
@@ -3487,6 +3672,9 @@ services/rp/src/
   # Core domain
   target.rs             Target definitions, progress tracking
   session.rs            Session state, persistence, recovery
+  cooling.rs            Camera-cooling controller: setpoint-ladder
+                        selection at session start, hold, warm-up ramp
+                        (§ Camera Cooling)
 
   # Equipment layer
   equipment/
@@ -3832,6 +4020,16 @@ Items explicitly out of scope for the initial implementation:
   multiple mounts is a separate concern
 - **Dome control** — ASCOM Dome device integration
 - **Mosaic planning** — multi-panel target definitions
+- **Ambient-aware cooldown preflight** — skipping obviously unreachable
+  cooler rungs (and warning early) from an ObservingConditions ambient
+  reading; needs an ObservingConditions equipment kind first. Ambient
+  stays a preflight optimization, never the rung decider (§ Camera
+  Cooling).
+- **Abort-on-unreachable cooling** — an opt-in knob to end the session
+  when no dark-library rung is reachable, instead of the default
+  proceed-uncooled-with-warning (§ Camera Cooling).
+- **Automated dark-library capture per rung** — a cloudy-night
+  orchestrator job, sibling of calibrator-flats.
 
 Note: flat/dark frame automation is no longer out of scope — it can be
 implemented as a calibration orchestrator plugin without changes to `rp`.

@@ -65,6 +65,7 @@ async fn rp_with_focuser_and_unreachable_camera(world: &mut RpWorld) {
         id: "main-cam".to_string(),
         alpaca_url: "http://127.0.0.1:1".to_string(),
         device_number: 0,
+        cooler_targets_c: Vec::new(),
     });
     start_rp(world).await;
 }

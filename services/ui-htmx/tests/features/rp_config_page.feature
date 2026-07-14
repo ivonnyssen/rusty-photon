@@ -6,11 +6,13 @@ Feature: rp configuration page
   (ApplyDisposition::Restart), so a successful apply persists to rp's config
   file, reports the changed paths as restart-required, and the page renders
   the restart callout instead of the reconnect poll. rp's equipment arrays
-  are array-typed and skipped by the schema walker (they round-trip through
-  the hidden blob and are edited on the equipment page instead), and its
-  optional blocks (site, guider, plate_solver, planner) blob-round-trip the
-  same way under the standard composite-skip rule — the form edits rp's
-  scalar leaves (session, safety, imaging, centering, server).
+  are arrays of objects and skipped by the schema walker (they round-trip
+  through the hidden blob and are edited on the equipment page instead —
+  where a camera entry's integer-enum cooler_targets_c array renders as a
+  checkbox grid), and rp's optional blocks (site, guider, plate_solver,
+  planner) blob-round-trip the same way under the standard composite-skip
+  rule — the form edits rp's scalar leaves (session, safety, imaging,
+  centering, cooling, server).
 
   Scenario: The rp config page renders rp's effective configuration
     Given a running rp orchestrator with an empty roster

@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  OmniSim camera profile shipped by bdd-infra. Copied (with the rest of
+  this tree) into a per-instance OMNISIM_SETTINGS_DIR before OmniSim
+  spawns — see the covercalibrator profile in this tree for the
+  seeding mechanics.
+
+  The cooler is enabled and tuned for the camera-cooling BDD scenarios
+  (services/rp/tests/features/camera_cooling.feature):
+
+    CanSetCCDTemperature    upstream default is false, which would make
+                            rp skip the camera; the cooling scenarios
+                            need a controllable cooler.
+    CanGetCoolerPower       exposes the simulator's power model — the
+                            scenarios drive floor detection off pegged
+                            power (deterministic), not off the transient
+                            temperature clamp.
+    CoolerAmbientTemperature +10 °C with CoolerDeltaTMax 40 puts the
+                            cooler floor at -30 °C: rungs above -30
+                            stabilize with headroom; -30 itself only
+                            holds at 100 % power.
+    CoolerTimeToSetPoint    seconds from ambient to setpoint; upstream
+                            default 30 s would dominate scenario
+                            wall-clock. The simulator's internal update
+                            tick is min(this x 5, 500) milliseconds, so
+                            a small value also keeps the curve smooth.
+    CoolerResetToAmbient    true so every cooler-on starts from ambient
+                            regardless of what a prior scenario left
+                            behind.
+-->
+<ArrayOfSettingsPair xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+  <SettingsPair>
+    <Key>UniqueID</Key>
+    <Value>3f6c2a51-9b7e-4d08-a3c4-5e1f8b2d7c90</Value>
+  </SettingsPair>
+  <SettingsPair>
+    <Key>HasCooler</Key>
+    <Value>true</Value>
+  </SettingsPair>
+  <SettingsPair>
+    <Key>CanSetCCDTemperature</Key>
+    <Value>true</Value>
+  </SettingsPair>
+  <SettingsPair>
+    <Key>CanGetCoolerPower</Key>
+    <Value>true</Value>
+  </SettingsPair>
+  <SettingsPair>
+    <Key>CoolerAmbientTemperature</Key>
+    <Value>10</Value>
+  </SettingsPair>
+  <SettingsPair>
+    <Key>CoolerDeltaTMax</Key>
+    <Value>40</Value>
+  </SettingsPair>
+  <SettingsPair>
+    <Key>CoolerTimeToSetPoint</Key>
+    <Value>2</Value>
+  </SettingsPair>
+  <SettingsPair>
+    <Key>CoolerResetToAmbient</Key>
+    <Value>true</Value>
+  </SettingsPair>
+  <SettingsPair>
+    <Key>CoolerFluctuations</Key>
+    <Value>0</Value>
+  </SettingsPair>
+</ArrayOfSettingsPair>

@@ -108,6 +108,7 @@ impl WatchdogE2eWorld {
                 id: "main-cam".to_string(),
                 alpaca_url: omnisim.base_url.clone(),
                 device_number: 0,
+                cooler_targets_c: Vec::new(),
             });
             builder.with_mount(MountConfig {
                 alpaca_url: omnisim.base_url.clone(),

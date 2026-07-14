@@ -586,6 +586,18 @@ impl UiWorld {
     /// Submit the form in the **already-rendered** `last_body` (used when a
     /// prior step navigated to the form, e.g. the add-equipment flow).
     pub async fn submit_rendered_form(&mut self, changes: &[(&str, &str)]) {
+        self.submit_rendered_form_multi(changes, ("", &[])).await;
+    }
+
+    /// Like [`submit_rendered_form`](Self::submit_rendered_form), plus a
+    /// checkbox group: `multi` is `(field name, checked values)`, submitted as
+    /// one pair per value under the shared name — the shape a browser posts
+    /// for a checkbox group. The rendered group's own pairs are replaced.
+    pub async fn submit_rendered_form_multi(
+        &mut self,
+        changes: &[(&str, &str)],
+        multi: (&str, &[&str]),
+    ) {
         let action =
             dom::form_post_url(&self.last_body).expect("rendered page has no <form hx-post>");
         let mut pairs = dom::successful_controls(&self.last_body);
@@ -594,6 +606,13 @@ impl UiWorld {
         for &(name, value) in changes {
             pairs.retain(|(n, _)| n.as_str() != name);
             pairs.push((name.to_string(), value.to_string()));
+        }
+        let (multi_name, multi_values) = multi;
+        if !multi_name.is_empty() {
+            pairs.retain(|(n, _)| n.as_str() != multi_name);
+            for value in multi_values {
+                pairs.push((multi_name.to_string(), (*value).to_string()));
+            }
         }
         let resp = reqwest::Client::new()
             .post(self.ui_url(&action))

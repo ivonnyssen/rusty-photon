@@ -35,7 +35,7 @@ pub mod sentinel_client;
 pub mod sse_fixtures;
 pub mod sse_proxy;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use axum::extract::{Form, Path, Query, State};
@@ -596,8 +596,11 @@ async fn config_post(
     State(state): State<AppState>,
     Path(service): Path<String>,
     headers: HeaderMap,
-    Form(form): Form<HashMap<String, String>>,
+    // Pairs, not a map: a checkbox group posts one pair per checked box
+    // and `serde_urlencoded` would collapse duplicate keys in a map.
+    Form(form): Form<Vec<(String, String)>>,
 ) -> Response {
+    let form = pages::FormValues::from(form);
     let title = page_title(&service);
     let handle = match resolve_service(&state, &service).await {
         Ok(handle) => handle,
@@ -1068,7 +1071,7 @@ mod tests {
             State(state),
             Path("rp:cameras:main-cam".to_string()),
             HeaderMap::new(),
-            Form(HashMap::new()),
+            Form(Vec::new()),
         )
         .await;
         let html = body_of(response).await;
@@ -1262,13 +1265,14 @@ mod tests {
     #[tokio::test]
     async fn config_post_renders_the_restart_callout() {
         let state = AppState::with_client("rp", Arc::new(RestartingDriver));
-        let mut form = HashMap::new();
-        form.insert(
-            "__config".to_string(),
-            r#"{"site":{"latitude_degrees":47.6}}"#.to_string(),
-        );
-        form.insert("__overrides".to_string(), "[]".to_string());
-        form.insert("site.latitude_degrees".to_string(), "48.1".to_string());
+        let form: Vec<(String, String)> = vec![
+            (
+                "__config".to_string(),
+                r#"{"site":{"latitude_degrees":47.6}}"#.to_string(),
+            ),
+            ("__overrides".to_string(), "[]".to_string()),
+            ("site.latitude_degrees".to_string(), "48.1".to_string()),
+        ];
 
         let response = config_post(
             State(state),
@@ -1471,13 +1475,14 @@ mod tests {
     /// hidden blobs plus every enabled field, as a browser would send them).
     async fn submit_static_form(state: AppState) -> String {
         let config = StaticConfigDriver.get_config().await.unwrap().config;
-        let mut form = HashMap::new();
-        form.insert(
-            "__config".to_string(),
-            serde_json::to_string(&config).unwrap(),
-        );
-        form.insert("__overrides".to_string(), "[]".to_string());
-        form.insert("__unlocked".to_string(), "[]".to_string());
+        let mut form: Vec<(String, String)> = vec![
+            (
+                "__config".to_string(),
+                serde_json::to_string(&config).unwrap(),
+            ),
+            ("__overrides".to_string(), "[]".to_string()),
+            ("__unlocked".to_string(), "[]".to_string()),
+        ];
         for (name, value) in [
             ("serial.port", "/dev/ttyACM0"),
             ("serial.baud_rate", "115200"),
@@ -1485,7 +1490,7 @@ mod tests {
             ("cover_calibrator.name", "FP2"),
             ("cover_calibrator.max_brightness", "4096"),
         ] {
-            form.insert(name.to_string(), value.to_string());
+            form.push((name.to_string(), value.to_string()));
         }
         let response = config_post(
             State(state),

@@ -111,6 +111,13 @@ pub struct SessionManager {
     /// Persistence). `None` disables persistence entirely — tests that
     /// only exercise the state machine.
     state_path: Option<PathBuf>,
+    /// Camera-cooling controller (rp.md § Camera Cooling): session
+    /// start runs its cooldown pass, every transition to idle its
+    /// warm-up ramp, and startup recovery its re-adopt path. Safety
+    /// interrupt/resume deliberately does not touch it — the cooler
+    /// holds its rung through an interruption. `None` in tests that
+    /// only exercise the state machine.
+    cooling: Option<Arc<crate::cooling::CoolingController>>,
 }
 
 impl SessionManager {
@@ -134,6 +141,7 @@ impl SessionManager {
             mcp_base_url: RwLock::new(String::new()),
             planner_progress: None,
             state_path: None,
+            cooling: None,
         }
     }
 
@@ -151,6 +159,13 @@ impl SessionManager {
     /// § Session Persistence).
     pub fn with_state_path(mut self, path: PathBuf) -> Self {
         self.state_path = Some(path);
+        self
+    }
+
+    /// Wire the camera-cooling controller so session transitions drive
+    /// cooldown, warm-up, and recovery (rp.md § Camera Cooling).
+    pub fn with_cooling(mut self, cooling: Arc<crate::cooling::CoolingController>) -> Self {
+        self.cooling = Some(cooling);
         self
     }
 
@@ -207,6 +222,14 @@ impl SessionManager {
 
         self.spawn_invoke(workflow_id.clone(), session_id.clone(), None)
             .await;
+
+        // Cooldown runs concurrently with the orchestrator — imaging
+        // preparation is never blocked on thermal settling (rp.md
+        // § Camera Cooling). A warm-up still ramping from the previous
+        // session is cancelled and superseded.
+        if let Some(cooling) = &self.cooling {
+            cooling.start_cooldown();
+        }
 
         Ok(serde_json::json!({
             "session_id": session_id,
@@ -327,6 +350,9 @@ impl SessionManager {
                 "workflow_id": failed_workflow_id,
             }),
         );
+        if let Some(cooling) = &self.cooling {
+            cooling.start_warmup();
+        }
     }
 
     pub async fn stop(&self) -> Result<(), String> {
@@ -343,6 +369,12 @@ impl SessionManager {
                 "reason": "manual_stop",
             }),
         );
+
+        // Every transition to idle ramps cooled cameras warm (a no-op
+        // for cameras rp never commanded).
+        if let Some(cooling) = &self.cooling {
+            cooling.start_warmup();
+        }
 
         Ok(())
     }
@@ -384,6 +416,9 @@ impl SessionManager {
                     "workflow_id": workflow_id,
                 }),
             );
+            if let Some(cooling) = &self.cooling {
+                cooling.start_warmup();
+            }
         } else {
             debug!(workflow_id = %workflow_id, "workflow_complete received but no matching active session");
         }
@@ -497,6 +532,13 @@ impl SessionManager {
             self.persist(&state).await;
         }
         drop(state);
+
+        // Re-adopt (or re-select) cooler rungs for the restored session —
+        // interrupted sessions included, since the cooler holds through
+        // an interruption (rp.md § Camera Cooling → Recovery).
+        if let Some(cooling) = &self.cooling {
+            cooling.recover();
+        }
 
         if !conditions_safe {
             info!(session_id = %persisted.session_id, workflow_id = %persisted.workflow_id,

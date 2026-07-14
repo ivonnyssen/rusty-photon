@@ -122,6 +122,7 @@ async fn rp_running_with_camera_at(world: &mut RpWorld, url: String, device_numb
         id: "main-cam".to_string(),
         alpaca_url: url,
         device_number: device_number as u32,
+        cooler_targets_c: Vec::new(),
     });
     start_rp(world).await;
 }
@@ -294,6 +295,7 @@ pub fn add_camera(world: &mut RpWorld) {
             id: "main-cam".to_string(),
             alpaca_url: url,
             device_number: 0,
+            cooler_targets_c: Vec::new(),
         });
     }
 }

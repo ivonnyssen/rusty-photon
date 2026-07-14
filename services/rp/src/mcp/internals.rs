@@ -817,6 +817,17 @@ impl McpHandler {
                 }
             };
 
+            // Cooling metadata (rp.md § Camera Cooling): the rung the
+            // controller currently holds for this camera, and a
+            // best-effort post-readout temperature read. Both are
+            // auxiliary — a failed read only drops the field, never
+            // the capture.
+            let cooler_setpoint_c = self
+                .cooling
+                .as_ref()
+                .and_then(|cooling| cooling.rung_for(camera_id));
+            let sensor_temperature_c = cam.ccd_temperature().await.ok();
+
             let doc = ExposureDocument {
                 id: document_id.clone(),
                 captured_at: chrono::Utc::now().to_rfc3339(),
@@ -826,6 +837,8 @@ impl McpHandler {
                 camera_id: Some(camera_id.to_string()),
                 duration: Some(duration),
                 max_adu: captured_max_adu,
+                cooler_setpoint_c,
+                sensor_temperature_c,
                 optics,
                 sections: serde_json::Map::new(),
             };
