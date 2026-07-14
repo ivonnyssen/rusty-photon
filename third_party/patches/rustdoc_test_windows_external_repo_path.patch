@@ -1,0 +1,28 @@
+--- a/rust/private/rustdoc/rustdoc_test_writer.rs
++++ b/rust/private/rustdoc/rustdoc_test_writer.rs
+@@ -226,6 +226,25 @@
+                 .for_each(|substring| stripped_arg = stripped_arg.replace(substring, ""));
+             stripped_arg
+         })
++        // rusty-photon patch (rustdoc_test_windows_external_repo_path): a bare
++        // `..`-relative cross-repo runfile path (Bazel's standard
++        // `File.short_path` convention, e.g.
++        // `../rules_rust+/util/process_wrapper/process_wrapper.exe`) does not
++        // reliably resolve from this script's cwd (the `_main` runfiles
++        // subdirectory) under unsandboxed/local test execution on Windows --
++        // the underlying gap tracked by bazelbuild/bazel#5926. The script
++        // below already creates an `external -> ..\` symlink for exactly this
++        // class of problem (see its TODO comment), but this argv never routed
++        // through it. Rewrite any `..`-prefixed argument to go through that
++        // symlink instead of the raw `..` traversal, so it actually benefits
++        // from the workaround.
++        .map(|arg| match arg.strip_prefix("../") {
++            Some(rest) => format!("external/{rest}"),
++            None => match arg.strip_prefix("..\\") {
++                Some(rest) => format!("external\\{rest}"),
++                None => arg,
++            },
++        })
+         .map(|arg| format!("'{arg}'"))
+         .collect::<Vec<String>>()
+         .join(" ");
