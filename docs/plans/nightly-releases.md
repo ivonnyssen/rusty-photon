@@ -504,11 +504,14 @@ pull its dependencies.
 Today's channel (N1/N2) ships `.deb`/`.rpm` as GitHub release assets: a
 machine upgrades by hand (`curl` + `sha256sum -c` +
 `apt-get install ./file.deb`, per docs/packaging.md). N5 adds a real
-`apt`/`dnf` **source** — `apt update && apt upgrade` / `dnf upgrade`
-picks the nightly up automatically — built from the exact `.deb`/`.rpm`
-files the `linux` job already builds and lifecycle-verifies. N5 adds no
-new package-building logic, only repackaging into repo form + hosting +
-a repo-level verification gate.
+`apt`/`dnf` binary **repository** — `apt update && apt upgrade` /
+`dnf upgrade` picks the nightly up automatically — built from the exact
+`.deb`/`.rpm` files the `linux` job already builds and
+lifecycle-verifies. (Deliberately not called a "source": that term reads
+as `deb-src`/source packages in Debian packaging, which this isn't — no
+source packages, binary `.deb`/`.rpm` only.) N5 adds no new
+package-building logic, only repackaging into repo form + hosting + a
+repo-level verification gate.
 
 **Scope: rolling-only, matching the channel's existing shape.** One apt
 suite (`nightly`) and one flat dnf repo per arch, always pointing at the
@@ -573,8 +576,15 @@ token), matching that tool's own README shape.
   both — older `apt` only reads the detached form, current `apt` prefers
   `InRelease`).
 - dnf: `createrepo_c` per arch directory, `repomd.xml` detached-signed
-  into `repomd.xml.asc`. The `.repo` file clients install points
-  `gpgkey=` at `pkg.rustyphoton.space/pubkey.asc`.
+  into `repomd.xml.asc`. Unlike apt (which always verifies `Release`/
+  `InRelease` against the configured key for any added source), dnf only
+  checks `repomd.xml`'s signature when the `.repo` file opts in — the
+  file clients install must set `repo_gpgcheck=1` (metadata signature;
+  what we sign) and `gpgcheck=0` (individual package signing, which N5
+  doesn't do — see the flagged unknown below) alongside `gpgkey=` at
+  `pkg.rustyphoton.space/pubkey.asc`. Without `repo_gpgcheck=1`, dnf
+  never checks the signature at all and the verify step's "signature
+  verifies" proof would not actually be exercising anything.
 - New scripts (thin-workflow-thick-script, same contract as
   `build-packages.sh`/`build-tarballs.sh`): `scripts/build-apt-repo.sh`
   (consumes the `linux` job's already-verified `.deb`s, emits the `deb/`
@@ -631,14 +641,17 @@ per leg" gate).** A new `scripts/verify-packages-repo.sh`, same shape as
 real": serve the freshly built `site/deb` and `site/rpm` over a local
 HTTP server inside the verify step (not yet on R2), import the *public*
 half of the signing key into a podman `debian:trixie` / `fedora:44`
-container, add the repo (a `sources.list.d` entry / a `.repo` file)
-pointing at the local server, then `apt update && apt install
-rusty-photon-<svc>` / `dnf install rusty-photon-<svc>` for at least one
-service per arch — proving both that the signature verifies (a client
-holding only the public key accepts it) and that the package resolves
-and installs through the real resolver, not just that the files exist.
-This is the actual "does `apt upgrade` work" proof that today's manual
-curl-and-install testing never exercises.
+container, add the repo (a `sources.list.d` entry / a `.repo` file with
+`repo_gpgcheck=1`/`gpgcheck=0`, per the dnf note above) pointing at the
+local server, then `apt update && apt install rusty-photon-<svc>` /
+`dnf install rusty-photon-<svc>` for at least one service per arch —
+proving both that the signature verifies (a client holding only the
+public key accepts it — and, on the dnf side, actually checked it, since
+the container's `.repo` file carries the same `repo_gpgcheck=1` real
+clients would need) and that the package resolves and installs through
+the real resolver, not just that the files exist. This is the actual
+"does `apt upgrade` work" proof that today's manual curl-and-install
+testing never exercises.
 
 ## Verification
 
