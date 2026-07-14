@@ -9,8 +9,8 @@ Feature: Focuser movement
   limit even when a move targets beyond it, so Move validates against it.
   While a move is in progress IsMoving stays true across several polls
   and Position ramps live toward the target (the simulated focuser
-  advances 640 steps per IsMoving poll, matching a real EAF's ~640 steps
-  per 100 ms); Halt freezes the position mid-travel. TempComp/
+  advances 640 steps per IsMoving poll — one second of a real EAF's
+  ~640 steps-per-second travel); Halt freezes the position mid-travel. TempComp/
   TempCompAvailable/SetTempComp stay stubbed, matching qhy-focuser/
   pa-scops-oag; Temperature returns the live EAFGetTemp reading, unlike
   pa-scops-oag which has no sensor.

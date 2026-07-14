@@ -146,10 +146,11 @@ there is no in-flight-task cancellation/invalidation machinery to build.
   limit** (observed on real hardware; ConformU flags it as a Move issue if the
   driver advertises the ceiling). The driver therefore reports and validates
   against `EAFGetMaxStep`, read during enumeration's brief open.
-- **Movement timing**: the validated EAF travels ≈ 640 steps per 100 ms;
-  `EAFIsMoving` stays true across many polls for a real move (a 1000-step move
-  settles in ≈ 1.7 s) and `EAFGetPosition` ramps live toward the target while
-  moving. `EAFStop` freezes the position mid-travel.
+- **Movement timing**: the validated EAF travels ≈ 640 steps per second
+  (≈ 64-65 steps observed per 100 ms poll); `EAFIsMoving` stays true across
+  many polls for a real move (a 1000-step move settles in ≈ 1.7 s) and
+  `EAFGetPosition` ramps live toward the target while moving. `EAFStop`
+  freezes the position mid-travel.
 - **Absolute-position stepper**: `0..=MaxStep` (working limit), with the
   position counter persisted in the focuser across power cycles.
 - **Onboard-flash firmware**: like the ASI camera and EFW, the EAF ships firmware
@@ -312,9 +313,9 @@ ASCOM error names per [`docs/references/ascom-alpaca.md`](../references/ascom-al
 The `simulation` backend presents one fabricated **EAF-Simulated** focuser whose
 values and movement model mirror the hardware-validated unit: working travel
 limit (`EAFGetMaxStep`) 60000, `EAF_INFO::MaxStep` ceiling 600000, and a
-deterministic move that advances **640 steps per `is_moving` poll** (the real
-EAF's ≈ 640 steps/100 ms, with travel keyed to observation instead of wall time
-so tests stay deterministic). Position ramps live toward the target across
+deterministic move that advances **640 steps per `is_moving` poll** (one
+second of the real EAF's ≈ 640 steps/s travel, keyed to observation instead
+of wall time so tests stay deterministic). Position ramps live toward the target across
 polls; the poll that reaches the target still reports moving (as the hardware
 does); halting freezes the position mid-travel; a move targeted past the
 working limit but within the ceiling is accepted and stops at the limit.
@@ -425,8 +426,9 @@ probe attached, on a Linux dev box (`cargo run -p zwo-focuser`, real build, no
   this as a Move issue against the original `EAF_INFO`-based implementation).
   The driver now reports/validates the working limit; ConformU passes with
   zero errors, warnings or issues.
-- **Movement timing**: ≈ 640 steps per 100 ms; `IsMoving` stays true across
-  many polls (1000 steps ≈ 1.7 s) with `Position` ramping live in between.
+- **Movement timing**: ≈ 640 steps per second (≈ 64-65 steps per 100 ms
+  poll); `IsMoving` stays true across many polls (1000 steps ≈ 1.7 s) with
+  `Position` ramping live in between.
   The simulation's original settle-after-one-poll / jump-to-target model was
   materially wrong and now mirrors the measured behavior (see *Behavioral
   contracts*).

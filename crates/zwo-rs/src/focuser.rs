@@ -383,9 +383,9 @@ const SIM_INFO_MAX_STEP: u32 = 600_000;
 pub(crate) const SIM_MAX_STEP: u32 = 60_000;
 
 /// Steps a simulated move advances per `is_moving` poll. A real EAF travels
-/// ~640 steps per 100 ms, so this models one poll ≈ one 100 ms tick while
-/// keeping the simulation deterministic (travel advances on observation, not
-/// wall time).
+/// ~640 steps per second (a 1000-step move settles in ≈1.7 s), so this models
+/// one poll ≈ one second of travel while keeping the simulation deterministic
+/// (travel advances on observation, not wall time).
 #[cfg(feature = "simulation")]
 const SIM_STEPS_PER_POLL: i32 = 640;
 
