@@ -44,6 +44,13 @@ pub trait FocuserHandle: std::fmt::Debug + Send + Sync {
     /// The focuser's enumeration [`FocuserInfo`] (cached; no open required).
     fn info(&self) -> FocuserInfo;
 
+    /// The working travel limit (`EAFGetMaxStep`; cached, read during
+    /// enumeration's brief open). The firmware stops at this limit even when
+    /// a move targets beyond it, so all range validation uses this — NOT
+    /// [`FocuserInfo::max_step`] (`EAF_INFO::MaxStep`), which is only the
+    /// fixed ceiling the limit can be raised to.
+    fn max_step(&self) -> u32;
+
     fn is_open(&self) -> bool;
     fn open(&self) -> BackendResult<()>;
     fn close(&self) -> BackendResult<()>;
@@ -76,18 +83,27 @@ pub struct ZwoFocuserHandle {
     sdk: zwo_rs::Sdk,
     index: usize,
     info: FocuserInfo,
+    max_step: u32,
     unique_id: String,
     focuser: Mutex<Option<zwo_rs::Focuser>>,
 }
 
 impl ZwoFocuserHandle {
     /// Build a handle for the focuser at enumeration `index`, with its cached
-    /// [`FocuserInfo`] and the serial-derived `unique_id` read at enumeration.
-    pub fn new(sdk: zwo_rs::Sdk, index: usize, info: FocuserInfo, unique_id: String) -> Self {
+    /// [`FocuserInfo`], working travel limit (`EAFGetMaxStep`), and the
+    /// serial-derived `unique_id` — all read at enumeration.
+    pub fn new(
+        sdk: zwo_rs::Sdk,
+        index: usize,
+        info: FocuserInfo,
+        max_step: u32,
+        unique_id: String,
+    ) -> Self {
         Self {
             sdk,
             index,
             info,
+            max_step,
             unique_id,
             focuser: Mutex::new(None),
         }
@@ -101,6 +117,10 @@ impl FocuserHandle for ZwoFocuserHandle {
 
     fn info(&self) -> FocuserInfo {
         self.info.clone()
+    }
+
+    fn max_step(&self) -> u32 {
+        self.max_step
     }
 
     fn is_open(&self) -> bool {
@@ -179,14 +199,27 @@ mod handle_tests {
     fn sim_handle() -> ZwoFocuserHandle {
         let sdk = zwo_rs::Sdk::new().expect("simulation SDK");
         let info = sdk.focusers().expect("enumerate")[0].clone();
-        ZwoFocuserHandle::new(sdk, 0, info, "ZWO:Sim:2a3b4c5d6e7f8091".to_string())
+        let max_step = sdk
+            .open_focuser(0)
+            .expect("open")
+            .max_step()
+            .expect("working travel limit");
+        ZwoFocuserHandle::new(
+            sdk,
+            0,
+            info,
+            max_step,
+            "ZWO:Sim:2a3b4c5d6e7f8091".to_string(),
+        )
     }
 
     #[test]
     fn production_handle_round_trips_against_the_sim_sdk() {
         let handle = sim_handle();
         assert_eq!(handle.unique_id(), "ZWO:Sim:2a3b4c5d6e7f8091");
-        assert_eq!(handle.info().max_step, 7000);
+        // The EAF_INFO ceiling and the working travel limit stay distinct.
+        assert_eq!(handle.info().max_step, 600_000);
+        assert_eq!(handle.max_step(), 60_000);
         // Open/close lifecycle.
         assert!(!handle.is_open());
         handle.open().unwrap();
@@ -224,13 +257,14 @@ pub(crate) mod mock {
         FocuserInfo {
             id: 0,
             name: "EAF-Mock".to_string(),
-            max_step: 7000,
+            max_step: 600_000,
         }
     }
 
     #[derive(Debug)]
     pub(crate) struct MockFocuserHandle {
         info: FocuserInfo,
+        max_step: u32,
         open: AtomicBool,
         position: AtomicI32,
         moving: AtomicBool,
@@ -244,6 +278,7 @@ pub(crate) mod mock {
         fn default() -> Self {
             Self {
                 info: default_info(),
+                max_step: 60_000,
                 open: AtomicBool::new(false),
                 position: AtomicI32::new(0),
                 moving: AtomicBool::new(false),
@@ -255,9 +290,10 @@ pub(crate) mod mock {
     }
 
     impl MockFocuserHandle {
-        /// Present a focuser with a specific `max_step` (bounds-validation tests).
+        /// Present a focuser with a specific working travel limit
+        /// (bounds-validation tests).
         pub fn with_max_step(mut self, max_step: u32) -> Self {
-            self.info.max_step = max_step;
+            self.max_step = max_step;
             self
         }
     }
@@ -269,6 +305,10 @@ pub(crate) mod mock {
 
         fn info(&self) -> FocuserInfo {
             self.info.clone()
+        }
+
+        fn max_step(&self) -> u32 {
+            self.max_step
         }
 
         fn is_open(&self) -> bool {
