@@ -26,9 +26,9 @@ deliberately reusable so the deferred `release.yml` generalization
 |-------|-------------|--------|-------------|
 | N0 | Tech spike: hosted-arm64 verify, timings, asset naming, version dialects — settles the Orange Pi question | **Done** (2026-07-13; findings below — Orange Pi: no-go) | scratch branch `spike/n0-nightly-packaging` (deleted) |
 | N1 | Debian anchor: `nightly-packages.yml` shared spine + `.deb` legs (x86_64 + arm64), rolling release, docs | **Done** (2026-07-13; first publish = first post-merge run) | PR #508 |
-| N2 | Fedora: `.rpm` build on both arches + Fedora lifecycle verify leg | **Done** (2026-07-13) | PR #513 |
-| N3 | Windows: suite-MSI leg (strictly after W5 of [windows-packaging.md](windows-packaging.md)) | In review | PR #509 |
-| N4 | macOS: per-service arm64 tarballs + Homebrew tap channel + `verify-brew.sh` | In review | PR #519 |
+| N2 | Fedora: `.rpm` build on both arches + Fedora lifecycle verify leg | **Done** (2026-07-13; rpms first published by that day's scheduled run) | PR #513 |
+| N3 | Windows: suite-MSI leg (strictly after W5 of [windows-packaging.md](windows-packaging.md)) | **Done** (2026-07-13; first MSI publish = next scheduled run, whose msi job skips the upgrade seed gracefully — the run after proves MSI-over-MSI) | PR #509 |
+| N4 | macOS: per-service arm64 tarballs + Homebrew tap channel + `verify-brew.sh` | **Done** (2026-07-13; first macOS publish = next scheduled run) | PR #519 |
 
 N1 is the anchor (it builds the shared spine); N2, N3, N4 are mutually
 independent afterwards. N3 is gated only on W5; N4 has synergy with PR-7
@@ -502,6 +502,15 @@ pull its dependencies.
   guarded scriptlets on a real host), `brew install` + `brew services
   start` on a physical Mac (N4), install a nightly MSI over the previous
   one on the Windows box (N3) — and record results here.
+  - **N1 validated on the field rig 2026-07-13**: all 17 packages
+    apt-upgraded from `0.1.0-1` to `0.1.0+nightly.20260713.g08484d2` via
+    the documented consumer path (`SHA256SUMS.txt` index → `curl` →
+    `sha256sum -c` → `apt-get install ./*.deb`). Unit pattern identical
+    before and after — the running services restarted onto the new
+    binaries and answered their HTTP probes, the serial drivers
+    re-handshook against the live hardware, the gated services stayed
+    gated, and the two units retry-looping on powered-off devices kept
+    retry-looping. All service configs byte-identical across the upgrade.
 - The skip-if-unchanged path and the failure-tracking issue get exercised
   naturally within the first week of N1 being live; confirm both behaved
   and note it here.
