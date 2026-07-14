@@ -617,23 +617,32 @@ mirroring every other leg, it does **not** push to R2 itself. `publish`
 gains `repo` in its `needs` list (so a broken repo build blocks the
 release exactly like a broken MSI or a broken tap push today) and, after
 its existing GitHub-release + Homebrew-tap steps, a final step pushes
-`site/` to the bucket via `wrangler r2 object put --remote`. Unlike the
-Bazel cache's content-addressed keys, `pool/`/`x86_64/`/`aarch64/`
-filenames carry the nightly version stamp (date + short SHA), so a plain
-put-every-night would leave every prior night's `.deb`/`.rpm` sitting in
-the bucket under a distinct key forever — `dpkg-scanpackages`/
-`createrepo_c` would then index all of them, silently turning "rolling"
-into "accumulating" and breaking the fixed rolling-only scope above. The
-publish step therefore deletes everything under the `deb/` and `rpm/`
-prefixes before uploading the freshly built tree — the same
-"replace, don't accumulate" pattern already used for the GitHub release
-assets (`gh release delete-asset` in a loop) and the Homebrew tap
-formulas (`rm -f homebrew-tap/Formula/*-nightly.rb`) earlier in this
-publish job. Only `pubkey.asc`, being genuinely stable across nights, is
-a real overwrite-in-place case. Adding or removing a service changes
-which files exist under `pool/`/`x86_64/`/`aarch64/` on the *next* clean
-build; `check-pkg-assets.sh` already asserts every service both plans
-agree exists.
+`site/` to the bucket. Unlike the Bazel cache's content-addressed keys,
+`pool/`/`x86_64/`/`aarch64/` filenames carry the nightly version stamp
+(date + short SHA), so a plain put-every-night would leave every prior
+night's `.deb`/`.rpm` sitting in the bucket under a distinct key
+forever — `dpkg-scanpackages`/`createrepo_c` would then index all of
+them, silently turning "rolling" into "accumulating" and breaking the
+fixed rolling-only scope above. That still needs a delete pass, but
+**not** delete-then-upload: deleting the old tree before the new one is
+live would open a window where `apt update`/`dnf makecache` mid-publish
+either 404s or fetches a `Release`/`repomd.xml` whose referenced content
+partway exists (apt's "Hash Sum mismatch" class of failure). So the
+final step orders it upload-then-delete instead: `wrangler r2 object
+put --remote` the new `pool/`/`x86_64/`/`aarch64/` content and
+`pubkey.asc` first (additive — existing clients are still being served
+correctly by the still-live old metadata throughout), then the
+top-level metadata last (`Release*`/`InRelease`, `repomd.xml*`) as the
+single atomic "flip" moment, and only *after* that succeeds does it
+delete whatever's now stale (the previous night's pool/repodata
+objects) — the same "replace, don't accumulate" end state as the
+GitHub release assets (`gh release delete-asset` in a loop) and the
+Homebrew tap formulas (`rm -f homebrew-tap/Formula/*-nightly.rb`)
+earlier in this publish job, just reordered so nothing a client might
+be mid-fetching ever disappears out from under it. Adding or removing a
+service changes which files exist under `pool/`/`x86_64/`/`aarch64/` on
+the *next* clean build; `check-pkg-assets.sh` already asserts every
+service both plans agree exists.
 
 **Verification (pre-publish, matching the plan's fixed "full lifecycle,
 per leg" gate).** A new `scripts/verify-packages-repo.sh`, same shape as
@@ -749,10 +758,12 @@ testing never exercises.
       producing a second served file rather than the single armored
       `pubkey.asc` described above; confirm against a real `apt update`
       in `verify-packages-repo.sh` before committing to one file.
-- [ ] (N5) The exact `wrangler`/R2 mechanism for deleting everything
-      under a prefix (`deb/`, `rpm/`) before each night's re-upload —
-      per-object delete looped over a `wrangler r2 object list` result,
-      or an equivalent bulk operation; confirm during implementation.
+- [ ] (N5) The exact `wrangler`/R2 mechanism for identifying and
+      deleting the now-stale objects under `deb/`/`rpm/` *after* the new
+      metadata is live — a pre-upload `wrangler r2 object list` snapshot
+      diffed against the freshly built tree (so only truly superseded
+      keys are pruned), per-object delete looped over the result, or an
+      equivalent bulk operation; confirm during implementation.
 
 ## Future considerations
 
