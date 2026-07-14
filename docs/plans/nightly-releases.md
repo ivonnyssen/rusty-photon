@@ -537,10 +537,11 @@ maintain. New bucket `rusty-photon-packages`, domain
 
 ```
 pkg.rustyphoton.space/
-  pubkey.gpg                                  # repo signing key, public half
+  pubkey.asc                                  # repo signing key, public half
   deb/
     dists/nightly/InRelease
     dists/nightly/Release
+    dists/nightly/Release.gpg
     dists/nightly/main/binary-amd64/Packages(.gz)
     dists/nightly/main/binary-arm64/Packages(.gz)
     pool/main/*.deb
@@ -573,7 +574,7 @@ token), matching that tool's own README shape.
   `InRelease`).
 - dnf: `createrepo_c` per arch directory, `repomd.xml` detached-signed
   into `repomd.xml.asc`. The `.repo` file clients install points
-  `gpgkey=` at `pkg.rustyphoton.space/pubkey.gpg`.
+  `gpgkey=` at `pkg.rustyphoton.space/pubkey.asc`.
 - New scripts (thin-workflow-thick-script, same contract as
   `build-packages.sh`/`build-tarballs.sh`): `scripts/build-apt-repo.sh`
   (consumes the `linux` job's already-verified `.deb`s, emits the `deb/`
@@ -590,8 +591,10 @@ as `HOMEBREW_TAP_TOKEN`. Private key (armored) → new secret
 `PACKAGES_GPG_PRIVATE_KEY`. Public key committed at
 `packaging/gpg/pubkey.asc` (checked in, matching the
 `packaging/postinst.common`-style "plain committed files, explicitness
-over DRY" convention) *and* re-served at `pkg.rustyphoton.space/pubkey.gpg`
-for client convenience; fingerprint recorded in
+over DRY" convention) *and* re-served byte-for-byte at
+`pkg.rustyphoton.space/pubkey.asc` for client convenience — one armored
+file, one name, everywhere it's referenced (repo layout, both `.repo`/
+`sources` client configs, this section); fingerprint recorded in
 docs/packaging.md#nightly-channel next to the existing install
 instructions. Key rotation is manual and rare (pre-1.0, single
 maintainer) — no automated rotation designed.
@@ -604,12 +607,23 @@ mirroring every other leg, it does **not** push to R2 itself. `publish`
 gains `repo` in its `needs` list (so a broken repo build blocks the
 release exactly like a broken MSI or a broken tap push today) and, after
 its existing GitHub-release + Homebrew-tap steps, a final step pushes
-`site/` to the bucket via `wrangler r2 object put --remote` — objects are
-overwritten in place (same key each night; no delete pass needed in the
-steady-state case, since the tree *shape* is fixed by the current service
-family, not by the version string). Adding or removing a service changes
-which files exist under `pool/`/`x86_64/`/`aarch64/`; `check-pkg-assets.sh`
-already asserts every service both plans agree exists.
+`site/` to the bucket via `wrangler r2 object put --remote`. Unlike the
+Bazel cache's content-addressed keys, `pool/`/`x86_64/`/`aarch64/`
+filenames carry the nightly version stamp (date + short SHA), so a plain
+put-every-night would leave every prior night's `.deb`/`.rpm` sitting in
+the bucket under a distinct key forever — `dpkg-scanpackages`/
+`createrepo_c` would then index all of them, silently turning "rolling"
+into "accumulating" and breaking the fixed rolling-only scope above. The
+publish step therefore deletes everything under the `deb/` and `rpm/`
+prefixes before uploading the freshly built tree — the same
+"replace, don't accumulate" pattern already used for the GitHub release
+assets (`gh release delete-asset` in a loop) and the Homebrew tap
+formulas (`rm -f homebrew-tap/Formula/*-nightly.rb`) earlier in this
+publish job. Only `pubkey.asc`, being genuinely stable across nights, is
+a real overwrite-in-place case. Adding or removing a service changes
+which files exist under `pool/`/`x86_64/`/`aarch64/` on the *next* clean
+build; `check-pkg-assets.sh` already asserts every service both plans
+agree exists.
 
 **Verification (pre-publish, matching the plan's fixed "full lifecycle,
 per leg" gate).** A new `scripts/verify-packages-repo.sh`, same shape as
@@ -716,6 +730,16 @@ curl-and-install testing never exercises.
       signed `Release`/`repomd.xml` already covers package integrity via
       embedded checksums, but worth a sanity check once real clients
       consume the channel.
+- [ ] (N5) Whether apt's `signed-by=` wants `pubkey.asc` as-is or a
+      dearmored binary keyring — some apt versions expect the latter for
+      `Signed-By:`/`signed-by=`, which would mean a `gpg --dearmor` step
+      producing a second served file rather than the single armored
+      `pubkey.asc` described above; confirm against a real `apt update`
+      in `verify-packages-repo.sh` before committing to one file.
+- [ ] (N5) The exact `wrangler`/R2 mechanism for deleting everything
+      under a prefix (`deb/`, `rpm/`) before each night's re-upload —
+      per-object delete looped over a `wrangler r2 object list` result,
+      or an equivalent bulk operation; confirm during implementation.
 
 ## Future considerations
 
