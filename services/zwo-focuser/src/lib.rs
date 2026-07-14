@@ -48,12 +48,13 @@ use zwo_rs::FocuserInfo;
 
 use crate::backend::{FocuserHandle, ZwoFocuserHandle};
 
-/// One EAF discovered at enumeration: its index, [`FocuserInfo`], the bare SDK
-/// `serial` (the key for `devices` config overrides), and the serial-derived
-/// ASCOM `UniqueID`.
+/// One EAF discovered at enumeration: its index, [`FocuserInfo`], the working
+/// travel limit (`EAFGetMaxStep`), the bare SDK `serial` (the key for
+/// `devices` config overrides), and the serial-derived ASCOM `UniqueID`.
 struct EnumeratedFocuser {
     index: usize,
     info: FocuserInfo,
+    max_step: u32,
     serial: String,
     unique_id: String,
 }
@@ -135,6 +136,7 @@ impl ServerBuilder {
                 zwo_rs::Sdk::new()?,
                 eaf.index,
                 eaf.info.clone(),
+                eaf.max_step,
                 eaf.unique_id.clone(),
             ));
             // `devices` overrides are keyed by the bare SDK serial (matching the
@@ -254,14 +256,32 @@ async fn enumerate_focusers() -> Result<Vec<EnumeratedFocuser>, ZwoFocuserError>
     let focusers =
         tokio::task::spawn_blocking(|| -> Result<Vec<EnumeratedFocuser>, zwo_rs::Error> {
             let sdk = zwo_rs::Sdk::new()?;
-            let infos = sdk.focusers()?;
-            let mut out = Vec::with_capacity(infos.len());
-            for (index, info) in infos.into_iter().enumerate() {
-                // Open briefly to read the stable serial, then close (the
-                // focuser drops at the end of the block → `EAFClose`).
-                let serial_result = {
+            let count = sdk.focusers()?.len();
+            let mut out = Vec::with_capacity(count);
+            for index in 0..count {
+                // Open briefly to read the stable serial and the working
+                // travel limit, then close (the focuser drops at the end of
+                // the block → `EAFClose`). The post-open `FocuserInfo` is the
+                // one cached: `EAFGetProperty` needs device access to fill
+                // `MaxStep`, so the pre-open enumeration copy can be
+                // incomplete.
+                let (info, max_step, serial_result) = {
                     let focuser = sdk.open_focuser(index)?;
-                    focuser.serial()
+                    let info = focuser.info().clone();
+                    // `EAFGetMaxStep` is the limit the firmware stops at;
+                    // `EAF_INFO::MaxStep` is only the ceiling it can be
+                    // raised to (see docs/services/zwo-focuser.md).
+                    let max_step = match focuser.max_step() {
+                        Ok(v) => v,
+                        Err(e) => {
+                            warn!(
+                                focuser = %info.name, error = %e,
+                                "EAFGetMaxStep failed; falling back to the EAF_INFO ceiling"
+                            );
+                            info.max_step
+                        }
+                    };
+                    (info, max_step, focuser.serial())
                 };
                 if let Err(ref e) = serial_result {
                     warn!(
@@ -273,6 +293,7 @@ async fn enumerate_focusers() -> Result<Vec<EnumeratedFocuser>, ZwoFocuserError>
                 out.push(EnumeratedFocuser {
                     index,
                     info,
+                    max_step,
                     serial,
                     unique_id,
                 });

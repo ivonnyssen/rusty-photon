@@ -15,7 +15,6 @@ use std::sync::Arc;
 
 use ascom_alpaca::api::{Device, Focuser};
 use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
-use zwo_rs::FocuserInfo;
 
 use crate::backend::{BackendError, FocuserHandle};
 use crate::config::DeviceOverride;
@@ -34,7 +33,11 @@ fn sdk_err(e: BackendError) -> ASCOMError {
 pub struct ZwoFocuser {
     #[debug(skip)]
     handle: Arc<dyn FocuserHandle>,
-    info: FocuserInfo,
+    /// The working travel limit (`EAFGetMaxStep`) — what `MaxStep`/
+    /// `MaxIncrement` report and `Move` validates against. The firmware stops
+    /// at this limit, so the `EAF_INFO::MaxStep` ceiling must not be used for
+    /// range checks.
+    max_step: u32,
     unique_id: String,
     name: String,
     description: String,
@@ -48,6 +51,7 @@ impl ZwoFocuser {
     /// `name`/`description` fall back to SDK-derived defaults.
     pub fn new(handle: Arc<dyn FocuserHandle>, overrides: Option<&DeviceOverride>) -> Self {
         let info = handle.info();
+        let max_step = handle.max_step();
         let unique_id = handle.unique_id();
         let name = overrides
             .and_then(|o| o.name.clone())
@@ -57,7 +61,7 @@ impl ZwoFocuser {
             .unwrap_or_else(|| format!("ZWO EAF focuser ({})", info.name));
         Self {
             handle,
-            info,
+            max_step,
             unique_id,
             name,
             description,
@@ -174,11 +178,11 @@ impl Focuser for ZwoFocuser {
     }
 
     async fn max_increment(&self) -> ASCOMResult<u32> {
-        Ok(self.info.max_step)
+        Ok(self.max_step)
     }
 
     async fn max_step(&self) -> ASCOMResult<u32> {
-        Ok(self.info.max_step)
+        Ok(self.max_step)
     }
 
     async fn position(&self) -> ASCOMResult<i32> {
@@ -215,13 +219,10 @@ impl Focuser for ZwoFocuser {
 
     async fn move_(&self, position: i32) -> ASCOMResult<()> {
         self.ensure_connected()?;
-        if position < 0 || u32::try_from(position).unwrap_or(u32::MAX) > self.info.max_step {
+        if position < 0 || u32::try_from(position).unwrap_or(u32::MAX) > self.max_step {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_VALUE,
-                format!(
-                    "Position {} out of range [0, {}]",
-                    position, self.info.max_step
-                ),
+                format!("Position {} out of range [0, {}]", position, self.max_step),
             ));
         }
         self.on_handle(move |h| h.move_to(position).map_err(sdk_err))

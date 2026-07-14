@@ -5,12 +5,13 @@ Feature: Focuser enumeration and connection lifecycle
   Each device's UniqueID is derived from its SDK serial; because
   EAFGetSerialNumber requires an open focuser, enumeration opens each
   focuser briefly to read the serial. Connect is per-device (C4). Opening
-  a device (C1) caches its EAF_INFO (name, MaxStep). An open failure
-  leaves the device not connected (C2). Disconnect closes the device
-  (C3). With zero focusers discovered the service still starts,
-  registering no Focuser devices and logging a warning. Against the
-  zwo-rs simulation backend exactly one focuser (EAF-Simulated, MaxStep
-  7000) is present.
+  a device (C1) caches its EAF_INFO (name) and working travel limit
+  (EAFGetMaxStep). An open failure leaves the device not connected (C2).
+  Disconnect closes the device (C3). With zero focusers discovered the
+  service still starts, registering no Focuser devices and logging a
+  warning. Against the zwo-rs simulation backend exactly one focuser
+  (EAF-Simulated, working travel limit 60000, EAF_INFO ceiling 600000)
+  is present.
 
   Background:
     Given the zwo-focuser service running with the simulation backend

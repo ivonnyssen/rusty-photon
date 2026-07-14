@@ -72,6 +72,34 @@ async fn focuser_reports_position(world: &mut FocuserWorld, _device: u32, expect
     );
 }
 
+#[then(regex = r"^focuser device (\d+) reports a Position between (-?\d+) and (-?\d+)$")]
+async fn focuser_reports_position_between(
+    world: &mut FocuserWorld,
+    _device: u32,
+    min: i32,
+    max: i32,
+) {
+    let actual = world.focuser().position().await.unwrap();
+    assert!(
+        (min..=max).contains(&actual),
+        "Position expected within [{min}, {max}], got {actual}"
+    );
+}
+
+/// Poll `IsMoving` until the move settles. Each poll advances the simulated
+/// focuser by one travel chunk, so the bound is comfortably above the longest
+/// scenario move (60000 steps / 640 per poll ≈ 94 polls).
+#[then(regex = r"^focuser device (\d+) eventually reports IsMoving as false$")]
+async fn focuser_eventually_stops_moving(world: &mut FocuserWorld, _device: u32) {
+    let focuser = world.focuser();
+    for _ in 0..200 {
+        if !focuser.is_moving().await.unwrap() {
+            return;
+        }
+    }
+    panic!("focuser still reports IsMoving after 200 polls");
+}
+
 #[then(regex = r"^focuser device (\d+) reports Temperature as ([\-0-9.]+)$")]
 async fn focuser_reports_temperature(world: &mut FocuserWorld, _device: u32, expected: f64) {
     let actual = world.focuser().temperature().await.unwrap();

@@ -133,10 +133,27 @@ impl Focuser {
         self.info.id
     }
 
-    /// Fixed maximum position (`EAF_INFO::MaxStep`).
-    #[must_use]
-    pub fn max_step(&self) -> u32 {
-        self.info.max_step
+    /// The working travel limit (`EAFGetMaxStep`) — the position the firmware
+    /// actually stops at, user-settable via ZWO's tooling (factory default
+    /// 60000). Distinct from [`FocuserInfo::max_step`] (`EAF_INFO::MaxStep`,
+    /// the fixed ceiling the limit can be raised to): a move commanded past
+    /// this limit but within the ceiling is *accepted* by `EAFMove` and then
+    /// silently stops here, so range validation must use this value.
+    ///
+    /// # Errors
+    /// Returns [`Error::Eaf`] if the SDK call fails (the focuser must be
+    /// open — `EAF_ERROR_CLOSED` otherwise).
+    pub fn max_step(&self) -> Result<u32> {
+        #[cfg(feature = "simulation")]
+        let max_step = SIM_MAX_STEP;
+        #[cfg(not(feature = "simulation"))]
+        let max_step = {
+            let mut v: c_int = 0;
+            // SAFETY: open focuser id; the SDK writes the current limit.
+            eaf_check(unsafe { sys::EAFGetMaxStep(self.info.id, &mut v) })?;
+            u32::try_from(v).unwrap_or(0)
+        };
+        Ok(max_step)
     }
 
     /// Current step position. Unlike [`crate::FilterWheel::position`], the EAF
@@ -355,14 +372,33 @@ fn read_focuser_property(id: i32) -> Result<FocuserInfo> {
 #[cfg(feature = "simulation")]
 const SIM_EAF_SERIAL: &str = "2a3b4c5d6e7f8091";
 
-/// The fabricated simulated focuser: a fixed `MaxStep` of 7000 — illustrative
-/// only, not any particular real EAF unit's actual value.
+/// `EAF_INFO::MaxStep` — the fixed ceiling the working limit can be raised to.
+/// A real EAF reports 600000.
+#[cfg(feature = "simulation")]
+const SIM_INFO_MAX_STEP: u32 = 600_000;
+
+/// The working travel limit (`EAFGetMaxStep`) — the position the firmware
+/// actually stops at. A real EAF's factory default is 60000.
+#[cfg(feature = "simulation")]
+pub(crate) const SIM_MAX_STEP: u32 = 60_000;
+
+/// Steps a simulated move advances per `is_moving` poll. A real EAF travels
+/// ~640 steps per 100 ms, so this models one poll ≈ one 100 ms tick while
+/// keeping the simulation deterministic (travel advances on observation, not
+/// wall time).
+#[cfg(feature = "simulation")]
+const SIM_STEPS_PER_POLL: i32 = 640;
+
+/// The fabricated simulated focuser. The limits mirror a real EAF unit:
+/// `EAF_INFO::MaxStep` (the ceiling, here) is 600000 while the firmware's
+/// working travel limit ([`SIM_MAX_STEP`], served via [`Focuser::max_step`])
+/// is 60000 — keeping the two-limit distinction visible in the simulation.
 #[cfg(feature = "simulation")]
 fn sim_focuser_info() -> FocuserInfo {
     FocuserInfo {
         id: 0,
         name: "EAF-Simulated".to_owned(),
-        max_step: 7000,
+        max_step: SIM_INFO_MAX_STEP,
     }
 }
 
@@ -372,6 +408,7 @@ fn sim_focuser_info() -> FocuserInfo {
 #[derive(Debug)]
 struct SimFocuserState {
     position: i32,
+    target: i32,
     moving: bool,
     reverse: bool,
     temperature: f32,
@@ -382,6 +419,7 @@ impl Default for SimFocuserState {
     fn default() -> Self {
         Self {
             position: 0,
+            target: 0,
             moving: false,
             reverse: false,
             temperature: 20.0,
@@ -392,23 +430,30 @@ impl Default for SimFocuserState {
 #[cfg(feature = "simulation")]
 impl Focuser {
     fn sim_position(&self) -> i32 {
-        // Unlike EFW's sentinel-carrying position, EAFGetPosition always
-        // returns the live/target value — the simulated move jumps straight to
-        // the target, so this is simply the cached position (see
-        // `docs/services/zwo-focuser.md`'s note on where "settle after one
-        // poll" belongs for the EAF).
+        // The in-flight position: a real EAF's `EAFGetPosition` reports the
+        // live step count that ramps toward the target while moving (it never
+        // jumps to the target). Travel advances on `is_moving` polls (see
+        // `sim_is_moving`), so this is a pure read.
         self.state.lock().unwrap().position
     }
 
     fn sim_is_moving(&self) -> bool {
         let mut st = self.state.lock().unwrap();
-        if st.moving {
-            // A simulated move settles one poll after it is requested.
-            st.moving = false;
-            true
-        } else {
-            false
+        if !st.moving {
+            return false;
         }
+        // Advance up to one poll's worth of travel toward the target,
+        // mirroring the real EAF where `IsMoving` stays true across several
+        // polls and the position ramps in between. The poll that reaches the
+        // target still reports `true` (the hardware reports moving until
+        // after it lands); the next poll reports `false`.
+        let delta = st.target - st.position;
+        let step = delta.clamp(-SIM_STEPS_PER_POLL, SIM_STEPS_PER_POLL);
+        st.position += step;
+        if st.position == st.target {
+            st.moving = false;
+        }
+        true
     }
 
     fn sim_move_to(&self, position: i32) -> Result<()> {
@@ -417,16 +462,25 @@ impl Focuser {
         if st.moving {
             return Err(Error::Eaf(EafError::Moving));
         }
+        // `EAFMove` validates against the `EAF_INFO::MaxStep` ceiling only; a
+        // target past the working limit but within the ceiling is accepted
+        // and the firmware silently stops at the limit (observed on real
+        // hardware). Range validation against the working limit is the ASCOM
+        // device's responsibility.
         if position < 0 || u32::try_from(position).unwrap_or(u32::MAX) > self.info.max_step {
             return Err(Error::Eaf(EafError::InvalidValue));
         }
-        st.position = position;
+        st.target = position.min(i32::try_from(SIM_MAX_STEP).expect("SIM_MAX_STEP fits in i32"));
         st.moving = true;
         Ok(())
     }
 
     fn sim_stop(&self) {
-        self.state.lock().unwrap().moving = false;
+        // Freeze wherever the move currently is — a real halt leaves the
+        // position mid-travel, not at the original target.
+        let mut st = self.state.lock().unwrap();
+        st.target = st.position;
+        st.moving = false;
     }
 
     fn sim_temperature(&self) -> f32 {
@@ -444,6 +498,7 @@ impl Focuser {
     fn sim_reset_position(&self, position: i32) {
         let mut st = self.state.lock().unwrap();
         st.position = position;
+        st.target = position;
         st.moving = false;
     }
 }
@@ -467,7 +522,7 @@ mod tests {
         {
             assert_eq!(focusers.len(), crate::SIM_FOCUSER_COUNT);
             assert_eq!(focusers[0].name, "EAF-Simulated");
-            assert_eq!(focusers[0].max_step, 7000);
+            assert_eq!(focusers[0].max_step, 600_000);
         }
         // Without the feature this calls the real SDK; with no hardware the
         // list is empty, but the call must still succeed.
@@ -483,7 +538,10 @@ mod tests {
         let sdk = Sdk::new().unwrap();
         let focuser = sdk.open_focuser(0).unwrap();
         assert_eq!(focuser.id(), 0);
-        assert_eq!(focuser.max_step(), 7000);
+        // The two limits stay distinct: the EAF_INFO ceiling vs the working
+        // travel limit the firmware enforces (EAFGetMaxStep).
+        assert_eq!(focuser.info().max_step, 600_000);
+        assert_eq!(focuser.max_step().unwrap(), 60_000);
         assert_eq!(focuser.info().name, "EAF-Simulated");
         let serial = focuser.serial().unwrap();
         assert_eq!(serial.len(), 16);
@@ -503,16 +561,22 @@ mod tests {
 
     #[cfg(feature = "simulation")]
     #[test]
-    fn move_reports_moving_then_settles() {
+    fn move_ramps_position_and_settles_at_the_target() {
         let sdk = Sdk::new().unwrap();
         let focuser = sdk.open_focuser(0).unwrap();
         assert_eq!(focuser.position().unwrap(), 0);
         focuser.move_to(3000).unwrap();
-        // The simulated focuser reports moving once, then settles; position is
-        // already live (no sentinel), so it reflects the target immediately.
-        assert_eq!(focuser.position().unwrap(), 3000);
+        // Position ramps toward the target across is_moving polls — it never
+        // jumps straight there (mirrors real EAF behavior). 3000 steps at 640
+        // per poll = 5 polls to land; the landing poll still reports true.
+        assert_eq!(focuser.position().unwrap(), 0);
         assert!(focuser.is_moving().unwrap());
+        assert_eq!(focuser.position().unwrap(), 640);
+        for _ in 0..4 {
+            assert!(focuser.is_moving().unwrap());
+        }
         assert!(!focuser.is_moving().unwrap());
+        assert_eq!(focuser.position().unwrap(), 3000);
     }
 
     #[cfg(feature = "simulation")]
@@ -524,10 +588,24 @@ mod tests {
             focuser.move_to(-1).unwrap_err(),
             Error::Eaf(EafError::InvalidValue)
         );
+        // The SDK bound is the EAF_INFO ceiling, not the working limit.
         assert_eq!(
-            focuser.move_to(7001).unwrap_err(),
+            focuser.move_to(600_001).unwrap_err(),
             Error::Eaf(EafError::InvalidValue)
         );
+    }
+
+    #[cfg(feature = "simulation")]
+    #[test]
+    fn move_past_the_working_limit_stops_at_the_limit() {
+        // Observed on real hardware: EAFMove accepts a target within the
+        // EAF_INFO ceiling but past the EAFGetMaxStep working limit, and the
+        // firmware silently stops at the limit.
+        let sdk = Sdk::new().unwrap();
+        let focuser = sdk.open_focuser(0).unwrap();
+        focuser.move_to(90_000).unwrap();
+        while focuser.is_moving().unwrap() {}
+        assert_eq!(focuser.position().unwrap(), 60_000);
     }
 
     #[cfg(feature = "simulation")]
@@ -540,19 +618,24 @@ mod tests {
             focuser.move_to(200).unwrap_err(),
             Error::Eaf(EafError::Moving)
         );
-        // After the move settles (one is_moving poll), a new move is accepted.
+        // A short (≤ one poll's travel) move settles after one is_moving
+        // poll; a new move is then accepted.
         assert!(focuser.is_moving().unwrap());
         focuser.move_to(200).unwrap();
     }
 
     #[cfg(feature = "simulation")]
     #[test]
-    fn stop_clears_moving() {
+    fn stop_freezes_mid_travel() {
         let sdk = Sdk::new().unwrap();
         let focuser = sdk.open_focuser(0).unwrap();
-        focuser.move_to(500).unwrap();
+        focuser.move_to(2000).unwrap();
+        // One poll of travel, then halt: the position freezes wherever the
+        // move was (mirrors real hardware), not at the original target.
+        assert!(focuser.is_moving().unwrap());
         focuser.stop().unwrap();
         assert!(!focuser.is_moving().unwrap());
+        assert_eq!(focuser.position().unwrap(), 640);
         // A halted focuser accepts a new move immediately.
         focuser.move_to(600).unwrap();
     }

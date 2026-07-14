@@ -1,18 +1,20 @@
 # ZWO EAF Focuser Service Design
 
-> **Status: v0 implemented (2026-07-09), pending real-hardware validation.**
-> The full `Device` + `Focuser` surface is built over a new `zwo_rs::Focuser`
-> FFI handle (the `libEAFFocuser` link directive, previously deliberately
-> omitted, now lands alongside it). 25 unit tests + 26 BDD scenarios (3
-> feature files) are green against the `zwo-rs` simulation backend; the full
-> local quality gate (`bazel build //... && bazel test //...`, `cargo fmt`,
-> `cargo clippy --all-targets --all-features -- -D warnings`) passes clean
-> across the whole workspace, including the sibling `zwo-camera` (no
-> regression from the shared `zwo-rs` changes). The ConformU harness is wired
-> and skips cleanly without `CONFORMU_PATH`. Manually verified end-to-end over
-> real Alpaca HTTP (connect, move, is-moving settle, position, temperature,
-> range rejection) against the simulation backend. **Not yet exercised against
-> a real EAF** — see *Real-hardware validation* below.
+> **Status: v0 validated on real hardware (2026-07-09 implemented, 2026-07-14
+> hardware-validated).** The full `Device` + `Focuser` surface is built over a
+> `zwo_rs::Focuser` FFI handle (the `libEAFFocuser` link directive, previously
+> deliberately omitted, lands alongside it). Validated end-to-end against a
+> physical EAF with temperature probe: enumeration, serial-derived identity,
+> connect/move/halt/settle, temperature, range rejection — and **ConformU
+> passes with zero errors, warnings or issues against the real device**.
+> Hardware validation surfaced two fixes now baked in: `MaxStep` comes from
+> `EAFGetMaxStep` (the firmware's working travel limit), not
+> `EAF_INFO::MaxStep` (see *Hardware Constraints*), and the EAF is a USB HID
+> device whose `/dev/hidraw*` node needs a udev rule that actually reaches
+> hidraw (see *Packaging*). 25 unit tests + 27 BDD scenarios (3 feature
+> files) are green against the `zwo-rs` simulation backend, whose movement
+> model now mirrors the measured hardware behavior (multi-poll IsMoving,
+> live position ramp, halt-freezes-mid-travel).
 
 ## Overview
 
@@ -127,25 +129,45 @@ there is no in-flight-task cancellation/invalidation machinery to build.
 
 ## Hardware Constraints
 
-- **Connection**: USB (ZWO vendor ID `0x03c3`, shared with ASI cameras and EFW).
-- **Absolute-position stepper**: `0..=MaxStep`, `MaxStep` read once from
-  `EAF_INFO` at open (see *Configuration* for whether it is also config-editable
-  in a later phase).
+- **Connection**: USB **HID** (ZWO vendor ID `0x03c3`, shared with ASI cameras
+  and EFW — but unlike the cameras, which are bulk-USB/libusb devices, the EAF
+  and EFW are HID devices the SDK reaches through `/dev/hidraw*`). Consequence:
+  a udev rule that matches only the USB device node (`SUBSYSTEM=="usb"`,
+  singular) grants no access; with the hidraw node inaccessible, `EAFGetNum`/
+  `EAFGetID` still enumerate (USB descriptors) but `EAFOpen` fails with
+  `EAF_ERROR_REMOVED` and a pre-open `EAFGetProperty` returns a degraded
+  `EAF_INFO` (`MaxStep` 0). See *Packaging* for the rule this package ships.
+- **Two `MaxStep` values — the working limit is the real one.**
+  `EAF_INFO::MaxStep` is only the fixed *ceiling* (600000 on the validated
+  unit) that the limit can be raised to; the firmware actually stops at the
+  user-settable `EAFGetMaxStep` working limit (factory default 60000).
+  `EAFMove` validates against the *ceiling*: a target past the working limit
+  but within the ceiling is **accepted, and the motor silently stops at the
+  limit** (observed on real hardware; ConformU flags it as a Move issue if the
+  driver advertises the ceiling). The driver therefore reports and validates
+  against `EAFGetMaxStep`, read during enumeration's brief open.
+- **Movement timing**: the validated EAF travels ≈ 640 steps per 100 ms;
+  `EAFIsMoving` stays true across many polls for a real move (a 1000-step move
+  settles in ≈ 1.7 s) and `EAFGetPosition` ramps live toward the target while
+  moving. `EAFStop` freezes the position mid-travel.
+- **Absolute-position stepper**: `0..=MaxStep` (working limit), with the
+  position counter persisted in the focuser across power cycles.
 - **Onboard-flash firmware**: like the ASI camera and EFW, the EAF ships firmware
   in onboard flash — no upload step, no cold-plug helper.
 - **Temperature sensor**: `EAFGetTemp` reports a live reading (unlike the Scops
-  OAG, which has none).
+  OAG, which has none). With the plug-in temperature probe attached the reading
+  is the probe's (validated: ambient-plausible 20.5 °C on the bench).
 - **`EAFGetSerialNumber` requires an open device** (`EAF_ERROR_CLOSED` otherwise),
   mirroring the ASI/EFW serial-read pattern; it may return `NOT_SUPPORTED` on
   older firmware, in which case enumeration falls back to a position-based
-  identity (see *Device identity*).
+  identity (see *Device identity*). The validated unit reports a real serial.
 - **`EAFIsMoving`** is a dedicated call with two out-parameters (`pbVal`,
   `pbHandControl`) — cleaner than EFW's `-1`-while-moving sentinel on
   `EFWGetPosition`. `pbHandControl` (whether the physical hand-paddle is driving
   the move) has no ASCOM `Focuser` mapping and is discarded in v0 (see *MVP
   scope*).
-- **`EAFGetPosition`** has no moving sentinel — it always returns the live/target
-  step count, whether or not the focuser is currently moving.
+- **`EAFGetPosition`** has no moving sentinel — it always returns the live
+  (ramping) step count, whether or not the focuser is currently moving.
 
 ## ASCOM Focuser Mapping
 
@@ -153,15 +175,15 @@ there is no in-flight-task cancellation/invalidation machinery to build.
 |------------------------|----------------|
 | Absolute | `true` (always) |
 | IsMoving | `EAFIsMoving` (dedicated call; `pbHandControl` discarded) |
-| MaxIncrement | `EAF_INFO::MaxStep` (read at open) |
-| MaxStep | `EAF_INFO::MaxStep` (read at open) |
-| Position | `EAFGetPosition` (no moving sentinel) |
+| MaxIncrement | `EAFGetMaxStep` (working travel limit; read at enumeration's brief open) |
+| MaxStep | `EAFGetMaxStep` (working travel limit; **not** the `EAF_INFO::MaxStep` ceiling — see *Hardware Constraints*) |
+| Position | `EAFGetPosition` (no moving sentinel; ramps live while moving) |
 | StepSize | `NOT_IMPLEMENTED` (no prior art; matches `qhy-focuser`/`pa-scops-oag`) |
 | TempComp | `false` (stubbed — see note below) |
 | TempCompAvailable | `false` |
 | Temperature | Live `EAFGetTemp` reading |
-| Halt | `EAFStop` |
-| Move | Validates `0..=MaxStep`, `EAFMove` (absolute-only) |
+| Halt | `EAFStop` (freezes mid-travel) |
+| Move | Validates `0..=MaxStep` (working limit), `EAFMove` (absolute-only) |
 | InterfaceVersion | `4` (trait default) |
 
 **TempComp is a known limitation, not a firmware-confirmed absence.** Neither
@@ -213,8 +235,9 @@ Sections:
   11123 is `pa-scops-oag`). Hard read-only (self-lockout: a port change would
   make the BFF lose the devices).
 
-**Deferred** (see *MVP scope*): `EAFSetMaxStep`/`EAFGetMaxStep` as a live,
-config-editable knob — v0 reads the fixed `EAF_INFO::MaxStep` at open time only.
+**Deferred** (see *MVP scope*): `EAFSetMaxStep` as a live, config-editable
+knob — v0 reads the `EAFGetMaxStep` working limit once, during enumeration's
+brief open, and never writes it.
 
 ### Config actions
 
@@ -256,8 +279,9 @@ config-actions tiers.
 
 - ASCOM Focuser `IFocuserV4` for **every enumerated EAF** (each registered as a
   device on the one port).
-- Startup enumeration registers all discovered EAFs; per-device connect/
-  disconnect lifecycle: open → cache `EAF_INFO` (name, `MaxStep`) → read serial.
+- Startup enumeration registers all discovered EAFs; each is opened briefly to
+  cache its `EAF_INFO` (name), working travel limit (`EAFGetMaxStep`), and
+  serial; per-device connect/disconnect lifecycle re-opens on demand.
 - Absolute `Move` validated against `0..=MaxStep`; `Halt`; `Position`;
   `IsMoving`; live `Temperature`.
 - `config.get`/`config.apply`/`config.schema` actions; hardware-derived
@@ -266,8 +290,8 @@ config-actions tiers.
 
 **Deferred (Future Work)**
 
-- `EAFSetMaxStep`/`EAFGetMaxStep` as a live, config-editable knob (v0 reads the
-  fixed value at open only).
+- `EAFSetMaxStep` as a live, config-editable knob (v0 reads the working limit
+  at enumeration only and never writes it).
 - Backlash get/set (`EAFGetBacklash`/`EAFSetBacklash`).
 - Beep/buzzer control (`EAFGetBeep`/`EAFSetBeep`).
 - Battery info, BLE pairing/scan/connect, LED control (none have an ASCOM
@@ -285,8 +309,15 @@ config-actions tiers.
 
 Named, testable behaviours, each mapping to a BDD scenario in `tests/features/`.
 ASCOM error names per [`docs/references/ascom-alpaca.md`](../references/ascom-alpaca.md).
-The `simulation` backend presents one fabricated **EAF-Simulated** focuser (fixed
-`MaxStep`, no randomness — mirrors `zwo-rs`'s EFW simulation approach).
+The `simulation` backend presents one fabricated **EAF-Simulated** focuser whose
+values and movement model mirror the hardware-validated unit: working travel
+limit (`EAFGetMaxStep`) 60000, `EAF_INFO::MaxStep` ceiling 600000, and a
+deterministic move that advances **640 steps per `is_moving` poll** (the real
+EAF's ≈ 640 steps/100 ms, with travel keyed to observation instead of wall time
+so tests stay deterministic). Position ramps live toward the target across
+polls; the poll that reaches the target still reports moving (as the hardware
+does); halting freezes the position mid-travel; a move targeted past the
+working limit but within the ceiling is accepted and stops at the limit.
 
 ### Enumeration & connection lifecycle
 
@@ -295,8 +326,9 @@ The `simulation` backend presents one fabricated **EAF-Simulated** focuser (fixe
   read the serial). Zero discovered EAFs is **not** a hard failure — the service
   starts with no Focuser devices, logged at `warn!`; a later reload
   re-enumerates.
-- **C1.** `set_connected(true)` on a device opens *that* EAF and caches its
-  `EAF_INFO` (name, `MaxStep`). On success `Connected = true`.
+- **C1.** `set_connected(true)` on a device opens *that* EAF. On success
+  `Connected = true`. (The name, working travel limit, and serial were cached
+  at enumeration.)
 - **C2.** `set_connected(true)` with the device's EAF unreachable / SDK open
   failure returns the mapped driver error and `Connected` stays `false`.
 - **C3.** `set_connected(false)` closes that device and returns `NOT_CONNECTED`
@@ -307,19 +339,25 @@ The `simulation` backend presents one fabricated **EAF-Simulated** focuser (fixe
 ### Movement
 
 - **M1.** `Absolute` is always `true`.
-- **M2.** `MaxStep`/`MaxIncrement` report the device's cached `EAF_INFO::MaxStep`.
+- **M2.** `MaxStep`/`MaxIncrement` report the device's cached working travel
+  limit (`EAFGetMaxStep`, read at enumeration's brief open — with a fallback
+  to the `EAF_INFO::MaxStep` ceiling if that call fails).
 - **M3.** `Position` reports the current step count (`EAFGetPosition`, no
-  sentinel — always live).
+  sentinel — always live, ramping toward the target during a move).
 - **M4.** `Move` to a position within `[0, MaxStep]` starts the move
   (`EAFMove`).
-- **M5.** `Move` to a position outside `[0, MaxStep]` (including negative)
-  returns `INVALID_VALUE`; no SDK call is made.
-- **M6.** `IsMoving` is `true` while a move is in progress, and settles to
-  `false` once the move completes.
-- **M7.** `Position` reflects the target position once the move completes.
+- **M5.** `Move` to a position outside `[0, MaxStep]` (including negative, and
+  including targets beyond the working limit that the firmware would accept
+  and silently truncate) returns `INVALID_VALUE`; no SDK call is made.
+- **M6.** `IsMoving` is `true` while a move is in progress — across several
+  polls, proportionally to the distance — and settles to `false` once the
+  move completes.
+- **M7.** `Position` reflects the target position once the move completes;
+  while the move is in progress it reports live intermediate values.
 - **M8.** A second `Move` while already moving is rejected (SDK error mapped to
   `INVALID_OPERATION`).
-- **M9.** `Halt` stops an in-progress move (`EAFStop`).
+- **M9.** `Halt` stops an in-progress move (`EAFStop`), freezing the position
+  mid-travel (not at the original target).
 - **M10.** `Halt` on an idle focuser succeeds as a no-op.
 - **M11.** `Temperature` returns the live `EAFGetTemp` reading.
 - **M12.** `StepSize` returns `NOT_IMPLEMENTED`.
@@ -368,41 +406,36 @@ cargo run -p zwo-focuser --features simulation
 
 ## Real-hardware validation
 
-Unlike the ASI camera and EFW filter wheel (both validated against real ZWO
-hardware before `zwo-camera` shipped), **no real EAF has exercised this driver in
-this codebase before now** — the `zwo-rs` EAF simulation backend is hand-fabricated
-with no prior-art timing model to check it against. This is the single biggest
-remaining risk and must happen before considering v0 done; it could not be
-performed from the sandboxed environment this code was developed in (no USB
-passthrough to the physical device).
+**Performed 2026-07-14** against a physical EAF with the plug-in temperature
+probe attached, on a Linux dev box (`cargo run -p zwo-focuser`, real build, no
+`--features simulation`), driven over the Alpaca HTTP API and by ConformU
+4.3.0. Results, in the order the original checklist posed them:
 
-**To validate, on a machine with the EAF plugged in:**
-
-```sh
-cargo build -p zwo-focuser   # real build, no --features simulation
-cargo run -p zwo-focuser -- --log-level debug
-```
-
-Then, in another terminal, drive it over the Alpaca HTTP API (or point an
-Alpaca client such as NINA/ASCOM's device tester at it) and confirm:
-
-- The service links (`libEAFFocuser` resolves — the one genuinely new
-  cross-platform-link risk this phase adds) and enumerates the real device
-  (`GET /api/v1/focuser/0/name` or similar after connecting).
-- The real `MaxStep` for this unit (`GET /api/v1/focuser/0/maxstep`) — the
-  simulation's `7000` is illustrative only, not this hardware's actual value.
-- `EAFGetSerialNumber` actually returns a serial (exercise the `noserial-0`
-  fallback if this firmware doesn't support it — check the `warn!` log line).
-- Real `EAFIsMoving` polling cadence for a move across a meaningful distance —
-  does `IsMoving` settle in one poll like the simulation, or does it need
-  several? If it needs several, the ASCOM contract still holds (`IsMoving`
-  simply stays `true` longer), but note it here.
-- `EAFStop` actually halts a real in-progress move.
-- `Temperature` returns a plausible reading (compare to ambient).
-
-Feed any surprises back into this design doc (CLAUDE.md rule 2) and, if the
-simulation's timing model was materially wrong, into
-`crates/zwo-rs/src/focuser.rs`'s simulation backend.
+- **Linking and enumeration**: `libEAFFocuser` resolves; the unit enumerates
+  and registers as device 0 with UniqueID `ZWO:EAF:<16-hex-serial>` —
+  `EAFGetSerialNumber` works on this firmware, so the `noserial-0` fallback
+  stayed unexercised.
+- **Device access is the real prerequisite**: the EAF is a USB **HID** device;
+  with `/dev/hidraw*` inaccessible, startup fails at `EAFOpen` with
+  `EAF_ERROR_REMOVED` even though USB enumeration works. See *Hardware
+  Constraints* and *Packaging*.
+- **MaxStep**: the unit reports an `EAF_INFO::MaxStep` ceiling of **600000**
+  but a firmware working limit (`EAFGetMaxStep`) of **60000** — and the motor
+  silently stops at the working limit when commanded past it (ConformU caught
+  this as a Move issue against the original `EAF_INFO`-based implementation).
+  The driver now reports/validates the working limit; ConformU passes with
+  zero errors, warnings or issues.
+- **Movement timing**: ≈ 640 steps per 100 ms; `IsMoving` stays true across
+  many polls (1000 steps ≈ 1.7 s) with `Position` ramping live in between.
+  The simulation's original settle-after-one-poll / jump-to-target model was
+  materially wrong and now mirrors the measured behavior (see *Behavioral
+  contracts*).
+- **Halt**: `EAFStop` halts a real in-progress move, freezing the position
+  mid-travel; a second `Move` while moving is rejected by the firmware
+  (`EAF_ERROR_MOVING` → `INVALID_OPERATION`).
+- **Temperature**: 20.5 °C on the bench — ambient-plausible (probe reading).
+- **Position persistence**: the step counter survives power cycles (stored in
+  the focuser, not the host).
 
 ## Packaging
 
@@ -414,6 +447,22 @@ Packaged as `rusty-photon-zwo-focuser` (`.deb`/`.rpm`) per
 (`90-rusty-photon-zwo-focuser.rules`, same VID `03c3` content as `zwo-camera`'s —
 a separate file so both packages can install their udev rule on the same host
 without a filename collision).
+
+**The udev rule must reach the hidraw node, not just the USB node.** The EAF
+(like the EFW, and unlike the ASI cameras) is a USB HID device the SDK opens
+via `/dev/hidraw*`; with that node inaccessible the device enumerates but
+`EAFOpen` fails with `EAF_ERROR_REMOVED` (observed on real hardware). The
+packaged rule's `SUBSYSTEMS=="usb", ATTRS{idVendor}=="03c3"` uses udev's
+*parent-walk* match keys, which also match the hidraw child of the ZWO USB
+device — unlike the singular `SUBSYSTEM=="usb"` form (which matches only the
+USB node itself and leaves the hidraw node root-only; ZWO's own `asi.rules`
+adds an explicit `KERNEL=="hidraw*"` line for this). Two caveats observed on a
+Fedora dev box: udev drops the **entire rule line at parse time** when
+`GROUP="plugdev"` cannot be resolved, and neither the packaged postinst nor
+Fedora itself creates a `plugdev` group — so on RPM hosts the rule (and the
+unit's `SupplementaryGroups=plugdev`) currently has no effect. That gap is
+cross-package (every USB-device package shares this postinst/rule shape) and
+is tracked outside this document.
 
 The MIT-licensed `libEAFFocuser.so` — **exactly the one SDK this binary links**
 (zwo-rs `focuser` feature,
