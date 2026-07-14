@@ -86,3 +86,14 @@ Feature: Plain-REST configuration endpoints
     Then the config response status should be 200
     And the apply status should be "ok"
     And the config file JSON at "/equipment/cameras/0/auth/password" should be "hunter2"
+
+  Scenario: PUT /api/config with an off-grid cooler target is rejected and the file is untouched
+    Given a temp rp config with a camera whose stored auth password is "hunter2"
+    And rp is started with that config file
+    And I remember the config file bytes
+    When I GET /api/config
+    And I PUT /api/config with the fetched config after setting "/equipment/cameras/0/cooler_targets_c" to "[-10, -12]"
+    Then the config response status should be 200
+    And the apply status should be "invalid"
+    And the apply errors should name path "equipment.cameras.0.cooler_targets_c"
+    And the config file bytes should be unchanged

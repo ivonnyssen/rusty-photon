@@ -157,6 +157,7 @@ async fn configure_default_equipment(world: &mut CalibratorFlatsWorld) {
             id: "main-cam".to_string(),
             alpaca_url: alpaca_url.clone(),
             device_number: 0,
+            cooler_targets_c: Vec::new(),
         });
     }
     if world.filter_wheels.is_empty() {

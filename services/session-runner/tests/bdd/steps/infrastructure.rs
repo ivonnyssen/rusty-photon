@@ -30,6 +30,7 @@ pub fn ensure_camera(world: &mut SessionRunnerWorld) {
             id: "main-cam".to_string(),
             alpaca_url: world.omnisim_url(),
             device_number: 0,
+            cooler_targets_c: Vec::new(),
         });
     }
 }

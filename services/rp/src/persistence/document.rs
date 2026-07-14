@@ -56,6 +56,18 @@ pub struct ExposureDocument {
     /// Document Cache section of `docs/services/rp.md`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_adu: Option<u32>,
+    /// The dark-library rung rp was regulating the capturing camera at
+    /// (rp.md § Camera Cooling). Omitted when rp was not cooling it —
+    /// empty ladder, cooling skipped or unreachable, or a warm-up in
+    /// progress. Ties the frame to its dark library.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cooler_setpoint_c: Option<i32>,
+    /// Best-effort `CCDTemperature` read at capture time. Omitted when
+    /// the read fails or the camera does not implement it. Together
+    /// with `cooler_setpoint_c` this makes a night where cooling
+    /// misbehaved identifiable frame by frame.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sensor_temperature_c: Option<f64>,
     /// Optical-train geometry resolved at capture time. Carries both the raw
     /// Alpaca camera readings (`pixel_size_*_um`, `sensor_*_px`) and the
     /// derived pixel scale and FOV that consumers like `plate_solve` and
@@ -249,6 +261,8 @@ mod tests {
             camera_id: Some("cam".to_string()),
             duration: Some(Duration::from_secs(1)),
             max_adu: Some(65535),
+            cooler_setpoint_c: None,
+            sensor_temperature_c: None,
             optics: None,
             sections: Map::new(),
         }

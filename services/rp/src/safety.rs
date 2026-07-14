@@ -895,7 +895,7 @@ mod tests {
                 alpaca_url: url.to_string(),
                 device_type: String::new(),
                 device_number,
-                cooler_target_c: None,
+                cooler_targets_c: Vec::new(),
                 gain: None,
                 offset: None,
                 focal_length_mm: None,

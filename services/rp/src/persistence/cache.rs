@@ -651,6 +651,8 @@ mod tests {
             camera_id: None,
             duration: None,
             max_adu: None,
+            cooler_setpoint_c: None,
+            sensor_temperature_c: None,
             optics: None,
             sections: Map::new(),
         }

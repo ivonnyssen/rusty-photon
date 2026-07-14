@@ -147,6 +147,10 @@ input[readonly], input:disabled, select:disabled {
 .checkbox { display: flex; align-items: center; gap: 9px; }
 .checkbox input { width: auto; }
 
+/* A checkbox group (an integer-enum array field, e.g. a camera's
+ * dark-library cooler grid): members flow horizontally and wrap. */
+.checkbox-group { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 6px; }
+
 .actions { margin-top: 22px; display: flex; gap: 10px; align-items: center; }
 button.primary {
   font: inherit; font-weight: 600; cursor: pointer;

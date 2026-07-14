@@ -18,8 +18,6 @@
 pub mod equipment;
 pub mod stream;
 
-use std::collections::HashMap;
-
 use maud::{html, Markup, DOCTYPE};
 use serde_json::Value;
 
@@ -207,6 +205,12 @@ enum FieldKind {
     },
     /// A `number` (floating-point) leaf. `nullable` persists `null` when cleared.
     Num { nullable: bool },
+    /// An `array` whose `items` are an integer `enum` — rendered as a
+    /// checkbox group, one checkbox per enumerated value in schema order
+    /// (e.g. rp's per-camera `cooler_targets_c` grid). Checked values are
+    /// written back as an array in `options` order; nothing checked ⇒ an
+    /// empty array. Every other array shape stays [`Shape::Skip`].
+    IntSet { options: Vec<i64> },
 }
 
 /// One renderable config field discovered in the schema.
@@ -226,7 +230,7 @@ pub struct FieldSpec {
 impl FieldSpec {
     fn input_type(&self) -> &'static str {
         match self.kind {
-            FieldKind::Bool => "checkbox",
+            FieldKind::Bool | FieldKind::IntSet { .. } => "checkbox",
             FieldKind::Int { .. } | FieldKind::Num { .. } => "number",
             FieldKind::Str => "text",
         }
@@ -354,14 +358,18 @@ fn resolve<'a>(node: &'a Value, root: &'a Value) -> &'a Value {
 enum Shape {
     /// A scalar leaf with its JSON base type and nullability.
     Scalar { base: String, nullable: bool },
+    /// An array of enumerated integers — a checkbox-group leaf.
+    IntEnumArray { options: Vec<i64> },
     /// A plain object to recurse into.
     Object,
     /// A composite/enum/custom subtree to skip (round-trips via the blob).
     Skip,
 }
 
-fn classify(node: &Value) -> Shape {
+fn classify(node: &Value, root: &Value) -> Shape {
     // Composite or enum/const subtrees are never rendered as scalar inputs.
+    // (An enum on an array's *items* is fine — that check is on the node
+    // itself, and the integer-enum-array case below depends on it.)
     if ["oneOf", "anyOf", "allOf", "enum", "const"]
         .iter()
         .any(|k| node.get(k).is_some())
@@ -390,15 +398,40 @@ fn classify(node: &Value) -> Shape {
             nullable,
         },
         Some("object") => Shape::Object,
+        // The one renderable array shape: items are an integer enum
+        // (e.g. rp's `cooler_targets_c` grid) — a checkbox group. All
+        // other arrays (objects, `$ref` items, un-enumerated scalars)
+        // fall through to `Skip` and round-trip via the blob.
+        Some("array") => match int_enum_options(node, root) {
+            Some(options) => Shape::IntEnumArray { options },
+            None => Shape::Skip,
+        },
         // An object def may omit `type` but carry `properties`.
         None if node.get("properties").is_some() => Shape::Object,
         _ => Shape::Skip,
     }
 }
 
+/// The enumerated integer values of an array node's `items`, when that is
+/// what they are: `items` (after `$ref` resolution) typed `integer` with a
+/// non-empty all-integer `enum`.
+fn int_enum_options(node: &Value, root: &Value) -> Option<Vec<i64>> {
+    let items = resolve(node.get("items")?, root);
+    if items.get("type").and_then(Value::as_str) != Some("integer") {
+        return None;
+    }
+    let options: Vec<i64> = items
+        .get("enum")?
+        .as_array()?
+        .iter()
+        .map(Value::as_i64)
+        .collect::<Option<Vec<i64>>>()?;
+    (!options.is_empty()).then_some(options)
+}
+
 fn walk_schema(node: &Value, root: &Value, prefix: &str, out: &mut Vec<FieldSpec>) {
     let resolved = resolve(node, root);
-    match classify(resolved) {
+    match classify(resolved, root) {
         Shape::Object => {
             if let Some(props) = resolved.get("properties").and_then(Value::as_object) {
                 // Walk properties in sorted key order so the rendered field order
@@ -426,15 +459,17 @@ fn walk_schema(node: &Value, root: &Value, prefix: &str, out: &mut Vec<FieldSpec
             }
             out.push(make_field(prefix, &base, nullable, resolved));
         }
+        Shape::IntEnumArray { options } => {
+            if prefix.is_empty() {
+                return; // a top-level array config is not a form field
+            }
+            out.push(field_spec(prefix, FieldKind::IntSet { options }));
+        }
         Shape::Skip => {}
     }
 }
 
 fn make_field(name: &str, base: &str, nullable: bool, node: &Value) -> FieldSpec {
-    let (section, sub) = match name.split_once('.') {
-        Some((s, rest)) => (s.to_string(), rest.to_string()),
-        None => (name.to_string(), name.to_string()),
-    };
     let kind = match base {
         "boolean" => FieldKind::Bool,
         "number" => FieldKind::Num { nullable },
@@ -445,6 +480,14 @@ fn make_field(name: &str, base: &str, nullable: bool, node: &Value) -> FieldSpec
         },
         // "string" and any unexpected base fall back to a text field.
         _ => FieldKind::Str,
+    };
+    field_spec(name, kind)
+}
+
+fn field_spec(name: &str, kind: FieldKind) -> FieldSpec {
+    let (section, sub) = match name.split_once('.') {
+        Some((s, rest)) => (s.to_string(), rest.to_string()),
+        None => (name.to_string(), name.to_string()),
     };
     FieldSpec {
         name: name.to_string(),
@@ -580,12 +623,29 @@ fn render_field(page: &Page<'_>, ctx: &FieldCtx<'_>, spec: &FieldSpec) -> Markup
     let err = ctx.errors.iter().find(|e| &e.path == name);
     html! {
         div.field.pinned[disabled].invalid[err.is_some()] {
-            @match spec.kind {
+            @match &spec.kind {
                 FieldKind::Bool => {
                     div.checkbox {
                         input type="checkbox" id=(name) name=(name)
                             checked[bool_at(ctx.config, &spec.pointer)] disabled[disabled];
                         label for=(name) { (spec.label) }
+                    }
+                }
+                // One checkbox per enumerated value, in schema order; all
+                // share the field's `name`, so the checked values arrive as
+                // repeated form pairs (see `FormValues`).
+                FieldKind::IntSet { options } => {
+                    label { (spec.label) }
+                    div.checkbox-group {
+                        @for option in options {
+                            @let option_id = format!("{name}.{option}");
+                            div.checkbox {
+                                input type="checkbox" id=(option_id) name=(name) value=(option)
+                                    checked[array_contains(ctx.config, &spec.pointer, *option)]
+                                    disabled[disabled];
+                                label for=(option_id) { (option) }
+                            }
+                        }
                     }
                 }
                 _ => {
@@ -807,15 +867,53 @@ pub enum FormError {
     BadOverrides(String),
 }
 
+/// Submitted form pairs with duplicate keys preserved. A checkbox group
+/// posts one `name=value` pair per checked box, and `serde_urlencoded`
+/// collapses duplicates when decoding into a map — so the handlers extract
+/// `Form<Vec<(String, String)>>` and wrap the pairs here. Single-value
+/// lookups take the first occurrence.
+#[derive(Debug, Default)]
+pub struct FormValues(Vec<(String, String)>);
+
+impl From<Vec<(String, String)>> for FormValues {
+    fn from(pairs: Vec<(String, String)>) -> Self {
+        Self(pairs)
+    }
+}
+
+impl FormValues {
+    fn get(&self, name: &str) -> Option<&str> {
+        self.0
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.as_str())
+    }
+
+    fn get_all<'a>(&'a self, name: &'a str) -> impl Iterator<Item = &'a str> {
+        self.0
+            .iter()
+            .filter(move |(k, _)| k == name)
+            .map(|(_, v)| v.as_str())
+    }
+
+    fn contains_key(&self, name: &str) -> bool {
+        self.0.iter().any(|(k, _)| k == name)
+    }
+
+    /// Replace every pair under `name` with a single `value` (appending
+    /// when absent) — the equipment entry forms re-seed `__config` this way.
+    pub fn set(&mut self, name: &str, value: String) {
+        self.0.retain(|(k, _)| k != name);
+        self.0.push((name.to_string(), value));
+    }
+}
+
 /// Rebuild the full Config from a submitted form: start from the hidden
 /// round-tripped blob and overlay each editable schema leaf by JSON pointer.
 /// Override-pinned, hard-read-only, and not-unlocked locked fields are not
 /// overlaid (they round-trip from the blob); schema subtrees the model skipped
 /// (`oneOf`/`anyOf`/secrets) round-trip untouched too.
-pub fn merge_form(
-    form: &HashMap<String, String>,
-    model: &FieldModel,
-) -> Result<MergedForm, FormError> {
+pub fn merge_form(form: &FormValues, model: &FieldModel) -> Result<MergedForm, FormError> {
     let raw = form.get("__config").ok_or(FormError::MissingConfig)?;
     let mut config: Value =
         serde_json::from_str(raw).map_err(|e| FormError::BadConfig(e.to_string()))?;
@@ -830,7 +928,7 @@ pub fn merge_form(
     // unlocked" (the safe default — locked fields stay read-only), and the set is
     // filtered to the schema's locked fields so a forged value can only ever
     // unlock a genuine identity field.
-    let unlocked = unlocked_set_from_json(model, form.get("__unlocked").map(String::as_str));
+    let unlocked = unlocked_set_from_json(model, form.get("__unlocked"));
 
     let is_pinned = |name: &str| overrides.iter().any(|o| o == name);
     let is_unlocked = |name: &str| unlocked.iter().any(|u| u == name);
@@ -856,9 +954,38 @@ pub fn merge_form(
                     Value::Bool(form.contains_key(&spec.name)),
                 );
             }
+            // A checkbox group submits one pair per checked box; absent
+            // pairs mean nothing is checked ⇒ an empty array (same
+            // present/absent semantics as `Bool`). Values are written in
+            // `options` (schema `enum`) order, which also dedupes.
+            FieldKind::IntSet { options } => {
+                let selected: Result<Vec<i64>, ()> = form
+                    .get_all(&spec.name)
+                    .map(|raw| match raw.trim().parse::<i64>() {
+                        Ok(n) if options.contains(&n) => Ok(n),
+                        _ => Err(()),
+                    })
+                    .collect();
+                match selected {
+                    Ok(selected) => {
+                        let chosen: Vec<Value> = options
+                            .iter()
+                            .filter(|o| selected.contains(o))
+                            .map(|o| Value::from(*o))
+                            .collect();
+                        set_pointer(&mut config, &spec.pointer, Value::Array(chosen));
+                    }
+                    Err(()) => {
+                        errors.push(field_error(
+                            &spec.name,
+                            "must be values from the allowed set",
+                        ));
+                    }
+                }
+            }
             FieldKind::Str => {
                 if let Some(raw) = form.get(&spec.name) {
-                    set_pointer(&mut config, &spec.pointer, Value::String(raw.clone()));
+                    set_pointer(&mut config, &spec.pointer, Value::String(raw.to_string()));
                 }
             }
             FieldKind::Int { nullable, min, max } => {
@@ -975,6 +1102,15 @@ fn bool_at(config: &Value, pointer: &str) -> bool {
         .pointer(pointer)
         .and_then(Value::as_bool)
         .unwrap_or(false)
+}
+
+/// Whether the config array at `pointer` contains the integer `value` —
+/// drives the `checked` state of a checkbox-group member.
+fn array_contains(config: &Value, pointer: &str, value: i64) -> bool {
+    config
+        .pointer(pointer)
+        .and_then(Value::as_array)
+        .is_some_and(|items| items.iter().any(|v| v.as_i64() == Some(value)))
 }
 
 fn field_error(path: &str, msg: &str) -> FieldError {
@@ -1094,6 +1230,13 @@ mod tests {
                             "alpaca_url": { "type": "string" },
                             "device_number": { "type": "integer", "format": "uint32", "minimum": 0 },
                             "gain": { "type": "integer", "format": "uint32", "minimum": 0 },
+                            // The integer-enum array shape (rp's dark-library
+                            // cooler grid) — renders as a checkbox group.
+                            "cooler_targets_c": {
+                                "type": "array",
+                                "items": { "type": "integer", "enum": [-15, -10, -5, 0, 5] },
+                                "uniqueItems": true,
+                            },
                             "auth": { "anyOf": [ { "$ref": "#/$defs/DeviceAuth" }, { "type": "null" } ] },
                         },
                     },
@@ -1133,11 +1276,161 @@ mod tests {
             FieldModel::from_item_schema(&rp_like_schema(), "cameras").expect("cameras item model");
         let names: Vec<&str> = model.fields.iter().map(|f| f.name.as_str()).collect();
         // Relative, sorted leaf names; the optional `auth` subtree is skipped
-        // (anyOf) exactly like on the config pages.
-        assert_eq!(names, vec!["alpaca_url", "device_number", "gain", "id"]);
+        // (anyOf) exactly like on the config pages, while the integer-enum
+        // array (`cooler_targets_c`) is a renderable leaf.
+        assert_eq!(
+            names,
+            vec![
+                "alpaca_url",
+                "cooler_targets_c",
+                "device_number",
+                "gain",
+                "id"
+            ]
+        );
         // Item models carry no tiers — the entry form has no read-only fields.
         assert!(model.locked.is_empty());
         assert!(model.read_only.is_empty());
+    }
+
+    #[test]
+    fn walker_classifies_an_integer_enum_array_as_a_checkbox_group() {
+        let model =
+            FieldModel::from_item_schema(&rp_like_schema(), "cameras").expect("cameras item model");
+        let spec = model
+            .fields
+            .iter()
+            .find(|f| f.name == "cooler_targets_c")
+            .expect("cooler_targets_c must be a walked leaf");
+        assert_eq!(
+            spec.kind,
+            FieldKind::IntSet {
+                options: vec![-15, -10, -5, 0, 5]
+            },
+            "options must carry the schema enum in its declared order"
+        );
+    }
+
+    #[test]
+    fn walker_still_skips_object_arrays() {
+        // rp's `equipment.cameras` is an array of objects — it must keep
+        // round-tripping via the blob, not render.
+        let model = FieldModel::from_schema(&rp_like_schema());
+        assert!(
+            !model
+                .fields
+                .iter()
+                .any(|f| f.name.starts_with("equipment.cameras")),
+            "object arrays must stay skipped: {:?}",
+            model.fields.iter().map(|f| &f.name).collect::<Vec<_>>()
+        );
+    }
+
+    /// A minimal schema with one integer-enum array leaf at a nested path,
+    /// for the checkbox-group render + merge tests.
+    fn grid_schema() -> ConfigSchemaResponse {
+        ConfigSchemaResponse {
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "cooling": {
+                        "type": "object",
+                        "properties": {
+                            "targets": {
+                                "type": "array",
+                                "items": { "type": "integer", "enum": [-10, -5, 0] },
+                                "uniqueItems": true,
+                            },
+                        },
+                    },
+                },
+            }),
+            locked_fields: vec![],
+            read_only_fields: vec![],
+        }
+    }
+
+    fn grid_model() -> FieldModel {
+        FieldModel::from_schema(&grid_schema())
+    }
+
+    #[test]
+    fn config_card_renders_a_checkbox_group_with_checked_members() {
+        let model = grid_model();
+        let config = json!({ "cooling": { "targets": [-10, 0] } });
+        let markup = config_card(&page(), &model, &config, &[], &[], &[], None).into_string();
+        // One checkbox per enum value, sharing the field name, with a
+        // per-value id; the values present in the config render checked.
+        for (id, value, checked) in [
+            ("cooling.targets.-10", "-10", true),
+            ("cooling.targets.-5", "-5", false),
+            ("cooling.targets.0", "0", true),
+        ] {
+            let tag_start = format!(r#"id="{id}""#);
+            let tag = markup
+                .split("<input")
+                .find(|frag| frag.contains(&tag_start))
+                .unwrap_or_else(|| panic!("missing checkbox {id}:\n{markup}"));
+            assert!(tag.contains(r#"name="cooling.targets""#), "{tag}");
+            assert!(tag.contains(&format!(r#"value="{value}""#)), "{tag}");
+            assert_eq!(
+                tag.contains("checked"),
+                checked,
+                "checkbox {id} checked-state mismatch: {tag}"
+            );
+        }
+    }
+
+    #[test]
+    fn merge_form_collects_checkbox_group_values_in_enum_order() {
+        let form = form_from(&[
+            ("__config", r#"{"cooling":{"targets":[0]}}"#),
+            ("__overrides", "[]"),
+            // Submitted out of enum order — the merge normalizes.
+            ("cooling.targets", "0"),
+            ("cooling.targets", "-10"),
+        ]);
+        let merged = merge_form(&form, &grid_model()).unwrap();
+        assert_eq!(
+            merged.config.pointer("/cooling/targets"),
+            Some(&json!([-10, 0])),
+            "checked values must be written back in schema enum order"
+        );
+        assert!(merged.errors.is_empty(), "{:?}", merged.errors);
+    }
+
+    #[test]
+    fn merge_form_empty_checkbox_group_becomes_empty_array() {
+        // Nothing checked ⇒ no pairs under the field name ⇒ empty array
+        // (same present/absent semantics as a boolean checkbox).
+        let form = form_from(&[
+            ("__config", r#"{"cooling":{"targets":[-10,0]}}"#),
+            ("__overrides", "[]"),
+        ]);
+        let merged = merge_form(&form, &grid_model()).unwrap();
+        assert_eq!(
+            merged.config.pointer("/cooling/targets"),
+            Some(&json!([])),
+            "unchecking every box must clear the array, not keep the prior value"
+        );
+    }
+
+    #[test]
+    fn merge_form_checkbox_group_value_outside_the_enum_is_a_field_error() {
+        let form = form_from(&[
+            ("__config", r#"{"cooling":{"targets":[]}}"#),
+            ("__overrides", "[]"),
+            ("cooling.targets", "-10"),
+            ("cooling.targets", "7"),
+        ]);
+        let merged = merge_form(&form, &grid_model()).unwrap();
+        assert_eq!(merged.errors.len(), 1, "{:?}", merged.errors);
+        assert_eq!(merged.errors[0].path, "cooling.targets");
+        assert_eq!(
+            merged.config.pointer("/cooling/targets"),
+            Some(&json!([])),
+            "a rejected submission must leave the blob value untouched"
+        );
     }
 
     #[test]
@@ -1191,11 +1484,13 @@ mod tests {
         .into_string()
     }
 
-    fn form_from(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-        pairs
-            .iter()
-            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
-            .collect()
+    fn form_from(pairs: &[(&str, &str)]) -> FormValues {
+        FormValues::from(
+            pairs
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                .collect::<Vec<_>>(),
+        )
     }
 
     /// The `<input ...>` tag whose `name` attribute is `name`.

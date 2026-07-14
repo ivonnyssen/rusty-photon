@@ -48,6 +48,33 @@ async fn submit_equipment_form(world: &mut UiWorld, step: &Step) {
     world.submit_rendered_form(&refs).await;
 }
 
+/// Submit the currently-rendered equipment form with the table's field edits
+/// plus a checkbox group: one submitted pair per checked value, sharing the
+/// group's field name (the multi-value shape a browser posts).
+#[when(regex = r#"^I submit the equipment form checking "([\w_]+)" values "([^"]+)" with:$"#)]
+async fn submit_equipment_form_with_checked(
+    world: &mut UiWorld,
+    name: String,
+    values: String,
+    step: &Step,
+) {
+    let table = step.table.as_ref().expect("step needs a table");
+    let changes: Vec<(String, String)> = table
+        .rows
+        .iter()
+        .skip(1) // header row: | field | value |
+        .map(|row| (row[0].clone(), row[1].clone()))
+        .collect();
+    let refs: Vec<(&str, &str)> = changes
+        .iter()
+        .map(|(f, v)| (f.as_str(), v.as_str()))
+        .collect();
+    let checked: Vec<&str> = values.split(',').map(str::trim).collect();
+    world
+        .submit_rendered_form_multi(&refs, (&name, &checked))
+        .await;
+}
+
 #[when(regex = r#"^I remove cover calibrator "([\w-]+)" from the roster$"#)]
 async fn remove_entry(world: &mut UiWorld, id: String) {
     // The Remove affordance is an htmx button (hx-post + hx-confirm); drive
@@ -125,6 +152,27 @@ fn form_problem(world: &mut UiWorld, needle: String) {
         dom::text_contains(&world.last_body, ".banner.error", &needle),
         "no problem banner mentioning {needle:?}:\n{}",
         world.last_body
+    );
+}
+
+#[then(regex = r#"^the form offers a "([\w_]+)" checkbox for value "(-?\d+)"$"#)]
+fn form_offers_checkbox(world: &mut UiWorld, name: String, value: String) {
+    assert!(
+        dom::has_checkbox(&world.last_body, &name, &value),
+        "no checkbox named {name:?} with value {value:?} in:\n{}",
+        world.last_body
+    );
+}
+
+#[then(regex = r#"^rp's config file JSON at "([^"]+)" equals "([^"]+)"$"#)]
+fn rp_config_json_at(world: &mut UiWorld, pointer: String, expected: String) {
+    let on_disk = world.rp_config_on_disk();
+    let expected: serde_json::Value =
+        serde_json::from_str(&expected).expect("the expected value must be JSON");
+    assert_eq!(
+        on_disk.pointer(&pointer),
+        Some(&expected),
+        "config file JSON at {pointer}:\n{on_disk}"
     );
 }
 

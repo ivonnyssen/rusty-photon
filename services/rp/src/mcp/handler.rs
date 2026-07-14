@@ -79,6 +79,11 @@ pub struct McpHandler {
     /// `with_centering_config` from the `centering` block in rp config;
     /// tests use `CenteringConfig::default()`.
     pub centering: crate::config::CenteringConfig,
+    /// Camera-cooling controller (rp.md § Camera Cooling), read by
+    /// `do_capture` to stamp the currently held rung on each exposure
+    /// document. `None` in tests that only exercise the tools — frames
+    /// then record no `cooler_setpoint_c`.
+    pub cooling: Option<Arc<crate::cooling::CoolingController>>,
     /// Merged tool catalog. Built by summing per-category routers
     /// in [`McpHandler::new`]; consumed by the
     /// `#[tool_handler(router = self.tool_router)]` ServerHandler
@@ -111,6 +116,7 @@ impl McpHandler {
             guider: None,
             guider_defaults: crate::config::GuiderDefaults::default(),
             centering: crate::config::CenteringConfig::default(),
+            cooling: None,
             // Pattern (c) merge: each `built_in/<category>.rs`
             // declares a `#[tool_router(router = tool_router_<name>,
             // vis = "pub")]` block whose generated associated function
@@ -204,6 +210,14 @@ impl McpHandler {
     /// `config.centering`; tests leave the default.
     pub fn with_centering_config(mut self, centering: crate::config::CenteringConfig) -> Self {
         self.centering = centering;
+        self
+    }
+
+    /// Wire the camera-cooling controller so `do_capture` can stamp the
+    /// currently held rung on each exposure document (rp.md § Camera
+    /// Cooling). Tests leave `None`.
+    pub fn with_cooling(mut self, cooling: Arc<crate::cooling::CoolingController>) -> Self {
+        self.cooling = Some(cooling);
         self
     }
 }

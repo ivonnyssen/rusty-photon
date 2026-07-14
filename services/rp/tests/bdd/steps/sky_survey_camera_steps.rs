@@ -60,6 +60,7 @@ async fn sky_survey_camera_follows(world: &mut RpWorld, offset_ra: f64, offset_d
         id: "main-cam".to_string(),
         alpaca_url: cam_url,
         device_number: 0,
+        cooler_targets_c: Vec::new(),
     });
 }
 

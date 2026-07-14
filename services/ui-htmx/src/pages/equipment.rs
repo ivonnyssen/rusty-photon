@@ -490,18 +490,17 @@ pub async fn new_form(
 /// the skeleton, but a sparse (hand-crafted) blob must not silently drop the
 /// submitted fields.
 fn entry_from_form(
-    form: &std::collections::HashMap<String, String>,
+    mut form: pages::FormValues,
     model: &FieldModel,
 ) -> Result<(Value, Vec<FieldError>), String> {
-    let mut form = form.clone();
     let blob: Value = match form.get("__config") {
         Some(raw) => serde_json::from_str(raw).map_err(|e| e.to_string())?,
         None => Value::Object(serde_json::Map::new()),
     };
     let mut seeded = skeleton_of(model);
     merge_values(&mut seeded, &blob);
-    form.insert(
-        "__config".to_string(),
+    form.set(
+        "__config",
         serde_json::to_string(&seeded).map_err(|e| e.to_string())?,
     );
     match pages::merge_form(&form, model) {
@@ -555,8 +554,12 @@ pub async fn new_submit(
     State(state): State<AppState>,
     Path(kind_key): Path<String>,
     headers: HeaderMap,
-    Form(form): Form<std::collections::HashMap<String, String>>,
+    // Pairs, not a map: a checkbox group (e.g. a camera's
+    // cooler_targets_c grid) posts one pair per checked box and
+    // `serde_urlencoded` would collapse duplicate keys in a map.
+    Form(form): Form<Vec<(String, String)>>,
 ) -> Response {
+    let form = pages::FormValues::from(form);
     let (rp, kind) = match kind_or_response(&state, &kind_key, &headers) {
         Ok(parts) => parts,
         Err(response) => return *response,
@@ -565,7 +568,7 @@ pub async fn new_submit(
         Ok(model) => model,
         Err(card) => return respond(card, &headers),
     };
-    let (entry, mut errors) = match entry_from_form(&form, &model) {
+    let (entry, mut errors) = match entry_from_form(form, &model) {
         Ok(parts) => parts,
         Err(msg) => return respond(rp_error_card(&ConfigClientError::Decode(msg)), &headers),
     };
@@ -651,8 +654,9 @@ pub async fn edit_submit(
     State(state): State<AppState>,
     Path((kind_key, id)): Path<(String, String)>,
     headers: HeaderMap,
-    Form(form): Form<std::collections::HashMap<String, String>>,
+    Form(form): Form<Vec<(String, String)>>,
 ) -> Response {
+    let form = pages::FormValues::from(form);
     let (rp, kind) = match kind_or_response(&state, &kind_key, &headers) {
         Ok(parts) => parts,
         Err(response) => return *response,
@@ -662,7 +666,7 @@ pub async fn edit_submit(
         Err(card) => return respond(card, &headers),
     };
     let mode = FormMode::Edit { id: &id };
-    let (entry, mut errors) = match entry_from_form(&form, &model) {
+    let (entry, mut errors) = match entry_from_form(form, &model) {
         Ok(parts) => parts,
         Err(msg) => return respond(rp_error_card(&ConfigClientError::Decode(msg)), &headers),
     };
@@ -753,7 +757,6 @@ fn with_push_url(mut response: Response) -> Response {
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
-    use std::collections::HashMap;
     use std::sync::Mutex;
 
     use serde_json::json;
@@ -952,12 +955,13 @@ mod tests {
             api_with_status(empty_status()),
             probe_managed(),
         );
-        let mut form = HashMap::new();
-        form.insert("__config".to_string(), "{}".to_string());
-        form.insert("__overrides".to_string(), "[]".to_string());
-        form.insert("id".to_string(), "new-flat".to_string());
-        form.insert("alpaca_url".to_string(), "http://127.0.0.1:1".to_string());
-        form.insert("device_number".to_string(), "0".to_string());
+        let form: Vec<(String, String)> = vec![
+            ("__config".to_string(), "{}".to_string()),
+            ("__overrides".to_string(), "[]".to_string()),
+            ("id".to_string(), "new-flat".to_string()),
+            ("alpaca_url".to_string(), "http://127.0.0.1:1".to_string()),
+            ("device_number".to_string(), "0".to_string()),
+        ];
 
         let response = new_submit(
             State(state),
@@ -1002,10 +1006,11 @@ mod tests {
             api_with_status(empty_status()),
             MockProbeHttp::new(),
         );
-        let mut form = HashMap::new();
-        form.insert("__config".to_string(), "{}".to_string());
-        form.insert("__overrides".to_string(), "[]".to_string());
-        form.insert("alpaca_url".to_string(), "http://127.0.0.1:1".to_string());
+        let form: Vec<(String, String)> = vec![
+            ("__config".to_string(), "{}".to_string()),
+            ("__overrides".to_string(), "[]".to_string()),
+            ("alpaca_url".to_string(), "http://127.0.0.1:1".to_string()),
+        ];
 
         let response = new_submit(
             State(state),
@@ -1036,11 +1041,12 @@ mod tests {
             api_with_status(empty_status()),
             MockProbeHttp::new(),
         );
-        let mut form = HashMap::new();
-        form.insert("__config".to_string(), "{}".to_string());
-        form.insert("__overrides".to_string(), "[]".to_string());
-        form.insert("id".to_string(), "new-flat".to_string());
-        form.insert("alpaca_url".to_string(), "nope".to_string());
+        let form: Vec<(String, String)> = vec![
+            ("__config".to_string(), "{}".to_string()),
+            ("__overrides".to_string(), "[]".to_string()),
+            ("id".to_string(), "new-flat".to_string()),
+            ("alpaca_url".to_string(), "nope".to_string()),
+        ];
 
         let response = new_submit(
             State(state),

@@ -40,6 +40,19 @@ Feature: Equipment page
     And rp's config file on disk contains the string "new-flat"
     And the roster section "Cover calibrators" does not yet list "new-flat"
 
+  Scenario: A camera's dark-library cooler grid renders as checkboxes and stores the checked rungs
+    Given a running rp orchestrator with an empty roster
+    And a BFF pointed at rp
+    When I open the add-equipment form for "cameras"
+    Then the form offers a "cooler_targets_c" checkbox for value "-10"
+    When I submit the equipment form checking "cooler_targets_c" values "-10, 5" with:
+      | field         | value              |
+      | id            | cooled-cam         |
+      | alpaca_url    | http://127.0.0.1:1 |
+      | device_number | 0                  |
+    Then the page reports the changes take effect when rp is restarted
+    And rp's config file JSON at "/equipment/cameras/0/cooler_targets_c" equals "[-10,5]"
+
   Scenario: An added entry with a duplicate id is rejected on the form
     Given a running dsd-fp2 driver registered in rp's roster as cover calibrator "flat-panel"
     And a BFF pointed at rp

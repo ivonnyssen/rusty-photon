@@ -11,6 +11,7 @@
 
 pub mod camera;
 pub mod centering;
+pub mod cooling;
 pub mod cover_calibrator;
 pub mod equipment;
 pub mod filter_wheel;
@@ -27,6 +28,7 @@ pub mod site;
 
 pub use camera::CameraConfig;
 pub use centering::CenteringConfig;
+pub use cooling::CoolingConfig;
 pub use cover_calibrator::CoverCalibratorConfig;
 pub use equipment::EquipmentConfig;
 pub use filter_wheel::FilterWheelConfig;
@@ -82,6 +84,12 @@ pub struct Config {
     /// an omitted block uses [`CenteringConfig`]'s defaults.
     #[serde(default)]
     pub centering: CenteringConfig,
+    /// Camera-cooling controller tuning (rp.md § Camera Cooling).
+    /// Always present; an omitted block uses [`CoolingConfig`]'s
+    /// defaults. The per-camera setpoint ladders live under
+    /// `equipment.cameras[].cooler_targets_c`.
+    #[serde(default)]
+    pub cooling: CoolingConfig,
     /// Optional plate-solver service. When `None`, the `plate_solve`
     /// MCP tool returns `plate solver not configured`. Mirrors the
     /// `Option<MountConfig>` pattern — the service is optional
@@ -373,7 +381,7 @@ mod tests {
                     "alpaca_url": "https://localhost:11120",
                     "device_type": "camera",
                     "device_number": 0,
-                    "cooler_target_c": -10.0,
+                    "cooler_targets_c": [-10, 5],
                     "gain": 100,
                     "offset": 50,
                     "focal_length_mm": 1000.0,
@@ -425,6 +433,17 @@ mod tests {
             "safety": { "poll_interval": "10s" },
             "imaging": { "cache_max_mib": 1024, "cache_max_images": 8 },
             "centering": { "solve_time_estimate": "30s", "slew_overhead_estimate": "10s" },
+            "cooling": {
+                "poll_interval": "10s",
+                "plateau_window": "2m",
+                "plateau_threshold_c": 0.5,
+                "tolerance_c": 1.0,
+                "max_cooler_power_pct": 90.0,
+                "regulation_margin_c": 3.0,
+                "max_cooldown": "20m",
+                "warmup_step_interval": "2m",
+                "warm_target_c": 10.0
+            },
             "plate_solver": { "url": "http://localhost:11131", "timeout": "1m", "default_search_radius_deg": 3.0 },
             "guider": {
                 "url": "http://localhost:11130",
@@ -454,6 +473,10 @@ mod tests {
             ("/safety/poll_interval", "10s"),
             ("/centering/solve_time_estimate", "30s"),
             ("/centering/slew_overhead_estimate", "10s"),
+            ("/cooling/poll_interval", "10s"),
+            ("/cooling/plateau_window", "2m"),
+            ("/cooling/max_cooldown", "20m"),
+            ("/cooling/warmup_step_interval", "2m"),
             ("/plate_solver/timeout", "1m"),
             ("/guider/timeout", "1m 30s"),
             ("/guider/settle_time", "10s"),

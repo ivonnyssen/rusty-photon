@@ -100,6 +100,17 @@ pub fn form_post_url(html: &str) -> Option<String> {
     attr(html, "form[hx-post]", "hx-post")
 }
 
+/// Whether the page renders a checkbox named `name` carrying `value` — one
+/// member of a checkbox group (e.g. a camera's `cooler_targets_c` grid).
+pub fn has_checkbox(html: &str, name: &str, value: &str) -> bool {
+    let doc = Html::parse_document(html);
+    doc.select(&selector(&format!(
+        r#"input[type="checkbox"][name="{name}"][value="{value}"]"#
+    )))
+    .next()
+    .is_some()
+}
+
 /// The `hx-get` URL of the "Unlock to edit" affordance for `field`, if present —
 /// the affordance the page actually renders, so a follow request goes where the
 /// browser would go rather than to a hard-coded `?unlock=` URL. It is a
