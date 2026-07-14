@@ -91,22 +91,31 @@ impl CoolingController {
     /// interrupt deliberately does **not** come through here — the
     /// cooler holds its rung through an interruption.
     pub fn start_warmup(self: &Arc<Self>) {
-        let mut states = self.lock_states();
-        for (camera_id, entry) in states.iter_mut() {
-            if let Some(task) = entry.task.take() {
-                task.abort();
-            }
-            let Some(from_c) = entry.commanded_c else {
-                continue;
-            };
-            // Frames captured during the ramp are off the grid — stop
-            // recording a rung immediately.
-            entry.rung_c = None;
+        // Collect under the lock, spawn after: a spawned warm-up task
+        // re-locks `states` almost immediately (`set_commanded`), and
+        // holding the guard across `tokio::spawn` would block a runtime
+        // worker on the mutex until the loop finishes.
+        let to_warm: Vec<(String, f64)> = {
+            let mut states = self.lock_states();
+            states
+                .iter_mut()
+                .filter_map(|(camera_id, entry)| {
+                    if let Some(task) = entry.task.take() {
+                        task.abort();
+                    }
+                    let from_c = entry.commanded_c?;
+                    // Frames captured during the ramp are off the grid —
+                    // stop recording a rung immediately.
+                    entry.rung_c = None;
+                    Some((camera_id.clone(), from_c))
+                })
+                .collect()
+        };
+        for (camera_id, from_c) in to_warm {
             let ctrl = Arc::clone(self);
             let id = camera_id.clone();
-            entry.task = Some(tokio::spawn(async move {
-                ctrl.run_warmup(&id, from_c).await;
-            }));
+            let handle = tokio::spawn(async move { ctrl.run_warmup(&id, from_c).await });
+            self.store_task(&camera_id, handle);
         }
     }
 
