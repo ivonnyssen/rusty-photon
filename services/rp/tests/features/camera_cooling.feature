@@ -63,6 +63,7 @@ Feature: Camera cooling selects and holds a dark-library setpoint
     Given a test webhook receiver subscribed to "cooler_warmup_started" and "cooler_warmup_complete"
     And rp is running with a camera with cooler targets "5" on the simulator and the test orchestrator
     When a session is started via the REST API
+    And the camera cooler becomes on
     And the session is stopped via the REST API
     Then the test webhook receiver should receive a "cooler_warmup_started" event
     And the test webhook receiver should receive a "cooler_warmup_complete" event

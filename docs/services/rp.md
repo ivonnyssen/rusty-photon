@@ -1939,10 +1939,13 @@ condensation/frost on the sensor window.
 A safety **interrupt** does not warm up: the session may resume, and a
 regulated cold sensor is not a hazard — the cooler holds its rung
 through the interruption. Starting a session during a warm-up cancels
-the ramp and begins a fresh cooldown pass. `rp` shutting down
-mid-ramp simply leaves the cooler at its last commanded setpoint —
-the driver keeps regulating, and the next session start or recovery
-takes over.
+the ramp and begins a fresh cooldown pass; symmetrically, a stop that
+lands while the cooldown pass is still commanding the device takes it
+over — the commanded setpoint is recorded before the first mutating
+call, so the cooler is never left regulating with nobody driving.
+`rp` shutting down mid-ramp simply leaves the cooler at its last
+commanded setpoint — the driver keeps regulating, and the next
+session start or recovery takes over.
 
 ### Per-frame recording
 

@@ -633,10 +633,13 @@ fn render_field(page: &Page<'_>, ctx: &FieldCtx<'_>, spec: &FieldSpec) -> Markup
                 }
                 // One checkbox per enumerated value, in schema order; all
                 // share the field's `name`, so the checked values arrive as
-                // repeated form pairs (see `FormValues`).
+                // repeated form pairs (see `FormValues`). The group heading
+                // is a span (a bare `label` would reference no control);
+                // `role="group"` + `aria-label` name the group for
+                // assistive tech, and each member keeps its own real label.
                 FieldKind::IntSet { options } => {
-                    label { (spec.label) }
-                    div.checkbox-group {
+                    span.group-label { (spec.label) }
+                    div.checkbox-group role="group" aria-label=(spec.label) {
                         @for option in options {
                             @let option_id = format!("{name}.{option}");
                             div.checkbox {
@@ -1379,6 +1382,28 @@ mod tests {
                 "checkbox {id} checked-state mismatch: {tag}"
             );
         }
+    }
+
+    #[test]
+    fn form_values_preserves_duplicates_and_set_replaces_them() {
+        let mut form = FormValues::from(vec![
+            ("targets".to_string(), "-10".to_string()),
+            ("other".to_string(), "x".to_string()),
+            ("targets".to_string(), "0".to_string()),
+        ]);
+        assert_eq!(form.get("targets"), Some("-10"), "get takes the first pair");
+        assert_eq!(
+            form.get_all("targets").collect::<Vec<_>>(),
+            vec!["-10", "0"]
+        );
+        assert!(form.contains_key("other"));
+        assert!(!form.contains_key("absent"));
+        assert_eq!(form.get("absent"), None);
+
+        form.set("targets", "5".to_string());
+        assert_eq!(form.get_all("targets").collect::<Vec<_>>(), vec!["5"]);
+        form.set("fresh", "1".to_string());
+        assert_eq!(form.get("fresh"), Some("1"), "set appends when absent");
     }
 
     #[test]

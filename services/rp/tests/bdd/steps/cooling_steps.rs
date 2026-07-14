@@ -4,7 +4,7 @@
 //! ladder-configured camera Givens, the numeric event/document
 //! assertions, and the direct simulator cooler-state checks.
 
-use cucumber::{given, then};
+use cucumber::{given, then, when};
 
 use bdd_infra::rp_harness::{CameraConfig, CoolingOverrides};
 
@@ -51,6 +51,24 @@ fn add_camera_with_targets(world: &mut RpWorld, ladder: Vec<i32>) {
         device_number: 0,
         cooler_targets_c: ladder,
     });
+}
+
+// --- When steps ---
+
+/// Wait until the cooldown task has actually switched the simulator
+/// camera's cooler on. The warm-up scenario stops the session right
+/// after starting it; without this barrier the stop can race the
+/// cooldown's first device command and the scenario would assert on an
+/// arbitrary interleaving instead of the ramp contract.
+#[when("the camera cooler becomes on")]
+async fn camera_cooler_becomes_on(world: &mut RpWorld) {
+    for _ in 0..40 {
+        if omnisim_cooler_on(world).await {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+    panic!("the simulator camera cooler did not turn on within timeout");
 }
 
 // --- Then steps ---

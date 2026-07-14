@@ -209,12 +209,20 @@ impl CoolingController {
             target_c = target,
             "cooldown pass: commanding the lowest rung"
         );
+        // Record the commanded intent BEFORE the first mutating call: a
+        // session stop racing this task (`start_warmup` aborts it at any
+        // await point) must find `commanded_c` set once the device may
+        // have been touched, so the warm-up path always takes over an
+        // in-flight cooldown instead of leaving the cooler commanded.
+        self.set_commanded(camera_id, f64::from(target));
         if let Err(e) = cam.set_set_ccd_temperature(f64::from(target)).await {
             warn!(camera_id, error = %e, "SetCCDTemperature failed; skipping cooling");
+            self.clear_state(camera_id);
             return;
         }
         if let Err(e) = cam.set_cooler_on(true).await {
             warn!(camera_id, error = %e, "CoolerOn(true) failed; skipping cooling");
+            self.clear_state(camera_id);
             return;
         }
         self.set_rung(camera_id, target);
@@ -232,12 +240,24 @@ impl CoolingController {
         loop {
             tokio::time::sleep(self.config.poll_interval).await;
             let now = Instant::now();
+            let timed_out = now.duration_since(pass_start) >= self.config.max_cooldown;
             let temp = match cam.ccd_temperature().await {
                 Ok(t) => t,
                 Err(e) => {
-                    // Transient read failures skip a sample, never
-                    // abort the pass.
+                    // Transient read failures skip a sample — but the
+                    // backstop must still bound the pass: a camera whose
+                    // temperature never reads can select nothing, and the
+                    // cooler must not be left commanded indefinitely.
                     debug!(camera_id, error = %e, "CCDTemperature read failed; skipping this sample");
+                    if timed_out {
+                        warn!(camera_id,
+                              "cooldown backstop expired without a readable CCDTemperature; switching the cooler off");
+                        if let Err(e) = cam.set_cooler_on(false).await {
+                            warn!(camera_id, error = %e, "CoolerOn(false) failed");
+                        }
+                        self.clear_state(camera_id);
+                        return;
+                    }
                     continue;
                 }
             };
@@ -292,7 +312,6 @@ impl CoolingController {
             let above_rung = temp > f64::from(target) + self.config.tolerance_c;
             let pegged =
                 !powers.is_empty() && powers.iter().all(|p| *p > self.config.max_cooler_power_pct);
-            let timed_out = now.duration_since(pass_start) >= self.config.max_cooldown;
             if timed_out {
                 debug!(
                     camera_id,
@@ -495,6 +514,15 @@ mod tests {
     struct CoolerSim {
         can_set: bool,
         can_get_power: bool,
+        /// When false the stub answers every `CCDTemperature` read with
+        /// an ASCOM error — the backstop-with-no-reading regression.
+        temp_readable: bool,
+        /// `Some` makes `HeatSinkTemperature` readable (warm-up ramps to
+        /// it); `None` answers NOT_IMPLEMENTED (fallback to config).
+        heatsink_c: Option<f64>,
+        /// Fail `SetCCDTemperature` writes once this many have
+        /// succeeded (the mid-pass command-failure branch).
+        fail_setpoint_after: Option<u32>,
         ambient_c: f64,
         floor_c: f64,
         setpoint_c: f64,
@@ -507,6 +535,9 @@ mod tests {
             Self {
                 can_set: true,
                 can_get_power: true,
+                temp_readable: true,
+                heatsink_c: None,
+                fail_setpoint_after: None,
                 ambient_c: 10.0,
                 floor_c: -30.0,
                 setpoint_c: 0.0,
@@ -578,7 +609,12 @@ mod tests {
             .route(
                 "/api/v1/camera/0/ccdtemperature",
                 get(|State(sim): State<Sim>| async move {
-                    ok_value(json!(sim.lock().unwrap().temperature()))
+                    let sim = sim.lock().unwrap();
+                    if sim.temp_readable {
+                        ok_value(json!(sim.temperature()))
+                    } else {
+                        Json(json!({ "ErrorNumber": 1024, "ErrorMessage": "not implemented" }))
+                    }
                 }),
             )
             .route(
@@ -614,18 +650,31 @@ mod tests {
                             .and_then(|v| v.parse().ok())
                             .unwrap_or(f64::NAN);
                         let mut sim = sim.lock().unwrap();
+                        if sim
+                            .fail_setpoint_after
+                            .is_some_and(|n| sim.set_setpoint_calls >= n)
+                        {
+                            return Json(
+                                json!({ "ErrorNumber": 1035, "ErrorMessage": "simulated setpoint failure" }),
+                            );
+                        }
                         sim.setpoint_c = value;
                         sim.set_setpoint_calls += 1;
                         Json(json!({ "ErrorNumber": 0, "ErrorMessage": "" }))
                     },
                 ),
             )
-            // HeatSinkTemperature is deliberately NOT_IMPLEMENTED (0x400)
-            // so warm-up falls back to `cooling.warm_target_c`.
+            // HeatSinkTemperature answers NOT_IMPLEMENTED (0x400) unless
+            // the sim sets `heatsink_c` — both warm-up target sources.
             .route(
                 "/api/v1/camera/0/heatsinktemperature",
-                get(|| async {
-                    Json(json!({ "ErrorNumber": 1024, "ErrorMessage": "not implemented" }))
+                get(|State(sim): State<Sim>| async move {
+                    match sim.lock().unwrap().heatsink_c {
+                        Some(t) => ok_value(json!(t)),
+                        None => Json(
+                            json!({ "ErrorNumber": 1024, "ErrorMessage": "not implemented" }),
+                        ),
+                    }
                 }),
             )
             .with_state(sim)
@@ -654,6 +703,17 @@ mod tests {
         Arc<CoolingController>,
         tokio::sync::broadcast::Receiver<crate::events::EventEnvelope>,
     ) {
+        controller_with_config(url, ladder, fast_config()).await
+    }
+
+    async fn controller_with_config(
+        url: &str,
+        ladder: &[i32],
+        config: CoolingConfig,
+    ) -> (
+        Arc<CoolingController>,
+        tokio::sync::broadcast::Receiver<crate::events::EventEnvelope>,
+    ) {
         let equipment_config: crate::config::EquipmentConfig = serde_json::from_value(json!({
             "cameras": [{
                 "id": "main-cam",
@@ -669,11 +729,7 @@ mod tests {
         );
         let bus = Arc::new(EventBus::from_config(&[]));
         let rx = bus.subscribe();
-        let ctrl = Arc::new(CoolingController::new(
-            Arc::new(registry),
-            bus,
-            fast_config(),
-        ));
+        let ctrl = Arc::new(CoolingController::new(Arc::new(registry), bus, config));
         (ctrl, rx)
     }
 
@@ -877,6 +933,238 @@ mod tests {
                 .any(|e| e.event == "cooler_stabilized"),
             "re-adoption must not re-announce stabilization"
         );
+    }
+
+    /// A camera whose `CCDTemperature` never reads can select nothing —
+    /// the `max_cooldown` backstop must still end the pass and switch
+    /// the cooler off rather than leaving it commanded indefinitely.
+    #[tokio::test]
+    async fn unreadable_temperature_hits_the_backstop_and_switches_off() {
+        let sim: Sim = Arc::new(Mutex::new(CoolerSim::new()));
+        sim.lock().unwrap().temp_readable = false;
+        let stub = spawn_stub(stub_router(sim.clone())).await;
+        let mut config = fast_config();
+        config.max_cooldown = Duration::from_millis(200);
+        let (ctrl, mut rx) = controller_with_config(&stub.url(), &[-10], config).await;
+
+        ctrl.run_cooldown("main-cam", &[-10]).await;
+
+        assert_eq!(ctrl.rung_for("main-cam"), None);
+        assert!(
+            !sim.lock().unwrap().cooler_on,
+            "the cooler must be switched off when the backstop expires without a reading"
+        );
+        assert!(
+            drain(&mut rx).is_empty(),
+            "no selection outcome can be announced without a temperature"
+        );
+    }
+
+    /// The public entry points spawn (and supersede) the per-camera
+    /// tasks. Drive a whole start → hold → warm-up cycle through them,
+    /// awaiting each stored task handle for determinism.
+    #[tokio::test]
+    async fn spawned_cooldown_then_warmup_cycle_completes() {
+        let sim: Sim = Arc::new(Mutex::new(CoolerSim::new()));
+        let stub = spawn_stub(stub_router(sim.clone())).await;
+        let (ctrl, mut rx) = controller_for(&stub.url(), &[-10]).await;
+
+        ctrl.start_cooldown();
+        let task = ctrl
+            .lock_states()
+            .get_mut("main-cam")
+            .and_then(|entry| entry.task.take())
+            .expect("start_cooldown must store the camera's task");
+        task.await.unwrap();
+        assert_eq!(ctrl.rung_for("main-cam"), Some(-10));
+
+        ctrl.start_warmup();
+        let task = ctrl
+            .lock_states()
+            .get_mut("main-cam")
+            .and_then(|entry| entry.task.take())
+            .expect("start_warmup must store the camera's task");
+        task.await.unwrap();
+        assert_eq!(ctrl.rung_for("main-cam"), None);
+        assert!(!sim.lock().unwrap().cooler_on);
+        let events = drain(&mut rx);
+        for expected in [
+            "cooler_stabilized",
+            "cooler_warmup_started",
+            "cooler_warmup_complete",
+        ] {
+            assert!(
+                events.iter().any(|e| e.event == expected),
+                "missing {expected}: {:?}",
+                events.iter().map(|e| &e.event).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    /// `recover()` (the spawn wrapper) re-adopts through a stored task,
+    /// and `start_warmup` on a camera with nothing commanded is a no-op.
+    #[tokio::test]
+    async fn spawned_recover_adopts_and_uncommanded_warmup_is_a_noop() {
+        let sim: Sim = Arc::new(Mutex::new(CoolerSim::new()));
+        {
+            let mut sim = sim.lock().unwrap();
+            sim.cooler_on = true;
+            sim.setpoint_c = -10.0;
+        }
+        let stub = spawn_stub(stub_router(sim.clone())).await;
+        let (ctrl, mut rx) = controller_for(&stub.url(), &[-10, 5]).await;
+
+        ctrl.recover();
+        let task = ctrl
+            .lock_states()
+            .get_mut("main-cam")
+            .and_then(|entry| entry.task.take())
+            .expect("recover must store the camera's task");
+        task.await.unwrap();
+        assert_eq!(ctrl.rung_for("main-cam"), Some(-10));
+
+        // Clear the commanded state to model "nothing commanded yet":
+        // warm-up must skip the camera entirely.
+        ctrl.clear_state("main-cam");
+        ctrl.start_warmup();
+        assert!(
+            ctrl.lock_states()
+                .get("main-cam")
+                .and_then(|entry| entry.task.as_ref())
+                .is_none(),
+            "no warm-up task may be spawned for a camera with nothing commanded"
+        );
+        assert!(
+            !drain(&mut rx)
+                .iter()
+                .any(|e| e.event.starts_with("cooler_warmup")),
+            "no warm-up events for a camera with nothing commanded"
+        );
+    }
+
+    /// A camera that never connected is skipped by both the cooldown
+    /// and the warm-up paths (nothing to command).
+    #[tokio::test]
+    async fn a_disconnected_camera_is_skipped() {
+        let equipment_config: crate::config::EquipmentConfig = serde_json::from_value(json!({
+            "cameras": [{
+                "id": "main-cam",
+                "alpaca_url": "http://127.0.0.1:1",
+                "cooler_targets_c": [-10],
+            }]
+        }))
+        .unwrap();
+        let registry = EquipmentRegistry::new(&equipment_config).await;
+        let bus = Arc::new(EventBus::from_config(&[]));
+        let mut rx = bus.subscribe();
+        let ctrl = Arc::new(CoolingController::new(
+            Arc::new(registry),
+            bus,
+            fast_config(),
+        ));
+
+        ctrl.run_cooldown("main-cam", &[-10]).await;
+        assert_eq!(ctrl.rung_for("main-cam"), None);
+
+        ctrl.run_recover("main-cam", &[-10]).await;
+        assert_eq!(ctrl.rung_for("main-cam"), None);
+
+        ctrl.set_commanded("main-cam", -10.0);
+        ctrl.run_warmup("main-cam", -10.0).await;
+        assert_eq!(ctrl.rung_for("main-cam"), None);
+        assert!(drain(&mut rx).is_empty(), "a skipped camera emits nothing");
+    }
+
+    /// A failing initial `SetCCDTemperature` aborts the pass and clears
+    /// the commanded state (nothing was established to warm up from).
+    #[tokio::test]
+    async fn a_failing_initial_setpoint_command_clears_state() {
+        let sim: Sim = Arc::new(Mutex::new(CoolerSim::new()));
+        sim.lock().unwrap().fail_setpoint_after = Some(0);
+        let stub = spawn_stub(stub_router(sim.clone())).await;
+        let (ctrl, mut rx) = controller_for(&stub.url(), &[-10]).await;
+
+        ctrl.run_cooldown("main-cam", &[-10]).await;
+
+        assert_eq!(ctrl.rung_for("main-cam"), None);
+        assert!(
+            ctrl.lock_states()
+                .get("main-cam")
+                .and_then(|entry| entry.commanded_c)
+                .is_none(),
+            "a failed command sequence must not leave a commanded setpoint behind"
+        );
+        assert!(drain(&mut rx).is_empty());
+    }
+
+    /// A `SetCCDTemperature` failure at the snap-up point switches the
+    /// cooler off instead of leaving it chasing the unreachable rung.
+    #[tokio::test]
+    async fn a_failing_snap_up_command_switches_the_cooler_off() {
+        let sim: Sim = Arc::new(Mutex::new(CoolerSim::new()));
+        sim.lock().unwrap().fail_setpoint_after = Some(1);
+        let stub = spawn_stub(stub_router(sim.clone())).await;
+        let (ctrl, mut rx) = controller_for(&stub.url(), &[-30, -10]).await;
+
+        ctrl.run_cooldown("main-cam", &[-30, -10]).await;
+
+        assert_eq!(ctrl.rung_for("main-cam"), None);
+        assert!(
+            !sim.lock().unwrap().cooler_on,
+            "the cooler must be off after a failed mid-pass command"
+        );
+        assert!(
+            !drain(&mut rx)
+                .iter()
+                .any(|e| e.event == "cooler_stabilized"),
+            "no stabilization may be announced after an aborted pass"
+        );
+    }
+
+    /// With `CanGetCoolerPower == false` the power criterion is skipped:
+    /// the rung stabilizes on temperature alone and the event carries no
+    /// `power_pct`.
+    #[tokio::test]
+    async fn stabilizes_without_a_readable_cooler_power() {
+        let sim: Sim = Arc::new(Mutex::new(CoolerSim::new()));
+        sim.lock().unwrap().can_get_power = false;
+        let stub = spawn_stub(stub_router(sim.clone())).await;
+        let (ctrl, mut rx) = controller_for(&stub.url(), &[-10]).await;
+
+        ctrl.run_cooldown("main-cam", &[-10]).await;
+
+        assert_eq!(ctrl.rung_for("main-cam"), Some(-10));
+        let events = drain(&mut rx);
+        let stabilized = events
+            .iter()
+            .find(|e| e.event == "cooler_stabilized")
+            .expect("cooler_stabilized must be emitted");
+        assert!(
+            stabilized.payload.get("power_pct").is_none(),
+            "no power_pct without a readable CoolerPower: {}",
+            stabilized.payload
+        );
+    }
+
+    /// A readable `HeatSinkTemperature` is the warm-up endpoint (the
+    /// configured fallback only applies when the read fails).
+    #[tokio::test]
+    async fn warmup_ramps_to_the_heat_sink_temperature_when_readable() {
+        let sim: Sim = Arc::new(Mutex::new(CoolerSim::new()));
+        sim.lock().unwrap().heatsink_c = Some(20.0);
+        let stub = spawn_stub(stub_router(sim.clone())).await;
+        let (ctrl, mut rx) = controller_for(&stub.url(), &[-10]).await;
+        ctrl.run_cooldown("main-cam", &[-10]).await;
+
+        ctrl.run_warmup("main-cam", -10.0).await;
+
+        assert_eq!(sim.lock().unwrap().setpoint_c, 20.0);
+        let events = drain(&mut rx);
+        let started = events
+            .iter()
+            .find(|e| e.event == "cooler_warmup_started")
+            .expect("cooler_warmup_started must be emitted");
+        assert_eq!(started.payload["target_c"], json!(20.0));
     }
 
     #[tokio::test]
