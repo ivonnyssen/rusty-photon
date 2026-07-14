@@ -454,13 +454,15 @@ via `/dev/hidraw*`; with that node inaccessible the device enumerates but
 `EAFOpen` fails with `EAF_ERROR_REMOVED` (observed on real hardware). The
 packaged rule's `SUBSYSTEMS=="usb", ATTRS{idVendor}=="03c3"` uses udev's
 *parent-walk* match keys, which also match the hidraw child of the ZWO USB
-device — unlike the singular `SUBSYSTEM=="usb"` form (which matches only the
-USB node itself and leaves the hidraw node root-only; ZWO's own `asi.rules`
-adds an explicit `KERNEL=="hidraw*"` line for this). Two caveats observed on a
-Fedora dev box: udev drops the **entire rule line at parse time** when
-`GROUP="plugdev"` cannot be resolved, and neither the packaged postinst nor
-Fedora itself creates a `plugdev` group — so on RPM hosts the rule (and the
-unit's `SupplementaryGroups=plugdev`) currently has no effect. That gap is
+device — **empirically confirmed** via `udevadm test` against a real EAF's
+hidraw node, so no explicit `KERNEL=="hidraw*"` line is needed. The singular
+`SUBSYSTEM=="usb"` form (as in ZWO's own `asi.rules`, which compensates with
+an explicit hidraw line) matches only the USB node itself and leaves the
+hidraw node root-only. Two caveats observed on a Fedora dev box: udev drops
+the **entire rule line at parse time** when `GROUP="plugdev"` cannot be
+resolved, and neither the packaged postinst nor Fedora itself creates a
+`plugdev` group — so on RPM hosts the rule (and the unit's
+`SupplementaryGroups=plugdev`) currently has no effect. That gap is
 cross-package (every USB-device package shares this postinst/rule shape) and
 is tracked outside this document.
 
