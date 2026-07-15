@@ -1,32 +1,46 @@
 #!/bin/sh
 # push-packages-repo.sh — replace the published package-repo tree in the
 # R2 bucket behind pkg.rustyphoton.space with the freshly built-and-
-# verified SITE (docs/plans/nightly-releases.md, phase N5). The upload
-# ordering is what makes the nightly replacement safe for a client
-# mid-`apt update`/`dnf makecache`:
+# verified SITE (docs/plans/nightly-releases.md, phase N5). Two bucket
+# bookkeeping objects make the replacement safe without any listing API
+# (wrangler has no `r2 object list`): manifest.txt — every key assumed
+# live, always a superset of reality — and manifest-prev.txt — the
+# previous publish's exact tree, which is retained for one extra
+# generation so metadata a client just read keeps resolving:
 #
-#   1. read the previously published object list — manifest.txt on the
-#      bucket (wrangler has no `r2 object list`; the manifest IS the
-#      listing),
+#   1. read manifest.txt (the live-key superset) and manifest-prev.txt
+#      (the retained previous generation); only a genuine missing-object
+#      error may stand in for either being absent,
 #   2. pre-write manifest.txt as the UNION of the old listing and the
 #      tree about to upload: every key this run might create is on
 #      record before it exists, so an interruption at any later point
 #      leaves nothing unlisted — a future run can always sweep it,
-#   3. upload every content object (pool debs, rpms, Packages indices,
-#      repodata blobs, pubkey.asc) — purely additive: the old metadata
-#      keeps serving the old, still-complete tree throughout,
+#   3. upload every content object (pool debs, rpms, indices and their
+#      by-hash copies, repodata blobs, pubkey.asc) — purely additive:
+#      the old metadata keeps serving the old, complete tree throughout,
 #   4. upload the metadata entry points last, as the flip — each
 #      signature lands before the file it covers, so the moment a client
 #      sees new metadata its signature is already fetchable:
 #      Release.gpg → Release → InRelease (apt), repomd.xml.asc →
 #      repomd.xml (dnf),
-#   5. only now delete stale objects (previous manifest minus the new
-#      tree), so nothing the old metadata could still point a client at
-#      ever disappears mid-publish; per-key tolerant, because an
-#      interrupted earlier run may have removed some already,
-#   6. rewrite manifest.txt as the exact new listing. Interrupted runs
-#      therefore self-heal: the on-bucket manifest is always a superset
-#      of what was actually uploaded, never a subset.
+#   5. delete stale objects: previous listing minus the new tree MINUS
+#      the retained previous generation. Unique-name objects (pool
+#      files, by-hash indices, repodata blobs) therefore live exactly
+#      two publishes, so a client that read the outgoing InRelease /
+#      repomd.xml still fetches every object it names for a full
+#      day — with the apt by-hash indices (build-apt-repo.sh) that
+#      closes the index replacement race completely; only the
+#      canonical stable-named Packages(.gz) paths, used by
+#      by-hash-unaware clients, keep a retry-sized window,
+#   6. write manifest-prev.txt = the exact new tree (the next run's
+#      grace generation),
+#   7. rewrite manifest.txt = the new tree plus what step 5 retained.
+#
+# Interruption anywhere self-heals: manifest.txt only ever grows ahead
+# of reality (step 2) and shrinks after deletes (step 7), so no key is
+# ever live-but-unlisted; the worst case of a mid-run death is a
+# shortened grace window for the just-outgoing generation, swept by the
+# next run.
 #
 # Auth: wrangler reads CLOUDFLARE_API_TOKEN (the PACKAGES_R2_API_TOKEN
 # secret — Object Read & Write scoped to just this bucket) and
@@ -37,6 +51,11 @@
 #   --bucket NAME  R2 bucket name (default: rusty-photon-packages)
 
 set -eu
+
+# One collation order for every sort and comm below — a locale mismatch
+# between them makes comm reject its input mid-run.
+LC_ALL=C
+export LC_ALL
 
 die() { echo "push-packages-repo: $*" >&2; exit 1; }
 
@@ -85,6 +104,26 @@ put() {
     echo "  put $1"
 }
 
+# fetch_listing KEY OUTFILE — 0 = fetched, 1 = object genuinely missing;
+# any other failure (auth, network) dies after retries, because
+# continuing with an empty listing would rewrite the on-bucket manifest
+# without the previous keys and orphan them forever.
+fetch_listing() {
+    : > "$2"
+    for attempt in 1 2 3; do
+        if wrangler r2 object get "$BUCKET/$1" --file "$2" --remote \
+            > /dev/null 2> "$TMPD/get-err.txt"; then
+            return 0
+        fi
+        sleep "$attempt"
+    done
+    if grep -qi "specified key does not exist" "$TMPD/get-err.txt"; then
+        return 1
+    fi
+    cat "$TMPD/get-err.txt" >&2
+    die "reading $1 failed and not with a missing-object error (above) — refusing to continue"
+}
+
 is_flip() {
     case "$1" in
         deb/dists/*/InRelease | deb/dists/*/Release | deb/dists/*/Release.gpg) return 0 ;;
@@ -93,36 +132,26 @@ is_flip() {
     esac
 }
 
-# 1. The previously published listing. Only a genuine missing-object
-# error counts as the first publish; anything else (auth, network) dies
-# after retries — continuing with an empty listing would rewrite the
-# on-bucket manifest without the previous keys and orphan them forever.
-: > "$TMPD/old.txt"
-got=""
-for attempt in 1 2 3; do
-    if wrangler r2 object get "$BUCKET/manifest.txt" --file "$TMPD/old.txt" --remote \
-        > /dev/null 2> "$TMPD/get-err.txt"; then
-        got=1
-        break
-    fi
-    sleep "$attempt"
-done
-if [ -n "$got" ]; then
+# 1. The live-key superset and the retained previous generation.
+if fetch_listing manifest.txt "$TMPD/old.txt"; then
     echo "Previous manifest: $(wc -l < "$TMPD/old.txt" | tr -d ' ') objects"
-elif grep -qi "specified key does not exist" "$TMPD/get-err.txt"; then
-    echo "No previous manifest.txt on the bucket (first publish)"
 else
-    cat "$TMPD/get-err.txt" >&2
-    die "reading the previous manifest.txt failed and not with a missing-object error (above) — refusing to continue with an empty listing"
+    echo "No previous manifest.txt on the bucket (first publish)"
 fi
-LC_ALL=C sort -u "$TMPD/old.txt" > "$TMPD/old.sorted"
+if fetch_listing manifest-prev.txt "$TMPD/prev.txt"; then
+    echo "Retained generation: $(wc -l < "$TMPD/prev.txt" | tr -d ' ') objects"
+else
+    echo "No manifest-prev.txt on the bucket (nothing retained yet)"
+fi
+sort -u "$TMPD/old.txt" > "$TMPD/old.sorted"
+sort -u "$TMPD/prev.txt" > "$TMPD/prev.sorted"
 
-(cd "$SITE_ABS" && find . -type f ! -name manifest.txt | sed 's|^\./||' | LC_ALL=C sort) > "$TMPD/new.txt"
+(cd "$SITE_ABS" && find . -type f ! -name manifest.txt ! -name manifest-prev.txt | sed 's|^\./||' | sort) > "$TMPD/new.txt"
 [ -s "$TMPD/new.txt" ] || die "no files under $SITE"
 
 # 2. Pre-write the union manifest, so every key this run might upload is
 # already on record for future sweeps if we die partway.
-LC_ALL=C sort -u "$TMPD/old.sorted" "$TMPD/new.txt" > "$TMPD/union.txt"
+sort -u "$TMPD/old.sorted" "$TMPD/new.txt" > "$TMPD/union.txt"
 put manifest.txt "$TMPD/union.txt"
 
 # 3. Content next — additive while the old metadata is still live.
@@ -143,8 +172,9 @@ for name in Release.gpg Release InRelease repomd.xml.asc repomd.xml; do
     done < "$TMPD/new.txt"
 done
 
-# 5. Sweep what the previous publish served and this one no longer does.
-comm -23 "$TMPD/old.sorted" "$TMPD/new.txt" > "$TMPD/stale.txt"
+# 5. Sweep everything except the new tree and the retained generation.
+comm -23 "$TMPD/old.sorted" "$TMPD/new.txt" > "$TMPD/not-new.txt"
+comm -23 "$TMPD/not-new.txt" "$TMPD/prev.sorted" > "$TMPD/stale.txt"
 if [ -s "$TMPD/stale.txt" ]; then
     echo "Deleting $(wc -l < "$TMPD/stale.txt" | tr -d ' ') stale objects..."
     while IFS= read -r k; do
@@ -159,8 +189,13 @@ else
     echo "No stale objects to delete"
 fi
 
-# 6. The exact new listing becomes the next run's step 1.
-put manifest.txt "$TMPD/new.txt"
+# 6. The new tree becomes the next run's retained generation.
+put manifest-prev.txt "$TMPD/new.txt"
+
+# 7. The live listing: the new tree plus what step 5 retained.
+comm -12 "$TMPD/old.sorted" "$TMPD/prev.sorted" > "$TMPD/retained.txt"
+sort -u "$TMPD/new.txt" "$TMPD/retained.txt" > "$TMPD/final.txt"
+put manifest.txt "$TMPD/final.txt"
 
 echo ""
-echo "push-packages-repo: OK ($(wc -l < "$TMPD/new.txt" | tr -d ' ') objects in $BUCKET)"
+echo "push-packages-repo: OK ($(wc -l < "$TMPD/new.txt" | tr -d ' ') objects published, $(wc -l < "$TMPD/final.txt" | tr -d ' ') live in $BUCKET)"

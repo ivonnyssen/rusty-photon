@@ -50,6 +50,13 @@ while [ $# -gt 0 ]; do
     shift
 done
 
+# $SERVICE is interpolated into the generated in-container test scripts;
+# constrain it to the package-name alphabet so a stray argument fails
+# here instead of as shell text inside the container.
+case "$SERVICE" in
+    "" | *[!a-z0-9-]*) die "--service must be lowercase letters, digits, and hyphens (got: $SERVICE)" ;;
+esac
+
 command -v podman > /dev/null 2>&1 || die "podman not found"
 command -v python3 > /dev/null 2>&1 || die "python3 not found (serves the tree)"
 [ -f "$SITE/pubkey.asc" ] || die "$SITE/pubkey.asc missing — run the build-*-repo.sh scripts first"

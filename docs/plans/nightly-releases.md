@@ -667,11 +667,24 @@ testing never exercises.
 - The publish push is a fourth script, `scripts/push-packages-repo.sh`
   (thin-workflow-thick-script; the inline-step wording above undersold
   it). Ordering as designed — content, metadata flip
-  (signature-before-signed within each pair), stale deletes — plus one
-  addition: wrangler has no `r2 object list`, so each publish uploads a
-  `manifest.txt` object listing and the next publish diffs against it
-  to find stale keys. Deletes are per-key tolerant and the manifest is
-  written last, so an interrupted publish self-heals on the next run.
+  (signature-before-signed within each pair), stale deletes — plus two
+  additions. First: wrangler has no `r2 object list`, so the listing is
+  itself a bucket object — `manifest.txt` (every live key; pre-written
+  as an old∪new union so an interrupted run leaves nothing unlisted).
+  Second: ordering alone cannot protect apt's *stable-named* index
+  files (a client holding the outgoing `InRelease` fetching a replaced
+  `Packages.gz` is a hash mismatch), so the tree publishes
+  content-addressed `by-hash/` index copies (`Acquire-By-Hash: yes` in
+  Release; apt fetches by the strongest listed hash — SHA512 on
+  current apt, verified against a live trixie client) and the pusher
+  retains the full previous generation for one publish
+  (`manifest-prev.txt`): unique-name objects live exactly two nights,
+  so metadata a client just read always resolves. dnf gets the same
+  guarantee for free (repodata blobs are hash-named natively).
+  Verified by a three-generation publish simulation against a stub
+  wrangler — which also caught a locale-mismatch bug (`LC_ALL=C sort`
+  vs plain `comm`) that would have killed the first real publish
+  mid-run.
 - Per-arch consumer proof: the runner's native arch gets the full
   `apt-get install` / `dnf install`; the other arch is proven by
   resolver + signed-checksum download (apt multi-arch

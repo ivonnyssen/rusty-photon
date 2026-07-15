@@ -17,13 +17,22 @@ handful of one-time commands below.
 pkg.rustyphoton.space/
   pubkey.asc          # repo signing key, public half —
                       # byte-for-byte packaging/gpg/pubkey.asc
-  manifest.txt        # full object listing; push-packages-repo.sh reads it
+  manifest.txt        # every live object key; push-packages-repo.sh reads it
                       # to find stale objects (wrangler has no `r2 object list`)
+  manifest-prev.txt   # the previous publish's tree, retained one extra
+                      # generation so just-read metadata keeps resolving
   deb/dists/nightly/  # InRelease, Release(.gpg), main/binary-{amd64,arm64}/
+                      # (Packages(.gz) + by-hash/ copies — Release
+                      # advertises Acquire-By-Hash)
   deb/pool/main/      # the .debs
   rpm/x86_64/         # .rpms + repodata/ (repomd.xml + repomd.xml.asc)
   rpm/aarch64/        # same for arm64
 ```
+
+The bucket holds the current generation plus the previous one —
+unique-name objects live exactly two publishes, the grace window that
+makes a mid-publish `apt update`/`dnf makecache` safe;
+`push-packages-repo.sh`'s header documents the full ordering.
 
 Client setup lives in
 [docs/packaging.md](../../docs/packaging.md#nightly-channel).

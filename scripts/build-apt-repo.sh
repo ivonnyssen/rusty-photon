@@ -8,13 +8,21 @@
 #   SITE/deb/pool/main/*.deb
 #   SITE/deb/dists/nightly/{InRelease,Release,Release.gpg}
 #   SITE/deb/dists/nightly/main/binary-<arch>/Packages(.gz)
+#   SITE/deb/dists/nightly/main/binary-<arch>/by-hash/SHA256/<hash>
 #
 # One rolling suite (`nightly`), fully regenerated from scratch on every
 # run — no pool accumulation, matching the channel's replace-don't-
 # accumulate shape. The Release file is signed two ways: clearsigned into
 # InRelease (what current apt reads) and detach-signed into Release.gpg
-# (what older apt reads). The tree is consumer-verified by
-# scripts/verify-packages-repo.sh before anything is pushed to the bucket.
+# (what older apt reads). Release advertises `Acquire-By-Hash: yes` and
+# the index files are duplicated under content-addressed by-hash/ names:
+# together with push-packages-repo.sh's one-generation retention this
+# removes the index replacement race entirely — a client that just read
+# the outgoing InRelease still fetches the exact index bytes it names.
+# (The canonical Packages(.gz) paths stay for by-hash-unaware clients,
+# which keep a retry-sized race window instead.) The tree is
+# consumer-verified by scripts/verify-packages-repo.sh before anything
+# is pushed to the bucket.
 #
 # Signing: PACKAGES_GPG_PRIVATE_KEY in the environment holds the armored
 # private key (the CI secret). It is imported into an ephemeral GNUPGHOME
@@ -130,9 +138,19 @@ cp "$PUBKEY" "$SITE/pubkey.asc"
 (
     cd "$SITE/deb"
     for a in $ARCHES; do
-        mkdir -p "dists/nightly/main/binary-$a"
+        mkdir -p "dists/nightly/main/binary-$a/by-hash/SHA256" \
+            "dists/nightly/main/binary-$a/by-hash/SHA512"
         dpkg-scanpackages --arch "$a" pool > "dists/nightly/main/binary-$a/Packages"
         gzip -9kf "dists/nightly/main/binary-$a/Packages"
+        # Content-addressed copies for Acquire-By-Hash. apt fetches by the
+        # strongest hash the Release below lists — SHA512 on current apt
+        # (verified against trixie) — with SHA256 kept for clients that
+        # prefer it.
+        for idx in Packages Packages.gz; do
+            f="dists/nightly/main/binary-$a/$idx"
+            cp "$f" "dists/nightly/main/binary-$a/by-hash/SHA256/$(sha256sum "$f" | cut -d' ' -f1)"
+            cp "$f" "dists/nightly/main/binary-$a/by-hash/SHA512/$(sha512sum "$f" | cut -d' ' -f1)"
+        done
     done
     cd dists/nightly
     apt-ftparchive \
@@ -142,6 +160,7 @@ cp "$PUBKEY" "$SITE/pubkey.asc"
         -o APT::FTPArchive::Release::Codename=nightly \
         -o APT::FTPArchive::Release::Components=main \
         -o "APT::FTPArchive::Release::Architectures=$(echo "$ARCHES" | sed 's/ $//')" \
+        -o APT::FTPArchive::Release::Acquire-By-Hash=yes \
         release . > Release
     gpg --batch --yes --clearsign -o InRelease Release
     gpg --batch --yes --detach-sign --armor -o Release.gpg Release
