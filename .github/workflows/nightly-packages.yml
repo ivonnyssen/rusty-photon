@@ -25,20 +25,29 @@
 #   macos    — per-service arm64 tarballs (the Homebrew formula payloads),
 #              lifecycle-verified through real brew (install → services →
 #              probe → uninstall) before anything publishes (phase N4).
+#   repo     — the apt/dnf repository trees for pkg.rustyphoton.space
+#              (phase N5), rendered from the linux legs' already-verified
+#              packages and consumer-verified (podman clients holding only
+#              the public signing key install through the real resolvers)
+#              before anything publishes.
 #   publish  — all-or-nothing across the enabled legs, so the release is
 #              always one coherent SHA with a complete asset set. For macOS
 #              it also pushes the regenerated -nightly formulas to the
 #              ivonnyssen/homebrew-rusty-photon tap in the same job, so tap
-#              and assets move together.
+#              and assets move together; the apt/dnf trees go to the R2
+#              bucket last, content-first/metadata-flip/delete-stale-after,
+#              so a client mid-update never sees a half-replaced repo.
 #   notify-on-failure — tracking issue on scheduled failures, label
 #              `nightly-packages` (same pattern as scheduled.yml).
 #
 # Thin workflow, thick scripts: the legs drive scripts/build-packages.sh +
 # scripts/verify-packages.sh (shared with on-demand builds on the rigs),
 # scripts/build-msi.ps1 + scripts/verify-msi.ps1 (shared with msi.yml and
-# release.yml), and scripts/build-tarballs.sh + scripts/verify-brew.sh +
+# release.yml), scripts/build-tarballs.sh + scripts/verify-brew.sh +
 # scripts/generate-brew-formulas.sh (shared with release.yml's stable
-# Homebrew channel).
+# Homebrew channel), and scripts/build-apt-repo.sh +
+# scripts/build-yum-repo.sh + scripts/verify-packages-repo.sh +
+# scripts/push-packages-repo.sh (the package-repo channel).
 permissions:
   contents: read
 
@@ -266,8 +275,43 @@ jobs:
           path: dist/${{ needs.plan.outputs.nightly_version }}/*.tar.gz
           if-no-files-found: error
 
+  repo:
+    needs: [plan, linux]
+    if: needs.plan.outputs.skip != 'true'
+    name: linux / apt+dnf repos
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Download the verified packages
+        uses: actions/download-artifact@v8
+        with:
+          pattern: packages-*
+          path: pkgs
+          merge-multiple: true
+      - name: Render the apt repository tree
+        env:
+          PACKAGES_GPG_PRIVATE_KEY: ${{ secrets.PACKAGES_GPG_PRIVATE_KEY }}
+        run: scripts/build-apt-repo.sh --dist pkgs --site site
+      - name: Render the dnf repository trees
+        env:
+          PACKAGES_GPG_PRIVATE_KEY: ${{ secrets.PACKAGES_GPG_PRIVATE_KEY }}
+        run: scripts/build-yum-repo.sh --dist pkgs --site site
+      # The consumer proof the manual curl-and-install path never gives:
+      # podman clients holding only the PUBLIC key add the repo exactly as
+      # docs/packaging.md documents and install through the real resolvers
+      # (signature checked; both arches covered per flavor).
+      - name: Verify as a repo consumer (apt + dnf)
+        run: scripts/verify-packages-repo.sh --site site
+      - name: Upload the repo site tree
+        uses: actions/upload-artifact@v7
+        with:
+          name: repo-site
+          path: site
+          if-no-files-found: error
+
   publish:
-    needs: [plan, linux, msi, macos]
+    needs: [plan, linux, msi, macos, repo]
     # inputs.dry_run is a real boolean here: the typed `inputs` context
     # preserves workflow_dispatch input types (unlike the string-typed
     # github.event.inputs) and is empty on schedule events — so `!= true`
@@ -275,16 +319,36 @@ jobs:
     if: needs.plan.outputs.skip != 'true' && inputs.dry_run != true
     name: publish
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v7
+      # Release assets and the repo site tree download separately: the
+      # site is pushed to the R2 bucket, not attached to the release, so
+      # it must stay out of the merged assets/ dir the checksum and
+      # upload globs run over.
       - name: Download package artifacts
         uses: actions/download-artifact@v8
         with:
+          pattern: packages-*
           path: assets
           merge-multiple: true
+      - name: Download the MSI artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: msi
+          path: assets
+      - name: Download the macOS tarball artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: tarballs-macos
+          path: assets
+      - name: Download the repo site tree
+        uses: actions/download-artifact@v8
+        with:
+          name: repo-site
+          path: site
       # GitHub silently rewrites `^` to `.` in uploaded asset names (N0
       # findings), so the rpm filenames are dot-rendered HERE, before the
       # checksums — sums taken over the pre-rename names would never verify
@@ -390,12 +454,23 @@ jobs:
             git commit -m "nightly: ${NIGHTLY_VERSION}"
             git push
           fi
+      # Last of the channels: the release assets and tap are already live,
+      # and the repo tree was consumer-verified in the repo job. The push
+      # ordering (content, then the metadata flip, then stale deletes) is
+      # what keeps a client mid-`apt update` safe — see the script header.
+      - name: Install wrangler
+        run: npm install -g wrangler
+      - name: Push the apt/dnf repos to R2 (pkg.rustyphoton.space)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.PACKAGES_R2_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: scripts/push-packages-repo.sh --site site
 
   notify-on-failure:
     # Tracking issue so a broken nightly channel surfaces without anyone
     # reading scheduled-workflow logs. Scheduled runs only: manual dispatches
     # are being watched by whoever dispatched them.
-    needs: [plan, linux, msi, macos, publish]
+    needs: [plan, linux, msi, macos, repo, publish]
     if: failure() && github.event_name == 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 10
