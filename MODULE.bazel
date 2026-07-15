@@ -50,18 +50,19 @@ bazel_dep(name = "buildifier_prebuilt", version = "8.5.1.2", dev_dependency = Tr
 # a BDD/integration child binary's src/ into the report).
 #
 # 3. rustdoc_test_windows_external_repo_path.patch — `rust_doc_test`'s
-#    generated Windows runner invokes its cross-repo `process_wrapper.exe` via
-#    a bare `..`-relative path (Bazel's standard `File.short_path`, e.g.
-#    `../rules_rust+/util/process_wrapper/process_wrapper.exe`), which does not
-#    reliably resolve from the runner's cwd under unsandboxed/local test
-#    execution on Windows (bazelbuild/bazel#5926-class gap — confirmed
-#    2026-07-14: `rusty-photon-service-lifecycle_doc_test` failed on
-#    windows-latest with "Lost inputs" nowhere in sight, just a plain
-#    `CommandNotFoundException`, the one time this cache-hit-shielded test
-#    actually executed fresh). The runner already creates an
-#    `external -> ..\` symlink for exactly this class of problem (its own TODO
-#    comment says so) but never routed this argument through it. The patch
-#    rewrites any `..`-prefixed argv entry to go through that symlink instead.
+#    generated Windows runner receives its cross-repo tools (notably
+#    `process_wrapper.exe`) as bare `..`-relative `File.short_path`s that must
+#    resolve through the test's runfiles tree — and on remote-cache-hit builds
+#    the tree entry for an exec-configuration tool can be absent or dangling
+#    on Windows (a bazelbuild/bazel#18580-class build-without-the-bytes /
+#    runfiles interplay; the runner's own `external -> ..\` symlink cannot
+#    help when the tree entry itself is missing, which is why rewriting argv
+#    through that symlink alone still failed on every cache-hit run). The
+#    patch instead routes every argv element through a PowerShell resolver in
+#    the generated runner: `..`-prefixed paths are looked up in the runfiles
+#    MANIFEST and invoked via their absolute execroot targets, sidestepping
+#    the tree; the `external/` rewrite remains as the no-manifest fallback,
+#    and every miss prints a Write-Warning naming the exact gap.
 #    Windows-only (write_test_runner_unix is untouched); this repo requires
 #    unsandboxed test execution everywhere (`test:ci --spawn_strategy=local`,
 #    see .bazelrc) for OmniSim's BDD network binding, so working around the

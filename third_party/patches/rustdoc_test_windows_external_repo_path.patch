@@ -1,66 +1,55 @@
 --- a/rust/private/rustdoc/rustdoc_test_writer.rs
 +++ b/rust/private/rustdoc/rustdoc_test_writer.rs
-@@ -207,44 +207,63 @@
- fn write_test_runner_windows(
-     path: &Path,
-     env: &BTreeMap<String, String>,
-     argv: &[String],
-     strip_substrings: &[String],
- ) {
-     let env_str = env
-         .iter()
-         .map(|(key, val)| format!("$env:{key}='{val}'"))
-         .collect::<Vec<String>>()
-         .join(" ; ");
- 
-     let argv_str = argv
-         .iter()
-         // Remove any substrings found in the argument
-         .map(|arg| {
-             let mut stripped_arg = arg.to_owned();
-             strip_substrings
-                 .iter()
+@@ -226,10 +226,42 @@
                  .for_each(|substring| stripped_arg = stripped_arg.replace(substring, ""));
              stripped_arg
          })
-+        // rusty-photon patch (rustdoc_test_windows_external_repo_path): a bare
-+        // `..`-relative cross-repo runfile path (Bazel's standard
-+        // `File.short_path` convention, e.g.
-+        // `../rules_rust+/util/process_wrapper/process_wrapper.exe`) does not
-+        // reliably resolve from this script's cwd (the `_main` runfiles
-+        // subdirectory) under unsandboxed/local test execution on Windows --
-+        // the underlying gap tracked by bazelbuild/bazel#5926. The script
-+        // below already creates an `external -> ..\` symlink for exactly this
-+        // class of problem (see its TODO comment), but this argv never routed
-+        // through it. Rewrite any `..`-prefixed argument to go through that
-+        // symlink instead of the raw `..` traversal, so it actually benefits
-+        // from the workaround.
-+        .map(|arg| match arg.strip_prefix("../") {
-+            Some(rest) => format!("external/{rest}"),
-+            None => match arg.strip_prefix("..\\") {
-+                Some(rest) => format!("external\\{rest}"),
-+                None => arg,
-+            },
-+        })
-         .map(|arg| format!("'{arg}'"))
+-        .map(|arg| format!("'{arg}'"))
++        // rusty-photon patch (rustdoc_test_windows_external_repo_path): every
++        // argument is routed through the RF() resolver defined below. Bazel
++        // hands cross-repo runfiles to this argv as bare `..`-relative
++        // short_paths (e.g.
++        // `../rules_rust+/util/process_wrapper/process_wrapper.exe`), which
++        // resolve neither from this script's cwd (the `_main` runfiles
++        // subdirectory) nor reliably through the sibling `external -> ..\\`
++        // symlink: on remote-cache-hit builds the runfiles-tree entry for an
++        // exec-configuration tool can be absent or dangling on Windows. RF
++        // looks the path up in the runfiles MANIFEST and invokes the absolute
++        // execroot target instead, sidestepping the tree; the `external/`
++        // rewrite remains as the fallback when no manifest exists, and every
++        // miss prints a Write-Warning so a failure names the exact gap.
++        .map(|arg| format!("(RF '{arg}')"))
          .collect::<Vec<String>>()
          .join(" ");
  
++    let rf_fn = concat!(
++        "function RF($p) { ",
++        "if ($p -notmatch '^\\.\\.[\\\\/]') { return $p } ; ",
++        "$rel = $p.Substring(3) -replace '\\\\','/' ; ",
++        "$mf = $env:RUNFILES_MANIFEST_FILE ; ",
++        "if (-not $mf -or -not (Test-Path $mf)) { $mf = Join-Path $env:TEST_SRCDIR 'MANIFEST' } ; ",
++        "if (Test-Path $mf) { ",
++        "foreach ($l in (Get-Content $mf)) { ",
++        "$i = $l.IndexOf(' ') ; ",
++        "if ($i -gt 0 -and $l.Substring(0, $i) -eq $rel) { ",
++        "$t = $l.Substring($i + 1) ; ",
++        "if (Test-Path $t) { return $t } ; ",
++        "Write-Warning ('runfiles manifest maps ' + $rel + ' to missing ' + $t) ",
++        "} } } ; ",
++        "$fb = 'external/' + $rel ; ",
++        "if (-not (Test-Path $fb)) { Write-Warning ('runfile not found via manifest or external/: ' + $rel) } ; ",
++        "return $fb }",
++    );
++
      let content = [
          "@ECHO OFF".to_owned(),
          "".to_owned(),
-         // TODO: Instead of creating a symlink to mimic the behavior of
-         // --legacy_external_runfiles, this rule should be able to correctly
-         // sanitize the action args to run in a runfiles without this link.
+@@ -239,7 +271,7 @@
          "powershell.exe -c \"if (!(Test-Path .\\external)) { New-Item -Path .\\external -ItemType SymbolicLink -Value ..\\ }\""
              .to_owned(),
          "".to_owned(),
-         format!("powershell.exe -c \"{env_str} ; & {argv_str}\""),
+-        format!("powershell.exe -c \"{env_str} ; & {argv_str}\""),
++        format!("powershell.exe -c \"{env_str} ; {rf_fn} ; & {argv_str}\""),
          "".to_owned(),
      ];
  
-     fs::write(path, content.join("\n")).expect("Failed to write test runner");
- }
- 
- #[cfg(target_family = "unix")]
- fn set_executable(path: &Path) {
