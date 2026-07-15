@@ -55,8 +55,8 @@ impl ConfigurableDriver for FileMonitorDriver {
             if matches!(rule.rule_type, RuleType::Regex) {
                 if let Err(e) = regex::Regex::new(&rule.pattern) {
                     errors.push(FieldError {
-                        path: "parsing.rules".to_string(),
-                        msg: format!("rule {i} ({:?}): invalid regex: {e}", rule.pattern),
+                        path: format!("parsing.rules.{i}.pattern"),
+                        msg: format!("invalid regex: {e}"),
                     });
                 }
             }
@@ -165,7 +165,8 @@ mod tests {
             safe: true,
         });
         let errors = FileMonitorDriver::validate(&config);
-        assert!(errors.iter().any(|e| e.path == "parsing.rules"));
+        // Index 1: valid_config() already has one rule at index 0.
+        assert!(errors.iter().any(|e| e.path == "parsing.rules.1.pattern"));
     }
 
     #[test]
