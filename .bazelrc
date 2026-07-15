@@ -318,6 +318,23 @@ build:ci --test_env=CONFORMU_PATH
 # gitignored user.bazelrc to point at a LAN bazel-remote instead.
 build:remote-cache --remote_cache=https://cache.rustyphoton.space
 
+# Bazel's own fallback for an Action-Cache hit whose referenced CAS blob has
+# been evicted from R2 is to invalidate that entry and retry the whole build,
+# forcing a local rebuild from source for just the affected actions — no
+# write access needed, since it's a rebuild, not a cache repair. But the
+# retry count is a hard budget (default 5), and each retry only surfaces the
+# next wave of evictions along the critical path, not the whole graph at
+# once. A build that exercises a dependency chain nothing has built before
+# (e.g. a version bump with no matching entry anywhere) can walk into more
+# distinct evictions than the default budget covers, and gives up mid-graph
+# even though every retry so far made real progress. This matters most for
+# PR builds specifically: they never get the write token (see bazel.yml), so
+# a PR can only heal itself by rebuilding locally within one invocation —
+# there's no second, privileged pass coming to finish the job for it. Raised
+# well above default so one invocation has enough budget to walk the full
+# critical path.
+build:remote-cache --experimental_remote_cache_eviction_retries=30
+
 # --- Conformu config -------------------------------------------------------
 
 # Run the per-service ConformU suites under Bazel:
