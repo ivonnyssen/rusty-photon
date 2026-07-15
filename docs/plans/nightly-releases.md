@@ -719,6 +719,22 @@ testing never exercises.
     re-handshook against the live hardware, the gated services stayed
     gated, and the two units retry-looping on powered-off devices kept
     retry-looping. All service configs byte-identical across the upgrade.
+  - **N2 validated in a Fedora container 2026-07-15** (dev-box podman,
+    standing in for a Fedora host — the fleet has no Fedora hardware):
+    sentinel nightly→nightly, `0.1.0^20260714.g6b8a1c6-1` →
+    `0.1.0^20260715.gb72dc63-1`, via the documented consumer path
+    (`SHA256SUMS.txt` → `curl` → `sha256sum -c` → `dnf install`). The
+    running unit restarted onto the new binary (`try-restart` postun:
+    new MainPID, active), stayed **enabled** — the `$1` scriptlet
+    guards held, no stop/disable from the outgoing `%preun` — config
+    byte-identical, `/health` 200.
+  - **N3 MSI-over-MSI proven by the 2026-07-15 scheduled run** (the
+    first with a published-MSI seed): the msi job pulled the prior
+    nightly MSI (`…20260714.g6b8a1c6`) and `verify-msi.ps1
+    -UpgradeFrom` installed it, then the fresh `…20260715.gb72dc63`
+    over it — upgrade OK, single ARP entry, every service class green
+    post-upgrade. This proof now recurs on every scheduled run; a
+    manual pass on a long-lived Windows box stays optional.
 - N5 real-machine validation (once the first repo publish lands): point
   a Debian machine at the apt repo and a Fedora machine at the dnf repo
   per docs/packaging.md#nightly-channel, then take a nightly→nightly
