@@ -8,21 +8,25 @@
 #   1. read the previously published object list — manifest.txt on the
 #      bucket (wrangler has no `r2 object list`; the manifest IS the
 #      listing),
-#   2. upload every content object (pool debs, rpms, Packages indices,
+#   2. pre-write manifest.txt as the UNION of the old listing and the
+#      tree about to upload: every key this run might create is on
+#      record before it exists, so an interruption at any later point
+#      leaves nothing unlisted — a future run can always sweep it,
+#   3. upload every content object (pool debs, rpms, Packages indices,
 #      repodata blobs, pubkey.asc) — purely additive: the old metadata
 #      keeps serving the old, still-complete tree throughout,
-#   3. upload the metadata entry points last, as the flip — each
+#   4. upload the metadata entry points last, as the flip — each
 #      signature lands before the file it covers, so the moment a client
 #      sees new metadata its signature is already fetchable:
 #      Release.gpg → Release → InRelease (apt), repomd.xml.asc →
 #      repomd.xml (dnf),
-#   4. only now delete stale objects (previous manifest minus the new
+#   5. only now delete stale objects (previous manifest minus the new
 #      tree), so nothing the old metadata could still point a client at
 #      ever disappears mid-publish; per-key tolerant, because an
 #      interrupted earlier run may have removed some already,
-#   5. upload the new manifest.txt. An interruption anywhere leaves the
-#      OLD manifest on the bucket still listing any leaked keys, so the
-#      next run's step 4 sweeps them — self-healing, no growth.
+#   6. rewrite manifest.txt as the exact new listing. Interrupted runs
+#      therefore self-heal: the on-bucket manifest is always a superset
+#      of what was actually uploaded, never a subset.
 #
 # Auth: wrangler reads CLOUDFLARE_API_TOKEN (the PACKAGES_R2_API_TOKEN
 # secret — Object Read & Write scoped to just this bucket) and
@@ -100,7 +104,12 @@ LC_ALL=C sort -u "$TMPD/old.txt" > "$TMPD/old.sorted"
 (cd "$SITE_ABS" && find . -type f ! -name manifest.txt | sed 's|^\./||' | LC_ALL=C sort) > "$TMPD/new.txt"
 [ -s "$TMPD/new.txt" ] || die "no files under $SITE"
 
-# 2. Content first — additive while the old metadata is still live.
+# 2. Pre-write the union manifest, so every key this run might upload is
+# already on record for future sweeps if we die partway.
+LC_ALL=C sort -u "$TMPD/old.sorted" "$TMPD/new.txt" > "$TMPD/union.txt"
+put manifest.txt "$TMPD/union.txt"
+
+# 3. Content next — additive while the old metadata is still live.
 echo "Uploading content objects..."
 while IFS= read -r k; do
     if ! is_flip "$k"; then
@@ -108,7 +117,7 @@ while IFS= read -r k; do
     fi
 done < "$TMPD/new.txt"
 
-# 3. The flip, signature-before-signed within each pair/trio.
+# 4. The flip, signature-before-signed within each pair/trio.
 echo "Flipping metadata..."
 for name in Release.gpg Release InRelease repomd.xml.asc repomd.xml; do
     while IFS= read -r k; do
@@ -118,7 +127,7 @@ for name in Release.gpg Release InRelease repomd.xml.asc repomd.xml; do
     done < "$TMPD/new.txt"
 done
 
-# 4. Sweep what the previous publish served and this one no longer does.
+# 5. Sweep what the previous publish served and this one no longer does.
 comm -23 "$TMPD/old.sorted" "$TMPD/new.txt" > "$TMPD/stale.txt"
 if [ -s "$TMPD/stale.txt" ]; then
     echo "Deleting $(wc -l < "$TMPD/stale.txt" | tr -d ' ') stale objects..."
@@ -134,7 +143,7 @@ else
     echo "No stale objects to delete"
 fi
 
-# 5. The new listing becomes the next run's step 1.
+# 6. The exact new listing becomes the next run's step 1.
 put manifest.txt "$TMPD/new.txt"
 
 echo ""

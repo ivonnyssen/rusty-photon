@@ -80,7 +80,11 @@ while [ -z "$PORT" ]; do
     PORT=$(sed -n 's/.*port \([0-9]*\).*/\1/p' "$TMPD/http.log" | head -1)
     [ -n "$PORT" ] && break
     i=$((i + 1))
-    [ "$i" -lt 20 ] || die "local HTTP server did not start (see $TMPD/http.log)"
+    if [ "$i" -ge 20 ]; then
+        # The EXIT trap removes $TMPD, so surface the log now.
+        cat "$TMPD/http.log" >&2 || true
+        die "local HTTP server did not start (log above)"
+    fi
     sleep 0.5
 done
 BASE="http://127.0.0.1:$PORT"
