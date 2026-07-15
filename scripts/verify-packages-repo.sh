@@ -143,10 +143,13 @@ if [ -d "$SITE_ABS/rpm" ]; then
     # has it — and the rpm %post scriptlets call systemctl, whose absence
     # (exit 127) makes dnf5 fail the whole transaction. Bake the binary in
     # (same reasoning as verify-packages.sh's image); no init runs here.
+    # dnf5-plugins provides `dnf download` (the foreign-arch proof below);
+    # it ships in the current base image, but installing it explicitly
+    # keeps the script's dependency real rather than incidental.
     RPM_IMG="localhost/rusty-photon-repo-verify-rpm"
     podman build -q -t "$RPM_IMG" - <<'EOF' > /dev/null
 FROM registry.fedoraproject.org/fedora:44
-RUN dnf -y install systemd && dnf clean all
+RUN dnf -y install systemd dnf5-plugins && dnf clean all
 EOF
     dnf_foreign=0
     [ -d "$SITE_ABS/rpm/$RPM_FOREIGN/repodata" ] && dnf_foreign=1
