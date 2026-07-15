@@ -359,7 +359,9 @@ async fn assert_device_connected(world: &RpWorld, array_key: &str, id: &str, exp
         .get(&url)
         .send()
         .await
-        .expect("failed to GET /api/equipment");
+        .expect("failed to GET /api/equipment")
+        .error_for_status()
+        .expect("GET /api/equipment returned a non-success status");
 
     let body: serde_json::Value = resp
         .json()
