@@ -18,11 +18,18 @@
 #   3. upload every content object (pool debs, rpms, indices and their
 #      by-hash copies, repodata blobs, pubkey.asc) — purely additive:
 #      the old metadata keeps serving the old, complete tree throughout,
-#   4. upload the metadata entry points last, as the flip — each
-#      signature lands before the file it covers, so the moment a client
-#      sees new metadata its signature is already fetchable:
-#      Release.gpg → Release → InRelease (apt), repomd.xml.asc →
-#      repomd.xml (dnf),
+#   4. upload the metadata entry points last, as the flip, detached
+#      signature before the file it covers (Release.gpg → Release →
+#      InRelease for apt, repomd.xml.asc → repomd.xml for dnf): a client
+#      that reads the NEW signed file always finds its signature already
+#      published. Detached-signature pairs replaced in place cannot be
+#      made fully atomic in either order — a client that read the
+#      OUTGOING signed file inside the sub-second gap between the two
+#      puts pairs it with the new signature and must retry; the reverse
+#      order would instead mismatch every client between the puts.
+#      Modern apt is immune outright (InRelease is clearsigned,
+#      one object, atomic); dnf and legacy-apt clients clear the
+#      transient on their next retry,
 #   5. delete stale objects: previous listing minus the new tree MINUS
 #      the retained previous generation. Unique-name objects (pool
 #      files, by-hash indices, repodata blobs) therefore live exactly
