@@ -88,6 +88,12 @@ echo "Serving $SITE_ABS at $BASE (pid $HTTP_PID)"
 
 # ---- apt ------------------------------------------------------------------
 if [ -d "$SITE_ABS/deb" ]; then
+    # Mounted as a directory over /etc/apt/keyrings (empty in the base
+    # image): a directory mount never depends on the runtime creating
+    # intermediate paths, and the in-container key path stays exactly the
+    # one docs/packaging.md documents.
+    mkdir -p "$TMPD/apt-keyrings"
+    cp "$SITE_ABS/pubkey.asc" "$TMPD/apt-keyrings/rusty-photon.asc"
     apt_foreign=0
     [ -f "$SITE_ABS/deb/dists/nightly/main/binary-$DEB_FOREIGN/Packages.gz" ] && apt_foreign=1
     cat > "$TMPD/apt-test.sh" <<EOF
@@ -112,7 +118,7 @@ fi
 EOF
     echo "== apt: install rusty-photon-$SERVICE from the repo (debian:trixie)"
     podman run --rm --network host \
-        -v "$SITE_ABS/pubkey.asc:/etc/apt/keyrings/rusty-photon.asc:ro,Z" \
+        -v "$TMPD/apt-keyrings:/etc/apt/keyrings:ro,Z" \
         -v "$TMPD/apt-test.sh:/apt-test.sh:ro,Z" \
         debian:trixie bash /apt-test.sh \
         || die "apt consumer verification failed"
