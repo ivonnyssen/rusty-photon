@@ -31,7 +31,7 @@ pub struct MountStatus {
 }
 
 /// `GET /api/equipment`: live connection state per configured device, mirroring
-/// the config's equipment shape. All six keys are always present; `mount` is
+/// the config's equipment shape. All ten keys are always present; `mount` is
 /// `null` when none is configured.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct EquipmentStatus {
@@ -45,6 +45,14 @@ pub struct EquipmentStatus {
     pub focusers: Vec<DeviceStatus>,
     #[serde(default)]
     pub safety_monitors: Vec<DeviceStatus>,
+    #[serde(default)]
+    pub switches: Vec<DeviceStatus>,
+    #[serde(default)]
+    pub rotators: Vec<DeviceStatus>,
+    #[serde(default)]
+    pub observing_conditions: Vec<DeviceStatus>,
+    #[serde(default)]
+    pub domes: Vec<DeviceStatus>,
     #[serde(default)]
     pub mount: Option<MountStatus>,
 }
@@ -63,6 +71,10 @@ impl EquipmentStatus {
             "cover_calibrators" => &self.cover_calibrators,
             "focusers" => &self.focusers,
             "safety_monitors" => &self.safety_monitors,
+            "switches" => &self.switches,
+            "rotators" => &self.rotators,
+            "observing_conditions" => &self.observing_conditions,
+            "domes" => &self.domes,
             _ => return None,
         };
         list.iter().find(|d| d.id == id).map(|d| d.connected)

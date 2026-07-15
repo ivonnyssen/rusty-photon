@@ -362,6 +362,7 @@ mod tests {
             focusers: vec![],
             safety_monitors: vec![],
             mount: None,
+            ..Default::default()
         })
     }
 
@@ -747,7 +748,6 @@ mod tests {
         let stub = crate::equipment::test_support::spawn_stub(app).await;
 
         let equipment_cfg = crate::config::EquipmentConfig {
-            cameras: vec![],
             mount: Some(crate::config::MountConfig {
                 alpaca_url: stub.url(),
                 device_number: 0,
@@ -755,10 +755,7 @@ mod tests {
                 slew_rate_arcsec_per_sec: Default::default(),
                 auth: None,
             }),
-            focusers: vec![],
-            filter_wheels: vec![],
-            cover_calibrators: vec![],
-            safety_monitors: vec![],
+            ..Default::default()
         };
         let equipment = Arc::new(EquipmentRegistry::new(&equipment_cfg).await);
         assert!(
@@ -783,7 +780,6 @@ mod tests {
     #[tokio::test]
     async fn park_skips_a_disconnected_mount() {
         let equipment_cfg = crate::config::EquipmentConfig {
-            cameras: vec![],
             mount: Some(crate::config::MountConfig {
                 // Client construction fails instantly on a bad URL, so
                 // the entry is disconnected without any retry delay.
@@ -793,10 +789,7 @@ mod tests {
                 slew_rate_arcsec_per_sec: Default::default(),
                 auth: None,
             }),
-            focusers: vec![],
-            filter_wheels: vec![],
-            cover_calibrators: vec![],
-            safety_monitors: vec![],
+            ..Default::default()
         };
         let equipment = Arc::new(EquipmentRegistry::new(&equipment_cfg).await);
 
@@ -911,10 +904,6 @@ mod tests {
                 // this entry is disconnected without any retry delay.
                 camera_cfg("never-connected-cam", "not-a-url", 0),
             ],
-            mount: None,
-            focusers: vec![],
-            filter_wheels: vec![],
-            cover_calibrators: vec![],
             safety_monitors: vec![
                 crate::config::SafetyMonitorConfig {
                     id: "reachable".to_string(),
@@ -929,6 +918,7 @@ mod tests {
                     auth: None,
                 },
             ],
+            ..Default::default()
         };
         let equipment = Arc::new(EquipmentRegistry::new(&equipment_cfg).await);
         let event_bus = Arc::new(EventBus::from_config(&[]));

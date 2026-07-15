@@ -13,10 +13,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bdd_infra::rp_harness::{
-    CameraConfig, CoverCalibratorConfig, FilterWheelConfig, FocuserConfig, GuiderConfig,
-    GuiderStub, McpTestClient, MountConfig, OmniSimHandle, OrchestratorInvocation,
-    PlannerTargetConfig, PlateSolverConfig, PlateSolverStub, ReceivedEvent, RpConfigBuilder,
-    SafetyMonitorConfig, SseClient, TestOrchestrator, WebhookReceiver,
+    CameraConfig, CoverCalibratorConfig, DomeConfig, FilterWheelConfig, FocuserConfig,
+    GuiderConfig, GuiderStub, McpTestClient, MountConfig, ObservingConditionsConfig, OmniSimHandle,
+    OrchestratorInvocation, PlannerTargetConfig, PlateSolverConfig, PlateSolverStub, ReceivedEvent,
+    RotatorConfig, RpConfigBuilder, SafetyMonitorConfig, SseClient, SwitchConfig, TestOrchestrator,
+    WebhookReceiver,
 };
 use bdd_infra::sky_survey_camera_harness::SkyViewStub;
 use bdd_infra::ServiceHandle;
@@ -84,6 +85,15 @@ pub struct RpWorld {
     pub planner_targets: Vec<PlannerTargetConfig>,
     /// Safety monitors accumulated via Given steps (safety.feature).
     pub safety_monitors: Vec<SafetyMonitorConfig>,
+    /// Switches accumulated via Given steps (equipment_connectivity.feature).
+    pub switches: Vec<SwitchConfig>,
+    /// Rotators accumulated via Given steps (equipment_connectivity.feature).
+    pub rotators: Vec<RotatorConfig>,
+    /// ObservingConditions devices accumulated via Given steps
+    /// (equipment_connectivity.feature).
+    pub observing_conditions: Vec<ObservingConditionsConfig>,
+    /// Domes accumulated via Given steps (equipment_connectivity.feature).
+    pub domes: Vec<DomeConfig>,
     /// Override rp's `safety.poll_interval`; safety scenarios pin this
     /// short so transitions are detected in test time.
     pub safety_poll_interval: Option<Duration>,
@@ -315,6 +325,18 @@ impl RpWorld {
         }
         for sm in &self.safety_monitors {
             builder.add_safety_monitor(sm.clone());
+        }
+        for sw in &self.switches {
+            builder.add_switch(sw.clone());
+        }
+        for r in &self.rotators {
+            builder.add_rotator(r.clone());
+        }
+        for oc in &self.observing_conditions {
+            builder.add_observing_conditions(oc.clone());
+        }
+        for d in &self.domes {
+            builder.add_dome(d.clone());
         }
         if let Some(interval) = self.safety_poll_interval {
             builder.with_safety_poll_interval(interval);

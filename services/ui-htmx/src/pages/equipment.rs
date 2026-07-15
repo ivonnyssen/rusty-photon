@@ -877,7 +877,8 @@ mod tests {
     fn empty_status() -> Value {
         json!({
             "cameras": [], "filter_wheels": [], "cover_calibrators": [],
-            "focusers": [], "safety_monitors": [], "mount": null
+            "focusers": [], "safety_monitors": [], "switches": [],
+            "rotators": [], "observing_conditions": [], "domes": [], "mount": null
         })
     }
 
@@ -1095,7 +1096,12 @@ mod tests {
             MockRpApi::new(),
             MockProbeHttp::new(),
         );
-        let response = new_form(State(state), Path("rotators".to_string()), HeaderMap::new()).await;
+        let response = new_form(
+            State(state),
+            Path("spectrographs".to_string()),
+            HeaderMap::new(),
+        )
+        .await;
         let html = body_of(response).await;
         assert!(html.contains("No equipment kind named"), "{html}");
     }

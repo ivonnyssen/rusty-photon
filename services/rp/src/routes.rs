@@ -528,6 +528,7 @@ mod tests {
             cover_calibrators: vec![],
             focusers: vec![],
             mount: None,
+            ..Default::default()
         });
         let session = Arc::new(crate::session::SessionManager::new(event_bus.clone(), &[]));
         let mcp = McpHandler::new(

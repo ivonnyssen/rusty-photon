@@ -3,12 +3,16 @@ use serde::{Deserialize, Serialize};
 
 use super::camera::CameraConfig;
 use super::cover_calibrator::CoverCalibratorConfig;
+use super::dome::DomeConfig;
 use super::filter_wheel::FilterWheelConfig;
 use super::focuser::FocuserConfig;
 use super::mount::MountConfig;
+use super::observing_conditions::ObservingConditionsConfig;
+use super::rotator::RotatorConfig;
 use super::safety_monitor::SafetyMonitorConfig;
+use super::switch::SwitchConfig;
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct EquipmentConfig {
     #[serde(default)]
@@ -23,6 +27,14 @@ pub struct EquipmentConfig {
     pub cover_calibrators: Vec<CoverCalibratorConfig>,
     #[serde(default)]
     pub safety_monitors: Vec<SafetyMonitorConfig>,
+    #[serde(default)]
+    pub switches: Vec<SwitchConfig>,
+    #[serde(default)]
+    pub rotators: Vec<RotatorConfig>,
+    #[serde(default)]
+    pub observing_conditions: Vec<ObservingConditionsConfig>,
+    #[serde(default)]
+    pub domes: Vec<DomeConfig>,
 }
 
 #[cfg(test)]

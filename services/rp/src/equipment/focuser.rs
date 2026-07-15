@@ -305,12 +305,8 @@ mod tests {
     async fn equipment_registry_surfaces_connected_focuser_in_status_and_lookup() {
         let stub = spawn_stub(ok_focuser_router()).await;
         let equipment_cfg = config::EquipmentConfig {
-            cameras: vec![],
-            mount: None,
             focusers: vec![focuser_config_for(&stub.url())],
-            filter_wheels: vec![],
-            cover_calibrators: vec![],
-            safety_monitors: vec![],
+            ..Default::default()
         };
         let registry = EquipmentRegistry::new(&equipment_cfg).await;
         assert_eq!(registry.focusers.len(), 1);

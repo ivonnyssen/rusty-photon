@@ -41,7 +41,7 @@ ndarray-ndimage = { workspace = true }
 rmpfit = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
-ascom-alpaca = { workspace = true, features = ["client", "camera", "filter_wheel", "cover_calibrator", "focuser", "telescope", "safety_monitor"] }
+ascom-alpaca = { workspace = true, features = ["client", "camera", "filter_wheel", "cover_calibrator", "focuser", "telescope", "safety_monitor", "switch", "rotator", "observing_conditions", "dome"] }
 rmcp = { workspace = true, features = ["server", "macros", "transport-streamable-http-server", "schemars"] }
 schemars = { workspace = true }
 tempfile = { workspace = true }
