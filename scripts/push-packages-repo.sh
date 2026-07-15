@@ -78,8 +78,9 @@ put() {
     # cached Packages.gz against a freshly flipped InRelease is a client
     # hash-mismatch. Every read origin-pulls from R2 instead — free egress,
     # and this channel's traffic is a handful of rigs; revisit only if
-    # that ever changes.
-    wrangler r2 object put "$BUCKET/$1" --file "$2" --cache-control no-store --remote > /dev/null 2>&1 \
+    # that ever changes. stdout is progress noise and stays quiet; stderr
+    # passes through so a failure shows its real cause in the CI log.
+    wrangler r2 object put "$BUCKET/$1" --file "$2" --cache-control no-store --remote > /dev/null \
         || die "upload failed: $1"
     echo "  put $1"
 }
@@ -92,12 +93,27 @@ is_flip() {
     esac
 }
 
-# 1. The previously published listing (absent on the first publish).
+# 1. The previously published listing. Only a genuine missing-object
+# error counts as the first publish; anything else (auth, network) dies
+# after retries — continuing with an empty listing would rewrite the
+# on-bucket manifest without the previous keys and orphan them forever.
 : > "$TMPD/old.txt"
-if wrangler r2 object get "$BUCKET/manifest.txt" --file "$TMPD/old.txt" --remote > /dev/null 2>&1; then
+got=""
+for attempt in 1 2 3; do
+    if wrangler r2 object get "$BUCKET/manifest.txt" --file "$TMPD/old.txt" --remote \
+        > /dev/null 2> "$TMPD/get-err.txt"; then
+        got=1
+        break
+    fi
+    sleep "$attempt"
+done
+if [ -n "$got" ]; then
     echo "Previous manifest: $(wc -l < "$TMPD/old.txt" | tr -d ' ') objects"
-else
+elif grep -qi "specified key does not exist" "$TMPD/get-err.txt"; then
     echo "No previous manifest.txt on the bucket (first publish)"
+else
+    cat "$TMPD/get-err.txt" >&2
+    die "reading the previous manifest.txt failed and not with a missing-object error (above) — refusing to continue with an empty listing"
 fi
 LC_ALL=C sort -u "$TMPD/old.txt" > "$TMPD/old.sorted"
 
