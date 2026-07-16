@@ -205,17 +205,18 @@ blocker, not a size objection.
     exist and work. Wiring either into an installer is rejected on four
     grounds, the first decisive:
 
-    - **Renewal does not exist.** `rp-tls` issues certificates but nothing
-      renews them: `acme.json` is written and never read back,
-      `renewal_days_before_expiry` and `post_renewal_hooks` are dead
-      write-only fields, there is no `rp renew-tls`, and `server.rs` uses
-      `with_single_cert`, which bakes the cert in at startup with no reload
-      path. A Let's Encrypt cert lives 90 days. Provisioning a real cert at
-      install time therefore ships a **90-day time bomb that detonates
+    - **Renewal does not exist**
+      ([#541](https://github.com/ivonnyssen/rusty-photon/issues/541)). `rp-tls`
+      issues certificates but nothing renews them: `acme.json` is written and
+      never read back, `renewal_days_before_expiry` and `post_renewal_hooks`
+      are dead write-only fields, there is no `rp renew-tls`, and `server.rs`
+      uses `with_single_cert`, which bakes the cert in at startup with no
+      reload path. A Let's Encrypt cert lives 90 days. Provisioning a real cert
+      at install time therefore ships a **90-day time bomb that detonates
       unattended at night** — the precise failure tenet #1 exists to prevent —
       and recovery means re-running the full command with every flag re-passed
-      and every service manually restarted. This must be fixed (ADR-002
-      Phase 2) before install-time issuance is worth discussing at all.
+      and every service manually restarted. **If #541 lands, this reason
+      evaporates** and the remaining three should be re-weighed on their own.
     - **Package installs must stay non-interactive.** `apt install -y` and the
       nightly verification legs run unattended; a postinst prompting for a
       domain and an API token breaks them.
@@ -336,4 +337,6 @@ blocker, not a size objection.
   [ADR-002](002-tls-for-inter-service-communication.md). Phases 2 and 3 of that
   ADR (cert hot-reload, background renewal, `rp renew-tls`, Pebble tests) are
   **documented in the present tense but not implemented** — `crates/rp-tls`
-  issues certificates and nothing renews them.
+  issues certificates and nothing renews them. Tracked as
+  [#541](https://github.com/ivonnyssen/rusty-photon/issues/541); landing it
+  reopens decision 10's install-time-provisioning half.

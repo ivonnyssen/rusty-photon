@@ -410,17 +410,16 @@ permissive in both directions across the binary boundary.
   reasoning in the issue needs updating when it is picked up. And **the Windows
   analogue is unresolved** (service account vs `Restart-Service`), which #523
   flags but does not answer. Doctor is an all-platforms tool, so D3s needs it.
-- **ADR-002 Phase 2 (cert renewal) blocks any install-time TLS story, and is
-  a live footgun regardless of this plan.** Decision 10 rejects install-time
-  provisioning primarily because nothing renews a certificate today. That gap
-  is independent of doctor and wants its own issue: ADR-002 documents renewal
-  in the present tense (*"No manual renewal."*, *"A background tokio task
-  checks certificate expiry daily"*, *"A `rp renew-tls` CLI command"*) and none
-  of it is implemented — so anyone following the ADR today believes they have
-  automatic renewal and does not. Phase 2 is `ReloadableCertResolver` + a
-  renewal task + `rp renew-tls`; Phase 3 is Pebble-backed tests, which matter
-  because the `instant-acme` order flow currently has **no end-to-end test**
-  (the BDD scenario stops at the DNS step for want of a real token).
+- **Cert renewal does not exist — tracked as
+  [#541](https://github.com/ivonnyssen/rusty-photon/issues/541).** Decision 10
+  rejects install-time provisioning primarily because nothing renews a
+  certificate today: ADR-002 documents renewal in the present tense and none of
+  it is implemented. The gap is independent of doctor and does not block any
+  phase here, but it **inverts decision 10's cost/benefit if it lands** — with
+  real renewal, install-time provisioning stops being a 90-day time bomb and
+  the "no installer cert prompt" half of decision 10 is worth revisiting on its
+  remaining merits (non-interactive installs, plaintext credentials, per-host
+  CA races) rather than on the renewal argument.
 - **Where the shared `ServerConfig` lives (D1).** A new `rp-server-config`
   crate, or a module in an existing shared crate. `rp-tls` and `rp-auth` are
   already the homes of the types it embeds; a new crate may be cleaner than
