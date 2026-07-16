@@ -60,7 +60,7 @@ mod tests {
                 "session": {"data_directory": "/tmp/rp-test"},
                 "equipment": {},
                 "plate_solver": {"url": "http://127.0.0.1:11131"},
-                "server": {}
+                "server": { "port": 0 }
             }"#,
         )
         .unwrap();
@@ -86,7 +86,7 @@ mod tests {
                     "timeout": "30s",
                     "default_search_radius_deg": 4.0
                 },
-                "server": {}
+                "server": { "port": 0 }
             }"#,
         )
         .unwrap();
@@ -111,7 +111,7 @@ mod tests {
                     "url": "http://127.0.0.1:11131",
                     "bogus_field": 1
                 },
-                "server": {}
+                "server": { "port": 0 }
             }"#,
         )
         .unwrap();

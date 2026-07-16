@@ -14,6 +14,7 @@ members = [
   "crates/rusty-photon-driver",
   "crates/rusty-photon-i18n",
   "crates/rusty-photon-i18n-derive",
+  "crates/rusty-photon-server-config",
   "crates/rusty-photon-service-lifecycle",
   "crates/rusty-photon-shared-transport",
   "crates/skywatcher-motor-protocol",
@@ -172,6 +173,7 @@ rusty-photon-i18n = { path = "crates/rusty-photon-i18n" }
 rusty-photon-i18n-derive = { path = "crates/rusty-photon-i18n-derive" }
 rusty-photon-config = { path = "crates/rusty-photon-config" }
 rusty-photon-driver = { path = "crates/rusty-photon-driver" }
+rusty-photon-server-config = { path = "crates/rusty-photon-server-config" }
 rusty-photon-service-lifecycle = { path = "crates/rusty-photon-service-lifecycle" }
 rusty-photon-shared-transport = { path = "crates/rusty-photon-shared-transport" }
 i18n-embed = { version = "0.16", features = ["fluent-system"] }

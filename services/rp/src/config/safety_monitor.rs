@@ -39,7 +39,7 @@ mod tests {
                         {"id": "weather-watcher", "alpaca_url": "http://127.0.0.1:32323"}
                     ]
                 },
-                "server": {}
+                "server": { "port": 0 }
             }"#,
         )
         .unwrap();
@@ -65,7 +65,7 @@ mod tests {
                         {"id": "sm", "alpaca_url": "http://127.0.0.1:32323", "pol_interval": "1s"}
                     ]
                 },
-                "server": {}
+                "server": { "port": 0 }
             }"#,
         )
         .unwrap();

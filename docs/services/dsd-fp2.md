@@ -319,6 +319,7 @@ service can later expose a Switch device (heater control) without redesign.
   },
   "server": {
     "port": 11119,
+    "bind_address": "0.0.0.0",
     "auth": null,
     "tls": null
   },
@@ -332,6 +333,11 @@ service can later expose a Switch device (heater control) without redesign.
   }
 }
 ```
+
+The `server` block is the shared `AlpacaServerConfig` from
+`crates/rusty-photon-server-config` (see ADR-016): `port`, `bind_address`
+(default `0.0.0.0`), optional `discovery_port`, and optional `tls`/`auth`.
+Absent `tls`/`auth` means plain, unauthenticated HTTP.
 
 `min_brightness` (default `250`) is the floor below which `calibrator_on`
 rejects a non-zero brightness — see [Brightness

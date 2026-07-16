@@ -994,7 +994,7 @@ mod tests {
                     "auth": { "username": "obs", "password": password }
                 }]
             },
-            "server": {}
+            "server": { "port": 0 }
         }))
         .unwrap()
     }

@@ -36,7 +36,7 @@ mod tests {
                         {"id": "roll-off", "alpaca_url": "http://127.0.0.1:11140"}
                     ]
                 },
-                "server": {}
+                "server": { "port": 0 }
             }"#,
         )
         .unwrap();
@@ -63,7 +63,7 @@ mod tests {
                         {"id": "roll-off", "name": "Roll-off Roof", "alpaca_url": "http://127.0.0.1:11140", "device_number": 1}
                     ]
                 },
-                "server": {}
+                "server": { "port": 0 }
             }"#,
         )
         .unwrap();
@@ -87,7 +87,7 @@ mod tests {
                         {"id": "roll-off", "alpaca_url": "http://127.0.0.1:11140", "device_type": "dome"}
                     ]
                 },
-                "server": {}
+                "server": { "port": 0 }
             }"#,
         )
         .unwrap();

@@ -147,7 +147,7 @@ mod tests {
                 "session": {"data_directory": "/tmp/rp-test"},
                 "equipment": {},
                 "cooling": {"poll_interval": "250ms", "plateau_window": "1s"},
-                "server": {}
+                "server": { "port": 0 }
             }"#,
         )
         .unwrap();
@@ -171,7 +171,7 @@ mod tests {
                 "session": {"data_directory": "/tmp/rp-test"},
                 "equipment": {},
                 "cooling": {"bogus_knob": 1},
-                "server": {}
+                "server": { "port": 0 }
             }"#,
         )
         .unwrap();

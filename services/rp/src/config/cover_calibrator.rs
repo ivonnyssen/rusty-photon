@@ -49,7 +49,7 @@ mod tests {
                         }
                     ]
                 },
-                "server": {}
+                "server": { "port": 0 }
             }"#,
         )
         .unwrap();

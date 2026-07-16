@@ -1167,6 +1167,7 @@ dependencies = [
  "rp-tls",
  "rusty-photon-config",
  "rusty-photon-driver",
+ "rusty-photon-server-config",
  "rusty-photon-service-lifecycle",
  "rusty-photon-shared-transport",
  "schemars 1.2.1",
@@ -4196,6 +4197,7 @@ dependencies = [
  "rp-tls",
  "rpassword",
  "rusty-photon-config",
+ "rusty-photon-server-config",
  "rusty-photon-service-lifecycle",
  "schemars 1.2.1",
  "serde",
@@ -4585,6 +4587,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "rusty-photon-server-config"
+version = "0.1.0"
+dependencies = [
+ "rp-auth",
+ "rp-tls",
+ "schemars 1.2.1",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

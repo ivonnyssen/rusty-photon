@@ -292,12 +292,7 @@ mod mock_tests {
                 polling_interval: Duration::from_secs(60),
                 ..Default::default()
             },
-            server: crate::config::ServerConfig {
-                port: 0,
-                discovery_port: None,
-                tls: None,
-                auth: None,
-            },
+            server: crate::config::AlpacaServerConfig::new(0),
             cover_calibrator: crate::config::CoverCalibratorConfig::default(),
         }
     }

@@ -104,7 +104,7 @@ mod tests {
                         "alpaca_url": "http://localhost:11122"
                     }
                 },
-                "server": {}
+                "server": { "port": 0 }
             }"#,
         )
         .unwrap();
@@ -133,7 +133,7 @@ mod tests {
                         "auth": {"username": "u", "password": "p"}
                     }
                 },
-                "server": {}
+                "server": { "port": 0 }
             }"#,
         )
         .unwrap();
@@ -158,7 +158,7 @@ mod tests {
                 "equipment": {
                     "mount": {"alpaca_url": "http://localhost:11122"}
                 },
-                "server": {}
+                "server": { "port": 0 }
             }"#,
         )
         .unwrap();
@@ -182,7 +182,7 @@ mod tests {
                         "slew_rate_arcsec_per_sec": 3600
                     }
                 },
-                "server": {}
+                "server": { "port": 0 }
             }"#,
         )
         .unwrap();
@@ -206,7 +206,7 @@ mod tests {
                         "slew_rate_arcsec_per_sec": -1.0
                     }
                 },
-                "server": {}
+                "server": { "port": 0 }
             }"#,
         )
         .unwrap();
@@ -250,7 +250,7 @@ mod tests {
                         "park_on_disconnect": true
                     }
                 },
-                "server": {}
+                "server": { "port": 0 }
             }"#,
         )
         .unwrap();
@@ -268,7 +268,7 @@ mod tests {
             r#"{
                 "session": {"data_directory": "/tmp/rp-test"},
                 "equipment": {},
-                "server": {}
+                "server": { "port": 0 }
             }"#,
         )
         .unwrap();

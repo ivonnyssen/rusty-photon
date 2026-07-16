@@ -36,7 +36,7 @@ mod tests {
                         {"id": "falcon", "alpaca_url": "http://127.0.0.1:11118"}
                     ]
                 },
-                "server": {}
+                "server": { "port": 0 }
             }"#,
         )
         .unwrap();
@@ -63,7 +63,7 @@ mod tests {
                         {"id": "falcon", "name": "Falcon Rotator", "alpaca_url": "http://127.0.0.1:11118", "device_number": 1}
                     ]
                 },
-                "server": {}
+                "server": { "port": 0 }
             }"#,
         )
         .unwrap();
@@ -87,7 +87,7 @@ mod tests {
                         {"id": "falcon", "alpaca_url": "http://127.0.0.1:11118", "device_type": "rotator"}
                     ]
                 },
-                "server": {}
+                "server": { "port": 0 }
             }"#,
         )
         .unwrap();

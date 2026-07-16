@@ -102,7 +102,7 @@ mod tests {
                         }
                     ]
                 },
-                "server": {}
+                "server": { "port": 0 }
             }"#,
         )
         .unwrap();
@@ -139,7 +139,7 @@ mod tests {
                         }
                     ]
                 },
-                "server": {}
+                "server": { "port": 0 }
             }"#,
         )
         .unwrap();
@@ -168,7 +168,7 @@ mod tests {
                         {"id": "main-focuser", "alpaca_url": "http://localhost:11113"}
                     ]
                 },
-                "server": {}
+                "server": { "port": 0 }
             }"#,
         )
         .unwrap();
@@ -194,7 +194,7 @@ mod tests {
                         }
                     ]
                 },
-                "server": {}
+                "server": { "port": 0 }
             }"#,
         )
         .unwrap();
@@ -220,7 +220,7 @@ mod tests {
                         }
                     ]
                 },
-                "server": {}
+                "server": { "port": 0 }
             }"#,
         )
         .unwrap();
@@ -249,7 +249,7 @@ mod tests {
                         }
                     ]
                 },
-                "server": {}
+                "server": { "port": 0 }
             }"#,
         )
         .unwrap();

@@ -98,7 +98,7 @@ mod tests {
             "session": { "data_directory": "/tmp/rp-test" },
             "equipment": {},
             "site": { "latitude_degrees": 91.0, "longitude_degrees": 0.0 },
-            "server": {}
+            "server": { "port": 0 }
         }));
         let errors = RpConfigDriver::validate(&config);
         assert_eq!(errors.len(), 1);
@@ -150,6 +150,7 @@ mod tests {
                 }
             },
             "server": {
+                "port": 0,
                 "auth": { "username": "obs", "password_hash": "$argon2id$real" }
             }
         }));

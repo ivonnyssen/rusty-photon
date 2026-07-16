@@ -56,7 +56,7 @@ mod tests {
                     "latitude_degrees": 47.6062,
                     "longitude_degrees": -122.3321
                 },
-                "server": {}
+                "server": { "port": 0 }
             }"#,
         )
         .unwrap();
@@ -86,7 +86,7 @@ mod tests {
                 "session": {"data_directory": "/tmp/rp-test"},
                 "equipment": {},
                 "site": {"latitude_degrees": 91.0, "longitude_degrees": 0.0},
-                "server": {}
+                "server": { "port": 0 }
             }"#,
         )
         .unwrap();
@@ -109,7 +109,7 @@ mod tests {
                 "session": {"data_directory": "/tmp/rp-test"},
                 "equipment": {},
                 "site": {"latitude_degrees": 0.0, "longitude_degrees": 181.0},
-                "server": {}
+                "server": { "port": 0 }
             }"#,
         )
         .unwrap();
@@ -136,7 +136,7 @@ mod tests {
                     "longitude_degrees": 0.0,
                     "elevation_meters": 1000
                 },
-                "server": {}
+                "server": { "port": 0 }
             }"#,
         )
         .unwrap();

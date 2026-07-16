@@ -1,0 +1,21 @@
+[package]
+name = "rusty-photon-server-config"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "The shared server config block (port, bind address, TLS, auth) embedded by every rusty-photon service"
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+schemars = { workspace = true }
+rp-tls = { workspace = true }
+rp-auth = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
