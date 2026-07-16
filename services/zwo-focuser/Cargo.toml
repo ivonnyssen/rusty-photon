@@ -32,7 +32,9 @@ ascom-alpaca = { workspace = true, features = ["server", "focuser"] }
 # the ASI/EFW SDKs belong to their own services.
 zwo-rs = { workspace = true, features = ["focuser"] }
 rp-tls = { workspace = true }
+rp-auth = { workspace = true }
 rusty-photon-config = { workspace = true }
+rusty-photon-server-config = { workspace = true }
 rusty-photon-driver = { workspace = true }
 rusty-photon-service-lifecycle = { workspace = true }
 tokio = { workspace = true }
@@ -168,6 +170,8 @@ systemd-libs = "*"
 zwo-rs = { workspace = true, features = ["simulation"] }
 # Client API for the BDD harness (tests/bdd/world.rs); kept out of the prod build.
 ascom-alpaca = { workspace = true, features = ["client"] }
+# HTTPS probe client for the TLS + auth smoke test (tests/bdd/steps/auth_steps.rs).
+reqwest = { workspace = true }
 tracing-subscriber = { workspace = true }
 bdd-infra = { workspace = true, features = ["conformu"] }
 cucumber = { workspace = true }

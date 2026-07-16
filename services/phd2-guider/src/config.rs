@@ -1,7 +1,7 @@
 //! Configuration types for the PHD2 guider service
 
+pub use rusty_photon_server_config::ServerConfig;
 use serde::{Deserialize, Serialize};
-use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -9,13 +9,11 @@ use std::time::Duration;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    /// HTTP listen address (`serve` mode only; the CLI ignores it).
-    /// Typed as `IpAddr` so a malformed address fails at config load.
-    #[serde(default = "default_bind_address")]
-    pub bind_address: IpAddr,
-    /// HTTP port (`serve` mode only). `0` auto-assigns — used by tests.
-    #[serde(default = "default_service_port")]
-    pub port: u16,
+    /// HTTP server settings (`serve` mode only; the CLI ignores it) —
+    /// the shared shape from `crates/rusty-photon-server-config`.
+    /// `port: 0` auto-assigns — used by tests.
+    #[serde(default = "default_server")]
+    pub server: ServerConfig,
     /// How long `POST /api/v1/guiding/stop` waits for PHD2 to reach
     /// the `Stopped` state (`serve` mode only).
     #[serde(default = "default_stop_timeout", with = "humantime_serde")]
@@ -29,8 +27,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            bind_address: default_bind_address(),
-            port: default_service_port(),
+            server: default_server(),
             stop_timeout: default_stop_timeout(),
             phd2: Phd2Config::default(),
             settling: SettleParams::default(),
@@ -38,12 +35,10 @@ impl Default for Config {
     }
 }
 
-fn default_bind_address() -> IpAddr {
-    IpAddr::from([127, 0, 0, 1])
-}
-
-fn default_service_port() -> u16 {
-    11130
+/// phd2-guider's default `server` block when the config file omits it:
+/// port 11130 on all interfaces, plain HTTP.
+fn default_server() -> ServerConfig {
+    ServerConfig::new(11130)
 }
 
 fn default_stop_timeout() -> Duration {
@@ -255,8 +250,8 @@ mod tests {
     #[test]
     fn an_empty_config_loads_with_the_serve_mode_defaults() {
         let config: Config = serde_json::from_str("{}").unwrap();
-        assert_eq!(config.bind_address, IpAddr::from([127, 0, 0, 1]));
-        assert_eq!(config.port, 11130);
+        assert_eq!(config.server.port, 11130);
+        assert_eq!(config.server.bind_address.to_string(), "0.0.0.0");
         assert_eq!(config.stop_timeout, Duration::from_secs(10));
         assert_eq!(config.phd2.host, "localhost");
         assert_eq!(config.settling.pixels, 0.5);
@@ -266,23 +261,16 @@ mod tests {
     fn the_serve_mode_fields_parse_from_json() {
         let config: Config = serde_json::from_str(
             r#"{
-                "bind_address": "0.0.0.0",
-                "port": 0,
+                "server": { "bind_address": "127.0.0.1", "port": 0 },
                 "stop_timeout": "1s",
                 "phd2": { "host": "127.0.0.1", "port": 14400 }
             }"#,
         )
         .unwrap();
-        assert_eq!(config.bind_address, IpAddr::from([0, 0, 0, 0]));
-        assert_eq!(config.port, 0);
+        assert_eq!(config.server.bind_address.to_string(), "127.0.0.1");
+        assert_eq!(config.server.port, 0);
         assert_eq!(config.stop_timeout, Duration::from_secs(1));
         assert_eq!(config.phd2.port, 14400);
-    }
-
-    #[test]
-    fn a_malformed_bind_address_fails_at_config_load() {
-        let err = serde_json::from_str::<Config>(r#"{"bind_address": "not-an-ip"}"#).unwrap_err();
-        assert!(err.to_string().contains("invalid IP address"));
     }
 
     #[test]

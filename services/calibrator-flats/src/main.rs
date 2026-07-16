@@ -17,13 +17,15 @@ struct Cli {
     #[arg(long)]
     config: Option<PathBuf>,
 
-    /// Port to listen on
-    #[arg(long, default_value = "11170")]
-    port: u16,
+    /// Port to listen on (overrides the config file's `server.port`,
+    /// default 11170)
+    #[arg(long)]
+    port: Option<u16>,
 
-    /// Bind address
-    #[arg(long, default_value = "127.0.0.1")]
-    bind_address: String,
+    /// Bind address (overrides the config file's `server.bind_address`,
+    /// default `0.0.0.0`)
+    #[arg(long)]
+    bind_address: Option<std::net::IpAddr>,
 
     /// Log level (trace, debug, info, warn, error)
     #[arg(long, default_value = "info", value_parser = clap::value_parser!(Level))]
@@ -48,18 +50,20 @@ fn main() -> ServiceResult {
     );
 
     let config_path = rusty_photon_config::resolve_config_path("calibrator-flats", cli.config)?;
-    let (port, bind_address) = (cli.port, cli.bind_address);
+    let overrides = calibrator_flats::config::CliOverrides {
+        port: cli.port,
+        bind_address: cli.bind_address,
+    };
 
     ServiceRunner::new("calibrator-flats")
         .scm_mode(cli.service)
         .run(move |shutdown| async move {
             debug!(config_path = %config_path.display(), "loading configuration");
-            let plan = calibrator_flats::config::load_config(&config_path)?;
+            let mut plan = calibrator_flats::config::load_config(&config_path)?;
+            overrides.apply(&mut plan);
 
             calibrator_flats::ServerBuilder::new()
                 .with_plan(plan)
-                .with_port(port)
-                .with_bind_address(bind_address)
                 .build()
                 .await?
                 .start(shutdown.cancelled())

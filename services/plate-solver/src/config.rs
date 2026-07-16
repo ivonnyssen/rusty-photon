@@ -4,24 +4,19 @@
 //! semantics. Validation rules are exercised by Phase 3 BDD's
 //! `configuration.feature`.
 
+pub use rusty_photon_server_config::ServerConfig;
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::{
-    net::{IpAddr, Ipv4Addr},
-    path::Path,
-    path::PathBuf,
-    time::Duration,
-};
+use std::{path::Path, path::PathBuf, time::Duration};
 use thiserror::Error;
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    #[serde(default = "default_bind_address")]
-    pub bind_address: IpAddr,
-
-    #[serde(default = "default_port")]
-    pub port: u16,
+    /// HTTP server settings — the shared shape from
+    /// `crates/rusty-photon-server-config`.
+    #[serde(default = "default_server")]
+    pub server: ServerConfig,
 
     pub astap_binary_path: PathBuf,
 
@@ -45,11 +40,10 @@ pub struct Config {
     pub astap_extra_env: HashMap<String, String>,
 }
 
-fn default_bind_address() -> IpAddr {
-    IpAddr::V4(Ipv4Addr::LOCALHOST)
-}
-fn default_port() -> u16 {
-    11131
+/// plate-solver's default `server` block when the config file omits it:
+/// port 11131 on all interfaces, plain HTTP.
+fn default_server() -> ServerConfig {
+    ServerConfig::new(11131)
 }
 fn default_max_concurrency() -> usize {
     1
@@ -216,8 +210,8 @@ mod tests {
         let cfg = load_config(&cfg_path).unwrap();
         cfg.validate().unwrap();
 
-        assert_eq!(cfg.bind_address, "127.0.0.1".parse::<IpAddr>().unwrap());
-        assert_eq!(cfg.port, 11131);
+        assert_eq!(cfg.server.port, 11131);
+        assert_eq!(cfg.server.bind_address.to_string(), "0.0.0.0");
         assert_eq!(cfg.max_concurrency, 1);
         assert_eq!(cfg.default_solve_timeout, Duration::from_secs(30));
         assert_eq!(cfg.max_solve_timeout, Duration::from_secs(120));
@@ -241,8 +235,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let db = fake_db_dir(&dir);
         let cfg = Config {
-            bind_address: default_bind_address(),
-            port: default_port(),
+            server: default_server(),
             astap_binary_path: "/absolutely/does/not/exist/astap_cli".into(),
             astap_db_directory: db,
             max_concurrency: default_max_concurrency(),
@@ -262,8 +255,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let bin = fake_binary(&dir, "astap_cli");
         let cfg = Config {
-            bind_address: default_bind_address(),
-            port: default_port(),
+            server: default_server(),
             astap_binary_path: bin,
             astap_db_directory: "/absolutely/does/not/exist/d05".into(),
             max_concurrency: default_max_concurrency(),
@@ -282,8 +274,7 @@ mod tests {
         let bin = fake_binary(&dir, "astap_cli");
         let db = fake_db_dir(&dir);
         let cfg = Config {
-            bind_address: default_bind_address(),
-            port: default_port(),
+            server: default_server(),
             astap_binary_path: bin,
             astap_db_directory: db,
             max_concurrency: 1,
@@ -301,8 +292,7 @@ mod tests {
         let bin = fake_binary(&dir, "astap_cli");
         let db = fake_db_dir(&dir);
         let cfg = Config {
-            bind_address: default_bind_address(),
-            port: default_port(),
+            server: default_server(),
             astap_binary_path: bin,
             astap_db_directory: db,
             max_concurrency: 0,
@@ -327,8 +317,7 @@ mod tests {
         fs::set_permissions(&bin, fs::Permissions::from_mode(0o644)).unwrap();
         let db = fake_db_dir(&dir);
         let cfg = Config {
-            bind_address: default_bind_address(),
-            port: default_port(),
+            server: default_server(),
             astap_binary_path: bin,
             astap_db_directory: db,
             max_concurrency: 1,

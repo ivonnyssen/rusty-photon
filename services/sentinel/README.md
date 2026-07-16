@@ -28,7 +28,7 @@ sentinel [OPTIONS]
 
 Options:
   -c, --config <PATH>            Path to JSON configuration file
-      --dashboard-port <PORT>    Dashboard port (overrides config file)
+      --dashboard-port <PORT>    Dashboard port (overrides the config file's server.port)
   -l, --log-level <LEVEL>        Log level [default: info]
                                  Values: trace, debug, info, warn, error
   -h, --help                     Print help
@@ -127,23 +127,35 @@ Transitions define *when* to send notifications. Each rule watches a monitor and
 
 If no transitions are configured, monitors still run and the dashboard works, but no notifications are sent.
 
-### Dashboard
+### Server and dashboard
 
 ```json
 {
+  "server": {
+    "port": 11114,
+    "bind_address": "0.0.0.0",
+    "tls": null,
+    "auth": null
+  },
   "dashboard": {
     "enabled": true,
-    "port": 11114,
     "history_size": 100
   }
 }
 ```
 
+The top-level `server` block configures the dashboard listener. It is the
+shared `ServerConfig` shape from `crates/rusty-photon-server-config`; absent
+`tls`/`auth` means plain, unauthenticated HTTP.
+
 | Field | Default | Description |
 |-------|---------|-------------|
-| `enabled` | `true` | Enable or disable the web dashboard. |
-| `port` | `11114` | HTTP port for the dashboard. |
-| `history_size` | `100` | Number of notification history entries to keep. |
+| `server.port` | `11114` | HTTP port for the dashboard. |
+| `server.bind_address` | `0.0.0.0` | Interface to bind (all interfaces by default). |
+| `server.tls` | `null` | Optional TLS (`cert`/`key` paths). |
+| `server.auth` | `null` | Optional HTTP Basic Auth (`username`/`password_hash`). |
+| `dashboard.enabled` | `true` | Enable or disable the web dashboard. |
+| `dashboard.history_size` | `100` | Number of notification history entries to keep. |
 
 ## Dashboard & API
 

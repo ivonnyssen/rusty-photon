@@ -14,7 +14,7 @@ const PUSHOVER_USER_KEY_ENV: &str = "PUSHOVER_USER_KEY";
 ///
 /// `deny_unknown_fields` so typoed or removed top-level keys fail loudly at
 /// load instead of being silently ignored.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     #[serde(default)]
@@ -25,6 +25,11 @@ pub struct Config {
     pub transitions: Vec<TransitionConfig>,
     #[serde(default)]
     pub dashboard: DashboardConfig,
+    /// The dashboard listener: the shared `server` block (port,
+    /// `bind_address`, optional `tls`/`auth`) from
+    /// `rusty-photon-server-config`.
+    #[serde(default = "default_server")]
+    pub server: rusty_photon_server_config::ServerConfig,
     /// Path to CA certificate for trusting TLS-enabled services
     #[serde(default)]
     pub ca_cert: Option<String>,
@@ -39,6 +44,21 @@ pub struct Config {
     /// only (today's behavior). See [`OperationWatchdogConfig`].
     #[serde(default)]
     pub operation_watchdog: Option<OperationWatchdogConfig>,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            monitors: Vec::new(),
+            notifiers: Vec::new(),
+            transitions: Vec::new(),
+            dashboard: DashboardConfig::default(),
+            server: default_server(),
+            ca_cert: None,
+            services: std::collections::HashMap::new(),
+            operation_watchdog: None,
+        }
+    }
 }
 
 impl Config {
@@ -332,30 +352,23 @@ pub struct HealthConfig {
     pub restart_backoff_max: Duration,
 }
 
-/// Dashboard configuration
+/// Dashboard configuration: whether the web dashboard is served and how much
+/// notification history it keeps. The listener itself (port, bind address,
+/// TLS, auth) is the top-level [`Config::server`] block.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DashboardConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
-    #[serde(default = "default_dashboard_port")]
-    pub port: u16,
     #[serde(default = "default_history_size")]
     pub history_size: usize,
-    #[serde(default)]
-    pub tls: Option<rp_tls::config::TlsConfig>,
-    #[serde(default)]
-    pub auth: Option<rp_auth::config::AuthConfig>,
 }
 
 impl Default for DashboardConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            port: default_dashboard_port(),
             history_size: default_history_size(),
-            tls: None,
-            auth: None,
         }
     }
 }
@@ -392,8 +405,10 @@ fn default_true() -> bool {
     true
 }
 
-fn default_dashboard_port() -> u16 {
-    11114
+/// Sentinel's default `server` block when the config file omits it: port
+/// 11114 on all interfaces, plain HTTP.
+fn default_server() -> rusty_photon_server_config::ServerConfig {
+    rusty_photon_server_config::ServerConfig::new(11114)
 }
 
 fn default_reconnect_max_attempts() -> u32 {
@@ -521,8 +536,10 @@ mod tests {
             ],
             "dashboard": {
                 "enabled": true,
-                "port": 11114,
                 "history_size": 100
+            },
+            "server": {
+                "port": 11114
             }
         }"#;
 
@@ -552,8 +569,8 @@ mod tests {
         assert_eq!(config.transitions[1].priority, None);
 
         assert!(config.dashboard.enabled);
-        assert_eq!(config.dashboard.port, 11114);
         assert_eq!(config.dashboard.history_size, 100);
+        assert_eq!(config.server.port, 11114);
     }
 
     #[test]
@@ -565,8 +582,9 @@ mod tests {
         assert!(config.notifiers.is_empty());
         assert!(config.transitions.is_empty());
         assert!(config.dashboard.enabled);
-        assert_eq!(config.dashboard.port, 11114);
         assert_eq!(config.dashboard.history_size, 100);
+        assert_eq!(config.server.port, 11114);
+        assert_eq!(config.server.bind_address.to_string(), "0.0.0.0");
     }
 
     #[test]
@@ -673,6 +691,10 @@ mod tests {
         assert!(config.notifiers.is_empty());
         assert!(config.transitions.is_empty());
         assert!(config.dashboard.enabled);
+        assert_eq!(config.server.port, 11114);
+        assert_eq!(config.server.bind_address.to_string(), "0.0.0.0");
+        assert!(config.server.tls.is_none());
+        assert!(config.server.auth.is_none());
     }
 
     #[test]
@@ -1051,6 +1073,26 @@ mod tests {
         let json = r#"{ "dashboard": { "theme": "dark" } }"#;
         let err = serde_json::from_str::<Config>(json).unwrap_err();
         assert!(err.to_string().contains("theme"), "{err}");
+    }
+
+    #[test]
+    fn dashboard_config_rejects_relocated_listener_fields() {
+        // port/tls/auth moved to the top-level `server` block; an old config
+        // still writing them under `dashboard` must fail loudly at load.
+        for (json, field) in [
+            (r#"{ "dashboard": { "port": 11114 } }"#, "port"),
+            (
+                r#"{ "dashboard": { "tls": { "cert": "c", "key": "k" } } }"#,
+                "tls",
+            ),
+            (
+                r#"{ "dashboard": { "auth": { "username": "u", "password_hash": "h" } } }"#,
+                "auth",
+            ),
+        ] {
+            let err = serde_json::from_str::<Config>(json).unwrap_err();
+            assert!(err.to_string().contains(field), "{err}");
+        }
     }
 
     #[test]

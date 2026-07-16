@@ -9,7 +9,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 
 #[cfg(not(miri))]
-use filemonitor::{Config, DeviceConfig, FileConfig, ParsingConfig, ServerConfig};
+use filemonitor::{AlpacaServerConfig, Config, DeviceConfig, FileConfig, ParsingConfig};
 #[cfg(not(miri))]
 use std::path::PathBuf;
 
@@ -34,12 +34,7 @@ async fn test_start_server_creation() {
             rules: vec![],
             case_sensitive: false,
         },
-        server: ServerConfig {
-            port: 0,
-            discovery_port: None,
-            tls: None,
-            auth: None,
-        },
+        server: AlpacaServerConfig::new(0),
     };
 
     std::fs::write(&config.file.path, "test").unwrap();

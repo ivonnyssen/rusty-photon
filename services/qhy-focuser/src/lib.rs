@@ -26,7 +26,7 @@ pub mod protocol;
 pub mod serial;
 
 pub use codec::{QhyCodec, QhyCodecError, QhyResponse};
-pub use config::{load_config, Config, FocuserConfig, SerialConfig, ServerConfig};
+pub use config::{load_config, AlpacaServerConfig, Config, FocuserConfig, SerialConfig};
 pub use error::{QhyFocuserError, Result};
 pub use focuser_device::QhyFocuserDevice;
 pub use manager::{CachedState, FocuserManager};
@@ -127,7 +127,7 @@ impl ServerBuilder {
             Box<dyn std::error::Error + Send + Sync>,
         > = async {
             let mut server = Server::new(CargoServerInfo!());
-            server.listen_addr = SocketAddr::from(([0, 0, 0, 0], self.config.server.port));
+            server.listen_addr = self.config.server.socket_addr();
 
             if self.config.focuser.enabled {
                 let mut focuser_device =
@@ -173,11 +173,8 @@ impl ServerBuilder {
                 None => router,
             };
 
-            let listener = rp_tls::server::bind_dual_stack_tokio(SocketAddr::from((
-                [0, 0, 0, 0],
-                self.config.server.port,
-            )))
-            .await?;
+            let listener =
+                rp_tls::server::bind_dual_stack_tokio(self.config.server.socket_addr()).await?;
             let local_addr = listener.local_addr()?;
 
             // Opt-in Alpaca UDP discovery responder (config `discovery_port`);

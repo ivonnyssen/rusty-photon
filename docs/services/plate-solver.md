@@ -366,7 +366,9 @@ Validation rules:
 - `astap_binary_path` must exist, be a regular file, and be executable
   by the current user.
 - `astap_db_directory` must exist and be a directory.
-- `bind_address` must parse as an IP address.
+- `server.bind_address` must parse as an IP address (typed `IpAddr`
+  in the shared server config, so a malformed address fails at config
+  load rather than at bind time).
 - `default_solve_timeout` must be ≤ `max_solve_timeout` (otherwise
   the request-supplied timeout could exceed `max_solve_timeout`,
   defeating the bound).
@@ -389,8 +391,12 @@ mandatory), so the packaged systemd unit gates on it with
 
 ```json
 {
-  "bind_address": "127.0.0.1",
-  "port": 11131,
+  "server": {
+    "port": 11131,
+    "bind_address": "0.0.0.0",
+    "tls": null,
+    "auth": null
+  },
   "astap_binary_path": "/opt/astap/astap_cli",
   "astap_db_directory": "/opt/astap/d05",
   "max_concurrency": 1,
@@ -400,10 +406,16 @@ mandatory), so the packaged systemd unit gates on it with
 }
 ```
 
+The `server` block is the shared `ServerConfig` from
+`crates/rusty-photon-server-config` (see ADR-016): `port`,
+`bind_address` (default `0.0.0.0`), and optional `tls`/`auth`. Absent
+`tls`/`auth` (shown as `null` above) means plain, unauthenticated
+HTTP.
+
 | Field | Required | Default | Notes |
 |-------|----------|---------|-------|
-| `bind_address` | no | `127.0.0.1` | Bind to `0.0.0.0` only when rp runs on a different machine. |
-| `port` | no | `11131` | Matches the placeholder rp config in `rp.md` §"Configuration". |
+| `server.bind_address` | no | `0.0.0.0` | Interface to bind; all interfaces by default. |
+| `server.port` | no | `11131` | Matches the placeholder rp config in `rp.md` §"Configuration". |
 | `astap_binary_path` | **yes** | — | No default. Wrapper must be told where ASTAP is. |
 | `astap_db_directory` | **yes** | — | No default. ASTAP needs an index database to solve; the operator picks D05 / D80 / etc. for their FOV. |
 | `max_concurrency` | no | `1` | Capacity of the single-flight semaphore. v1 ships at 1; tuning above 1 is operator-driven and unsupported by the v1 budget assertions. |

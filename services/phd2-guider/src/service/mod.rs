@@ -69,8 +69,7 @@ impl ServerBuilder {
         // Bind before spawning any background task: a bind failure a
         // caller chooses to handle must not leak an event pump or a
         // PHD2 connect-retry loop.
-        let bind_addr = SocketAddr::new(config.bind_address, config.port);
-        let listener = TcpListener::bind(bind_addr).await?;
+        let listener = TcpListener::bind(config.server.socket_addr()).await?;
         let local_addr = listener.local_addr()?;
 
         ops.spawn_event_pump();
@@ -81,10 +80,26 @@ impl ServerBuilder {
 
         let router = api::build_router(ops);
 
+        // Opt-in HTTP Basic Auth (shared server config `auth` block).
+        let router = match &config.server.auth {
+            Some(auth) => {
+                if config.server.tls.is_none() {
+                    tracing::warn!(
+                        "Authentication is enabled but TLS is not. \
+                         Credentials will be transmitted in cleartext. \
+                         Consider enabling TLS (see `rp init-tls`)."
+                    );
+                }
+                rp_auth::layer(router, auth)
+            }
+            None => router,
+        };
+
         Ok(BoundServer {
             listener,
             router,
             local_addr,
+            tls: config.server.tls.clone(),
         })
     }
 }
@@ -100,6 +115,8 @@ pub struct BoundServer {
     listener: TcpListener,
     router: axum::Router,
     local_addr: SocketAddr,
+    /// TLS settings from the shared server config; `None` serves plain HTTP.
+    tls: Option<rp_tls::config::TlsConfig>,
 }
 
 impl BoundServer {
@@ -110,13 +127,29 @@ impl BoundServer {
     /// Run the server until `shutdown` resolves. The runner
     /// ([`rusty_photon_service_lifecycle::ServiceRunner`]) owns signal
     /// installation; this method just threads the shutdown future into
-    /// `axum::serve(...).with_graceful_shutdown(...)`.
+    /// the serve loop (TLS when `server.tls` is configured, plain
+    /// `axum::serve` otherwise).
     pub async fn start(
         self,
         shutdown: impl Future<Output = ()> + Send + 'static,
     ) -> Result<(), std::io::Error> {
-        axum::serve(self.listener, self.router)
-            .with_graceful_shutdown(shutdown)
-            .await
+        let Self {
+            listener,
+            router,
+            local_addr: _,
+            tls,
+        } = self;
+        match tls {
+            Some(ref tls_config) => {
+                rp_tls::server::serve_tls(listener, router, tls_config, shutdown)
+                    .await
+                    .map_err(std::io::Error::other)
+            }
+            None => {
+                axum::serve(listener, router)
+                    .with_graceful_shutdown(shutdown)
+                    .await
+            }
+        }
     }
 }

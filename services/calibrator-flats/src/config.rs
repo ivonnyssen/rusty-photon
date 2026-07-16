@@ -1,7 +1,10 @@
+use std::net::IpAddr;
 use std::path::Path;
 use std::time::Duration;
 
 use serde::Deserialize;
+
+pub use rusty_photon_server_config::ServerConfig;
 
 use crate::error::{CalibratorFlatsError, Result};
 
@@ -13,10 +16,15 @@ pub struct FilterPlan {
     pub count: u32,
 }
 
-/// Flat calibration plan passed via the orchestrator plugin config.
+/// Flat calibration plan passed via the orchestrator plugin config. This is
+/// also the service's config file, so it carries the HTTP `server` block.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FlatPlan {
+    /// The HTTP server for `/invoke` and `/health`. Plan files without a
+    /// `server` block keep loading via the default.
+    #[serde(default = "default_server")]
+    pub server: ServerConfig,
     pub camera_id: String,
     pub filter_wheel_id: String,
     pub calibrator_id: String,
@@ -37,6 +45,35 @@ pub struct FlatPlan {
     pub brightness: Option<u32>,
     /// Filters to capture flats for
     pub filters: Vec<FilterPlan>,
+}
+
+/// calibrator-flats' default `server` block when the plan file omits it:
+/// port 11170 on all interfaces, plain HTTP.
+pub(crate) fn default_server() -> ServerConfig {
+    ServerConfig::new(11170)
+}
+
+/// CLI overrides layered over the file config after load: `--port` and
+/// `--bind-address` pin `server.port` / `server.bind_address` over whatever
+/// the file (or the `default_server()` fallback) supplied.
+#[derive(Debug, Clone, Default)]
+pub struct CliOverrides {
+    /// `--port` → `server.port`.
+    pub port: Option<u16>,
+    /// `--bind-address` → `server.bind_address`.
+    pub bind_address: Option<IpAddr>,
+}
+
+impl CliOverrides {
+    /// Apply the overrides onto `plan` in place.
+    pub fn apply(&self, plan: &mut FlatPlan) {
+        if let Some(port) = self.port {
+            plan.server.port = port;
+        }
+        if let Some(bind_address) = self.bind_address {
+            plan.server.bind_address = bind_address;
+        }
+    }
 }
 
 fn default_target_adu_fraction() -> f64 {
@@ -96,6 +133,54 @@ mod tests {
         assert_eq!(plan.initial_duration, Duration::from_secs(1));
         assert!(plan.brightness.is_none());
         assert_eq!(plan.filters.len(), 1);
+        // A plan file without a `server` block keeps loading via the default.
+        assert_eq!(plan.server.port, 11170);
+        assert_eq!(plan.server.bind_address.to_string(), "0.0.0.0");
+        assert!(plan.server.tls.is_none());
+        assert!(plan.server.auth.is_none());
+    }
+
+    #[test]
+    fn deserialize_flat_plan_with_server_block() {
+        let json = r#"{
+            "server": { "port": 12000, "bind_address": "127.0.0.1" },
+            "camera_id": "main-cam",
+            "filter_wheel_id": "main-fw",
+            "calibrator_id": "flat-panel",
+            "filters": [{"name": "Luminance", "count": 20}]
+        }"#;
+        let plan: FlatPlan = serde_json::from_str(json).unwrap();
+        assert_eq!(plan.server.socket_addr().to_string(), "127.0.0.1:12000");
+    }
+
+    #[test]
+    fn cli_overrides_pin_port_and_bind_address() {
+        let json = r#"{
+            "camera_id": "main-cam",
+            "filter_wheel_id": "main-fw",
+            "calibrator_id": "flat-panel",
+            "filters": [{"name": "Luminance", "count": 20}]
+        }"#;
+        let mut plan: FlatPlan = serde_json::from_str(json).unwrap();
+        let overrides = CliOverrides {
+            port: Some(12345),
+            bind_address: Some("127.0.0.1".parse().unwrap()),
+        };
+        overrides.apply(&mut plan);
+        assert_eq!(plan.server.socket_addr().to_string(), "127.0.0.1:12345");
+    }
+
+    #[test]
+    fn empty_cli_overrides_leave_the_plan_untouched() {
+        let json = r#"{
+            "camera_id": "main-cam",
+            "filter_wheel_id": "main-fw",
+            "calibrator_id": "flat-panel",
+            "filters": [{"name": "Luminance", "count": 20}]
+        }"#;
+        let mut plan: FlatPlan = serde_json::from_str(json).unwrap();
+        CliOverrides::default().apply(&mut plan);
+        assert_eq!(plan.server.socket_addr().to_string(), "0.0.0.0:11170");
     }
 
     #[test]

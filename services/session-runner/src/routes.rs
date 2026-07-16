@@ -488,7 +488,7 @@ mod tests {
         std::fs::create_dir_all(&workflows_dir).unwrap();
         std::fs::create_dir_all(&state_dir).unwrap();
         Config {
-            port: 0,
+            server: crate::config::ServerConfig::new(0),
             workflows_dir,
             state_dir,
             mcp_server_url: None,

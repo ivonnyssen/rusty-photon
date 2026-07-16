@@ -247,7 +247,6 @@ The MVP boundary drives BDD scenario selection (Phase 2). Grounded in what
 - Per-serial connect-time tuning (gain/offset/target-temperature defaults).
 - `ElectronsPerADU` / `FullWellCapacity` (upstream `NOT_IMPLEMENTED`; supply
   placeholders only if ConformU requires them).
-- TLS / HTTP Basic Auth (compose `rp-tls` / `rp-auth` later).
 
 ---
 
@@ -276,10 +275,18 @@ toggle and the port.
     }
   },
   "server": {
-    "port": 11121
+    "port": 11121,
+    "bind_address": "0.0.0.0",
+    "tls": null,
+    "auth": null
   }
 }
 ```
+
+The `server` block is the shared `AlpacaServerConfig` from
+`crates/rusty-photon-server-config` (see ADR-016): `port`, `bind_address`
+(default `0.0.0.0`), optional `discovery_port`, and optional `tls`/`auth`.
+Absent `tls`/`auth` means plain, unauthenticated HTTP.
 
 Sections:
 
@@ -305,7 +312,8 @@ implemented generically in `rusty_photon_config::actions` + the ASCOM adapter in
 [`rusty-photon-driver`](../../crates/rusty-photon-driver). `config_actions.rs`
 supplies `ConfigurableDriver for QhyCameraDriver`:
 
-- **Secrets redacted/carried forward:** none in v0 (no auth yet).
+- **Secrets redacted/carried forward:** `server.auth.password_hash` (the one
+  secret; `server.tls` stores file *paths*, not key material).
 - **Locked (identity) fields:** none — UniqueIDs are hardware-derived and not
   stored in config, so there is no identity field to lock (a deliberate
   divergence from the `materialize_identity` convention; see *Device identity*).

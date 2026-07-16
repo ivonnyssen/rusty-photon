@@ -138,7 +138,7 @@ pub async fn start_session_runner_service(world: &mut SessionRunnerWorld) {
     }
 
     let config = serde_json::json!({
-        "port": 0,
+        "server": { "port": 0 },
         "workflows_dir": world.workflows_dir.as_ref().expect("just ensured").path(),
         "state_dir": world.state_dir.as_ref().expect("just ensured").path(),
     });

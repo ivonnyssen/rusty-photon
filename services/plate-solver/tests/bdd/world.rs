@@ -68,9 +68,12 @@ pub struct PlateSolverWorld {
     pub concurrent_results: Vec<ConcurrentResult>,
 
     /// Configuration JSON being accumulated by `configuration.feature`'s
-    /// composing Given steps. Materialized to disk by the
-    /// `When the wrapper starts` step.
+    /// composing Given steps (and staged whole by `auth.feature`'s
+    /// Given step). Materialized to disk by the starting When step.
     pub pending_config: serde_json::Map<String, serde_json::Value>,
+
+    /// PKI tree for the TLS + auth smoke test (`auth.feature`).
+    pub tls_pki_dir: Option<TempDir>,
 }
 
 #[derive(Debug, Clone)]
@@ -277,8 +280,10 @@ fn write_config(
     extra_env: &HashMap<String, String>,
 ) -> PathBuf {
     let body = serde_json::json!({
-        "bind_address": "127.0.0.1",
-        "port": 0,  // OS picks a free port; ServiceHandle parses it from stdout
+        "server": {
+            "bind_address": "127.0.0.1",
+            "port": 0,  // OS picks a free port; ServiceHandle parses it from stdout
+        },
         "astap_binary_path": binary_path.to_string_lossy(),
         "astap_db_directory": db_directory.to_string_lossy(),
         "astap_extra_env": extra_env,

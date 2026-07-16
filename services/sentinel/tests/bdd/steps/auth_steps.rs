@@ -30,11 +30,11 @@ async fn sentinel_started_with_dashboard_auth(world: &mut SentinelWorld) {
     let hash = rp_auth::credentials::hash_password(AUTH_PASSWORD).unwrap();
 
     let mut config = world.build_sentinel_config();
-    config["dashboard"]["tls"] = serde_json::json!({
+    config["server"]["tls"] = serde_json::json!({
         "cert": certs_dir.join("sentinel.pem").to_string_lossy().to_string(),
         "key": certs_dir.join("sentinel-key.pem").to_string_lossy().to_string()
     });
-    config["dashboard"]["auth"] = serde_json::json!({
+    config["server"]["auth"] = serde_json::json!({
         "username": AUTH_USERNAME,
         "password_hash": hash
     });

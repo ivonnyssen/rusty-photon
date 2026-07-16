@@ -78,6 +78,12 @@ pub struct FalconRotatorWorld {
     pub reload: Option<ReloadSignal>,
     pub last_response: Option<serde_json::Value>,
     pub last_supported_actions: Option<Vec<String>>,
+
+    /// PKI tree for the TLS + auth smoke test (`auth.feature`).
+    pub tls_pki_dir: Option<TempDir>,
+    /// Config staged by a Given step for a custom-config start that must not
+    /// go through `start_service` (which clears `tls` / `auth`).
+    pub pending_config: Option<Config>,
 }
 
 impl FalconRotatorWorld {

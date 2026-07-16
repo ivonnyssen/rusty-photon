@@ -33,24 +33,15 @@ use crate::error::{Result, SessionRunnerError};
 /// Builder for the session-runner server (two-phase: build → start).
 pub struct ServerBuilder {
     config: Option<Config>,
-    bind_address: String,
 }
 
 impl ServerBuilder {
     pub fn new() -> Self {
-        Self {
-            config: None,
-            bind_address: "127.0.0.1".to_owned(),
-        }
+        Self { config: None }
     }
 
     pub fn with_config(mut self, config: Config) -> Self {
         self.config = Some(config);
-        self
-    }
-
-    pub fn with_bind_address(mut self, addr: String) -> Self {
-        self.bind_address = addr;
         self
     }
 
@@ -61,10 +52,24 @@ impl ServerBuilder {
                     .to_owned(),
             )
         })?;
-        let bind_addr = format!("{}:{}", self.bind_address, config.port);
+        let server = config.server.clone();
         let router = routes::build_router(Arc::new(config));
 
-        let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
+        // Layer HTTP Basic Auth when configured (server.auth).
+        let router = match &server.auth {
+            Some(auth) => {
+                if server.tls.is_none() {
+                    tracing::warn!(
+                        "Authentication is enabled but TLS is not. Credentials will be \
+                         transmitted in cleartext. Consider enabling TLS (see `rp init-tls`)."
+                    );
+                }
+                rp_auth::layer(router, auth)
+            }
+            None => router,
+        };
+
+        let listener = tokio::net::TcpListener::bind(server.socket_addr()).await?;
         let local_addr = listener.local_addr()?;
 
         // This println is parsed by BDD tests to discover the bound port.
@@ -80,6 +85,7 @@ impl ServerBuilder {
             listener,
             router,
             local_addr,
+            tls: server.tls,
         })
     }
 }
@@ -95,6 +101,7 @@ pub struct BoundServer {
     listener: tokio::net::TcpListener,
     router: axum::Router,
     local_addr: SocketAddr,
+    tls: Option<rp_tls::config::TlsConfig>,
 }
 
 impl BoundServer {
@@ -105,10 +112,15 @@ impl BoundServer {
     pub async fn start(self, shutdown: impl Future<Output = ()> + Send + 'static) -> Result<()> {
         info!("session-runner service started on {}", self.local_addr);
 
-        axum::serve(self.listener, self.router)
-            .with_graceful_shutdown(shutdown)
-            .await
-            .map_err(|e| SessionRunnerError::Server(e.to_string()))?;
+        match self.tls {
+            Some(ref tls) => rp_tls::server::serve_tls(self.listener, self.router, tls, shutdown)
+                .await
+                .map_err(|e| SessionRunnerError::Server(e.to_string()))?,
+            None => axum::serve(self.listener, self.router)
+                .with_graceful_shutdown(shutdown)
+                .await
+                .map_err(|e| SessionRunnerError::Server(e.to_string()))?,
+        }
 
         debug!("session-runner service shut down");
         Ok(())

@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use rusty_photon_service_lifecycle::{report_from_boxed, ServiceResult, ServiceRunner};
-use tracing::{debug, info, Level};
+use tracing::{debug, info, warn, Level};
 use ui_htmx::{build_router, load_config, AppState, Config};
 
 #[derive(Parser)]
@@ -15,7 +15,7 @@ struct Args {
     /// Path to the BFF configuration file. Defaults to the platform
     /// config directory (e.g. `~/.config/rusty-photon/ui-htmx.json` on
     /// Linux); created with defaults on first start if absent (binds
-    /// 127.0.0.1:11120, targets dsd-fp2 at http://127.0.0.1:11119).
+    /// 0.0.0.0:11120, targets dsd-fp2 at http://127.0.0.1:11119).
     #[arg(short, long)]
     config: Option<PathBuf>,
 
@@ -72,8 +72,23 @@ fn main() -> ServiceResult {
             let state = AppState::from_config(&config)?.with_sse_shutdown(sse_token.clone());
             let app = build_router(state);
 
-            let addr = format!("{}:{}", config.server.bind, config.server.port);
-            let listener = tokio::net::TcpListener::bind(&addr).await?;
+            // Layer HTTP Basic auth around the whole router (`/health`
+            // included) when `server.auth` is configured.
+            let app = match &config.server.auth {
+                Some(auth) => {
+                    if config.server.tls.is_none() {
+                        warn!(
+                            "Authentication is enabled but TLS is not. \
+                             Credentials will be transmitted in cleartext. \
+                             Consider enabling TLS (see `rp init-tls`)."
+                        );
+                    }
+                    rp_auth::layer(app, auth)
+                }
+                None => app,
+            };
+
+            let listener = tokio::net::TcpListener::bind(config.server.socket_addr()).await?;
             let bound = listener.local_addr()?;
             // Print to stdout (not just `info!`) so port discovery works regardless
             // of log level/output — matching the drivers' `bound_addr=` line.
@@ -85,12 +100,21 @@ fn main() -> ServiceResult {
             }
             info!("ui-htmx listening; bound_addr={bound}");
 
-            axum::serve(listener, app)
-                .with_graceful_shutdown(async move {
-                    shutdown.cancelled().await;
-                    sse_token.cancel();
-                })
-                .await?;
+            let shutdown_signal = async move {
+                shutdown.cancelled().await;
+                sse_token.cancel();
+            };
+            match &config.server.tls {
+                Some(tls) => {
+                    debug!("Serving HTTPS (server.tls configured)");
+                    rp_tls::server::serve_tls(listener, app, tls, shutdown_signal).await?;
+                }
+                None => {
+                    axum::serve(listener, app)
+                        .with_graceful_shutdown(shutdown_signal)
+                        .await?;
+                }
+            }
             Ok(())
         })
 }

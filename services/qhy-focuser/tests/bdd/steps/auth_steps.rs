@@ -30,9 +30,7 @@ fn qhy_configured_with_tls_and_auth(world: &mut QhyFocuserWorld) {
             polling_interval: std::time::Duration::from_secs(60),
             ..Default::default()
         },
-        server: qhy_focuser::ServerConfig {
-            port: 0,
-            discovery_port: None,
+        server: qhy_focuser::AlpacaServerConfig {
             tls: Some(rp_tls::config::TlsConfig {
                 cert: certs_dir
                     .join("qhy-focuser.pem")
@@ -43,7 +41,7 @@ fn qhy_configured_with_tls_and_auth(world: &mut QhyFocuserWorld) {
                     .to_string_lossy()
                     .into_owned(),
             }),
-            auth: None,
+            ..qhy_focuser::AlpacaServerConfig::new(0)
         },
         focuser: qhy_focuser::FocuserConfig {
             enabled: true,
@@ -62,12 +60,7 @@ fn qhy_configured_without_auth(world: &mut QhyFocuserWorld) {
             polling_interval: std::time::Duration::from_secs(60),
             ..Default::default()
         },
-        server: qhy_focuser::ServerConfig {
-            port: 0,
-            discovery_port: None,
-            tls: None,
-            auth: None,
-        },
+        server: qhy_focuser::AlpacaServerConfig::new(0),
         focuser: qhy_focuser::FocuserConfig {
             enabled: true,
             ..Default::default()

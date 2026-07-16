@@ -8,6 +8,8 @@
 //!   minted into config, so there is no identity field to lock.
 //! - **Hard read-only:** `server.port` (a BFF could not follow the rebind).
 //! - **Editable:** the per-serial `devices` map (`name` / `description`).
+//! - **Secret:** `server.auth.password_hash` (redacted on read, carried
+//!   forward on apply).
 
 use rusty_photon_config::actions::{ConfigurableDriver, FieldError};
 
@@ -28,9 +30,10 @@ impl ConfigurableDriver for ZwoFocuserDriver {
         Vec::new()
     }
 
-    /// No secrets in v0 (TLS / auth are Future Work).
+    /// The Basic-Auth credential hash is redacted on read and carried
+    /// forward on apply so a round-tripped form never blanks it.
     fn secret_pointers() -> &'static [&'static str] {
-        &[]
+        &["/server/auth/password_hash"]
     }
 
     fn override_paths(overrides: &CliOverrides) -> Vec<String> {

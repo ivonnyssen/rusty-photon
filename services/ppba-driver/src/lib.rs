@@ -28,7 +28,7 @@ pub mod switches;
 
 pub use codec::{PpbaCodec, PpbaCodecError, PpbaResponse};
 pub use config::{
-    load_config, Config, DeviceConfig, ObservingConditionsConfig, SerialConfig, ServerConfig,
+    load_config, AlpacaServerConfig, Config, DeviceConfig, ObservingConditionsConfig, SerialConfig,
     SwitchConfig,
 };
 pub use error::{PpbaError, Result};
@@ -124,7 +124,7 @@ impl ServerBuilder {
             Box<dyn std::error::Error + Send + Sync>,
         > = async {
             let mut server = Server::new(CargoServerInfo!());
-            server.listen_addr = SocketAddr::from(([0, 0, 0, 0], self.config.server.port));
+            server.listen_addr = self.config.server.socket_addr();
 
             // Build the shared config-action context once (when a config source
             // + reload signal were supplied) and clone it to each device, so both
@@ -186,11 +186,8 @@ impl ServerBuilder {
                 None => router,
             };
 
-            let listener = rp_tls::server::bind_dual_stack_tokio(SocketAddr::from((
-                [0, 0, 0, 0],
-                self.config.server.port,
-            )))
-            .await?;
+            let listener =
+                rp_tls::server::bind_dual_stack_tokio(self.config.server.socket_addr()).await?;
             let local_addr = listener.local_addr()?;
 
             // Opt-in Alpaca UDP discovery responder (config `discovery_port`);

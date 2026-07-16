@@ -51,7 +51,7 @@ pub mod types;
 
 // Re-export commonly used types at the crate root for convenience
 pub use client::Phd2Client;
-pub use config::{load_config, Config, Phd2Config, ReconnectConfig, SettleParams};
+pub use config::{load_config, Config, Phd2Config, ReconnectConfig, ServerConfig, SettleParams};
 pub use error::{Phd2Error, Result};
 pub use events::{AppState, GuideStepStats, Phd2Event};
 pub use fits::{decode_base64_u16, write_grayscale_u16_fits};

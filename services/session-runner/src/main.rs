@@ -18,13 +18,14 @@ struct Cli {
     #[arg(long)]
     config: Option<PathBuf>,
 
-    /// Port to listen on (overrides the config file's `port`)
+    /// Port to listen on (overrides the config file's `server.port`)
     #[arg(long)]
     port: Option<u16>,
 
-    /// Bind address
-    #[arg(long, default_value = "127.0.0.1")]
-    bind_address: String,
+    /// Bind address (overrides the config file's `server.bind_address`,
+    /// default `0.0.0.0`)
+    #[arg(long)]
+    bind_address: Option<std::net::IpAddr>,
 
     /// Log level (trace, debug, info, warn, error)
     #[arg(long, default_value = "info", value_parser = clap::value_parser!(Level))]
@@ -49,20 +50,20 @@ fn main() -> ServiceResult {
     );
 
     let config_path = rusty_photon_config::resolve_config_path("session-runner", cli.config)?;
-    let (port, bind_address) = (cli.port, cli.bind_address);
+    let overrides = session_runner::config::CliOverrides {
+        port: cli.port,
+        bind_address: cli.bind_address,
+    };
 
     ServiceRunner::new("session-runner")
         .scm_mode(cli.service)
         .run(move |shutdown| async move {
             debug!(config_path = %config_path.display(), "loading configuration");
             let mut config = session_runner::config::load_config(&config_path)?;
-            if let Some(port) = port {
-                config.port = port;
-            }
+            overrides.apply(&mut config);
 
             session_runner::ServerBuilder::new()
                 .with_config(config)
-                .with_bind_address(bind_address)
                 .build()
                 .await?
                 .start(shutdown.cancelled())

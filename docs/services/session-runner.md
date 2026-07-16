@@ -892,7 +892,12 @@ rejected — it names the blackboard file.
 
 ```jsonc
 {
-  "port": 11171,
+  "server": {
+    "port": 11171,
+    "bind_address": "0.0.0.0",
+    "tls": null,
+    "auth": null
+  },
   "workflows_dir": "/var/lib/rusty-photon/workflows",
   "state_dir": "/var/lib/rusty-photon/session-runner",
   "mcp_server_url": null,       // rp MCP endpoint for standalone /validate only
@@ -902,19 +907,24 @@ rejected — it names the blackboard file.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `port` | int | 11171 | HTTP listen port for `/invoke`, `/validate`, `/health` |
+| `server` | object | `{ "port": 11171 }` | The HTTP server for `/invoke`, `/validate`, `/health` |
 | `workflows_dir` | path | required | Directory of workflow documents; first-party documents ship in the package |
 | `state_dir` | path | required | Blackboard persistence directory |
 | `mcp_server_url` | string or null | null | `rp` MCP endpoint used only by standalone `/validate` catalog validation; invocations always use the URL delivered in the `/invoke` payload |
 | `events_url` | string or null | null | Explicit SSE endpoint; null derives `<mcp origin>/api/events/subscribe` |
+
+The `server` block is the shared `ServerConfig` from
+`crates/rusty-photon-server-config` (see ADR-016): `port`, `bind_address`
+(default `0.0.0.0`), and optional `tls`/`auth`. Absent `tls`/`auth` means
+plain, unauthenticated HTTP.
 
 Unknown configuration keys are rejected at load — a misspelled field must
 not silently fall back to a default. CLI: `--config <path>` (default: the
 platform config directory, e.g.
 `~/.config/rusty-photon/session-runner.json` on Linux,
 `%PROGRAMDATA%\rusty-photon\session-runner.json` on Windows), `--port` (overrides the
-file's `port`; `--port 0` binds an ephemeral port, printed at startup),
-`--bind-address` (default `127.0.0.1`), `--log-level`.
+file's `server.port`; `--port 0` binds an ephemeral port, printed at startup),
+`--bind-address` (overrides the file's `server.bind_address`), `--log-level`.
 
 ## Example Documents
 
@@ -1330,6 +1340,10 @@ targeted `until_event` wait, resume fixtures) execute purpose-built
 documents from `tests/fixtures/workflows/`; the spawned service's
 `workflows_dir` is a per-scenario merge of `workflows/` and that fixtures
 directory.
+
+A separate TLS + auth smoke scenario (`auth.feature`) spawns only
+session-runner itself with `server.tls` and `server.auth` configured and
+proves `/health` requires HTTP Basic Auth over HTTPS.
 
 ### Golden documents
 

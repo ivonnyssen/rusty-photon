@@ -181,6 +181,11 @@ pub struct SkySurveyCameraWorld {
     pub last_ascom_error: Option<u32>,
     pub last_image_dimensions: Option<(u32, u32)>,
     pub last_error: Option<String>,
+
+    /// PKI tree for the TLS + auth smoke test (`auth.feature`).
+    pub tls_pki_dir: Option<TempDir>,
+    /// Config JSON staged by a Given step for a custom-config start.
+    pub pending_config: Option<serde_json::Value>,
 }
 
 impl SkySurveyCameraWorld {

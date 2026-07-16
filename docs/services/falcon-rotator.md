@@ -259,6 +259,7 @@ Either path is a follow-up PR. The MVP just exposes the raw count.
   },
   "server": {
     "port": 11118,
+    "bind_address": "0.0.0.0",
     "auth": {
       "username": "observatory",
       "password_hash": "$argon2id$v=19$m=19456,t=2,p=1$..."
@@ -285,6 +286,7 @@ Either path is a follow-up PR. The MVP just exposes the raw count.
 | `serial` | `baud_rate` | Baud rate | `9600` |
 | `serial` | `timeout` | Serial read/write timeout (`humantime`) | `"2s"` |
 | `server` | `port` | HTTP server port | `11118` |
+| `server` | `bind_address` | Interface to bind (`0.0.0.0` listens on all interfaces) | `"0.0.0.0"` |
 | `server` | `discovery_port` | Alpaca UDP discovery responder port (opt-in; normally `32227`). Absent/`null` disables discovery — many rusty-photon servers on one host would collide on the shared port | _absent_ (disabled) |
 | `server` | `tls` | Optional `rp-tls` block | none |
 | `server` | `auth` | Optional `rp-auth` block | none |
@@ -296,6 +298,11 @@ Either path is a follow-up PR. The MVP just exposes the raw count.
 | `switch` | `unique_id` | Stable ASCOM UniqueID for the Switch (see [Device identity](#device-identity-uniqueid)) | _minted UUIDv4 on first run_ |
 | `switch` | `description` | Switch description | `"Pegasus Falcon Rotator status sensors (voltage + limit-hit)"` |
 | `switch` | `enabled` | Whether to register the Switch device | `true` |
+
+The `server` block is the shared `AlpacaServerConfig` from
+`crates/rusty-photon-server-config` (see ADR-016): `port`, `bind_address`
+(default `0.0.0.0`), optional `discovery_port`, and optional `tls`/`auth`.
+Absent `tls`/`auth` means plain, unauthenticated HTTP.
 
 Every block (`Config` and each nested config struct) rejects unknown keys at deserialize (`deny_unknown_fields`), so a typo or a key removed by a schema change fails loudly at load instead of being silently ignored.
 

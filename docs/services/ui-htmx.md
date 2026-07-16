@@ -595,8 +595,10 @@ change fails loudly at load instead of being silently ignored.
 ```jsonc
 {
   "server": {
-    "bind": "127.0.0.1",   // BFF listen address
-    "port": 11120          // BFF listen port
+    "port": 11120,             // BFF listen port
+    "bind_address": "0.0.0.0", // interface to bind (default: all interfaces)
+    "tls": null,               // optional { "cert": "...", "key": "..." } — serves HTTPS when set
+    "auth": null               // optional { "username": "...", "password_hash": "..." } — HTTP Basic on every route
   },
   "drivers": {
     "dsd-fp2": {
@@ -628,6 +630,17 @@ change fails loudly at load instead of being silently ignored.
 }
 ```
 
+The `server` block is the shared `ServerConfig` from
+`crates/rusty-photon-server-config` (see ADR-016): `port`, `bind_address`
+(default `0.0.0.0`), and optional `tls`/`auth`. Absent `tls`/`auth` — the
+default — means plain, unauthenticated HTTP. When `auth` is set, HTTP Basic
+credentials are required on **every** route (`/health` included); when `tls`
+is set, the BFF itself serves HTTPS with the named certificate/key (enabling
+`auth` without `tls` logs a cleartext-credentials warning). The former `bind`
+key was renamed to `bind_address` with this adoption — a config still carrying
+`bind` fails loudly at load (`deny_unknown_fields`) — and the default bind
+moved from loopback to all interfaces.
+
 The restart button targets Sentinel's `services` map entry named by the
 driver's `sentinel_service`, defaulting to the driver's own service id — so
 when the BFF id and the Sentinel-side name match (the convention), no extra
@@ -638,7 +651,7 @@ wiring is needed. A name Sentinel does not know simply surfaces Sentinel's
 
 | Argument | Description |
 |----------|-------------|
-| `-c, --config`     | Path to the BFF configuration file. If omitted, the path resolves to the platform config directory (`~/.config/rusty-photon/ui-htmx.json` on Linux, `%PROGRAMDATA%\rusty-photon\ui-htmx.json` on Windows) and is created with `Config::default()` on first start (binds `127.0.0.1:11120`, with a single `dsd-fp2` driver at `http://127.0.0.1:11119`). An explicit `--config` naming a missing file stays a hard error. |
+| `-c, --config`     | Path to the BFF configuration file. If omitted, the path resolves to the platform config directory (`~/.config/rusty-photon/ui-htmx.json` on Linux, `%PROGRAMDATA%\rusty-photon\ui-htmx.json` on Windows) and is created with `Config::default()` on first start (binds `0.0.0.0:11120`, with a single `dsd-fp2` driver at `http://127.0.0.1:11119`). An explicit `--config` naming a missing file stays a hard error. |
 | `--port`           | BFF listen port (overrides `server.port`). |
 | `-l, --log-level`  | Log level: trace, debug, info, warn, error. |
 | `--service`        | Hidden: run as a Windows service (passed by the Windows service control manager; no-op on other platforms). |
@@ -655,13 +668,14 @@ wiring is needed. A name Sentinel does not know simply surfaces Sentinel's
   own static `drivers` entry.
 - **Secrets are already redacted** by `config.get` (`********`), so they never
   reach the browser; the round-trip sentinel keeps them unchanged on apply.
-- **Binds loopback by default; BFF-side TLS/auth is deferred.** The default
-  config binds `127.0.0.1`, reachable only from the host (e.g. via an SSH tunnel
-  from the warm-room laptop). Exposing the BFF on the LAN means binding `0.0.0.0`,
-  which serves the config pages over **plain HTTP with no BFF-side auth** — so
-  until BFF TLS/auth lands ([Deferred](#deferred)), reach it through an SSH tunnel
-  or a reverse proxy that terminates TLS + auth, rather than a raw `0.0.0.0` bind.
-  (The driver credentials the BFF holds are unaffected — the BFF is a client, and
+- **BFF-side TLS/auth is the shared server shape.** `server.tls` serves the UI
+  over HTTPS and `server.auth` puts every route (`/health` included) behind
+  HTTP Basic auth — the same `rp-tls`/`rp-auth` stack every other service uses.
+  Absent both — the default — the BFF serves **plain unauthenticated HTTP** on
+  `0.0.0.0:11120`, so on a shared network either enable `tls` + `auth` or set
+  `bind_address` to `127.0.0.1` and reach it via an SSH tunnel. Enabling `auth`
+  without `tls` logs a warning: credentials would travel in cleartext. (The
+  driver credentials the BFF holds are unaffected — the BFF is a client, and
   each driver still enforces its own `rp-auth`/`rp-tls`.)
 
 ## MVP Scope
@@ -693,6 +707,9 @@ wiring is needed. A name Sentinel does not know simply surfaces Sentinel's
   `sentinel` block is configured) and the restart callout's inline restart
   button, both posting to `/config/{service}/restart` (Phase 4 of the
   config-actions plan).
+- **BFF-side TLS + HTTP Basic auth** via the shared `server` block
+  (`rp-tls`/`rp-auth`, wrapping the whole router — see
+  [Configuration](#configuration) and [Security](#security)).
 - Dark theme reusing the mock CSS tokens; assets embedded via `include_str!`
   (CSS + the HTMX bundle + the SSE extension); no npm, no WASM.
 - Plain-axum lifecycle under `rusty-photon-service-lifecycle::ServiceRunner` with
@@ -723,7 +740,7 @@ wiring is needed. A name Sentinel does not know simply surfaces Sentinel's
   deferred** — it renders as a checkbox group (see
   [Schema-driven rendering](#schema-driven-rendering-fieldmodel)); scalar
   `enum` leaves and `oneOf` forms remain follow-ups.
-- **BFF-side TLS/auth**, the **LCARS theme**, and **i18n**.
+- The **LCARS theme** and **i18n**.
 
 ## Testing Strategy
 
@@ -926,6 +943,13 @@ under both `sh -c` and `cmd /C` so the suite stays green on Windows. Scenarios:
 - With no `sentinel` block configured, the config card renders no restart
   affordance.
 
+**TLS/auth scenarios** (`auth.feature`, `tls.feature`) spawn the BFF with a
+generated CA + service certificate (`rp_tls::cert`) and probe `/health` over
+`rp_tls::client::build_reqwest_client`: with `server.auth` configured, valid
+Basic credentials answer 200 while wrong or missing ones answer 401 with the
+`WWW-Authenticate` challenge; without it, no credentials are needed; with
+`server.tls` configured, the BFF answers over HTTPS.
+
 ### Phase 5 BDD (`equipment_page.feature`, `rp_config_page.feature`, `stream_page.feature`)
 
 The rp-backed surfaces follow the same real-binaries rule: scenarios spawn the
@@ -1007,7 +1031,7 @@ suites run everywhere the existing one does. Coverage:
 
 | Module | Description |
 |--------|-------------|
-| `config.rs` | `Config`, `ServerConfig`, the `Drivers` map + `DriverTarget` (+ `sentinel_service`), the optional `RpTarget` + `SentinelTarget`, defaults + JSON load. |
+| `config.rs` | `Config`, the shared `ServerConfig` (re-exported from `rusty-photon-server-config`), the `Drivers` map + `DriverTarget` (+ `sentinel_service`), the optional `RpTarget` + `SentinelTarget`, defaults + JSON load. |
 | `io.rs` | `HttpClient` trait (`#[cfg_attr(test, mockall::automock)]`) + `ReqwestHttpClient` (rp-tls CA trust + optional Basic auth). |
 | `driver_client.rs` | `ConfigClient` trait + `AlpacaConfigClient` (ASCOM action transport) + `RestConfigClient` (rp's plain-REST transport): request shaping, envelope parsing, error mapping. Re-exports the shared wire types from `rusty_photon_config::actions`. |
 | `sentinel_client.rs` | `SentinelClient` trait + `HttpSentinelClient`: `POST /api/services/{name}/restart` request shaping + outcome/404/409 parsing against Sentinel's REST API. |
@@ -1020,7 +1044,7 @@ suites run everywhere the existing one does. Coverage:
 | `sse_proxy.rs` | `/stream/events`: rp SSE client (incremental frame parser), envelope→fragment translation, cursor passthrough, shutdown token. |
 | `assets.rs` | `include_str!` of `assets/app.css` + `assets/htmx.min.js` + `assets/htmx-ext-sse.js`; asset routes. |
 | `lib.rs` | `build_router`, multi-driver `AppState` (+ rp target + Sentinel client), the `/config/{service}` (+ `/restart`), `/equipment*`, `/stream*` handlers, public exports. |
-| `main.rs` | CLI (clap) + tracing init; lifecycle owned by `ServiceRunner` (plain axum + graceful shutdown; SSE shutdown token). |
+| `main.rs` | CLI (clap) + tracing init; lifecycle owned by `ServiceRunner` (axum — or `rp_tls::server::serve_tls` when `server.tls` is set — with the optional `rp_auth` layer, graceful shutdown, SSE shutdown token). |
 
 ## References
 

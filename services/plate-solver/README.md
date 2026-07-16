@@ -41,14 +41,21 @@ Configure `plate-solver` to point at the install:
 
 ```json
 {
-  "bind_address": "127.0.0.1",
-  "port": 11131,
+  "server": {
+    "port": 11131,
+    "bind_address": "0.0.0.0"
+  },
   "astap_binary_path": "/opt/astap/astap_cli",
   "astap_db_directory": "/opt/astap/d05",
   "default_solve_timeout": "30s",
   "max_solve_timeout": "120s"
 }
 ```
+
+The `server` block is the shared shape from
+`crates/rusty-photon-server-config` — it also accepts optional `tls`
+and `auth` blocks; absent both, the service speaks plain,
+unauthenticated HTTP.
 
 `astap_binary_path` and `astap_db_directory` are the only required
 fields. Validation runs at startup; missing or unreadable values exit

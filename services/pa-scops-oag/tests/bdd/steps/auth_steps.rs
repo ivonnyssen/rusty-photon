@@ -25,9 +25,7 @@ fn mock_config(certs_dir: Option<&std::path::Path>) -> pa_scops_oag::Config {
             polling_interval: std::time::Duration::from_secs(60),
             ..Default::default()
         },
-        server: pa_scops_oag::ServerConfig {
-            port: 0,
-            discovery_port: None,
+        server: pa_scops_oag::AlpacaServerConfig {
             tls: certs_dir.map(|dir| rp_tls::config::TlsConfig {
                 cert: dir.join("pa-scops-oag.pem").to_string_lossy().into_owned(),
                 key: dir
@@ -35,7 +33,7 @@ fn mock_config(certs_dir: Option<&std::path::Path>) -> pa_scops_oag::Config {
                     .to_string_lossy()
                     .into_owned(),
             }),
-            auth: None,
+            ..pa_scops_oag::AlpacaServerConfig::new(0)
         },
         focuser: pa_scops_oag::FocuserConfig {
             enabled: true,

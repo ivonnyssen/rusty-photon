@@ -96,6 +96,12 @@ pub struct SessionRunnerWorld {
     pub received_events: Arc<RwLock<Vec<ReceivedEvent>>>,
     pub webhook_ack_config: Option<(Duration, Duration)>,
 
+    // --- TLS + auth smoke test (`auth.feature`) ---
+    /// PKI tree for the TLS + auth smoke test.
+    pub tls_pki_dir: Option<tempfile::TempDir>,
+    /// Config JSON staged by a Given step for a custom-config start.
+    pub pending_config: Option<Value>,
+
     // --- Flat calibration plan ---
     /// Filter name → count, forwarded as the document's `filters`
     /// parameter in the orchestrator registration's `config`.

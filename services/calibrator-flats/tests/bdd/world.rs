@@ -41,6 +41,12 @@ pub struct CalibratorFlatsWorld {
     /// Filter name → count for the calibrator-flats service config.
     pub flat_plan: Vec<(String, u32)>,
 
+    // --- TLS + auth smoke test (`auth.feature`) ---
+    /// PKI tree for the TLS + auth smoke test.
+    pub tls_pki_dir: Option<tempfile::TempDir>,
+    /// Config JSON staged by a Given step for a custom-config start.
+    pub pending_config: Option<Value>,
+
     // --- REST API state ---
     pub last_api_status: Option<u16>,
     pub last_api_body: Option<Value>,

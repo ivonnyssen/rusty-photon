@@ -80,13 +80,13 @@ async fn given_config_with_mock_astap(world: &mut PlateSolverWorld) {
 
 #[when("the wrapper starts")]
 async fn when_wrapper_starts(world: &mut PlateSolverWorld) {
-    // Inject port: 0 so concurrent test runs don't collide on the
-    // default port; ServiceHandle parses the actual bound port from
-    // the wrapper's stdout.
+    // Inject a server block with port: 0 so concurrent test runs don't
+    // collide on the default port; ServiceHandle parses the actual bound
+    // port from the wrapper's stdout.
     world
         .pending_config
-        .entry("port".to_string())
-        .or_insert_with(|| serde_json::Value::from(0));
+        .entry("server".to_string())
+        .or_insert_with(|| serde_json::json!({ "port": 0 }));
 
     let dir = world.temp_dir_path();
     let cfg_path = dir.join("config.json");

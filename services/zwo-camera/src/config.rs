@@ -1,6 +1,7 @@
 //! Configuration for the zwo-camera service.
 //!
-//! `ServerConfig::port` binds the listener; the `devices` override map (keyed by
+//! The shared `server` block (`AlpacaServerConfig`) binds the listener; the
+//! `devices` override map (keyed by
 //! SDK serial — applied to each `ZwoCamera` at registration) is live as of
 //! Phase E, and the whole `Config` is exposed through the
 //! `config.get`/`apply`/`schema` actions (see `config_actions.rs`). EFW filter
@@ -10,6 +11,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+pub use rusty_photon_server_config::AlpacaServerConfig;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -25,13 +27,22 @@ pub const DEFAULT_PORT: u16 = 11122;
 /// typoed or removed keys fail loudly at load instead of being silently
 /// ignored — in particular the pre-ADR-014 `filterwheel` section, which is no
 /// longer valid here (the EFW belongs to a future separate service).
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     /// Optional per-device overrides keyed by SDK serial (Phase E+).
     pub devices: BTreeMap<String, DeviceOverride>,
-    /// HTTP server settings.
-    pub server: ServerConfig,
+    /// HTTP server settings (the shared Alpaca `server` block).
+    pub server: AlpacaServerConfig,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            devices: BTreeMap::new(),
+            server: AlpacaServerConfig::new(DEFAULT_PORT),
+        }
+    }
 }
 
 /// Friendly overrides for a specific device, keyed by its SDK serial.
@@ -42,34 +53,6 @@ pub struct DeviceOverride {
     pub name: Option<String>,
     /// Description override.
     pub description: Option<String>,
-}
-
-/// HTTP server settings.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(default, deny_unknown_fields)]
-pub struct ServerConfig {
-    /// The listening port (one port hosts every enumerated device).
-    #[serde(default = "default_port")]
-    pub port: u16,
-    /// Alpaca UDP discovery responder port (normally 32227). Absent/`null` —
-    /// the default — disables discovery: many rusty-photon servers on one
-    /// host would collide on the shared discovery port, so it is a per-host
-    /// opt-in for single-driver deployments.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub discovery_port: Option<u16>,
-}
-
-impl Default for ServerConfig {
-    fn default() -> Self {
-        Self {
-            port: DEFAULT_PORT,
-            discovery_port: None,
-        }
-    }
-}
-
-fn default_port() -> u16 {
-    DEFAULT_PORT
 }
 
 /// CLI overrides layered on top of the file configuration.
@@ -133,13 +116,8 @@ mod tests {
     fn default_config_uses_the_reserved_port() {
         let config = Config::default();
         assert_eq!(config.server.port, 11122);
+        assert_eq!(config.server.bind_address.to_string(), "0.0.0.0");
         assert!(config.devices.is_empty());
-    }
-
-    #[test]
-    fn a_server_object_without_a_port_keeps_the_default() {
-        let config: Config = serde_json::from_str(r#"{"server": {}}"#).unwrap();
-        assert_eq!(config.server.port, 11122);
     }
 
     #[test]

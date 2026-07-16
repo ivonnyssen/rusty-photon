@@ -37,7 +37,7 @@ async fn sentinel_started_with_tls(world: &mut SentinelWorld) {
     let certs_dir = dir.join("certs");
 
     let mut config = world.build_sentinel_config();
-    config["dashboard"]["tls"] = serde_json::json!({
+    config["server"]["tls"] = serde_json::json!({
         "cert": certs_dir.join("sentinel.pem").to_string_lossy().to_string(),
         "key": certs_dir.join("sentinel-key.pem").to_string_lossy().to_string()
     });

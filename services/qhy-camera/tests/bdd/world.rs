@@ -35,6 +35,11 @@ pub struct CameraWorld {
     pub last_error_code: Option<u16>,
     pub last_response: Option<serde_json::Value>,
     pub last_actions: Option<Vec<String>>,
+
+    /// PKI tree for the TLS + auth smoke test (`auth.feature`).
+    pub tls_pki_dir: Option<TempDir>,
+    /// Config JSON staged by a Given step for a custom-config start.
+    pub pending_config: Option<serde_json::Value>,
 }
 
 impl CameraWorld {

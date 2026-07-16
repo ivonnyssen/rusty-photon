@@ -11,6 +11,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+pub use rusty_photon_server_config::AlpacaServerConfig;
 use serde::{Deserialize, Serialize};
 
 /// Top-level service configuration.
@@ -18,7 +19,7 @@ use serde::{Deserialize, Serialize};
 /// `deny_unknown_fields` (as in zwo-camera and the other newer services) so
 /// typoed or removed keys fail loudly at load instead of being silently
 /// ignored.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     /// Optional per-device overrides keyed by **SDK serial**. A device with no
@@ -26,9 +27,24 @@ pub struct Config {
     /// avoid colliding with the `config.get` response's own `overrides[]` field.
     #[serde(default)]
     pub devices: BTreeMap<String, DeviceOverride>,
-    /// HTTP server settings.
-    #[serde(default)]
-    pub server: ServerConfig,
+    /// HTTP server settings (the shared Alpaca `server` block).
+    #[serde(default = "default_server")]
+    pub server: AlpacaServerConfig,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            devices: BTreeMap::new(),
+            server: default_server(),
+        }
+    }
+}
+
+/// qhy-camera's default `server` block when the config file omits it: port
+/// 11121 (next free in the 1112x family) on all interfaces, plain HTTP.
+fn default_server() -> AlpacaServerConfig {
+    AlpacaServerConfig::new(11121)
 }
 
 /// Per-device override, keyed by SDK serial in [`Config::devices`].
@@ -44,34 +60,6 @@ pub struct DeviceOverride {
     /// Human filter names for a CFW (overrides the generated `Filter0..N`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filter_names: Option<Vec<String>>,
-}
-
-/// HTTP server configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
-// `#[serde(default)]` so a partial `{"server": {}}` keeps the default port
-// (missing fields fall back to `ServerConfig::default()`), consistent with the
-// top-level `Config`'s tolerance of an absent `server` key and with zwo-camera.
-// `deny_unknown_fields` rejects typoed/removed keys at load.
-#[serde(default, deny_unknown_fields)]
-pub struct ServerConfig {
-    /// Listening port. One port hosts all enumerated devices. Hard read-only
-    /// (a port change would make the BFF lose the devices).
-    pub port: u16,
-    /// Alpaca UDP discovery responder port (normally 32227). Absent/`null` —
-    /// the default — disables discovery: many rusty-photon servers on one
-    /// host would collide on the shared discovery port, so it is a per-host
-    /// opt-in for single-driver deployments.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub discovery_port: Option<u16>,
-}
-
-impl Default for ServerConfig {
-    fn default() -> Self {
-        Self {
-            port: 11121,
-            discovery_port: None,
-        }
-    }
 }
 
 /// CLI overrides layered over the file config. Tracks which fields are pinned by
@@ -130,6 +118,7 @@ mod tests {
         let c = Config::default();
         assert!(c.devices.is_empty());
         assert_eq!(c.server.port, 11121);
+        assert_eq!(c.server.bind_address.to_string(), "0.0.0.0");
     }
 
     #[test]
@@ -137,14 +126,6 @@ mod tests {
         let c: Config = serde_json::from_str("{}").unwrap();
         assert_eq!(c.server.port, 11121);
         assert!(c.devices.is_empty());
-    }
-
-    #[test]
-    fn server_object_without_a_port_keeps_the_default() {
-        // A present-but-partial `server` object must not fail to deserialize on a
-        // missing `port` — `#[serde(default)]` on ServerConfig fills it in.
-        let c: Config = serde_json::from_str(r#"{ "server": {} }"#).unwrap();
-        assert_eq!(c.server.port, 11121);
     }
 
     #[test]
@@ -186,14 +167,6 @@ mod tests {
                 .unwrap_err()
                 .to_string();
         assert!(err.contains("descripton"), "{err}");
-    }
-
-    #[test]
-    fn a_typoed_server_field_is_rejected_loudly() {
-        let err = serde_json::from_str::<Config>(r#"{"server": {"prot": 12000}}"#)
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("prot"), "{err}");
     }
 
     #[test]

@@ -1,17 +1,29 @@
 //! Configuration types for the PPBA Driver
 
+pub use rusty_photon_server_config::AlpacaServerConfig;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::time::Duration;
 
 /// Main configuration structure
-#[derive(Debug, Clone, Serialize, Deserialize, Default, schemars::JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub serial: SerialConfig,
-    pub server: ServerConfig,
+    pub server: AlpacaServerConfig,
     pub switch: SwitchConfig,
     pub observingconditions: ObservingConditionsConfig,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            serial: SerialConfig::default(),
+            server: AlpacaServerConfig::new(11112),
+            switch: SwitchConfig::default(),
+            observingconditions: ObservingConditionsConfig::default(),
+        }
+    }
 }
 
 /// Serial port configuration
@@ -29,23 +41,6 @@ pub struct SerialConfig {
     #[serde(default = "default_timeout", with = "humantime_serde")]
     #[schemars(with = "String")]
     pub timeout: Duration,
-}
-
-/// Server configuration
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ServerConfig {
-    pub port: u16,
-    /// Alpaca UDP discovery responder port (normally 32227). Absent/`null` —
-    /// the default — disables discovery: many rusty-photon servers on one
-    /// host would collide on the shared discovery port, so it is a per-host
-    /// opt-in for single-driver deployments.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub discovery_port: Option<u16>,
-    #[serde(default)]
-    pub tls: Option<rp_tls::config::TlsConfig>,
-    #[serde(default)]
-    pub auth: Option<rp_auth::config::AuthConfig>,
 }
 
 /// Switch device configuration
@@ -116,17 +111,6 @@ impl Default for SerialConfig {
             baud_rate: default_baud_rate(),
             polling_interval: default_polling_interval(),
             timeout: default_timeout(),
-        }
-    }
-}
-
-impl Default for ServerConfig {
-    fn default() -> Self {
-        Self {
-            port: 11112,
-            discovery_port: None,
-            tls: None,
-            auth: None,
         }
     }
 }
@@ -269,6 +253,7 @@ mod tests {
         assert_eq!(config.serial.timeout, Duration::from_secs(2));
 
         assert_eq!(config.server.port, 11112);
+        assert_eq!(config.server.bind_address.to_string(), "0.0.0.0");
     }
 
     #[test]
@@ -307,13 +292,6 @@ mod tests {
         assert_eq!(config.baud_rate, 9600);
         assert_eq!(config.polling_interval, Duration::from_millis(5000));
         assert_eq!(config.timeout, Duration::from_secs(2));
-    }
-
-    #[test]
-    fn server_config_default() {
-        let config = ServerConfig::default();
-
-        assert_eq!(config.port, 11112);
     }
 
     #[test]
@@ -446,13 +424,6 @@ mod tests {
     }
 
     #[test]
-    fn server_config_rejects_unknown_field() {
-        let json = r#"{"port": 11112, "bind_address": "0.0.0.0"}"#;
-        let err = serde_json::from_str::<ServerConfig>(json).unwrap_err();
-        assert!(err.to_string().contains("bind_address"), "{err}");
-    }
-
-    #[test]
     fn switch_config_rejects_unknown_field() {
         let json = r#"{"name": "n", "description": "d", "channels": 4}"#;
         let err = serde_json::from_str::<SwitchConfig>(json).unwrap_err();
@@ -475,6 +446,6 @@ mod tests {
         assert!(debug_str.contains("SwitchConfig"));
         assert!(debug_str.contains("ObservingConditionsConfig"));
         assert!(debug_str.contains("SerialConfig"));
-        assert!(debug_str.contains("ServerConfig"));
+        assert!(debug_str.contains("AlpacaServerConfig"));
     }
 }

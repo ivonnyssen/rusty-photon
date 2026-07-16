@@ -149,17 +149,29 @@ pub async fn run_with_client_ctx(
     let shared_state = device.shared_state();
 
     let mut server = Server::new(CargoServerInfo!());
-    server.listen_addr = std::net::SocketAddr::from(([0, 0, 0, 0], config.server.port));
+    server.listen_addr = config.server.socket_addr();
     server.devices.register(device);
 
     let alpaca_service = server.into_service();
     let app = routes::build_router(shared_state).fallback_service(alpaca_service);
+    let app = match &config.server.auth {
+        Some(auth) => {
+            if config.server.tls.is_none() {
+                tracing::warn!(
+                    "Authentication is enabled but TLS is not. \
+                     Credentials will be transmitted in cleartext. \
+                     Consider enabling TLS (see `rp init-tls`)."
+                );
+            }
+            rp_auth::layer(app, auth)
+        }
+        None => app,
+    };
 
-    let listener = tokio::net::TcpListener::bind(("0.0.0.0", config.server.port))
+    let bind_addr = config.server.socket_addr();
+    let listener = rp_tls::server::bind_dual_stack_tokio(bind_addr)
         .await
-        .map_err(|e| {
-            SkySurveyCameraError::Bind(format!("bind 0.0.0.0:{}: {e}", config.server.port))
-        })?;
+        .map_err(|e| SkySurveyCameraError::Bind(format!("bind {bind_addr}: {e}")))?;
     let local = listener
         .local_addr()
         .map_err(|e| SkySurveyCameraError::Bind(format!("local_addr: {e}")))?;
@@ -181,10 +193,14 @@ pub async fn run_with_client_ctx(
     // profraw files flush when bdd-infra's ServiceHandle sends
     // SIGTERM at the end of each scenario.
     let serve = async {
-        axum::serve(listener, app)
-            .with_graceful_shutdown(shutdown)
-            .await
-            .map_err(|e| SkySurveyCameraError::Server(e.to_string()))
+        match config.server.tls {
+            Some(ref tls_config) => rp_tls::server::serve_tls(listener, app, tls_config, shutdown)
+                .await
+                .map_err(|e| SkySurveyCameraError::Server(e.to_string())),
+            None => rp_tls::server::serve_plain(listener, app, shutdown)
+                .await
+                .map_err(|e| SkySurveyCameraError::Server(e.to_string())),
+        }
     };
     rusty_photon_driver::discovery::serve_with(discovery, serve).await?;
     Ok(())

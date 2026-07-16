@@ -3,9 +3,12 @@
 //! must exist (there are no usable defaults for `workflows_dir` /
 //! `state_dir`).
 
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
+
+pub use rusty_photon_server_config::ServerConfig;
 
 use crate::error::{Result, SessionRunnerError};
 
@@ -16,9 +19,9 @@ pub const DEFAULT_PORT: u16 = 11171;
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    /// HTTP listen port for `/invoke`, `/validate`, `/health`.
-    #[serde(default = "default_port")]
-    pub port: u16,
+    /// The HTTP server for `/invoke`, `/validate`, `/health`.
+    #[serde(default = "default_server")]
+    pub server: ServerConfig,
     /// Directory of workflow documents; first-party documents ship in the
     /// package. Required.
     pub workflows_dir: PathBuf,
@@ -35,8 +38,33 @@ pub struct Config {
     pub events_url: Option<String>,
 }
 
-fn default_port() -> u16 {
-    DEFAULT_PORT
+/// session-runner's default `server` block when the config file omits it:
+/// port 11171 on all interfaces, plain HTTP.
+pub(crate) fn default_server() -> ServerConfig {
+    ServerConfig::new(DEFAULT_PORT)
+}
+
+/// CLI overrides layered over the file config after load: `--port` and
+/// `--bind-address` pin `server.port` / `server.bind_address` over whatever
+/// the file (or the `default_server()` fallback) supplied.
+#[derive(Debug, Clone, Default)]
+pub struct CliOverrides {
+    /// `--port` → `server.port`.
+    pub port: Option<u16>,
+    /// `--bind-address` → `server.bind_address`.
+    pub bind_address: Option<IpAddr>,
+}
+
+impl CliOverrides {
+    /// Apply the overrides onto `config` in place.
+    pub fn apply(&self, config: &mut Config) {
+        if let Some(port) = self.port {
+            config.server.port = port;
+        }
+        if let Some(bind_address) = self.bind_address {
+            config.server.bind_address = bind_address;
+        }
+    }
 }
 
 /// Load and parse the configuration file. Unknown keys are rejected —
@@ -68,7 +96,10 @@ mod tests {
             r#"{ "workflows_dir": "/var/lib/rp/workflows", "state_dir": "/var/lib/rp/state" }"#,
         );
         let config = load_config(&path).unwrap();
-        assert_eq!(config.port, 11171);
+        assert_eq!(config.server.port, 11171);
+        assert_eq!(config.server.bind_address.to_string(), "0.0.0.0");
+        assert!(config.server.tls.is_none());
+        assert!(config.server.auth.is_none());
         assert_eq!(config.workflows_dir, PathBuf::from("/var/lib/rp/workflows"));
         assert_eq!(config.state_dir, PathBuf::from("/var/lib/rp/state"));
         assert_eq!(config.mcp_server_url, None);
@@ -80,16 +111,38 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = write_config(
             &dir,
-            r#"{ "port": 12000, "workflows_dir": "w", "state_dir": "s",
+            r#"{ "server": { "port": 12000 }, "workflows_dir": "w", "state_dir": "s",
                  "mcp_server_url": "http://localhost:11115/mcp",
                  "events_url": "http://localhost:11115/api/events/subscribe" }"#,
         );
         let config = load_config(&path).unwrap();
-        assert_eq!(config.port, 12000);
+        assert_eq!(config.server.port, 12000);
         assert_eq!(
             config.mcp_server_url.as_deref(),
             Some("http://localhost:11115/mcp")
         );
+    }
+
+    #[test]
+    fn test_cli_overrides_pin_port_and_bind_address() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_config(&dir, r#"{ "workflows_dir": "w", "state_dir": "s" }"#);
+        let mut config = load_config(&path).unwrap();
+        let overrides = CliOverrides {
+            port: Some(12345),
+            bind_address: Some("127.0.0.1".parse().unwrap()),
+        };
+        overrides.apply(&mut config);
+        assert_eq!(config.server.socket_addr().to_string(), "127.0.0.1:12345");
+    }
+
+    #[test]
+    fn test_empty_cli_overrides_leave_the_file_config_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_config(&dir, r#"{ "workflows_dir": "w", "state_dir": "s" }"#);
+        let mut config = load_config(&path).unwrap();
+        CliOverrides::default().apply(&mut config);
+        assert_eq!(config.server.socket_addr().to_string(), "0.0.0.0:11171");
     }
 
     #[test]
