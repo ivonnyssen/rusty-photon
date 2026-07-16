@@ -18,7 +18,8 @@ pkg.rustyphoton.space/
   pubkey.asc          # repo signing key, public half —
                       # byte-for-byte packaging/gpg/pubkey.asc
   manifest.txt        # every live object key; push-packages-repo.sh reads it
-                      # to find stale objects (wrangler has no `r2 object list`)
+                      # to find stale objects (never lists the bucket, so the
+                      # sweep can only touch keys the publisher itself wrote)
   manifest-prev.txt   # the previous publish's tree, retained one extra
                       # generation so just-read metadata keeps resolving
   deb/dists/nightly/  # InRelease, Release(.gpg), main/binary-{amd64,arm64}/
@@ -41,9 +42,14 @@ Client setup lives in
 
 - **GET = anonymous** — a public bucket on a custom domain; R2 serves
   `GET`/`HEAD`/`Range`/conditional requests natively, no code in front.
-- **Writes = the CI publish job only**, via the Cloudflare API with
-  `PACKAGES_R2_API_TOKEN` (Object Read & Write, scoped to just this
-  bucket), held as a GitHub Actions secret.
+- **Writes = the CI publish job only**, via R2's S3-compatible endpoint
+  with the S3 credentials of an R2 API token scoped Object Read & Write
+  on just this bucket (`PACKAGES_R2_ACCESS_KEY_ID` /
+  `PACKAGES_R2_SECRET_ACCESS_KEY`, GitHub Actions secrets). The S3 API
+  is the only API a bucket-scoped object token can authenticate — the
+  Cloudflare REST API (wrangler's `r2 object` path) accepts only
+  account-wide Admin R2 tokens, which would also grant CI write access
+  to every other bucket in the account.
 - **The trust anchor for consumers is the GPG signature, not the
   transport**: apt verifies `InRelease`/`Release.gpg` and dnf verifies
   `repomd.xml.asc` (the documented `.repo` sets `repo_gpgcheck=1`)
@@ -72,10 +78,14 @@ wrangler r2 bucket domain add rusty-photon-packages \
 #    Custom Domains → Connect domain)
 
 # 3. CI write credentials: dashboard → R2 → API → Manage API tokens →
-#    create with Object Read & Write on ONLY this bucket; the "Token
-#    value" (not the S3 key pair shown next to it) becomes:
-gh secret set PACKAGES_R2_API_TOKEN
-gh secret set CLOUDFLARE_ACCOUNT_ID     # wrangler needs it with the token
+#    create with Object Read & Write on ONLY this bucket. Use the S3
+#    key pair the creation screen shows (Access Key ID + Secret Access
+#    Key) — NOT the "Token value" next to it: the token value only
+#    works on the Cloudflare REST API, which rejects bucket-scoped
+#    object tokens (it wants account-wide Admin).
+gh secret set PACKAGES_R2_ACCESS_KEY_ID
+gh secret set PACKAGES_R2_SECRET_ACCESS_KEY
+gh secret set CLOUDFLARE_ACCOUNT_ID     # forms the S3 endpoint URL
 
 # 4. Signing key: private half to CI (back it up first — GitHub secrets
 #    are write-only), public half committed at packaging/gpg/pubkey.asc.

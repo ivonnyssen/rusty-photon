@@ -2,10 +2,11 @@
 # push-packages-repo.sh — replace the published package-repo tree in the
 # R2 bucket behind pkg.rustyphoton.space with the freshly built-and-
 # verified SITE (docs/plans/nightly-releases.md, phase N5). Two bucket
-# bookkeeping objects make the replacement safe without any listing API
-# (wrangler has no `r2 object list`): manifest.txt — every key assumed
-# live, always a superset of reality — and manifest-prev.txt — the
-# previous publish's exact tree, which is retained for one extra
+# bookkeeping objects make the replacement safe without ever listing
+# the bucket — a sweep driven only by keys this script recorded can
+# never touch objects placed by other means: manifest.txt — every key
+# assumed live, always a superset of reality — and manifest-prev.txt —
+# the previous publish's exact tree, which is retained for one extra
 # generation so metadata a client just read keeps resolving:
 #
 #   1. read manifest.txt (the live-key superset) and manifest-prev.txt
@@ -49,9 +50,15 @@
 # shortened grace window for the just-outgoing generation, swept by the
 # next run.
 #
-# Auth: wrangler reads CLOUDFLARE_API_TOKEN (the PACKAGES_R2_API_TOKEN
-# secret — Object Read & Write scoped to just this bucket) and
-# CLOUDFLARE_ACCOUNT_ID from the environment.
+# Auth: R2's S3-compatible endpoint via the aws CLI, using the S3
+# credentials of a bucket-scoped "Object Read & Write" R2 API token
+# (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY — the
+# PACKAGES_R2_ACCESS_KEY_ID / PACKAGES_R2_SECRET_ACCESS_KEY secrets)
+# plus CLOUDFLARE_ACCOUNT_ID to form the endpoint URL. The S3 API is
+# the ONLY API such a token can authenticate against: the Cloudflare
+# REST API (what `wrangler r2 object` drives) rejects object-level
+# tokens outright and accepts only account-wide Admin R2 tokens —
+# far too much blast radius for a nightly publisher.
 #
 # Usage: scripts/push-packages-repo.sh [--site DIR] [--bucket NAME]
 #   --site DIR     the verified tree to publish (default: site)
@@ -90,11 +97,22 @@ while [ $# -gt 0 ]; do
     shift
 done
 
-command -v wrangler > /dev/null 2>&1 || die "wrangler not found (npm install -g wrangler)"
-[ -n "${CLOUDFLARE_API_TOKEN:-}" ] || die "CLOUDFLARE_API_TOKEN is not set"
+command -v aws > /dev/null 2>&1 || die "aws CLI not found"
+[ -n "${AWS_ACCESS_KEY_ID:-}" ] || die "AWS_ACCESS_KEY_ID is not set"
+[ -n "${AWS_SECRET_ACCESS_KEY:-}" ] || die "AWS_SECRET_ACCESS_KEY is not set"
 [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ] || die "CLOUDFLARE_ACCOUNT_ID is not set"
 [ -f "$SITE/pubkey.asc" ] || die "$SITE/pubkey.asc missing — build + verify the tree first"
 SITE_ABS=$(cd "$SITE" && pwd)
+
+ENDPOINT="https://${CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com"
+# R2 wants region "auto"; aws CLI refuses to run with no region at all.
+AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-auto}"
+export AWS_DEFAULT_REGION
+# aws CLI ≥ 2.23 adds CRC integrity headers by default; R2 rejects
+# them. when_required restores plain SigV4 (older CLIs ignore these).
+AWS_REQUEST_CHECKSUM_CALCULATION=when_required
+AWS_RESPONSE_CHECKSUM_VALIDATION=when_required
+export AWS_REQUEST_CHECKSUM_CALCULATION AWS_RESPONSE_CHECKSUM_VALIDATION
 
 TMPD=$(mktemp -d)
 trap 'rm -rf "$TMPD"' EXIT INT TERM
@@ -104,29 +122,32 @@ put() {
     # cached Packages.gz against a freshly flipped InRelease is a client
     # hash-mismatch. Every read origin-pulls from R2 instead — free egress,
     # and this channel's traffic is a handful of rigs; revisit only if
-    # that ever changes. stdout is progress noise and stays quiet; stderr
-    # passes through so a failure shows its real cause in the CI log.
-    wrangler r2 object put "$BUCKET/$1" --file "$2" --cache-control no-store --remote > /dev/null \
+    # that ever changes. aws prints an ETag blob on stdout — discarded
+    # by the redirect; stderr passes through so a failure shows its
+    # real cause in the CI log.
+    aws s3api put-object --endpoint-url "$ENDPOINT" --bucket "$BUCKET" \
+        --key "$1" --body "$2" --cache-control no-store > /dev/null \
         || die "upload failed: $1"
     echo "  put $1"
 }
 
-# fetch_listing KEY OUTFILE — 0 = fetched, 1 = object genuinely missing;
-# any other failure (auth, network) dies after retries, because
-# continuing with an empty listing would rewrite the on-bucket manifest
-# without the previous keys and orphan them forever.
+# fetch_listing KEY OUTFILE — 0 = fetched, 1 = object genuinely missing
+# (NoSuchKey); any other failure (auth, network) dies after retries,
+# because continuing with an empty listing would rewrite the on-bucket
+# manifest without the previous keys and orphan them forever.
 fetch_listing() {
     : > "$2"
     for attempt in 1 2 3; do
-        if wrangler r2 object get "$BUCKET/$1" --file "$2" --remote \
+        if aws s3api get-object --endpoint-url "$ENDPOINT" \
+            --bucket "$BUCKET" --key "$1" "$2" \
             > /dev/null 2> "$TMPD/get-err.txt"; then
             return 0
         fi
+        if grep -q "NoSuchKey" "$TMPD/get-err.txt"; then
+            return 1
+        fi
         sleep "$attempt"
     done
-    if grep -qi "specified key does not exist" "$TMPD/get-err.txt"; then
-        return 1
-    fi
     cat "$TMPD/get-err.txt" >&2
     die "reading $1 failed and not with a missing-object error (above) — refusing to continue"
 }
@@ -186,7 +207,8 @@ if [ -s "$TMPD/stale.txt" ]; then
     echo "Deleting $(wc -l < "$TMPD/stale.txt" | tr -d ' ') stale objects..."
     while IFS= read -r k; do
         [ -n "$k" ] || continue
-        if wrangler r2 object delete "$BUCKET/$k" --remote > /dev/null 2>&1; then
+        if aws s3api delete-object --endpoint-url "$ENDPOINT" \
+            --bucket "$BUCKET" --key "$k" > /dev/null 2>&1; then
             echo "  deleted $k"
         else
             echo "push-packages-repo: warning: could not delete stale $k (already gone?)" >&2
