@@ -322,18 +322,31 @@ build:remote-cache --remote_cache=https://cache.rustyphoton.space
 # been evicted from R2 is to invalidate that entry and retry the whole build,
 # forcing a local rebuild from source for just the affected actions — no
 # write access needed, since it's a rebuild, not a cache repair. But the
-# retry count is a hard budget (default 5), and each retry only surfaces the
-# next wave of evictions along the critical path, not the whole graph at
-# once. A build that exercises a dependency chain nothing has built before
-# (e.g. a version bump with no matching entry anywhere) can walk into more
-# distinct evictions than the default budget covers, and gives up mid-graph
-# even though every retry so far made real progress. This matters most for
-# PR builds specifically: they never get the write token (see bazel.yml), so
-# a PR can only heal itself by rebuilding locally within one invocation —
+# retry count is a hard budget (default 5), and *without* --keep_going below,
+# each retry aborts the whole build at the FIRST failing action and starts
+# over — so one retry only ever fixes one action, and if scheduling reaches
+# the same first failure again, it can cycle on that single node forever, no
+# matter how high this budget goes (observed directly: 30 retries surfacing
+# only 3 repeating digests, never progressing). This matters most for PR
+# builds specifically: they never get the write token (see bazel.yml), so a
+# PR can only heal itself by rebuilding locally within one invocation —
 # there's no second, privileged pass coming to finish the job for it. Raised
-# well above default so one invocation has enough budget to walk the full
-# critical path.
+# well above default so a build that's actually making progress (see
+# --keep_going below) has enough budget to walk the whole critical path.
 build:remote-cache --experimental_remote_cache_eviction_retries=30
+
+# Paired with the retry budget above: without --keep_going, Bazel stops at
+# the first failing action per attempt, so an eviction retry only ever
+# discovers and fixes one broken action before the whole build restarts from
+# scratch -- if scheduling keeps reaching the same first failure, it cycles
+# on that one node no matter how many retries it gets. --keep_going lets one
+# attempt surface and invalidate every currently-broken action instead of
+# just the first, so each retry makes cumulative progress across the whole
+# graph. windows-latest already carried this (bazel.yml, for an unrelated
+# E0463 diagnostic) and was the only platform that converged instead of
+# cycling; this extends the same behavior to every platform for the reason
+# that actually matters here.
+build:remote-cache --keep_going
 
 # --- Conformu config -------------------------------------------------------
 

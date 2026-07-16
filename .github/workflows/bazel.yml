@@ -161,17 +161,14 @@ jobs:
           else
             REMOTE_FLAGS+=(--remote_upload_local_results=false)
           fi
-          # DIAGNOSTIC (PR #474/#473): --keep_going surfaces every failing
-          # target in one run instead of stopping at the first, so we can see
-          # whether the windows-latest E0463 pattern (100% reproducible per
-          # target: conformu_integration always fails on exactly {bdd_infra,
-          # tokio, tracing_subscriber}; bdd always on exactly {ascom_alpaca,
-          # bdd_infra, cucumber, serde, tokio}) is unique to ppba-driver or
-          # hits other services with the same large-rust_test-target shape
-          # (e.g. qhy-focuser's conformu_integration).
-          if [[ "$RUNNER_OS" == "Windows" ]]; then
-            REMOTE_FLAGS+=(--keep_going)
-          fi
+          # --keep_going (surfaces every failing target instead of stopping at
+          # the first -- originally added here just for Windows, as an E0463
+          # diagnostic) now comes from `.bazelrc`'s `build:remote-cache`
+          # unconditionally, for every OS: it's also what lets a remote-cache
+          # eviction retry invalidate every currently-broken action per
+          # attempt instead of just the first one, which is what actually
+          # lets PR builds converge on a cache-eviction wave. No need to set
+          # it here too.
           # macOS intermittently wedges inside Bazel's HTTP remote-cache
           # client during the bulk-download tail of the build: every in-flight
           # transfer stalls at once, the step goes silent, and
