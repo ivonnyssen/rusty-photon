@@ -35,7 +35,7 @@ deliberately reusable so the deferred `release.yml` generalization
 | N2 | Fedora: `.rpm` build on both arches + Fedora lifecycle verify leg | **Done** (2026-07-13; rpms first published by that day's scheduled run) | PR #513 |
 | N3 | Windows: suite-MSI leg (strictly after W5 of [windows-packaging.md](windows-packaging.md)) | **Done** (2026-07-13; first MSI publish = next scheduled run, whose msi job skips the upgrade seed gracefully — the run after proves MSI-over-MSI) | PR #509 |
 | N4 | macOS: per-service arm64 tarballs + Homebrew tap channel + `verify-brew.sh` | **Done** (2026-07-13; first macOS publish = next scheduled run) | PR #519 |
-| N5 | Debian/Fedora package repositories: Cloudflare R2-hosted `apt`/`dnf` channels for the N1/N2 `.deb`/`.rpm` legs | **Done** (2026-07-15; first publish landed 2026-07-16 via PR #547's S3-API auth fix) | PRs #535, #547 |
+| N5 | Debian/Fedora package repositories: Cloudflare R2-hosted `apt`/`dnf` channels for the N1/N2 `.deb`/`.rpm` legs | **Done** (2026-07-16: #535 merged and, after PR #547's S3-API auth fix, the first publish landed the same day) | PRs #535, #547 |
 
 N1 is the anchor (it builds the shared spine); N2, N3, N4 are mutually
 independent afterwards. N3 is gated only on W5; N4 has synergy with PR-7
@@ -776,11 +776,11 @@ testing never exercises.
     over it — upgrade OK, single ARP entry, every service class green
     post-upgrade. This proof now recurs on every scheduled run; a
     manual pass on a long-lived Windows box stays optional.
-- N5 real-machine validation (once the first repo publish lands): point
-  a Debian machine at the apt repo and a Fedora machine at the dnf repo
-  per docs/packaging.md#nightly-channel, then take a nightly→nightly
-  step via plain `apt upgrade` / `dnf upgrade` — and record results
-  here.
+- N5 real-machine validation: point a Debian machine at the apt repo
+  and a Fedora machine at the dnf repo per
+  docs/packaging.md#nightly-channel, then take a nightly→nightly step
+  via plain `apt upgrade` / `dnf upgrade`. The first publish and the
+  install halves are done (below); only the upgrade step remains.
   - **First repo publish landed 2026-07-16** (workflow_dispatch run
     after the PR #547 S3-API auth fix; merge commit `5f506ab`): the
     pusher took the first-publish path (both manifests genuinely
