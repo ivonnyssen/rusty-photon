@@ -43,7 +43,7 @@ rather than a component of them.
 
    This is what keeps the design tractable. Generation inside postinst would
    have to converge across N package installs in arbitrary order — the wart
-   the MSI's seed-once already has, documented at `docs/packaging-windows.md:177`
+   the MSI's seed-once already has, documented at `docs/packaging-windows.md:182`
    (*"after adding features to an existing install, add the new service's
    entry by hand"*). An operator-run doctor sees the whole system at once and
    converges in a single pass. No ordering problem, no idempotent merge, and no
