@@ -553,13 +553,17 @@ pkg.rustyphoton.space/
     aarch64/repodata/ (+ *.rpm)
 ```
 
-> **As-built note:** this paragraph records the original design. The
-> shipped pusher instead drives R2's **S3-compatible endpoint** via the
-> aws CLI, authenticated with the same bucket-scoped token's S3 key
-> pair (`PACKAGES_R2_ACCESS_KEY_ID` / `PACKAGES_R2_SECRET_ACCESS_KEY`) —
-> Cloudflare's REST API, the only API wrangler's object commands can
-> use, turned out to reject bucket-scoped object tokens. See the
-> as-built deltas below.
+> **As-built note:** the design prose from here through the end of the
+> **Workflow integration** subsection records the original plan and is
+> historical where it names tooling. The shipped pusher drives R2's
+> **S3-compatible endpoint** via the aws CLI, authenticated with the
+> same bucket-scoped token's S3 key pair (`PACKAGES_R2_ACCESS_KEY_ID` /
+> `PACKAGES_R2_SECRET_ACCESS_KEY`) — Cloudflare's REST API, the only
+> API wrangler's object commands can use, turned out to reject
+> bucket-scoped object tokens — and `tools/rusty-photon-packages-r2/`
+> shipped README-only (no `wrangler.toml`, nothing deploys). Where this
+> prose and the **As-built deltas** below disagree, the deltas are
+> authoritative.
 
 Writes go straight from CI to R2 via `wrangler r2 object put --remote`
 (the same CLI already used to deploy the cache Worker), authenticated
