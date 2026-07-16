@@ -215,15 +215,29 @@ blocker, not a size objection.
   `rusty_photon_config::save`'s atomic temp→fsync→rename→fsync-dir path and the
   layer-aware persist rules, so it cannot bake a transient CLI override into a
   file. Atomic rename bounds the damage to a lost update, never corruption.
-- **Sentinel cannot restart anything on a packaged Linux host today**, and
-  decision 8 makes that blocking rather than cosmetic. Its unit runs
-  `User=rusty-photon` with `NoNewPrivileges=yes`, the driver units are system
-  units, and there is no polkit rule or sudoers fragment in `packaging/`. Once
-  "not restartable" is removed and supervision is universal, *every* discovered
-  service depends on a privilege path that does not exist. Choosing one
-  (polkit, sudoers, a D-Bus call to systemd, or running sentinel differently)
-  has real security trade-offs, is deliberately *not* decided here, and is now
-  a **prerequisite** for the sentinel work rather than a parallel concern.
+- **Sentinel cannot restart anything on a packaged Linux host today**
+  (`NoNewPrivileges=yes` against system units, no polkit rule in `packaging/`),
+  and decision 8 makes that blocking rather than cosmetic: once "not
+  restartable" is removed and supervision is universal, *every* discovered
+  service depends on that privilege path. It is tracked as
+  [#523](https://github.com/ivonnyssen/rusty-photon/issues/523), which already
+  carries a scoped polkit rule verified on the rig, gated on
+  `unit.indexOf("rusty-photon-") == 0 && verb == "restart"` — the same set
+  decision 8 enumerates. Shipping it is a **prerequisite** for the sentinel
+  work. Note #523 describes the rule as inert until sentinel's `services` map
+  is populated; decision 8 deletes that map, so the rule is live for every
+  discovered service. The Windows analogue (service account vs
+  `Restart-Service`) is open.
+- **This ADR is a prerequisite for
+  [#524](https://github.com/ivonnyssen/rusty-photon/issues/524)** (TLS on by
+  default), and partly contradicts its proposed mechanism. Decision 3's shared
+  `ServerConfig` creates the `tls`/`auth` surface that four Alpaca drivers and
+  ui-htmx do not have today — #524 assumes every service already has the knob
+  and only needs its default flipped, which is not the case. Conversely, #524
+  proposes cert provisioning in *"first-start (or package postinst)"*, which
+  decision 1 rules out: a per-host CA has exactly one creator, so N unordered
+  postinsts race for it. `doctor --fix` is the natural provisioner. Both points
+  need reconciling with #524 before either lands.
 - **This breaks already-merged code.** The per-service `health` block shipped
   in #505 (merged 2026-07-13); decision 8 deletes it along with the whole
   `services` map. A breaking config-schema change, sanctioned pre-1.0. The
@@ -264,3 +278,9 @@ blocker, not a size objection.
 - Precedent for shared-mechanism / per-service-data:
   `packaging/postinst.udev-stanza` (shared) +
   `services/*/pkg/90-rusty-photon-*.rules` (per-service)
+- Open issues this interacts with:
+  [#523](https://github.com/ivonnyssen/rusty-photon/issues/523) (sentinel's
+  polkit rule — a prerequisite for decision 8) and
+  [#524](https://github.com/ivonnyssen/rusty-photon/issues/524) (TLS by
+  default — unblocked by decision 3, but its postinst-provisioning mechanism
+  conflicts with decision 1)
