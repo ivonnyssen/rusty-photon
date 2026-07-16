@@ -191,7 +191,48 @@ blocker, not a size objection.
    duplication. Copies a machine writes and verifies are not what bites
    operators.
 
-10. **The catalog is derived, not typed.** `services/<svc>/pkg` existing is
+10. **TLS is off by default, uniformly, and no installer asks about certs.**
+    The shared `ServerConfig` carries `tls` and `auth` for **every** service —
+    the point is that all 18 have the same knobs in the same shape — and both
+    default to **off**. Simple and uniform beats secure-by-default here: a home
+    observatory LAN is the deployment, and a knob that is present-but-off on
+    every service is easier to reason about than a knob that is absent on four
+    drivers and defaulted differently elsewhere.
+
+    **Certificate provisioning stays operator-run**, which is decision 1
+    applied to TLS: `rp init-tls` (self-signed) and `rp init-tls --acme
+    --domain … --dns-provider cloudflare` (Let's Encrypt via DNS-01) already
+    exist and work. Wiring either into an installer is rejected on four
+    grounds, the first decisive:
+
+    - **Renewal does not exist.** `rp-tls` issues certificates but nothing
+      renews them: `acme.json` is written and never read back,
+      `renewal_days_before_expiry` and `post_renewal_hooks` are dead
+      write-only fields, there is no `rp renew-tls`, and `server.rs` uses
+      `with_single_cert`, which bakes the cert in at startup with no reload
+      path. A Let's Encrypt cert lives 90 days. Provisioning a real cert at
+      install time therefore ships a **90-day time bomb that detonates
+      unattended at night** — the precise failure tenet #1 exists to prevent —
+      and recovery means re-running the full command with every flag re-passed
+      and every service manually restarted. This must be fixed (ADR-002
+      Phase 2) before install-time issuance is worth discussing at all.
+    - **Package installs must stay non-interactive.** `apt install -y` and the
+      nightly verification legs run unattended; a postinst prompting for a
+      domain and an API token breaks them.
+    - **It would put a DNS-edit credential on the rig in plaintext.**
+      `--dns-token` is persisted literally into `acme.json`; the `$VAR`
+      indirection `resolve_credentials` supports is only reachable by
+      hand-editing a file nothing reads back.
+    - **A per-host wildcard cert has exactly one creator**, so N unordered
+      postinsts race for it — decision 1's convergence problem, sharpened.
+
+    This **supersedes [#524](https://github.com/ivonnyssen/rusty-photon/issues/524)**
+    (TLS on by default), whose premise is also factually wrong: it assumes
+    every service has a `tls` knob needing its default flipped, but
+    zwo-camera, qhy-camera, zwo-focuser, and sky-survey-camera have no such
+    field at all.
+
+11. **The catalog is derived, not typed.** `services/<svc>/pkg` existing is
    already the packaging authority — `build-packages.sh` and
    `generate-brew-formulas.sh` derive their service lists from it with a
    byte-identical line. Doctor's catalog comes from the same place, with a CI
@@ -228,16 +269,23 @@ blocker, not a size objection.
   is populated; decision 8 deletes that map, so the rule is live for every
   discovered service. The Windows analogue (service account vs
   `Restart-Service`) is open.
-- **This ADR is a prerequisite for
-  [#524](https://github.com/ivonnyssen/rusty-photon/issues/524)** (TLS on by
-  default), and partly contradicts its proposed mechanism. Decision 3's shared
-  `ServerConfig` creates the `tls`/`auth` surface that four Alpaca drivers and
-  ui-htmx do not have today — #524 assumes every service already has the knob
-  and only needs its default flipped, which is not the case. Conversely, #524
-  proposes cert provisioning in *"first-start (or package postinst)"*, which
-  decision 1 rules out: a per-host CA has exactly one creator, so N unordered
-  postinsts race for it. `doctor --fix` is the natural provisioner. Both points
-  need reconciling with #524 before either lands.
+- **[#524](https://github.com/ivonnyssen/rusty-photon/issues/524) is
+  superseded by decision 10** and should be closed or re-scoped. It argues the
+  opposite default, on a premise that does not hold (four Alpaca drivers have
+  no `tls` field to re-default), and proposes provisioning in *"first-start (or
+  package postinst)"*, which decision 1 rules out. What survives from it is
+  worth keeping: its observation that sentinel's dashboard is **LAN-open and
+  unauthenticated**, and that auth-by-default is *"related but separable"* from
+  transport. That separable half gets sharper under decision 8 — see below.
+- **Decision 8 raises the stakes on sentinel's unauthenticated restart
+  endpoint.** Today that endpoint is effectively decorative on packaged Linux
+  because the privilege path is missing. Once #523's polkit rule ships and
+  supervision is universal, it becomes a working, LAN-reachable,
+  unauthenticated control that can restart the entire observatory. Decision 10
+  (TLS off, auth off) leaves it that way by default. That is a deliberate call
+  for a trusted home LAN, not an oversight, but it is the one place where the
+  uniform-and-simple default has real teeth and it should be revisited if the
+  stack ever leaves that setting.
 - **This breaks already-merged code.** The per-service `health` block shipped
   in #505 (merged 2026-07-13); decision 8 deletes it along with the whole
   `services` map. A breaking config-schema change, sanctioned pre-1.0. The
@@ -282,5 +330,10 @@ blocker, not a size objection.
   [#523](https://github.com/ivonnyssen/rusty-photon/issues/523) (sentinel's
   polkit rule — a prerequisite for decision 8) and
   [#524](https://github.com/ivonnyssen/rusty-photon/issues/524) (TLS by
-  default — unblocked by decision 3, but its postinst-provisioning mechanism
-  conflicts with decision 1)
+  default — **superseded** by decision 10; close or re-scope to the
+  auth-by-default half)
+- TLS mechanics decision 10 leans on, and the renewal gap it turns on:
+  [ADR-002](002-tls-for-inter-service-communication.md). Phases 2 and 3 of that
+  ADR (cert hot-reload, background renewal, `rp renew-tls`, Pebble tests) are
+  **documented in the present tense but not implemented** — `crates/rp-tls`
+  issues certificates and nothing renews them.

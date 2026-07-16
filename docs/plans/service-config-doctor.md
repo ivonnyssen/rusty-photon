@@ -143,13 +143,17 @@ see Flagged unknowns). Every service embeds it. Three consequences:
   consumes `ClientAuthConfig` outbound (`config.rs:90,114`) but exposes no
   inbound auth.
 
-  **This makes D1 a prerequisite for
-  [#524](https://github.com/ivonnyssen/rusty-photon/issues/524)** (TLS on by
-  default). That issue's premise — *"Every service takes `tls:
-  Option<rp_tls::config::TlsConfig>` defaulting to `None`"* — does not hold:
-  for these five the field is **absent**, not defaulted, and #524 names only
-  ui-htmx as lacking TLS support. You cannot default a knob to on when four
-  Alpaca drivers have no knob. D1 creates the surface #524 then flips.
+  **Both default to off** (ADR-016 decision 10). The win is uniformity, not
+  security posture: the same knobs, in the same shape, on all 18 services,
+  rather than a field that is absent on four drivers and defaulted differently
+  elsewhere. So D1 stays a pure no-behaviour-change refactor — nothing that
+  serves plain HTTP today starts serving TLS.
+
+  This **supersedes [#524](https://github.com/ivonnyssen/rusty-photon/issues/524)**
+  (TLS on by default), which also rests on a false premise: it assumes every
+  service has a `tls` knob whose default needs flipping, but for these four
+  Alpaca drivers the field is **absent**, not defaulted, and #524 names only
+  ui-htmx as lacking support.
 - **The bind-address naming split resolves.** `bind_address` (rp),
   `bind` (ui-htmx), absent-and-hardcoded (the other 11).
 - **Doctor becomes possible.** One shape to parse out of 18 files.
@@ -406,21 +410,17 @@ permissive in both directions across the binary boundary.
   reasoning in the issue needs updating when it is picked up. And **the Windows
   analogue is unresolved** (service account vs `Restart-Service`), which #523
   flags but does not answer. Doctor is an all-platforms tool, so D3s needs it.
-- **Whether D1 adopts #524's TLS tri-state now or later.**
-  [#524](https://github.com/ivonnyssen/rusty-photon/issues/524) wants `tls`
-  absent to mean *"use the provisioned host certs"* rather than *"plain HTTP"*,
-  with an explicit opt-out knob for dev loops. That is a different shape from
-  today's `Option<TlsConfig>`, and D1 is where the shared type is minted —
-  building it as a plain `Option` means re-cutting it for #524. Adopting the
-  tri-state in D1 costs little; deciding to defer it is fine too, but should be
-  deliberate.
-- **Who provisions certs (D3 vs #524).** #524 proposes a *"first-start (or
-  package postinst)"* path generating a per-host CA + service certs. Postinst
-  conflicts with Decision 1 and hits the same convergence problem, sharpened: a
-  per-host CA has exactly one creator, so N unordered postinsts race for it.
-  `doctor --fix` is the natural home — it already runs once, sees the whole
-  host, and writes config atomically. Needs agreement with #524's owner before
-  either lands.
+- **ADR-002 Phase 2 (cert renewal) blocks any install-time TLS story, and is
+  a live footgun regardless of this plan.** Decision 10 rejects install-time
+  provisioning primarily because nothing renews a certificate today. That gap
+  is independent of doctor and wants its own issue: ADR-002 documents renewal
+  in the present tense (*"No manual renewal."*, *"A background tokio task
+  checks certificate expiry daily"*, *"A `rp renew-tls` CLI command"*) and none
+  of it is implemented — so anyone following the ADR today believes they have
+  automatic renewal and does not. Phase 2 is `ReloadableCertResolver` + a
+  renewal task + `rp renew-tls`; Phase 3 is Pebble-backed tests, which matter
+  because the `instant-acme` order flow currently has **no end-to-end test**
+  (the BDD scenario stops at the DNS step for want of a real token).
 - **Where the shared `ServerConfig` lives (D1).** A new `rp-server-config`
   crate, or a module in an existing shared crate. `rp-tls` and `rp-auth` are
   already the homes of the types it embeds; a new crate may be cleaner than
