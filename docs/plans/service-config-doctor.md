@@ -31,7 +31,8 @@ rather than a component of them.
 | D3s | Sentinel discovers its services; delete the `services` map; policy → constants (needs the privilege path first) | Not started | |
 | D4 | `rusty-photon-doctor-checks` crate + generic hardware checks (no SDK) | Not started | |
 | D5 | Per-service `doctor` subcommand + aggregation | Not started | |
-| D6 | Packaging, install-flow docs, on-rig verification | Not started | |
+| D6 | Move the TLS lifecycle `rp` → doctor; split `rp-tls`; certs to `~/.config/rusty-photon/pki`; doctor generates certs + writes TLS-on config | Not started | |
+| D7 | Packaging, install-flow docs, on-rig verification | Not started | |
 
 ## Decisions (fixed — see [ADR-016](../decisions/016-service-config-ownership-and-doctor.md) for rationale)
 
@@ -56,7 +57,7 @@ rather than a component of them.
    instead.
 
 3. **Doctor is a standalone binary, not a component of the services.** It links
-   no service crate. It knows the catalog, one `ServerConfig` shape, and the
+   no service crate. It knows the catalog, one `ServerConfig` shape, and
    ui-htmx's `drivers` map; everything else in every config file is opaque
    `serde_json::Value` it steps around.
 
@@ -143,17 +144,16 @@ see Flagged unknowns). Every service embeds it. Three consequences:
   consumes `ClientAuthConfig` outbound (`config.rs:90,114`) but exposes no
   inbound auth.
 
-  **Both default to off** (ADR-016 decision 10). The win is uniformity, not
-  security posture: the same knobs, in the same shape, on all 18 services,
-  rather than a field that is absent on four drivers and defaulted differently
-  elsewhere. So D1 stays a pure no-behaviour-change refactor — nothing that
-  serves plain HTTP today starts serving TLS.
+  **Absent `tls` still means plain HTTP**, so D1 stays a pure
+  no-behaviour-change refactor. TLS arrives in D6 via doctor's *generated
+  config*, not via the serde default — see ADR-016 decision 10(d) for why that
+  distinction is load-bearing.
 
   This **supersedes [#524](https://github.com/ivonnyssen/rusty-photon/issues/524)**
-  (TLS on by default), which also rests on a false premise: it assumes every
-  service has a `tls` knob whose default needs flipping, but for these four
-  Alpaca drivers the field is **absent**, not defaulted, and #524 names only
-  ui-htmx as lacking support.
+  on mechanism while agreeing with its goal. Its premise was false: it assumes
+  every service has a `tls` knob whose default needs flipping, but for these
+  four Alpaca drivers the field is **absent**, and #524 names only ui-htmx as
+  lacking support.
 - **The bind-address naming split resolves.** `bind_address` (rp),
   `bind` (ui-htmx), absent-and-hardcoded (the other 11).
 - **Doctor becomes possible.** One shape to parse out of 18 files.
@@ -304,6 +304,47 @@ what the constants encode, and no-recovery-notification is untouched.
 **D1 is a hard prerequisite**, not just for doctor: sentinel reading
 `<svc>.json` for a port only works once `ServerConfig` is one shared type.
 
+### D6 — the TLS lifecycle moves to doctor
+
+Runs after D2 (doctor exists, catalog derived) and D1 (every service has a
+`tls` field). Four moves, per ADR-016 decision 10:
+
+**Split `rp-tls`.** The serving half (`server`, `client`, `config`,
+`permissions`, `error`) stays a dependency of all 18 services. The
+provisioning half (`cert`, `acme`, `acme_config`, `dns`) goes to doctor. This
+is the phase's main payoff beyond the feature: `rp-tls` today drags
+`cloudflare` + `instant-acme` into **every service that only wants to serve
+HTTPS**, and `install_default_crypto_provider` (`lib.rs:27`) exists solely
+because of it — *"both `aws-lc-rs` and `ring` end up feature-activated on
+rustls via our transitive deps (reqwest 0.13 + reqwest 0.12 via cloudflare
+rustls-tls)"*. Quarantining `cloudflare` to one binary cuts
+[#229](https://github.com/ivonnyssen/rusty-photon/issues/229)'s blast radius
+from the workspace to doctor, and may let the crypto-provider workaround go for
+services entirely. Verify that claim by checking whether `ring` still gets
+activated once `cloudflare` is out of a service's tree.
+
+**Retire `DEFAULT_SERVICES`.** `rp_tls::cert::DEFAULT_SERVICES` lists five of
+eighteen — the sixth hand-typed encoding of the service list, and stale enough
+that dsd-fp2, pa-falcon-rotator, pa-scops-oag and star-adventurer-gti get no
+cert despite *having* `tls` fields. Doctor's derived catalog replaces it.
+
+**Move the paths.** `~/.rusty-photon/pki` → `~/.config/rusty-photon/pki`;
+`acme.json` alongside the configs. One tree, covered by the existing
+`/etc/rusty-photon` symlink. Under the packaged deployment that is
+`/var/lib/rusty-photon/.config/rusty-photon/pki`, which `ReadWritePaths=` already
+covers; keys stay 0600 and owned by `rusty-photon`.
+
+**Move the commands.** `rp init-tls` is removed; doctor gains issuance, ACME,
+and renewal. `rp`'s `acme_setup.feature` / `tls_setup.feature` and
+`bdd-infra`'s one-shot command tests (`lib.rs:1199`) move with it.
+
+Then `doctor --fix` generates certs and writes `tls` on for every service it
+wires. **Absent `tls` still means plain HTTP** — see decision 10(d): packages
+start services at install, before any doctor run, so a serde default of "on"
+would strand every fresh install without certs, and would break every BDD and
+ConformU test that hand-writes a config omitting `tls`
+(`services/ppba-driver/tests/conformu_integration.rs:79`).
+
 ### D4/D5 — hardware checks, and why the SDK line is not a judgment call
 
 [ADR-014](../decisions/014-zwo-per-device-services-and-link-features.md) exists
@@ -410,16 +451,26 @@ permissive in both directions across the binary boundary.
   reasoning in the issue needs updating when it is picked up. And **the Windows
   analogue is unresolved** (service account vs `Restart-Service`), which #523
   flags but does not answer. Doctor is an all-platforms tool, so D3s needs it.
-- **Cert renewal does not exist — tracked as
-  [#541](https://github.com/ivonnyssen/rusty-photon/issues/541).** Decision 10
-  rejects install-time provisioning primarily because nothing renews a
-  certificate today: ADR-002 documents renewal in the present tense and none of
-  it is implemented. The gap is independent of doctor and does not block any
-  phase here, but it **inverts decision 10's cost/benefit if it lands** — with
-  real renewal, install-time provisioning stops being a 90-day time bomb and
-  the "no installer cert prompt" half of decision 10 is worth revisiting on its
-  remaining merits (non-interactive installs, plaintext credentials, per-host
-  CA races) rather than on the renewal argument.
+- **Cert renewal does not exist — [#541](https://github.com/ivonnyssen/rusty-photon/issues/541),
+  and D6 re-homes it.** ADR-002 documents renewal in the present tense and none
+  of it is implemented. It does **not** block the default path — self-signed
+  certs are valid ten years — but it blocks ACME being trustworthy, which is
+  what dev boxes and any domain-owning host will run. Two things need deciding
+  as part of re-scoping #541 onto doctor:
+  - **The scheduler.** ADR-002 says *"a background tokio task in `rp serve`"*;
+    with the commands in doctor that becomes `doctor tls renew` on a systemd
+    timer / scheduled task / launchd interval. Conventional (certbot's shape)
+    and better — renewing zwo-camera's cert should not require rp to be
+    running.
+  - **The swap.** `ReloadableCertResolver` (ADR-002 Phase 2) versus simply
+    restarting the service via sentinel, which decision 8 makes universally
+    possible. Restarting is far simpler and may be enough given renewal is
+    quarterly and can be scheduled for daylight — but it must never fire
+    mid-exposure.
+- **Does `rp hash-password` follow the TLS commands into doctor (D6)?** It is
+  auth rather than TLS, but by the same reasoning — credential material is
+  service config, and rp is an arbitrary host for the command — it probably
+  belongs there too. Deciding it with D6 avoids moving it twice.
 - **Where the shared `ServerConfig` lives (D1).** A new `rp-server-config`
   crate, or a module in an existing shared crate. `rp-tls` and `rp-auth` are
   already the homes of the types it embeds; a new crate may be cleaner than
