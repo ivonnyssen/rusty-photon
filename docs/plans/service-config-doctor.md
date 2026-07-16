@@ -24,7 +24,7 @@ rather than a component of them.
 
 | Phase | Description | Status | Branch / PR |
 |-------|-------------|--------|-------------|
-| D0 | This plan + ADR-016 (config ownership + the SDK line) | Not started | |
+| D0 | This plan + [ADR-016](../decisions/016-service-config-ownership-and-doctor.md) (config ownership + the SDK line) | Open | #539 |
 | D1 | Extract shared `ServerConfig`; 13 definitions → 1; TLS/auth for the 5 services that lack it | Not started | |
 | D2 | `rusty-photon-doctor` binary: catalog + service-config diagnosis (read-only) | Not started | |
 | D3 | `--fix`; doctor owns sentinel's `services` and ui-htmx's `drivers` maps | Not started | |
@@ -32,7 +32,7 @@ rather than a component of them.
 | D5 | Per-service `doctor` subcommand + aggregation | Not started | |
 | D6 | Packaging, install-flow docs, on-rig verification | Not started | |
 
-## Decisions (fixed — see ADR-016 for rationale)
+## Decisions (fixed — see [ADR-016](../decisions/016-service-config-ownership-and-doctor.md) for rationale)
 
 1. **The installer puts bytes on disk. Doctor wires the configs.** Packages do
    not generate or seed config; postinst does not call doctor. Services
@@ -350,6 +350,10 @@ permissive in both directions across the binary boundary.
 
 ## References
 
+- [ADR-016](../decisions/016-service-config-ownership-and-doctor.md) — the
+  decision record behind this plan: config ownership, the installer/doctor
+  split, and the SDK line, with the rejected alternatives (runtime discovery,
+  postinst generation, a joint file, a hardware-probing central doctor).
 - [ADR-012](../decisions/012-service-packaging-architecture.md) — config is
   user-based XDG, owned by the service; conffiles rejected because services
   rewrite their own config. Generation is not shipping: this plan does not
