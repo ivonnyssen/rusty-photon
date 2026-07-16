@@ -710,6 +710,19 @@ testing never exercises.
 - `tools/rusty-photon-packages-r2/` is README-only: with no Worker
   there is nothing to deploy, so no `wrangler.toml`; bucket + domain
   are two one-time CLI commands documented there.
+- The pusher authenticates against R2's **S3-compatible endpoint** (aws
+  CLI, preinstalled on ubuntu runners), not `wrangler r2 object` as
+  designed above: the first publish attempt (2026-07-16) failed with
+  403 because Cloudflare's REST API — the only thing wrangler's object
+  commands can drive — rejects bucket-scoped Object Read & Write
+  tokens outright (they authenticate solely via the S3 API; REST wants
+  an account-wide Admin R2 token, unacceptable blast radius with the
+  Bazel-cache bucket in the same account). CI secrets are therefore
+  the token's S3 key pair (`PACKAGES_R2_ACCESS_KEY_ID` /
+  `PACKAGES_R2_SECRET_ACCESS_KEY`) rather than its REST token value
+  (`PACKAGES_R2_API_TOKEN`, retired). The three-generation publish
+  simulation was re-run against a stub `aws` to re-prove the manifest
+  retention algebra on the new CLI.
 
 ## Verification
 
@@ -756,6 +769,13 @@ testing never exercises.
 - The skip-if-unchanged path and the failure-tracking issue get exercised
   naturally within the first week of N1 being live; confirm both behaved
   and note it here.
+  - **Failure-tracking issue exercised 2026-07-16**: the first
+    post-N5-merge scheduled run failed in `publish` (the wrangler/token
+    mismatch recorded in the as-built deltas) and `notify-on-failure`
+    filed the tracking issue unprompted — once on the scheduled run and
+    again on its rerun after the first issue was closed. Behaved as
+    designed. Skip-if-unchanged still pending its first natural
+    occurrence.
 
 ## Flagged unknowns (resolve during the noted phase)
 
