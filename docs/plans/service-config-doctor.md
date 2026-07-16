@@ -78,9 +78,9 @@ rather than a component of them.
 
 7. **The doctor report schema parses permissively.** `#[serde(default)]`,
    tolerate unknown fields — the opposite of the `deny_unknown_fields`
-   convention every config uses. A config typo should be fatal; a doctor from
-   last night's nightly meeting a service from tonight's should degrade to a
-   partial report, not refuse to run.
+   convention every config uses. A config typo should be fatal; a doctor and a
+   service from different nightly builds should degrade to a partial report,
+   not refuse to run.
 
 8. **Sentinel discovers its supervised services; its `services` map is
    deleted, not doctor-generated.** Sentinel shells out to `systemctl`, so it
