@@ -27,7 +27,8 @@ rather than a component of them.
 | D0 | This plan + [ADR-016](../decisions/016-service-config-ownership-and-doctor.md) (config ownership + the SDK line) | Open | #539 |
 | D1 | Extract shared `ServerConfig`; 13 definitions → 1; TLS/auth for the 5 services that lack it | Not started | |
 | D2 | `rusty-photon-doctor` binary: catalog + service-config diagnosis (read-only) | Not started | |
-| D3 | `--fix`; doctor owns sentinel's `services` and ui-htmx's `drivers` maps | Not started | |
+| D3 | `--fix`; doctor owns ui-htmx's `drivers` map | Not started | |
+| D3s | Sentinel discovers its services; delete the `services` map; policy → constants (needs the privilege path first) | Not started | |
 | D4 | `rusty-photon-doctor-checks` crate + generic hardware checks (no SDK) | Not started | |
 | D5 | Per-service `doctor` subcommand + aggregation | Not started | |
 | D6 | Packaging, install-flow docs, on-rig verification | Not started | |
@@ -56,7 +57,7 @@ rather than a component of them.
 
 3. **Doctor is a standalone binary, not a component of the services.** It links
    no service crate. It knows the catalog, one `ServerConfig` shape, and the
-   two aggregator maps; everything else in every config file is opaque
+   ui-htmx's `drivers` map; everything else in every config file is opaque
    `serde_json::Value` it steps around.
 
 4. **Doctor's scope is service config, never device usage.** "Is `/dev/ttyUSB0`
@@ -79,6 +80,18 @@ rather than a component of them.
    convention every config uses. A config typo should be fatal; a doctor from
    last night's nightly meeting a service from tonight's should degrade to a
    partial report, not refuse to run.
+
+8. **Sentinel discovers its supervised services; its `services` map is
+   deleted, not doctor-generated.** Sentinel shells out to `systemctl`, so it
+   is same-host-bound by definition and can ask the platform — which, unlike a
+   driver, is alive when the driver is dead. All policy in that map becomes
+   constants (restart budget 300s; health poll 30s; threshold 3; backoff 60s
+   doubling to 900s), health supervision becomes universal, and "not
+   restartable" is removed: every service must come back when sentinel says so.
+
+   The rule this follows is not "static vs. dynamic" but **whether the source
+   of truth can be down when you need it.** Asking a driver how to restart
+   itself fails that test; asking the service manager passes it.
 
 ## Design
 
@@ -175,7 +188,9 @@ What D2 diagnoses — all service-level, zero device knowledge:
   a Flagged unknown below.
 - **Dangling name joins.** ui-htmx `drivers` key → `sentinel_service` →
   sentinel `services` key → `operation_watchdog.operations.<family>.service`.
-  Four spellings of one service name, matched by convention, unvalidated.
+  Four spellings of one service name, matched by convention, unvalidated. D3s
+  deletes the third; the survivors must name a unit the service manager
+  actually reports.
 - **Config-gated services that will never start.** sky-survey-camera,
   plate-solver, and calibrator-flats hard-require a config file and carry
   `ConditionPathExists=`. Installed, enabled, silently inert.
@@ -185,26 +200,30 @@ What D2 diagnoses — all service-level, zero device knowledge:
 - **Platform-wrong defaults**, e.g. rp self-creating `session.data_directory`
   as a Linux path that is not writable on macOS (`docs/packaging-macos.md:136`).
 - **URL convention mismatches** — sentinel's `base_url` wants an `/api/v1`
-  suffix; rp's `alpaca_url` and ui-htmx's `base_url` do not.
+  suffix; rp's `alpaca_url` and ui-htmx's `base_url` do not. D3s retires
+  sentinel's side of this by deriving the URL, which removes the mismatch at
+  its source rather than checking for it.
 
 D2 is read-only. It reports and suggests; it writes nothing.
 
-### D3 — `--fix`, and the two aggregator maps
+### D3 — `--fix`, and ui-htmx's `drivers` map
 
-Doctor owns **sentinel's `services` map** and **ui-htmx's `drivers` map**
-outright. Both are pure service facts — name, URL, restart command — and both
-are copies of information the catalog already has. Generating them kills two of
-the three copies of every port and service name in the system, and makes the
-restart commands correct for the first time.
+Doctor owns **ui-htmx's `drivers` map** outright: pure service facts (name,
+URL, credentials) that are copies of what the catalog already knows. ui-htmx is
+not same-host-bound and cannot read anyone's config dir, so its targets stay a
+written artifact — but machine-written rather than hand-written.
 
-`rp.json`'s `equipment[].alpaca_url` is the third copy and stays
+`rp.json`'s `equipment[].alpaca_url` is the remaining copy and stays
 operator-facing: it lives inside the device-usage block, and doctor does not
-cross that line. Doctor *checks* it (is the port real, does a service listen
-there) but does not own it.
+cross that line. rp is not same-host-bound either. Doctor *checks* it (is the
+port real, does a service listen there) but does not own it.
 
 That reframes the goal deliberately: **the enemy is hand-maintained
 duplication, not duplication on disk.** Copies a machine writes and verifies
 are not what bites operators.
+
+Sentinel is deliberately **not** in this phase — see D3s, where its map is
+deleted rather than generated.
 
 Write safety: `--fix` uses `rusty_photon_config::save`'s existing atomic
 temp→fsync→rename→fsync-dir path, making doctor a third writer alongside
@@ -212,6 +231,66 @@ operator hand-edits and drivers' own `config.apply`. Atomic rename means no
 corruption, only a possible lost update, and `--fix` is an
 operator-initiated foreground action. Doctor must reuse the layer-aware persist
 rules — it must not bake a transient CLI override into a file.
+
+### D3s — sentinel discovers; the `services` map is deleted
+
+Sentinel's map is not doctor-generated. It is **deleted**. A doctor-written map
+goes stale the moment a package is installed and stays stale until someone
+re-runs `--fix`; asking the platform costs nothing and is never stale. Sentinel
+already shells out to `systemctl`, so it is **same-host-bound by definition**
+and every fact in the map follows from that.
+
+| Was | Becomes |
+|---|---|
+| the `services` map (which services to supervise) | enumerate `rusty-photon-*` from the service manager |
+| `restart_command` | derived from the unit name |
+| `health_command` | derived — `systemctl is-active <unit>` |
+| `base_url` | read the service's own `<svc>.json` → `server.port` (one typed shape after D1) |
+| `health.url` | derived from port + catalog class (below) |
+| `max_restart_duration` | constant **300s** |
+| `health.poll_interval` | constant **30s** |
+| `health.failure_threshold` | constant **3** |
+| `health.restart_backoff` / `_max` | constants **60s**, doubling to **900s** |
+| `restart_command: null` ("not restartable") | **removed** |
+
+Every constant except the restart budget is the shipped default promoted to a
+constant (`services/sentinel/src/config.rs:411-430`), so behaviour is unchanged;
+`max_restart_duration` moves 60s → 300s.
+
+**The health probe URL is derivable because there are exactly two classes**, and
+which class a service is in is a static catalog fact:
+
+- **Alpaca drivers** answer `GET {base}/management/v1/configureddevices` — no
+  device number needed, so no device knowledge leaks into sentinel.
+- **Non-Alpaca services** (rp, plate-solver, session-runner, calibrator-flats,
+  phd2-guider, ui-htmx) answer `GET {base}/health`. These are exactly the seven
+  that define a `/health` route today; the Alpaca drivers have none, by design.
+
+**Health supervision becomes universal.** Presence of a `health` block is
+currently the opt-in; with the block gone, every discovered service is
+supervised. That is the tenet-#2 answer and removes a footgun where forgetting
+a block silently meant no supervision. Expect the first deployment to surface
+flapping that was previously invisible.
+
+**"Not restartable" is removed.** Every rusty-photon service must come back when
+sentinel says so; one that cannot is a bug to fix, not a config to write. The
+escape hatch's stated purpose — a remote MCU we cannot `systemctl` — is moot
+under same-host discovery: such a device was never a local unit, so it is never
+enumerated.
+
+**This phase is gated on the privilege path** (Flagged unknowns). Today sentinel
+runs `NoNewPrivileges=yes` with no polkit rule, so it can restart nothing. Once
+supervision is universal and "not restartable" is gone, *every* service depends
+on a privilege path that does not exist — which turns that open question from a
+parallel concern into a prerequisite.
+
+**This breaks merged code.** The per-service `health` block shipped in #505
+(merged 2026-07-13). Deleting it is a breaking config-schema change, sanctioned
+pre-1.0. That PR's settled choices survive the move: never-give-up backoff is
+what the constants encode, and no-recovery-notification is untouched.
+
+**D1 is a hard prerequisite**, not just for doctor: sentinel reading
+`<svc>.json` for a port only works once `ServerConfig` is one shared type.
 
 ### D4/D5 — hardware checks, and why the SDK line is not a judgment call
 
@@ -298,11 +377,14 @@ permissive in both directions across the binary boundary.
 
 ## Flagged unknowns (resolve during the noted phase)
 
-- **The sentinel privilege path (D2/D3).** Doctor will report that sentinel
-  cannot restart anything on packaged Linux. Actually fixing it is a separate
-  decision — polkit rule, sudoers fragment, a D-Bus call to systemd, or running
-  sentinel differently — with real security trade-offs. Needs a decision before
-  D3 generates `restart_command` values that still cannot execute.
+- **The sentinel privilege path — blocks D3s.** Sentinel runs
+  `NoNewPrivileges=yes` against system units with no polkit rule or sudoers
+  fragment, so it can restart nothing on packaged Linux today. D2 merely
+  *reports* that. D3s cannot ship without it: once supervision is universal and
+  "not restartable" is gone, every discovered service depends on a privilege
+  path that does not exist. The options — polkit rule, sudoers fragment, a
+  D-Bus call to systemd, or running sentinel differently — carry real security
+  trade-offs and need a decision, not a default.
 - **Where the shared `ServerConfig` lives (D1).** A new `rp-server-config`
   crate, or a module in an existing shared crate. `rp-tls` and `rp-auth` are
   already the homes of the types it embeds; a new crate may be cleaner than
