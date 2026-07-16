@@ -122,8 +122,9 @@ put() {
     # cached Packages.gz against a freshly flipped InRelease is a client
     # hash-mismatch. Every read origin-pulls from R2 instead — free egress,
     # and this channel's traffic is a handful of rigs; revisit only if
-    # that ever changes. stdout is the ETag blob and stays quiet; stderr
-    # passes through so a failure shows its real cause in the CI log.
+    # that ever changes. aws prints an ETag blob on stdout — discarded
+    # by the redirect; stderr passes through so a failure shows its
+    # real cause in the CI log.
     aws s3api put-object --endpoint-url "$ENDPOINT" --bucket "$BUCKET" \
         --key "$1" --body "$2" --cache-control no-store > /dev/null \
         || die "upload failed: $1"

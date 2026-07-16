@@ -553,6 +553,14 @@ pkg.rustyphoton.space/
     aarch64/repodata/ (+ *.rpm)
 ```
 
+> **As-built note:** this paragraph records the original design. The
+> shipped pusher instead drives R2's **S3-compatible endpoint** via the
+> aws CLI, authenticated with the same bucket-scoped token's S3 key
+> pair (`PACKAGES_R2_ACCESS_KEY_ID` / `PACKAGES_R2_SECRET_ACCESS_KEY`) —
+> Cloudflare's REST API, the only API wrangler's object commands can
+> use, turned out to reject bucket-scoped object tokens. See the
+> as-built deltas below.
+
 Writes go straight from CI to R2 via `wrangler r2 object put --remote`
 (the same CLI already used to deploy the cache Worker), authenticated
 with a new Cloudflare API token scoped to Object Read & Write on just
@@ -628,8 +636,8 @@ fixed rolling-only scope above. That still needs a delete pass, but
 live would open a window where `apt update`/`dnf makecache` mid-publish
 either 404s or fetches a `Release`/`repomd.xml` whose referenced content
 partway exists (apt's "Hash Sum mismatch" class of failure). So the
-final step orders it upload-then-delete instead: `wrangler r2 object
-put --remote` the new `pool/`/`x86_64/`/`aarch64/` content and
+final step orders it upload-then-delete instead: upload the new
+`pool/`/`x86_64/`/`aarch64/` content and
 `pubkey.asc` first (additive — existing clients are still being served
 correctly by the still-live old metadata throughout), then the
 top-level metadata last (`Release*`/`InRelease`, `repomd.xml*`) as the
@@ -720,7 +728,10 @@ testing never exercises.
   Bazel-cache bucket in the same account). CI secrets are therefore
   the token's S3 key pair (`PACKAGES_R2_ACCESS_KEY_ID` /
   `PACKAGES_R2_SECRET_ACCESS_KEY`) rather than its REST token value
-  (`PACKAGES_R2_API_TOKEN`, retired). The three-generation publish
+  (`PACKAGES_R2_API_TOKEN`, retired). S3's `ListObjectsV2` was
+  deliberately left unused even though it removes wrangler's
+  no-listing constraint: a manifest-driven sweep can only ever touch
+  keys the publisher itself wrote. The three-generation publish
   simulation was re-run against a stub `aws` to re-prove the manifest
   retention algebra on the new CLI.
 
