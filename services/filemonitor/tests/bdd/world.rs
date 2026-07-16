@@ -46,6 +46,11 @@ pub struct FilemonitorWorld {
 
     // Auth test state
     pub auth_password: Option<String>,
+
+    // Config actions test state
+    pub last_response: Option<Value>,
+    pub last_supported_actions: Option<Vec<String>>,
+    pub last_ascom_error: Option<ascom_alpaca::ASCOMError>,
 }
 
 impl FilemonitorWorld {
@@ -162,4 +167,86 @@ impl FilemonitorWorld {
         }
         panic!("filemonitor did not become healthy within 30 seconds");
     }
+
+    /// The OS-assigned port the spawned service bound.
+    pub fn bound_port(&self) -> u16 {
+        self.filemonitor.as_ref().expect("service not started").port
+    }
+
+    /// Call `config.get`, stash the parsed response, and return the `config`
+    /// object (so a When step can edit a field and re-`config.apply` it).
+    pub async fn current_config(&mut self) -> Value {
+        let monitor = Arc::clone(self.monitor());
+        let body = monitor
+            .action("config.get".to_string(), String::new())
+            .await
+            .expect("config.get failed");
+        let parsed: Value = serde_json::from_str(&body).expect("config.get returned invalid JSON");
+        let config = parsed
+            .get("config")
+            .cloned()
+            .expect("config.get response missing `config`");
+        self.last_response = Some(parsed);
+        config
+    }
+
+    /// Call `config.get` and stash the parsed response.
+    pub async fn call_config_get(&mut self) {
+        self.current_config().await;
+    }
+
+    /// Call `config.schema` and stash the parsed response.
+    pub async fn call_config_schema(&mut self) {
+        let monitor = Arc::clone(self.monitor());
+        let body = monitor
+            .action("config.schema".to_string(), String::new())
+            .await
+            .expect("config.schema failed");
+        self.last_response =
+            Some(serde_json::from_str(&body).expect("config.schema returned invalid JSON"));
+    }
+
+    /// Call `config.apply` with `params` and stash the parsed response.
+    pub async fn call_config_apply(&mut self, params: Value) {
+        let monitor = Arc::clone(self.monitor());
+        let body = monitor
+            .action("config.apply".to_string(), params.to_string())
+            .await
+            .expect("config.apply failed");
+        self.last_response =
+            Some(serde_json::from_str(&body).expect("config.apply returned invalid JSON"));
+    }
+
+    /// Poll `config.get` on a fresh client until `file.polling_interval` equals
+    /// `expected`, panicking after ~20 s. A fresh client is used each attempt so
+    /// a connection dropped by the reload doesn't wedge the poll, and the loop
+    /// tolerates the brief blip while the server tears down and rebinds.
+    pub async fn wait_for_config_polling_interval(&self, expected: &str) {
+        let addr = SocketAddr::from(([127, 0, 0, 1], self.bound_port()));
+        for _ in 0..80 {
+            if try_get_polling_interval(addr).await.as_deref() == Some(expected) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        panic!("reloaded service did not report polling_interval {expected} within 20s");
+    }
+}
+
+/// Read `file.polling_interval` via a fresh client, returning `None` on any
+/// transport/parse failure (e.g. mid-reload).
+async fn try_get_polling_interval(addr: SocketAddr) -> Option<String> {
+    let client = AlpacaClient::new_from_addr(addr);
+    let mut devices = client.get_devices().await.ok()?;
+    if let Some(TypedDevice::SafetyMonitor(monitor)) = devices.next() {
+        let body = monitor
+            .action("config.get".to_string(), String::new())
+            .await
+            .ok()?;
+        let parsed: Value = serde_json::from_str(&body).ok()?;
+        return parsed["config"]["file"]["polling_interval"]
+            .as_str()
+            .map(str::to_string);
+    }
+    None
 }

@@ -74,6 +74,36 @@ The parsing rules are evaluated in order, with the first match determining safet
 
 Every block (`Config` and each nested config struct — `DeviceConfig`, `FileConfig`, `ParsingConfig`, `ParsingRule`, `ServerConfig`) rejects unknown keys at deserialize (`deny_unknown_fields`), so a typo or a key removed by a schema change fails loudly at load instead of being silently ignored.
 
+## Config actions
+
+filemonitor exposes its configuration over HTTP as the vendor ASCOM actions
+`config.get` / `config.apply` / `config.schema` on the SafetyMonitor device —
+the cross-driver protocol in [`config-actions.md`](config-actions.md),
+implemented generically in `rusty_photon_config::actions`. `config_actions.rs`
+supplies the driver-specific half (`ConfigurableDriver for FileMonitorDriver`,
+`Overrides = ()` — the binary has no CLI overrides beyond `--config` /
+`--log-level`) plus the `dispatch` the device delegates to.
+
+- **Secret redacted / carried forward:** `/server/auth/password_hash`.
+- **Locked (identity) field:** `device.unique_id`.
+- **Hard read-only field:** `server.port`.
+- **Validation:** `device.unique_id` and `file.path` must be non-empty,
+  `file.polling_interval` must be greater than zero, and every `regex`-type
+  parsing rule's `pattern` must compile — a bad pattern otherwise fails
+  silently as a non-match at evaluation time (see [Operation](#operation)),
+  so `config.apply` rejects it at the config boundary instead.
+
+A `config.apply` that changes a field persists atomically, returns
+`status:"applying"`, and fires the in-process reload: `main.rs` runs under
+`ServiceRunner::with_reload().run_with_reload(...)`, whose loop
+(`run_server_loop`) rebuilds the server from the freshly-persisted file. Both
+the shutdown signal and a `config.apply`-fired reload drive the *same*
+graceful-shutdown future passed to the running server, so a reload drains
+in-flight requests and closes keep-alive connections before rebinding — a
+client's persistent connection reconnects and observes the new configuration
+rather than continuing to talk to the torn-down server's stale in-memory
+state.
+
 ## Operation
 
 The service parses the monitored file according to the configured rules, yielding either:

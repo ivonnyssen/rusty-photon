@@ -167,6 +167,7 @@ UI can't edit away its own reachability.
 | `pa-scops-oag` | Focuser | auth password hash | single device; FTDI serial focuser, no temperature sensor |
 | `sky-survey-camera` | Camera | follow-mode client passwords | `Overrides = ()`; cross-field validation |
 | `star-adventurer-gti` | Telescope | auth password hash | config actions alongside the `ApPark` actions; `transport` block read-only |
+| `filemonitor` | SafetyMonitor | auth password hash | `Overrides = ()`; regex parsing-rule patterns validated at apply time |
 | `rp` | — (REST transport) | per-device `auth` passwords across the equipment arrays (wildcards) + server auth hash | `ApplyDisposition::Restart` — no reload; `server.port` read-only |
 
 ## The web UI
