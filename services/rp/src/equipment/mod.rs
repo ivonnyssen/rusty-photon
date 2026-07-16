@@ -5,9 +5,14 @@
 //! It is built from a [`crate::config::EquipmentConfig`] at startup; each
 //! per-device-type connect routine lives in its own submodule
 //! ([`camera`], [`filter_wheel`], [`cover_calibrator`], [`focuser`],
-//! [`mount`]). Generic Alpaca-client glue (HTTP basic-auth header,
-//! retry/backoff with `Permanent`/`Transient` outcomes) lives in
-//! [`alpaca`].
+//! [`mount`], [`safety_monitor`], [`switch`], [`rotator`],
+//! [`observing_conditions`], [`dome`]). Generic Alpaca-client glue (HTTP
+//! basic-auth header, retry/backoff with `Permanent`/`Transient` outcomes)
+//! lives in [`alpaca`].
+//!
+//! `switch`, `rotator`, `observing_conditions`, and `dome` cover roster
+//! membership and connectivity status only (rp.md § Equipment Integration)
+//! — no MCP tool integration, unlike the other six kinds.
 //!
 //! The submodules' `*Entry` types and shared status types are
 //! re-exported here so existing `crate::equipment::CameraEntry` etc.
@@ -16,10 +21,14 @@
 pub mod alpaca;
 pub mod camera;
 pub mod cover_calibrator;
+pub mod dome;
 pub mod filter_wheel;
 pub mod focuser;
 pub mod mount;
+pub mod observing_conditions;
+pub mod rotator;
 pub mod safety_monitor;
+pub mod switch;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
@@ -27,10 +36,14 @@ pub(crate) mod test_support;
 
 pub use camera::CameraEntry;
 pub use cover_calibrator::CoverCalibratorEntry;
+pub use dome::DomeEntry;
 pub use filter_wheel::FilterWheelEntry;
 pub use focuser::FocuserEntry;
 pub use mount::MountEntry;
+pub use observing_conditions::ObservingConditionsEntry;
+pub use rotator::RotatorEntry;
 pub use safety_monitor::SafetyMonitorEntry;
+pub use switch::SwitchEntry;
 
 use serde::Serialize;
 use tracing::debug;
@@ -38,12 +51,17 @@ use tracing::debug;
 use crate::config;
 use crate::error::RpError;
 
+#[derive(Default)]
 pub struct EquipmentRegistry {
     pub cameras: Vec<CameraEntry>,
     pub filter_wheels: Vec<FilterWheelEntry>,
     pub cover_calibrators: Vec<CoverCalibratorEntry>,
     pub focusers: Vec<FocuserEntry>,
     pub safety_monitors: Vec<SafetyMonitorEntry>,
+    pub switches: Vec<SwitchEntry>,
+    pub rotators: Vec<RotatorEntry>,
+    pub observing_conditions: Vec<ObservingConditionsEntry>,
+    pub domes: Vec<DomeEntry>,
     pub mount: Option<MountEntry>,
 }
 
@@ -54,6 +72,10 @@ pub struct EquipmentStatus {
     pub cover_calibrators: Vec<DeviceStatus>,
     pub focusers: Vec<DeviceStatus>,
     pub safety_monitors: Vec<DeviceStatus>,
+    pub switches: Vec<DeviceStatus>,
+    pub rotators: Vec<DeviceStatus>,
+    pub observing_conditions: Vec<DeviceStatus>,
+    pub domes: Vec<DeviceStatus>,
     pub mount: Option<MountStatus>,
 }
 
@@ -107,6 +129,30 @@ impl EquipmentRegistry {
             safety_monitors.push(entry);
         }
 
+        let mut switches = Vec::new();
+        for switch_config in &equipment_config.switches {
+            let entry = switch::connect_switch(switch_config).await;
+            switches.push(entry);
+        }
+
+        let mut rotators = Vec::new();
+        for rotator_config in &equipment_config.rotators {
+            let entry = rotator::connect_rotator(rotator_config).await;
+            rotators.push(entry);
+        }
+
+        let mut observing_conditions = Vec::new();
+        for oc_config in &equipment_config.observing_conditions {
+            let entry = observing_conditions::connect_observing_conditions(oc_config).await;
+            observing_conditions.push(entry);
+        }
+
+        let mut domes = Vec::new();
+        for dome_config in &equipment_config.domes {
+            let entry = dome::connect_dome(dome_config).await;
+            domes.push(entry);
+        }
+
         let mount = match &equipment_config.mount {
             Some(mount_config) => Some(mount::connect_mount(mount_config).await),
             None => None,
@@ -118,6 +164,10 @@ impl EquipmentRegistry {
             cover_calibrators,
             focusers,
             safety_monitors,
+            switches,
+            rotators,
+            observing_conditions,
+            domes,
             mount,
         }
     }
@@ -164,6 +214,38 @@ impl EquipmentRegistry {
                     connected: sm.connected,
                 })
                 .collect(),
+            switches: self
+                .switches
+                .iter()
+                .map(|sw| DeviceStatus {
+                    id: sw.id.clone(),
+                    connected: sw.connected,
+                })
+                .collect(),
+            rotators: self
+                .rotators
+                .iter()
+                .map(|r| DeviceStatus {
+                    id: r.id.clone(),
+                    connected: r.connected,
+                })
+                .collect(),
+            observing_conditions: self
+                .observing_conditions
+                .iter()
+                .map(|oc| DeviceStatus {
+                    id: oc.id.clone(),
+                    connected: oc.connected,
+                })
+                .collect(),
+            domes: self
+                .domes
+                .iter()
+                .map(|d| DeviceStatus {
+                    id: d.id.clone(),
+                    connected: d.connected,
+                })
+                .collect(),
             mount: self.mount.as_ref().map(|m| MountStatus {
                 connected: m.connected,
             }),
@@ -188,6 +270,22 @@ impl EquipmentRegistry {
 
     pub fn find_safety_monitor(&self, id: &str) -> Option<&SafetyMonitorEntry> {
         self.safety_monitors.iter().find(|sm| sm.id == id)
+    }
+
+    pub fn find_switch(&self, id: &str) -> Option<&SwitchEntry> {
+        self.switches.iter().find(|sw| sw.id == id)
+    }
+
+    pub fn find_rotator(&self, id: &str) -> Option<&RotatorEntry> {
+        self.rotators.iter().find(|r| r.id == id)
+    }
+
+    pub fn find_observing_conditions(&self, id: &str) -> Option<&ObservingConditionsEntry> {
+        self.observing_conditions.iter().find(|oc| oc.id == id)
+    }
+
+    pub fn find_dome(&self, id: &str) -> Option<&DomeEntry> {
+        self.domes.iter().find(|d| d.id == id)
     }
 
     /// Returns the singular mount entry, or `None` when no mount is

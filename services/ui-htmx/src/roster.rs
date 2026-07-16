@@ -5,7 +5,7 @@
 //!
 //! Everything here is pure data manipulation over `serde_json::Value` (rp's
 //! config schema is the authority on entry shapes — the BFF hardcodes only the
-//! six equipment kinds, which are rp's wire contract per `rp.md`).
+//! ten equipment kinds, which are rp's wire contract per `rp.md`).
 
 use serde_json::Value;
 
@@ -13,7 +13,11 @@ use serde_json::Value;
 /// and `rp:{kind}:{id}` keys (rp's mount entry has no id of its own).
 pub const MOUNT_ID: &str = "mount";
 
-/// One equipment kind — the six keys of rp's config `equipment` block.
+/// One equipment kind — the ten keys of rp's config `equipment` block.
+/// `Switches`, `Rotators`, `ObservingConditions`, and `Domes` cover roster
+/// membership and connectivity status only (rp.md § Equipment Integration) —
+/// same generic add/edit/remove/config-page treatment as every other kind,
+/// but rp exposes no MCP tool integration for them yet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EquipKind {
     Cameras,
@@ -21,16 +25,24 @@ pub enum EquipKind {
     CoverCalibrators,
     Focusers,
     SafetyMonitors,
+    Switches,
+    Rotators,
+    ObservingConditions,
+    Domes,
     Mount,
 }
 
 impl EquipKind {
-    pub const ALL: [EquipKind; 6] = [
+    pub const ALL: [EquipKind; 10] = [
         EquipKind::Cameras,
         EquipKind::FilterWheels,
         EquipKind::CoverCalibrators,
         EquipKind::Focusers,
         EquipKind::SafetyMonitors,
+        EquipKind::Switches,
+        EquipKind::Rotators,
+        EquipKind::ObservingConditions,
+        EquipKind::Domes,
         EquipKind::Mount,
     ];
 
@@ -43,6 +55,10 @@ impl EquipKind {
             EquipKind::CoverCalibrators => "cover_calibrators",
             EquipKind::Focusers => "focusers",
             EquipKind::SafetyMonitors => "safety_monitors",
+            EquipKind::Switches => "switches",
+            EquipKind::Rotators => "rotators",
+            EquipKind::ObservingConditions => "observing_conditions",
+            EquipKind::Domes => "domes",
             EquipKind::Mount => "mount",
         }
     }
@@ -56,6 +72,10 @@ impl EquipKind {
             EquipKind::CoverCalibrators => "covercalibrator",
             EquipKind::Focusers => "focuser",
             EquipKind::SafetyMonitors => "safetymonitor",
+            EquipKind::Switches => "switch",
+            EquipKind::Rotators => "rotator",
+            EquipKind::ObservingConditions => "observingconditions",
+            EquipKind::Domes => "dome",
             EquipKind::Mount => "telescope",
         }
     }
@@ -68,6 +88,10 @@ impl EquipKind {
             EquipKind::CoverCalibrators => "Cover calibrators",
             EquipKind::Focusers => "Focusers",
             EquipKind::SafetyMonitors => "Safety monitors",
+            EquipKind::Switches => "Switches",
+            EquipKind::Rotators => "Rotators",
+            EquipKind::ObservingConditions => "Observing conditions",
+            EquipKind::Domes => "Domes",
             EquipKind::Mount => "Mount",
         }
     }
@@ -363,6 +387,10 @@ mod tests {
                     { "id": "main-focuser", "alpaca_url": "http://127.0.0.1:11113",
                       "device_number": 1 }
                 ],
+                "switches": [
+                    { "id": "ppba", "name": "Pegasus PPBA",
+                      "alpaca_url": "http://127.0.0.1:11112", "device_number": 0 }
+                ],
                 "mount": { "alpaca_url": "http://127.0.0.1:11116", "device_number": 0 }
             }
         })
@@ -378,6 +406,7 @@ mod tests {
                 "rp:cameras:main-cam",
                 "rp:cameras:guide-cam",
                 "rp:focusers:main-focuser",
+                "rp:switches:ppba",
                 "rp:mount:mount",
             ]
         );
@@ -397,6 +426,9 @@ mod tests {
         let focuser = &roster[2];
         assert_eq!(focuser.device_number, 1);
         assert_eq!(focuser.kind.ascom_type(), "focuser");
+        let switch = &roster[3];
+        assert_eq!(switch.display_name(), "Pegasus PPBA");
+        assert_eq!(switch.kind.ascom_type(), "switch");
     }
 
     #[test]
@@ -560,7 +592,7 @@ mod tests {
             parse_service_key("rp:focusers:oag:fine"),
             Some((EquipKind::Focusers, "oag:fine"))
         ));
-        assert!(parse_service_key("rp:rotators:x").is_none()); // unknown kind
+        assert!(parse_service_key("rp:spectrographs:x").is_none()); // unknown kind
         assert!(parse_service_key("rp:cameras:").is_none()); // empty id
         assert!(parse_service_key("dsd-fp2").is_none()); // not roster-derived
     }

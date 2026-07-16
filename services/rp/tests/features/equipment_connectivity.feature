@@ -57,3 +57,47 @@ Feature: Equipment connectivity
     When rp starts
     Then the equipment status should show the camera as connected
     And the equipment status should show the filter wheel as disconnected
+
+  Scenario: Switch is connected after startup
+    Given a running Alpaca simulator
+    And rp is configured with a switch on the simulator
+    When rp starts
+    Then the equipment status should show the switch as connected
+
+  Scenario: Switch reports disconnected when simulator is unreachable
+    Given rp is configured with a switch at "http://localhost:1" device 0
+    When rp starts
+    Then the equipment status should show the switch as disconnected
+
+  Scenario: Rotator is connected after startup
+    Given a running Alpaca simulator
+    And rp is configured with a rotator on the simulator
+    When rp starts
+    Then the equipment status should show the rotator as connected
+
+  Scenario: Rotator reports disconnected when simulator is unreachable
+    Given rp is configured with a rotator at "http://localhost:1" device 0
+    When rp starts
+    Then the equipment status should show the rotator as disconnected
+
+  Scenario: ObservingConditions device is connected after startup
+    Given a running Alpaca simulator
+    And rp is configured with an observing conditions device on the simulator
+    When rp starts
+    Then the equipment status should show the observing conditions device as connected
+
+  Scenario: ObservingConditions device reports disconnected when simulator is unreachable
+    Given rp is configured with an observing conditions device at "http://localhost:1" device 0
+    When rp starts
+    Then the equipment status should show the observing conditions device as disconnected
+
+  Scenario: Dome is connected after startup
+    Given a running Alpaca simulator
+    And rp is configured with a dome on the simulator
+    When rp starts
+    Then the equipment status should show the dome as connected
+
+  Scenario: Dome reports disconnected when simulator is unreachable
+    Given rp is configured with a dome at "http://localhost:1" device 0
+    When rp starts
+    Then the equipment status should show the dome as disconnected

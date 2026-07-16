@@ -912,6 +912,7 @@ fn camera_registry_with_meta(
         cover_calibrators: vec![],
         focusers: vec![],
         mount: None,
+        ..Default::default()
     }
 }
 
@@ -937,6 +938,7 @@ fn filter_wheel_registry(
         cover_calibrators: vec![],
         focusers: vec![],
         mount: None,
+        ..Default::default()
     }
 }
 
@@ -961,6 +963,7 @@ fn calibrator_registry(
         }],
         focusers: vec![],
         mount: None,
+        ..Default::default()
     }
 }
 
@@ -990,6 +993,7 @@ fn focuser_registry(
             device: Some(foc),
         }],
         mount: None,
+        ..Default::default()
     }
 }
 
@@ -1014,6 +1018,7 @@ fn mount_registry(
             },
             device: Some(mount),
         }),
+        ..Default::default()
     }
 }
 
@@ -1037,6 +1042,7 @@ fn empty_registry() -> crate::equipment::EquipmentRegistry {
         cover_calibrators: vec![],
         focusers: vec![],
         mount: None,
+        ..Default::default()
     }
 }
 
@@ -1058,6 +1064,7 @@ fn disconnected_mount_registry() -> crate::equipment::EquipmentRegistry {
             },
             device: None,
         }),
+        ..Default::default()
     }
 }
 
@@ -1726,6 +1733,7 @@ async fn test_persist_capture_artifact_skips_cache_on_sidecar_failure() {
             cover_calibrators: vec![],
             focusers: vec![],
             mount: None,
+            ..Default::default()
         }),
         Arc::new(crate::events::EventBus::from_config(&[])),
         SessionConfig {
@@ -1974,6 +1982,7 @@ async fn test_compute_image_stats_bad_fits() {
         cover_calibrators: vec![],
         focusers: vec![],
         mount: None,
+        ..Default::default()
     });
     let result = handler
         .compute_image_stats(Parameters(ComputeImageStatsParams {
@@ -1996,6 +2005,7 @@ async fn test_compute_image_stats_missing_arguments() {
         cover_calibrators: vec![],
         focusers: vec![],
         mount: None,
+        ..Default::default()
     });
     let result = handler
         .compute_image_stats(Parameters(ComputeImageStatsParams {
@@ -2065,6 +2075,7 @@ async fn test_compute_image_stats_persists_section_via_document_id() {
             cover_calibrators: vec![],
             focusers: vec![],
             mount: None,
+            ..Default::default()
         }),
         Arc::new(crate::events::EventBus::from_config(&[])),
         SessionConfig {
@@ -2370,6 +2381,7 @@ async fn test_move_focuser_not_connected() {
             device: None,
         }],
         mount: None,
+        ..Default::default()
     };
     let handler = test_handler(registry);
     let result = handler
@@ -2424,6 +2436,7 @@ async fn test_get_focuser_position_not_connected() {
             device: None,
         }],
         mount: None,
+        ..Default::default()
     };
     let handler = test_handler(registry);
     let result = handler
@@ -3674,6 +3687,7 @@ fn handler_with_site_and_mount() -> McpHandler {
             config: mount_cfg,
             device: Some(Arc::new(mock)),
         }),
+        ..Default::default()
     };
     McpHandler::new(
         Arc::new(registry),
@@ -4590,6 +4604,7 @@ fn auto_focus_registry(starting_position: i32) -> crate::equipment::EquipmentReg
             device: Some(Arc::new(focuser)),
         }],
         mount: None,
+        ..Default::default()
     }
 }
 
@@ -5252,6 +5267,7 @@ async fn slew_deadline_overflow_falls_back_without_panic() {
             },
             device: Some(Arc::new(MockTelescope::default())),
         }),
+        ..Default::default()
     };
     let handler = test_handler(registry);
     let mut rx = handler.event_bus.subscribe();

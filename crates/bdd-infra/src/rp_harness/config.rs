@@ -85,6 +85,38 @@ pub struct SafetyMonitorConfig {
     pub device_number: u32,
 }
 
+/// Switch equipment entry.
+#[derive(Debug, Clone)]
+pub struct SwitchConfig {
+    pub id: String,
+    pub alpaca_url: String,
+    pub device_number: u32,
+}
+
+/// Rotator equipment entry.
+#[derive(Debug, Clone)]
+pub struct RotatorConfig {
+    pub id: String,
+    pub alpaca_url: String,
+    pub device_number: u32,
+}
+
+/// ObservingConditions equipment entry.
+#[derive(Debug, Clone)]
+pub struct ObservingConditionsConfig {
+    pub id: String,
+    pub alpaca_url: String,
+    pub device_number: u32,
+}
+
+/// Dome equipment entry.
+#[derive(Debug, Clone)]
+pub struct DomeConfig {
+    pub id: String,
+    pub alpaca_url: String,
+    pub device_number: u32,
+}
+
 /// Planner target entry — emitted into rp's top-level `targets` array
 /// (rp.md § Target Definition; only the fields rp's
 /// `parse_targets_from_value` reads today).
@@ -207,6 +239,16 @@ pub struct RpConfigBuilder {
     pub focusers: Vec<FocuserConfig>,
     /// Safety monitors gating the session (see rp.md § Safety).
     pub safety_monitors: Vec<SafetyMonitorConfig>,
+    /// Switches — roster membership + connectivity status only (rp.md §
+    /// Equipment Integration); no MCP tool integration yet.
+    pub switches: Vec<SwitchConfig>,
+    /// Rotators — roster membership + connectivity status only.
+    pub rotators: Vec<RotatorConfig>,
+    /// ObservingConditions devices — roster membership + connectivity
+    /// status only.
+    pub observing_conditions: Vec<ObservingConditionsConfig>,
+    /// Domes — roster membership + connectivity status only.
+    pub domes: Vec<DomeConfig>,
     /// Override `safety.poll_interval` in the emitted rp config.
     /// `None` ⇒ rp's default (10 s). Safety scenarios pin this short
     /// (~250 ms) so unsafe/safe transitions are detected quickly.
@@ -285,6 +327,26 @@ impl RpConfigBuilder {
 
     pub fn add_safety_monitor(&mut self, sm: SafetyMonitorConfig) -> &mut Self {
         self.safety_monitors.push(sm);
+        self
+    }
+
+    pub fn add_switch(&mut self, switch: SwitchConfig) -> &mut Self {
+        self.switches.push(switch);
+        self
+    }
+
+    pub fn add_rotator(&mut self, rotator: RotatorConfig) -> &mut Self {
+        self.rotators.push(rotator);
+        self
+    }
+
+    pub fn add_observing_conditions(&mut self, oc: ObservingConditionsConfig) -> &mut Self {
+        self.observing_conditions.push(oc);
+        self
+    }
+
+    pub fn add_dome(&mut self, dome: DomeConfig) -> &mut Self {
+        self.domes.push(dome);
         self
     }
 
@@ -472,6 +534,54 @@ impl RpConfigBuilder {
             })
             .collect();
 
+        let switches: Vec<Value> = self
+            .switches
+            .iter()
+            .map(|sw| {
+                serde_json::json!({
+                    "id": sw.id,
+                    "alpaca_url": sw.alpaca_url,
+                    "device_number": sw.device_number,
+                })
+            })
+            .collect();
+
+        let rotators: Vec<Value> = self
+            .rotators
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "id": r.id,
+                    "alpaca_url": r.alpaca_url,
+                    "device_number": r.device_number,
+                })
+            })
+            .collect();
+
+        let observing_conditions: Vec<Value> = self
+            .observing_conditions
+            .iter()
+            .map(|oc| {
+                serde_json::json!({
+                    "id": oc.id,
+                    "alpaca_url": oc.alpaca_url,
+                    "device_number": oc.device_number,
+                })
+            })
+            .collect();
+
+        let domes: Vec<Value> = self
+            .domes
+            .iter()
+            .map(|d| {
+                serde_json::json!({
+                    "id": d.id,
+                    "alpaca_url": d.alpaca_url,
+                    "device_number": d.device_number,
+                })
+            })
+            .collect();
+
         let mut safety = serde_json::json!({});
         if let Some(poll) = self.safety_poll_interval {
             safety["poll_interval"] = serde_json::json!(format!("{}ms", poll.as_millis()));
@@ -520,7 +630,11 @@ impl RpConfigBuilder {
                 "focusers": focusers,
                 "filter_wheels": filter_wheels,
                 "cover_calibrators": cover_calibrators,
-                "safety_monitors": safety_monitors
+                "safety_monitors": safety_monitors,
+                "switches": switches,
+                "rotators": rotators,
+                "observing_conditions": observing_conditions,
+                "domes": domes
             },
             "plugins": self.plugin_configs,
             "targets": self

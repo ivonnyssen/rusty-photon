@@ -237,12 +237,8 @@ mod tests {
     async fn equipment_registry_surfaces_connected_mount_in_status_and_lookup() {
         let stub = spawn_stub(ok_mount_router()).await;
         let equipment_cfg = config::EquipmentConfig {
-            cameras: vec![],
             mount: Some(mount_config_for(&stub.url())),
-            focusers: vec![],
-            filter_wheels: vec![],
-            cover_calibrators: vec![],
-            safety_monitors: vec![],
+            ..Default::default()
         };
         let registry = EquipmentRegistry::new(&equipment_cfg).await;
 
@@ -313,12 +309,8 @@ mod tests {
 
     async fn registry_with_mount(stub_url: &str) -> EquipmentRegistry {
         let equipment_cfg = config::EquipmentConfig {
-            cameras: vec![],
             mount: Some(mount_config_for(stub_url)),
-            focusers: vec![],
-            filter_wheels: vec![],
-            cover_calibrators: vec![],
-            safety_monitors: vec![],
+            ..Default::default()
         };
         EquipmentRegistry::new(&equipment_cfg).await
     }
@@ -335,15 +327,7 @@ mod tests {
 
     #[tokio::test]
     async fn validate_site_no_op_when_mount_absent() {
-        let registry = EquipmentRegistry::new(&config::EquipmentConfig {
-            cameras: vec![],
-            mount: None,
-            focusers: vec![],
-            filter_wheels: vec![],
-            cover_calibrators: vec![],
-            safety_monitors: vec![],
-        })
-        .await;
+        let registry = EquipmentRegistry::new(&config::EquipmentConfig::default()).await;
         let site = config::SiteConfig {
             latitude_degrees: 47.6062,
             longitude_degrees: -122.3321,

@@ -672,11 +672,11 @@ MyWorld::cucumber()
     .after(/* ... */)
 ```
 
-If your scenarios start exercising additional device classes (dome,
-rotator, switch, observingconditions, safetymonitor — all of which
-expose the same `/restart` endpoint shape), add the corresponding
-helper call to `OmniSimHandle::reset_all_devices` so future
-contributors get the isolation for free.
+`OmniSimHandle::reset_all_devices` already covers every device class our
+BDD suites exercise today: telescope, camera, filter wheel, focuser, cover
+calibrator, safety monitor, switch, rotator, observing conditions, and dome.
+If a future device class exposes the same `/restart` endpoint shape, add its
+`reset_X` helper call there too so contributors get the isolation for free.
 
 **Why scenarios that touch OmniSim must serialize.** A `before(scenario)`
 reset that disconnects the shared simulator's devices is unsafe to

@@ -1358,14 +1358,12 @@ mod tests {
                 id: "main-cam".to_string(),
                 connected: true,
             }],
-            filter_wheels: vec![],
             cover_calibrators: vec![DeviceStatus {
                 id: "flat".to_string(),
                 connected: false,
             }],
-            focusers: vec![],
-            safety_monitors: vec![],
             mount: Some(MountStatus { connected: true }),
+            ..Default::default()
         }
     }
 

@@ -191,7 +191,7 @@ BFF serves every configured driver.
 | `GET`  | `/config/{service}/status` | HTMX poll target during reconnect: try `config.schema` + `config.get`; when the driver answers, swap in the refreshed form. Honours the same optional `?unlock=` query. |
 | `POST` | `/config/{service}/restart` | Ask Sentinel to restart the driver's process (`POST {sentinel}/api/services/{sentinel_service}/restart`); render the outcome (see [Restart via Sentinel](#restart-via-sentinel-post-configservicerestart)). |
 | `GET`  | `/equipment` | The [equipment page](#equipment-page-equipment): rp's roster with live connection LEDs, capability tiers, and add/edit/remove affordances. |
-| `GET`  | `/equipment/{kind}/new` | Schema-generated "add device" form for one equipment kind (`cameras`, `filter_wheels`, `cover_calibrators`, `focusers`, `safety_monitors`, `mount`). |
+| `GET`  | `/equipment/{kind}/new` | Schema-generated "add device" form for one equipment kind (`cameras`, `filter_wheels`, `cover_calibrators`, `focusers`, `safety_monitors`, `switches`, `rotators`, `observing_conditions`, `domes`, `mount`). |
 | `POST` | `/equipment/{kind}/new` | Insert the new entry into rp's config (`GET /api/config` → splice → `PUT /api/config`); render the roster with the apply outcome. |
 | `GET`  | `/equipment/{kind}/{id}/edit` | Edit form for one roster entry, prefilled from rp's config (the singular `mount` uses the fixed id `mount`). |
 | `POST` | `/equipment/{kind}/{id}/edit` | Replace that entry in rp's config and apply. |
@@ -357,7 +357,9 @@ locked/identity field that the user unlocked.
    entry, and the ASCOM device type from which array it sits in
    (`cameras`→`camera`, `filter_wheels`→`filterwheel`,
    `cover_calibrators`→`covercalibrator`, `focusers`→`focuser`,
-   `safety_monitors`→`safetymonitor`, `mount`→`telescope`). The BFF calls the
+   `safety_monitors`→`safetymonitor`, `switches`→`switch`, `rotators`→`rotator`,
+   `observing_conditions`→`observingconditions`, `domes`→`dome`,
+   `mount`→`telescope`). The BFF calls the
    device **without credentials** (rp redacts per-device auth, rightly), so a
    driver behind auth renders the transport-error banner with a hint to add a
    static `drivers` entry carrying credentials.

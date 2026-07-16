@@ -1768,6 +1768,10 @@ Supported ASCOM device types:
 | FilterWheel | Filter selection by position |
 | SafetyMonitor | Safety state polling |
 | CoverCalibrator | Dust cover control (open, close) and flat panel control (on, off, brightness) |
+| Switch | Roster membership and connectivity status only — no MCP tool integration yet |
+| Rotator | Roster membership and connectivity status only — no MCP tool integration yet |
+| ObservingConditions | Roster membership and connectivity status only — no MCP tool integration yet |
+| Dome | Roster membership and connectivity status only — no MCP tool integration yet |
 
 **Mount site properties.** On telescope connect, `rp` reads
 `SiteLatitude` and `SiteLongitude` to validate the configured `site`
@@ -3276,9 +3280,10 @@ implemented** — the router serves only the unmarked ones.
 
 #### Equipment
 - `GET /api/equipment` — live connection status per configured device. The
-  response mirrors the config's equipment shape: six fixed keys
+  response mirrors the config's equipment shape: ten fixed keys
   (`cameras`, `filter_wheels`, `cover_calibrators`, `focusers`,
-  `safety_monitors` — arrays of `{ "id", "connected" }` — and `mount`, a
+  `safety_monitors`, `switches`, `rotators`, `observing_conditions`,
+  `domes` — arrays of `{ "id", "connected" }` — and `mount`, a
   `{ "connected" }` object or `null`). The `id` is the operator-supplied
   config id; the mount is singular and has none. Device *addresses and
   settings* are not repeated here — they live in the config, readable via
@@ -3552,7 +3557,30 @@ return a structured "site not configured" error.
         "alpaca_url": "http://localhost:11125",
         "device_number": 0
       }
-    ]
+    ],
+    "switches": [
+      {
+        "id": "ppba",
+        "name": "Pegasus PPBA",
+        "alpaca_url": "http://localhost:11112",
+        "device_number": 0
+      }
+    ],
+    "rotators": [
+      {
+        "id": "falcon",
+        "alpaca_url": "http://localhost:11118",
+        "device_number": 0
+      }
+    ],
+    "observing_conditions": [
+      {
+        "id": "ppba-weather",
+        "alpaca_url": "http://localhost:11112",
+        "device_number": 0
+      }
+    ],
+    "domes": []
   },
   "guider": {
     "url": "http://localhost:11130",
@@ -4018,13 +4046,16 @@ Items explicitly out of scope for the initial implementation:
   plugins
 - **Multiple mounts** — the current design assumes one mount; extending to
   multiple mounts is a separate concern
-- **Dome control** — ASCOM Dome device integration
+- **Dome control** — the `domes` equipment kind covers roster membership and
+  connectivity status only (§ Equipment Integration); actual dome behavior
+  (open/close, sync-to-scope) is still out of scope
 - **Mosaic planning** — multi-panel target definitions
 - **Ambient-aware cooldown preflight** — skipping obviously unreachable
   cooler rungs (and warning early) from an ObservingConditions ambient
-  reading; needs an ObservingConditions equipment kind first. Ambient
-  stays a preflight optimization, never the rung decider (§ Camera
-  Cooling).
+  reading. The `observing_conditions` equipment kind (§ Equipment
+  Integration) now exists, satisfying the prerequisite; the preflight
+  feature itself is still out of scope. Ambient stays a preflight
+  optimization, never the rung decider (§ Camera Cooling).
 - **Abort-on-unreachable cooling** — an opt-in knob to end the session
   when no dark-library rung is reachable, instead of the default
   proceed-uncooled-with-warning (§ Camera Cooling).

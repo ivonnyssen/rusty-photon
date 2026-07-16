@@ -144,10 +144,31 @@ impl OmniSimHandle {
         Self::restart_device("safetymonitor", 0).await
     }
 
+    /// Reset the switch simulator device 0 to its OmniSim default state.
+    pub async fn reset_switch() -> Result<(), String> {
+        Self::restart_device("switch", 0).await
+    }
+
+    /// Reset the rotator simulator device 0 to its OmniSim default state.
+    pub async fn reset_rotator() -> Result<(), String> {
+        Self::restart_device("rotator", 0).await
+    }
+
+    /// Reset the observing-conditions simulator device 0 to its OmniSim
+    /// default state.
+    pub async fn reset_observing_conditions() -> Result<(), String> {
+        Self::restart_device("observingconditions", 0).await
+    }
+
+    /// Reset the dome simulator device 0 to its OmniSim default state.
+    pub async fn reset_dome() -> Result<(), String> {
+        Self::restart_device("dome", 0).await
+    }
+
     /// Reset every device class our BDD suites currently exercise
     /// (telescope, camera, filter wheel, focuser, cover calibrator,
-    /// safety monitor) to OmniSim defaults. Issued **sequentially** —
-    /// one PUT at a time.
+    /// safety monitor, switch, rotator, observing conditions, dome) to
+    /// OmniSim defaults. Issued **sequentially** — one PUT at a time.
     ///
     /// Why not parallel? OmniSim's `DriverManager.Load{Class}(n)`
     /// mutates a process-wide `static List<AlpacaConfiguredDevice>
@@ -178,9 +199,6 @@ impl OmniSimHandle {
     /// failure is fatal — that's the loud-reset behaviour from #172
     /// that catches state leakage between scenarios.
     ///
-    /// Other device classes (dome, rotator, switch, observingconditions)
-    /// also expose `/restart`, but our scenarios don't touch them yet;
-    /// add a call here when that changes.
     pub async fn reset_all_devices() -> Result<(), Vec<String>> {
         if OMNISIM.get().is_none() {
             return Ok(());
@@ -193,6 +211,10 @@ impl OmniSimHandle {
             Self::reset_focuser().await,
             Self::reset_cover_calibrator().await,
             Self::reset_safety_monitor().await,
+            Self::reset_switch().await,
+            Self::reset_rotator().await,
+            Self::reset_observing_conditions().await,
+            Self::reset_dome().await,
         ];
         for result in results {
             if let Err(e) = result {
