@@ -35,7 +35,7 @@ deliberately reusable so the deferred `release.yml` generalization
 | N2 | Fedora: `.rpm` build on both arches + Fedora lifecycle verify leg | **Done** (2026-07-13; rpms first published by that day's scheduled run) | PR #513 |
 | N3 | Windows: suite-MSI leg (strictly after W5 of [windows-packaging.md](windows-packaging.md)) | **Done** (2026-07-13; first MSI publish = next scheduled run, whose msi job skips the upgrade seed gracefully — the run after proves MSI-over-MSI) | PR #509 |
 | N4 | macOS: per-service arm64 tarballs + Homebrew tap channel + `verify-brew.sh` | **Done** (2026-07-13; first macOS publish = next scheduled run) | PR #519 |
-| N5 | Debian/Fedora package repositories: Cloudflare R2-hosted `apt`/`dnf` channels for the N1/N2 `.deb`/`.rpm` legs | Not started | |
+| N5 | Debian/Fedora package repositories: Cloudflare R2-hosted `apt`/`dnf` channels for the N1/N2 `.deb`/`.rpm` legs | **Done** (2026-07-15; first repo publish = the next scheduled run after merge) | PR #535 |
 
 N1 is the anchor (it builds the shared spine); N2, N3, N4 are mutually
 independent afterwards. N3 is gated only on W5; N4 has synergy with PR-7
@@ -662,6 +662,55 @@ the real resolver, not just that the files exist. This is the actual
 "does `apt upgrade` work" proof that today's manual curl-and-install
 testing never exercises.
 
+**As-built deltas.**
+
+- The publish push is a fourth script, `scripts/push-packages-repo.sh`
+  (thin-workflow-thick-script; the inline-step wording above undersold
+  it). Ordering as designed — content, metadata flip
+  (signature-before-signed within each pair), stale deletes — plus two
+  additions. First: wrangler has no `r2 object list`, so the listing is
+  itself a bucket object — `manifest.txt` (every live key; pre-written
+  as an old∪new union so an interrupted run leaves nothing unlisted).
+  Second: ordering alone cannot protect apt's *stable-named* index
+  files (a client holding the outgoing `InRelease` fetching a replaced
+  `Packages.gz` is a hash mismatch), so the tree publishes
+  content-addressed `by-hash/` index copies (`Acquire-By-Hash: yes` in
+  Release; apt fetches by the strongest listed hash — SHA512 on
+  current apt, verified against a live trixie client) and the pusher
+  retains the full previous generation for one publish
+  (`manifest-prev.txt`): unique-name objects live exactly two nights,
+  so metadata a client just read always resolves. dnf gets the same
+  guarantee for free (repodata blobs are hash-named natively).
+  Verified by a three-generation publish simulation against a stub
+  wrangler — which also caught a locale-mismatch bug (`LC_ALL=C sort`
+  vs plain `comm`) that would have killed the first real publish
+  mid-run.
+- Per-arch consumer proof: the runner's native arch gets the full
+  `apt-get install` / `dnf install`; the other arch is proven by
+  resolver + signed-checksum download (apt multi-arch
+  `apt-get download pkg:arm64`, dnf `download --forcearch`) — no
+  emulation, the foreign binary never executes, and per-arch
+  scriptlet/unit behavior is already covered arch-natively by
+  `verify-packages.sh` in the linux legs.
+- The fedora verify client bakes `systemd` into its image: the base
+  image ships none, the rpm `%post` calls `systemctl` (exit 127 when
+  absent), and dnf5 fails the whole transaction on a scriptlet 127 —
+  while every real Fedora host has systemd, where the offline
+  `systemctl enable` path succeeds.
+- Every object uploads with `Cache-Control: no-store`: Cloudflare's
+  default edge-cache extension list covers `.gz`, and a stale cached
+  `Packages.gz` against a freshly flipped `InRelease` is a client
+  hash-mismatch. Reads origin-pull from R2 (free egress, tiny
+  traffic); see tools/rusty-photon-packages-r2/README.md before ever
+  adding cache rules.
+- Both build scripts fingerprint-check the imported private key
+  against the committed `packaging/gpg/pubkey.asc` (`--pubkey`
+  overridable for local throwaway-key runs) and die on mismatch, so
+  secret/committed-key drift cannot ship an unverifiable tree.
+- `tools/rusty-photon-packages-r2/` is README-only: with no Worker
+  there is nothing to deploy, so no `wrangler.toml`; bucket + domain
+  are two one-time CLI commands documented there.
+
 ## Verification
 
 - Per-leg lifecycle gates (N1 `verify-packages.sh` both arches, N2 Fedora
@@ -683,6 +732,27 @@ testing never exercises.
     re-handshook against the live hardware, the gated services stayed
     gated, and the two units retry-looping on powered-off devices kept
     retry-looping. All service configs byte-identical across the upgrade.
+  - **N2 validated in a Fedora container 2026-07-15** (dev-box podman,
+    standing in for a Fedora host — the fleet has no Fedora hardware):
+    sentinel nightly→nightly, `0.1.0^20260714.g6b8a1c6-1` →
+    `0.1.0^20260715.gb72dc63-1`, via the documented consumer path
+    (`SHA256SUMS.txt` → `curl` → `sha256sum -c` → `dnf install`). The
+    running unit restarted onto the new binary (`try-restart` postun:
+    new MainPID, active), stayed **enabled** — the `$1` scriptlet
+    guards held, no stop/disable from the outgoing `%preun` — config
+    byte-identical, `/health` 200.
+  - **N3 MSI-over-MSI proven by the 2026-07-15 scheduled run** (the
+    first with a published-MSI seed): the msi job pulled the prior
+    nightly MSI (`…20260714.g6b8a1c6`) and `verify-msi.ps1
+    -UpgradeFrom` installed it, then the fresh `…20260715.gb72dc63`
+    over it — upgrade OK, single ARP entry, every service class green
+    post-upgrade. This proof now recurs on every scheduled run; a
+    manual pass on a long-lived Windows box stays optional.
+- N5 real-machine validation (once the first repo publish lands): point
+  a Debian machine at the apt repo and a Fedora machine at the dnf repo
+  per docs/packaging.md#nightly-channel, then take a nightly→nightly
+  step via plain `apt upgrade` / `dnf upgrade` — and record results
+  here.
 - The skip-if-unchanged path and the failure-tracking issue get exercised
   naturally within the first week of N1 being live; confirm both behaved
   and note it here.
@@ -738,32 +808,33 @@ testing never exercises.
       `brew services restart rusty-photon-<svc>` slots in (documented in
       docs/packaging-macos.md); live validation rides the first
       physical-Mac pass (Verification).
-- [ ] (N5) R2 custom-domain public-bucket provisioning mechanics via
-      `wrangler` (exact CLI/API surface — confirm during
-      implementation; the cache Worker's `routes` block is the closest
-      existing precedent but attaches a domain to a *Worker*, not to a
-      bucket directly).
-- [ ] (N5) Whether `apt-ftparchive release` alone is sufficient for the
-      `Release` file or a hand-rolled generator is cleaner given the
-      small, fixed `Components`/`Architectures` set — prototype before
-      committing, the way N0 prototyped the version dialects.
-- [ ] (N5) Per-*package* signing (`rpm --addsign`, `dpkg-sig`/`debsign`)
-      in addition to metadata signing — likely unnecessary, since the
-      signed `Release`/`repomd.xml` already covers package integrity via
-      embedded checksums, but worth a sanity check once real clients
-      consume the channel.
-- [ ] (N5) Whether apt's `signed-by=` wants `pubkey.asc` as-is or a
-      dearmored binary keyring — some apt versions expect the latter for
-      `Signed-By:`/`signed-by=`, which would mean a `gpg --dearmor` step
-      producing a second served file rather than the single armored
-      `pubkey.asc` described above; confirm against a real `apt update`
-      in `verify-packages-repo.sh` before committing to one file.
-- [ ] (N5) The exact `wrangler`/R2 mechanism for identifying and
-      deleting the now-stale objects under `deb/`/`rpm/` *after* the new
-      metadata is live — a pre-upload `wrangler r2 object list` snapshot
-      diffed against the freshly built tree (so only truly superseded
-      keys are pruned), per-object delete looped over the result, or an
-      equivalent bulk operation; confirm during implementation.
+- [x] (N5) R2 custom-domain public-bucket provisioning mechanics via
+      `wrangler` — first-class CLI since wrangler 4.x:
+      `wrangler r2 bucket create` + `wrangler r2 bucket domain add
+      <bucket> --domain … --zone-id …` (no Worker, no `routes` block);
+      documented in tools/rusty-photon-packages-r2/README.md.
+- [x] (N5) `apt-ftparchive release` alone **is** sufficient: the
+      `-o APT::FTPArchive::Release::{Origin,Label,Suite,Codename,Components,Architectures}`
+      options render exactly the small fixed header plus the hash
+      blocks; no hand-rolled generator (proven in the implementation
+      spike against a real trixie client).
+- [x] (N5) Per-*package* signing is unnecessary, now proven rather than
+      presumed: tamper tests against real clients showed a modified
+      pool `.deb` refused by apt (hash mismatch vs the signed Release
+      chain) and a modified `repomd.xml` refused by dnf (bad PGP
+      signature) — the signed metadata covers package integrity end to
+      end. `gpgcheck=0` + `repo_gpgcheck=1` stays the documented client
+      config.
+- [x] (N5) apt's `signed-by=` accepts the **armored** `pubkey.asc`
+      as-is on trixie (apt ≥ 2.4) — one armored file everywhere, no
+      `gpg --dearmor` step, verified by `verify-packages-repo.sh`'s
+      real `apt update` in the spike and in every repo-job run since.
+- [x] (N5) Stale-object deletion: wrangler (4.94) has **no
+      `r2 object list`**, so `push-packages-repo.sh` maintains a
+      `manifest.txt` object on the bucket — the previous publish's key
+      listing, diffed against the freshly built tree; per-key tolerant
+      deletes after the metadata flip, manifest written last, so an
+      interrupted publish self-heals on the next run.
 
 ## Future considerations
 

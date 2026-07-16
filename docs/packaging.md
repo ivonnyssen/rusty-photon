@@ -101,7 +101,10 @@ and the macOS arm64 tarballs with their regenerated `-nightly` Homebrew
 formulas ([docs/packaging-macos.md](packaging-macos.md#nightly-channel))
 — all-or-nothing across the legs, so the release is always one coherent
 commit with a complete asset set. There is one release and one tag;
-assets are replaced on each publish, with no dated history.
+assets are replaced on each publish, with no dated history. The same
+debs and rpms are additionally published as a real `apt`/`dnf`
+repository (see [Package repositories](#package-repositories-recommended)
+below), which is the recommended way to consume the channel on Linux.
 
 Nightly debs carry the version `<base>+nightly.<date>.g<sha>` (e.g.
 `0.1.0+nightly.20260712.gba09dc9`), which dpkg sorts above the plain
@@ -116,6 +119,59 @@ to `.` in uploaded asset names, so the *file* is called
 `…-0.1.0.<date>.g<sha>-1.<arch>.rpm` while `rpm -q` after install shows
 the true `^` version. `SHA256SUMS.txt` lists the dot-rendered names, so
 checksums verify against the files as downloaded.
+
+### Package repositories (recommended)
+
+The channel is also served as a real `apt`/`dnf` repository at
+`pkg.rustyphoton.space` (a Cloudflare R2 public bucket;
+tools/rusty-photon-packages-r2/README.md documents the hosting), so a
+machine set up once picks every nightly up with plain
+`apt upgrade` / `dnf upgrade`. The repository is rolling-only — exactly
+one version, the current nightly; the GitHub release assets below stay
+as the manual path (and the downgrade/rollback path).
+
+Clients verify the repo metadata against the signing key; its
+fingerprint is
+
+```
+C2BE 1E02 D49E 111B 6BEC  2882 51AA 3DE5 44C0 0B8F
+```
+
+(the same key as `packaging/gpg/pubkey.asc` in this repo — compare
+before trusting the downloaded copy).
+
+Debian-family:
+
+```sh
+sudo install -d /etc/apt/keyrings
+sudo curl -fsSLo /etc/apt/keyrings/rusty-photon.asc https://pkg.rustyphoton.space/pubkey.asc
+echo "deb [signed-by=/etc/apt/keyrings/rusty-photon.asc] https://pkg.rustyphoton.space/deb nightly main" \
+    | sudo tee /etc/apt/sources.list.d/rusty-photon-nightly.list
+sudo apt update
+sudo apt install rusty-photon-<svc>     # thereafter: plain `apt upgrade`
+```
+
+Fedora:
+
+```sh
+sudo tee /etc/yum.repos.d/rusty-photon-nightly.repo <<'EOF'
+[rusty-photon-nightly]
+name=Rusty Photon nightly
+baseurl=https://pkg.rustyphoton.space/rpm/$basearch/
+enabled=1
+repo_gpgcheck=1
+gpgcheck=0
+gpgkey=https://pkg.rustyphoton.space/pubkey.asc
+EOF
+sudo dnf install rusty-photon-<svc>     # thereafter: plain `dnf upgrade`
+```
+
+`repo_gpgcheck=1` is what makes dnf verify the repo signature at all
+(dnf imports the key on first contact — check the fingerprint it shows
+against the one above); `gpgcheck=0` because individual packages carry
+no signature — the signed metadata's checksums cover them.
+
+### Manual asset download
 
 Filenames change nightly (they carry the version), so use
 `SHA256SUMS.txt` — the one asset with a stable URL — as the index:
