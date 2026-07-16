@@ -27,11 +27,11 @@ rather than a component of them.
 | D0 | This plan + [ADR-016](../decisions/016-service-config-ownership-and-doctor.md) (config ownership + the SDK line) | Open | #539 |
 | D1 | Extract shared `ServerConfig`; 13 definitions → 1; TLS/auth for the 5 services that lack it | Not started | |
 | D2 | `rusty-photon-doctor` binary: catalog + service-config diagnosis (read-only) | Not started | |
-| D3 | `--fix`; doctor owns ui-htmx's `drivers` map | Not started | |
+| D3 | `--fix`; ui-htmx sources from rp's roster (its `drivers` map becomes an empty-by-default override) | Not started | |
 | D3s | Sentinel discovers its services; delete the `services` map; policy → constants (needs the privilege path first) | Not started | |
 | D4 | `rusty-photon-doctor-checks` crate + generic hardware checks (no SDK) | Not started | |
 | D5 | Per-service `doctor` subcommand + aggregation | Not started | |
-| D6 | Move the TLS lifecycle `rp` → doctor; split `rp-tls`; certs to `~/.config/rusty-photon/pki`; doctor generates certs + writes TLS-on config | Not started | |
+| D6 | Move the TLS + credential lifecycle `rp` → doctor; split `rp-tls`; certs to `~/.config/rusty-photon/pki`; doctor generates certs + mints one credential + writes TLS-on/auth-on config | Not started | |
 | D7 | Packaging, install-flow docs, on-rig verification | Not started | |
 
 ## Decisions (fixed — see [ADR-016](../decisions/016-service-config-ownership-and-doctor.md) for rationale)
@@ -144,16 +144,16 @@ see Flagged unknowns). Every service embeds it. Three consequences:
   consumes `ClientAuthConfig` outbound (`config.rs:90,114`) but exposes no
   inbound auth.
 
-  **Absent `tls` still means plain HTTP**, so D1 stays a pure
-  no-behaviour-change refactor. TLS arrives in D6 via doctor's *generated
-  config*, not via the serde default — see ADR-016 decision 10(d) for why that
-  distinction is load-bearing.
+  **Absent `tls`/`auth` still means plain, unauthenticated HTTP**, so D1 stays
+  a pure no-behaviour-change refactor. Both arrive in D6 via doctor's
+  *generated config*, not via the serde default — see ADR-016 decision 10(d)
+  for why that distinction is load-bearing.
 
   This **supersedes [#524](https://github.com/ivonnyssen/rusty-photon/issues/524)**
-  on mechanism while agreeing with its goal. Its premise was false: it assumes
-  every service has a `tls` knob whose default needs flipping, but for these
-  four Alpaca drivers the field is **absent**, and #524 names only ui-htmx as
-  lacking support.
+  and adopts both its transport and auth halves. Its premise was false: it
+  assumes every service has a `tls` knob whose default needs flipping, but for
+  these four Alpaca drivers the field is **absent**, and #524 names only ui-htmx
+  as lacking support.
 - **The bind-address naming split resolves.** `bind_address` (rp),
   `bind` (ui-htmx), absent-and-hardcoded (the other 11).
 - **Doctor becomes possible.** One shape to parse out of 18 files.
@@ -218,21 +218,26 @@ What D2 diagnoses — all service-level, zero device knowledge:
 
 D2 is read-only. It reports and suggests; it writes nothing.
 
-### D3 — `--fix`, and ui-htmx's `drivers` map
+### D3 — `--fix`, and ui-htmx sourcing from rp
 
-Doctor owns **ui-htmx's `drivers` map** outright: pure service facts (name,
-URL, credentials) that are copies of what the catalog already knows. ui-htmx is
-not same-host-bound and cannot read anyone's config dir, so its targets stay a
-written artifact — but machine-written rather than hand-written.
+ui-htmx's source of truth is **rp's roster**, which it already derives at
+runtime; the target keeps only that (ADR-016 decision 9). Its own config
+shrinks to its listening port and where rp is (`localhost` by default on the
+single box). The static `drivers` map survives only as an optional override —
+a third-party device rp does not manage, or a driver given a separate
+credential — empty for a stock rig, and `--fix` leaves it that way.
 
-`rp.json`'s `equipment[].alpaca_url` is the remaining copy and stays
-operator-facing: it lives inside the device-usage block, and doctor does not
-cross that line. rp is not same-host-bound either. Doctor *checks* it (is the
-port real, does a service listen there) but does not own it.
+The liveness objection ("if rp is down the UI goes blind") dissolves against
+the recovery model: when rp will not start you `ssh` in and run `doctor`, you
+do not reach for the browser, so a blind UI during an rp outage costs nothing.
+The three forces that used to require a static map — auth redaction, devices rp
+could not model, restart wiring — are gone (doctor mints ui-htmx's credential
+per D6, #534 adds the device kinds, D3s removes `sentinel_service`).
 
-That reframes the goal deliberately: **the enemy is hand-maintained
-duplication, not duplication on disk.** Copies a machine writes and verifies
-are not what bites operators.
+`rp.json`'s `equipment[].alpaca_url` is the operator-facing copy and stays
+inside the device-usage block doctor does not cross. Doctor *checks* it (is the
+port real, does a service listen there) but does not own it. The enemy is
+**hand-maintained** duplication, not duplication on disk.
 
 Sentinel is deliberately **not** in this phase — see D3s, where its map is
 deleted rather than generated.
@@ -304,10 +309,10 @@ what the constants encode, and no-recovery-notification is untouched.
 **D1 is a hard prerequisite**, not just for doctor: sentinel reading
 `<svc>.json` for a port only works once `ServerConfig` is one shared type.
 
-### D6 — the TLS lifecycle moves to doctor
+### D6 — the TLS and credential lifecycle moves to doctor
 
-Runs after D2 (doctor exists, catalog derived) and D1 (every service has a
-`tls` field). Four moves, per ADR-016 decision 10:
+Runs after D2 (doctor exists, catalog derived) and D1 (every service has `tls`
+and `auth` fields). Per ADR-016 decision 10:
 
 **Split `rp-tls`.** The serving half (`server`, `client`, `config`,
 `permissions`, `error`) stays a dependency of all 18 services. The
@@ -338,11 +343,20 @@ covers; keys stay 0600 and owned by `rusty-photon`.
 and renewal. `rp`'s `acme_setup.feature` / `tls_setup.feature` and
 `bdd-infra`'s one-shot command tests (`lib.rs:1199`) move with it.
 
-Then `doctor --fix` generates certs and writes `tls` on for every service it
-wires. **Absent `tls` still means plain HTTP** — see decision 10(d): packages
-start services at install, before any doctor run, so a serde default of "on"
-would strand every fresh install without certs, and would break every BDD and
-ConformU test that hand-writes a config omitting `tls`
+**Credentials too.** D6 also mints one observatory credential and distributes
+it (ADR-016 decision 10(e)): the Argon2id hash into each service's
+`server.auth`, the plaintext into each client's auth block. `rp hash-password`
+moves here from rp along with `init-tls`. Because doctor generates the
+credential it holds the plaintext at mint time, so it writes every copy in the
+right form — which is what makes the auth-on default machine-maintained rather
+than a hand-typed sprawl.
+
+Then `doctor --fix` generates certs + the credential and writes `tls` and
+`auth` on for every service it wires. **Absent `tls`/`auth` still means plain,
+unauthenticated HTTP** — see decision 10(d): packages start services at
+install, before any doctor run, so a serde default of "on" would strand every
+fresh install without certs and credentials, and would break every BDD and
+ConformU test that hand-writes a config omitting them
 (`services/ppba-driver/tests/conformu_integration.rs:79`).
 
 ### D4/D5 — hardware checks, and why the SDK line is not a judgment call
@@ -467,10 +481,13 @@ permissive in both directions across the binary boundary.
     possible. Restarting is far simpler and may be enough given renewal is
     quarterly and can be scheduled for daylight — but it must never fire
     mid-exposure.
-- **Does `rp hash-password` follow the TLS commands into doctor (D6)?** It is
-  auth rather than TLS, but by the same reasoning — credential material is
-  service config, and rp is an arbitrary host for the command — it probably
-  belongs there too. Deciding it with D6 avoids moving it twice.
+- **Credential rotation and recovery UX (D6).** With auth on by default and one
+  minted credential, the open questions are operational, not architectural:
+  `doctor auth rotate` re-runs distribution, but what restarts the services to
+  pick up a new `server.auth` (the same swap question as cert renewal — restart
+  via sentinel vs in-process reload), and how an operator who forgets the
+  credential recovers (re-mint via `doctor`, same as any won't-authenticate
+  case). Settle alongside the renewal swap decision.
 - **Where the shared `ServerConfig` lives (D1).** A new `rp-server-config`
   crate, or a module in an existing shared crate. `rp-tls` and `rp-auth` are
   already the homes of the types it embeds; a new crate may be cleaner than
