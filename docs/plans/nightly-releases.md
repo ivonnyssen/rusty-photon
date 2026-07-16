@@ -35,7 +35,7 @@ deliberately reusable so the deferred `release.yml` generalization
 | N2 | Fedora: `.rpm` build on both arches + Fedora lifecycle verify leg | **Done** (2026-07-13; rpms first published by that day's scheduled run) | PR #513 |
 | N3 | Windows: suite-MSI leg (strictly after W5 of [windows-packaging.md](windows-packaging.md)) | **Done** (2026-07-13; first MSI publish = next scheduled run, whose msi job skips the upgrade seed gracefully — the run after proves MSI-over-MSI) | PR #509 |
 | N4 | macOS: per-service arm64 tarballs + Homebrew tap channel + `verify-brew.sh` | **Done** (2026-07-13; first macOS publish = next scheduled run) | PR #519 |
-| N5 | Debian/Fedora package repositories: Cloudflare R2-hosted `apt`/`dnf` channels for the N1/N2 `.deb`/`.rpm` legs | **Done** (2026-07-15; first repo publish = the next scheduled run after merge) | PR #535 |
+| N5 | Debian/Fedora package repositories: Cloudflare R2-hosted `apt`/`dnf` channels for the N1/N2 `.deb`/`.rpm` legs | **Done** (2026-07-15; first publish landed 2026-07-16 via PR #547's S3-API auth fix) | PRs #535, #547 |
 
 N1 is the anchor (it builds the shared spine); N2, N3, N4 are mutually
 independent afterwards. N3 is gated only on W5; N4 has synergy with PR-7
@@ -781,6 +781,27 @@ testing never exercises.
   per docs/packaging.md#nightly-channel, then take a nightly→nightly
   step via plain `apt upgrade` / `dnf upgrade` — and record results
   here.
+  - **First repo publish landed 2026-07-16** (workflow_dispatch run
+    after the PR #547 S3-API auth fix; merge commit `5f506ab`): the
+    pusher took the first-publish path (both manifests genuinely
+    absent), published 100 objects, nothing stale to delete. Live
+    surface verified: the served `pubkey.asc` fingerprint matches the
+    committed `packaging/gpg/pubkey.asc`, `InRelease` is clearsigned
+    and advertises `Acquire-By-Hash: yes`, and the last untested
+    seam — `+` in R2 object keys via the custom domain — is closed
+    (pool-deb URLs return 200 both literal and `%2B`-encoded).
+  - **Live-client installs proven the same day** (podman containers on
+    the dev box, documented consumer path, public key only): a
+    `debian:trixie` client verified `InRelease` through the
+    `signed-by=` keyring and installed sentinel
+    `0.1.0+nightly.20260716.g5f506ab` from the pool; a Fedora 44
+    client with `repo_gpgcheck=1` built its cache against the signed
+    `repomd.xml` and installed `0.1.0^20260716.g5f506ab-1`, unit
+    coming out `enabled` (offline enable — the `$1` guards). Still
+    pending: the nightly→nightly step via plain `apt upgrade` /
+    `dnf upgrade` once the next scheduled publish provides a second
+    generation; proof containers `rp-repo-proof-apt` /
+    `rp-repo-proof-dnf` stand seeded at `20260716.g5f506ab` for it.
 - The skip-if-unchanged path and the failure-tracking issue get exercised
   naturally within the first week of N1 being live; confirm both behaved
   and note it here.
