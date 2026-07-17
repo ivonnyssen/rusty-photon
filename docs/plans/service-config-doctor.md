@@ -24,8 +24,8 @@ doctor *out* of the services rather than a component of them.
 
 | Phase | Description | Status | Branch / PR |
 |-------|-------------|--------|-------------|
-| D0 | This plan + [ADR-016](../decisions/016-service-config-ownership-and-doctor.md) (config ownership + the SDK line) | Open | #539 |
-| D1 | `rusty-photon-server-config` (core + Alpaca shapes); all 18 services adopt; TLS/auth for the 9 that lack it; `bind_address` everywhere (default `0.0.0.0`); per-service TLS+auth smoke scenarios | Open | #549 |
+| D0 | This plan + [ADR-016](../decisions/016-service-config-ownership-and-doctor.md) (config ownership + the SDK line) | Merged | #539 |
+| D1 | `rusty-photon-server-config` (core + Alpaca shapes); all 18 services adopt; TLS/auth for the 9 that lack it; `bind_address` everywhere (default `0.0.0.0`); per-service TLS+auth smoke scenarios | Merged | #549 |
 | D2 | `rusty-photon-doctor` binary: catalog + service-config diagnosis (read-only) | Not started | |
 | D3 | `--fix`; ui-htmx sources from rp's roster (its `drivers` map becomes an empty-by-default override) | Not started | |
 | D3s | Sentinel discovers its services; delete the `services` map; policy → constants (privilege path shipped — polkit rule in the sentinel packages) | Not started | |
