@@ -27,6 +27,21 @@ pub struct DoctorWorld {
     pub last_check: Option<serde_json::Value>,
     /// What each config file was staged with, for is-unchanged assertions.
     pub staged: std::collections::HashMap<String, String>,
+    /// pki file bytes snapshotted by the "has already run" givens, for
+    /// unchanged/changed assertions after a second provisioning run.
+    pub pki_staged: std::collections::HashMap<String, Vec<u8>>,
+    /// The ACME flag values the last `tls issue --acme` run passed, so the
+    /// acme.json content assertions have expected values.
+    pub acme_flags: Option<AcmeFlags>,
+    /// HTTP status captured by the TLS roundtrip steps.
+    pub tls_https_status: Option<u16>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AcmeFlags {
+    pub domain: String,
+    pub email: String,
+    pub dns_provider: String,
 }
 
 impl DoctorWorld {
@@ -47,11 +62,40 @@ impl DoctorWorld {
             report: None,
             last_check: None,
             staged: std::collections::HashMap::new(),
+            pki_staged: std::collections::HashMap::new(),
+            acme_flags: None,
+            tls_https_status: None,
         }
     }
 
     pub fn config_dir(&self) -> PathBuf {
         self.temp.path().join("config")
+    }
+
+    pub fn pki_dir(&self) -> PathBuf {
+        self.config_dir().join("pki")
+    }
+
+    /// The credential plaintext from the canonical pki copy.
+    pub fn credential(&self) -> String {
+        std::fs::read_to_string(self.pki_dir().join("credential"))
+            .expect("pki/credential exists")
+            .trim()
+            .to_string()
+    }
+
+    /// Snapshot every pki file's bytes for unchanged/changed assertions.
+    pub fn snapshot_pki(&mut self) {
+        self.pki_staged.clear();
+        let dir = self.pki_dir();
+        let entries = std::fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("pki dir missing at snapshot time: {e}"));
+        for entry in entries {
+            let entry = entry.expect("pki dir entry");
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let bytes = std::fs::read(entry.path()).expect("pki file readable");
+            self.pki_staged.insert(name, bytes);
+        }
     }
 
     pub fn write_config(&mut self, name: &str, content: &str) {
@@ -121,6 +165,34 @@ impl DoctorWorld {
             None
         };
         self.output = Some(output);
+    }
+
+    /// Run the doctor binary with a subcommand (`tls issue`, `auth rotate`,
+    /// …) against the staged config dir and facts. The global
+    /// `--config-dir`/`--platform-facts` flags precede the subcommand.
+    pub fn run_doctor_subcommand(&mut self, subcommand_args: &[&str], stdin: Option<&[u8]>) {
+        let facts_path = self.temp.path().join("facts.json");
+        std::fs::write(
+            &facts_path,
+            serde_json::to_string(&self.facts).expect("facts serialize"),
+        )
+        .expect("facts file");
+        let config_dir = self.config_dir().to_str().expect("utf8 path").to_string();
+        let facts_path = facts_path.to_str().expect("utf8 path").to_string();
+        let mut args = vec![
+            "--config-dir",
+            config_dir.as_str(),
+            "--platform-facts",
+            facts_path.as_str(),
+        ];
+        args.extend_from_slice(subcommand_args);
+        self.output = Some(bdd_infra::run_once("doctor", &args, stdin));
+        self.report = None;
+    }
+
+    pub fn stderr(&self) -> String {
+        String::from_utf8_lossy(&self.output.as_ref().expect("run doctor first").stderr)
+            .into_owned()
     }
 
     pub fn report(&self) -> &serde_json::Value {

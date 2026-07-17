@@ -161,6 +161,8 @@ rust_test(
     deps = [
         ":doctor_lib",
         "//crates/bdd-infra",
+        "//crates/rp-auth",
+        "//crates/rp-tls",
     ] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
         normal = True,
         normal_dev = True,
