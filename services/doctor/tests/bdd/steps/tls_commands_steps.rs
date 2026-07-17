@@ -229,18 +229,26 @@ fn acme_staging_true(world: &mut DoctorWorld, _name: String) {
 // ---------------------------------------------------------------------------
 
 #[when(expr = "a test HTTPS server is started with the {string} certificate")]
-fn start_test_https_server(_world: &mut DoctorWorld, _service: String) {
-    // Combined with the connect step below, where the server and client
-    // live in one async scope.
+fn start_test_https_server(world: &mut DoctorWorld, service: String) {
+    // Records the service whose cert pair the connect step below serves —
+    // server and client live in one async scope there.
+    world.tls_roundtrip_service = Some(service);
 }
 
 #[when("a client connects using the generated CA certificate")]
 async fn client_connects_with_ca(world: &mut DoctorWorld) {
+    let service = world
+        .tls_roundtrip_service
+        .clone()
+        .expect("no service recorded — missing the HTTPS-server step?");
     let pki = world.pki_dir();
     let tls_config = rusty_photon_tls::config::TlsConfig {
-        cert: pki.join("ppba-driver.pem").to_string_lossy().into_owned(),
+        cert: pki
+            .join(format!("{service}.pem"))
+            .to_string_lossy()
+            .into_owned(),
         key: pki
-            .join("ppba-driver-key.pem")
+            .join(format!("{service}-key.pem"))
             .to_string_lossy()
             .into_owned(),
     };

@@ -291,17 +291,34 @@ impl SentinelBuilder {
         // The discovery loop (registry upkeep + universal health
         // supervision) is appended after the DI override so injecting custom
         // event monitors never silently disables supervision. With the
-        // doctor-written `service_auth` credential set, probes authenticate
-        // (HTTP Basic) and verify TLS against `ca_cert` — credentials never
-        // ride an unverified connection. Without it, probes send no
-        // credentials and never parse the body, and sentinel cannot assume
-        // it holds a CA for every peer's self-signed certificate, so the
-        // probe client skips certificate verification. If the intended
-        // client cannot be built, fall back to the shared (verifying)
-        // client loudly — self-signed TLS peers would then probe as down.
-        let probe_http: Arc<dyn io::HttpClient> = match &config.service_auth {
-            Some(auth) => match ReqwestHttpClient::with_auth(
-                ca_path.as_deref(),
+        // doctor-written `service_auth` credential set AND a `ca_cert` to
+        // verify peers against, probes authenticate (HTTP Basic, https
+        // requests only — see `ReqwestHttpClient`) — credentials never ride
+        // an unverified or unencrypted connection. `service_auth` without
+        // `ca_cert` cannot honor that rule (system roots reject self-signed
+        // peers, probing them as down), so it degrades to the
+        // unauthenticated path with a loud warning. Unauthenticated probes
+        // send no credentials and never parse the body, and sentinel cannot
+        // assume it holds a CA for every peer's self-signed certificate, so
+        // that client skips certificate verification; auth-on peers answer
+        // 401, which is still proof of life. If the intended client cannot
+        // be built, fall back to the shared (verifying) client loudly —
+        // self-signed TLS peers would then probe as down.
+        let insecure_probe_client = || -> Arc<dyn io::HttpClient> {
+            match ReqwestHttpClient::insecure() {
+                Ok(client) => Arc::new(client),
+                Err(e) => {
+                    tracing::error!(
+                        "{e}; probing through the shared verifying client — \
+                         self-signed TLS peers may report down"
+                    );
+                    Arc::clone(&http)
+                }
+            }
+        };
+        let probe_http: Arc<dyn io::HttpClient> = match (&config.service_auth, ca_path.as_deref()) {
+            (Some(auth), Some(ca)) => match ReqwestHttpClient::with_auth(
+                Some(ca),
                 auth.username.clone(),
                 auth.password.clone(),
             ) {
@@ -315,16 +332,17 @@ impl SentinelBuilder {
                     Arc::clone(&http)
                 }
             },
-            None => match ReqwestHttpClient::insecure() {
-                Ok(client) => Arc::new(client),
-                Err(e) => {
-                    tracing::error!(
-                        "{e}; probing through the shared verifying client — \
-                         self-signed TLS peers may report down"
-                    );
-                    Arc::clone(&http)
-                }
-            },
+            (Some(_), None) => {
+                tracing::warn!(
+                    "service_auth is set but ca_cert is not — probing unauthenticated \
+                     with certificate verification off so the credential never rides \
+                     an unverified connection; auth-on peers answer 401 (still proof \
+                     of life). Set ca_cert to authenticate probes (doctor --fix \
+                     writes both)"
+                );
+                insecure_probe_client()
+            }
+            (None, _) => insecure_probe_client(),
         };
         let supervision = DiscoverySupervisor::new(
             Arc::clone(&manager),

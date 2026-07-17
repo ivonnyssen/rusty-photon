@@ -35,6 +35,8 @@ pub struct DoctorWorld {
     pub acme_flags: Option<AcmeFlags>,
     /// HTTP status captured by the TLS roundtrip steps.
     pub tls_https_status: Option<u16>,
+    /// The service whose cert pair the TLS roundtrip serves.
+    pub tls_roundtrip_service: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -65,6 +67,7 @@ impl DoctorWorld {
             pki_staged: std::collections::HashMap::new(),
             acme_flags: None,
             tls_https_status: None,
+            tls_roundtrip_service: None,
         }
     }
 
