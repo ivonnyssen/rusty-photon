@@ -11,6 +11,7 @@ members = [
   "crates/rp-plate-solver",
   "crates/rp-tls",
   "crates/rusty-photon-config",
+  "crates/rusty-photon-doctor-checks",
   "crates/rusty-photon-driver",
   "crates/rusty-photon-i18n",
   "crates/rusty-photon-i18n-derive",
@@ -173,6 +174,7 @@ cargo-husky = { version = "1", default-features = false, features = [
 rusty-photon-i18n = { path = "crates/rusty-photon-i18n" }
 rusty-photon-i18n-derive = { path = "crates/rusty-photon-i18n-derive" }
 rusty-photon-config = { path = "crates/rusty-photon-config" }
+rusty-photon-doctor-checks = { path = "crates/rusty-photon-doctor-checks" }
 rusty-photon-driver = { path = "crates/rusty-photon-driver" }
 rusty-photon-server-config = { path = "crates/rusty-photon-server-config" }
 rusty-photon-service-lifecycle = { path = "crates/rusty-photon-service-lifecycle" }

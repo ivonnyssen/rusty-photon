@@ -149,5 +149,13 @@ mod doctor_toml_parity {
         let meta = parse(include_str!("../pkg/doctor.toml")).unwrap();
         assert_eq!(meta.port, Config::default().server.port);
         assert_eq!(meta.class, ServerClass::Alpaca);
+
+        // Vendor-only USB identity (any ZWO device); pins the file
+        // against edits. No serial device — the SDK owns the USB link.
+        assert!(meta.serial.is_none());
+        let usb = meta.usb.unwrap();
+        assert_eq!(usb.vendor, "03c3");
+        assert_eq!(usb.product, None);
+        assert_eq!(usb.model, None);
     }
 }
