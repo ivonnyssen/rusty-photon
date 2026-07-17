@@ -306,6 +306,16 @@ pub fn derive_probe(config_dir: &Path, service: &str) -> Option<ProbeSpec> {
             return None;
         }
     };
+    if server.port == 0 {
+        // Port 0 means OS-assigned at bind: the actual port is unknowable
+        // from the config, and probing :0 would report a healthy service as
+        // down forever.
+        debug!(
+            "{} binds an ephemeral port; probe not derivable",
+            path.display()
+        );
+        return None;
+    }
     let scheme = if server.tls.is_some() {
         "https"
     } else {
@@ -630,13 +640,18 @@ impl ServiceManager for StubServiceManager {
                 "stub restart of `{unit}` scripted to fail"
             )));
         }
-        let log = self.dir.join("restarts.log");
-        let mut content = std::fs::read_to_string(&log).unwrap_or_default();
-        content.push_str(unit);
-        content.push('\n');
-        std::fs::write(&log, content).map_err(|e| {
-            crate::SentinelError::Monitor(format!("stub restarts.log write failed: {e}"))
-        })?;
+        // Appended, not read-modify-written: concurrent restarts of two
+        // different units (two supervisors, or the ladder racing the REST
+        // endpoint) must never clobber each other's log lines.
+        use std::io::Write as _;
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.dir.join("restarts.log"))
+            .and_then(|mut log| writeln!(log, "{unit}"))
+            .map_err(|e| {
+                crate::SentinelError::Monitor(format!("stub restarts.log write failed: {e}"))
+            })?;
         if !self.dir.join(format!("stuck-{unit}")).exists() {
             self.set_unit_state(unit, "running");
         }
@@ -834,6 +849,15 @@ mod tests {
         assert!(derive_probe(dir.path(), "portless").is_none());
         std::fs::write(dir.path().join("serverless.json"), r#"{"device":{}}"#).unwrap();
         assert!(derive_probe(dir.path(), "serverless").is_none());
+    }
+
+    #[test]
+    fn derive_probe_ephemeral_port_is_none() {
+        // Port 0 is OS-assigned at bind: the real port is unknowable from
+        // the config, and probing :0 would report a healthy service as down.
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("rp.json"), r#"{"server":{"port":0}}"#).unwrap();
+        assert!(derive_probe(dir.path(), "rp").is_none());
     }
 
     #[test]
