@@ -59,4 +59,3 @@ jobs:
             target/release/${{ inputs.package || 'doctor' }}
             target/release/${{ inputs.package || 'doctor' }}.exe
           if-no-files-found: error
-# (touch: rebuild after the D2 host-validation fixes)
