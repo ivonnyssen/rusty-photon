@@ -2,7 +2,10 @@ load("@cr//:defs.bzl", "aliases", "all_crate_deps")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 
 exports_files(
-    ["Cargo.toml"],
+    [
+        "Cargo.toml",
+        "pkg/doctor.toml",
+    ],
     visibility = ["//visibility:public"],
 )
 
@@ -80,6 +83,7 @@ rust_test(
         normal_dev = True,
         proc_macro_dev = True,
     ),
+    compile_data = ["pkg/doctor.toml"],
     crate = ":zwo-focuser_lib_sim",
     # Set explicitly for TWO reasons: (1) rust_test does NOT inherit
     # `crate_features` from the `crate` it wraps; (2) Bazel `crate_features` is

@@ -2,7 +2,10 @@ load("@cr//:defs.bzl", "aliases", "all_crate_deps")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 
 exports_files(
-    ["Cargo.toml"],
+    [
+        "Cargo.toml",
+        "pkg/doctor.toml",
+    ],
     visibility = ["//visibility:public"],
 )
 
@@ -60,6 +63,7 @@ rust_test(
         normal_dev = True,
         proc_macro_dev = True,
     ),
+    compile_data = ["pkg/doctor.toml"],
     crate = ":dsd-fp2_lib",
     crate_features = ["mock"],
     proc_macro_deps = all_crate_deps(
