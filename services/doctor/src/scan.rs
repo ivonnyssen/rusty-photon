@@ -18,6 +18,16 @@ use serde_json::Value;
 
 use crate::catalog::CatalogEntry;
 
+/// Why a config file's contents are unavailable — two different operator
+/// problems, diagnosed under two different check names.
+#[derive(Debug)]
+pub enum ReadError {
+    /// The file exists but could not be read (permissions, I/O).
+    Unreadable(String),
+    /// The file was read but is not valid JSON.
+    InvalidJson(String),
+}
+
 /// The `server` block, parsed under the catalog-declared shape.
 #[derive(Debug)]
 pub enum ServerBlock {
@@ -39,8 +49,8 @@ pub enum ServerBlock {
 pub struct ServiceScan {
     pub entry: &'static CatalogEntry,
     pub config_path: PathBuf,
-    /// `None` — file absent; `Err` — not valid JSON.
-    pub raw: Option<Result<Value, String>>,
+    /// `None` — file absent; `Err` — unreadable or not valid JSON.
+    pub raw: Option<Result<Value, ReadError>>,
     pub server: ServerBlock,
 }
 
@@ -88,9 +98,12 @@ impl ServiceScan {
 pub fn scan_service(config_dir: &Path, entry: &'static CatalogEntry) -> ServiceScan {
     let config_path = config_dir.join(entry.config_file());
     let raw = match std::fs::read_to_string(&config_path) {
-        Ok(content) => Some(serde_json::from_str::<Value>(&content).map_err(|e| e.to_string())),
+        Ok(content) => Some(
+            serde_json::from_str::<Value>(&content)
+                .map_err(|e| ReadError::InvalidJson(e.to_string())),
+        ),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-        Err(e) => Some(Err(format!("unreadable: {e}"))),
+        Err(e) => Some(Err(ReadError::Unreadable(e.to_string()))),
     };
     let server = match &raw {
         None => ServerBlock::FileAbsent,
@@ -283,6 +296,23 @@ mod tests {
         let scan = scan_service(dir.path(), entry);
         assert_eq!(scan.effective_port(), 4711);
         assert_eq!(scan.discovery_port(), Some(32227));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_unreadable_config_is_distinguished_from_invalid_json() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "qhy-focuser.json", "{}");
+        let path = dir.path().join("qhy-focuser.json");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let scan = scan_service(dir.path(), catalog::entry("qhy-focuser").unwrap());
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        match scan.raw {
+            Some(Err(ReadError::Unreadable(_))) => {}
+            Some(Ok(_)) => {} // running privileged — mode 000 still reads
+            other => unreachable!("expected Unreadable, got {other:?}"),
+        }
     }
 
     #[test]

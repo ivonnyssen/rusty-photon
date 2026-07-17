@@ -124,9 +124,11 @@ All service-manager knowledge sits behind one trait with a per-platform
 implementation:
 
 - **systemd** (Linux) — `systemctl list-unit-files 'rusty-photon-*'` for the
-  inventory, `systemctl show <unit>` for `UnitFileState`, `User`,
-  `NoNewPrivileges`, and `ConditionPathExists`. Polkit facts come from
-  scanning `/etc/polkit-1/rules.d/*.rules`.
+  inventory and enablement, `systemctl cat <unit>` for the
+  `ConditionPathExists=` gate. Polkit facts come from a heuristic scan of
+  `/etc/polkit-1/rules.d` and `/usr/share/polkit-1/rules.d` (the vendor dir
+  the sentinel packages ship their rule to) for the manage-units action, the
+  `rusty-photon-` unit prefix, and the `"rusty-photon"` user literal.
 - **SCM** (Windows) — PowerShell `Get-Service rusty-photon-*` / `sc.exe qc`
   for the inventory and start type.
 - **brew services** (macOS) — `brew services list` filtered to
@@ -170,6 +172,7 @@ report groups naturally.
 
 | Check | Status | Trigger |
 |---|---|---|
+| `config.unreadable` | fail | `<svc>.json` exists but could not be read (permissions, I/O) — a different operator problem than bad JSON, diagnosed under its own name. |
 | `config.json-syntax` | fail | `<svc>.json` is not valid JSON. The service will refuse to start (by design — corrupt config never silently resets), and doctor says so before the next night does. |
 | `config.server-shape` | fail | The top-level `server` block does not parse under the catalog-declared shape (`ServerConfig` for core, `AlpacaServerConfig` for Alpaca): unknown keys (`deny_unknown_fields`), missing `port` when the block is present, `discovery_port` on a core service, malformed `bind_address`. An absent `server` block is `ok` — the service applies its defaults. |
 | `config.known-blocks` | fail | One of the cross-reference blocks doctor joins across fails to parse: ui-htmx's `drivers` map / `sentinel` target, sentinel's `services` map / `operation_watchdog`, rp's `equipment` array / `session` block. Everything else in every file is opaque `serde_json::Value` doctor steps around. |
@@ -219,14 +222,14 @@ side entirely.
 
 | Check | Status | Trigger |
 |---|---|---|
-| `tls.paths` | fail | A `server.tls` block is present but the cert or key path does not exist — or, on Unix in packaged mode, is not readable by the user the unit runs as (owner/group/mode heuristic against the unit's `User=`). |
+| `tls.paths` | fail | A `server.tls` block is present but the cert or key path does not exist. (Readability by the unit's user is not checked in D2 — doctor runs privileged on packaged hosts, so an ownership heuristic needs the passwd machinery D4's hardware checks bring; existence is the check until then.) |
 | `tls.auth-without-tls` | warn | `server.auth` is set while `server.tls` is absent: HTTP Basic credentials in cleartext on the wire. Legal (pre-D6 reality), but worth a nag — ADR-003's scheme is Basic **over TLS**. |
 
 ### Platform defaults
 
 | Check | Status | Trigger |
 |---|---|---|
-| `rp.data-directory` | fail | rp's `session.data_directory` does not exist or is not writable (by the service user in packaged mode, by the current user otherwise). Catches the Linux-path-on-macOS default documented in `docs/packaging-macos.md`. |
+| `rp.data-directory` | fail | rp's `session.data_directory` does not exist. Catches the Linux-path-on-macOS default documented in `docs/packaging-macos.md`. (Writability-by-service-user follows the same D4 deferral as `tls.paths`; doctor writes no probe files.) |
 
 ## Report
 

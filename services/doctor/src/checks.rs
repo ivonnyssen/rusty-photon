@@ -95,9 +95,8 @@ fn inventory(ctx: &Context) -> Vec<Check> {
                     scan.config_path.display()
                 ),
                 Some(format!(
-                    "start it once so it self-creates its defaults: e.g. \
-                     `systemctl start {}`",
-                    scan.entry.unit_name()
+                    "start it once so it self-creates its defaults: e.g. `{}`",
+                    start_command(ctx.facts.platform, &scan.entry.unit_name())
                 )),
             )),
             (false, true) => checks.push(Check::warn(
@@ -135,6 +134,15 @@ fn inventory(ctx: &Context) -> Vec<Check> {
     checks
 }
 
+/// The platform's way to start a service once, for suggestion text.
+fn start_command(platform: Platform, unit: &str) -> String {
+    match platform {
+        Platform::Linux => format!("systemctl start {unit}"),
+        Platform::Windows => format!("Start-Service {unit}"),
+        Platform::Macos => format!("brew services start {unit}"),
+    }
+}
+
 // ---- Config parsing ----
 
 fn config_parsing(ctx: &Context) -> Vec<Check> {
@@ -142,7 +150,7 @@ fn config_parsing(ctx: &Context) -> Vec<Check> {
     for scan in ctx.scans.iter().filter(|s| ctx.participates(s)) {
         match &scan.raw {
             None => continue,
-            Some(Err(e)) => {
+            Some(Err(scan::ReadError::InvalidJson(e))) => {
                 checks.push(Check::fail(
                     "config.json-syntax",
                     svc(scan),
@@ -152,6 +160,19 @@ fn config_parsing(ctx: &Context) -> Vec<Check> {
                         scan.config_path.display()
                     ),
                     Some("fix the JSON by hand; every field is preserved on disk".to_string()),
+                ));
+                continue;
+            }
+            Some(Err(scan::ReadError::Unreadable(e))) => {
+                checks.push(Check::fail(
+                    "config.unreadable",
+                    svc(scan),
+                    format!("{} could not be read: {e}", scan.config_path.display()),
+                    Some(
+                        "fix the file's permissions or ownership — the service user \
+                         must be able to read and rewrite it"
+                            .to_string(),
+                    ),
                 ));
                 continue;
             }
@@ -236,13 +257,17 @@ fn ports(ctx: &Context) -> Vec<Check> {
                     format!("{} ({source})", s.entry.name)
                 })
                 .collect::<Vec<_>>()
-                .join(" and ");
+                .join(", ");
             checks.push(Check::fail(
                 "ports.collision",
                 svc(scans[0]),
-                format!("{members} both resolve to port {port} — one of them will not bind"),
+                format!(
+                    "port {port} is claimed by {} services — {members} — and only \
+                     one can bind",
+                    scans.len()
+                ),
                 Some(format!(
-                    "set a distinct server.port in one of them (defaults: {})",
+                    "give each a distinct server.port (defaults: {})",
                     scans
                         .iter()
                         .map(|s| format!("{} {}", s.entry.name, s.entry.default_port))
@@ -276,12 +301,12 @@ fn ports(ctx: &Context) -> Vec<Check> {
                 .iter()
                 .map(|s| s.entry.name)
                 .collect::<Vec<_>>()
-                .join(" and ");
+                .join(", ");
             checks.push(Check::fail(
                 "ports.discovery-collision",
                 svc(scans[0]),
                 format!(
-                    "{members} both enable discovery_port {port} — UDP responders \
+                    "discovery_port {port} is enabled by {members} — UDP responders \
                      collide; discovery is a per-host opt-in for one driver"
                 ),
                 Some("remove discovery_port from all but one config".to_string()),
@@ -344,10 +369,11 @@ fn units_and_privileges(ctx: &Context) -> Vec<Check> {
             Some(false) => checks.push(Check::fail(
                 "sentinel.privilege-path",
                 Some("sentinel".to_string()),
-                "sentinel runs unprivileged with NoNewPrivileges=yes and no polkit \
-                 rule grants it org.freedesktop.systemd1.manage-units for \
-                 rusty-photon-* units (heuristic scan of the polkit rules dirs) — \
-                 every restart it attempts will be denied"
+                "no polkit rule granting the rusty-photon user \
+                 org.freedesktop.systemd1.manage-units for rusty-photon-* units \
+                 was found (heuristic scan of the polkit rules directories) — the \
+                 packaged sentinel unit runs unprivileged with \
+                 NoNewPrivileges=yes, so every restart it attempts will be denied"
                     .to_string(),
                 Some(
                     "install the packaged rule (shipped with the sentinel deb/rpm \

@@ -55,7 +55,7 @@ Feature: TLS material and platform default diagnosis
     Then the report contains a "fail" check named "rp.data-directory" for service "rp"
     And that check's detail mentions "/nonexistent/rusty-photon-data"
 
-  Scenario: An rp data_directory that exists and is writable passes
+  Scenario: An rp data_directory that exists passes
     Given a config directory with an existing data directory
     And a config file "rp.json" with session.data_directory pointing at that data directory on port 11115
     When I run doctor with --json

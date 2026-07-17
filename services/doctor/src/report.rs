@@ -123,8 +123,14 @@ impl Report {
     }
 
     /// True when at least one check failed — the exit-1 condition.
+    /// [`Status::Unknown`] counts as a failure: it only appears when
+    /// aggregating a newer binary's report, and treating an unrecognized
+    /// outcome as clean would let the exit code disagree with the rendered
+    /// report.
     pub fn has_failures(&self) -> bool {
-        self.checks.iter().any(|c| c.status == Status::Fail)
+        self.checks
+            .iter()
+            .any(|c| matches!(c.status, Status::Fail | Status::Unknown))
     }
 }
 
@@ -170,6 +176,16 @@ mod tests {
         assert_eq!(report.checks[1].status, Status::Fail);
         assert!(report.has_failures());
         assert_eq!(report.doctor_version, "");
+    }
+
+    #[test]
+    fn test_unknown_statuses_alone_count_as_failures() {
+        let json = r#"{ "checks": [ { "name": "x", "status": "degraded" } ] }"#;
+        let report: Report = serde_json::from_str(json).unwrap();
+        assert!(
+            report.has_failures(),
+            "an unrecognized outcome must not exit clean"
+        );
     }
 
     #[test]

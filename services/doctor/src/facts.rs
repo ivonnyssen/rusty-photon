@@ -182,7 +182,10 @@ pub fn parse_unit_file_listing(listing: &str) -> Vec<(String, bool)> {
             if !stem.starts_with("rusty-photon-") {
                 return None;
             }
-            Some((stem.to_string(), state == "enabled"))
+            // `enabled-runtime` is enabled-until-reboot — still a unit that
+            // will start, so the enabled-gated checks apply to it too.
+            let enabled = state == "enabled" || state == "enabled-runtime";
+            Some((stem.to_string(), enabled))
         })
         .collect()
 }
@@ -200,10 +203,11 @@ pub fn parse_condition_path(unit_file: &str) -> Option<PathBuf> {
     })
 }
 
-/// Scan polkit rules directories for a rule that mentions both the
-/// `manage-units` action and the `rusty-photon-` unit prefix. A heuristic —
-/// polkit rules are JavaScript and doctor does not execute them — and the
-/// check's detail text says so.
+/// Scan polkit rules directories for a rule that mentions the
+/// `manage-units` action, the `rusty-photon-` unit prefix, and the quoted
+/// `"rusty-photon"` user literal (the shape of the rule the sentinel
+/// packages ship). A heuristic — polkit rules are JavaScript and doctor
+/// does not execute them — and the check's detail text says so.
 pub fn polkit_grants_sentinel_restart(rules_dirs: &[&Path]) -> bool {
     rules_dirs.iter().any(|dir| {
         let Ok(entries) = std::fs::read_dir(dir) else {
@@ -218,6 +222,7 @@ pub fn polkit_grants_sentinel_restart(rules_dirs: &[&Path]) -> bool {
                 Ok(content) => {
                     content.contains("org.freedesktop.systemd1.manage-units")
                         && content.contains("rusty-photon-")
+                        && content.contains("\"rusty-photon\"")
                 }
                 Err(e) => {
                     debug!(path = %path.display(), error = %e, "unreadable polkit rules file");
@@ -314,6 +319,7 @@ mod tests {
     fn test_unit_file_listing_parses_states_and_filters_foreign_units() {
         let listing = "rusty-photon-qhy-focuser.service enabled enabled\n\
                        rusty-photon-rp.service disabled enabled\n\
+                       rusty-photon-sentinel.service enabled-runtime enabled\n\
                        ssh.service enabled enabled\n";
         let units = parse_unit_file_listing(listing);
         assert_eq!(
@@ -321,6 +327,7 @@ mod tests {
             vec![
                 ("rusty-photon-qhy-focuser".to_string(), true),
                 ("rusty-photon-rp".to_string(), false),
+                ("rusty-photon-sentinel".to_string(), true),
             ]
         );
     }
@@ -346,19 +353,29 @@ mod tests {
             dir.path().join("50-rusty-photon-sentinel.rules"),
             r#"polkit.addRule(function (action, subject) {
                 if (action.id == "org.freedesktop.systemd1.manage-units" &&
+                    subject.user == "rusty-photon" &&
                     unit.indexOf("rusty-photon-") == 0) { return polkit.Result.YES; }
             });"#,
         )
         .unwrap();
         assert!(polkit_grants_sentinel_restart(&[dir.path()]));
-        // Non-.rules files never match.
+        // A rule for some other user does not count as sentinel's grant.
         let dir2 = tempfile::tempdir().unwrap();
         std::fs::write(
-            dir2.path().join("readme.txt"),
-            "org.freedesktop.systemd1.manage-units rusty-photon-",
+            dir2.path().join("50-other.rules"),
+            r#"action.id == "org.freedesktop.systemd1.manage-units" &&
+               subject.user == "operator" && unit.indexOf("rusty-photon-") == 0"#,
         )
         .unwrap();
         assert!(!polkit_grants_sentinel_restart(&[dir2.path()]));
+        // Non-.rules files never match.
+        let dir3 = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir3.path().join("readme.txt"),
+            "org.freedesktop.systemd1.manage-units \"rusty-photon\" rusty-photon-",
+        )
+        .unwrap();
+        assert!(!polkit_grants_sentinel_restart(&[dir3.path()]));
     }
 
     #[test]
