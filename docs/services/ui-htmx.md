@@ -582,15 +582,21 @@ terminates the browser's `EventSource` and holds its own connection to rp's
 
 ## Configuration
 
-The BFF has its own small config (it is not an ASCOM device). The `drivers` map
-is keyed by service id (the `{service}` path segment); add an entry per driver.
-The default config carries a single local `dsd-fp2` so `cargo run` works with no
-config file. The optional `rp` target switches on the equipment page, the
-activity stream, the `/config/rp` page, and the roster-derived config targets;
-without it those routes render a "no rp configured" card. Every block
-(`Config` and each nested target/auth struct) rejects unknown keys at
-deserialize (`deny_unknown_fields`), so a typo or a key removed by a schema
-change fails loudly at load instead of being silently ignored.
+The BFF has its own small config (it is not an ASCOM device), and since
+doctor-plan D3 its **source of truth is rp's roster** (ADR-016 decision 9):
+the default config is just the listening port and where rp is
+(`http://127.0.0.1:11115` — the single-box default), and the config targets
+come from the roster at request time. The static `drivers` map survives only
+as an **optional, empty-by-default override** — a third-party device rp does
+not manage, or a driver that needs its own credentials/CA; each entry is
+keyed by service id (the `{service}` path segment). Doctor's `--fix` never
+generates entries for it. The `rp` target also switches on the equipment
+page, the activity stream, and the `/config/rp` page; setting it to `null`
+explicitly leaves the BFF the pure driver-config UI of Phase 3 (with only
+the `drivers` entries you declare). Every block (`Config` and each nested
+target/auth struct) rejects unknown keys at deserialize
+(`deny_unknown_fields`), so a typo or a key removed by a schema change fails
+loudly at load instead of being silently ignored.
 
 ```jsonc
 {
@@ -600,24 +606,24 @@ change fails loudly at load instead of being silently ignored.
     "tls": null,               // optional { "cert": "...", "key": "..." } — serves HTTPS when set
     "auth": null               // optional { "username": "...", "password_hash": "..." } — HTTP Basic on every route
   },
-  "drivers": {
-    "dsd-fp2": {
-      "name": "Deep Sky Dad FP2",            // optional display name (defaults to the id)
-      "base_url": "http://127.0.0.1:11119",  // the driver's Alpaca base URL
-      "device_type": "covercalibrator",
-      "device_number": 0,
-      "auth": null,            // optional { "username": "...", "password": "..." }
-      "ca_cert_path": null     // optional PEM CA for a TLS-enabled driver
-    },
-    "qhy-focuser": {
-      "base_url": "http://127.0.0.1:11113",
-      "device_type": "focuser"
-    }
-  },
-  "rp": {                                    // optional — enables /equipment, /stream, /config/rp
+  // The rp roster is the source of truth. Absent means the single-box
+  // default below; write "rp": null to run without rp (pure driver UI).
+  "rp": {
     "base_url": "http://127.0.0.1:11115",    // rp's REST base URL
     "auth": null,                            // optional Basic credentials for rp
     "ca_cert_path": null                     // optional PEM CA for a TLS-enabled rp
+  },
+  // Optional override entries — empty on a stock rig. For devices rp does
+  // not manage, or drivers needing their own credentials/CA.
+  "drivers": {
+    "third-party-dome": {
+      "name": "Legacy dome",                 // optional display name (defaults to the id)
+      "base_url": "http://127.0.0.1:7843",   // the driver's Alpaca base URL
+      "device_type": "dome",
+      "device_number": 0,
+      "auth": null,            // optional { "username": "...", "password": "..." }
+      "ca_cert_path": null     // optional PEM CA for a TLS-enabled driver
+    }
   },
   // Optional: where Sentinel's dashboard/REST API lives. Absent (the default)
   // means no restart affordances are rendered anywhere.
@@ -652,7 +658,7 @@ banner.
 
 | Argument | Description |
 |----------|-------------|
-| `-c, --config`     | Path to the BFF configuration file. If omitted, the path resolves to the platform config directory (`~/.config/rusty-photon/ui-htmx.json` on Linux, `%PROGRAMDATA%\rusty-photon\ui-htmx.json` on Windows) and is created with `Config::default()` on first start (binds `0.0.0.0:11120`, with a single `dsd-fp2` driver at `http://127.0.0.1:11119`). An explicit `--config` naming a missing file stays a hard error. |
+| `-c, --config`     | Path to the BFF configuration file. If omitted, the path resolves to the platform config directory (`~/.config/rusty-photon/ui-htmx.json` on Linux, `%PROGRAMDATA%\rusty-photon\ui-htmx.json` on Windows) and is created with `Config::default()` on first start (binds `0.0.0.0:11120`, rp at `http://127.0.0.1:11115`, no driver overrides). An explicit `--config` naming a missing file stays a hard error. |
 | `--port`           | BFF listen port (overrides `server.port`). |
 | `-l, --log-level`  | Log level: trace, debug, info, warn, error. |
 | `--service`        | Hidden: run as a Windows service (passed by the Windows service control manager; no-op on other platforms). |

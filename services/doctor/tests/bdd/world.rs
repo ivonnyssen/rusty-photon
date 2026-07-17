@@ -25,6 +25,8 @@ pub struct DoctorWorld {
     /// The check the last "contains a check" assertion matched, so
     /// follow-up detail/suggestion assertions have a subject.
     pub last_check: Option<serde_json::Value>,
+    /// What each config file was staged with, for is-unchanged assertions.
+    pub staged: std::collections::HashMap<String, String>,
 }
 
 impl DoctorWorld {
@@ -44,6 +46,7 @@ impl DoctorWorld {
             output: None,
             report: None,
             last_check: None,
+            staged: std::collections::HashMap::new(),
         }
     }
 
@@ -51,9 +54,18 @@ impl DoctorWorld {
         self.temp.path().join("config")
     }
 
-    pub fn write_config(&self, name: &str, content: &str) {
+    pub fn write_config(&mut self, name: &str, content: &str) {
         std::fs::write(self.config_dir().join(name), content)
             .unwrap_or_else(|e| panic!("writing {name}: {e}"));
+        self.staged.insert(name.to_string(), content.to_string());
+    }
+
+    /// The current on-disk JSON of a staged config file.
+    pub fn config_value(&self, name: &str) -> serde_json::Value {
+        let content = std::fs::read_to_string(self.config_dir().join(name))
+            .unwrap_or_else(|e| panic!("reading {name}: {e}"));
+        serde_json::from_str(&content)
+            .unwrap_or_else(|e| panic!("{name} is not valid JSON ({e}): {content}"))
     }
 
     pub fn add_unit(&mut self, name: &str) {
@@ -67,6 +79,11 @@ impl DoctorWorld {
 
     /// Run the doctor binary against the staged config dir and facts.
     pub fn run_doctor(&mut self, json: bool) {
+        self.run_doctor_args(json, false);
+    }
+
+    /// [`run_doctor`], optionally with `--fix`.
+    pub fn run_doctor_args(&mut self, json: bool, fix: bool) {
         let facts_path = self.temp.path().join("facts.json");
         std::fs::write(
             &facts_path,
@@ -88,6 +105,9 @@ impl DoctorWorld {
         ];
         if json {
             args.push("--json");
+        }
+        if fix {
+            args.push("--fix");
         }
         let output = bdd_infra::run_once("doctor", &args, None);
         self.report = if json && output.status.code() != Some(2) {

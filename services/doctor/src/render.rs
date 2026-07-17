@@ -46,6 +46,9 @@ pub fn render(report: &Report) -> String {
             let _ = writeln!(out, "     fix: {suggestion}");
         }
     }
+    for applied in &report.fixes_applied {
+        let _ = writeln!(out, "FIXED {} — {}", applied.check, applied.op);
+    }
     let _ = writeln!(out, "summary: {ok} ok, {warn} warn, {fail} fail");
     out
 }
@@ -81,6 +84,23 @@ mod tests {
         assert!(
             !text.contains("config.server-shape"),
             "ok checks are counted, not listed: {text}"
+        );
+    }
+
+    #[test]
+    fn test_render_lists_applied_fixes() {
+        let report = Report::new(Mode::Packaged, "/etc/rusty-photon".into(), vec![])
+            .with_fixes_applied(vec![crate::report::AppliedFix {
+                check: "config.retired-keys".to_string(),
+                op: crate::report::FixOp::RemoveKey {
+                    service: "sentinel".to_string(),
+                    pointer: "/services".to_string(),
+                },
+            }]);
+        let text = render(&report);
+        assert!(
+            text.contains("FIXED config.retired-keys — sentinel.json: remove /services"),
+            "{text}"
         );
     }
 }

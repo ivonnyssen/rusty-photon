@@ -14,6 +14,11 @@ fn run_text(world: &mut DoctorWorld) {
     world.run_doctor(false);
 }
 
+#[when("I run doctor with --fix and --json")]
+fn run_fix_json(world: &mut DoctorWorld) {
+    world.run_doctor_args(true, true);
+}
+
 #[when("I run doctor pointed at a config directory that does not exist")]
 fn run_against_missing_dir(world: &mut DoctorWorld) {
     world.config_dir_override = Some(world.temp.path().join("no-such-dir"));

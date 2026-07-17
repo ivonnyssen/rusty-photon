@@ -1,12 +1,14 @@
 //! Configuration for the `ui-htmx` BFF.
 //!
-//! The BFF is not an ASCOM device; this is its own small config. It targets a
-//! **map of drivers** keyed by service id (`dsd-fp2`, `qhy-focuser`, …); each
-//! entry says how to reach that driver's Alpaca config actions. The default
-//! config carries a single local `dsd-fp2` entry so `cargo run` works with no
-//! config file. The optional [`RpTarget`] additionally enables the rp-backed
-//! surfaces — `/config/rp`, `/equipment`, `/stream`, and the roster-derived
-//! config targets (see `docs/services/ui-htmx.md`).
+//! The BFF is not an ASCOM device; this is its own small config, and since
+//! doctor-plan D3 its source of truth is **rp's roster** (ADR-016 decision
+//! 9): the default config is the listening port plus the single-box
+//! [`RpTarget`], and the config targets come from the roster at request
+//! time. The `drivers` map survives as an empty-by-default **override** —
+//! a third-party device rp does not manage, or a driver needing its own
+//! credentials/CA — keyed by service id (`dsd-fp2`, `qhy-focuser`, …).
+//! Writing `"rp": null` explicitly leaves the BFF the pure driver-config UI
+//! (see `docs/services/ui-htmx.md`).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -22,11 +24,13 @@ pub struct Config {
     pub server: ServerConfig,
     #[serde(default)]
     pub drivers: Drivers,
-    /// The rp orchestrator, when one is running. Enables the `/config/rp` page,
-    /// the `/equipment` roster, the `/stream` activity feed, and roster-derived
-    /// device config pages. `None` (the default) leaves the BFF a pure
-    /// driver-config UI.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The rp orchestrator — the roster source of truth. Enables the
+    /// `/config/rp` page, the `/equipment` roster, the `/stream` activity
+    /// feed, and roster-derived device config pages. An absent key defaults
+    /// to rp on this box (`http://127.0.0.1:11115`); an **explicit `null`**
+    /// runs without rp (pure driver-config UI), and is serialized back as
+    /// `null` so the choice survives a rewrite.
+    #[serde(default = "default_rp_target")]
     pub rp: Option<RpTarget>,
     /// Where Sentinel's dashboard/REST API lives. Absent (the default) means
     /// no restart affordances are rendered anywhere — Sentinel is optional
@@ -40,10 +44,15 @@ impl Default for Config {
         Self {
             server: default_server(),
             drivers: Drivers::default(),
-            rp: None,
+            rp: default_rp_target(),
             sentinel: None,
         }
     }
+}
+
+/// The single-box default: rp on localhost at its default port.
+fn default_rp_target() -> Option<RpTarget> {
+    Some(RpTarget::default())
 }
 
 /// The BFF's default `server` block when the config file omits it: port 11120
@@ -52,20 +61,12 @@ fn default_server() -> ServerConfig {
     ServerConfig::new(11120)
 }
 
-/// The driver targets the BFF knows about, keyed by service id (the path
-/// segment in `/config/{service}`). A newtype over the map so it can carry a
-/// non-empty default (a single local `dsd-fp2`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// The driver override targets, keyed by service id (the path segment in
+/// `/config/{service}`). Empty by default — rp's roster is the source of
+/// truth, and doctor's `--fix` never generates entries here.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Drivers(pub BTreeMap<String, DriverTarget>);
-
-impl Default for Drivers {
-    fn default() -> Self {
-        let mut map = BTreeMap::new();
-        map.insert("dsd-fp2".to_string(), DriverTarget::default());
-        Self(map)
-    }
-}
 
 /// How to reach one driver's Alpaca config actions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -182,17 +183,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn defaults_target_local_dsd_fp2() {
+    fn defaults_are_roster_first() {
+        // The single-box default: no driver overrides, rp on localhost —
+        // rp's roster is the source of truth (doctor-plan D3).
         let c = Config::default();
         assert_eq!(c.server.bind_address.to_string(), "0.0.0.0");
         assert_eq!(c.server.port, 11120);
         assert!(c.server.tls.is_none());
         assert!(c.server.auth.is_none());
-        let dsd = c.drivers.0.get("dsd-fp2").unwrap();
-        assert_eq!(dsd.base_url, "http://127.0.0.1:11119");
-        assert_eq!(dsd.device_type, "covercalibrator");
-        assert_eq!(dsd.device_number, 0);
-        assert!(dsd.auth.is_none());
+        assert!(c.drivers.0.is_empty());
+        assert_eq!(c.rp.unwrap().base_url, "http://127.0.0.1:11115");
     }
 
     #[test]
@@ -201,8 +201,10 @@ mod tests {
         let c: Config = serde_json::from_str(json).unwrap();
         assert_eq!(c.server.port, 9000);
         assert_eq!(c.server.bind_address.to_string(), "0.0.0.0");
-        // Omitting `drivers` falls back to the default single dsd-fp2 entry.
-        assert!(c.drivers.0.contains_key("dsd-fp2"));
+        // Omitting `drivers` means no overrides; omitting `rp` means the
+        // single-box default.
+        assert!(c.drivers.0.is_empty());
+        assert_eq!(c.rp.unwrap().base_url, "http://127.0.0.1:11115");
     }
 
     #[test]
@@ -240,7 +242,8 @@ mod tests {
         std::fs::write(&path, scaffold).unwrap();
         let c = load_config(&path).unwrap();
         assert_eq!(c.server.port, 11120);
-        assert!(c.drivers.0.contains_key("dsd-fp2"));
+        assert!(c.drivers.0.is_empty());
+        assert!(c.rp.is_some(), "the scaffolded rp target must load back");
     }
 
     #[test]
@@ -295,10 +298,18 @@ mod tests {
     }
 
     #[test]
-    fn rp_target_is_absent_by_default_and_parses_when_present() {
-        let c = Config::default();
+    fn rp_target_null_is_explicit_and_survives_a_round_trip() {
+        // Absent key -> the single-box default; explicit null -> no rp, and
+        // the choice must survive serialization (rp is not skipped when
+        // None, else a rewrite would silently resurrect the default).
+        let c: Config = serde_json::from_str(r#"{ "rp": null }"#).unwrap();
         assert!(c.rp.is_none());
+        let back: Config = serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
+        assert!(back.rp.is_none(), "explicit null must round-trip");
+    }
 
+    #[test]
+    fn rp_target_parses_when_present() {
         let json = r#"{
             "rp": {
                 "base_url": "https://pi.local:11115",

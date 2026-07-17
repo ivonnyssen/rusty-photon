@@ -770,9 +770,10 @@ mod tests {
     use serde_json::{json, Value};
 
     fn config_with_base_url(base_url: &str) -> Config {
-        let mut config = Config::default();
-        config.drivers.0.get_mut("dsd-fp2").unwrap().base_url = base_url.to_string();
-        config
+        let json = serde_json::json!({
+            "drivers": { "dsd-fp2": { "base_url": base_url } }
+        });
+        serde_json::from_value(json).expect("driver config parses")
     }
 
     #[test]
@@ -843,13 +844,16 @@ mod tests {
 
     #[test]
     fn from_config_with_rp_target_serves_the_rp_config_page() {
-        let json = r#"{ "rp": { "base_url": "http://127.0.0.1:11115" } }"#;
+        let json = r#"{
+            "rp": { "base_url": "http://127.0.0.1:11115" },
+            "drivers": { "dsd-fp2": { "base_url": "http://127.0.0.1:11119" } }
+        }"#;
         let config: Config = serde_json::from_str(json).unwrap();
         let state = AppState::from_config(&config).unwrap();
         let rp = state.drivers.get("rp").unwrap();
         assert_eq!(rp.title, "rp");
         assert_eq!(rp.subtitle, "rp · orchestrator (REST)");
-        // The default drivers map is still there alongside the rp entry.
+        // Override entries coexist with the rp entry.
         assert!(state.drivers.contains_key("dsd-fp2"));
     }
 

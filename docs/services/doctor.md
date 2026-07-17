@@ -11,11 +11,12 @@ never learns device usage (which camera is the guide cam belongs to `rp`).
 decision record; [`docs/plans/service-config-doctor.md`](../plans/service-config-doctor.md)
 tracks the phases.
 
-This document specifies the **D2 scope: read-only diagnosis**. Doctor examines
-the config directory and the platform's service manager, prints a report, and
-writes nothing. Repair (`--fix`, D3), hardware checks (D4/D5), and the TLS +
-credential lifecycle (D6) extend this binary later; their contracts are
-recorded in the plan and folded in here as they land.
+This document specifies the **D2 + D3 scope: diagnosis and repair**. A
+default run examines the config directory and the platform's service
+manager, prints a report, and writes nothing; `--fix` (D3) additionally
+applies the machine-applicable fixes and re-diagnoses. Hardware checks
+(D4/D5) and the TLS + credential lifecycle (D6) extend this binary later;
+their contracts are recorded in the plan and folded in here as they land.
 
 Doctor is a one-shot CLI, not a long-running service: no server, no config
 file of its own, no unit. It lives at `services/doctor` (cargo binary
@@ -32,9 +33,11 @@ graph LR
     doctor --> report["report<br/>text or --json"]
 ```
 
-Three inputs, one output. Everything is read-only in D2: config files are
+Three inputs, one output. A default run is read-only: config files are
 parsed but never written, and every service-manager interaction is a query
-(`list-unit-files`, `show`), never a verb.
+(`list-unit-files`, `show`), never a verb. Only `--fix` writes — config
+files only, through `rusty_photon_config::save`'s atomic path, never a
+service-manager verb.
 
 ### The derived catalog
 
@@ -232,6 +235,53 @@ convention and validated by nothing at runtime until the 2am 404.
 |---|---|---|
 | `rp.data-directory` | fail | rp's `session.data_directory` does not exist. Catches the Linux-path-on-macOS default documented in `docs/packaging-macos.md`. (Writability-by-service-user follows the same D4 deferral as `tls.paths`; doctor writes no probe files.) |
 
+## Repair — `--fix` (D3)
+
+`doctor --fix` runs the same diagnosis, applies every **machine-applicable
+fix** the checks planned, then re-runs the diagnosis and reports the
+post-fix state. The loop an operator runs after installing packages is:
+services self-create their defaults, `doctor --fix` makes the install
+coherent, done.
+
+A fix is planned only where the correct value is derivable, not a judgment
+call:
+
+| Check | Fix `--fix` applies |
+|---|---|
+| `ports.collision` | Move each colliding service whose configured port differs from its catalog default back to that default — but only when the default itself is free among the effective ports. A collision between judgment-call ports (two services deliberately moved to the same custom port) gets a suggestion, not a fix. |
+| `config.retired-keys` | Delete the retired key (sentinel's `services` map; a driver's `sentinel_service`). |
+| `joins.ui-htmx-driver-port` | Rewrite the driver `base_url`'s port to the service's effective port. |
+| `urls.spurious-suffix` | Strip the `/api/v1` suffix — **ui-htmx `drivers` entries only**. rp's `equipment[].alpaca_url` lives inside the device-usage block doctor checks but does not own (ADR-016 decision 4), so it stays suggestion-only. |
+
+Everything else stays suggestion-only: missing TLS material cannot be
+conjured (until D6), a `ConditionPathExists` gate needs a hand-written
+config, a `discovery_port` collision is operator intent (which host keeps
+the responder?), and rp's `session.data_directory` is a placement decision.
+`--fix` also never *generates* config — a stock rig's ui-htmx `drivers` map
+stays empty (rp's roster is the source of truth; see
+[ui-htmx.md](ui-htmx.md)).
+
+Write mechanics:
+
+- Fixes are grouped per file and applied as one read-modify-write through
+  `rusty_photon_config::save` — the same atomic
+  temp→fsync→rename→fsync-dir path the services' own `config.apply` uses,
+  so a crash mid-fix never corrupts a config. Every byte doctor does not
+  touch is preserved (the mutation is on the raw JSON value, not a typed
+  round-trip).
+- Doctor reads files directly and holds no override layers, so a fix can
+  never bake a transient value into a file (the plan's layer-aware persist
+  rule is satisfied by construction).
+- **Services may be running while `--fix` writes** — that is the canonical
+  install flow, so doctor warns rather than refuses: atomic renames make
+  corruption impossible, and the residual race (a driver's own
+  `config.apply` landing between doctor's read and write loses one of the
+  two writes) is called out on stderr in packaged mode with the advice to
+  re-run doctor afterwards. Services read config at startup, so applied
+  fixes take effect on each service's next restart.
+- `--fix` is **idempotent**: the post-fix diagnosis plans no further fixes,
+  and a second `--fix` run applies nothing.
+
 ## Report
 
 One schema, shared by the text renderer and `--json`, and — from D5 on — by
@@ -253,23 +303,42 @@ run (ADR-016 decision 7).
       "service": "qhy-focuser",
       "status": "fail",
       "detail": "qhy-focuser and dsd-fp2 both resolve to port 11113 (qhy-focuser: configured; dsd-fp2: configured)",
-      "suggestion": "set a distinct server.port in dsd-fp2.json (default 11119)"
+      "suggestion": "set a distinct server.port in dsd-fp2.json (default 11119)",
+      "fixes": [
+        { "op": "set-number", "service": "dsd-fp2", "pointer": "/server/port", "value": 11119 }
+      ]
     }
-  ]
+  ],
+  "fixes_applied": []
 }
 ```
 
+- `fixes` (per check, empty and omitted when none) carries the
+  machine-applicable fix plan as primitive JSON-pointer operations —
+  `set-number`, `set-string`, `remove-key` — against one service's config
+  file. Primitive ops keep the schema forward-parseable: an aggregating
+  doctor that does not recognize a newer op simply cannot apply it, and
+  says so, instead of misparsing the check.
+- `fixes_applied` (top level, populated by `--fix` runs) records what was
+  actually written, one entry per applied fix: the originating check name,
+  the service, and the operation. On a `--fix` run the `checks` array is
+  the **post-fix** diagnosis — the exit code and the report describe the
+  state the operator is left with.
+
 `ok` checks are included (an empty report is indistinguishable from a doctor
-that skipped everything); the text renderer summarizes them and prints
-`warn`/`fail` in full.
+that skipped everything); the text renderer summarizes them, prints
+`warn`/`fail` in full, and lists applied fixes.
 
 ## CLI contract
 
 ```
-doctor [--config-dir <path>] [--json]
+doctor [--config-dir <path>] [--json] [--fix]
 ```
 
-- Default run diagnoses and prints the human-readable report to stdout.
+- Default run diagnoses and prints the human-readable report to stdout;
+  it writes nothing.
+- `--fix` applies the machine-applicable fixes (see §Repair), re-diagnoses,
+  and reports the post-fix state.
 - `--json` prints the report JSON instead.
 - `--platform-facts <file>` exists only under the `mock` feature (tests).
 - Logging goes to stderr via `tracing` (`debug!` throughout; the report is
@@ -279,9 +348,9 @@ Exit codes:
 
 | Code | Meaning |
 |---|---|
-| 0 | Diagnosis ran; no `fail`-status checks (warnings allowed). |
-| 1 | Diagnosis ran; at least one check failed. |
-| 2 | Doctor itself could not run (unresolvable config dir, inspector error). |
+| 0 | Diagnosis ran; no `fail`-status checks (warnings allowed). After `--fix`: the post-fix state is clean. |
+| 1 | Diagnosis ran; at least one check failed (after fixes, on a `--fix` run). |
+| 2 | Doctor itself could not run (unresolvable config dir, inspector error, or a fix write failed). |
 
 Scripts and CI can gate on "the rig is coherent" without parsing JSON.
 
@@ -300,20 +369,22 @@ deliberate: a config-repair tool with its own config file would need a doctor.
   scratch config dir and a platform-facts file with known-broken states (port
   collision, dangling watchdog service, retired D3s keys, unparseable JSON,
   missing `ConditionPathExists` target, absent polkit rule), run the real
-  binary, assert the diagnosis, the exit code, and the `--json` schema.
+  binary, assert the diagnosis, the exit code, and the `--json` schema. For
+  `--fix`: assert the rewritten file contents (untouched bytes preserved),
+  post-fix convergence, idempotence of a second run, that a default run
+  writes nothing, and that unfixable checks stay reported without a write.
 - **On-host** (D2 gate, per the plan's all-platforms requirement) — the real
   inspectors validated against a packaged Linux host, the Windows VM (SCM),
   and macOS (brew services).
 
 ## MVP scope
 
-**In D2 (this document):** everything above — derived catalog, config-root
-resolution, platform inspectors, the check list, the report schema, text +
-`--json` rendering, exit codes. Read-only throughout; no network I/O.
+**In D2 + D3 (this document):** everything above — derived catalog,
+config-root resolution, platform inspectors, the check list, the report
+schema, text + `--json` rendering, exit codes, and `--fix`. No network I/O;
+writes happen only under `--fix`, only to config files.
 
 **Deferred, tracked in the plan:**
-
-- `--fix` and ui-htmx roster-sourcing — D3.
 - `rusty-photon-doctor-checks` crate + hardware checks that need no SDK
   (device nodes, udev, plugdev, VID:PID, firmware helper) — D4.
 - Per-service `doctor` subcommands (full-config validation, SDK-side

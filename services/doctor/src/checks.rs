@@ -270,6 +270,9 @@ fn ports(ctx: &Context) -> Vec<Check> {
     for scan in &participants {
         by_port.entry(scan.effective_port()).or_default().push(scan);
     }
+    // Ports a fix may not move a service onto: every effective port in use,
+    // plus every default a fix already claimed this round.
+    let mut claimed: std::collections::BTreeSet<u16> = by_port.keys().copied().collect();
     let mut collided = false;
     for (port, scans) in &by_port {
         if scans.len() > 1 {
@@ -285,23 +288,43 @@ fn ports(ctx: &Context) -> Vec<Check> {
                 })
                 .collect::<Vec<_>>()
                 .join(", ");
-            checks.push(Check::fail(
-                "ports.collision",
-                svc(scans[0]),
-                format!(
-                    "port {port} is claimed by {} services — {members} — and only \
-                     one can bind",
-                    scans.len()
-                ),
-                Some(format!(
-                    "give each a distinct server.port (defaults: {})",
-                    scans
-                        .iter()
-                        .map(|s| format!("{} {}", s.entry.name, s.entry.default_port))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )),
-            ));
+            // The derivable repair: a configured member whose own catalog
+            // default is free goes back to it. A member already at its
+            // default, or whose default is taken, is a judgment call — the
+            // suggestion text covers it.
+            let mut fixes = Vec::new();
+            for scan in scans {
+                let configured = matches!(&scan.server, ServerBlock::Parsed { .. });
+                let default = scan.entry.default_port;
+                if configured && default != *port && !claimed.contains(&default) {
+                    claimed.insert(default);
+                    fixes.push(crate::report::FixOp::SetNumber {
+                        service: scan.entry.name.to_string(),
+                        pointer: "/server/port".to_string(),
+                        value: u64::from(default),
+                    });
+                }
+            }
+            checks.push(
+                Check::fail(
+                    "ports.collision",
+                    svc(scans[0]),
+                    format!(
+                        "port {port} is claimed by {} services — {members} — and only \
+                         one can bind",
+                        scans.len()
+                    ),
+                    Some(format!(
+                        "give each a distinct server.port (defaults: {})",
+                        scans
+                            .iter()
+                            .map(|s| format!("{} {}", s.entry.name, s.entry.default_port))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )),
+                )
+                .with_fixes(fixes),
+            );
         }
     }
     if !collided && !participants.is_empty() {
@@ -443,34 +466,49 @@ fn name_joins(ctx: &Context) -> Vec<Check> {
 fn retired_keys(sentinel: &Option<SentinelView>, ui: &Option<UiHtmxView>) -> Vec<Check> {
     let mut checks = Vec::new();
     if sentinel.as_ref().is_some_and(|s| s.services.is_some()) {
-        checks.push(Check::fail(
-            "config.retired-keys",
-            Some("sentinel".to_string()),
-            "sentinel.json carries the retired services map — sentinel discovers \
-             its services from the platform service manager now, and refuses to \
-             start while the key is present"
-                .to_string(),
-            Some(
-                "delete the top-level \"services\" key; supervision needs no \
-                 replacement config"
+        checks.push(
+            Check::fail(
+                "config.retired-keys",
+                Some("sentinel".to_string()),
+                "sentinel.json carries the retired services map — sentinel discovers \
+                 its services from the platform service manager now, and refuses to \
+                 start while the key is present"
                     .to_string(),
-            ),
-        ));
+                Some(
+                    "delete the top-level \"services\" key; supervision needs no \
+                     replacement config"
+                        .to_string(),
+                ),
+            )
+            .with_fixes(vec![crate::report::FixOp::RemoveKey {
+                service: "sentinel".to_string(),
+                pointer: "/services".to_string(),
+            }]),
+        );
     }
     if let Some(ui) = ui {
         for (driver_id, driver) in &ui.drivers {
             if driver.sentinel_service.is_some() {
-                checks.push(Check::fail(
-                    "config.retired-keys",
-                    Some("ui-htmx".to_string()),
-                    format!(
-                        "drivers.{driver_id} carries the retired sentinel_service \
-                         field — the restart name is always the driver's own map \
-                         key now, and ui-htmx refuses to start while the field is \
-                         present"
-                    ),
-                    Some(format!("delete drivers.{driver_id}.sentinel_service")),
-                ));
+                checks.push(
+                    Check::fail(
+                        "config.retired-keys",
+                        Some("ui-htmx".to_string()),
+                        format!(
+                            "drivers.{driver_id} carries the retired sentinel_service \
+                             field — the restart name is always the driver's own map \
+                             key now, and ui-htmx refuses to start while the field is \
+                             present"
+                        ),
+                        Some(format!("delete drivers.{driver_id}.sentinel_service")),
+                    )
+                    .with_fixes(vec![crate::report::FixOp::RemoveKey {
+                        service: "ui-htmx".to_string(),
+                        pointer: format!(
+                            "/drivers/{}/sentinel_service",
+                            crate::fix::escape_token(driver_id)
+                        ),
+                    }]),
+                );
             }
         }
     }
@@ -572,16 +610,27 @@ fn ui_driver_port_joins(ctx: &Context, ui: &UiHtmxView) -> Vec<Check> {
         };
         let expected = scan.effective_port();
         if port != expected {
-            checks.push(Check::fail(
-                "joins.ui-htmx-driver-port",
-                Some("ui-htmx".to_string()),
-                format!(
-                    "drivers.{driver_id}.base_url points at localhost port {port}, \
-                     but {driver_id} listens on {expected} — every config page for \
-                     it will show a transport banner"
-                ),
-                Some(format!("change the URL's port to {expected}")),
-            ));
+            let fixes = match replace_port(url, expected) {
+                Some(corrected) => vec![crate::report::FixOp::SetString {
+                    service: "ui-htmx".to_string(),
+                    pointer: format!("/drivers/{}/base_url", crate::fix::escape_token(driver_id)),
+                    value: corrected,
+                }],
+                None => Vec::new(),
+            };
+            checks.push(
+                Check::fail(
+                    "joins.ui-htmx-driver-port",
+                    Some("ui-htmx".to_string()),
+                    format!(
+                        "drivers.{driver_id}.base_url points at localhost port {port}, \
+                         but {driver_id} listens on {expected} — every config page for \
+                         it will show a transport banner"
+                    ),
+                    Some(format!("change the URL's port to {expected}")),
+                )
+                .with_fixes(fixes),
+            );
         }
     }
     checks
@@ -599,29 +648,61 @@ fn localhost_port(url: &str) -> Option<u16> {
     port.parse().ok()
 }
 
+/// `url` with its authority's port replaced — only for URLs
+/// [`localhost_port`] already parsed, so the split is known to succeed.
+fn replace_port(url: &str, port: u16) -> Option<String> {
+    let (scheme, rest) = match url.split_once("://") {
+        Some((scheme, rest)) => (Some(scheme), rest),
+        None => (None, url),
+    };
+    let (authority, path) = match rest.split_once('/') {
+        Some((authority, path)) => (authority, Some(path)),
+        None => (rest, None),
+    };
+    let (host, _) = authority.rsplit_once(':')?;
+    let mut out = String::new();
+    if let Some(scheme) = scheme {
+        out.push_str(scheme);
+        out.push_str("://");
+    }
+    out.push_str(host);
+    out.push(':');
+    out.push_str(&port.to_string());
+    if let Some(path) = path {
+        out.push('/');
+        out.push_str(path);
+    }
+    Some(out)
+}
+
 // ---- URL conventions ----
 
 fn url_conventions(ctx: &Context) -> Vec<Check> {
     let mut checks = Vec::new();
-    let mut spurious = |service: &str, field: String, url: &str| {
-        if url.trim_end_matches('/').ends_with("/api/v1") {
-            checks.push(Check::warn(
-                "urls.spurious-suffix",
-                Some(service.to_string()),
-                format!(
-                    "{field} ({url}) carries /api/v1, but this client appends it \
-                     itself — requests would double the prefix and 404"
-                ),
-                Some(format!(
-                    "use {}",
-                    url.trim_end_matches('/').trim_end_matches("/api/v1")
-                )),
-            ));
-        }
+    let carries_suffix = |url: &str| url.trim_end_matches('/').ends_with("/api/v1");
+    let stripped = |url: &str| {
+        url.trim_end_matches('/')
+            .trim_end_matches("/api/v1")
+            .to_string()
     };
+    let spurious = |service: &str, field: String, url: &str| {
+        Check::warn(
+            "urls.spurious-suffix",
+            Some(service.to_string()),
+            format!(
+                "{field} ({url}) carries /api/v1, but this client appends it \
+                 itself — requests would double the prefix and 404"
+            ),
+            Some(format!("use {}", stripped(url))),
+        )
+    };
+    // rp's alpaca_url lives inside the device-usage block doctor checks but
+    // does not own (ADR-016 decision 4): suggestion only, never a fix.
     if let Some(rp) = ctx.scan("rp").and_then(|s| scan::view::<RpView>(s)?.ok()) {
         for url in rp.alpaca_urls() {
-            spurious("rp", "an equipment alpaca_url".to_string(), &url);
+            if carries_suffix(&url) {
+                checks.push(spurious("rp", "an equipment alpaca_url".to_string(), &url));
+            }
         }
     }
     if let Some(ui) = ctx
@@ -630,7 +711,19 @@ fn url_conventions(ctx: &Context) -> Vec<Check> {
     {
         for (driver_id, driver) in &ui.drivers {
             if let Some(url) = &driver.base_url {
-                spurious("ui-htmx", format!("drivers.{driver_id}.base_url"), url);
+                if carries_suffix(url) {
+                    checks.push(
+                        spurious("ui-htmx", format!("drivers.{driver_id}.base_url"), url)
+                            .with_fixes(vec![crate::report::FixOp::SetString {
+                                service: "ui-htmx".to_string(),
+                                pointer: format!(
+                                    "/drivers/{}/base_url",
+                                    crate::fix::escape_token(driver_id)
+                                ),
+                                value: stripped(url),
+                            }]),
+                    );
+                }
             }
         }
     }
