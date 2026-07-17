@@ -23,18 +23,35 @@ use crate::report::{AppliedFix, Check, FixOp};
 /// A read or write error on one file aborts with an error: half-applied
 /// repair must be reported, not glossed over.
 pub fn apply_fixes(config_dir: &Path, checks: &[Check]) -> Result<Vec<AppliedFix>, String> {
-    let mut by_service: BTreeMap<String, Vec<(String, FixOp)>> = BTreeMap::new();
+    let mut ops = Vec::new();
     for check in checks {
         for op in &check.fixes {
-            let Some(service) = op.service() else {
-                warn!("skipping a fix op this doctor build does not know");
-                continue;
-            };
-            by_service
-                .entry(service.to_string())
-                .or_default()
-                .push((check.name.clone(), op.clone()));
+            ops.push((check.name.clone(), op.clone()));
         }
+    }
+    apply_ops(config_dir, ops, false)
+}
+
+/// Apply a list of `(originating check name, op)` pairs, grouped per
+/// service file — [`apply_fixes`]'s engine, also driven directly by the
+/// provisioning pass and `doctor auth rotate`. `overwrite` governs
+/// [`FixOp::SetObject`] only: `false` (everything but rotate) preserves
+/// present blocks as operator intent.
+pub fn apply_ops(
+    config_dir: &Path,
+    ops: Vec<(String, FixOp)>,
+    overwrite: bool,
+) -> Result<Vec<AppliedFix>, String> {
+    let mut by_service: BTreeMap<String, Vec<(String, FixOp)>> = BTreeMap::new();
+    for (check_name, op) in ops {
+        let Some(service) = op.service() else {
+            warn!("skipping a fix op this doctor build cannot apply: {op}");
+            continue;
+        };
+        by_service
+            .entry(service.to_string())
+            .or_default()
+            .push((check_name, op));
     }
 
     let mut applied = Vec::new();
@@ -47,7 +64,7 @@ pub fn apply_fixes(config_dir: &Path, checks: &[Check]) -> Result<Vec<AppliedFix
 
         let mut wrote_any = false;
         for (check_name, op) in ops {
-            if apply_op(&mut value, &op) {
+            if apply_op(&mut value, &op, overwrite) {
                 debug!("applied: {op}");
                 wrote_any = true;
                 applied.push(AppliedFix {
@@ -55,7 +72,7 @@ pub fn apply_fixes(config_dir: &Path, checks: &[Check]) -> Result<Vec<AppliedFix
                     op,
                 });
             } else {
-                debug!("fix target already gone, skipping: {op}");
+                debug!("fix target already gone or kept, skipping: {op}");
             }
         }
         if wrote_any {
@@ -67,28 +84,48 @@ pub fn apply_fixes(config_dir: &Path, checks: &[Check]) -> Result<Vec<AppliedFix
 }
 
 /// Apply one op to a config value. Returns whether anything changed. Ops
-/// never create intermediate structure: the pointer was derived from the
-/// same file moments ago, so a missing parent means the target is already
-/// gone.
-fn apply_op(value: &mut Value, op: &FixOp) -> bool {
+/// never create intermediate structure — the pointer was derived from the
+/// same file moments ago, so a missing *parent* means the target is
+/// already gone — but the final key is created when absent (the whole
+/// point of the provisioning ops).
+fn apply_op(value: &mut Value, op: &FixOp, overwrite: bool) -> bool {
     match op {
         FixOp::SetNumber {
             pointer, value: n, ..
-        } => set(value, pointer, Value::from(*n)),
+        } => upsert(value, pointer, Value::from(*n), true),
         FixOp::SetString {
             pointer, value: s, ..
-        } => set(value, pointer, Value::from(s.as_str())),
+        } => upsert(value, pointer, Value::from(s.as_str()), true),
+        FixOp::SetObject {
+            pointer, value: v, ..
+        } => upsert(value, pointer, v.clone(), overwrite),
         FixOp::RemoveKey { pointer, .. } => remove(value, pointer),
-        FixOp::Unknown => false,
+        // Provisioning actions are performed against the pki tree, never as
+        // config-pointer ops; an unknown op from a newer binary cannot be
+        // applied at all.
+        FixOp::GenerateCa | FixOp::GenerateCert { .. } | FixOp::MintCredential | FixOp::Unknown => {
+            false
+        }
     }
 }
 
-fn set(value: &mut Value, pointer: &str, new: Value) -> bool {
-    match value.pointer_mut(pointer) {
-        Some(slot) if *slot != new => {
-            *slot = new;
-            true
-        }
+/// Set `pointer` to `new`, creating the final key when absent (the parent
+/// must exist and be an object). With `overwrite` false an existing
+/// non-null value is left alone — a present block is operator intent.
+fn upsert(value: &mut Value, pointer: &str, new: Value, overwrite: bool) -> bool {
+    let Some((parent_ptr, key)) = pointer.rsplit_once('/') else {
+        return false;
+    };
+    let key = key.replace("~1", "/").replace("~0", "~");
+    match value.pointer_mut(parent_ptr) {
+        Some(Value::Object(map)) => match map.get(&key) {
+            Some(existing) if *existing == new => false,
+            Some(existing) if !existing.is_null() && !overwrite => false,
+            _ => {
+                map.insert(key, new);
+                true
+            }
+        },
         _ => false,
     }
 }
@@ -125,18 +162,50 @@ mod tests {
     }
 
     #[test]
-    fn test_set_changes_and_reports_noop() {
+    fn test_upsert_changes_and_reports_noop() {
         let mut v = sample();
-        assert!(set(&mut v, "/server/port", Value::from(11113u64)));
+        assert!(upsert(&mut v, "/server/port", Value::from(11113u64), true));
         assert_eq!(v["server"]["port"], 11113);
         assert!(
-            !set(&mut v, "/server/port", Value::from(11113u64)),
+            !upsert(&mut v, "/server/port", Value::from(11113u64), true),
             "setting the same value is a no-op"
         );
         assert!(
-            !set(&mut v, "/absent/port", Value::from(1u64)),
+            !upsert(&mut v, "/absent/port", Value::from(1u64), true),
             "a missing parent is never created"
         );
+    }
+
+    #[test]
+    fn test_upsert_creates_the_final_key_but_respects_present_values() {
+        let mut v = sample();
+        let block = serde_json::json!({ "cert": "/p/c.pem", "key": "/p/k.pem" });
+        assert!(
+            upsert(&mut v, "/server/tls", block.clone(), false),
+            "an absent key is created"
+        );
+        assert_eq!(v["server"]["tls"], block);
+
+        let other = serde_json::json!({ "cert": "/other.pem", "key": "/other-key.pem" });
+        assert!(
+            !upsert(&mut v, "/server/tls", other.clone(), false),
+            "a present block is operator intent"
+        );
+        assert_eq!(v["server"]["tls"], block);
+
+        assert!(
+            upsert(&mut v, "/server/tls", other.clone(), true),
+            "overwrite (rotation) replaces it"
+        );
+        assert_eq!(v["server"]["tls"], other);
+
+        v["server"]["auth"] = Value::Null;
+        let auth = serde_json::json!({ "username": "observatory", "password_hash": "h" });
+        assert!(
+            upsert(&mut v, "/server/auth", auth.clone(), false),
+            "an explicit null still means absent"
+        );
+        assert_eq!(v["server"]["auth"], auth);
     }
 
     #[test]
@@ -159,7 +228,8 @@ mod tests {
                 service: "x".to_string(),
                 pointer: "/server/port".to_string(),
                 value: 1,
-            }
+            },
+            false,
         ));
         assert!(apply_op(
             &mut v,
@@ -167,18 +237,41 @@ mod tests {
                 service: "x".to_string(),
                 pointer: "/drivers/a~1b/base_url".to_string(),
                 value: "http://y".to_string(),
-            }
+            },
+            false,
+        ));
+        assert!(apply_op(
+            &mut v,
+            &FixOp::SetObject {
+                service: "x".to_string(),
+                pointer: "/server/tls".to_string(),
+                value: serde_json::json!({ "cert": "c", "key": "k" }),
+            },
+            false,
         ));
         assert!(apply_op(
             &mut v,
             &FixOp::RemoveKey {
                 service: "x".to_string(),
                 pointer: "/keep".to_string(),
-            }
+            },
+            false,
         ));
+        for op in [FixOp::GenerateCa, FixOp::MintCredential, FixOp::Unknown] {
+            assert!(
+                !apply_op(&mut v, &op, true),
+                "{op} is never a config-pointer application"
+            );
+        }
         assert!(
-            !apply_op(&mut v, &FixOp::Unknown),
-            "an unknown op from a newer binary is never applied"
+            !apply_op(
+                &mut v,
+                &FixOp::GenerateCert {
+                    service: "x".to_string()
+                },
+                true
+            ),
+            "certificate issuance is not a config-pointer application"
         );
     }
 

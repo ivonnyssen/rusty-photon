@@ -145,7 +145,7 @@ fn parse_server_block(block: &Value, class: ServerClass) -> ServerBlock {
 
 /// The `.json` files in the config dir that belong to no catalog service —
 /// candidates for the unknown-config warning. Known non-service files are
-/// exempt: `acme.json` (rp-tls ACME state) lives beside the configs.
+/// exempt: `acme.json` (doctor's ACME state) lives beside the configs.
 pub fn unknown_config_files(config_dir: &Path, known: &[String]) -> Vec<String> {
     const NON_SERVICE_FILES: &[&str] = &["acme.json"];
     let Ok(entries) = std::fs::read_dir(config_dir) else {
@@ -204,6 +204,16 @@ pub struct WatchdogView {
     pub operations: BTreeMap<String, WatchdogOperationView>,
 }
 
+/// sentinel: the doctor-written observatory credential its health probes
+/// present to supervised services (docs/services/sentinel.md).
+#[derive(Debug, Deserialize, Default)]
+pub struct ClientAuthView {
+    #[serde(default)]
+    pub username: Option<String>,
+    #[serde(default)]
+    pub password: Option<String>,
+}
+
 /// sentinel: the blocks doctor joins across. The retired `services` map is
 /// read only to diagnose it (`config.retired-keys`) — since D3s sentinel
 /// discovers its services from the platform service manager.
@@ -213,6 +223,8 @@ pub struct SentinelView {
     pub services: Option<Value>,
     #[serde(default)]
     pub operation_watchdog: Option<WatchdogView>,
+    #[serde(default)]
+    pub service_auth: Option<ClientAuthView>,
 }
 
 /// rp: the session block field doctor checks.

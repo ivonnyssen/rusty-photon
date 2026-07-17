@@ -1,38 +1,114 @@
 //! rusty-photon-doctor CLI (docs/services/doctor.md §CLI contract).
 //!
-//! One-shot: diagnose (and repair, with --fix), print, exit. Exit 0 = no
-//! failing check (warnings allowed; post-fix state on a --fix run), 1 = at
-//! least one failure, 2 = doctor itself could not run.
+//! One-shot: diagnose (and repair, with --fix), print, exit — plus the
+//! provisioning subcommands (`tls issue`, `auth rotate`,
+//! `auth hash-password`). Exit 0 = no failing check (warnings allowed;
+//! post-fix state on a --fix run) / the subcommand succeeded, 1 = at least
+//! one failure, 2 = doctor itself could not run.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use doctor::facts::PlatformFacts;
+use doctor::report::Report;
+use tracing::debug;
 use tracing_subscriber::EnvFilter;
 
-/// Diagnoses a multi-service rusty-photon install: config files, ports,
-/// and cross-service wiring. Read-only.
+/// Diagnoses and repairs a multi-service rusty-photon install: config
+/// files, ports, cross-service wiring, TLS, and the observatory
+/// credential. A default run is read-only.
 #[derive(Debug, Parser)]
 #[command(name = "rusty-photon-doctor", version)]
 struct Cli {
     /// Config directory to diagnose. Default: /etc/rusty-photon when the
     /// packaged symlink exists (Unix), else the platform config directory
-    /// the services themselves use.
-    #[arg(long)]
+    /// the services themselves use. Scopes the pki tree too.
+    #[arg(long, global = true)]
     config_dir: Option<PathBuf>,
     /// Emit the DoctorReport JSON instead of the human-readable report.
-    #[arg(long)]
+    #[arg(long, global = true)]
     json: bool,
-    /// Apply the machine-applicable fixes, re-diagnose, and report the
-    /// post-fix state. Everything else stays read-only.
+    /// Apply the machine-applicable fixes and the provisioning pass
+    /// (certs, credential, TLS/auth-on), re-diagnose, and report the
+    /// post-fix state.
     #[arg(long)]
     fix: bool,
     /// Test affordance: read platform facts from a JSON file instead of
     /// querying the host's service manager.
     #[cfg(feature = "mock")]
-    #[arg(long)]
+    #[arg(long, global = true)]
     platform_facts: Option<PathBuf>,
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Debug, Subcommand)]
+enum Command {
+    /// Certificate provisioning.
+    Tls {
+        #[command(subcommand)]
+        command: TlsCommand,
+    },
+    /// Observatory credential management.
+    Auth {
+        #[command(subcommand)]
+        command: AuthCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum TlsCommand {
+    /// Create the CA (if absent) and a certificate pair for each installed
+    /// service that lacks one, under `<config-root>/pki`. Configs are
+    /// never touched — that is `--fix`'s provisioning pass.
+    Issue {
+        /// Request a publicly-trusted wildcard certificate via ACME
+        /// (DNS-01) instead of self-signed issuance.
+        #[arg(long)]
+        acme: bool,
+        /// Base domain (the wildcard certificate covers `*.<domain>`).
+        #[arg(long)]
+        domain: Option<String>,
+        /// DNS provider for the DNS-01 challenge (supported: cloudflare).
+        #[arg(long)]
+        dns_provider: Option<String>,
+        /// DNS provider API token.
+        #[arg(long)]
+        dns_token: Option<String>,
+        /// ACME account email for expiry notifications.
+        #[arg(long)]
+        email: Option<String>,
+        /// Use the Let's Encrypt staging endpoint.
+        #[arg(long)]
+        staging: bool,
+        /// Restrict issuance to the named services (default: the installed
+        /// set, derived from the catalog).
+        #[arg(long, num_args = 1..)]
+        services: Vec<String>,
+        /// Additional subject alternative names for the service certs.
+        #[arg(long, num_args = 1..)]
+        extra_san: Vec<String>,
+        /// Re-issue service certificates even when a pair exists. Never
+        /// re-issues the CA.
+        #[arg(long)]
+        force: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum AuthCommand {
+    /// Mint a fresh observatory credential, overwrite `pki/credential`,
+    /// and re-align every installed service's `server.auth` and sentinel's
+    /// `service_auth` to it.
+    Rotate,
+    /// Hash one password (Argon2id) for hand-written configs. Prompts with
+    /// confirmation, or reads one line from stdin with --stdin.
+    HashPassword {
+        /// Read the password from stdin instead of prompting.
+        #[arg(long)]
+        stdin: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -42,19 +118,26 @@ fn main() -> ExitCode {
         .init();
     let cli = Cli::parse();
 
-    let facts = match gather_facts(&cli) {
-        Ok(facts) => facts,
-        Err(e) => {
-            eprintln!("doctor: {e}");
-            return ExitCode::from(2);
-        }
-    };
-    let config_dir = match doctor::resolve_config_dir(cli.config_dir) {
-        Ok(dir) => dir,
-        Err(e) => {
-            eprintln!("doctor: {e}");
-            return ExitCode::from(2);
-        }
+    match &cli.command {
+        None => run_diagnosis(&cli),
+        Some(Command::Tls {
+            command: TlsCommand::Issue { .. },
+        }) => run_tls_issue(&cli),
+        Some(Command::Auth {
+            command: AuthCommand::Rotate,
+        }) => run_auth_rotate(&cli),
+        Some(Command::Auth {
+            command: AuthCommand::HashPassword { stdin },
+        }) => run_hash_password(*stdin),
+    }
+}
+
+/// The default run: diagnose (and with --fix, repair + provision), print
+/// the report, exit by the post-run state.
+fn run_diagnosis(cli: &Cli) -> ExitCode {
+    let (config_dir, facts) = match resolve_inputs(cli) {
+        Ok(inputs) => inputs,
+        Err(code) => return code,
     };
 
     let report = if cli.fix {
@@ -81,21 +164,321 @@ fn main() -> ExitCode {
     } else {
         doctor::diagnose(config_dir, facts)
     };
-    if cli.json {
-        match serde_json::to_string_pretty(&report) {
-            Ok(json) => println!("{json}"),
-            Err(e) => {
-                eprintln!("doctor: could not serialize the report: {e}");
-                return ExitCode::from(2);
-            }
-        }
-    } else {
-        print!("{}", doctor::render::render(&report));
+    if let Err(code) = print_report(cli, &report) {
+        return code;
     }
     if report.has_failures() {
         ExitCode::from(1)
     } else {
         ExitCode::SUCCESS
+    }
+}
+
+/// `doctor tls issue`: the cert step alone — self-signed CA + per-service
+/// pairs, or the ACME wildcard path with --acme. Exit 0 on success.
+fn run_tls_issue(cli: &Cli) -> ExitCode {
+    let Some(Command::Tls {
+        command:
+            TlsCommand::Issue {
+                acme,
+                domain,
+                dns_provider,
+                dns_token,
+                email,
+                staging,
+                services,
+                extra_san,
+                force,
+            },
+    }) = &cli.command
+    else {
+        return ExitCode::from(2);
+    };
+    let (config_dir, facts) = match resolve_inputs(cli) {
+        Ok(inputs) => inputs,
+        Err(code) => return code,
+    };
+
+    if *acme {
+        return run_tls_issue_acme(
+            &config_dir,
+            domain.as_deref(),
+            dns_provider.as_deref(),
+            dns_token.as_deref(),
+            email.as_deref(),
+            *staging,
+        );
+    }
+
+    let ctx = doctor::checks::Context::gather(config_dir.clone(), facts);
+    let service_set = if services.is_empty() {
+        ctx.installed_services()
+    } else {
+        services.clone()
+    };
+    debug!(?service_set, force, "issuing self-signed certificates");
+    let applied =
+        match doctor::provision::ensure_material(&config_dir, &service_set, extra_san, *force) {
+            Ok(applied) => applied,
+            Err(e) => {
+                eprintln!("doctor: {e}");
+                return ExitCode::from(2);
+            }
+        };
+
+    if cli.json {
+        let report =
+            Report::new(ctx.mode, config_dir.clone(), Vec::new()).with_fixes_applied(applied);
+        if let Err(code) = print_json(&report) {
+            return code;
+        }
+    } else {
+        let pki = doctor::provision::pki_dir(&config_dir);
+        println!("pki tree: {}", pki.display());
+        if applied.is_empty() {
+            println!("nothing to issue — the CA and every requested pair already exist");
+        }
+        for fix in &applied {
+            println!("{}", fix.op);
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+/// The ACME leg of `tls issue`. The configuration is persisted to
+/// `<config-root>/acme.json` before the order is attempted — that is the
+/// contract renewal picks up from, whether or not the order succeeds.
+fn run_tls_issue_acme(
+    config_dir: &std::path::Path,
+    domain: Option<&str>,
+    dns_provider: Option<&str>,
+    dns_token: Option<&str>,
+    email: Option<&str>,
+    staging: bool,
+) -> ExitCode {
+    let required = [
+        ("--domain", domain),
+        ("--dns-provider", dns_provider),
+        ("--dns-token", dns_token),
+        ("--email", email),
+    ];
+    for (flag, value) in required {
+        if value.is_none() {
+            eprintln!("doctor: {flag} is required with --acme");
+            return ExitCode::from(2);
+        }
+    }
+    let (Some(domain), Some(dns_provider), Some(dns_token), Some(email)) =
+        (domain, dns_provider, dns_token, email)
+    else {
+        return ExitCode::from(2);
+    };
+
+    let runtime = match tokio::runtime::Runtime::new() {
+        Ok(runtime) => runtime,
+        Err(e) => {
+            eprintln!("doctor: could not start the async runtime: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    match runtime.block_on(doctor::provision::run_acme(
+        config_dir,
+        domain,
+        dns_provider,
+        dns_token,
+        email,
+        staging,
+    )) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("doctor: {e}");
+            ExitCode::from(2)
+        }
+    }
+}
+
+/// `doctor auth rotate`: mint a fresh credential and re-align every copy —
+/// unlike `--fix`, present `server.auth` / `service_auth` blocks are
+/// overwritten. Services pick the new hash up at their next restart.
+fn run_auth_rotate(cli: &Cli) -> ExitCode {
+    let (config_dir, facts) = match resolve_inputs(cli) {
+        Ok(inputs) => inputs,
+        Err(code) => return code,
+    };
+    let ctx = doctor::checks::Context::gather(config_dir.clone(), facts);
+
+    let password = match doctor::provision::mint_credential(&config_dir) {
+        Ok(password) => password,
+        Err(e) => {
+            eprintln!("doctor: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    let mut applied = vec![doctor::report::AppliedFix {
+        check: "provisioning".to_string(),
+        op: doctor::report::FixOp::MintCredential,
+    }];
+
+    let ops = match rotate_ops(&ctx, &password) {
+        Ok(ops) => ops,
+        Err(e) => {
+            eprintln!("doctor: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    match doctor::fix::apply_ops(&config_dir, ops, true) {
+        Ok(written) => applied.extend(written),
+        Err(e) => {
+            eprintln!("doctor: {e}");
+            return ExitCode::from(2);
+        }
+    }
+
+    if cli.json {
+        let report =
+            Report::new(ctx.mode, config_dir.clone(), Vec::new()).with_fixes_applied(applied);
+        if let Err(code) = print_json(&report) {
+            return code;
+        }
+    } else {
+        println!(
+            "rotated the observatory credential (canonical copy: {}); \
+             restart services to pick up the new hash",
+            doctor::provision::credential_path(&config_dir).display()
+        );
+        for fix in &applied {
+            println!("{}", fix.op);
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+/// The distribution ops for a rotation: the fresh hash into every
+/// installed service's `server.auth`, the plaintext into sentinel's
+/// `service_auth`.
+fn rotate_ops(
+    ctx: &doctor::checks::Context,
+    password: &str,
+) -> Result<Vec<(String, doctor::report::FixOp)>, String> {
+    use doctor::report::FixOp;
+    let mut ops = Vec::new();
+    for service in ctx.installed_services() {
+        let hash = rp_auth::credentials::hash_password(password)
+            .map_err(|e| format!("could not hash the credential: {e}"))?;
+        ops.push((
+            "provisioning".to_string(),
+            FixOp::SetObject {
+                service: service.clone(),
+                pointer: "/server/auth".to_string(),
+                value: serde_json::json!({
+                    "username": doctor::provision::CREDENTIAL_USERNAME,
+                    "password_hash": hash,
+                }),
+            },
+        ));
+        if service == "sentinel" {
+            ops.push((
+                "provisioning".to_string(),
+                FixOp::SetObject {
+                    service,
+                    pointer: "/service_auth".to_string(),
+                    value: serde_json::json!({
+                        "username": doctor::provision::CREDENTIAL_USERNAME,
+                        "password": password,
+                    }),
+                },
+            ));
+        }
+    }
+    Ok(ops)
+}
+
+/// `doctor auth hash-password`: hash one password for hand-written configs
+/// (the third-party-driver escape hatch).
+fn run_hash_password(stdin_mode: bool) -> ExitCode {
+    let password = if stdin_mode {
+        debug!("reading the password from stdin");
+        let mut line = String::new();
+        if let Err(e) = std::io::stdin().read_line(&mut line) {
+            eprintln!("doctor: could not read stdin: {e}");
+            return ExitCode::from(2);
+        }
+        line.trim_end().to_string()
+    } else {
+        let password = match rpassword::prompt_password("Enter password: ") {
+            Ok(password) => password,
+            Err(e) => {
+                eprintln!("doctor: could not read the password: {e}");
+                return ExitCode::from(2);
+            }
+        };
+        let confirm = match rpassword::prompt_password("Confirm password: ") {
+            Ok(confirm) => confirm,
+            Err(e) => {
+                eprintln!("doctor: could not read the confirmation: {e}");
+                return ExitCode::from(2);
+            }
+        };
+        if password != confirm {
+            eprintln!("doctor: passwords do not match");
+            return ExitCode::from(2);
+        }
+        password
+    };
+    if password.is_empty() {
+        eprintln!("doctor: password must not be empty");
+        return ExitCode::from(2);
+    }
+    match rp_auth::credentials::hash_password(&password) {
+        Ok(hash) => {
+            println!("{hash}");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("doctor: {e}");
+            ExitCode::from(2)
+        }
+    }
+}
+
+/// The config dir + platform facts every config-touching path starts from.
+fn resolve_inputs(cli: &Cli) -> Result<(PathBuf, PlatformFacts), ExitCode> {
+    let facts = match gather_facts(cli) {
+        Ok(facts) => facts,
+        Err(e) => {
+            eprintln!("doctor: {e}");
+            return Err(ExitCode::from(2));
+        }
+    };
+    let config_dir = match doctor::resolve_config_dir(cli.config_dir.clone()) {
+        Ok(dir) => dir,
+        Err(e) => {
+            eprintln!("doctor: {e}");
+            return Err(ExitCode::from(2));
+        }
+    };
+    Ok((config_dir, facts))
+}
+
+fn print_report(cli: &Cli, report: &Report) -> Result<(), ExitCode> {
+    if cli.json {
+        print_json(report)
+    } else {
+        print!("{}", doctor::render::render(report));
+        Ok(())
+    }
+}
+
+fn print_json(report: &Report) -> Result<(), ExitCode> {
+    match serde_json::to_string_pretty(report) {
+        Ok(json) => {
+            println!("{json}");
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("doctor: could not serialize the report: {e}");
+            Err(ExitCode::from(2))
+        }
     }
 }
 
@@ -108,6 +491,7 @@ fn gather_facts(cli: &Cli) -> Result<PlatformFacts, String> {
 }
 
 #[cfg(not(feature = "mock"))]
-fn gather_facts(_cli: &Cli) -> Result<PlatformFacts, String> {
+fn gather_facts(cli: &Cli) -> Result<PlatformFacts, String> {
+    let _ = cli;
     Ok(PlatformFacts::gather())
 }

@@ -12,6 +12,7 @@ pub mod catalog;
 pub mod checks;
 pub mod facts;
 pub mod fix;
+pub mod provision;
 pub mod render;
 pub mod report;
 pub mod scan;
@@ -99,18 +100,27 @@ const MAX_FIX_ROUNDS: usize = 4;
 
 /// Diagnose, apply the machine-applicable fixes, re-diagnose — repeated
 /// until a round plans nothing — and report the post-fix state plus what
-/// was written. `Err` means a fix write itself failed (exit 2 territory);
-/// the diagnosis outcome stays in the report.
+/// was written. The provisioning material pass (docs/services/doctor.md
+/// §Provisioning) runs first: the `server.tls`/`server.auth` blocks the
+/// fix rounds write must point at material that exists, and the
+/// `auth.absent` plan needs `pki/credential` to hash. `Err` means a
+/// provisioning step or fix write itself failed (exit 2 territory); the
+/// diagnosis outcome stays in the report.
 pub fn diagnose_and_fix(config_dir: PathBuf, facts: PlatformFacts) -> Result<Report, String> {
-    let mut applied = Vec::new();
+    let mut applied = provision_material(&config_dir, &facts)?;
     for round in 0..MAX_FIX_ROUNDS {
         let report = diagnose(config_dir.clone(), facts.clone());
         let planned: usize = report.checks.iter().map(|c| c.fixes.len()).sum();
-        if planned == 0 {
+        // The sentinel client-block wiring is provisioning-pass work, not a
+        // check's fix plan — planned fresh each round so a second run plans
+        // (and applies) nothing.
+        let client_ops = provision::plan_client_wiring(&config_dir);
+        if planned == 0 && client_ops.is_empty() {
             debug!(round, applied = applied.len(), "fix rounds converged");
             return Ok(report.with_fixes_applied(applied));
         }
-        let round_applied = fix::apply_fixes(&config_dir, &report.checks)?;
+        let mut round_applied = fix::apply_fixes(&config_dir, &report.checks)?;
+        round_applied.extend(fix::apply_ops(&config_dir, client_ops, false)?);
         if round_applied.is_empty() {
             // Planned targets were already gone (a concurrent edit landed
             // between diagnosis and apply). Nothing was written, but the
@@ -121,6 +131,26 @@ pub fn diagnose_and_fix(config_dir: PathBuf, facts: PlatformFacts) -> Result<Rep
         applied.extend(round_applied);
     }
     Ok(diagnose(config_dir, facts).with_fixes_applied(applied))
+}
+
+/// The material half of the provisioning pass: CA-if-absent, a certificate
+/// pair per installed service, and the observatory credential. Nothing is
+/// created on a host with no installed services — an empty config
+/// directory must stay empty.
+fn provision_material(
+    config_dir: &Path,
+    facts: &PlatformFacts,
+) -> Result<Vec<report::AppliedFix>, String> {
+    let ctx = checks::Context::gather(config_dir.to_path_buf(), facts.clone());
+    let services = ctx.installed_services();
+    if services.is_empty() {
+        debug!("no installed services; skipping the provisioning material pass");
+        return Ok(Vec::new());
+    }
+    let mut applied = provision::ensure_material(config_dir, &services, &[], false)?;
+    let (_password, credential_applied) = provision::ensure_credential(config_dir)?;
+    applied.extend(credential_applied);
+    Ok(applied)
 }
 
 #[cfg(all(test, unix))]

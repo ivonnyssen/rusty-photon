@@ -160,7 +160,7 @@ dependencies = [
  "http-body-util",
  "if-addrs",
  "impl_serialize",
- "indexmap",
+ "indexmap 2.14.0",
  "macro_rules_attribute",
  "mediatype",
  "mime",
@@ -168,7 +168,7 @@ dependencies = [
  "num_enum",
  "paste",
  "rand 0.10.2",
- "reqwest",
+ "reqwest 0.13.4",
  "serde",
  "serde-ndim",
  "serde_json",
@@ -286,6 +286,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5ec2f1fc3ec205783a5da9a7e6c1509cc69dedf09a1949e412c1e18469326d00"
 dependencies = [
  "aws-lc-sys",
+ "untrusted 0.7.1",
  "zeroize",
 ]
 
@@ -397,7 +398,7 @@ dependencies = [
  "chrono",
  "humantime",
  "libc",
- "reqwest",
+ "reqwest 0.13.4",
  "rmcp",
  "rp-auth",
  "rp-ephemeris",
@@ -491,6 +492,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc0b364ead1874514c8c2855ab558056ebfeb775653e7ae45ff72f28f8f3166c"
 
 [[package]]
+name = "bs58"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bf88ba1141d185c399bee5288d850d63b8369520c1eafc32a0430b5b6c287bf4"
+dependencies = [
+ "tinyvec",
+]
+
+[[package]]
 name = "bstr"
 version = "1.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -559,7 +569,7 @@ dependencies = [
  "humantime-serde",
  "libc",
  "mockall",
- "reqwest",
+ "reqwest 0.13.4",
  "rmcp",
  "rp-auth",
  "rusty-photon-config",
@@ -632,8 +642,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327"
 dependencies = [
  "iana-time-zone",
+ "js-sys",
  "num-traits",
  "serde",
+ "wasm-bindgen",
  "windows-link",
 ]
 
@@ -688,6 +700,25 @@ name = "clap_lex"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
+
+[[package]]
+name = "cloudflare"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1678b3295890df5895480a7c080430e73df2b7101f1763f62a3b32dd532f1d37"
+dependencies = [
+ "chrono",
+ "http",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
+ "serde_with",
+ "thiserror 2.0.18",
+ "url",
+ "urlencoding",
+ "uuid",
+]
 
 [[package]]
 name = "cmake"
@@ -1040,6 +1071,9 @@ name = "deranged"
 version = "0.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7cd812cc2bc1d69d4764bd80df88b4317eaef9e773c75226407d9bc0876b211c"
+dependencies = [
+ "serde_core",
+]
 
 [[package]]
 name = "derive_more"
@@ -1120,18 +1154,30 @@ dependencies = [
 name = "doctor"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "axum",
  "bdd-infra",
  "clap",
+ "cloudflare",
  "cucumber",
- "reqwest",
+ "derive_more",
+ "hostname",
+ "instant-acme",
+ "mockall",
+ "rand 0.10.2",
+ "rcgen",
+ "reqwest 0.13.4",
  "rp-auth",
+ "rpassword",
+ "rustls",
+ "rustls-pemfile",
  "rusty-photon-config",
  "rusty-photon-server-config",
  "rusty-photon-tls",
  "serde",
  "serde_json",
  "tempfile",
+ "time",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -1162,7 +1208,7 @@ dependencies = [
  "rusty-photon-service-lifecycle",
  "rusty-photon-shared-transport",
  "rusty-photon-tls",
- "schemars",
+ "schemars 1.2.1",
  "serde",
  "serde_json",
  "tempfile",
@@ -1271,7 +1317,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1316,14 +1362,14 @@ dependencies = [
  "humantime-serde",
  "proptest",
  "regex",
- "reqwest",
+ "reqwest 0.13.4",
  "rp-auth",
  "rusty-photon-config",
  "rusty-photon-driver",
  "rusty-photon-server-config",
  "rusty-photon-service-lifecycle",
  "rusty-photon-tls",
- "schemars",
+ "schemars 1.2.1",
  "serde",
  "serde_json",
  "tempfile",
@@ -1369,7 +1415,7 @@ dependencies = [
  "byteorder",
  "flate2",
  "futures",
- "indexmap",
+ "indexmap 2.14.0",
  "log",
  "quick-error 2.0.1",
  "serde",
@@ -1735,12 +1781,18 @@ dependencies = [
  "futures-core",
  "futures-sink",
  "http",
- "indexmap",
+ "indexmap 2.14.0",
  "slab",
  "tokio",
  "tokio-util",
  "tracing",
 ]
+
+[[package]]
+name = "hashbrown"
+version = "0.12.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8a9ee70c43aaf417c914396645a0fa852624801b24ebb7ae78fe8272889ac888"
 
 [[package]]
 name = "hashbrown"
@@ -1767,6 +1819,23 @@ name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
+
+[[package]]
+name = "hex"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
+
+[[package]]
+name = "hostname"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "617aaa3557aef3810a6369d0a99fac8a080891b68bd9f9812a1eeda0c0730cbd"
+dependencies = [
+ "cfg-if",
+ "libc",
+ "windows-link",
+]
 
 [[package]]
 name = "html5ever"
@@ -1871,9 +1940,12 @@ dependencies = [
  "hyper",
  "hyper-util",
  "rustls",
+ "rustls-native-certs",
+ "rustls-platform-verifier",
  "tokio",
  "tokio-rustls",
  "tower-service",
+ "webpki-roots",
 ]
 
 [[package]]
@@ -2150,6 +2222,17 @@ checksum = "964de6e86d545b246d84badc0fef527924ace5134f30641c203ef52ba83f58d5"
 
 [[package]]
 name = "indexmap"
+version = "1.9.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bd070e393353796e801d209ad339e89596eb4c8d430d18ede6a1cced8fafbd99"
+dependencies = [
+ "autocfg",
+ "hashbrown 0.12.3",
+ "serde",
+]
+
+[[package]]
+name = "indexmap"
 version = "2.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d466e9454f08e4a911e14806c24e16fba1b4c121d1ea474396f396069cf949d9"
@@ -2181,6 +2264,32 @@ dependencies = [
  "similar",
  "strip-ansi-escapes",
  "tempfile",
+]
+
+[[package]]
+name = "instant-acme"
+version = "0.8.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9f05ad37c421b962354c358d347d4a6130151df9407978372d3ad7f0c8f71a64"
+dependencies = [
+ "async-trait",
+ "aws-lc-rs",
+ "base64",
+ "bytes",
+ "http",
+ "http-body",
+ "http-body-util",
+ "httpdate",
+ "hyper",
+ "hyper-rustls",
+ "hyper-util",
+ "rcgen",
+ "rustls",
+ "rustls-pki-types",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]
@@ -2592,6 +2701,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6877bb514081ee2a7ff5ef9de3281f14a4dd4bceac4c09388074a6b5df8a139a"
 
 [[package]]
+name = "mime_guess"
+version = "2.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f7c44f8e672c00fe5308fa235f821cb4198414e1c77935c1ab6948d3fd78550e"
+dependencies = [
+ "mime",
+ "unicase",
+]
+
+[[package]]
 name = "minimal-lexical"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2697,7 +2816,7 @@ version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b6e54a8b65764f71827a90ca1d56965ec0c67f069f996477bd493402a901d1f"
 dependencies = [
- "indexmap",
+ "indexmap 2.14.0",
  "itertools 0.13.0",
  "ndarray",
  "noisy_float",
@@ -2934,7 +3053,7 @@ dependencies = [
  "bdd-infra",
  "cargo-husky",
  "cucumber",
- "reqwest",
+ "reqwest 0.13.4",
  "serde_json",
  "tokio",
 ]
@@ -2972,7 +3091,7 @@ dependencies = [
  "humantime-serde",
  "mockall",
  "proptest",
- "reqwest",
+ "reqwest 0.13.4",
  "rp-auth",
  "rusty-photon-config",
  "rusty-photon-driver",
@@ -2980,7 +3099,7 @@ dependencies = [
  "rusty-photon-service-lifecycle",
  "rusty-photon-shared-transport",
  "rusty-photon-tls",
- "schemars",
+ "schemars 1.2.1",
  "serde",
  "serde_json",
  "tempfile",
@@ -3007,7 +3126,7 @@ dependencies = [
  "humantime-serde",
  "mockall",
  "proptest",
- "reqwest",
+ "reqwest 0.13.4",
  "rp-auth",
  "rusty-photon-config",
  "rusty-photon-driver",
@@ -3015,7 +3134,7 @@ dependencies = [
  "rusty-photon-service-lifecycle",
  "rusty-photon-shared-transport",
  "rusty-photon-tls",
- "schemars",
+ "schemars 1.2.1",
  "serde",
  "serde_json",
  "tempfile",
@@ -3167,7 +3286,7 @@ checksum = "8701b58ea97060d5e5b155d383a69952a60943f0e6dfe30b04c287beb0b27455"
 dependencies = [
  "fixedbitset",
  "hashbrown 0.15.5",
- "indexmap",
+ "indexmap 2.14.0",
 ]
 
 [[package]]
@@ -3185,7 +3304,7 @@ dependencies = [
  "humantime-serde",
  "libc",
  "mockall",
- "reqwest",
+ "reqwest 0.13.4",
  "rp-auth",
  "rp-fits",
  "rusty-photon-config",
@@ -3294,7 +3413,7 @@ dependencies = [
  "humantime-serde",
  "libc",
  "mockall",
- "reqwest",
+ "reqwest 0.13.4",
  "rp-auth",
  "rusty-photon-config",
  "rusty-photon-server-config",
@@ -3357,7 +3476,7 @@ dependencies = [
  "i18n-embed-fl",
  "mockall",
  "proptest",
- "reqwest",
+ "reqwest 0.13.4",
  "rp-auth",
  "rust-embed",
  "rusty-photon-config",
@@ -3367,7 +3486,7 @@ dependencies = [
  "rusty-photon-service-lifecycle",
  "rusty-photon-shared-transport",
  "rusty-photon-tls",
- "schemars",
+ "schemars 1.2.1",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -3529,7 +3648,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "343d3bd7056eda839b03204e68deff7d1b13aba7af2b2fd16890697274262ee7"
 dependencies = [
  "heck",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "log",
  "multimap",
  "petgraph",
@@ -3548,7 +3667,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "27c6023962132f4b30eb4c172c91ce92d933da334c59c23cddee82358ddafb0b"
 dependencies = [
  "anyhow",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "proc-macro2",
  "quote",
  "syn",
@@ -3578,14 +3697,14 @@ dependencies = [
  "ndarray",
  "parking_lot",
  "qhyccd-rs",
- "reqwest",
+ "reqwest 0.13.4",
  "rp-auth",
  "rusty-photon-config",
  "rusty-photon-driver",
  "rusty-photon-server-config",
  "rusty-photon-service-lifecycle",
  "rusty-photon-tls",
- "schemars",
+ "schemars 1.2.1",
  "serde",
  "serde_json",
  "tempfile",
@@ -3611,7 +3730,7 @@ dependencies = [
  "humantime-serde",
  "mockall",
  "proptest",
- "reqwest",
+ "reqwest 0.13.4",
  "rp-auth",
  "rusty-photon-config",
  "rusty-photon-driver",
@@ -3619,7 +3738,7 @@ dependencies = [
  "rusty-photon-service-lifecycle",
  "rusty-photon-shared-transport",
  "rusty-photon-tls",
- "schemars",
+ "schemars 1.2.1",
  "serde",
  "serde_json",
  "tempfile",
@@ -3711,7 +3830,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3852,6 +3971,7 @@ version = "0.14.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57f6d249aad744e274e682777a50283a225a32705394ee6d5fcc01efa25e4055"
 dependencies = [
+ "aws-lc-rs",
  "pem",
  "ring",
  "rustls-pki-types",
@@ -3948,6 +4068,46 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "reqwest"
+version = "0.12.28"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eddd3ca559203180a307f12d114c268abf583f59b03cb906fd0b3ff8646c1147"
+dependencies = [
+ "base64",
+ "bytes",
+ "futures-core",
+ "futures-util",
+ "http",
+ "http-body",
+ "http-body-util",
+ "hyper",
+ "hyper-rustls",
+ "hyper-util",
+ "js-sys",
+ "log",
+ "mime_guess",
+ "percent-encoding",
+ "pin-project-lite",
+ "quinn",
+ "rustls",
+ "rustls-pki-types",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
+ "sync_wrapper",
+ "tokio",
+ "tokio-rustls",
+ "tower",
+ "tower-http",
+ "tower-service",
+ "url",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "webpki-roots",
+]
+
+[[package]]
+name = "reqwest"
 version = "0.13.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "219c5811de6525e5416c7d5d53bb656d3afdbc6c5af816e0802bcfa42dbdc1c3"
@@ -4000,7 +4160,7 @@ dependencies = [
  "cfg-if",
  "getrandom 0.2.17",
  "libc",
- "untrusted",
+ "untrusted 0.9.0",
  "windows-sys 0.52.0",
 ]
 
@@ -4020,9 +4180,9 @@ dependencies = [
  "pastey",
  "pin-project-lite",
  "rand 0.10.2",
- "reqwest",
+ "reqwest 0.13.4",
  "rmcp-macros",
- "schemars",
+ "schemars 1.2.1",
  "serde",
  "serde_json",
  "sse-stream",
@@ -4075,7 +4235,7 @@ dependencies = [
  "mockall",
  "ndarray",
  "ndarray-ndimage",
- "reqwest",
+ "reqwest 0.13.4",
  "rmcp",
  "rmpfit",
  "rp-auth",
@@ -4089,7 +4249,7 @@ dependencies = [
  "rusty-photon-server-config",
  "rusty-photon-service-lifecycle",
  "rusty-photon-tls",
- "schemars",
+ "schemars 1.2.1",
  "serde",
  "serde_json",
  "tempfile",
@@ -4109,8 +4269,8 @@ dependencies = [
  "axum",
  "base64",
  "derive_more",
- "reqwest",
- "schemars",
+ "reqwest 0.13.4",
+ "schemars 1.2.1",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -4160,7 +4320,7 @@ dependencies = [
  "axum",
  "humantime-serde",
  "mockall",
- "reqwest",
+ "reqwest 0.13.4",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -4176,7 +4336,7 @@ dependencies = [
  "axum",
  "humantime-serde",
  "mockall",
- "reqwest",
+ "reqwest 0.13.4",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -4288,7 +4448,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4300,6 +4460,7 @@ dependencies = [
  "aws-lc-rs",
  "log",
  "once_cell",
+ "ring",
  "rustls-pki-types",
  "rustls-webpki",
  "subtle",
@@ -4355,7 +4516,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4373,7 +4534,7 @@ dependencies = [
  "aws-lc-rs",
  "ring",
  "rustls-pki-types",
- "untrusted",
+ "untrusted 0.9.0",
 ]
 
 [[package]]
@@ -4399,7 +4560,7 @@ name = "rusty-photon-config"
 version = "0.1.0"
 dependencies = [
  "directories",
- "schemars",
+ "schemars 1.2.1",
  "serde",
  "serde_json",
  "tempfile",
@@ -4416,7 +4577,7 @@ dependencies = [
  "rusty-photon-config",
  "rusty-photon-service-lifecycle",
  "rusty-photon-shared-transport",
- "schemars",
+ "schemars 1.2.1",
  "serde",
  "serde_json",
  "tempfile",
@@ -4456,7 +4617,7 @@ version = "0.1.0"
 dependencies = [
  "rp-auth",
  "rusty-photon-tls",
- "schemars",
+ "schemars 1.2.1",
  "serde",
  "serde_json",
 ]
@@ -4496,10 +4657,10 @@ dependencies = [
  "axum",
  "hyper-util",
  "rcgen",
- "reqwest",
+ "reqwest 0.13.4",
  "rustls",
  "rustls-pemfile",
- "schemars",
+ "schemars 1.2.1",
  "serde",
  "serde_json",
  "socket2",
@@ -4532,6 +4693,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "91c1b7e4904c873ef0710c1f407dde2e6287de2bebc1bbbf7d430bb7cbffd939"
 dependencies = [
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "schemars"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4cd191f9397d57d581cddd31014772520aa448f65ef991055d7f61582c65165f"
+dependencies = [
+ "dyn-clone",
+ "ref-cast",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -4660,7 +4833,7 @@ dependencies = [
  "humantime",
  "humantime-serde",
  "mockall",
- "reqwest",
+ "reqwest 0.13.4",
  "rp-auth",
  "rusty-photon-config",
  "rusty-photon-server-config",
@@ -4734,7 +4907,7 @@ version = "1.0.150"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e8014e44b4736ed0538adeecded0fce2a272f22dc9578a7eb6b2d9993c74cfb9"
 dependencies = [
- "indexmap",
+ "indexmap 2.14.0",
  "itoa",
  "memchr",
  "serde",
@@ -4774,6 +4947,38 @@ dependencies = [
  "itoa",
  "ryu",
  "serde",
+]
+
+[[package]]
+name = "serde_with"
+version = "3.21.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "76a5c54c7310e7b8b9577c286d7e399ddd876c3e12b3ed917a8aabc4b96e9e8c"
+dependencies = [
+ "base64",
+ "bs58",
+ "chrono",
+ "hex",
+ "indexmap 1.9.3",
+ "indexmap 2.14.0",
+ "schemars 0.9.0",
+ "schemars 1.2.1",
+ "serde_core",
+ "serde_json",
+ "serde_with_macros",
+ "time",
+]
+
+[[package]]
+name = "serde_with_macros"
+version = "3.21.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "84d57bc0c8b9a17920c178daa6bb924850d54a9c97ab45194bb8c17ad66bb660"
+dependencies = [
+ "darling",
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]
@@ -4837,7 +5042,7 @@ dependencies = [
  "humantime",
  "jsonschema",
  "proptest",
- "reqwest",
+ "reqwest 0.13.4",
  "rmcp",
  "rp-auth",
  "rusty-photon-config",
@@ -4946,7 +5151,7 @@ dependencies = [
  "ndarray",
  "parking_lot",
  "proptest",
- "reqwest",
+ "reqwest 0.13.4",
  "rp-auth",
  "rp-fits",
  "rusty-photon-config",
@@ -4954,7 +5159,7 @@ dependencies = [
  "rusty-photon-server-config",
  "rusty-photon-service-lifecycle",
  "rusty-photon-tls",
- "schemars",
+ "schemars 1.2.1",
  "serde",
  "serde_json",
  "tempfile",
@@ -5049,7 +5254,7 @@ dependencies = [
  "mockall",
  "proptest",
  "regex",
- "reqwest",
+ "reqwest 0.13.4",
  "rp-auth",
  "rusty-photon-config",
  "rusty-photon-driver",
@@ -5057,7 +5262,7 @@ dependencies = [
  "rusty-photon-service-lifecycle",
  "rusty-photon-shared-transport",
  "rusty-photon-tls",
- "schemars",
+ "schemars 1.2.1",
  "serde",
  "serde_json",
  "skywatcher-motor-protocol",
@@ -5242,10 +5447,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.2",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5302,9 +5507,9 @@ dependencies = [
  "fs4",
  "futures-util",
  "http",
- "indexmap",
+ "indexmap 2.14.0",
  "pastey",
- "reqwest",
+ "reqwest 0.13.4",
  "serde",
  "serde_json",
  "serde_repr",
@@ -5548,7 +5753,7 @@ version = "0.25.12+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d2153edc6955a6c354fad8f5efd38b6a8769bdccf9fe50f8e1329f81b0baa5d7"
 dependencies = [
- "indexmap",
+ "indexmap 2.14.0",
  "toml_datetime",
  "toml_parser",
  "winnow",
@@ -5795,7 +6000,7 @@ dependencies = [
  "libc",
  "maud",
  "mockall",
- "reqwest",
+ "reqwest 0.13.4",
  "rp-auth",
  "rusty-photon-config",
  "rusty-photon-server-config",
@@ -5878,6 +6083,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "unicase"
+version = "2.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dbc4bc3a9f746d862c45cb89d705aa10f187bb96c76001afab07a0d35ce60142"
+
+[[package]]
 name = "unicode-general-category"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5915,6 +6126,12 @@ checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
 
 [[package]]
 name = "untrusted"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a156c684c91ea7d62626509bce3cb4e1d9ed5c4d978f7b4352658f96a4c26b4a"
+
+[[package]]
+name = "untrusted"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
@@ -5930,6 +6147,12 @@ dependencies = [
  "percent-encoding",
  "serde",
 ]
+
+[[package]]
+name = "urlencoding"
+version = "2.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "daf8dba3b7eb870caf1ddeed7bc9d2a049f3cfdfae7cb521b087cc33ae4c49da"
 
 [[package]]
 name = "utf-8"
@@ -6122,7 +6345,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bb0e353e6a2fbdc176932bbaab493762eb1255a7900fe0fea1a2f96c296cc909"
 dependencies = [
  "anyhow",
- "indexmap",
+ "indexmap 2.14.0",
  "wasm-encoder",
  "wasmparser",
 ]
@@ -6148,7 +6371,7 @@ checksum = "47b807c72e1bac69382b3a6fb3dbe8ea4c0ed87ff5629b8685ae6b9a611028fe"
 dependencies = [
  "bitflags 2.11.1",
  "hashbrown 0.15.5",
- "indexmap",
+ "indexmap 2.14.0",
  "semver",
 ]
 
@@ -6207,6 +6430,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "webpki-roots"
+version = "1.0.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bf85cb06032201fa7c6f829d7db5a7e5aa45bcc0655327713065f6f0576731bf"
+dependencies = [
+ "rustls-pki-types",
+]
+
+[[package]]
 name = "widestring"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6234,7 +6466,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6458,7 +6690,7 @@ checksum = "b7c566e0f4b284dd6561c786d9cb0142da491f46a9fbed79ea69cdad5db17f21"
 dependencies = [
  "anyhow",
  "heck",
- "indexmap",
+ "indexmap 2.14.0",
  "prettyplease",
  "syn",
  "wasm-metadata",
@@ -6489,7 +6721,7 @@ checksum = "9d66ea20e9553b30172b5e831994e35fbde2d165325bec84fc43dbf6f4eb9cb2"
 dependencies = [
  "anyhow",
  "bitflags 2.11.1",
- "indexmap",
+ "indexmap 2.14.0",
  "log",
  "serde",
  "serde_derive",
@@ -6508,7 +6740,7 @@ checksum = "ecc8ac4bc1dc3381b7f59c34f00b67e18f910c2c0f50015669dde7def656a736"
 dependencies = [
  "anyhow",
  "id-arena",
- "indexmap",
+ "indexmap 2.14.0",
  "log",
  "semver",
  "serde",
@@ -6531,6 +6763,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d43b0f71ce057da06bc0851b23ee24f3f86190b07203dd8f567d0b706a185202"
 dependencies = [
  "asn1-rs",
+ "aws-lc-rs",
  "data-encoding",
  "der-parser",
  "lazy_static",
@@ -6674,7 +6907,7 @@ checksum = "2d04a6b5381502aa6087c94c669499eb1602eb9c5e8198e534de571f7154809b"
 dependencies = [
  "crc32fast",
  "flate2",
- "indexmap",
+ "indexmap 2.14.0",
  "memchr",
  "typed-path",
  "zopfli",
@@ -6717,14 +6950,14 @@ dependencies = [
  "derive_more",
  "ndarray",
  "parking_lot",
- "reqwest",
+ "reqwest 0.13.4",
  "rp-auth",
  "rusty-photon-config",
  "rusty-photon-driver",
  "rusty-photon-server-config",
  "rusty-photon-service-lifecycle",
  "rusty-photon-tls",
- "schemars",
+ "schemars 1.2.1",
  "serde",
  "serde_json",
  "tempfile",
@@ -6754,7 +6987,7 @@ dependencies = [
  "rusty-photon-server-config",
  "rusty-photon-service-lifecycle",
  "rusty-photon-tls",
- "schemars",
+ "schemars 1.2.1",
  "serde",
  "serde_json",
  "tempfile",

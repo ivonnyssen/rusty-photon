@@ -1,4 +1,3 @@
-@wip
 Feature: Credential commands
   doctor auth hash-password hashes one password for hand-written configs
   (the third-party-driver escape hatch). doctor auth rotate mints a fresh

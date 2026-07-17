@@ -1,4 +1,3 @@
-@wip
 Feature: ACME certificate setup via doctor tls issue --acme
   doctor tls issue --acme requests certificates from Let's Encrypt via
   DNS-01 challenge validation. ACME mode requires --domain,

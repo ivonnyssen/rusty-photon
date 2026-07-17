@@ -1,4 +1,3 @@
-@wip
 Feature: Certificate issuance via doctor tls issue
   doctor tls issue creates the self-signed CA (if absent) and a
   certificate pair for each installed service that lacks one, under the

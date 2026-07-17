@@ -8,9 +8,10 @@ Feature: Repair — doctor --fix
   config.apply uses, every field doctor does not touch is preserved (the
   formatting normalizes to the pretty-printed shape config.apply writes),
   and a second --fix run applies nothing. Judgment calls stay suggestions:
-  discovery_port collisions, TLS material, and rp's equipment alpaca_url
-  (inside the device-usage block doctor checks but does not own) are never
-  written.
+  discovery_port collisions, hand-set TLS material paths, and rp's
+  equipment alpaca_url (inside the device-usage block doctor checks but
+  does not own) are never written. The provisioning pass --fix also runs is
+  provisioning.feature's subject.
 
   Background:
     Given platform facts with enabled units:
@@ -132,9 +133,8 @@ Feature: Repair — doctor --fix
       """
     When I run doctor with --fix and --json
     Then doctor exits with code 1
-    And the report records no applied fixes
     And the report contains a "fail" check named "tls.paths" for service "rp"
-    And the config file "rp.json" is unchanged from what was staged
+    And the config file "rp.json" has the string "/nonexistent/cert.pem" at "/server/tls/cert"
 
   Scenario: The JSON report carries the machine-applicable fix plan
     Given a config directory with "sentinel.json" containing:

@@ -1,4 +1,3 @@
-@wip
 Feature: TLS and credential provisioning under --fix
   The --fix provisioning pass makes an install TLS-on and auth-on: it
   creates a self-signed CA and per-service certificates under the config

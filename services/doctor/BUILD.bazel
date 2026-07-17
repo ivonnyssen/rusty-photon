@@ -7,8 +7,10 @@ exports_files(
 )
 
 _INTRA_WORKSPACE_DEPS = [
+    "//crates/rp-auth:rp-auth",
     "//crates/rusty-photon-config:rusty-photon-config",
     "//crates/rusty-photon-server-config:rusty-photon-server-config",
+    "//crates/rusty-photon-tls:rusty-photon-tls",
 ]
 
 # The derived catalog: every packaged service's pkg/doctor.toml, embedded
@@ -161,8 +163,6 @@ rust_test(
     deps = [
         ":doctor_lib",
         "//crates/bdd-infra",
-        "//crates/rp-auth",
-        "//crates/rusty-photon-tls",
     ] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
         normal = True,
         normal_dev = True,
