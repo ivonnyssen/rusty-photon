@@ -112,9 +112,11 @@ pub fn diagnose_and_fix(config_dir: PathBuf, facts: PlatformFacts) -> Result<Rep
         }
         let round_applied = fix::apply_fixes(&config_dir, &report.checks)?;
         if round_applied.is_empty() {
-            // Planned targets were already gone (a concurrent edit); the
-            // current diagnosis is as good as it gets this run.
-            return Ok(report.with_fixes_applied(applied));
+            // Planned targets were already gone (a concurrent edit landed
+            // between diagnosis and apply). Nothing was written, but the
+            // diagnosis in hand is stale now — loop so the returned report
+            // is always a fresh post-state diagnosis.
+            continue;
         }
         applied.extend(round_applied);
     }
