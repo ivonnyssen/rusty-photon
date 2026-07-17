@@ -379,3 +379,22 @@ mod tests {
         assert!(rendered.contains("<redacted>"));
     }
 }
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+mod doctor_toml_parity {
+    use rusty_photon_server_config::doctor_toml::{parse, ServerClass};
+
+    use super::Config;
+
+    /// `pkg/doctor.toml` is this service's catalog entry for
+    /// `rusty-photon-doctor` and must match the config defaults
+    /// (docs/services/doctor.md §The derived catalog).
+    #[test]
+    fn pkg_doctor_toml_matches_config_defaults() {
+        let meta = parse(include_str!("../pkg/doctor.toml")).unwrap();
+        assert_eq!(meta.port, Config::default().server.port);
+        assert_eq!(meta.class, ServerClass::Core);
+    }
+}

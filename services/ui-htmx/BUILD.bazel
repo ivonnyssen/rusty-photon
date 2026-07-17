@@ -2,7 +2,10 @@ load("@cr//:defs.bzl", "aliases", "all_crate_deps")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 
 exports_files(
-    ["Cargo.toml"],
+    [
+        "Cargo.toml",
+        "pkg/doctor.toml",
+    ],
     visibility = ["//visibility:public"],
 )
 
@@ -100,7 +103,7 @@ rust_test(
     ),
     # The unit tests recompile the library (include_str! runs again), so the
     # embedded assets must be visible here too.
-    compile_data = _EMBEDDED_ASSETS,
+    compile_data = _EMBEDDED_ASSETS + ["pkg/doctor.toml"],
     crate = ":ui-htmx_lib",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,

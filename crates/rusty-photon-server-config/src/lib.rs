@@ -16,6 +16,8 @@
 
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
+pub mod doctor_toml;
+
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use rp_auth::config::AuthConfig;

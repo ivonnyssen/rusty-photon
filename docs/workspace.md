@@ -26,6 +26,7 @@ belong in any single service design doc.
 | [dsd-fp2](services/dsd-fp2.md) | CoverCalibrator | 11119 | `docs/services/dsd-fp2.md` (first adopter of `rusty-photon-shared-transport`) |
 | [ui-htmx](services/ui-htmx.md) | — (web config UI / BFF, not an ASCOM device) | 11120 | `docs/services/ui-htmx.md` |
 | [session-runner](services/session-runner.md) | — (generic workflow-orchestrator plugin) | 11171 | `docs/services/session-runner.md` (implemented — executes declarative JSON workflow documents against `rp`'s MCP tools: expression layer, trigger overlay, blackboard resume; ships `deep_sky.json`, `calibrator_flats.json`, `sky_flat.json`; authoring guide: [workflow-documents.md](references/workflow-documents.md)) |
+| [doctor](services/doctor.md) | — (install diagnosis CLI, not an ASCOM device) | — | `docs/services/doctor.md` (D2 implemented — read-only diagnosis: config parsing, port collisions, cross-service name joins, unit/privilege gaps; catalog derived from `services/*/pkg/doctor.toml`; later phases: `--fix`, hardware checks, TLS/credential lifecycle — see `docs/plans/service-config-doctor.md`) |
 
 ## Documentation Index
 

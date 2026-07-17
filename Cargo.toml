@@ -26,6 +26,7 @@ members = [
   "services/qhy-camera",
   "services/qhy-focuser",
   "services/calibrator-flats",
+  "services/doctor",
   "services/dsd-fp2",
   "services/rp",
   "services/plate-solver",

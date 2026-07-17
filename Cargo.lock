@@ -1151,6 +1151,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "doctor"
+version = "0.1.0"
+dependencies = [
+ "bdd-infra",
+ "clap",
+ "cucumber",
+ "rusty-photon-config",
+ "rusty-photon-server-config",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "downcast"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

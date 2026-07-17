@@ -66,16 +66,18 @@ pub fn resolve_config_path(
 
 /// The per-user platform config directory on non-Windows platforms
 /// (`directories::ProjectDirs`, e.g. `~/.config/rusty-photon` on Linux).
+/// Public because doctor resolves the same directory the services do.
 #[cfg(not(windows))]
-fn default_config_dir() -> Result<PathBuf, ConfigError> {
+pub fn default_config_dir() -> Result<PathBuf, ConfigError> {
     let dirs =
         directories::ProjectDirs::from("", "", "rusty-photon").ok_or(ConfigError::NoConfigDir)?;
     Ok(dirs.config_dir().to_path_buf())
 }
 
 /// The machine-wide config directory on Windows: `%PROGRAMDATA%\rusty-photon`.
+/// Public because doctor resolves the same directory the services do.
 #[cfg(windows)]
-fn default_config_dir() -> Result<PathBuf, ConfigError> {
+pub fn default_config_dir() -> Result<PathBuf, ConfigError> {
     Ok(program_data_root(std::env::var_os("ProgramData")).join("rusty-photon"))
 }
 
