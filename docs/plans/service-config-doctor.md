@@ -29,7 +29,7 @@ doctor *out* of the services rather than a component of them.
 | D2 | `rusty-photon-doctor` binary: catalog + service-config diagnosis (read-only) | Merged | #554 |
 | D3 | `--fix`; ui-htmx sources from rp's roster (its `drivers` map becomes an empty-by-default override) | Merged | #560 → #559 |
 | D3s | Sentinel discovers its services; delete the `services` map; policy → constants (privilege path shipped — polkit rule in the sentinel packages) | Merged | #559 |
-| D4 | `rusty-photon-doctor-checks` crate + generic hardware checks (no SDK) | In progress | `feature/doctor-checks-d4` |
+| D4 | `rusty-photon-doctor-checks` crate + generic hardware checks (no SDK) | In review | [#563](https://github.com/ivonnyssen/rusty-photon/pull/563) |
 | D5 | Per-service `doctor` subcommand + aggregation | Not started | |
 | D6 | Move the TLS + credential lifecycle `rp` → doctor; split `rp-tls`; certs to `~/.config/rusty-photon/pki`; doctor generates certs + mints one credential + writes TLS-on/auth-on config | Not started | |
 | D7 | Packaging, install-flow docs, on-rig verification | Not started | |
