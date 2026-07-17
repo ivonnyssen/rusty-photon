@@ -31,7 +31,7 @@ doctor *out* of the services rather than a component of them.
 | D3s | Sentinel discovers its services; delete the `services` map; policy → constants (privilege path shipped — polkit rule in the sentinel packages) | Merged | #559 |
 | D4 | `rusty-photon-doctor-checks` crate + generic hardware checks (no SDK) | Not started | |
 | D5 | Per-service `doctor` subcommand + aggregation | Not started | |
-| D6 | Move the TLS + credential lifecycle `rp` → doctor; split `rp-tls`; certs to `~/.config/rusty-photon/pki`; doctor generates certs + mints one credential + writes TLS-on/auth-on config | Not started | |
+| D6 | Move the TLS + credential lifecycle `rp` → doctor; split `rp-tls`; certs to `~/.config/rusty-photon/pki`; doctor generates certs + mints one credential + writes TLS-on/auth-on config | In progress (two PRs: D6a move, D6b renewal) | `feature/doctor-d6-tls-credentials` |
 | D7 | Packaging, install-flow docs, on-rig verification | Not started | |
 
 ## Decisions (fixed — see [ADR-016](../decisions/016-service-config-ownership-and-doctor.md) for rationale)
@@ -452,6 +452,57 @@ fresh install without certs and credentials, and would break every BDD and
 ConformU test that hand-writes a config omitting them
 (`services/ppba-driver/tests/conformu_integration.rs:79`).
 
+Settled interactively 2026-07-17 (the eight open choices, recorded here so
+the implementation and later phases inherit them):
+
+1. **Slicing — two PRs.** D6a is the lifecycle move: the `rp-tls` split,
+   `DEFAULT_SERVICES` retirement, the path move, the commands moving to
+   doctor, and credential mint + TLS/auth-on in `--fix`. D6b is renewal —
+   [#541](https://github.com/ivonnyssen/rusty-photon/issues/541)'s scope
+   (renewal command, expiry checking, the swap, ACME end-to-end tests).
+   Each stays independently reviewable and the move is not hostage to
+   ACME test infrastructure.
+2. **Renewal scheduler — one-shot `doctor tls renew` on a platform
+   scheduler** (systemd timer / Windows scheduled task / launchd interval —
+   certbot's shape). No background task in any service: renewing
+   zwo-camera's cert must not require rp (or anything else) to be running.
+   The one-shot is a no-op unless a cert is within its renewal window, so
+   the same timer serves self-signed (ten-year, effectively never) and
+   ACME (90→45-day) installs. Timer units ship with the packaging (D7).
+3. **The swap — in-process hot reload** (`ReloadableCertResolver`, ADR-002
+   Phase 2), not restart-via-sentinel. Services pick up a renewed cert
+   without restarting, so renewal can never interrupt an exposure at all —
+   the mid-exposure hazard is removed rather than scheduled around.
+4. **Reload trigger — throttled mtime re-check.** The resolver stats the
+   cert file on handshake (cached, re-checked at most every ~60s) and
+   reloads on mtime change. No new dependencies, no signals, no watcher
+   lifecycle; portable to all three platforms. Lands with D6b alongside
+   renewal.
+5. **Auth rotation still restarts.** Hot reload covers certs only.
+   `doctor auth rotate` is operator-initiated and rare, so services pick
+   up a rotated `server.auth` by restart; no reload machinery grows into
+   the auth middleware.
+6. **Crate split — provisioning into doctor as modules; serving half
+   renamed `rusty-photon-tls`.** `cert`/`acme`/`acme_config`/`dns` (and
+   the `cloudflare` + `instant-acme` dependencies) move into
+   `services/doctor` directly — doctor is their only consumer, so no new
+   crate. The serving half (`server`, `client`, `config`, `permissions`,
+   `error`) is renamed `rp-tls` → `rusty-photon-tls` in the same pass,
+   matching the workspace-infra naming convention while the break is
+   already sanctioned.
+7. **Credential canonical copy — a 0600 file under the pki tree**
+   (`~/.config/rusty-photon/pki/credential`, owned by the service user,
+   beside the CA key it is morally equivalent to). `--fix` reuses it when
+   wiring a newly installed service, recovery for a forgotten credential
+   is reading it there, and `doctor auth rotate` overwrites it and
+   re-runs distribution.
+8. **Doctor ships in sentinel's package** (D7 implements). Sentinel is the
+   always-installed supervisor; its deb/rpm/MSI/brew artifact carries the
+   doctor binary and the renewal timer units. No separate
+   `rusty-photon-doctor` package, and no service package grows a doctor
+   dependency — ADR-016 decision 1's operator-run model is unchanged;
+   only the delivery vehicle is bundled.
+
 ### D4/D5 — hardware checks, and why the SDK line is not a judgment call
 
 [ADR-014](../decisions/014-zwo-per-device-services-and-link-features.md) exists
@@ -557,25 +608,18 @@ permissive in both directions across the binary boundary.
   and D6 re-homes it.** ADR-002 documents renewal in the present tense and none
   of it is implemented. It does **not** block the default path — self-signed
   certs are valid ten years — but it blocks ACME being trustworthy, which is
-  what dev boxes and any domain-owning host will run. Two things need deciding
-  as part of re-scoping #541 onto doctor:
-  - **The scheduler.** ADR-002 says *"a background tokio task in `rp serve`"*;
-    with the commands in doctor that becomes `doctor tls renew` on a systemd
-    timer / scheduled task / launchd interval. Conventional (certbot's shape)
-    and better — renewing zwo-camera's cert should not require rp to be
-    running.
-  - **The swap.** `ReloadableCertResolver` (ADR-002 Phase 2) versus simply
-    restarting the service via sentinel, which decision 8 makes universally
-    possible. Restarting is far simpler and may be enough given renewal is
-    quarterly and can be scheduled for daylight — but it must never fire
-    mid-exposure.
-- **Credential rotation and recovery UX (D6).** With auth on by default and one
-  minted credential, the open questions are operational, not architectural:
-  `doctor auth rotate` re-runs distribution, but what restarts the services to
-  pick up a new `server.auth` (the same swap question as cert renewal — restart
-  via sentinel vs in-process reload), and how an operator who forgets the
-  credential recovers (re-mint via `doctor`, same as any won't-authenticate
-  case). Settle alongside the renewal swap decision.
+  what dev boxes and any domain-owning host will run. ~~Two things need
+  deciding as part of re-scoping #541 onto doctor: the scheduler and the
+  swap.~~ **Resolved (D6 decisions 2–4):** one-shot `doctor tls renew` on a
+  platform scheduler; the swap is in-process hot reload
+  (`ReloadableCertResolver`) triggered by a throttled mtime re-check.
+  Implementation is the D6b PR.
+- **Credential rotation and recovery UX (D6) — resolved (D6 decisions 5
+  and 7).** `doctor auth rotate` re-runs distribution; services pick up a
+  rotated `server.auth` by restart (rotation is operator-initiated and rare —
+  no auth reload machinery). Recovery for a forgotten credential is reading
+  the canonical 0600 copy at `~/.config/rusty-photon/pki/credential`, which
+  `--fix` also reuses when wiring a newly installed service.
 - **How doctor detects what is installed (D2).** ~~Binary presence under a
   platform-specific prefix is the most portable; querying dpkg/rpm/SCM/brew is
   more accurate but is four implementations.~~ **Resolved (D2 decision 3):**
@@ -589,9 +633,12 @@ permissive in both directions across the binary boundary.
   driver's `config.apply` landing between doctor's read and write loses one
   of the two writes) is called out on stderr with the advice to re-run
   doctor and restart services to pick up fixed configs.
-- **Which package ships doctor (D6).** Its own `rusty-photon-doctor` package
-  that the operator installs deliberately, or bundled into a common package.
-  Decision 1 removes the `Depends:` pressure that would have forced the latter.
+- **Which package ships doctor — resolved (D6 decision 8): sentinel's
+  package.** ~~Its own `rusty-photon-doctor` package that the operator
+  installs deliberately, or bundled into a common package.~~ Sentinel's
+  deb/rpm/MSI/brew artifact carries the doctor binary and the renewal timer
+  units; D7 implements. Decision 1's operator-run model is unchanged — only
+  the delivery vehicle is bundled.
 
 ## Future considerations
 

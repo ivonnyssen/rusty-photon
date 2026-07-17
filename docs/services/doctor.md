@@ -11,17 +11,19 @@ never learns device usage (which camera is the guide cam belongs to `rp`).
 decision record; [`docs/plans/service-config-doctor.md`](../plans/service-config-doctor.md)
 tracks the phases.
 
-This document specifies the **D2 + D3 scope: diagnosis and repair**. A
-default run examines the config directory and the platform's service
-manager, prints a report, and writes nothing; `--fix` (D3) additionally
-applies the machine-applicable fixes and re-diagnoses. Hardware checks
-(D4/D5) and the TLS + credential lifecycle (D6) extend this binary later;
-their contracts are recorded in the plan and folded in here as they land.
+This document specifies the **D2 + D3 scope (diagnosis and repair) plus the
+D6a scope (TLS + credential provisioning)**. A default run examines the
+config directory and the platform's service manager, prints a report, and
+writes nothing; `--fix` (D3) additionally applies the machine-applicable
+fixes, runs the provisioning pass (D6a), and re-diagnoses; the `tls`/`auth`
+subcommands (D6a) expose provisioning à la carte. Hardware checks (D4/D5)
+and cert renewal (D6b) extend this binary later; their contracts are
+recorded in the plan and folded in here as they land.
 
 Doctor is a one-shot CLI, not a long-running service: no server, no config
 file of its own, no unit. It lives at `services/doctor` (cargo binary
 `doctor`) and is installed as `rusty-photon-doctor` when packaging arrives
-(D7).
+(D7, riding in sentinel's package).
 
 ## Architecture
 
@@ -35,8 +37,9 @@ graph LR
 
 Three inputs, one output. A default run is read-only: config files are
 parsed but never written, and every service-manager interaction is a query
-(`list-unit-files`, `show`), never a verb. Only `--fix` writes — config
-files only, through `rusty_photon_config::save`'s atomic path, never a
+(`list-unit-files`, `show`), never a verb. Only `--fix` and the `tls`/`auth`
+subcommands write — config files through `rusty_photon_config::save`'s
+atomic path, plus the pki tree (D6a) — and nothing ever runs a
 service-manager verb.
 
 ### The derived catalog
@@ -227,7 +230,10 @@ convention and validated by nothing at runtime until the 2am 404.
 | Check | Status | Trigger |
 |---|---|---|
 | `tls.paths` | fail | A `server.tls` block is present but the cert or key is not an existing **file**, after resolving the path the way the service itself will (`TlsConfig::resolved_*_path`, which expands `~`; a relative remainder anchors at the config dir; empty paths and directories are absent). Readability by the unit's user is not checked in D2 — doctor runs privileged on packaged hosts, so an ownership heuristic needs the passwd machinery D4's hardware checks bring. |
-| `tls.auth-without-tls` | warn | `server.auth` is set while `server.tls` is absent: HTTP Basic credentials in cleartext on the wire. Legal (pre-D6 reality), but worth a nag — ADR-003's scheme is Basic **over TLS**. |
+| `tls.auth-without-tls` | warn | `server.auth` is set while `server.tls` is absent: HTTP Basic credentials in cleartext on the wire. Legal, but worth a nag — ADR-003's scheme is Basic **over TLS**. Fixed by the provisioning pass turning TLS on. |
+| `tls.absent` (D6a) | warn | An installed service has no `server.tls` block: it serves plain HTTP. Legal (absent still means off — ADR-016 decision 10(d)), and fixable: the provisioning pass issues a cert and writes the block. |
+| `auth.absent` (D6a) | warn | An installed service has no `server.auth` block: it answers unauthenticated. Same legality and fix as `tls.absent`. |
+| `auth.mismatch` (D6a) | warn | A client auth block's plaintext password does not verify (Argon2id) against the target service's `server.auth` hash — the client will get 401s. Suggestion-only: hand-set credentials are operator intent, so doctor reports the pair and suggests `doctor auth rotate` to re-align everything to the observatory credential. |
 
 ### Platform defaults
 
@@ -253,10 +259,12 @@ call:
 | `joins.ui-htmx-driver-port` | Rewrite the driver `base_url`'s port to the service's effective port. |
 | `urls.spurious-suffix` | Strip the `/api/v1` suffix — **ui-htmx `drivers` entries only**. rp's `equipment[].alpaca_url` lives inside the device-usage block doctor checks but does not own (ADR-016 decision 4), so it stays suggestion-only. |
 
-Everything else stays suggestion-only: missing TLS material cannot be
-conjured (until D6), a `ConditionPathExists` gate needs a hand-written
-config, a `discovery_port` collision is operator intent (which host keeps
-the responder?), and rp's `session.data_directory` is a placement decision.
+Everything else stays suggestion-only: a `ConditionPathExists` gate needs a
+hand-written config, a `discovery_port` collision is operator intent (which
+host keeps the responder?), and rp's `session.data_directory` is a placement
+decision. Missing TLS material and absent `tls`/`auth` blocks stopped being
+suggestion-only with D6a — the provisioning pass (next section) conjures
+them.
 `--fix` also never *generates* config — a stock rig's ui-htmx `drivers` map
 stays empty (rp's roster is the source of truth; see
 [ui-htmx.md](ui-htmx.md)).
@@ -282,6 +290,112 @@ Write mechanics:
   fixes take effect on each service's next restart.
 - `--fix` is **idempotent**: the post-fix diagnosis plans no further fixes,
   and a second `--fix` run applies nothing.
+
+## Provisioning — TLS and the observatory credential (D6a)
+
+Doctor owns the TLS and credential lifecycle (ADR-016 decision 10; the
+settled sub-decisions are in the plan's D6 section). The provisioning code —
+self-signed issuance, ACME, DNS-01 — lives inside doctor as modules; the
+serving half every service links is the `rusty-photon-tls` crate (renamed
+from `rp-tls`), which carries none of the `cloudflare`/`instant-acme`
+dependency tree. `rp init-tls` and `rp hash-password` are removed; their
+functionality lives here.
+
+### The pki tree
+
+All TLS material and the credential live under **`<config-root>/pki`** —
+the same resolved config root as the service configs (`--config-dir` >
+`/etc/rusty-photon` symlink > platform default), so a scratch `--config-dir`
+scopes provisioning the same way it scopes diagnosis, and on a packaged
+Linux host the tree is `/var/lib/rusty-photon/.config/rusty-photon/pki`.
+One tree, one symlink, one thing to back up. (`~/.rusty-photon/pki` is
+retired; pre-1.0, no migration shim — a config still pointing at old
+material keeps working, since `tls.paths` checks the configured paths,
+wherever they point.)
+
+```
+<config-root>/
+  pki/
+    ca.pem            # self-signed CA, 10-year validity, create-if-absent
+    ca-key.pem        # 0600
+    <svc>.pem         # per-service cert, 10-year, SANs: hostname + localhost + extras
+    <svc>-key.pem     # 0600
+    credential        # observatory credential plaintext, 0600 — the canonical copy
+  acme.json           # ACME account/config state (0600), alongside the configs
+```
+
+Key files and `credential` are `0600` and owned by the service user on
+packaged hosts (doctor runs privileged there and chowns what it writes).
+The CA is **never regenerated** while `ca.pem` exists — replacing it
+invalidates every distributed trust anchor, so that is an explicit operator
+act (delete the file, re-run).
+
+### The observatory credential
+
+One credential for the whole observatory (ADR-016 decision 10(e)):
+username **`observatory`**, password minted with ≥128 bits of entropy. The
+canonical plaintext copy is `pki/credential`; because doctor mints it, it
+can write **both forms everywhere they belong**:
+
+- the **Argon2id hash** into each installed service's `server.auth`;
+- the **plaintext** into each client auth block — rp's `equipment[].auth`
+  entries, sentinel's service-probe `auth`, ui-htmx's `rp`/`dashboard`/
+  `drivers[].auth` targets — alongside the CA path each client trusts.
+
+`doctor auth rotate` overwrites `pki/credential` with a fresh mint and
+re-runs the same distribution; services pick the new `server.auth` up at
+their next restart (rotation is operator-initiated and rare — no reload
+machinery). A forgotten credential is recovered by reading
+`pki/credential`, or by rotating.
+
+### What `--fix` adds
+
+After the config fixes, `--fix` runs the provisioning pass over every
+installed service:
+
+1. **Certs** — create the CA if absent; issue a cert for each installed
+   service whose `<svc>.pem`/`<svc>-key.pem` pair is missing. Existing
+   material is never touched.
+2. **Credential** — reuse `pki/credential` if present, else mint and write
+   it. A service installed after the first `--fix` run is wired with the
+   *same* credential on the next run.
+3. **Config writes** — where a service's `server.tls` is absent, write the
+   block pointing at the issued pair; where `server.auth` is absent, write
+   `observatory` + the hash. Client blocks that are absent get the
+   plaintext + CA path. **Present blocks are never overwritten** — a
+   hand-set credential or hand-placed cert path is operator intent;
+   incoherence surfaces as `auth.mismatch`/`tls.paths`, suggestion-only.
+
+The same "absent means off" contract from decision 10(d) is what makes this
+safe: packages start services before any doctor run, and BDD/ConformU
+configs that omit `tls`/`auth` keep meaning plain HTTP. After one `--fix`,
+every wired service is TLS-on and auth-on, and services pick both up at
+their next restart (the existing `--fix` restart advice covers it).
+
+### Subcommands
+
+- **`doctor tls issue`** — the cert step alone (CA-if-absent + missing
+  service certs), without touching configs. `--services <name>...`
+  restricts to named services; `--extra-san <host-or-ip>...` adds SANs;
+  `--force` re-issues service certs from the existing CA (never the CA
+  itself). The service set defaults to the installed set, derived from the
+  catalog — `rp_tls::cert::DEFAULT_SERVICES` (five hand-typed names of
+  eighteen) is retired.
+- **`doctor tls issue --acme --domain <d> --dns-provider <p> --dns-token <t>
+  --email <e> [--staging]`** — the ACME path, unchanged in mechanism from
+  `rp init-tls --acme` (DNS-01, wildcard cert, account state persisted to
+  `acme.json`). Publicly-trusted certs need no CA distribution to clients.
+- **`doctor auth rotate`** — mint + distribute, as above.
+- **`doctor auth hash-password [--stdin]`** — hash one password for
+  hand-written configs (the third-party-driver escape hatch); prompt with
+  confirmation, or read stdin.
+- **`doctor tls renew`** arrives with D6b (one-shot renewal for a platform
+  scheduler, plus the in-process cert hot-reload in `rusty-photon-tls`).
+
+Subcommands report through the same report schema (`--json` works on all
+of them); provisioning actions appear in `fixes_applied` as non-pointer
+operations (`generate-ca`, `generate-cert`, `mint-credential`) next to the
+config-pointer ops, which the permissive parse lets older consumers skip.
 
 ## Report
 
@@ -315,10 +429,11 @@ run (ADR-016 decision 7).
 
 - `fixes` (per check, empty and omitted when none) carries the
   machine-applicable fix plan as primitive JSON-pointer operations —
-  `set-number`, `set-string`, `remove-key` — against one service's config
-  file. Primitive ops keep the schema forward-parseable: an aggregating
-  doctor that does not recognize a newer op simply cannot apply it, and
-  says so, instead of misparsing the check.
+  `set-number`, `set-string`, `set-object` (D6a, for whole
+  `server.tls`/`server.auth`/client blocks), `remove-key` — against one
+  service's config file. Primitive ops keep the schema forward-parseable:
+  an aggregating doctor that does not recognize a newer op simply cannot
+  apply it, and says so, instead of misparsing the check.
 - `fixes_applied` (top level, populated by `--fix` runs) records what was
   actually written, one entry per applied fix: the originating check name
   and the operation (which carries the service). Like `fixes`, it is
@@ -335,13 +450,20 @@ that skipped everything); the text renderer summarizes them, prints
 
 ```
 doctor [--config-dir <path>] [--json] [--fix]
+doctor tls issue [--acme --domain <d> --dns-provider <p> --dns-token <t> --email <e> [--staging]]
+                 [--services <name>...] [--extra-san <host-or-ip>...] [--force]
+doctor auth rotate
+doctor auth hash-password [--stdin]
 ```
 
-- Default run diagnoses and prints the human-readable report to stdout;
-  it writes nothing.
-- `--fix` applies the machine-applicable fixes (see §Repair), re-diagnoses,
-  and reports the post-fix state.
-- `--json` prints the report JSON instead.
+- Default run (no subcommand) diagnoses and prints the human-readable
+  report to stdout; it writes nothing.
+- `--fix` applies the machine-applicable fixes (see §Repair) and the
+  provisioning pass (see §Provisioning), re-diagnoses, and reports the
+  post-fix state.
+- `--json` prints the report JSON instead, on every subcommand.
+- `--config-dir` scopes subcommands too — the pki tree anchors at the
+  resolved config root.
 - `--platform-facts <file>` exists only under the `mock` feature (tests).
 - Logging goes to stderr via `tracing` (`debug!` throughout; the report is
   the product, not the log).
@@ -358,8 +480,11 @@ Scripts and CI can gate on "the rig is coherent" without parsing JSON.
 
 ## Configuration
 
-Doctor has **no config file**. Its inputs are the two flags above. This is
-deliberate: a config-repair tool with its own config file would need a doctor.
+Doctor has **no config file**. Its inputs are the flags above. This is
+deliberate: a config-repair tool with its own config file would need a
+doctor. (`acme.json` is provisioning *state* doctor writes and reads back —
+account URL, domain, DNS provider — not configuration of doctor's own
+behavior; every knob in it was a CLI flag first.)
 
 ## Verification
 
@@ -378,19 +503,40 @@ deliberate: a config-repair tool with its own config file would need a doctor.
 - **On-host** (D2 gate, per the plan's all-platforms requirement) — the real
   inspectors validated against a packaged Linux host, the Windows VM (SCM),
   and macOS (brew services).
+- **D6a** — unit: cert/ACME module tests move with the code; credential
+  mint → Argon2id hash → verify round-trip; pki paths anchor at the
+  resolved config root. BDD: against a scratch `--config-dir`, `--fix`
+  creates the CA/certs/credential and writes `tls`/`auth` + client blocks
+  (hash server-side, plaintext client-side); a second run applies nothing
+  and reuses the credential for a newly-appearing service; hand-set blocks
+  survive untouched; `auth.mismatch` fires on an incoherent pair;
+  `doctor tls issue --force` re-issues service certs but never the CA;
+  `doctor auth rotate` re-aligns a mismatched pair. rp's
+  `tls_setup.feature`/`acme_setup.feature` and `bdd-infra`'s one-shot
+  command tests move here with the commands. On-host: a packaged install
+  goes TLS-on/auth-on with one `--fix` and every service answers
+  authenticated HTTPS after restart.
 
 ## MVP scope
 
-**In D2 + D3 (this document):** everything above — derived catalog,
-config-root resolution, platform inspectors, the check list, the report
-schema, text + `--json` rendering, exit codes, and `--fix`. No network I/O;
-writes happen only under `--fix`, only to config files.
+**In D2 + D3:** derived catalog, config-root resolution, platform
+inspectors, the check list, the report schema, text + `--json` rendering,
+exit codes, and `--fix`. No network I/O; writes happen only under `--fix`,
+only to config files.
+
+**In D6a (this document's §Provisioning):** the TLS + credential lifecycle —
+self-signed issuance and ACME moved from `rp` (which loses `init-tls` and
+`hash-password`), the pki tree under the config root, the minted observatory
+credential and its distribution, `tls`/`auth`-on written by `--fix`, and the
+`tls`/`auth` subcommands. Writes now also cover the pki tree; ACME is the
+one place doctor does network I/O, and only when asked.
 
 **Deferred, tracked in the plan:**
 - `rusty-photon-doctor-checks` crate + hardware checks that need no SDK
   (device nodes, udev, plugdev, VID:PID, firmware helper) — D4.
 - Per-service `doctor` subcommands (full-config validation, SDK-side
   hardware checks) + aggregation over the report schema — D5.
-- TLS + credential lifecycle (cert generation, ACME, `hash-password`,
-  minted observatory credential) — D6.
-- Packaging and install-flow docs — D7.
+- Cert renewal: `doctor tls renew` + platform timers, in-process cert
+  hot-reload in `rusty-photon-tls`
+  ([#541](https://github.com/ivonnyssen/rusty-photon/issues/541)) — D6b.
+- Packaging (doctor ships in sentinel's package) and install-flow docs — D7.
