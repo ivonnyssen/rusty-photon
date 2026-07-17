@@ -85,20 +85,37 @@ fn inventory(ctx: &Context) -> Vec<Check> {
     for scan in &ctx.scans {
         let installed = ctx.installed(scan.entry);
         match (installed, scan.config_present()) {
-            (true, false) => checks.push(Check::warn(
-                "inventory.unit-without-config",
-                svc(scan),
-                format!(
-                    "unit {} is installed but {} does not exist — the service has \
-                     never started, or writes its config somewhere unexpected",
-                    scan.entry.unit_name(),
-                    scan.config_path.display()
-                ),
-                Some(format!(
-                    "start it once so it self-creates its defaults: e.g. `{}`",
-                    start_command(ctx.facts.platform, &manager_name(ctx, scan.entry))
-                )),
-            )),
+            (true, false) => {
+                // A unit gated on ConditionPathExists= hard-requires a
+                // hand-written config — "start it once" would do nothing.
+                let gate = ctx
+                    .facts
+                    .unit(&scan.entry.unit_name())
+                    .and_then(|u| u.condition_path.as_ref());
+                let suggestion = match gate {
+                    Some(gate) => format!(
+                        "this service needs a hand-written config — the unit is \
+                         gated on {} — so create that file, then start the unit",
+                        gate.display()
+                    ),
+                    None => format!(
+                        "start it once so it self-creates its defaults: e.g. `{}`",
+                        start_command(ctx.facts.platform, &manager_name(ctx, scan.entry))
+                    ),
+                };
+                checks.push(Check::warn(
+                    "inventory.unit-without-config",
+                    svc(scan),
+                    format!(
+                        "unit {} is installed but {} does not exist — the service \
+                         has never started, or writes its config somewhere \
+                         unexpected",
+                        scan.entry.unit_name(),
+                        scan.config_path.display()
+                    ),
+                    Some(suggestion),
+                ));
+            }
             (false, true) => checks.push(Check::warn(
                 "inventory.config-without-unit",
                 svc(scan),

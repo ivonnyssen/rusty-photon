@@ -16,6 +16,8 @@ Feature: Unit wiring and privilege diagnosis
     Then doctor exits with code 1
     And the report contains a "fail" check named "units.config-gated" for service "plate-solver"
     And that check's detail mentions "ConditionPathExists"
+    And the report contains a "warn" check named "inventory.unit-without-config" for service "plate-solver"
+    And that check's suggestion mentions "hand-written"
 
   Scenario: A gate whose file exists is satisfied
     Given a config directory with a valid "plate-solver.json" on port 11131

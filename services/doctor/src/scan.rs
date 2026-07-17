@@ -33,7 +33,10 @@ pub enum ReadError {
 pub enum ServerBlock {
     /// No config file — the service will self-create defaults on first run.
     FileAbsent,
-    /// File present, no `server` key — the service applies its defaults.
+    /// No parseable `server` block to judge: the file has no `server` key
+    /// (the service applies its defaults), or the file itself is unreadable
+    /// or invalid JSON — the read-level checks own that diagnosis, and the
+    /// effective port falls back to the catalog default either way.
     BlockAbsent,
     /// Parsed. `discovery_port` is `None` for core services.
     Parsed {
