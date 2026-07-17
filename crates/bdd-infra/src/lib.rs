@@ -286,9 +286,20 @@ impl ServiceHandle {
     ///
     /// Same binary discovery and panic-on-missing behaviour as [`start`](Self::start).
     pub async fn start_with_args(package_name: &str, args: &[&str]) -> Self {
+        Self::start_with_env(package_name, args, &[]).await
+    }
+
+    /// Like [`start_with_args`](Self::start_with_args), additionally setting
+    /// environment variables on the child process.
+    ///
+    /// Scenarios run concurrently inside one test process, so a child that
+    /// needs a per-scenario environment (e.g. sentinel's
+    /// `SENTINEL_SERVICE_MANAGER_DIR` stub seam) must receive it here rather
+    /// than via `std::env::set_var`, which would race across scenarios.
+    pub async fn start_with_env(package_name: &str, args: &[&str], envs: &[(&str, &str)]) -> Self {
         let binary = require_binary(package_name);
 
-        let mut child = spawn_process(&binary, package_name, args);
+        let mut child = spawn_process(&binary, package_name, args, envs);
 
         let stdout = child
             .stdout
@@ -321,7 +332,7 @@ impl ServiceHandle {
     pub async fn try_start_with_args(package_name: &str, args: &[&str]) -> Result<Self, String> {
         let binary = require_binary(package_name);
 
-        let mut child = spawn_process(&binary, package_name, args);
+        let mut child = spawn_process(&binary, package_name, args, &[]);
 
         let stdout = child
             .stdout
@@ -572,10 +583,18 @@ const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
 /// On Windows the child is spawned with [`CREATE_NEW_PROCESS_GROUP`] so that
 /// [`send_sigterm`] can deliver `CTRL_BREAK_EVENT` only to the child's group
 /// without affecting the test runner.
-fn spawn_process(binary: &str, package_name: &str, args: &[&str]) -> tokio::process::Child {
+fn spawn_process(
+    binary: &str,
+    package_name: &str,
+    args: &[&str],
+    envs: &[(&str, &str)],
+) -> tokio::process::Child {
     debug!(binary = %binary, ?args, "starting {} from pre-built binary", package_name);
     let mut cmd = tokio::process::Command::new(binary);
     cmd.args(args).stdout(Stdio::piped()).kill_on_drop(true);
+    for (key, value) in envs {
+        cmd.env(key, value);
+    }
     if let Some((key, value)) = child_coverage_profile_var(package_name) {
         debug!(profile = ?value, "routing {} child coverage into COVERAGE_DIR", package_name);
         cmd.env(key, value);

@@ -11,6 +11,7 @@
 pub mod catalog;
 pub mod checks;
 pub mod facts;
+pub mod fix;
 pub mod render;
 pub mod report;
 pub mod scan;
@@ -88,6 +89,38 @@ pub fn diagnose(config_dir: PathBuf, facts: PlatformFacts) -> Report {
     let ctx = checks::Context::gather(config_dir, facts);
     let checks = checks::run_all(&ctx);
     Report::new(ctx.mode, ctx.config_dir, checks)
+}
+
+/// One fix can unlock the next (a freed default port makes another
+/// collision fixable), so `--fix` iterates plan→apply to a fixpoint. The
+/// cap is a runaway backstop, far above any real chain — ops are
+/// idempotent, so even a pathological planner converges to no-ops.
+const MAX_FIX_ROUNDS: usize = 4;
+
+/// Diagnose, apply the machine-applicable fixes, re-diagnose — repeated
+/// until a round plans nothing — and report the post-fix state plus what
+/// was written. `Err` means a fix write itself failed (exit 2 territory);
+/// the diagnosis outcome stays in the report.
+pub fn diagnose_and_fix(config_dir: PathBuf, facts: PlatformFacts) -> Result<Report, String> {
+    let mut applied = Vec::new();
+    for round in 0..MAX_FIX_ROUNDS {
+        let report = diagnose(config_dir.clone(), facts.clone());
+        let planned: usize = report.checks.iter().map(|c| c.fixes.len()).sum();
+        if planned == 0 {
+            debug!(round, applied = applied.len(), "fix rounds converged");
+            return Ok(report.with_fixes_applied(applied));
+        }
+        let round_applied = fix::apply_fixes(&config_dir, &report.checks)?;
+        if round_applied.is_empty() {
+            // Planned targets were already gone (a concurrent edit landed
+            // between diagnosis and apply). Nothing was written, but the
+            // diagnosis in hand is stale now — loop so the returned report
+            // is always a fresh post-state diagnosis.
+            continue;
+        }
+        applied.extend(round_applied);
+    }
+    Ok(diagnose(config_dir, facts).with_fixes_applied(applied))
 }
 
 #[cfg(all(test, unix))]

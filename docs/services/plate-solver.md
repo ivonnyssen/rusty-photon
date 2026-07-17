@@ -152,10 +152,10 @@ at high frequency without costing wrapper performance.
 
 Sentinel consumes this endpoint through its
 [service health supervision](sentinel.md#service-health-supervision):
-a `health` block on the wrapper's `services` entry polls it on a
-configurable cadence and runs the configured restart command after
-consecutive failures. Anything else that speaks HTTP (Prometheus
-blackbox exporter, Nagios) can probe it too.
+every discovered running service is probed automatically (the URL is
+derived from this service's own config), and the derived restart
+command runs after consecutive failures. Anything else that speaks
+HTTP (Prometheus blackbox exporter, Nagios) can probe it too.
 
 ### Subprocess Supervision
 
@@ -517,17 +517,15 @@ operator cares about.
 ### Sentinel-driven supervision
 
 Sentinel's [service health supervision](sentinel.md#service-health-supervision)
-is the first-party answer: a `health` block on this service's entry
-in Sentinel's `services` map polls `GET /health` (typically every
-30–60 s), and after a configurable number of consecutive failures
-runs the configured restart command — backing off between attempts
-and notifying on every autonomous restart. The wrapper's
-graceful-shutdown semantics (SIGTERM handler) compose cleanly with
-`systemctl restart`-style commands. See the
-[README's Sentinel integration section](../../services/plate-solver/README.md#sentinel-integration)
-for a concrete config recipe. `/health` remains available to any
-other operational tooling (Prometheus blackbox exporter, Nagios,
-etc.).
+is the first-party answer, and it needs no wiring: sentinel discovers
+the installed `rusty-photon-plate-solver` unit, derives the
+`GET /health` probe from this service's own config, polls it every
+30 s, and after three consecutive failures runs the derived restart
+command — backing off between attempts and notifying on every
+autonomous restart. The wrapper's graceful-shutdown semantics
+(SIGTERM handler) compose cleanly with `systemctl restart`.
+`/health` remains available to any other operational tooling
+(Prometheus blackbox exporter, Nagios, etc.).
 
 ## MVP Scope
 

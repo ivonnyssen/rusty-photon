@@ -496,6 +496,13 @@ The `env!("CARGO_PKG_NAME")` macro resolves to the calling service's package
 name at compile time. `bdd-infra` derives the binary discovery env var from
 it: `rp` → `RP_BINARY`, `ppba-driver` → `PPBA_DRIVER_BINARY`, etc.
 
+A child that needs extra flags takes `start_with_args`; one that needs a
+per-scenario **environment** takes `start_with_env` (e.g. sentinel's
+`SENTINEL_SERVICE_MANAGER_DIR` stub seam — see
+[sentinel.md §The test seam](../services/sentinel.md#the-test-seam-sentinel_service_manager_dir)).
+Never `std::env::set_var` for a spawned child: scenarios run concurrently in
+one process, so process-global env mutation races across scenarios.
+
 **Binary discovery order:**
 
 1. Explicit env var `{PACKAGE_UPPER_SNAKE}_BINARY` (e.g., `FILEMONITOR_BINARY=/path/to/bin`).

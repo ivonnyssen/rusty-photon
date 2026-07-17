@@ -39,7 +39,7 @@ If no config file is provided, sentinel starts with an empty default configurati
 
 ## Configuration
 
-Configuration is a JSON file where every section is optional. The sections below cover monitoring and notification; the `services` map (supervised services: restart commands, and per-service `health` blocks for autonomous health supervision) and the `operation_watchdog` block are documented in the [design document](../../docs/services/sentinel.md). See [`examples/config.json`](examples/config.json) for a complete example.
+Configuration is a JSON file where every section is optional. The sections below cover monitoring and notification; the `operation_watchdog` block is documented in the [design document](../../docs/services/sentinel.md). The services sentinel supervises are **not configured** — they are discovered from the platform service manager (see the design document's [Service Discovery](../../docs/services/sentinel.md#service-discovery) section); a config still carrying the retired `services` map fails loudly at load. See [`examples/config.json`](examples/config.json) for a complete example.
 
 ### Monitors
 
@@ -163,11 +163,11 @@ When the dashboard is enabled, the following endpoints are available:
 
 | Endpoint | Description |
 |----------|-------------|
-| `GET /` | Web UI showing monitor statuses, supervised-service health, and notification history (auto-refreshes every 5s). |
+| `GET /` | Web UI showing monitor statuses, discovered services (run state + health), and notification history (auto-refreshes every 5s). |
 | `GET /api/status` | JSON array of monitor statuses. |
-| `GET /api/services` | JSON array of supervised-service health statuses. |
+| `GET /api/services` | JSON array of discovered services with their run states and health. |
 | `GET /api/history` | JSON array of recent notification records. |
-| `POST /api/services/{name}/restart` | Run a supervised service's configured restart command. |
+| `POST /api/services/{name}/restart` | Restart a discovered service via its derived platform command. |
 | `GET /health` | Returns `200 OK` — useful for health checks. |
 
 ## Design Documentation

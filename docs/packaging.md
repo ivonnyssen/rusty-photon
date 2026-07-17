@@ -284,14 +284,15 @@ share the same file.
 Sentinel's restart endpoint, watchdog ladder, and health supervision shell
 out to `systemctl restart rusty-photon-<svc>` as the unprivileged
 `rusty-photon` user — its unit sets `NoNewPrivileges=yes`, so a `sudo`
-prefix in a `restart_command` can never work. The sentinel package
+prefix could never work. The sentinel package
 therefore ships a scoped polkit rule,
 `/usr/share/polkit-1/rules.d/50-rusty-photon-sentinel.rules`, granting that
 user exactly the `restart` verb on `rusty-photon-*` units; other verbs and
 non-prefixed units still require the usual authorization. polkitd picks the
-rule up on install with no reload step, so supervised services are
-configured with plain `systemctl restart rusty-photon-<svc>` restart
-commands (see [sentinel.md](services/sentinel.md)).
+rule up on install with no reload step. The restart commands themselves are
+derived from the discovered unit names — the rule's scope and the discovery
+scope are the same set (see
+[sentinel.md §Service discovery](services/sentinel.md#service-discovery)).
 
 ## Camera specifics
 

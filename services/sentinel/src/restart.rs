@@ -1,16 +1,15 @@
 //! The Service Restart API's engine: `POST /api/services/{name}/restart`.
 //!
 //! Sentinel owns *process* restart for the rest of the stack (drivers reload
-//! themselves via `config.apply`; sentinel restarts processes). For each entry
-//! in the top-level `services` map the [`RestartManager`] runs the configured
-//! `restart_command` through the platform shell and — when a `health_command`
-//! is configured — polls it (exit 0 = healthy) until it succeeds or the
-//! service's `max_restart_duration` budget elapses. The command's outcome is a
-//! *domain* result ([`RestartReport`], HTTP 200 either way); addressing errors
-//! ([`RestartError`]) map to 4xx. See `docs/services/sentinel.md`
-//! §Service Restart API.
+//! themselves via `config.apply`; sentinel restarts processes). `{name}` is a
+//! [discovered service](crate::discovery); the [`RestartManager`] hands its
+//! unit to the platform service manager and then polls the platform's
+//! recovery check until it passes or the constant restart budget elapses.
+//! The command's outcome is a *domain* result ([`RestartReport`], HTTP 200
+//! either way); addressing errors ([`RestartError`]) map to 4xx. See
+//! `docs/services/sentinel.md` §Service Restart API.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -18,22 +17,18 @@ use serde::Serialize;
 use tokio::time::Instant;
 use tracing::{debug, info, warn};
 
-use crate::config::ServiceConfig;
-use crate::corrective::{Restarter, ShellRestarter};
+use crate::discovery::{ServiceManager, ServiceRegistry};
 
-/// How many times recovery re-runs `health_command` before giving up. The
-/// total wait is bounded by the service's `max_restart_duration` regardless.
+/// How many times recovery re-runs the platform check before giving up. The
+/// total wait is bounded by the restart budget regardless.
 const RECOVERY_ATTEMPTS: u32 = 5;
 
 /// Addressing errors — the dashboard handler maps these to 4xx.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RestartError {
-    /// `{name}` is not in the `services` map (404).
-    #[error("no configured service named '{0}'")]
+    /// `{name}` is not a discovered service (404).
+    #[error("no discovered service named '{0}'")]
     UnknownService(String),
-    /// The service is configured `restart_command: null` (409).
-    #[error("service '{0}' is not restartable")]
-    NotRestartable(String),
     /// Another restart of this service is still running (409).
     #[error("a restart of '{0}' is already in flight")]
     AlreadyInFlight(String),
@@ -43,11 +38,11 @@ pub enum RestartError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Recovery {
-    /// `health_command` exited 0 within the remaining budget.
+    /// The platform's recovery check passed within the remaining budget.
     Healthy,
-    /// `health_command` never exited 0 before the budget elapsed.
+    /// The recovery check never passed before the budget elapsed.
     Timeout,
-    /// No `health_command` is configured — confirmation skipped.
+    /// The platform has no recovery check (Homebrew) — confirmation skipped.
     Skipped,
 }
 
@@ -104,31 +99,32 @@ impl Drop for RestartSlot {
     }
 }
 
-/// The supervised-services registry plus the shell seam and the shared
-/// [`RestartGate`].
+/// The restart engine over the discovered-service registry, the platform
+/// service manager, and the shared [`RestartGate`].
 #[derive(derive_more::Debug)]
 pub struct RestartManager {
-    services: HashMap<String, ServiceConfig>,
-    /// Runs both `restart_command` and each `health_command` probe: the
-    /// [`Restarter`] contract — run a shell command bounded by a budget,
-    /// `Ok` iff it exits 0 in time — is exactly what both need.
+    /// The registry the discovery loop maintains; `{name}` resolves here.
+    registry: ServiceRegistry,
     #[debug(skip)]
-    runner: Arc<dyn Restarter>,
+    manager: Arc<dyn ServiceManager>,
+    /// The constant restart budget — one budget for the platform command
+    /// *and* the recovery wait together.
+    budget: Duration,
     gate: RestartGate,
 }
 
 impl RestartManager {
-    pub fn new(services: HashMap<String, ServiceConfig>, runner: Arc<dyn Restarter>) -> Self {
+    pub fn new(
+        registry: ServiceRegistry,
+        manager: Arc<dyn ServiceManager>,
+        budget: Duration,
+    ) -> Self {
         Self {
-            services,
-            runner,
+            registry,
+            manager,
+            budget,
             gate: RestartGate::default(),
         }
-    }
-
-    /// Production manager: commands run through the platform shell.
-    pub fn shell(services: HashMap<String, ServiceConfig>) -> Self {
-        Self::new(services, Arc::new(ShellRestarter))
     }
 
     /// A clone of the shared gate, for wiring into the other restart paths
@@ -137,39 +133,30 @@ impl RestartManager {
         self.gate.clone()
     }
 
-    /// Restart `name`: run its `restart_command`, then confirm recovery via
-    /// `health_command` when configured. Blocks until done — bounded by the
-    /// service's `max_restart_duration`.
+    /// Restart `name`: hand its unit to the platform, then confirm recovery
+    /// via the platform's check. Blocks until done — bounded by the budget.
+    /// Works for any discovered service regardless of run state (the manual
+    /// restart is the operator's recovery hammer).
     pub async fn restart(&self, name: &str) -> Result<RestartReport, RestartError> {
-        let service = self
-            .services
+        let unit = self
+            .registry
+            .read()
+            .await
             .get(name)
+            .map(|s| s.unit.clone())
             .ok_or_else(|| RestartError::UnknownService(name.to_string()))?;
-        let command = service
-            .restart_command
-            .as_deref()
-            .ok_or_else(|| RestartError::NotRestartable(name.to_string()))?;
         let _slot = self
             .gate
             .try_acquire(name)
             .ok_or_else(|| RestartError::AlreadyInFlight(name.to_string()))?;
 
-        let budget = service.max_restart_duration;
-        info!("restarting service '{name}' (budget {budget:?})");
+        let budget = self.budget;
+        info!("restarting service '{name}' (unit {unit}, budget {budget:?})");
         let started = Instant::now();
-        match self.runner.restart(command, budget).await {
+        match self.manager.restart(&unit, budget).await {
             Ok(()) => {
-                let recovery = match service.health_command.as_deref() {
-                    Some(health) => {
-                        let remaining = budget.saturating_sub(started.elapsed());
-                        if self.await_healthy(name, health, remaining).await {
-                            Recovery::Healthy
-                        } else {
-                            Recovery::Timeout
-                        }
-                    }
-                    None => Recovery::Skipped,
-                };
+                let remaining = budget.saturating_sub(started.elapsed());
+                let recovery = self.await_recovered(name, &unit, remaining).await;
                 info!("service '{name}' restarted (recovery: {recovery:?})");
                 Ok(RestartReport {
                     service: name.to_string(),
@@ -179,7 +166,7 @@ impl RestartManager {
                 })
             }
             Err(e) => {
-                warn!("service '{name}' restart command failed: {e}");
+                warn!("service '{name}' restart failed: {e}");
                 Ok(RestartReport {
                     service: name.to_string(),
                     status: "failed",
@@ -190,30 +177,31 @@ impl RestartManager {
         }
     }
 
-    /// Poll `health_command` until it exits 0 or the remaining `budget` runs
-    /// out. Mirrors the corrective ladder's `await_recovery`: the whole phase —
-    /// probe runs *and* the sleeps between them — sits under one outer timeout.
-    /// Each probe gets only its per-attempt slice of the budget, so one probe
-    /// that hangs (e.g. a check blocking while the service is half-up) is
-    /// killed and retried instead of monopolizing the whole phase.
-    async fn await_healthy(&self, name: &str, command: &str, budget: Duration) -> bool {
-        if budget.is_zero() {
-            return false;
-        }
+    /// Poll the platform's recovery check until it passes or the remaining
+    /// `budget` runs out. The whole phase — every check run, the first one
+    /// included, *and* the sleeps between them — sits under one outer
+    /// timeout, so even a wedged platform check cannot escape the budget.
+    /// (tokio's timeout polls the inner future once before the deadline, so
+    /// a zero remaining budget still lets an instantly-resolving check
+    /// report Skipped/Healthy instead of blindly timing out.)
+    async fn await_recovered(&self, name: &str, unit: &str, budget: Duration) -> Recovery {
         let interval = budget.checked_div(RECOVERY_ATTEMPTS).unwrap_or(budget);
         let poll = async {
             for attempt in 0..RECOVERY_ATTEMPTS {
-                match self.runner.restart(command, interval).await {
-                    Ok(()) => return true,
-                    Err(e) => debug!("service '{name}' health probe not yet passing: {e}"),
+                match self.manager.recovery_check(unit).await {
+                    None => return Recovery::Skipped,
+                    Some(true) => return Recovery::Healthy,
+                    Some(false) => debug!("service '{name}' not yet recovered"),
                 }
                 if attempt + 1 < RECOVERY_ATTEMPTS {
                     tokio::time::sleep(interval).await;
                 }
             }
-            false
+            Recovery::Timeout
         };
-        tokio::time::timeout(budget, poll).await.unwrap_or(false)
+        tokio::time::timeout(budget, poll)
+            .await
+            .unwrap_or(Recovery::Timeout)
     }
 }
 
@@ -223,184 +211,154 @@ impl RestartManager {
 mod tests {
     use super::*;
 
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
     use async_trait::async_trait;
 
-    /// Records every command it runs; scripts one result per named command.
-    #[derive(Debug, Default)]
-    struct ScriptedRunner {
-        /// Commands that succeed; everything else errors.
-        succeeds: Vec<String>,
-        calls: Mutex<Vec<String>>,
-        /// The per-call budget each command was given.
-        budgets: Mutex<Vec<Duration>>,
-        /// When set, the runner blocks on this notification before returning
+    use crate::discovery::{DiscoveredService, DiscoveredUnit, RunState};
+
+    /// Scripted service manager: records restarts, answers a fixed recovery
+    /// sequence (then repeats the last answer).
+    #[derive(Debug)]
+    struct ScriptedManager {
+        restart_ok: bool,
+        restarts: Mutex<Vec<String>>,
+        recovery: Mutex<Vec<Option<bool>>>,
+        recovery_calls: AtomicU32,
+        /// When set, the restart blocks on this notification before returning
         /// (used to hold a restart in flight).
         hold: Option<Arc<tokio::sync::Notify>>,
     }
 
-    impl ScriptedRunner {
-        fn succeeding(commands: &[&str]) -> Self {
+    impl ScriptedManager {
+        fn new(restart_ok: bool, recovery: Vec<Option<bool>>) -> Self {
             Self {
-                succeeds: commands.iter().map(|s| s.to_string()).collect(),
-                ..Self::default()
+                restart_ok,
+                restarts: Mutex::new(Vec::new()),
+                recovery: Mutex::new(recovery),
+                recovery_calls: AtomicU32::new(0),
+                hold: None,
             }
         }
     }
 
     #[async_trait]
-    impl Restarter for ScriptedRunner {
-        async fn restart(&self, command: &str, budget: Duration) -> crate::Result<()> {
-            self.calls.lock().unwrap().push(command.to_string());
-            self.budgets.lock().unwrap().push(budget);
+    impl ServiceManager for ScriptedManager {
+        async fn enumerate(&self) -> crate::Result<Vec<DiscoveredUnit>> {
+            Ok(Vec::new())
+        }
+
+        async fn restart(&self, unit: &str, _budget: Duration) -> crate::Result<()> {
+            self.restarts.lock().unwrap().push(unit.to_string());
             if let Some(hold) = &self.hold {
                 hold.notified().await;
             }
-            if self.succeeds.iter().any(|c| c == command) {
+            if self.restart_ok {
                 Ok(())
             } else {
-                Err(crate::SentinelError::Monitor(format!(
-                    "`{command}` exited with 1"
-                )))
+                Err(crate::SentinelError::Monitor(
+                    "`systemctl restart` exited with 1".to_string(),
+                ))
             }
+        }
+
+        async fn recovery_check(&self, _unit: &str) -> Option<bool> {
+            self.recovery_calls.fetch_add(1, Ordering::SeqCst);
+            let scripted = self.recovery.lock().unwrap();
+            let idx = (self.recovery_calls.load(Ordering::SeqCst) as usize - 1)
+                .min(scripted.len().saturating_sub(1));
+            scripted.get(idx).copied().unwrap_or(Some(true))
         }
     }
 
-    fn service(
-        restart_command: Option<&str>,
-        health_command: Option<&str>,
-        budget: Duration,
-    ) -> ServiceConfig {
-        ServiceConfig {
-            base_url: None,
-            device_number: 0,
-            restart_command: restart_command.map(String::from),
-            health_command: health_command.map(String::from),
-            max_restart_duration: budget,
-            health: None,
-        }
+    fn registry_with(names: &[&str]) -> ServiceRegistry {
+        let map: HashMap<String, DiscoveredService> = names
+            .iter()
+            .map(|n| {
+                (
+                    n.to_string(),
+                    DiscoveredService {
+                        name: n.to_string(),
+                        unit: format!("rusty-photon-{n}"),
+                        state: RunState::Running,
+                        probe: None,
+                    },
+                )
+            })
+            .collect();
+        Arc::new(tokio::sync::RwLock::new(map))
     }
 
     fn manager(
-        services: &[(&str, ServiceConfig)],
-        runner: ScriptedRunner,
-    ) -> (RestartManager, Arc<ScriptedRunner>) {
-        let map = services
-            .iter()
-            .map(|(n, s)| (n.to_string(), s.clone()))
-            .collect();
-        let runner = Arc::new(runner);
+        names: &[&str],
+        scripted: ScriptedManager,
+    ) -> (RestartManager, Arc<ScriptedManager>) {
+        let scripted = Arc::new(scripted);
         (
-            RestartManager::new(map, Arc::clone(&runner) as Arc<dyn Restarter>),
-            runner,
+            RestartManager::new(
+                registry_with(names),
+                Arc::clone(&scripted) as Arc<dyn ServiceManager>,
+                Duration::from_secs(1),
+            ),
+            scripted,
         )
     }
 
     #[tokio::test]
     async fn unknown_service_is_rejected() {
-        let (m, _) = manager(&[], ScriptedRunner::default());
+        let (m, _) = manager(&[], ScriptedManager::new(true, vec![Some(true)]));
         let err = m.restart("nope").await.unwrap_err();
         assert_eq!(err, RestartError::UnknownService("nope".to_string()));
-        assert!(err.to_string().contains("no configured service"), "{err}");
+        assert!(err.to_string().contains("no discovered service"), "{err}");
     }
 
     #[tokio::test]
-    async fn not_restartable_service_is_rejected() {
-        let svc = service(None, None, Duration::from_secs(1));
-        let (m, runner) = manager(&[("mount", svc)], ScriptedRunner::default());
-        let err = m.restart("mount").await.unwrap_err();
-        assert!(
-            runner.calls.lock().unwrap().is_empty(),
-            "no command may run for a non-restartable service"
-        );
-        assert_eq!(err, RestartError::NotRestartable("mount".to_string()));
-        assert!(err.to_string().contains("not restartable"), "{err}");
-    }
-
-    #[tokio::test]
-    async fn restart_without_health_command_skips_recovery() {
-        let svc = service(Some("restart-cmd"), None, Duration::from_secs(1));
-        let (m, runner) = manager(
-            &[("svc", svc)],
-            ScriptedRunner::succeeding(&["restart-cmd"]),
-        );
-        let report = m.restart("svc").await.unwrap();
-        assert_eq!(report.status, "ok");
-        assert_eq!(report.recovery, Some(Recovery::Skipped));
-        assert_eq!(report.detail, None);
-        assert_eq!(
-            *runner.calls.lock().unwrap(),
-            vec!["restart-cmd".to_string()],
-            "exactly the restart command runs; no health probe is configured"
-        );
-    }
-
-    #[tokio::test]
-    async fn restart_with_passing_health_reports_healthy() {
-        let svc = service(
-            Some("restart-cmd"),
-            Some("health-cmd"),
-            Duration::from_secs(1),
-        );
-        let runner = ScriptedRunner::succeeding(&["restart-cmd", "health-cmd"]);
-        let (m, runner) = manager(&[("svc", svc)], runner);
-        let report = m.restart("svc").await.unwrap();
+    async fn restart_hands_the_unit_to_the_platform() {
+        let (m, scripted) = manager(&["dsd-fp2"], ScriptedManager::new(true, vec![Some(true)]));
+        let report = m.restart("dsd-fp2").await.unwrap();
         assert_eq!(report.status, "ok");
         assert_eq!(report.recovery, Some(Recovery::Healthy));
         assert_eq!(
-            *runner.calls.lock().unwrap(),
-            vec!["restart-cmd".to_string(), "health-cmd".to_string()]
+            *scripted.restarts.lock().unwrap(),
+            vec!["rusty-photon-dsd-fp2".to_string()],
+            "the platform receives the unit name, not the service name"
         );
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn restart_with_failing_health_reports_timeout() {
-        let svc = service(
-            Some("restart-cmd"),
-            Some("health-cmd"),
-            Duration::from_millis(50),
-        );
-        // Only the restart command succeeds; every health probe errors.
-        let runner = ScriptedRunner::succeeding(&["restart-cmd"]);
-        let (m, _) = manager(&[("svc", svc)], runner);
-        let report = m.restart("svc").await.unwrap();
-        assert_eq!(report.status, "ok");
-        assert_eq!(report.recovery, Some(Recovery::Timeout));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn health_probes_get_a_per_attempt_slice_of_the_budget() {
-        let svc = service(
-            Some("restart-cmd"),
-            Some("health-cmd"),
-            Duration::from_millis(50),
-        );
-        let runner = ScriptedRunner::succeeding(&["restart-cmd"]);
-        let (m, runner) = manager(&[("svc", svc)], runner);
-        m.restart("svc").await.unwrap();
-        let budgets = runner.budgets.lock().unwrap();
-        assert_eq!(
-            budgets[0],
-            Duration::from_millis(50),
-            "the restart command gets the full budget"
-        );
-        assert!(budgets.len() > 1, "health probes must have run");
-        for probe_budget in &budgets[1..] {
-            // budget / RECOVERY_ATTEMPTS: one hanging probe is killed after its
-            // slice instead of monopolizing the phase and foreclosing retries.
-            assert_eq!(*probe_budget, Duration::from_millis(10), "{budgets:?}");
-        }
     }
 
     #[tokio::test]
-    async fn failing_restart_command_reports_failed_with_detail() {
-        let svc = service(
-            Some("restart-cmd"),
-            Some("health-cmd"),
-            Duration::from_secs(1),
+    async fn platform_without_recovery_check_skips() {
+        let (m, _) = manager(&["svc"], ScriptedManager::new(true, vec![None]));
+        let report = m.restart("svc").await.unwrap();
+        assert_eq!(report.status, "ok");
+        assert_eq!(report.recovery, Some(Recovery::Skipped));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn recovery_that_never_passes_reports_timeout() {
+        let (m, scripted) = manager(&["svc"], ScriptedManager::new(true, vec![Some(false)]));
+        let report = m.restart("svc").await.unwrap();
+        assert_eq!(report.status, "ok");
+        assert_eq!(report.recovery, Some(Recovery::Timeout));
+        assert!(
+            scripted.recovery_calls.load(Ordering::SeqCst) >= 2,
+            "recovery must be re-checked, not decided on one probe"
         );
-        // Nothing succeeds — the restart command itself errors.
-        let runner = ScriptedRunner::default();
-        let (m, runner) = manager(&[("svc", svc)], runner);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn recovery_passing_on_a_later_check_is_healthy() {
+        let (m, _) = manager(
+            &["svc"],
+            ScriptedManager::new(true, vec![Some(false), Some(false), Some(true)]),
+        );
+        let report = m.restart("svc").await.unwrap();
+        assert_eq!(report.recovery, Some(Recovery::Healthy));
+    }
+
+    #[tokio::test]
+    async fn failing_restart_reports_failed_with_detail() {
+        let (m, scripted) = manager(&["svc"], ScriptedManager::new(false, vec![Some(true)]));
         let report = m.restart("svc").await.unwrap();
         assert_eq!(report.status, "failed");
         assert_eq!(report.recovery, None);
@@ -409,9 +367,9 @@ mod tests {
             "{report:?}"
         );
         assert_eq!(
-            *runner.calls.lock().unwrap(),
-            vec!["restart-cmd".to_string()],
-            "a failed restart must not probe health"
+            scripted.recovery_calls.load(Ordering::SeqCst),
+            0,
+            "a failed restart must not poll recovery"
         );
     }
 
@@ -441,16 +399,12 @@ mod tests {
 
     #[tokio::test]
     async fn manager_gate_accessor_shares_in_flight_set() {
-        let svc = service(Some("restart-cmd"), None, Duration::from_secs(1));
-        let (m, runner) = manager(
-            &[("svc", svc)],
-            ScriptedRunner::succeeding(&["restart-cmd"]),
-        );
+        let (m, scripted) = manager(&["svc"], ScriptedManager::new(true, vec![Some(true)]));
         let slot = m.gate().try_acquire("svc").unwrap();
         let err = m.restart("svc").await.unwrap_err();
         assert_eq!(err, RestartError::AlreadyInFlight("svc".to_string()));
         assert!(
-            runner.calls.lock().unwrap().is_empty(),
+            scripted.restarts.lock().unwrap().is_empty(),
             "no command may run while the gate slot is held externally"
         );
         drop(slot);
@@ -460,13 +414,11 @@ mod tests {
     #[tokio::test]
     async fn concurrent_restart_of_same_service_is_rejected() {
         let notify = Arc::new(tokio::sync::Notify::new());
-        let runner = ScriptedRunner {
-            succeeds: vec!["restart-cmd".to_string()],
+        let scripted = ScriptedManager {
             hold: Some(Arc::clone(&notify)),
-            ..ScriptedRunner::default()
+            ..ScriptedManager::new(true, vec![Some(true)])
         };
-        let svc = service(Some("restart-cmd"), None, Duration::from_secs(5));
-        let (m, _) = manager(&[("svc", svc)], runner);
+        let (m, _) = manager(&["svc"], scripted);
         let m = Arc::new(m);
 
         // Hold the first restart mid-command, then race a second one.

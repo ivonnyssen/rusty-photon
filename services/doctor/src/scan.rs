@@ -171,13 +171,15 @@ pub fn unknown_config_files(config_dir: &Path, known: &[String]) -> Vec<String> 
 // views of other services' shapes, and must keep working as those shapes
 // grow fields doctor does not join across.
 
-/// ui-htmx: one `drivers` map entry.
+/// ui-htmx: one `drivers` map entry. The retired `sentinel_service` field is
+/// read only to diagnose it (`config.retired-keys`) — since D3s the restart
+/// name is always the driver's own map key.
 #[derive(Debug, Deserialize, Default)]
 pub struct UiDriverView {
     #[serde(default)]
     pub base_url: Option<String>,
     #[serde(default)]
-    pub sentinel_service: Option<String>,
+    pub sentinel_service: Option<Value>,
 }
 
 /// ui-htmx: the blocks doctor joins across.
@@ -187,15 +189,6 @@ pub struct UiHtmxView {
     pub drivers: BTreeMap<String, UiDriverView>,
     #[serde(default)]
     pub sentinel: Option<Value>,
-}
-
-/// sentinel: one `services` map entry.
-#[derive(Debug, Deserialize, Default)]
-pub struct SentinelServiceView {
-    #[serde(default)]
-    pub base_url: Option<String>,
-    #[serde(default)]
-    pub restart_command: Option<String>,
 }
 
 /// sentinel: one watchdog operation family.
@@ -211,11 +204,13 @@ pub struct WatchdogView {
     pub operations: BTreeMap<String, WatchdogOperationView>,
 }
 
-/// sentinel: the blocks doctor joins across.
+/// sentinel: the blocks doctor joins across. The retired `services` map is
+/// read only to diagnose it (`config.retired-keys`) — since D3s sentinel
+/// discovers its services from the platform service manager.
 #[derive(Debug, Deserialize, Default)]
 pub struct SentinelView {
     #[serde(default)]
-    pub services: BTreeMap<String, SentinelServiceView>,
+    pub services: Option<Value>,
     #[serde(default)]
     pub operation_watchdog: Option<WatchdogView>,
 }
@@ -367,7 +362,8 @@ mod tests {
         write(
             dir.path(),
             "sentinel.json",
-            r#"{ "server": { "port": 11114 }, "services": ["not", "a", "map"] }"#,
+            r#"{ "server": { "port": 11114 },
+                 "operation_watchdog": { "operations": "not a map" } }"#,
         );
         let scan = scan_service(dir.path(), catalog::entry("sentinel").unwrap());
         let result: Result<SentinelView, String> = view(&scan).unwrap();
@@ -377,14 +373,42 @@ mod tests {
             dir.path(),
             "sentinel.json",
             r#"{ "server": { "port": 11114 },
-                 "services": { "cam": { "base_url": "http://x/api/v1", "future": 1 } },
+                 "operation_watchdog": {
+                   "rp_url": "http://localhost:11115",
+                   "operations": { "slew": { "service": "qhy-focuser", "future": 1 } } },
                  "dashboard_extras": true }"#,
         );
         let scan = scan_service(dir.path(), catalog::entry("sentinel").unwrap());
         let sentinel: SentinelView = view(&scan).unwrap().unwrap();
+        let watchdog = sentinel.operation_watchdog.unwrap();
         assert_eq!(
-            sentinel.services["cam"].base_url.as_deref(),
-            Some("http://x/api/v1")
+            watchdog.operations["slew"].service.as_deref(),
+            Some("qhy-focuser")
         );
+        assert!(sentinel.services.is_none(), "no retired key present");
+    }
+
+    #[test]
+    fn test_views_surface_retired_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "sentinel.json",
+            r#"{ "server": { "port": 11114 },
+                 "services": { "cam": { "restart_command": "systemctl restart x" } } }"#,
+        );
+        let scan = scan_service(dir.path(), catalog::entry("sentinel").unwrap());
+        let sentinel: SentinelView = view(&scan).unwrap().unwrap();
+        assert!(sentinel.services.is_some(), "the retired map must be seen");
+
+        write(
+            dir.path(),
+            "ui-htmx.json",
+            r#"{ "server": { "port": 11120 },
+                 "drivers": { "dsd-fp2": { "sentinel_service": "dsd-fp2" } } }"#,
+        );
+        let scan = scan_service(dir.path(), catalog::entry("ui-htmx").unwrap());
+        let ui: UiHtmxView = view(&scan).unwrap().unwrap();
+        assert!(ui.drivers["dsd-fp2"].sentinel_service.is_some());
     }
 }

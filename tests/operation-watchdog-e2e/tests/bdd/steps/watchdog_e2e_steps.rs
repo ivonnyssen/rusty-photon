@@ -69,7 +69,7 @@ async fn watchdog_escalates_centering(world: &mut WatchdogE2eWorld) {
     );
 }
 
-#[then("the corrective ladder runs the restart command")]
+#[then("the corrective ladder restarts the rp service")]
 async fn ladder_runs_restart(world: &mut WatchdogE2eWorld) {
     let history = world
         .wait_for_history(|r| {
@@ -87,6 +87,14 @@ async fn ladder_runs_restart(world: &mut WatchdogE2eWorld) {
                     .is_some_and(|m| m.contains("restart=ran"))
         }),
         "expected the escalation message to report 'restart=ran'; history: {history:#?}"
+    );
+    // `restart=ran` is emitted only after the restart rung's manager call
+    // returned Ok — by then the stub has already recorded the unit.
+    let restarts = world.restart_log();
+    assert!(
+        restarts.iter().any(|u| u == "rusty-photon-rp"),
+        "expected the stub service manager to have restarted rusty-photon-rp; \
+         restarts.log: {restarts:?}"
     );
 }
 

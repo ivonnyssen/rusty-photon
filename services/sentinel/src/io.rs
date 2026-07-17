@@ -56,6 +56,23 @@ impl ReqwestHttpClient {
         client.auth = Some((username, password));
         Ok(client)
     }
+
+    /// A client that skips TLS certificate verification — for the health
+    /// probes only: a probe sends no credentials and never parses the body,
+    /// and sentinel cannot assume it holds a CA for every supervised peer's
+    /// self-signed certificate. Never use this for a request that carries
+    /// credentials or whose response is trusted. Errs instead of silently
+    /// degrading to a verifying client (which would probe self-signed TLS
+    /// peers as down).
+    pub fn insecure() -> crate::Result<Self> {
+        let client = reqwest::Client::builder()
+            .danger_accept_invalid_certs(true)
+            .build()
+            .map_err(|e| {
+                crate::SentinelError::Config(format!("failed to build probe HTTP client: {e}"))
+            })?;
+        Ok(Self { client, auth: None })
+    }
 }
 
 #[async_trait]

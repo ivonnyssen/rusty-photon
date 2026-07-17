@@ -1,7 +1,8 @@
 //! rusty-photon-doctor CLI (docs/services/doctor.md §CLI contract).
 //!
-//! One-shot: diagnose, print, exit. Exit 0 = no failing check (warnings
-//! allowed), 1 = at least one failure, 2 = doctor itself could not run.
+//! One-shot: diagnose (and repair, with --fix), print, exit. Exit 0 = no
+//! failing check (warnings allowed; post-fix state on a --fix run), 1 = at
+//! least one failure, 2 = doctor itself could not run.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -23,6 +24,10 @@ struct Cli {
     /// Emit the DoctorReport JSON instead of the human-readable report.
     #[arg(long)]
     json: bool,
+    /// Apply the machine-applicable fixes, re-diagnose, and report the
+    /// post-fix state. Everything else stays read-only.
+    #[arg(long)]
+    fix: bool,
     /// Test affordance: read platform facts from a JSON file instead of
     /// querying the host's service manager.
     #[cfg(feature = "mock")]
@@ -52,7 +57,30 @@ fn main() -> ExitCode {
         }
     };
 
-    let report = doctor::diagnose(config_dir, facts);
+    let report = if cli.fix {
+        if !facts.units.is_empty() {
+            // Units installed is the strongest liveness signal doctor has
+            // (the inventory carries no cross-platform active state), and
+            // the canonical flow runs --fix with services live anyway:
+            // atomic renames make corruption impossible, but a driver's own
+            // config.apply landing mid-fix loses one of the two writes.
+            eprintln!(
+                "doctor: rusty-photon units are installed, so their services \
+                 may be running while fixes are written — a concurrent config \
+                 change can lose one write; re-run doctor to verify, and \
+                 restart services to pick up fixed configs"
+            );
+        }
+        match doctor::diagnose_and_fix(config_dir, facts) {
+            Ok(report) => report,
+            Err(e) => {
+                eprintln!("doctor: {e}");
+                return ExitCode::from(2);
+            }
+        }
+    } else {
+        doctor::diagnose(config_dir, facts)
+    };
     if cli.json {
         match serde_json::to_string_pretty(&report) {
             Ok(json) => println!("{json}"),

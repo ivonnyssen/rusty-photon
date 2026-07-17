@@ -1,4 +1,4 @@
-//! BDD step definitions for the service health supervision feature
+//! BDD step definitions for service discovery and health supervision.
 
 use std::time::Duration;
 
@@ -6,39 +6,45 @@ use cucumber::{given, then, when};
 
 use crate::world::SentinelWorld;
 
-/// A shell command that appends one line to the marker file per run, so the
-/// test can count restarts. Works under both platform shells.
-fn append_marker_command(path: &std::path::Path) -> String {
-    format!("echo ok >> \"{}\"", path.display())
+#[given(expr = "a discovered unit {string} in state {string}")]
+fn discovered_unit(world: &mut SentinelWorld, unit: String, state: String) {
+    world.add_discovered_unit(&unit, &state);
 }
 
 #[given(expr = "a stub service whose health endpoint answers {int}")]
 async fn health_stub_answering(world: &mut SentinelWorld, status: u16) {
-    let healthy = match status {
-        200 => true,
-        503 => false,
-        other => panic!("unsupported stub health status {other}"),
-    };
-    world.start_health_stub(healthy).await;
+    world.start_health_stub(status).await;
 }
 
-#[given(
-    expr = "sentinel is running with service {string} supervised at the stub with a restart command that appends to a marker file"
-)]
-async fn sentinel_with_supervised_service(world: &mut SentinelWorld, name: String) {
-    let marker = world.restart_marker_path();
-    world.add_health_supervised_service(&name, Some(append_marker_command(&marker)));
-    world.start_sentinel().await;
+#[given(expr = "the stub service is discovered as {string} in state {string}")]
+fn stub_discovered_as(world: &mut SentinelWorld, service: String, state: String) {
+    world.discover_health_stub_as(&service, &state);
 }
 
-#[given(
-    expr = "sentinel is running with notifiers and service {string} supervised at the stub with a restart command that appends to a marker file"
-)]
-async fn sentinel_with_notifiers_and_supervised_service(world: &mut SentinelWorld, name: String) {
+#[given("sentinel is running with notifiers and no monitors")]
+async fn sentinel_with_notifiers(world: &mut SentinelWorld) {
     world.sentinel_has_notifiers = true;
-    let marker = world.restart_marker_path();
-    world.add_health_supervised_service(&name, Some(append_marker_command(&marker)));
     world.start_sentinel().await;
+}
+
+#[given(expr = "the service manager fails restarts of {string}")]
+fn manager_fails_restarts(world: &mut SentinelWorld, unit: String) {
+    world.fail_restarts_of(&unit);
+}
+
+#[given("the service manager leaves restarted units in their prior state")]
+fn manager_leaves_units_stuck(world: &mut SentinelWorld) {
+    world.leave_restarted_units_stuck();
+}
+
+#[when(expr = "the unit {string} appears in state {string}")]
+fn unit_appears(world: &mut SentinelWorld, unit: String, state: String) {
+    world.add_discovered_unit(&unit, &state);
+}
+
+#[when(expr = "the unit {string} is removed")]
+fn unit_removed(world: &mut SentinelWorld, unit: String) {
+    world.remove_discovered_unit(&unit);
 }
 
 #[when(expr = "the dashboard reports service {string} health {string}")]
@@ -56,28 +62,43 @@ async fn dashboard_reports_service_health(
     );
 }
 
-#[then("the restart marker file does not exist after a settle period")]
-async fn marker_does_not_exist(world: &mut SentinelWorld) {
-    // A negative assertion needs a fixed window: five poll intervals is ample
-    // time for a spurious restart (threshold is two failed probes) to appear.
+#[then("the service manager records no restarts after a settle period")]
+async fn no_restarts_after_settle(world: &mut SentinelWorld) {
+    // A negative assertion needs a fixed window: with the stub policy's
+    // 200ms probes and threshold 2, a spurious restart would land well
+    // within a second.
     tokio::time::sleep(Duration::from_secs(1)).await;
-    let marker = world.restart_marker.as_ref().expect("no marker path");
-    assert!(
-        !marker.exists(),
-        "healthy service was restarted: {}",
-        marker.display()
-    );
+    let log = world.restart_log();
+    assert!(log.is_empty(), "unexpected restarts recorded: {log:?}");
 }
 
-#[when(expr = "the restart marker file records at least {int} restart(s) within {int} seconds")]
-#[then(expr = "the restart marker file records at least {int} restart(s) within {int} seconds")]
-async fn marker_records_restarts(world: &mut SentinelWorld, min: usize, ceiling_secs: u64) {
+#[when(
+    expr = "the service manager records at least {int} restart(s) of {string} within {int} seconds"
+)]
+#[then(
+    expr = "the service manager records at least {int} restart(s) of {string} within {int} seconds"
+)]
+async fn manager_records_restarts(
+    world: &mut SentinelWorld,
+    min: usize,
+    unit: String,
+    ceiling_secs: u64,
+) {
     let count = world
-        .wait_for_marker_lines(min, Duration::from_secs(ceiling_secs))
+        .wait_for_restarts(&unit, min, Duration::from_secs(ceiling_secs))
         .await;
     assert!(
         count >= min,
-        "expected at least {min} restarts within {ceiling_secs}s, saw {count}"
+        "expected at least {min} restart(s) of {unit} within {ceiling_secs}s, saw {count}"
+    );
+}
+
+#[then(expr = "the service manager records a restart of {string}")]
+fn manager_records_a_restart(world: &mut SentinelWorld, unit: String) {
+    let log = world.restart_log();
+    assert!(
+        log.contains(&unit),
+        "no restart of {unit} recorded: {log:?}"
     );
 }
 
@@ -87,7 +108,7 @@ fn stub_becomes_healthy(world: &mut SentinelWorld) {
         .health_stub
         .as_ref()
         .expect("health stub not started")
-        .set_healthy(true);
+        .set_status(200);
 }
 
 #[then(expr = "the dashboard reports zero restarts in the current outage for {string}")]
@@ -170,21 +191,87 @@ async fn request_services_endpoint(world: &mut SentinelWorld) {
     world.http_get("/api/services").await;
 }
 
-#[then(expr = "the services response lists {string} with health {string}")]
-fn services_response_lists(world: &mut SentinelWorld, name: String, health: String) {
+/// Find `name` in the captured `/api/services` response body.
+fn captured_service(world: &SentinelWorld, name: &str) -> serde_json::Value {
     let body = world
         .last_response_body
         .as_ref()
         .expect("no response body captured");
     let services: Vec<serde_json::Value> = serde_json::from_str(body)
         .unwrap_or_else(|e| panic!("services response is not JSON ({e}): {body}"));
-    let service = services
+    services
         .iter()
-        .find(|s| s["name"].as_str() == Some(name.as_str()))
-        .unwrap_or_else(|| panic!("service '{name}' not listed: {services:?}"));
+        .find(|s| s["name"].as_str() == Some(name))
+        .unwrap_or_else(|| panic!("service '{name}' not listed: {services:?}"))
+        .clone()
+}
+
+#[then(expr = "the services response lists {string} with health {string}")]
+fn services_response_lists_health(world: &mut SentinelWorld, name: String, health: String) {
+    let service = captured_service(world, &name);
     assert_eq!(
         service["health"].as_str(),
         Some(health.as_str()),
         "unexpected health: {service}"
     );
+}
+
+#[then(expr = "the services response lists {string} with run state {string}")]
+fn services_response_lists_run_state(world: &mut SentinelWorld, name: String, run_state: String) {
+    let service = captured_service(world, &name);
+    assert_eq!(
+        service["run_state"].as_str(),
+        Some(run_state.as_str()),
+        "unexpected run state: {service}"
+    );
+}
+
+#[then(expr = "the services response does not list {string}")]
+fn services_response_does_not_list(world: &mut SentinelWorld, name: String) {
+    let body = world
+        .last_response_body
+        .as_ref()
+        .expect("no response body captured");
+    let services: Vec<serde_json::Value> = serde_json::from_str(body)
+        .unwrap_or_else(|e| panic!("services response is not JSON ({e}): {body}"));
+    assert!(
+        !services
+            .iter()
+            .any(|s| s["name"].as_str() == Some(name.as_str())),
+        "service '{name}' should not be listed: {services:?}"
+    );
+}
+
+#[then(expr = "the services response eventually lists {string} with run state {string}")]
+async fn services_eventually_lists(world: &mut SentinelWorld, name: String, run_state: String) {
+    let mut last: Option<serde_json::Value> = None;
+    for _ in 0..60 {
+        let services = world.get_services().await;
+        if let Some(service) = services
+            .iter()
+            .find(|s| s["name"].as_str() == Some(name.as_str()))
+        {
+            if service["run_state"].as_str() == Some(run_state.as_str()) {
+                return;
+            }
+            last = Some(service.clone());
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    panic!("service '{name}' never reported run state '{run_state}': {last:?}");
+}
+
+#[then(expr = "the services response eventually does not list {string}")]
+async fn services_eventually_does_not_list(world: &mut SentinelWorld, name: String) {
+    for _ in 0..60 {
+        let services = world.get_services().await;
+        if !services
+            .iter()
+            .any(|s| s["name"].as_str() == Some(name.as_str()))
+        {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    panic!("service '{name}' was never dropped from /api/services");
 }

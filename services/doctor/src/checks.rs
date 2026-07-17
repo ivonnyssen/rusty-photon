@@ -270,6 +270,9 @@ fn ports(ctx: &Context) -> Vec<Check> {
     for scan in &participants {
         by_port.entry(scan.effective_port()).or_default().push(scan);
     }
+    // Ports a fix may not move a service onto: every effective port in use,
+    // plus every default a fix already claimed this round.
+    let mut claimed: std::collections::BTreeSet<u16> = by_port.keys().copied().collect();
     let mut collided = false;
     for (port, scans) in &by_port {
         if scans.len() > 1 {
@@ -285,23 +288,43 @@ fn ports(ctx: &Context) -> Vec<Check> {
                 })
                 .collect::<Vec<_>>()
                 .join(", ");
-            checks.push(Check::fail(
-                "ports.collision",
-                svc(scans[0]),
-                format!(
-                    "port {port} is claimed by {} services — {members} — and only \
-                     one can bind",
-                    scans.len()
-                ),
-                Some(format!(
-                    "give each a distinct server.port (defaults: {})",
-                    scans
-                        .iter()
-                        .map(|s| format!("{} {}", s.entry.name, s.entry.default_port))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )),
-            ));
+            // The derivable repair: a configured member whose own catalog
+            // default is free goes back to it. A member already at its
+            // default, or whose default is taken, is a judgment call — the
+            // suggestion text covers it.
+            let mut fixes = Vec::new();
+            for scan in scans {
+                let configured = matches!(&scan.server, ServerBlock::Parsed { .. });
+                let default = scan.entry.default_port;
+                if configured && default != *port && !claimed.contains(&default) {
+                    claimed.insert(default);
+                    fixes.push(crate::report::FixOp::SetNumber {
+                        service: scan.entry.name.to_string(),
+                        pointer: "/server/port".to_string(),
+                        value: u64::from(default),
+                    });
+                }
+            }
+            checks.push(
+                Check::fail(
+                    "ports.collision",
+                    svc(scans[0]),
+                    format!(
+                        "port {port} is claimed by {} services — {members} — and only \
+                         one can bind",
+                        scans.len()
+                    ),
+                    Some(format!(
+                        "give each a distinct server.port (defaults: {})",
+                        scans
+                            .iter()
+                            .map(|s| format!("{} {}", s.entry.name, s.entry.default_port))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )),
+                )
+                .with_fixes(fixes),
+            );
         }
     }
     if !collided && !participants.is_empty() {
@@ -423,173 +446,148 @@ fn name_joins(ctx: &Context) -> Vec<Check> {
         ctx.scan("sentinel").and_then(|s| scan::view(s)?.ok());
     let ui_view: Option<UiHtmxView> = ctx.scan("ui-htmx").and_then(|s| scan::view(s)?.ok());
 
+    checks.extend(retired_keys(&sentinel_view, &ui_view));
     if let Some(sentinel) = &sentinel_view {
-        checks.extend(sentinel_restart_joins(ctx, sentinel));
-        checks.extend(watchdog_joins(sentinel));
+        checks.extend(watchdog_joins(ctx, sentinel));
     }
     if let Some(ui) = &ui_view {
         if ui.sentinel.is_some() {
-            if let Some(sentinel) = &sentinel_view {
-                checks.extend(ui_sentinel_joins(ui, sentinel));
-            }
+            checks.extend(ui_restart_joins(ctx, ui));
         }
         checks.extend(ui_driver_port_joins(ctx, ui));
     }
     checks
 }
 
-/// Extract the unit a `systemctl … restart <unit>` command names, plus
-/// whether it uses the `--user` scope.
-fn restart_command_unit(command: &str) -> Option<(String, bool)> {
-    let tokens: Vec<&str> = command.split_whitespace().collect();
-    let user_scope = tokens.contains(&"--user");
-    let restart_pos = tokens.iter().position(|t| *t == "restart")?;
-    let unit = tokens.get(restart_pos + 1)?;
-    Some((
-        unit.strip_suffix(".service").unwrap_or(unit).to_string(),
-        user_scope,
-    ))
-}
-
-fn sentinel_restart_joins(ctx: &Context, sentinel: &SentinelView) -> Vec<Check> {
+/// Config keys retired by D3s (sentinel discovers its services): sentinel's
+/// `services` map and ui-htmx's per-driver `sentinel_service`. Both fail the
+/// service's own strict load, so the file is dead weight that keeps the
+/// service from starting.
+fn retired_keys(sentinel: &Option<SentinelView>, ui: &Option<UiHtmxView>) -> Vec<Check> {
     let mut checks = Vec::new();
-    if ctx.mode != Mode::Packaged {
-        return checks;
-    }
-    let mut all_resolve = true;
-    for (name, service) in &sentinel.services {
-        let Some(command) = &service.restart_command else {
-            continue;
-        };
-        let Some((unit, user_scope)) = restart_command_unit(command) else {
-            continue;
-        };
-        if user_scope {
-            all_resolve = false;
-            checks.push(Check::fail(
-                "joins.sentinel-unit",
+    if sentinel.as_ref().is_some_and(|s| s.services.is_some()) {
+        checks.push(
+            Check::fail(
+                "config.retired-keys",
                 Some("sentinel".to_string()),
-                format!(
-                    "services.{name}.restart_command uses `systemctl --user`, but \
-                     rusty-photon units are system units — the restart will never \
-                     find the unit"
+                "sentinel.json carries the retired services map — sentinel discovers \
+                 its services from the platform service manager now, and refuses to \
+                 start while the key is present"
+                    .to_string(),
+                Some(
+                    "delete the top-level \"services\" key; supervision needs no \
+                     replacement config"
+                        .to_string(),
                 ),
-                Some(format!("drop --user: `systemctl restart {unit}`")),
-            ));
-            continue;
-        }
-        if ctx.facts.unit(&unit).is_some() {
-            continue;
-        }
-        all_resolve = false;
-        let suggestion = if !unit.starts_with("rusty-photon-")
-            && ctx.facts.unit(&format!("rusty-photon-{unit}")).is_some()
-        {
-            Some(format!(
-                "the installed unit is rusty-photon-{unit} — restart commands need \
-                 the rusty-photon- prefix"
-            ))
-        } else {
-            Some(format!(
-                "installed units are: {}",
-                ctx.facts
-                    .units
-                    .iter()
-                    .map(|u| u.name.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ))
-        };
-        checks.push(Check::fail(
-            "joins.sentinel-unit",
-            Some("sentinel".to_string()),
-            format!(
-                "services.{name}.restart_command names unit {unit}, which the \
-                 service manager does not report"
-            ),
-            suggestion,
-        ));
+            )
+            .with_fixes(vec![crate::report::FixOp::RemoveKey {
+                service: "sentinel".to_string(),
+                pointer: "/services".to_string(),
+            }]),
+        );
     }
-    if all_resolve
-        && sentinel
-            .services
-            .values()
-            .any(|s| s.restart_command.is_some())
-    {
-        checks.push(Check::ok(
-            "joins.sentinel-unit",
-            Some("sentinel".to_string()),
-            "every restart_command names an installed unit".to_string(),
-        ));
+    if let Some(ui) = ui {
+        for (driver_id, driver) in &ui.drivers {
+            if driver.sentinel_service.is_some() {
+                checks.push(
+                    Check::fail(
+                        "config.retired-keys",
+                        Some("ui-htmx".to_string()),
+                        format!(
+                            "drivers.{driver_id} carries the retired sentinel_service \
+                             field — the restart name is always the driver's own map \
+                             key now, and ui-htmx refuses to start while the field is \
+                             present"
+                        ),
+                        Some(format!("delete drivers.{driver_id}.sentinel_service")),
+                    )
+                    .with_fixes(vec![crate::report::FixOp::RemoveKey {
+                        service: "ui-htmx".to_string(),
+                        pointer: format!(
+                            "/drivers/{}/sentinel_service",
+                            crate::fix::escape_token(driver_id)
+                        ),
+                    }]),
+                );
+            }
+        }
     }
     checks
 }
 
-fn watchdog_joins(sentinel: &SentinelView) -> Vec<Check> {
+/// The installed rusty-photon units' service names (unit minus the prefix) —
+/// what sentinel's discovery will resolve restart names against.
+fn discovered_service_names(ctx: &Context) -> Vec<String> {
+    ctx.facts
+        .units
+        .iter()
+        .filter_map(|u| u.name.strip_prefix("rusty-photon-"))
+        .map(str::to_string)
+        .collect()
+}
+
+fn watchdog_joins(ctx: &Context, sentinel: &SentinelView) -> Vec<Check> {
     let mut checks = Vec::new();
+    if ctx.mode != Mode::Packaged {
+        return checks;
+    }
     let Some(watchdog) = &sentinel.operation_watchdog else {
         return checks;
     };
+    let discovered = discovered_service_names(ctx);
     for (family, operation) in &watchdog.operations {
         let Some(service) = &operation.service else {
             continue;
         };
-        if !sentinel.services.contains_key(service) {
+        if !discovered.iter().any(|name| name == service) {
             checks.push(Check::fail(
                 "joins.watchdog-service",
                 Some("sentinel".to_string()),
                 format!(
                     "operation_watchdog.operations.{family}.service names \
-                     \"{service}\", which is not a key of the services map — the \
-                     watchdog's restart rung will never fire"
+                     \"{service}\", but no rusty-photon-{service} unit is installed \
+                     — sentinel's discovery will never resolve it, so the \
+                     watchdog's ladder degrades to notify-only"
                 ),
-                Some(format!(
-                    "existing keys: {}",
-                    sentinel
-                        .services
-                        .keys()
-                        .map(String::as_str)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )),
+                Some(format!("installed services are: {}", discovered.join(", "))),
             ));
         }
     }
     checks
 }
 
-fn ui_sentinel_joins(ui: &UiHtmxView, sentinel: &SentinelView) -> Vec<Check> {
+/// ui-htmx renders its Restart-via-Sentinel affordance for every
+/// config-declared driver whenever a `sentinel` target is set, naming the
+/// driver's own map key. A key with no matching installed unit 404s at
+/// sentinel — legal for a third-party device (hence warn, not fail), but
+/// worth knowing before 2am.
+fn ui_restart_joins(ctx: &Context, ui: &UiHtmxView) -> Vec<Check> {
     let mut checks = Vec::new();
+    if ctx.mode != Mode::Packaged {
+        return checks;
+    }
+    let discovered = discovered_service_names(ctx);
     let mut all_resolve = true;
-    for (driver_id, driver) in &ui.drivers {
-        let target = driver.sentinel_service.as_deref().unwrap_or(driver_id);
-        if !sentinel.services.contains_key(target) {
+    for driver_id in ui.drivers.keys() {
+        if !discovered.iter().any(|name| name == driver_id) {
             all_resolve = false;
-            checks.push(Check::fail(
-                "joins.ui-htmx-sentinel",
+            checks.push(Check::warn(
+                "joins.ui-htmx-restart",
                 Some("ui-htmx".to_string()),
                 format!(
-                    "drivers.{driver_id} restarts via sentinel service \"{target}\", \
-                     which is not a key of sentinel's services map — the restart \
-                     button will 404"
+                    "drivers.{driver_id} has no installed rusty-photon-{driver_id} \
+                     unit, so its Restart-via-Sentinel button will 404 — fine if \
+                     this is a third-party device sentinel cannot restart"
                 ),
-                Some(format!(
-                    "sentinel's keys: {}",
-                    sentinel
-                        .services
-                        .keys()
-                        .map(String::as_str)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )),
+                None,
             ));
         }
     }
     if all_resolve && !ui.drivers.is_empty() {
         checks.push(Check::ok(
-            "joins.ui-htmx-sentinel",
+            "joins.ui-htmx-restart",
             Some("ui-htmx".to_string()),
-            "every driver's sentinel_service resolves to a sentinel services key".to_string(),
+            "every driver key resolves to an installed unit sentinel can restart".to_string(),
         ));
     }
     checks
@@ -612,16 +610,27 @@ fn ui_driver_port_joins(ctx: &Context, ui: &UiHtmxView) -> Vec<Check> {
         };
         let expected = scan.effective_port();
         if port != expected {
-            checks.push(Check::fail(
-                "joins.ui-htmx-driver-port",
-                Some("ui-htmx".to_string()),
-                format!(
-                    "drivers.{driver_id}.base_url points at localhost port {port}, \
-                     but {driver_id} listens on {expected} — every config page for \
-                     it will show a transport banner"
-                ),
-                Some(format!("change the URL's port to {expected}")),
-            ));
+            let fixes = match replace_port(url, expected) {
+                Some(corrected) => vec![crate::report::FixOp::SetString {
+                    service: "ui-htmx".to_string(),
+                    pointer: format!("/drivers/{}/base_url", crate::fix::escape_token(driver_id)),
+                    value: corrected,
+                }],
+                None => Vec::new(),
+            };
+            checks.push(
+                Check::fail(
+                    "joins.ui-htmx-driver-port",
+                    Some("ui-htmx".to_string()),
+                    format!(
+                        "drivers.{driver_id}.base_url points at localhost port {port}, \
+                         but {driver_id} listens on {expected} — every config page for \
+                         it will show a transport banner"
+                    ),
+                    Some(format!("change the URL's port to {expected}")),
+                )
+                .with_fixes(fixes),
+            );
         }
     }
     checks
@@ -639,50 +648,61 @@ fn localhost_port(url: &str) -> Option<u16> {
     port.parse().ok()
 }
 
+/// `url` with its authority's port replaced — only for URLs
+/// [`localhost_port`] already parsed, so the split is known to succeed.
+fn replace_port(url: &str, port: u16) -> Option<String> {
+    let (scheme, rest) = match url.split_once("://") {
+        Some((scheme, rest)) => (Some(scheme), rest),
+        None => (None, url),
+    };
+    let (authority, path) = match rest.split_once('/') {
+        Some((authority, path)) => (authority, Some(path)),
+        None => (rest, None),
+    };
+    let (host, _) = authority.rsplit_once(':')?;
+    let mut out = String::new();
+    if let Some(scheme) = scheme {
+        out.push_str(scheme);
+        out.push_str("://");
+    }
+    out.push_str(host);
+    out.push(':');
+    out.push_str(&port.to_string());
+    if let Some(path) = path {
+        out.push('/');
+        out.push_str(path);
+    }
+    Some(out)
+}
+
 // ---- URL conventions ----
 
 fn url_conventions(ctx: &Context) -> Vec<Check> {
     let mut checks = Vec::new();
-    if let Some(sentinel) = ctx
-        .scan("sentinel")
-        .and_then(|s| scan::view::<SentinelView>(s)?.ok())
-    {
-        for (name, service) in &sentinel.services {
-            let Some(url) = &service.base_url else {
-                continue;
-            };
-            if !url.trim_end_matches('/').ends_with("/api/v1") {
-                checks.push(Check::warn(
-                    "urls.sentinel-suffix",
-                    Some("sentinel".to_string()),
-                    format!(
-                        "services.{name}.base_url ({url}) lacks the /api/v1 suffix \
-                         sentinel's Alpaca probes append method paths below"
-                    ),
-                    Some(format!("use {}/api/v1", url.trim_end_matches('/'))),
-                ));
-            }
-        }
-    }
-    let mut spurious = |service: &str, field: String, url: &str| {
-        if url.trim_end_matches('/').ends_with("/api/v1") {
-            checks.push(Check::warn(
-                "urls.spurious-suffix",
-                Some(service.to_string()),
-                format!(
-                    "{field} ({url}) carries /api/v1, but this client appends it \
-                     itself — requests would double the prefix and 404"
-                ),
-                Some(format!(
-                    "use {}",
-                    url.trim_end_matches('/').trim_end_matches("/api/v1")
-                )),
-            ));
-        }
+    let carries_suffix = |url: &str| url.trim_end_matches('/').ends_with("/api/v1");
+    let stripped = |url: &str| {
+        url.trim_end_matches('/')
+            .trim_end_matches("/api/v1")
+            .to_string()
     };
+    let spurious = |service: &str, field: String, url: &str| {
+        Check::warn(
+            "urls.spurious-suffix",
+            Some(service.to_string()),
+            format!(
+                "{field} ({url}) carries /api/v1, but this client appends it \
+                 itself — requests would double the prefix and 404"
+            ),
+            Some(format!("use {}", stripped(url))),
+        )
+    };
+    // rp's alpaca_url lives inside the device-usage block doctor checks but
+    // does not own (ADR-016 decision 4): suggestion only, never a fix.
     if let Some(rp) = ctx.scan("rp").and_then(|s| scan::view::<RpView>(s)?.ok()) {
         for url in rp.alpaca_urls() {
-            spurious("rp", "an equipment alpaca_url".to_string(), &url);
+            if carries_suffix(&url) {
+                checks.push(spurious("rp", "an equipment alpaca_url".to_string(), &url));
+            }
         }
     }
     if let Some(ui) = ctx
@@ -691,7 +711,19 @@ fn url_conventions(ctx: &Context) -> Vec<Check> {
     {
         for (driver_id, driver) in &ui.drivers {
             if let Some(url) = &driver.base_url {
-                spurious("ui-htmx", format!("drivers.{driver_id}.base_url"), url);
+                if carries_suffix(url) {
+                    checks.push(
+                        spurious("ui-htmx", format!("drivers.{driver_id}.base_url"), url)
+                            .with_fixes(vec![crate::report::FixOp::SetString {
+                                service: "ui-htmx".to_string(),
+                                pointer: format!(
+                                    "/drivers/{}/base_url",
+                                    crate::fix::escape_token(driver_id)
+                                ),
+                                value: stripped(url),
+                            }]),
+                    );
+                }
             }
         }
     }
@@ -818,20 +850,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_restart_command_unit_extraction() {
-        assert_eq!(
-            restart_command_unit("systemctl restart rusty-photon-qhy-focuser"),
-            Some(("rusty-photon-qhy-focuser".to_string(), false))
-        );
-        assert_eq!(
-            restart_command_unit("systemctl --user restart qhy-focuser.service"),
-            Some(("qhy-focuser".to_string(), true))
-        );
-        assert_eq!(restart_command_unit("echo nothing"), None);
-        assert_eq!(restart_command_unit("systemctl restart"), None);
-    }
-
-    #[test]
     fn test_start_command_speaks_each_platforms_language() {
         assert_eq!(
             start_command(Platform::Linux, "rusty-photon-rp"),
@@ -890,5 +908,30 @@ mod tests {
         assert_eq!(localhost_port("http://10.0.85.245:11113"), None);
         assert_eq!(localhost_port("http://localhost"), None);
         assert_eq!(localhost_port("not a url"), None);
+    }
+
+    #[test]
+    fn test_replace_port_rebuilds_every_url_shape() {
+        // Scheme + path: both preserved around the swapped port.
+        assert_eq!(
+            replace_port("http://localhost:11114/api/v1", 11113).as_deref(),
+            Some("http://localhost:11113/api/v1")
+        );
+        // Scheme, no path.
+        assert_eq!(
+            replace_port("http://localhost:11114", 11113).as_deref(),
+            Some("http://localhost:11113")
+        );
+        // No scheme (authority-only), with and without a path.
+        assert_eq!(
+            replace_port("localhost:11114/x", 11113).as_deref(),
+            Some("localhost:11113/x")
+        );
+        assert_eq!(
+            replace_port("localhost:11114", 11113).as_deref(),
+            Some("localhost:11113")
+        );
+        // No port to replace.
+        assert_eq!(replace_port("http://localhost", 11113), None);
     }
 }

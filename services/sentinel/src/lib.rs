@@ -7,6 +7,7 @@ pub mod alpaca_client;
 pub mod config;
 pub mod corrective;
 pub mod dashboard;
+pub mod discovery;
 pub mod engine;
 pub mod error;
 pub mod health;
@@ -27,8 +28,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::alpaca_client::AlpacaSafetyMonitor;
 use crate::corrective::{Corrective, CorrectiveLadder};
+use crate::discovery::{ServiceManager, ServiceRegistry, SupervisionPolicy};
 use crate::engine::Engine;
-use crate::health::ServiceHealthSupervisor;
+use crate::health::{DiscoverySupervisor, SupervisionContext};
 use crate::io::ReqwestHttpClient;
 use crate::monitor::Monitor;
 use crate::notifier::Notifier;
@@ -96,67 +98,44 @@ impl Config {
     /// Build the push-based event monitors from config. Today this is the
     /// optional `operation_watchdog`; an absent block yields no event
     /// monitors (safety-polling-only behavior). The watchdog's corrective
-    /// ladder shares the same `http` client used for polling and the same
-    /// restart `gate` as every other restart path.
+    /// ladder shares the same `http` client used for polling, the same
+    /// restart `gate` as every other restart path, and resolves
+    /// `operations.<family>.service` against the discovered-services
+    /// `registry`.
+    #[allow(clippy::too_many_arguments)]
     pub fn build_event_monitors(
         &self,
         notifiers: &[Arc<dyn Notifier>],
         state: &StateHandle,
         http: &Arc<dyn io::HttpClient>,
         gate: restart::RestartGate,
+        registry: &ServiceRegistry,
+        manager: &Arc<dyn ServiceManager>,
+        restart_budget: std::time::Duration,
     ) -> Vec<Arc<dyn EventMonitor>> {
         match &self.operation_watchdog {
             Some(watchdog) => {
                 let source: Arc<dyn WatchdogEventSource> =
                     Arc::new(HttpWatchdogEventSource::new(&watchdog.rp_url));
-                let corrective: Arc<dyn Corrective> =
-                    Arc::new(CorrectiveLadder::http(Arc::clone(http), gate));
+                let corrective: Arc<dyn Corrective> = Arc::new(CorrectiveLadder::http(
+                    Arc::clone(http),
+                    gate,
+                    Arc::clone(manager),
+                    restart_budget,
+                ));
                 let monitor = OperationDeadlineMonitor::new(
                     "Operation Watchdog",
                     source,
                     notifiers.to_vec(),
                     Arc::clone(state),
                     watchdog.clone(),
-                    self.services.clone(),
+                    Arc::clone(registry),
                     corrective,
                 );
                 vec![Arc::new(monitor)]
             }
             None => Vec::new(),
         }
-    }
-
-    /// Build one [`ServiceHealthSupervisor`] per `services` entry with a
-    /// `health` block, sorted by name for deterministic task order. A health
-    /// block on a service with no `restart_command` still gets a supervisor —
-    /// it degrades to probe-and-notify (the constructor warns).
-    pub fn build_health_supervisors(
-        &self,
-        http: &Arc<dyn io::HttpClient>,
-        restarts: &Arc<restart::RestartManager>,
-        notifiers: &[Arc<dyn Notifier>],
-        state: &StateHandle,
-    ) -> Vec<Arc<dyn EventMonitor>> {
-        let mut supervised: Vec<(&String, &config::ServiceConfig, &config::HealthConfig)> = self
-            .services
-            .iter()
-            .filter_map(|(name, svc)| svc.health.as_ref().map(|h| (name, svc, h)))
-            .collect();
-        supervised.sort_by_key(|(name, _, _)| name.as_str());
-        supervised
-            .into_iter()
-            .map(|(name, svc, health)| -> Arc<dyn EventMonitor> {
-                Arc::new(ServiceHealthSupervisor::new(
-                    name.clone(),
-                    health.clone(),
-                    svc.restart_command.is_some(),
-                    Arc::clone(http),
-                    Arc::clone(restarts),
-                    notifiers.to_vec(),
-                    Arc::clone(state),
-                ))
-            })
-            .collect()
     }
 }
 
@@ -168,6 +147,8 @@ pub struct SentinelBuilder {
     monitors: Option<Vec<Arc<dyn Monitor>>>,
     event_monitors: Option<Vec<Arc<dyn EventMonitor>>>,
     notifiers: Option<Vec<Arc<dyn Notifier>>>,
+    service_manager: Option<Arc<dyn ServiceManager>>,
+    config_dir: Option<std::path::PathBuf>,
 }
 
 impl SentinelBuilder {
@@ -191,6 +172,8 @@ impl SentinelBuilder {
             monitors: None,
             event_monitors: None,
             notifiers: None,
+            service_manager: None,
+            config_dir: None,
         }
     }
 
@@ -225,6 +208,23 @@ impl SentinelBuilder {
         self
     }
 
+    /// Override the platform service manager (useful for testing). Without
+    /// this, the manager comes from
+    /// [`discovery::service_manager_from_env`] — the platform backend, or
+    /// the directory-backed stub when `SENTINEL_SERVICE_MANAGER_DIR` is set.
+    pub fn with_service_manager(mut self, manager: Arc<dyn ServiceManager>) -> Self {
+        self.service_manager = Some(manager);
+        self
+    }
+
+    /// The directory sentinel's own config file lives in — where discovery
+    /// reads the supervised services' `<svc>.json` siblings to derive their
+    /// probe URLs. Without it, health reports `unknown` for every service.
+    pub fn with_config_dir(mut self, dir: std::path::PathBuf) -> Self {
+        self.config_dir = Some(dir);
+        self
+    }
+
     /// Build the sentinel service: constructs monitors, notifiers, engine, connects monitors,
     /// and binds the dashboard listener if enabled.
     pub async fn build(self) -> Result<Sentinel> {
@@ -241,43 +241,82 @@ impl SentinelBuilder {
             .notifiers
             .unwrap_or_else(|| config.build_notifiers(&http));
 
-        // Build shared state
+        // Build shared state. Service snapshots are populated by discovery,
+        // not seeded from config.
         let monitors_with_intervals: Vec<(String, std::time::Duration)> = monitors
             .iter()
             .map(|m| (m.name().to_string(), m.polling_interval()))
             .collect();
-        // Seed one snapshot slot per health-supervised service, sorted by
-        // name so the dashboard/API order is deterministic.
-        let mut supervised: Vec<(String, std::time::Duration)> = config
-            .services
-            .iter()
-            .filter_map(|(name, svc)| svc.health.as_ref().map(|h| (name.clone(), h.poll_interval)))
-            .collect();
-        supervised.sort_by(|a, b| a.0.cmp(&b.0));
+        let state = state::new_state_handle(monitors_with_intervals, config.dashboard.history_size);
 
-        let state = state::new_state_handle(
-            monitors_with_intervals,
-            supervised,
-            config.dashboard.history_size,
-        );
+        // Service discovery: the platform service manager (or the test
+        // stub), the supervision policy constants, and the shared registry
+        // every consumer resolves against.
+        let manager = self
+            .service_manager
+            .unwrap_or_else(discovery::service_manager_from_env);
+        let policy = SupervisionPolicy::resolve_from_env();
+        let registry: ServiceRegistry =
+            Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
 
-        // The Service Restart API's engine, over the top-level supervised-
-        // services registry. Commands run through the platform shell. Built
-        // before the event monitors so its restart gate can be shared with
-        // the watchdog ladder and the health supervisors.
-        let restarts = Arc::new(restart::RestartManager::shell(config.services.clone()));
+        // The Service Restart API's engine, over the discovered-services
+        // registry. Built before the event monitors so its restart gate can
+        // be shared with the watchdog ladder and the health supervisors.
+        let restarts = Arc::new(restart::RestartManager::new(
+            Arc::clone(&registry),
+            Arc::clone(&manager),
+            policy.restart_budget,
+        ));
 
         // Build event monitors (the operation watchdog) — they escalate
         // through the notifier chain and record into shared state.
         let mut event_monitors = self.event_monitors.unwrap_or_else(|| {
-            config.build_event_monitors(&notifiers, &state, &http, restarts.gate())
+            config.build_event_monitors(
+                &notifiers,
+                &state,
+                &http,
+                restarts.gate(),
+                &registry,
+                &manager,
+                policy.restart_budget,
+            )
         });
 
-        // Health supervisors are appended after the DI override so injecting
-        // custom event monitors never silently disables supervision (tests
-        // that don't want it simply configure no `health` blocks).
-        event_monitors
-            .extend(config.build_health_supervisors(&http, &restarts, &notifiers, &state));
+        // The discovery loop (registry upkeep + universal health
+        // supervision) is appended after the DI override so injecting custom
+        // event monitors never silently disables supervision. Its probes use
+        // a client that skips certificate verification: probes send no
+        // credentials and never parse the body, and sentinel cannot assume
+        // it holds a CA for every peer's self-signed certificate. If that
+        // client cannot be built, fall back to the shared (verifying) client
+        // loudly — self-signed TLS peers would then probe as down.
+        let probe_http: Arc<dyn io::HttpClient> = match ReqwestHttpClient::insecure() {
+            Ok(client) => Arc::new(client),
+            Err(e) => {
+                tracing::error!(
+                    "{e}; probing through the shared verifying client — \
+                     self-signed TLS peers may report down"
+                );
+                Arc::clone(&http)
+            }
+        };
+        let supervision = DiscoverySupervisor::new(
+            Arc::clone(&manager),
+            self.config_dir.clone(),
+            SupervisionContext {
+                policy,
+                registry: Arc::clone(&registry),
+                http: probe_http,
+                restarts: Arc::clone(&restarts),
+                notifiers: notifiers.clone(),
+                state: Arc::clone(&state),
+            },
+        );
+        // Run the first discovery pass before the dashboard binds, so the
+        // restart endpoint and /api/services never race an empty registry at
+        // startup.
+        supervision.refresh().await;
+        event_monitors.push(Arc::new(supervision));
 
         // Build engine
         let engine = Engine::new(
@@ -483,38 +522,28 @@ mod tests {
         assert_eq!(monitors[0].name(), "Test Monitor");
     }
 
-    #[test]
-    fn build_health_supervisors_one_per_health_block() {
-        let json = r#"{
-            "services": {
-                "plate-solver": {
-                    "restart_command": "restart",
-                    "health": { "url": "http://localhost:11131/health" }
-                },
-                "rp": { "restart_command": "restart-rp" }
-            }
-        }"#;
-        let config: Config = serde_json::from_str(json).unwrap();
-        let http: Arc<dyn io::HttpClient> = Arc::new(MockHttpClient::new());
-        let restarts = Arc::new(restart::RestartManager::shell(config.services.clone()));
-        let state = state::new_state_handle(vec![], vec![], 10);
+    /// A no-op service manager so builder tests never touch the platform's
+    /// real `systemctl`/SCM/brew.
+    #[derive(Debug)]
+    struct EmptyManager;
 
-        let supervisors = config.build_health_supervisors(&http, &restarts, &[], &state);
+    #[async_trait::async_trait]
+    impl ServiceManager for EmptyManager {
+        async fn enumerate(&self) -> Result<Vec<discovery::DiscoveredUnit>> {
+            Ok(Vec::new())
+        }
 
-        assert_eq!(supervisors.len(), 1, "only entries with a health block");
-        assert_eq!(supervisors[0].name(), "plate-solver");
+        async fn restart(&self, _unit: &str, _budget: std::time::Duration) -> Result<()> {
+            Ok(())
+        }
+
+        async fn recovery_check(&self, _unit: &str) -> Option<bool> {
+            None
+        }
     }
 
-    #[test]
-    fn build_health_supervisors_empty_without_health_blocks() {
-        let config = Config::default();
-        let http: Arc<dyn io::HttpClient> = Arc::new(MockHttpClient::new());
-        let restarts = Arc::new(restart::RestartManager::shell(config.services.clone()));
-        let state = state::new_state_handle(vec![], vec![], 10);
-
-        let supervisors = config.build_health_supervisors(&http, &restarts, &[], &state);
-
-        assert!(supervisors.is_empty());
+    fn empty_manager() -> Arc<dyn ServiceManager> {
+        Arc::new(EmptyManager)
     }
 
     #[tokio::test]
@@ -526,6 +555,7 @@ mod tests {
 
         let sentinel = SentinelBuilder::new(Config::default())
             .with_http_client(http)
+            .with_service_manager(empty_manager())
             .with_cancellation_token(cancel)
             .build()
             .await
@@ -558,6 +588,7 @@ mod tests {
         // Injecting empty monitors should override the config factory
         let sentinel = SentinelBuilder::new(config)
             .with_http_client(http)
+            .with_service_manager(empty_manager())
             .with_monitors(vec![])
             .with_cancellation_token(cancel)
             .build()
@@ -590,6 +621,7 @@ mod tests {
         // Injecting empty notifiers should override the config factory
         let sentinel = SentinelBuilder::new(config)
             .with_http_client(http)
+            .with_service_manager(empty_manager())
             .with_notifiers(vec![])
             .with_cancellation_token(cancel)
             .build()
@@ -609,6 +641,7 @@ mod tests {
 
         let sentinel = SentinelBuilder::new(config)
             .with_http_client(http)
+            .with_service_manager(empty_manager())
             .build()
             .await
             .unwrap();
@@ -630,6 +663,7 @@ mod tests {
 
         let sentinel = SentinelBuilder::new(config)
             .with_http_client(http)
+            .with_service_manager(empty_manager())
             .build()
             .await
             .unwrap();

@@ -50,18 +50,20 @@ pub struct SentinelWorld {
     pub watchdog_rp_url: Option<String>,
 
     // Corrective ladder: a stub Alpaca service the watchdog can health-check
-    // and abort, plus the Alpaca base URL baked into the watchdog `services`
-    // config. Present only for the abort scenario.
+    // and abort, discovered as the "mount" service. Present only for the
+    // abort scenario.
     pub mount_stub: Option<MountServiceStub>,
-    pub mount_service_url: Option<String>,
 
-    // Service restart API: entries for the top-level `services` map, plus the
-    // marker file the scripted restart command writes (proof it ran).
-    pub supervised_services: serde_json::Map<String, serde_json::Value>,
-    pub restart_marker: Option<PathBuf>,
+    // Whether the mount stub has been wired into discovery (unit + sibling
+    // config), so the watchdog's `slew` family runs the ladder against it.
+    pub mount_discovered: bool,
 
-    // Service health supervision: a stub HTTP service whose /health answer is
-    // flippable between 200 and 503 at runtime.
+    // Service discovery: the stub service-manager directory handed to the
+    // spawned sentinel via SENTINEL_SERVICE_MANAGER_DIR.
+    pub service_manager_dir: Option<PathBuf>,
+
+    // Service health supervision: a stub HTTP service whose /health answer
+    // (an arbitrary status code) is flippable at runtime.
     pub health_stub: Option<FlippableHealthStub>,
 }
 
@@ -174,12 +176,6 @@ impl SentinelWorld {
             }
         }
 
-        // The top-level supervised-services map (the restart endpoint's and the
-        // corrective ladder's shared registry).
-        if !self.supervised_services.is_empty() {
-            config["services"] = serde_json::Value::Object(self.supervised_services.clone());
-        }
-
         // Wire the operation watchdog when a watched rp URL is set. Buffers are
         // zeroed so the tracked deadline equals the operation's
         // `max_duration_ms` exactly, keeping the BDD fast and deterministic;
@@ -193,23 +189,16 @@ impl SentinelWorld {
                 "notifiers": ["pushover"],
                 "operations": { "slew": { "buffer": "0s" } }
             });
-            // When a corrective service stub is configured, make `slew` run the
-            // abort ladder against it (responsive service + abort verb => the
-            // ladder stops at a clean abort, so `restart_command` stays null and
-            // the BDD never shells out). The service lives in the top-level
-            // `services` map (shared with the restart endpoint) — inserted, not
-            // assigned, so `supervised_services` entries added by restart-API
-            // steps survive; its restart budget is per-service, kept tight so a
-            // regression that reaches the restart rung fails fast.
-            if let Some(svc_url) = &self.mount_service_url {
+            // When the corrective service stub is discovered, make `slew` run
+            // the abort ladder against it (responsive service + abort verb =>
+            // the ladder stops at a clean abort, so nothing is restarted). The
+            // stub is wired into discovery — a `rusty-photon-mount` unit plus
+            // a sibling mount.json carrying the stub's port — by
+            // `start_mount_service_stub`.
+            if self.mount_discovered {
                 watchdog["operations"]["slew"]["on_expiry"] =
                     serde_json::json!("abort_then_restart");
                 watchdog["operations"]["slew"]["service"] = serde_json::json!("mount");
-                config["services"]["mount"] = serde_json::json!({
-                    "base_url": svc_url,
-                    "restart_command": null,
-                    "max_restart_duration": "2s"
-                });
             }
             config["operation_watchdog"] = watchdog;
         }
@@ -246,34 +235,122 @@ impl SentinelWorld {
         }));
     }
 
-    /// Absolute path of the marker file the scripted restart command writes —
-    /// recorded so the Then-step can assert the command actually ran.
-    pub fn restart_marker_path(&mut self) -> PathBuf {
+    /// The stub service-manager directory (created on first use, with fast
+    /// policy timings and an empty unit listing). Handed to the spawned
+    /// sentinel via `SENTINEL_SERVICE_MANAGER_DIR`, so no scenario ever
+    /// enumerates the host's real service manager.
+    pub fn service_manager_dir(&mut self) -> PathBuf {
+        if let Some(dir) = &self.service_manager_dir {
+            return dir.clone();
+        }
+        let root = self
+            .temp_dir
+            .get_or_insert_with(|| TempDir::new().expect("failed to create temp dir"));
+        let dir = root.path().join("svcmgr");
+        std::fs::create_dir_all(&dir).expect("failed to create service manager dir");
+        std::fs::write(dir.join("units.txt"), "").expect("failed to seed units.txt");
+        // Tight timings so threshold/backoff scenarios resolve in seconds:
+        // discovery every 250ms, probe every 200ms, threshold 2, backoff
+        // 1s..2s, restart budget 1s.
+        std::fs::write(
+            dir.join("policy.json"),
+            serde_json::json!({
+                "discovery_interval": "250ms",
+                "poll_interval": "200ms",
+                "failure_threshold": 2,
+                "restart_backoff": "1s",
+                "restart_backoff_max": "2s",
+                "restart_budget": "1s"
+            })
+            .to_string(),
+        )
+        .expect("failed to write policy.json");
+        self.service_manager_dir = Some(dir.clone());
+        dir
+    }
+
+    fn units_txt_path(&mut self) -> PathBuf {
+        self.service_manager_dir().join("units.txt")
+    }
+
+    /// Add (or replace) a unit line in the stub's `units.txt`.
+    pub fn add_discovered_unit(&mut self, unit: &str, state: &str) {
+        self.remove_discovered_unit(unit);
+        let path = self.units_txt_path();
+        let mut content = std::fs::read_to_string(&path).unwrap_or_default();
+        content.push_str(&format!("{unit} {state}\n"));
+        std::fs::write(&path, content).expect("failed to write units.txt");
+    }
+
+    /// Drop a unit line from the stub's `units.txt`.
+    pub fn remove_discovered_unit(&mut self, unit: &str) {
+        let path = self.units_txt_path();
+        let content = std::fs::read_to_string(&path).unwrap_or_default();
+        let kept: String = content
+            .lines()
+            .filter(|line| line.split_whitespace().next() != Some(unit))
+            .map(|line| format!("{line}\n"))
+            .collect();
+        std::fs::write(&path, kept).expect("failed to write units.txt");
+    }
+
+    /// Make the stub fail every restart of `unit`.
+    pub fn fail_restarts_of(&mut self, unit: &str) {
+        let path = self
+            .service_manager_dir()
+            .join(format!("restart-fail-{unit}"));
+        std::fs::write(path, "").expect("failed to write restart-fail marker");
+    }
+
+    /// Keep restarted units in their prior state (models a restart that does
+    /// not bring the service back), for every unit currently listed.
+    pub fn leave_restarted_units_stuck(&mut self) {
+        let units: Vec<String> = std::fs::read_to_string(self.units_txt_path())
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| l.split_whitespace().next().map(str::to_string))
+            .collect();
+        let dir = self.service_manager_dir();
+        for unit in units {
+            std::fs::write(dir.join(format!("stuck-{unit}")), "")
+                .expect("failed to write stuck marker");
+        }
+    }
+
+    /// Restart-log lines (one unit name per recorded restart).
+    pub fn restart_log(&mut self) -> Vec<String> {
+        std::fs::read_to_string(self.service_manager_dir().join("restarts.log"))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// Poll the stub's restart log until it records at least `min` restarts
+    /// of `unit` or `ceiling` elapses. Returns the final count.
+    pub async fn wait_for_restarts(&mut self, unit: &str, min: usize, ceiling: Duration) -> usize {
+        let deadline = tokio::time::Instant::now() + ceiling;
+        loop {
+            let count = self.restart_log().iter().filter(|l| *l == unit).count();
+            if count >= min || tokio::time::Instant::now() >= deadline {
+                return count;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    /// Write a supervised service's own `<service>.json` next to sentinel's
+    /// config file, so discovery can derive its probe URL from the shared
+    /// `server` block.
+    pub fn write_service_config(&mut self, service: &str, port: u16) {
         let dir = self
             .temp_dir
             .get_or_insert_with(|| TempDir::new().expect("failed to create temp dir"));
-        let path = dir.path().join("restart-marker.txt");
-        self.restart_marker = Some(path.clone());
-        path
-    }
-
-    /// Add an entry to the top-level `services` map (the restart endpoint's
-    /// registry). `restart_command: None` serializes as `null` (not restartable).
-    pub fn add_supervised_service(
-        &mut self,
-        name: &str,
-        restart_command: Option<String>,
-        health_command: Option<String>,
-        max_restart_duration: Option<&str>,
-    ) {
-        let mut entry = serde_json::json!({ "restart_command": restart_command });
-        if let Some(health) = health_command {
-            entry["health_command"] = serde_json::json!(health);
-        }
-        if let Some(budget) = max_restart_duration {
-            entry["max_restart_duration"] = serde_json::json!(budget);
-        }
-        self.supervised_services.insert(name.to_string(), entry);
+        std::fs::write(
+            dir.path().join(format!("{service}.json")),
+            serde_json::json!({ "server": { "port": port } }).to_string(),
+        )
+        .expect("failed to write sibling service config");
     }
 
     /// POST a dashboard endpoint (empty body) and capture status + body.
@@ -314,13 +391,18 @@ impl SentinelWorld {
         self.pushover_stub_url = Some(format!("http://{addr}/1/messages.json"));
     }
 
-    /// Start sentinel binary with the accumulated config.
+    /// Start sentinel binary with the accumulated config. The stub service
+    /// manager directory is always created and passed via
+    /// `SENTINEL_SERVICE_MANAGER_DIR` — a spawned sentinel must never
+    /// enumerate the host's real service manager, even in scenarios that
+    /// discover nothing.
     pub async fn start_sentinel(&mut self) {
         // Stand up the Pushover stub before sentinel so its URL can be baked
         // into the config the child process loads.
         if self.sentinel_has_notifiers && self.pushover_stub_url.is_none() {
             self.start_pushover_stub().await;
         }
+        let manager_dir = self.service_manager_dir();
         let config_json = self.build_sentinel_config();
         let dir = self
             .temp_dir
@@ -329,8 +411,15 @@ impl SentinelWorld {
         std::fs::write(&config_path, config_json.to_string())
             .expect("failed to write sentinel config");
 
-        let handle =
-            ServiceHandle::start(env!("CARGO_PKG_NAME"), config_path.to_str().unwrap()).await;
+        let handle = ServiceHandle::start_with_env(
+            env!("CARGO_PKG_NAME"),
+            &["--config", config_path.to_str().unwrap()],
+            &[(
+                "SENTINEL_SERVICE_MANAGER_DIR",
+                manager_dir.to_str().unwrap(),
+            )],
+        )
+        .await;
 
         self.sentinel = Some(handle);
     }
@@ -465,38 +554,35 @@ impl SentinelWorld {
     }
 
     /// Start a stub Alpaca telescope service the corrective ladder can probe
-    /// (reports connected) and abort (records the call), and wire the watchdog
-    /// `services` config at its URL.
+    /// (reports connected) and abort (records the call), and wire it into
+    /// discovery as the running `mount` service: a `rusty-photon-mount` unit
+    /// in the stub manager plus a sibling `mount.json` carrying the stub's
+    /// port, from which sentinel derives its Alpaca base URL.
     pub async fn start_mount_service_stub(&mut self) {
         let stub = MountServiceStub::start().await;
-        self.mount_service_url = Some(format!("{}/api/v1", stub.base_url()));
+        self.add_discovered_unit("rusty-photon-mount", "running");
+        self.write_service_config("mount", stub.port());
+        self.mount_discovered = true;
         self.mount_stub = Some(stub);
     }
 
-    /// Start the flippable health stub answering 200 (healthy) or 503.
-    pub async fn start_health_stub(&mut self, healthy: bool) {
-        self.health_stub = Some(FlippableHealthStub::start(healthy).await);
+    /// Start the flippable health stub answering the given HTTP status, and
+    /// wire it into discovery as `service` in the given run state: a
+    /// `rusty-photon-<service>` unit plus a sibling `<service>.json` carrying
+    /// the stub's port, from which sentinel derives the probe URL.
+    pub fn discover_health_stub_as(&mut self, service: &str, state: &str) {
+        let port = self
+            .health_stub
+            .as_ref()
+            .expect("health stub not started")
+            .port();
+        self.add_discovered_unit(&format!("rusty-photon-{service}"), state);
+        self.write_service_config(service, port);
     }
 
-    /// Add a `services` entry supervised by health polling at the running
-    /// health stub. Fast timings (200ms cadence, threshold 2, 1s..2s backoff)
-    /// keep the scenarios well under their wait ceilings.
-    pub fn add_health_supervised_service(&mut self, name: &str, restart_command: Option<String>) {
-        let stub = self.health_stub.as_ref().expect("health stub not started");
-        self.supervised_services.insert(
-            name.to_string(),
-            serde_json::json!({
-                "restart_command": restart_command,
-                "max_restart_duration": "2s",
-                "health": {
-                    "url": stub.health_url(),
-                    "poll_interval": "200ms",
-                    "failure_threshold": 2,
-                    "restart_backoff": "1s",
-                    "restart_backoff_max": "2s"
-                }
-            }),
-        );
+    /// Start the flippable health stub answering the given HTTP status.
+    pub async fn start_health_stub(&mut self, status: u16) {
+        self.health_stub = Some(FlippableHealthStub::start(status).await);
     }
 
     /// GET /api/services and parse as JSON array.
@@ -529,55 +615,35 @@ impl SentinelWorld {
         }
         last
     }
-
-    /// Poll the restart marker file until it holds at least `min` lines (one
-    /// per restart-command run) or `ceiling` elapses. Returns the final count.
-    pub async fn wait_for_marker_lines(&self, min: usize, ceiling: Duration) -> usize {
-        let marker = self.restart_marker.as_ref().expect("no marker path");
-        let deadline = tokio::time::Instant::now() + ceiling;
-        loop {
-            let count = std::fs::read_to_string(marker)
-                .map(|c| c.lines().count())
-                .unwrap_or(0);
-            if count >= min || tokio::time::Instant::now() >= deadline {
-                return count;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    }
 }
 
-/// A stub HTTP service whose `GET /health` answer flips between 200 (healthy)
-/// and 503 at runtime — the supervised target for the health-supervision BDD.
+/// A stub HTTP service whose `GET /health` answer (an arbitrary HTTP status,
+/// e.g. 200, 401, 503) is flippable at runtime — the supervised target for
+/// the health-supervision BDD.
 #[derive(Debug)]
 pub struct FlippableHealthStub {
-    base_url: String,
-    healthy: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    port: u16,
+    status: std::sync::Arc<std::sync::atomic::AtomicU16>,
     handle: tokio::task::JoinHandle<()>,
 }
 
 impl FlippableHealthStub {
-    pub async fn start(initially_healthy: bool) -> Self {
+    pub async fn start(initial_status: u16) -> Self {
         use axum::http::StatusCode;
         use axum::routing::get;
         use axum::{Json, Router};
         use std::sync::atomic::Ordering;
 
-        let healthy = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(initially_healthy));
-        let flag = std::sync::Arc::clone(&healthy);
+        let status = std::sync::Arc::new(std::sync::atomic::AtomicU16::new(initial_status));
+        let answer = std::sync::Arc::clone(&status);
         let app = Router::new().route(
             "/health",
             get(move || {
-                let flag = std::sync::Arc::clone(&flag);
+                let answer = std::sync::Arc::clone(&answer);
                 async move {
-                    if flag.load(Ordering::SeqCst) {
-                        (StatusCode::OK, Json(serde_json::json!({ "status": "ok" })))
-                    } else {
-                        (
-                            StatusCode::SERVICE_UNAVAILABLE,
-                            Json(serde_json::json!({ "status": "error" })),
-                        )
-                    }
+                    let code = StatusCode::from_u16(answer.load(Ordering::SeqCst))
+                        .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+                    (code, Json(serde_json::json!({ "status": "stub" })))
                 }
             }),
         );
@@ -590,19 +656,19 @@ impl FlippableHealthStub {
         });
 
         Self {
-            base_url: format!("http://{addr}"),
-            healthy,
+            port: addr.port(),
+            status,
             handle,
         }
     }
 
-    pub fn health_url(&self) -> String {
-        format!("{}/health", self.base_url)
+    pub fn port(&self) -> u16 {
+        self.port
     }
 
-    pub fn set_healthy(&self, healthy: bool) {
-        self.healthy
-            .store(healthy, std::sync::atomic::Ordering::SeqCst);
+    pub fn set_status(&self, status: u16) {
+        self.status
+            .store(status, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -613,12 +679,13 @@ impl Drop for FlippableHealthStub {
 }
 
 /// A stub Alpaca telescope service for the corrective-ladder BDD: it answers
-/// `GET .../telescope/0/connected` as responsive and records every
+/// `GET .../telescope/0/connected` as responsive, records every
 /// `PUT .../telescope/0/abortslew` so the test can assert the watchdog aborted
-/// the right device.
+/// the right device, and answers the management API so health supervision
+/// (which probes every discovered running service) sees it as up.
 #[derive(Debug)]
 pub struct MountServiceStub {
-    base_url: String,
+    port: u16,
     abort_count: std::sync::Arc<std::sync::atomic::AtomicU32>,
     handle: tokio::task::JoinHandle<()>,
 }
@@ -637,6 +704,14 @@ impl MountServiceStub {
                 get(|| async {
                     Json(serde_json::json!({
                         "Value": true, "ErrorNumber": 0, "ErrorMessage": ""
+                    }))
+                }),
+            )
+            .route(
+                "/management/v1/configureddevices",
+                get(|| async {
+                    Json(serde_json::json!({
+                        "Value": [], "ErrorNumber": 0, "ErrorMessage": ""
                     }))
                 }),
             )
@@ -661,14 +736,14 @@ impl MountServiceStub {
         });
 
         Self {
-            base_url: format!("http://{addr}"),
+            port: addr.port(),
             abort_count,
             handle,
         }
     }
 
-    pub fn base_url(&self) -> &str {
-        &self.base_url
+    pub fn port(&self) -> u16 {
+        self.port
     }
 
     /// Number of `abortslew` calls received so far.

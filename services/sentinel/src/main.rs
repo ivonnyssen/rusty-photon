@@ -75,15 +75,19 @@ fn main() -> ServiceResult {
         config.transitions.len()
     );
 
+    // Discovery derives probe URLs from the supervised services' own
+    // `<svc>.json` files, which live next to sentinel's own config file.
+    let config_dir = config_path.parent().map(std::path::Path::to_path_buf);
+
     ServiceRunner::new("sentinel")
         .scm_mode(args.service)
         .run(move |shutdown| async move {
-            SentinelBuilder::new(config)
-                .with_cancellation_token(shutdown.token())
-                .build()
-                .await?
-                .start()
-                .await?;
+            let mut builder =
+                SentinelBuilder::new(config).with_cancellation_token(shutdown.token());
+            if let Some(dir) = config_dir {
+                builder = builder.with_config_dir(dir);
+            }
+            builder.build().await?.start().await?;
             Ok(())
         })
 }
