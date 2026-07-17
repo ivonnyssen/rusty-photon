@@ -512,6 +512,30 @@ mod tests {
         }
     }
 
+    /// systemd's own semantics: assignments accumulate, an empty
+    /// assignment resets — which matters when a drop-in overrides the
+    /// packaged unit, and feeds the hardware access diagnosis.
+    #[test]
+    fn test_supplementary_groups_accumulate_and_reset() {
+        let unit = "[Service]\n\
+                    SupplementaryGroups=dialout plugdev\n\
+                    SupplementaryGroups=video dialout\n";
+        assert_eq!(
+            parse_supplementary_groups(unit),
+            vec!["dialout", "plugdev", "video"],
+            "multiple assignments accumulate, names deduplicate"
+        );
+        let reset = "SupplementaryGroups=dialout\n\
+                     SupplementaryGroups=\n\
+                     SupplementaryGroups=plugdev\n";
+        assert_eq!(
+            parse_supplementary_groups(reset),
+            vec!["plugdev"],
+            "an empty assignment resets the accumulated list"
+        );
+        assert!(parse_supplementary_groups("[Service]\nUser=rusty-photon\n").is_empty());
+    }
+
     #[test]
     fn test_facts_parse_permissively_and_unit_lookup_works() {
         let facts: PlatformFacts = serde_json::from_str(

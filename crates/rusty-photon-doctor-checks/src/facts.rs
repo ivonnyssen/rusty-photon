@@ -228,7 +228,6 @@ mod unix {
 
     use super::UserFacts;
 
-    /// Resolve the requested group names against a group database in
     /// Parse the whole group database in `/etc/group` format
     /// (`name:x:gid:members`) — all of it, not a requested subset: the
     /// checks resolve gids they could not have requested by name (a

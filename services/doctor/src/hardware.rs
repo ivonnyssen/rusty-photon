@@ -394,9 +394,10 @@ fn udev_rule(ctx: &Context, hw: &HardwareFacts, scan: &ServiceScan, checks: &mut
             scan,
             "hardware.udev-rule",
             format!(
-                "{} names GROUP= {} which does not exist on this host — udev \
-                 silently drops the entire rule line, so the rule file's \
-                 presence proves nothing",
+                "{} names GROUP= {} which is not present in /etc/group — udev \
+                 silently drops the entire rule line on an unresolvable group, \
+                 so the rule file's presence proves nothing (a group resolved \
+                 purely via NSS is invisible to this check)",
                 rule.file_name,
                 unresolvable.join(", ")
             ),
