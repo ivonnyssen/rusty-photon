@@ -238,8 +238,15 @@ impl UiWorld {
 
     /// List a unit in the stub's `units.txt`, so sentinel discovers it.
     pub fn add_discovered_unit(&mut self, unit: &str, state: &str) {
+        // Idempotent: rewrite without any prior line for `unit` first, so a
+        // repeated Given can never leave duplicate enumeration entries.
         let path = self.service_manager_dir().join("units.txt");
-        let mut content = std::fs::read_to_string(&path).unwrap_or_default();
+        let mut content: String = std::fs::read_to_string(&path)
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| line.split_whitespace().next() != Some(unit))
+            .map(|line| format!("{line}\n"))
+            .collect();
         content.push_str(&format!("{unit} {state}\n"));
         std::fs::write(&path, content).expect("failed to write units.txt");
     }
