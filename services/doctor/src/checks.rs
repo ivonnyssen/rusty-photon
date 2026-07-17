@@ -96,7 +96,7 @@ fn inventory(ctx: &Context) -> Vec<Check> {
                 ),
                 Some(format!(
                     "start it once so it self-creates its defaults: e.g. `{}`",
-                    start_command(ctx.facts.platform, &scan.entry.unit_name())
+                    start_command(ctx.facts.platform, &manager_name(ctx, scan.entry))
                 )),
             )),
             (false, true) => checks.push(Check::warn(
@@ -132,6 +132,16 @@ fn inventory(ctx: &Context) -> Vec<Check> {
         ));
     }
     checks
+}
+
+/// The name the service manager itself knows the unit by — the brew
+/// nightly channel's formula name when that is what is installed, else the
+/// unit stem. Remediation text must name what the operator can type.
+fn manager_name(ctx: &Context, entry: &CatalogEntry) -> String {
+    ctx.facts
+        .unit(&entry.unit_name())
+        .and_then(|u| u.source_name.clone())
+        .unwrap_or_else(|| entry.unit_name())
 }
 
 /// The platform's way to start a service once, for suggestion text.
@@ -681,10 +691,16 @@ fn tls_and_auth(ctx: &Context) -> Vec<Check> {
         };
         if let Some(tls) = &server.tls {
             let mut missing: Vec<String> = Vec::new();
-            for path in [&tls.cert, &tls.key] {
-                let resolved = resolve_config_relative(&ctx.config_dir, Path::new(path));
-                if !resolved.exists() {
-                    missing.push(path.clone());
+            for (raw, resolved) in [
+                (&tls.cert, tls.resolved_cert_path()),
+                (&tls.key, tls.resolved_key_path()),
+            ] {
+                if !tls_material_present(&ctx.config_dir, raw, &resolved) {
+                    missing.push(if raw.trim().is_empty() {
+                        "<empty path>".to_string()
+                    } else {
+                        raw.clone()
+                    });
                 }
             }
             if missing.is_empty() {
@@ -724,13 +740,21 @@ fn tls_and_auth(ctx: &Context) -> Vec<Check> {
     checks
 }
 
-/// Resolve a possibly-relative config path against the config dir.
-fn resolve_config_relative(config_dir: &Path, path: &Path) -> PathBuf {
-    if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        config_dir.join(path)
+/// Whether one piece of TLS material is present as a real file. `resolved`
+/// is the path the service itself will open (`TlsConfig::resolved_*_path`,
+/// which expands `~`); a relative remainder is anchored at the config dir.
+/// Empty paths and directories are absent — the service would fail to read
+/// either.
+fn tls_material_present(config_dir: &Path, raw: &str, resolved: &Path) -> bool {
+    if raw.trim().is_empty() {
+        return false;
     }
+    let anchored = if resolved.is_absolute() {
+        resolved.to_path_buf()
+    } else {
+        config_dir.join(resolved)
+    };
+    anchored.is_file()
 }
 
 // ---- rp platform defaults ----
@@ -788,6 +812,41 @@ mod tests {
         );
         assert_eq!(restart_command_unit("echo nothing"), None);
         assert_eq!(restart_command_unit("systemctl restart"), None);
+    }
+
+    #[test]
+    fn test_tls_material_present_matches_service_resolution() {
+        let dir = tempfile::tempdir().unwrap();
+        let pem = dir.path().join("cert.pem");
+        std::fs::write(&pem, "stub").unwrap();
+
+        // Absolute existing file: present; empty and whitespace paths: absent.
+        assert!(tls_material_present(
+            dir.path(),
+            pem.to_str().unwrap(),
+            &pem
+        ));
+        assert!(!tls_material_present(dir.path(), "", Path::new("")));
+        assert!(!tls_material_present(dir.path(), "  ", Path::new("  ")));
+
+        // A directory is not usable TLS material.
+        assert!(!tls_material_present(
+            dir.path(),
+            dir.path().to_str().unwrap(),
+            dir.path()
+        ));
+
+        // A relative resolved path anchors at the config dir.
+        assert!(tls_material_present(
+            dir.path(),
+            "cert.pem",
+            Path::new("cert.pem")
+        ));
+        assert!(!tls_material_present(
+            dir.path(),
+            "missing.pem",
+            Path::new("missing.pem")
+        ));
     }
 
     #[test]

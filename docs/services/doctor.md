@@ -222,7 +222,7 @@ side entirely.
 
 | Check | Status | Trigger |
 |---|---|---|
-| `tls.paths` | fail | A `server.tls` block is present but the cert or key path does not exist. (Readability by the unit's user is not checked in D2 — doctor runs privileged on packaged hosts, so an ownership heuristic needs the passwd machinery D4's hardware checks bring; existence is the check until then.) |
+| `tls.paths` | fail | A `server.tls` block is present but the cert or key is not an existing **file**, after resolving the path the way the service itself will (`TlsConfig::resolved_*_path`, which expands `~`; a relative remainder anchors at the config dir; empty paths and directories are absent). Readability by the unit's user is not checked in D2 — doctor runs privileged on packaged hosts, so an ownership heuristic needs the passwd machinery D4's hardware checks bring. |
 | `tls.auth-without-tls` | warn | `server.auth` is set while `server.tls` is absent: HTTP Basic credentials in cleartext on the wire. Legal (pre-D6 reality), but worth a nag — ADR-003's scheme is Basic **over TLS**. |
 
 ### Platform defaults

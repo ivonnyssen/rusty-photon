@@ -37,6 +37,11 @@ pub struct UnitFacts {
     /// gated on one. systemd only.
     #[serde(default)]
     pub condition_path: Option<PathBuf>,
+    /// The service manager's own name for the unit when it differs from the
+    /// stem — brew's nightly-channel formulas (`rusty-photon-<svc>-nightly`).
+    /// Remediation text must use this name; catalog joins use `name`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_name: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -164,6 +169,7 @@ fn list_systemd_units() -> Vec<UnitFacts> {
                 name,
                 enabled,
                 condition_path,
+                source_name: None,
             }
         })
         .collect()
@@ -264,6 +270,7 @@ pub fn parse_windows_service_listing(listing: &str) -> Vec<UnitFacts> {
                 name: name.to_string(),
                 enabled: start_type.trim().starts_with("Automatic"),
                 condition_path: None,
+                source_name: None,
             })
         })
         .collect()
@@ -296,9 +303,11 @@ pub fn parse_brew_services_listing(listing: &str) -> Vec<UnitFacts> {
             if !name.starts_with("rusty-photon-") {
                 return None;
             }
-            let name = name.strip_suffix("-nightly").unwrap_or(name);
+            let stem = name.strip_suffix("-nightly").unwrap_or(name);
+            let source_name = (stem != name).then(|| name.to_string());
             Some(UnitFacts {
-                name: name.to_string(),
+                name: stem.to_string(),
+                source_name,
                 // `none` means installed but never registered to start;
                 // anything else (started/scheduled/error/stopped) is a
                 // service the operator has wired up.
@@ -404,10 +413,17 @@ mod tests {
 
     #[test]
     fn test_brew_nightly_formula_names_normalize_to_the_unit_stem() {
-        let listing = "rusty-photon-sentinel-nightly started igor ~/Library/...\n";
+        let listing = "rusty-photon-sentinel-nightly started igor ~/Library/...\n\
+                       rusty-photon-rp none\n";
         let units = parse_brew_services_listing(listing);
         assert_eq!(units[0].name, "rusty-photon-sentinel");
         assert!(units[0].enabled);
+        assert_eq!(
+            units[0].source_name.as_deref(),
+            Some("rusty-photon-sentinel-nightly"),
+            "remediation text needs the installable formula name"
+        );
+        assert_eq!(units[1].source_name, None, "stable names carry no alias");
     }
 
     #[test]

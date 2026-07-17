@@ -61,6 +61,7 @@ impl DoctorWorld {
             name: name.to_string(),
             enabled: true,
             condition_path: None,
+            source_name: None,
         });
     }
 

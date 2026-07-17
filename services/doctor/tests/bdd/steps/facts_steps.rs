@@ -49,6 +49,7 @@ fn push_gated_unit(world: &mut DoctorWorld, unit: String, gate: PathBuf) {
         name: unit,
         enabled: true,
         condition_path: Some(gate),
+        source_name: None,
     });
 }
 
