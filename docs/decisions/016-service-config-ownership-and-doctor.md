@@ -419,7 +419,8 @@ blocker, not a size objection.
 
 ## Amendments (2026-07-16)
 
-Settled while starting D1; each modifies the decision text above in place.
+Each modifies the decision text above in place; 1–4 were settled while
+starting D1.
 
 1. **Two `ServerConfig` shapes, not one** (modifies decisions 3, 8, 10). The
    shared crate carries `ServerConfig` (`port`, `bind_address`, `tls`, `auth`)
@@ -455,6 +456,19 @@ Settled while starting D1; each modifies the decision text above in place.
    shape-only), every service ends with a top-level `server` block, making
    decision 10's "every service has the knobs" premise true immediately
    after D1.
+
+5. **The sentinel privilege path shipped**
+   ([#523](https://github.com/ivonnyssen/rusty-photon/issues/523) resolved;
+   updates the Consequences bullet on sentinel restarts). The sentinel
+   deb/rpm ships the rig-verified scoped polkit rule at
+   `/usr/share/polkit-1/rules.d/50-rusty-photon-sentinel.rules` — the
+   `restart` verb on `rusty-photon-*` units, `rusty-photon` user only — so
+   decision 8's prerequisite is met on packaged Linux, and the grant never
+   depended on sentinel's `services` map, so deleting that map changes
+   nothing about it. The Windows analogue is moot: the MSI installs every
+   service, sentinel included, under `LocalSystem`, which may restart
+   services. macOS `brew services` run as the operator's own user and cross
+   no privilege boundary.
 
 ## References
 

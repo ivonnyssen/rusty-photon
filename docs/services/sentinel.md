@@ -110,11 +110,11 @@ configured.
     "dsd-fp2": {
       "base_url": "http://localhost:11119/api/v1",
       "device_number": 0,
-      "restart_command": "systemctl --user restart dsd-fp2",
-      "health_command": "systemctl --user is-active dsd-fp2",
+      "restart_command": "systemctl restart rusty-photon-dsd-fp2",
+      "health_command": "systemctl is-active rusty-photon-dsd-fp2",
       "max_restart_duration": "60s"
     },
-    "rp": { "restart_command": "systemctl --user restart rp" }
+    "rp": { "restart_command": "systemctl restart rusty-photon-rp" }
   }
 }
 ```
@@ -133,9 +133,24 @@ Windows), so follow each platform's best practice:
 
 | Platform | `restart_command` | `health_command` |
 |---|---|---|
-| Linux (systemd user unit) | `systemctl --user restart dsd-fp2` | `systemctl --user is-active dsd-fp2` (exit 0 iff active) |
-| Linux (system unit) | `systemctl restart dsd-fp2` | `systemctl is-active dsd-fp2` |
-| Windows (SCM service) | `powershell -Command "Restart-Service dsd-fp2"` | `sc query dsd-fp2 \| findstr RUNNING` |
+| Linux (packaged deb/rpm, system unit) | `systemctl restart rusty-photon-dsd-fp2` | `systemctl is-active rusty-photon-dsd-fp2` (exit 0 iff active) |
+| Linux (hand-written user unit) | `systemctl --user restart dsd-fp2` | `systemctl --user is-active dsd-fp2` |
+| Windows (MSI, SCM service) | `powershell -Command "Restart-Service rusty-photon-dsd-fp2"` | `sc query rusty-photon-dsd-fp2 \| findstr RUNNING` |
+| macOS (Homebrew) | `brew services restart rusty-photon-dsd-fp2` | *(none — recovery confirmation is skipped)* |
+
+**Restart privileges.** On a packaged Linux install the unit runs sentinel as
+the unprivileged `rusty-photon` user with `NoNewPrivileges=yes`, so a `sudo`
+prefix in `restart_command` can never work (setuid is blocked), and plain
+`systemctl restart` is only authorized because the sentinel package ships a
+scoped polkit rule (`/usr/share/polkit-1/rules.d/50-rusty-photon-sentinel.rules`)
+letting the `rusty-photon` user restart `rusty-photon-*` units — and nothing
+else: other verbs (start, stop, enable) and non-prefixed units such as
+`ssh.service` still require the usual interactive authorization. The rule
+needs the JavaScript-rules polkitd (any current Debian or Fedora ships it).
+On Windows the MSI installs every service — sentinel included — under
+`LocalSystem`, which may restart services, so `Restart-Service` needs no
+analogous grant; on macOS `brew services` run as the operator's own user, so
+no privilege boundary is crossed.
 
 ### Monitor Types
 
@@ -366,8 +381,8 @@ REST restart endpoint), referenced by `operations.<family>.service`:
 {
   "services": {
     "star-adventurer": { "base_url": "http://localhost:11117/api/v1", "restart_command": null },
-    "qhyccd-alpaca":   { "base_url": "http://localhost:11111/api/v1", "device_number": 0, "restart_command": "systemctl --user restart qhyccd-alpaca" },
-    "qhy-focuser":     { "base_url": "http://localhost:11113/api/v1", "restart_command": "systemctl --user restart qhy-focuser", "max_restart_duration": "45s" }
+    "qhy-camera":      { "base_url": "http://localhost:11121/api/v1", "device_number": 0, "restart_command": "systemctl restart rusty-photon-qhy-camera" },
+    "qhy-focuser":     { "base_url": "http://localhost:11113/api/v1", "restart_command": "systemctl restart rusty-photon-qhy-focuser", "max_restart_duration": "45s" }
   },
   "operation_watchdog": {
     "rp_url": "http://localhost:8080",
@@ -379,7 +394,7 @@ REST restart endpoint), referenced by `operations.<family>.service`:
     "operations": {
       "slew":         { "buffer": "5s",  "on_expiry": "abort_then_restart", "service": "star-adventurer" },
       "park":         { "buffer": "30s", "on_expiry": "notify_only"        },
-      "exposure":     { "buffer": "30s", "on_expiry": "abort_then_restart", "service": "qhyccd-alpaca"   },
+      "exposure":     { "buffer": "30s", "on_expiry": "abort_then_restart", "service": "qhy-camera"      },
       "centering":    { "buffer": "0s",  "on_expiry": "notify_only"        },
       "move_focuser": { "buffer": "5s",  "on_expiry": "abort_then_restart", "service": "qhy-focuser"     }
     }
@@ -443,7 +458,7 @@ Each `services` entry with a `health` block gets its own
 {
   "services": {
     "plate-solver": {
-      "restart_command": "systemctl --user restart plate-solver",
+      "restart_command": "systemctl restart rusty-photon-plate-solver",
       "max_restart_duration": "30s",
       "health": {
         "url": "http://localhost:11131/health",

@@ -48,6 +48,11 @@ priority = "optional"
 depends = "$auto, adduser"
 assets = [
     ["target/release/sentinel", "usr/bin/rusty-photon-sentinel", "755"],
+    # Scoped grant (restart of rusty-photon-* units only) without which the
+    # unprivileged NoNewPrivileges unit could restart nothing via systemctl.
+    # Vendor rules dir, not /etc: polkitd reads both, and /etc is the local
+    # admin's override space (also keeps cargo-deb from marking it a conffile).
+    ["pkg/50-rusty-photon-sentinel.rules", "usr/share/polkit-1/rules.d/50-rusty-photon-sentinel.rules", "644"],
 ]
 maintainer-scripts = "pkg/"
 
@@ -65,6 +70,7 @@ license = "MIT OR Apache-2.0"
 assets = [
     { source = "target/release/sentinel", dest = "/usr/bin/rusty-photon-sentinel", mode = "755" },
     { source = "pkg/rusty-photon-sentinel.service", dest = "/usr/lib/systemd/system/rusty-photon-sentinel.service", mode = "644" },
+    { source = "pkg/50-rusty-photon-sentinel.rules", dest = "/usr/share/polkit-1/rules.d/50-rusty-photon-sentinel.rules", mode = "644" },
 ]
 post_install_script = """
 getent passwd rusty-photon > /dev/null || useradd -r -d /var/lib/rusty-photon -s /sbin/nologin rusty-photon
