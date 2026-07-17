@@ -19,7 +19,8 @@ fn generate_tls_certs(world: &mut SentinelWorld) {
         .parent()
         .expect("cert path has no parent")
         .to_path_buf();
-    rp_tls::cert::generate_service_cert(&ca_pem, &ca_key, "filemonitor", &[], &certs_dir).unwrap();
+    rusty_photon_tls::cert::generate_service_cert(&ca_pem, &ca_key, "filemonitor", &[], &certs_dir)
+        .unwrap();
     world.pki = Some(pki);
 }
 

@@ -20,7 +20,7 @@ pub enum ZwoFocuserError {
         addr: String,
         /// The underlying error from the dual-stack bind helper.
         #[source]
-        source: rp_tls::error::TlsError,
+        source: rusty_photon_tls::error::TlsError,
     },
 
     /// The blocking enumeration task panicked or was cancelled.

@@ -237,7 +237,7 @@ fn start_test_https_server(_world: &mut DoctorWorld, _service: String) {
 #[when("a client connects using the generated CA certificate")]
 async fn client_connects_with_ca(world: &mut DoctorWorld) {
     let pki = world.pki_dir();
-    let tls_config = rp_tls::config::TlsConfig {
+    let tls_config = rusty_photon_tls::config::TlsConfig {
         cert: pki.join("ppba-driver.pem").to_string_lossy().into_owned(),
         key: pki
             .join("ppba-driver-key.pem")
@@ -246,14 +246,16 @@ async fn client_connects_with_ca(world: &mut DoctorWorld) {
     };
 
     let addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let listener = rp_tls::server::bind_dual_stack_tokio(addr).await.unwrap();
+    let listener = rusty_photon_tls::server::bind_dual_stack_tokio(addr)
+        .await
+        .unwrap();
     let bound_addr = listener.local_addr().unwrap();
 
     let router = axum::Router::new().route("/health", axum::routing::get(|| async { "ok" }));
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     tokio::spawn(async move {
-        rp_tls::server::serve_tls(listener, router, &tls_config, async {
+        rusty_photon_tls::server::serve_tls(listener, router, &tls_config, async {
             shutdown_rx.await.ok();
         })
         .await
@@ -261,7 +263,7 @@ async fn client_connects_with_ca(world: &mut DoctorWorld) {
     });
 
     let ca_path = pki.join("ca.pem");
-    let client = rp_tls::client::build_reqwest_client(Some(&ca_path)).unwrap();
+    let client = rusty_photon_tls::client::build_reqwest_client(Some(&ca_path)).unwrap();
     let url = format!("https://localhost:{}/health", bound_addr.port());
 
     let response = client.get(&url).send().await.unwrap();

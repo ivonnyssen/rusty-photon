@@ -75,7 +75,7 @@ rust_library(
 # Variant with the tls-auth feature enabled: the shared PKI + credentials
 # fixture (PkiFixture), TlsAuthState/TlsAuthSmokeWorld, and the
 # tls_auth_smoke_steps! macro backing every service's TLS + Basic Auth BDD
-# scenarios. The feature gates the deps on rp-tls (cert generation, the
+# scenarios. The feature gates the deps on rusty-photon-tls (cert generation, the
 # CA-trusting reqwest client) and rp-auth (Argon2id hashing).
 rust_library(
     name = "bdd-infra_tls_auth",
@@ -91,7 +91,7 @@ rust_library(
     visibility = ["//visibility:public"],
     deps = [
         "//crates/rp-auth",
-        "//crates/rp-tls",
+        "//crates/rusty-photon-tls",
     ] + all_crate_deps(normal = True),
 )
 
@@ -119,7 +119,7 @@ rust_library(
         "//crates/rp-auth",
         "//crates/rp-ephemeris",
         "//crates/rp-fits",
-        "//crates/rp-tls",
+        "//crates/rusty-photon-tls",
     ] + all_crate_deps(normal = True),
 )
 
@@ -211,7 +211,7 @@ rust_test(
     ),
     deps = [
         "//crates/rp-auth",
-        "//crates/rp-tls",
+        "//crates/rusty-photon-tls",
     ] + all_crate_deps(
         normal = True,
         normal_dev = True,

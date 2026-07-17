@@ -35,7 +35,7 @@ async-trait = { workspace = true }
 derive_more = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
-rp-tls = { workspace = true }
+rusty-photon-tls = { workspace = true }
 rp-auth = { workspace = true }
 axum = { workspace = true }
 erfars = { workspace = true }

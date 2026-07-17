@@ -1,13 +1,13 @@
 //! The Alpaca UDP discovery responder, wired to the drivers' optional
 //! `server.discovery_port` config field.
 //!
-//! Every service serves HTTP itself through rp-tls
+//! Every service serves HTTP itself through rusty-photon-tls
 //! ([`ascom_alpaca::Server::into_service`] for the TLS/auth layering) rather
 //! than `ascom_alpaca::Server::start()` — and only the latter spawns the
 //! crate's own discovery responder. `into_service`'s documented contract is
 //! that "the caller is responsible for starting the Alpaca discovery server
 //! separately if needed"; this module is that caller-owned responder. (The
-//! responder was lost when PR #63 introduced the rp-tls serving path.)
+//! responder was lost when PR #63 introduced the rusty-photon-tls serving path.)
 //!
 //! Discovery is **off unless the config opts in**: rusty-photon runs up to
 //! 14 Alpaca servers on one host, and a default-on responder in every one

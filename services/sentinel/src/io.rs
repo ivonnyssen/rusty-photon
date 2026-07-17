@@ -37,7 +37,7 @@ impl ReqwestHttpClient {
     /// path is added as a trusted root, allowing connections to services using
     /// certificates signed by the Rusty Photon CA.
     pub fn new(ca_cert_path: Option<&std::path::Path>) -> crate::Result<Self> {
-        let client = rp_tls::client::build_reqwest_client(ca_cert_path).map_err(|e| {
+        let client = rusty_photon_tls::client::build_reqwest_client(ca_cert_path).map_err(|e| {
             crate::SentinelError::Config(format!("failed to build HTTP client: {e}"))
         })?;
         Ok(Self { client, auth: None })

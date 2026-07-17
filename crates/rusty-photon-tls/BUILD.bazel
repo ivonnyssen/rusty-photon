@@ -7,10 +7,10 @@ exports_files(
 )
 
 rust_library(
-    name = "rp-tls",
+    name = "rusty-photon-tls",
     srcs = glob(["src/**/*.rs"]),
     aliases = aliases(),
-    crate_name = "rp_tls",
+    crate_name = "rusty_photon_tls",
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = ["//visibility:public"],
@@ -18,13 +18,13 @@ rust_library(
 )
 
 rust_test(
-    name = "rp-tls_unit_test",
+    name = "rusty-photon-tls_unit_test",
     size = "small",
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,
     ),
-    crate = ":rp-tls",
+    crate = ":rusty-photon-tls",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,
@@ -48,7 +48,7 @@ rust_test(
         proc_macro = True,
         proc_macro_dev = True,
     ),
-    deps = [":rp-tls"] + all_crate_deps(
+    deps = [":rusty-photon-tls"] + all_crate_deps(
         normal = True,
         normal_dev = True,
     ),

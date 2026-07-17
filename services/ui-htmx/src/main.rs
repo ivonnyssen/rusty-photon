@@ -107,7 +107,8 @@ fn main() -> ServiceResult {
             match &config.server.tls {
                 Some(tls) => {
                     debug!("Serving HTTPS (server.tls configured)");
-                    rp_tls::server::serve_tls(listener, app, tls, shutdown_signal).await?;
+                    rusty_photon_tls::server::serve_tls(listener, app, tls, shutdown_signal)
+                        .await?;
                 }
                 None => {
                     axum::serve(listener, app)

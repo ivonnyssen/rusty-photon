@@ -21,7 +21,7 @@ pub mod doctor_toml;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use rp_auth::config::AuthConfig;
-use rp_tls::config::TlsConfig;
+use rusty_photon_tls::config::TlsConfig;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 

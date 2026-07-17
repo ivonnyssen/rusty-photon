@@ -2,7 +2,7 @@
 //!
 //! Mirrors `sentinel`'s `io.rs`: a small `HttpClient` trait (mocked with
 //! `mockall` in tests) plus a `reqwest`-backed production implementation built
-//! through `rp-tls` so it trusts the Rusty Photon CA and can present HTTP Basic
+//! through `rusty-photon-tls` so it trusts the Rusty Photon CA and can present HTTP Basic
 //! credentials to an auth-enabled driver.
 
 use std::path::Path;
@@ -53,7 +53,7 @@ impl ReqwestHttpClient {
     /// Build a client that trusts the Rusty Photon CA at `ca_cert_path` (when
     /// `Some`), with no credentials.
     pub fn new(ca_cert_path: Option<&Path>) -> Result<Self, HttpError> {
-        let client = rp_tls::client::build_reqwest_client(ca_cert_path)
+        let client = rusty_photon_tls::client::build_reqwest_client(ca_cert_path)
             .map_err(|e| HttpError(format!("failed to build HTTP client: {e}")))?;
         Ok(Self { client, auth: None })
     }

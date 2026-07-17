@@ -1,6 +1,5 @@
 //! BDD step definitions for rp service
 
-pub mod acme_steps;
 pub mod auth_steps;
 pub mod auto_focus_steps;
 pub mod camera_info_steps;

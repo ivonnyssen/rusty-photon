@@ -33,8 +33,8 @@ use std::sync::Arc;
 
 use ascom_alpaca::api::CargoServerInfo;
 use ascom_alpaca::Server;
-use rp_tls::config::TlsConfig;
 use rusty_photon_service_lifecycle::ReloadSignal;
+use rusty_photon_tls::config::TlsConfig;
 use tracing::{debug, info, warn};
 
 use crate::backend::{
@@ -184,7 +184,7 @@ impl ServerBuilder {
         // `with_reload` loop rebinds the same port; a raw bind could fail to
         // rebind while a prior listener's TIME_WAIT lingers.
         let bind_addr = self.config.server.socket_addr();
-        let listener = rp_tls::server::bind_dual_stack_tokio(bind_addr)
+        let listener = rusty_photon_tls::server::bind_dual_stack_tokio(bind_addr)
             .await
             .map_err(|source| QhyCameraError::Bind {
                 port: self.config.server.port,
@@ -192,7 +192,7 @@ impl ServerBuilder {
             })?;
         let local_addr = listener.local_addr().map_err(|e| QhyCameraError::Bind {
             port: self.config.server.port,
-            source: rp_tls::error::TlsError::Io(e),
+            source: rusty_photon_tls::error::TlsError::Io(e),
         })?;
 
         // Opt-in Alpaca UDP discovery responder (config `discovery_port`);
@@ -261,11 +261,12 @@ impl BoundServer {
             let result = match tls {
                 Some(ref tls_config) => {
                     debug!("serving over TLS");
-                    rp_tls::server::serve_tls(listener, router, tls_config, shutdown).await
+                    rusty_photon_tls::server::serve_tls(listener, router, tls_config, shutdown)
+                        .await
                 }
                 None => {
                     debug!("serving plain HTTP");
-                    rp_tls::server::serve_plain(listener, router, shutdown).await
+                    rusty_photon_tls::server::serve_plain(listener, router, shutdown).await
                 }
             };
             result.map_err(|e| QhyCameraError::Server(e.to_string()))

@@ -157,7 +157,10 @@ impl SentinelBuilder {
     /// When `config.ca_cert` is set, the HTTP client trusts that CA for
     /// connecting to TLS-enabled Alpaca services.
     pub fn new(config: Config) -> Self {
-        let ca_path = config.ca_cert.as_deref().map(rp_tls::config::expand_tilde);
+        let ca_path = config
+            .ca_cert
+            .as_deref()
+            .map(rusty_photon_tls::config::expand_tilde);
         let http: Arc<dyn io::HttpClient> = match ReqwestHttpClient::new(ca_path.as_deref()) {
             Ok(client) => Arc::new(client),
             Err(e) => {
@@ -233,7 +236,10 @@ impl SentinelBuilder {
         let config = self.config;
 
         // Use injected monitors/notifiers or fall back to config factories
-        let ca_path = config.ca_cert.as_deref().map(rp_tls::config::expand_tilde);
+        let ca_path = config
+            .ca_cert
+            .as_deref()
+            .map(rusty_photon_tls::config::expand_tilde);
         let monitors = self
             .monitors
             .unwrap_or_else(|| config.build_monitors(&http, ca_path.as_deref()));
@@ -373,7 +379,7 @@ pub struct Sentinel {
     state: state::StateHandle,
     cancel: CancellationToken,
     dashboard_listener: Option<tokio::net::TcpListener>,
-    dashboard_tls: Option<rp_tls::config::TlsConfig>,
+    dashboard_tls: Option<rusty_photon_tls::config::TlsConfig>,
     dashboard_auth: Option<rp_auth::config::AuthConfig>,
     restarts: Arc<restart::RestartManager>,
 }
@@ -436,9 +442,14 @@ impl Sentinel {
 
                 match dashboard_tls {
                     Some(ref tls_config) => {
-                        rp_tls::server::serve_tls(listener, router, tls_config, async move {
-                            cancel_for_dashboard.cancelled().await;
-                        })
+                        rusty_photon_tls::server::serve_tls(
+                            listener,
+                            router,
+                            tls_config,
+                            async move {
+                                cancel_for_dashboard.cancelled().await;
+                            },
+                        )
                         .await
                         .ok();
                     }

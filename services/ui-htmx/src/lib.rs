@@ -264,8 +264,10 @@ impl AppState {
                 ),
                 ca_cert_path: rp.ca_cert_path.clone(),
                 base_url: rp.base_url.clone(),
-                stream_client: rp_tls::client::build_reqwest_client(rp.ca_cert_path.as_deref())
-                    .map_err(|e| format!("rp target: failed to build stream client: {e}"))?,
+                stream_client: rusty_photon_tls::client::build_reqwest_client(
+                    rp.ca_cert_path.as_deref(),
+                )
+                .map_err(|e| format!("rp target: failed to build stream client: {e}"))?,
                 stream_auth: rp
                     .auth
                     .as_ref()

@@ -5,7 +5,6 @@ pub mod cooling;
 pub mod equipment;
 pub mod error;
 pub mod events;
-pub mod hash_password_cmd;
 pub mod imaging;
 pub mod mcp;
 pub mod persistence;
@@ -13,7 +12,6 @@ pub mod planner;
 pub mod routes;
 pub mod safety;
 pub mod session;
-pub mod tls_cmd;
 
 use std::future::Future;
 use std::net::SocketAddr;
@@ -23,7 +21,7 @@ use std::sync::Arc;
 use tracing::{debug, info};
 
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
-use rp_tls::config::TlsConfig;
+use rusty_photon_tls::config::TlsConfig;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::Config;
@@ -387,9 +385,14 @@ impl BoundServer {
         match self.tls {
             Some(ref tls_config) => {
                 info!("rp service started on {} (TLS)", self.local_addr);
-                rp_tls::server::serve_tls(self.listener, self.router, tls_config, graceful)
-                    .await
-                    .map_err(|e| crate::error::RpError::Server(e.to_string()))?;
+                rusty_photon_tls::server::serve_tls(
+                    self.listener,
+                    self.router,
+                    tls_config,
+                    graceful,
+                )
+                .await
+                .map_err(|e| crate::error::RpError::Server(e.to_string()))?;
             }
             None => {
                 info!("rp service started on {}", self.local_addr);
