@@ -832,6 +832,22 @@ mod tests {
     }
 
     #[test]
+    fn test_start_command_speaks_each_platforms_language() {
+        assert_eq!(
+            start_command(Platform::Linux, "rusty-photon-rp"),
+            "systemctl start rusty-photon-rp"
+        );
+        assert_eq!(
+            start_command(Platform::Windows, "rusty-photon-rp"),
+            "Start-Service rusty-photon-rp"
+        );
+        assert_eq!(
+            start_command(Platform::Macos, "rusty-photon-rp-nightly"),
+            "brew services start rusty-photon-rp-nightly"
+        );
+    }
+
+    #[test]
     fn test_tls_material_present_matches_service_resolution() {
         let dir = tempfile::tempdir().unwrap();
         let pem = dir.path().join("cert.pem");

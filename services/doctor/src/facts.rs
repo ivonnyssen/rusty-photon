@@ -426,6 +426,38 @@ mod tests {
         assert_eq!(units[1].source_name, None, "stable names carry no alias");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn test_run_captures_stdout_and_degrades_on_failure() {
+        let out = run(Command::new("echo").arg("systemctl-stand-in")).unwrap();
+        assert!(out.contains("systemctl-stand-in"));
+        assert!(run(&mut Command::new("false")).is_none(), "non-zero exit");
+        assert!(
+            run(&mut Command::new("/nonexistent/doctor-test-binary")).is_none(),
+            "missing binary"
+        );
+    }
+
+    /// Exercises the real host-gathering path end to end: on a systemd host
+    /// it queries the service manager, elsewhere the query fails and
+    /// degrades to an empty inventory — both are legitimate outcomes, and
+    /// every unit that does come back is a rusty-photon stem.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_gather_reports_host_facts_without_panicking() {
+        let facts = PlatformFacts::gather();
+        assert_eq!(facts.platform, Platform::Linux);
+        for unit in &facts.units {
+            assert!(unit.name.starts_with("rusty-photon-"), "{}", unit.name);
+        }
+        if facts.unit("rusty-photon-sentinel").is_none() {
+            assert!(
+                facts.polkit_grants_sentinel_restart.is_none(),
+                "the polkit fact is gathered only when sentinel is installed"
+            );
+        }
+    }
+
     #[test]
     fn test_facts_parse_permissively_and_unit_lookup_works() {
         let facts: PlatformFacts = serde_json::from_str(
