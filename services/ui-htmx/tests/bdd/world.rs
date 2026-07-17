@@ -194,9 +194,13 @@ impl UiWorld {
                 }),
             );
         }
+        // rp defaults ON (roster-first, doctor-plan D3); the driver-only
+        // scenarios must opt out explicitly or the BFF would reach for an rp
+        // at the default port — possibly a real one from a parallel suite.
         let mut config = json!({
             "server": { "bind_address": "127.0.0.1", "port": 0 },
             "drivers": Value::Object(map),
+            "rp": null,
         });
         if let Some(sentinel) = &self.sentinel {
             config["sentinel"] = json!({
@@ -512,7 +516,7 @@ impl UiWorld {
         self.start_bff_with_rp_at(UNREACHABLE_PORT).await;
     }
 
-    /// Spawn a BFF with **no** rp target (the default dsd-fp2 drivers entry
+    /// Spawn a BFF with an explicit `"rp": null` (declared driver entries
     /// only) — the "rp-backed surfaces unavailable" state.
     pub async fn start_bff_without_rp(&mut self) {
         self.start_bff_pointing_at(UNREACHABLE_PORT).await;

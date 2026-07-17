@@ -26,8 +26,8 @@ doctor *out* of the services rather than a component of them.
 |-------|-------------|--------|-------------|
 | D0 | This plan + [ADR-016](../decisions/016-service-config-ownership-and-doctor.md) (config ownership + the SDK line) | Merged | #539 |
 | D1 | `rusty-photon-server-config` (core + Alpaca shapes); all 18 services adopt; TLS/auth for the 9 that lack it; `bind_address` everywhere (default `0.0.0.0`); per-service TLS+auth smoke scenarios | Merged | #549 (follow-up: [#550](https://github.com/ivonnyssen/rusty-photon/issues/550), smoke-fixture dedupe) |
-| D2 | `rusty-photon-doctor` binary: catalog + service-config diagnosis (read-only) | In progress | `feature/doctor-d2-diagnosis` |
-| D3 | `--fix`; ui-htmx sources from rp's roster (its `drivers` map becomes an empty-by-default override) | Not started | |
+| D2 | `rusty-photon-doctor` binary: catalog + service-config diagnosis (read-only) | Merged | #554 |
+| D3 | `--fix`; ui-htmx sources from rp's roster (its `drivers` map becomes an empty-by-default override) | In review | `feature/doctor-d3-fix` |
 | D3s | Sentinel discovers its services; delete the `services` map; policy → constants (privilege path shipped — polkit rule in the sentinel packages) | In review | `feature/sentinel-service-discovery` |
 | D4 | `rusty-photon-doctor-checks` crate + generic hardware checks (no SDK) | Not started | |
 | D5 | Per-service `doctor` subcommand + aggregation | Not started | |
@@ -581,9 +581,14 @@ permissive in both directions across the binary boundary.
   more accurate but is four implementations.~~ **Resolved (D2 decision 3):**
   ask the service manager for `rusty-photon-*` units, plus config-file
   presence for dev checkouts.
-- **Whether `--fix` should refuse to run while services are live (D3).** Atomic
-  rename makes it safe from corruption, but a driver's `config.apply` could
-  race a `--fix` write. Refusing, warning, or ignoring are all defensible.
+- **Whether `--fix` should refuse to run while services are live — resolved
+  (D3): warn and proceed.** The canonical install flow (packages install,
+  services auto-start, operator runs `--fix` once) has services running by
+  design at exactly that moment, so refusing would break the primary
+  workflow. Atomic renames make corruption impossible; the residual race (a
+  driver's `config.apply` landing between doctor's read and write loses one
+  of the two writes) is called out on stderr with the advice to re-run
+  doctor and restart services to pick up fixed configs.
 - **Which package ships doctor (D6).** Its own `rusty-photon-doctor` package
   that the operator installs deliberately, or bundled into a common package.
   Decision 1 removes the `Depends:` pressure that would have forced the latter.
