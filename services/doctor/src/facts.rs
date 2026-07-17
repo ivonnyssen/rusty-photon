@@ -277,7 +277,10 @@ fn gather_macos() -> PlatformFacts {
 }
 
 /// Parse `brew services list` (`Name Status User File` columns, header
-/// line first) down to the registered `rusty-photon-*` formulas.
+/// line first) down to the registered `rusty-photon-*` formulas. The
+/// nightly channel's formulas are `rusty-photon-<svc>-nightly` but install
+/// the same binaries and services, so the channel suffix is stripped to
+/// recover the unit stem.
 pub fn parse_brew_services_listing(listing: &str) -> Vec<UnitFacts> {
     listing
         .lines()
@@ -288,6 +291,7 @@ pub fn parse_brew_services_listing(listing: &str) -> Vec<UnitFacts> {
             if !name.starts_with("rusty-photon-") {
                 return None;
             }
+            let name = name.strip_suffix("-nightly").unwrap_or(name);
             Some(UnitFacts {
                 name: name.to_string(),
                 // `none` means installed but never registered to start;
@@ -379,6 +383,14 @@ mod tests {
         assert_eq!(units.len(), 2);
         assert!(units[0].enabled);
         assert!(!units[1].enabled);
+    }
+
+    #[test]
+    fn test_brew_nightly_formula_names_normalize_to_the_unit_stem() {
+        let listing = "rusty-photon-sentinel-nightly started igor ~/Library/...\n";
+        let units = parse_brew_services_listing(listing);
+        assert_eq!(units[0].name, "rusty-photon-sentinel");
+        assert!(units[0].enabled);
     }
 
     #[test]

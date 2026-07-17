@@ -102,8 +102,14 @@ Doctor diagnoses one config directory per run, resolved in order:
 2. `/etc/rusty-photon`, if it exists (Unix). Packaging ships this symlink
    pointing at the service user's tree
    (`/var/lib/rusty-photon/.config/rusty-photon`), so an operator running
-   doctor as root or as themselves diagnoses the **service user's** configs,
-   not their own empty home.
+   doctor as root diagnoses the **service user's** configs, not their own
+   empty home. A packaged tree that exists but is **unreadable by the
+   invoking user is a hard error** (exit 2, "run with sudo"), never a
+   fall-through: the tree is 0750-owned by `rusty-photon`, and silently
+   diagnosing the operator's own empty config directory instead would report
+   seventeen missing configs on a healthy rig — and scan polkit rule
+   directories it cannot read. A dangling symlink (packages removed) falls
+   through to step 3.
 3. The platform default the services themselves use —
    `rusty_photon_config`'s resolution (`~/.config/rusty-photon` on Linux,
    `~/Library/Application Support/rusty-photon` on macOS,
