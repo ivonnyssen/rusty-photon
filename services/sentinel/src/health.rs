@@ -9,8 +9,10 @@
 //! removed, or leaves supervision. There is no opt-in: every discovered
 //! service in a supervised state is supervised (plan D3s).
 //!
-//! A supervisor probes `GET {derived health URL}` every poll interval. Alive
-//! means 200 — or 401/403, an auth challenge being proof of life. Any other
+//! A supervisor probes `GET {derived health URL}` every poll interval, with
+//! HTTP Basic credentials when the doctor-written `service_auth` credential
+//! is configured. Alive means 200 — or 401/403, an auth challenge being
+//! proof of life (the target may hold a hand-set credential). Any other
 //! status, a timeout, or a connection error is a failed probe; a `failed`
 //! unit counts as a failed probe without HTTP. After the failure threshold
 //! the supervisor restarts the service through the shared [`RestartManager`]
@@ -84,8 +86,9 @@ impl ServiceHealthSupervisor {
     }
 
     /// One probe: alive iff `GET {url}` answers 200 — or 401/403, an auth
-    /// challenge being proof of life (sentinel holds no credentials for its
-    /// peers). The body is never parsed.
+    /// challenge being proof of life (the shared client carries
+    /// `service_auth` when configured, but the target may hold a hand-set
+    /// credential). The body is never parsed.
     async fn probe(&self, url: &str) -> bool {
         match tokio::time::timeout(PROBE_TIMEOUT, self.ctx.http.get(url)).await {
             Ok(Ok(resp)) if matches!(resp.status, 200 | 401 | 403) => true,

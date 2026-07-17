@@ -290,21 +290,41 @@ impl SentinelBuilder {
 
         // The discovery loop (registry upkeep + universal health
         // supervision) is appended after the DI override so injecting custom
-        // event monitors never silently disables supervision. Its probes use
-        // a client that skips certificate verification: probes send no
+        // event monitors never silently disables supervision. With the
+        // doctor-written `service_auth` credential set, probes authenticate
+        // (HTTP Basic) and verify TLS against `ca_cert` — credentials never
+        // ride an unverified connection. Without it, probes send no
         // credentials and never parse the body, and sentinel cannot assume
-        // it holds a CA for every peer's self-signed certificate. If that
-        // client cannot be built, fall back to the shared (verifying) client
-        // loudly — self-signed TLS peers would then probe as down.
-        let probe_http: Arc<dyn io::HttpClient> = match ReqwestHttpClient::insecure() {
-            Ok(client) => Arc::new(client),
-            Err(e) => {
-                tracing::error!(
-                    "{e}; probing through the shared verifying client — \
-                     self-signed TLS peers may report down"
-                );
-                Arc::clone(&http)
-            }
+        // it holds a CA for every peer's self-signed certificate, so the
+        // probe client skips certificate verification. If the intended
+        // client cannot be built, fall back to the shared (verifying)
+        // client loudly — self-signed TLS peers would then probe as down.
+        let probe_http: Arc<dyn io::HttpClient> = match &config.service_auth {
+            Some(auth) => match ReqwestHttpClient::with_auth(
+                ca_path.as_deref(),
+                auth.username.clone(),
+                auth.password.clone(),
+            ) {
+                Ok(client) => Arc::new(client),
+                Err(e) => {
+                    tracing::error!(
+                        "failed to build the authenticated probe client: {e}; probing \
+                         through the shared client without service_auth — auth-on \
+                         peers will answer 401 (still proof of life)"
+                    );
+                    Arc::clone(&http)
+                }
+            },
+            None => match ReqwestHttpClient::insecure() {
+                Ok(client) => Arc::new(client),
+                Err(e) => {
+                    tracing::error!(
+                        "{e}; probing through the shared verifying client — \
+                         self-signed TLS peers may report down"
+                    );
+                    Arc::clone(&http)
+                }
+            },
         };
         let supervision = DiscoverySupervisor::new(
             Arc::clone(&manager),
@@ -432,7 +452,7 @@ impl Sentinel {
                             tracing::warn!(
                                 "Authentication is enabled but TLS is not. \
                                  Credentials will be transmitted in cleartext. \
-                                 Consider enabling TLS (see `rp init-tls`)."
+                                 Consider enabling TLS (see `doctor --fix`)."
                             );
                         }
                         rp_auth::layer(router, auth)
