@@ -176,7 +176,8 @@ report groups naturally.
 | `config.unreadable` | fail | `<svc>.json` exists but could not be read (permissions, I/O) — a different operator problem than bad JSON, diagnosed under its own name. |
 | `config.json-syntax` | fail | `<svc>.json` is not valid JSON. The service will refuse to start (by design — corrupt config never silently resets), and doctor says so before the next night does. |
 | `config.server-shape` | fail | The top-level `server` block does not parse under the catalog-declared shape (`ServerConfig` for core, `AlpacaServerConfig` for Alpaca): unknown keys (`deny_unknown_fields`), missing `port` when the block is present, `discovery_port` on a core service, malformed `bind_address`. An absent `server` block is `ok` — the service applies its defaults. |
-| `config.known-blocks` | fail | One of the cross-reference blocks doctor joins across fails to parse: ui-htmx's `drivers` map / `sentinel` target, sentinel's `services` map / `operation_watchdog`, rp's `equipment` array / `session` block. Everything else in every file is opaque `serde_json::Value` doctor steps around. |
+| `config.known-blocks` | fail | One of the cross-reference blocks doctor joins across fails to parse: ui-htmx's `drivers` map / `sentinel` target, sentinel's `operation_watchdog`, rp's `equipment` array / `session` block. Everything else in every file is opaque `serde_json::Value` doctor steps around. |
+| `config.retired-keys` | fail | A config still carries a key its service retired with D3s and now refuses to start over (`deny_unknown_fields`): sentinel's `services` map (supervision is discovered, not configured) or a ui-htmx driver's `sentinel_service` (the restart name is always the driver's own map key). The remedy is deletion — no replacement config exists. |
 
 Full-config typo detection (a misspelled key in, say, qhy-camera's
 `device_overrides`) is **out of D2's reach by design**: doctor knows only the
@@ -199,25 +200,24 @@ the typed shape — validates its own file and doctor aggregates.
 
 ### Name joins
 
-Four spellings of one service name exist today (ui-htmx `drivers` key →
-`sentinel_service` → sentinel `services` key →
-`operation_watchdog.operations.<family>.service`), matched by convention and
-validated by nothing. Doctor validates the survivors; D3s deletes sentinel's
-side entirely.
+Since D3s sentinel discovers its services from the platform service manager,
+so the service-name joins that survive resolve against the **installed
+`rusty-photon-*` units** (packaged mode only — the joins have nothing to
+resolve against on a dev checkout): the watchdog's
+`operations.<family>.service` and ui-htmx's `drivers` keys, matched by
+convention and validated by nothing at runtime until the 2am 404.
 
 | Check | Status | Trigger |
 |---|---|---|
-| `joins.sentinel-unit` | fail | A sentinel `services` entry's `restart_command` names a unit the service manager does not report. Specifically recognizes the two historical rot patterns and names them in the detail: `systemctl --user` against system units, and unit names missing the `rusty-photon-` prefix. |
-| `joins.watchdog-service` | fail | An `operation_watchdog.operations.<family>.service` value is not a key of sentinel's `services` map. |
-| `joins.ui-htmx-sentinel` | fail | ui-htmx has a `sentinel` target configured, and a driver's effective `sentinel_service` (the field, defaulting to the driver's map key) is not a key of sentinel's `services` map on this host. |
+| `joins.watchdog-service` | fail | An `operation_watchdog.operations.<family>.service` names a service with no installed `rusty-photon-<service>` unit — sentinel's discovery will never resolve it, so the watchdog's ladder degrades to notify-only. |
+| `joins.ui-htmx-restart` | warn | ui-htmx has a `sentinel` target configured, and a `drivers` key matches no installed unit — its Restart-via-Sentinel button will 404. A warning, not a failure: a third-party device sentinel cannot restart is a legitimate override entry. |
 | `joins.ui-htmx-driver-port` | fail | A ui-htmx `drivers` entry is keyed by a catalog service name and its `base_url` points at localhost, but the URL's port is not that service's effective port. The 2am 404 in a UI banner, caught at noon. Non-localhost URLs are out of scope (remote host — doctor sees one machine). |
 
 ### URL conventions
 
 | Check | Status | Trigger |
 |---|---|---|
-| `urls.sentinel-suffix` | warn | A sentinel `services` entry has a `base_url` that does not end in `/api/v1`. Sentinel's watchdog appends Alpaca method paths to it; without the suffix every probe 404s. |
-| `urls.spurious-suffix` | warn | An rp `equipment[].alpaca_url` or ui-htmx `drivers[].base_url` **does** end in `/api/v1`. Those clients append it themselves; doubling it 404s. (Doctor reads `alpaca_url` out of rp's equipment entries and steps around the rest of the block — checking the URL is service wiring, owning the entry is device usage.) |
+| `urls.spurious-suffix` | warn | An rp `equipment[].alpaca_url` or ui-htmx `drivers[].base_url` ends in `/api/v1`. Those clients append it themselves; doubling it 404s. (Doctor reads `alpaca_url` out of rp's equipment entries and steps around the rest of the block — checking the URL is service wiring, owning the entry is device usage.) Sentinel's URLs are all derived since D3s, so no sentinel-side convention is left to check. |
 
 ### TLS and auth
 
@@ -298,9 +298,9 @@ deliberate: a config-repair tool with its own config file would need a doctor.
   status value from a newer service).
 - **BDD** (`services/doctor/tests`, built with the `mock` feature) — seed a
   scratch config dir and a platform-facts file with known-broken states (port
-  collision, dangling `sentinel_service`, unparseable JSON, missing
-  `ConditionPathExists` target, absent polkit rule), run the real binary,
-  assert the diagnosis, the exit code, and the `--json` schema.
+  collision, dangling watchdog service, retired D3s keys, unparseable JSON,
+  missing `ConditionPathExists` target, absent polkit rule), run the real
+  binary, assert the diagnosis, the exit code, and the `--json` schema.
 - **On-host** (D2 gate, per the plan's all-platforms requirement) — the real
   inspectors validated against a packaged Linux host, the Windows VM (SCM),
   and macOS (brew services).
@@ -314,8 +314,6 @@ resolution, platform inspectors, the check list, the report schema, text +
 **Deferred, tracked in the plan:**
 
 - `--fix` and ui-htmx roster-sourcing — D3.
-- Sentinel service discovery (deletes the `services` map and most of the
-  join checks above with it) — D3s, gated on #523.
 - `rusty-photon-doctor-checks` crate + hardware checks that need no SDK
   (device nodes, udev, plugdev, VID:PID, firmware helper) — D4.
 - Per-service `doctor` subcommands (full-config validation, SDK-side

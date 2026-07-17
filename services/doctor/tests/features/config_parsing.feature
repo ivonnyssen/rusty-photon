@@ -64,7 +64,8 @@ Feature: Config file parsing diagnosis
     Given platform facts with an enabled unit "rusty-photon-sentinel"
     And a config directory with "sentinel.json" containing:
       """
-      { "server": { "port": 11114 }, "services": [ "not", "a", "map" ] }
+      { "server": { "port": 11114 },
+        "operation_watchdog": { "operations": [ "not", "a", "map" ] } }
       """
     When I run doctor with --json
     Then the report contains a "fail" check named "config.known-blocks" for service "sentinel"

@@ -423,173 +423,133 @@ fn name_joins(ctx: &Context) -> Vec<Check> {
         ctx.scan("sentinel").and_then(|s| scan::view(s)?.ok());
     let ui_view: Option<UiHtmxView> = ctx.scan("ui-htmx").and_then(|s| scan::view(s)?.ok());
 
+    checks.extend(retired_keys(&sentinel_view, &ui_view));
     if let Some(sentinel) = &sentinel_view {
-        checks.extend(sentinel_restart_joins(ctx, sentinel));
-        checks.extend(watchdog_joins(sentinel));
+        checks.extend(watchdog_joins(ctx, sentinel));
     }
     if let Some(ui) = &ui_view {
         if ui.sentinel.is_some() {
-            if let Some(sentinel) = &sentinel_view {
-                checks.extend(ui_sentinel_joins(ui, sentinel));
-            }
+            checks.extend(ui_restart_joins(ctx, ui));
         }
         checks.extend(ui_driver_port_joins(ctx, ui));
     }
     checks
 }
 
-/// Extract the unit a `systemctl … restart <unit>` command names, plus
-/// whether it uses the `--user` scope.
-fn restart_command_unit(command: &str) -> Option<(String, bool)> {
-    let tokens: Vec<&str> = command.split_whitespace().collect();
-    let user_scope = tokens.contains(&"--user");
-    let restart_pos = tokens.iter().position(|t| *t == "restart")?;
-    let unit = tokens.get(restart_pos + 1)?;
-    Some((
-        unit.strip_suffix(".service").unwrap_or(unit).to_string(),
-        user_scope,
-    ))
-}
-
-fn sentinel_restart_joins(ctx: &Context, sentinel: &SentinelView) -> Vec<Check> {
+/// Config keys retired by D3s (sentinel discovers its services): sentinel's
+/// `services` map and ui-htmx's per-driver `sentinel_service`. Both fail the
+/// service's own strict load, so the file is dead weight that keeps the
+/// service from starting.
+fn retired_keys(sentinel: &Option<SentinelView>, ui: &Option<UiHtmxView>) -> Vec<Check> {
     let mut checks = Vec::new();
-    if ctx.mode != Mode::Packaged {
-        return checks;
-    }
-    let mut all_resolve = true;
-    for (name, service) in &sentinel.services {
-        let Some(command) = &service.restart_command else {
-            continue;
-        };
-        let Some((unit, user_scope)) = restart_command_unit(command) else {
-            continue;
-        };
-        if user_scope {
-            all_resolve = false;
-            checks.push(Check::fail(
-                "joins.sentinel-unit",
-                Some("sentinel".to_string()),
-                format!(
-                    "services.{name}.restart_command uses `systemctl --user`, but \
-                     rusty-photon units are system units — the restart will never \
-                     find the unit"
-                ),
-                Some(format!("drop --user: `systemctl restart {unit}`")),
-            ));
-            continue;
-        }
-        if ctx.facts.unit(&unit).is_some() {
-            continue;
-        }
-        all_resolve = false;
-        let suggestion = if !unit.starts_with("rusty-photon-")
-            && ctx.facts.unit(&format!("rusty-photon-{unit}")).is_some()
-        {
-            Some(format!(
-                "the installed unit is rusty-photon-{unit} — restart commands need \
-                 the rusty-photon- prefix"
-            ))
-        } else {
-            Some(format!(
-                "installed units are: {}",
-                ctx.facts
-                    .units
-                    .iter()
-                    .map(|u| u.name.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ))
-        };
+    if sentinel.as_ref().is_some_and(|s| s.services.is_some()) {
         checks.push(Check::fail(
-            "joins.sentinel-unit",
+            "config.retired-keys",
             Some("sentinel".to_string()),
-            format!(
-                "services.{name}.restart_command names unit {unit}, which the \
-                 service manager does not report"
+            "sentinel.json carries the retired services map — sentinel discovers \
+             its services from the platform service manager now, and refuses to \
+             start while the key is present"
+                .to_string(),
+            Some(
+                "delete the top-level \"services\" key; supervision needs no \
+                 replacement config"
+                    .to_string(),
             ),
-            suggestion,
         ));
     }
-    if all_resolve
-        && sentinel
-            .services
-            .values()
-            .any(|s| s.restart_command.is_some())
-    {
-        checks.push(Check::ok(
-            "joins.sentinel-unit",
-            Some("sentinel".to_string()),
-            "every restart_command names an installed unit".to_string(),
-        ));
+    if let Some(ui) = ui {
+        for (driver_id, driver) in &ui.drivers {
+            if driver.sentinel_service.is_some() {
+                checks.push(Check::fail(
+                    "config.retired-keys",
+                    Some("ui-htmx".to_string()),
+                    format!(
+                        "drivers.{driver_id} carries the retired sentinel_service \
+                         field — the restart name is always the driver's own map \
+                         key now, and ui-htmx refuses to start while the field is \
+                         present"
+                    ),
+                    Some(format!("delete drivers.{driver_id}.sentinel_service")),
+                ));
+            }
+        }
     }
     checks
 }
 
-fn watchdog_joins(sentinel: &SentinelView) -> Vec<Check> {
+/// The installed rusty-photon units' service names (unit minus the prefix) —
+/// what sentinel's discovery will resolve restart names against.
+fn discovered_service_names(ctx: &Context) -> Vec<String> {
+    ctx.facts
+        .units
+        .iter()
+        .filter_map(|u| u.name.strip_prefix("rusty-photon-"))
+        .map(str::to_string)
+        .collect()
+}
+
+fn watchdog_joins(ctx: &Context, sentinel: &SentinelView) -> Vec<Check> {
     let mut checks = Vec::new();
+    if ctx.mode != Mode::Packaged {
+        return checks;
+    }
     let Some(watchdog) = &sentinel.operation_watchdog else {
         return checks;
     };
+    let discovered = discovered_service_names(ctx);
     for (family, operation) in &watchdog.operations {
         let Some(service) = &operation.service else {
             continue;
         };
-        if !sentinel.services.contains_key(service) {
+        if !discovered.iter().any(|name| name == service) {
             checks.push(Check::fail(
                 "joins.watchdog-service",
                 Some("sentinel".to_string()),
                 format!(
                     "operation_watchdog.operations.{family}.service names \
-                     \"{service}\", which is not a key of the services map — the \
-                     watchdog's restart rung will never fire"
+                     \"{service}\", but no rusty-photon-{service} unit is installed \
+                     — sentinel's discovery will never resolve it, so the \
+                     watchdog's ladder degrades to notify-only"
                 ),
-                Some(format!(
-                    "existing keys: {}",
-                    sentinel
-                        .services
-                        .keys()
-                        .map(String::as_str)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )),
+                Some(format!("installed services are: {}", discovered.join(", "))),
             ));
         }
     }
     checks
 }
 
-fn ui_sentinel_joins(ui: &UiHtmxView, sentinel: &SentinelView) -> Vec<Check> {
+/// ui-htmx renders its Restart-via-Sentinel affordance for every
+/// config-declared driver whenever a `sentinel` target is set, naming the
+/// driver's own map key. A key with no matching installed unit 404s at
+/// sentinel — legal for a third-party device (hence warn, not fail), but
+/// worth knowing before 2am.
+fn ui_restart_joins(ctx: &Context, ui: &UiHtmxView) -> Vec<Check> {
     let mut checks = Vec::new();
+    if ctx.mode != Mode::Packaged {
+        return checks;
+    }
+    let discovered = discovered_service_names(ctx);
     let mut all_resolve = true;
-    for (driver_id, driver) in &ui.drivers {
-        let target = driver.sentinel_service.as_deref().unwrap_or(driver_id);
-        if !sentinel.services.contains_key(target) {
+    for driver_id in ui.drivers.keys() {
+        if !discovered.iter().any(|name| name == driver_id) {
             all_resolve = false;
-            checks.push(Check::fail(
-                "joins.ui-htmx-sentinel",
+            checks.push(Check::warn(
+                "joins.ui-htmx-restart",
                 Some("ui-htmx".to_string()),
                 format!(
-                    "drivers.{driver_id} restarts via sentinel service \"{target}\", \
-                     which is not a key of sentinel's services map — the restart \
-                     button will 404"
+                    "drivers.{driver_id} has no installed rusty-photon-{driver_id} \
+                     unit, so its Restart-via-Sentinel button will 404 — fine if \
+                     this is a third-party device sentinel cannot restart"
                 ),
-                Some(format!(
-                    "sentinel's keys: {}",
-                    sentinel
-                        .services
-                        .keys()
-                        .map(String::as_str)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )),
+                None,
             ));
         }
     }
     if all_resolve && !ui.drivers.is_empty() {
         checks.push(Check::ok(
-            "joins.ui-htmx-sentinel",
+            "joins.ui-htmx-restart",
             Some("ui-htmx".to_string()),
-            "every driver's sentinel_service resolves to a sentinel services key".to_string(),
+            "every driver key resolves to an installed unit sentinel can restart".to_string(),
         ));
     }
     checks
@@ -643,27 +603,6 @@ fn localhost_port(url: &str) -> Option<u16> {
 
 fn url_conventions(ctx: &Context) -> Vec<Check> {
     let mut checks = Vec::new();
-    if let Some(sentinel) = ctx
-        .scan("sentinel")
-        .and_then(|s| scan::view::<SentinelView>(s)?.ok())
-    {
-        for (name, service) in &sentinel.services {
-            let Some(url) = &service.base_url else {
-                continue;
-            };
-            if !url.trim_end_matches('/').ends_with("/api/v1") {
-                checks.push(Check::warn(
-                    "urls.sentinel-suffix",
-                    Some("sentinel".to_string()),
-                    format!(
-                        "services.{name}.base_url ({url}) lacks the /api/v1 suffix \
-                         sentinel's Alpaca probes append method paths below"
-                    ),
-                    Some(format!("use {}/api/v1", url.trim_end_matches('/'))),
-                ));
-            }
-        }
-    }
     let mut spurious = |service: &str, field: String, url: &str| {
         if url.trim_end_matches('/').ends_with("/api/v1") {
             checks.push(Check::warn(
@@ -816,20 +755,6 @@ fn rp_platform_defaults(ctx: &Context) -> Vec<Check> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_restart_command_unit_extraction() {
-        assert_eq!(
-            restart_command_unit("systemctl restart rusty-photon-qhy-focuser"),
-            Some(("rusty-photon-qhy-focuser".to_string(), false))
-        );
-        assert_eq!(
-            restart_command_unit("systemctl --user restart qhy-focuser.service"),
-            Some(("qhy-focuser".to_string(), true))
-        );
-        assert_eq!(restart_command_unit("echo nothing"), None);
-        assert_eq!(restart_command_unit("systemctl restart"), None);
-    }
 
     #[test]
     fn test_start_command_speaks_each_platforms_language() {
