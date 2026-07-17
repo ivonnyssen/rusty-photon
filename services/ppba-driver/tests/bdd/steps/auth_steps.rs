@@ -1,43 +1,30 @@
 //! BDD step definitions for ppba-driver HTTP Basic Auth
 
+use bdd_infra::tls_auth::{wait_until_ready, PkiFixture};
 use cucumber::{given, then, when};
 
 use crate::steps::infrastructure::ServiceHandle;
 use crate::world::PpbaWorld;
 
-const AUTH_USERNAME: &str = "observatory";
-const AUTH_PASSWORD: &str = "test-password";
+fn pki(world: &PpbaWorld) -> &PkiFixture {
+    world.pki.as_ref().expect("TLS certs not generated")
+}
+
+fn management_url(world: &PpbaWorld) -> String {
+    let port = world.ppba.as_ref().expect("ppba-driver not started").port;
+    format!("https://localhost:{port}/management/v1/configureddevices")
+}
 
 #[given("ppba-driver is configured with TLS and auth enabled and mock serial")]
 fn ppba_configured_with_tls_and_auth(world: &mut PpbaWorld) {
-    let pki_dir = world
-        .tls_pki_dir
-        .as_ref()
-        .expect("TLS certs not generated")
-        .path()
-        .to_path_buf();
-    let certs_dir = pki_dir.join("certs");
-
-    let hash = rp_auth::credentials::hash_password(AUTH_PASSWORD).unwrap();
+    let pki = pki(world);
 
     world.config = serde_json::json!({
         "serial": { "port": "/dev/mock", "baud_rate": 9600, "polling_interval": "60s", "timeout": "2s" },
-        "server": {
-            "port": 0,
-            "tls": {
-                "cert": certs_dir.join("ppba-driver.pem").to_string_lossy().to_string(),
-                "key": certs_dir.join("ppba-driver-key.pem").to_string_lossy().to_string()
-            },
-            "auth": {
-                "username": AUTH_USERNAME,
-                "password_hash": hash
-            }
-        },
+        "server": pki.server_block(0),
         "switch": { "name": "Test Switch", "unique_id": "test-switch", "description": "Test", "enabled": true },
         "observingconditions": { "name": "Test OC", "unique_id": "test-oc", "description": "Test", "enabled": false }
     });
-
-    world.auth_password = Some(AUTH_PASSWORD.to_string());
 }
 
 #[given("ppba-driver is configured without auth and with mock serial")]
@@ -102,73 +89,22 @@ async fn ppba_started_without_auth(world: &mut PpbaWorld) {
 
 #[then("the Alpaca management endpoint should respond with valid credentials")]
 async fn alpaca_management_responds_with_auth(world: &mut PpbaWorld) {
-    let pki_dir = world
-        .tls_pki_dir
-        .as_ref()
-        .expect("TLS certs not generated")
-        .path()
-        .to_path_buf();
-    let ca_path = pki_dir.join("ca.pem");
-    let client = rp_tls::client::build_reqwest_client(Some(&ca_path)).unwrap();
-    let port = world.ppba.as_ref().expect("ppba-driver not started").port;
-    let url = format!("https://localhost:{}/management/v1/configureddevices", port);
-
-    let mut ok = false;
-    for _ in 0..60 {
-        if let Ok(resp) = client
-            .get(&url)
-            .basic_auth(AUTH_USERNAME, Some(AUTH_PASSWORD))
-            .send()
-            .await
-        {
-            if resp.status().as_u16() == 200 {
-                ok = true;
-                break;
-            }
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    }
-    assert!(
-        ok,
-        "Alpaca management endpoint did not respond with valid credentials"
-    );
+    let pki = pki(world);
+    let client = pki.https_client();
+    let url = management_url(world);
+    wait_until_ready(&client, &url, pki.username(), pki.password()).await;
 }
 
 #[then("the Alpaca management endpoint should reject wrong credentials with 401")]
 async fn alpaca_rejects_wrong_credentials(world: &mut PpbaWorld) {
-    let pki_dir = world
-        .tls_pki_dir
-        .as_ref()
-        .expect("TLS certs not generated")
-        .path()
-        .to_path_buf();
-    let ca_path = pki_dir.join("ca.pem");
-    let client = rp_tls::client::build_reqwest_client(Some(&ca_path)).unwrap();
-    let port = world.ppba.as_ref().expect("ppba-driver not started").port;
-    let url = format!("https://localhost:{}/management/v1/configureddevices", port);
+    let pki = pki(world);
+    let client = pki.https_client();
+    let url = management_url(world);
+    wait_until_ready(&client, &url, pki.username(), pki.password()).await;
 
-    // First wait for the server to be ready with correct credentials
-    let mut ready = false;
-    for _ in 0..60 {
-        if let Ok(resp) = client
-            .get(&url)
-            .basic_auth(AUTH_USERNAME, Some(AUTH_PASSWORD))
-            .send()
-            .await
-        {
-            if resp.status().as_u16() == 200 {
-                ready = true;
-                break;
-            }
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    }
-    assert!(ready, "Server did not become ready");
-
-    // Now test with wrong credentials
     let resp = client
         .get(&url)
-        .basic_auth(AUTH_USERNAME, Some("wrong-password"))
+        .basic_auth(pki.username(), Some("wrong-password"))
         .send()
         .await
         .unwrap();
@@ -177,70 +113,21 @@ async fn alpaca_rejects_wrong_credentials(world: &mut PpbaWorld) {
 
 #[then("the Alpaca management endpoint should reject missing credentials with 401")]
 async fn alpaca_rejects_missing_credentials(world: &mut PpbaWorld) {
-    let pki_dir = world
-        .tls_pki_dir
-        .as_ref()
-        .expect("TLS certs not generated")
-        .path()
-        .to_path_buf();
-    let ca_path = pki_dir.join("ca.pem");
-    let client = rp_tls::client::build_reqwest_client(Some(&ca_path)).unwrap();
-    let port = world.ppba.as_ref().expect("ppba-driver not started").port;
-    let url = format!("https://localhost:{}/management/v1/configureddevices", port);
+    let pki = pki(world);
+    let client = pki.https_client();
+    let url = management_url(world);
+    wait_until_ready(&client, &url, pki.username(), pki.password()).await;
 
-    // First wait for server readiness
-    let mut ready = false;
-    for _ in 0..60 {
-        if let Ok(resp) = client
-            .get(&url)
-            .basic_auth(AUTH_USERNAME, Some(AUTH_PASSWORD))
-            .send()
-            .await
-        {
-            if resp.status().as_u16() == 200 {
-                ready = true;
-                break;
-            }
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    }
-    assert!(ready, "Server did not become ready");
-
-    // Now test without credentials
     let resp = client.get(&url).send().await.unwrap();
     assert_eq!(resp.status().as_u16(), 401);
 }
 
 #[then("the 401 response should include a WWW-Authenticate header")]
 async fn response_includes_www_authenticate(world: &mut PpbaWorld) {
-    let pki_dir = world
-        .tls_pki_dir
-        .as_ref()
-        .expect("TLS certs not generated")
-        .path()
-        .to_path_buf();
-    let ca_path = pki_dir.join("ca.pem");
-    let client = rp_tls::client::build_reqwest_client(Some(&ca_path)).unwrap();
-    let port = world.ppba.as_ref().expect("ppba-driver not started").port;
-    let url = format!("https://localhost:{}/management/v1/configureddevices", port);
-
-    // Wait for server readiness
-    let mut ready = false;
-    for _ in 0..60 {
-        if let Ok(resp) = client
-            .get(&url)
-            .basic_auth(AUTH_USERNAME, Some(AUTH_PASSWORD))
-            .send()
-            .await
-        {
-            if resp.status().as_u16() == 200 {
-                ready = true;
-                break;
-            }
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    }
-    assert!(ready, "Server did not become ready");
+    let pki = pki(world);
+    let client = pki.https_client();
+    let url = management_url(world);
+    wait_until_ready(&client, &url, pki.username(), pki.password()).await;
 
     let resp = client.get(&url).send().await.unwrap();
     assert_eq!(resp.status().as_u16(), 401);

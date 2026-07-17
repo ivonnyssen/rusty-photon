@@ -178,9 +178,11 @@ rust_test(
         # fixtures merge) hash-mismatch in the coverage merge. The test crate does
         # not use the fixtures module, so the variant is otherwise transparent.
         ":ui-htmx_lib_fixtures",
-        # The rp-harness variant: the Phase-5 suites use RpConfigBuilder + the
-        # launcher (no OmniSim scenarios here — the roster device is dsd-fp2).
-        "//crates/bdd-infra:bdd-infra_rp_harness",
+        # The rp-harness + tls-auth variant: the Phase-5 suites use
+        # RpConfigBuilder + the launcher (no OmniSim scenarios here — the
+        # roster device is dsd-fp2), and the TLS + auth suites use the shared
+        # PKI + credentials fixture.
+        "//crates/bdd-infra:bdd-infra_rp_harness_tls_auth",
     ] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
         normal = True,
         normal_dev = True,

@@ -170,7 +170,7 @@ zwo-rs = { workspace = true, features = ["simulation"] }
 # Client API for the BDD harness (tests/bdd/world.rs); kept out of the prod build.
 ascom-alpaca = { workspace = true, features = ["client"] }
 tracing-subscriber = { workspace = true }
-bdd-infra = { workspace = true, features = ["conformu"] }
+bdd-infra = { workspace = true, features = ["conformu", "tls-auth"] }
 cucumber = { workspace = true }
 tempfile = { workspace = true }
 tokio-test = { workspace = true }

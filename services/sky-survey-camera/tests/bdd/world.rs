@@ -6,6 +6,7 @@
 
 use ascom_alpaca::api::{Camera, TypedDevice};
 use ascom_alpaca::Client as AlpacaClient;
+use bdd_infra::tls_auth::{TlsAuthSmokeWorld, TlsAuthState};
 use bdd_infra::ServiceHandle;
 use cucumber::World;
 use serde_json::Value;
@@ -182,10 +183,64 @@ pub struct SkySurveyCameraWorld {
     pub last_image_dimensions: Option<(u32, u32)>,
     pub last_error: Option<String>,
 
-    /// PKI tree for the TLS + auth smoke test (`auth.feature`).
-    pub tls_pki_dir: Option<TempDir>,
-    /// Config JSON staged by a Given step for a custom-config start.
-    pub pending_config: Option<serde_json::Value>,
+    /// State for the shared TLS + auth smoke steps (`auth.feature`).
+    pub tls_auth: TlsAuthState,
+}
+
+impl TlsAuthSmokeWorld for SkySurveyCameraWorld {
+    fn tls_auth(&mut self) -> &mut TlsAuthState {
+        &mut self.tls_auth
+    }
+
+    /// The `build_config_json` defaults, minus the two runtime-dependent
+    /// `survey` fields (`endpoint`, `cache_dir`) that
+    /// [`Self::start_with_tls_auth`] fills in once the SkyView stub and the
+    /// temp dir exist.
+    fn base_test_config(&self) -> serde_json::Value {
+        serde_json::json!({
+            "device": {
+                "name": "Test Sky Survey Camera",
+                "unique_id": "sky-survey-camera-test-001",
+                "description": "BDD test instance",
+            },
+            "optics": {
+                "focal_length_mm": 1000.0,
+                "pixel_size_x_um": 3.76,
+                "pixel_size_y_um": 3.76,
+                "sensor_width_px": 640,
+                "sensor_height_px": 480,
+            },
+            "pointing": {
+                "initial_ra_deg": 0.0,
+                "initial_dec_deg": 0.0,
+                "initial_rotation_deg": 0.0,
+            },
+            "survey": {
+                "name": "DSS2 Red",
+                "request_timeout": "5s",
+            },
+        })
+    }
+
+    async fn start_with_tls_auth(&mut self, mut config: serde_json::Value) {
+        // Point the survey endpoint at a local stub so the config never
+        // references the real SkyView URL (the scenario never fetches).
+        self.spawn_skyview_stub().await;
+        config["survey"]["endpoint"] = Value::String(
+            self.survey_endpoint_override
+                .clone()
+                .expect("stub endpoint set by spawn_skyview_stub"),
+        );
+        config["survey"]["cache_dir"] =
+            Value::String(self.cache_dir().to_string_lossy().to_string());
+        let handle = bdd_infra::tls_auth::spawn_service_handle(
+            &mut self.tls_auth,
+            env!("CARGO_PKG_NAME"),
+            &config,
+        )
+        .await;
+        self.service = Some(handle);
+    }
 }
 
 impl SkySurveyCameraWorld {

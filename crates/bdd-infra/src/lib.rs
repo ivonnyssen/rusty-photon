@@ -39,6 +39,13 @@
 //! tests only need `ServiceHandle` should leave the feature off so they don't
 //! pull in axum, reqwest, or rmcp transitively.
 //!
+//! # `tls-auth` feature
+//!
+//! Enabling the `tls-auth` cargo feature exposes the [`tls_auth`] module:
+//! the shared `PkiFixture` (throwaway CA + service certificate + per-run
+//! generated credentials), probe helpers, and the [`tls_auth_smoke_steps!`]
+//! macro backing every service's TLS + HTTP Basic Auth `auth.feature`.
+//!
 //! # Usage
 //!
 //! ```rust,ignore

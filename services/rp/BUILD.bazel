@@ -202,7 +202,7 @@ rust_test(
     use_libtest_harness = False,
     deps = [
         ":rp_lib",
-        "//crates/bdd-infra:bdd-infra_rp_harness",
+        "//crates/bdd-infra:bdd-infra_rp_harness_tls_auth",
     ] + _INTRA_WORKSPACE_DEPS + [
         _RP_PLATE_SOLVER,
         _RP_GUIDER,

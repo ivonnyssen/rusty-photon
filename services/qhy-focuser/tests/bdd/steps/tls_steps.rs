@@ -8,44 +8,21 @@ use bdd_infra::ServiceHandle;
 
 #[given("generated TLS certificates for qhy-focuser")]
 fn generate_tls_certs(world: &mut QhyFocuserWorld) {
-    let dir = TempDir::new().unwrap();
-    rp_tls::cert::generate_ca(dir.path()).unwrap();
-    let ca_pem = std::fs::read_to_string(dir.path().join("ca.pem")).unwrap();
-    let ca_key = std::fs::read_to_string(dir.path().join("ca-key.pem")).unwrap();
-    let certs_dir = dir.path().join("certs");
-    rp_tls::cert::generate_service_cert(&ca_pem, &ca_key, "qhy-focuser", &[], &certs_dir).unwrap();
-    world.tls_pki_dir = Some(dir);
+    world.pki = Some(bdd_infra::tls_auth::PkiFixture::generate(env!(
+        "CARGO_PKG_NAME"
+    )));
 }
 
 #[given("qhy-focuser is configured with TLS enabled and mock serial")]
 fn qhy_configured_with_tls(world: &mut QhyFocuserWorld) {
-    let pki_dir = world
-        .tls_pki_dir
-        .as_ref()
-        .expect("TLS certs not generated")
-        .path()
-        .to_path_buf();
-    let certs_dir = pki_dir.join("certs");
-
+    // The TLS block is spliced into the serialized JSON in the When step.
     world.config = Some(qhy_focuser::Config {
         serial: qhy_focuser::SerialConfig {
             port: "/dev/mock".to_string(),
             polling_interval: std::time::Duration::from_secs(60),
             ..Default::default()
         },
-        server: qhy_focuser::AlpacaServerConfig {
-            tls: Some(rp_tls::config::TlsConfig {
-                cert: certs_dir
-                    .join("qhy-focuser.pem")
-                    .to_string_lossy()
-                    .into_owned(),
-                key: certs_dir
-                    .join("qhy-focuser-key.pem")
-                    .to_string_lossy()
-                    .into_owned(),
-            }),
-            ..qhy_focuser::AlpacaServerConfig::new(0)
-        },
+        server: qhy_focuser::AlpacaServerConfig::new(0),
         focuser: qhy_focuser::FocuserConfig {
             enabled: true,
             ..Default::default()
@@ -56,11 +33,19 @@ fn qhy_configured_with_tls(world: &mut QhyFocuserWorld) {
 #[when("qhy-focuser is started with TLS")]
 async fn qhy_started_with_tls(world: &mut QhyFocuserWorld) {
     let config = world.config.as_ref().expect("config not set");
+    let mut config_json: serde_json::Value =
+        serde_json::to_value(config).expect("failed to serialize config");
+    config_json["server"]["tls"] = world
+        .pki
+        .as_ref()
+        .expect("TLS certs not generated")
+        .tls_block();
+
     let dir = world
         .temp_dir
         .get_or_insert_with(|| TempDir::new().unwrap());
     let config_path = dir.path().join("qhy_tls_config.json");
-    std::fs::write(&config_path, serde_json::to_string_pretty(config).unwrap()).unwrap();
+    std::fs::write(&config_path, config_json.to_string()).unwrap();
 
     let handle = ServiceHandle::start(env!("CARGO_PKG_NAME"), config_path.to_str().unwrap()).await;
 
@@ -69,14 +54,11 @@ async fn qhy_started_with_tls(world: &mut QhyFocuserWorld) {
 
 #[then("the Alpaca management endpoint should respond over HTTPS")]
 async fn alpaca_management_responds_https(world: &mut QhyFocuserWorld) {
-    let pki_dir = world
-        .tls_pki_dir
+    let client = world
+        .pki
         .as_ref()
         .expect("TLS certs not generated")
-        .path()
-        .to_path_buf();
-    let ca_path = pki_dir.join("ca.pem");
-    let client = rp_tls::client::build_reqwest_client(Some(&ca_path)).unwrap();
+        .https_client();
     let port = world
         .focuser_handle
         .as_ref()

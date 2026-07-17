@@ -10,9 +10,9 @@
 //!
 //! Devices are driven via Alpaca HTTP through the in-process client, so
 //! the real serialisation / dispatch path is still exercised. The
-//! harness sets `config.server.auth = None`, so authentication is
-//! **not** covered here — cover that separately if it becomes a
-//! regression risk.
+//! `start_service` harness sets `config.server.auth = None`; the TLS +
+//! auth credential gate is covered by the shared smoke scenario in
+//! `auth.feature` via the `TlsAuthSmokeWorld` impl below.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -21,6 +21,7 @@ use std::time::Duration;
 
 use ascom_alpaca::api::{Rotator, Switch, TypedDevice};
 use ascom_alpaca::Client as AlpacaClient;
+use bdd_infra::tls_auth::{TlsAuthSmokeWorld, TlsAuthState};
 use cucumber::World;
 use pa_falcon_rotator::config::CliOverrides;
 use pa_falcon_rotator::{Config, MockFalconTransportFactory, ServerBuilder};
@@ -79,11 +80,48 @@ pub struct FalconRotatorWorld {
     pub last_response: Option<serde_json::Value>,
     pub last_supported_actions: Option<Vec<String>>,
 
-    /// PKI tree for the TLS + auth smoke test (`auth.feature`).
-    pub tls_pki_dir: Option<TempDir>,
-    /// Config staged by a Given step for a custom-config start that must not
-    /// go through `start_service` (which clears `tls` / `auth`).
-    pub pending_config: Option<Config>,
+    /// State for the shared TLS + auth smoke steps (`auth.feature`).
+    pub tls_auth: TlsAuthState,
+}
+
+impl TlsAuthSmokeWorld for FalconRotatorWorld {
+    fn tls_auth(&mut self) -> &mut TlsAuthState {
+        &mut self.tls_auth
+    }
+
+    fn base_test_config(&self) -> serde_json::Value {
+        // The library defaults with the mock serial port; the shared
+        // configure step replaces `server` with the fixture's block.
+        let mut config = serde_json::to_value(Config::default()).unwrap();
+        config["serial"]["port"] = serde_json::json!("/dev/mock");
+        config
+    }
+
+    async fn start_with_tls_auth(&mut self, config: serde_json::Value) {
+        // Deserialize through the typed `Config` so the smoke exercises the
+        // real config-load path: the shared `server` block (port 0 + `tls` +
+        // `auth`) maps onto `AlpacaServerConfig`.
+        let config: Config = serde_json::from_value(config).unwrap();
+
+        let mock = Arc::new(MockFalconTransportFactory::default());
+        let factory: Arc<dyn TransportFactory> = Arc::clone(&mock) as _;
+        let bound = ServerBuilder::new()
+            .with_config(config)
+            .with_factory(factory)
+            .build()
+            .await
+            .expect("build in-process Alpaca server with TLS + auth");
+        let local_addr = bound.listen_addr();
+
+        let server_handle = tokio::spawn(async move {
+            let _ = bound.start(std::future::pending::<()>()).await;
+        });
+        self.mock = Some(mock);
+        // Torn down by `World::shutdown` from the cucumber `after` hook.
+        self.server_handle = Some(server_handle);
+        self.server_addr = Some(SocketAddr::from(([127, 0, 0, 1], local_addr.port())));
+        self.tls_auth.port = Some(local_addr.port());
+    }
 }
 
 impl FalconRotatorWorld {

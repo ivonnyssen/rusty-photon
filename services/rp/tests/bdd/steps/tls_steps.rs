@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use cucumber::{given, then, when};
 use tempfile::TempDir;
 
+use bdd_infra::tls_auth::wait_until_ready;
 use bdd_infra::ServiceHandle;
 
 use crate::world::RpWorld;
@@ -167,13 +168,9 @@ fn https_connection_succeeded(world: &mut RpWorld) {
 
 #[given("generated TLS certificates")]
 fn generate_tls_certs(world: &mut RpWorld) {
-    let dir = TempDir::new().unwrap();
-    rp_tls::cert::generate_ca(dir.path()).unwrap();
-    let ca_pem = std::fs::read_to_string(dir.path().join("ca.pem")).unwrap();
-    let ca_key = std::fs::read_to_string(dir.path().join("ca-key.pem")).unwrap();
-    let certs_dir = dir.path().join("certs");
-    rp_tls::cert::generate_service_cert(&ca_pem, &ca_key, "rp", &[], &certs_dir).unwrap();
-    world.tls_pki_dir = Some(dir);
+    world.pki = Some(bdd_infra::tls_auth::PkiFixture::generate(env!(
+        "CARGO_PKG_NAME"
+    )));
 }
 
 #[given("rp is configured with TLS enabled")]
@@ -183,14 +180,8 @@ fn rp_configured_with_tls(_world: &mut RpWorld) {
 
 #[when("rp is started")]
 async fn rp_started_with_tls(world: &mut RpWorld) {
-    let dir = pki_dir(world);
-    let certs_dir = dir.join("certs");
-
     let mut config = world.build_config();
-    config["server"]["tls"] = serde_json::json!({
-        "cert": certs_dir.join("rp.pem").to_string_lossy().to_string(),
-        "key": certs_dir.join("rp-key.pem").to_string_lossy().to_string()
-    });
+    config["server"]["tls"] = world.pki().tls_block();
 
     let config_path = std::env::temp_dir()
         .join(format!(
@@ -208,31 +199,18 @@ async fn rp_started_with_tls(world: &mut RpWorld) {
 
     world.rp = Some(ServiceHandle::start(env!("CARGO_PKG_NAME"), &config_path).await);
 
-    // Wait for healthy over HTTPS
-    let ca_path = dir.join("ca.pem");
-    let client = rp_tls::client::build_reqwest_client(Some(&ca_path)).unwrap();
+    // Wait for healthy over HTTPS. rp has no auth configured here, so the
+    // credentials the shared readiness probe sends are ignored.
+    let pki = world.pki();
+    let client = pki.https_client();
     let port = world.rp.as_ref().unwrap().port;
     let url = format!("https://localhost:{}/health", port);
-
-    let mut healthy = false;
-    for _ in 0..120 {
-        if client.get(&url).send().await.is_ok() {
-            healthy = true;
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-    }
-    assert!(
-        healthy,
-        "rp did not become healthy over HTTPS within timeout"
-    );
+    wait_until_ready(&client, &url, pki.username(), pki.password()).await;
 }
 
 #[then("the health endpoint should respond over HTTPS")]
 async fn health_responds_https(world: &mut RpWorld) {
-    let dir = pki_dir(world);
-    let ca_path = dir.join("ca.pem");
-    let client = rp_tls::client::build_reqwest_client(Some(&ca_path)).unwrap();
+    let client = world.pki().https_client();
     let port = world.rp.as_ref().expect("rp not started").port;
     let url = format!("https://localhost:{}/health", port);
 

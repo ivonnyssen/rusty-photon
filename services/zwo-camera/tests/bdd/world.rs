@@ -13,6 +13,7 @@ use ascom_alpaca::api::camera::GuideDirection;
 use ascom_alpaca::api::{Camera, TypedDevice};
 use ascom_alpaca::ASCOMErrorCode;
 use ascom_alpaca::Client as AlpacaClient;
+use bdd_infra::tls_auth::{TlsAuthSmokeWorld, TlsAuthState};
 use bdd_infra::ServiceHandle;
 use cucumber::World;
 use tempfile::TempDir;
@@ -31,10 +32,28 @@ pub struct CameraWorld {
     pub last_response: Option<serde_json::Value>,
     pub last_actions: Option<Vec<String>>,
 
-    /// PKI tree for the TLS + auth smoke test (`auth.feature`).
-    pub tls_pki_dir: Option<TempDir>,
-    /// Config JSON staged by a Given step for a custom-config start.
-    pub pending_config: Option<serde_json::Value>,
+    /// State for the shared TLS + auth smoke steps (`auth.feature`).
+    pub tls_auth: TlsAuthState,
+}
+
+impl TlsAuthSmokeWorld for CameraWorld {
+    fn tls_auth(&mut self) -> &mut TlsAuthState {
+        &mut self.tls_auth
+    }
+
+    fn base_test_config(&self) -> serde_json::Value {
+        serde_json::json!({ "devices": {} })
+    }
+
+    async fn start_with_tls_auth(&mut self, config: serde_json::Value) {
+        let handle = bdd_infra::tls_auth::spawn_service_handle(
+            &mut self.tls_auth,
+            env!("CARGO_PKG_NAME"),
+            &config,
+        )
+        .await;
+        self.handle = Some(handle);
+    }
 }
 
 impl CameraWorld {

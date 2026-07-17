@@ -4,6 +4,7 @@
 //! the settle/stop behavior), writes a config pointing at it, and
 //! starts `phd2-guider serve` via `bdd_infra::ServiceHandle`.
 
+use bdd_infra::tls_auth::{TlsAuthSmokeWorld, TlsAuthState};
 use bdd_infra::ServiceHandle;
 use cucumber::World;
 use std::io::{BufRead, BufReader};
@@ -30,11 +31,47 @@ pub struct GuiderWorld {
     /// Result of the most recent HTTP request (status + body).
     pub last_response: Option<HttpResponse>,
 
-    /// PKI tree for the TLS + auth smoke test (`auth.feature`).
-    pub tls_pki_dir: Option<TempDir>,
+    /// State for the shared TLS + auth smoke steps (`auth.feature`).
+    pub tls_auth: TlsAuthState,
+}
 
-    /// Config JSON staged by a Given step for a custom-config start.
-    pub pending_config: Option<serde_json::Value>,
+impl TlsAuthSmokeWorld for GuiderWorld {
+    /// The guider is not an Alpaca device; its credential gate is probed on
+    /// the health route (which also requires the PHD2 connection to be up).
+    const PROBE_PATH: &'static str = "/health";
+
+    fn tls_auth(&mut self) -> &mut TlsAuthState {
+        &mut self.tls_auth
+    }
+
+    fn base_test_config(&self) -> serde_json::Value {
+        // Same shape as `start_service`'s config, pointing at the mock PHD2
+        // the scenario's first Given spawned.
+        let phd2_port = self.mock.as_ref().expect("mock PHD2 not started").port;
+        serde_json::json!({
+            "stop_timeout": "10s",
+            "phd2": {
+                "host": "127.0.0.1",
+                "port": phd2_port,
+                "connection_timeout": "2s",
+                "command_timeout": "5s",
+                "reconnect": { "enabled": true, "interval": "200ms" }
+            },
+            "settling": { "pixels": 0.5, "time": "10s", "timeout": "60s" }
+        })
+    }
+
+    async fn start_with_tls_auth(&mut self, config: serde_json::Value) {
+        let path = bdd_infra::tls_auth::stage_config_file(&mut self.tls_auth, &config);
+        let handle = bdd_infra::ServiceHandle::start_with_args(
+            env!("CARGO_PKG_NAME"),
+            &["--config", path.to_str().unwrap(), "serve"],
+        )
+        .await;
+        self.tls_auth.port = Some(handle.port);
+        // The cucumber `after` hook in `tests/bdd.rs` stops the handle here.
+        self.service_handle = Some(handle);
+    }
 }
 
 #[derive(Debug, Clone)]

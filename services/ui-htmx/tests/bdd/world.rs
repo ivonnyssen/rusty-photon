@@ -87,8 +87,9 @@ pub struct UiWorld {
     /// The SSE `id` of the first feed frame, captured for the replay-cursor
     /// scenario.
     pub sse_cursor: Option<u64>,
-    /// PKI tree for the TLS + auth suite (`auth.feature`, `tls.feature`).
-    pub tls_pki_dir: Option<TempDir>,
+    /// Shared PKI + credentials fixture for the TLS + auth suite
+    /// (`auth.feature`, `tls.feature`).
+    pub pki: Option<bdd_infra::tls_auth::PkiFixture>,
     /// Config JSON staged by a Given step for a custom-config BFF start.
     pub pending_config: Option<Value>,
 }

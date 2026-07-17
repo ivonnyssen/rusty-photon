@@ -1,24 +1,13 @@
-//! BDD step definitions for rp HTTP Basic Auth and hash-password CLI
-
-use std::path::PathBuf;
+//! BDD step definitions for rp HTTP Basic Auth and hash-password CLI.
+//! The auth scenarios build on the shared bdd-infra PKI + credentials
+//! fixture (see `world.pki()`) and probe `/health` over HTTPS.
 
 use cucumber::{given, then, when};
 
+use bdd_infra::tls_auth::wait_until_ready;
 use bdd_infra::ServiceHandle;
 
 use crate::world::RpWorld;
-
-const AUTH_USERNAME: &str = "observatory";
-const AUTH_PASSWORD: &str = "test-password";
-
-fn pki_dir(world: &RpWorld) -> PathBuf {
-    world
-        .tls_pki_dir
-        .as_ref()
-        .expect("pki_dir not set")
-        .path()
-        .to_path_buf()
-}
 
 // ---------------------------------------------------------------------------
 // Auth config steps
@@ -31,20 +20,9 @@ fn rp_configured_with_tls_and_auth(_world: &mut RpWorld) {
 
 #[when("rp is started with auth")]
 async fn rp_started_with_auth(world: &mut RpWorld) {
-    let dir = pki_dir(world);
-    let certs_dir = dir.join("certs");
-
-    let hash = rp_auth::credentials::hash_password(AUTH_PASSWORD).unwrap();
-
     let mut config = world.build_config();
-    config["server"]["tls"] = serde_json::json!({
-        "cert": certs_dir.join("rp.pem").to_string_lossy().to_string(),
-        "key": certs_dir.join("rp-key.pem").to_string_lossy().to_string()
-    });
-    config["server"]["auth"] = serde_json::json!({
-        "username": AUTH_USERNAME,
-        "password_hash": hash
-    });
+    config["server"]["tls"] = world.pki().tls_block();
+    config["server"]["auth"] = world.pki().auth_block();
 
     let config_path = std::env::temp_dir()
         .join(format!(
@@ -64,31 +42,12 @@ async fn rp_started_with_auth(world: &mut RpWorld) {
 
     world.rp = Some(handle);
 
-    // Wait for healthy over HTTPS with auth
-    let ca_path = dir.join("ca.pem");
-    let client = rp_tls::client::build_reqwest_client(Some(&ca_path)).unwrap();
+    // Wait for healthy over HTTPS with valid credentials.
+    let pki = world.pki();
+    let client = pki.https_client();
     let port = world.rp.as_ref().unwrap().port;
     let url = format!("https://localhost:{}/health", port);
-
-    let mut healthy = false;
-    for _ in 0..120 {
-        if let Ok(resp) = client
-            .get(&url)
-            .basic_auth(AUTH_USERNAME, Some(AUTH_PASSWORD))
-            .send()
-            .await
-        {
-            if resp.status().as_u16() == 200 {
-                healthy = true;
-                break;
-            }
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-    }
-    assert!(
-        healthy,
-        "rp did not become healthy with auth within timeout"
-    );
+    wait_until_ready(&client, &url, pki.username(), pki.password()).await;
 }
 
 // ---------------------------------------------------------------------------
@@ -97,15 +56,14 @@ async fn rp_started_with_auth(world: &mut RpWorld) {
 
 #[then("the health endpoint should respond with valid credentials")]
 async fn health_responds_with_auth(world: &mut RpWorld) {
-    let dir = pki_dir(world);
-    let ca_path = dir.join("ca.pem");
-    let client = rp_tls::client::build_reqwest_client(Some(&ca_path)).unwrap();
+    let pki = world.pki();
+    let client = pki.https_client();
     let port = world.rp.as_ref().expect("rp not started").port;
     let url = format!("https://localhost:{}/health", port);
 
     let resp = client
         .get(&url)
-        .basic_auth(AUTH_USERNAME, Some(AUTH_PASSWORD))
+        .basic_auth(pki.username(), Some(pki.password()))
         .send()
         .await
         .unwrap();
@@ -114,15 +72,14 @@ async fn health_responds_with_auth(world: &mut RpWorld) {
 
 #[then("the health endpoint should reject wrong credentials with 401")]
 async fn health_rejects_wrong_credentials(world: &mut RpWorld) {
-    let dir = pki_dir(world);
-    let ca_path = dir.join("ca.pem");
-    let client = rp_tls::client::build_reqwest_client(Some(&ca_path)).unwrap();
+    let pki = world.pki();
+    let client = pki.https_client();
     let port = world.rp.as_ref().expect("rp not started").port;
     let url = format!("https://localhost:{}/health", port);
 
     let resp = client
         .get(&url)
-        .basic_auth(AUTH_USERNAME, Some("wrong-password"))
+        .basic_auth(pki.username(), Some("wrong-password"))
         .send()
         .await
         .unwrap();
@@ -131,9 +88,7 @@ async fn health_rejects_wrong_credentials(world: &mut RpWorld) {
 
 #[then("the health endpoint should reject missing credentials with 401")]
 async fn health_rejects_missing_credentials(world: &mut RpWorld) {
-    let dir = pki_dir(world);
-    let ca_path = dir.join("ca.pem");
-    let client = rp_tls::client::build_reqwest_client(Some(&ca_path)).unwrap();
+    let client = world.pki().https_client();
     let port = world.rp.as_ref().expect("rp not started").port;
     let url = format!("https://localhost:{}/health", port);
 
@@ -143,9 +98,7 @@ async fn health_rejects_missing_credentials(world: &mut RpWorld) {
 
 #[then("the rp 401 response should include a WWW-Authenticate header")]
 async fn rp_401_includes_www_authenticate(world: &mut RpWorld) {
-    let dir = pki_dir(world);
-    let ca_path = dir.join("ca.pem");
-    let client = rp_tls::client::build_reqwest_client(Some(&ca_path)).unwrap();
+    let client = world.pki().https_client();
     let port = world.rp.as_ref().expect("rp not started").port;
     let url = format!("https://localhost:{}/health", port);
 
