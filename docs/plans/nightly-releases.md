@@ -779,8 +779,8 @@ testing never exercises.
 - N5 real-machine validation: point a Debian machine at the apt repo
   and a Fedora machine at the dnf repo per
   docs/packaging.md#nightly-channel, then take a nightly→nightly step
-  via plain `apt upgrade` / `dnf upgrade`. The first publish and the
-  install halves are done (below); only the upgrade step remains.
+  via plain `apt upgrade` / `dnf upgrade`. **Complete** — results
+  below.
   - **First repo publish landed 2026-07-16** (workflow_dispatch run
     after the PR #547 S3-API auth fix; merge commit `5f506ab`): the
     pusher took the first-publish path (both manifests genuinely
@@ -797,11 +797,22 @@ testing never exercises.
     `0.1.0+nightly.20260716.g5f506ab` from the pool; a Fedora 44
     client with `repo_gpgcheck=1` built its cache against the signed
     `repomd.xml` and installed `0.1.0^20260716.g5f506ab-1`, unit
-    coming out `enabled` (offline enable — the `$1` guards). Still
-    pending: the nightly→nightly step via plain `apt upgrade` /
-    `dnf upgrade` once the next scheduled publish provides a second
-    generation; proof containers `rp-repo-proof-apt` /
-    `rp-repo-proof-dnf` stand seeded at `20260716.g5f506ab` for it.
+    coming out `enabled` (offline enable — the `$1` guards).
+  - **Nightly→nightly repo upgrades proven 2026-07-17** against the
+    second publish (dispatched run on `30e49ad` — which also
+    live-proved the retention algebra: previous manifest read,
+    generation retained, zero deletions, 188 objects live = 100 new +
+    88 retained generation-1 uniques). The Debian client took plain
+    `apt-get upgrade` from `0.1.0+nightly.20260716.g5f506ab` to
+    `…20260717.g30e49ad`; a Fedora 44 client seeded from the
+    *retained* generation-1 rpm (still served after the generation-2
+    flip — the retention guarantee exercised for real) took
+    `dnf upgrade` to `0.1.0^20260717.g30e49ad-1` under
+    `repo_gpgcheck=1`, with the unit staying `enabled` across the
+    upgrade. Operational note: a dnf client inside its
+    `metadata_expire` window (48 h default) reports nothing to do
+    until the cache expires or `--refresh` is passed — inherent dnf
+    caching, acceptable at this channel's cadence.
 - The skip-if-unchanged path and the failure-tracking issue get exercised
   naturally within the first week of N1 being live; confirm both behaved
   and note it here.
