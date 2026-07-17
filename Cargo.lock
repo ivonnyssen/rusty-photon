@@ -400,12 +400,15 @@ dependencies = [
  "libc",
  "reqwest 0.13.4",
  "rmcp",
+ "rp-auth",
  "rp-ephemeris",
  "rp-fits",
+ "rp-tls",
  "serde_json",
  "tempfile",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -1165,7 +1168,6 @@ dependencies = [
  "cucumber",
  "derive_more",
  "humantime-serde",
- "reqwest 0.13.4",
  "rp-auth",
  "rp-tls",
  "rusty-photon-config",

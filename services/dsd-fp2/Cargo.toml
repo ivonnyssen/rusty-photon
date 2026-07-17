@@ -116,8 +116,7 @@ require-sh = true
 tracing-subscriber = { workspace = true }
 tokio-test = { workspace = true }
 cucumber = { workspace = true }
-reqwest = { workspace = true }
-bdd-infra = { workspace = true, features = ["conformu"] }
+bdd-infra = { workspace = true, features = ["conformu", "tls-auth"] }
 
 [[test]]
 name = "bdd"

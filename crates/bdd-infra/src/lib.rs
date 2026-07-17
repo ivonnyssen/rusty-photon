@@ -168,6 +168,9 @@ pub mod conformu;
 #[cfg(feature = "conformu")]
 pub use conformu::{run_conformu, ConformuRun};
 
+#[cfg(feature = "tls-auth")]
+pub mod tls_auth;
+
 use std::process::Stdio;
 use std::time::Duration;
 
