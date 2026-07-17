@@ -47,12 +47,12 @@
   "services": {
     "dsd-fp2": {
       "base_url": "http://localhost:11119/api/v1",
-      "restart_command": "systemctl --user restart dsd-fp2",
-      "health_command": "systemctl --user is-active dsd-fp2",
+      "restart_command": "systemctl restart rusty-photon-dsd-fp2",
+      "health_command": "systemctl is-active rusty-photon-dsd-fp2",
       "max_restart_duration": "60s"
     },
     "plate-solver": {
-      "restart_command": "systemctl --user restart plate-solver",
+      "restart_command": "systemctl restart rusty-photon-plate-solver",
       "max_restart_duration": "30s",
       "health": {
         "url": "http://localhost:11131/health",

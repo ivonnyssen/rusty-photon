@@ -12,8 +12,9 @@
 # config (see self_creates_config); phd2-guider's /health legitimately
 # answers 503 in the container (no PHD2), so its probe accepts 200 or 503.
 # The zwo services additionally prove via ldd that each binary resolves
-# exactly its own bundled SDK blob through the RUNPATH (ADR-014). Runs
-# natively on arm64 (the rig) and x86_64 (dev box).
+# exactly its own bundled SDK blob through the RUNPATH (ADR-014); sentinel
+# additionally proves its polkit rule (the restart privilege path) is
+# installed. Runs natively on arm64 (the rig) and x86_64 (dev box).
 #
 # The --rpm flavor differs where rpm's lifecycle genuinely differs:
 # the scriptlets enable units without starting them (Fedora convention —
@@ -421,6 +422,15 @@ for s in $SERVICES; do
         done
     fi
 
+    if [ "$s" = sentinel ]; then
+        # The restart privilege path: without this polkit rule the
+        # NoNewPrivileges unit could restart nothing via systemctl (the
+        # grant itself is verified on a real host — the container has no
+        # polkitd; here we prove the package puts the rule where the
+        # JS-rules polkitd reads vendor rules).
+        cx test -f /usr/share/polkit-1/rules.d/50-rusty-photon-sentinel.rules \
+            || fail "$s" "polkit rule not installed at /usr/share/polkit-1/rules.d"
+    fi
     if [ "$s" = zwo-camera ]; then
         # RUNPATH proof: the SONAME-less bundled blob resolves from the shared
         # /usr/lib/rusty-photon dir — and ONLY the camera SDK is needed
