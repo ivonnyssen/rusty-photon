@@ -421,6 +421,15 @@ from the workspace to doctor, and may let the crypto-provider workaround go for
 services entirely. Verify that claim by checking whether `ring` still gets
 activated once `cloudflare` is out of a service's tree.
 
+*Verified after the D6a split* (`cargo tree -p ppba-driver -i ring`):
+`reqwest 0.12` and `cloudflare` are gone from every service tree (only
+`reqwest 0.13` remains), and `ring` is **no longer feature-activated on
+rustls** there — it survives only as `rcgen`/`x509-parser`'s internal
+dependency via `rusty-photon-tls`'s `test_cert` module. So the provider
+ambiguity the workaround guards against is gone for services;
+`install_default_crypto_provider` stays as a harmless belt-and-suspenders
+until a dedicated pass retires it (candidate for D6b or #229).
+
 **Retire `DEFAULT_SERVICES`.** `rp_tls::cert::DEFAULT_SERVICES` lists five of
 eighteen — the sixth hand-typed encoding of the service list, and stale enough
 that dsd-fp2, pa-falcon-rotator, pa-scops-oag and star-adventurer-gti get no
