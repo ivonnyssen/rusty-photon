@@ -1,0 +1,315 @@
+# doctor — Service Design
+
+## Overview
+
+`doctor` is the standalone diagnosis-and-repair tool for a multi-service
+rusty-photon install: packages put bytes on disk, services self-create their
+default configs, and doctor makes the result coherent. It audits **service
+facts** — ports, TLS, auth, service-to-service references, unit wiring — and
+never learns device usage (which camera is the guide cam belongs to `rp`).
+[ADR-016](../decisions/016-service-config-ownership-and-doctor.md) is the
+decision record; [`docs/plans/service-config-doctor.md`](../plans/service-config-doctor.md)
+tracks the phases.
+
+This document specifies the **D2 scope: read-only diagnosis**. Doctor examines
+the config directory and the platform's service manager, prints a report, and
+writes nothing. Repair (`--fix`, D3), hardware checks (D4/D5), and the TLS +
+credential lifecycle (D6) extend this binary later; their contracts are
+recorded in the plan and folded in here as they land.
+
+Doctor is a one-shot CLI, not a long-running service: no server, no config
+file of its own, no unit. It lives at `services/doctor` (cargo binary
+`doctor`) and is installed as `rusty-photon-doctor` when packaging arrives
+(D7).
+
+## Architecture
+
+```mermaid
+graph LR
+    catalog["derived catalog<br/>services/*/pkg/doctor.toml<br/>(embedded at build time)"] --> doctor[doctor]
+    configs["config dir<br/>&lt;svc&gt;.json × N"] --> doctor
+    sm["service manager<br/>systemd / SCM / brew"] -->|read-only queries| doctor
+    doctor --> report["report<br/>text or --json"]
+```
+
+Three inputs, one output. Everything is read-only in D2: config files are
+parsed but never written, and every service-manager interaction is a query
+(`list-unit-files`, `show`), never a verb.
+
+### The derived catalog
+
+Doctor's catalog — which services exist, their class, and their default port —
+is **derived from the packaging tree, not typed into doctor**
+(ADR-016 decision 11). Each packaged service carries a metadata file,
+`services/<svc>/pkg/doctor.toml`:
+
+```toml
+# Catalog metadata for rusty-photon-doctor (docs/services/doctor.md).
+# This service's own unit tests assert these values match its config defaults.
+class = "alpaca"  # "alpaca" | "core" — which shared server shape its config uses
+port = 11113      # default port when the config file or server block is absent
+```
+
+Everything else is derived from the directory name: the config file is
+`<svc>.json`, the systemd unit is `rusty-photon-<svc>.service`, the Windows
+service and brew formula are `rusty-photon-<svc>`.
+
+Three guards keep the catalog honest:
+
+1. **Each service tests its own file.** A unit test in each service crate
+   (`include_str!("../pkg/doctor.toml")`) asserts the declared port equals its
+   own `Config::default()` server port and the class matches the shape it
+   embeds (`AlpacaServerConfig` vs `ServerConfig`). A drifted copy fails that
+   service's tests, not doctor's.
+2. **Doctor embeds the files at build time** and a doctor unit test asserts
+   the embedded set parses, ports are unique, and the table matches the files.
+3. **A CI completeness check** asserts every `services/*/pkg` directory
+   contains a `doctor.toml`, so a newly packaged service cannot silently stay
+   out of the catalog.
+
+The catalog today (17 packaged services; `session-runner` has no `pkg/` and
+joins the catalog when it is packaged):
+
+| Service | Class | Default port |
+|---|---|---|
+| filemonitor | alpaca | 11111 |
+| ppba-driver | alpaca | 11112 |
+| qhy-focuser | alpaca | 11113 |
+| sentinel | core | 11114 |
+| rp | core | 11115 |
+| sky-survey-camera | alpaca | 11116 |
+| star-adventurer-gti | alpaca | 11117 |
+| pa-falcon-rotator | alpaca | 11118 |
+| dsd-fp2 | alpaca | 11119 |
+| ui-htmx | core | 11120 |
+| qhy-camera | alpaca | 11121 |
+| zwo-camera | alpaca | 11122 |
+| pa-scops-oag | alpaca | 11123 |
+| zwo-focuser | alpaca | 11124 |
+| phd2-guider | core | 11130 |
+| plate-solver | core | 11131 |
+| calibrator-flats | core | 11170 |
+
+Doctor itself never appears in the catalog: it is a one-shot binary with no
+unit and no port, and when D7 gives it a `pkg/` directory the packaging
+scripts and the completeness check gain a carve-out for unit-less packages.
+
+### Config-root resolution
+
+Doctor diagnoses one config directory per run, resolved in order:
+
+1. `--config-dir <path>` — explicit, always wins.
+2. `/etc/rusty-photon`, if it exists (Unix). Packaging ships this symlink
+   pointing at the service user's tree
+   (`/var/lib/rusty-photon/.config/rusty-photon`), so an operator running
+   doctor as root or as themselves diagnoses the **service user's** configs,
+   not their own empty home.
+3. The platform default the services themselves use —
+   `rusty_photon_config`'s resolution (`~/.config/rusty-photon` on Linux,
+   `~/Library/Application Support/rusty-photon` on macOS,
+   `%ProgramData%\rusty-photon` on Windows).
+
+Step 3 is what makes doctor useful on a dev checkout with no packages
+installed.
+
+### Platform inspectors
+
+All service-manager knowledge sits behind one trait with a per-platform
+implementation:
+
+- **systemd** (Linux) — `systemctl list-unit-files 'rusty-photon-*'` for the
+  inventory, `systemctl show <unit>` for `UnitFileState`, `User`,
+  `NoNewPrivileges`, and `ConditionPathExists`. Polkit facts come from
+  scanning `/etc/polkit-1/rules.d/*.rules`.
+- **SCM** (Windows) — PowerShell `Get-Service rusty-photon-*` / `sc.exe qc`
+  for the inventory and start type.
+- **brew services** (macOS) — `brew services list` filtered to
+  `rusty-photon-*` formulas.
+
+The inspector reports a platform-neutral inventory (unit name, enabled,
+active, plus platform-specific facts where they exist); checks that depend on
+a fact one platform lacks (systemd conditions, polkit) simply do not run on
+the other platforms.
+
+For hermetic tests, the `mock` feature (the same convention drivers use)
+enables a `--platform-facts <file>` flag: the file deserializes into the
+inspector's output type and replaces the host queries, so BDD scenarios can
+stage any host state on any OS. The flag does not exist in release builds.
+
+### Packaged host vs dev checkout
+
+If the inspector finds **zero** `rusty-photon-*` units, the host is treated as
+a dev checkout: doctor runs the config-only checks (parse, shapes, ports,
+joins, TLS paths) against whatever config files exist, skips the unit-joined
+checks, and says so in the report (`mode: "config-only"`). Inventory
+mismatch checks (orphan configs, unit-without-config) only make sense against
+a package inventory and run only in `mode: "packaged"`.
+
+## Diagnosis — the D2 checks
+
+Every check yields `ok`, `warn`, or `fail` plus a human-readable detail and,
+where doctor can suggest one, a concrete remedy (as text — machine-applicable
+fixes arrive with D3). Checks are service-scoped where applicable so the
+report groups naturally.
+
+### Inventory (packaged mode only)
+
+| Check | Status | Trigger |
+|---|---|---|
+| `inventory.unit-without-config` | warn | A `rusty-photon-*` unit is installed but `<svc>.json` does not exist. The service has never started (it self-creates config on first run) — or its state directory is wrong. |
+| `inventory.config-without-unit` | warn | `<svc>.json` exists for a catalog service whose unit is not installed. Leftover from a removed package, or a hand-copied file. |
+| `inventory.unknown-config` | warn | A `*.json` in the config dir matches no catalog service and no known non-service file (`acme.json`; the `pki/` tree is ignored). Catches typo'd filenames that a service will silently never read. |
+
+### Config parsing
+
+| Check | Status | Trigger |
+|---|---|---|
+| `config.json-syntax` | fail | `<svc>.json` is not valid JSON. The service will refuse to start (by design — corrupt config never silently resets), and doctor says so before the next night does. |
+| `config.server-shape` | fail | The top-level `server` block does not parse under the catalog-declared shape (`ServerConfig` for core, `AlpacaServerConfig` for Alpaca): unknown keys (`deny_unknown_fields`), missing `port` when the block is present, `discovery_port` on a core service, malformed `bind_address`. An absent `server` block is `ok` — the service applies its defaults. |
+| `config.known-blocks` | fail | One of the cross-reference blocks doctor joins across fails to parse: ui-htmx's `drivers` map / `sentinel` target, sentinel's `services` map / `operation_watchdog`, rp's `equipment` array / `session` block. Everything else in every file is opaque `serde_json::Value` doctor steps around. |
+
+Full-config typo detection (a misspelled key in, say, qhy-camera's
+`device_overrides`) is **out of D2's reach by design**: doctor knows only the
+shared blocks. It arrives with D5, where each service's own binary — which has
+the typed shape — validates its own file and doctor aggregates.
+
+### Ports
+
+| Check | Status | Trigger |
+|---|---|---|
+| `ports.collision` | fail | Two services resolve to the same **effective** port. Effective = the configured `server.port`, else the catalog default. A service is in the collision set when its unit is installed or its config file exists. |
+| `ports.discovery-collision` | fail | Two or more Alpaca configs set the same `discovery_port`. The responder is a per-host opt-in for single-driver deployments precisely because N responders collide; two enabled is always a mistake. |
+
+### Units and privileges (systemd facts; run where the platform has them)
+
+| Check | Status | Trigger |
+|---|---|---|
+| `units.config-gated` | fail | A unit is enabled but its `ConditionPathExists=` file is missing: installed, enabled, and silently inert. Today that is sky-survey-camera, plate-solver, calibrator-flats, and phd2-guider, all of which hard-require a config file. |
+| `sentinel.privilege-path` | fail | Sentinel's unit is installed, runs as an unprivileged user with `NoNewPrivileges=yes`, and no rule under `/etc/polkit-1/rules.d/` grants that user `org.freedesktop.systemd1.manage-units` for `rusty-photon-*` units — so every restart sentinel attempts will be denied at the privilege boundary. Points at the scoped rule from [#523](https://github.com/ivonnyssen/rusty-photon/issues/523). Detection is a heuristic (scan for the action id + user in the rules files) and the detail says so. |
+
+### Name joins
+
+Four spellings of one service name exist today (ui-htmx `drivers` key →
+`sentinel_service` → sentinel `services` key →
+`operation_watchdog.operations.<family>.service`), matched by convention and
+validated by nothing. Doctor validates the survivors; D3s deletes sentinel's
+side entirely.
+
+| Check | Status | Trigger |
+|---|---|---|
+| `joins.sentinel-unit` | fail | A sentinel `services` entry's `restart_command` names a unit the service manager does not report. Specifically recognizes the two historical rot patterns and names them in the detail: `systemctl --user` against system units, and unit names missing the `rusty-photon-` prefix. |
+| `joins.watchdog-service` | fail | An `operation_watchdog.operations.<family>.service` value is not a key of sentinel's `services` map. |
+| `joins.ui-htmx-sentinel` | fail | ui-htmx has a `sentinel` target configured, and a driver's effective `sentinel_service` (the field, defaulting to the driver's map key) is not a key of sentinel's `services` map on this host. |
+| `joins.ui-htmx-driver-port` | fail | A ui-htmx `drivers` entry is keyed by a catalog service name and its `base_url` points at localhost, but the URL's port is not that service's effective port. The 2am 404 in a UI banner, caught at noon. Non-localhost URLs are out of scope (remote host — doctor sees one machine). |
+
+### URL conventions
+
+| Check | Status | Trigger |
+|---|---|---|
+| `urls.sentinel-suffix` | warn | A sentinel `services` entry has a `base_url` that does not end in `/api/v1`. Sentinel's watchdog appends Alpaca method paths to it; without the suffix every probe 404s. |
+| `urls.spurious-suffix` | warn | An rp `equipment[].alpaca_url` or ui-htmx `drivers[].base_url` **does** end in `/api/v1`. Those clients append it themselves; doubling it 404s. (Doctor reads `alpaca_url` out of rp's equipment entries and steps around the rest of the block — checking the URL is service wiring, owning the entry is device usage.) |
+
+### TLS and auth
+
+| Check | Status | Trigger |
+|---|---|---|
+| `tls.paths` | fail | A `server.tls` block is present but the cert or key path does not exist — or, on Unix in packaged mode, is not readable by the user the unit runs as (owner/group/mode heuristic against the unit's `User=`). |
+| `tls.auth-without-tls` | warn | `server.auth` is set while `server.tls` is absent: HTTP Basic credentials in cleartext on the wire. Legal (pre-D6 reality), but worth a nag — ADR-003's scheme is Basic **over TLS**. |
+
+### Platform defaults
+
+| Check | Status | Trigger |
+|---|---|---|
+| `rp.data-directory` | fail | rp's `session.data_directory` does not exist or is not writable (by the service user in packaged mode, by the current user otherwise). Catches the Linux-path-on-macOS default documented in `docs/packaging-macos.md`. |
+
+## Report
+
+One schema, shared by the text renderer and `--json`, and — from D5 on — by
+the per-service `doctor` subcommands central doctor aggregates. It therefore
+versions and parses **permissively** (`#[serde(default)]`, unknown fields
+tolerated) — the inverse of the config convention, so a doctor and a service
+from different nightlies degrade to a partial report instead of refusing to
+run (ADR-016 decision 7).
+
+```json
+{
+  "schema_version": 1,
+  "doctor_version": "0.1.0",
+  "mode": "packaged",
+  "config_dir": "/var/lib/rusty-photon/.config/rusty-photon",
+  "checks": [
+    {
+      "name": "ports.collision",
+      "service": "qhy-focuser",
+      "status": "fail",
+      "detail": "qhy-focuser and dsd-fp2 both resolve to port 11113 (qhy-focuser: configured; dsd-fp2: configured)",
+      "suggestion": "set a distinct server.port in dsd-fp2.json (default 11119)"
+    }
+  ]
+}
+```
+
+`ok` checks are included (an empty report is indistinguishable from a doctor
+that skipped everything); the text renderer summarizes them and prints
+`warn`/`fail` in full.
+
+## CLI contract
+
+```
+doctor [--config-dir <path>] [--json]
+```
+
+- Default run diagnoses and prints the human-readable report to stdout.
+- `--json` prints the report JSON instead.
+- `--platform-facts <file>` exists only under the `mock` feature (tests).
+- Logging goes to stderr via `tracing` (`debug!` throughout; the report is
+  the product, not the log).
+
+Exit codes:
+
+| Code | Meaning |
+|---|---|
+| 0 | Diagnosis ran; no `fail`-status checks (warnings allowed). |
+| 1 | Diagnosis ran; at least one check failed. |
+| 2 | Doctor itself could not run (unresolvable config dir, inspector error). |
+
+Scripts and CI can gate on "the rig is coherent" without parsing JSON.
+
+## Configuration
+
+Doctor has **no config file**. Its inputs are the two flags above. This is
+deliberate: a config-repair tool with its own config file would need a doctor.
+
+## Verification
+
+- **Unit** — catalog parsing/uniqueness and the per-service `doctor.toml`
+  parity tests; per-check tests against tempdir fixtures; report schema
+  round-trip including a forward-compatibility case (unknown fields, unknown
+  status value from a newer service).
+- **BDD** (`services/doctor/tests`, built with the `mock` feature) — seed a
+  scratch config dir and a platform-facts file with known-broken states (port
+  collision, dangling `sentinel_service`, unparseable JSON, missing
+  `ConditionPathExists` target, absent polkit rule), run the real binary,
+  assert the diagnosis, the exit code, and the `--json` schema.
+- **On-host** (D2 gate, per the plan's all-platforms requirement) — the real
+  inspectors validated against a packaged Linux host, the Windows VM (SCM),
+  and macOS (brew services).
+
+## MVP scope
+
+**In D2 (this document):** everything above — derived catalog, config-root
+resolution, platform inspectors, the check list, the report schema, text +
+`--json` rendering, exit codes. Read-only throughout; no network I/O.
+
+**Deferred, tracked in the plan:**
+
+- `--fix` and ui-htmx roster-sourcing — D3.
+- Sentinel service discovery (deletes the `services` map and most of the
+  join checks above with it) — D3s, gated on #523.
+- `rusty-photon-doctor-checks` crate + hardware checks that need no SDK
+  (device nodes, udev, plugdev, VID:PID, firmware helper) — D4.
+- Per-service `doctor` subcommands (full-config validation, SDK-side
+  hardware checks) + aggregation over the report schema — D5.
+- TLS + credential lifecycle (cert generation, ACME, `hash-password`,
+  minted observatory credential) — D6.
+- Packaging and install-flow docs — D7.
