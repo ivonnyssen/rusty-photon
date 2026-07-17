@@ -29,7 +29,7 @@ doctor *out* of the services rather than a component of them.
 | D2 | `rusty-photon-doctor` binary: catalog + service-config diagnosis (read-only) | Merged | #554 |
 | D3 | `--fix`; ui-htmx sources from rp's roster (its `drivers` map becomes an empty-by-default override) | Merged | #560 → #559 |
 | D3s | Sentinel discovers its services; delete the `services` map; policy → constants (privilege path shipped — polkit rule in the sentinel packages) | Merged | #559 |
-| D4 | `rusty-photon-doctor-checks` crate + generic hardware checks (no SDK) | Not started | |
+| D4 | `rusty-photon-doctor-checks` crate + generic hardware checks (no SDK) | In progress | `feature/doctor-checks-d4` |
 | D5 | Per-service `doctor` subcommand + aggregation | Not started | |
 | D6 | Move the TLS + credential lifecycle `rp` → doctor; split `rp-tls`; certs to `~/.config/rusty-photon/pki`; doctor generates certs + mints one credential + writes TLS-on/auth-on config | Not started | |
 | D7 | Packaging, install-flow docs, on-rig verification | Not started | |
@@ -471,21 +471,37 @@ objection.
 So:
 
 **D4 — no SDK needed → central doctor**, via a shared
-`rusty-photon-doctor-checks` crate:
+`rusty-photon-doctor-checks` crate (contract now specified in
+[doctor.md §Hardware](../services/doctor.md); settled choices: one severity
+rule — fail when the unit is enabled, warn otherwise; device-presence
+checks on all three platforms, the udev/group/firmware mechanics on Linux):
 
-- device node exists at the configured serial path; writable by `rusty-photon`
-- `rusty-photon` is in `plugdev`
+- device node exists at the configured serial path (catalog-declared JSON
+  pointer + platform defaults; star-adventurer-gti gated on
+  `transport.kind == "usb"`); openable by `rusty-photon`
+- group access is judged the way it actually works: membership is conferred
+  per-unit via `SupplementaryGroups=` (**never** `/etc/group` — no packaging
+  step edits it), and `/etc/group` matters only for group *existence*, which
+  is what makes udev's `GROUP=` resolvable
 - the udev rule is installed **and parsed** — udev silently drops an entire
   rule line on an unresolvable `GROUP=`, so "the file is present" is not the
-  check
-- VID:PID present in sysfs
-- the firmware helper has been run. `packaging/postinst.udev-stanza` already
-  tells operators *"camera firmware is not bundled. Run '<helper>' once as root
-  before first use"* (ADR-013 forbids packaging proprietary firmware) and
-  nothing verifies they did.
+  check; installed content is also diffed against the packaged copy (warn on
+  drift — `/etc/udev/rules.d` overrides are legitimate)
+- USB device present, for every device-backed service: declared
+  vendor(:product) plus a product-string substring where the VID:PID is a
+  generic bridge chip — the three Pegasus devices all report FTDI's
+  `0403:6015` and the FP2 reports the RP2040's `2e8a:000a`, so VID:PID alone
+  cannot name the device (rig-measured 2026-07-17)
+- the firmware helper has been run — the qhy helper's own idempotency gate,
+  a three-artifact conjunction. `packaging/postinst.udev-stanza` already
+  tells operators *"camera firmware is not bundled. Run '<helper>' once as
+  root before first use"* (ADR-013 forbids packaging proprietary firmware)
+  and nothing verifies they did.
 
-The serial-side helpers belong in or beside `rusty-photon-shared-transport`,
-which is already the shared home for that concern.
+The probe/predicate helpers live in `rusty-photon-doctor-checks` itself
+rather than `rusty-photon-shared-transport`: the transport crate holds no
+path or enumeration API (each driver's factory owns its path privately),
+and doctor must not inherit a driver runtime dependency for a `stat`.
 
 **D5 — SDK needed → the service**, via a `doctor` subcommand on each service
 binary that links only its own blob, emitting the shared report schema as JSON.
