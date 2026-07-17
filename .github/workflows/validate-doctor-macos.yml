@@ -30,6 +30,9 @@ jobs:
       - name: Install nightly formulas and register a service
         run: |
           brew tap ivonnyssen/rusty-photon
+          # Newer Homebrew refuses formulas from untrusted third-party taps;
+          # older brews have no `trust` subcommand, hence the fallback.
+          brew trust ivonnyssen/rusty-photon 2>/dev/null || true
           brew install rusty-photon-sentinel-nightly rusty-photon-filemonitor-nightly
           # Registration is what the inspector reads; a start failure in the
           # CI sandbox must not fail the leg (status still lists the formula).
