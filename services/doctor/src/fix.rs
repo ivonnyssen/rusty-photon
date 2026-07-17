@@ -4,9 +4,10 @@
 //! planned. They are grouped per service file and applied as one
 //! read-modify-write through `rusty_photon_config::save` — the same atomic
 //! temp→fsync→rename→fsync-dir path the services' own `config.apply` uses —
-//! so a crash mid-fix never corrupts a config, and every byte doctor does
+//! so a crash mid-fix never corrupts a config, and every field doctor does
 //! not touch is preserved (the mutation is on the raw JSON value, not a
-//! typed round-trip).
+//! typed round-trip; `save` normalizes formatting to the same
+//! pretty-printed shape `config.apply` writes).
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -156,7 +157,7 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_fixes_groups_writes_and_preserves_bytes() {
+    fn test_apply_fixes_groups_writes_and_preserves_untouched_fields() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("qhy-focuser.json");
         std::fs::write(

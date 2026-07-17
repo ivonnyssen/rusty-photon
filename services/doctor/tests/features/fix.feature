@@ -5,8 +5,9 @@ Feature: Repair — doctor --fix
   port corrected, a spurious /api/v1 suffix stripped from a ui-htmx driver
   URL — then re-diagnoses and reports the post-fix state, exit code
   included. Writes go through the same atomic save path the services' own
-  config.apply uses, every byte doctor does not touch is preserved, and a
-  second --fix run applies nothing. Judgment calls stay suggestions:
+  config.apply uses, every field doctor does not touch is preserved (the
+  formatting normalizes to the pretty-printed shape config.apply writes),
+  and a second --fix run applies nothing. Judgment calls stay suggestions:
   discovery_port collisions, TLS material, and rp's equipment alpaca_url
   (inside the device-usage block doctor checks but does not own) are never
   written.

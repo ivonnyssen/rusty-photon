@@ -266,9 +266,10 @@ Write mechanics:
 - Fixes are grouped per file and applied as one read-modify-write through
   `rusty_photon_config::save` — the same atomic
   temp→fsync→rename→fsync-dir path the services' own `config.apply` uses,
-  so a crash mid-fix never corrupts a config. Every byte doctor does not
-  touch is preserved (the mutation is on the raw JSON value, not a typed
-  round-trip).
+  so a crash mid-fix never corrupts a config. Every field doctor does not
+  touch is preserved — the mutation is on the raw JSON value, not a typed
+  round-trip — though `save` normalizes formatting to the same
+  pretty-printed shape `config.apply` writes.
 - Doctor reads files directly and holds no override layers, so a fix can
   never bake a transient value into a file (the plan's layer-aware persist
   rule is satisfied by construction).
@@ -370,7 +371,7 @@ deliberate: a config-repair tool with its own config file would need a doctor.
   collision, dangling watchdog service, retired D3s keys, unparseable JSON,
   missing `ConditionPathExists` target, absent polkit rule), run the real
   binary, assert the diagnosis, the exit code, and the `--json` schema. For
-  `--fix`: assert the rewritten file contents (untouched bytes preserved),
+  `--fix`: assert the rewritten file contents (untouched fields preserved),
   post-fix convergence, idempotence of a second run, that a default run
   writes nothing, and that unfixable checks stay reported without a write.
 - **On-host** (D2 gate, per the plan's all-platforms requirement) — the real
