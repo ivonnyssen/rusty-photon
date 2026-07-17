@@ -309,8 +309,7 @@ run (ADR-016 decision 7).
         { "op": "set-number", "service": "dsd-fp2", "pointer": "/server/port", "value": 11119 }
       ]
     }
-  ],
-  "fixes_applied": []
+  ]
 }
 ```
 
@@ -321,10 +320,12 @@ run (ADR-016 decision 7).
   doctor that does not recognize a newer op simply cannot apply it, and
   says so, instead of misparsing the check.
 - `fixes_applied` (top level, populated by `--fix` runs) records what was
-  actually written, one entry per applied fix: the originating check name,
-  the service, and the operation. On a `--fix` run the `checks` array is
-  the **post-fix** diagnosis — the exit code and the report describe the
-  state the operator is left with.
+  actually written, one entry per applied fix: the originating check name
+  and the operation (which carries the service). Like `fixes`, it is
+  omitted when empty — a consumer must treat the missing field as an empty
+  list, which the permissive parse does by construction. On a `--fix` run
+  the `checks` array is the **post-fix** diagnosis — the exit code and the
+  report describe the state the operator is left with.
 
 `ok` checks are included (an empty report is indistinguishable from a doctor
 that skipped everything); the text renderer summarizes them, prints
