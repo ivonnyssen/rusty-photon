@@ -15,17 +15,17 @@ reachability). It never learns what a camera is *for* — device usage stays in
 `rp`.
 
 This plan also collapses the 13 independent `ServerConfig` definitions into
-one shared type. That is not a side quest: it is what lets doctor read the
-`server` block out of any `<svc>.json` while treating the other 95% of the
-file as opaque bytes, and therefore what keeps doctor *out* of the services
-rather than a component of them.
+one shared crate, `rusty-photon-server-config`. That is not a side quest: it
+is what lets doctor read the `server` block out of any `<svc>.json` while
+treating the other 95% of the file as opaque bytes, and therefore what keeps
+doctor *out* of the services rather than a component of them.
 
 ## Implementation Status
 
 | Phase | Description | Status | Branch / PR |
 |-------|-------------|--------|-------------|
 | D0 | This plan + [ADR-016](../decisions/016-service-config-ownership-and-doctor.md) (config ownership + the SDK line) | Open | #539 |
-| D1 | Extract shared `ServerConfig`; 13 definitions → 1; TLS/auth for the 5 services that lack it | Not started | |
+| D1 | `rusty-photon-server-config` (core + Alpaca shapes); all 18 services adopt; TLS/auth for the 9 that lack it; `bind_address` everywhere (default `0.0.0.0`); per-service TLS+auth smoke scenarios | Open | #549 |
 | D2 | `rusty-photon-doctor` binary: catalog + service-config diagnosis (read-only) | Not started | |
 | D3 | `--fix`; ui-htmx sources from rp's roster (its `drivers` map becomes an empty-by-default override) | Not started | |
 | D3s | Sentinel discovers its services; delete the `services` map; policy → constants (needs the privilege path first) | Not started | |
@@ -57,9 +57,9 @@ rather than a component of them.
    instead.
 
 3. **Doctor is a standalone binary, not a component of the services.** It links
-   no service crate. It knows the catalog, one `ServerConfig` shape, and
-   ui-htmx's `drivers` map; everything else in every config file is opaque
-   `serde_json::Value` it steps around.
+   no service crate. It knows the catalog, the two shared `ServerConfig` shapes
+   (core and Alpaca — see D1), and ui-htmx's `drivers` map; everything else in
+   every config file is opaque `serde_json::Value` it steps around.
 
 4. **Doctor's scope is service config, never device usage.** "Is `/dev/ttyUSB0`
    writable" is service health and in scope. "Which camera is the guide cam",
@@ -135,36 +135,92 @@ identical:
 | `services/rp/src/config/server.rs:6` | port, **bind_address**, tls, auth — no discovery_port |
 | `services/ui-htmx/src/config.rs:40` | **bind**, port — no tls/auth/discovery |
 
-Extract one type (`rp-server-config`, or a module in an existing shared crate —
-see Flagged unknowns). Every service embeds it. Three consequences:
+Extract one crate, **`rusty-photon-server-config`** (workspace-infra naming,
+like `rusty-photon-config` and `rusty-photon-shared-transport`). It depends on
+`rp-tls` and `rp-auth` for the embedded types, and has no dependency in either
+direction with `rusty-photon-config` — the machinery crate stays
+`serde_json::Value`-based and shape-agnostic; this crate is the one typed
+shape. Doctor is essentially the composition of the two plus the catalog.
 
-- **Five services gain TLS and auth for free.** qhy-camera, zwo-camera,
-  zwo-focuser, sky-survey-camera, and ui-htmx currently cannot be secured at
-  all while their siblings can. sky-survey-camera is the sharpest case: it
+The crate carries **two shapes**, both `deny_unknown_fields`:
+
+- `ServerConfig` — `port`, `bind_address`, `tls`, `auth` — for the non-Alpaca
+  services (rp, ui-htmx, sentinel, plate-solver, session-runner,
+  calibrator-flats, phd2-guider).
+- `AlpacaServerConfig` — the same plus `discovery_port` — for the 11 Alpaca
+  drivers.
+
+Two shapes rather than one because `discovery_port` on a non-Alpaca service
+would be an accepted-but-inert knob — the exact silent-footgun class
+`deny_unknown_fields` exists to prevent. The Alpaca shape declares all five
+fields explicitly rather than `#[serde(flatten)]`-ing the core (serde's
+`deny_unknown_fields` does not compose with `flatten`); a common-subset
+accessor gives doctor and sentinel one view of `port`/`bind_address`/`tls`/
+`auth` across both.
+
+**Scope: all 18 services, one PR.** The 13 definitions above collapse into the
+shared shapes, and the five services with ad-hoc listener configs (sentinel,
+plate-solver, session-runner, calibrator-flats, phd2-guider) convert to
+`ServerConfig` in the same pass. That makes D6's premise — every service has
+`tls`/`auth` fields — true immediately after D1, with no straggler phase.
+
+Consequences:
+
+- **Nine services gain TLS and auth.** The five from the table (qhy-camera,
+  zwo-camera, zwo-focuser, sky-survey-camera, ui-htmx) plus plate-solver,
+  session-runner, calibrator-flats, and phd2-guider. sentinel's dashboard
+  already carries `tls`/`auth` (`services/sentinel/src/config.rs:336-349`)
+  and converts shape-only. sky-survey-camera is the sharpest case: it
   consumes `ClientAuthConfig` outbound (`config.rs:90,114`) but exposes no
-  inbound auth.
+  inbound auth. Every service ends up with a **top-level `server` block** —
+  that placement is the doctor contract (sentinel's moves out of
+  `dashboard`, calibrator-flats gains one where port/bind were CLI-only).
 
-  **Absent `tls`/`auth` still means plain, unauthenticated HTTP**, so D1 stays
-  a pure no-behaviour-change refactor. Both arrive in D6 via doctor's
-  *generated config*, not via the serde default — see ADR-016 decision 10(d)
-  for why that distinction is load-bearing.
+  **Absent `tls`/`auth` still means plain, unauthenticated HTTP.** Both are
+  turned on in D6 via doctor's *generated config*, not via the serde default —
+  see ADR-016 decision 10(d) for why that distinction is load-bearing.
 
   This **supersedes [#524](https://github.com/ivonnyssen/rusty-photon/issues/524)**
   and adopts both its transport and auth halves. Its premise was false: it
   assumes every service has a `tls` knob whose default needs flipping, but for
   these four Alpaca drivers the field is **absent**, and #524 names only ui-htmx
   as lacking support.
-- **The bind-address naming split resolves.** `bind_address` (rp),
-  `bind` (ui-htmx), absent-and-hardcoded (the other 11).
-- **Doctor becomes possible.** One shape to parse out of 18 files.
+- **The bind-address naming split resolves.** Every service gains a
+  configurable `bind_address` with a **unified default of `0.0.0.0`**,
+  replacing `bind_address` (rp, plate-solver, phd2-guider — default
+  `127.0.0.1`), `bind` (ui-htmx, default `127.0.0.1`), CLI-only bind flags
+  (session-runner, calibrator-flats — default `127.0.0.1`), and
+  absent-and-hardcoded-`0.0.0.0` (the 11 Alpaca drivers and sentinel). This
+  is D1's **one deliberate behaviour change**: six services (rp, ui-htmx,
+  plate-solver, session-runner, calibrator-flats, phd2-guider) move from a
+  loopback default to LAN-exposed. Existing installs whose config files carry
+  explicit values are unaffected; ones that relied on the old defaults (rp's
+  scaffold wrote `"server": {}`) pick up the new default — or, where the
+  schema changed shape (`port` is now required when the block is present;
+  ui-htmx's `bind` rename), fail loudly at next start and need a one-line
+  edit. The interim exposure is accepted because D6 makes TLS + auth the
+  default for every real deployment. Default *ports* stay per-service,
+  supplied by each service's parent-config constructor, not by serde defaults
+  inside the shared shapes.
+- **Doctor becomes possible.** One crate to parse the `server` block out of
+  all 18 files.
 
-`discovery_port` keeps its `#[serde(default, skip_serializing_if = "Option::is_none")]`
+`discovery_port` (Alpaca shape only) keeps its
+`#[serde(default, skip_serializing_if = "Option::is_none")]`
 so `config.apply` cannot re-persist a stale key, and its default stays `None` —
 the collision rationale at `crates/rusty-photon-driver/src/discovery.rs:12` is
 unchanged by this plan.
 
 Pre-1.0 breaking config-schema changes are sanctioned, so the rename of
 `ui-htmx`'s `bind` → `bind_address` needs no migration shim.
+
+**Verification for D1** (in addition to the crate's unit tests): every service
+gets one TLS+auth **smoke scenario** — boots with TLS and auth configured,
+rejects an unauthenticated request, answers an authenticated HTTPS one —
+proving each service actually threads the shared config into its serve path.
+ui-htmx gets a **full mirrored auth/TLS suite** (its axum stack is the one
+with no existing pattern); ppba-driver's existing `auth.feature` remains the
+deep representative suite for the shared Alpaca driver stack.
 
 ### D2 — the catalog and service-config diagnosis
 
@@ -262,7 +318,7 @@ and every fact in the map follows from that.
 | the `services` map (which services to supervise) | enumerate `rusty-photon-*` from the service manager |
 | `restart_command` | derived from the unit name |
 | `health_command` | derived — `systemctl is-active <unit>` |
-| `base_url` | read the service's own `<svc>.json` → `server.port` (one typed shape after D1) |
+| `base_url` | read the service's own `<svc>.json` → `server.port` (shared shapes after D1) |
 | `health.url` | derived from port + catalog class (below) |
 | `max_restart_duration` | constant **300s** |
 | `health.poll_interval` | constant **30s** |
@@ -307,7 +363,8 @@ pre-1.0. That PR's settled choices survive the move: never-give-up backoff is
 what the constants encode, and no-recovery-notification is untouched.
 
 **D1 is a hard prerequisite**, not just for doctor: sentinel reading
-`<svc>.json` for a port only works once `ServerConfig` is one shared type.
+`<svc>.json` for a port only works once every service's `server` block uses
+the shared shapes.
 
 ### D6 — the TLS and credential lifecycle moves to doctor
 
@@ -488,10 +545,6 @@ permissive in both directions across the binary boundary.
   via sentinel vs in-process reload), and how an operator who forgets the
   credential recovers (re-mint via `doctor`, same as any won't-authenticate
   case). Settle alongside the renewal swap decision.
-- **Where the shared `ServerConfig` lives (D1).** A new `rp-server-config`
-  crate, or a module in an existing shared crate. `rp-tls` and `rp-auth` are
-  already the homes of the types it embeds; a new crate may be cleaner than
-  making one of those depend on the other.
 - **How doctor detects what is installed (D2).** Binary presence under a
   platform-specific prefix is the most portable; querying dpkg/rpm/SCM/brew is
   more accurate but is four implementations.

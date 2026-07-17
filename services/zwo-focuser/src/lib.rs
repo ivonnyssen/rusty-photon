@@ -29,18 +29,21 @@ mod config_actions;
 mod error;
 mod focuser;
 
-pub use config::{load_effective_config, CliOverrides, Config, DeviceOverride, DEFAULT_PORT};
+pub use config::{
+    load_effective_config, AlpacaServerConfig, CliOverrides, Config, DeviceOverride, DEFAULT_PORT,
+};
 pub use config_actions::ZwoFocuserDriver;
 pub use error::ZwoFocuserError;
 pub use focuser::ZwoFocuser;
 
 use std::future::Future;
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use ascom_alpaca::api::{CargoServerInfo, Device};
 use ascom_alpaca::Server;
+use rp_tls::config::TlsConfig;
 use rusty_photon_service_lifecycle::ReloadSignal;
 use tokio::net::TcpListener;
 use tracing::{debug, info, warn};
@@ -119,8 +122,6 @@ impl ServerBuilder {
     /// Returns [`ZwoFocuserError`] when SDK enumeration fails or the listener
     /// cannot bind the configured port.
     pub async fn build(self) -> Result<BoundServer, ZwoFocuserError> {
-        let port = self.config.server.port;
-
         let focusers = if self.force_empty {
             Vec::new()
         } else {
@@ -159,7 +160,7 @@ impl ServerBuilder {
         // every other Alpaca service. SO_REUSEADDR matters here because the
         // in-process `with_reload` loop rebinds the same port; a raw bind could
         // fail to rebind while a prior listener's TIME_WAIT lingers.
-        let bind_addr = SocketAddr::from((Ipv4Addr::UNSPECIFIED, port));
+        let bind_addr = self.config.server.socket_addr();
         let listener = rp_tls::server::bind_dual_stack_tokio(bind_addr)
             .await
             .map_err(|source| ZwoFocuserError::Bind {
@@ -181,6 +182,19 @@ impl ServerBuilder {
                 .map_err(|e| ZwoFocuserError::Discovery(e.to_string()))?;
 
         let app = axum::Router::new().fallback_service(server.into_service());
+        let app = match &self.config.server.auth {
+            Some(auth) => {
+                if self.config.server.tls.is_none() {
+                    warn!(
+                        "Authentication is enabled but TLS is not. \
+                         Credentials will be transmitted in cleartext. \
+                         Consider enabling TLS (see `rp init-tls`)."
+                    );
+                }
+                rp_auth::layer(app, auth)
+            }
+            None => app,
+        };
         // Stdout is reserved for the machine-readable `bound_addr=<host>:<port>`
         // handshake that `bdd-infra::parse_bound_port` waits on for port
         // discovery; every peer service emits it. Logs go to stderr, so this
@@ -196,6 +210,7 @@ impl ServerBuilder {
             listener,
             app,
             local_addr,
+            tls: self.config.server.tls.clone(),
             discovery,
         })
     }
@@ -206,6 +221,8 @@ pub struct BoundServer {
     listener: TcpListener,
     app: axum::Router,
     local_addr: SocketAddr,
+    /// TLS settings from `server.tls`; `Some` makes `start()` serve HTTPS.
+    tls: Option<TlsConfig>,
     /// Alpaca UDP discovery responder, when the config opts in. Runs inside
     /// `start()`'s select so its socket closes when serving ends (reload).
     discovery: Option<ascom_alpaca::discovery::BoundDiscoveryServer>,
@@ -231,13 +248,20 @@ impl BoundServer {
             listener,
             app,
             local_addr: _,
+            tls,
             discovery,
         } = self;
         let serve = async {
-            axum::serve(listener, app)
-                .with_graceful_shutdown(shutdown)
-                .await
-                .map_err(|e| ZwoFocuserError::Server(e.to_string()))
+            match tls {
+                Some(ref tls_config) => {
+                    rp_tls::server::serve_tls(listener, app, tls_config, shutdown)
+                        .await
+                        .map_err(|e| ZwoFocuserError::Server(e.to_string()))
+                }
+                None => rp_tls::server::serve_plain(listener, app, shutdown)
+                    .await
+                    .map_err(|e| ZwoFocuserError::Server(e.to_string())),
+            }
         };
         rusty_photon_driver::discovery::serve_with(discovery, serve).await?;
         Ok(())

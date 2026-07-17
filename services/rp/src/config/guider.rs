@@ -107,7 +107,7 @@ mod tests {
                 "session": {"data_directory": "/tmp/rp-test"},
                 "equipment": {},
                 "guider": {"url": "http://127.0.0.1:11130"},
-                "server": {}
+                "server": { "port": 0 }
             }"#,
         )
         .unwrap();
@@ -139,7 +139,7 @@ mod tests {
                     "settle_timeout": "40s",
                     "dither_pixels": 5.0
                 },
-                "server": {}
+                "server": { "port": 0 }
             }"#,
         )
         .unwrap();
@@ -172,7 +172,7 @@ mod tests {
                     "url": "http://127.0.0.1:11130",
                     "dither_every_n_exposures": 3
                 },
-                "server": {}
+                "server": { "port": 0 }
             }"#,
         )
         .unwrap();

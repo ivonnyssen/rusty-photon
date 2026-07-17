@@ -15,19 +15,14 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use star_adventurer_gti::{
-    Config, MockTransportFactory, MountConfig, ServerBuilder, ServerConfig, TransportFactory,
+    AlpacaServerConfig, Config, MockTransportFactory, MountConfig, ServerBuilder, TransportFactory,
 };
 
 static SERVER_LOCK: Mutex<()> = Mutex::new(());
 
 fn test_config(mount_enabled: bool) -> Config {
     let mut cfg = Config::default();
-    cfg.server = ServerConfig {
-        port: 0,
-        discovery_port: None,
-        tls: None,
-        auth: None,
-    };
+    cfg.server = AlpacaServerConfig::new(0);
     cfg.mount = MountConfig {
         enabled: mount_enabled,
         ..cfg.mount

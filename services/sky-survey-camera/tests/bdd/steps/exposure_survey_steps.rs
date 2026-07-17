@@ -37,7 +37,7 @@ fn cache_hit(world: &mut SkySurveyCameraWorld) {
     // World defaults to 1000mm focal length, 3.76um pixels, 640x480
     // sensor — match what build_config_json injects.
     use sky_survey_camera::config::{
-        Config, DeviceConfig, OpticsConfig, PointingConfig, ServerConfig, SurveyConfig,
+        AlpacaServerConfig, Config, DeviceConfig, OpticsConfig, PointingConfig, SurveyConfig,
     };
     let config = Config {
         device: DeviceConfig {
@@ -68,10 +68,7 @@ fn cache_hit(world: &mut SkySurveyCameraWorld) {
             cache_dir: world.cache_dir(),
             endpoint: "http://placeholder/".to_string(),
         },
-        server: ServerConfig {
-            port: 0,
-            discovery_port: None,
-        },
+        server: AlpacaServerConfig::new(0),
     };
     let req = build_full_sensor_request(&config, pointing, 1, 1);
     let key = req.cache_key();

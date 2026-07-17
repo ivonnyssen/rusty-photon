@@ -52,7 +52,7 @@ mod tests {
             r#"{
                 "session": {"data_directory": "/tmp/rp-test"},
                 "equipment": {"rotator": {}},
-                "server": {}
+                "server": { "port": 0 }
             }"#,
         )
         .unwrap();

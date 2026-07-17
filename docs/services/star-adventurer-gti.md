@@ -1245,6 +1245,7 @@ loudly at load instead of being silently ignored.
   },
   "server": {
     "port": 11117,
+    "bind_address": "0.0.0.0",
     "tls": null,
     "auth": null
   },
@@ -1274,6 +1275,11 @@ loudly at load instead of being silently ignored.
   }
 }
 ```
+
+The `server` block is the shared `AlpacaServerConfig` from
+`crates/rusty-photon-server-config` (see ADR-016): `port`, `bind_address`
+(default `0.0.0.0`), optional `discovery_port`, and optional `tls`/`auth`.
+Absent `tls`/`auth` means plain, unauthenticated HTTP.
 
 The WiFi variant of `transport`:
 

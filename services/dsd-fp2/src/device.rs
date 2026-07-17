@@ -371,7 +371,9 @@ mod tests {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod mock_tests {
     use super::*;
-    use crate::config::{CliOverrides, Config, CoverCalibratorConfig, SerialConfig, ServerConfig};
+    use crate::config::{
+        AlpacaServerConfig, CliOverrides, Config, CoverCalibratorConfig, SerialConfig,
+    };
     use crate::mock::MockTransportFactory;
     use rusty_photon_service_lifecycle::ReloadSignal;
     use std::time::Duration;
@@ -383,12 +385,7 @@ mod mock_tests {
                 polling_interval: Duration::from_secs(60),
                 ..Default::default()
             },
-            server: ServerConfig {
-                port: 0,
-                discovery_port: None,
-                tls: None,
-                auth: None,
-            },
+            server: AlpacaServerConfig::new(0),
             cover_calibrator: test_cover_calibrator(),
         }
     }

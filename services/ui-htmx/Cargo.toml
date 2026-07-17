@@ -43,8 +43,10 @@ async-trait = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 clap = { workspace = true }
+rp-auth = { workspace = true }
 rp-tls = { workspace = true }
 rusty-photon-config = { workspace = true }
+rusty-photon-server-config = { workspace = true }
 rusty-photon-service-lifecycle = { workspace = true }
 # Async stream construction for the production SSE proxy (`/stream/events`,
 # Phase 5) and the test-only SSE fixture endpoint.

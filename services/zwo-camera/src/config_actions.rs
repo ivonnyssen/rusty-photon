@@ -31,9 +31,10 @@ impl ConfigurableDriver for ZwoCameraDriver {
         Vec::new()
     }
 
-    /// No secrets in v0 (TLS / auth are Future Work).
+    /// The one secret: the server-auth password hash. `TlsConfig` stores file
+    /// *paths*, not key material, so there is nothing to redact there.
     fn secret_pointers() -> &'static [&'static str] {
-        &[]
+        &["/server/auth/password_hash"]
     }
 
     fn override_paths(overrides: &CliOverrides) -> Vec<String> {

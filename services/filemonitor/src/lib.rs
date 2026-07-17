@@ -9,6 +9,7 @@ use std::sync::Arc;
 use ascom_alpaca::api::{CargoServerInfo, Device, SafetyMonitor};
 use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult, Server};
 use rp_tls::config::TlsConfig;
+pub use rusty_photon_server_config::AlpacaServerConfig;
 use rusty_photon_service_lifecycle::ReloadSignal;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
@@ -27,7 +28,7 @@ pub struct Config {
     pub device: DeviceConfig,
     pub file: FileConfig,
     pub parsing: ParsingConfig,
-    pub server: ServerConfig,
+    pub server: AlpacaServerConfig,
 }
 
 /// `deny_unknown_fields` so typoed or removed keys fail loudly at load
@@ -82,24 +83,6 @@ pub struct ParsingRule {
 pub enum RuleType {
     Contains,
     Regex,
-}
-
-/// `deny_unknown_fields` so typoed or removed keys fail loudly at load
-/// instead of being silently ignored.
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ServerConfig {
-    pub port: u16,
-    /// Alpaca UDP discovery responder port (normally 32227). Absent/`null` —
-    /// the default — disables discovery: many rusty-photon servers on one
-    /// host would collide on the shared discovery port, so it is a per-host
-    /// opt-in for single-driver deployments.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub discovery_port: Option<u16>,
-    #[serde(default)]
-    pub tls: Option<rp_tls::config::TlsConfig>,
-    #[serde(default)]
-    pub auth: Option<rp_auth::config::AuthConfig>,
 }
 
 /// The packaged first-start default watch path, under the service's
@@ -168,12 +151,7 @@ impl Default for Config {
                 ],
                 case_sensitive: false,
             },
-            server: ServerConfig {
-                port: 11111,
-                discovery_port: None,
-                tls: None,
-                auth: None,
-            },
+            server: AlpacaServerConfig::new(11111),
         }
     }
 }
@@ -428,7 +406,7 @@ impl ServerBuilder {
         }
 
         let mut server = Server::new(CargoServerInfo!());
-        server.listen_addr = SocketAddr::from(([0, 0, 0, 0], self.config.server.port));
+        server.listen_addr = self.config.server.socket_addr();
         server.devices.register(device);
 
         info!(
@@ -459,11 +437,8 @@ impl ServerBuilder {
             None => router,
         };
 
-        let listener = rp_tls::server::bind_dual_stack_tokio(SocketAddr::from((
-            [0, 0, 0, 0],
-            self.config.server.port,
-        )))
-        .await?;
+        let listener =
+            rp_tls::server::bind_dual_stack_tokio(self.config.server.socket_addr()).await?;
         let local_addr = listener.local_addr()?;
 
         // Opt-in Alpaca UDP discovery responder (config `discovery_port`);
@@ -620,12 +595,7 @@ mod device_config_action_tests {
                 }],
                 case_sensitive: false,
             },
-            server: ServerConfig {
-                port: 11111,
-                discovery_port: None,
-                tls: None,
-                auth: None,
-            },
+            server: AlpacaServerConfig::new(11111),
         }
     }
 
@@ -852,12 +822,7 @@ mod property_tests {
                 ],
                 case_sensitive: false,
             },
-            server: ServerConfig {
-                port: 8080,
-                discovery_port: None,
-                tls: None,
-                auth: None,
-            },
+            server: AlpacaServerConfig::new(8080),
         }
     }
 
@@ -887,12 +852,7 @@ mod property_tests {
                 ],
                 case_sensitive: true,
             },
-            server: ServerConfig {
-                port: 8080,
-                discovery_port: None,
-                tls: None,
-                auth: None,
-            },
+            server: AlpacaServerConfig::new(8080),
         }
     }
 
@@ -949,12 +909,7 @@ mod property_tests {
                     }],
                     case_sensitive: true,
                 },
-                server: ServerConfig {
-                    port: 8080,
-                    discovery_port: None,
-                    tls: None,
-                    auth: None,
-                },
+                server: AlpacaServerConfig::new(8080),
             };
 
             let device = FileMonitorDevice::new(config);
@@ -1005,12 +960,7 @@ mod property_tests {
                     }],
                     case_sensitive: false,
                 },
-                server: ServerConfig {
-                    port: 8080,
-                    discovery_port: None,
-                    tls: None,
-                    auth: None,
-                },
+                server: AlpacaServerConfig::new(8080),
             };
 
             let device = FileMonitorDevice::new(config);
@@ -1046,12 +996,7 @@ mod property_tests {
                     }],
                     case_sensitive: false,
                 },
-                server: ServerConfig {
-                    port,
-                    discovery_port: None,
-                    tls: None,
-                    auth: None,
-                },
+                server: AlpacaServerConfig::new(port),
             };
 
             let json = serde_json::to_string(&config).unwrap();
@@ -1087,12 +1032,7 @@ mod property_tests {
                     }],
                     case_sensitive: false,
                 },
-                server: ServerConfig {
-                    port: 8080,
-                    discovery_port: None,
-                    tls: None,
-                    auth: None,
-                },
+                server: AlpacaServerConfig::new(8080),
             };
 
             let device = FileMonitorDevice::new(config);
@@ -1189,10 +1129,12 @@ mod default_config_tests {
     }
 
     #[test]
-    fn a_typoed_server_field_is_rejected_loudly() {
-        let err = serde_json::from_str::<ServerConfig>(r#"{"prot": 1234}"#)
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("prot"), "{err}");
+    fn default_server_config_is_plain_http_on_all_interfaces() {
+        let c = Config::default();
+        assert_eq!(c.server.port, 11111);
+        assert_eq!(c.server.bind_address.to_string(), "0.0.0.0");
+        assert!(c.server.discovery_port.is_none());
+        assert!(c.server.tls.is_none());
+        assert!(c.server.auth.is_none());
     }
 }

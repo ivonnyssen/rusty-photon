@@ -21,7 +21,7 @@ pub mod filterwheel;
 pub mod preflight;
 
 pub use camera::QhyCameraDevice;
-pub use config::{load_effective_config, CliOverrides, Config, DeviceOverride};
+pub use config::{load_effective_config, AlpacaServerConfig, CliOverrides, Config, DeviceOverride};
 pub use config_actions::QhyCameraDriver;
 pub use error::{QhyCameraError, Result};
 pub use filterwheel::QhyFilterWheelDevice;
@@ -33,6 +33,7 @@ use std::sync::Arc;
 
 use ascom_alpaca::api::CargoServerInfo;
 use ascom_alpaca::Server;
+use rp_tls::config::TlsConfig;
 use rusty_photon_service_lifecycle::ReloadSignal;
 use tracing::{debug, info, warn};
 
@@ -103,7 +104,7 @@ impl ServerBuilder {
         };
 
         let mut server = Server::new(CargoServerInfo!());
-        server.listen_addr = SocketAddr::from(([0, 0, 0, 0], self.config.server.port));
+        server.listen_addr = self.config.server.socket_addr();
 
         // Clone the camera/CFW handles out so the `sdk` borrow ends before `sdk`
         // is moved into the BoundServer (the cloned handles share its backend).
@@ -160,13 +161,29 @@ impl ServerBuilder {
             warn!("no QHY cameras discovered; starting with no Camera devices");
         }
 
+        let tls = self.config.server.tls.clone();
         let router = axum::Router::new().fallback_service(server.into_service());
+
+        // HTTP Basic Auth (config `server.auth`); absent means unauthenticated.
+        let router = match &self.config.server.auth {
+            Some(auth) => {
+                if self.config.server.tls.is_none() {
+                    warn!(
+                        "Authentication is enabled but TLS is not. \
+                         Credentials will be transmitted in cleartext. \
+                         Consider enabling TLS (see `rp init-tls`)."
+                    );
+                }
+                rp_auth::layer(router, auth)
+            }
+            None => router,
+        };
 
         // Shared dual-stack helper (IPv6 + IPv4) with SO_REUSEADDR, like every
         // other Alpaca service. SO_REUSEADDR matters here because the in-process
         // `with_reload` loop rebinds the same port; a raw bind could fail to
         // rebind while a prior listener's TIME_WAIT lingers.
-        let bind_addr = SocketAddr::from(([0, 0, 0, 0], self.config.server.port));
+        let bind_addr = self.config.server.socket_addr();
         let listener = rp_tls::server::bind_dual_stack_tokio(bind_addr)
             .await
             .map_err(|source| QhyCameraError::Bind {
@@ -201,6 +218,7 @@ impl ServerBuilder {
             listener,
             router,
             local_addr,
+            tls,
             discovery,
             _sdk: sdk,
         })
@@ -212,6 +230,8 @@ pub struct BoundServer {
     listener: tokio::net::TcpListener,
     router: axum::Router,
     local_addr: SocketAddr,
+    /// TLS settings (config `server.tls`); `None` serves plain HTTP.
+    tls: Option<TlsConfig>,
     /// Alpaca UDP discovery responder, when the config opts in. Runs inside
     /// `start()`'s select so its socket closes when serving ends (reload).
     discovery: Option<ascom_alpaca::discovery::BoundDiscoveryServer>,
@@ -233,14 +253,22 @@ impl BoundServer {
             listener,
             router,
             local_addr: _,
+            tls,
             discovery,
             _sdk,
         } = self;
         let serve = async {
-            axum::serve(listener, router)
-                .with_graceful_shutdown(shutdown)
-                .await
-                .map_err(|e| QhyCameraError::Server(e.to_string()))
+            let result = match tls {
+                Some(ref tls_config) => {
+                    debug!("serving over TLS");
+                    rp_tls::server::serve_tls(listener, router, tls_config, shutdown).await
+                }
+                None => {
+                    debug!("serving plain HTTP");
+                    rp_tls::server::serve_plain(listener, router, shutdown).await
+                }
+            };
+            result.map_err(|e| QhyCameraError::Server(e.to_string()))
         };
         let result = rusty_photon_driver::discovery::serve_with(discovery, serve).await;
         debug!("qhy-camera shut down");

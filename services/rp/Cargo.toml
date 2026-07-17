@@ -35,6 +35,7 @@ rp-tls = { workspace = true }
 rpassword = { workspace = true }
 rp-fits = { workspace = true }
 rusty-photon-config = { workspace = true }
+rusty-photon-server-config = { workspace = true }
 rusty-photon-service-lifecycle = { workspace = true }
 ndarray = { workspace = true }
 ndarray-ndimage = { workspace = true }

@@ -76,6 +76,8 @@ Configuration is provided via a JSON file:
   },
   "server": {
     "port": 11112,
+    "bind_address": "0.0.0.0",
+    "tls": null,
     "auth": {
       "username": "observatory",
       "password_hash": "$argon2id$v=19$m=19456,t=2,p=1$..."
@@ -97,6 +99,11 @@ Configuration is provided via a JSON file:
 }
 ```
 
+The `server` block is the shared `AlpacaServerConfig` from
+`crates/rusty-photon-server-config` (see ADR-016): `port`, `bind_address`
+(default `0.0.0.0`), optional `discovery_port`, and optional `tls`/`auth`.
+Absent `tls`/`auth` means plain, unauthenticated HTTP.
+
 Every block (`Config` and each nested config struct) rejects unknown keys at
 deserialize (`deny_unknown_fields`), so a typo or a key removed by a schema
 change fails loudly at load instead of being silently ignored.
@@ -110,6 +117,7 @@ change fails loudly at load instead of being silently ignored.
 | serial | polling_interval | Status poll interval (humantime, e.g. `"5s"`, `"500ms"`) | `"5s"` |
 | serial | timeout | Serial timeout (humantime) | `"2s"` |
 | server | port | HTTP server port | 11112 |
+| server | bind_address | Interface to bind (`0.0.0.0` = all interfaces) | "0.0.0.0" |
 | server.auth | username | HTTP Basic Auth username (optional) | — |
 | server.auth | password_hash | Argon2id password hash (optional) | — |
 | switch | name | ASCOM device name for the Switch | "Pegasus PPBA Switch" |

@@ -116,7 +116,7 @@ impl ConfigurableDriver for DsdFp2Driver {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;
-    use crate::config::{Config, CoverCalibratorConfig, SerialConfig, ServerConfig};
+    use crate::config::{AlpacaServerConfig, Config, CoverCalibratorConfig, SerialConfig};
     use std::time::Duration;
 
     /// A config that is valid for `validate()`: like `Config::default()` but with
@@ -184,7 +184,7 @@ mod tests {
                 polling_interval: Duration::ZERO,
                 timeout: Duration::ZERO,
             },
-            server: ServerConfig::default(),
+            server: AlpacaServerConfig::new(11119),
             cover_calibrator: CoverCalibratorConfig {
                 max_brightness: 9999,
                 ..CoverCalibratorConfig::default()

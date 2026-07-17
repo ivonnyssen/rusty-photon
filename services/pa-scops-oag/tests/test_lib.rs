@@ -14,7 +14,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use pa_scops_oag::config::{FocuserConfig, SerialConfig, ServerConfig};
+use pa_scops_oag::config::{AlpacaServerConfig, FocuserConfig, SerialConfig};
 use pa_scops_oag::{Config, MockScopsTransportFactory};
 use rusty_photon_shared_transport::TransportFactory;
 
@@ -27,12 +27,7 @@ fn test_config(focuser_enabled: bool) -> Config {
             polling_interval: Duration::from_secs(60),
             ..Default::default()
         },
-        server: ServerConfig {
-            port: 0,
-            discovery_port: None,
-            tls: None,
-            auth: None,
-        },
+        server: AlpacaServerConfig::new(0),
         focuser: FocuserConfig {
             enabled: focuser_enabled,
             ..Default::default()

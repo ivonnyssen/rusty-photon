@@ -97,7 +97,12 @@ cargo run  -p zwo-camera --features simulation -- --port 11122
 ```jsonc
 {
   "devices": {},          // per-serial name/description overrides
-  "server": { "port": 11122 }
+  "server": {
+    "port": 11122,
+    "bind_address": "0.0.0.0", // default: all interfaces
+    "tls": null,               // shared server block (rusty-photon-server-config);
+    "auth": null               // absent tls/auth = plain unauthenticated HTTP
+  }
 }
 ```
 

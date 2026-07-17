@@ -78,13 +78,15 @@ impl ConfigurableDriver for SkySurveyCameraDriver {
         errors
     }
 
-    /// Follow-mode client credentials are plaintext passwords; redact them on
-    /// read and carry them forward on apply so a round-tripped form never blanks
-    /// them. Absent (`None`) blocks are simply skipped by the redaction.
+    /// Follow-mode client credentials are plaintext passwords and the inbound
+    /// Basic-Auth credential is a hash; redact them on read and carry them
+    /// forward on apply so a round-tripped form never blanks them. Absent
+    /// (`None`) blocks are simply skipped by the redaction.
     fn secret_pointers() -> &'static [&'static str] {
         &[
             "/pointing/telescope/auth/password",
             "/pointing/rotator/auth/password",
+            "/server/auth/password_hash",
         ]
     }
 
@@ -109,7 +111,7 @@ impl ConfigurableDriver for SkySurveyCameraDriver {
 mod tests {
     use super::*;
     use crate::config::{
-        DeviceConfig, OpticsConfig, PointingConfig, RotatorFollowConfig, ServerConfig,
+        AlpacaServerConfig, DeviceConfig, OpticsConfig, PointingConfig, RotatorFollowConfig,
         SurveyConfig, TelescopeFollowConfig,
     };
     use std::path::PathBuf as P;
@@ -142,10 +144,7 @@ mod tests {
                 cache_dir: P::from("/tmp"),
                 endpoint: "http://x/".into(),
             },
-            server: ServerConfig {
-                port: 0,
-                discovery_port: None,
-            },
+            server: AlpacaServerConfig::new(0),
         }
     }
 
@@ -204,7 +203,8 @@ mod tests {
             SkySurveyCameraDriver::secret_pointers(),
             &[
                 "/pointing/telescope/auth/password",
-                "/pointing/rotator/auth/password"
+                "/pointing/rotator/auth/password",
+                "/server/auth/password_hash"
             ]
         );
     }

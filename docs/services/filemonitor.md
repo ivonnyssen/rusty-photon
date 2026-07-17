@@ -54,6 +54,8 @@ The service uses a JSON configuration file with the following format:
   },
   "server": {
     "port": 11111,
+    "bind_address": "0.0.0.0",
+    "tls": null,
     "auth": {
       "username": "observatory",
       "password_hash": "$argon2id$v=19$m=19456,t=2,p=1$..."
@@ -67,12 +69,17 @@ Configuration sections:
 - **device**: ASCOM device metadata (name, unique ID, description)
 - **file**: Path to monitor and polling interval (humantime string, e.g. `"60s"`)
 - **parsing**: Multiple rule types (contains, regex) with safe/unsafe outcomes
-- **server**: ASCOM Alpaca server configuration (port, optional TLS/auth)
+- **server**: ASCOM Alpaca server configuration (port, bind address, optional TLS/auth)
 - **server.auth**: Optional HTTP Basic Auth credentials (username, Argon2id password_hash). See [ADR-003](../decisions/003-authentication-for-device-access.md).
+
+The `server` block is the shared `AlpacaServerConfig` from
+`crates/rusty-photon-server-config` (see ADR-016): `port`, `bind_address`
+(default `0.0.0.0`), optional `discovery_port`, and optional `tls`/`auth`.
+Absent `tls`/`auth` means plain, unauthenticated HTTP.
 
 The parsing rules are evaluated in order, with the first match determining safety status. If no rules match, the device defaults to unsafe (`false`) for safety reasons.
 
-Every block (`Config` and each nested config struct — `DeviceConfig`, `FileConfig`, `ParsingConfig`, `ParsingRule`, `ServerConfig`) rejects unknown keys at deserialize (`deny_unknown_fields`), so a typo or a key removed by a schema change fails loudly at load instead of being silently ignored.
+Every block (`Config` and each nested config struct — `DeviceConfig`, `FileConfig`, `ParsingConfig`, `ParsingRule`, and the shared `AlpacaServerConfig`) rejects unknown keys at deserialize (`deny_unknown_fields`), so a typo or a key removed by a schema change fails loudly at load instead of being silently ignored.
 
 ## Config actions
 
@@ -186,7 +193,7 @@ The service uses Rust's `PathBuf` for cross-platform path handling:
 - **Windows**: `C:\Observatory\RoofStatusFile.txt` or `\\server\share\RoofStatusFile.txt`
 
 #### Network Binding
-- All platforms bind to `0.0.0.0` (IPv4) by default
+- All platforms bind to `0.0.0.0` (all interfaces) by default; configurable via `server.bind_address`
 - IPv6 dual-stack support available on all platforms
 - Windows Firewall may require configuration for network access
 

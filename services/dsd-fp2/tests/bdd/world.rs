@@ -29,6 +29,10 @@ pub struct Fp2World {
     pub last_response: Option<serde_json::Value>,
     /// Result of the last `supported_actions` query.
     pub last_supported_actions: Option<Vec<String>>,
+    /// PKI tree for the TLS + auth smoke test (`auth.feature`).
+    pub tls_pki_dir: Option<TempDir>,
+    /// Config JSON staged by a Given step for a custom-config start.
+    pub pending_config: Option<serde_json::Value>,
 }
 
 impl Fp2World {

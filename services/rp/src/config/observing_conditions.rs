@@ -36,7 +36,7 @@ mod tests {
                         {"id": "ppba-weather", "alpaca_url": "http://127.0.0.1:11112"}
                     ]
                 },
-                "server": {}
+                "server": { "port": 0 }
             }"#,
         )
         .unwrap();
@@ -63,7 +63,7 @@ mod tests {
                         {"id": "ppba-weather", "name": "PPBA Weather", "alpaca_url": "http://127.0.0.1:11112", "device_number": 1}
                     ]
                 },
-                "server": {}
+                "server": { "port": 0 }
             }"#,
         )
         .unwrap();
@@ -87,7 +87,7 @@ mod tests {
                         {"id": "ppba-weather", "alpaca_url": "http://127.0.0.1:11112", "device_type": "observingconditions"}
                     ]
                 },
-                "server": {}
+                "server": { "port": 0 }
             }"#,
         )
         .unwrap();

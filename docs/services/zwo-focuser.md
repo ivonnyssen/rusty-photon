@@ -222,10 +222,18 @@ the port.
     }
   },
   "server": {
-    "port": 11124
+    "port": 11124,
+    "bind_address": "0.0.0.0",
+    "tls": null,
+    "auth": null
   }
 }
 ```
+
+The `server` block is the shared `AlpacaServerConfig` from
+`crates/rusty-photon-server-config` (see ADR-016): `port`, `bind_address`
+(default `0.0.0.0`), optional `discovery_port`, and optional `tls`/`auth`.
+Absent `tls`/`auth` means plain, unauthenticated HTTP.
 
 Sections:
 
@@ -247,7 +255,7 @@ implemented generically in `rusty_photon_config::actions` + the ASCOM adapter in
 [`rusty-photon-driver`](../../crates/rusty-photon-driver). `config_actions.rs`
 supplies `ConfigurableDriver for ZwoFocuserDriver`:
 
-- **Secrets redacted/carried forward:** none in v0 (no auth yet).
+- **Secrets redacted/carried forward:** `server.auth.password_hash`.
 - **Locked (identity) fields:** none — UniqueIDs are hardware-derived and not
   stored in config, so there is no identity field to lock (same divergence as
   `zwo-camera`; see *Device identity*).

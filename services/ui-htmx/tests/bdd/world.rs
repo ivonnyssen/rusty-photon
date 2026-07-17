@@ -87,6 +87,10 @@ pub struct UiWorld {
     /// The SSE `id` of the first feed frame, captured for the replay-cursor
     /// scenario.
     pub sse_cursor: Option<u64>,
+    /// PKI tree for the TLS + auth suite (`auth.feature`, `tls.feature`).
+    pub tls_pki_dir: Option<TempDir>,
+    /// Config JSON staged by a Given step for a custom-config BFF start.
+    pub pending_config: Option<Value>,
 }
 
 impl UiWorld {
@@ -187,7 +191,7 @@ impl UiWorld {
             );
         }
         let mut config = json!({
-            "server": { "bind": "127.0.0.1", "port": 0 },
+            "server": { "bind_address": "127.0.0.1", "port": 0 },
             "drivers": Value::Object(map),
         });
         if let Some(sentinel) = &self.sentinel {
@@ -196,6 +200,16 @@ impl UiWorld {
             });
         }
         let path = self.temp_path("ui-htmx.json");
+        std::fs::write(&path, config.to_string()).expect("failed to write BFF config");
+        let handle = ServiceHandle::start("ui-htmx", path.to_str().unwrap()).await;
+        self.ui = Some(handle);
+    }
+
+    /// Spawn the BFF from the config JSON a Given step staged in
+    /// `pending_config` (the TLS + auth suite: `auth.feature`, `tls.feature`).
+    pub async fn start_bff_from_pending_config(&mut self) {
+        let config = self.pending_config.take().expect("config not staged");
+        let path = self.temp_path("ui-htmx-tls-auth.json");
         std::fs::write(&path, config.to_string()).expect("failed to write BFF config");
         let handle = ServiceHandle::start("ui-htmx", path.to_str().unwrap()).await;
         self.ui = Some(handle);
@@ -217,7 +231,8 @@ impl UiWorld {
     /// bound, and the driver Given has already started the first BFF.
     pub async fn start_sentinel_and_rewire_bff(&mut self, services: Value) {
         let config = json!({
-            "dashboard": { "enabled": true, "port": 0, "history_size": 100 },
+            "dashboard": { "enabled": true, "history_size": 100 },
+            "server": { "port": 0, "bind_address": "127.0.0.1" },
             "services": services,
         });
         let path = self.temp_path("sentinel.json");
@@ -416,7 +431,7 @@ impl UiWorld {
     /// Spawn a BFF whose config carries only an `rp` target at the given port.
     pub async fn start_bff_with_rp_at(&mut self, rp_port: u16) {
         let config = json!({
-            "server": { "bind": "127.0.0.1", "port": 0 },
+            "server": { "bind_address": "127.0.0.1", "port": 0 },
             "drivers": {},
             "rp": { "base_url": format!("http://127.0.0.1:{rp_port}") }
         });

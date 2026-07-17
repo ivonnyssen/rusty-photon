@@ -24,7 +24,10 @@ humantime = { workspace = true }
 jsonschema = { version = "0.47", default-features = false }
 reqwest = { workspace = true }
 rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest"] }
+rp-auth = { workspace = true }
+rp-tls = { workspace = true }
 rusty-photon-config = { workspace = true }
+rusty-photon-server-config = { workspace = true }
 rusty-photon-service-lifecycle = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

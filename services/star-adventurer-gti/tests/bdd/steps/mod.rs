@@ -1,5 +1,6 @@
 pub mod abort_steps;
 pub mod altitude_floor_steps;
+pub mod auth_steps;
 pub mod auto_flip_steps;
 pub mod config_actions_steps;
 pub mod connection_steps;

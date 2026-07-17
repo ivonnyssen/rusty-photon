@@ -1,5 +1,6 @@
 //! Configuration types for the Deep Sky Dad FP2 driver.
 
+pub use rusty_photon_server_config::AlpacaServerConfig;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -8,12 +9,22 @@ use std::time::Duration;
 ///
 /// `deny_unknown_fields` so typoed or removed keys fail loudly at load
 /// instead of being silently ignored.
-#[derive(Debug, Clone, Serialize, Deserialize, Default, schemars::JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub serial: SerialConfig,
-    pub server: ServerConfig,
+    pub server: AlpacaServerConfig,
     pub cover_calibrator: CoverCalibratorConfig,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            serial: SerialConfig::default(),
+            server: AlpacaServerConfig::new(11119),
+            cover_calibrator: CoverCalibratorConfig::default(),
+        }
+    }
 }
 
 /// Serial port configuration.
@@ -35,26 +46,6 @@ pub struct SerialConfig {
     #[serde(default = "default_timeout", with = "humantime_serde")]
     #[schemars(with = "String")]
     pub timeout: Duration,
-}
-
-/// Server configuration.
-///
-/// `deny_unknown_fields` so typoed or removed keys fail loudly at load
-/// instead of being silently ignored.
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ServerConfig {
-    pub port: u16,
-    /// Alpaca UDP discovery responder port (normally 32227). Absent/`null` —
-    /// the default — disables discovery: many rusty-photon servers on one
-    /// host would collide on the shared discovery port, so it is a per-host
-    /// opt-in for single-driver deployments.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub discovery_port: Option<u16>,
-    #[serde(default)]
-    pub tls: Option<rp_tls::config::TlsConfig>,
-    #[serde(default)]
-    pub auth: Option<rp_auth::config::AuthConfig>,
 }
 
 /// CoverCalibrator device configuration.
@@ -127,17 +118,6 @@ impl Default for SerialConfig {
             baud_rate: default_baud_rate(),
             polling_interval: default_polling_interval(),
             timeout: default_timeout(),
-        }
-    }
-}
-
-impl Default for ServerConfig {
-    fn default() -> Self {
-        Self {
-            port: 11119,
-            discovery_port: None,
-            tls: None,
-            auth: None,
         }
     }
 }
@@ -251,6 +231,7 @@ mod tests {
         assert_eq!(c.serial.polling_interval, Duration::from_millis(500));
         assert_eq!(c.serial.timeout, Duration::from_secs(3));
         assert_eq!(c.server.port, 11119);
+        assert_eq!(c.server.bind_address.to_string(), "0.0.0.0");
         assert!(c.cover_calibrator.enabled);
         assert_eq!(c.cover_calibrator.max_brightness, 4096);
         assert_eq!(c.cover_calibrator.min_brightness, 250);
@@ -389,15 +370,6 @@ mod tests {
                 .unwrap_err()
                 .to_string();
         assert!(err.contains("baudrate"), "{err}");
-    }
-
-    #[test]
-    fn a_typoed_server_field_is_rejected_loudly() {
-        let err =
-            serde_json::from_str::<ServerConfig>(r#"{"port": 11119, "discoveryport": 32227}"#)
-                .unwrap_err()
-                .to_string();
-        assert!(err.contains("discoveryport"), "{err}");
     }
 
     #[test]

@@ -56,7 +56,7 @@ mod tests {
                 "session": {"data_directory": "/tmp/rp-test"},
                 "equipment": {},
                 "safety": {"poll_interval": "250ms"},
-                "server": {}
+                "server": { "port": 0 }
             }"#,
         )
         .unwrap();
@@ -75,7 +75,7 @@ mod tests {
                 "session": {"data_directory": "/tmp/rp-test"},
                 "equipment": {},
                 "safety": {"park_on_unsafe": true},
-                "server": {}
+                "server": { "port": 0 }
             }"#,
         )
         .unwrap();

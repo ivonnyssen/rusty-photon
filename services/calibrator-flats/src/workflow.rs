@@ -239,6 +239,7 @@ mod tests {
 
     fn plan(initial: Duration, max_iterations: u32, tolerance: f64) -> FlatPlan {
         FlatPlan {
+            server: crate::config::ServerConfig::new(0),
             camera_id: "main-cam".into(),
             filter_wheel_id: "fw".into(),
             calibrator_id: "cc".into(),

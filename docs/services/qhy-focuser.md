@@ -101,6 +101,8 @@ Responses are JSON objects terminated by `}` (no newline). Commands are sent as 
   },
   "server": {
     "port": 11113,
+    "bind_address": "0.0.0.0",
+    "tls": null,
     "auth": {
       "username": "observatory",
       "password_hash": "$argon2id$v=19$m=19456,t=2,p=1$..."
@@ -121,6 +123,11 @@ Responses are JSON objects terminated by `}` (no newline). Commands are sent as 
 `unique_id` is optional and may be omitted or left empty: the service mints
 a UUIDv4 on first run and persists it (see [Device identity
 (UniqueID)](#device-identity-uniqueid) below).
+
+The `server` block is the shared `AlpacaServerConfig` from
+`crates/rusty-photon-server-config` (see ADR-016): `port`, `bind_address`
+(default `0.0.0.0`), optional `discovery_port`, and optional `tls`/`auth`.
+Absent `tls`/`auth` means plain, unauthenticated HTTP.
 
 Every block (`Config` and each nested config struct) rejects unknown keys at
 deserialize (`deny_unknown_fields`), so a typo or a key removed by a schema

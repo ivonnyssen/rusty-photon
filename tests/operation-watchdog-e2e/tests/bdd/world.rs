@@ -158,7 +158,8 @@ impl WatchdogE2eWorld {
                 "api_url": pushover_url,
             }],
             "transitions": [],
-            "dashboard": { "enabled": true, "port": 0, "history_size": 100 },
+            "dashboard": { "enabled": true, "history_size": 100 },
+            "server": { "port": 0 },
             // The top-level supervised-services registry (shared by the
             // watchdog ladder and the restart endpoint). `centering` has no
             // Alpaca binding, so the ladder skips health/abort and goes

@@ -11,6 +11,7 @@
 //! so the stubs compile but never panic. Phase 4 fills the bodies in
 //! and removes the `@wip` tag in the same commit.
 
+pub mod auth_steps;
 pub mod config_steps;
 pub mod health_steps;
 pub mod real_astap_steps;

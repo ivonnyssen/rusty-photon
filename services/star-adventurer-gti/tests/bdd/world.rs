@@ -20,7 +20,7 @@ use bdd_infra::ServiceHandle;
 use cucumber::World;
 use serde_json::Value;
 use star_adventurer_gti::{
-    Config, CwExclusionZone, MinAltitudeDegrees, MountConfig, ServerConfig, TransportConfig,
+    AlpacaServerConfig, Config, CwExclusionZone, MinAltitudeDegrees, MountConfig, TransportConfig,
     UsbConfig,
 };
 use tempfile::TempDir;
@@ -56,6 +56,11 @@ pub struct StarAdventurerWorld {
     pub last_response: Option<Value>,
     /// Result of the last supported_actions query.
     pub last_supported_actions: Option<Vec<String>>,
+
+    /// PKI tree for the TLS + auth smoke test (`auth.feature`).
+    pub tls_pki_dir: Option<TempDir>,
+    /// Config JSON staged by a Given step for a custom-config start.
+    pub pending_config: Option<serde_json::Value>,
 }
 
 impl StarAdventurerWorld {
@@ -266,12 +271,7 @@ fn default_test_config() -> Config {
             command_timeout: Duration::from_secs(2),
             polling_interval: Duration::from_millis(50),
         }),
-        server: ServerConfig {
-            port: 0,
-            discovery_port: None,
-            tls: None,
-            auth: None,
-        },
+        server: AlpacaServerConfig::new(0),
         mount: MountConfig {
             settle_after_slew: Duration::from_millis(0),
             // BDD scenarios pass hardcoded RA / Dec targets (the

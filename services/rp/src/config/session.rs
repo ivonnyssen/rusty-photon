@@ -74,7 +74,7 @@ mod tests {
                     "session_state_flie": "/tmp/typo.json"
                 },
                 "equipment": {},
-                "server": {}
+                "server": { "port": 0 }
             }"#,
         )
         .unwrap();
@@ -98,7 +98,7 @@ mod tests {
                     "file_naming_pattern": "{target}_{filter}"
                 },
                 "equipment": {},
-                "server": {}
+                "server": { "port": 0 }
             }"#,
         )
         .unwrap();

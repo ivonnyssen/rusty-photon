@@ -7,17 +7,19 @@ exports_files(
 )
 
 # sky-survey-camera depends on rp-fits for the workspace's shared FITS
-# reader/writer surface, and on rp-auth for the `ClientAuthConfig`
-# used by `pointing.telescope.auth` (telescope-following mode reuses
-# `rp`'s mount-auth shape verbatim). rp-tls is only required by
-# services that mount HTTPS in front of the ASCOM Alpaca surface;
-# v0 is plain HTTP.
+# reader/writer surface, on rp-auth for the `ClientAuthConfig` used by
+# `pointing.telescope.auth` (telescope-following mode reuses `rp`'s
+# mount-auth shape verbatim) plus the inbound `server.auth` Basic-Auth
+# layer, and on rp-tls for the optional `server.tls` HTTPS serve path
+# (both via the shared rusty-photon-server-config `server` block).
 
 _INTRA_WORKSPACE_DEPS = [
     "//crates/rp-auth:rp-auth",
     "//crates/rp-fits:rp-fits",
+    "//crates/rp-tls:rp-tls",
     "//crates/rusty-photon-config:rusty-photon-config",
     "//crates/rusty-photon-driver:rusty-photon-driver",
+    "//crates/rusty-photon-server-config:rusty-photon-server-config",
     "//crates/rusty-photon-service-lifecycle:rusty-photon-service-lifecycle",
 ]
 

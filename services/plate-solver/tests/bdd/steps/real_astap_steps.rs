@@ -62,8 +62,10 @@ fn write_real_config(
     extra_env: &HashMap<String, String>,
 ) -> PathBuf {
     let body = serde_json::json!({
-        "bind_address": "127.0.0.1",
-        "port": 0,
+        "server": {
+            "bind_address": "127.0.0.1",
+            "port": 0,
+        },
         "astap_binary_path": binary.to_string_lossy(),
         "astap_db_directory": db.to_string_lossy(),
         "astap_extra_env": extra_env,

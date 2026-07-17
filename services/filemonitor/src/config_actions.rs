@@ -95,7 +95,7 @@ impl ConfigurableDriver for FileMonitorDriver {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;
-    use crate::{DeviceConfig, FileConfig, ParsingConfig, ParsingRule, ServerConfig};
+    use crate::{AlpacaServerConfig, DeviceConfig, FileConfig, ParsingConfig, ParsingRule};
     use std::path::PathBuf;
     use std::time::Duration;
 
@@ -118,12 +118,7 @@ mod tests {
                 }],
                 case_sensitive: false,
             },
-            server: ServerConfig {
-                port: 11111,
-                discovery_port: None,
-                tls: None,
-                auth: None,
-            },
+            server: AlpacaServerConfig::new(11111),
         }
     }
 

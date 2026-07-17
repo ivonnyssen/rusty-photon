@@ -212,7 +212,36 @@ the file must exist (`camera_id`, `filter_wheel_id`, `calibrator_id`,
 `ConditionPathExists` instead of crash-looping on a fresh install. Both
 `FlatPlan` and `FilterPlan` reject unknown keys at deserialize
 (`deny_unknown_fields`), so a typo or a key removed by a schema change
-fails loudly at load instead of being silently ignored. The plan is part of `rp`'s plugin configuration:
+fails loudly at load instead of being silently ignored.
+
+The service's own config file additionally carries a top-level `server`
+block for its HTTP endpoint (`/invoke`, `/health`):
+
+```json
+{
+  "server": {
+    "port": 11170,
+    "bind_address": "0.0.0.0",
+    "tls": null,
+    "auth": null
+  },
+  "camera_id": "main-cam",
+  "filter_wheel_id": "main-fw",
+  "calibrator_id": "flat-panel",
+  "filters": [
+    { "name": "Luminance", "count": 20 }
+  ]
+}
+```
+
+The `server` block is the shared `ServerConfig` from
+`crates/rusty-photon-server-config` (see ADR-016): `port`, `bind_address`
+(default `0.0.0.0`), and optional `tls`/`auth`. Absent `tls`/`auth` means
+plain, unauthenticated HTTP; a plan file without a `server` block keeps
+loading (port 11170 on all interfaces). `--port` / `--bind-address`
+override `server.port` / `server.bind_address` from the command line.
+
+The plan is part of `rp`'s plugin configuration:
 
 ```json
 {
@@ -246,6 +275,7 @@ fails loudly at load instead of being silently ignored. The plan is part of `rp`
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
+| `server` | object | `{ "port": 11170 }` | The service's HTTP endpoint (own config file only, not the plugin registration) — the shared `ServerConfig` shape above |
 | `camera_id` | string | required | Camera to use for flat exposures |
 | `filter_wheel_id` | string | required | Filter wheel to use |
 | `calibrator_id` | string | required | CoverCalibrator device to control |
@@ -288,6 +318,10 @@ Current scenarios (`tests/features/flat_calibration.feature`):
 
 - Orchestrator captures flats and returns the session to `idle`
 - Orchestrator emits an `exposure_complete` event per captured flat
+
+A separate TLS + auth smoke scenario (`tests/features/auth.feature`)
+spawns only calibrator-flats itself with `server.tls` and `server.auth`
+configured and proves `/health` requires HTTP Basic Auth over HTTPS.
 
 Planned scenarios (not yet implemented):
 

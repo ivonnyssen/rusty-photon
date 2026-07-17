@@ -20,7 +20,7 @@ struct Args {
     #[arg(short, long)]
     config: Option<PathBuf>,
 
-    /// Dashboard port (overrides config file)
+    /// Dashboard port (overrides the config file's `server.port`)
     #[arg(long)]
     dashboard_port: Option<u16>,
 
@@ -64,7 +64,7 @@ fn main() -> ServiceResult {
     config.resolve_secrets()?;
 
     if let Some(dashboard_port) = args.dashboard_port {
-        config.dashboard.port = dashboard_port;
+        config.server.port = dashboard_port;
     }
 
     tracing::info!("Starting sentinel service");

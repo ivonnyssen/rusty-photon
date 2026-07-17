@@ -44,7 +44,7 @@ mod tests {
                 "session": {"data_directory": "/tmp/rp-test"},
                 "equipment": {},
                 "imaging": {"cache_max_mib": 256, "cache_max_images": 4},
-                "server": {}
+                "server": { "port": 0 }
             }"#,
         )
         .unwrap();
@@ -64,7 +64,7 @@ mod tests {
                 "session": {"data_directory": "/tmp/rp-test"},
                 "equipment": {},
                 "imaging": {"cache_max_mib": 256, "cache_ttl_secs": 60},
-                "server": {}
+                "server": { "port": 0 }
             }"#,
         )
         .unwrap();

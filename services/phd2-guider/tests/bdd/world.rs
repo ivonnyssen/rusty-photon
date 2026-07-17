@@ -29,6 +29,12 @@ pub struct GuiderWorld {
 
     /// Result of the most recent HTTP request (status + body).
     pub last_response: Option<HttpResponse>,
+
+    /// PKI tree for the TLS + auth smoke test (`auth.feature`).
+    pub tls_pki_dir: Option<TempDir>,
+
+    /// Config JSON staged by a Given step for a custom-config start.
+    pub pending_config: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -150,8 +156,10 @@ impl GuiderWorld {
     ) {
         let dir = self.temp_dir_path();
         let config = serde_json::json!({
-            "bind_address": "127.0.0.1",
-            "port": 0,  // OS picks a free port; ServiceHandle parses it from stdout
+            "server": {
+                "bind_address": "127.0.0.1",
+                "port": 0,  // OS picks a free port; ServiceHandle parses it from stdout
+            },
             "stop_timeout": stop_timeout,
             "phd2": {
                 "host": "127.0.0.1",

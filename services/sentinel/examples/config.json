@@ -38,8 +38,11 @@
   ],
   "dashboard": {
     "enabled": true,
-    "port": 11114,
     "history_size": 100
+  },
+  "server": {
+    "port": 11114,
+    "bind_address": "0.0.0.0"
   },
   "services": {
     "dsd-fp2": {

@@ -32,9 +32,7 @@ fn configured_with_tls(world: &mut ScopsWorld) {
             polling_interval: std::time::Duration::from_secs(60),
             ..Default::default()
         },
-        server: pa_scops_oag::ServerConfig {
-            port: 0,
-            discovery_port: None,
+        server: pa_scops_oag::AlpacaServerConfig {
             tls: Some(rp_tls::config::TlsConfig {
                 cert: certs_dir
                     .join("pa-scops-oag.pem")
@@ -45,7 +43,7 @@ fn configured_with_tls(world: &mut ScopsWorld) {
                     .to_string_lossy()
                     .into_owned(),
             }),
-            auth: None,
+            ..pa_scops_oag::AlpacaServerConfig::new(0)
         },
         focuser: pa_scops_oag::FocuserConfig {
             enabled: true,

@@ -58,12 +58,39 @@ For custom monitors/notifiers (e.g. in an astrophotography app), use `with_monit
 Configuration is loaded from a JSON file. All sections are optional with sensible defaults.
 Every section (the top-level `Config` plus each nested block —
 `MonitorConfig`, `NotifierConfig`, `TransitionConfig`, `DashboardConfig`,
-`OperationWatchdogConfig`, `OperationPolicy`, `ServiceConfig`, `HealthConfig`)
+`ServerConfig`, `OperationWatchdogConfig`, `OperationPolicy`,
+`ServiceConfig`, `HealthConfig`)
 rejects unknown keys at deserialize (`deny_unknown_fields`), so a typo or a
 key removed by a schema change fails loudly at load instead of being silently
 ignored.
 
 See `examples/config.json` for a complete example.
+
+### Server and dashboard
+
+The dashboard listener is configured by the top-level `server` block;
+`dashboard` keeps only what the dashboard itself does (whether it is served,
+how much notification history it keeps):
+
+```json
+{
+  "server": {
+    "port": 11114,
+    "bind_address": "0.0.0.0",
+    "tls": null,
+    "auth": null
+  },
+  "dashboard": {
+    "enabled": true,
+    "history_size": 100
+  }
+}
+```
+
+The `server` block is the shared `ServerConfig` from
+`crates/rusty-photon-server-config` (see ADR-016): `port` (default `11114`),
+`bind_address` (default `0.0.0.0`), and optional `tls`/`auth`. Absent
+`tls`/`auth` means plain, unauthenticated HTTP.
 
 ### Supervised services (`services`)
 
@@ -164,8 +191,8 @@ Empty transitions config means no notifications are sent.
 
 ### Authentication
 
-The dashboard supports optional HTTP Basic Auth via the `dashboard.auth`
-config section. Monitor connections to auth-enabled Alpaca services use
+The dashboard supports optional HTTP Basic Auth via the top-level
+`server.auth` config section. Monitor connections to auth-enabled Alpaca services use
 per-monitor `auth` credentials (plaintext password, `chmod 600` recommended).
 See [ADR-003](../decisions/003-authentication-for-device-access.md).
 
@@ -556,8 +583,8 @@ fields classified `restart_required`.
   completes — bounded by the service's `max_restart_duration`, so the
   response always arrives within that budget plus scheduling noise.
 - **Same protection as the rest of the dashboard.** The endpoint sits on the
-  dashboard router, behind the same optional `dashboard.auth` Basic-auth and
-  TLS layers — there is no separate gate. Deploying without dashboard auth
+  dashboard router, behind the same optional `server.auth` Basic-auth and
+  `server.tls` layers — there is no separate gate. Deploying without dashboard auth
   leaves it (like the JSON API) open; the restart commands themselves come
   only from sentinel's own config file, never from the request.
 - A user-initiated restart is logged (`info!`) but does **not** dispatch

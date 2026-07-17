@@ -539,8 +539,12 @@ async fn stop_reconnection(&self);
 
 ```json
 {
-  "bind_address": "127.0.0.1",
-  "port": 11130,
+  "server": {
+    "port": 11130,
+    "bind_address": "0.0.0.0",
+    "tls": null,
+    "auth": null
+  },
   "stop_timeout": "10s",
   "phd2": {
     "host": "localhost",
@@ -570,14 +574,18 @@ convention.
 
 Configuration sections:
 
-- **HTTP service mode** (top level; only read by `phd2-guider serve`,
-  ignored by the CLI subcommands):
-  - `bind_address`: listen address (default: `127.0.0.1`; bind
-    `0.0.0.0` only when `rp` runs on a different machine)
+- **server** (only read by `phd2-guider serve`, ignored by the CLI
+  subcommands): the shared `ServerConfig` from
+  `crates/rusty-photon-server-config` (see ADR-016):
   - `port`: HTTP port (default: `11130`; `0` auto-assigns — used by
     tests)
-  - `stop_timeout`: how long `POST /api/v1/guiding/stop` waits for
-    PHD2 to reach `Stopped` (default: `"10s"`)
+  - `bind_address`: listen interface (default: `0.0.0.0`, all
+    interfaces)
+  - `tls` / `auth`: optional HTTPS and HTTP Basic Auth blocks. Absent
+    (`null`) means plain, unauthenticated HTTP.
+- **stop_timeout** (top level; `serve` mode only): how long
+  `POST /api/v1/guiding/stop` waits for PHD2 to reach `Stopped`
+  (default: `"10s"`)
 - **phd2**: PHD2 connection and process settings
   - `host`: PHD2 host address (default: localhost)
   - `port`: JSON RPC port (default: 4400)
@@ -873,9 +881,10 @@ request.
 
 ### Startup and port discovery
 
-`serve` binds `bind_address:port` and prints `bound_addr=<host>:<port>`
-to stdout (the `bdd-infra::ServiceHandle` discovery convention; `port: 0`
-auto-assigns). Config validation failures exit non-zero before binding.
+`serve` binds `server.bind_address:server.port` and prints
+`bound_addr=<host>:<port>` to stdout (the `bdd-infra::ServiceHandle`
+discovery convention; `port: 0` auto-assigns). Config validation
+failures exit non-zero before binding.
 
 ## Implementation Phases
 

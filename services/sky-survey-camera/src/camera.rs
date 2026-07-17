@@ -824,7 +824,9 @@ impl Camera for SkySurveyCamera {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;
-    use crate::config::{DeviceConfig, OpticsConfig, PointingConfig, ServerConfig, SurveyConfig};
+    use crate::config::{
+        AlpacaServerConfig, DeviceConfig, OpticsConfig, PointingConfig, SurveyConfig,
+    };
 
     fn fake_config() -> Config {
         Config {
@@ -853,10 +855,7 @@ mod tests {
                 cache_dir: std::env::temp_dir().join("sky-survey-camera-tests"),
                 endpoint: "http://placeholder/".into(),
             },
-            server: ServerConfig {
-                port: 0,
-                discovery_port: None,
-            },
+            server: AlpacaServerConfig::new(0),
         }
     }
 

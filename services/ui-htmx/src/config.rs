@@ -11,13 +11,14 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+pub use rusty_photon_server_config::ServerConfig;
 use serde::{Deserialize, Serialize};
 
 /// Top-level BFF configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    #[serde(default)]
+    #[serde(default = "default_server")]
     pub server: ServerConfig,
     #[serde(default)]
     pub drivers: Drivers,
@@ -34,14 +35,21 @@ pub struct Config {
     pub sentinel: Option<SentinelTarget>,
 }
 
-/// Where the BFF itself listens.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ServerConfig {
-    #[serde(default = "default_bind")]
-    pub bind: String,
-    #[serde(default = "default_port")]
-    pub port: u16,
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            server: default_server(),
+            drivers: Drivers::default(),
+            rp: None,
+            sentinel: None,
+        }
+    }
+}
+
+/// The BFF's default `server` block when the config file omits it: port 11120
+/// on all interfaces, plain HTTP.
+fn default_server() -> ServerConfig {
+    ServerConfig::new(11120)
 }
 
 /// The driver targets the BFF knows about, keyed by service id (the path
@@ -141,14 +149,6 @@ fn default_rp_base_url() -> String {
     "http://127.0.0.1:11115".to_string()
 }
 
-fn default_bind() -> String {
-    "127.0.0.1".to_string()
-}
-
-fn default_port() -> u16 {
-    11120
-}
-
 fn default_base_url() -> String {
     "http://127.0.0.1:11119".to_string()
 }
@@ -159,15 +159,6 @@ fn default_sentinel_base_url() -> String {
 
 fn default_device_type() -> String {
     "covercalibrator".to_string()
-}
-
-impl Default for ServerConfig {
-    fn default() -> Self {
-        Self {
-            bind: default_bind(),
-            port: default_port(),
-        }
-    }
 }
 
 impl Default for DriverTarget {
@@ -200,8 +191,10 @@ mod tests {
     #[test]
     fn defaults_target_local_dsd_fp2() {
         let c = Config::default();
-        assert_eq!(c.server.bind, "127.0.0.1");
+        assert_eq!(c.server.bind_address.to_string(), "0.0.0.0");
         assert_eq!(c.server.port, 11120);
+        assert!(c.server.tls.is_none());
+        assert!(c.server.auth.is_none());
         let dsd = c.drivers.0.get("dsd-fp2").unwrap();
         assert_eq!(dsd.base_url, "http://127.0.0.1:11119");
         assert_eq!(dsd.device_type, "covercalibrator");
@@ -214,7 +207,7 @@ mod tests {
         let json = r#"{ "server": { "port": 9000 } }"#;
         let c: Config = serde_json::from_str(json).unwrap();
         assert_eq!(c.server.port, 9000);
-        assert_eq!(c.server.bind, "127.0.0.1");
+        assert_eq!(c.server.bind_address.to_string(), "0.0.0.0");
         // Omitting `drivers` falls back to the default single dsd-fp2 entry.
         assert!(c.drivers.0.contains_key("dsd-fp2"));
     }
@@ -360,12 +353,6 @@ mod tests {
     fn config_rejects_unknown_top_level_field() {
         let err = serde_json::from_str::<Config>(r#"{"plugins": []}"#).unwrap_err();
         assert!(err.to_string().contains("plugins"), "{err}");
-    }
-
-    #[test]
-    fn server_config_rejects_unknown_field() {
-        let err = serde_json::from_str::<Config>(r#"{"server": {"tls": true}}"#).unwrap_err();
-        assert!(err.to_string().contains("tls"), "{err}");
     }
 
     #[test]

@@ -94,7 +94,7 @@ mod tests {
                     "solve_time_estimate": "12s",
                     "slew_overhead_estimate": "3s"
                 },
-                "server": {}
+                "server": { "port": 0 }
             }"#,
         )
         .unwrap();
@@ -120,7 +120,7 @@ mod tests {
                 "session": {"data_directory": "/tmp/rp-test"},
                 "equipment": {},
                 "centering": {"solve_time_estimate": "45s"},
-                "server": {}
+                "server": { "port": 0 }
             }"#,
         )
         .unwrap();
@@ -147,7 +147,7 @@ mod tests {
                 "session": {"data_directory": "/tmp/rp-test"},
                 "equipment": {},
                 "centering": {"bogus_field": 1},
-                "server": {}
+                "server": { "port": 0 }
             }"#,
         )
         .unwrap();

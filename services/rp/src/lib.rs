@@ -83,7 +83,7 @@ impl ServerBuilder {
         // flags, so this is exactly the loaded file. Served by
         // `GET /api/config` and diffed against by `PUT /api/config`.
         let effective_config = Arc::new(config.clone());
-        let bind_addr = format!("{}:{}", config.server.bind_address, config.server.port);
+        let bind_addr = config.server.socket_addr();
 
         debug!("initializing equipment registry");
         let equipment = Arc::new(EquipmentRegistry::new(&config.equipment).await);
@@ -275,7 +275,7 @@ impl ServerBuilder {
 
         let tls = config.server.tls.clone();
 
-        let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
+        let listener = tokio::net::TcpListener::bind(bind_addr).await?;
         let local_addr = listener.local_addr()?;
 
         // Set the MCP base URL on the session manager

@@ -7,15 +7,26 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::path::Path;
 use std::time::Duration;
 
+pub use rusty_photon_server_config::AlpacaServerConfig;
 use serde::{Deserialize, Serialize};
 
 /// Top-level configuration deserialised from the JSON config file.
-#[derive(Debug, Clone, Serialize, Deserialize, Default, schemars::JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub transport: TransportConfig,
-    pub server: ServerConfig,
+    pub server: AlpacaServerConfig,
     pub mount: MountConfig,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            transport: TransportConfig::default(),
+            server: AlpacaServerConfig::new(11_117),
+            mount: MountConfig::default(),
+        }
+    }
 }
 
 /// Transport block — `usb` (serial) or `udp` (WiFi).
@@ -85,22 +96,6 @@ pub struct UdpConfig {
     #[serde(default = "default_polling_interval", with = "humantime_serde")]
     #[schemars(with = "String")]
     pub polling_interval: Duration,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ServerConfig {
-    pub port: u16,
-    /// Alpaca UDP discovery responder port (normally 32227). Absent/`null` —
-    /// the default — disables discovery: many rusty-photon servers on one
-    /// host would collide on the shared discovery port, so it is a per-host
-    /// opt-in for single-driver deployments.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub discovery_port: Option<u16>,
-    #[serde(default)]
-    pub tls: Option<rp_tls::config::TlsConfig>,
-    #[serde(default)]
-    pub auth: Option<rp_auth::config::AuthConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -1076,17 +1071,6 @@ impl Default for UdpConfig {
     }
 }
 
-impl Default for ServerConfig {
-    fn default() -> Self {
-        Self {
-            port: 11_117,
-            discovery_port: None,
-            tls: None,
-            auth: None,
-        }
-    }
-}
-
 impl Default for MountConfig {
     fn default() -> Self {
         Self {
@@ -1140,6 +1124,7 @@ mod tests {
     fn config_defaults_match_the_design_doc() {
         let cfg = Config::default();
         assert_eq!(cfg.server.port, 11_117);
+        assert_eq!(cfg.server.bind_address.to_string(), "0.0.0.0");
         assert_eq!(cfg.mount.name, "Star Adventurer GTi");
         // `unique_id` ships empty so the first-run materialize step mints
         // a persistent UUIDv4; the hardcoded literal was removed for
@@ -1951,13 +1936,6 @@ mod tests {
         let json = r#"{"address": "192.168.4.1", "bind_address": "192.168.4.2", "mtu": 1500}"#;
         let err = serde_json::from_str::<UdpConfig>(json).unwrap_err();
         assert!(err.to_string().contains("mtu"), "{err}");
-    }
-
-    #[test]
-    fn server_config_rejects_unknown_field() {
-        let json = r#"{"port": 11117, "bind_address": "0.0.0.0"}"#;
-        let err = serde_json::from_str::<ServerConfig>(json).unwrap_err();
-        assert!(err.to_string().contains("bind_address"), "{err}");
     }
 
     #[test]

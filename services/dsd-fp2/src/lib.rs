@@ -17,8 +17,8 @@ pub mod transport;
 
 pub use codec::Fp2Codec;
 pub use config::{
-    load_config, load_effective_config, resolve_config_path, CliOverrides, Config,
-    CoverCalibratorConfig, SerialConfig, ServerConfig,
+    load_config, load_effective_config, resolve_config_path, AlpacaServerConfig, CliOverrides,
+    Config, CoverCalibratorConfig, SerialConfig,
 };
 pub use device::DsdFp2Device;
 pub use error::{DsdFp2Error, Result};
@@ -142,7 +142,7 @@ impl ServerBuilder {
             Box<dyn std::error::Error + Send + Sync>,
         > = async {
             let mut server = Server::new(CargoServerInfo!());
-            server.listen_addr = SocketAddr::from(([0, 0, 0, 0], self.config.server.port));
+            server.listen_addr = self.config.server.socket_addr();
 
             if self.config.cover_calibrator.enabled {
                 let mut device =
@@ -186,11 +186,8 @@ impl ServerBuilder {
                 None => router,
             };
 
-            let listener = rp_tls::server::bind_dual_stack_tokio(SocketAddr::from((
-                [0, 0, 0, 0],
-                self.config.server.port,
-            )))
-            .await?;
+            let listener =
+                rp_tls::server::bind_dual_stack_tokio(self.config.server.socket_addr()).await?;
             let local_addr = listener.local_addr()?;
 
             // Opt-in Alpaca UDP discovery responder (config `discovery_port`);

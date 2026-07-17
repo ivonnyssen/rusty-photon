@@ -126,8 +126,10 @@ impl SentinelWorld {
             "transitions": self.sentinel_transitions,
             "dashboard": {
                 "enabled": true,
-                "port": 0,
                 "history_size": 100
+            },
+            "server": {
+                "port": 0
             }
         });
 

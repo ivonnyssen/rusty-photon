@@ -141,7 +141,10 @@ compensation" profile ConformU accepts.
     "timeout": "2s"
   },
   "server": {
-    "port": 11123
+    "port": 11123,
+    "bind_address": "0.0.0.0",
+    "tls": null,
+    "auth": null
   },
   "focuser": {
     "name": "Pegasus Scops OAG",
@@ -157,6 +160,11 @@ compensation" profile ConformU accepts.
 UUIDv4 on first run and persists it (see [Device identity](#device-identity-uniqueid)).
 `max_step` defaults to `22000`, the travel range the official Pegasus Astro
 software enforces for the Scops OAG (positions 0–22000).
+
+The `server` block is the shared `AlpacaServerConfig` from
+`crates/rusty-photon-server-config` (see ADR-016): `port`, `bind_address`
+(default `0.0.0.0`), optional `discovery_port`, and optional `tls`/`auth`.
+Absent `tls`/`auth` means plain, unauthenticated HTTP.
 
 `server.discovery_port` (not shown above) is the Alpaca UDP discovery responder
 port (opt-in; normally `32227`). Absent/`null` — the default — disables

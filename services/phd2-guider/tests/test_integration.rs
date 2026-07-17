@@ -2370,7 +2370,7 @@ fn test_no_subcommand_starts_the_http_service() {
     // discovery line, then terminate.
     let dir = tempfile::tempdir().expect("create temp dir");
     let config_path = dir.path().join("config.json");
-    std::fs::write(&config_path, r#"{"port": 0}"#).expect("write config");
+    std::fs::write(&config_path, r#"{"server": {"port": 0}}"#).expect("write config");
 
     let mut child = phd2_guider_command()
         .arg("--config")

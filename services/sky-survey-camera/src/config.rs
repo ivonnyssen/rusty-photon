@@ -1,4 +1,5 @@
 use rp_auth::config::ClientAuthConfig;
+pub use rusty_photon_server_config::AlpacaServerConfig;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -12,7 +13,8 @@ pub struct Config {
     pub optics: OpticsConfig,
     pub pointing: PointingConfig,
     pub survey: SurveyConfig,
-    pub server: ServerConfig,
+    /// HTTP server settings (the shared `rusty-photon-server-config` shape).
+    pub server: AlpacaServerConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -137,18 +139,6 @@ fn default_survey_endpoint() -> String {
     "https://skyview.gsfc.nasa.gov/current/cgi/runquery.pl".to_string()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ServerConfig {
-    pub port: u16,
-    /// Alpaca UDP discovery responder port (normally 32227). Absent/`null` —
-    /// the default — disables discovery: many rusty-photon servers on one
-    /// host would collide on the shared discovery port, so it is a per-host
-    /// opt-in for single-driver deployments.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub discovery_port: Option<u16>,
-}
-
 pub async fn load_config(path: &Path) -> Result<Config, SkySurveyCameraError> {
     let bytes = tokio::fs::read(path).await?;
     let config: Config = serde_json::from_slice(&bytes)?;
@@ -226,10 +216,7 @@ mod tests {
                 cache_dir: PathBuf::from("/tmp"),
                 endpoint: default_survey_endpoint(),
             },
-            server: ServerConfig {
-                port: 0,
-                discovery_port: None,
-            },
+            server: AlpacaServerConfig::new(0),
         }
     }
 
@@ -460,9 +447,18 @@ mod tests {
     }
 
     #[test]
-    fn server_config_rejects_unknown_field() {
-        let json = r#"{"port": 0, "bind_address": "0.0.0.0"}"#;
-        let err = serde_json::from_str::<ServerConfig>(json).unwrap_err();
-        assert!(err.to_string().contains("bind_address"), "{err}");
+    fn server_block_without_bind_address_defaults_to_all_interfaces() {
+        let json = r#"{
+            "device": {"name": "n", "description": "d"},
+            "optics": {"focal_length_mm": 1000.0, "pixel_size_x_um": 3.76, "pixel_size_y_um": 3.76, "sensor_width_px": 100, "sensor_height_px": 100},
+            "pointing": {"initial_ra_deg": 0.0, "initial_dec_deg": 0.0},
+            "survey": {"name": "DSS2 Red", "request_timeout": "30s", "cache_dir": "/tmp"},
+            "server": {"port": 11116}
+        }"#;
+        let config: Config = serde_json::from_str(json).unwrap();
+        assert_eq!(config.server.port, 11116);
+        assert_eq!(config.server.bind_address.to_string(), "0.0.0.0");
+        assert!(config.server.tls.is_none());
+        assert!(config.server.auth.is_none());
     }
 }

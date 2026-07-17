@@ -52,7 +52,6 @@ to *Future Work*.
 - Multiple bands selected via an attached ASCOM FilterWheel.
 - Additional survey backends (CDS `hips2fits`, local HiPS tiles).
 - Bayer / one-shot colour, cooling, pulse guiding, fast readout.
-- TLS and HTTP Basic Auth (would compose `rp-tls` / `rp-auth`).
 - Cache eviction.
 
 ## Implementation Framework
@@ -97,7 +96,10 @@ second backend (e.g. CDS `hips2fits`) is added; see *Future Work*.
     "cache_dir": "/var/cache/sky-survey-camera"
   },
   "server": {
-    "port": 11116
+    "port": 11116,
+    "bind_address": "0.0.0.0",
+    "tls": null,
+    "auth": null
   }
 }
 ```
@@ -105,6 +107,11 @@ second backend (e.g. CDS `hips2fits`) is added; see *Future Work*.
 Every block above (`Config` and each nested config struct) rejects unknown
 keys at deserialize (`deny_unknown_fields`), so a typo or a key removed by a
 schema change fails loudly at load instead of being silently ignored.
+
+The `server` block is the shared `AlpacaServerConfig` from
+`crates/rusty-photon-server-config` (see ADR-016): `port`, `bind_address`
+(default `0.0.0.0`), optional `discovery_port`, and optional `tls`/`auth`.
+Absent `tls`/`auth` means plain, unauthenticated HTTP.
 
 Configuration sections:
 
@@ -186,8 +193,8 @@ Configuration sections:
     angle of the field, the orientation the simulator renders.
 - **survey** — Backend selector + request timeout (humantime per the
   `Duration` convention) + on-disk cache directory.
-- **server** — Listening port. TLS and Basic Auth are added later via
-  `rp-tls` / `rp-auth` if needed; out of scope for v0.
+- **server** — Listening port and bind address, plus optional `tls`
+  (HTTPS via `rp-tls`) and `auth` (HTTP Basic Auth via `rp-auth`).
 
 ### Device identity (UniqueID)
 
@@ -254,7 +261,8 @@ half (`ConfigurableDriver for SkySurveyCameraDriver`, `Overrides = ()` — the
 binary has no CLI overrides) plus the `dispatch` the camera device delegates to.
 
 - **Secrets redacted / carried forward:** the follow-mode client passwords
-  `/pointing/telescope/auth/password` and `/pointing/rotator/auth/password`.
+  `/pointing/telescope/auth/password` and `/pointing/rotator/auth/password`,
+  plus the inbound `/server/auth/password_hash`.
 - **Locked (identity) field:** `device.unique_id`.
 - **Hard read-only field:** `server.port`.
 - **Validation** mirrors load-time `config::validate` (telescope offsets finite,

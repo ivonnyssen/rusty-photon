@@ -111,6 +111,7 @@ pub struct Config {
     /// `plate_solver`.
     #[serde(default)]
     pub guider: Option<GuiderConfig>,
+    #[serde(default = "server::default_server")]
     pub server: ServerConfig,
 }
 
@@ -125,7 +126,7 @@ pub fn default_scaffold() -> serde_json::Value {
     serde_json::json!({
         "session": { "data_directory": default_data_directory() },
         "equipment": {},
-        "server": {}
+        "server": { "port": 11115, "bind_address": "0.0.0.0" }
     })
 }
 
@@ -203,8 +204,7 @@ pub fn load_config(path: &Path) -> Result<Config> {
 pub(crate) mod test_support {
     pub const MINIMAL_CONFIG_JSON: &str = r#"{
         "session": {"data_directory": "/tmp/rp-test"},
-        "equipment": {},
-        "server": {}
+        "equipment": {}
     }"#;
 }
 
@@ -268,7 +268,7 @@ mod tests {
         let config = load_config(&path).unwrap();
         assert_eq!(config.session.data_directory, "/tmp/rp-test");
         assert_eq!(config.server.port, 11115);
-        assert_eq!(config.server.bind_address, "127.0.0.1");
+        assert_eq!(config.server.bind_address.to_string(), "0.0.0.0");
         assert_eq!(config.imaging.cache_max_mib, 1024);
         assert_eq!(config.imaging.cache_max_images, 8);
     }
@@ -288,7 +288,7 @@ mod tests {
             r#"{
                 "session": {"data_directory": "/tmp/rp-test"},
                 "equipment": {},
-                "server": {},
+                "server": { "port": 0 },
                 "workflows": []
             }"#,
         )

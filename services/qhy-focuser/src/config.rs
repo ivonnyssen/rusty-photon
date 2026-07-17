@@ -1,5 +1,6 @@
 //! Configuration types for the QHY Q-Focuser driver
 
+pub use rusty_photon_server_config::AlpacaServerConfig;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::time::Duration;
@@ -8,12 +9,22 @@ use std::time::Duration;
 ///
 /// `deny_unknown_fields` so typoed or removed keys fail loudly at load
 /// instead of being silently ignored.
-#[derive(Debug, Clone, Serialize, Deserialize, Default, schemars::JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub serial: SerialConfig,
-    pub server: ServerConfig,
+    pub server: AlpacaServerConfig,
     pub focuser: FocuserConfig,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            serial: SerialConfig::default(),
+            server: AlpacaServerConfig::new(11113),
+            focuser: FocuserConfig::default(),
+        }
+    }
 }
 
 /// Serial port configuration
@@ -34,26 +45,6 @@ pub struct SerialConfig {
     #[serde(default = "default_timeout", with = "humantime_serde")]
     #[schemars(with = "String")]
     pub timeout: Duration,
-}
-
-/// Server configuration
-///
-/// `deny_unknown_fields` so typoed or removed keys fail loudly at load
-/// instead of being silently ignored.
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ServerConfig {
-    pub port: u16,
-    /// Alpaca UDP discovery responder port (normally 32227). Absent/`null` —
-    /// the default — disables discovery: many rusty-photon servers on one
-    /// host would collide on the shared discovery port, so it is a per-host
-    /// opt-in for single-driver deployments.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub discovery_port: Option<u16>,
-    #[serde(default)]
-    pub tls: Option<rp_tls::config::TlsConfig>,
-    #[serde(default)]
-    pub auth: Option<rp_auth::config::AuthConfig>,
 }
 
 /// Focuser device configuration
@@ -117,17 +108,6 @@ impl Default for SerialConfig {
             baud_rate: default_baud_rate(),
             polling_interval: default_polling_interval(),
             timeout: default_timeout(),
-        }
-    }
-}
-
-impl Default for ServerConfig {
-    fn default() -> Self {
-        Self {
-            port: 11113,
-            discovery_port: None,
-            tls: None,
-            auth: None,
         }
     }
 }
@@ -236,6 +216,7 @@ mod tests {
         assert_eq!(config.serial.timeout, Duration::from_secs(2));
 
         assert_eq!(config.server.port, 11113);
+        assert_eq!(config.server.bind_address.to_string(), "0.0.0.0");
     }
 
     #[test]
@@ -264,13 +245,6 @@ mod tests {
         assert_eq!(config.baud_rate, 9600);
         assert_eq!(config.polling_interval, Duration::from_millis(1000));
         assert_eq!(config.timeout, Duration::from_secs(2));
-    }
-
-    #[test]
-    fn server_config_default() {
-        let config = ServerConfig::default();
-
-        assert_eq!(config.port, 11113);
     }
 
     #[test]
@@ -391,14 +365,6 @@ mod tests {
     }
 
     #[test]
-    fn a_typoed_server_field_is_rejected_loudly() {
-        let err = serde_json::from_str::<ServerConfig>(r#"{"port": 11113, "prot": 1}"#)
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("prot"), "{err}");
-    }
-
-    #[test]
     fn a_typoed_focuser_field_is_rejected_loudly() {
         let err = serde_json::from_str::<FocuserConfig>(
             r#"{"name": "F", "description": "d", "max_stpe": 1000}"#,
@@ -426,7 +392,7 @@ mod tests {
         assert!(debug_str.contains("Config"));
         assert!(debug_str.contains("FocuserConfig"));
         assert!(debug_str.contains("SerialConfig"));
-        assert!(debug_str.contains("ServerConfig"));
+        assert!(debug_str.contains("AlpacaServerConfig"));
     }
 
     #[test]

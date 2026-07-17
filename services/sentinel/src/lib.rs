@@ -21,7 +21,6 @@ pub mod watchdog;
 pub use config::{load_config, Config};
 pub use error::{Result, SentinelError};
 
-use std::net::SocketAddr;
 use std::sync::Arc;
 
 use tokio_util::sync::CancellationToken;
@@ -295,7 +294,7 @@ impl SentinelBuilder {
 
         // Bind dashboard listener if enabled
         let dashboard_listener = if config.dashboard.enabled {
-            let addr = SocketAddr::from(([0, 0, 0, 0], config.dashboard.port));
+            let addr = config.server.socket_addr();
             match tokio::net::TcpListener::bind(addr).await {
                 Ok(listener) => {
                     tracing::debug!("Dashboard bound to {}", addr);
@@ -303,8 +302,8 @@ impl SentinelBuilder {
                 }
                 Err(e) => {
                     tracing::error!(
-                        "Failed to bind dashboard to port {}: {}. Continuing without dashboard.",
-                        config.dashboard.port,
+                        "Failed to bind dashboard to {}: {}. Continuing without dashboard.",
+                        addr,
                         e
                     );
                     None
@@ -314,8 +313,8 @@ impl SentinelBuilder {
             None
         };
 
-        let dashboard_tls = config.dashboard.tls.clone();
-        let dashboard_auth = config.dashboard.auth.clone();
+        let dashboard_tls = config.server.tls.clone();
+        let dashboard_auth = config.server.auth.clone();
 
         Ok(Sentinel {
             engine,
@@ -602,14 +601,9 @@ mod tests {
 
     #[tokio::test]
     async fn has_dashboard_true_when_enabled() {
-        let config = Config {
-            dashboard: config::DashboardConfig {
-                enabled: true,
-                port: 0,
-                ..config::DashboardConfig::default()
-            },
-            ..Config::default()
-        };
+        let mut config = Config::default();
+        // Ephemeral port so parallel tests never contend for 11114.
+        config.server.port = 0;
         let mock = MockHttpClient::new();
         let http: Arc<dyn io::HttpClient> = Arc::new(mock);
 

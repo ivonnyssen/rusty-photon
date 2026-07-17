@@ -338,7 +338,6 @@ ASI C API exposes and what `zwo-rs` will wrap.
 - Per-serial connect-time tuning (gain/offset/target-temperature defaults).
 - `FullWellCapacity` (no native ASI field; supply a placeholder only if ConformU
   requires it).
-- TLS / HTTP Basic Auth (compose `rp-tls` / `rp-auth` later).
 - **Vendoring the SDK** into `libzwo-sys` (MIT permits) to drop external
   provisioning — deferred in favour of mirroring `qhyccd-rs`'s external model.
 
@@ -365,10 +364,18 @@ per-serial display overrides plus the port.
     }
   },
   "server": {
-    "port": 11122
+    "port": 11122,
+    "bind_address": "0.0.0.0",
+    "tls": null,
+    "auth": null
   }
 }
 ```
+
+The `server` block is the shared `AlpacaServerConfig` from
+`crates/rusty-photon-server-config` (see ADR-016): `port`, `bind_address`
+(default `0.0.0.0`), optional `discovery_port`, and optional `tls`/`auth`.
+Absent `tls`/`auth` means plain, unauthenticated HTTP.
 
 Sections:
 
@@ -394,7 +401,8 @@ implemented generically in `rusty_photon_config::actions` + the ASCOM adapter in
 [`rusty-photon-driver`](../../crates/rusty-photon-driver). `config_actions.rs`
 supplies `ConfigurableDriver for ZwoCameraDriver`:
 
-- **Secrets redacted/carried forward:** none in v0 (no auth yet).
+- **Secrets redacted/carried forward:** `server.auth.password_hash` (the one
+  secret; `server.tls` stores file *paths*, not key material).
 - **Locked (identity) fields:** none — UniqueIDs are hardware-derived and not
   stored in config, so there is no identity field to lock (a deliberate
   divergence from the `materialize_identity` convention; see *Device identity*).
