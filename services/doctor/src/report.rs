@@ -269,6 +269,44 @@ mod tests {
     }
 
     #[test]
+    fn test_fix_op_display_names_the_file_and_operation() {
+        let set_number = FixOp::SetNumber {
+            service: "dsd-fp2".to_string(),
+            pointer: "/server/port".to_string(),
+            value: 11119,
+        };
+        assert_eq!(
+            set_number.to_string(),
+            "dsd-fp2.json: set /server/port to 11119"
+        );
+        assert_eq!(set_number.service(), Some("dsd-fp2"));
+
+        let set_string = FixOp::SetString {
+            service: "ui-htmx".to_string(),
+            pointer: "/drivers/x/base_url".to_string(),
+            value: "http://localhost:11113".to_string(),
+        };
+        assert_eq!(
+            set_string.to_string(),
+            "ui-htmx.json: set /drivers/x/base_url to \"http://localhost:11113\""
+        );
+        assert_eq!(set_string.service(), Some("ui-htmx"));
+
+        let remove = FixOp::RemoveKey {
+            service: "sentinel".to_string(),
+            pointer: "/services".to_string(),
+        };
+        assert_eq!(remove.to_string(), "sentinel.json: remove /services");
+        assert_eq!(remove.service(), Some("sentinel"));
+
+        assert_eq!(
+            FixOp::Unknown.to_string(),
+            "an operation this doctor build does not know"
+        );
+        assert_eq!(FixOp::Unknown.service(), None);
+    }
+
+    #[test]
     fn test_a_fix_op_from_a_newer_binary_degrades_to_unknown() {
         let json = r#"{
             "checks": [ {

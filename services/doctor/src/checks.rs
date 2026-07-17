@@ -909,4 +909,29 @@ mod tests {
         assert_eq!(localhost_port("http://localhost"), None);
         assert_eq!(localhost_port("not a url"), None);
     }
+
+    #[test]
+    fn test_replace_port_rebuilds_every_url_shape() {
+        // Scheme + path: both preserved around the swapped port.
+        assert_eq!(
+            replace_port("http://localhost:11114/api/v1", 11113).as_deref(),
+            Some("http://localhost:11113/api/v1")
+        );
+        // Scheme, no path.
+        assert_eq!(
+            replace_port("http://localhost:11114", 11113).as_deref(),
+            Some("http://localhost:11113")
+        );
+        // No scheme (authority-only), with and without a path.
+        assert_eq!(
+            replace_port("localhost:11114/x", 11113).as_deref(),
+            Some("localhost:11113/x")
+        );
+        assert_eq!(
+            replace_port("localhost:11114", 11113).as_deref(),
+            Some("localhost:11113")
+        );
+        // No port to replace.
+        assert_eq!(replace_port("http://localhost", 11113), None);
+    }
 }

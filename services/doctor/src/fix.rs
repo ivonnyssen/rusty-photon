@@ -147,6 +147,39 @@ mod tests {
         assert!(!remove(&mut v, "/server/port"), "second removal is a no-op");
         assert!(!remove(&mut v, "/absent/key"));
         assert!(!remove(&mut v, "/keep/0"), "array elements are not keys");
+        assert!(!remove(&mut v, "no-slash"), "a token without a parent");
+    }
+
+    #[test]
+    fn test_apply_op_covers_every_variant() {
+        let mut v = sample();
+        assert!(apply_op(
+            &mut v,
+            &FixOp::SetNumber {
+                service: "x".to_string(),
+                pointer: "/server/port".to_string(),
+                value: 1,
+            }
+        ));
+        assert!(apply_op(
+            &mut v,
+            &FixOp::SetString {
+                service: "x".to_string(),
+                pointer: "/drivers/a~1b/base_url".to_string(),
+                value: "http://y".to_string(),
+            }
+        ));
+        assert!(apply_op(
+            &mut v,
+            &FixOp::RemoveKey {
+                service: "x".to_string(),
+                pointer: "/keep".to_string(),
+            }
+        ));
+        assert!(
+            !apply_op(&mut v, &FixOp::Unknown),
+            "an unknown op from a newer binary is never applied"
+        );
     }
 
     #[test]
@@ -205,6 +238,32 @@ mod tests {
         }])];
         let applied = apply_fixes(dir.path(), &checks).unwrap();
         assert!(applied.is_empty(), "nothing to remove, nothing recorded");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_apply_fixes_errors_when_the_write_fails() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("sentinel.json"), r#"{ "services": {} }"#).unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
+        let checks = vec![Check::fail(
+            "config.retired-keys",
+            Some("sentinel".to_string()),
+            "retired",
+            None,
+        )
+        .with_fixes(vec![FixOp::RemoveKey {
+            service: "sentinel".to_string(),
+            pointer: "/services".to_string(),
+        }])];
+        let result = apply_fixes(dir.path(), &checks);
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        match result {
+            // Running privileged (root CI containers) writes anyway.
+            Ok(applied) => assert_eq!(applied.len(), 1),
+            Err(err) => assert!(err.contains("could not write"), "{err}"),
+        }
     }
 
     #[test]
