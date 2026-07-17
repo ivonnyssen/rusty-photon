@@ -25,11 +25,8 @@ pub struct QhyFocuserWorld {
     pub temperature_result: Option<f64>,
     pub is_moving_result: Option<bool>,
 
-    /// TLS test state
-    pub tls_pki_dir: Option<TempDir>,
-
-    /// Auth test state — plaintext password for HTTP Basic Auth assertions
-    pub auth_password: Option<String>,
+    /// Throwaway PKI + per-run credentials for the TLS/auth scenarios
+    pub pki: Option<bdd_infra::tls_auth::PkiFixture>,
 
     /// Parsed JSON body of the last config.get / config.apply / config.schema action.
     pub last_response: Option<serde_json::Value>,

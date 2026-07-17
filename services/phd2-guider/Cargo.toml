@@ -114,7 +114,7 @@ mockall = { workspace = true }
 tempfile = { workspace = true }
 cargo-husky = { workspace = true }
 cucumber = { workspace = true }
-bdd-infra = { workspace = true }
+bdd-infra = { workspace = true, features = ["tls-auth"] }
 reqwest = { workspace = true }
 
 [target.'cfg(unix)'.dev-dependencies]

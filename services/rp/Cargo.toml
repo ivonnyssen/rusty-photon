@@ -114,7 +114,9 @@ fi
 require-sh = true
 
 [dev-dependencies]
-bdd-infra = { workspace = true, features = ["rp-harness"] }
+# tls-auth: the shared PKI + credentials fixture backing the deep TLS + Basic
+# Auth suites (tls.feature, auth.feature).
+bdd-infra = { workspace = true, features = ["rp-harness", "tls-auth"] }
 cucumber = { workspace = true }
 derive_more = { workspace = true }
 libc = { workspace = true }

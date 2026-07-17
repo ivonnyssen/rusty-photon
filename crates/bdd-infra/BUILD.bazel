@@ -72,6 +72,57 @@ rust_library(
     deps = all_crate_deps(normal = True),
 )
 
+# Variant with the tls-auth feature enabled: the shared PKI + credentials
+# fixture (PkiFixture), TlsAuthState/TlsAuthSmokeWorld, and the
+# tls_auth_smoke_steps! macro backing every service's TLS + Basic Auth BDD
+# scenarios. The feature gates the deps on rp-tls (cert generation, the
+# CA-trusting reqwest client) and rp-auth (Argon2id hashing).
+rust_library(
+    name = "bdd-infra_tls_auth",
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = ["src/bin/**"],
+    ),
+    aliases = aliases(),
+    crate_features = ["tls-auth"],
+    crate_name = "bdd_infra",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//visibility:public"],
+    deps = [
+        "//crates/rp-auth",
+        "//crates/rp-tls",
+    ] + all_crate_deps(normal = True),
+)
+
+# Variant with rp-harness AND tls-auth enabled, for the suites that spawn rp
+# alongside their TLS + auth scenarios (rp, ui-htmx, calibrator-flats,
+# session-runner). A test binary can link only one bdd_infra crate, so the
+# feature union needs its own variant.
+rust_library(
+    name = "bdd-infra_rp_harness_tls_auth",
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = ["src/bin/**"],
+    ),
+    aliases = aliases(),
+    crate_features = [
+        "rp-harness",
+        "tls-auth",
+    ],
+    crate_name = "bdd_infra",
+    data = glob(["omnisim-config/**"]),
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//visibility:public"],
+    deps = [
+        "//crates/rp-auth",
+        "//crates/rp-ephemeris",
+        "//crates/rp-fits",
+        "//crates/rp-tls",
+    ] + all_crate_deps(normal = True),
+)
+
 # Helper binary used by bdd-infra's own integration tests. Referenced via the
 # TEST_SERVICE_BINARY env var by tests/service_handle.rs.
 rust_binary(
@@ -134,6 +185,33 @@ rust_test(
     deps = [
         "//crates/rp-ephemeris",
         "//crates/rp-fits",
+    ] + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+# Unit tests of the feature-gated tls_auth module (fixture generation, JSON
+# block shapes, config staging). Positively filtered to the module tree,
+# mirroring bdd-infra_rp_harness_unit_test, so the requires-cargo run_once_*
+# tests in the base `tests::` module stay out and these run on every PR.
+rust_test(
+    name = "bdd-infra_tls_auth_unit_test",
+    size = "small",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    args = ["tls_auth::"],
+    crate = ":bdd-infra_tls_auth",
+    crate_features = ["tls-auth"],
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = [
+        "//crates/rp-auth",
+        "//crates/rp-tls",
     ] + all_crate_deps(
         normal = True,
         normal_dev = True,

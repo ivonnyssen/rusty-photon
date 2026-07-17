@@ -29,11 +29,8 @@ pub struct PpbaWorld {
     /// ASCOM error from the last "try" operation
     pub last_error: Option<ASCOMError>,
 
-    /// TLS test state
-    pub tls_pki_dir: Option<tempfile::TempDir>,
-
-    /// Auth test password (plaintext, for building requests)
-    pub auth_password: Option<String>,
+    /// Throwaway PKI + per-run credentials for the TLS/auth scenarios
+    pub pki: Option<bdd_infra::tls_auth::PkiFixture>,
 
     /// Parsed JSON body of the last config.get / config.apply / config.schema action.
     pub last_response: Option<serde_json::Value>,

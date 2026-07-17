@@ -209,7 +209,7 @@ rust_test(
     # Cargo test uses `required-features = ["mock"]` for the same reason.
     deps = [
         ":pa-falcon-rotator_lib_mock",
-        "//crates/bdd-infra",
+        "//crates/bdd-infra:bdd-infra_tls_auth",
     ] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
         normal = True,
         normal_dev = True,

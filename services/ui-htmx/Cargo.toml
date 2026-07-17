@@ -121,7 +121,9 @@ require-sh = true
 [dev-dependencies]
 # rp-harness: the Phase-5 suites spawn a real rp (RpConfigBuilder + launcher)
 # alongside the BFF and dsd-fp2 — an all-first-party stack, no OmniSim.
-bdd-infra = { workspace = true, features = ["rp-harness"] }
+# tls-auth: the shared PKI + credentials fixture backing the deep TLS + Basic
+# Auth suites (auth.feature, tls.feature).
+bdd-infra = { workspace = true, features = ["rp-harness", "tls-auth"] }
 mockall = { workspace = true }
 cucumber = { workspace = true }
 tempfile = { workspace = true }

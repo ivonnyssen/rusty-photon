@@ -36,8 +36,8 @@ pub struct SentinelWorld {
     pub last_status_code: Option<u16>,
     pub last_error: Option<String>,
 
-    // TLS test state
-    pub tls_pki_dir: Option<TempDir>,
+    // TLS + auth test state (shared PKI fixture: CA, service cert, credentials)
+    pub pki: Option<bdd_infra::tls_auth::PkiFixture>,
 
     // Local Pushover API stub so notification scenarios never hit the real
     // api.pushover.net (slow, non-hermetic, rejects test credentials).
@@ -75,6 +75,27 @@ impl SentinelWorld {
         std::fs::write(&file_path, content).expect("failed to write temp file");
         self.temp_file_path = Some(file_path.clone());
         file_path
+    }
+
+    /// The shared PKI fixture (panics if the cert-generation Given hasn't run).
+    pub fn pki(&self) -> &bdd_infra::tls_auth::PkiFixture {
+        self.pki.as_ref().expect("TLS certs not generated")
+    }
+
+    /// `server.tls` fragment for the filemonitor certificate pair signed by
+    /// the fixture's CA — the cross-service scenarios spawn a TLS-enabled
+    /// filemonitor that must chain to the same CA sentinel trusts.
+    pub fn fm_tls_block(&self) -> serde_json::Value {
+        let certs_dir = self
+            .pki()
+            .cert_path()
+            .parent()
+            .expect("cert path has no parent")
+            .to_path_buf();
+        serde_json::json!({
+            "cert": certs_dir.join("filemonitor.pem").to_string_lossy(),
+            "key": certs_dir.join("filemonitor-key.pem").to_string_lossy(),
+        })
     }
 
     /// Build filemonitor JSON config from accumulated state.

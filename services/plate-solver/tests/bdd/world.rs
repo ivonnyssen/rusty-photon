@@ -4,6 +4,7 @@
 //! the spawned wrapper handle, the temp directory holding fixtures and
 //! configs, and the most recent HTTP response body / status / timing.
 
+use bdd_infra::tls_auth::{TlsAuthSmokeWorld, TlsAuthState};
 use bdd_infra::ServiceHandle;
 use cucumber::World;
 use std::collections::HashMap;
@@ -68,12 +69,48 @@ pub struct PlateSolverWorld {
     pub concurrent_results: Vec<ConcurrentResult>,
 
     /// Configuration JSON being accumulated by `configuration.feature`'s
-    /// composing Given steps (and staged whole by `auth.feature`'s
-    /// Given step). Materialized to disk by the starting When step.
+    /// composing Given steps. Materialized to disk by the starting When
+    /// step.
     pub pending_config: serde_json::Map<String, serde_json::Value>,
 
-    /// PKI tree for the TLS + auth smoke test (`auth.feature`).
-    pub tls_pki_dir: Option<TempDir>,
+    /// State for the shared TLS + auth smoke steps (`auth.feature`).
+    pub tls_auth: TlsAuthState,
+}
+
+impl TlsAuthSmokeWorld for PlateSolverWorld {
+    const PROBE_PATH: &'static str = "/health";
+
+    fn tls_auth(&mut self) -> &mut TlsAuthState {
+        &mut self.tls_auth
+    }
+
+    fn base_test_config(&self) -> serde_json::Value {
+        // Reuse the suite's mock_astap plus an empty db dir so startup
+        // validation passes without a real ASTAP install. The db dir is
+        // kept (not auto-deleted) under the OS temp dir so it still
+        // exists when the service starts, matching the lifetime handling
+        // of the harness's staged temp config files.
+        let mock_path = Self::mock_astap_path();
+        let db_dir = tempfile::Builder::new()
+            .prefix("plate-solver-auth-db-")
+            .tempdir()
+            .expect("create db dir")
+            .keep();
+        serde_json::json!({
+            "astap_binary_path": mock_path.to_string_lossy(),
+            "astap_db_directory": db_dir.to_string_lossy(),
+        })
+    }
+
+    async fn start_with_tls_auth(&mut self, config: serde_json::Value) {
+        let handle = bdd_infra::tls_auth::spawn_service_handle(
+            &mut self.tls_auth,
+            env!("CARGO_PKG_NAME"),
+            &config,
+        )
+        .await;
+        self.service_handle = Some(handle);
+    }
 }
 
 #[derive(Debug, Clone)]

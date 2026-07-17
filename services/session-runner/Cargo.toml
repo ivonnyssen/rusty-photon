@@ -43,7 +43,7 @@ tracing = { workspace = true }
 rusty-photon-service-lifecycle = { workspace = true, features = ["scm"] }
 
 [dev-dependencies]
-bdd-infra = { workspace = true, features = ["rp-harness"] }
+bdd-infra = { workspace = true, features = ["rp-harness", "tls-auth"] }
 cucumber = { workspace = true }
 derive_more = { workspace = true }
 proptest = { workspace = true }

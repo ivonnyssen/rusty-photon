@@ -105,7 +105,7 @@ fi
 require-sh = true
 
 [dev-dependencies]
-bdd-infra = { workspace = true }
+bdd-infra = { workspace = true, features = ["tls-auth"] }
 tokio-test = { workspace = true }
 mockall = { workspace = true }
 cucumber = { workspace = true }
