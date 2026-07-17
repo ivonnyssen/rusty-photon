@@ -167,6 +167,7 @@ report groups naturally.
 | `inventory.unit-without-config` | warn | A `rusty-photon-*` unit is installed but `<svc>.json` does not exist. The service has never started (it self-creates config on first run) — or its state directory is wrong. |
 | `inventory.config-without-unit` | warn | `<svc>.json` exists for a catalog service whose unit is not installed. Leftover from a removed package, or a hand-copied file. |
 | `inventory.unknown-config` | warn | A `*.json` in the config dir matches no catalog service and no known non-service file (`acme.json`; the `pki/` tree is ignored). Catches typo'd filenames that a service will silently never read. |
+| `inventory.unit-and-config` | ok | Unit installed and config present — the healthy pairing, reported so an empty report is never mistaken for a clean one. |
 
 ### Config parsing
 
@@ -194,7 +195,7 @@ the typed shape — validates its own file and doctor aggregates.
 | Check | Status | Trigger |
 |---|---|---|
 | `units.config-gated` | fail | A unit is enabled but its `ConditionPathExists=` file is missing: installed, enabled, and silently inert. Today that is sky-survey-camera, plate-solver, calibrator-flats, and phd2-guider, all of which hard-require a config file. |
-| `sentinel.privilege-path` | fail | Sentinel's unit is installed, runs as an unprivileged user with `NoNewPrivileges=yes`, and no rule under `/etc/polkit-1/rules.d/` grants that user `org.freedesktop.systemd1.manage-units` for `rusty-photon-*` units — so every restart sentinel attempts will be denied at the privilege boundary. Points at the scoped rule from [#523](https://github.com/ivonnyssen/rusty-photon/issues/523). Detection is a heuristic (scan for the action id + user in the rules files) and the detail says so. |
+| `sentinel.privilege-path` | fail | Sentinel's unit is installed and no rule under `/etc/polkit-1/rules.d/` or `/usr/share/polkit-1/rules.d/` (where the sentinel packages ship theirs) grants the `rusty-photon` user `org.freedesktop.systemd1.manage-units` for `rusty-photon-*` units — the packaged unit runs unprivileged with `NoNewPrivileges=yes`, so every restart sentinel attempts will be denied at the privilege boundary. Points at the scoped rule from [#523](https://github.com/ivonnyssen/rusty-photon/issues/523). Detection is a heuristic (scan for the action id, unit prefix, and user literal in the rules files) and the detail says so. |
 
 ### Name joins
 
