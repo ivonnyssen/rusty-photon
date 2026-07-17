@@ -194,7 +194,7 @@ Configuration sections:
 - **survey** — Backend selector + request timeout (humantime per the
   `Duration` convention) + on-disk cache directory.
 - **server** — Listening port and bind address, plus optional `tls`
-  (HTTPS via `rp-tls`) and `auth` (HTTP Basic Auth via `rp-auth`).
+  (HTTPS via `rusty-photon-tls`) and `auth` (HTTP Basic Auth via `rp-auth`).
 
 ### Device identity (UniqueID)
 

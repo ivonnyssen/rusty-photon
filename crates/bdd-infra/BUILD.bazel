@@ -145,8 +145,9 @@ rust_test(
         proc_macro = True,
         proc_macro_dev = True,
     ),
-    # 3 of the run_once_* tests shell out to `cargo build` when RP_BINARY
-    # isn't pre-set. See docs/plans/archive/bazel-migration.md "Known test gaps".
+    # 3 of the run_once_* tests need pre-built doctor / rp binaries, found
+    # via the cargo target-dir walk when DOCTOR_BINARY / RP_BINARY aren't
+    # pre-set. See docs/plans/archive/bazel-migration.md "Known test gaps".
     tags = ["requires-cargo"],
     deps = all_crate_deps(
         normal = True,

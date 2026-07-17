@@ -61,7 +61,7 @@ impl ServerBuilder {
                 if server.tls.is_none() {
                     tracing::warn!(
                         "Authentication is enabled but TLS is not. Credentials will be \
-                         transmitted in cleartext. Consider enabling TLS (see `rp init-tls`)."
+                         transmitted in cleartext. Consider enabling TLS (see `doctor --fix`)."
                     );
                 }
                 rp_auth::layer(router, auth)

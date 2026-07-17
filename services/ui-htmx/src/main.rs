@@ -80,7 +80,7 @@ fn main() -> ServiceResult {
                         warn!(
                             "Authentication is enabled but TLS is not. \
                              Credentials will be transmitted in cleartext. \
-                             Consider enabling TLS (see `rp init-tls`)."
+                             Consider enabling TLS (see `doctor --fix`)."
                         );
                     }
                     rp_auth::layer(app, auth)

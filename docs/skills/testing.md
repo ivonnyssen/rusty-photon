@@ -887,8 +887,9 @@ needs to return canned responses or verify call arguments. **This is the default
 for HTTP-client error-path tests** — see ADR-004.
 
 Examples: `HttpClient` trait in sentinel (mocks reqwest for `AlpacaSafetyMonitor`
-and `PushoverNotifier`), `DnsProvider` trait in rp-tls (mocks Cloudflare API),
-`AcmeClient` trait in rp-tls (mocks Let's Encrypt ACME protocol).
+and `PushoverNotifier`), `DnsProvider` trait in doctor's provisioning module
+(mocks Cloudflare API), `AcmeClient` trait in the same module (mocks Let's
+Encrypt ACME protocol).
 
 **In-test axum stub server** — Use as the **escape hatch** when the production
 code traverses a wide foreign trait surface that mockall would generate huge
