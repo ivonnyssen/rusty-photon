@@ -149,7 +149,7 @@ async fn index_handler(State(dashboard): State<DashboardState>) -> impl IntoResp
                     <td style="padding: 0.5rem;">{}</td>
                 </tr>"#,
                 html_escape(&s.name),
-                run_state,
+                html_escape(&run_state),
                 color,
                 bg,
                 s.health,

@@ -287,8 +287,19 @@ impl SentinelBuilder {
         // event monitors never silently disables supervision. Its probes use
         // a client that skips certificate verification: probes send no
         // credentials and never parse the body, and sentinel cannot assume
-        // it holds a CA for every peer's self-signed certificate.
-        let probe_http: Arc<dyn io::HttpClient> = Arc::new(ReqwestHttpClient::insecure());
+        // it holds a CA for every peer's self-signed certificate. If that
+        // client cannot be built, fall back to the shared (verifying) client
+        // loudly — self-signed TLS peers would then probe as down.
+        let probe_http: Arc<dyn io::HttpClient> = match ReqwestHttpClient::insecure() {
+            Ok(client) => Arc::new(client),
+            Err(e) => {
+                tracing::error!(
+                    "{e}; probing through the shared verifying client — \
+                     self-signed TLS peers may report down"
+                );
+                Arc::clone(&http)
+            }
+        };
         let supervision = DiscoverySupervisor::new(
             Arc::clone(&manager),
             self.config_dir.clone(),

@@ -178,26 +178,24 @@ impl RestartManager {
     }
 
     /// Poll the platform's recovery check until it passes or the remaining
-    /// `budget` runs out. The whole phase — check runs *and* the sleeps
-    /// between them — sits under one outer timeout; each check is short by
-    /// construction, so one wedged check never monopolizes the phase.
+    /// `budget` runs out. The whole phase — every check run, the first one
+    /// included, *and* the sleeps between them — sits under one outer
+    /// timeout, so even a wedged platform check cannot escape the budget.
+    /// (tokio's timeout polls the inner future once before the deadline, so
+    /// a zero remaining budget still lets an instantly-resolving check
+    /// report Skipped/Healthy instead of blindly timing out.)
     async fn await_recovered(&self, name: &str, unit: &str, budget: Duration) -> Recovery {
-        match self.manager.recovery_check(unit).await {
-            None => return Recovery::Skipped,
-            Some(true) => return Recovery::Healthy,
-            Some(false) => debug!("service '{name}' not yet recovered"),
-        }
-        if budget.is_zero() {
-            return Recovery::Timeout;
-        }
         let interval = budget.checked_div(RECOVERY_ATTEMPTS).unwrap_or(budget);
         let poll = async {
-            for _ in 1..RECOVERY_ATTEMPTS {
-                tokio::time::sleep(interval).await;
-                if self.manager.recovery_check(unit).await == Some(true) {
-                    return Recovery::Healthy;
+            for attempt in 0..RECOVERY_ATTEMPTS {
+                match self.manager.recovery_check(unit).await {
+                    None => return Recovery::Skipped,
+                    Some(true) => return Recovery::Healthy,
+                    Some(false) => debug!("service '{name}' not yet recovered"),
                 }
-                debug!("service '{name}' not yet recovered");
+                if attempt + 1 < RECOVERY_ATTEMPTS {
+                    tokio::time::sleep(interval).await;
+                }
             }
             Recovery::Timeout
         };

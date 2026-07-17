@@ -224,6 +224,12 @@ impl WatchdogE2eWorld {
             std::process::id(),
             seq
         ));
+        // A crashed prior run can leave this deterministic path behind (PIDs
+        // recycle); stale units.txt / restarts.log state must never leak into
+        // this scenario.
+        if dir.exists() {
+            std::fs::remove_dir_all(&dir).expect("clear stale harness dir");
+        }
         let manager_dir = dir.join("svcmgr");
         std::fs::create_dir_all(&manager_dir).expect("create stub service-manager dir");
         std::fs::write(manager_dir.join("units.txt"), "rusty-photon-rp stopped\n")

@@ -956,11 +956,11 @@ mod tests {
 
     #[tokio::test]
     async fn is_healthy_returns_false_when_connection_refused() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        drop(listener);
-        let base_url = format!("http://127.0.0.1:{}", port);
-        assert!(!OmniSimProcess::is_healthy(&base_url).await);
+        // Port 1 is reserved (root-only bind) and never listening: connection
+        // refused by construction. A bind-then-drop ephemeral port raced the
+        // rest of the suite — another test could re-bind it in the window and
+        // answer the probe.
+        assert!(!OmniSimProcess::is_healthy("http://127.0.0.1:1").await);
     }
 
     #[tokio::test]
