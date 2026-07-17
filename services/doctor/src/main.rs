@@ -59,13 +59,16 @@ fn main() -> ExitCode {
 
     let report = if cli.fix {
         if !facts.units.is_empty() {
-            // The canonical flow runs --fix with services live: atomic
-            // renames make corruption impossible, but a driver's own
+            // Units installed is the strongest liveness signal doctor has
+            // (the inventory carries no cross-platform active state), and
+            // the canonical flow runs --fix with services live anyway:
+            // atomic renames make corruption impossible, but a driver's own
             // config.apply landing mid-fix loses one of the two writes.
             eprintln!(
-                "doctor: services may be running while fixes are written — a \
-                 concurrent config change can lose one write; re-run doctor to \
-                 verify, and restart services to pick up fixed configs"
+                "doctor: rusty-photon units are installed, so their services \
+                 may be running while fixes are written — a concurrent config \
+                 change can lose one write; re-run doctor to verify, and \
+                 restart services to pick up fixed configs"
             );
         }
         match doctor::diagnose_and_fix(config_dir, facts) {
