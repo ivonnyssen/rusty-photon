@@ -571,11 +571,21 @@ impl ServiceManager for BrewServiceManager {
 #[derive(Debug)]
 pub struct StubServiceManager {
     dir: PathBuf,
+    /// Serializes every `units.txt` access: the per-service supervisors run
+    /// concurrently, and an unlocked read-modify-write (or a read racing a
+    /// truncate-and-rewrite) could lose a state flip or observe a
+    /// half-written file. (Tests mutate the file from *outside* the sentinel
+    /// process, where whole-file writes are effectively atomic enough for
+    /// the scenarios' polling assertions.)
+    state_lock: std::sync::Mutex<()>,
 }
 
 impl StubServiceManager {
     pub fn new(dir: PathBuf) -> Self {
-        Self { dir }
+        Self {
+            dir,
+            state_lock: std::sync::Mutex::new(()),
+        }
     }
 
     fn units_path(&self) -> PathBuf {
@@ -583,6 +593,7 @@ impl StubServiceManager {
     }
 
     fn read_units(&self) -> Vec<DiscoveredUnit> {
+        let _guard = self.state_lock.lock().unwrap_or_else(|p| p.into_inner());
         let Ok(content) = std::fs::read_to_string(self.units_path()) else {
             return Vec::new();
         };
@@ -611,6 +622,7 @@ impl StubServiceManager {
     }
 
     fn set_unit_state(&self, unit: &str, state: &str) {
+        let _guard = self.state_lock.lock().unwrap_or_else(|p| p.into_inner());
         let Ok(content) = std::fs::read_to_string(self.units_path()) else {
             return;
         };
