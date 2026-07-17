@@ -296,7 +296,7 @@ convention and validated by nothing at runtime until the 2am 404.
 
 | Check | Status | Trigger |
 |---|---|---|
-| `rp.data-directory` | fail | rp's `session.data_directory` does not exist — catches the Linux-path-on-macOS default documented in `docs/packaging-macos.md` — or, in packaged mode, exists but is not writable by the `rusty-photon` user rp runs as, judged from the directory's owner/group/mode. Doctor writes no probe files — the judgment is an ownership heuristic, and the detail says so; dev checkouts keep the existence-only check (the operator owns their own tree). (`tls.paths` readability keeps its D2 shape; the TLS lifecycle work owns that check's evolution.) |
+| `rp.data-directory` | fail | rp's `session.data_directory` does not exist — catches the Linux-path-on-macOS default documented in `docs/packaging-macos.md` — or, on a packaged **Linux** install, exists but is not writable by the `rusty-photon` user rp runs as under systemd, judged from the directory's owner/group/mode. Doctor writes no probe files — the judgment is an ownership heuristic, and the detail says so. Dev checkouts keep the existence-only check (the operator owns their own tree), as do macOS and Windows installs — brew services run as the operator and the MSI's services as LocalSystem, so there is no service user to judge for. (`tls.paths` readability keeps its D2 shape; the TLS lifecycle work owns that check's evolution.) |
 
 ### Hardware (D4 — the no-SDK checks)
 

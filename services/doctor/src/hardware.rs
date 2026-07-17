@@ -49,6 +49,12 @@ pub fn probe_request(scans: &[ServiceScan], facts: &PlatformFacts) -> ProbeReque
                 req.paths.push(PathBuf::from(path));
             }
         }
+        // udev rules, firmware artifacts, and the service-user writability
+        // judgment are Linux/systemd facts — probing them elsewhere is
+        // syscall noise the checks would never read.
+        if facts.platform != Platform::Linux {
+            continue;
+        }
         if let Some(rule) = catalog::udev_rule_for(scan.entry.name) {
             req.udev_rules.push(rule.file_name.to_string());
         }
@@ -57,8 +63,10 @@ pub fn probe_request(scans: &[ServiceScan], facts: &PlatformFacts) -> ProbeReque
                 .extend(QHY_FIRMWARE_ARTIFACTS.iter().map(|(p, _)| PathBuf::from(p)));
         }
     }
-    if let Some(dir) = rp_data_directory(scans) {
-        req.paths.push(PathBuf::from(dir));
+    if facts.platform == Platform::Linux {
+        if let Some(dir) = rp_data_directory(scans) {
+            req.paths.push(PathBuf::from(dir));
+        }
     }
     req
 }

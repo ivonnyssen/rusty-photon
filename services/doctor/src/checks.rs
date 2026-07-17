@@ -832,12 +832,15 @@ fn rp_platform_defaults(ctx: &Context) -> Vec<Check> {
     };
     let path = Path::new(&dir);
     if path.is_dir() {
-        // Packaged mode: existence is not enough — rp runs as the service
-        // user, and a root-owned directory from a sudo'd first run is a
-        // classic way to strand session persistence. Judged from
-        // ownership and mode (gathered facts), so ACLs are invisible;
-        // dev checkouts keep the existence-only check.
-        let unwritable = (ctx.mode == Mode::Packaged)
+        // Packaged Linux: existence is not enough — under systemd rp runs
+        // as the rusty-photon user, and a root-owned directory from a
+        // sudo'd first run is a classic way to strand session
+        // persistence. Judged from ownership and mode (gathered facts),
+        // so ACLs are invisible. Dev checkouts keep the existence-only
+        // check, and so do macOS/Windows installs — brew services run as
+        // the operator and the MSI's services as LocalSystem, so there is
+        // no rusty-photon user to judge for.
+        let unwritable = (ctx.mode == Mode::Packaged && ctx.facts.platform == Platform::Linux)
             .then_some(ctx.hardware.as_ref())
             .flatten()
             .and_then(|hw| {
