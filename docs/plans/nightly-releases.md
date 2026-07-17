@@ -35,7 +35,7 @@ deliberately reusable so the deferred `release.yml` generalization
 | N2 | Fedora: `.rpm` build on both arches + Fedora lifecycle verify leg | **Done** (2026-07-13; rpms first published by that day's scheduled run) | PR #513 |
 | N3 | Windows: suite-MSI leg (strictly after W5 of [windows-packaging.md](windows-packaging.md)) | **Done** (2026-07-13; first MSI publish = next scheduled run, whose msi job skips the upgrade seed gracefully — the run after proves MSI-over-MSI) | PR #509 |
 | N4 | macOS: per-service arm64 tarballs + Homebrew tap channel + `verify-brew.sh` | **Done** (2026-07-13; first macOS publish = next scheduled run) | PR #519 |
-| N5 | Debian/Fedora package repositories: Cloudflare R2-hosted `apt`/`dnf` channels for the N1/N2 `.deb`/`.rpm` legs | **Done** (2026-07-15; first repo publish = the next scheduled run after merge) | PR #535 |
+| N5 | Debian/Fedora package repositories: Cloudflare R2-hosted `apt`/`dnf` channels for the N1/N2 `.deb`/`.rpm` legs | **Done** (2026-07-16: #535 merged and, after PR #547's S3-API auth fix, the first publish landed the same day) | PRs #535, #547 |
 
 N1 is the anchor (it builds the shared spine); N2, N3, N4 are mutually
 independent afterwards. N3 is gated only on W5; N4 has synergy with PR-7
@@ -553,6 +553,18 @@ pkg.rustyphoton.space/
     aarch64/repodata/ (+ *.rpm)
 ```
 
+> **As-built note:** the design prose from here through the end of the
+> **Workflow integration** subsection records the original plan and is
+> historical where it names tooling. The shipped pusher drives R2's
+> **S3-compatible endpoint** via the aws CLI, authenticated with the
+> same bucket-scoped token's S3 key pair (`PACKAGES_R2_ACCESS_KEY_ID` /
+> `PACKAGES_R2_SECRET_ACCESS_KEY`) — Cloudflare's REST API, the only
+> API wrangler's object commands can use, turned out to reject
+> bucket-scoped object tokens — and `tools/rusty-photon-packages-r2/`
+> shipped README-only (no `wrangler.toml`, nothing deploys). Where this
+> prose and the **As-built deltas** below disagree, the deltas are
+> authoritative.
+
 Writes go straight from CI to R2 via `wrangler r2 object put --remote`
 (the same CLI already used to deploy the cache Worker), authenticated
 with a new Cloudflare API token scoped to Object Read & Write on just
@@ -628,8 +640,8 @@ fixed rolling-only scope above. That still needs a delete pass, but
 live would open a window where `apt update`/`dnf makecache` mid-publish
 either 404s or fetches a `Release`/`repomd.xml` whose referenced content
 partway exists (apt's "Hash Sum mismatch" class of failure). So the
-final step orders it upload-then-delete instead: `wrangler r2 object
-put --remote` the new `pool/`/`x86_64/`/`aarch64/` content and
+final step orders it upload-then-delete instead: upload the new
+`pool/`/`x86_64/`/`aarch64/` content and
 `pubkey.asc` first (additive — existing clients are still being served
 correctly by the still-live old metadata throughout), then the
 top-level metadata last (`Release*`/`InRelease`, `repomd.xml*`) as the
@@ -710,6 +722,22 @@ testing never exercises.
 - `tools/rusty-photon-packages-r2/` is README-only: with no Worker
   there is nothing to deploy, so no `wrangler.toml`; bucket + domain
   are two one-time CLI commands documented there.
+- The pusher authenticates against R2's **S3-compatible endpoint** (aws
+  CLI, preinstalled on ubuntu runners), not `wrangler r2 object` as
+  designed above: the first publish attempt (2026-07-16) failed with
+  403 because Cloudflare's REST API — the only thing wrangler's object
+  commands can drive — rejects bucket-scoped Object Read & Write
+  tokens outright (they authenticate solely via the S3 API; REST wants
+  an account-wide Admin R2 token, unacceptable blast radius with the
+  Bazel-cache bucket in the same account). CI secrets are therefore
+  the token's S3 key pair (`PACKAGES_R2_ACCESS_KEY_ID` /
+  `PACKAGES_R2_SECRET_ACCESS_KEY`) rather than its REST token value
+  (`PACKAGES_R2_API_TOKEN`, retired). S3's `ListObjectsV2` was
+  deliberately left unused even though it removes wrangler's
+  no-listing constraint: a manifest-driven sweep can only ever touch
+  keys the publisher itself wrote. The three-generation publish
+  simulation was re-run against a stub `aws` to re-prove the manifest
+  retention algebra on the new CLI.
 
 ## Verification
 
@@ -748,14 +776,42 @@ testing never exercises.
     over it — upgrade OK, single ARP entry, every service class green
     post-upgrade. This proof now recurs on every scheduled run; a
     manual pass on a long-lived Windows box stays optional.
-- N5 real-machine validation (once the first repo publish lands): point
-  a Debian machine at the apt repo and a Fedora machine at the dnf repo
-  per docs/packaging.md#nightly-channel, then take a nightly→nightly
-  step via plain `apt upgrade` / `dnf upgrade` — and record results
-  here.
+- N5 real-machine validation: point a Debian machine at the apt repo
+  and a Fedora machine at the dnf repo per
+  docs/packaging.md#nightly-channel, then take a nightly→nightly step
+  via plain `apt upgrade` / `dnf upgrade`. The first publish and the
+  install halves are done (below); only the upgrade step remains.
+  - **First repo publish landed 2026-07-16** (workflow_dispatch run
+    after the PR #547 S3-API auth fix; merge commit `5f506ab`): the
+    pusher took the first-publish path (both manifests genuinely
+    absent), published 100 objects, nothing stale to delete. Live
+    surface verified: the served `pubkey.asc` fingerprint matches the
+    committed `packaging/gpg/pubkey.asc`, `InRelease` is clearsigned
+    and advertises `Acquire-By-Hash: yes`, and the last untested
+    seam — `+` in R2 object keys via the custom domain — is closed
+    (pool-deb URLs return 200 both literal and `%2B`-encoded).
+  - **Live-client installs proven the same day** (podman containers on
+    the dev box, documented consumer path, public key only): a
+    `debian:trixie` client verified `InRelease` through the
+    `signed-by=` keyring and installed sentinel
+    `0.1.0+nightly.20260716.g5f506ab` from the pool; a Fedora 44
+    client with `repo_gpgcheck=1` built its cache against the signed
+    `repomd.xml` and installed `0.1.0^20260716.g5f506ab-1`, unit
+    coming out `enabled` (offline enable — the `$1` guards). Still
+    pending: the nightly→nightly step via plain `apt upgrade` /
+    `dnf upgrade` once the next scheduled publish provides a second
+    generation; proof containers `rp-repo-proof-apt` /
+    `rp-repo-proof-dnf` stand seeded at `20260716.g5f506ab` for it.
 - The skip-if-unchanged path and the failure-tracking issue get exercised
   naturally within the first week of N1 being live; confirm both behaved
   and note it here.
+  - **Failure-tracking issue exercised 2026-07-16**: the first
+    post-N5-merge scheduled run failed in `publish` (the wrangler/token
+    mismatch recorded in the as-built deltas) and `notify-on-failure`
+    filed the tracking issue unprompted — once on the scheduled run and
+    again on its rerun after the first issue was closed. Behaved as
+    designed. Skip-if-unchanged still pending its first natural
+    occurrence.
 
 ## Flagged unknowns (resolve during the noted phase)
 

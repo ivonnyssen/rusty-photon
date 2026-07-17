@@ -458,11 +458,13 @@ jobs:
       # and the repo tree was consumer-verified in the repo job. The push
       # ordering (content, then the metadata flip, then stale deletes) is
       # what keeps a client mid-`apt update` safe — see the script header.
-      - name: Install wrangler
-        run: npm install -g wrangler
+      # aws CLI (preinstalled on ubuntu runners) against R2's S3 endpoint:
+      # the S3 API is the only one a bucket-scoped Object Read & Write
+      # token can authenticate — see the script header.
       - name: Push the apt/dnf repos to R2 (pkg.rustyphoton.space)
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.PACKAGES_R2_API_TOKEN }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.PACKAGES_R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.PACKAGES_R2_SECRET_ACCESS_KEY }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: scripts/push-packages-repo.sh --site site
 
