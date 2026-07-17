@@ -113,11 +113,14 @@ impl HardwareFacts {
 
 /// What the gatherer should probe. Callers derive this from their catalog
 /// and configs; the gatherer answers exactly these questions and nothing
-/// else, so a staged-facts test can enumerate its whole world.
+/// else, so a staged-facts test can enumerate its whole world. Groups are
+/// the exception — the whole (small) group database is gathered, because
+/// the checks must resolve gids the request could not have anticipated: a
+/// device node's owning group comes from the distro's own udev defaults
+/// (`dialout`), and an operator-edited rule can name any group.
 #[derive(Debug, Clone, Default)]
 pub struct ProbeRequest {
     pub paths: Vec<PathBuf>,
-    pub groups: Vec<String>,
     /// udev rule file names (not paths — the gatherer searches the rules
     /// directories in precedence order).
     pub udev_rules: Vec<String>,
@@ -139,7 +142,7 @@ pub fn gather(req: &ProbeRequest) -> HardwareFacts {
     }
     #[cfg(unix)]
     {
-        facts.groups = unix::groups(Path::new("/etc/group"), &req.groups);
+        facts.groups = unix::groups(Path::new("/etc/group"));
         facts.service_user = unix::user(Path::new("/etc/passwd"), &req.service_user);
     }
     #[cfg(target_os = "linux")]
@@ -226,11 +229,15 @@ mod unix {
     use super::UserFacts;
 
     /// Resolve the requested group names against a group database in
-    /// `/etc/group` format (`name:x:gid:members`). File parsing rather
+    /// Parse the whole group database in `/etc/group` format
+    /// (`name:x:gid:members`) — all of it, not a requested subset: the
+    /// checks resolve gids they could not have requested by name (a
+    /// node's owning group set by the distro's udev defaults, a group
+    /// named only inside an operator-edited rule). File parsing rather
     /// than `getgrnam` keeps the lookup testable against a staged file;
     /// hosts resolving groups purely through NSS plugins are out of its
     /// reach, and the checks' details say the judgment is a heuristic.
-    pub fn groups(group_file: &Path, wanted: &[String]) -> BTreeMap<String, u32> {
+    pub fn groups(group_file: &Path) -> BTreeMap<String, u32> {
         let Ok(content) = std::fs::read_to_string(group_file) else {
             debug!(path = %group_file.display(), "group database unreadable");
             return BTreeMap::new();
@@ -242,10 +249,7 @@ mod unix {
                 let name = fields.next()?;
                 let _password = fields.next()?;
                 let gid: u32 = fields.next()?.parse().ok()?;
-                wanted
-                    .iter()
-                    .any(|w| w == name)
-                    .then(|| (name.to_string(), gid))
+                Some((name.to_string(), gid))
             })
             .collect()
     }
@@ -551,21 +555,17 @@ mod tests {
             "root:x:0:\ndialout:x:20:igor\nplugdev:x:46:\nmalformed line\n",
         )
         .unwrap();
-        let groups = unix::groups(
-            &group,
-            &[
-                "dialout".to_string(),
-                "plugdev".to_string(),
-                "ghost".to_string(),
-            ],
-        );
+        let groups = unix::groups(&group);
         assert_eq!(groups.get("dialout"), Some(&20));
         assert_eq!(groups.get("plugdev"), Some(&46));
-        assert!(!groups.contains_key("ghost"), "absent group stays absent");
-        assert!(
-            !groups.contains_key("root"),
-            "unrequested groups are not gathered"
+        assert_eq!(
+            groups.get("root"),
+            Some(&0),
+            "the whole database is gathered — checks resolve gids they \
+             could not have requested by name"
         );
+        assert!(!groups.contains_key("ghost"), "absent group stays absent");
+        assert_eq!(groups.len(), 3, "the malformed line is skipped");
 
         let passwd = dir.path().join("passwd");
         std::fs::write(

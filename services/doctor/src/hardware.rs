@@ -60,17 +60,6 @@ pub fn probe_request(scans: &[ServiceScan], facts: &PlatformFacts) -> ProbeReque
     if let Some(dir) = rp_data_directory(scans) {
         req.paths.push(PathBuf::from(dir));
     }
-    // Groups: everything a shipped rule assigns plus everything any unit
-    // confers — both group existence (udev resolvability) and gid mapping
-    // (the access judgment) come from this set.
-    for rule in catalog::UDEV_RULES {
-        req.groups.extend(udev::group_assignments(rule.content));
-    }
-    for unit in &facts.units {
-        req.groups.extend(unit.supplementary_groups.iter().cloned());
-    }
-    req.groups.sort();
-    req.groups.dedup();
     req
 }
 
@@ -608,11 +597,6 @@ mod tests {
         assert_eq!(
             req.udev_rules,
             vec!["90-rusty-photon-qhy.rules".to_string()]
-        );
-        assert_eq!(
-            req.groups,
-            vec!["plugdev".to_string()],
-            "groups = shipped-rule assignments ∪ unit SupplementaryGroups, deduplicated"
         );
         assert!(
             !req.paths.iter().any(|p| p.to_str() == Some("/dev/ttyACM0")),

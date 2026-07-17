@@ -19,7 +19,8 @@ pub fn vendor_matches(content: &str) -> Vec<String> {
 }
 
 /// Extract quoted values following `<token>`, `<token>:`, `<token>=`, or
-/// `<token>==` — i.e. both assignment and match operators.
+/// `<token>==` — i.e. both assignment and match operators, with the
+/// whitespace udevd tolerates around them (`GROUP = "x"`).
 fn scan(content: &str, token: &str) -> Vec<String> {
     let mut values: Vec<String> = Vec::new();
     for line in content.lines() {
@@ -30,7 +31,10 @@ fn scan(content: &str, token: &str) -> Vec<String> {
         let mut rest = line;
         while let Some(at) = rest.find(token) {
             rest = &rest[at + token.len()..];
-            let after = rest.trim_start_matches([':', '=']);
+            let after = rest
+                .trim_start()
+                .trim_start_matches([':', '='])
+                .trim_start();
             let Some(quoted) = after.strip_prefix('"') else {
                 continue;
             };
@@ -69,6 +73,17 @@ ACTION=="add", SUBSYSTEMS=="usb", ATTRS{idVendor}=="1618", RUN+="/bin/sh -c 'ech
                        SUBSYSTEMS==\"usb\", GROUP=\"plugdev\"\n\
                        SUBSYSTEMS==\"usb\", GROUP=\"plugdev\"\n";
         assert_eq!(group_assignments(content), vec!["dialout", "plugdev"]);
+    }
+
+    #[test]
+    fn test_whitespace_around_operators_is_tolerated() {
+        // udevd accepts spaces around the operator; operator-edited rules
+        // that are semantically equivalent must not vanish from the scan.
+        let content = "SUBSYSTEMS==\"usb\", GROUP = \"plugdev\"\n\
+                       KERNEL==\"ttyUSB*\", GROUP= \"dialout\"\n\
+                       ATTRS{idVendor} == \"1618\", MODE=\"0660\"\n";
+        assert_eq!(group_assignments(content), vec!["plugdev", "dialout"]);
+        assert_eq!(vendor_matches(content), vec!["1618"]);
     }
 
     #[test]

@@ -28,7 +28,7 @@ pub struct Context {
 
 impl Context {
     /// Scan the config dir and derive the mode from the unit inventory.
-    pub fn gather(config_dir: PathBuf, facts: PlatformFacts) -> Self {
+    pub fn gather(config_dir: PathBuf, mut facts: PlatformFacts) -> Self {
         let mode = if facts.units.is_empty() {
             Mode::ConfigOnly
         } else {
@@ -38,7 +38,7 @@ impl Context {
             .iter()
             .map(|entry| scan::scan_service(&config_dir, entry))
             .collect();
-        let hardware = facts.hardware.clone().or_else(|| {
+        let hardware = facts.hardware.take().or_else(|| {
             facts.probe_hardware.then(|| {
                 rusty_photon_doctor_checks::gather(&crate::hardware::probe_request(&scans, &facts))
             })
