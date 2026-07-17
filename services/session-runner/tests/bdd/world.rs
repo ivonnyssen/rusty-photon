@@ -14,6 +14,7 @@ use bdd_infra::rp_harness::{
     PlannerTargetConfig, PlateSolverConfig, PlateSolverStub, ReceivedEvent, RpConfigBuilder,
     SafetyMonitorConfig, SseClient, WebhookReceiver,
 };
+use bdd_infra::tls_auth::{TlsAuthSmokeWorld, TlsAuthState};
 use bdd_infra::ServiceHandle;
 use cucumber::World;
 use serde_json::Value;
@@ -97,10 +98,8 @@ pub struct SessionRunnerWorld {
     pub webhook_ack_config: Option<(Duration, Duration)>,
 
     // --- TLS + auth smoke test (`auth.feature`) ---
-    /// PKI tree for the TLS + auth smoke test.
-    pub tls_pki_dir: Option<tempfile::TempDir>,
-    /// Config JSON staged by a Given step for a custom-config start.
-    pub pending_config: Option<Value>,
+    /// State for the shared TLS + auth smoke steps.
+    pub tls_auth: TlsAuthState,
 
     // --- Flat calibration plan ---
     /// Filter name → count, forwarded as the document's `filters`
@@ -110,6 +109,46 @@ pub struct SessionRunnerWorld {
     // --- REST API state ---
     pub last_api_status: Option<u16>,
     pub last_api_body: Option<Value>,
+}
+
+impl TlsAuthSmokeWorld for SessionRunnerWorld {
+    const PROBE_PATH: &'static str = "/health";
+
+    fn tls_auth(&mut self) -> &mut TlsAuthState {
+        &mut self.tls_auth
+    }
+
+    fn base_test_config(&self) -> serde_json::Value {
+        // The service only needs directories that exist; the smoke
+        // scenario never invokes a workflow, so both stay empty. They are
+        // kept (not auto-deleted) under the OS temp dir so they still
+        // exist when the service starts, matching the lifetime handling
+        // of the harness's staged temp config files.
+        let workflows_dir = tempfile::Builder::new()
+            .prefix("session-runner-auth-workflows-")
+            .tempdir()
+            .expect("create workflows dir")
+            .keep();
+        let state_dir = tempfile::Builder::new()
+            .prefix("session-runner-auth-state-")
+            .tempdir()
+            .expect("create state dir")
+            .keep();
+        serde_json::json!({
+            "workflows_dir": workflows_dir,
+            "state_dir": state_dir,
+        })
+    }
+
+    async fn start_with_tls_auth(&mut self, config: serde_json::Value) {
+        let handle = bdd_infra::tls_auth::spawn_service_handle(
+            &mut self.tls_auth,
+            env!("CARGO_PKG_NAME"),
+            &config,
+        )
+        .await;
+        self.session_runner = Some(handle);
+    }
 }
 
 impl SessionRunnerWorld {

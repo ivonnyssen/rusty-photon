@@ -109,7 +109,7 @@ rust_test(
     use_libtest_harness = False,
     deps = [
         ":calibrator-flats_lib",
-        "//crates/bdd-infra:bdd-infra_rp_harness",
+        "//crates/bdd-infra:bdd-infra_rp_harness_tls_auth",
     ] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
         normal = True,
         normal_dev = True,

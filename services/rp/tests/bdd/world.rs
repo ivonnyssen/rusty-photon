@@ -178,7 +178,11 @@ pub struct RpWorld {
     pub flat_plan: Vec<(String, u32)>,
 
     // --- TLS test state ---
-    /// Temp directory holding generated PKI (CA + service certs)
+    /// Shared PKI + credentials fixture for the TLS/auth connectivity suites
+    /// (`tls.feature`, `auth.feature`).
+    pub pki: Option<bdd_infra::tls_auth::PkiFixture>,
+    /// Temp directory holding CLI-generated PKI — the `init-tls` output
+    /// directory of the `tls_setup.feature` / `acme_setup.feature` scenarios.
     pub tls_pki_dir: Option<tempfile::TempDir>,
     /// Stored CA cert PEM for idempotency comparison
     pub tls_ca_cert_pem: Option<String>,
@@ -189,8 +193,8 @@ pub struct RpWorld {
     /// Last command output (for ACME CLI tests)
     pub last_command_output: Option<std::process::Output>,
 
-    // --- Auth test state ---
-    /// Plaintext password used for test auth
+    // --- hash-password CLI test state (hash_password.feature) ---
+    /// Plaintext password fed to the rp hash-password CLI via stdin
     pub auth_password: Option<String>,
     /// Hash output from rp hash-password CLI
     pub auth_hash_output: Option<String>,
@@ -284,6 +288,12 @@ impl RpWorld {
     /// The MCP endpoint URL for rp
     pub fn rp_mcp_url(&self) -> String {
         format!("{}/mcp", self.rp_url())
+    }
+
+    /// The shared PKI + credentials fixture, panicking if the
+    /// `Given generated TLS certificates` step has not run.
+    pub fn pki(&self) -> &bdd_infra::tls_auth::PkiFixture {
+        self.pki.as_ref().expect("TLS certs not generated")
     }
 
     /// Get the persistent MCP client, panicking if not connected.

@@ -5,16 +5,10 @@ use tempfile::TempDir;
 
 use crate::world::SentinelWorld;
 
-const AUTH_USERNAME: &str = "observatory";
-const AUTH_PASSWORD: &str = "test-password";
-
-fn pki_dir(world: &SentinelWorld) -> std::path::PathBuf {
-    world
-        .tls_pki_dir
-        .as_ref()
-        .expect("TLS certs not generated")
-        .path()
-        .to_path_buf()
+/// The dashboard health URL of the running sentinel over HTTPS.
+fn health_url(world: &SentinelWorld) -> String {
+    let port = world.sentinel.as_ref().expect("sentinel not started").port;
+    format!("https://localhost:{port}/health")
 }
 
 #[given("sentinel is configured with dashboard TLS and auth enabled")]
@@ -24,20 +18,8 @@ fn sentinel_configured_with_dashboard_auth(_world: &mut SentinelWorld) {
 
 #[when("sentinel is started with dashboard auth")]
 async fn sentinel_started_with_dashboard_auth(world: &mut SentinelWorld) {
-    let dir = pki_dir(world);
-    let certs_dir = dir.join("certs");
-
-    let hash = rp_auth::credentials::hash_password(AUTH_PASSWORD).unwrap();
-
     let mut config = world.build_sentinel_config();
-    config["server"]["tls"] = serde_json::json!({
-        "cert": certs_dir.join("sentinel.pem").to_string_lossy().to_string(),
-        "key": certs_dir.join("sentinel-key.pem").to_string_lossy().to_string()
-    });
-    config["server"]["auth"] = serde_json::json!({
-        "username": AUTH_USERNAME,
-        "password_hash": hash
-    });
+    config["server"] = world.pki().server_block(0);
 
     let temp_dir = world
         .temp_dir
@@ -71,62 +53,30 @@ async fn sentinel_started_without_dashboard_auth(world: &mut SentinelWorld) {
 
 #[then("the dashboard health endpoint should respond with valid credentials")]
 async fn dashboard_health_responds_with_auth(world: &mut SentinelWorld) {
-    let dir = pki_dir(world);
-    let ca_path = dir.join("ca.pem");
-    let client = rp_tls::client::build_reqwest_client(Some(&ca_path)).unwrap();
-    let port = world.sentinel.as_ref().expect("sentinel not started").port;
-    let url = format!("https://localhost:{}/health", port);
+    let pki = world.pki();
+    let client = pki.https_client();
+    let url = health_url(world);
+    bdd_infra::tls_auth::wait_until_ready(&client, &url, pki.username(), pki.password()).await;
 
-    let mut ok = false;
-    for _ in 0..60 {
-        if let Ok(resp) = client
-            .get(&url)
-            .basic_auth(AUTH_USERNAME, Some(AUTH_PASSWORD))
-            .send()
-            .await
-        {
-            if resp.status().as_u16() == 200 {
-                ok = true;
-                break;
-            }
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    }
-    assert!(
-        ok,
-        "Dashboard health endpoint did not respond with valid credentials"
-    );
+    let resp = client
+        .get(&url)
+        .basic_auth(pki.username(), Some(pki.password()))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
 }
 
 #[then("the dashboard health endpoint should reject wrong credentials with 401")]
 async fn dashboard_rejects_wrong_credentials(world: &mut SentinelWorld) {
-    let dir = pki_dir(world);
-    let ca_path = dir.join("ca.pem");
-    let client = rp_tls::client::build_reqwest_client(Some(&ca_path)).unwrap();
-    let port = world.sentinel.as_ref().expect("sentinel not started").port;
-    let url = format!("https://localhost:{}/health", port);
-
-    // Wait for readiness with correct creds
-    let mut ready = false;
-    for _ in 0..60 {
-        if let Ok(resp) = client
-            .get(&url)
-            .basic_auth(AUTH_USERNAME, Some(AUTH_PASSWORD))
-            .send()
-            .await
-        {
-            if resp.status().as_u16() == 200 {
-                ready = true;
-                break;
-            }
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    }
-    assert!(ready, "Server did not become ready");
+    let pki = world.pki();
+    let client = pki.https_client();
+    let url = health_url(world);
+    bdd_infra::tls_auth::wait_until_ready(&client, &url, pki.username(), pki.password()).await;
 
     let resp = client
         .get(&url)
-        .basic_auth(AUTH_USERNAME, Some("wrong-password"))
+        .basic_auth(pki.username(), Some("wrong-password"))
         .send()
         .await
         .unwrap();
@@ -135,29 +85,10 @@ async fn dashboard_rejects_wrong_credentials(world: &mut SentinelWorld) {
 
 #[then("the dashboard health endpoint should reject missing credentials with 401")]
 async fn dashboard_rejects_missing_credentials(world: &mut SentinelWorld) {
-    let dir = pki_dir(world);
-    let ca_path = dir.join("ca.pem");
-    let client = rp_tls::client::build_reqwest_client(Some(&ca_path)).unwrap();
-    let port = world.sentinel.as_ref().expect("sentinel not started").port;
-    let url = format!("https://localhost:{}/health", port);
-
-    // Wait for readiness
-    let mut ready = false;
-    for _ in 0..60 {
-        if let Ok(resp) = client
-            .get(&url)
-            .basic_auth(AUTH_USERNAME, Some(AUTH_PASSWORD))
-            .send()
-            .await
-        {
-            if resp.status().as_u16() == 200 {
-                ready = true;
-                break;
-            }
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    }
-    assert!(ready, "Server did not become ready");
+    let pki = world.pki();
+    let client = pki.https_client();
+    let url = health_url(world);
+    bdd_infra::tls_auth::wait_until_ready(&client, &url, pki.username(), pki.password()).await;
 
     let resp = client.get(&url).send().await.unwrap();
     assert_eq!(resp.status().as_u16(), 401);
@@ -165,29 +96,10 @@ async fn dashboard_rejects_missing_credentials(world: &mut SentinelWorld) {
 
 #[then("the dashboard 401 response should include a WWW-Authenticate header")]
 async fn dashboard_401_includes_www_authenticate(world: &mut SentinelWorld) {
-    let dir = pki_dir(world);
-    let ca_path = dir.join("ca.pem");
-    let client = rp_tls::client::build_reqwest_client(Some(&ca_path)).unwrap();
-    let port = world.sentinel.as_ref().expect("sentinel not started").port;
-    let url = format!("https://localhost:{}/health", port);
-
-    // Wait for readiness
-    let mut ready = false;
-    for _ in 0..60 {
-        if let Ok(resp) = client
-            .get(&url)
-            .basic_auth(AUTH_USERNAME, Some(AUTH_PASSWORD))
-            .send()
-            .await
-        {
-            if resp.status().as_u16() == 200 {
-                ready = true;
-                break;
-            }
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    }
-    assert!(ready, "Server did not become ready");
+    let pki = world.pki();
+    let client = pki.https_client();
+    let url = health_url(world);
+    bdd_infra::tls_auth::wait_until_ready(&client, &url, pki.username(), pki.password()).await;
 
     let resp = client.get(&url).send().await.unwrap();
     assert_eq!(resp.status().as_u16(), 401);
@@ -225,11 +137,6 @@ async fn dashboard_responds_without_credentials(world: &mut SentinelWorld) {
     expr = "filemonitor is running with TLS and auth enabled and a contains rule {string} as safe"
 )]
 async fn filemonitor_running_with_tls_and_auth(world: &mut SentinelWorld, pattern: String) {
-    let dir = pki_dir(world);
-    let certs_dir = dir.join("certs");
-
-    let hash = rp_auth::credentials::hash_password(AUTH_PASSWORD).unwrap();
-
     world.fm_rules.push(serde_json::json!({
         "type": "contains",
         "pattern": pattern,
@@ -240,14 +147,8 @@ async fn filemonitor_running_with_tls_and_auth(world: &mut SentinelWorld, patter
     world.create_temp_file(&pattern);
 
     let mut config = world.build_filemonitor_config();
-    config["server"]["tls"] = serde_json::json!({
-        "cert": certs_dir.join("filemonitor.pem").to_string_lossy().to_string(),
-        "key": certs_dir.join("filemonitor-key.pem").to_string_lossy().to_string()
-    });
-    config["server"]["auth"] = serde_json::json!({
-        "username": AUTH_USERNAME,
-        "password_hash": hash
-    });
+    config["server"]["tls"] = world.fm_tls_block();
+    config["server"]["auth"] = world.pki().auth_block();
 
     let temp_dir = world
         .temp_dir
@@ -264,8 +165,9 @@ async fn filemonitor_running_with_tls_and_auth(world: &mut SentinelWorld, patter
 #[given("sentinel is configured to monitor the auth-enabled filemonitor")]
 fn sentinel_configured_with_auth_monitor(world: &mut SentinelWorld) {
     let fm = world.filemonitor.as_ref().expect("filemonitor not started");
+    let pki = world.pki.as_ref().expect("TLS certs not generated");
 
-    world.sentinel_monitors.push(serde_json::json!({
+    let monitor = serde_json::json!({
         "type": "alpaca_safety_monitor",
         "name": "Auth Monitor",
         "host": "localhost",
@@ -274,21 +176,19 @@ fn sentinel_configured_with_auth_monitor(world: &mut SentinelWorld) {
         "polling_interval": "1s",
         "scheme": "https",
         "auth": {
-            "username": AUTH_USERNAME,
-            "password": AUTH_PASSWORD
+            "username": pki.username(),
+            "password": pki.password()
         }
-    }));
+    });
+    world.sentinel_monitors.push(monitor);
 
     world.sentinel_monitor_name = "Auth Monitor".to_string();
 }
 
 #[when("sentinel is started with CA trust")]
 async fn sentinel_started_with_ca_trust(world: &mut SentinelWorld) {
-    let dir = pki_dir(world);
-    let ca_path = dir.join("ca.pem");
-
     let mut config = world.build_sentinel_config();
-    config["ca_cert"] = serde_json::json!(ca_path.to_string_lossy().to_string());
+    config["ca_cert"] = serde_json::json!(world.pki().ca_path().to_string_lossy());
 
     let temp_dir = world
         .temp_dir

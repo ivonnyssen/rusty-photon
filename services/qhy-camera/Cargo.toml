@@ -141,7 +141,7 @@ require-sh = true
 # [dependencies] entry keeps `filter_wheel` (production-used: real CFW devices).
 ascom-alpaca = { workspace = true, features = ["client"] }
 tracing-subscriber = { workspace = true }
-bdd-infra = { workspace = true, features = ["conformu"] }
+bdd-infra = { workspace = true, features = ["conformu", "tls-auth"] }
 cucumber = { workspace = true }
 tempfile = { workspace = true }
 tokio-test = { workspace = true }

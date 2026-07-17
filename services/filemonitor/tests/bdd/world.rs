@@ -41,11 +41,8 @@ pub struct FilemonitorWorld {
     pub loaded_config: Option<Value>,
     pub config_path: Option<String>,
 
-    // TLS test state
-    pub tls_pki_dir: Option<TempDir>,
-
-    // Auth test state
-    pub auth_password: Option<String>,
+    // TLS + auth test state (shared PKI fixture: CA, service cert, credentials)
+    pub pki: Option<bdd_infra::tls_auth::PkiFixture>,
 
     // Config actions test state
     pub last_response: Option<Value>,
@@ -67,6 +64,11 @@ impl FilemonitorWorld {
     /// Convenience accessor for the typed SafetyMonitor device.
     pub fn monitor(&self) -> &Arc<dyn SafetyMonitor> {
         self.monitor.as_ref().expect("monitor not acquired")
+    }
+
+    /// The shared PKI fixture (panics if the cert-generation Given hasn't run).
+    pub fn pki(&self) -> &bdd_infra::tls_auth::PkiFixture {
+        self.pki.as_ref().expect("TLS certs not generated")
     }
 
     /// Build a JSON config from the accumulated world state.

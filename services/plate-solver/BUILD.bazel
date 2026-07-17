@@ -171,7 +171,7 @@ rust_test(
     use_libtest_harness = False,
     deps = [
         ":plate-solver_lib",
-        "//crates/bdd-infra",
+        "//crates/bdd-infra:bdd-infra_tls_auth",
     ] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
         normal = True,
         normal_dev = True,

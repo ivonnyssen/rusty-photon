@@ -16,6 +16,7 @@ use ascom_alpaca::api::telescope::{PierSide, Telescope};
 use ascom_alpaca::api::TypedDevice;
 use ascom_alpaca::ASCOMError;
 use ascom_alpaca::Client as AlpacaClient;
+use bdd_infra::tls_auth::{TlsAuthSmokeWorld, TlsAuthState};
 use bdd_infra::ServiceHandle;
 use cucumber::World;
 use serde_json::Value;
@@ -57,10 +58,32 @@ pub struct StarAdventurerWorld {
     /// Result of the last supported_actions query.
     pub last_supported_actions: Option<Vec<String>>,
 
-    /// PKI tree for the TLS + auth smoke test (`auth.feature`).
-    pub tls_pki_dir: Option<TempDir>,
-    /// Config JSON staged by a Given step for a custom-config start.
-    pub pending_config: Option<serde_json::Value>,
+    /// State for the shared TLS + auth smoke steps (`auth.feature`).
+    pub tls_auth: TlsAuthState,
+}
+
+impl TlsAuthSmokeWorld for StarAdventurerWorld {
+    fn tls_auth(&mut self) -> &mut TlsAuthState {
+        &mut self.tls_auth
+    }
+
+    /// The world's default test config (mock serial transport, port 0,
+    /// BDD-safe mount envelope). It serialises with a plain `server` block,
+    /// which the shared configure step replaces with the TLS + auth one.
+    fn base_test_config(&self) -> serde_json::Value {
+        let config = self.config.clone().unwrap_or_else(default_test_config);
+        serde_json::to_value(&config).expect("config JSON serialisation")
+    }
+
+    async fn start_with_tls_auth(&mut self, config: serde_json::Value) {
+        let handle = bdd_infra::tls_auth::spawn_service_handle(
+            &mut self.tls_auth,
+            env!("CARGO_PKG_NAME"),
+            &config,
+        )
+        .await;
+        self.service_handle = Some(handle);
+    }
 }
 
 impl StarAdventurerWorld {

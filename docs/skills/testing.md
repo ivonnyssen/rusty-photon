@@ -439,15 +439,39 @@ test spawns `rp` alongside OmniSim and/or an orchestrator plugin:
 
 Turn the feature on **only** for tests that actually spawn rp. Services whose
 BDD tests only need `ServiceHandle` (filemonitor, qhy-focuser, ppba-driver,
-sentinel, …) should leave the default features so they don't compile axum,
-reqwest, and rmcp transitively.
+sentinel, …) should leave it off so they don't compile axum, reqwest, and
+rmcp transitively.
+
+**Optional `tls-auth` feature** — the shared TLS + HTTP Basic Auth test
+fixture behind every service's `auth.feature`:
+
+- `PkiFixture` — per-scenario throwaway PKI (generated CA + service
+  certificate signed by it) plus a per-run generated password and its
+  Argon2id hash. Because the password is random, no suite carries a
+  hard-coded credential (CodeQL's `hard-coded-cryptographic-value` query
+  stays quiet — no used-in-tests dismissal ritual). Accessors: `ca_path()` /
+  `cert_path()` / `key_path()`, `https_client()` (a reqwest client trusting
+  the CA), and the JSON fragments `tls_block()` / `auth_block()` /
+  `server_block(port)`.
+- `TlsAuthState` + `TlsAuthSmokeWorld` + `tls_auth_smoke_steps!` — the smoke
+  suite in a box. The World embeds a `TlsAuthState`, implements the trait
+  (base config JSON, launch mechanism, and — for non-Alpaca services — a
+  `PROBE_PATH` override, usually `/health`), and invokes the macro in its
+  `auth_steps.rs`; the feature file is the byte-identical service-neutral
+  `auth.feature` (copy dsd-fp2's). Deep TLS/auth suites (ppba-driver,
+  ui-htmx, …) keep their own scenario sets but build on `PkiFixture` and
+  `wait_until_ready` instead of hand-rolled cert plumbing.
+
+Under Bazel, BDD targets link the matching crate variant:
+`//crates/bdd-infra:bdd-infra_tls_auth`, or
+`:bdd-infra_rp_harness_tls_auth` when the suite also spawns rp.
 
 ```toml
 # rp's own tests and any rp-client plugin's tests:
-bdd-infra = { workspace = true, features = ["rp-harness"] }
+bdd-infra = { workspace = true, features = ["rp-harness", "tls-auth"] }
 
 # Services whose tests only spawn themselves:
-bdd-infra = { workspace = true }
+bdd-infra = { workspace = true, features = ["tls-auth"] }
 ```
 
 **Convention: per-plugin BDD suites.** End-to-end tests for an rp orchestrator

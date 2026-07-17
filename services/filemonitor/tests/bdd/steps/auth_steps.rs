@@ -6,8 +6,15 @@ use tempfile::TempDir;
 use crate::steps::infrastructure::ServiceHandle;
 use crate::world::{FilemonitorWorld, ParsingRuleConfig};
 
-const AUTH_USERNAME: &str = "observatory";
-const AUTH_PASSWORD: &str = "test-password";
+/// The Alpaca management URL of the running filemonitor over HTTPS.
+fn management_url(world: &FilemonitorWorld) -> String {
+    let port = world
+        .filemonitor
+        .as_ref()
+        .expect("filemonitor not started")
+        .port;
+    format!("https://localhost:{port}/management/v1/configureddevices")
+}
 
 #[given(expr = "a monitored file containing {string}")]
 fn monitored_file_containing(world: &mut FilemonitorWorld, content: String) {
@@ -24,26 +31,9 @@ fn filemonitor_configured_with_tls_auth_and_rule(world: &mut FilemonitorWorld, p
         safe: true,
     });
 
-    let hash = rp_auth::credentials::hash_password(AUTH_PASSWORD).unwrap();
-    world.auth_password = Some(AUTH_PASSWORD.to_string());
-
-    let pki_dir = world
-        .tls_pki_dir
-        .as_ref()
-        .expect("TLS certs not generated")
-        .path()
-        .to_path_buf();
-    let certs_dir = pki_dir.join("certs");
-
     let mut config = world.build_config_json();
-    config["server"]["tls"] = serde_json::json!({
-        "cert": certs_dir.join("filemonitor.pem").to_string_lossy().to_string(),
-        "key": certs_dir.join("filemonitor-key.pem").to_string_lossy().to_string()
-    });
-    config["server"]["auth"] = serde_json::json!({
-        "username": AUTH_USERNAME,
-        "password_hash": hash
-    });
+    config["server"]["tls"] = world.pki().tls_block();
+    config["server"]["auth"] = world.pki().auth_block();
 
     // Store config in temp dir for the When step to pick up
     let dir = world
@@ -92,81 +82,30 @@ async fn filemonitor_started_without_auth(world: &mut FilemonitorWorld) {
 
 #[then("the Alpaca management endpoint should respond with valid credentials")]
 async fn alpaca_management_responds_with_auth(world: &mut FilemonitorWorld) {
-    let pki_dir = world
-        .tls_pki_dir
-        .as_ref()
-        .expect("TLS certs not generated")
-        .path()
-        .to_path_buf();
-    let ca_path = pki_dir.join("ca.pem");
-    let client = rp_tls::client::build_reqwest_client(Some(&ca_path)).unwrap();
-    let port = world
-        .filemonitor
-        .as_ref()
-        .expect("filemonitor not started")
-        .port;
-    let url = format!("https://localhost:{}/management/v1/configureddevices", port);
+    let pki = world.pki();
+    let client = pki.https_client();
+    let url = management_url(world);
+    bdd_infra::tls_auth::wait_until_ready(&client, &url, pki.username(), pki.password()).await;
 
-    let mut ok = false;
-    for _ in 0..60 {
-        if let Ok(resp) = client
-            .get(&url)
-            .basic_auth(AUTH_USERNAME, Some(AUTH_PASSWORD))
-            .send()
-            .await
-        {
-            if resp.status().as_u16() == 200 {
-                ok = true;
-                break;
-            }
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    }
-    assert!(
-        ok,
-        "Alpaca management endpoint did not respond with valid credentials"
-    );
+    let resp = client
+        .get(&url)
+        .basic_auth(pki.username(), Some(pki.password()))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
 }
 
 #[then("the Alpaca management endpoint should reject wrong credentials with 401")]
 async fn alpaca_rejects_wrong_credentials(world: &mut FilemonitorWorld) {
-    let pki_dir = world
-        .tls_pki_dir
-        .as_ref()
-        .expect("TLS certs not generated")
-        .path()
-        .to_path_buf();
-    let ca_path = pki_dir.join("ca.pem");
-    let client = rp_tls::client::build_reqwest_client(Some(&ca_path)).unwrap();
-    let port = world
-        .filemonitor
-        .as_ref()
-        .expect("filemonitor not started")
-        .port;
-    let url = format!("https://localhost:{}/management/v1/configureddevices", port);
+    let pki = world.pki();
+    let client = pki.https_client();
+    let url = management_url(world);
+    bdd_infra::tls_auth::wait_until_ready(&client, &url, pki.username(), pki.password()).await;
 
-    // First wait for the server to be ready with correct credentials
-    let mut ready = false;
-    for _ in 0..60 {
-        if let Ok(resp) = client
-            .get(&url)
-            .basic_auth(AUTH_USERNAME, Some(AUTH_PASSWORD))
-            .send()
-            .await
-        {
-            if resp.status().as_u16() == 200 {
-                ready = true;
-                break;
-            }
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    }
-    assert!(ready, "Server did not become ready");
-
-    // Now test with wrong credentials
     let resp = client
         .get(&url)
-        .basic_auth(AUTH_USERNAME, Some("wrong-password"))
+        .basic_auth(pki.username(), Some("wrong-password"))
         .send()
         .await
         .unwrap();
@@ -175,78 +114,21 @@ async fn alpaca_rejects_wrong_credentials(world: &mut FilemonitorWorld) {
 
 #[then("the Alpaca management endpoint should reject missing credentials with 401")]
 async fn alpaca_rejects_missing_credentials(world: &mut FilemonitorWorld) {
-    let pki_dir = world
-        .tls_pki_dir
-        .as_ref()
-        .expect("TLS certs not generated")
-        .path()
-        .to_path_buf();
-    let ca_path = pki_dir.join("ca.pem");
-    let client = rp_tls::client::build_reqwest_client(Some(&ca_path)).unwrap();
-    let port = world
-        .filemonitor
-        .as_ref()
-        .expect("filemonitor not started")
-        .port;
-    let url = format!("https://localhost:{}/management/v1/configureddevices", port);
+    let pki = world.pki();
+    let client = pki.https_client();
+    let url = management_url(world);
+    bdd_infra::tls_auth::wait_until_ready(&client, &url, pki.username(), pki.password()).await;
 
-    // First wait for server readiness
-    let mut ready = false;
-    for _ in 0..60 {
-        if let Ok(resp) = client
-            .get(&url)
-            .basic_auth(AUTH_USERNAME, Some(AUTH_PASSWORD))
-            .send()
-            .await
-        {
-            if resp.status().as_u16() == 200 {
-                ready = true;
-                break;
-            }
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    }
-    assert!(ready, "Server did not become ready");
-
-    // Now test without credentials
     let resp = client.get(&url).send().await.unwrap();
     assert_eq!(resp.status().as_u16(), 401);
 }
 
 #[then("the 401 response should include a WWW-Authenticate header")]
 async fn response_includes_www_authenticate(world: &mut FilemonitorWorld) {
-    let pki_dir = world
-        .tls_pki_dir
-        .as_ref()
-        .expect("TLS certs not generated")
-        .path()
-        .to_path_buf();
-    let ca_path = pki_dir.join("ca.pem");
-    let client = rp_tls::client::build_reqwest_client(Some(&ca_path)).unwrap();
-    let port = world
-        .filemonitor
-        .as_ref()
-        .expect("filemonitor not started")
-        .port;
-    let url = format!("https://localhost:{}/management/v1/configureddevices", port);
-
-    // Wait for server readiness
-    let mut ready = false;
-    for _ in 0..60 {
-        if let Ok(resp) = client
-            .get(&url)
-            .basic_auth(AUTH_USERNAME, Some(AUTH_PASSWORD))
-            .send()
-            .await
-        {
-            if resp.status().as_u16() == 200 {
-                ready = true;
-                break;
-            }
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    }
-    assert!(ready, "Server did not become ready");
+    let pki = world.pki();
+    let client = pki.https_client();
+    let url = management_url(world);
+    bdd_infra::tls_auth::wait_until_ready(&client, &url, pki.username(), pki.password()).await;
 
     let resp = client.get(&url).send().await.unwrap();
     assert_eq!(resp.status().as_u16(), 401);

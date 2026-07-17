@@ -10,9 +10,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bdd_infra::rp_harness::{
-    CameraConfig, CoverCalibratorConfig, FilterWheelConfig, ReceivedEvent, RpConfigBuilder,
-    WebhookReceiver,
+    build_calibrator_flats_config, CameraConfig, CoverCalibratorConfig, FilterWheelConfig,
+    ReceivedEvent, RpConfigBuilder, WebhookReceiver,
 };
+use bdd_infra::tls_auth::{TlsAuthSmokeWorld, TlsAuthState};
 use bdd_infra::ServiceHandle;
 use cucumber::World;
 use serde_json::Value;
@@ -42,14 +43,36 @@ pub struct CalibratorFlatsWorld {
     pub flat_plan: Vec<(String, u32)>,
 
     // --- TLS + auth smoke test (`auth.feature`) ---
-    /// PKI tree for the TLS + auth smoke test.
-    pub tls_pki_dir: Option<tempfile::TempDir>,
-    /// Config JSON staged by a Given step for a custom-config start.
-    pub pending_config: Option<Value>,
+    /// State for the shared TLS + auth smoke steps.
+    pub tls_auth: TlsAuthState,
 
     // --- REST API state ---
     pub last_api_status: Option<u16>,
     pub last_api_body: Option<Value>,
+}
+
+impl TlsAuthSmokeWorld for CalibratorFlatsWorld {
+    const PROBE_PATH: &'static str = "/health";
+
+    fn tls_auth(&mut self) -> &mut TlsAuthState {
+        &mut self.tls_auth
+    }
+
+    fn base_test_config(&self) -> serde_json::Value {
+        // The suite's usual plan; it is never invoked — the smoke
+        // scenario only probes `/health`.
+        build_calibrator_flats_config(&[("Luminance".to_string(), 1)])
+    }
+
+    async fn start_with_tls_auth(&mut self, config: serde_json::Value) {
+        let handle = bdd_infra::tls_auth::spawn_service_handle(
+            &mut self.tls_auth,
+            env!("CARGO_PKG_NAME"),
+            &config,
+        )
+        .await;
+        self.calibrator_flats = Some(handle);
+    }
 }
 
 impl CalibratorFlatsWorld {

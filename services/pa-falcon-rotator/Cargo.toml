@@ -110,7 +110,7 @@ require-sh = true
 
 [dev-dependencies]
 tracing-subscriber = { workspace = true }
-bdd-infra = { workspace = true, features = ["conformu"] }
+bdd-infra = { workspace = true, features = ["conformu", "tls-auth"] }
 tokio-test = { workspace = true }
 mockall = { workspace = true }
 proptest = { workspace = true }

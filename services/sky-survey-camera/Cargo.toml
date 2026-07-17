@@ -117,7 +117,7 @@ require-sh = true
 
 [dev-dependencies]
 tracing-subscriber = { workspace = true }
-bdd-infra = { workspace = true, features = ["conformu"] }
+bdd-infra = { workspace = true, features = ["conformu", "tls-auth"] }
 cucumber = { workspace = true }
 tempfile = { workspace = true }
 tokio-test = { workspace = true }
