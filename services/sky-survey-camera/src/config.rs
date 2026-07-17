@@ -6,6 +6,12 @@ use std::time::Duration;
 
 use crate::error::SkySurveyCameraError;
 
+/// The port allocated to sky-survey-camera (`pkg/doctor.toml`, the service
+/// docs). There is no `Config::default()` — the optics fields are mandatory,
+/// so this is the value operators and the packaged catalog wire in, not a
+/// serde default.
+pub const DEFAULT_PORT: u16 = 11116;
+
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -460,5 +466,24 @@ mod tests {
         assert_eq!(config.server.bind_address.to_string(), "0.0.0.0");
         assert!(config.server.tls.is_none());
         assert!(config.server.auth.is_none());
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+mod doctor_toml_parity {
+    use rusty_photon_server_config::doctor_toml::{parse, ServerClass};
+
+    use super::DEFAULT_PORT;
+
+    /// `pkg/doctor.toml` is this service's catalog entry for
+    /// `rusty-photon-doctor` and must match the config defaults
+    /// (docs/services/doctor.md §The derived catalog).
+    #[test]
+    fn pkg_doctor_toml_matches_config_defaults() {
+        let meta = parse(include_str!("../pkg/doctor.toml")).unwrap();
+        assert_eq!(meta.port, DEFAULT_PORT);
+        assert_eq!(meta.class, ServerClass::Alpaca);
     }
 }

@@ -27,6 +27,7 @@ Coverage comes from the `bazel coverage` job (`.github/workflows/bazel-coverage.
 | [qhy-camera](services/qhy-camera) | ASCOM Camera (+ FilterWheel) | 11121 | [![coverage][cov-qhy-camera]][cov-qhy-camera-link] | Driver for QHYCCD cameras + filter wheels (vendored `qhyccd-rs` bindings; links the proprietary SDK unless `QHYCCD_SKIP_NATIVE_LINK=1`) |
 | [zwo-camera](services/zwo-camera) | ASCOM Camera | 11122 | [![coverage][cov-zwo-camera]][cov-zwo-camera-link] | Driver for ZWO ASI cameras (vendored `zwo-rs` bindings, MIT SDK; links only the camera SDK — ADR-014 — unless `ZWO_SKIP_NATIVE_LINK=1`); the EFW filter wheel is a future separate service |
 | [zwo-focuser](services/zwo-focuser) | ASCOM Focuser | 11124 | [![coverage][cov-zwo-focuser]][cov-zwo-focuser-link] | Driver for the ZWO EAF (vendored `zwo-rs` bindings, MIT SDK; links only the focuser SDK — ADR-014 — unless `ZWO_SKIP_NATIVE_LINK=1`) |
+| [doctor](services/doctor) | Install diagnosis CLI | — | [![coverage][cov-doctor]][cov-doctor-link] | Read-only diagnosis of a multi-service install: config parsing, port collisions, cross-service wiring, unit and privilege gaps (ADR-016) |
 
 ### RP (Main Application)
 
@@ -117,6 +118,10 @@ ASCOM Alpaca **Camera** driver for ZWO ASI hardware, built natively on the vendo
 ### ZWO Focuser
 
 ASCOM Alpaca **Focuser** driver for the ZWO EAF, built on the same vendored `zwo-rs` crate (its `focuser` feature — the binary links only the focuser SDK, `libEAFFocuser`; ADR-014) rather than the serial transport pattern the other focusers use. Exposes the full `Device + Focuser` surface (absolute move, halt, live temperature) and passes ConformU against the simulation backend; real-hardware validation is pending. See [docs/services/zwo-focuser.md](docs/services/zwo-focuser.md) for design documentation.
+
+### Doctor
+
+One-shot CLI that diagnoses a multi-service install, read-only: packages put bytes on disk, services self-create their configs, and `rusty-photon-doctor` reports what does not line up — unparseable configs, port collisions, dangling cross-service name references, units that will never start, and sentinel's restart-privilege gap. Its service catalog is derived from each service's `pkg/doctor.toml`, never hand-maintained. Repair (`--fix`), hardware checks, and the TLS/credential lifecycle arrive in later phases of [the plan](docs/plans/service-config-doctor.md) (ADR-016). See [docs/services/doctor.md](docs/services/doctor.md) for design documentation.
 
 ## Getting Started
 
@@ -242,6 +247,7 @@ rusty-photon/
     calibrator-flats/      Flat-field calibration orchestrator plugin (CoverCalibrator)
     plate-solver/          rp-managed HTTP service wrapping the ASTAP CLI
     ui-htmx/               Server-rendered web configuration UI (BFF)
+    doctor/                Install diagnosis CLI (read-only in D2; ADR-016)
   docs/
     services/              Per-service design documentation
     crates/                Per-crate design documentation
@@ -308,3 +314,5 @@ Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT L
 [cov-zwo-camera-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=zwo-camera
 [cov-zwo-focuser]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=zwo-focuser
 [cov-zwo-focuser-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=zwo-focuser
+[cov-doctor]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=doctor
+[cov-doctor-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=doctor

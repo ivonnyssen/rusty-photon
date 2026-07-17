@@ -1,0 +1,168 @@
+load("@cr//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+
+exports_files(
+    ["Cargo.toml"],
+    visibility = ["//visibility:public"],
+)
+
+_INTRA_WORKSPACE_DEPS = [
+    "//crates/rusty-photon-config:rusty-photon-config",
+    "//crates/rusty-photon-server-config:rusty-photon-server-config",
+]
+
+# The derived catalog: every packaged service's pkg/doctor.toml, embedded
+# via include_str! (src/catalog.rs). Cross-package file labels — each
+# service's BUILD exports the file. tests/tree_parity.rs asserts this list
+# matches services/*/pkg under Cargo.
+_CATALOG_METADATA = [
+    "//services/calibrator-flats:pkg/doctor.toml",
+    "//services/dsd-fp2:pkg/doctor.toml",
+    "//services/filemonitor:pkg/doctor.toml",
+    "//services/pa-falcon-rotator:pkg/doctor.toml",
+    "//services/pa-scops-oag:pkg/doctor.toml",
+    "//services/phd2-guider:pkg/doctor.toml",
+    "//services/plate-solver:pkg/doctor.toml",
+    "//services/ppba-driver:pkg/doctor.toml",
+    "//services/qhy-camera:pkg/doctor.toml",
+    "//services/qhy-focuser:pkg/doctor.toml",
+    "//services/rp:pkg/doctor.toml",
+    "//services/sentinel:pkg/doctor.toml",
+    "//services/sky-survey-camera:pkg/doctor.toml",
+    "//services/star-adventurer-gti:pkg/doctor.toml",
+    "//services/ui-htmx:pkg/doctor.toml",
+    "//services/zwo-camera:pkg/doctor.toml",
+    "//services/zwo-focuser:pkg/doctor.toml",
+]
+
+rust_library(
+    name = "doctor_lib",
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = ["src/main.rs"],
+    ),
+    aliases = aliases(),
+    compile_data = _CATALOG_METADATA,
+    crate_name = "doctor",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//visibility:public"],
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+)
+
+# The BDD suite drives the binary through --platform-facts, which only
+# exists under the `mock` feature; features are a compile-time concept, so
+# the mock binary needs its own lib twin.
+rust_library(
+    name = "doctor_lib_mock",
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = ["src/main.rs"],
+    ),
+    aliases = aliases(),
+    compile_data = _CATALOG_METADATA,
+    crate_features = ["mock"],
+    crate_name = "doctor",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+)
+
+rust_binary(
+    name = "doctor",
+    srcs = ["src/main.rs"],
+    aliases = aliases(),
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//visibility:public"],
+    deps = [":doctor_lib"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+)
+
+rust_binary(
+    name = "doctor_mock",
+    srcs = ["src/main.rs"],
+    aliases = aliases(),
+    crate_features = ["mock"],
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    deps = [":doctor_lib_mock"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "doctor_unit_test",
+    size = "small",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate = ":doctor_lib",
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+# Walks services/*/pkg via the compile-time CARGO_MANIFEST_DIR, so it needs
+# the real source tree — Cargo runs it (nightly safety net); Bazel's
+# sandbox tags it out.
+rust_test(
+    name = "tree_parity",
+    size = "small",
+    srcs = ["tests/tree_parity.rs"],
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    tags = ["requires-cargo"],
+    deps = [":doctor_lib"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+rust_test(
+    name = "bdd",
+    size = "small",
+    srcs = ["tests/bdd.rs"] + glob(["tests/bdd/**/*.rs"]),
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate_root = "tests/bdd.rs",
+    data = [
+        "Cargo.toml",
+        ":doctor_mock",
+    ] + glob(["tests/features/**"]),
+    edition = "2021",
+    env = {
+        "BDD_PACKAGE_DIR": "services/doctor",
+        "DOCTOR_BINARY": "$(rootpath :doctor_mock)",
+        "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :doctor_mock)",
+    },
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    # rules_rust defaults CARGO_PKG_NAME to the crate name ("bdd"), but
+    # bdd-infra derives {PKG_UPPER_SNAKE}_BINARY from it — it must be the
+    # service name.
+    rustc_env = {"CARGO_PKG_NAME": "doctor"},
+    tags = ["bdd"],
+    use_libtest_harness = False,
+    deps = [
+        ":doctor_lib",
+        "//crates/bdd-infra",
+    ] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)

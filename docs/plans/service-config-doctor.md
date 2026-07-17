@@ -25,8 +25,8 @@ doctor *out* of the services rather than a component of them.
 | Phase | Description | Status | Branch / PR |
 |-------|-------------|--------|-------------|
 | D0 | This plan + [ADR-016](../decisions/016-service-config-ownership-and-doctor.md) (config ownership + the SDK line) | Merged | #539 |
-| D1 | `rusty-photon-server-config` (core + Alpaca shapes); all 18 services adopt; TLS/auth for the 9 that lack it; `bind_address` everywhere (default `0.0.0.0`); per-service TLS+auth smoke scenarios | Merged | #549 |
-| D2 | `rusty-photon-doctor` binary: catalog + service-config diagnosis (read-only) | Not started | |
+| D1 | `rusty-photon-server-config` (core + Alpaca shapes); all 18 services adopt; TLS/auth for the 9 that lack it; `bind_address` everywhere (default `0.0.0.0`); per-service TLS+auth smoke scenarios | Merged | #549 (follow-up: [#550](https://github.com/ivonnyssen/rusty-photon/issues/550), smoke-fixture dedupe) |
+| D2 | `rusty-photon-doctor` binary: catalog + service-config diagnosis (read-only) | In progress | `feature/doctor-d2-diagnosis` |
 | D3 | `--fix`; ui-htmx sources from rp's roster (its `drivers` map becomes an empty-by-default override) | Not started | |
 | D3s | Sentinel discovers its services; delete the `services` map; policy → constants (privilege path shipped — polkit rule in the sentinel packages) | Not started | |
 | D4 | `rusty-photon-doctor-checks` crate + generic hardware checks (no SDK) | Not started | |
@@ -224,6 +224,40 @@ deep representative suite for the shared Alpaca driver stack.
 
 ### D2 — the catalog and service-config diagnosis
 
+The full D2 specification is the design doc,
+[`docs/services/doctor.md`](../services/doctor.md). Settled interactively
+2026-07-16 (the eight open choices, recorded here so later phases inherit
+them):
+
+1. **Location** — `services/doctor` (cargo binary `doctor`, installed as
+   `rusty-photon-doctor` at D7). No `pkg/` until D7, so doctor stays out of
+   its own catalog; D7 needs a packaging carve-out for a unit-less one-shot
+   binary.
+2. **Catalog mechanism** — per-service metadata files,
+   `services/<svc>/pkg/doctor.toml` (`class = "alpaca"|"core"`, `port`).
+   Each service unit-tests its own file against its own config defaults;
+   doctor embeds the files at build time; CI asserts every `services/*/pkg`
+   dir carries one. Note the packaged set is **17** services — session-runner
+   has no `pkg/` yet and self-enrolls when packaging lands.
+3. **Installed-detection** — the service manager knows a `rusty-photon-*`
+   unit, OR a config file exists (covers dev checkouts). Matches D3s's
+   discovery exactly.
+4. **Platforms** — all three inspectors (systemd, Windows SCM, brew
+   services) fully implemented and host-validated in the D2 PR, not
+   deferred.
+5. **Static only** — no network I/O in D2; liveness probes arrive with the
+   phases that need them (D3/D5).
+6. **CLI contract** — human text by default, `--json` emits the permissive
+   `DoctorReport` schema from day one; exit 0 = no failures, 1 = failures
+   found, 2 = doctor could not run.
+7. **Config root** — `--config-dir` > the packaged `/etc/rusty-photon`
+   symlink (Unix) > the platform default the services themselves resolve.
+8. **Parse scope** — JSON syntax + the catalog-declared `server` shape + the
+   known cross-reference blocks (ui-htmx `drivers`/`sentinel`, sentinel
+   `services`/`operation_watchdog`, rp `equipment[].alpaca_url`/`session`).
+   Full-shape typo detection is honestly deferred to D5's per-service
+   subcommands.
+
 **The catalog must be derived, not typed.** `services/<svc>/pkg` existing is
 already the packaging authority, and both packaging scripts derive the service
 list from it with a byte-identical line —
@@ -234,7 +268,8 @@ ALL_SERVICES=$(for d in services/*/pkg; do [ -d "$d" ] && basename "$(dirname "$
 ```
 
 Doctor's catalog (service name, default port, unit name per platform) comes
-from the same place, with a CI test asserting the table matches the tree.
+from the same place, via the `doctor.toml` mechanism above, with CI asserting
+the table matches the tree.
 
 This matters because `rusty-photon-<svc>` is *already* independently re-encoded
 in `.service` files, `.wxs` fragments, `generate-brew-formulas.sh`, and
@@ -261,8 +296,8 @@ What D2 diagnoses — all service-level, zero device knowledge:
   deletes the third; the survivors must name a unit the service manager
   actually reports.
 - **Config-gated services that will never start.** sky-survey-camera,
-  plate-solver, and calibrator-flats hard-require a config file and carry
-  `ConditionPathExists=`. Installed, enabled, silently inert.
+  plate-solver, calibrator-flats, and phd2-guider hard-require a config file
+  and carry `ConditionPathExists=`. Installed, enabled, silently inert.
 - **Unparseable configs.** `deny_unknown_fields` makes a typo fatal at startup;
   doctor catches it before the next night.
 - **TLS cert/key paths** absent or unreadable by the `rusty-photon` user.
@@ -541,9 +576,11 @@ permissive in both directions across the binary boundary.
   via sentinel vs in-process reload), and how an operator who forgets the
   credential recovers (re-mint via `doctor`, same as any won't-authenticate
   case). Settle alongside the renewal swap decision.
-- **How doctor detects what is installed (D2).** Binary presence under a
+- **How doctor detects what is installed (D2).** ~~Binary presence under a
   platform-specific prefix is the most portable; querying dpkg/rpm/SCM/brew is
-  more accurate but is four implementations.
+  more accurate but is four implementations.~~ **Resolved (D2 decision 3):**
+  ask the service manager for `rusty-photon-*` units, plus config-file
+  presence for dev checkouts.
 - **Whether `--fix` should refuse to run while services are live (D3).** Atomic
   rename makes it safe from corruption, but a driver's `config.apply` could
   race a `--fix` write. Refusing, warning, or ignoring are all defensible.
