@@ -111,13 +111,15 @@ impl HardwareFacts {
     }
 }
 
-/// What the gatherer should probe. Callers derive this from their catalog
-/// and configs; the gatherer answers exactly these questions and nothing
-/// else, so a staged-facts test can enumerate its whole world. Groups are
-/// the exception — the whole (small) group database is gathered, because
-/// the checks must resolve gids the request could not have anticipated: a
-/// device node's owning group comes from the distro's own udev defaults
-/// (`dialout`), and an operator-edited rule can name any group.
+/// The request-scoped part of a gather: which paths to `stat`, which udev
+/// rule files to read, which user to look up — derived by callers from
+/// their catalog and configs. The rest of [`HardwareFacts`] is host-wide
+/// inventory gathered unconditionally, because the checks match against
+/// it rather than ask for specific entries: the USB bus and COM-port
+/// lists (a check asks "is my device among these"), and the whole (small)
+/// group database — the checks resolve gids the request could not have
+/// anticipated (a node's owning group comes from the distro's own udev
+/// defaults, and an operator-edited rule can name any group).
 #[derive(Debug, Clone, Default)]
 pub struct ProbeRequest {
     pub paths: Vec<PathBuf>,
