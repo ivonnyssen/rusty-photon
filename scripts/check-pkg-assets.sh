@@ -74,7 +74,13 @@ for pkgdir in services/*/pkg; do
 
     # Camera packages ship their own udev rule (the postinst udev stanza
     # reloads rules on install, so the rule file must actually be there).
+    # Sentinel ships the polkit rule that authorizes its restart commands
+    # (no postinst stanza needed — polkitd hot-reloads rules.d).
     case "$svc" in
+        sentinel)
+            [ -f "$pkgdir/50-rusty-photon-sentinel.rules" ] \
+                || err "$svc: missing pkg/50-rusty-photon-sentinel.rules"
+            ;;
         qhy-camera)
             [ -f "$pkgdir/90-rusty-photon-qhy.rules" ] \
                 || err "$svc: missing pkg/90-rusty-photon-qhy.rules"

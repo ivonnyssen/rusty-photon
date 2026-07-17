@@ -1,0 +1,17 @@
+// Lets the rusty-photon service user restart rusty-photon-* systemd units
+// without interactive authentication. The packaged unit runs sentinel
+// unprivileged with NoNewPrivileges=yes, so sudo can never elevate; this
+// scoped grant is the privilege path for sentinel's restart endpoint, the
+// watchdog ladder's restart rung, and health supervision. Everything else
+// stays denied: other verbs (start, stop, enable) and units without the
+// rusty-photon- prefix still require the usual authorization.
+polkit.addRule(function (action, subject) {
+    if (action.id == "org.freedesktop.systemd1.manage-units" &&
+        subject.user == "rusty-photon") {
+        var unit = action.lookup("unit") || "";
+        var verb = action.lookup("verb") || "";
+        if (unit.indexOf("rusty-photon-") == 0 && verb == "restart") {
+            return polkit.Result.YES;
+        }
+    }
+});

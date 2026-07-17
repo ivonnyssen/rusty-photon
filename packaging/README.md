@@ -31,6 +31,11 @@ doesn't even end in `-camera`, so the substitution leaves the helper path
 unchanged and permanently missing, which is exactly the desired no-op).
 These `pkg/` dirs additionally hold the udev rule file and the native-SDK
 payload pieces, all listed as plain `assets` in the metadata blocks:
+sentinel ships `50-rusty-photon-sentinel.rules` into
+`/usr/share/polkit-1/rules.d/` (the scoped polkit grant that lets its
+unprivileged `NoNewPrivileges=yes` unit run `systemctl restart
+rusty-photon-<svc>` — restart verb and `rusty-photon-*` units only; no
+postinst stanza needed, polkitd hot-reloads rules.d);
 qhy-camera the firmware helper; zwo-camera and zwo-focuser each their own
 committed `ZWO-SDK-LICENSE.txt` (checker-`cmp`'d against the copy vendored
 with the libzwo-sys headers) plus a gitignored `lib/` dir into which

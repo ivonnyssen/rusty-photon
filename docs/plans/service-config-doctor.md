@@ -24,11 +24,11 @@ doctor *out* of the services rather than a component of them.
 
 | Phase | Description | Status | Branch / PR |
 |-------|-------------|--------|-------------|
-| D0 | This plan + [ADR-016](../decisions/016-service-config-ownership-and-doctor.md) (config ownership + the SDK line) | Open | #539 |
-| D1 | `rusty-photon-server-config` (core + Alpaca shapes); all 18 services adopt; TLS/auth for the 9 that lack it; `bind_address` everywhere (default `0.0.0.0`); per-service TLS+auth smoke scenarios | Open | #549 |
+| D0 | This plan + [ADR-016](../decisions/016-service-config-ownership-and-doctor.md) (config ownership + the SDK line) | Merged | #539 |
+| D1 | `rusty-photon-server-config` (core + Alpaca shapes); all 18 services adopt; TLS/auth for the 9 that lack it; `bind_address` everywhere (default `0.0.0.0`); per-service TLS+auth smoke scenarios | Merged | #549 |
 | D2 | `rusty-photon-doctor` binary: catalog + service-config diagnosis (read-only) | Not started | |
 | D3 | `--fix`; ui-htmx sources from rp's roster (its `drivers` map becomes an empty-by-default override) | Not started | |
-| D3s | Sentinel discovers its services; delete the `services` map; policy → constants (needs the privilege path first) | Not started | |
+| D3s | Sentinel discovers its services; delete the `services` map; policy → constants (privilege path shipped — polkit rule in the sentinel packages) | Not started | |
 | D4 | `rusty-photon-doctor-checks` crate + generic hardware checks (no SDK) | Not started | |
 | D5 | Per-service `doctor` subcommand + aggregation | Not started | |
 | D6 | Move the TLS + credential lifecycle `rp` → doctor; split `rp-tls`; certs to `~/.config/rusty-photon/pki`; doctor generates certs + mints one credential + writes TLS-on/auth-on config | Not started | |
@@ -248,12 +248,13 @@ rot the same way.
 What D2 diagnoses — all service-level, zero device knowledge:
 
 - **Port collisions** across the hand-allocated 11111–11170 range.
-- **The sentinel privilege gap.** `services/sentinel/pkg/rusty-photon-sentinel.service`
-  runs `User=rusty-photon` with `NoNewPrivileges=yes`, the driver units are
-  system units, and there is no polkit rule or sudoers fragment anywhere in
-  `packaging/`. Sentinel cannot restart anything on a packaged Linux host
-  regardless of what `restart_command` says. Doctor reports this; fixing it is
-  a Flagged unknown below.
+- **The sentinel privilege path.** The sentinel package ships the scoped
+  polkit rule (`services/sentinel/pkg/50-rusty-photon-sentinel.rules` →
+  `/usr/share/polkit-1/rules.d/`) that lets its `NoNewPrivileges=yes` unit
+  restart `rusty-photon-*` units. Doctor verifies the rule is actually
+  installed: on a host installed from packages predating the rule (or where
+  it was hand-removed), sentinel is back to restarting nothing, and only a
+  2am failure would surface that.
 - **Dangling name joins.** ui-htmx `drivers` key → `sentinel_service` →
   sentinel `services` key → `operation_watchdog.operations.<family>.service`.
   Four spellings of one service name, matched by convention, unvalidated. D3s
@@ -501,27 +502,22 @@ permissive in both directions across the binary boundary.
 
 ## Flagged unknowns (resolve during the noted phase)
 
-- **The sentinel privilege path — blocks D3s; tracked as
-  [#523](https://github.com/ivonnyssen/rusty-photon/issues/523).** Sentinel runs
-  `NoNewPrivileges=yes` against system units with no polkit rule, so it can
-  restart nothing on packaged Linux today. D2 merely *reports* that; D3s cannot
-  ship without the fix, because once supervision is universal and "not
-  restartable" is gone, every discovered service depends on a privilege path
-  that does not exist.
-
-  Mostly resolved already: #523 carries a scoped polkit rule **verified
-  end-to-end on the rig** (restart succeeds; non-prefixed units like
-  `ssh.service` stay denied). It gates on `unit.indexOf("rusty-photon-") == 0
-  && verb == "restart"`, which lines up exactly with D3s enumerating
-  `rusty-photon-*` — the rule's scope and the discovery scope are the same set.
-  So this is "ship the known fix", not "make a decision".
-
-  Two tails remain. **#523 assumes the rule is "inert unless sentinel's
-  `services` map is populated"** — D3s deletes that map, so under this design
-  the rule is live for every discovered service the moment it lands; that
-  reasoning in the issue needs updating when it is picked up. And **the Windows
-  analogue is unresolved** (service account vs `Restart-Service`), which #523
-  flags but does not answer. Doctor is an all-platforms tool, so D3s needs it.
+- **The sentinel privilege path — resolved
+  ([#523](https://github.com/ivonnyssen/rusty-photon/issues/523)); was the
+  D3s blocker.** The sentinel deb/rpm ships the rig-verified scoped polkit
+  rule at `/usr/share/polkit-1/rules.d/50-rusty-photon-sentinel.rules`
+  (restart of `rusty-photon-*` units succeeds; non-prefixed units like
+  `ssh.service` stay denied). It gates on
+  `unit.indexOf("rusty-photon-") == 0 && verb == "restart"`, which lines up
+  exactly with D3s enumerating `rusty-photon-*` — the rule's scope and the
+  discovery scope are the same set, and the grant is live for every
+  `rusty-photon-*` unit from install (it never depended on sentinel's
+  `services` map), so D3s deleting that map changes nothing about it. The
+  Windows analogue turned out to be a non-issue: the MSI installs every
+  service — sentinel included — under `LocalSystem`, which may restart
+  services; macOS `brew services` run as the operator's own user. What
+  remains is verification, not decision: D2 checks the rule file is present
+  on hosts installed from packages predating it.
 - **Cert renewal does not exist — [#541](https://github.com/ivonnyssen/rusty-photon/issues/541),
   and D6 re-homes it.** ADR-002 documents renewal in the present tense and none
   of it is implemented. It does **not** block the default path — self-signed
