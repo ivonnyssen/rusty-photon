@@ -43,24 +43,5 @@
   "server": {
     "port": 11114,
     "bind_address": "0.0.0.0"
-  },
-  "services": {
-    "dsd-fp2": {
-      "base_url": "http://localhost:11119/api/v1",
-      "restart_command": "systemctl restart rusty-photon-dsd-fp2",
-      "health_command": "systemctl is-active rusty-photon-dsd-fp2",
-      "max_restart_duration": "60s"
-    },
-    "plate-solver": {
-      "restart_command": "systemctl restart rusty-photon-plate-solver",
-      "max_restart_duration": "30s",
-      "health": {
-        "url": "http://localhost:11131/health",
-        "poll_interval": "30s",
-        "failure_threshold": 3,
-        "restart_backoff": "1m",
-        "restart_backoff_max": "15m"
-      }
-    }
   }
 }

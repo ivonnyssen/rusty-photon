@@ -131,8 +131,13 @@ async fn index_handler(State(dashboard): State<DashboardState>) -> impl IntoResp
                     r#"<script>document.write(new Date({at}).toLocaleTimeString())</script>"#
                 ),
             };
+            let run_state = serde_json::to_value(s.run_state)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_string))
+                .unwrap_or_default();
             format!(
                 r#"<tr style="border-bottom: 1px solid #dee2e6;">
+                    <td style="padding: 0.5rem;">{}</td>
                     <td style="padding: 0.5rem;">{}</td>
                     <td style="padding: 0.5rem;">
                         <span style="display: inline-block; padding: 0.25em 0.6em; border-radius: 0.25rem; font-size: 0.85em; font-weight: 600; color: {}; background-color: {};">{}</span>
@@ -144,6 +149,7 @@ async fn index_handler(State(dashboard): State<DashboardState>) -> impl IntoResp
                     <td style="padding: 0.5rem;">{}</td>
                 </tr>"#,
                 html_escape(&s.name),
+                run_state,
                 color,
                 bg,
                 s.health,
@@ -227,6 +233,7 @@ async fn index_handler(State(dashboard): State<DashboardState>) -> impl IntoResp
                         const nextRestart = s.next_restart_epoch_ms === null ? '—' : new Date(s.next_restart_epoch_ms).toLocaleTimeString();
                         return `<tr style="border-bottom: 1px solid #dee2e6;">
                             <td style="padding: 0.5rem;">${{esc(s.name)}}</td>
+                            <td style="padding: 0.5rem;">${{esc(s.run_state)}}</td>
                             <td style="padding: 0.5rem;">
                                 <span style="display: inline-block; padding: 0.25em 0.6em; border-radius: 0.25rem; font-size: 0.85em; font-weight: 600; color: ${{color}}; background-color: ${{bg}};">${{label}}</span>
                             </td>
@@ -274,11 +281,12 @@ async fn index_handler(State(dashboard): State<DashboardState>) -> impl IntoResp
         </table>
     </section>
     <section>
-        <h2>Supervised Services</h2>
+        <h2>Discovered Services</h2>
         <table style="width: 100%; border-collapse: collapse;">
             <thead>
                 <tr style="border-bottom: 2px solid #dee2e6;">
                     <th style="padding: 0.5rem; text-align: left;">Name</th>
+                    <th style="padding: 0.5rem; text-align: left;">State</th>
                     <th style="padding: 0.5rem; text-align: left;">Health</th>
                     <th style="padding: 0.5rem; text-align: left;">Failures</th>
                     <th style="padding: 0.5rem; text-align: left;">Restarts (Outage)</th>
@@ -338,9 +346,9 @@ async fn status_handler(State(dashboard): State<DashboardState>) -> impl IntoRes
     axum::Json(statuses)
 }
 
-/// `GET /api/services`: one entry per health-supervised service (seeded from
-/// config, so entries exist before their first probe). Empty array when no
-/// `services` entry has a `health` block.
+/// `GET /api/services`: one entry per discovered service (populated by the
+/// discovery loop, so entries exist before their first probe). Empty array
+/// when nothing is discovered.
 async fn services_handler(State(dashboard): State<DashboardState>) -> impl IntoResponse {
     let state = dashboard.state.read().await;
 
@@ -350,6 +358,9 @@ async fn services_handler(State(dashboard): State<DashboardState>) -> impl IntoR
         .map(|s| {
             serde_json::json!({
                 "name": s.name,
+                "unit": s.unit,
+                // "running" | "failed" | "inert" | "stopped" | "disabled".
+                "run_state": s.run_state,
                 // "unknown" | "up" | "down" (the enum's lowercase serde form).
                 "health": s.health,
                 "last_probe_epoch_ms": s.last_probe_epoch_ms,
@@ -387,10 +398,10 @@ async fn history_handler(State(dashboard): State<DashboardState>) -> impl IntoRe
     axum::Json(history)
 }
 
-/// `POST /api/services/{name}/restart`: run the service's configured restart
-/// command (and health-confirmation poll). The command's outcome is a domain
-/// result on HTTP 200; addressing errors map to 404 (unknown name) or 409
-/// (not restartable / already in flight).
+/// `POST /api/services/{name}/restart`: run the discovered service's derived
+/// restart command (and recovery poll). The command's outcome is a domain
+/// result on HTTP 200; addressing errors map to 404 (no discovered service by
+/// that name) or 409 (already in flight).
 async fn restart_handler(
     State(dashboard): State<DashboardState>,
     Path(name): Path<String>,
@@ -400,9 +411,7 @@ async fn restart_handler(
         Err(e) => {
             let code = match e {
                 RestartError::UnknownService(_) => StatusCode::NOT_FOUND,
-                RestartError::NotRestartable(_) | RestartError::AlreadyInFlight(_) => {
-                    StatusCode::CONFLICT
-                }
+                RestartError::AlreadyInFlight(_) => StatusCode::CONFLICT,
             };
             (
                 code,
@@ -430,9 +439,53 @@ mod tests {
     use crate::notifier::NotificationRecord;
     use crate::state::new_state_handle;
 
-    /// Router with an empty supervised-services registry (non-restart tests).
+    use crate::discovery::{DiscoveredService, DiscoveredUnit, RunState, ServiceManager};
+
+    /// A [`ServiceManager`] that accepts every restart — the restart-handler
+    /// tests only assert the HTTP mapping, not the platform.
+    #[derive(Debug)]
+    struct AlwaysOkManager;
+
+    #[async_trait::async_trait]
+    impl ServiceManager for AlwaysOkManager {
+        async fn enumerate(&self) -> crate::Result<Vec<DiscoveredUnit>> {
+            Ok(Vec::new())
+        }
+
+        async fn restart(&self, _unit: &str, _budget: Duration) -> crate::Result<()> {
+            Ok(())
+        }
+
+        async fn recovery_check(&self, _unit: &str) -> Option<bool> {
+            None
+        }
+    }
+
+    fn restart_manager(services: &[&str]) -> Arc<RestartManager> {
+        let registry: std::collections::HashMap<String, DiscoveredService> = services
+            .iter()
+            .map(|n| {
+                (
+                    n.to_string(),
+                    DiscoveredService {
+                        name: n.to_string(),
+                        unit: format!("rusty-photon-{n}"),
+                        state: RunState::Running,
+                        probe: None,
+                    },
+                )
+            })
+            .collect();
+        Arc::new(RestartManager::new(
+            Arc::new(tokio::sync::RwLock::new(registry)),
+            Arc::new(AlwaysOkManager),
+            Duration::from_secs(1),
+        ))
+    }
+
+    /// Router with an empty discovered-services registry (non-restart tests).
     fn router(state: StateHandle) -> Router {
-        build_router(state, Arc::new(RestartManager::shell(Default::default())))
+        build_router(state, restart_manager(&[]))
     }
 
     #[test]
@@ -471,11 +524,16 @@ mod tests {
     async fn index_escapes_names_and_messages() {
         let state = new_state_handle(
             vec![("<b>mon</b>".to_string(), Duration::from_secs(30))],
-            vec![("<script>svc</script>".to_string(), Duration::from_secs(30))],
             10,
         );
         {
             let mut s = state.write().await;
+            s.set_service_health(crate::state::ServiceHealthStatus::unknown(
+                "<script>svc</script>".to_string(),
+                "rusty-photon-svc".to_string(),
+                RunState::Running,
+                Duration::from_secs(30),
+            ));
             s.add_notification(NotificationRecord {
                 monitor_name: "<script>svc</script>".to_string(),
                 notifier_type: "pushover".to_string(),
@@ -514,7 +572,6 @@ mod tests {
                 "Test Monitor".to_string(),
                 std::time::Duration::from_secs(30),
             )],
-            vec![],
             10,
         )
     }
@@ -616,21 +673,19 @@ mod tests {
         assert!(html.contains("Sentinel Dashboard"));
         assert!(html.contains("Last Check"));
         assert!(html.contains("Next Check"));
-        assert!(html.contains("Supervised Services"));
+        assert!(html.contains("Discovered Services"));
         assert!(html.contains("Next Restart"));
     }
 
     #[tokio::test]
     async fn services_returns_json() {
-        let state = new_state_handle(
-            vec![],
-            vec![("plate-solver".to_string(), Duration::from_secs(30))],
-            10,
-        );
+        let state = new_state_handle(vec![], 10);
         {
             let mut s = state.write().await;
             s.set_service_health(crate::state::ServiceHealthStatus {
                 name: "plate-solver".to_string(),
+                unit: "rusty-photon-plate-solver".to_string(),
+                run_state: RunState::Running,
                 health: crate::state::ServiceHealth::Up,
                 last_probe_epoch_ms: 1000,
                 consecutive_failures: 0,
@@ -658,6 +713,8 @@ mod tests {
         let json: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
         assert_eq!(json.len(), 1);
         assert_eq!(json[0]["name"], "plate-solver");
+        assert_eq!(json[0]["unit"], "rusty-photon-plate-solver");
+        assert_eq!(json[0]["run_state"], "running");
         assert_eq!(json[0]["health"], "up");
         assert_eq!(json[0]["last_probe_epoch_ms"], 1000);
         assert_eq!(json[0]["consecutive_failures"], 0);
@@ -689,24 +746,8 @@ mod tests {
         assert!(json.is_empty());
     }
 
-    /// A [`crate::corrective::Restarter`] that accepts every command — the
-    /// restart-handler tests only assert the HTTP mapping, not the shell.
-    #[derive(Debug)]
-    struct AlwaysOkRunner;
-
-    #[async_trait::async_trait]
-    impl crate::corrective::Restarter for AlwaysOkRunner {
-        async fn restart(&self, _command: &str, _budget: Duration) -> crate::Result<()> {
-            Ok(())
-        }
-    }
-
-    fn restart_router(services_json: &str) -> Router {
-        let services = serde_json::from_str(services_json).unwrap();
-        build_router(
-            setup_state(),
-            Arc::new(RestartManager::new(services, Arc::new(AlwaysOkRunner))),
-        )
+    fn restart_router(services: &[&str]) -> Router {
+        build_router(setup_state(), restart_manager(services))
     }
 
     async fn post_restart(app: Router, name: &str) -> (StatusCode, serde_json::Value) {
@@ -729,32 +770,21 @@ mod tests {
 
     #[tokio::test]
     async fn restart_unknown_service_is_404() {
-        let app = restart_router("{}");
+        let app = restart_router(&[]);
         let (status, body) = post_restart(app, "nope").await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert!(
             body["error"]
                 .as_str()
                 .unwrap()
-                .contains("no configured service named 'nope'"),
-            "{body}"
-        );
-    }
-
-    #[tokio::test]
-    async fn restart_not_restartable_service_is_409() {
-        let app = restart_router(r#"{ "mount": { "restart_command": null } }"#);
-        let (status, body) = post_restart(app, "mount").await;
-        assert_eq!(status, StatusCode::CONFLICT);
-        assert!(
-            body["error"].as_str().unwrap().contains("not restartable"),
+                .contains("no discovered service named 'nope'"),
             "{body}"
         );
     }
 
     #[tokio::test]
     async fn restart_ok_reports_domain_outcome_on_200() {
-        let app = restart_router(r#"{ "svc": { "restart_command": "restart-cmd" } }"#);
+        let app = restart_router(&["svc"]);
         let (status, body) = post_restart(app, "svc").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["service"], "svc");
@@ -764,7 +794,7 @@ mod tests {
 
     #[tokio::test]
     async fn status_empty_monitors() {
-        let state = new_state_handle(vec![], vec![], 10);
+        let state = new_state_handle(vec![], 10);
         let app = router(state);
         let response = app
             .oneshot(

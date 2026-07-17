@@ -2,10 +2,10 @@
 //!
 //! Speaks Sentinel's Service Restart API (`POST /api/services/{name}/restart`,
 //! see `docs/services/sentinel.md` §Service Restart API) over an
-//! [`HttpClient`]. Sentinel reports the restart command's outcome as a domain
-//! result on HTTP 200 ([`RestartOutcome`]); 404/409 are addressing errors
-//! (unknown service name / not restartable / already in flight), surfaced as
-//! typed [`SentinelClientError`] variants so the page can name the reason.
+//! [`HttpClient`]. Sentinel reports the restart's outcome as a domain result
+//! on HTTP 200 ([`RestartOutcome`]); 404/409 are addressing errors (no
+//! discovered service by that name / a restart already in flight), surfaced
+//! as typed [`SentinelClientError`] variants so the page can name the reason.
 //! Handlers depend on the [`SentinelClient`] trait so tests can inject stubs.
 
 use std::sync::Arc;
@@ -17,7 +17,7 @@ use crate::io::HttpClient;
 /// Sentinel's domain outcome for an accepted restart request (HTTP 200).
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct RestartOutcome {
-    /// `"ok"` (the restart command exited 0) or `"failed"`.
+    /// `"ok"` (the platform accepted the restart) or `"failed"`.
     pub status: String,
     /// Present on `"ok"`: `"healthy"`, `"timeout"`, or `"skipped"`.
     #[serde(default)]
@@ -28,12 +28,12 @@ pub struct RestartOutcome {
 }
 
 impl RestartOutcome {
-    /// The restart command ran and exited 0.
+    /// The platform accepted and ran the restart.
     pub fn is_ok(&self) -> bool {
         self.status == "ok"
     }
 
-    /// Sentinel's `health_command` never confirmed recovery within its budget.
+    /// Sentinel's recovery check never confirmed recovery within its budget.
     /// (The driver may still come back — the budget is Sentinel's, not the
     /// driver's — so the page keeps its own reconnect poll either way.)
     pub fn recovery_timed_out(&self) -> bool {
@@ -44,10 +44,10 @@ impl RestartOutcome {
 /// A failure asking Sentinel to restart a service.
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum SentinelClientError {
-    /// Sentinel answered 404: the name is not in its `services` map.
+    /// Sentinel answered 404: no discovered service carries the name.
     #[error("Sentinel does not supervise this driver: {0}")]
     UnknownService(String),
-    /// Sentinel answered 409: not restartable, or a restart is already running.
+    /// Sentinel answered 409: a restart of the service is already in flight.
     #[error("Sentinel rejected the restart: {0}")]
     Rejected(String),
     /// Network failure or an unexpected HTTP status (Sentinel is down, or its
@@ -63,8 +63,8 @@ pub enum SentinelClientError {
 /// trait so tests can inject canned outcomes.
 #[async_trait]
 pub trait SentinelClient: Send + Sync {
-    /// `POST /api/services/{service}/restart` — `service` is the name in
-    /// Sentinel's `services` map, not the BFF's own service id.
+    /// `POST /api/services/{service}/restart` — `service` is the discovered
+    /// service name (the unit name minus the `rusty-photon-` prefix).
     async fn restart(&self, service: &str) -> Result<RestartOutcome, SentinelClientError>;
 }
 
@@ -182,11 +182,14 @@ mod tests {
 
     #[tokio::test]
     async fn conflict_maps_to_rejected_with_reason() {
-        let client = client_returning(409, r#"{"error":"service 'dsd-fp2' is not restartable"}"#);
+        let client = client_returning(
+            409,
+            r#"{"error":"a restart of 'dsd-fp2' is already running"}"#,
+        );
         let err = client.restart("dsd-fp2").await.unwrap_err();
         assert!(
             matches!(&err, SentinelClientError::Rejected(reason)
-                if reason == "service 'dsd-fp2' is not restartable"),
+                if reason == "a restart of 'dsd-fp2' is already running"),
             "{err:?}"
         );
     }

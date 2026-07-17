@@ -33,15 +33,13 @@ pub struct Config {
     /// Path to CA certificate for trusting TLS-enabled services
     #[serde(default)]
     pub ca_cert: Option<String>,
-    /// Supervised services, keyed by an operator-chosen name. The registry has
-    /// two consumers: the dashboard's `POST /api/services/{name}/restart`
-    /// endpoint and the operation watchdog's corrective ladder
-    /// (`operations.<family>.service` references keys here). See
-    /// [`ServiceConfig`].
-    #[serde(default)]
-    pub services: std::collections::HashMap<String, ServiceConfig>,
     /// Optional push-based operation watchdog. Absent means safety polling
     /// only (today's behavior). See [`OperationWatchdogConfig`].
+    ///
+    /// There is deliberately no `services` map: the services sentinel
+    /// supervises are discovered from the platform service manager (see
+    /// `crate::discovery` and `docs/services/sentinel.md` §Service
+    /// Discovery), so a config still carrying one fails loudly at load.
     #[serde(default)]
     pub operation_watchdog: Option<OperationWatchdogConfig>,
 }
@@ -55,7 +53,6 @@ impl Default for Config {
             dashboard: DashboardConfig::default(),
             server: default_server(),
             ca_cert: None,
-            services: std::collections::HashMap::new(),
             operation_watchdog: None,
         }
     }
@@ -247,8 +244,7 @@ pub struct OperationWatchdogConfig {
     pub message_template: String,
     /// Per-operation-family policy overrides, keyed by family (the event
     /// name with its `_started` / `_complete` / `_failed` suffix stripped).
-    /// `operations.<family>.service` references the **top-level**
-    /// [`Config::services`] map.
+    /// `operations.<family>.service` names a discovered service.
     #[serde(default)]
     pub operations: std::collections::HashMap<String, OperationPolicy>,
 }
@@ -264,9 +260,10 @@ pub struct OperationPolicy {
     /// Corrective-action policy on expiry.
     #[serde(default)]
     pub on_expiry: OnExpiry,
-    /// Service (a key into [`OperationWatchdogConfig::services`]) that owns
-    /// this family. Required for `abort_then_restart`; an `abort_then_restart`
-    /// family with no resolvable `service` degrades to `notify_only`.
+    /// Name of the discovered service (`dsd-fp2`, not `rusty-photon-dsd-fp2`)
+    /// that owns this family. Required for `abort_then_restart`; an
+    /// `abort_then_restart` family whose `service` is unset or not discovered
+    /// degrades to `notify_only`.
     #[serde(default)]
     pub service: Option<String>,
 }
@@ -283,73 +280,6 @@ pub enum OnExpiry {
     /// Run the corrective ladder (health → abort → restart) against the
     /// family's `service`, then notify.
     AbortThenRestart,
-}
-
-/// One supervised service: how the watchdog ladder probes/aborts it and how
-/// both the ladder and the restart endpoint restart it. Commands run through
-/// the platform shell (`sh -c` on unix, `cmd /C` on windows).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ServiceConfig {
-    /// Alpaca API base of the service, e.g. `http://host:port/api/v1`. The
-    /// watchdog ladder appends `{device-type}/{device_number}/connected`
-    /// (health) or the family's abort verb to it. Optional so non-Alpaca
-    /// services (e.g. `rp`) can be restart-only entries; without it the
-    /// ladder cannot probe or abort and falls through to restart.
-    #[serde(default)]
-    pub base_url: Option<String>,
-    /// Alpaca device number for the health-check / abort URLs.
-    #[serde(default)]
-    pub device_number: u32,
-    /// Shell command that restarts the service. `null` marks the service as
-    /// not restartable (the ladder stops at abort; the restart endpoint
-    /// answers 409) — the canonical example is a remote MCU we cannot
-    /// `systemctl`.
-    #[serde(default)]
-    pub restart_command: Option<String>,
-    /// Shell command whose exit 0 means the service is healthy (e.g.
-    /// `systemctl --user is-active dsd-fp2`). When set, the restart endpoint
-    /// polls it after `restart_command` to confirm recovery; when absent,
-    /// recovery confirmation is skipped. Not used by the watchdog ladder
-    /// (which probes over HTTP via `base_url`).
-    #[serde(default)]
-    pub health_command: Option<String>,
-    /// Time budget for `restart_command` to exit *and* the service to become
-    /// healthy/responsive again — one budget for both phases, used by the
-    /// restart endpoint and the watchdog ladder's restart rung.
-    #[serde(default = "default_max_restart_duration", with = "humantime_serde")]
-    pub max_restart_duration: Duration,
-    /// Optional HTTP health supervision. Presence of this block opts the
-    /// service in: sentinel probes `health.url` on a cadence and autonomously
-    /// runs `restart_command` after consecutive failures.
-    #[serde(default)]
-    pub health: Option<HealthConfig>,
-}
-
-/// Per-service HTTP health supervision: sentinel GETs `url` every
-/// `poll_interval` and, after `failure_threshold` consecutive failures, runs
-/// the service's `restart_command` — backing off between attempts (doubling
-/// from `restart_backoff` up to `restart_backoff_max`) while probing
-/// continues at the same cadence. Only a clean 200 counts as alive; the
-/// response body is never parsed.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct HealthConfig {
-    /// Health URL probed with GET, e.g. `http://localhost:11131/health`.
-    pub url: String,
-    /// Probe cadence. Unchanged during outages — only restarting backs off.
-    #[serde(default = "default_health_poll_interval", with = "humantime_serde")]
-    pub poll_interval: Duration,
-    /// Consecutive failed probes before the first autonomous restart.
-    #[serde(default = "default_failure_threshold")]
-    pub failure_threshold: u32,
-    /// Wait before a second restart attempt when the first did not cure the
-    /// service; doubles after every attempt.
-    #[serde(default = "default_restart_backoff", with = "humantime_serde")]
-    pub restart_backoff: Duration,
-    /// Ceiling for the doubling backoff.
-    #[serde(default = "default_restart_backoff_max", with = "humantime_serde")]
-    pub restart_backoff_max: Duration,
 }
 
 /// Dashboard configuration: whether the web dashboard is served and how much
@@ -421,26 +351,6 @@ fn default_reconnect_backoff() -> Duration {
 
 fn default_watchdog_buffer() -> Duration {
     Duration::from_secs(10)
-}
-
-fn default_max_restart_duration() -> Duration {
-    Duration::from_secs(60)
-}
-
-fn default_health_poll_interval() -> Duration {
-    Duration::from_secs(30)
-}
-
-fn default_failure_threshold() -> u32 {
-    3
-}
-
-fn default_restart_backoff() -> Duration {
-    Duration::from_secs(60)
-}
-
-fn default_restart_backoff_max() -> Duration {
-    Duration::from_secs(900)
 }
 
 fn default_watchdog_message_template() -> String {
@@ -793,16 +703,6 @@ mod tests {
     #[test]
     fn parse_operation_watchdog_full() {
         let json = r#"{
-            "services": {
-                "mount": {
-                    "base_url": "http://localhost:11112/api/v1",
-                    "device_number": 2,
-                    "restart_command": "systemctl restart mount",
-                    "health_command": "systemctl is-active mount",
-                    "max_restart_duration": "45s"
-                },
-                "camera": { "base_url": "http://localhost:11111/api/v1" }
-            },
             "operation_watchdog": {
                 "rp_url": "http://localhost:8080",
                 "reconnect_max_attempts": 3,
@@ -811,7 +711,7 @@ mod tests {
                 "notifiers": ["pushover"],
                 "message_template": "{operation} stuck",
                 "operations": {
-                    "slew": { "buffer": "5s", "on_expiry": "abort_then_restart", "service": "mount" },
+                    "slew": { "buffer": "5s", "on_expiry": "abort_then_restart", "service": "star-adventurer-gti" },
                     "park": { "on_expiry": "notify_only" }
                 }
             }
@@ -828,44 +728,12 @@ mod tests {
         let slew = wd.operations.get("slew").unwrap();
         assert_eq!(slew.buffer, Some(Duration::from_secs(5)));
         assert_eq!(slew.on_expiry, OnExpiry::AbortThenRestart);
-        assert_eq!(slew.service.as_deref(), Some("mount"));
+        assert_eq!(slew.service.as_deref(), Some("star-adventurer-gti"));
 
         let park = wd.operations.get("park").unwrap();
         assert_eq!(park.buffer, None);
         assert_eq!(park.on_expiry, OnExpiry::NotifyOnly);
         assert_eq!(park.service, None);
-
-        let mount = config.services.get("mount").unwrap();
-        assert_eq!(
-            mount.base_url.as_deref(),
-            Some("http://localhost:11112/api/v1")
-        );
-        assert_eq!(mount.device_number, 2);
-        assert_eq!(
-            mount.restart_command.as_deref(),
-            Some("systemctl restart mount")
-        );
-        assert_eq!(
-            mount.health_command.as_deref(),
-            Some("systemctl is-active mount")
-        );
-        assert_eq!(mount.max_restart_duration, Duration::from_secs(45));
-
-        let camera = config.services.get("camera").unwrap();
-        assert_eq!(camera.device_number, 0, "device_number defaults to 0");
-        assert_eq!(
-            camera.restart_command, None,
-            "restart_command defaults to null"
-        );
-        assert_eq!(
-            camera.health_command, None,
-            "health_command defaults to null"
-        );
-        assert_eq!(
-            camera.max_restart_duration,
-            Duration::from_secs(60),
-            "max_restart_duration defaults to 60s"
-        );
     }
 
     #[test]
@@ -874,7 +742,6 @@ mod tests {
             "operation_watchdog": { "rp_url": "http://rp:9000" }
         }"#;
         let config: Config = serde_json::from_str(json).unwrap();
-        assert!(config.services.is_empty());
         let wd = config.operation_watchdog.unwrap();
         assert_eq!(wd.reconnect_max_attempts, 5);
         assert_eq!(wd.reconnect_backoff, Duration::from_secs(5));
@@ -885,106 +752,21 @@ mod tests {
     }
 
     #[test]
-    fn service_config_rejects_unknown_field() {
+    fn config_rejects_retired_services_map() {
+        // The `services` map was deleted when supervision moved to service
+        // discovery; a config still carrying it must fail loudly at load,
+        // not be silently ignored.
         let json = r#"{
-            "services": { "mount": { "base_url": "http://x", "bogus": 1 } }
+            "services": { "rp": { "restart_command": "systemctl restart rusty-photon-rp" } }
         }"#;
         let err = serde_json::from_str::<Config>(json).unwrap_err();
-        assert!(err.to_string().contains("bogus"), "{err}");
-    }
-
-    #[test]
-    fn service_config_base_url_is_optional() {
-        // A restart-only entry (e.g. a non-Alpaca service like rp) needs no
-        // Alpaca base URL; the ladder degrades and the restart endpoint never
-        // uses it.
-        let json = r#"{
-            "services": { "rp": { "restart_command": "systemctl --user restart rp" } }
-        }"#;
-        let config: Config = serde_json::from_str(json).unwrap();
-        let rp = config.services.get("rp").unwrap();
-        assert_eq!(rp.base_url, None);
-        assert_eq!(
-            rp.restart_command.as_deref(),
-            Some("systemctl --user restart rp")
-        );
-    }
-
-    #[test]
-    fn parse_service_health_full() {
-        let json = r#"{
-            "services": {
-                "plate-solver": {
-                    "restart_command": "systemctl restart plate-solver",
-                    "health": {
-                        "url": "http://localhost:11131/health",
-                        "poll_interval": "10s",
-                        "failure_threshold": 5,
-                        "restart_backoff": "30s",
-                        "restart_backoff_max": "5m"
-                    }
-                }
-            }
-        }"#;
-        let config: Config = serde_json::from_str(json).unwrap();
-        let health = config
-            .services
-            .get("plate-solver")
-            .unwrap()
-            .health
-            .as_ref()
-            .unwrap();
-        assert_eq!(health.url, "http://localhost:11131/health");
-        assert_eq!(health.poll_interval, Duration::from_secs(10));
-        assert_eq!(health.failure_threshold, 5);
-        assert_eq!(health.restart_backoff, Duration::from_secs(30));
-        assert_eq!(health.restart_backoff_max, Duration::from_secs(300));
-    }
-
-    #[test]
-    fn service_health_defaults() {
-        let json = r#"{
-            "services": { "svc": { "health": { "url": "http://x/health" } } }
-        }"#;
-        let config: Config = serde_json::from_str(json).unwrap();
-        let health = config.services.get("svc").unwrap().health.as_ref().unwrap();
-        assert_eq!(health.poll_interval, Duration::from_secs(30));
-        assert_eq!(health.failure_threshold, 3);
-        assert_eq!(health.restart_backoff, Duration::from_secs(60));
-        assert_eq!(health.restart_backoff_max, Duration::from_secs(900));
-    }
-
-    #[test]
-    fn service_health_absent_by_default() {
-        let json = r#"{
-            "services": { "svc": { "restart_command": "restart" } }
-        }"#;
-        let config: Config = serde_json::from_str(json).unwrap();
-        assert!(config.services.get("svc").unwrap().health.is_none());
-    }
-
-    #[test]
-    fn service_health_requires_url() {
-        let json = r#"{
-            "services": { "svc": { "health": { "poll_interval": "10s" } } }
-        }"#;
-        let err = serde_json::from_str::<Config>(json).unwrap_err();
-        assert!(err.to_string().contains("url"), "{err}");
-    }
-
-    #[test]
-    fn service_health_rejects_unknown_field() {
-        let json = r#"{
-            "services": { "svc": { "health": { "url": "http://x", "bogus": 1 } } }
-        }"#;
-        let err = serde_json::from_str::<Config>(json).unwrap_err();
-        assert!(err.to_string().contains("bogus"), "{err}");
+        assert!(err.to_string().contains("services"), "{err}");
     }
 
     #[test]
     fn operation_watchdog_rejects_nested_services() {
-        // The registry moved to the top level; a config still nesting it inside
-        // the watchdog block must fail loudly, not be silently ignored.
+        // The watchdog block never carried a service registry of its own;
+        // one nested here must fail loudly, not be silently ignored.
         let json = r#"{
             "operation_watchdog": {
                 "rp_url": "http://rp",

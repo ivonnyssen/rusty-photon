@@ -56,6 +56,19 @@ impl ReqwestHttpClient {
         client.auth = Some((username, password));
         Ok(client)
     }
+
+    /// A client that skips TLS certificate verification — for the health
+    /// probes only: a probe sends no credentials and never parses the body,
+    /// and sentinel cannot assume it holds a CA for every supervised peer's
+    /// self-signed certificate. Never use this for a request that carries
+    /// credentials or whose response is trusted.
+    pub fn insecure() -> Self {
+        let client = reqwest::Client::builder()
+            .danger_accept_invalid_certs(true)
+            .build()
+            .unwrap_or_default();
+        Self { client, auth: None }
+    }
 }
 
 #[async_trait]

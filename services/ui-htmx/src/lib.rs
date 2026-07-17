@@ -65,9 +65,11 @@ struct DriverHandle {
     title: String,
     subtitle: String,
     client: Arc<dyn ConfigClient>,
-    /// This driver's name in Sentinel's `services` map. `Some` only when the
-    /// BFF has a `sentinel` block configured (then it defaults to the driver's
-    /// own service id) — it gates every restart affordance.
+    /// This driver's name at Sentinel (the `{name}` in
+    /// `POST /api/services/{name}/restart` — the discovered unit minus its
+    /// `rusty-photon-` prefix, which is the driver's own service id). `Some`
+    /// only when the BFF has a `sentinel` block configured — it gates every
+    /// restart affordance.
     sentinel_service: Option<String>,
 }
 
@@ -218,13 +220,9 @@ impl AppState {
                 target.device_number,
             );
             // The restart affordances render only with a Sentinel to call;
-            // the Sentinel-side name defaults to the driver's own service id.
-            let sentinel_service = sentinel.as_ref().map(|_| {
-                target
-                    .sentinel_service
-                    .clone()
-                    .unwrap_or_else(|| service.clone())
-            });
+            // the Sentinel-side name is the driver's own service id (Sentinel
+            // discovers the `rusty-photon-{id}` unit and strips the prefix).
+            let sentinel_service = sentinel.as_ref().map(|_| service.clone());
             drivers.insert(
                 service.clone(),
                 DriverHandle {
@@ -303,7 +301,7 @@ impl AppState {
     }
 
     /// [`AppState::with_client`] plus a Sentinel client (tests inject stubs for
-    /// both), with the Sentinel-side name defaulting to the service id.
+    /// both), with the Sentinel-side name being the service id (as always).
     pub fn with_client_and_sentinel(
         service: &str,
         client: Arc<dyn ConfigClient>,
@@ -756,10 +754,7 @@ async fn config_restart(
             &service,
             &format!(
                 "Sentinel could not restart the driver: {}",
-                outcome
-                    .detail
-                    .as_deref()
-                    .unwrap_or("the restart command failed")
+                outcome.detail.as_deref().unwrap_or("the restart failed")
             ),
         ),
         Err(err) => pages::message_error_card(&service, &err.to_string()),
@@ -1394,7 +1389,7 @@ mod tests {
         assert_eq!(
             sentinel.last_service.lock().unwrap().as_deref(),
             Some("dsd-fp2"),
-            "the Sentinel-side name defaults to the service id"
+            "the Sentinel-side name is the service id"
         );
     }
 
@@ -1433,13 +1428,13 @@ mod tests {
     #[tokio::test]
     async fn config_restart_unsupervised_names_the_reason() {
         let sentinel = StubSentinel::new(Err(SentinelClientError::UnknownService(
-            "no configured service named 'dsd-fp2'".to_string(),
+            "no discovered service named 'dsd-fp2'".to_string(),
         )));
         let state =
             AppState::with_client_and_sentinel("dsd-fp2", Arc::new(StaticConfigDriver), sentinel);
         let html = post_restart(state).await;
         assert!(html.contains("does not supervise"), "{html}");
-        assert!(html.contains("no configured service named"), "{html}");
+        assert!(html.contains("no discovered service named"), "{html}");
     }
 
     /// Renders like [`StaticConfigDriver`]; `config.apply` reports the change

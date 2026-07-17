@@ -189,7 +189,7 @@ BFF serves every configured driver.
 | `GET`  | `/config/{service}` | Call `config.schema` + `config.get`; render the form generated from the schema, filled with current values. An optional `?unlock=<field>` query renders one locked/identity field (e.g. a device `unique_id`) editable — the read-only-by-default escape hatch. Resolve failures render honest, distinct cards: unknown `{service}` ("no configured driver"), rp unreachable while resolving a roster key (retryable), or a roster entry no client can be built from (e.g. malformed `alpaca_url` — links to the Equipment page to fix it). |
 | `POST` | `/config/{service}` | Re-fetch `config.schema` to coerce the form back into the full Config, call `config.apply`; render the result state (see below). |
 | `GET`  | `/config/{service}/status` | HTMX poll target during reconnect: try `config.schema` + `config.get`; when the driver answers, swap in the refreshed form. Honours the same optional `?unlock=` query. |
-| `POST` | `/config/{service}/restart` | Ask Sentinel to restart the driver's process (`POST {sentinel}/api/services/{sentinel_service}/restart`); render the outcome (see [Restart via Sentinel](#restart-via-sentinel-post-configservicerestart)). |
+| `POST` | `/config/{service}/restart` | Ask Sentinel to restart the driver's process (`POST {sentinel}/api/services/{service}/restart` — the driver's own service id names the discovered service); render the outcome (see [Restart via Sentinel](#restart-via-sentinel-post-configservicerestart)). |
 | `GET`  | `/equipment` | The [equipment page](#equipment-page-equipment): rp's roster with live connection LEDs, capability tiers, and add/edit/remove affordances. |
 | `GET`  | `/equipment/{kind}/new` | Schema-generated "add device" form for one equipment kind (`cameras`, `filter_wheels`, `cover_calibrators`, `focusers`, `safety_monitors`, `switches`, `rotators`, `observing_conditions`, `domes`, `mount`). |
 | `POST` | `/equipment/{kind}/new` | Insert the new entry into rp's config (`GET /api/config` → splice → `PUT /api/config`); render the roster with the apply outcome. |
@@ -607,8 +607,7 @@ change fails loudly at load instead of being silently ignored.
       "device_type": "covercalibrator",
       "device_number": 0,
       "auth": null,            // optional { "username": "...", "password": "..." }
-      "ca_cert_path": null,    // optional PEM CA for a TLS-enabled driver
-      "sentinel_service": null // optional name in Sentinel's `services` map (defaults to the driver's id)
+      "ca_cert_path": null     // optional PEM CA for a TLS-enabled driver
     },
     "qhy-focuser": {
       "base_url": "http://127.0.0.1:11113",
@@ -641,11 +640,13 @@ key was renamed to `bind_address` with this adoption — a config still carrying
 `bind` fails loudly at load (`deny_unknown_fields`) — and the default bind
 moved from loopback to all interfaces.
 
-The restart button targets Sentinel's `services` map entry named by the
-driver's `sentinel_service`, defaulting to the driver's own service id — so
-when the BFF id and the Sentinel-side name match (the convention), no extra
-wiring is needed. A name Sentinel does not know simply surfaces Sentinel's
-404 in the error banner.
+The restart button names the driver's own service id, which Sentinel resolves
+against its [discovered services](sentinel.md#service-discovery)
+(`dsd-fp2` → the `rusty-photon-dsd-fp2` unit) — there is no per-driver
+wiring. The former `sentinel_service` override was deleted with Sentinel's
+`services` map (a config still carrying it fails loudly at load); an id
+Sentinel has not discovered simply surfaces Sentinel's 404 in the error
+banner.
 
 ### CLI Arguments
 
@@ -927,18 +928,19 @@ call end to end. Scenarios:
 
 **Restart scenarios spawn a real Sentinel too** (`restart.feature`): the same
 `bdd_infra::ServiceHandle` pattern starts the workspace's real `sentinel`
-binary (dashboard on port 0, `bound_addr=` discovery) with a `services` map
-whose `restart_command` writes a marker file — commands are chosen to work
-under both `sh -c` and `cmd /C` so the suite stays green on Windows. Scenarios:
+binary (dashboard on port 0, `bound_addr=` discovery) with
+`SENTINEL_SERVICE_MANAGER_DIR` pointing at a stub service-manager directory
+(see [sentinel.md §The test seam](sentinel.md#the-test-seam-sentinel_service_manager_dir))
+that lists the driver's unit, so discovery works without systemd. Scenarios:
 
 - The config card offers "Restart via Sentinel" when a sentinel block is
-  configured, and clicking it runs the configured restart command (the marker
-  file exists) and swaps in the reconnecting fragment, which then serves the
-  form again (the dsd-fp2 driver never actually died — the command is a
-  stand-in — so the poll reconnects immediately).
-- A failing restart command surfaces Sentinel's `status:"failed"` detail in an
-  error banner.
-- A driver whose `sentinel_service` Sentinel does not know surfaces the 404
+  configured, and clicking it restarts the discovered unit (the stub's
+  `restarts.log` records it) and swaps in the reconnecting fragment, which
+  then serves the form again (the dsd-fp2 driver never actually died — the
+  stub restart is a stand-in — so the poll reconnects immediately).
+- A failing restart (the stub's `restart-fail` marker) surfaces Sentinel's
+  `status:"failed"` detail in an error banner.
+- A driver whose service id Sentinel has not discovered surfaces the 404
   reason.
 - With no `sentinel` block configured, the config card renders no restart
   affordance.
@@ -1031,7 +1033,7 @@ suites run everywhere the existing one does. Coverage:
 
 | Module | Description |
 |--------|-------------|
-| `config.rs` | `Config`, the shared `ServerConfig` (re-exported from `rusty-photon-server-config`), the `Drivers` map + `DriverTarget` (+ `sentinel_service`), the optional `RpTarget` + `SentinelTarget`, defaults + JSON load. |
+| `config.rs` | `Config`, the shared `ServerConfig` (re-exported from `rusty-photon-server-config`), the `Drivers` map + `DriverTarget`, the optional `RpTarget` + `SentinelTarget`, defaults + JSON load. |
 | `io.rs` | `HttpClient` trait (`#[cfg_attr(test, mockall::automock)]`) + `ReqwestHttpClient` (rp-tls CA trust + optional Basic auth). |
 | `driver_client.rs` | `ConfigClient` trait + `AlpacaConfigClient` (ASCOM action transport) + `RestConfigClient` (rp's plain-REST transport): request shaping, envelope parsing, error mapping. Re-exports the shared wire types from `rusty_photon_config::actions`. |
 | `sentinel_client.rs` | `SentinelClient` trait + `HttpSentinelClient`: `POST /api/services/{name}/restart` request shaping + outcome/404/409 parsing against Sentinel's REST API. |

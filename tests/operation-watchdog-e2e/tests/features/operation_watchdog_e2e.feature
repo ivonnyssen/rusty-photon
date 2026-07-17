@@ -10,14 +10,16 @@ Feature: Operation watchdog end-to-end (real rp + real sentinel)
   does NOT enforce it (it is advisory for the watchdog), so the watchdog timer
   is the only thing that fires. Because centering has no single Alpaca device to
   abort, the ladder skips the abort rung and exercises the restart rung — the
-  rung that is otherwise only unit-tested.
+  rung that is otherwise only unit-tested. The rp service the ladder restarts
+  is discovered from the service manager (a directory-backed stub here), and
+  the restart is the manager's derived restart of the rusty-photon-rp unit.
 
   Scenario: A wedged centering operation escalates to the restart rung
     Given rp's plate solver hangs so a centering operation never completes
     And a running rp and sentinel with the operation watchdog enabled
     When the operator starts centering on a target
     Then the watchdog escalates the centering operation
-    And the corrective ladder runs the restart command
+    And the corrective ladder restarts the rp service
 
   Scenario: A centering operation that completes in time is not escalated
     Given rp's plate solver returns the target field center immediately

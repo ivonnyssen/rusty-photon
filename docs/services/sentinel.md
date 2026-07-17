@@ -2,7 +2,7 @@
 
 ## Overview
 
-Sentinel is an observatory monitoring and notification service. It polls ASCOM Alpaca devices via their HTTP API, detects state transitions (safe/unsafe), and sends notifications through configurable channels. It supervises the health of HTTP services (periodic `GET` health probes with autonomous restart, see [Service Health Supervision](#service-health-supervision)) and provides a web dashboard for real-time status viewing.
+Sentinel is an observatory monitoring and notification service. It polls ASCOM Alpaca devices via their HTTP API, detects state transitions (safe/unsafe), and sends notifications through configurable channels. It supervises the health of the installed rusty-photon services — discovered from the platform service manager, not configured (see [Service Discovery](#service-discovery)) — with periodic `GET` health probes and autonomous restart ([Service Health Supervision](#service-health-supervision)), and provides a web dashboard for real-time status viewing.
 
 Unlike other services in this workspace, sentinel is **not** an ASCOM Alpaca server — it is a client/consumer that monitors other ASCOM devices.
 
@@ -36,7 +36,8 @@ Dashboard (axum + hand-rolled HTML) --- web UI w/ JS polling
 - **`Monitor`** — `poll() -> MonitorState`, `connect()`, `disconnect()`, `polling_interval() -> Duration`. A **pull-based** monitor the engine polls on a fixed interval. First implementation: `AlpacaSafetyMonitor`.
 - **`EventMonitor`** — `name()`, `run(cancel)`. A **self-driving** monitor task that owns its own lifecycle — a long-lived connection it reacts to, or a poll loop it paces itself — and runs until the cancellation token fires. Added because some monitors cannot be expressed as the engine-paced `poll() -> State` shape; the engine spawns a parallel task per `EventMonitor` alongside the per-`Monitor` poll loops. Implementations: `OperationDeadlineMonitor` (see [Operation Watchdog](#operation-watchdog)) and `ServiceHealthSupervisor` (see [Service Health Supervision](#service-health-supervision)).
 - **`Notifier`** — `notify(notification)`. First implementation: `PushoverNotifier`. The watchdog reuses this dispatch path — an expiry or liveness escalation is just another notification.
-- **`Corrective`** / **`HealthChecker`** / **`Aborter`** / **`Restarter`** — the watchdog's corrective-action ladder for `abort_then_restart` operations. `CorrectiveLadder` composes the three rung traits (health → abort → restart) behind the single `Corrective::run` seam the watchdog calls; HTTP and shell default impls live in `corrective.rs`. See [Operation Watchdog](#operation-watchdog). `Restarter` (run a shell command bounded by a budget, `Ok` iff it exits 0 in time) is also the seam behind the [Service Restart API](#service-restart-api): the REST endpoint runs both `restart_command` and the `health_command` recovery poll through it, so tests inject a recording stub.
+- **`Corrective`** / **`HealthChecker`** / **`Aborter`** / **`Restarter`** — the watchdog's corrective-action ladder for `abort_then_restart` operations. `CorrectiveLadder` composes the three rung traits (health → abort → restart) behind the single `Corrective::run` seam the watchdog calls; HTTP and shell default impls live in `corrective.rs`. See [Operation Watchdog](#operation-watchdog). `Restarter` (run a shell command bounded by a budget, `Ok` iff it exits 0 in time) is also the seam behind the [Service Restart API](#service-restart-api): the REST endpoint runs both the derived restart command and the derived recovery poll through it, so tests inject a recording stub.
+- **`ServiceManager`** — the [service discovery](#service-discovery) seam: enumerate installed `rusty-photon-*` units with run states, derive the restart/recovery commands. Implementations: systemd (Linux), SCM (Windows), Homebrew services (macOS), and the directory-backed test stub.
 - **`HttpClient`** — wraps `reqwest` for testability (mockall in tests). Used by monitors, notifiers, and the corrective health-check / abort rungs.
 
 ### Dependency Injection
@@ -58,11 +59,12 @@ For custom monitors/notifiers (e.g. in an astrophotography app), use `with_monit
 Configuration is loaded from a JSON file. All sections are optional with sensible defaults.
 Every section (the top-level `Config` plus each nested block —
 `MonitorConfig`, `NotifierConfig`, `TransitionConfig`, `DashboardConfig`,
-`ServerConfig`, `OperationWatchdogConfig`, `OperationPolicy`,
-`ServiceConfig`, `HealthConfig`)
+`ServerConfig`, `OperationWatchdogConfig`, `OperationPolicy`)
 rejects unknown keys at deserialize (`deny_unknown_fields`), so a typo or a
 key removed by a schema change fails loudly at load instead of being silently
-ignored.
+ignored. In particular a config still carrying the retired `services` map
+(deleted when sentinel moved to [service discovery](#service-discovery))
+fails at load with the offending key named.
 
 See `examples/config.json` for a complete example.
 
@@ -92,61 +94,116 @@ The `server` block is the shared `ServerConfig` from
 `bind_address` (default `0.0.0.0`), and optional `tls`/`auth`. Absent
 `tls`/`auth` means plain, unauthenticated HTTP.
 
-### Supervised services (`services`)
+### Service discovery
 
-The optional top-level `services` map is sentinel's registry of the services it
-can supervise, keyed by a name of the operator's choosing (conventionally the
-systemd unit / package name). It has **three consumers**: the
-[REST restart endpoint](#service-restart-api), the operation watchdog's
-[corrective ladder](#escalation-corrective-action-ladder)
-(`operations.<family>.service` references keys in this map), and
-[service health supervision](#service-health-supervision) (entries with a
-`health` block). Each consumer is independent — none requires the others to be
-configured.
+Sentinel has **no configured service registry**. It discovers the services it
+supervises from the platform service manager: at startup and every 60 s
+thereafter it enumerates the installed `rusty-photon-*` service units
+(excluding its own) and derives everything the retired `services` map used to
+spell out. The rule (ADR-016 decision 8) is not "static vs. dynamic" but
+*whether the source of truth can be down when you need it*: asking a dead
+driver how to restart itself fails that test; asking the service manager —
+which is alive precisely when the driver is not — passes it. Discovery is
+re-run on a fixed cadence so a newly installed package is picked up, and a
+removed one dropped, without restarting sentinel.
 
-```json
-{
-  "services": {
-    "dsd-fp2": {
-      "base_url": "http://localhost:11119/api/v1",
-      "device_number": 0,
-      "restart_command": "systemctl restart rusty-photon-dsd-fp2",
-      "health_command": "systemctl is-active rusty-photon-dsd-fp2",
-      "max_restart_duration": "60s"
-    },
-    "rp": { "restart_command": "systemctl restart rusty-photon-rp" }
-  }
-}
-```
+| Fact | Derivation |
+|---|---|
+| which services exist | enumerate `rusty-photon-*` service units (below) |
+| service name | unit name minus the `rusty-photon-` prefix (`rusty-photon-dsd-fp2` → `dsd-fp2`) |
+| restart command | from the unit name: `systemctl restart <unit>` / `Restart-Service <unit>` / `brew services restart <unit>` |
+| recovery check | `systemctl is-active <unit>` / `sc query <unit>` reports `RUNNING` / *(macOS: skipped)* |
+| health probe URL | scheme + port from the service's own `<svc>.json` (below); path from the service's probe class |
+| restart budget, poll cadence, thresholds, backoff | constants — see [Service Health Supervision](#service-health-supervision) |
 
-| Field | Default | Meaning |
+Sentinel is same-host-bound by definition (it shells out to the service
+manager), so every derived URL targets the local host. Processes started by
+hand (`cargo run`) are not under the service manager and are therefore not
+discovered or supervised.
+
+#### Enumeration and run states
+
+| Platform | Enumeration | State source |
 |---|---|---|
-| `base_url` | *(none)* | Alpaca API base of the service, e.g. `http://host:port/api/v1`. Used only by the watchdog ladder's HTTP health-check and abort rungs; optional so non-Alpaca services (e.g. `rp`) can still be restart-only entries. |
-| `device_number` | `0` | Alpaca device number for the ladder's health-check / abort URLs. |
-| `restart_command` | `null` | Shell command that restarts the service; `null` = not restartable (the ladder stops at abort; the REST endpoint answers 409). |
-| `health_command` | `null` | Shell command whose **exit 0 means healthy**. When set, the REST restart endpoint polls it after the restart command to confirm recovery; when absent, recovery confirmation is skipped. |
-| `max_restart_duration` | `60s` | Per-service time budget (humantime) for the restart command *and* the recovery wait together. Used by the REST endpoint, the watchdog ladder, and health supervision. |
-| `health` | *(none)* | Optional block that opts the service into [HTTP health supervision](#service-health-supervision): periodic `GET` probes with autonomous restart on consecutive failures. |
+| Linux (deb/rpm, system units) | `systemctl list-unit-files 'rusty-photon-*.service'` | `systemctl show <unit>` (`ActiveState`, `SubState`, `UnitFileState`, `ConditionResult`) |
+| Windows (MSI, SCM) | SCM services named `rusty-photon-*` | service status + start type |
+| macOS (Homebrew) | `brew services list` filtered to `rusty-photon-*` | brew service status |
 
-Commands run through the platform shell (`sh -c` on Unix, `cmd /C` on
-Windows), so follow each platform's best practice:
+Each discovered service is classified by run state, which decides what
+supervision does with it:
 
-| Platform | `restart_command` | `health_command` |
+| Run state | Meaning | Supervision |
 |---|---|---|
-| Linux (packaged deb/rpm, system unit) | `systemctl restart rusty-photon-dsd-fp2` | `systemctl is-active rusty-photon-dsd-fp2` (exit 0 iff active) |
-| Linux (hand-written user unit) | `systemctl --user restart dsd-fp2` | `systemctl --user is-active dsd-fp2` |
-| Windows (MSI, SCM service) | `powershell -Command "Restart-Service rusty-photon-dsd-fp2"` | `sc query rusty-photon-dsd-fp2 \| findstr RUNNING` |
-| macOS (Homebrew) | `brew services restart rusty-photon-dsd-fp2` | *(none — recovery confirmation is skipped)* |
+| `running` | unit active (or activating) | health-probed; restarted autonomously on hang |
+| `failed` | unit failed — the OS supervisor's `Restart=on-failure` gave up | restarted autonomously (sentinel never gives up) |
+| `inert` | installed and enabled, but a start condition is unmet — the `ConditionPathExists` config gate of plate-solver, sky-survey-camera, and calibrator-flats | displayed only. A config-gated service that has never been given a config is deliberate, not broken; restart-looping it would be pure notification spam (the doctor flags it instead) |
+| `stopped` | inactive without a failed state — the operator stopped it | displayed only. An operator-stopped service stays stopped |
+| `disabled` | unit file disabled or masked | displayed only |
+
+Only `running` and `failed` services are autonomously restarted. The
+[manual REST restart](#service-restart-api) is exempt from this classification
+— it is the operator's recovery hammer and restarts any discovered service.
+
+#### Deriving the health probe URL
+
+Sentinel reads the supervised service's **own config file** — `<svc>.json` in
+the directory of sentinel's own config file (on a packaged install every
+service resolves the same platform config directory —
+`/var/lib/rusty-photon/.config/rusty-photon/` on Linux,
+`%PROGRAMDATA%\rusty-photon` on Windows, `~/Library/Application
+Support/rusty-photon/` on macOS; in tests a scratch dir holds sibling
+files). Since D1 every service's `server` block uses the shared
+`rusty-photon-server-config` shapes, so one permissive parse recovers what the
+probe needs: `port` (required), and whether `tls` is configured (scheme
+`https` vs `http`). The parse is deliberately **permissive** — only the
+`server` block is read and unknown fields are tolerated (ADR-016 decision 7:
+strict parsing is for a service's own config; a cross-binary read from a
+possibly newer or older build must degrade, not refuse). The probe host is
+`localhost` (the service's `bind_address` when it names a specific address).
+The probe path follows the service's **probe class**:
+
+- **Alpaca drivers** answer `GET {base}/management/v1/configureddevices` — no
+  device number needed, so no device knowledge leaks into sentinel.
+- **Non-Alpaca services** (`rp`, `plate-solver`, `session-runner`,
+  `calibrator-flats`, `phd2-guider`, `ui-htmx`) answer `GET {base}/health`.
+  These are exactly the services that define a `/health` route; the Alpaca
+  drivers have none, by design. The set is a compile-time constant; a new
+  non-Alpaca service must be added to it (a unit test asserts every listed
+  name exists under `services/*/pkg`).
+
+A missing or unreadable `<svc>.json` (the service has never started, so it has
+not self-created its default config) means no probe URL can be derived: the
+service's health reports `unknown`, nothing is restarted because of it, and
+the read is retried on every discovery cycle.
+
+#### The test seam (`SENTINEL_SERVICE_MANAGER_DIR`)
+
+Tests cannot install systemd units, so when the environment variable
+`SENTINEL_SERVICE_MANAGER_DIR` is set sentinel swaps the platform backend for
+a **directory-backed stub** (all platforms, no shell):
+
+- enumeration reads `<dir>/units.txt` — one `<unit> <run-state>` pair per
+  line;
+- a restart appends the unit name to `<dir>/restarts.log` and succeeds,
+  unless `<dir>/restart-fail-<unit>` exists (then it fails);
+- the recovery check passes iff the unit's `units.txt` state is `running`.
+
+The sentinel BDD suites and the operation-watchdog e2e harness drive
+supervision through this seam (mutating `units.txt` mid-scenario to model
+crashes and operator stops, asserting `restarts.log` to prove a restart ran).
+It is a test seam, not an operator feature — production installs must let
+discovery ask the real service manager.
 
 **Restart privileges.** On a packaged Linux install the unit runs sentinel as
 the unprivileged `rusty-photon` user with `NoNewPrivileges=yes`, so a `sudo`
-prefix in `restart_command` can never work (setuid is blocked), and plain
-`systemctl restart` is only authorized because the sentinel package ships a
-scoped polkit rule (`/usr/share/polkit-1/rules.d/50-rusty-photon-sentinel.rules`)
+prefix could never work (setuid is blocked), and plain `systemctl restart` is
+only authorized because the sentinel package ships a scoped polkit rule
+(`/usr/share/polkit-1/rules.d/50-rusty-photon-sentinel.rules`)
 letting the `rusty-photon` user restart `rusty-photon-*` units — and nothing
 else: other verbs (start, stop, enable) and non-prefixed units such as
-`ssh.service` still require the usual interactive authorization. The rule
-needs the JavaScript-rules polkitd (any current Debian or Fedora ships it).
+`ssh.service` still require the usual interactive authorization. The rule's
+scope and the discovery scope are the same set. The rule needs the
+JavaScript-rules polkitd (any current Debian or Fedora ships it).
 On Windows the MSI installs every service — sentinel included — under
 `LocalSystem`, which may restart services, so `Restart-Service` needs no
 analogous grant; on macOS `brew services` run as the operator's own user, so
@@ -309,12 +366,17 @@ operation family's `on_expiry` policy:
   or an unresponsive rp has no single service to abort).
 - **`abort_then_restart`** — run an **escalating ladder** against the
   service that owns the family (named by `operations.<family>.service` and
-  resolved against the `services` map), then notify. The ladder takes the
-  least-invasive action that can clear the stall, in order:
-  1. **Health check** — `GET {base_url}/{device}/{n}/connected` with a 2 s
-     timeout. A clean `200` means the service is alive and the *operation*
-     is stuck; anything else (non-200, timeout, connection refused) means
-     the service itself is unresponsive.
+  resolved against the [discovered services](#service-discovery)), then
+  notify. The ladder takes the least-invasive action that can clear the
+  stall, in order:
+  1. **Health check** — `GET {base_url}/{device}/0/connected` with a 2 s
+     timeout, where `base_url` is derived from the service's `<svc>.json`
+     (`{scheme}://localhost:{port}/api/v1` — see
+     [Service discovery](#deriving-the-health-probe-url)) and the device
+     number is always `0` (one service per device, ADR-014). A clean `200`
+     means the service is alive and the *operation* is stuck; anything else
+     (non-200, timeout, connection refused) means the service itself is
+     unresponsive.
   2. **Abort** — if the service is responsive and the family maps to an
      ASCOM abort verb (`slew`/`park` → `telescope/{n}/abortslew`,
      `exposure` → `camera/{n}/abortexposure`, `move_focuser` →
@@ -322,13 +384,10 @@ operation family's `on_expiry` policy:
      ladder** — the aborted operation surfaces a `*_failed` / `*_complete`
      on the stream, which clears its tracking entry.
   3. **Restart** — if the service is unresponsive, the abort failed, or the
-     family has no abort verb (e.g. the compound `centering`), and a
-     `restart_command` is configured, run it (bounded by the service's
-     `max_restart_duration`) and then poll the health check until the
-     service is responsive again or the budget elapses.
-     `restart_command: null` marks a service as **not restartable** (a
-     remote MCU such as the star-adventurer-gti is the canonical example) —
-     the ladder stops at abort. The rung first acquires the service's slot in
+     family has no abort verb (e.g. the compound `centering`), run the
+     derived restart command (bounded by the constant 300 s restart budget)
+     and then poll the health check until the service is responsive again or
+     the budget elapses. The rung first acquires the service's slot in
      the [shared restart gate](#the-shared-restart-gate); if another restart
      of the same service is already in flight (REST endpoint or health
      supervision), the rung is skipped and the escalation message reports
@@ -338,13 +397,13 @@ operation family's `on_expiry` policy:
      `{action}` placeholder).
 
 A family configured `abort_then_restart` whose `service` cannot be
-resolved (no `service` set, or a name absent from the top-level
-[`services`](#supervised-services-services) map) **degrades safely to
+resolved (no `service` set, or a name that no
+[discovered service](#service-discovery) carries) **degrades safely to
 `notify_only`** with a logged warning — a config mistake never
 aborts the wrong device or wedges the watchdog (tenet #2, robustness).
-A resolvable service with no `base_url` cannot be health-checked or
-aborted (health reports *unknown*, abort is skipped), so the ladder falls
-through to the restart rung.
+A discovered service whose `<svc>.json` cannot be read has no derivable
+URL, so it cannot be health-checked or aborted (health reports *unknown*,
+abort is skipped) and the ladder falls through to the restart rung.
 
 > **End-to-end coverage.** The ladder's rungs are unit-tested
 > (`services/sentinel/src/corrective.rs`) and the watchdog's policy branching +
@@ -373,17 +432,12 @@ through to the restart rung.
 ### Configuration
 
 The watchdog is configured by an optional top-level `operation_watchdog`
-block. Services it can health-check, abort, and restart are declared in the
-**top-level [`services`](#supervised-services-services) map** (shared with the
-REST restart endpoint), referenced by `operations.<family>.service`:
+block. The services it can health-check, abort, and restart are the
+[discovered services](#service-discovery), referenced by name in
+`operations.<family>.service`:
 
 ```json
 {
-  "services": {
-    "star-adventurer": { "base_url": "http://localhost:11117/api/v1", "restart_command": null },
-    "qhy-camera":      { "base_url": "http://localhost:11121/api/v1", "device_number": 0, "restart_command": "systemctl restart rusty-photon-qhy-camera" },
-    "qhy-focuser":     { "base_url": "http://localhost:11113/api/v1", "restart_command": "systemctl restart rusty-photon-qhy-focuser", "max_restart_duration": "45s" }
-  },
   "operation_watchdog": {
     "rp_url": "http://localhost:8080",
     "reconnect_max_attempts": 5,
@@ -392,11 +446,11 @@ REST restart endpoint), referenced by `operations.<family>.service`:
     "notifiers": ["pushover"],
     "message_template": "Operation {operation} ({operation_id}) {reason} after {elapsed}{action}",
     "operations": {
-      "slew":         { "buffer": "5s",  "on_expiry": "abort_then_restart", "service": "star-adventurer" },
+      "slew":         { "buffer": "5s",  "on_expiry": "abort_then_restart", "service": "star-adventurer-gti" },
       "park":         { "buffer": "30s", "on_expiry": "notify_only"        },
-      "exposure":     { "buffer": "30s", "on_expiry": "abort_then_restart", "service": "qhy-camera"      },
+      "exposure":     { "buffer": "30s", "on_expiry": "abort_then_restart", "service": "qhy-camera"          },
       "centering":    { "buffer": "0s",  "on_expiry": "notify_only"        },
-      "move_focuser": { "buffer": "5s",  "on_expiry": "abort_then_restart", "service": "qhy-focuser"     }
+      "move_focuser": { "buffer": "5s",  "on_expiry": "abort_then_restart", "service": "qhy-focuser"         }
     }
   }
 }
@@ -412,11 +466,11 @@ REST restart endpoint), referenced by `operations.<family>.service`:
 | `message_template` | built-in | Escalation message; placeholders `{operation}`, `{operation_id}`, `{elapsed}`, `{reason}`, `{action}` (the corrective-action summary, empty for `notify_only`). |
 | `operations.<family>.buffer` | `default_buffer` | Buffer for this operation family. |
 | `operations.<family>.on_expiry` | `notify_only` | Corrective-action policy: `notify_only`, or `abort_then_restart` (runs the ladder against `service`). |
-| `operations.<family>.service` | *(none)* | Service (key into the top-level `services` map) that owns this family. Required for `abort_then_restart`; ignored otherwise. |
+| `operations.<family>.service` | *(none)* | Name of the [discovered service](#service-discovery) that owns this family (`dsd-fp2`, not `rusty-photon-dsd-fp2`). Required for `abort_then_restart`; ignored otherwise. |
 
-The restart rung's time budget is the referenced service's
-`max_restart_duration` (default `60s`) — there is no watchdog-global budget;
-each service declares how long its restart may take.
+The restart rung's time budget is the constant 300 s restart budget shared
+with every other restart path (see
+[Service Health Supervision](#service-health-supervision)).
 
 `reconnect_max_attempts` of `0` means "never give up reconnecting" (the
 watchdog keeps retrying without ever escalating an unresponsive rp), and a
@@ -429,10 +483,10 @@ watchdog keeps retrying without ever escalating an unresponsive rp), and a
 | Operation completes within its deadline | Tracking entry removed on `*_complete` / `*_failed`. No notification. |
 | Operation's `max_duration_ms + buffer` elapses with no completion | One escalation per expiry, recorded in history (and, for `abort_then_restart`, after the ladder runs). |
 | Expiry, `abort_then_restart`, service responsive | Health check passes → abort verb `PUT`; ladder stops; notification reports `abort=ok`. |
-| Expiry, `abort_then_restart`, service unresponsive | Abort skipped → `restart_command` run (if set) → recovery awaited up to `max_restart_duration`; notification reports the restart outcome. |
-| Expiry, `abort_then_restart`, family has no abort verb (`centering`, `plate_solve`) | Abort skipped; restart attempted if configured, else notify-only. |
-| Expiry, `abort_then_restart`, service has no `base_url` | Health reports unknown, abort skipped; restart attempted if configured. |
-| Expiry, `abort_then_restart`, `service` unset or unknown | Degrades to `notify_only` with a logged warning. |
+| Expiry, `abort_then_restart`, service unresponsive | Abort skipped → derived restart command run → recovery awaited up to the 300 s budget; notification reports the restart outcome. |
+| Expiry, `abort_then_restart`, family has no abort verb (`centering`, `plate_solve`) | Abort skipped; restart attempted. |
+| Expiry, `abort_then_restart`, service's `<svc>.json` unreadable | Health reports unknown, abort skipped; restart attempted. |
+| Expiry, `abort_then_restart`, `service` unset or not discovered | Degrades to `notify_only` with a logged warning. |
 | `*_started` without `max_duration_ms` | Tracked open, no timer; clears on completion or on a liveness escalation. |
 | Stream drops, reconnect succeeds within `reconnect_max_attempts` | Replays buffered events, resumes tracking. No escalation unless a `stream_gap` is reported. |
 | Reconnect reports `stream_gap` | Every currently-tracked operation is escalated (completions may have been lost); tracking resumes from the live tail. |
@@ -451,61 +505,55 @@ a service that SIGSEGVs is relaunched by the OS supervisor, but a service
 that *hangs* — process alive, HTTP dead — previously needed an external
 `/health`-polling watchdog. This loop is that watchdog.
 
-Each `services` entry with a `health` block gets its own
-`ServiceHealthSupervisor` (an `EventMonitor`, one tokio task per service):
+Supervision is **universal and unconfigured**: every
+[discovered service](#service-discovery) in the `running` or `failed` run
+state is supervised — there is no opt-in block, so forgetting one can never
+silently mean no supervision. Each supervised service gets its own
+`ServiceHealthSupervisor` task, spawned and reaped by the discovery loop as
+services are installed, removed, stopped, and started. All supervision policy
+is **constants** (the shipped defaults of the retired per-service config,
+promoted):
 
-```json
-{
-  "services": {
-    "plate-solver": {
-      "restart_command": "systemctl restart rusty-photon-plate-solver",
-      "max_restart_duration": "30s",
-      "health": {
-        "url": "http://localhost:11131/health",
-        "poll_interval": "30s",
-        "failure_threshold": 3,
-        "restart_backoff": "1m",
-        "restart_backoff_max": "15m"
-      }
-    }
-  }
-}
-```
-
-| Field | Default | Meaning |
+| Constant | Value | Meaning |
 |---|---|---|
-| `url` | *(required)* | Health URL probed with `GET`. Only a clean `200` counts as alive; any other status, a timeout, or a connection error counts as a failed probe. The response body is never parsed (health bodies are not uniform across services). |
-| `poll_interval` | `30s` | Probe cadence (humantime). Probing continues at this cadence during outages and backoff — only *restarting* is throttled. |
-| `failure_threshold` | `3` | Consecutive failed probes before the first autonomous restart. |
-| `restart_backoff` | `1m` | Wait before a second restart attempt when the first did not cure the service (humantime). |
-| `restart_backoff_max` | `15m` | Ceiling for the doubling backoff (humantime). |
+| probe timeout | `2s` | Per-probe bound (the same bound as the watchdog ladder's health rung). The probed endpoint should therefore be cheap; `plate-solver`'s `/health` (two filesystem stats, no subprocess) is the reference shape. |
+| poll interval | `30s` | Probe cadence. Probing continues at this cadence during outages and backoff — only *restarting* is throttled. |
+| failure threshold | `3` | Consecutive failed probes before the first autonomous restart. |
+| restart backoff | `60s` | Wait before a second restart attempt when the first did not cure the service, doubling after every attempt. |
+| restart backoff max | `900s` | Ceiling for the doubling backoff. |
+| restart budget | `300s` | Time budget for a restart command *and* its recovery wait together — shared by the REST endpoint, the watchdog ladder, and health supervision. |
 
-Each probe is bounded by a hardcoded **2 s timeout** (the same bound as the
-watchdog ladder's health rung). The probed endpoint should therefore be cheap;
-`plate-solver`'s `/health` (two filesystem stats, no subprocess) is the
-reference shape.
+The probe is a `GET` of the service's
+[derived health URL](#deriving-the-health-probe-url). Alive means a `200`,
+**or a `401`/`403`** — an auth-enabled service that challenges an
+unauthenticated probe has proven it is up, and sentinel holds no credentials
+for its peers (that changes in doctor-plan D6, but aliveness must not depend
+on it). Any other status, a timeout, or a connection error counts as a failed
+probe. The response body is never parsed (health bodies are not uniform
+across services).
 
 ### Behavior
 
-- **Detection.** After `failure_threshold` consecutive failed probes, the
-  supervisor runs the service's `restart_command` through the same
+- **Detection.** After the failure threshold, the supervisor runs the
+  service's derived restart command through the same
   [`RestartManager`](#service-restart-api) engine the REST endpoint uses —
-  bounded by `max_restart_duration`, with the `health_command` recovery poll
-  if one is configured, and holding the service's slot in the shared
-  restart gate (below).
+  bounded by the restart budget, with the derived recovery check
+  (`systemctl is-active`-style, where the platform has one), and holding the
+  service's slot in the shared restart gate (below).
+- **`failed` units.** A unit the OS supervisor gave up on (`Restart=on-failure`
+  exhausted) has no HTTP to probe; it is restarted directly on the same
+  threshold-and-backoff state machine. Sentinel never gives up where systemd
+  does.
 - **Backoff.** Each restart attempt schedules the *next* allowed attempt
-  `restart_backoff` later, doubling after every attempt up to
-  `restart_backoff_max`. Probing never stops and the supervisor **never gives
-  up** — a service that stays broken is retried at the capped cadence until
-  it recovers or an operator intervenes.
+  one backoff later, doubling up to the ceiling. Probing never stops and the
+  supervisor **never gives up** — a service that stays broken is retried at
+  the capped cadence until it recovers or an operator intervenes.
 - **Recovery.** One successful probe ends the outage: the failure counter,
   the backoff, and the restart schedule all reset. Recovery is visible on the
   dashboard but is deliberately **not** notified.
-- **Not restartable.** A `health` block on a service with
-  `restart_command: null` degrades to probe-and-notify: a single notification
-  fires when the threshold is crossed (once per outage) and no restart is
-  attempted — the same degrade-with-warning posture as the watchdog ladder
-  (tenet #2, robustness).
+- **Underivable probe.** A `running` service whose `<svc>.json` cannot be
+  read has no probe URL: its health reports `unknown`, no probe-driven
+  restart fires, and the derivation is retried every discovery cycle.
 
 ### Notifications
 
@@ -517,10 +565,9 @@ recorded in the dashboard notification history:
 |---|---|---|
 | First restart of an outage | `0` | Service unhealthy after N consecutive failed probes; restarted autonomously, with the restart outcome (`status` / `recovery`). |
 | Every later restart of the same outage | `1` (escalated) | Service **still unhealthy** after K autonomous restarts, with the latest outcome and the next-attempt time. |
-| Threshold crossed on a non-restartable service | `1` | Service unhealthy and has no `restart_command`; manual intervention required. |
 
 Notification volume is bounded by construction: at most one notification per
-restart attempt, and attempts are backoff-throttled (at the `15m` default cap,
+restart attempt, and attempts are backoff-throttled (at the `900s` cap,
 at most one escalation per 15 minutes per service). There is no separate
 dedup or cooldown mechanism.
 
@@ -528,7 +575,7 @@ dedup or cooldown mechanism.
 
 All three restart paths — the REST endpoint, the watchdog ladder's restart
 rung, and health supervision — acquire the same per-service in-flight slot
-(`RestartGate` in `restart.rs`) before running a `restart_command`, so at most
+(`RestartGate` in `restart.rs`) before running a restart, so at most
 one restart of a given service runs at any time:
 
 - REST endpoint blocked by the gate → `409` (already in flight), unchanged.
@@ -542,12 +589,14 @@ one restart of a given service runs at any time:
 
 | Scenario | Behavior |
 |----------|----------|
-| Sentinel starts before a supervised service finishes booting | First probes fail but nothing restarts until `failure_threshold × poll_interval` (90 s by default) has elapsed — natural startup grace. A restart of a still-booting service is harmless for `systemctl restart`-style commands. |
+| Sentinel starts before a supervised service finishes booting | First probes fail but nothing restarts until threshold × poll interval (90 s) has elapsed — natural startup grace. A restart of a still-booting service is harmless for `systemctl restart`-style commands. |
 | Manual restart (REST/UI) during an outage | The autonomous attempt finds the gate held and skips silently; if the manual restart cures the service, the next successful probe resets the outage. |
 | Restart command fails (non-zero, spawn failure, over budget) | Counts as an attempt: notification carries the failure detail, backoff advances, probing continues. |
-| Service flaps (recovers, fails again) | Each recovery fully resets the state machine; a new outage starts at `failure_threshold` fresh failures and the initial `restart_backoff`. |
+| Service flaps (recovers, fails again) | Each recovery fully resets the state machine; a new outage starts at 3 fresh failures and the initial 60 s backoff. |
 | Shutdown during an in-flight autonomous restart | The supervisor returns immediately (restart await is raced against the cancellation token); the gate slot is released and the shell child runs to completion detached. |
-| `health` block absent | The service is restart-on-demand only — exactly today's behavior. |
+| Operator stops a service mid-outage (`running` → `stopped`) | Its supervisor is stood down on the next discovery refresh (≤ 60 s); no further probes or restarts. The threshold-and-90-s detection window means an operator stop is seen before any probe-driven restart can fire. |
+| Package removed mid-outage | The service leaves the discovered set; its supervisor and dashboard entry are reaped. |
+| Service is `inert`, `stopped`, or `disabled` | Displayed on the dashboard, never probed, never restarted, never notified. |
 
 ## Service Restart API
 
@@ -560,15 +609,18 @@ split: drivers reload *themselves* via `config.apply`, sentinel restarts
 POST /api/services/{name}/restart
 ```
 
-`{name}` is a key in the top-level
-[`services`](#supervised-services-services) map. Sentinel does **not** spawn
-or own the processes — it shells out to the service's configured
-`restart_command` (the OS supervisor owns relaunch), then, when a
-`health_command` is configured, polls it until it exits 0 or the service's
-`max_restart_duration` budget elapses (each probe is bounded to its
-per-attempt slice of the budget, so one hanging probe is killed and retried
-rather than consuming the whole phase). The endpoint is the manual "recovery
-hammer" the web UI's *Restart via Sentinel* affordance calls (see
+`{name}` is the name of a [discovered service](#service-discovery)
+(`dsd-fp2`, not `rusty-photon-dsd-fp2`). Sentinel does **not** spawn
+or own the processes — it shells out to the derived restart command (the OS
+supervisor owns relaunch), then polls the derived recovery check
+(`systemctl is-active`-style; on platforms without one, recovery
+confirmation is skipped) until it exits 0 or the 300 s restart budget
+elapses (each probe is bounded to its per-attempt slice of the budget, so
+one hanging probe is killed and retried rather than consuming the whole
+phase). The manual restart is the operator's recovery hammer, so it works
+for **any** discovered service regardless of run state — including `stopped`
+and `inert` ones autonomous supervision leaves alone. The endpoint is what
+the web UI's *Restart via Sentinel* affordance calls (see
 [`ui-htmx.md`](ui-htmx.md)), and the escalation target for `config.apply`
 fields classified `restart_required`.
 
@@ -576,12 +628,11 @@ fields classified `restart_required`.
 
 | Condition | Response |
 |---|---|
-| Restart command exits 0; `health_command` set and exits 0 within the remaining budget | `200` `{"service":"<name>","status":"ok","recovery":"healthy"}` |
-| Restart command exits 0; `health_command` set but never exits 0 in budget | `200` `{"service":"<name>","status":"ok","recovery":"timeout"}` |
-| Restart command exits 0; no `health_command` | `200` `{"service":"<name>","status":"ok","recovery":"skipped"}` |
+| Restart command exits 0; recovery check passes within the remaining budget | `200` `{"service":"<name>","status":"ok","recovery":"healthy"}` |
+| Restart command exits 0; recovery check never passes in budget | `200` `{"service":"<name>","status":"ok","recovery":"timeout"}` |
+| Restart command exits 0; platform has no recovery check (macOS) | `200` `{"service":"<name>","status":"ok","recovery":"skipped"}` |
 | Restart command exits non-zero, fails to spawn, or exceeds the budget | `200` `{"service":"<name>","status":"failed","detail":"…"}` (no recovery poll) |
-| `{name}` not in the `services` map | `404` `{"error":"no configured service named '<name>'"}` |
-| Service configured with `restart_command: null` | `409` `{"error":"service '<name>' is not restartable"}` |
+| `{name}` is not a discovered service | `404` `{"error":"no discovered service named '<name>'"}` |
 | A restart for `{name}` is already in flight | `409` `{"error":"a restart of '<name>' is already in flight"}` |
 
 - **`status` reports the action's outcome, not the transport's** — a failed
@@ -595,30 +646,32 @@ fields classified `restart_required`.
   autonomous restart (health supervision) or a watchdog-ladder restart is
   currently running for that service.
 - **The request blocks** until the command (and recovery poll, if any)
-  completes — bounded by the service's `max_restart_duration`, so the
+  completes — bounded by the 300 s restart budget, so the
   response always arrives within that budget plus scheduling noise.
 - **Same protection as the rest of the dashboard.** The endpoint sits on the
   dashboard router, behind the same optional `server.auth` Basic-auth and
   `server.tls` layers — there is no separate gate. Deploying without dashboard auth
-  leaves it (like the JSON API) open; the restart commands themselves come
-  only from sentinel's own config file, never from the request.
+  leaves it (like the JSON API) open; the restart command is derived from the
+  discovered unit name, never taken from the request.
 - A user-initiated restart is logged (`info!`) but does **not** dispatch
   notifications and is not recorded in the notification history — the
   operator who pressed the button already knows.
 
-- **Web UI**: Server-rendered HTML with JavaScript polling (auto-refreshes every 5 seconds). Shows monitor statuses, a *Supervised Services* health table, and the notification history.
-- **JSON API**: `/api/status` (monitor statuses), `/api/services` (supervised-service health, below), `/api/history` (notification history)
+- **Web UI**: Server-rendered HTML with JavaScript polling (auto-refreshes every 5 seconds). Shows monitor statuses, a *Discovered Services* table (run state + health), and the notification history.
+- **JSON API**: `/api/status` (monitor statuses), `/api/services` (discovered-service state and health, below), `/api/history` (notification history)
 - **Service restart**: `POST /api/services/{name}/restart` (see [Service Restart API](#service-restart-api))
 - **Health check**: `/health` returns 200 OK
 
 ### `GET /api/services`
 
-Returns one entry per supervised service (a `services` entry with a `health`
-block), sorted by name — an empty array when nothing is supervised:
+Returns one entry per [discovered service](#service-discovery), sorted by
+name — an empty array when nothing is discovered:
 
 ```json
 [{
   "name": "plate-solver",
+  "unit": "rusty-photon-plate-solver",
+  "run_state": "running",
   "health": "up",
   "last_probe_epoch_ms": 1760000000000,
   "consecutive_failures": 0,
@@ -629,7 +682,10 @@ block), sorted by name — an empty array when nothing is supervised:
 }]
 ```
 
-- `health` is `"unknown"` (never probed yet), `"up"`, or `"down"`.
+- `run_state` is the discovery classification: `"running"`, `"failed"`,
+  `"inert"`, `"stopped"`, or `"disabled"`.
+- `health` is `"unknown"` (never probed, no derivable probe URL, or not in a
+  probed run state), `"up"`, or `"down"`.
 - `last_probe_epoch_ms` is `0` until the first probe completes.
 - `restarts_in_outage` counts autonomous restarts in the current outage
   (resets on recovery); `total_restarts` counts them since sentinel started.
@@ -651,8 +707,9 @@ services/sentinel/src/
   alpaca_client.rs     AlpacaSafetyMonitor (Monitor impl)
   watchdog.rs          EventMonitor trait + OperationDeadlineMonitor + SSE event source + deadline tracking
   corrective.rs        Corrective-action ladder: HealthChecker/Aborter/Restarter traits + HTTP/shell impls + CorrectiveLadder
-  restart.rs           RestartManager: services registry + shared RestartGate + restart/recovery orchestration
-  health.rs            ServiceHealthSupervisor (EventMonitor impl): periodic health probes + autonomous restart with backoff
+  discovery.rs         ServiceManager trait (systemd/SCM/brew backends + test stub) + unit enumeration, run-state classification, probe-URL derivation
+  restart.rs           RestartManager: discovered-service registry + shared RestartGate + restart/recovery orchestration
+  health.rs            ServiceHealthSupervisor: periodic health probes + autonomous restart with backoff; discovery loop spawns/reaps one per supervised service
   notifier.rs          Notifier trait + Notification types
   pushover.rs          PushoverNotifier (Notifier impl)
   engine.rs            Engine: polling loops + transition matching + dispatch

@@ -1,11 +1,15 @@
 //! BDD world for the operation-watchdog end-to-end suite.
 //!
 //! Holds the real processes (OmniSim, rp, sentinel), the in-process
-//! plate-solver stub used to wedge a `center_on_target` call, and a local
+//! plate-solver stub used to wedge a `center_on_target` call, a local
 //! Pushover stub so the watchdog's escalations land in sentinel's dashboard
-//! history without a network round-trip. Everything is per-scenario; teardown
-//! runs in the cucumber `after` hook (see `bdd.rs`).
+//! history without a network round-trip, and the directory-backed stub
+//! service manager (`SENTINEL_SERVICE_MANAGER_DIR`) sentinel discovers the
+//! "rp" service from. Everything is per-scenario; teardown runs in the
+//! cucumber `after` hook (see `bdd.rs`).
 
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use bdd_infra::rp_harness::{
@@ -15,6 +19,11 @@ use bdd_infra::rp_harness::{
 use bdd_infra::ServiceHandle;
 use cucumber::World;
 use serde_json::Value;
+
+/// Per-process counter so each scenario gets a distinct harness directory —
+/// combined with the PID this stays collision-free across parallel test
+/// binaries (the same pattern `write_temp_config_file` uses).
+static HARNESS_DIR_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// How rp's plate solver behaves for the scenario — selected by a `Given`
 /// step before rp starts, since the choice is baked into rp's config.
@@ -55,6 +64,16 @@ pub struct WatchdogE2eWorld {
     /// no-false-alarm scenario): `Some(Ok)` on success, `Some(Err)` on a tool
     /// error, `None` if never invoked.
     pub centering_result: Option<Result<Value, String>>,
+
+    /// Per-scenario harness directory holding sentinel's config file, the
+    /// sibling `rp.json` discovery derives rp's Alpaca base URL from, and the
+    /// stub service-manager directory. Removed in teardown.
+    pub harness_dir: Option<PathBuf>,
+
+    /// The stub service-manager directory (`<harness_dir>/svcmgr`), handed to
+    /// sentinel via `SENTINEL_SERVICE_MANAGER_DIR`; its `restarts.log` is
+    /// what the restart-rung assertion reads.
+    pub manager_dir: Option<PathBuf>,
 }
 
 impl WatchdogE2eWorld {
@@ -138,10 +157,13 @@ impl WatchdogE2eWorld {
     }
 
     /// Build sentinel's JSON config: the operation watchdog pointed at rp, with
-    /// `centering` set to `abort_then_restart` against a "rp" service whose
-    /// restart command is a trivial cross-shell `exit 0`. Buffers are zeroed so
-    /// the tracked deadline equals rp's `max_duration_ms` exactly; reconnect is
-    /// tight so the unresponsive path resolves in a couple of seconds.
+    /// `centering` set to `abort_then_restart` against the *discovered* "rp"
+    /// service — there is no `services` map; sentinel's registry comes from the
+    /// stub service manager laid out by [`write_sentinel_fs`](Self::write_sentinel_fs),
+    /// and the ladder's restart rung hands the unit to that manager. Buffers
+    /// are zeroed so the tracked deadline equals rp's `max_duration_ms`
+    /// exactly; reconnect is tight so the unresponsive path resolves in a
+    /// couple of seconds.
     fn build_sentinel_config(&self) -> Value {
         let rp_url = self.rp_base_url();
         let pushover_url = self
@@ -160,25 +182,6 @@ impl WatchdogE2eWorld {
             "transitions": [],
             "dashboard": { "enabled": true, "history_size": 100 },
             "server": { "port": 0 },
-            // The top-level supervised-services registry (shared by the
-            // watchdog ladder and the restart endpoint). `centering` has no
-            // Alpaca binding, so the ladder skips health/abort and goes
-            // straight to this restart command. base_url is unused for a
-            // binding-less family. The command is a trivial cross-shell
-            // `exit 0` (works under both `sh -c` and `cmd /C`, no
-            // path/quoting/redirection to mis-parse); the `restart=ran` token
-            // the test asserts on is emitted only after the real
-            // ShellRestarter spawns it and it exits 0, which is the
-            // end-to-end proof the restart rung executed. The restart budget
-            // is per-service.
-            "services": {
-                "rp": {
-                    "base_url": "http://127.0.0.1:1/api/v1",
-                    "device_number": 0,
-                    "restart_command": "exit 0",
-                    "max_restart_duration": "2s",
-                }
-            },
             "operation_watchdog": {
                 "rp_url": rp_url,
                 "reconnect_max_attempts": 2,
@@ -194,6 +197,67 @@ impl WatchdogE2eWorld {
                 }
             }
         })
+    }
+
+    /// Lay out sentinel's on-disk world in a fresh harness directory and
+    /// return `(sentinel config path, stub service-manager dir)`:
+    ///
+    /// - `svcmgr/units.txt` lists `rusty-photon-rp` as `stopped`: discovery
+    ///   still resolves it and the ladder's restart rung still restarts it,
+    ///   but autonomous health supervision leaves stopped units alone — so it
+    ///   can never steal the one-restart-per-service gate slot from the
+    ///   ladder mid-scenario.
+    /// - `svcmgr/policy.json` overrides only the restart budget (down from
+    ///   the 300 s constant to 2 s, bounding the ladder's recovery wait);
+    ///   every other supervision constant keeps its slow production default
+    ///   so supervision stays quiet for the scenario's lifetime.
+    /// - `rp.json`, the sibling file discovery derives rp's Alpaca base URL
+    ///   from, claims port 1 — unreachable by construction. `centering` has
+    ///   no Alpaca binding, so the ladder's health rung reports unknown and
+    ///   falls through to restart, and the recovery wait can never confirm:
+    ///   the outcome carries `restart=ran` (the token the test asserts on)
+    ///   followed by `recovery=timeout`.
+    fn write_sentinel_fs(&mut self, sentinel_config: &Value) -> (String, PathBuf) {
+        let seq = HARNESS_DIR_SEQ.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "operation-watchdog-e2e-{}-{}",
+            std::process::id(),
+            seq
+        ));
+        let manager_dir = dir.join("svcmgr");
+        std::fs::create_dir_all(&manager_dir).expect("create stub service-manager dir");
+        std::fs::write(manager_dir.join("units.txt"), "rusty-photon-rp stopped\n")
+            .expect("write stub units.txt");
+        std::fs::write(
+            manager_dir.join("policy.json"),
+            serde_json::json!({ "restart_budget": "2s" }).to_string(),
+        )
+        .expect("write stub policy.json");
+        std::fs::write(
+            dir.join("rp.json"),
+            serde_json::json!({ "server": { "port": 1 } }).to_string(),
+        )
+        .expect("write sibling rp.json");
+        let config_path = dir.join("sentinel.json");
+        std::fs::write(
+            &config_path,
+            serde_json::to_string_pretty(sentinel_config).expect("serialize sentinel config"),
+        )
+        .expect("write sentinel config");
+        self.harness_dir = Some(dir);
+        self.manager_dir = Some(manager_dir.clone());
+        (config_path.to_string_lossy().to_string(), manager_dir)
+    }
+
+    /// Restart-log lines from the stub service manager (one unit name per
+    /// recorded restart); empty when no restart ran.
+    pub fn restart_log(&self) -> Vec<String> {
+        let dir = self.manager_dir.as_ref().expect("sentinel not started");
+        std::fs::read_to_string(dir.join("restarts.log"))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect()
     }
 
     /// Start the full stack: OmniSim (when equipment is needed), the Pushover
@@ -214,12 +278,18 @@ impl WatchdogE2eWorld {
         );
 
         let sentinel_config = self.build_sentinel_config();
-        let config_path = bdd_infra::rp_harness::write_temp_config_file(
-            "operation-watchdog-e2e-sentinel",
-            &sentinel_config,
-        )
-        .await;
-        self.sentinel = Some(ServiceHandle::start("sentinel", &config_path).await);
+        let (config_path, manager_dir) = self.write_sentinel_fs(&sentinel_config);
+        self.sentinel = Some(
+            ServiceHandle::start_with_env(
+                "sentinel",
+                &["--config", &config_path],
+                &[(
+                    "SENTINEL_SERVICE_MANAGER_DIR",
+                    manager_dir.to_str().expect("manager dir path is UTF-8"),
+                )],
+            )
+            .await,
+        );
 
         // Give sentinel's watchdog a moment to open its SSE subscription before
         // any operation fires, so a live `centering_started` is observed. There
@@ -351,6 +421,12 @@ impl WatchdogE2eWorld {
         if let Some(handle) = self.pushover_stub.take() {
             handle.abort();
         }
+        // Best-effort: the config, sibling rp.json, and stub manager dir are
+        // all under the per-scenario harness directory.
+        if let Some(dir) = self.harness_dir.take() {
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+        self.manager_dir = None;
     }
 }
 

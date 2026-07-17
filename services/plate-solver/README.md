@@ -183,32 +183,19 @@ Tail logs (PowerShell): `Get-Content -Wait C:\ProgramData\plate-solver\stderr.lo
 ## Sentinel integration
 
 Sentinel supervises this wrapper through its
-[service health supervision](../../docs/services/sentinel.md#service-health-supervision):
-a `health` block on the wrapper's entry in Sentinel's `services` map
-polls `GET /health` and, after a configurable number of consecutive
-failures (non-200, timeout, or connection refused), runs the
-configured restart command — with doubling backoff between attempts
-and a Pushover notification for every autonomous restart. This covers
-both crashes and hangs; the OS process supervisor (recipes above)
-remains the relaunch mechanism the restart command drives.
-
-A minimal Sentinel config supervising this service (Linux user unit):
-
-```json
-{
-  "services": {
-    "plate-solver": {
-      "restart_command": "systemctl --user restart plate-solver",
-      "max_restart_duration": "30s",
-      "health": {
-        "url": "http://localhost:11131/health",
-        "poll_interval": "30s",
-        "failure_threshold": 3
-      }
-    }
-  }
-}
-```
+[service health supervision](../../docs/services/sentinel.md#service-health-supervision),
+and on a packaged install it needs **no configuration at all**:
+sentinel discovers the installed `rusty-photon-plate-solver` unit from
+the service manager, derives the `GET /health` probe from this
+service's own config file, and after three consecutive failures
+(non-200, timeout, or connection refused) runs
+`systemctl restart rusty-photon-plate-solver` — with doubling backoff
+between attempts and a Pushover notification for every autonomous
+restart. This covers both crashes and hangs; the OS process supervisor
+(recipes above) remains the relaunch mechanism the restart drives.
+Hand-run wrappers (`cargo run`, the ad-hoc recipes above under
+non-packaged names) are not under the service manager and are
+therefore not supervised.
 
 Defense in depth around it:
 

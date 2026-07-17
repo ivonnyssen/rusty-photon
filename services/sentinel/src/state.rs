@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
+use crate::discovery::{DiscoveredService, RunState};
 use crate::monitor::MonitorState;
 use crate::notifier::NotificationRecord;
 
@@ -22,15 +23,16 @@ pub struct MonitorStatus {
     pub polling_interval: Duration,
 }
 
-/// Health of a supervised service as seen by its health supervisor.
+/// Health of a discovered service as seen by its health supervisor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ServiceHealth {
-    /// Not probed yet.
+    /// Never probed, no derivable probe URL, or not in a probed run state.
     Unknown,
-    /// Last probe answered a clean 200.
+    /// Last probe answered alive (200, or an auth challenge — 401/403).
     Up,
-    /// Last probe failed (non-200, timeout, or connection error).
+    /// Last probe failed (other status, timeout, or connection error), or
+    /// the unit is in the `failed` run state.
     Down,
 }
 
@@ -44,11 +46,17 @@ impl std::fmt::Display for ServiceHealth {
     }
 }
 
-/// Snapshot of one supervised service, published by its health supervisor
-/// after every probe (single writer per service).
+/// Snapshot of one discovered service. Set membership, `unit`, and
+/// `run_state` are maintained by the discovery loop; the health fields are
+/// published by the service's health supervisor after every probe (single
+/// writer per service).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceHealthStatus {
     pub name: String,
+    /// The platform unit name (`rusty-photon-<name>`).
+    pub unit: String,
+    /// The discovery classification.
+    pub run_state: RunState,
     pub health: ServiceHealth,
     /// 0 until the first probe completes.
     pub last_probe_epoch_ms: u64,
@@ -65,10 +73,17 @@ pub struct ServiceHealthStatus {
 }
 
 impl ServiceHealthStatus {
-    /// The unseeded/unprobed snapshot every supervised service starts from.
-    pub fn unknown(name: String, poll_interval: Duration) -> Self {
+    /// The unprobed snapshot a newly discovered service starts from.
+    pub fn unknown(
+        name: String,
+        unit: String,
+        run_state: RunState,
+        poll_interval: Duration,
+    ) -> Self {
         Self {
             name,
+            unit,
+            run_state,
             health: ServiceHealth::Unknown,
             last_probe_epoch_ms: 0,
             consecutive_failures: 0,
@@ -91,11 +106,7 @@ pub struct SharedState {
 }
 
 impl SharedState {
-    pub fn new(
-        monitors_with_intervals: Vec<(String, Duration)>,
-        supervised_services: Vec<(String, Duration)>,
-        history_max_size: usize,
-    ) -> Self {
+    pub fn new(monitors_with_intervals: Vec<(String, Duration)>, history_max_size: usize) -> Self {
         let monitors = monitors_with_intervals
             .into_iter()
             .map(|(name, polling_interval)| MonitorStatus {
@@ -108,28 +119,55 @@ impl SharedState {
             })
             .collect();
 
-        let services = supervised_services
-            .into_iter()
-            .map(|(name, poll_interval)| ServiceHealthStatus::unknown(name, poll_interval))
-            .collect();
-
         Self {
             monitors,
-            services,
+            // Populated by the discovery loop; empty until the first pass.
+            services: Vec::new(),
             history: VecDeque::with_capacity(history_max_size),
             history_max_size,
             started_at: Instant::now(),
         }
     }
 
-    /// Replace a supervised service's snapshot (matched by name). The
+    /// Replace a discovered service's snapshot (matched by name). The
     /// supervisor's local state machine is authoritative; this is push-only.
-    /// An unseeded name is inserted defensively.
+    /// An unseeded name is inserted defensively, keeping name order.
     pub fn set_service_health(&mut self, status: ServiceHealthStatus) {
         match self.services.iter_mut().find(|s| s.name == status.name) {
             Some(slot) => *slot = status,
-            None => self.services.push(status),
+            None => {
+                self.services.push(status);
+                self.services.sort_by(|a, b| a.name.cmp(&b.name));
+            }
         }
+    }
+
+    /// Reconcile the snapshot list with a discovery pass: insert a fresh
+    /// `unknown` slot for every newly discovered service, refresh `unit` and
+    /// `run_state` on existing ones (their health fields belong to their
+    /// supervisor), drop services that left the discovered set, and keep the
+    /// list name-sorted for deterministic dashboard/API order.
+    pub fn sync_discovered_services(
+        &mut self,
+        services: &std::collections::HashMap<String, DiscoveredService>,
+        poll_interval: Duration,
+    ) {
+        self.services.retain(|s| services.contains_key(&s.name));
+        for svc in services.values() {
+            match self.services.iter_mut().find(|s| s.name == svc.name) {
+                Some(slot) => {
+                    slot.unit = svc.unit.clone();
+                    slot.run_state = svc.state;
+                }
+                None => self.services.push(ServiceHealthStatus::unknown(
+                    svc.name.clone(),
+                    svc.unit.clone(),
+                    svc.state,
+                    poll_interval,
+                )),
+            }
+        }
+        self.services.sort_by(|a, b| a.name.cmp(&b.name));
     }
 
     /// Update a monitor's state, returning true if the state changed
@@ -183,12 +221,10 @@ pub type StateHandle = Arc<RwLock<SharedState>>;
 
 pub fn new_state_handle(
     monitors_with_intervals: Vec<(String, Duration)>,
-    supervised_services: Vec<(String, Duration)>,
     history_max_size: usize,
 ) -> StateHandle {
     Arc::new(RwLock::new(SharedState::new(
         monitors_with_intervals,
-        supervised_services,
         history_max_size,
     )))
 }
@@ -206,7 +242,6 @@ mod tests {
                 ("m1".to_string(), Duration::from_secs(30)),
                 ("m2".to_string(), Duration::from_secs(60)),
             ],
-            vec![],
             10,
         );
         assert_eq!(state.monitors.len(), 2);
@@ -218,11 +253,7 @@ mod tests {
 
     #[test]
     fn update_monitor_returns_true_on_change() {
-        let mut state = SharedState::new(
-            vec![("m1".to_string(), Duration::from_secs(30))],
-            vec![],
-            10,
-        );
+        let mut state = SharedState::new(vec![("m1".to_string(), Duration::from_secs(30))], 10);
         let changed = state.update_monitor("m1", MonitorState::Safe, 1000);
         assert!(changed);
         assert_eq!(state.monitors[0].state, MonitorState::Safe);
@@ -231,11 +262,7 @@ mod tests {
 
     #[test]
     fn update_monitor_returns_false_on_same_state() {
-        let mut state = SharedState::new(
-            vec![("m1".to_string(), Duration::from_secs(30))],
-            vec![],
-            10,
-        );
+        let mut state = SharedState::new(vec![("m1".to_string(), Duration::from_secs(30))], 10);
         state.update_monitor("m1", MonitorState::Safe, 1000);
         let changed = state.update_monitor("m1", MonitorState::Safe, 2000);
         assert!(!changed);
@@ -245,11 +272,7 @@ mod tests {
 
     #[test]
     fn update_unknown_increments_error_count() {
-        let mut state = SharedState::new(
-            vec![("m1".to_string(), Duration::from_secs(30))],
-            vec![],
-            10,
-        );
+        let mut state = SharedState::new(vec![("m1".to_string(), Duration::from_secs(30))], 10);
         state.update_monitor("m1", MonitorState::Unknown, 1000);
         assert_eq!(state.monitors[0].consecutive_errors, 1);
         state.update_monitor("m1", MonitorState::Unknown, 2000);
@@ -258,11 +281,7 @@ mod tests {
 
     #[test]
     fn update_resets_error_count_on_recovery() {
-        let mut state = SharedState::new(
-            vec![("m1".to_string(), Duration::from_secs(30))],
-            vec![],
-            10,
-        );
+        let mut state = SharedState::new(vec![("m1".to_string(), Duration::from_secs(30))], 10);
         state.update_monitor("m1", MonitorState::Unknown, 1000);
         state.update_monitor("m1", MonitorState::Unknown, 2000);
         assert_eq!(state.monitors[0].consecutive_errors, 2);
@@ -272,18 +291,14 @@ mod tests {
 
     #[test]
     fn update_unknown_monitor_returns_false() {
-        let mut state = SharedState::new(
-            vec![("m1".to_string(), Duration::from_secs(30))],
-            vec![],
-            10,
-        );
+        let mut state = SharedState::new(vec![("m1".to_string(), Duration::from_secs(30))], 10);
         let changed = state.update_monitor("nonexistent", MonitorState::Safe, 1000);
         assert!(!changed);
     }
 
     #[test]
     fn history_respects_max_size() {
-        let mut state = SharedState::new(vec![], vec![], 2);
+        let mut state = SharedState::new(vec![], 2);
         for i in 0..5 {
             state.add_notification(NotificationRecord {
                 monitor_name: format!("m{}", i),
@@ -301,11 +316,7 @@ mod tests {
 
     #[test]
     fn get_monitor_state() {
-        let mut state = SharedState::new(
-            vec![("m1".to_string(), Duration::from_secs(30))],
-            vec![],
-            10,
-        );
+        let mut state = SharedState::new(vec![("m1".to_string(), Duration::from_secs(30))], 10);
         assert_eq!(state.get_monitor_state("m1"), Some(MonitorState::Unknown));
         state.update_monitor("m1", MonitorState::Safe, 1000);
         assert_eq!(state.get_monitor_state("m1"), Some(MonitorState::Safe));
@@ -314,41 +325,102 @@ mod tests {
 
     #[test]
     fn get_consecutive_errors_for_unknown_monitor_returns_zero() {
-        let state = SharedState::new(
-            vec![("m1".to_string(), Duration::from_secs(30))],
-            vec![],
-            10,
-        );
+        let state = SharedState::new(vec![("m1".to_string(), Duration::from_secs(30))], 10);
         assert_eq!(state.get_monitor_consecutive_errors("nonexistent"), 0);
     }
 
+    fn discovered(name: &str, state: RunState) -> DiscoveredService {
+        DiscoveredService {
+            name: name.to_string(),
+            unit: format!("rusty-photon-{name}"),
+            state,
+            probe: None,
+        }
+    }
+
+    fn pass(services: &[(&str, RunState)]) -> std::collections::HashMap<String, DiscoveredService> {
+        services
+            .iter()
+            .map(|(n, s)| (n.to_string(), discovered(n, *s)))
+            .collect()
+    }
+
     #[test]
-    fn new_state_seeds_supervised_services_unknown() {
-        let state = SharedState::new(
-            vec![],
-            vec![("plate-solver".to_string(), Duration::from_secs(30))],
-            10,
+    fn sync_seeds_new_services_unknown_and_sorted() {
+        let mut state = SharedState::new(vec![], 10);
+        state.sync_discovered_services(
+            &pass(&[
+                ("plate-solver", RunState::Inert),
+                ("dsd-fp2", RunState::Running),
+            ]),
+            Duration::from_secs(30),
         );
-        assert_eq!(state.services.len(), 1);
-        let service = &state.services[0];
+        assert_eq!(state.services.len(), 2);
+        assert_eq!(state.services[0].name, "dsd-fp2", "name-sorted");
+        let service = &state.services[1];
         assert_eq!(service.name, "plate-solver");
+        assert_eq!(service.unit, "rusty-photon-plate-solver");
+        assert_eq!(service.run_state, RunState::Inert);
         assert_eq!(service.health, ServiceHealth::Unknown);
         assert_eq!(service.last_probe_epoch_ms, 0);
-        assert_eq!(service.consecutive_failures, 0);
-        assert_eq!(service.restarts_in_outage, 0);
         assert_eq!(service.total_restarts, 0);
-        assert_eq!(service.next_restart_epoch_ms, None);
         assert_eq!(service.poll_interval, Duration::from_secs(30));
     }
 
     #[test]
-    fn set_service_health_replaces_by_name() {
-        let mut state = SharedState::new(
-            vec![],
-            vec![("svc".to_string(), Duration::from_secs(30))],
-            10,
+    fn sync_refreshes_run_state_but_preserves_health_fields() {
+        let mut state = SharedState::new(vec![], 10);
+        state.sync_discovered_services(
+            &pass(&[("svc", RunState::Running)]),
+            Duration::from_secs(30),
         );
-        let mut status = ServiceHealthStatus::unknown("svc".to_string(), Duration::from_secs(30));
+        let mut status = state.services[0].clone();
+        status.health = ServiceHealth::Down;
+        status.consecutive_failures = 2;
+        status.total_restarts = 3;
+        state.set_service_health(status);
+
+        state.sync_discovered_services(
+            &pass(&[("svc", RunState::Stopped)]),
+            Duration::from_secs(30),
+        );
+        let service = &state.services[0];
+        assert_eq!(service.run_state, RunState::Stopped, "run state refreshed");
+        assert_eq!(
+            service.health,
+            ServiceHealth::Down,
+            "the supervisor's health fields survive a discovery pass"
+        );
+        assert_eq!(service.consecutive_failures, 2);
+        assert_eq!(service.total_restarts, 3);
+    }
+
+    #[test]
+    fn sync_drops_services_that_left_the_discovered_set() {
+        let mut state = SharedState::new(vec![], 10);
+        state.sync_discovered_services(
+            &pass(&[("a", RunState::Running), ("b", RunState::Running)]),
+            Duration::from_secs(30),
+        );
+        assert_eq!(state.services.len(), 2);
+        state.sync_discovered_services(&pass(&[("b", RunState::Running)]), Duration::from_secs(30));
+        assert_eq!(state.services.len(), 1);
+        assert_eq!(state.services[0].name, "b");
+    }
+
+    #[test]
+    fn set_service_health_replaces_by_name() {
+        let mut state = SharedState::new(vec![], 10);
+        state.sync_discovered_services(
+            &pass(&[("svc", RunState::Running)]),
+            Duration::from_secs(30),
+        );
+        let mut status = ServiceHealthStatus::unknown(
+            "svc".to_string(),
+            "rusty-photon-svc".to_string(),
+            RunState::Running,
+            Duration::from_secs(30),
+        );
         status.health = ServiceHealth::Down;
         status.consecutive_failures = 2;
         state.set_service_health(status);
@@ -356,9 +428,15 @@ mod tests {
         assert_eq!(state.services[0].health, ServiceHealth::Down);
         assert_eq!(state.services[0].consecutive_failures, 2);
 
-        // An unseeded name is inserted defensively.
-        let other = ServiceHealthStatus::unknown("other".to_string(), Duration::from_secs(5));
+        // An unseeded name is inserted defensively, keeping name order.
+        let other = ServiceHealthStatus::unknown(
+            "another".to_string(),
+            "rusty-photon-another".to_string(),
+            RunState::Running,
+            Duration::from_secs(5),
+        );
         state.set_service_health(other);
         assert_eq!(state.services.len(), 2);
+        assert_eq!(state.services[0].name, "another");
     }
 }

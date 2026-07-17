@@ -1,36 +1,28 @@
 //! Step definitions for the Restart-via-Sentinel feature: a real sentinel is
-//! spawned alongside the driver + BFF, its scripted `restart_command` proving
-//! the whole BFF → sentinel → shell chain end to end.
+//! spawned alongside the driver + BFF, discovering units from the stub
+//! service manager (`SENTINEL_SERVICE_MANAGER_DIR`) and recording restarts in
+//! its log — proving the whole BFF → sentinel → service-manager chain end to
+//! end.
 
 use cucumber::{given, then, when};
-use serde_json::json;
 
 use crate::dom;
 use crate::world::UiWorld;
 
-/// A shell command that writes the marker file. The same line works under both
-/// platform shells (`sh -c` on unix, `cmd /C` on windows), quoted path included.
-fn write_marker_command(path: &std::path::Path) -> String {
-    format!("echo ok > \"{}\"", path.display())
+#[given(expr = "a sentinel that has discovered the running {string} unit")]
+async fn sentinel_with_running_unit(world: &mut UiWorld, service: String) {
+    world.add_discovered_unit(&format!("rusty-photon-{service}"), "running");
+    world.start_sentinel_and_rewire_bff().await;
 }
 
-#[given(expr = "a sentinel supervising {string} with a restart command that writes a marker file")]
-async fn sentinel_with_marker_command(world: &mut UiWorld, service: String) {
-    let marker = world.restart_marker_path();
-    let services = json!({ service: { "restart_command": write_marker_command(&marker) } });
-    world.start_sentinel_and_rewire_bff(services).await;
+#[given(expr = "the service manager fails restarts of {string}")]
+fn service_manager_fails_restarts(world: &mut UiWorld, unit: String) {
+    world.fail_restarts_of(&unit);
 }
 
-#[given(expr = "a sentinel supervising {string} with a restart command that fails")]
-async fn sentinel_with_failing_command(world: &mut UiWorld, service: String) {
-    // `exit 1` is understood by both platform shells.
-    let services = json!({ service: { "restart_command": "exit 1" } });
-    world.start_sentinel_and_rewire_bff(services).await;
-}
-
-#[given("a sentinel supervising no services")]
+#[given("a sentinel that has discovered no services")]
 async fn sentinel_with_no_services(world: &mut UiWorld) {
-    world.start_sentinel_and_rewire_bff(json!({})).await;
+    world.start_sentinel_and_rewire_bff().await;
 }
 
 #[when("I request a restart of the dsd-fp2 driver")]
@@ -57,16 +49,12 @@ fn no_restart_affordance(world: &mut UiWorld) {
     );
 }
 
-#[then("the restart marker file exists")]
-fn restart_marker_exists(world: &mut UiWorld) {
-    let marker = world
-        .restart_marker
-        .as_ref()
-        .expect("no marker path recorded");
+#[then(expr = "the service manager records a restart of {string}")]
+fn service_manager_recorded_restart(world: &mut UiWorld, unit: String) {
+    let log = world.restart_log();
     assert!(
-        marker.exists(),
-        "sentinel's restart command did not write {}",
-        marker.display()
+        log.iter().any(|line| line == &unit),
+        "no restart of {unit} in the service manager's log: {log:?}"
     );
 }
 

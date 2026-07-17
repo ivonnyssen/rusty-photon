@@ -38,8 +38,11 @@ pub struct UiWorld {
     pub ui: Option<ServiceHandle>,
     /// A real sentinel the BFF's restart affordance calls (restart scenarios only).
     pub sentinel: Option<ServiceHandle>,
-    /// Marker file sentinel's scripted restart command writes — proof it ran.
-    pub restart_marker: Option<PathBuf>,
+    /// The stub service-manager directory handed to the spawned sentinel via
+    /// `SENTINEL_SERVICE_MANAGER_DIR` (restart scenarios only): sentinel
+    /// discovers the units its `units.txt` lists and records every restart in
+    /// its `restarts.log`.
+    service_manager_dir: Option<PathBuf>,
     temp_dir: Option<TempDir>,
     /// The port the driver bound — OS-assigned (the driver binds `:0`),
     /// discovered from its stdout. The reload-reconnect scenario pins this into
@@ -218,27 +221,76 @@ impl UiWorld {
 
     // --- the sentinel the restart affordance calls --------------------------
 
-    /// Path of the marker file sentinel's scripted restart command writes —
-    /// recorded so the Then-step can assert the command actually ran.
-    pub fn restart_marker_path(&mut self) -> PathBuf {
-        let path = self.temp_path("restart-marker.txt");
-        self.restart_marker = Some(path.clone());
-        path
+    /// The stub service-manager directory (created on first use, with an empty
+    /// unit listing). Handed to the spawned sentinel via
+    /// `SENTINEL_SERVICE_MANAGER_DIR`, so the test sentinel never enumerates
+    /// the host's real service manager.
+    pub fn service_manager_dir(&mut self) -> PathBuf {
+        if let Some(dir) = &self.service_manager_dir {
+            return dir.clone();
+        }
+        let dir = self.temp_path("svcmgr");
+        std::fs::create_dir_all(&dir).expect("failed to create service manager dir");
+        std::fs::write(dir.join("units.txt"), "").expect("failed to seed units.txt");
+        self.service_manager_dir = Some(dir.clone());
+        dir
     }
 
-    /// Spawn a real sentinel supervising the given `services` map (its top-level
-    /// registry), then **replace** the already-running BFF with one whose config
-    /// carries a `sentinel` block — the sentinel URL is only known once it has
-    /// bound, and the driver Given has already started the first BFF.
-    pub async fn start_sentinel_and_rewire_bff(&mut self, services: Value) {
+    /// List a unit in the stub's `units.txt`, so sentinel discovers it.
+    pub fn add_discovered_unit(&mut self, unit: &str, state: &str) {
+        let path = self.service_manager_dir().join("units.txt");
+        let mut content = std::fs::read_to_string(&path).unwrap_or_default();
+        content.push_str(&format!("{unit} {state}\n"));
+        std::fs::write(&path, content).expect("failed to write units.txt");
+    }
+
+    /// Make the stub service manager fail every restart of `unit`.
+    pub fn fail_restarts_of(&mut self, unit: &str) {
+        let path = self
+            .service_manager_dir()
+            .join(format!("restart-fail-{unit}"));
+        std::fs::write(path, "").expect("failed to write restart-fail marker");
+    }
+
+    /// The stub's restart log (one unit name per recorded restart).
+    pub fn restart_log(&mut self) -> Vec<String> {
+        std::fs::read_to_string(self.service_manager_dir().join("restarts.log"))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// Spawn a real sentinel discovering units from the stub service-manager
+    /// directory (list them first via
+    /// [`add_discovered_unit`](Self::add_discovered_unit)), then **replace**
+    /// the already-running BFF with one whose config carries a `sentinel`
+    /// block — the sentinel URL is only known once it has bound, and the
+    /// driver Given has already started the first BFF. Sentinel runs its
+    /// first discovery pass before binding, so the discovered set is complete
+    /// as soon as the handle returns. Its config lives in its own
+    /// subdirectory: sentinel derives health-probe URLs from sibling
+    /// `<service>.json` files, and the driver's config (port 0) must not be
+    /// mistaken for one.
+    pub async fn start_sentinel_and_rewire_bff(&mut self) {
+        let manager_dir = self.service_manager_dir();
         let config = json!({
             "dashboard": { "enabled": true, "history_size": 100 },
             "server": { "port": 0, "bind_address": "127.0.0.1" },
-            "services": services,
         });
-        let path = self.temp_path("sentinel.json");
+        let config_dir = self.temp_path("sentinel-home");
+        std::fs::create_dir_all(&config_dir).expect("failed to create sentinel config dir");
+        let path = config_dir.join("sentinel.json");
         std::fs::write(&path, config.to_string()).expect("failed to write sentinel config");
-        let handle = ServiceHandle::start("sentinel", path.to_str().unwrap()).await;
+        let handle = ServiceHandle::start_with_env(
+            "sentinel",
+            &["--config", path.to_str().unwrap()],
+            &[(
+                "SENTINEL_SERVICE_MANAGER_DIR",
+                manager_dir.to_str().unwrap(),
+            )],
+        )
+        .await;
         self.sentinel = Some(handle);
         if let Some(mut ui) = self.ui.take() {
             ui.stop().await;

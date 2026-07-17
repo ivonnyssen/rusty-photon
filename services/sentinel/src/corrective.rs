@@ -19,7 +19,7 @@ use async_trait::async_trait;
 use tokio::time::Instant;
 use tracing::{debug, warn};
 
-use crate::config::ServiceConfig;
+use crate::discovery::{DiscoveredService, ServiceManager};
 use crate::io::HttpClient;
 use crate::restart::RestartGate;
 
@@ -59,59 +59,47 @@ pub fn alpaca_binding(family: &str) -> Option<AlpacaBinding> {
     }
 }
 
-/// A fully-resolved corrective target: which Alpaca device to probe / abort and
-/// which command restarts the owning service. Built from an operation family
-/// plus its owning [`ServiceConfig`].
+/// A fully-resolved corrective target: which Alpaca device to probe / abort
+/// and which unit restarts the owning service. Built from an operation family
+/// plus its owning [`DiscoveredService`].
 #[derive(Debug, Clone)]
 pub struct CorrectiveTarget {
     pub service_name: String,
-    /// Alpaca API base. `None` for a service with no Alpaca surface (a
-    /// restart-only entry): no probe, no abort — the ladder falls through to
-    /// restart.
+    /// Unit name the restart rung hands the service manager.
+    pub unit: String,
+    /// Derived Alpaca API base (`{scheme}://{host}:{port}/api/v1`). `None`
+    /// when the service's `<svc>.json` was unreadable: no probe, no abort —
+    /// the ladder falls through to restart.
     pub base_url: Option<String>,
-    pub device_number: u32,
     pub binding: Option<AlpacaBinding>,
-    pub restart_command: Option<String>,
-    /// The service's own budget for the restart command + recovery wait.
-    pub max_restart_duration: Duration,
 }
 
 impl CorrectiveTarget {
-    /// Resolve a target from the family and the service that owns it.
-    pub fn new(service_name: &str, family: &str, service: &ServiceConfig) -> Self {
+    /// Resolve a target from the family and the discovered service that owns
+    /// it. The device number is always `0`: one service per device (ADR-014).
+    pub fn new(family: &str, service: &DiscoveredService) -> Self {
         Self {
-            service_name: service_name.to_string(),
-            base_url: service
-                .base_url
-                .as_deref()
-                .map(|u| u.trim_end_matches('/').to_string()),
-            device_number: service.device_number,
+            service_name: service.name.clone(),
+            unit: service.unit.clone(),
+            base_url: service.probe.as_ref().map(|p| p.alpaca_base.clone()),
             binding: alpaca_binding(family),
-            restart_command: service.restart_command.clone(),
-            max_restart_duration: service.max_restart_duration,
         }
     }
 
-    /// `{base}/{device-type}/{n}/connected`, or `None` when the family has no
-    /// Alpaca device to probe or the service no Alpaca base URL.
+    /// `{base}/{device-type}/0/connected`, or `None` when the family has no
+    /// Alpaca device to probe or the service no derivable base URL.
     fn connected_url(&self) -> Option<String> {
         let base = self.base_url.as_deref()?;
         let b = self.binding?;
-        Some(format!(
-            "{}/{}/{}/connected",
-            base, b.device_type, self.device_number
-        ))
+        Some(format!("{}/{}/0/connected", base, b.device_type))
     }
 
-    /// `{base}/{device-type}/{n}/{verb}`, or `None` when the family has no
-    /// abort verb or the service no Alpaca base URL.
+    /// `{base}/{device-type}/0/{verb}`, or `None` when the family has no
+    /// abort verb or the service no derivable base URL.
     fn abort_url(&self) -> Option<String> {
         let base = self.base_url.as_deref()?;
         let b = self.binding?;
-        Some(format!(
-            "{}/{}/{}/{}",
-            base, b.device_type, self.device_number, b.abort_verb
-        ))
+        Some(format!("{}/{}/0/{}", base, b.device_type, b.abort_verb))
     }
 }
 
@@ -152,8 +140,9 @@ pub trait Aborter: Send + Sync + fmt::Debug {
 /// Rung 3 — restart an unresponsive (or un-abortable) service.
 #[async_trait]
 pub trait Restarter: Send + Sync + fmt::Debug {
-    /// Run `command`, bounded by `budget`. `Ok` iff it exits 0 in time.
-    async fn restart(&self, command: &str, budget: Duration) -> crate::Result<()>;
+    /// Restart `unit`, bounded by `budget`. `Ok` iff the platform command
+    /// exits 0 in time.
+    async fn restart(&self, unit: &str, budget: Duration) -> crate::Result<()>;
 }
 
 // ---- default impls -----------------------------------------------------
@@ -251,21 +240,37 @@ struct AlpacaResponse {
     error_message: String,
 }
 
-/// Shell restarter: runs the command via the platform shell (`sh -c` on Unix,
-/// `cmd /C` on Windows), bounded by the budget.
-#[derive(Debug, Default)]
-pub struct ShellRestarter;
+/// The production restart rung: hands the unit to the platform
+/// [`ServiceManager`], which derives and runs the actual command.
+#[derive(derive_more::Debug)]
+pub struct ManagerRestarter {
+    #[debug(skip)]
+    manager: Arc<dyn ServiceManager>,
+}
+
+impl ManagerRestarter {
+    pub fn new(manager: Arc<dyn ServiceManager>) -> Self {
+        Self { manager }
+    }
+}
+
+#[async_trait]
+impl Restarter for ManagerRestarter {
+    async fn restart(&self, unit: &str, budget: Duration) -> crate::Result<()> {
+        self.manager.restart(unit, budget).await
+    }
+}
 
 /// Build the platform shell invocation for `command`.
 #[cfg(unix)]
-fn shell_command(command: &str) -> tokio::process::Command {
+pub(crate) fn shell_command(command: &str) -> tokio::process::Command {
     let mut c = tokio::process::Command::new("sh");
     c.arg("-c").arg(command);
     c
 }
 
 #[cfg(windows)]
-fn shell_command(command: &str) -> tokio::process::Command {
+pub(crate) fn shell_command(command: &str) -> tokio::process::Command {
     use std::os::windows::process::CommandExt;
     // `cmd` does not understand backslash-escaped quotes, so std's default
     // argv encoding (quote the whole argument, escape its inner quotes as
@@ -277,27 +282,27 @@ fn shell_command(command: &str) -> tokio::process::Command {
     tokio::process::Command::from(c)
 }
 
-#[async_trait]
-impl Restarter for ShellRestarter {
-    async fn restart(&self, command: &str, budget: Duration) -> crate::Result<()> {
-        debug!("restart: running `{command}` (budget {budget:?})");
-        let mut child = shell_command(command).spawn().map_err(|e| {
-            crate::SentinelError::Monitor(format!("failed to spawn restart `{command}`: {e}"))
-        })?;
-        match tokio::time::timeout(budget, child.wait()).await {
-            Ok(Ok(status)) if status.success() => Ok(()),
-            Ok(Ok(status)) => Err(crate::SentinelError::Monitor(format!(
-                "restart `{command}` exited with {status}"
-            ))),
-            Ok(Err(e)) => Err(crate::SentinelError::Monitor(format!(
-                "restart `{command}` wait failed: {e}"
-            ))),
-            Err(_) => {
-                let _ = child.start_kill();
-                Err(crate::SentinelError::Monitor(format!(
-                    "restart `{command}` exceeded {budget:?}"
-                )))
-            }
+/// Run `command` through the platform shell, bounded by `budget`. `Ok` iff it
+/// exits 0 in time — the execution primitive behind every platform service
+/// manager's derived commands.
+pub(crate) async fn run_shell(command: &str, budget: Duration) -> crate::Result<()> {
+    debug!("running `{command}` (budget {budget:?})");
+    let mut child = shell_command(command)
+        .spawn()
+        .map_err(|e| crate::SentinelError::Monitor(format!("failed to spawn `{command}`: {e}")))?;
+    match tokio::time::timeout(budget, child.wait()).await {
+        Ok(Ok(status)) if status.success() => Ok(()),
+        Ok(Ok(status)) => Err(crate::SentinelError::Monitor(format!(
+            "`{command}` exited with {status}"
+        ))),
+        Ok(Err(e)) => Err(crate::SentinelError::Monitor(format!(
+            "`{command}` wait failed: {e}"
+        ))),
+        Err(_) => {
+            let _ = child.start_kill();
+            Err(crate::SentinelError::Monitor(format!(
+                "`{command}` exceeded {budget:?}"
+            )))
         }
     }
 }
@@ -345,6 +350,9 @@ pub struct CorrectiveLadder {
     /// service's slot across the command and the recovery wait, so it never
     /// races the REST endpoint or health supervision.
     gate: RestartGate,
+    /// The constant restart budget shared by every restart path — one budget
+    /// for the platform command *and* the recovery wait.
+    restart_budget: Duration,
 }
 
 impl CorrectiveLadder {
@@ -353,36 +361,37 @@ impl CorrectiveLadder {
         aborter: Arc<dyn Aborter>,
         restarter: Arc<dyn Restarter>,
         gate: RestartGate,
+        restart_budget: Duration,
     ) -> Self {
         Self {
             health,
             aborter,
             restarter,
             gate,
+            restart_budget,
         }
     }
 
-    /// Production ladder: HTTP health-check + abort over a shared client, shell
-    /// restarter, restarts coordinated through the shared `gate`.
-    pub fn http(http: Arc<dyn HttpClient>, gate: RestartGate) -> Self {
+    /// Production ladder: HTTP health-check + abort over a shared client, the
+    /// platform service manager as the restart rung, restarts coordinated
+    /// through the shared `gate`.
+    pub fn http(
+        http: Arc<dyn HttpClient>,
+        gate: RestartGate,
+        manager: Arc<dyn ServiceManager>,
+        restart_budget: Duration,
+    ) -> Self {
         Self::new(
             Arc::new(HttpHealthChecker::new(Arc::clone(&http))),
             Arc::new(HttpAborter::new(http)),
-            Arc::new(ShellRestarter),
+            Arc::new(ManagerRestarter::new(manager)),
             gate,
+            restart_budget,
         )
     }
 
-    /// Restart rung: run the command (if any), then confirm recovery.
+    /// Restart rung: restart the unit, then confirm recovery.
     async fn run_restart(&self, target: &CorrectiveTarget, outcome: &mut LadderOutcome) {
-        let Some(command) = target.restart_command.as_deref() else {
-            debug!(
-                "ladder '{}': not restartable, stopping at notify",
-                target.service_name
-            );
-            outcome.push("restart=skipped(not restartable)");
-            return;
-        };
         let Some(_slot) = self.gate.try_acquire(&target.service_name) else {
             debug!(
                 "ladder '{}': restart already in flight elsewhere, skipping",
@@ -391,12 +400,12 @@ impl CorrectiveLadder {
             outcome.push("restart=skipped(already in flight)");
             return;
         };
-        // The service's `max_restart_duration` is one budget for the command
-        // *and* the recovery wait — measure what the command spends so recovery
-        // gets only the remainder (rather than a second full budget).
-        let budget = target.max_restart_duration;
+        // One budget for the command *and* the recovery wait — measure what
+        // the command spends so recovery gets only the remainder (rather than
+        // a second full budget).
+        let budget = self.restart_budget;
         let started = Instant::now();
-        match self.restarter.restart(command, budget).await {
+        match self.restarter.restart(&target.unit, budget).await {
             Ok(()) => {
                 outcome.push("restart=ran");
                 let remaining = budget.saturating_sub(started.elapsed());
@@ -486,30 +495,32 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Mutex;
 
+    use crate::discovery::{ProbeSpec, RunState};
     use crate::io::{HttpResponse, MockHttpClient};
 
-    /// The tight per-service budget every mock-ladder test target carries, so
-    /// recovery polling resolves in milliseconds.
+    /// The tight restart budget every mock-ladder test carries, so recovery
+    /// polling resolves in milliseconds.
     const TEST_BUDGET: Duration = Duration::from_millis(20);
 
-    fn service(restart_command: Option<&str>) -> ServiceConfig {
-        ServiceConfig {
-            base_url: Some("http://svc/api/v1".to_string()),
-            device_number: 0,
-            restart_command: restart_command.map(String::from),
-            health_command: None,
-            max_restart_duration: TEST_BUDGET,
-            health: None,
+    fn service(name: &str) -> DiscoveredService {
+        DiscoveredService {
+            name: name.to_string(),
+            unit: format!("rusty-photon-{name}"),
+            state: RunState::Running,
+            probe: Some(ProbeSpec {
+                health_url: "http://svc/management/v1/configureddevices".to_string(),
+                alpaca_base: "http://svc/api/v1".to_string(),
+            }),
         }
     }
 
-    fn target(restart_command: Option<&str>) -> CorrectiveTarget {
-        CorrectiveTarget::new("mount", "slew", &service(restart_command))
+    fn target() -> CorrectiveTarget {
+        CorrectiveTarget::new("slew", &service("mount"))
     }
 
-    fn compound_target(restart_command: Option<&str>) -> CorrectiveTarget {
+    fn compound_target() -> CorrectiveTarget {
         // `centering` has no Alpaca binding.
-        CorrectiveTarget::new("rp", "centering", &service(restart_command))
+        CorrectiveTarget::new("centering", &service("rp"))
     }
 
     // ---- mock rungs ----------------------------------------------------
@@ -570,22 +581,22 @@ mod tests {
     struct MockRestart {
         ok: bool,
         calls: AtomicU32,
-        last_command: Mutex<Option<String>>,
+        last_unit: Mutex<Option<String>>,
     }
     impl MockRestart {
         fn new(ok: bool) -> Arc<Self> {
             Arc::new(Self {
                 ok,
                 calls: AtomicU32::new(0),
-                last_command: Mutex::new(None),
+                last_unit: Mutex::new(None),
             })
         }
     }
     #[async_trait]
     impl Restarter for MockRestart {
-        async fn restart(&self, command: &str, _budget: Duration) -> crate::Result<()> {
+        async fn restart(&self, unit: &str, _budget: Duration) -> crate::Result<()> {
             self.calls.fetch_add(1, Ordering::SeqCst);
-            *self.last_command.lock().unwrap() = Some(command.to_string());
+            *self.last_unit.lock().unwrap() = Some(unit.to_string());
             if self.ok {
                 Ok(())
             } else {
@@ -599,7 +610,13 @@ mod tests {
         aborter: Arc<MockAbort>,
         restarter: Arc<MockRestart>,
     ) -> CorrectiveLadder {
-        CorrectiveLadder::new(health, aborter, restarter, RestartGate::default())
+        CorrectiveLadder::new(
+            health,
+            aborter,
+            restarter,
+            RestartGate::default(),
+            TEST_BUDGET,
+        )
     }
 
     // ---- ladder orchestration -----------------------------------------
@@ -611,7 +628,7 @@ mod tests {
         let restarter = MockRestart::new(true);
         let l = ladder(health.clone(), aborter.clone(), restarter.clone());
 
-        let outcome = l.run(&target(Some("restart"))).await;
+        let outcome = l.run(&target()).await;
 
         assert_eq!(aborter.calls.load(Ordering::SeqCst), 1, "abort must run");
         assert_eq!(
@@ -636,7 +653,7 @@ mod tests {
         let restarter = MockRestart::new(true);
         let l = ladder(health.clone(), aborter.clone(), restarter.clone());
 
-        let outcome = l.run(&target(Some("systemctl restart mount"))).await;
+        let outcome = l.run(&target()).await;
 
         assert_eq!(
             aborter.calls.load(Ordering::SeqCst),
@@ -645,8 +662,9 @@ mod tests {
         );
         assert_eq!(restarter.calls.load(Ordering::SeqCst), 1);
         assert_eq!(
-            restarter.last_command.lock().unwrap().as_deref(),
-            Some("systemctl restart mount")
+            restarter.last_unit.lock().unwrap().as_deref(),
+            Some("rusty-photon-mount"),
+            "the restart rung hands the manager the unit name"
         );
         assert!(outcome.rungs.contains(&"restart=ran".to_string()));
         assert!(outcome.rungs.contains(&"recovery=responsive".to_string()));
@@ -660,7 +678,7 @@ mod tests {
         let restarter = MockRestart::new(true);
         let l = ladder(health, aborter, restarter);
 
-        let outcome = l.run(&target(Some("restart"))).await;
+        let outcome = l.run(&target()).await;
 
         assert!(outcome.rungs.contains(&"restart=ran".to_string()));
         assert!(outcome.rungs.contains(&"recovery=timeout".to_string()));
@@ -672,12 +690,18 @@ mod tests {
         let aborter = MockAbort::new(true);
         let restarter = MockRestart::new(true);
         let gate = RestartGate::default();
-        let l = CorrectiveLadder::new(health, aborter, restarter.clone(), gate.clone());
+        let l = CorrectiveLadder::new(
+            health,
+            aborter,
+            restarter.clone(),
+            gate.clone(),
+            TEST_BUDGET,
+        );
 
         // Another restart path (REST endpoint / health supervision) holds the
         // target service's slot.
         let _slot = gate.try_acquire("mount").unwrap();
-        let outcome = l.run(&target(Some("restart"))).await;
+        let outcome = l.run(&target()).await;
 
         assert_eq!(
             restarter.calls.load(Ordering::SeqCst),
@@ -699,9 +723,9 @@ mod tests {
         let aborter = MockAbort::new(true);
         let restarter = MockRestart::new(true);
         let gate = RestartGate::default();
-        let l = CorrectiveLadder::new(health, aborter, restarter, gate.clone());
+        let l = CorrectiveLadder::new(health, aborter, restarter, gate.clone(), TEST_BUDGET);
 
-        l.run(&target(Some("restart"))).await;
+        l.run(&target()).await;
 
         assert!(
             gate.try_acquire("mount").is_some(),
@@ -716,7 +740,7 @@ mod tests {
         let restarter = MockRestart::new(true);
         let l = ladder(health, aborter.clone(), restarter.clone());
 
-        let outcome = l.run(&target(Some("restart"))).await;
+        let outcome = l.run(&target()).await;
 
         assert_eq!(aborter.calls.load(Ordering::SeqCst), 1);
         assert_eq!(restarter.calls.load(Ordering::SeqCst), 1);
@@ -731,7 +755,7 @@ mod tests {
         let restarter = MockRestart::new(true);
         let l = ladder(health, aborter.clone(), restarter.clone());
 
-        let outcome = l.run(&compound_target(Some("restart"))).await;
+        let outcome = l.run(&compound_target()).await;
 
         assert_eq!(
             aborter.calls.load(Ordering::SeqCst),
@@ -743,26 +767,13 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn not_restartable_stops_at_abort() {
-        let health = MockHealth::new(Healthiness::Unresponsive, vec![]);
-        let aborter = MockAbort::new(true);
-        let restarter = MockRestart::new(true);
-        let l = ladder(health, aborter.clone(), restarter.clone());
-
-        let outcome = l.run(&target(None)).await;
-
-        assert_eq!(restarter.calls.load(Ordering::SeqCst), 0);
-        assert!(outcome.rungs.iter().any(|r| r.contains("not restartable")));
-    }
-
-    #[tokio::test(start_paused = true)]
     async fn restart_failure_is_reported() {
         let health = MockHealth::new(Healthiness::Unresponsive, vec![]);
         let aborter = MockAbort::new(true);
         let restarter = MockRestart::new(false);
         let l = ladder(health, aborter, restarter);
 
-        let outcome = l.run(&target(Some("restart"))).await;
+        let outcome = l.run(&target()).await;
 
         assert!(outcome.rungs.contains(&"restart=failed".to_string()));
         assert!(!outcome.rungs.iter().any(|r| r.starts_with("recovery=")));
@@ -784,50 +795,34 @@ mod tests {
     }
 
     #[test]
-    fn target_builds_alpaca_urls_and_trims_base() {
-        let t = CorrectiveTarget::new(
-            "mount",
-            "exposure",
-            &ServiceConfig {
-                base_url: Some("http://svc:11111/api/v1/".to_string()),
-                device_number: 3,
-                restart_command: None,
-                health_command: None,
-                max_restart_duration: TEST_BUDGET,
-                health: None,
-            },
-        );
+    fn target_builds_alpaca_urls_at_device_zero() {
+        let t = CorrectiveTarget::new("exposure", &service("qhy-camera"));
         assert_eq!(
             t.connected_url().unwrap(),
-            "http://svc:11111/api/v1/camera/3/connected"
+            "http://svc/api/v1/camera/0/connected"
         );
         assert_eq!(
             t.abort_url().unwrap(),
-            "http://svc:11111/api/v1/camera/3/abortexposure"
+            "http://svc/api/v1/camera/0/abortexposure"
         );
     }
 
     #[test]
     fn target_with_no_binding_has_no_urls() {
-        let t = compound_target(None);
+        let t = compound_target();
         assert!(t.connected_url().is_none());
         assert!(t.abort_url().is_none());
     }
 
     #[test]
-    fn target_without_base_url_has_no_urls() {
-        // A restart-only service (no Alpaca surface): even a family with an
+    fn target_without_probe_spec_has_no_urls() {
+        // A service whose <svc>.json was unreadable: even a family with an
         // abort verb cannot be probed or aborted.
         let t = CorrectiveTarget::new(
-            "rp",
             "slew",
-            &ServiceConfig {
-                base_url: None,
-                device_number: 0,
-                restart_command: Some("restart".to_string()),
-                health_command: None,
-                max_restart_duration: TEST_BUDGET,
-                health: None,
+            &DiscoveredService {
+                probe: None,
+                ..service("mount")
             },
         );
         assert!(t.connected_url().is_none());
@@ -866,7 +861,7 @@ mod tests {
             .withf(|url| url.contains("/telescope/0/connected"))
             .returning(|_| Box::pin(async { Ok(ok_200()) }));
         let checker = HttpHealthChecker::new(Arc::new(mock));
-        assert_eq!(checker.check(&target(None)).await, Healthiness::Responsive);
+        assert_eq!(checker.check(&target()).await, Healthiness::Responsive);
     }
 
     #[tokio::test]
@@ -881,10 +876,7 @@ mod tests {
             })
         });
         let checker = HttpHealthChecker::new(Arc::new(mock));
-        assert_eq!(
-            checker.check(&target(None)).await,
-            Healthiness::Unresponsive
-        );
+        assert_eq!(checker.check(&target()).await, Healthiness::Unresponsive);
     }
 
     #[tokio::test]
@@ -893,10 +885,7 @@ mod tests {
         mock.expect_get()
             .returning(|_| Box::pin(async { Err(crate::SentinelError::Http("refused".into())) }));
         let checker = HttpHealthChecker::new(Arc::new(mock));
-        assert_eq!(
-            checker.check(&target(None)).await,
-            Healthiness::Unresponsive
-        );
+        assert_eq!(checker.check(&target()).await, Healthiness::Unresponsive);
     }
 
     #[tokio::test]
@@ -904,7 +893,7 @@ mod tests {
         // No HTTP call expected — the mock has no expectations set.
         let checker = HttpHealthChecker::new(Arc::new(MockHttpClient::new()));
         assert_eq!(
-            checker.check(&compound_target(None)).await,
+            checker.check(&compound_target()).await,
             Healthiness::Unknown
         );
     }
@@ -925,13 +914,13 @@ mod tests {
                 })
             });
         let aborter = HttpAborter::new(Arc::new(mock));
-        aborter.abort(&target(None)).await.unwrap();
+        aborter.abort(&target()).await.unwrap();
     }
 
     #[tokio::test]
     async fn http_abort_no_verb_errors() {
         let aborter = HttpAborter::new(Arc::new(MockHttpClient::new()));
-        let err = aborter.abort(&compound_target(None)).await.unwrap_err();
+        let err = aborter.abort(&compound_target()).await.unwrap_err();
         assert!(err.to_string().contains("no abort verb"), "{err}");
     }
 
@@ -947,7 +936,7 @@ mod tests {
             })
         });
         let aborter = HttpAborter::new(Arc::new(mock));
-        let err = aborter.abort(&target(None)).await.unwrap_err();
+        let err = aborter.abort(&target()).await.unwrap_err();
         assert!(err.to_string().contains("409"), "{err}");
     }
 
@@ -965,7 +954,7 @@ mod tests {
             })
         });
         let aborter = HttpAborter::new(Arc::new(mock));
-        let err = aborter.abort(&target(None)).await.unwrap_err();
+        let err = aborter.abort(&target()).await.unwrap_err();
         assert!(err.to_string().contains("1025"), "{err}");
         assert!(err.to_string().contains("Invalid while parked"), "{err}");
     }
@@ -982,26 +971,22 @@ mod tests {
             })
         });
         let aborter = HttpAborter::new(Arc::new(mock));
-        aborter.abort(&target(None)).await.unwrap();
+        aborter.abort(&target()).await.unwrap();
     }
 
-    // ---- shell restarter (exit-code tests unix only — they use `sh`
+    // ---- shell primitive (exit-code tests unix only — they use `sh`
     //      built-ins; the quoted-path test runs on both platforms) ------
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn shell_restart_zero_exit_ok() {
-        ShellRestarter
-            .restart("true", Duration::from_secs(5))
-            .await
-            .unwrap();
+    async fn run_shell_zero_exit_ok() {
+        run_shell("true", Duration::from_secs(5)).await.unwrap();
     }
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn shell_restart_nonzero_exit_errors() {
-        let err = ShellRestarter
-            .restart("false", Duration::from_secs(5))
+    async fn run_shell_nonzero_exit_errors() {
+        let err = run_shell("false", Duration::from_secs(5))
             .await
             .unwrap_err();
         assert!(err.to_string().contains("exited"), "{err}");
@@ -1009,27 +994,23 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn shell_restart_times_out() {
-        let err = ShellRestarter
-            .restart("sleep 5", Duration::from_millis(50))
+    async fn run_shell_times_out() {
+        let err = run_shell("sleep 5", Duration::from_millis(50))
             .await
             .unwrap_err();
         assert!(err.to_string().contains("exceeded"), "{err}");
     }
 
-    // Cross-platform (the command shape the BDD marker commands use). On
+    // Cross-platform (the command shape the platform managers derive). On
     // Windows this regression-tests the `raw_arg` invocation: std's default
     // argv encoding escapes the inner quotes as `\"`, which `cmd` does not
     // parse — the space in the file name makes the quotes load-bearing.
     #[tokio::test]
-    async fn shell_restart_preserves_quoted_paths() {
+    async fn run_shell_preserves_quoted_paths() {
         let dir = tempfile::tempdir().unwrap();
         let marker = dir.path().join("restart marker.txt");
         let command = format!("echo ok > \"{}\"", marker.display());
-        ShellRestarter
-            .restart(&command, Duration::from_secs(5))
-            .await
-            .unwrap();
+        run_shell(&command, Duration::from_secs(5)).await.unwrap();
         assert!(marker.exists(), "`{command}` did not write the marker");
     }
 }

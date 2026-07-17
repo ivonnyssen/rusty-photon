@@ -20,7 +20,7 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
-use crate::config::{OnExpiry, OperationWatchdogConfig, ServiceConfig};
+use crate::config::{OnExpiry, OperationWatchdogConfig};
 use crate::corrective::{Corrective, CorrectiveTarget};
 use crate::notifier::{Notification, NotificationRecord, Notifier};
 use crate::state::StateHandle;
@@ -227,9 +227,9 @@ pub struct OperationDeadlineMonitor {
     notifiers: Vec<Arc<dyn Notifier>>,
     state: StateHandle,
     config: OperationWatchdogConfig,
-    /// The top-level supervised-services registry (`Config::services`), which
-    /// `operations.<family>.service` references.
-    services: std::collections::HashMap<String, ServiceConfig>,
+    /// The discovered-services registry, which `operations.<family>.service`
+    /// references by name.
+    services: crate::discovery::ServiceRegistry,
     /// Corrective-action ladder, run on expiry for `abort_then_restart`
     /// families. Never invoked for `notify_only` or liveness triggers.
     corrective: Arc<dyn Corrective>,
@@ -242,7 +242,7 @@ impl OperationDeadlineMonitor {
         notifiers: Vec<Arc<dyn Notifier>>,
         state: StateHandle,
         config: OperationWatchdogConfig,
-        services: std::collections::HashMap<String, ServiceConfig>,
+        services: crate::discovery::ServiceRegistry,
         corrective: Arc<dyn Corrective>,
     ) -> Self {
         Self {
@@ -257,13 +257,13 @@ impl OperationDeadlineMonitor {
     }
 
     /// Resolve the corrective target for a family: its configured `service`
-    /// must exist in the top-level `services` registry. `None` for
-    /// unconfigured / mismatched families (the caller degrades to
-    /// notify-only).
-    fn resolve_target(&self, family: &str) -> Option<CorrectiveTarget> {
+    /// must be a discovered service. `None` for unconfigured / undiscovered
+    /// families (the caller degrades to notify-only).
+    async fn resolve_target(&self, family: &str) -> Option<CorrectiveTarget> {
         let service_name = self.config.operations.get(family)?.service.as_deref()?;
-        let service = self.services.get(service_name)?;
-        Some(CorrectiveTarget::new(service_name, family, service))
+        let services = self.services.read().await;
+        let service = services.get(service_name)?;
+        Some(CorrectiveTarget::new(family, service))
     }
 
     /// Run the corrective ladder for an expired family and return the message
@@ -273,7 +273,7 @@ impl OperationDeadlineMonitor {
         if self.on_expiry_for(family) != OnExpiry::AbortThenRestart {
             return String::new();
         }
-        match self.resolve_target(family) {
+        match self.resolve_target(family).await {
             Some(target) => {
                 debug!(
                     "watchdog '{}' running corrective ladder for {} via service '{}'",
@@ -867,11 +867,11 @@ mod tests {
         build_monitor_with_services(source, config, std::collections::HashMap::new())
     }
 
-    /// [`build_monitor`] plus a top-level `services` registry (ladder tests).
+    /// [`build_monitor`] plus a discovered-services registry (ladder tests).
     fn build_monitor_with_services(
         source: Arc<MockSource>,
         config: OperationWatchdogConfig,
-        services: std::collections::HashMap<String, ServiceConfig>,
+        services: std::collections::HashMap<String, crate::discovery::DiscoveredService>,
     ) -> (
         OperationDeadlineMonitor,
         Arc<Mutex<Vec<String>>>,
@@ -882,14 +882,14 @@ mod tests {
             messages: Arc::clone(&messages),
         });
         let corrective = Arc::new(RecordingCorrective::default());
-        let state = new_state_handle(vec![], vec![], 100);
+        let state = new_state_handle(vec![], 100);
         let monitor = OperationDeadlineMonitor::new(
             "Test Watchdog",
             source,
             vec![notifier],
             state,
             config,
-            services,
+            Arc::new(tokio::sync::RwLock::new(services)),
             Arc::clone(&corrective) as Arc<dyn Corrective>,
         );
         (monitor, messages, corrective)
@@ -1084,12 +1084,20 @@ mod tests {
         serde_json::from_str(json).unwrap()
     }
 
-    /// The top-level `services` registry [`ladder_config`]'s `slew` references.
-    fn ladder_services() -> std::collections::HashMap<String, ServiceConfig> {
-        serde_json::from_str(
-            r#"{ "mount": { "base_url": "http://mount/api/v1", "restart_command": null } }"#,
-        )
-        .unwrap()
+    /// The discovered-services registry [`ladder_config`]'s `slew` references.
+    fn ladder_services() -> std::collections::HashMap<String, crate::discovery::DiscoveredService> {
+        std::collections::HashMap::from([(
+            "mount".to_string(),
+            crate::discovery::DiscoveredService {
+                name: "mount".to_string(),
+                unit: "rusty-photon-mount".to_string(),
+                state: crate::discovery::RunState::Running,
+                probe: Some(crate::discovery::ProbeSpec {
+                    health_url: "http://mount/management/v1/configureddevices".to_string(),
+                    alpaca_base: "http://mount/api/v1".to_string(),
+                }),
+            },
+        )])
     }
 
     #[tokio::test(start_paused = true)]

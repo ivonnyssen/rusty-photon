@@ -140,12 +140,12 @@ session persists data) — point it at a writable directory, e.g.
 `~/Library/Application Support/rusty-photon/rp-data`, before running real
 sessions.
 
-**sentinel as watchdog**: its restart commands are plain config — point
-each supervised service's `restart_command` at brew:
-
-```json
-"restart_command": "brew services restart rusty-photon-zwo-camera"
-```
+**sentinel as watchdog**: sentinel discovers the installed
+`rusty-photon-*` services from `brew services list` and derives each
+restart as `brew services restart rusty-photon-<svc>` — nothing to
+configure (see [sentinel.md §Service discovery](services/sentinel.md#service-discovery)).
+brew has no `systemctl is-active` equivalent, so post-restart recovery
+confirmation is skipped on macOS.
 
 ## Camera specifics
 

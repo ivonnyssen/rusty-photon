@@ -708,11 +708,11 @@ pub fn reconnecting_card(service: &str) -> Markup {
     polling_card(service, "Saved — the driver is reloading. Reconnecting…")
 }
 
-/// The restart-accepted fragment: Sentinel ran the restart command, so the
-/// driver's process is coming back — same poll wiring as the reload flow.
-/// `recovery_timed_out` adds that Sentinel's own health check never confirmed
-/// recovery within its budget (the poll may still succeed — the budget is
-/// Sentinel's, not the driver's).
+/// The restart-accepted fragment: Sentinel restarted the driver's unit
+/// through the platform service manager, so the driver's process is coming
+/// back — same poll wiring as the reload flow. `recovery_timed_out` adds that
+/// Sentinel's recovery check never confirmed recovery within its budget (the
+/// poll may still succeed — the budget is Sentinel's, not the driver's).
 pub fn restarting_card(service: &str, recovery_timed_out: bool) -> Markup {
     let message = if recovery_timed_out {
         "Restart requested via Sentinel, but its health check did not confirm \

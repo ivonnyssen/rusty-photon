@@ -86,12 +86,6 @@ pub struct DriverTarget {
     /// Optional PEM CA path for a TLS-enabled driver (trusted via `rp-tls`).
     #[serde(default)]
     pub ca_cert_path: Option<PathBuf>,
-    /// This driver's name in Sentinel's `services` map (the `{name}` in
-    /// `POST /api/services/{name}/restart`). Defaults to the driver's own
-    /// service id — the convention — so it only needs setting when the two
-    /// differ. Meaningful only when the top-level `sentinel` block is present.
-    #[serde(default)]
-    pub sentinel_service: Option<String>,
 }
 
 /// How to reach Sentinel's dashboard/REST API (the restart endpoint).
@@ -170,7 +164,6 @@ impl Default for DriverTarget {
             device_number: 0,
             auth: None,
             ca_cert_path: None,
-            sentinel_service: None,
         }
     }
 }
@@ -254,21 +247,11 @@ mod tests {
     fn sentinel_block_absent_by_default() {
         let c = Config::default();
         assert!(c.sentinel.is_none());
-        assert!(c
-            .drivers
-            .0
-            .get("dsd-fp2")
-            .unwrap()
-            .sentinel_service
-            .is_none());
     }
 
     #[test]
-    fn deserialises_sentinel_block_and_service_override() {
+    fn deserialises_sentinel_block() {
         let json = r#"{
-            "drivers": {
-                "dsd-fp2": { "sentinel_service": "dsd-fp2-unit" }
-            },
             "sentinel": {
                 "base_url": "http://127.0.0.1:19114",
                 "auth": { "username": "obs", "password": "secret" }
@@ -278,15 +261,16 @@ mod tests {
         let sentinel = c.sentinel.unwrap();
         assert_eq!(sentinel.base_url, "http://127.0.0.1:19114");
         assert_eq!(sentinel.auth.unwrap().username, "obs");
-        assert_eq!(
-            c.drivers
-                .0
-                .get("dsd-fp2")
-                .unwrap()
-                .sentinel_service
-                .as_deref(),
-            Some("dsd-fp2-unit")
-        );
+    }
+
+    #[test]
+    fn retired_sentinel_service_field_is_rejected() {
+        // Sentinel discovers services from the platform service manager now;
+        // the per-driver name override is gone, and deny_unknown_fields makes
+        // an old config carrying it fail loudly rather than silently ignore it.
+        let json = r#"{"drivers": {"dsd-fp2": {"sentinel_service": "dsd-fp2-unit"}}}"#;
+        let err = serde_json::from_str::<Config>(json).unwrap_err();
+        assert!(err.to_string().contains("sentinel_service"), "{err}");
     }
 
     #[test]
