@@ -145,8 +145,14 @@ impl SharedState {
     /// Reconcile the snapshot list with a discovery pass: insert a fresh
     /// `unknown` slot for every newly discovered service, refresh `unit` and
     /// `run_state` on existing ones (their health fields belong to their
-    /// supervisor), drop services that left the discovered set, and keep the
-    /// list name-sorted for deterministic dashboard/API order.
+    /// supervisor while one runs), drop services that left the discovered
+    /// set, and keep the list name-sorted for deterministic dashboard/API
+    /// order. A service that leaves the supervised run states also has its
+    /// outage state reset here: its supervisor may be reaped before its next
+    /// tick, and a stood-down service displayed as `down` with a scheduled
+    /// restart would contradict what supervision is actually doing. The
+    /// lifetime restart counter and the last-probe stamp are history and
+    /// survive.
     pub fn sync_discovered_services(
         &mut self,
         services: &std::collections::HashMap<String, DiscoveredService>,
@@ -158,6 +164,12 @@ impl SharedState {
                 Some(slot) => {
                     slot.unit = svc.unit.clone();
                     slot.run_state = svc.state;
+                    if !svc.state.supervised() {
+                        slot.health = ServiceHealth::Unknown;
+                        slot.consecutive_failures = 0;
+                        slot.restarts_in_outage = 0;
+                        slot.next_restart_epoch_ms = None;
+                    }
                 }
                 None => self.services.push(ServiceHealthStatus::unknown(
                     svc.name.clone(),
@@ -377,22 +389,42 @@ mod tests {
         let mut status = state.services[0].clone();
         status.health = ServiceHealth::Down;
         status.consecutive_failures = 2;
+        status.restarts_in_outage = 1;
+        status.next_restart_epoch_ms = Some(999);
         status.total_restarts = 3;
+        status.last_probe_epoch_ms = 12_345;
         state.set_service_health(status);
 
+        // A supervised-state refresh leaves the supervisor's fields alone.
+        state
+            .sync_discovered_services(&pass(&[("svc", RunState::Failed)]), Duration::from_secs(30));
+        let service = &state.services[0];
+        assert_eq!(service.run_state, RunState::Failed, "run state refreshed");
+        assert_eq!(
+            service.health,
+            ServiceHealth::Down,
+            "the supervisor's health fields survive a supervised refresh"
+        );
+        assert_eq!(service.consecutive_failures, 2);
+
+        // Leaving the supervised states resets the outage — the supervisor
+        // may be reaped before its next tick, and a stood-down service must
+        // not stay displayed as down with a scheduled restart.
         state.sync_discovered_services(
             &pass(&[("svc", RunState::Stopped)]),
             Duration::from_secs(30),
         );
         let service = &state.services[0];
-        assert_eq!(service.run_state, RunState::Stopped, "run state refreshed");
+        assert_eq!(service.run_state, RunState::Stopped);
+        assert_eq!(service.health, ServiceHealth::Unknown);
+        assert_eq!(service.consecutive_failures, 0);
+        assert_eq!(service.restarts_in_outage, 0);
+        assert_eq!(service.next_restart_epoch_ms, None);
+        assert_eq!(service.total_restarts, 3, "lifetime counter is history");
         assert_eq!(
-            service.health,
-            ServiceHealth::Down,
-            "the supervisor's health fields survive a discovery pass"
+            service.last_probe_epoch_ms, 12_345,
+            "probe stamp is history"
         );
-        assert_eq!(service.consecutive_failures, 2);
-        assert_eq!(service.total_restarts, 3);
     }
 
     #[test]
