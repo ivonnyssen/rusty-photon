@@ -58,8 +58,10 @@ rust_test(
 
 rust_test(
     name = "bdd",
-    # ~15 s locally; cross-spawns filemonitor. "small" gives 60 s headroom.
-    size = "small",
+    # ~20 s locally, but every scenario spawns child processes and the
+    # discovery/supervision scenarios carry fixed settle windows; Windows
+    # runners exceed small's 60 s. "medium" gives 300 s headroom.
+    size = "medium",
     srcs = ["tests/bdd.rs"] + glob(["tests/bdd/**/*.rs"]),
     aliases = aliases(
         normal_dev = True,
