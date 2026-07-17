@@ -1,0 +1,49 @@
+# Builds one workspace package's release binary on a chosen runner and
+# uploads it as an artifact. Manual-only: the pre-packaging validation path
+# for running a not-yet-packaged binary on a real host (a Windows VM, the
+# field rig, a Mac) — first used for rusty-photon-doctor's D2 host
+# validation, useful for any service before its packaging phase lands.
+name: build-binary
+
+on:
+  workflow_dispatch:
+    inputs:
+      package:
+        description: "Workspace package whose binary to build"
+        required: true
+        default: "doctor"
+      runner:
+        description: "Runner image (host OS/arch of the target machine)"
+        required: true
+        default: "ubuntu-latest"
+        type: choice
+        options:
+          - ubuntu-latest
+          - ubuntu-24.04-arm
+          - windows-latest
+          - macos-latest
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ inputs.package }} / ${{ inputs.runner }}
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: build-binary-${{ inputs.runner }}
+      - name: Build the release binary
+        run: cargo build --release --locked -p ${{ inputs.package }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.package }}-${{ inputs.runner }}
+          path: |
+            target/release/${{ inputs.package }}
+            target/release/${{ inputs.package }}.exe
+          if-no-files-found: error
