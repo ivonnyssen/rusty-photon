@@ -60,6 +60,10 @@ impl<'a> RealAcmeClient<'a> {
         acme_root: Option<PathBuf>,
         propagation_wait: Duration,
     ) -> Self {
+        // instant-acme's HTTP client builds rustls configs from the
+        // process-default CryptoProvider, which our dependency tree cannot
+        // auto-select (both aws-lc-rs and ring are feature-activated).
+        rusty_photon_tls::install_default_crypto_provider();
         Self {
             dns_provider,
             acme_root,
@@ -126,7 +130,7 @@ impl AcmeClient for RealAcmeClient<'_> {
     }
 
     async fn order_certificate(&self, domain: String) -> Result<(String, String)> {
-        use instant_acme::{ChallengeType, Identifier, NewOrder, RetryPolicy};
+        use instant_acme::{AuthorizationStatus, ChallengeType, Identifier, NewOrder, RetryPolicy};
 
         let mut account_guard = self.account.lock().await;
         let account = account_guard.as_mut().ok_or_else(|| {
@@ -162,6 +166,21 @@ impl AcmeClient for RealAcmeClient<'_> {
         while let Some(auth_result) = auths.next().await {
             let mut auth = auth_result
                 .map_err(|e| TlsError::Acme(format!("failed to get authorization: {e}")))?;
+
+            match auth.status {
+                AuthorizationStatus::Pending => {}
+                // The server reused a still-valid authorization (common on
+                // renewal); there is nothing to prove for it.
+                AuthorizationStatus::Valid => {
+                    debug!("Authorization already valid; skipping its challenge");
+                    continue;
+                }
+                other => {
+                    return Err(TlsError::Acme(format!(
+                        "authorization is {other:?} and cannot be completed"
+                    )));
+                }
+            }
 
             let mut challenge = auth.challenge(ChallengeType::Dns01).ok_or_else(|| {
                 TlsError::Acme("no DNS-01 challenge offered by server".to_string())

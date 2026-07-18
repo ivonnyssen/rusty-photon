@@ -1,4 +1,3 @@
-@wip
 Feature: End-to-end ACME issuance and renewal against Pebble
   These scenarios drive the real instant-acme order flow — account,
   order, DNS-01 challenge, finalize, download — against Pebble (Let's

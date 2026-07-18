@@ -11,7 +11,7 @@ fn check_matches(check: &Value, status: &str, name: &str, service: Option<&str>)
         && service.is_none_or(|s| check["service"] == s)
 }
 
-fn find_check(world: &mut DoctorWorld, status: &str, name: &str, service: Option<&str>) {
+pub fn find_check(world: &mut DoctorWorld, status: &str, name: &str, service: Option<&str>) {
     let found = world
         .checks()
         .iter()

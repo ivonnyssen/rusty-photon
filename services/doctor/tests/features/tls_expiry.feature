@@ -1,4 +1,3 @@
-@wip
 Feature: Certificate expiry diagnosis
   The tls.expiry check reads each configured server.tls certificate and
   grades its not_after: expired or unparseable is a failure — rustls

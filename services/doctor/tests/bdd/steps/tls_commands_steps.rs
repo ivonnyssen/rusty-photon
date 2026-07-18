@@ -252,6 +252,17 @@ fn start_test_https_server(world: &mut DoctorWorld, service: String) {
 
 #[when("a client connects using the generated CA certificate")]
 async fn client_connects_with_ca(world: &mut DoctorWorld) {
+    // The hot-reload scenario has its server already running: connect to
+    // it and capture the peer certificate for the swapped-pair assertion.
+    if let Some(addr) = world.hot_reload_addr {
+        let ca_path = world.pki_dir().join("ca.pem");
+        let (status, peer) =
+            crate::steps::tls_renew_steps::https_get_capturing_peer(addr, &ca_path).await;
+        world.tls_https_status = Some(status);
+        world.peer_cert_after = Some(peer);
+        return;
+    }
+
     let service = world
         .tls_roundtrip_service
         .clone()

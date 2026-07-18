@@ -45,6 +45,15 @@ pub struct DoctorWorld {
     pub stub_shutdowns: Vec<tokio::sync::oneshot::Sender<()>>,
     /// The stub per-service binary staged for the shell-out probe.
     pub stub_binary: Option<PathBuf>,
+    /// The scenario's private Pebble + challtestsrv (killed on drop).
+    pub pebble: Option<crate::pebble::PebbleHandle>,
+    /// The file a staged post-renewal hook writes.
+    pub pebble_marker: Option<PathBuf>,
+    /// The in-process hot-reloading HTTPS server's bound address.
+    pub hot_reload_addr: Option<std::net::SocketAddr>,
+    /// Peer certificate DER captured before / after `doctor tls renew`.
+    pub peer_cert_before: Option<Vec<u8>>,
+    pub peer_cert_after: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone)]
@@ -83,6 +92,11 @@ impl DoctorWorld {
             stub_port: None,
             stub_shutdowns: Vec::new(),
             stub_binary: None,
+            pebble: None,
+            pebble_marker: None,
+            hot_reload_addr: None,
+            peer_cert_before: None,
+            peer_cert_after: None,
         }
     }
 
@@ -100,6 +114,84 @@ impl DoctorWorld {
             .expect("pki/credential exists")
             .trim()
             .to_string()
+    }
+
+    /// Stage a CA with an arbitrary `not_after` into the pki tree, shaped
+    /// like the one `doctor tls issue` mints, and snapshot the tree.
+    pub fn stage_ca(&mut self, not_after: time::OffsetDateTime) {
+        let pki = self.pki_dir();
+        std::fs::create_dir_all(&pki).expect("pki dir");
+        let mut params = rcgen::CertificateParams::default();
+        params
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, "Rusty Photon Observatory CA");
+        params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        params.key_usages = vec![
+            rcgen::KeyUsagePurpose::KeyCertSign,
+            rcgen::KeyUsagePurpose::CrlSign,
+        ];
+        params.not_before = not_after - time::Duration::days(3650);
+        params.not_after = not_after;
+        let key = rcgen::KeyPair::generate().expect("CA key");
+        let cert = params.self_signed(&key).expect("CA cert");
+        std::fs::write(pki.join("ca.pem"), cert.pem()).expect("ca.pem");
+        std::fs::write(pki.join("ca-key.pem"), key.serialize_pem()).expect("ca-key.pem");
+        self.snapshot_pki();
+    }
+
+    /// Stage a service pair with an arbitrary `not_after` and extra DNS
+    /// SANs, signed by the staged CA exactly like doctor's issuance shapes
+    /// its certs, and snapshot the tree. The pair's mtimes are backdated so
+    /// a later re-issue is a visible change to the hot-reloading resolver.
+    pub fn stage_service_pair(
+        &mut self,
+        service: &str,
+        not_after: time::OffsetDateTime,
+        extra_sans: &[&str],
+    ) {
+        let pki = self.pki_dir();
+        let ca_cert_pem = std::fs::read_to_string(pki.join("ca.pem")).expect("stage the CA first");
+        let ca_key_pem = std::fs::read_to_string(pki.join("ca-key.pem")).expect("ca-key.pem");
+        let ca_key = rcgen::KeyPair::from_pem(&ca_key_pem).expect("CA key parses");
+        let issuer = rcgen::Issuer::from_ca_cert_pem(&ca_cert_pem, &ca_key).expect("CA issuer");
+
+        let mut sans = vec!["localhost".to_string()];
+        sans.extend(extra_sans.iter().map(|s| (*s).to_string()));
+        let mut params = rcgen::CertificateParams::new(sans).expect("SANs");
+        params
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, service);
+        params.is_ca = rcgen::IsCa::NoCa;
+        params.key_usages = vec![rcgen::KeyUsagePurpose::DigitalSignature];
+        params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
+        params.not_before = not_after - time::Duration::days(365);
+        params.not_after = not_after;
+        params
+            .subject_alt_names
+            .push(rcgen::SanType::IpAddress(std::net::IpAddr::V4(
+                std::net::Ipv4Addr::LOCALHOST,
+            )));
+        params
+            .subject_alt_names
+            .push(rcgen::SanType::IpAddress(std::net::IpAddr::V6(
+                std::net::Ipv6Addr::LOCALHOST,
+            )));
+        let key = rcgen::KeyPair::generate().expect("service key");
+        let cert = params.signed_by(&key, &issuer).expect("service cert");
+
+        let cert_path = pki.join(format!("{service}.pem"));
+        let key_path = pki.join(format!("{service}-key.pem"));
+        std::fs::write(&cert_path, cert.pem()).expect("service cert file");
+        std::fs::write(&key_path, key.serialize_pem()).expect("service key file");
+        for path in [&cert_path, &key_path] {
+            let file = std::fs::File::options()
+                .write(true)
+                .open(path)
+                .expect("reopen for backdating");
+            file.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(3600))
+                .expect("backdate mtime");
+        }
+        self.snapshot_pki();
     }
 
     /// Snapshot every pki file's bytes for unchanged/changed assertions.

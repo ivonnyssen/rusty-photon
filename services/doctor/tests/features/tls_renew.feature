@@ -1,4 +1,3 @@
-@wip
 Feature: One-shot certificate renewal via doctor tls renew
   doctor tls renew is the one-shot a platform scheduler runs daily: it
   re-issues, from the existing CA, every self-signed service pair in the
