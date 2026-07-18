@@ -236,7 +236,7 @@ test:ci --test_summary=terse
 # tail (observed: 313-378s critical path on ubuntu, ~34 test executions with
 # rp:bdd/session-runner:bdd 8-way sharded). Overcommit the CPU pool 2x and cap
 # concurrent tests at 8, for TEST invocations only: `bazel build` keeps the
-# real-core pool for compilation. Like --spawn_strategy above these are
+# real-core pool for compilation. Like --spawn_strategy above, these are
 # scheduling/execution-only knobs — they don't enter action keys or the
 # analysis cache, so build-vs-test values may differ freely. Memory holds: 8
 # concurrent OmniSim spawns ≈ 2-3 GB against 16 GB Linux/Windows runners, and
@@ -499,10 +499,10 @@ coverage:coverage --test_timeout=900
 coverage:coverage --test_tag_filters=-requires-cargo,-conformu
 # Coverage keeps un-overcommitted test scheduling: instrumented BDD suites run
 # much heavier than plain ones (rp:bdd ~400s warm against the 900s cap above,
-# with a hang history under instrumentation), so the 2x CPU overcommit test:ci
-# applies to the PR gate is reset here. bazel-coverage.yml passes --config=ci
-# before --config=coverage, so these later values win. Revisit once the PR
-# gate has soak time at 8-wide.
+# with a hang history under instrumentation), so the 2x CPU overcommit that
+# test:ci applies to the PR gate is reset here. bazel-coverage.yml passes
+# --config=ci before --config=coverage, so these later values win. Revisit
+# once the PR gate has soak time at 8-wide.
 coverage:coverage --local_test_jobs=auto
 coverage:coverage --local_resources=cpu=HOST_CPUS
 
