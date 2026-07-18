@@ -483,14 +483,19 @@ pub fn build_router(state: AppState) -> Router {
 }
 
 /// The Configuration surface. With an rp target, `/` IS rp's settings page —
-/// the identical rendering to `GET /config/rp`, so its form posts and restart
-/// affordances (which target the `/config/rp/...` routes) work unchanged.
-/// Devices are configured from the equipment page's per-device Configure
-/// buttons, so no device list renders here. Without an rp target, the
-/// static-driver index is the fallback (the pure driver-config UI).
-async fn index(State(state): State<AppState>, headers: HeaderMap) -> Response {
+/// the identical rendering to `GET /config/rp` (including the `?unlock=`
+/// escape hatch), so its form posts and restart affordances (which target
+/// the `/config/rp/...` routes) work unchanged. Devices are configured from
+/// the equipment page's per-device Configure buttons, so no device list
+/// renders here. Without an rp target, the static-driver index is the
+/// fallback (the pure driver-config UI).
+async fn index(
+    State(state): State<AppState>,
+    Query(query): Query<UnlockQuery>,
+    headers: HeaderMap,
+) -> Response {
     if state.rp().is_some() {
-        return render_config_get(&state, "rp", None, &headers).await;
+        return render_config_get(&state, "rp", query.unlock.as_deref(), &headers).await;
     }
     let links: Vec<DriverLink> = state
         .drivers
