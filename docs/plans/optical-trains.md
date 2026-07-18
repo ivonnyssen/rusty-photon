@@ -172,7 +172,7 @@ block moves into it as `equipment.mount.guiding`:
       "dither_pixels": 5,
       "recalibrate_above_deg": 5.0
     }
-  }
+  },
   // cameras[], focusers[], rotators[] etc. unchanged, minus the removed
   // camera_id back-refs; CameraConfig loses focal_length_mm
 }
