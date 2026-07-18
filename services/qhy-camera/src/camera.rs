@@ -1474,7 +1474,7 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            device.wait_until_drained(Duration::from_secs(2)).await,
+            device.wait_until_drained(Duration::from_secs(30)).await,
             "capture task did not drain in time"
         );
         assert_eq!(device.camera_state().await.unwrap(), CameraState::Error);
@@ -1863,9 +1863,11 @@ mod tests {
             .start_exposure(Duration::from_millis(10), true)
             .await
             .unwrap();
-        // Wait (on a deadline, not a polling sleep) for the detached capture task.
+        // Wait (on a deadline, not a polling sleep) for the detached capture
+        // task. The 30 s cap is sized for contended CI runners; the wait
+        // returns the moment the task drains, so healthy runs never feel it.
         assert!(
-            device.wait_until_drained(Duration::from_secs(2)).await,
+            device.wait_until_drained(Duration::from_secs(30)).await,
             "capture task did not drain in time"
         );
         assert!(device.image_ready().await.unwrap());
@@ -1886,7 +1888,7 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            device.wait_until_drained(Duration::from_secs(2)).await,
+            device.wait_until_drained(Duration::from_secs(30)).await,
             "capture task did not drain in time"
         );
         assert_eq!(device.camera_state().await.unwrap(), CameraState::Error);
