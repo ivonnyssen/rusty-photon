@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use rusty_photon_tls::error::{Result, TlsError};
-use rusty_photon_tls::permissions::{set_restricted_permissions, write_restricted};
+use rusty_photon_tls::permissions::{create_restricted, write_restricted};
 use tokio::sync::Mutex;
 use tracing::{debug, info};
 
@@ -317,12 +317,13 @@ fn write_atomic(path: &Path, contents: &str, restrict: bool) -> Result<()> {
     let tmp = path.with_file_name(tmp_name);
     {
         use std::io::Write;
-        // Restrict while the file is still empty: key bytes must never
-        // exist on disk under the umask-default mode.
-        let mut file = std::fs::File::create(&tmp)?;
-        if restrict {
-            set_restricted_permissions(&tmp)?;
-        }
+        // Key bytes must never be readable through any fd another process
+        // could hold: the staged file is born 0600, not chmod'd after.
+        let mut file = if restrict {
+            create_restricted(&tmp)?
+        } else {
+            std::fs::File::create(&tmp)?
+        };
         file.write_all(contents.as_bytes())?;
         file.sync_all()?;
     }

@@ -26,13 +26,31 @@ pub fn set_restricted_permissions(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Create `path` (truncating any previous content), restrict it while it
-/// is still empty, then write `contents` — secret bytes never exist on
-/// disk under the umask-default mode.
+/// Create `path` restricted from the first instant (truncating any
+/// previous content) and return the handle. On Unix the file is born 0600
+/// via `OpenOptions::mode` — a chmod after creation leaves a window where
+/// another process can open the umask-mode file and hold the fd across the
+/// later restriction. `mode` only applies when the file is newly created,
+/// so an existing file (a rotation overwrite) is restricted explicitly too.
+pub fn create_restricted(path: &Path) -> Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options.open(path)?;
+    set_restricted_permissions(path)?;
+    Ok(file)
+}
+
+/// Write `contents` to a file that is restricted before any byte reaches
+/// disk — secret bytes never exist under the umask-default mode, and no
+/// pre-write fd can outlive the restriction.
 pub fn write_restricted(path: &Path, contents: &[u8]) -> Result<()> {
     use std::io::Write;
-    let mut file = std::fs::File::create(path)?;
-    set_restricted_permissions(path)?;
+    let mut file = create_restricted(path)?;
     file.write_all(contents)?;
     Ok(())
 }
