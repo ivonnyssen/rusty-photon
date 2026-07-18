@@ -588,6 +588,16 @@ mod tests {
         assert_eq!(parse_windows_path_name("\"unterminated"), None);
     }
 
+    /// Mirrors the gather smoke test: on a systemd host `is-active` answers
+    /// (a unit that does not exist is not active); without systemctl the
+    /// fact stays ungathered. Either way the query must not panic.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_is_active_answers_for_an_unknown_unit_without_panicking() {
+        let state = systemd_unit_is_active("rusty-photon-doctor-test-ghost");
+        assert_ne!(state, Some(true), "a nonexistent unit must not be active");
+    }
+
     #[test]
     fn test_exec_start_takes_the_effective_assignment() {
         let unit = "# /usr/lib/systemd/system/x.service\n\

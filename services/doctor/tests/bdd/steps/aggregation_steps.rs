@@ -21,36 +21,53 @@ const DEVICES_JSON: &str = r#"{ "Value": [
     { "DeviceName": "Stub Wheel", "DeviceType": "FilterWheel", "DeviceNumber": 1 }
 ] }"#;
 
-async fn management_response(require_auth: bool, headers: HeaderMap) -> (StatusCode, String) {
-    if require_auth {
-        let authorized = headers
-            .get(axum::http::header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .is_some_and(|v| v == STUB_BASIC_HEADER);
-        if !authorized {
-            return (StatusCode::UNAUTHORIZED, String::new());
-        }
-    }
-    (StatusCode::OK, DEVICES_JSON.to_string())
+/// How the stub management endpoint answers.
+#[derive(Clone, Copy)]
+enum StubBehavior {
+    Devices,
+    RequireAuth,
+    ServerError,
+    BadPayload,
 }
 
-fn stub_router(require_auth: bool) -> axum::Router {
+async fn management_response(behavior: StubBehavior, headers: HeaderMap) -> (StatusCode, String) {
+    match behavior {
+        StubBehavior::RequireAuth => {
+            let authorized = headers
+                .get(axum::http::header::AUTHORIZATION)
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|v| v == STUB_BASIC_HEADER);
+            if !authorized {
+                return (StatusCode::UNAUTHORIZED, String::new());
+            }
+            (StatusCode::OK, DEVICES_JSON.to_string())
+        }
+        StubBehavior::Devices => (StatusCode::OK, DEVICES_JSON.to_string()),
+        StubBehavior::ServerError => (StatusCode::INTERNAL_SERVER_ERROR, String::new()),
+        StubBehavior::BadPayload => (
+            StatusCode::OK,
+            "this is not the management JSON".to_string(),
+        ),
+    }
+}
+
+fn stub_router(behavior: StubBehavior) -> axum::Router {
     axum::Router::new().route(
         "/management/v1/configureddevices",
-        axum::routing::get(move |headers: HeaderMap| management_response(require_auth, headers)),
+        axum::routing::get(move |headers: HeaderMap| management_response(behavior, headers)),
     )
 }
 
 /// Start a plain-HTTP stub management endpoint; the bound port lands in
 /// `world.stub_port` for the config-staging steps.
-async fn start_http_stub(world: &mut DoctorWorld, require_auth: bool) {
+async fn start_http_stub(world: &mut DoctorWorld, behavior: StubBehavior) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("stub endpoint bind");
     world.stub_port = Some(listener.local_addr().expect("stub addr").port());
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     world.stub_shutdowns.push(shutdown_tx);
-    let router = stub_router(require_auth);
+    let router = stub_router(behavior);
     tokio::spawn(async move {
         axum::serve(listener, router)
             .with_graceful_shutdown(async {
@@ -63,12 +80,22 @@ async fn start_http_stub(world: &mut DoctorWorld, require_auth: bool) {
 
 #[given("a stub management endpoint serving two configured devices")]
 async fn stub_endpoint(world: &mut DoctorWorld) {
-    start_http_stub(world, false).await;
+    start_http_stub(world, StubBehavior::Devices).await;
 }
 
 #[given("a stub management endpoint that requires authentication")]
 async fn stub_endpoint_authenticated(world: &mut DoctorWorld) {
-    start_http_stub(world, true).await;
+    start_http_stub(world, StubBehavior::RequireAuth).await;
+}
+
+#[given("a stub management endpoint answering HTTP 500")]
+async fn stub_endpoint_server_error(world: &mut DoctorWorld) {
+    start_http_stub(world, StubBehavior::ServerError).await;
+}
+
+#[given("a stub management endpoint whose payload is not management JSON")]
+async fn stub_endpoint_bad_payload(world: &mut DoctorWorld) {
+    start_http_stub(world, StubBehavior::BadPayload).await;
 }
 
 /// An HTTPS stub serving the pki tree's issued pair for the service — the
@@ -97,7 +124,7 @@ async fn stub_endpoint_https(world: &mut DoctorWorld, service: String) {
     world.stub_port = Some(port);
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     world.stub_shutdowns.push(shutdown_tx);
-    let router = stub_router(false);
+    let router = stub_router(StubBehavior::Devices);
     tokio::spawn(async move {
         rusty_photon_tls::server::serve_tls(listener, router, &tls_config, async {
             shutdown_rx.await.ok();
@@ -147,9 +174,29 @@ async fn config_at_dead_port(world: &mut DoctorWorld, file: String) {
 
 #[given("a staged observatory credential")]
 fn staged_credential(world: &mut DoctorWorld) {
+    write_credential(world, STUB_PASSWORD);
+}
+
+#[given("a staged observatory credential the endpoint does not accept")]
+fn staged_rejected_credential(world: &mut DoctorWorld) {
+    write_credential(world, "not-the-stub-password");
+}
+
+fn write_credential(world: &mut DoctorWorld, plaintext: &str) {
     let pki = world.pki_dir();
     std::fs::create_dir_all(&pki).expect("pki dir");
-    std::fs::write(pki.join("credential"), format!("{STUB_PASSWORD}\n")).expect("credential file");
+    std::fs::write(pki.join("credential"), format!("{plaintext}\n")).expect("credential file");
+}
+
+/// A config whose `server.tls` is set while no pki tree exists — the probe
+/// must warn that it cannot verify, not connect unverified.
+#[given(expr = "a config file {string} with a tls block but no pki tree")]
+fn config_tls_without_pki(world: &mut DoctorWorld, file: String) {
+    world.write_config(
+        &file,
+        r#"{ "server": { "port": 1,
+             "tls": { "cert": "/nope/cert.pem", "key": "/nope/key.pem" } } }"#,
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -217,6 +264,18 @@ fn stub_predates_subcommand(world: &mut DoctorWorld, service: String) {
     ));
 }
 
+#[given(expr = "a stub per-service doctor for {string} whose report has no checks")]
+fn stub_doctor_empty_report(world: &mut DoctorWorld, service: String) {
+    let report_file = format!("{service}-doctor-report.json");
+    std::fs::write(world.temp.path().join(&report_file), "{}").expect("stub report file");
+    world.stub_binary = Some(write_stub_script(
+        world.temp.path(),
+        &format!("stub-{service}"),
+        &format!("#!/bin/sh\ncat \"$(dirname \"$0\")/{report_file}\"\n"),
+        &format!("@echo off\r\ntype \"%~dp0{report_file}\"\r\n"),
+    ));
+}
+
 // ---------------------------------------------------------------------------
 // Unit run-state staging
 // ---------------------------------------------------------------------------
@@ -240,4 +299,13 @@ fn unit_stopped_with_stub(world: &mut DoctorWorld, unit: String) {
 fn unit_stopped_without_binary(world: &mut DoctorWorld, unit: String) {
     world.add_unit(&unit);
     world.set_unit_probe_facts(&unit, false, None);
+}
+
+#[given(
+    expr = "platform facts where unit {string} is installed but stopped, with a binary that does not exist"
+)]
+fn unit_stopped_with_missing_binary(world: &mut DoctorWorld, unit: String) {
+    let missing = world.temp.path().join("no-such-binary");
+    world.add_unit(&unit);
+    world.set_unit_probe_facts(&unit, false, Some(missing));
 }

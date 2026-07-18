@@ -96,3 +96,66 @@ Feature: Aggregation over the per-service doctors
     When I run doctor with --json
     Then the report has no checks named "service.devices"
     And the report has no checks named "service.doctor-probe"
+
+  Scenario: an active core-class service exposes no management API and is not probed
+    Given a config file "sentinel.json" containing:
+      """
+      { "server": { "port": 11114 } }
+      """
+    And platform facts where unit "rusty-photon-sentinel" is installed and active
+    When I run doctor with --json
+    Then the report has no checks named "service.devices"
+    And the report has no checks named "service.doctor-probe"
+
+  Scenario: a TLS service without a pki tree warns instead of probing unverified
+    Given a config file "ppba-driver.json" with a tls block but no pki tree
+    And platform facts where unit "rusty-photon-ppba-driver" is installed and active
+    When I run doctor with --json
+    Then the report contains a "warn" check named "service.devices" for service "ppba-driver"
+    And that check's detail mentions "trust root"
+
+  Scenario: a rejected observatory credential proves liveness only
+    Given a staged observatory credential the endpoint does not accept
+    And a stub management endpoint that requires authentication
+    And a config file "ppba-driver.json" pointing at the stub endpoint with auth enabled
+    And platform facts where unit "rusty-photon-ppba-driver" is installed and active
+    When I run doctor with --json
+    Then the report contains a "warn" check named "service.devices" for service "ppba-driver"
+    And that check's detail mentions "credential was rejected"
+
+  Scenario: a management API answering a server error is a failure
+    Given a stub management endpoint answering HTTP 500
+    And a config file "ppba-driver.json" pointing at the stub endpoint
+    And platform facts where unit "rusty-photon-ppba-driver" is installed and active
+    When I run doctor with --json
+    Then the report contains a "fail" check named "service.devices" for service "ppba-driver"
+    And that check's detail mentions "500"
+
+  Scenario: a management API answering garbage is a failure
+    Given a stub management endpoint whose payload is not management JSON
+    And a config file "ppba-driver.json" pointing at the stub endpoint
+    And platform facts where unit "rusty-photon-ppba-driver" is installed and active
+    When I run doctor with --json
+    Then the report contains a "fail" check named "service.devices" for service "ppba-driver"
+    And that check's detail mentions "did not parse"
+
+  Scenario: a recorded binary that no longer exists is a probe warning
+    Given a config file "ppba-driver.json" containing:
+      """
+      { "server": { "port": 11112 } }
+      """
+    And platform facts where unit "rusty-photon-ppba-driver" is installed but stopped, with a binary that does not exist
+    When I run doctor with --json
+    Then the report contains a "warn" check named "service.doctor-probe" for service "ppba-driver"
+    And that check's detail mentions "could not run"
+
+  Scenario: a per-service report with no checks is a probe warning, not silent coverage
+    Given a stub per-service doctor for "ppba-driver" whose report has no checks
+    And a config file "ppba-driver.json" containing:
+      """
+      { "server": { "port": 11112 } }
+      """
+    And platform facts where unit "rusty-photon-ppba-driver" is installed but stopped, with the stub binary
+    When I run doctor with --json
+    Then the report contains a "warn" check named "service.doctor-probe" for service "ppba-driver"
+    And that check's detail mentions "no checks"
