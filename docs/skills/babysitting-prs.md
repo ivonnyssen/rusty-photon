@@ -90,13 +90,16 @@ while :; do
     | jq -s '[.[][] | select(.user.login == "copilot-pull-request-reviewer[bot]")] | length')
   failed=$(gh pr checks "$1" --json bucket --jq '[.[] | select(.bucket == "fail")] | length')
   pending=$(gh pr checks "$1" --json bucket --jq '[.[] | select(.bucket == "pending")] | length')
-  if [ "$failed" -gt 0 ]; then
+  # The :-defaults keep a transient gh/jq failure (empty variable) from
+  # erroring the loop or reading as an exit condition: a failed query must
+  # never count as "no rounds", "check failed", or "nothing pending".
+  if [ "${failed:-0}" -gt 0 ]; then
     sleep 15  # a job re-run's attempt switch can transiently surface the prior attempt's fail
     failed=$(gh pr checks "$1" --json bucket --jq '[.[] | select(.bucket == "fail")] | length')
-    [ "$failed" -gt 0 ] && { echo "check failed"; exit 0; }
+    [ "${failed:-0}" -gt 0 ] && { echo "check failed"; exit 0; }
   fi
-  [ "$rounds" -gt "$2" ]  && { echo "new Copilot round"; exit 0; }
-  [ "$pending" -eq 0 ]    && { echo "no checks pending"; exit 0; }
+  [ "${rounds:-0}" -gt "$2" ]  && { echo "new Copilot round"; exit 0; }
+  [ "${pending:-1}" -eq 0 ]    && { echo "no checks pending"; exit 0; }
   sleep 60
 done
 ```
