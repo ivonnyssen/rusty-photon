@@ -143,7 +143,10 @@ rust_test(
 
 rust_test(
     name = "bdd",
-    size = "small",
+    # medium (300s): the provisioning scenarios spawn the binary for
+    # Argon2id hashing and certificate generation per run — ~15s on a dev
+    # box, past small's 60s cap on a loaded Windows CI runner.
+    size = "medium",
     srcs = ["tests/bdd.rs"] + glob(["tests/bdd/**/*.rs"]),
     aliases = aliases(
         normal_dev = True,
