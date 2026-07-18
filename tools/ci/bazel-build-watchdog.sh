@@ -89,6 +89,16 @@ workspace_hash() {
   fi
 }
 
+# Defense-in-depth for everything tailed into the step log: CI hands the
+# remote-cache credential to bazel via --remote_header="Authorization=Bearer
+# <token>", and the server may echo received options into its logs. GitHub
+# masks the registered secret value itself, but nothing guarantees that is
+# the only place the token appears. POSIX ERE only ([Aa]/[Bb] casings, no
+# GNU-sed /I) so BSD sed on the macOS runners accepts it.
+redact_bearer() {
+  sed -E 's/([Aa]uthorization[=:][[:space:]]*[Bb]earer[[:space:]]+)[^[:space:]]+/\1[REDACTED]/g'
+}
+
 # Print the live server pid for an output base, if any: pidfile present, pid
 # alive, and its command line naming exactly this output base (guards against
 # a stale pidfile whose pid the OS has recycled; -ww: unlimited width, no
@@ -133,9 +143,9 @@ dump_server_logs() {
       sleep 3
     fi
     echo "--- tail of ${dir}/server/jvm.out ---"
-    tail -n 1000 "$dir/server/jvm.out" 2>/dev/null || true
+    tail -n 1000 "$dir/server/jvm.out" 2>/dev/null | redact_bearer || true
     echo "--- tail of ${dir}/java.log ---"
-    tail -n 1000 "$dir/java.log" 2>/dev/null || true
+    tail -n 1000 "$dir/java.log" 2>/dev/null | redact_bearer || true
     echo "::endgroup::"
   done
   ((printed)) || echo "bazel-build-watchdog: ${reason} — no server directory found for workspace hash ${ws_hash}"
@@ -165,9 +175,9 @@ dump_hung_server() {
     kill -QUIT "$server_pid" 2>/dev/null || true
     sleep 3
     echo "--- tail of ${output_base}/java.log ---"
-    tail -n 1000 "$output_base/java.log" 2>/dev/null || true
+    tail -n 1000 "$output_base/java.log" 2>/dev/null | redact_bearer || true
     echo "--- tail of ${output_base}/server/jvm.out ---"
-    tail -n 1000 "$output_base/server/jvm.out" 2>/dev/null || true
+    tail -n 1000 "$output_base/server/jvm.out" 2>/dev/null | redact_bearer || true
     kill -KILL "$server_pid" 2>/dev/null || true
   done
   echo "::endgroup::"
