@@ -609,7 +609,10 @@ legs, both scoped to the resolved config root:
    tree whose `not_after` is within 30 days is re-issued from the existing
    CA, **preserving the old cert's SANs** (unioned with the current
    hostname defaults, so `--extra-san` names given at issue time survive a
-   renewal that no longer knows the flag). The CA itself is never
+   renewal that no longer knows the flag). A pair whose key half cannot be
+   loaded — unreadable, unparseable, or no longer matching the
+   certificate's public key — is due regardless of the window: it cannot
+   serve TLS now, however far off expiry is. The CA itself is never
    regenerated — a CA inside its window gets a loud warning naming the
    explicit operator act (delete `ca.pem` and `ca-key.pem`, then
    `doctor tls issue --force` so every service pair is re-issued from
@@ -619,7 +622,9 @@ legs, both scoped to the resolved config root:
    first order is attempted, so renewal — not a hand-replayed `issue`
    with every flag re-passed — is also the **recovery path** when that
    first order failed). A missing `acme-cert.pem` therefore counts as
-   "due", as does one within `renewal_days_before_expiry`. The order
+   "due", as does one within `renewal_days_before_expiry` — and, as on
+   the self-signed leg, a wildcard pair whose key half is missing or
+   cannot be loaded. The order
    replays the persisted settings (directory URL, DNS provider and
    credentials — `$VAR` indirection resolves here, at 3am, which is why
    the env-var form matters; propagation wait; ACME trust root), retries

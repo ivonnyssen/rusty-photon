@@ -510,7 +510,9 @@ within `renewal_days_before_expiry` of its `not_after`:
 
 Self-signed service pairs get the same treatment from the same command
 (re-issued from the existing CA inside a 30-day window, SANs preserved);
-the CA itself is never auto-renewed. The `tls.expiry` doctor check
+the CA itself is never auto-renewed. On both legs a pair whose key half
+cannot be loaded — or no longer matches the certificate — is due
+regardless of the window: it cannot serve TLS now. The `tls.expiry` doctor check
 reports expired or expiring material on every diagnosis — an expired
 certificate otherwise loads cleanly and only *clients* reject the
 handshake, invisibly to the server.

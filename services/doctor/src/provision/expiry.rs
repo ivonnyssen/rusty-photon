@@ -45,6 +45,15 @@ pub fn sans(cert_pem: &str) -> Vec<String> {
     .unwrap_or_default()
 }
 
+/// The leaf certificate's raw subject public key bytes — renewal compares
+/// them against a key file's public half to catch a pair whose halves no
+/// longer match.
+pub fn public_key(cert_pem: &str) -> Result<Vec<u8>, String> {
+    with_leaf(cert_pem, |cert| {
+        cert.public_key().subject_public_key.data.to_vec()
+    })
+}
+
 /// Parse the first PEM block as an X.509 certificate and apply `f`.
 fn with_leaf<T>(cert_pem: &str, f: impl FnOnce(&X509Certificate<'_>) -> T) -> Result<T, String> {
     let (_, pem) = x509_parser::pem::parse_x509_pem(cert_pem.as_bytes())

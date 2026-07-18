@@ -72,6 +72,25 @@ fn due_within(not_after: time::OffsetDateTime, window_days: i64) -> bool {
     not_after - time::OffsetDateTime::now_utc() <= time::Duration::days(window_days)
 }
 
+/// A pair whose key half cannot be loaded — or no longer matches the
+/// certificate — cannot serve TLS however far off expiry is, so it is due
+/// regardless of the renewal window. An unparseable *certificate* is not
+/// judged here; the expiry gate already treats it as due.
+fn broken_key(key_path: &Path, cert_pem: &str) -> Option<&'static str> {
+    let Ok(key_pem) = std::fs::read_to_string(key_path) else {
+        return Some("its key file is unreadable");
+    };
+    let Ok(key) = rcgen::KeyPair::from_pem(&key_pem) else {
+        return Some("its key does not parse");
+    };
+    match expiry::public_key(cert_pem) {
+        Ok(cert_key) if cert_key != key.public_key_raw() => {
+            Some("its key does not match the certificate")
+        }
+        _ => None,
+    }
+}
+
 /// The self-signed leg: re-issue every due `<svc>.pem`/`<svc>-key.pem`
 /// pair from the existing CA, preserving the old certificate's DNS and IP
 /// SANs (unioned with the hostname and loopback defaults by
@@ -117,7 +136,8 @@ fn renew_self_signed(
         if service.ends_with("-key") || name == "ca.pem" || name == "acme-cert.pem" {
             continue;
         }
-        if !pki.join(format!("{service}-key.pem")).is_file() {
+        let key_path = pki.join(format!("{service}-key.pem"));
+        if !key_path.is_file() {
             debug!(
                 service,
                 "certificate without a key file; not a renewable pair"
@@ -129,6 +149,11 @@ fn renew_self_signed(
             due.push((service.to_string(), Vec::new()));
             continue;
         };
+        if let Some(reason) = broken_key(&key_path, &pem) {
+            debug!(service, "{reason}; treating the pair as due");
+            due.push((service.to_string(), expiry::sans(&pem)));
+            continue;
+        }
         match expiry::not_after(&pem) {
             Ok(not_after) if !force && !due_within(not_after, SELF_SIGNED_RENEWAL_WINDOW_DAYS) => {
                 debug!(service, %not_after, "outside the renewal window");
@@ -202,15 +227,22 @@ async fn renew_acme(
                 debug!(cert = %cert_path.display(), "wildcard certificate missing; due");
                 true
             }
-            Ok(pem) => match expiry::not_after(&pem) {
-                Ok(not_after) => {
-                    due_within(not_after, i64::from(config.renewal_days_before_expiry))
-                }
-                Err(e) => {
-                    debug!("wildcard certificate unparseable ({e}); due");
+            Ok(pem) => {
+                if let Some(reason) = broken_key(&key_path, &pem) {
+                    debug!("wildcard pair is due: {reason}");
                     true
+                } else {
+                    match expiry::not_after(&pem) {
+                        Ok(not_after) => {
+                            due_within(not_after, i64::from(config.renewal_days_before_expiry))
+                        }
+                        Err(e) => {
+                            debug!("wildcard certificate unparseable ({e}); due");
+                            true
+                        }
+                    }
                 }
-            },
+            }
         };
     if !due {
         debug!("the ACME wildcard pair is outside its renewal window");
@@ -527,6 +559,93 @@ mod tests {
         assert!(
             sans.contains(&"192.0.2.7".to_string()),
             "an IP SAN must survive the re-issue: {sans:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_a_garbage_key_makes_a_healthy_pair_due() {
+        let (dir, pki) = stage_tree();
+        let healthy = time::OffsetDateTime::now_utc() + time::Duration::days(300);
+        stage_pair(
+            &pki,
+            "qhy-focuser",
+            healthy,
+            &["localhost", "observatory.local"],
+        );
+        std::fs::write(pki.join("qhy-focuser-key.pem"), "garbage").unwrap();
+
+        let (applied, _) = renew(dir.path(), false).await.unwrap();
+        assert_eq!(applied.len(), 1, "{applied:?}");
+        let renewed_cert = std::fs::read_to_string(pki.join("qhy-focuser.pem")).unwrap();
+        let renewed_key = std::fs::read_to_string(pki.join("qhy-focuser-key.pem")).unwrap();
+        let key = rcgen::KeyPair::from_pem(&renewed_key).unwrap();
+        assert_eq!(
+            expiry::public_key(&renewed_cert).unwrap(),
+            key.public_key_raw(),
+            "the re-issued halves must match"
+        );
+        let sans = expiry::sans(&renewed_cert);
+        assert!(
+            sans.contains(&"observatory.local".to_string()),
+            "SANs must survive a broken-key re-issue: {sans:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_a_mismatched_key_makes_a_healthy_pair_due() {
+        let (dir, pki) = stage_tree();
+        let healthy = time::OffsetDateTime::now_utc() + time::Duration::days(300);
+        stage_pair(&pki, "qhy-focuser", healthy, &["localhost"]);
+        let other = rcgen::KeyPair::generate().unwrap();
+        std::fs::write(pki.join("qhy-focuser-key.pem"), other.serialize_pem()).unwrap();
+
+        let (applied, _) = renew(dir.path(), false).await.unwrap();
+        assert_eq!(applied.len(), 1, "a mismatched key must make the pair due");
+        let renewed_cert = std::fs::read_to_string(pki.join("qhy-focuser.pem")).unwrap();
+        let renewed_key = std::fs::read_to_string(pki.join("qhy-focuser-key.pem")).unwrap();
+        let key = rcgen::KeyPair::from_pem(&renewed_key).unwrap();
+        assert_eq!(
+            expiry::public_key(&renewed_cert).unwrap(),
+            key.public_key_raw(),
+            "the re-issued halves must match"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_acme_leg_treats_a_garbage_key_as_due() {
+        // Cert healthy and outside the window, key present but unloadable —
+        // the bogus provider error proves the due gate was passed.
+        let (dir, pki) = stage_tree();
+        stage_pair(
+            &pki,
+            "placeholder",
+            time::OffsetDateTime::now_utc() + time::Duration::days(300),
+            &["localhost"],
+        );
+        std::fs::rename(
+            pki.join("placeholder.pem"),
+            acme_config::acme_cert_path(&pki),
+        )
+        .unwrap();
+        std::fs::remove_file(pki.join("placeholder-key.pem")).unwrap();
+        std::fs::write(acme_config::acme_key_path(&pki), "garbage").unwrap();
+        std::fs::write(
+            dir.path().join("acme.json"),
+            serde_json::json!({
+                "email": "ops@example.com",
+                "domain": "observatory.test",
+                "dns_provider": "no-such-provider",
+                "dns_credentials": { "api_token": "tok" },
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let err = renew(dir.path(), false).await.unwrap_err();
+        assert!(
+            err.message.contains("unsupported DNS provider"),
+            "a garbage acme-key.pem must pass the due gate: {}",
+            err.message
         );
     }
 
