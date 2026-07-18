@@ -1,13 +1,18 @@
-/* ui-htmx — dark theme reusing the design tokens from the chosen activity-stream
- * mock (docs/plans/ui-design/mocks/7-stream-fold.html) so the configuration
- * pages are visually consistent with the eventual stream UI. */
+/* ui-htmx — dark theme derived from the chosen activity-stream mock
+ * (docs/plans/ui-design/mocks/7-stream-fold.html). The surface tones are
+ * lifted relative to the mock into an explicit elevation ladder
+ * (bg < panel < panel-2, each a visible step) — the mock's near-black
+ * values collapse into one another on ordinary screens; the night-vision
+ * filter multiplies whatever contrast the base theme has, so it inherits
+ * the same separation. */
 
 :root {
-  --bg: #08080a;
-  --panel: #0f0f12;
-  --edge: #1c1c22;
+  --bg: #0a0a0d;
+  --panel: #14141a;
+  --panel-2: #1b1b23;
+  --edge: #2a2a35;
   --text: #fafafa;
-  --dim: #9c9ca6;
+  --dim: #a5a5b0;
   --accent-a: #6366f1;
   --accent-b: #d946ef;
   --ok: #4ade80;
@@ -110,10 +115,23 @@ h1 { font-size: 22px; margin: 0 0 4px; }
 }
 
 fieldset { border: 0; margin: 0 0 8px; padding: 0; }
-fieldset + fieldset { margin-top: 8px; padding-top: 16px; border-top: 1px solid var(--edge); }
+/* A labeled config section is an enclosed sub-panel: grouping by
+ * containment, not separator lines (drivers can serve several devices —
+ * e.g. falcon's rotator + status switch — and their sections must read
+ * as distinct boxes). Legendless fieldsets (the equipment add/edit form)
+ * are a single unlabeled group and get no chrome. */
+fieldset:has(> legend) {
+  border: 1px solid var(--edge);
+  border-radius: 8px;
+  background: var(--panel-2);
+  margin: 0 0 16px;
+  padding: 16px 16px 2px;
+}
 legend {
-  padding: 0; margin-bottom: 12px;
-  font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim);
+  /* float removes the native render-on-the-border legend placement */
+  float: left; width: 100%;
+  padding: 0; margin: 0 0 14px;
+  font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; color: var(--text);
 }
 
 .field { margin-bottom: 16px; }
@@ -134,7 +152,7 @@ input:focus, select:focus { outline: none; border-color: var(--accent-a); }
 
 input[readonly], input:disabled, select:disabled {
   color: var(--dim);
-  background: #0b0b0e;
+  background: #121217;
   cursor: not-allowed;
 }
 
