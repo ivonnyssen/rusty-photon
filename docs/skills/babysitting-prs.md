@@ -87,13 +87,18 @@ checks pending**. The shape:
 while :; do
   rounds=$(gh api "repos/{owner}/{repo}/pulls/$1/reviews" \
     --jq '[.[] | select(.user.login == "copilot-pull-request-reviewer[bot]")] | length')
-  checks=$(gh pr checks "$1" 2>/dev/null)
-  [ -n "$(echo "$checks" | awk -F'\t' '$2 == "fail"')" ]      && { echo "check failed"; exit 0; }
-  [ "$rounds" -gt "$2" ]                                      && { echo "new Copilot round"; exit 0; }
-  [ -z "$(echo "$checks" | awk -F'\t' '$2 == "pending"')" ]   && { echo "all checks done"; exit 0; }
+  failed=$(gh pr checks "$1" --json bucket --jq '[.[] | select(.bucket == "fail")] | length')
+  pending=$(gh pr checks "$1" --json bucket --jq '[.[] | select(.bucket == "pending")] | length')
+  [ "$failed" -gt 0 ]     && { echo "check failed"; exit 0; }
+  [ "$rounds" -gt "$2" ]  && { echo "new Copilot round"; exit 0; }
+  [ "$pending" -eq 0 ]    && { echo "all checks done"; exit 0; }
   sleep 60
 done
 ```
+
+(`--json bucket` is the machine contract — normalized
+`pass`/`fail`/`pending`/`skipping`/`cancel` buckets; never parse the
+human-formatted table.)
 
 Run it via your harness's background-task facility (or `&` + `wait`) so
 the wait costs nothing and reaction time is one poll interval.
