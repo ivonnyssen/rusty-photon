@@ -18,31 +18,35 @@ use crate::steps::tool_steps::{add_camera, ensure_omnisim, start_rp};
 use crate::world::RpWorld;
 
 /// The reference roster + trains from rp.md § Optical Trains: two
-/// cameras, two focusers, a rotator, and a filter wheel (all on
-/// unreachable Alpaca URLs — equipment connects lazily and these
-/// scenarios only exercise the config endpoints), a mount carrying the
-/// guiding block, and the main/guide trains sharing `main-focuser`.
+/// cameras, two focusers, a rotator, and a filter wheel, a mount
+/// carrying the guiding block, and the main/guide trains sharing
+/// `main-focuser`. The Alpaca URLs are deliberately *invalid* (not
+/// merely unbound): an invalid URL fails client construction before
+/// the connect retry loop, so rp starts instantly instead of paying
+/// 3-attempt backoff per device — these scenarios only exercise the
+/// config endpoints. The guiding service URL stays a well-formed
+/// unbound address (it is never dialed at startup).
 #[given("a temp rp config with the reference optical trains")]
 fn temp_config_reference_trains(world: &mut RpWorld) {
     write_scenario_config(
         world,
         serde_json::json!({
             "cameras": [
-                { "id": "main-cam", "alpaca_url": "http://127.0.0.1:1" },
-                { "id": "guide-cam", "alpaca_url": "http://127.0.0.1:1" }
+                { "id": "main-cam", "alpaca_url": "not-a-url" },
+                { "id": "guide-cam", "alpaca_url": "not-a-url" }
             ],
             "focusers": [
-                { "id": "main-focuser", "alpaca_url": "http://127.0.0.1:1" },
-                { "id": "guide-focuser", "alpaca_url": "http://127.0.0.1:1" }
+                { "id": "main-focuser", "alpaca_url": "not-a-url" },
+                { "id": "guide-focuser", "alpaca_url": "not-a-url" }
             ],
             "rotators": [
-                { "id": "falcon", "alpaca_url": "http://127.0.0.1:1" }
+                { "id": "falcon", "alpaca_url": "not-a-url" }
             ],
             "filter_wheels": [
-                { "id": "main-fw", "alpaca_url": "http://127.0.0.1:1" }
+                { "id": "main-fw", "alpaca_url": "not-a-url" }
             ],
             "mount": {
-                "alpaca_url": "http://127.0.0.1:1",
+                "alpaca_url": "not-a-url",
                 "guiding": { "url": "http://127.0.0.1:1" }
             },
             "optical_trains": [

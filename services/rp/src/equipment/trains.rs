@@ -138,7 +138,13 @@ impl TrainModel {
 
         let mut trains = Vec::new();
         let mut seen_train_ids: HashSet<&str> = HashSet::new();
-        let mut seen_terminal_cameras: HashSet<&str> = HashSet::new();
+        // Camera id → id of the train that reserved it. Reservation is a
+        // property of the *submitted* config, not the accepted model: a
+        // train invalidated by an unrelated error still reserves its
+        // terminal camera, so a double-termination conflict surfaces in
+        // the same validation pass as that error instead of appearing
+        // only after the operator fixes it and reloads.
+        let mut seen_terminal_cameras: HashMap<&str, &str> = HashMap::new();
         let mut seen_guiding_train = false;
 
         for (i, train) in equipment.optical_trains.iter().enumerate() {
@@ -229,11 +235,11 @@ impl TrainModel {
                         train_ok = false;
                     }
                     (TrainDeviceKind::Camera, true) => {
-                        if !seen_terminal_cameras.insert(id) {
+                        if let Some(other) = seen_terminal_cameras.insert(id, &train.id) {
                             errors.push(FieldError {
                                 path: entry_path,
                                 msg: format!(
-                                    "camera '{id}' already terminates another train \
+                                    "camera '{id}' already terminates train '{other}' \
                                      (train '{}')",
                                     train.id
                                 ),
@@ -678,7 +684,13 @@ mod tests {
             ]
         );
         assert!(errors[0].msg.contains("may only terminate"));
-        assert!(errors[1].msg.contains("already terminates another train"));
+        // The conflict names the train that reserved the camera, so the
+        // operator knows both ends of it.
+        assert!(
+            errors[1].msg.contains("already terminates train 'one'"),
+            "{}",
+            errors[1].msg
+        );
     }
 
     #[test]
