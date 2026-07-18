@@ -1969,5 +1969,27 @@ mod doctor_toml_parity {
         let meta = parse(include_str!("../pkg/doctor.toml")).unwrap();
         assert_eq!(meta.port, Config::default().server.port);
         assert_eq!(meta.class, ServerClass::Alpaca);
+
+        // The declared serial pointer must resolve, in the serialized
+        // default config, to the declared platform default.
+        let serial = meta.serial.unwrap();
+        let value = serde_json::to_value(Config::default()).unwrap();
+        let port = value.pointer(&serial.pointer).unwrap().as_str().unwrap();
+        #[cfg(unix)]
+        assert_eq!(port, serial.default_unix);
+        #[cfg(windows)]
+        assert_eq!(port, serial.default_windows);
+
+        // The serial checks apply only on the USB transport, and the
+        // default config must be on that transport for the defaults above
+        // to be meaningful.
+        assert_eq!(
+            serial.gate,
+            Some(("/transport/kind".to_string(), "usb".to_string()))
+        );
+        assert_eq!(value.pointer("/transport/kind").unwrap(), "usb");
+
+        // No USB identity declared yet (not measured on hardware).
+        assert!(meta.usb.is_none());
     }
 }

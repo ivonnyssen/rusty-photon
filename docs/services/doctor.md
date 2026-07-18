@@ -11,13 +11,16 @@ never learns device usage (which camera is the guide cam belongs to `rp`).
 decision record; [`docs/plans/service-config-doctor.md`](../plans/service-config-doctor.md)
 tracks the phases.
 
-This document specifies the **D2 + D3 scope (diagnosis and repair) plus the
-D6a scope (TLS + credential provisioning)**. A default run examines the
-config directory and the platform's service manager, prints a report, and
-writes nothing; `--fix` (D3) additionally applies the machine-applicable
-fixes, runs the provisioning pass (D6a), and re-diagnoses; the `tls`/`auth`
-subcommands (D6a) expose provisioning à la carte. Hardware checks (D4/D5)
-and cert renewal (D6b) extend this binary later; their contracts are
+This document specifies the **D2–D4 scope (diagnosis, repair, and the
+no-SDK hardware checks) plus the D6a scope (TLS + credential
+provisioning)**. A default run examines the config directory, the
+platform's service manager, and the host's device surface (device nodes,
+USB inventory, udev rules — all read-only), prints a report, and writes
+nothing; `--fix` (D3) additionally applies the machine-applicable fixes,
+runs the provisioning pass (D6a), and re-diagnoses; the `tls`/`auth`
+subcommands (D6a) expose provisioning à la carte. Per-service SDK-side
+hardware checks (D5) and cert renewal (D6b) extend this binary later;
+their contracts are
 recorded in the plan and folded in here as they land.
 
 Doctor is a one-shot CLI, not a long-running service: no server, no config
@@ -32,12 +35,16 @@ graph LR
     catalog["derived catalog<br/>services/*/pkg/doctor.toml<br/>(embedded at build time)"] --> doctor[doctor]
     configs["config dir<br/>&lt;svc&gt;.json × N"] --> doctor
     sm["service manager<br/>systemd / SCM / brew"] -->|read-only queries| doctor
+    hw["device surface<br/>/dev, sysfs, group db, udev rules<br/>(via rusty-photon-doctor-checks)"] -->|read-only probes| doctor
     doctor --> report["report<br/>text or --json"]
 ```
 
-Three inputs, one output. A default run is read-only: config files are
-parsed but never written, and every service-manager interaction is a query
-(`list-unit-files`, `show`), never a verb. Only `--fix` and the `tls`/`auth`
+Four inputs, one output. A default run is read-only: config files are
+parsed but never written, every service-manager interaction is a query
+(`list-unit-files`, `show`), never a verb, and every hardware probe is a
+stat, a directory listing, or a read-only inventory query — doctor never
+opens a device (ADR-016 decision 5: a running service holds its hardware;
+doctor must never contend for it). Only `--fix` and the `tls`/`auth`
 subcommands write — config files through `rusty_photon_config::save`'s
 atomic path, plus the pki tree (D6a) — and nothing ever runs a
 service-manager verb.
@@ -54,6 +61,20 @@ is **derived from the packaging tree, not typed into doctor**
 # This service's own unit tests assert these values match its config defaults.
 class = "alpaca"  # "alpaca" | "core" — which shared server shape its config uses
 port = 11113      # default port when the config file or server block is absent
+
+# Optional hardware identity (§Hardware checks) — present only on services
+# that talk to a device.
+serial_pointer = "/serial/port"       # config JSON pointer holding the device path
+serial_default_unix = "/dev/ttyACM0"  # effective path when the file or field is absent
+serial_default_windows = "COM3"
+usb_vendor = "1618"                   # USB idVendor, four lowercase hex digits
+usb_product = "c179"                  # optional idProduct — omitted for vendor-only
+                                      # families (a QHY camera is any 1618 device)
+usb_model = "Q-Focuser"               # optional product-string substring — required
+                                      # where the VID:PID is a generic bridge chip
+                                      # shared across devices (FTDI FT-X, RP2040)
+serial_gate_pointer = "/transport/kind"  # optional: the serial checks apply only
+serial_gate_value = "usb"                # when this pointer holds this value
 ```
 
 Everything else is derived from the directory name: the config file is
@@ -65,13 +86,27 @@ Three guards keep the catalog honest:
 1. **Each service tests its own file.** A unit test in each service crate
    (`include_str!("../pkg/doctor.toml")`) asserts the declared port equals its
    own `Config::default()` server port and the class matches the shape it
-   embeds (`AlpacaServerConfig` vs `ServerConfig`). A drifted copy fails that
-   service's tests, not doctor's.
+   embeds (`AlpacaServerConfig` vs `ServerConfig`). Services declaring serial
+   metadata extend the same test: the pointer resolves in their own default
+   config shape and the declared defaults equal their `DEFAULT_SERIAL_PORT`
+   constants. A drifted copy fails that service's tests, not doctor's.
 2. **Doctor embeds the files at build time** and a doctor unit test asserts
    the embedded set parses, ports are unique, and the table matches the files.
+   Doctor also embeds the three shipped udev rules
+   (`services/*/pkg/90-*.rules`) and asserts each rule-shipping service's
+   declared `usb_vendor` equals the `ATTRS{idVendor}` its own rule matches —
+   one source of truth for the USB checks, drift-guarded against the rule.
 3. **A CI completeness check** asserts every `services/*/pkg` directory
    contains a `doctor.toml`, so a newly packaged service cannot silently stay
    out of the catalog.
+
+USB identity declarations are measured from real hardware (the values a
+device reports on the bus), so the code-parity guard cannot cover them;
+the vendor-vs-rule assertion above and the on-rig verification leg do.
+`qhy-focuser` and `star-adventurer-gti` carry no `usb_*` keys yet — their
+identities get declared the day the hardware is measured on a USB port —
+so the USB-presence check simply does not run for them; their device-node
+checks work regardless.
 
 The catalog today (17 packaged services; `session-runner` has no `pkg/` and
 joins the catalog when it is packaged):
@@ -142,13 +177,42 @@ implementation:
 
 The inspector reports a platform-neutral inventory (unit name, enabled,
 active, plus platform-specific facts where they exist); checks that depend on
-a fact one platform lacks (systemd conditions, polkit) simply do not run on
-the other platforms.
+a fact one platform lacks (systemd conditions, polkit, systemd's
+`SupplementaryGroups=`) simply do not run on the other platforms.
+
+### The hardware gatherer
+
+The device-surface knowledge lives in the shared
+`rusty-photon-doctor-checks` crate (ADR-016 decision 6: the similarity
+between central doctor and D5's per-service doctors is a library, not a
+binary). Doctor derives a probe list from the catalog and the scanned
+configs — the effective serial paths, the expected udev rule files, the
+firmware artifacts — and the crate gathers `HardwareFacts`, read-only:
+
+- **Paths** — `stat` results (exists, file kind, mode, owner) for every
+  probed path. Never an `open`.
+- **USB inventory** — vendor:product plus the product string per device:
+  sysfs (`/sys/bus/usb/devices/*/idVendor` …) on Linux, the
+  `SYSTEM\CurrentControlSet\Enum\USB` registry tree plus the bus-reported
+  device description on Windows, `system_profiler -json SPUSBDataType` on
+  macOS.
+- **Serial ports** (Windows) — `[System.IO.Ports.SerialPort]::GetPortNames()`.
+- **Identity** — the `rusty-photon` user's uid/gid and the gid of every
+  group the checks reference (udev `GROUP=` names, unit
+  `SupplementaryGroups=` names), from the host's user/group database.
+- **udev rules** (Linux) — the content of the *effective* installed copy of
+  each expected rule file (`/etc/udev/rules.d` shadows `/usr/lib` and
+  `/lib`, same as udev's own precedence).
 
 For hermetic tests, the `mock` feature (the same convention drivers use)
 enables a `--platform-facts <file>` flag: the file deserializes into the
 inspector's output type and replaces the host queries, so BDD scenarios can
 stage any host state on any OS. The flag does not exist in release builds.
+A staged facts file may include a `hardware` object; when it does not, the
+hardware checks are skipped entirely — a staged file is the whole truth of
+its scenario, and probing the real host underneath a mock would make every
+scenario's outcome depend on the machine running it. A real (non-mock) run
+always gathers.
 
 ### Packaged host vs dev checkout
 
@@ -239,7 +303,31 @@ convention and validated by nothing at runtime until the 2am 404.
 
 | Check | Status | Trigger |
 |---|---|---|
-| `rp.data-directory` | fail | rp's `session.data_directory` does not exist. Catches the Linux-path-on-macOS default documented in `docs/packaging-macos.md`. (Writability-by-service-user follows the same D4 deferral as `tls.paths`; doctor writes no probe files.) |
+| `rp.data-directory` | fail | rp's `session.data_directory` does not exist — catches the Linux-path-on-macOS default documented in `docs/packaging-macos.md` — or, on a packaged **Linux** install, exists but is not writable by the `rusty-photon` user rp runs as under systemd, judged from the directory's owner/group/mode. Doctor writes no probe files — the judgment is an ownership heuristic, and the detail says so. Dev checkouts keep the existence-only check (the operator owns their own tree), as do macOS and Windows installs — brew services run as the operator and the MSI's services as LocalSystem, so there is no service user to judge for. (`tls.paths` readability keeps its D2 shape; the TLS lifecycle work owns that check's evolution.) |
+
+### Hardware (D4 — the no-SDK checks)
+
+Everything here needs no vendor blob (ADR-016 decision 5); SDK-side checks
+are D5's per-service `doctor` subcommands. One severity rule covers the
+whole family: **`fail` when the service's unit is installed and enabled** —
+it will start at boot and hit the problem, so this is tomorrow's 2am
+failure reported at noon — **`warn` otherwise** (a parked service, or a dev
+checkout). A check runs only for services that participate in diagnosis
+(config present or unit installed) and declare the relevant catalog
+metadata.
+
+| Check | Platforms | Trigger |
+|---|---|---|
+| `hardware.serial-node` | Linux, macOS, Windows | The effective serial device — the config value at the catalog's `serial_pointer`, else the platform's declared default — does not exist, or exists but is not a character device (Unix). On Windows: the configured name is not among the host's present COM ports. A service with a `serial_gate_pointer` participates only while its config holds the gate value (star-adventurer-gti on `kind: "udp"` has no serial device to check — the same pointer is a UDP port number there). |
+| `hardware.serial-access` | Linux (packaged) | The node exists but the `rusty-photon` user cannot open it, judged from the node's owner/group/mode, the user's uid/gid, the unit's `SupplementaryGroups=`, and the host's group database. Also fires when the unit file itself is missing the `SupplementaryGroups=` entry its access depends on — group membership is conferred per-unit, **not** via `/etc/group`, so that file is checked only for group *existence*, never membership. |
+| `hardware.usb-device` | Linux, macOS, Windows | No device on the bus matches the service's declared USB identity: `usb_vendor`, plus `usb_product` when declared, plus `usb_model` as a product-string substring when declared. The substring is what makes the check honest for devices behind generic bridge chips — the three Pegasus devices all report FTDI's `0403:6015` and the FP2 reports the RP2040's `2e8a:000a`, so VID:PID alone would confuse "the Falcon is plugged in" with "the PPBA is plugged in". |
+| `hardware.udev-rule` | Linux (packaged) | For each service shipping a udev rule, against the effective installed copy: the file is missing (`fail`/`warn` per the severity rule); a `GROUP=` it names does not resolve in the host's group database — udev **silently drops the entire rule line** on an unresolvable `GROUP=`, so file presence alone proves nothing (`fail`/`warn`); or the content differs from the packaged copy doctor embeds (`warn` always — an operator override in `/etc/udev/rules.d` is legitimate, but worth surfacing). |
+| `hardware.firmware-helper` | Linux (packaged) | qhy-camera's unit is installed but the firmware helper's three artifacts are not all present: `/lib/firmware/qhy/` (directory), `/usr/local/sbin/fxload` (executable), `/etc/udev/rules.d/85-qhyccd.rules` (file). The conjunction is the helper's own idempotency gate — any subset is a partial install that must re-converge — and the suggestion points at `/usr/sbin/rusty-photon-qhy-firmware-install` (ADR-013: proprietary firmware is never packaged, so nothing but this check verifies the operator ran it). |
+
+None of these checks plan a `--fix`: absent hardware cannot be conjured, a
+missing group or udev rule is package/host surgery outside config files,
+and the firmware helper needs network and root. Every failure carries a
+concrete suggestion instead.
 
 ## Repair — `--fix` (D3)
 
@@ -489,9 +577,12 @@ behavior; every knob in it was a CLI flag first.)
 ## Verification
 
 - **Unit** — catalog parsing/uniqueness and the per-service `doctor.toml`
-  parity tests; per-check tests against tempdir fixtures; report schema
-  round-trip including a forward-compatibility case (unknown fields, unknown
-  status value from a newer service).
+  parity tests (now including serial pointer/defaults against each service's
+  own config shape, and `usb_vendor` against each shipped udev rule);
+  per-check tests against tempdir fixtures; the `doctor-checks` crate's pure
+  predicates against staged facts, and its gatherer against fake root trees;
+  report schema round-trip including a forward-compatibility case (unknown
+  fields, unknown status value from a newer service).
 - **BDD** (`services/doctor/tests`, built with the `mock` feature) — seed a
   scratch config dir and a platform-facts file with known-broken states (port
   collision, dangling watchdog service, retired D3s keys, unparseable JSON,
@@ -500,9 +591,15 @@ behavior; every knob in it was a CLI flag first.)
   `--fix`: assert the rewritten file contents (untouched fields preserved),
   post-fix convergence, idempotence of a second run, that a default run
   writes nothing, and that unfixable checks stay reported without a write.
+  For hardware: stage `hardware` facts (nodes, USB inventory, groups, rule
+  contents) and assert each check's fail/warn split against enabled and
+  disabled units, plus that a facts file without a `hardware` object skips
+  the family.
 - **On-host** (D2 gate, per the plan's all-platforms requirement) — the real
   inspectors validated against a packaged Linux host, the Windows VM (SCM),
-  and macOS (brew services).
+  and macOS (brew services). The D4 gatherer gets the same three legs, plus
+  the rig's unplug-proof: disconnect a device, run doctor, confirm the
+  report is honest.
 - **D6a** — unit: cert/ACME module tests move with the code; credential
   mint → Argon2id hash → verify round-trip; pki paths anchor at the
   resolved config root. BDD: against a scratch `--config-dir`, `--fix`
@@ -519,24 +616,25 @@ behavior; every knob in it was a CLI flag first.)
 
 ## MVP scope
 
-**In D2 + D3:** derived catalog, config-root resolution, platform
-inspectors, the check list, the report schema, text + `--json` rendering,
-exit codes, and `--fix`. No network I/O; writes happen only under `--fix`,
-only to config files.
+**In D2–D4:** derived catalog, config-root resolution, platform
+inspectors, the check list including the no-SDK hardware family, the
+`rusty-photon-doctor-checks` crate, the report schema, text + `--json`
+rendering, exit codes, and `--fix`. Hardware probes never open a device.
 
 **In D6a (this document's §Provisioning):** the TLS + credential lifecycle —
 self-signed issuance and ACME moved from `rp` (which loses `init-tls` and
 `hash-password`), the pki tree under the config root, the minted observatory
 credential and its distribution, `tls`/`auth`-on written by `--fix`, and the
-`tls`/`auth` subcommands. Writes now also cover the pki tree; ACME is the
-one place doctor does network I/O, and only when asked.
+`tls`/`auth` subcommands. Writes cover config files and the pki tree; ACME
+is the one place doctor does network I/O, and only when asked.
 
 **Deferred, tracked in the plan:**
-- `rusty-photon-doctor-checks` crate + hardware checks that need no SDK
-  (device nodes, udev, plugdev, VID:PID, firmware helper) — D4.
 - Per-service `doctor` subcommands (full-config validation, SDK-side
   hardware checks) + aggregation over the report schema — D5.
 - Cert renewal: `doctor tls renew` + platform timers, in-process cert
   hot-reload in `rusty-photon-tls`
   ([#541](https://github.com/ivonnyssen/rusty-photon/issues/541)) — D6b.
 - Packaging (doctor ships in sentinel's package) and install-flow docs — D7.
+- `usb_*` identity declarations for qhy-focuser and star-adventurer-gti —
+  measured whenever that hardware is next on a USB port; two lines of
+  `doctor.toml` each.

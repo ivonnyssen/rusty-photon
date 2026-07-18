@@ -29,6 +29,7 @@ rcgen = { workspace = true }
 rp-auth = { workspace = true }
 rpassword = { workspace = true }
 rusty-photon-config = { workspace = true }
+rusty-photon-doctor-checks = { workspace = true }
 rusty-photon-server-config = { workspace = true }
 rusty-photon-tls = { workspace = true }
 serde = { workspace = true }

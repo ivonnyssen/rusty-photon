@@ -1172,6 +1172,7 @@ dependencies = [
  "rustls",
  "rustls-pemfile",
  "rusty-photon-config",
+ "rusty-photon-doctor-checks",
  "rusty-photon-server-config",
  "rusty-photon-tls",
  "serde",
@@ -4567,6 +4568,16 @@ dependencies = [
  "thiserror 2.0.18",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "rusty-photon-doctor-checks"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
 ]
 
 [[package]]

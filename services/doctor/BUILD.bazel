@@ -9,6 +9,7 @@ exports_files(
 _INTRA_WORKSPACE_DEPS = [
     "//crates/rp-auth:rp-auth",
     "//crates/rusty-photon-config:rusty-photon-config",
+    "//crates/rusty-photon-doctor-checks:rusty-photon-doctor-checks",
     "//crates/rusty-photon-server-config:rusty-photon-server-config",
     "//crates/rusty-photon-tls:rusty-photon-tls",
 ]
@@ -37,6 +38,15 @@ _CATALOG_METADATA = [
     "//services/zwo-focuser:pkg/doctor.toml",
 ]
 
+# The shipped udev rules, embedded for the installed-content comparison
+# (src/catalog.rs UDEV_RULES; tests/tree_parity.rs asserts this list
+# matches services/*/pkg/*.rules under Cargo).
+_UDEV_RULES = [
+    "//services/qhy-camera:pkg/90-rusty-photon-qhy.rules",
+    "//services/zwo-camera:pkg/90-rusty-photon-zwo.rules",
+    "//services/zwo-focuser:pkg/90-rusty-photon-zwo-focuser.rules",
+]
+
 rust_library(
     name = "doctor_lib",
     srcs = glob(
@@ -44,7 +54,7 @@ rust_library(
         exclude = ["src/main.rs"],
     ),
     aliases = aliases(),
-    compile_data = _CATALOG_METADATA,
+    compile_data = _CATALOG_METADATA + _UDEV_RULES,
     crate_name = "doctor",
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
@@ -62,7 +72,7 @@ rust_library(
         exclude = ["src/main.rs"],
     ),
     aliases = aliases(),
-    compile_data = _CATALOG_METADATA,
+    compile_data = _CATALOG_METADATA + _UDEV_RULES,
     crate_features = ["mock"],
     crate_name = "doctor",
     edition = "2021",

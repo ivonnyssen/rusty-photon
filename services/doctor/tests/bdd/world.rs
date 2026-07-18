@@ -56,6 +56,10 @@ impl DoctorWorld {
                 platform: Platform::Linux,
                 units: Vec::new(),
                 polkit_grants_sentinel_restart: None,
+                hardware: None,
+                // A staged facts file is its scenario's whole truth: the
+                // binary must never probe the BDD host underneath it.
+                probe_hardware: false,
             },
             pem_paths: Vec::new(),
             data_dir: None,
@@ -121,7 +125,16 @@ impl DoctorWorld {
             enabled: true,
             condition_path: None,
             source_name: None,
+            supplementary_groups: Vec::new(),
         });
+    }
+
+    /// The staged hardware facts, created on first touch — scenarios that
+    /// never call this keep `hardware` absent and the family skipped.
+    pub fn hardware(&mut self) -> &mut rusty_photon_doctor_checks::HardwareFacts {
+        self.facts
+            .hardware
+            .get_or_insert_with(rusty_photon_doctor_checks::HardwareFacts::default)
     }
 
     /// Run the doctor binary against the staged config dir and facts.

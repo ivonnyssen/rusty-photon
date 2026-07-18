@@ -26,6 +26,17 @@ fn no_units(world: &mut DoctorWorld) {
     world.facts.units.clear();
 }
 
+#[given(expr = "platform facts with a disabled unit {string}")]
+fn disabled_unit(world: &mut DoctorWorld, unit: String) {
+    world.facts.units.push(UnitFacts {
+        name: unit,
+        enabled: false,
+        condition_path: None,
+        source_name: None,
+        supplementary_groups: Vec::new(),
+    });
+}
+
 #[given(expr = "Windows platform facts with an enabled unit {string}")]
 fn windows_unit(world: &mut DoctorWorld, unit: String) {
     world.facts.platform = Platform::Windows;
@@ -50,6 +61,7 @@ fn push_gated_unit(world: &mut DoctorWorld, unit: String, gate: PathBuf) {
         enabled: true,
         condition_path: Some(gate),
         source_name: None,
+        supplementary_groups: Vec::new(),
     });
 }
 
