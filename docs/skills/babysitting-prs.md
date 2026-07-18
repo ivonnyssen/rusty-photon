@@ -85,8 +85,8 @@ checks pending**. The shape:
 ```sh
 # watch-pr.sh <pr> <copilot-round-baseline>
 while :; do
-  rounds=$(gh api "repos/{owner}/{repo}/pulls/$1/reviews" \
-    --jq '[.[] | select(.user.login == "copilot-pull-request-reviewer[bot]")] | length')
+  rounds=$(gh api --paginate "repos/{owner}/{repo}/pulls/$1/reviews" \
+    | jq -s '[.[][] | select(.user.login == "copilot-pull-request-reviewer[bot]")] | length')
   failed=$(gh pr checks "$1" --json bucket --jq '[.[] | select(.bucket == "fail")] | length')
   pending=$(gh pr checks "$1" --json bucket --jq '[.[] | select(.bucket == "pending")] | length')
   if [ "$failed" -gt 0 ]; then
