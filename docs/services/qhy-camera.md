@@ -179,8 +179,10 @@ graph TD;
   (the `qhyccd-rs` `simulation` camera + a tiny in-crate trait seam over the SDK
   for unit tests).
 - **`preflight.rs` / `doctor.rs`** — Windows `qhyccd.dll` resolution (startup
-  preflight for the delay-loaded SDK DLL) and the interactive `doctor`
-  subcommand; see *Windows: qhyccd.dll resolution* below.
+  preflight for the delay-loaded SDK DLL) and the per-service `doctor`
+  subcommand ([doctor.md §Per-service doctors](doctor.md)), which carries
+  the Windows installation checks; see *Windows: qhyccd.dll resolution*
+  below.
 
 **Concurrency.** The QHY SDK is blocking C FFI and is **not** safe to call from
 arbitrary threads concurrently for a single device. Device state (current ROI,
@@ -530,9 +532,11 @@ fn main() -> ServiceResult {
 else is `debug!` ([AGENTS.md](../AGENTS.md) Rule 9).
 
 In addition to the plain service invocation, `main.rs` exposes one subcommand:
-`rusty-photon-qhy-camera doctor` — the interactive Windows installation
-diagnostic specified in *Windows: qhyccd.dll resolution* below. Running with no
-subcommand starts the driver exactly as before.
+`rusty-photon-qhy-camera doctor [--config <file>] [--json]` — the per-service
+doctor ([doctor.md §Per-service doctors](doctor.md): own-config validation
+plus SDK enumeration), which on Windows real-SDK builds also carries the
+installation diagnostics specified in *Windows: qhyccd.dll resolution*
+below. Running with no subcommand starts the driver exactly as before.
 
 ---
 
@@ -615,40 +619,50 @@ during `StartServices` (found by `verify-msi.ps1`, plan W4):
   preflight keys off runtime behavior, not linkage.) Non-Windows builds have
   no preflight.
 
-### `doctor` subcommand (interactive diagnostic)
+### `doctor` subcommand (installation checks inside the D5 shape)
 
-`rusty-photon-qhy-camera doctor` — compiled on every platform, useful on
-Windows (planned Start-Menu shortcut, plan W4). It can do what a session-0
-service cannot: talk to the operator and open a browser.
+`rusty-photon-qhy-camera doctor [--config <file>] [--json]` — the standard
+per-service doctor ([doctor.md §Per-service doctors](doctor.md):
+`config.full-shape` + `hardware.sdk-devices`, shared report schema, exit
+0/1/2), compiled on every platform and still especially useful on Windows
+(planned Start-Menu shortcut, plan W4), where its text mode can do what a
+session-0 service cannot: talk to the operator and open a browser.
 
-- **DR1.** On Windows real-SDK builds it reports: **(a)** `qhyccd.dll`
-  resolution — found at which probed path / found via the default search
-  order / missing (with the probed list **and every failed load attempt with
-  its loader error**); **(b)** the **loaded** SDK version
-  via `GetQHYCCDSDKVersion` vs. the **pinned build-time** SDK version
-  (26.06.04), with an explicit warning when they differ — ABI skew against
-  whatever the All-in-One ships is an accepted risk (ADR-015), surfaced here;
-  **(c)** the number of cameras the loaded SDK enumerates; **(d)** best-effort
-  driver-pack presence (existence of the known `QHYCCD` install roots);
-  **(e)** the download URL. The SDK is only called when the DLL actually
-  resolved (calling into a delay-loaded DLL that is missing would trip the
-  delay-load helper). Known limitation: if the installed DLL is old enough to
-  *lack* a symbol the pinned import library carries, the delay-load helper
-  faults on that call — the doctor surfaces version skew, not symbol-level
-  skew.
-- **DR2.** When the report is unhealthy **or** version-skewed, the doctor
-  offers to open the QHY download page in the default browser
-  (`[y/N]` prompt on stdin; opened via `cmd /C start` — no extra dependency).
-  Non-interactive stdin (EOF) counts as "No".
-- **DR3.** Exit code reflects overall health: **0** = healthy (DLL resolved
-  *and* SDK version readable — version skew alone still exits 0, it is a
-  surfaced warning, not a failure); **1** = unhealthy (DLL missing, or DLL
-  present but SDK init / version query failed).
-- **DR4.** On non-Windows platforms the doctor prints that it is
-  Windows-only (Unix builds link the SDK statically — there is nothing to
-  resolve) and exits 0.
-- **DR5.** On `simulation` builds it reports that the simulation backend
-  needs no `qhyccd.dll` and exits 0.
+- **DR1.** On Windows real-SDK builds the report additionally carries:
+  **(a)** `hardware.sdk-dll` — `qhyccd.dll` resolution: `ok` found at which
+  probed path / found via the default search order, `fail` when missing,
+  with the probed list **and every failed load attempt with its loader
+  error** in the detail and the All-in-One remedy plus best-effort
+  driver-pack presence (existence of the known `QHYCCD` install roots) in
+  the suggestion; **(b)** `hardware.sdk-version` — the **loaded** SDK
+  version via `GetQHYCCDSDKVersion` vs. the **pinned build-time** SDK
+  version (26.06.04): `warn` when they differ — ABI skew against whatever
+  the All-in-One ships is an accepted risk (ADR-015), surfaced here —
+  `fail` when the DLL resolved but the version is unreadable; **(c)** the
+  standard `hardware.sdk-devices` check lists what the loaded SDK
+  enumerates. The SDK is only called when the DLL actually resolved
+  (calling into a delay-loaded DLL that is missing would trip the
+  delay-load helper); with the DLL missing, `hardware.sdk-devices` is
+  omitted — `hardware.sdk-dll` carries the whole story. Known limitation:
+  if the installed DLL is old enough to *lack* a symbol the pinned import
+  library carries, the delay-load helper faults on that call — the doctor
+  surfaces version skew, not symbol-level skew.
+- **DR2.** In **text mode only**, when `hardware.sdk-dll` failed or
+  `hardware.sdk-version` is non-`ok`, the doctor offers to open the QHY
+  download page in the default browser (`[y/N]` prompt on stdin; opened via
+  `cmd /C start` — no extra dependency). Non-interactive stdin (EOF) counts
+  as "No", and `--json` (central doctor's shell-out) never prompts.
+- **DR3.** The shared exit-code contract preserves the health semantics:
+  **0** = DLL resolved *and* SDK version readable — version skew alone
+  still exits 0, it is a `warn`, not a failure; **1** = `hardware.sdk-dll`
+  or `hardware.sdk-version` failed (DLL missing, or DLL present but SDK
+  init / version query failed).
+- **DR4.** On non-Windows platforms only the standard pair runs (Unix
+  builds link the SDK statically — there is no DLL to resolve, so the
+  installation checks do not exist there).
+- **DR5.** On `simulation` builds the installation checks do not exist
+  either (the simulation backend makes no SDK calls and needs no
+  `qhyccd.dll`); `hardware.sdk-devices` enumerates the simulated cameras.
 
 The pinned build-time SDK version constant lives in `preflight.rs`, kept in
 lockstep with the SDK pin in `crates/qhyccd-rs/libqhyccd-sys/build.rs` and the
@@ -672,12 +686,13 @@ Layered per [`testing.md`](../skills/testing.md).
   hardware nor the SDK linked** where possible.
 - **Windows DLL resolution** — the preflight's candidate ordering/selection are
   pure functions with **injected** environment and fs-existence checkers, and
-  the doctor's report rendering / exit-code mapping / prompt parsing are pure
-  over plain data — all unit-tested **cross-platform**. The real
-  `LoadLibrary` path is exercised by `#[cfg(windows)]` unit tests on the
-  Windows CI legs (and by plan-W4's on-Windows verification pass). No BDD
-  scenarios: the BDD suite drives the `simulation` binary, which deliberately
-  skips this whole layer (PF5/DR5).
+  the doctor's check assembly / prompt parsing are pure over plain data —
+  all unit-tested **cross-platform**. The real `LoadLibrary` path is
+  exercised by `#[cfg(windows)]` unit tests on the Windows CI legs (and by
+  plan-W4's on-Windows verification pass). The BDD doctor smoke
+  (`doctor.feature`, shared fixture) drives the `simulation` binary, which
+  deliberately skips this whole layer (PF5/DR5) — it proves the config and
+  enumeration contract, not the DLL layer.
 - **BDD** (`bdd-infra::ServiceHandle`) — connection lifecycle (C1–C4), ROI/bin
   validation (R1–R2, B1–B3), exposure happy-path + error paths (E1–E9),
   gain/offset/readout (GO1–RM1), cooling (K1–K4), and FilterWheel (FW1–FW3 when
