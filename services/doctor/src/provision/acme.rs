@@ -300,9 +300,13 @@ pub async fn issue_certificate(
     Ok(())
 }
 
-/// Write `contents` to a `.tmp` sibling and rename it over `path`.
+/// Write `contents` to a temp sibling and rename it over `path`.
 /// `restrict` applies 0600 to the temp file first, so the final file never
-/// exists with open permissions.
+/// exists with open permissions. The temp name carries the pid so two
+/// doctor runs never stage into each other's file, and the data is synced
+/// to disk before the rename so a crash cannot leave `path` truncated —
+/// losing the rename itself is safe (the previous complete file remains),
+/// so the parent directory is not synced.
 fn write_atomic(path: &Path, contents: &str, restrict: bool) -> Result<()> {
     let mut tmp_name = path
         .file_name()
@@ -310,9 +314,14 @@ fn write_atomic(path: &Path, contents: &str, restrict: bool) -> Result<()> {
         .ok_or_else(|| {
             TlsError::Other(format!("{} has no file name to write to", path.display()))
         })?;
-    tmp_name.push(".tmp");
+    tmp_name.push(format!(".tmp-{}", std::process::id()));
     let tmp = path.with_file_name(tmp_name);
-    std::fs::write(&tmp, contents)?;
+    {
+        use std::io::Write;
+        let mut file = std::fs::File::create(&tmp)?;
+        file.write_all(contents.as_bytes())?;
+        file.sync_all()?;
+    }
     if restrict {
         set_restricted_permissions(&tmp)?;
     }
@@ -472,9 +481,14 @@ mod tests {
         std::fs::write(&path, "OLD").unwrap();
         write_atomic(&path, "NEW", false).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "NEW");
+        let leftovers: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains(".tmp"))
+            .collect();
         assert!(
-            !dir.path().join("acme-cert.pem.tmp").exists(),
-            "the temp sibling must be renamed away"
+            leftovers.is_empty(),
+            "the temp sibling must be renamed away: {leftovers:?}"
         );
     }
 

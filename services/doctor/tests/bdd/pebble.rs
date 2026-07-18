@@ -172,7 +172,10 @@ impl PebbleHandle {
             .expect("spawn pebble");
 
         let mut handle = Self {
-            directory_url: format!("https://localhost:{acme_port}/dir"),
+            // 127.0.0.1 rather than localhost: Pebble binds IPv4 loopback
+            // only, and localhost resolves to ::1 first on some hosts. The
+            // endpoint cert carries loopback IP SANs, so the IP URL verifies.
+            directory_url: format!("https://127.0.0.1:{acme_port}/dir"),
             management_url: format!("http://127.0.0.1:{chall_mgmt_port}"),
             ca_pem: dir.path().join("ca.pem"),
             _dir: dir,
