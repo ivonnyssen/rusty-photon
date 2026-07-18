@@ -258,10 +258,11 @@ fn config_parsing(ctx: &Context) -> Vec<Check> {
 }
 
 /// The known cross-reference blocks must parse for the join checks to see
-/// them; a shape error there is its own diagnosis.
+/// them; a shape error there is its own diagnosis. (ui-htmx has no arm:
+/// since #569 its view reads only the retired `drivers` key, as an opaque
+/// `Value` that cannot fail to parse.)
 fn known_blocks(scan: &ServiceScan) -> Vec<Check> {
     let result = match scan.entry.name {
-        "ui-htmx" => scan::view::<UiHtmxView>(scan).map(|r| r.map(|_| ())),
         "sentinel" => scan::view::<SentinelView>(scan).map(|r| r.map(|_| ())),
         "rp" => scan::view::<RpView>(scan).map(|r| r.map(|_| ())),
         _ => None,

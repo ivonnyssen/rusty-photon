@@ -396,24 +396,34 @@ fn normalized_host(url: &str) -> Option<String> {
 /// device on another host must never grow a restart button that would bounce
 /// an unrelated local service. The port must be explicit in the URL: falling
 /// back to the scheme default (80/443) would let a mistyped portless URL
-/// match an unrelated service. Sentinel-unreachable, no port, or no match
-/// degrades to no affordance (the page still renders).
+/// match an unrelated service. The lookup is time-bounded — the affordance
+/// is page decoration, and a hung Sentinel must not stall rendering the
+/// form. Sentinel unreachable or slow, no port, or no match degrades to no
+/// affordance (the page still renders).
 async fn resolve_sentinel_service(
     sentinel: &dyn SentinelClient,
     sentinel_host: &str,
     alpaca_url: &str,
 ) -> Option<String> {
+    // The same bound sentinel's own health probes use.
+    const LOOKUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
     if normalized_host(alpaca_url)? != sentinel_host {
         return None;
     }
     let port = reqwest::Url::parse(alpaca_url).ok()?.port()?;
-    match sentinel.services().await {
-        Ok(services) => services
+    match tokio::time::timeout(LOOKUP_TIMEOUT, sentinel.services()).await {
+        Ok(Ok(services)) => services
             .into_iter()
             .find(|s| s.probe_port == Some(port))
             .map(|s| s.name),
-        Err(e) => {
+        Ok(Err(e)) => {
             tracing::debug!("sentinel service list unavailable, no restart affordance: {e}");
+            None
+        }
+        Err(_) => {
+            tracing::debug!(
+                "sentinel service list timed out after {LOOKUP_TIMEOUT:?}, no restart affordance"
+            );
             None
         }
     }
@@ -1140,6 +1150,34 @@ mod tests {
                 "connection refused".to_string(),
             ))
         }
+    }
+
+    /// A `SentinelClient` whose service listing never answers.
+    struct HangingSentinel;
+
+    #[async_trait::async_trait]
+    impl SentinelClient for HangingSentinel {
+        async fn restart(&self, _service: &str) -> Result<RestartOutcome, SentinelClientError> {
+            unreachable!("the hung listing never yields a restart name")
+        }
+
+        async fn services(
+            &self,
+        ) -> Result<Vec<sentinel_client::SentinelService>, SentinelClientError> {
+            std::future::pending().await
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn roster_device_with_hung_sentinel_times_out_to_no_restart_name() {
+        // A hung Sentinel must not stall the page render: the lookup is
+        // time-bounded and degrades to no affordance.
+        let state = rp_state_with_config_client(Arc::new(GoodRoster))
+            .with_sentinel_client(Arc::new(HangingSentinel), "http://127.0.0.1:11114");
+        let handle = resolve_service(&state, "rp:cover_calibrators:flat")
+            .await
+            .unwrap();
+        assert!(handle.sentinel_service.is_none());
     }
 
     #[tokio::test]
