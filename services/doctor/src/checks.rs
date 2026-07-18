@@ -761,26 +761,26 @@ fn tls_and_auth(ctx: &Context) -> Vec<Check> {
             continue;
         };
         if let Some(tls) = &server.tls {
+            // Per path: empty or absent-on-disk is a failure; a relative
+            // path is ungradable — the service resolves it against its own
+            // working directory (`TlsConfig::resolved_*_path` only expands
+            // `~`), which doctor cannot know, so claiming presence either
+            // way would be a guess.
             let mut missing: Vec<String> = Vec::new();
+            let mut relative: Vec<String> = Vec::new();
             for (raw, resolved) in [
                 (&tls.cert, tls.resolved_cert_path()),
                 (&tls.key, tls.resolved_key_path()),
             ] {
-                if !tls_material_present(&ctx.config_dir, raw, &resolved) {
-                    missing.push(if raw.trim().is_empty() {
-                        "<empty path>".to_string()
-                    } else {
-                        raw.clone()
-                    });
+                if raw.trim().is_empty() {
+                    missing.push("<empty path>".to_string());
+                } else if !resolved.is_absolute() {
+                    relative.push(raw.clone());
+                } else if !resolved.is_file() {
+                    missing.push(raw.clone());
                 }
             }
-            if missing.is_empty() {
-                checks.push(Check::ok(
-                    "tls.paths",
-                    svc(scan),
-                    "TLS cert and key exist".to_string(),
-                ));
-            } else {
+            if !missing.is_empty() {
                 checks.push(Check::fail(
                     "tls.paths",
                     svc(scan),
@@ -795,11 +795,33 @@ fn tls_and_auth(ctx: &Context) -> Vec<Check> {
                             .to_string(),
                     ),
                 ));
+            } else if !relative.is_empty() {
+                checks.push(Check::warn(
+                    "tls.paths",
+                    svc(scan),
+                    format!(
+                        "server.tls uses relative paths ({}): the service resolves \
+                         them against its own working directory, which doctor \
+                         cannot know, so the material cannot be judged",
+                        relative.join(", ")
+                    ),
+                    Some(
+                        "use absolute paths — doctor-issued material always is, and \
+                         `doctor --fix` writes absolute paths"
+                            .to_string(),
+                    ),
+                ));
+            } else {
+                checks.push(Check::ok(
+                    "tls.paths",
+                    svc(scan),
+                    "TLS cert and key exist".to_string(),
+                ));
             }
-            // Expiry is judged only on a certificate file that exists — a
-            // missing one stays tls.paths' concern.
-            let cert_file = anchored_path(&ctx.config_dir, &tls.resolved_cert_path());
-            if !tls.cert.trim().is_empty() && cert_file.is_file() {
+            // Expiry is judged only on an absolute certificate path whose
+            // file exists — missing or ungradable stays tls.paths' concern.
+            let cert_file = tls.resolved_cert_path();
+            if relative.is_empty() && !tls.cert.trim().is_empty() && cert_file.is_file() {
                 checks.push(tls_expiry(ctx, scan, &cert_file));
             }
         }
@@ -969,28 +991,6 @@ fn auth_mismatch(ctx: &Context) -> Vec<Check> {
         ));
     }
     checks
-}
-
-/// Whether one piece of TLS material is present as a real file. `resolved`
-/// is the path the service itself will open (`TlsConfig::resolved_*_path`,
-/// which expands `~`); a relative remainder is anchored at the config dir.
-/// Empty paths and directories are absent — the service would fail to read
-/// either.
-fn tls_material_present(config_dir: &Path, raw: &str, resolved: &Path) -> bool {
-    if raw.trim().is_empty() {
-        return false;
-    }
-    anchored_path(config_dir, resolved).is_file()
-}
-
-/// A resolved TLS path anchored the way the service will open it: absolute
-/// stays as-is, a relative remainder anchors at the config dir.
-fn anchored_path(config_dir: &Path, resolved: &Path) -> PathBuf {
-    if resolved.is_absolute() {
-        resolved.to_path_buf()
-    } else {
-        config_dir.join(resolved)
-    }
 }
 
 /// `tls.expiry` (D6b): grade an existing configured certificate's
@@ -1171,41 +1171,6 @@ mod tests {
             start_command(Platform::Macos, "rusty-photon-rp-nightly"),
             "brew services start rusty-photon-rp-nightly"
         );
-    }
-
-    #[test]
-    fn test_tls_material_present_matches_service_resolution() {
-        let dir = tempfile::tempdir().unwrap();
-        let pem = dir.path().join("cert.pem");
-        std::fs::write(&pem, "stub").unwrap();
-
-        // Absolute existing file: present; empty and whitespace paths: absent.
-        assert!(tls_material_present(
-            dir.path(),
-            pem.to_str().unwrap(),
-            &pem
-        ));
-        assert!(!tls_material_present(dir.path(), "", Path::new("")));
-        assert!(!tls_material_present(dir.path(), "  ", Path::new("  ")));
-
-        // A directory is not usable TLS material.
-        assert!(!tls_material_present(
-            dir.path(),
-            dir.path().to_str().unwrap(),
-            dir.path()
-        ));
-
-        // A relative resolved path anchors at the config dir.
-        assert!(tls_material_present(
-            dir.path(),
-            "cert.pem",
-            Path::new("cert.pem")
-        ));
-        assert!(!tls_material_present(
-            dir.path(),
-            "missing.pem",
-            Path::new("missing.pem")
-        ));
     }
 
     #[test]

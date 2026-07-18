@@ -30,6 +30,16 @@ Feature: TLS material and platform default diagnosis
     When I run doctor with --json
     Then the report contains an "ok" check named "tls.paths" for service "qhy-focuser"
 
+  Scenario: Relative TLS paths cannot be judged and warn
+    Given a config directory with "qhy-focuser.json" containing:
+      """
+      { "server": { "port": 11113,
+          "tls": { "cert": "pki/qhy-focuser.pem", "key": "pki/qhy-focuser-key.pem" } } }
+      """
+    When I run doctor with --json
+    Then the report contains a "warn" check named "tls.paths" for service "qhy-focuser"
+    And that check's detail mentions "working directory"
+
   Scenario: Auth without TLS warns about cleartext credentials
     Given a config directory with "qhy-focuser.json" containing:
       """
