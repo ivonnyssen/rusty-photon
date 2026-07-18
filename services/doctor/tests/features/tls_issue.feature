@@ -47,6 +47,15 @@ Feature: Certificate issuance via doctor tls issue
     Then the pki file "ppba-driver.pem" exists
     And the pki file "dsd-fp2.pem" does not exist
 
+  Scenario: tls issue reports the issued material as JSON
+    Given a config file "ppba-driver.json" containing:
+      """
+      { "server": { "port": 11112 } }
+      """
+    When I run doctor tls issue with --json
+    Then the report records an applied "generate-ca" provisioning action
+    And the report records an applied "generate-cert" provisioning action for service "ppba-driver"
+
   Scenario: The --force flag re-issues service certificates but never the CA
     Given a config file "ppba-driver.json" containing:
       """

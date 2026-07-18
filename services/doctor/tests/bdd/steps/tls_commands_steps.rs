@@ -120,6 +120,21 @@ fn run_auth_rotate(world: &mut DoctorWorld) {
     );
 }
 
+#[when("I run doctor auth rotate with --json")]
+fn run_auth_rotate_json(world: &mut DoctorWorld) {
+    world.run_doctor_subcommand(&["auth", "rotate", "--json"], None);
+}
+
+#[when("I run doctor tls issue with --json")]
+fn run_tls_issue_json(world: &mut DoctorWorld) {
+    world.run_doctor_subcommand(&["tls", "issue", "--json"], None);
+}
+
+#[when("I run doctor auth hash-password with empty input on stdin")]
+fn run_hash_password_empty(world: &mut DoctorWorld) {
+    world.run_doctor_subcommand(&["auth", "hash-password", "--stdin"], Some(b"\n"));
+}
+
 // ---------------------------------------------------------------------------
 // Process-outcome assertions
 // ---------------------------------------------------------------------------

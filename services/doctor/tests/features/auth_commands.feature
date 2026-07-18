@@ -27,6 +27,21 @@ Feature: Credential commands
     And the auth hash at "/server/auth/password_hash" in "ppba-driver.json" verifies against the credential file
     And the sentinel client auth password verifies against the auth hash in "ppba-driver.json"
 
+  Scenario: hash-password rejects an empty password
+    When I run doctor auth hash-password with empty input on stdin
+    Then the command exits with a non-zero status
+    And stderr contains "password must not be empty"
+
+  Scenario: rotate reports the re-mint as JSON
+    Given a config file "ppba-driver.json" containing:
+      """
+      { "server": { "port": 11112 } }
+      """
+    And doctor has already run with --fix
+    When I run doctor auth rotate with --json
+    Then the report records an applied "mint-credential" provisioning action
+    And the pki file "credential" has changed
+
   Scenario: rotate repairs a mismatched client credential
     Given a config file "ppba-driver.json" whose auth hash is of the password "right-password"
     And a config file "sentinel.json" whose client auth block carries the password "wrong-password"

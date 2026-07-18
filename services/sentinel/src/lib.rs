@@ -304,46 +304,8 @@ impl SentinelBuilder {
         // 401, which is still proof of life. If the intended client cannot
         // be built, fall back to the shared (verifying) client loudly —
         // self-signed TLS peers would then probe as down.
-        let insecure_probe_client = || -> Arc<dyn io::HttpClient> {
-            match ReqwestHttpClient::insecure() {
-                Ok(client) => Arc::new(client),
-                Err(e) => {
-                    tracing::error!(
-                        "{e}; probing through the shared verifying client — \
-                         self-signed TLS peers may report down"
-                    );
-                    Arc::clone(&http)
-                }
-            }
-        };
-        let probe_http: Arc<dyn io::HttpClient> = match (&config.service_auth, ca_path.as_deref()) {
-            (Some(auth), Some(ca)) => match ReqwestHttpClient::with_auth(
-                Some(ca),
-                auth.username.clone(),
-                auth.password.clone(),
-            ) {
-                Ok(client) => Arc::new(client),
-                Err(e) => {
-                    tracing::error!(
-                        "failed to build the authenticated probe client: {e}; probing \
-                         through the shared client without service_auth — auth-on \
-                         peers will answer 401 (still proof of life)"
-                    );
-                    Arc::clone(&http)
-                }
-            },
-            (Some(_), None) => {
-                tracing::warn!(
-                    "service_auth is set but ca_cert is not — probing unauthenticated \
-                     with certificate verification off so the credential never rides \
-                     an unverified connection; auth-on peers answer 401 (still proof \
-                     of life). Set ca_cert to authenticate probes (doctor --fix \
-                     writes both)"
-                );
-                insecure_probe_client()
-            }
-            (None, _) => insecure_probe_client(),
-        };
+        let probe_http =
+            build_probe_client(config.service_auth.as_ref(), ca_path.as_deref(), &http);
         let supervision = DiscoverySupervisor::new(
             Arc::clone(&manager),
             self.config_dir.clone(),
@@ -518,6 +480,66 @@ impl Sentinel {
     }
 }
 
+/// The client the health-supervision probes use. With the doctor-written
+/// `service_auth` credential set AND a `ca_cert` to verify peers against,
+/// probes authenticate (HTTP Basic, https requests only — see
+/// [`ReqwestHttpClient`]) — credentials never ride an unverified or
+/// unencrypted connection. `service_auth` without `ca_cert` cannot honor
+/// that rule (system roots reject self-signed peers, probing them as down),
+/// so it degrades to the unauthenticated path with a loud warning.
+/// Unauthenticated probes send no credentials and never parse the body, and
+/// sentinel cannot assume it holds a CA for every peer's self-signed
+/// certificate, so that client skips certificate verification; auth-on
+/// peers answer 401, which is still proof of life. If the intended client
+/// cannot be built, fall back to the `shared` (verifying) client loudly —
+/// self-signed TLS peers would then probe as down.
+fn build_probe_client(
+    service_auth: Option<&rp_auth::config::ClientAuthConfig>,
+    ca_path: Option<&std::path::Path>,
+    shared: &Arc<dyn io::HttpClient>,
+) -> Arc<dyn io::HttpClient> {
+    let insecure_probe_client = || -> Arc<dyn io::HttpClient> {
+        match ReqwestHttpClient::insecure() {
+            Ok(client) => Arc::new(client),
+            Err(e) => {
+                tracing::error!(
+                    "{e}; probing through the shared verifying client — \
+                     self-signed TLS peers may report down"
+                );
+                Arc::clone(shared)
+            }
+        }
+    };
+    match (service_auth, ca_path) {
+        (Some(auth), Some(ca)) => match ReqwestHttpClient::with_auth(
+            Some(ca),
+            auth.username.clone(),
+            auth.password.clone(),
+        ) {
+            Ok(client) => Arc::new(client),
+            Err(e) => {
+                tracing::error!(
+                    "failed to build the authenticated probe client: {e}; probing \
+                     through the shared client without service_auth — auth-on \
+                     peers will answer 401 (still proof of life)"
+                );
+                Arc::clone(shared)
+            }
+        },
+        (Some(_), None) => {
+            tracing::warn!(
+                "service_auth is set but ca_cert is not — probing unauthenticated \
+                 with certificate verification off so the credential never rides \
+                 an unverified connection; auth-on peers answer 401 (still proof \
+                 of life). Set ca_cert to authenticate probes (doctor --fix \
+                 writes both)"
+            );
+            insecure_probe_client()
+        }
+        (None, _) => insecure_probe_client(),
+    }
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
@@ -525,6 +547,53 @@ mod tests {
     use super::*;
     use crate::config::MonitorConfig;
     use crate::io::MockHttpClient;
+
+    /// A CA file on disk for the authenticated-probe arm.
+    fn temp_ca() -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        rusty_photon_tls::test_cert::generate_ca(dir.path()).unwrap();
+        let ca = dir.path().join("ca.pem");
+        (dir, ca)
+    }
+
+    fn observatory_auth() -> rp_auth::config::ClientAuthConfig {
+        rp_auth::config::ClientAuthConfig {
+            username: "observatory".to_string(),
+            password: "secret".to_string(),
+        }
+    }
+
+    #[test]
+    fn probe_client_authenticates_with_credential_and_ca() {
+        let (_dir, ca) = temp_ca();
+        let shared: Arc<dyn io::HttpClient> = Arc::new(MockHttpClient::new());
+        let client = build_probe_client(Some(&observatory_auth()), Some(&ca), &shared);
+        // A distinct client was built rather than the shared one reused.
+        assert!(!Arc::ptr_eq(
+            &client,
+            &(Arc::clone(&shared) as Arc<dyn io::HttpClient>)
+        ));
+    }
+
+    #[test]
+    fn probe_client_degrades_to_unauthenticated_without_ca() {
+        let shared: Arc<dyn io::HttpClient> = Arc::new(MockHttpClient::new());
+        let client = build_probe_client(Some(&observatory_auth()), None, &shared);
+        assert!(!Arc::ptr_eq(
+            &client,
+            &(Arc::clone(&shared) as Arc<dyn io::HttpClient>)
+        ));
+    }
+
+    #[test]
+    fn probe_client_is_insecure_without_credential() {
+        let shared: Arc<dyn io::HttpClient> = Arc::new(MockHttpClient::new());
+        let client = build_probe_client(None, None, &shared);
+        assert!(!Arc::ptr_eq(
+            &client,
+            &(Arc::clone(&shared) as Arc<dyn io::HttpClient>)
+        ));
+    }
 
     #[tokio::test]
     async fn build_notifiers_creates_pushover_from_config() {

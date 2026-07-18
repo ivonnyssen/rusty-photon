@@ -189,8 +189,19 @@ impl DoctorWorld {
             facts_path.as_str(),
         ];
         args.extend_from_slice(subcommand_args);
-        self.output = Some(bdd_infra::run_once("doctor", &args, stdin));
-        self.report = None;
+        let json = subcommand_args.contains(&"--json");
+        let output = bdd_infra::run_once("doctor", &args, stdin);
+        self.report = if json && output.status.code() == Some(0) {
+            Some(serde_json::from_slice(&output.stdout).unwrap_or_else(|e| {
+                panic!(
+                    "--json output is not valid JSON ({e}): {}",
+                    String::from_utf8_lossy(&output.stdout)
+                )
+            }))
+        } else {
+            None
+        };
+        self.output = Some(output);
     }
 
     pub fn stderr(&self) -> String {
