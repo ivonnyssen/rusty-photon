@@ -144,10 +144,12 @@ fn sync_dir(_parent: &Path) -> std::io::Result<()> {
 /// Carry the replaced file's mode and owner over to the staged temp file (Unix). The rename in
 /// [`save`] replaces the inode, so without this a privileged caller — doctor under sudo, the only
 /// practical way to run it against a packaged install's config root — would strand the config
-/// root-owned and unreadable by the service user. Ownership is only changed when it differs;
-/// unprivileged callers always write their own files, so they never reach the chown. A failed
-/// chown is a save error: silently proceeding would drop the service user's access, which is
-/// worse than not writing at all.
+/// root-owned and unreadable by the service user. The invariant is that a save never changes who
+/// owns the file: the chown runs whenever the staged file's owner differs from the original's,
+/// and a chown that fails is a save error. For an unprivileged caller that only happens in an
+/// anomalous state (a config hand-chowned to another user), where the save now fails with
+/// `PermissionDenied` instead of silently re-owning the file to the writer — surfacing the
+/// anomaly beats papering over it.
 #[cfg(unix)]
 fn preserve_owner_and_mode(path: &Path, tmp: &tempfile::NamedTempFile) -> std::io::Result<()> {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -162,7 +164,17 @@ fn preserve_owner_and_mode(path: &Path, tmp: &tempfile::NamedTempFile) -> std::i
     // to the final owner.
     let staged = tmp.as_file().metadata()?;
     if (staged.uid(), staged.gid()) != (original.uid(), original.gid()) {
-        std::os::unix::fs::fchown(tmp.as_file(), Some(original.uid()), Some(original.gid()))?;
+        std::os::unix::fs::fchown(tmp.as_file(), Some(original.uid()), Some(original.gid()))
+            .map_err(|e| {
+                std::io::Error::new(
+                    e.kind(),
+                    format!(
+                        "keeping the replaced file's owner {}:{}: {e}",
+                        original.uid(),
+                        original.gid()
+                    ),
+                )
+            })?;
     }
     tmp.as_file()
         .set_permissions(std::fs::Permissions::from_mode(original.mode() & 0o7777))?;
@@ -178,7 +190,8 @@ fn preserve_owner_and_mode(_path: &Path, _tmp: &tempfile::NamedTempFile) -> std:
 /// file in the same directory, fsync, rename into place, then fsync the directory (Unix) so the
 /// rename itself is durable. When a file is being replaced, its mode and owner survive onto the
 /// new inode (Unix), so a privileged caller never leaves a config the owning service can no
-/// longer read.
+/// longer read. A save that cannot keep the original owner — an unprivileged caller replacing a
+/// file owned by another user — fails with `PermissionDenied` rather than changing who owns it.
 pub fn save(path: &Path, value: &Value) -> std::io::Result<()> {
     let (tmp, parent) = stage_pretty_json(path, value)?;
     preserve_owner_and_mode(path, &tmp)?;
