@@ -1000,9 +1000,10 @@ fn anchored_path(config_dir: &Path, resolved: &Path) -> PathBuf {
 /// Inside the renewal window warns. Suggestion-only: renewal belongs on
 /// the platform timer, so `--fix` never renews.
 fn tls_expiry(ctx: &Context, scan: &ServiceScan, cert_file: &Path) -> Check {
-    let suggestion = "run `doctor tls renew` (the platform timer's command), or \
-                      `doctor tls issue --force` for a certificate the renew legs \
-                      don't own"
+    let suggestion = "run `doctor tls renew` (the platform timer's command) for \
+                      doctor-issued material (`doctor tls issue --force` re-issues \
+                      it with fresh SANs); a certificate doctor did not issue must \
+                      be replaced by whatever issued it"
         .to_string();
     let pem = match std::fs::read_to_string(cert_file) {
         Ok(pem) => pem,
