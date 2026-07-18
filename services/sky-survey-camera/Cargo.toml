@@ -38,7 +38,7 @@ ndarray = { workspace = true }
 parking_lot = { workspace = true }
 rp-auth = { workspace = true }
 rp-fits = { workspace = true }
-rp-tls = { workspace = true }
+rusty-photon-tls = { workspace = true }
 rusty-photon-config = { workspace = true }
 rusty-photon-server-config = { workspace = true }
 rusty-photon-driver = { workspace = true }

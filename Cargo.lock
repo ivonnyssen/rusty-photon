@@ -403,7 +403,7 @@ dependencies = [
  "rp-auth",
  "rp-ephemeris",
  "rp-fits",
- "rp-tls",
+ "rusty-photon-tls",
  "serde_json",
  "tempfile",
  "tokio",
@@ -572,10 +572,10 @@ dependencies = [
  "reqwest 0.13.4",
  "rmcp",
  "rp-auth",
- "rp-tls",
  "rusty-photon-config",
  "rusty-photon-server-config",
  "rusty-photon-service-lifecycle",
+ "rusty-photon-tls",
  "serde",
  "serde_json",
  "tempfile",
@@ -1154,15 +1154,31 @@ dependencies = [
 name = "doctor"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "axum",
  "bdd-infra",
  "clap",
+ "cloudflare",
  "cucumber",
+ "derive_more",
+ "hostname",
+ "instant-acme",
+ "mockall",
+ "rand 0.10.2",
+ "rcgen",
+ "reqwest 0.13.4",
+ "rp-auth",
+ "rpassword",
+ "rustls",
+ "rustls-pemfile",
  "rusty-photon-config",
  "rusty-photon-doctor-checks",
  "rusty-photon-server-config",
+ "rusty-photon-tls",
  "serde",
  "serde_json",
  "tempfile",
+ "time",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -1187,12 +1203,12 @@ dependencies = [
  "derive_more",
  "humantime-serde",
  "rp-auth",
- "rp-tls",
  "rusty-photon-config",
  "rusty-photon-driver",
  "rusty-photon-server-config",
  "rusty-photon-service-lifecycle",
  "rusty-photon-shared-transport",
+ "rusty-photon-tls",
  "schemars 1.2.1",
  "serde",
  "serde_json",
@@ -1302,7 +1318,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1349,11 +1365,11 @@ dependencies = [
  "regex",
  "reqwest 0.13.4",
  "rp-auth",
- "rp-tls",
  "rusty-photon-config",
  "rusty-photon-driver",
  "rusty-photon-server-config",
  "rusty-photon-service-lifecycle",
+ "rusty-photon-tls",
  "schemars 1.2.1",
  "serde",
  "serde_json",
@@ -3078,12 +3094,12 @@ dependencies = [
  "proptest",
  "reqwest 0.13.4",
  "rp-auth",
- "rp-tls",
  "rusty-photon-config",
  "rusty-photon-driver",
  "rusty-photon-server-config",
  "rusty-photon-service-lifecycle",
  "rusty-photon-shared-transport",
+ "rusty-photon-tls",
  "schemars 1.2.1",
  "serde",
  "serde_json",
@@ -3113,12 +3129,12 @@ dependencies = [
  "proptest",
  "reqwest 0.13.4",
  "rp-auth",
- "rp-tls",
  "rusty-photon-config",
  "rusty-photon-driver",
  "rusty-photon-server-config",
  "rusty-photon-service-lifecycle",
  "rusty-photon-shared-transport",
+ "rusty-photon-tls",
  "schemars 1.2.1",
  "serde",
  "serde_json",
@@ -3292,10 +3308,10 @@ dependencies = [
  "reqwest 0.13.4",
  "rp-auth",
  "rp-fits",
- "rp-tls",
  "rusty-photon-config",
  "rusty-photon-server-config",
  "rusty-photon-service-lifecycle",
+ "rusty-photon-tls",
  "serde",
  "serde_json",
  "tempfile",
@@ -3400,10 +3416,10 @@ dependencies = [
  "mockall",
  "reqwest 0.13.4",
  "rp-auth",
- "rp-tls",
  "rusty-photon-config",
  "rusty-photon-server-config",
  "rusty-photon-service-lifecycle",
+ "rusty-photon-tls",
  "serde",
  "serde_json",
  "tempfile",
@@ -3463,7 +3479,6 @@ dependencies = [
  "proptest",
  "reqwest 0.13.4",
  "rp-auth",
- "rp-tls",
  "rust-embed",
  "rusty-photon-config",
  "rusty-photon-driver",
@@ -3471,6 +3486,7 @@ dependencies = [
  "rusty-photon-server-config",
  "rusty-photon-service-lifecycle",
  "rusty-photon-shared-transport",
+ "rusty-photon-tls",
  "schemars 1.2.1",
  "serde",
  "serde_json",
@@ -3684,11 +3700,11 @@ dependencies = [
  "qhyccd-rs",
  "reqwest 0.13.4",
  "rp-auth",
- "rp-tls",
  "rusty-photon-config",
  "rusty-photon-driver",
  "rusty-photon-server-config",
  "rusty-photon-service-lifecycle",
+ "rusty-photon-tls",
  "schemars 1.2.1",
  "serde",
  "serde_json",
@@ -3717,12 +3733,12 @@ dependencies = [
  "proptest",
  "reqwest 0.13.4",
  "rp-auth",
- "rp-tls",
  "rusty-photon-config",
  "rusty-photon-driver",
  "rusty-photon-server-config",
  "rusty-photon-service-lifecycle",
  "rusty-photon-shared-transport",
+ "rusty-photon-tls",
  "schemars 1.2.1",
  "serde",
  "serde_json",
@@ -4229,11 +4245,11 @@ dependencies = [
  "rp-fits",
  "rp-guider",
  "rp-plate-solver",
- "rp-tls",
  "rpassword",
  "rusty-photon-config",
  "rusty-photon-server-config",
  "rusty-photon-service-lifecycle",
+ "rusty-photon-tls",
  "schemars 1.2.1",
  "serde",
  "serde_json",
@@ -4326,34 +4342,6 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
- "tracing",
-]
-
-[[package]]
-name = "rp-tls"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "axum",
- "cloudflare",
- "derive_more",
- "hostname",
- "hyper-util",
- "instant-acme",
- "mockall",
- "rcgen",
- "reqwest 0.13.4",
- "rustls",
- "rustls-pemfile",
- "schemars 1.2.1",
- "serde",
- "serde_json",
- "socket2",
- "tempfile",
- "thiserror 2.0.18",
- "time",
- "tokio",
- "tokio-rustls",
  "tracing",
 ]
 
@@ -4461,7 +4449,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4529,7 +4517,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4639,7 +4627,7 @@ name = "rusty-photon-server-config"
 version = "0.1.0"
 dependencies = [
  "rp-auth",
- "rp-tls",
+ "rusty-photon-tls",
  "schemars 1.2.1",
  "serde",
  "serde_json",
@@ -4670,6 +4658,27 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "rusty-photon-tls"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "hyper-util",
+ "rcgen",
+ "reqwest 0.13.4",
+ "rustls",
+ "rustls-pemfile",
+ "schemars 1.2.1",
+ "serde",
+ "serde_json",
+ "socket2",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-rustls",
  "tracing",
 ]
 
@@ -4837,10 +4846,10 @@ dependencies = [
  "mockall",
  "reqwest 0.13.4",
  "rp-auth",
- "rp-tls",
  "rusty-photon-config",
  "rusty-photon-server-config",
  "rusty-photon-service-lifecycle",
+ "rusty-photon-tls",
  "serde",
  "serde_json",
  "tempfile",
@@ -4953,9 +4962,9 @@ dependencies = [
 
 [[package]]
 name = "serde_with"
-version = "3.20.0"
+version = "3.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e72c1c2cb7b223fafb600a619537a871c2818583d619401b785e7c0b746ccde2"
+checksum = "76a5c54c7310e7b8b9577c286d7e399ddd876c3e12b3ed917a8aabc4b96e9e8c"
 dependencies = [
  "base64",
  "bs58",
@@ -4973,9 +4982,9 @@ dependencies = [
 
 [[package]]
 name = "serde_with_macros"
-version = "3.20.0"
+version = "3.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b90c488738ecb4fb0262f41f43bc40efc5868d9fb744319ddf5f5317f417bfac"
+checksum = "84d57bc0c8b9a17920c178daa6bb924850d54a9c97ab45194bb8c17ad66bb660"
 dependencies = [
  "darling",
  "proc-macro2",
@@ -5047,10 +5056,10 @@ dependencies = [
  "reqwest 0.13.4",
  "rmcp",
  "rp-auth",
- "rp-tls",
  "rusty-photon-config",
  "rusty-photon-server-config",
  "rusty-photon-service-lifecycle",
+ "rusty-photon-tls",
  "serde",
  "serde_json",
  "tempfile",
@@ -5156,11 +5165,11 @@ dependencies = [
  "reqwest 0.13.4",
  "rp-auth",
  "rp-fits",
- "rp-tls",
  "rusty-photon-config",
  "rusty-photon-driver",
  "rusty-photon-server-config",
  "rusty-photon-service-lifecycle",
+ "rusty-photon-tls",
  "schemars 1.2.1",
  "serde",
  "serde_json",
@@ -5258,12 +5267,12 @@ dependencies = [
  "regex",
  "reqwest 0.13.4",
  "rp-auth",
- "rp-tls",
  "rusty-photon-config",
  "rusty-photon-driver",
  "rusty-photon-server-config",
  "rusty-photon-service-lifecycle",
  "rusty-photon-shared-transport",
+ "rusty-photon-tls",
  "schemars 1.2.1",
  "serde",
  "serde_json",
@@ -5452,7 +5461,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6004,10 +6013,10 @@ dependencies = [
  "mockall",
  "reqwest 0.13.4",
  "rp-auth",
- "rp-tls",
  "rusty-photon-config",
  "rusty-photon-server-config",
  "rusty-photon-service-lifecycle",
+ "rusty-photon-tls",
  "scraper",
  "serde",
  "serde_json",
@@ -6433,9 +6442,9 @@ dependencies = [
 
 [[package]]
 name = "webpki-roots"
-version = "1.0.7"
+version = "1.0.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "52f5ee44c96cf55f1b349600768e3ece3a8f26010c05265ab73f945bb1a2eb9d"
+checksum = "bf85cb06032201fa7c6f829d7db5a7e5aa45bcc0655327713065f6f0576731bf"
 dependencies = [
  "rustls-pki-types",
 ]
@@ -6468,7 +6477,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6954,11 +6963,11 @@ dependencies = [
  "parking_lot",
  "reqwest 0.13.4",
  "rp-auth",
- "rp-tls",
  "rusty-photon-config",
  "rusty-photon-driver",
  "rusty-photon-server-config",
  "rusty-photon-service-lifecycle",
+ "rusty-photon-tls",
  "schemars 1.2.1",
  "serde",
  "serde_json",
@@ -6984,11 +6993,11 @@ dependencies = [
  "derive_more",
  "parking_lot",
  "rp-auth",
- "rp-tls",
  "rusty-photon-config",
  "rusty-photon-driver",
  "rusty-photon-server-config",
  "rusty-photon-service-lifecycle",
+ "rusty-photon-tls",
  "schemars 1.2.1",
  "serde",
  "serde_json",

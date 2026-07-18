@@ -62,6 +62,16 @@ impl Context {
         scan.config_present() || self.installed(scan.entry)
     }
 
+    /// The participating service names — the "installed set" the
+    /// provisioning pass and `doctor tls issue` issue certificates for.
+    pub fn installed_services(&self) -> Vec<String> {
+        self.scans
+            .iter()
+            .filter(|s| self.participates(s))
+            .map(|s| s.entry.name.to_string())
+            .collect()
+    }
+
     fn installed(&self, entry: &CatalogEntry) -> bool {
         self.facts.unit(&entry.unit_name()).is_some()
     }
@@ -746,6 +756,7 @@ fn url_conventions(ctx: &Context) -> Vec<Check> {
 fn tls_and_auth(ctx: &Context) -> Vec<Check> {
     let mut checks = Vec::new();
     for scan in ctx.scans.iter().filter(|s| ctx.participates(s)) {
+        checks.extend(tls_auth_absent(ctx, scan));
         let Some(server) = scan.server() else {
             continue;
         };
@@ -779,8 +790,8 @@ fn tls_and_auth(ctx: &Context) -> Vec<Check> {
                         missing.join(", ")
                     ),
                     Some(
-                        "generate certs (rp init-tls today; doctor owns this from D6) \
-                         or fix the paths"
+                        "generate certs (`doctor tls issue`, or `doctor --fix` to also \
+                         wire the config) or fix the paths"
                             .to_string(),
                     ),
                 ));
@@ -796,6 +807,160 @@ fn tls_and_auth(ctx: &Context) -> Vec<Check> {
                 Some("add a server.tls block (ADR-003: Basic auth over TLS)".to_string()),
             ));
         }
+    }
+    checks.extend(auth_mismatch(ctx));
+    checks
+}
+
+/// The D6a absent checks: an installed service without a `server.tls` /
+/// `server.auth` block serves plain, unauthenticated HTTP. Legal (absent
+/// means off — ADR-016 decision 10(d)) and fixable: each check plans the
+/// whole-block write the provisioning pass applies. The `auth` plan needs
+/// the observatory credential, so it appears only once `pki/credential`
+/// exists (under `--fix` the material pass runs first).
+fn tls_auth_absent(ctx: &Context, scan: &ServiceScan) -> Vec<Check> {
+    if scan.value().is_none() {
+        // No parseable file: the read-level checks own the diagnosis, and
+        // provisioning has nothing to write into.
+        return Vec::new();
+    }
+    let (tls_absent, auth_absent, server_key_present) = match &scan.server {
+        ServerBlock::Parsed { server, .. } => (server.tls.is_none(), server.auth.is_none(), true),
+        // Valid JSON without a server key: the service applies its plain
+        // HTTP defaults, so both blocks are absent.
+        ServerBlock::BlockAbsent => (true, true, false),
+        // An unparseable block is config.server-shape's diagnosis; writing
+        // into it would be guesswork.
+        ServerBlock::Invalid(_) | ServerBlock::FileAbsent => return Vec::new(),
+    };
+    let name = scan.entry.name;
+    let mut checks = Vec::new();
+    if tls_absent {
+        let tls_value = crate::provision::tls_block_value(&ctx.config_dir, name);
+        let fixes = if server_key_present {
+            vec![crate::report::FixOp::SetObject {
+                service: name.to_string(),
+                pointer: "/server/tls".to_string(),
+                value: tls_value,
+            }]
+        } else {
+            // No server key at all: the block is created whole, keeping the
+            // port the service would have defaulted to.
+            vec![crate::report::FixOp::SetObject {
+                service: name.to_string(),
+                pointer: "/server".to_string(),
+                value: serde_json::json!({ "port": scan.entry.default_port, "tls": tls_value }),
+            }]
+        };
+        checks.push(
+            Check::warn(
+                "tls.absent",
+                svc(scan),
+                format!("{name} has no server.tls block — it serves plain HTTP"),
+                Some(
+                    "run `doctor --fix` to issue a certificate and turn TLS on \
+                     (services pick it up at next restart)"
+                        .to_string(),
+                ),
+            )
+            .with_fixes(fixes),
+        );
+    }
+    if auth_absent {
+        let fixes = match plan_auth_block(ctx) {
+            Some(value) => vec![crate::report::FixOp::SetObject {
+                service: name.to_string(),
+                pointer: "/server/auth".to_string(),
+                value,
+            }],
+            None => Vec::new(),
+        };
+        checks.push(
+            Check::warn(
+                "auth.absent",
+                svc(scan),
+                format!("{name} has no server.auth block — it answers unauthenticated"),
+                Some(
+                    "run `doctor --fix` to mint the observatory credential and turn \
+                     auth on (services pick it up at next restart)"
+                        .to_string(),
+                ),
+            )
+            .with_fixes(fixes),
+        );
+    }
+    checks
+}
+
+/// The `server.auth` block value for one service: the observatory username
+/// and a fresh Argon2id hash of the minted credential. `None` until the
+/// credential exists.
+fn plan_auth_block(ctx: &Context) -> Option<serde_json::Value> {
+    let password = crate::provision::read_credential(&ctx.config_dir)?;
+    match rp_auth::credentials::hash_password(&password) {
+        Ok(hash) => Some(serde_json::json!({
+            "username": crate::provision::CREDENTIAL_USERNAME,
+            "password_hash": hash,
+        })),
+        Err(e) => {
+            tracing::warn!("could not hash the observatory credential: {e}");
+            None
+        }
+    }
+}
+
+/// `auth.mismatch`: sentinel's `service_auth` plaintext must verify
+/// (Argon2id) against each installed service's `server.auth` hash, or its
+/// authenticated probes will 401. Suggestion-only — hand-set credentials
+/// are operator intent, so doctor reports the pair and points at
+/// `doctor auth rotate`.
+fn auth_mismatch(ctx: &Context) -> Vec<Check> {
+    let mut checks = Vec::new();
+    let Some(sentinel_scan) = ctx.scan("sentinel").filter(|s| ctx.participates(s)) else {
+        return checks;
+    };
+    let Some(sentinel) = scan::view::<SentinelView>(sentinel_scan).and_then(Result::ok) else {
+        return checks;
+    };
+    let Some(client) = sentinel.service_auth else {
+        return checks;
+    };
+    let (Some(username), Some(password)) = (client.username, client.password) else {
+        return checks;
+    };
+    for scan in ctx.scans.iter().filter(|s| ctx.participates(s)) {
+        if scan.entry.name == "sentinel" {
+            // service_auth is for the supervised peers; sentinel does not
+            // probe itself.
+            continue;
+        }
+        let Some(auth) = scan.server().and_then(|s| s.auth.as_ref()) else {
+            continue;
+        };
+        let username_matches = auth.username == username;
+        if username_matches && rp_auth::credentials::verify_password(&password, &auth.password_hash)
+        {
+            continue;
+        }
+        let what = if username_matches {
+            "password does not verify against"
+        } else {
+            "username does not match"
+        };
+        checks.push(Check::warn(
+            "auth.mismatch",
+            svc(scan),
+            format!(
+                "sentinel's service_auth {what} {}'s server.auth — its \
+                 authenticated probes will get 401s",
+                scan.entry.name
+            ),
+            Some(
+                "run `doctor auth rotate` to re-mint the observatory credential \
+                 and re-align every copy, or fix the pair by hand"
+                    .to_string(),
+            ),
+        ));
     }
     checks
 }

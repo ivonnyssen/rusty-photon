@@ -32,7 +32,7 @@ ascom-alpaca = { workspace = true, features = ["server", "camera"] }
 # nothing else — the EFW/EAF SDKs belong to their own services.
 zwo-rs = { workspace = true, features = ["camera"] }
 rp-auth = { workspace = true }
-rp-tls = { workspace = true }
+rusty-photon-tls = { workspace = true }
 rusty-photon-config = { workspace = true }
 rusty-photon-server-config = { workspace = true }
 rusty-photon-driver = { workspace = true }

@@ -8,9 +8,9 @@ use std::sync::Arc;
 
 use ascom_alpaca::api::{CargoServerInfo, Device, SafetyMonitor};
 use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult, Server};
-use rp_tls::config::TlsConfig;
 pub use rusty_photon_server_config::AlpacaServerConfig;
 use rusty_photon_service_lifecycle::ReloadSignal;
+use rusty_photon_tls::config::TlsConfig;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
 use tokio::time::{interval, Duration};
@@ -429,7 +429,7 @@ impl ServerBuilder {
                     tracing::warn!(
                         "Authentication is enabled but TLS is not. \
                          Credentials will be transmitted in cleartext. \
-                         Consider enabling TLS (see `rp init-tls`)."
+                         Consider enabling TLS (see `doctor --fix`)."
                     );
                 }
                 rp_auth::layer(router, auth)
@@ -438,7 +438,8 @@ impl ServerBuilder {
         };
 
         let listener =
-            rp_tls::server::bind_dual_stack_tokio(self.config.server.socket_addr()).await?;
+            rusty_photon_tls::server::bind_dual_stack_tokio(self.config.server.socket_addr())
+                .await?;
         let local_addr = listener.local_addr()?;
 
         // Opt-in Alpaca UDP discovery responder (config `discovery_port`);
@@ -495,11 +496,12 @@ impl BoundServer {
             match tls {
                 Some(ref tls_config) => {
                     info!("filemonitor started on {} (TLS)", local_addr);
-                    rp_tls::server::serve_tls(listener, router, tls_config, shutdown).await
+                    rusty_photon_tls::server::serve_tls(listener, router, tls_config, shutdown)
+                        .await
                 }
                 None => {
                     info!("filemonitor started on {}", local_addr);
-                    rp_tls::server::serve_plain(listener, router, shutdown).await
+                    rusty_photon_tls::server::serve_plain(listener, router, shutdown).await
                 }
             }
         };
@@ -511,7 +513,7 @@ impl BoundServer {
 
 /// Build a fresh `BoundServer` from a `Config` and run it until the
 /// `shutdown` future resolves. The drain semantics are whatever
-/// `rp_tls::server::serve_plain` / `serve_tls` provide for graceful
+/// `rusty_photon_tls::server::serve_plain` / `serve_tls` provide for graceful
 /// shutdown.
 pub async fn start_server(
     config: Config,

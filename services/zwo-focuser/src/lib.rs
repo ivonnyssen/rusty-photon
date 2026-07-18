@@ -43,8 +43,8 @@ use std::sync::Arc;
 
 use ascom_alpaca::api::{CargoServerInfo, Device};
 use ascom_alpaca::Server;
-use rp_tls::config::TlsConfig;
 use rusty_photon_service_lifecycle::ReloadSignal;
+use rusty_photon_tls::config::TlsConfig;
 use tokio::net::TcpListener;
 use tracing::{debug, info, warn};
 use zwo_rs::FocuserInfo;
@@ -161,7 +161,7 @@ impl ServerBuilder {
         // in-process `with_reload` loop rebinds the same port; a raw bind could
         // fail to rebind while a prior listener's TIME_WAIT lingers.
         let bind_addr = self.config.server.socket_addr();
-        let listener = rp_tls::server::bind_dual_stack_tokio(bind_addr)
+        let listener = rusty_photon_tls::server::bind_dual_stack_tokio(bind_addr)
             .await
             .map_err(|source| ZwoFocuserError::Bind {
                 addr: bind_addr.to_string(),
@@ -171,7 +171,7 @@ impl ServerBuilder {
             .local_addr()
             .map_err(|source| ZwoFocuserError::Bind {
                 addr: bind_addr.to_string(),
-                source: rp_tls::error::TlsError::Io(source),
+                source: rusty_photon_tls::error::TlsError::Io(source),
             })?;
 
         // Opt-in Alpaca UDP discovery responder (config `discovery_port`);
@@ -188,7 +188,7 @@ impl ServerBuilder {
                     warn!(
                         "Authentication is enabled but TLS is not. \
                          Credentials will be transmitted in cleartext. \
-                         Consider enabling TLS (see `rp init-tls`)."
+                         Consider enabling TLS (see `doctor --fix`)."
                     );
                 }
                 rp_auth::layer(app, auth)
@@ -254,11 +254,11 @@ impl BoundServer {
         let serve = async {
             match tls {
                 Some(ref tls_config) => {
-                    rp_tls::server::serve_tls(listener, app, tls_config, shutdown)
+                    rusty_photon_tls::server::serve_tls(listener, app, tls_config, shutdown)
                         .await
                         .map_err(|e| ZwoFocuserError::Server(e.to_string()))
                 }
-                None => rp_tls::server::serve_plain(listener, app, shutdown)
+                None => rusty_photon_tls::server::serve_plain(listener, app, shutdown)
                     .await
                     .map_err(|e| ZwoFocuserError::Server(e.to_string())),
             }

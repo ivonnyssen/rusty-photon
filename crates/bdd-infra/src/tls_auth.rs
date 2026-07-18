@@ -40,12 +40,17 @@ impl PkiFixture {
     /// `generate_service_cert` always includes as a SAN).
     pub fn generate(service_name: &str) -> Self {
         let dir = TempDir::new().unwrap();
-        rp_tls::cert::generate_ca(dir.path()).unwrap();
+        rusty_photon_tls::test_cert::generate_ca(dir.path()).unwrap();
         let ca_pem = std::fs::read_to_string(dir.path().join("ca.pem")).unwrap();
         let ca_key = std::fs::read_to_string(dir.path().join("ca-key.pem")).unwrap();
         let certs_dir = dir.path().join("certs");
-        rp_tls::cert::generate_service_cert(&ca_pem, &ca_key, service_name, &[], &certs_dir)
-            .unwrap();
+        rusty_photon_tls::test_cert::generate_service_cert(
+            &ca_pem,
+            &ca_key,
+            service_name,
+            &certs_dir,
+        )
+        .unwrap();
 
         let password = uuid::Uuid::new_v4().simple().to_string();
         let password_hash = rp_auth::credentials::hash_password(&password).unwrap();
@@ -90,7 +95,7 @@ impl PkiFixture {
 
     /// An HTTPS client trusting this fixture's CA.
     pub fn https_client(&self) -> reqwest::Client {
-        rp_tls::client::build_reqwest_client(Some(&self.ca_path())).unwrap()
+        rusty_photon_tls::client::build_reqwest_client(Some(&self.ca_path())).unwrap()
     }
 
     /// The `server.tls` JSON fragment pointing at the generated cert pair.

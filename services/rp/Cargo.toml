@@ -31,7 +31,7 @@ rp-catalog = { workspace = true }
 rp-ephemeris = { workspace = true }
 rp-guider = { workspace = true }
 rp-plate-solver = { workspace = true }
-rp-tls = { workspace = true }
+rusty-photon-tls = { workspace = true }
 rpassword = { workspace = true }
 rp-fits = { workspace = true }
 rusty-photon-config = { workspace = true }

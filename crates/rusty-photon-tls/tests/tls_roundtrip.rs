@@ -12,16 +12,21 @@ async fn https_roundtrip_with_generated_certs() {
     let pki_dir = tempfile::tempdir().unwrap();
     let certs_dir = pki_dir.path().join("certs");
 
-    rp_tls::cert::generate_ca(pki_dir.path()).unwrap();
+    rusty_photon_tls::test_cert::generate_ca(pki_dir.path()).unwrap();
 
     let ca_cert_pem = std::fs::read_to_string(pki_dir.path().join("ca.pem")).unwrap();
     let ca_key_pem = std::fs::read_to_string(pki_dir.path().join("ca-key.pem")).unwrap();
 
-    rp_tls::cert::generate_service_cert(&ca_cert_pem, &ca_key_pem, "test-service", &[], &certs_dir)
-        .unwrap();
+    rusty_photon_tls::test_cert::generate_service_cert(
+        &ca_cert_pem,
+        &ca_key_pem,
+        "test-service",
+        &certs_dir,
+    )
+    .unwrap();
 
     // Build TLS config
-    let tls_config = rp_tls::config::TlsConfig {
+    let tls_config = rusty_photon_tls::config::TlsConfig {
         cert: certs_dir
             .join("test-service.pem")
             .to_string_lossy()
@@ -34,14 +39,16 @@ async fn https_roundtrip_with_generated_certs() {
 
     // Start TLS server
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let listener = rp_tls::server::bind_dual_stack_tokio(addr).await.unwrap();
+    let listener = rusty_photon_tls::server::bind_dual_stack_tokio(addr)
+        .await
+        .unwrap();
     let bound_addr = listener.local_addr().unwrap();
 
     let router = Router::new().route("/health", get(|| async { "ok" }));
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let server_handle = tokio::spawn(async move {
-        rp_tls::server::serve_tls(listener, router, &tls_config, async {
+        rusty_photon_tls::server::serve_tls(listener, router, &tls_config, async {
             shutdown_rx.await.ok();
         })
         .await
@@ -50,7 +57,8 @@ async fn https_roundtrip_with_generated_certs() {
 
     // Build client with CA trust
     let client =
-        rp_tls::client::build_reqwest_client(Some(&pki_dir.path().join("ca.pem"))).unwrap();
+        rusty_photon_tls::client::build_reqwest_client(Some(&pki_dir.path().join("ca.pem")))
+            .unwrap();
 
     // Make HTTPS request
     let url = format!("https://localhost:{}/health", bound_addr.port());
@@ -69,15 +77,20 @@ async fn client_without_ca_rejects_self_signed() {
     let pki_dir = tempfile::tempdir().unwrap();
     let certs_dir = pki_dir.path().join("certs");
 
-    rp_tls::cert::generate_ca(pki_dir.path()).unwrap();
+    rusty_photon_tls::test_cert::generate_ca(pki_dir.path()).unwrap();
 
     let ca_cert_pem = std::fs::read_to_string(pki_dir.path().join("ca.pem")).unwrap();
     let ca_key_pem = std::fs::read_to_string(pki_dir.path().join("ca-key.pem")).unwrap();
 
-    rp_tls::cert::generate_service_cert(&ca_cert_pem, &ca_key_pem, "test-service", &[], &certs_dir)
-        .unwrap();
+    rusty_photon_tls::test_cert::generate_service_cert(
+        &ca_cert_pem,
+        &ca_key_pem,
+        "test-service",
+        &certs_dir,
+    )
+    .unwrap();
 
-    let tls_config = rp_tls::config::TlsConfig {
+    let tls_config = rusty_photon_tls::config::TlsConfig {
         cert: certs_dir
             .join("test-service.pem")
             .to_string_lossy()
@@ -90,14 +103,16 @@ async fn client_without_ca_rejects_self_signed() {
 
     // Start TLS server
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let listener = rp_tls::server::bind_dual_stack_tokio(addr).await.unwrap();
+    let listener = rusty_photon_tls::server::bind_dual_stack_tokio(addr)
+        .await
+        .unwrap();
     let bound_addr = listener.local_addr().unwrap();
 
     let router = Router::new().route("/health", get(|| async { "ok" }));
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let server_handle = tokio::spawn(async move {
-        rp_tls::server::serve_tls(listener, router, &tls_config, async {
+        rusty_photon_tls::server::serve_tls(listener, router, &tls_config, async {
             shutdown_rx.await.ok();
         })
         .await
@@ -105,7 +120,7 @@ async fn client_without_ca_rejects_self_signed() {
     });
 
     // Build client WITHOUT CA trust — should reject the self-signed cert
-    let client = rp_tls::client::build_reqwest_client(None).unwrap();
+    let client = rusty_photon_tls::client::build_reqwest_client(None).unwrap();
 
     let url = format!("https://localhost:{}/health", bound_addr.port());
     let result = client.get(&url).send().await;
@@ -120,14 +135,16 @@ async fn client_without_ca_rejects_self_signed() {
 async fn plain_http_roundtrip() {
     // Start plain HTTP server
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let listener = rp_tls::server::bind_dual_stack_tokio(addr).await.unwrap();
+    let listener = rusty_photon_tls::server::bind_dual_stack_tokio(addr)
+        .await
+        .unwrap();
     let bound_addr = listener.local_addr().unwrap();
 
     let router = Router::new().route("/health", get(|| async { "ok" }));
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let server_handle = tokio::spawn(async move {
-        rp_tls::server::serve_plain(listener, router, async {
+        rusty_photon_tls::server::serve_plain(listener, router, async {
             shutdown_rx.await.ok();
         })
         .await

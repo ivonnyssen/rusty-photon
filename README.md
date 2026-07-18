@@ -219,7 +219,7 @@ rusty-photon/
     rp-ephemeris/                    Astronomical math (Ephemeris + ERFA wrapper + Site)
     rp-fits/                         FITS reader/writer wrapper (ADR-001)
     rp-plate-solver/                 HTTP client for the plate-solver service
-    rp-tls/                          TLS/ACME helpers for inter-service comms (ADR-002)
+    rusty-photon-tls/                TLS serving for inter-service comms (ADR-002; issuance lives in doctor)
     rusty-photon-config/             Config-path + first-run UniqueID + config.get/apply/schema protocol
     rusty-photon-driver/             Shared ASCOM-driver runtime: DriverError + config-action dispatch (ADR-007)
     rusty-photon-i18n/               Workspace Fluent i18n loader + locale resolver

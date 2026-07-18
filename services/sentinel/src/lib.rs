@@ -157,7 +157,10 @@ impl SentinelBuilder {
     /// When `config.ca_cert` is set, the HTTP client trusts that CA for
     /// connecting to TLS-enabled Alpaca services.
     pub fn new(config: Config) -> Self {
-        let ca_path = config.ca_cert.as_deref().map(rp_tls::config::expand_tilde);
+        let ca_path = config
+            .ca_cert
+            .as_deref()
+            .map(rusty_photon_tls::config::expand_tilde);
         let http: Arc<dyn io::HttpClient> = match ReqwestHttpClient::new(ca_path.as_deref()) {
             Ok(client) => Arc::new(client),
             Err(e) => {
@@ -233,7 +236,10 @@ impl SentinelBuilder {
         let config = self.config;
 
         // Use injected monitors/notifiers or fall back to config factories
-        let ca_path = config.ca_cert.as_deref().map(rp_tls::config::expand_tilde);
+        let ca_path = config
+            .ca_cert
+            .as_deref()
+            .map(rusty_photon_tls::config::expand_tilde);
         let monitors = self
             .monitors
             .unwrap_or_else(|| config.build_monitors(&http, ca_path.as_deref()));
@@ -284,22 +290,22 @@ impl SentinelBuilder {
 
         // The discovery loop (registry upkeep + universal health
         // supervision) is appended after the DI override so injecting custom
-        // event monitors never silently disables supervision. Its probes use
-        // a client that skips certificate verification: probes send no
-        // credentials and never parse the body, and sentinel cannot assume
-        // it holds a CA for every peer's self-signed certificate. If that
-        // client cannot be built, fall back to the shared (verifying) client
-        // loudly — self-signed TLS peers would then probe as down.
-        let probe_http: Arc<dyn io::HttpClient> = match ReqwestHttpClient::insecure() {
-            Ok(client) => Arc::new(client),
-            Err(e) => {
-                tracing::error!(
-                    "{e}; probing through the shared verifying client — \
-                     self-signed TLS peers may report down"
-                );
-                Arc::clone(&http)
-            }
-        };
+        // event monitors never silently disables supervision. With the
+        // doctor-written `service_auth` credential set AND a `ca_cert` to
+        // verify peers against, probes authenticate (HTTP Basic, https
+        // requests only — see `ReqwestHttpClient`) — credentials never ride
+        // an unverified or unencrypted connection. `service_auth` without
+        // `ca_cert` cannot honor that rule (system roots reject self-signed
+        // peers, probing them as down), so it degrades to the
+        // unauthenticated path with a loud warning. Unauthenticated probes
+        // send no credentials and never parse the body, and sentinel cannot
+        // assume it holds a CA for every peer's self-signed certificate, so
+        // that client skips certificate verification; auth-on peers answer
+        // 401, which is still proof of life. If the intended client cannot
+        // be built, fall back to the shared (verifying) client loudly —
+        // self-signed TLS peers would then probe as down.
+        let probe_http =
+            build_probe_client(config.service_auth.as_ref(), ca_path.as_deref(), &http);
         let supervision = DiscoverySupervisor::new(
             Arc::clone(&manager),
             self.config_dir.clone(),
@@ -373,7 +379,7 @@ pub struct Sentinel {
     state: state::StateHandle,
     cancel: CancellationToken,
     dashboard_listener: Option<tokio::net::TcpListener>,
-    dashboard_tls: Option<rp_tls::config::TlsConfig>,
+    dashboard_tls: Option<rusty_photon_tls::config::TlsConfig>,
     dashboard_auth: Option<rp_auth::config::AuthConfig>,
     restarts: Arc<restart::RestartManager>,
 }
@@ -426,7 +432,7 @@ impl Sentinel {
                             tracing::warn!(
                                 "Authentication is enabled but TLS is not. \
                                  Credentials will be transmitted in cleartext. \
-                                 Consider enabling TLS (see `rp init-tls`)."
+                                 Consider enabling TLS (see `doctor --fix`)."
                             );
                         }
                         rp_auth::layer(router, auth)
@@ -436,9 +442,14 @@ impl Sentinel {
 
                 match dashboard_tls {
                     Some(ref tls_config) => {
-                        rp_tls::server::serve_tls(listener, router, tls_config, async move {
-                            cancel_for_dashboard.cancelled().await;
-                        })
+                        rusty_photon_tls::server::serve_tls(
+                            listener,
+                            router,
+                            tls_config,
+                            async move {
+                                cancel_for_dashboard.cancelled().await;
+                            },
+                        )
                         .await
                         .ok();
                     }
@@ -469,6 +480,66 @@ impl Sentinel {
     }
 }
 
+/// The client the health-supervision probes use. With the doctor-written
+/// `service_auth` credential set AND a `ca_cert` to verify peers against,
+/// probes authenticate (HTTP Basic, https requests only — see
+/// [`ReqwestHttpClient`]) — credentials never ride an unverified or
+/// unencrypted connection. `service_auth` without `ca_cert` cannot honor
+/// that rule (system roots reject self-signed peers, probing them as down),
+/// so it degrades to the unauthenticated path with a loud warning.
+/// Unauthenticated probes send no credentials and never parse the body, and
+/// sentinel cannot assume it holds a CA for every peer's self-signed
+/// certificate, so that client skips certificate verification; auth-on
+/// peers answer 401, which is still proof of life. If the intended client
+/// cannot be built, fall back to the `shared` (verifying) client loudly —
+/// self-signed TLS peers would then probe as down.
+fn build_probe_client(
+    service_auth: Option<&rp_auth::config::ClientAuthConfig>,
+    ca_path: Option<&std::path::Path>,
+    shared: &Arc<dyn io::HttpClient>,
+) -> Arc<dyn io::HttpClient> {
+    let insecure_probe_client = || -> Arc<dyn io::HttpClient> {
+        match ReqwestHttpClient::insecure() {
+            Ok(client) => Arc::new(client),
+            Err(e) => {
+                tracing::error!(
+                    "{e}; probing through the shared verifying client — \
+                     self-signed TLS peers may report down"
+                );
+                Arc::clone(shared)
+            }
+        }
+    };
+    match (service_auth, ca_path) {
+        (Some(auth), Some(ca)) => match ReqwestHttpClient::with_auth(
+            Some(ca),
+            auth.username.clone(),
+            auth.password.clone(),
+        ) {
+            Ok(client) => Arc::new(client),
+            Err(e) => {
+                tracing::error!(
+                    "failed to build the authenticated probe client: {e}; probing \
+                     through the shared client without service_auth — auth-on \
+                     peers will answer 401 (still proof of life)"
+                );
+                Arc::clone(shared)
+            }
+        },
+        (Some(_), None) => {
+            tracing::warn!(
+                "service_auth is set but ca_cert is not — probing unauthenticated \
+                 with certificate verification off so the credential never rides \
+                 an unverified connection; auth-on peers answer 401 (still proof \
+                 of life). Set ca_cert to authenticate probes (doctor --fix \
+                 writes both)"
+            );
+            insecure_probe_client()
+        }
+        (None, _) => insecure_probe_client(),
+    }
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
@@ -476,6 +547,53 @@ mod tests {
     use super::*;
     use crate::config::MonitorConfig;
     use crate::io::MockHttpClient;
+
+    /// A CA file on disk for the authenticated-probe arm.
+    fn temp_ca() -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        rusty_photon_tls::test_cert::generate_ca(dir.path()).unwrap();
+        let ca = dir.path().join("ca.pem");
+        (dir, ca)
+    }
+
+    fn observatory_auth() -> rp_auth::config::ClientAuthConfig {
+        rp_auth::config::ClientAuthConfig {
+            username: "observatory".to_string(),
+            password: "secret".to_string(),
+        }
+    }
+
+    #[test]
+    fn probe_client_authenticates_with_credential_and_ca() {
+        let (_dir, ca) = temp_ca();
+        let shared: Arc<dyn io::HttpClient> = Arc::new(MockHttpClient::new());
+        let client = build_probe_client(Some(&observatory_auth()), Some(&ca), &shared);
+        // A distinct client was built rather than the shared one reused.
+        assert!(!Arc::ptr_eq(
+            &client,
+            &(Arc::clone(&shared) as Arc<dyn io::HttpClient>)
+        ));
+    }
+
+    #[test]
+    fn probe_client_degrades_to_unauthenticated_without_ca() {
+        let shared: Arc<dyn io::HttpClient> = Arc::new(MockHttpClient::new());
+        let client = build_probe_client(Some(&observatory_auth()), None, &shared);
+        assert!(!Arc::ptr_eq(
+            &client,
+            &(Arc::clone(&shared) as Arc<dyn io::HttpClient>)
+        ));
+    }
+
+    #[test]
+    fn probe_client_is_insecure_without_credential() {
+        let shared: Arc<dyn io::HttpClient> = Arc::new(MockHttpClient::new());
+        let client = build_probe_client(None, None, &shared);
+        assert!(!Arc::ptr_eq(
+            &client,
+            &(Arc::clone(&shared) as Arc<dyn io::HttpClient>)
+        ));
+    }
 
     #[tokio::test]
     async fn build_notifiers_creates_pushover_from_config() {

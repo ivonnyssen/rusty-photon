@@ -55,10 +55,29 @@ pub enum FixOp {
         pointer: String,
         value: String,
     },
+    /// A whole JSON object written at the pointer — `server.tls`,
+    /// `server.auth`, and the client auth blocks the provisioning pass
+    /// distributes. Applied only where the target is absent (or `null`):
+    /// present blocks are operator intent and are never overwritten.
+    SetObject {
+        service: String,
+        pointer: String,
+        value: serde_json::Value,
+    },
     RemoveKey {
         service: String,
         pointer: String,
     },
+    /// Provisioning action (not a config-pointer op): the self-signed CA
+    /// was generated under the pki tree.
+    GenerateCa,
+    /// Provisioning action: a service certificate pair was issued.
+    GenerateCert {
+        service: String,
+    },
+    /// Provisioning action: the observatory credential was minted and its
+    /// canonical `pki/credential` copy written.
+    MintCredential,
     /// An op this doctor build does not know — a plan from a newer binary.
     /// Never emitted, only parsed; it cannot be applied.
     #[serde(other)]
@@ -66,14 +85,17 @@ pub enum FixOp {
 }
 
 impl FixOp {
-    /// The service whose config file this op targets (`None` for an op from
-    /// a newer binary).
+    /// The service whose config file (or certificate) this op targets
+    /// (`None` for host-wide provisioning actions and ops from a newer
+    /// binary).
     pub fn service(&self) -> Option<&str> {
         match self {
             FixOp::SetNumber { service, .. }
             | FixOp::SetString { service, .. }
-            | FixOp::RemoveKey { service, .. } => Some(service),
-            FixOp::Unknown => None,
+            | FixOp::SetObject { service, .. }
+            | FixOp::RemoveKey { service, .. }
+            | FixOp::GenerateCert { service } => Some(service),
+            FixOp::GenerateCa | FixOp::MintCredential | FixOp::Unknown => None,
         }
     }
 }
@@ -91,8 +113,20 @@ impl std::fmt::Display for FixOp {
                 pointer,
                 value,
             } => write!(f, "{service}.json: set {pointer} to \"{value}\""),
+            // The value may carry credential material (a password hash, the
+            // client plaintext), so only the pointer is printed.
+            FixOp::SetObject {
+                service, pointer, ..
+            } => write!(f, "{service}.json: set {pointer}"),
             FixOp::RemoveKey { service, pointer } => {
                 write!(f, "{service}.json: remove {pointer}")
+            }
+            FixOp::GenerateCa => write!(f, "pki: generated the CA certificate and key"),
+            FixOp::GenerateCert { service } => {
+                write!(f, "pki: issued a certificate pair for {service}")
+            }
+            FixOp::MintCredential => {
+                write!(f, "pki: minted the observatory credential")
             }
             FixOp::Unknown => write!(f, "an operation this doctor build does not know"),
         }
@@ -304,6 +338,64 @@ mod tests {
             "an operation this doctor build does not know"
         );
         assert_eq!(FixOp::Unknown.service(), None);
+    }
+
+    #[test]
+    fn test_provisioning_ops_round_trip_with_kebab_tags() {
+        let ops = vec![
+            FixOp::SetObject {
+                service: "ppba-driver".to_string(),
+                pointer: "/server/tls".to_string(),
+                value: serde_json::json!({ "cert": "/p/ppba-driver.pem", "key": "/p/ppba-driver-key.pem" }),
+            },
+            FixOp::GenerateCa,
+            FixOp::GenerateCert {
+                service: "dsd-fp2".to_string(),
+            },
+            FixOp::MintCredential,
+        ];
+        let json = serde_json::to_string(&ops).unwrap();
+        for tag in [
+            r#""op":"set-object""#,
+            r#""op":"generate-ca""#,
+            r#""op":"generate-cert""#,
+            r#""op":"mint-credential""#,
+        ] {
+            assert!(json.contains(tag), "{tag} missing from {json}");
+        }
+        let back: Vec<FixOp> = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, ops);
+        assert_eq!(ops[0].service(), Some("ppba-driver"));
+        assert_eq!(ops[1].service(), None);
+        assert_eq!(ops[2].service(), Some("dsd-fp2"));
+        assert_eq!(ops[3].service(), None);
+    }
+
+    #[test]
+    fn test_set_object_display_never_prints_the_value() {
+        let op = FixOp::SetObject {
+            service: "sentinel".to_string(),
+            pointer: "/service_auth".to_string(),
+            value: serde_json::json!({ "username": "observatory", "password": "s3cret" }),
+        };
+        let rendered = op.to_string();
+        assert_eq!(rendered, "sentinel.json: set /service_auth");
+        assert!(!rendered.contains("s3cret"));
+        assert_eq!(
+            FixOp::GenerateCa.to_string(),
+            "pki: generated the CA certificate and key"
+        );
+        assert_eq!(
+            FixOp::GenerateCert {
+                service: "rp".to_string()
+            }
+            .to_string(),
+            "pki: issued a certificate pair for rp"
+        );
+        assert_eq!(
+            FixOp::MintCredential.to_string(),
+            "pki: minted the observatory credential"
+        );
     }
 
     #[test]

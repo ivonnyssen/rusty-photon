@@ -61,7 +61,7 @@ impl ServerBuilder {
                 if server.tls.is_none() {
                     tracing::warn!(
                         "Authentication is enabled but TLS is not. Credentials will be \
-                         transmitted in cleartext. Consider enabling TLS (see `rp init-tls`)."
+                         transmitted in cleartext. Consider enabling TLS (see `doctor --fix`)."
                     );
                 }
                 rp_auth::layer(router, auth)
@@ -101,7 +101,7 @@ pub struct BoundServer {
     listener: tokio::net::TcpListener,
     router: axum::Router,
     local_addr: SocketAddr,
-    tls: Option<rp_tls::config::TlsConfig>,
+    tls: Option<rusty_photon_tls::config::TlsConfig>,
 }
 
 impl BoundServer {
@@ -113,9 +113,11 @@ impl BoundServer {
         info!("session-runner service started on {}", self.local_addr);
 
         match self.tls {
-            Some(ref tls) => rp_tls::server::serve_tls(self.listener, self.router, tls, shutdown)
-                .await
-                .map_err(|e| SessionRunnerError::Server(e.to_string()))?,
+            Some(ref tls) => {
+                rusty_photon_tls::server::serve_tls(self.listener, self.router, tls, shutdown)
+                    .await
+                    .map_err(|e| SessionRunnerError::Server(e.to_string()))?
+            }
             None => axum::serve(self.listener, self.router)
                 .with_graceful_shutdown(shutdown)
                 .await

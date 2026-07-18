@@ -42,9 +42,9 @@ use std::sync::Arc;
 
 use ascom_alpaca::api::CargoServerInfo;
 use ascom_alpaca::Server;
-use rp_tls::config::TlsConfig;
 use rusty_photon_service_lifecycle::ReloadSignal;
 use rusty_photon_shared_transport::TransportFactory;
+use rusty_photon_tls::config::TlsConfig;
 use tracing::{debug, info};
 
 use crate::config::CliOverrides;
@@ -165,7 +165,7 @@ impl ServerBuilder {
                         tracing::warn!(
                             "Authentication is enabled but TLS is not. \
                              Credentials will be transmitted in cleartext. \
-                             Consider enabling TLS (see `rp init-tls`)."
+                             Consider enabling TLS (see `doctor --fix`)."
                         );
                     }
                     rp_auth::layer(router, auth)
@@ -174,7 +174,8 @@ impl ServerBuilder {
             };
 
             let listener =
-                rp_tls::server::bind_dual_stack_tokio(self.config.server.socket_addr()).await?;
+                rusty_photon_tls::server::bind_dual_stack_tokio(self.config.server.socket_addr())
+                    .await?;
             let local_addr = listener.local_addr()?;
 
             // Opt-in Alpaca UDP discovery responder (config `discovery_port`);
@@ -258,11 +259,12 @@ impl BoundServer {
             match tls {
                 Some(ref tls_config) => {
                     info!("qhy-focuser started on {} (TLS)", local_addr);
-                    rp_tls::server::serve_tls(listener, router, tls_config, shutdown).await
+                    rusty_photon_tls::server::serve_tls(listener, router, tls_config, shutdown)
+                        .await
                 }
                 None => {
                     info!("qhy-focuser started on {}", local_addr);
-                    rp_tls::server::serve_plain(listener, router, shutdown).await
+                    rusty_photon_tls::server::serve_plain(listener, router, shutdown).await
                 }
             }
         };

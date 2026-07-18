@@ -5,9 +5,9 @@ use rcgen::{
     BasicConstraints, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair,
     KeyUsagePurpose, SanType,
 };
+use rusty_photon_tls::error::{Result, TlsError};
+use rusty_photon_tls::permissions::set_restricted_permissions;
 use tracing::debug;
-
-use crate::error::{Result, TlsError};
 
 /// Duration for CA certificate validity (10 years in days).
 const CA_VALIDITY_DAYS: i64 = 3650;
@@ -42,6 +42,7 @@ pub fn generate_ca(output_dir: &Path) -> Result<()> {
 
     fs::write(&cert_path, cert.pem())?;
     fs::write(&key_path, key_pair.serialize_pem())?;
+    set_restricted_permissions(&key_path)?;
 
     debug!("Generated CA certificate: {}", cert_path.display());
     debug!("Generated CA private key: {}", key_path.display());
@@ -107,6 +108,7 @@ pub fn generate_service_cert(
 
     fs::write(&cert_path, service_cert.pem())?;
     fs::write(&key_path, service_key.serialize_pem())?;
+    set_restricted_permissions(&key_path)?;
 
     debug!(
         "Generated service certificate for '{}': {}",
@@ -142,15 +144,6 @@ fn build_dns_sans(extra_sans: &[String]) -> Vec<String> {
 fn get_hostname() -> Option<String> {
     hostname::get().ok().and_then(|h| h.into_string().ok())
 }
-
-/// List of default services for certificate generation.
-pub const DEFAULT_SERVICES: &[&str] = &[
-    "filemonitor",
-    "ppba-driver",
-    "qhy-focuser",
-    "rp",
-    "sentinel",
-];
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
@@ -240,7 +233,7 @@ mod tests {
     fn generated_cert_chain_validates() {
         use rustls::pki_types::CertificateDer;
 
-        crate::install_default_crypto_provider();
+        rusty_photon_tls::install_default_crypto_provider();
 
         let ca_dir = tempfile::tempdir().unwrap();
         generate_ca(ca_dir.path()).unwrap();

@@ -97,7 +97,7 @@ driver-client + config-model logic (target/tech-agnostic) is extracted into
                  │      ▼                                   │
                  │  HttpClient (io.rs)                      │
                  │      │  get() / put_form()  (reqwest,    │
-                 │      │  rp-tls CA trust + Basic auth)    │
+                 │      │  rusty-photon-tls CA trust + Basic auth)    │
                  └──────┼──────────────────────────────────┘
                         │  PUT /api/v1/covercalibrator/0/action
                         │     Action=config.get | config.apply
@@ -110,7 +110,7 @@ driver (the pattern `sentinel` uses for its Alpaca polling — see
 [`sentinel.md`](sentinel.md)):
 
 - **`HttpClient`** (`io.rs`) — `get(url)` / `put_form(url, params)`. Production
-  impl wraps `reqwest` and is built through `rp_tls::client::build_reqwest_client`
+  impl wraps `reqwest` and is built through `rusty_photon_tls::client::build_reqwest_client`
   so it trusts the Rusty Photon CA, with optional HTTP Basic auth. Requests send
   `Connection: close` (no keep-alive pooling): a driver applies config by
   reloading — tearing its server down and rebinding — which leaves a pooled
@@ -667,9 +667,9 @@ banner.
 
 - **The BFF holds driver credentials** (and rp's, for the `rp` target), in its
   own config, never in the page. It authenticates with HTTP Basic auth and
-  trusts the Rusty Photon CA via `rp-tls` — the same client construction
+  trusts the Rusty Photon CA via `rusty-photon-tls` — the same client construction
   `sentinel` uses. Config actions are protected by whatever server-wide
-  `rp-auth`/`rp-tls` the target runs; the BFF is just an authorised client (see
+  `rp-auth`/`rusty-photon-tls` the target runs; the BFF is just an authorised client (see
   the plan's Security section). Roster-derived config targets are called
   without credentials (rp redacts per-device auth) — an authed device needs its
   own static `drivers` entry.
@@ -677,13 +677,13 @@ banner.
   reach the browser; the round-trip sentinel keeps them unchanged on apply.
 - **BFF-side TLS/auth is the shared server shape.** `server.tls` serves the UI
   over HTTPS and `server.auth` puts every route (`/health` included) behind
-  HTTP Basic auth — the same `rp-tls`/`rp-auth` stack every other service uses.
+  HTTP Basic auth — the same `rusty-photon-tls`/`rp-auth` stack every other service uses.
   Absent both — the default — the BFF serves **plain unauthenticated HTTP** on
   `0.0.0.0:11120`, so on a shared network either enable `tls` + `auth` or set
   `bind_address` to `127.0.0.1` and reach it via an SSH tunnel. Enabling `auth`
   without `tls` logs a warning: credentials would travel in cleartext. (The
   driver credentials the BFF holds are unaffected — the BFF is a client, and
-  each driver still enforces its own `rp-auth`/`rp-tls`.)
+  each driver still enforces its own `rp-auth`/`rusty-photon-tls`.)
 
 ## MVP Scope
 
@@ -715,7 +715,7 @@ banner.
   button, both posting to `/config/{service}/restart` (Phase 4 of the
   config-actions plan).
 - **BFF-side TLS + HTTP Basic auth** via the shared `server` block
-  (`rp-tls`/`rp-auth`, wrapping the whole router — see
+  (`rusty-photon-tls`/`rp-auth`, wrapping the whole router — see
   [Configuration](#configuration) and [Security](#security)).
 - Dark theme reusing the mock CSS tokens; assets embedded via `include_str!`
   (CSS + the HTMX bundle + the SSE extension); no npm, no WASM.
@@ -952,8 +952,8 @@ that lists the driver's unit, so discovery works without systemd. Scenarios:
   affordance.
 
 **TLS/auth scenarios** (`auth.feature`, `tls.feature`) spawn the BFF with a
-generated CA + service certificate (`rp_tls::cert`) and probe `/health` over
-`rp_tls::client::build_reqwest_client`: with `server.auth` configured, valid
+generated CA + service certificate (`rusty_photon_tls::test_cert`) and probe `/health` over
+`rusty_photon_tls::client::build_reqwest_client`: with `server.auth` configured, valid
 Basic credentials answer 200 while wrong or missing ones answer 401 with the
 `WWW-Authenticate` challenge; without it, no credentials are needed; with
 `server.tls` configured, the BFF answers over HTTPS.
@@ -1040,7 +1040,7 @@ suites run everywhere the existing one does. Coverage:
 | Module | Description |
 |--------|-------------|
 | `config.rs` | `Config`, the shared `ServerConfig` (re-exported from `rusty-photon-server-config`), the `Drivers` map + `DriverTarget`, the optional `RpTarget` + `SentinelTarget`, defaults + JSON load. |
-| `io.rs` | `HttpClient` trait (`#[cfg_attr(test, mockall::automock)]`) + `ReqwestHttpClient` (rp-tls CA trust + optional Basic auth). |
+| `io.rs` | `HttpClient` trait (`#[cfg_attr(test, mockall::automock)]`) + `ReqwestHttpClient` (rusty-photon-tls CA trust + optional Basic auth). |
 | `driver_client.rs` | `ConfigClient` trait + `AlpacaConfigClient` (ASCOM action transport) + `RestConfigClient` (rp's plain-REST transport): request shaping, envelope parsing, error mapping. Re-exports the shared wire types from `rusty_photon_config::actions`. |
 | `sentinel_client.rs` | `SentinelClient` trait + `HttpSentinelClient`: `POST /api/services/{name}/restart` request shaping + outcome/404/409 parsing against Sentinel's REST API. |
 | `rp_client.rs` | The non-config rp surface: `RpApi` trait (`equipment_status`, `session_status`) + its reqwest impl — the seam the equipment page and stream shell render from. |
@@ -1052,7 +1052,7 @@ suites run everywhere the existing one does. Coverage:
 | `sse_proxy.rs` | `/stream/events`: rp SSE client (incremental frame parser), envelope→fragment translation, cursor passthrough, shutdown token. |
 | `assets.rs` | `include_str!` of `assets/app.css` + `assets/htmx.min.js` + `assets/htmx-ext-sse.js`; asset routes. |
 | `lib.rs` | `build_router`, multi-driver `AppState` (+ rp target + Sentinel client), the `/config/{service}` (+ `/restart`), `/equipment*`, `/stream*` handlers, public exports. |
-| `main.rs` | CLI (clap) + tracing init; lifecycle owned by `ServiceRunner` (axum — or `rp_tls::server::serve_tls` when `server.tls` is set — with the optional `rp_auth` layer, graceful shutdown, SSE shutdown token). |
+| `main.rs` | CLI (clap) + tracing init; lifecycle owned by `ServiceRunner` (axum — or `rusty_photon_tls::server::serve_tls` when `server.tls` is set — with the optional `rp_auth` layer, graceful shutdown, SSE shutdown token). |
 
 ## References
 

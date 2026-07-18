@@ -87,7 +87,7 @@ impl ServerBuilder {
                     tracing::warn!(
                         "Authentication is enabled but TLS is not. \
                          Credentials will be transmitted in cleartext. \
-                         Consider enabling TLS (see `rp init-tls`)."
+                         Consider enabling TLS (see `doctor --fix`)."
                     );
                 }
                 rp_auth::layer(router, auth)
@@ -116,7 +116,7 @@ pub struct BoundServer {
     router: axum::Router,
     local_addr: SocketAddr,
     /// TLS settings from the shared server config; `None` serves plain HTTP.
-    tls: Option<rp_tls::config::TlsConfig>,
+    tls: Option<rusty_photon_tls::config::TlsConfig>,
 }
 
 impl BoundServer {
@@ -141,7 +141,7 @@ impl BoundServer {
         } = self;
         match tls {
             Some(ref tls_config) => {
-                rp_tls::server::serve_tls(listener, router, tls_config, shutdown)
+                rusty_photon_tls::server::serve_tls(listener, router, tls_config, shutdown)
                     .await
                     .map_err(std::io::Error::other)
             }

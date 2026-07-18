@@ -33,6 +33,13 @@ pub struct Config {
     /// Path to CA certificate for trusting TLS-enabled services
     #[serde(default)]
     pub ca_cert: Option<String>,
+    /// The observatory credential doctor mints and distributes
+    /// (docs/services/doctor.md §Provisioning): HTTP Basic credentials the
+    /// health-supervision probes present to supervised services whose
+    /// `server.auth` is on. Absent means unauthenticated probes, where an
+    /// auth challenge (401/403) still counts as proof of life.
+    #[serde(default)]
+    pub service_auth: Option<rp_auth::config::ClientAuthConfig>,
     /// Optional push-based operation watchdog. Absent means safety polling
     /// only (today's behavior). See [`OperationWatchdogConfig`].
     ///
@@ -53,6 +60,7 @@ impl Default for Config {
             dashboard: DashboardConfig::default(),
             server: default_server(),
             ca_cert: None,
+            service_auth: None,
             operation_watchdog: None,
         }
     }
@@ -749,6 +757,25 @@ mod tests {
         assert!(wd.notifiers.is_empty());
         assert!(wd.operations.is_empty());
         assert!(wd.message_template.contains("{operation}"));
+    }
+
+    #[test]
+    fn parse_service_auth_credential() {
+        let json = r#"{
+            "ca_cert": "/var/lib/rusty-photon/.config/rusty-photon/pki/ca.pem",
+            "service_auth": { "username": "observatory", "password": "plain" }
+        }"#;
+        let config: Config = serde_json::from_str(json).unwrap();
+        let auth = config.service_auth.unwrap();
+        assert_eq!(auth.username, "observatory");
+        assert_eq!(auth.password, "plain");
+    }
+
+    #[test]
+    fn service_auth_absent_by_default() {
+        let config: Config = serde_json::from_str("{}").unwrap();
+        assert!(config.service_auth.is_none());
+        assert!(Config::default().service_auth.is_none());
     }
 
     #[test]

@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 /// Server-side authentication configuration.
 ///
 /// Stored in each service's config file. The password is hashed with Argon2id;
-/// use `rp hash-password` to generate the hash.
+/// use `doctor auth hash-password` to generate the hash.
 #[derive(Clone, Serialize, Deserialize, schemars::JsonSchema, derive_more::Debug)]
 pub struct AuthConfig {
     pub username: String,

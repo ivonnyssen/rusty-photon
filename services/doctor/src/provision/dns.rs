@@ -1,9 +1,8 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
+use rusty_photon_tls::error::{Result, TlsError};
 use tracing::debug;
-
-use crate::error::{Result, TlsError};
 
 /// Trait for DNS providers that can create and delete TXT records
 /// for ACME DNS-01 challenge validation.

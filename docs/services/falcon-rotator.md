@@ -288,7 +288,7 @@ Either path is a follow-up PR. The MVP just exposes the raw count.
 | `server` | `port` | HTTP server port | `11118` |
 | `server` | `bind_address` | Interface to bind (`0.0.0.0` listens on all interfaces) | `"0.0.0.0"` |
 | `server` | `discovery_port` | Alpaca UDP discovery responder port (opt-in; normally `32227`). Absent/`null` disables discovery — many rusty-photon servers on one host would collide on the shared port | _absent_ (disabled) |
-| `server` | `tls` | Optional `rp-tls` block | none |
+| `server` | `tls` | Optional `rusty-photon-tls` block | none |
 | `server` | `auth` | Optional `rp-auth` block | none |
 | `rotator` | `name` | ASCOM device name | `"Pegasus Falcon Rotator"` |
 | `rotator` | `unique_id` | Stable ASCOM UniqueID (see [Device identity](#device-identity-uniqueid)) | _minted UUIDv4 on first run_ |

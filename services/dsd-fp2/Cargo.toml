@@ -41,7 +41,7 @@ rusty-photon-service-lifecycle = { workspace = true }
 rusty-photon-config = { workspace = true }
 rusty-photon-server-config = { workspace = true }
 rusty-photon-driver = { workspace = true }
-rp-tls = { workspace = true }
+rusty-photon-tls = { workspace = true }
 rp-auth = { workspace = true }
 axum = { workspace = true }
 tempfile = { workspace = true }

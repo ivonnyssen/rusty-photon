@@ -51,7 +51,7 @@ mod tests {
     fn build_client_with_valid_ca() {
         // Generate a CA cert first
         let dir = tempfile::tempdir().unwrap();
-        crate::cert::generate_ca(dir.path()).unwrap();
+        crate::test_cert::generate_ca(dir.path()).unwrap();
 
         let ca_path = dir.path().join("ca.pem");
         let client = build_reqwest_client(Some(&ca_path)).unwrap();

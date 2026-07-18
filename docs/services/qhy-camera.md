@@ -784,10 +784,10 @@ the "how" decisions made while building.
   UDP discovery is opt-in via `server.discovery_port` (absent by default —
   many rusty-photon servers on one host would collide on the shared
   discovery port), like every Alpaca service.
-  The listener is created via the shared `rp_tls::server::bind_dual_stack_tokio`
+  The listener is created via the shared `rusty_photon_tls::server::bind_dual_stack_tokio`
   helper (IPv6 + IPv4, `SO_REUSEADDR`) like every other Alpaca service, so the
   in-process `with_reload` rebind survives a prior listener's lingering
-  `TIME_WAIT`. TLS termination / Basic Auth (the rest of `rp-tls` / `rp-auth`)
+  `TIME_WAIT`. TLS termination / Basic Auth (the rest of `rusty-photon-tls` / `rp-auth`)
   are still Future Work.
 - **SDK call serialization.** The single in-flight capture is the one logical
   owner of the device's blocking SDK calls: `start_exposure` claims an
@@ -851,7 +851,7 @@ the "how" decisions made while building.
 - **PulseGuide** / `CanPulseGuide`.
 - **Focuser consolidation.** `qhyccd-rs` also covers QHY focusers; a future
   evaluation could let this SDK supersede the serial [`qhy-focuser`](qhy-focuser.md).
-- **TLS / Basic Auth** via `rp-tls` / `rp-auth`.
+- **TLS / Basic Auth** via `rusty-photon-tls` / `rp-auth`.
 - **`ElectronsPerADU` / `FullWellCapacity`** real values if a signal model is
   added.
 

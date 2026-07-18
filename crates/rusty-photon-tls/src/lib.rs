@@ -1,18 +1,17 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
-//! TLS utilities for Rusty Photon services.
+//! TLS serving utilities for Rusty Photon services.
 //!
-//! Provides certificate generation, TLS server helpers, client CA trust,
-//! and shared configuration types for opt-in HTTPS across all services.
+//! Provides TLS server helpers, client CA trust, and shared configuration
+//! types for opt-in HTTPS across all services. Certificate *provisioning*
+//! (self-signed issuance, ACME, DNS-01) lives in doctor — the one binary
+//! that mints material — so services carry only what serving needs.
 
-pub mod acme;
-pub mod acme_config;
-pub mod cert;
 pub mod client;
 pub mod config;
-pub mod dns;
 pub mod error;
 pub mod permissions;
 pub mod server;
+pub mod test_cert;
 
 /// Install `aws-lc-rs` as the process-wide default rustls `CryptoProvider`.
 ///
@@ -31,7 +30,7 @@ pub fn install_default_crypto_provider() {
             tracing::error!(
                 cipher_suites = existing.cipher_suites.len(),
                 kx_groups = existing.kx_groups.len(),
-                "rustls crypto provider was already installed before rp-tls could register aws-lc-rs; keeping existing provider"
+                "rustls crypto provider was already installed before rusty-photon-tls could register aws-lc-rs; keeping existing provider"
             );
         }
     });

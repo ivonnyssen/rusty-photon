@@ -19,7 +19,7 @@ pub enum QhyCameraError {
     #[error("server bind on port {port}: {source}")]
     Bind {
         port: u16,
-        source: rp_tls::error::TlsError,
+        source: rusty_photon_tls::error::TlsError,
     },
 
     /// The HTTP server returned an error while serving.

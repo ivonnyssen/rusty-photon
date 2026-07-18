@@ -2,13 +2,13 @@ use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use rusty_photon_tls::error::{Result, TlsError};
+use rusty_photon_tls::permissions::set_restricted_permissions;
 use tokio::sync::Mutex;
 use tracing::{debug, info};
 
-use crate::acme_config::{self, AcmeConfig};
-use crate::dns::DnsProvider;
-use crate::error::{Result, TlsError};
-use crate::permissions::set_restricted_permissions;
+use super::acme_config::{self, AcmeConfig};
+use super::dns::DnsProvider;
 
 /// Trait abstracting the ACME protocol operations.
 ///
@@ -239,9 +239,8 @@ pub async fn issue_certificate(
     let (cert_chain_pem, private_key_pem) =
         acme_client.order_certificate(config.domain.clone()).await?;
 
-    // Write certificate and key
-    let certs_dir = pki_dir.join("certs");
-    std::fs::create_dir_all(&certs_dir)?;
+    // Write certificate and key (flat pki tree — no certs/ subdirectory)
+    std::fs::create_dir_all(pki_dir)?;
 
     let cert_path = acme_config::acme_cert_path(pki_dir);
     let key_path = acme_config::acme_key_path(pki_dir);
@@ -400,7 +399,7 @@ mod tests {
 
     #[tokio::test]
     async fn real_acme_client_invalid_credentials_returns_parse_error() {
-        let dns = crate::dns::MockDnsProvider::new();
+        let dns = super::super::dns::MockDnsProvider::new();
         let client = RealAcmeClient::new(&dns);
         let result = client
             .create_or_load_account(
