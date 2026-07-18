@@ -291,9 +291,10 @@ async fn probe_shell_out(ctx: &Context, scan: &ServiceScan, unit: &UnitFacts) ->
                 "service.doctor-probe",
                 service,
                 format!(
-                    "{} did not produce a doctor report (exit {}{}{}) — a binary older \
-                     than the doctor subcommand predates it; update the service package \
-                     to restore per-service diagnosis",
+                    "{} did not produce a doctor report (exit {}{}{}) — commonly a \
+                     binary from before the doctor subcommand (update the service \
+                     package); a crash or non-JSON output on stdout lands here too, \
+                     and then the exit code and stderr above are the clue",
                     binary.display(),
                     output
                         .status
