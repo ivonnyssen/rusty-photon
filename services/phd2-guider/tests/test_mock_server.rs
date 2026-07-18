@@ -1560,22 +1560,22 @@ async fn test_server_disconnect_triggers_reconnection() {
     wait_connected(&client).await;
     assert!(client.is_connected().await);
 
-    // The server drops the stream after its delay; wait for the client to
-    // observe the loss.
-    let c = &client;
-    wait_until("connection loss", || async move { !c.is_connected().await }).await;
-
-    // Should receive ConnectionLost event
-    let mut _found_connection_lost = false;
-    while let Ok(event) = events.try_recv() {
-        if matches!(event, phd2_guider::Phd2Event::ConnectionLost { .. }) {
-            _found_connection_lost = true;
-            break;
+    // The server drops the stream after its delay; the ConnectionLost
+    // broadcast is the deterministic loss signal (we subscribed before
+    // connecting, so it cannot be missed).
+    tokio::time::timeout(EVENT_DEADLINE, async {
+        loop {
+            if let Ok(phd2_guider::Phd2Event::ConnectionLost { .. }) = events.recv().await {
+                return;
+            }
         }
-    }
+    })
+    .await
+    .expect("no ConnectionLost event within the deadline");
 
-    // The dropped listener can never accept a reconnect, so the loss is
-    // final — no settling delay needed before the assert.
+    // The connected flag flips before the broadcast, and the dropped
+    // listener can never accept a reconnect, so the loss is already
+    // observable and final.
     assert!(!client.is_connected().await);
 
     // Stop reconnection to clean up
