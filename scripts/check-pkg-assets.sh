@@ -207,7 +207,6 @@ win_feature_id() {
 }
 
 pkg_wxs=installer/Package.wxs
-seed_ps1=installer/seed-ui-htmx-config.ps1
 if [ -f "$pkg_wxs" ]; then
     for svc in $WIN_SERVICES; do
         frag="installer/fragments/$svc.wxs"
@@ -276,26 +275,6 @@ if [ -f "$pkg_wxs" ]; then
                 ;;
         esac
     done
-
-    # The ui-htmx seed table must cover exactly the Drivers-tree services with
-    # the documented ports (the Automation/Core services never appear in the
-    # BFF's drivers map).
-    if [ -f "$seed_ps1" ]; then
-        for svc in $WIN_SERVICES; do
-            case "$svc" in
-                sentinel | ui-htmx | rp | session-runner | plate-solver | phd2-guider | calibrator-flats)
-                    grep -q "'$svc' *= *@{ port" "$seed_ps1" \
-                        && err "$svc: non-driver service must not appear in the ui-htmx seed table"
-                    ;;
-                *)
-                    grep -q "'$svc' *= *@{ port = $(win_port_of "$svc");" "$seed_ps1" \
-                        || err "$svc: ui-htmx seed table missing or wrong port (expected $(win_port_of "$svc"))"
-                    ;;
-            esac
-        done
-    else
-        err "installer: missing $seed_ps1"
-    fi
 fi
 
 # The QHY Windows pin lives in four shipped places; they must all match the

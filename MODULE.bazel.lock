@@ -513,7 +513,7 @@
           "FILE:@@//services/session-runner/Cargo.toml c5600170f68b9b254f74e8b5b49eaa7d4ef84f768aeaaeb77a50badd43f43785",
           "FILE:@@//services/sky-survey-camera/Cargo.toml 27616927ccfb1888ea75f20c52b018626b2aad363aa1c7032dc8c3b0f6a792e9",
           "FILE:@@//services/star-adventurer-gti/Cargo.toml e207be46192be08d20c3fa53c78b1003b2f15adb225c29fd7dae84a288950b25",
-          "FILE:@@//services/ui-htmx/Cargo.toml 1c11d9dcf271eeb716ad9b4460efbe860c2163802e69a04ee5cfb90bf43f3424",
+          "FILE:@@//services/ui-htmx/Cargo.toml bdb6b3faad9599cd2db71667e11b25d507138407ac70659692f0fa71b31eb20b",
           "FILE:@@//services/zwo-camera/Cargo.toml 0877b29c1d0503bdcc4ca25b6437117224014ee1b06aec438a7b1dfcd8bda253",
           "FILE:@@//crates/zwo-rs/Cargo.toml 18d5eb535625d0f1a3204886e5985ca229385a690196866772b26c9a11b2bd3c",
           "FILE:@@//crates/zwo-rs/libzwo-sys/Cargo.toml 3aa5e5b3221bf6278edaf3c647b9203a6c7b30808c3beca1d9ba3e0731b8ed5c",

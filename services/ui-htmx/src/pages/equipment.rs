@@ -159,7 +159,7 @@ fn tier_badge(tier: &Tier) -> Markup {
         Tier::AuthRequired => (
             "auth",
             "auth required",
-            Some("This device requires credentials — add it to the ui-htmx drivers map to configure it."),
+            Some("This device requires credentials the BFF does not hold — configure it from its own setup UI or its config file."),
         ),
         Tier::Unreachable => ("unreachable", "unreachable", None),
     };

@@ -21,11 +21,6 @@ async fn bff_unreachable_rp(world: &mut UiWorld) {
     world.start_bff_with_unreachable_rp().await;
 }
 
-#[given("a BFF with no rp target configured")]
-async fn bff_without_rp(world: &mut UiWorld) {
-    world.start_bff_without_rp().await;
-}
-
 #[when(regex = r#"^I submit the rp form with "([\w.]+)" set to "([^"]*)"$"#)]
 async fn submit_rp_form(world: &mut UiWorld, field: String, value: String) {
     world

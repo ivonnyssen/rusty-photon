@@ -86,9 +86,6 @@
       <Component Id="ProgramDataLogsDir" Directory="RustyPhotonLogsFolder" Guid="93DCA4CB-A732-4378-9BF3-C3631F11154D">
         <CreateFolder />
       </Component>
-      <Component Id="SeedUiHtmxConfigScript" Directory="INSTALLFOLDER">
-        <File Id="SeedUiHtmxConfigScriptFile" Name="seed-ui-htmx-config.ps1" Source="installer\seed-ui-htmx-config.ps1" KeyPath="yes" />
-      </Component>
       <Component Id="LicenseMit" Directory="INSTALLFOLDER">
         <File Id="LicenseMitFile" Name="LICENSE-MIT.txt" Source="!(bindpath.repo)\LICENSE-MIT" KeyPath="yes" />
       </Component>
@@ -97,29 +94,11 @@
       </Component>
     </ComponentGroup>
 
-    <!-- ui-htmx driver-map seeding (W4): ui-htmx discovers drivers only via
-         the static `drivers` map in its own config (no discovery), and its
-         self-created default lists a lone dsd-fp2 — wrong for almost every
-         install. The MSI uniquely knows the selection, so after InstallFiles
-         (and before StartServices, or ui-htmx would self-create its default
-         first) a deferred elevated action runs the seed script, which writes
-         %ProgramData%\rusty-photon\ui-htmx.json from the installed
-         rusty-photon-*.exe set — ONLY if the file does not exist, preserving
-         the self-creation / config.apply ownership model. Upgrades, repairs
-         and modifies re-run it harmlessly (the config exists → no-op). -->
-    <SetProperty Id="SeedUiHtmxConfig"
-                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]seed-ui-htmx-config.ps1&quot;"
-                 Sequence="execute"
-                 Before="SeedUiHtmxConfig" />
-    <CustomAction Id="SeedUiHtmxConfig"
-                  BinaryRef="Wix4UtilCA_X64"
-                  DllEntry="WixQuietExec64"
-                  Execute="deferred"
-                  Impersonate="no"
-                  Return="check" />
-    <InstallExecuteSequence>
-      <Custom Action="SeedUiHtmxConfig" After="InstallFiles" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />
-    </InstallExecuteSequence>
+    <!-- The former ui-htmx driver-map seed action (W4) is gone with the
+         drivers map itself (#569): ui-htmx's self-created default — the
+         required rp target on localhost — is correct for every install, and
+         the device list lives in rp's equipment roster, not in ui-htmx
+         config. -->
 
     <!-- Feature tree. Level 1 = installed by default (Core is also
          non-deselectable); Level 2 = off by default, selectable in the

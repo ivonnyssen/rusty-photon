@@ -270,6 +270,11 @@ service per ADR-014.
   wrong for everything else). A Core-only install seeds an empty map
   (honest, unlike the phantom dsd-fp2 default), and a co-installed rp
   feature seeds the `rp` target, enabling `/equipment` and `/stream`.
+  **Retired 2026-07-18** ([#569](https://github.com/ivonnyssen/rusty-photon/issues/569)):
+  the drivers map itself is gone — device targets derive from rp's
+  equipment roster, ui-htmx's self-created default (the required `rp`
+  target) is correct for every install, and the seed action + script were
+  deleted; `verify-msi.ps1` now asserts the self-created shape instead.
 - `scripts/build-msi.ps1` (runs on a dev box or CI, mirrors
   `build-packages.sh`): stage pinned SDKs into the package cache (QHY
   `sdk_win64_<ver>.zip` for `qhyccd.lib`; ZWO DLLs from the pinned ref);
@@ -282,8 +287,9 @@ service per ADR-014.
   Windows box / `windows-latest`): silent install with all features →
   every auto-start service `RUNNING` (`sc query`), gated four present but
   stopped → configs self-created in `%PROGRAMDATA%` with minted
-  `unique_id`s → the seeded `ui-htmx.json` `drivers` map matches the
-  installed feature set → HTTP port probes (`/management/apiversions` for
+  `unique_id`s → the self-created `ui-htmx.json` carries the required `rp`
+  target and no retired `drivers` key (#569 — formerly a seeded-map
+  assertion) → HTTP port probes (`/management/apiversions` for
   Alpaca services) → log files appearing under `...\logs\` → kill one service
   process and observe SCM restart it (failure-actions proof) → feature
   remove → full uninstall: services gone, Program Files clean, configs and

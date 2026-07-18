@@ -83,7 +83,3 @@ Feature: Equipment page
     And rp's config file on disk does not contain the string "flat-panel"
     And the roster section "Cover calibrators" lists "flat-panel"
 
-  Scenario: Without an rp target the equipment page explains it is unavailable
-    Given a BFF with no rp target configured
-    When I open the equipment page
-    Then the page explains that no rp orchestrator is configured

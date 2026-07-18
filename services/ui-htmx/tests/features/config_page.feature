@@ -1,8 +1,10 @@
 Feature: driver configuration page
   The BFF serves a configuration page for a real driver, backed by the driver's
   own `config.get` / `config.schema` / `config.apply` ASCOM actions over HTTP.
-  The form is generated from the driver's JSON Schema (`config.schema`), and one
-  BFF can serve several drivers, each at its own `/config/{service}` route.
+  The form is generated from the driver's JSON Schema (`config.schema`). Every
+  device target is derived from rp's equipment roster (#569) — these scenarios
+  spawn the driver, a real rp with the driver rostered as cover calibrator
+  "dsd-fp2", and the BFF, and open `/config/rp:cover_calibrators:dsd-fp2`.
   Opening the page renders a form filled with the driver's current effective
   configuration; a field pinned by a command-line override is shown disabled.
   Submitting the form calls `config.apply` on the driver: an unchanged
@@ -39,7 +41,7 @@ Feature: driver configuration page
     Given a dsd-fp2 driver running with serial.port "/dev/ttyACM0" and max_brightness 4096
     When I submit the config form setting max_brightness to 2048
     Then the page reports the driver is reloading
-    And the page polls /config/dsd-fp2/status every 1s for reconnection
+    And the page polls the device's status route every 1s for reconnection
     And the rendered output matches the "config_card_reloading" snapshot
 
   Scenario: The reloaded driver's new configuration is served back through the page
@@ -67,11 +69,3 @@ Feature: driver configuration page
     When I open the dsd-fp2 config page
     Then the page shows a driver error
 
-  Scenario: One BFF serves several drivers, each at its own route
-    Given a dsd-fp2 driver running and also exposed as "dsd-fp2-alt"
-    When I open the configuration index
-    Then the index links to "dsd-fp2"
-    And the index links to "dsd-fp2-alt"
-    And the rendered output matches the "index_page" snapshot
-    When I open the config page for "dsd-fp2-alt"
-    Then the page shows the value "/dev/ttyACM0"

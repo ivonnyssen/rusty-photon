@@ -23,7 +23,7 @@ fn generate_tls_certs(world: &mut UiWorld) {
 fn configured_with_tls_and_auth(world: &mut UiWorld) {
     world.pending_config = Some(serde_json::json!({
         "server": pki(world).server_block(0),
-        "drivers": {}
+        "rp": {}
     }));
 }
 
@@ -31,7 +31,7 @@ fn configured_with_tls_and_auth(world: &mut UiWorld) {
 fn configured_with_tls_only(world: &mut UiWorld) {
     world.pending_config = Some(serde_json::json!({
         "server": { "port": 0, "tls": pki(world).tls_block() },
-        "drivers": {}
+        "rp": {}
     }));
 }
 
@@ -39,7 +39,7 @@ fn configured_with_tls_only(world: &mut UiWorld) {
 fn configured_plain(world: &mut UiWorld) {
     world.pending_config = Some(serde_json::json!({
         "server": { "port": 0, "bind_address": "127.0.0.1" },
-        "drivers": {}
+        "rp": {}
     }));
 }
 

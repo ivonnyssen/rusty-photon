@@ -255,8 +255,8 @@ report groups naturally.
 | `config.unreadable` | fail | `<svc>.json` exists but could not be read (permissions, I/O) — a different operator problem than bad JSON, diagnosed under its own name. |
 | `config.json-syntax` | fail | `<svc>.json` is not valid JSON. The service will refuse to start (by design — corrupt config never silently resets), and doctor says so before the next night does. |
 | `config.server-shape` | fail | The top-level `server` block does not parse under the catalog-declared shape (`ServerConfig` for core, `AlpacaServerConfig` for Alpaca): unknown keys (`deny_unknown_fields`), missing `port` when the block is present, `discovery_port` on a core service, malformed `bind_address`. An absent `server` block is `ok` — the service applies its defaults. |
-| `config.known-blocks` | fail | One of the cross-reference blocks doctor joins across fails to parse: ui-htmx's `drivers` map / `sentinel` target, sentinel's `operation_watchdog`, rp's `equipment` array / `session` block. Everything else in every file is opaque `serde_json::Value` doctor steps around. |
-| `config.retired-keys` | fail | A config still carries a key its service retired with D3s and now refuses to start over (`deny_unknown_fields`): sentinel's `services` map (supervision is discovered, not configured) or a ui-htmx driver's `sentinel_service` (the restart name is always the driver's own map key). The remedy is deletion — no replacement config exists. |
+| `config.known-blocks` | fail | One of the cross-reference blocks doctor joins across fails to parse: sentinel's `operation_watchdog`, rp's `equipment` array / `session` block. Everything else in every file is opaque `serde_json::Value` doctor steps around (ui-htmx's whole file included — its view reads only the retired `drivers` key). |
+| `config.retired-keys` | fail | A config still carries a key its service retired and now refuses to start over (`deny_unknown_fields`): sentinel's `services` map (D3s — supervision is discovered, not configured) or ui-htmx's whole `drivers` override map (#569 — rp's equipment roster is the only device source). The remedy is deletion — no replacement config exists. |
 
 Full-config typo detection (a misspelled key in, say, qhy-camera's
 `device_overrides`) is **out of D2's reach by design**: doctor knows only the
@@ -280,23 +280,24 @@ the typed shape — validates its own file and doctor aggregates.
 ### Name joins
 
 Since D3s sentinel discovers its services from the platform service manager,
-so the service-name joins that survive resolve against the **installed
-`rusty-photon-*` units** (packaged mode only — the joins have nothing to
+so the one service-name join that survives resolves against the **installed
+`rusty-photon-*` units** (packaged mode only — the join has nothing to
 resolve against on a dev checkout): the watchdog's
-`operations.<family>.service` and ui-htmx's `drivers` keys, matched by
-convention and validated by nothing at runtime until the 2am 404.
+`operations.<family>.service`, matched by convention and validated by
+nothing at runtime until the 2am 404. (ui-htmx's restart names stopped
+being configured with #569 — they are derived at request time by matching a
+roster device's `alpaca_url` port against sentinel's discovered services,
+so there is no ui-htmx-side name join left to check.)
 
 | Check | Status | Trigger |
 |---|---|---|
 | `joins.watchdog-service` | fail | An `operation_watchdog.operations.<family>.service` names a service with no installed `rusty-photon-<service>` unit — sentinel's discovery will never resolve it, so the watchdog's ladder degrades to notify-only. |
-| `joins.ui-htmx-restart` | warn | ui-htmx has a `sentinel` target configured, and a `drivers` key matches no installed unit — its Restart-via-Sentinel button will 404. A warning, not a failure: a third-party device sentinel cannot restart is a legitimate override entry. |
-| `joins.ui-htmx-driver-port` | fail | A ui-htmx `drivers` entry is keyed by a catalog service name and its `base_url` points at localhost, but the URL's port is not that service's effective port. The 2am 404 in a UI banner, caught at noon. Non-localhost URLs are out of scope (remote host — doctor sees one machine). |
 
 ### URL conventions
 
 | Check | Status | Trigger |
 |---|---|---|
-| `urls.spurious-suffix` | warn | An rp `equipment[].alpaca_url` or ui-htmx `drivers[].base_url` ends in `/api/v1`. Those clients append it themselves; doubling it 404s. (Doctor reads `alpaca_url` out of rp's equipment entries and steps around the rest of the block — checking the URL is service wiring, owning the entry is device usage.) Sentinel's URLs are all derived since D3s, so no sentinel-side convention is left to check. |
+| `urls.spurious-suffix` | warn | An rp `equipment[].alpaca_url` ends in `/api/v1`. The client appends it itself; doubling it 404s. (Doctor reads `alpaca_url` out of rp's equipment entries and steps around the rest of the block — checking the URL is service wiring, owning the entry is device usage.) Sentinel's URLs are all derived since D3s, and ui-htmx's device URLs come from rp's roster since #569 — no other client-side convention is left to check. |
 
 ### TLS and auth
 
@@ -433,9 +434,7 @@ call:
 | Check | Fix `--fix` applies |
 |---|---|
 | `ports.collision` | Move each colliding service whose configured port differs from its catalog default back to that default — but only when the default itself is free among the effective ports. A collision between judgment-call ports (two services deliberately moved to the same custom port) gets a suggestion, not a fix. |
-| `config.retired-keys` | Delete the retired key (sentinel's `services` map; a driver's `sentinel_service`). |
-| `joins.ui-htmx-driver-port` | Rewrite the driver `base_url`'s port to the service's effective port. |
-| `urls.spurious-suffix` | Strip the `/api/v1` suffix — **ui-htmx `drivers` entries only**. rp's `equipment[].alpaca_url` lives inside the device-usage block doctor checks but does not own (ADR-016 decision 4), so it stays suggestion-only. |
+| `config.retired-keys` | Delete the retired key (sentinel's `services` map; ui-htmx's `drivers` map). |
 
 Everything else stays suggestion-only: a `ConditionPathExists` gate needs a
 hand-written config, a `discovery_port` collision is operator intent (which
@@ -443,9 +442,8 @@ host keeps the responder?), and rp's `session.data_directory` is a placement
 decision. Missing TLS material and absent `tls`/`auth` blocks stopped being
 suggestion-only with D6a — the provisioning pass (next section) conjures
 them.
-`--fix` also never *generates* config — a stock rig's ui-htmx `drivers` map
-stays empty (rp's roster is the source of truth; see
-[ui-htmx.md](ui-htmx.md)).
+`--fix` also never *generates* config — device targets come from rp's
+roster, never from doctor-written entries (see [ui-htmx.md](ui-htmx.md)).
 
 Write mechanics:
 
@@ -524,8 +522,8 @@ can write **both forms everywhere they belong**:
 
 - the **Argon2id hash** into each installed service's `server.auth`;
 - the **plaintext** into each client auth block — rp's `equipment[].auth`
-  entries, sentinel's service-probe `auth`, ui-htmx's `rp`/`dashboard`/
-  `drivers[].auth` targets — alongside the CA path each client trusts.
+  entries, sentinel's service-probe `auth`, ui-htmx's `rp`/`sentinel`
+  targets — alongside the CA path each client trusts.
 
 `doctor auth rotate` overwrites `pki/credential` with a fresh mint and
 re-runs the same distribution; services pick the new `server.auth` up at

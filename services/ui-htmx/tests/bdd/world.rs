@@ -2,9 +2,10 @@
 //!
 //! Mirrors the binary-spawning pattern the other services use (see
 //! [`sentinel`](../../../../sentinel/tests/bdd/world.rs)): every scenario
-//! spawns the *real* `ui-htmx` binary **plus** a real `dsd-fp2` driver (mock
-//! hardware) for it to configure, and drives the BFF over HTTP. There is no
-//! in-process router and no stubbed client — the production
+//! spawns the *real* `ui-htmx` binary **plus** a real `rp` orchestrator and a
+//! real `dsd-fp2` driver (mock hardware) rostered in rp's config — every
+//! config target is roster-derived (#569) — and drives the BFF over HTTP.
+//! There is no in-process router and no stubbed client: the production
 //! `ReqwestHttpClient` → `AlpacaConfigClient` path and the driver's real
 //! `config.get` / `config.apply` / in-process reload are exercised end to end.
 //!
@@ -29,6 +30,10 @@ const DRIVER_ACTION_PATH: &str = "/api/v1/covercalibrator/0/action";
 /// the repo's convention for an unreachable Alpaca target (see ui-htmx's
 /// `io.rs` test and rp's BDD steps). Deterministic, unlike a released free port.
 const UNREACHABLE_PORT: u16 = 1;
+
+/// The roster id the dsd-fp2 driver is registered under in rp's config — the
+/// config-page suites reach it at [`UiWorld::device_config_path`].
+const DEVICE_ID: &str = "dsd-fp2";
 
 #[derive(Debug, Default, World)]
 pub struct UiWorld {
@@ -105,12 +110,12 @@ impl bdd_infra::doctor_smoke::DoctorSmokeWorld for UiWorld {
     }
 
     fn valid_config(&self) -> serde_json::Value {
-        // The same shape `start_bff_with_drivers` stages: the shared core
-        // `server` block, no driver overrides, rp opted out.
+        // The same shape `start_bff_with_rp_at` stages: the shared core
+        // `server` block plus the required rp target (doctor only parses —
+        // nothing is contacted).
         json!({
             "server": { "bind_address": "127.0.0.1", "port": 0 },
-            "drivers": {},
-            "rp": null
+            "rp": {}
         })
     }
 }
@@ -125,24 +130,31 @@ impl UiWorld {
 
     // --- spawning real services -------------------------------------------
 
+    /// The roster-derived config-page path of the dsd-fp2 device the suites
+    /// exercise (rp's roster is the only device source — #569).
+    pub fn device_config_path(&self) -> String {
+        format!("/config/rp:cover_calibrators:{DEVICE_ID}")
+    }
+
     /// Spawn a real dsd-fp2 driver (mock hardware) reporting the given
-    /// effective `serial.port` and `max_brightness`, then point a fresh BFF at
-    /// it.
+    /// effective `serial.port` and `max_brightness`, roster it in a fresh rp,
+    /// and point a fresh BFF at that rp.
     pub async fn start_driver_and_bff(&mut self, serial_port: &str, max_brightness: u32) {
         // The driver binds port 0, so the OS assigns a free port atomically —
         // no racy preselection. The reload-reconnect scenario pins the resulting
         // port (`pin_driver_port`) so a reload keeps the same address.
-        let config_path = self.write_driver_config(serial_port, max_brightness);
-        let handle = ServiceHandle::start("dsd-fp2", &config_path).await;
-        self.driver_port = handle.port;
-        self.driver = Some(handle);
-        self.wait_for_driver_ready().await;
-        self.start_bff_pointing_at(self.driver_port).await;
+        self.start_driver_and_rp_with_cover_calibrator_config(
+            DEVICE_ID,
+            serial_port,
+            max_brightness,
+        )
+        .await;
+        self.start_bff_with_rp().await;
     }
 
     /// Spawn a real dsd-fp2 driver whose `serial.port` is pinned by a `--port`
     /// command-line override (so `config.get` reports it in `overrides[]`),
-    /// then point a fresh BFF at it.
+    /// roster it in a fresh rp, and point a fresh BFF at that rp.
     pub async fn start_driver_with_serial_override_and_bff(&mut self, serial_port: &str) {
         // The file carries its own serial.port; the override pins a different
         // effective value, which is what the page must render read-only. Binds
@@ -157,78 +169,26 @@ impl UiWorld {
         self.driver_port = handle.port;
         self.driver = Some(handle);
         self.wait_for_driver_ready().await;
-        self.start_bff_pointing_at(self.driver_port).await;
+        self.roster_driver_and_start_rp(DEVICE_ID).await;
+        self.start_bff_with_rp().await;
     }
 
-    /// Spawn a real dsd-fp2 driver and a BFF that exposes it under **two**
-    /// service ids (`dsd-fp2` and `dsd-fp2-alt`), to drive the multi-driver
-    /// index + per-service routing end to end. (A single real driver behind two
-    /// ids is enough to exercise the map → routing → index paths; the
-    /// generic-render-across-different-schemas path is unit-tested.)
-    pub async fn start_driver_and_multi_bff(&mut self, serial_port: &str, max_brightness: u32) {
-        let config_path = self.write_driver_config(serial_port, max_brightness);
-        let handle = ServiceHandle::start("dsd-fp2", &config_path).await;
-        self.driver_port = handle.port;
-        self.driver = Some(handle);
-        self.wait_for_driver_ready().await;
-        let port = self.driver_port;
-        self.start_bff_with_drivers(&[("dsd-fp2", port), ("dsd-fp2-alt", port)])
-            .await;
-    }
-
-    /// Spawn a BFF pointed at a driver that is not running, so `config.get` is
-    /// refused.
+    /// Spawn rp with a roster entry pointing at a driver that is not running,
+    /// and a BFF at that rp — so the device page's `config.get` is refused.
     pub async fn start_bff_with_unreachable_driver(&mut self) {
-        self.start_bff_pointing_at(UNREACHABLE_PORT).await;
+        self.driver_port = UNREACHABLE_PORT;
+        self.roster_driver_and_start_rp(DEVICE_ID).await;
+        self.start_bff_with_rp().await;
     }
 
-    /// Spawn just the BFF — no driver process — for the `/fixtures/*` scenarios
-    /// (plan §9 Tier 1). The fixtures don't talk to a driver, so the configured
-    /// (unreachable) target is never contacted; this is the lightest setup that
-    /// brings up a fixtures-capable BFF. The spawned binary carries the
-    /// `test-fixtures` feature (cargo `--all-features`; Bazel `:ui-htmx_fixtures`).
+    /// Spawn just the BFF — no driver, no rp process — for the `/fixtures/*`
+    /// scenarios (plan §9 Tier 1). The fixtures never talk to rp, so the
+    /// configured (unreachable) rp target is never contacted; this is the
+    /// lightest setup that brings up a fixtures-capable BFF. The spawned
+    /// binary carries the `test-fixtures` feature (cargo `--all-features`;
+    /// Bazel `:ui-htmx_fixtures`).
     pub async fn start_bff_only(&mut self) {
-        self.start_bff_pointing_at(UNREACHABLE_PORT).await;
-    }
-
-    async fn start_bff_pointing_at(&mut self, driver_port: u16) {
-        self.start_bff_with_drivers(&[("dsd-fp2", driver_port)])
-            .await;
-    }
-
-    /// Spawn a BFF configured with the given `(service id, driver port)` entries,
-    /// all on loopback. The same real driver can appear under several ids. When a
-    /// sentinel is running (restart scenarios), its URL is carried in the BFF's
-    /// `sentinel` block so the restart affordances render.
-    async fn start_bff_with_drivers(&mut self, drivers: &[(&str, u16)]) {
-        let mut map = serde_json::Map::new();
-        for (service, port) in drivers {
-            map.insert(
-                (*service).to_string(),
-                json!({
-                    "base_url": format!("http://127.0.0.1:{port}"),
-                    "device_type": "covercalibrator",
-                    "device_number": 0
-                }),
-            );
-        }
-        // rp defaults ON (roster-first, doctor-plan D3); the driver-only
-        // scenarios must opt out explicitly or the BFF would reach for an rp
-        // at the default port — possibly a real one from a parallel suite.
-        let mut config = json!({
-            "server": { "bind_address": "127.0.0.1", "port": 0 },
-            "drivers": Value::Object(map),
-            "rp": null,
-        });
-        if let Some(sentinel) = &self.sentinel {
-            config["sentinel"] = json!({
-                "base_url": format!("http://127.0.0.1:{}", sentinel.port)
-            });
-        }
-        let path = self.temp_path("ui-htmx.json");
-        std::fs::write(&path, config.to_string()).expect("failed to write BFF config");
-        let handle = ServiceHandle::start("ui-htmx", path.to_str().unwrap()).await;
-        self.ui = Some(handle);
+        self.start_bff_with_rp_at(UNREACHABLE_PORT).await;
     }
 
     /// Spawn the BFF from the config JSON a Given step staged in
@@ -298,9 +258,11 @@ impl UiWorld {
     /// driver Given has already started the first BFF. Sentinel runs its
     /// first discovery pass before binding, so the discovered set is complete
     /// as soon as the handle returns. Its config lives in its own
-    /// subdirectory: sentinel derives health-probe URLs from sibling
-    /// `<service>.json` files, and the driver's config (port 0) must not be
-    /// mistaken for one.
+    /// subdirectory, seeded with a sibling `dsd-fp2.json` carrying the
+    /// driver's real bound port: discovery derives each service's probe port
+    /// from such files, and the BFF's roster-derived restart match needs
+    /// `probe_port` to equal the rostered device's `alpaca_url` port. (The
+    /// driver's own config — port 0 — must not be mistaken for it.)
     pub async fn start_sentinel_and_rewire_bff(&mut self) {
         let manager_dir = self.service_manager_dir();
         let config = json!({
@@ -309,6 +271,11 @@ impl UiWorld {
         });
         let config_dir = self.temp_path("sentinel-home");
         std::fs::create_dir_all(&config_dir).expect("failed to create sentinel config dir");
+        std::fs::write(
+            config_dir.join("dsd-fp2.json"),
+            json!({ "server": { "port": self.driver_port, "discovery_port": null } }).to_string(),
+        )
+        .expect("failed to write the driver probe config");
         let path = config_dir.join("sentinel.json");
         std::fs::write(&path, config.to_string()).expect("failed to write sentinel config");
         let handle = ServiceHandle::start_with_env(
@@ -324,15 +291,15 @@ impl UiWorld {
         if let Some(mut ui) = self.ui.take() {
             ui.stop().await;
         }
-        let port = self.driver_port;
-        self.start_bff_with_drivers(&[("dsd-fp2", port)]).await;
+        self.start_bff_with_rp().await;
     }
 
-    /// Follow the page's own "Restart via Sentinel" affordance the way htmx
-    /// would: render the page, read the button's rendered `hx-post` URL, and
-    /// POST it with htmx's headers (the affordance carries no form fields).
-    pub async fn request_restart(&mut self) {
-        self.get("/config/dsd-fp2").await;
+    /// Follow a page's own "Restart via Sentinel" affordance the way htmx
+    /// would: render the page at `path`, read the button's rendered `hx-post`
+    /// URL, and POST it with htmx's headers (the affordance carries no form
+    /// fields).
+    pub async fn request_restart_at(&mut self, path: &str) {
+        self.get(path).await;
         let url = dom::attr(&self.last_body, "button.restart-sentinel", "hx-post")
             .unwrap_or_else(|| panic!("no restart affordance in:\n{}", self.last_body));
         let resp = reqwest::Client::new()
@@ -342,6 +309,13 @@ impl UiWorld {
             .await
             .expect("BFF restart POST failed");
         self.last_body = resp.text().await.unwrap_or_default();
+    }
+
+    /// [`request_restart_at`](Self::request_restart_at) for the rostered
+    /// dsd-fp2 device page.
+    pub async fn request_restart(&mut self) {
+        let path = self.device_config_path();
+        self.request_restart_at(&path).await;
     }
 
     fn write_driver_config(&mut self, serial_port: &str, max_brightness: u32) -> String {
@@ -495,11 +469,29 @@ impl UiWorld {
     /// roster as cover calibrator `id` — the all-first-party managed-device
     /// stack (no OmniSim).
     pub async fn start_driver_and_rp_with_cover_calibrator(&mut self, id: &str) {
-        let config_path = self.write_driver_config("/dev/ttyACM0", 4096);
+        self.start_driver_and_rp_with_cover_calibrator_config(id, "/dev/ttyACM0", 4096)
+            .await;
+    }
+
+    /// [`start_driver_and_rp_with_cover_calibrator`] with an explicit driver
+    /// config (the config-page suite renders these exact values).
+    pub async fn start_driver_and_rp_with_cover_calibrator_config(
+        &mut self,
+        id: &str,
+        serial_port: &str,
+        max_brightness: u32,
+    ) {
+        let config_path = self.write_driver_config(serial_port, max_brightness);
         let handle = ServiceHandle::start("dsd-fp2", &config_path).await;
         self.driver_port = handle.port;
         self.driver = Some(handle);
         self.wait_for_driver_ready().await;
+        self.roster_driver_and_start_rp(id).await;
+    }
+
+    /// Spawn rp with the (already known) `self.driver_port` rostered as cover
+    /// calibrator `id`.
+    async fn roster_driver_and_start_rp(&mut self, id: &str) {
         let mut builder = bdd_infra::rp_harness::RpConfigBuilder::new();
         builder.add_cover_calibrator(bdd_infra::rp_harness::CoverCalibratorConfig {
             id: id.to_string(),
@@ -510,13 +502,19 @@ impl UiWorld {
         self.start_rp(&builder).await;
     }
 
-    /// Spawn a BFF whose config carries only an `rp` target at the given port.
+    /// Spawn a BFF whose config carries an `rp` target at the given port.
+    /// When a sentinel is running (restart scenarios), its URL is carried in
+    /// the BFF's `sentinel` block so the restart affordances render.
     pub async fn start_bff_with_rp_at(&mut self, rp_port: u16) {
-        let config = json!({
+        let mut config = json!({
             "server": { "bind_address": "127.0.0.1", "port": 0 },
-            "drivers": {},
             "rp": { "base_url": format!("http://127.0.0.1:{rp_port}") }
         });
+        if let Some(sentinel) = &self.sentinel {
+            config["sentinel"] = json!({
+                "base_url": format!("http://127.0.0.1:{}", sentinel.port)
+            });
+        }
         let path = self.temp_path("ui-htmx.json");
         std::fs::write(&path, config.to_string()).expect("failed to write BFF config");
         let handle = ServiceHandle::start("ui-htmx", path.to_str().unwrap()).await;
@@ -532,12 +530,6 @@ impl UiWorld {
     /// Spawn a BFF pointed at an rp that is not running.
     pub async fn start_bff_with_unreachable_rp(&mut self) {
         self.start_bff_with_rp_at(UNREACHABLE_PORT).await;
-    }
-
-    /// Spawn a BFF with an explicit `"rp": null` (declared driver entries
-    /// only) — the "rp-backed surfaces unavailable" state.
-    pub async fn start_bff_without_rp(&mut self) {
-        self.start_bff_pointing_at(UNREACHABLE_PORT).await;
     }
 
     /// The rp config file as currently persisted on disk.
@@ -655,7 +647,8 @@ impl UiWorld {
     /// them, so read-only/locked fields round-trip from the hidden blob — no
     /// side-channel `config.get` is consulted.
     pub async fn submit_form(&mut self, changes: &[(&str, &str)]) {
-        self.submit_form_at("/config/dsd-fp2", changes).await;
+        let path = self.device_config_path();
+        self.submit_form_at(&path, changes).await;
     }
 
     /// Render the page at `path` and submit its form the way htmx would: the
@@ -726,7 +719,8 @@ impl UiWorld {
     /// rendered HTML, then issue that htmx GET — instead of fabricating the
     /// `?unlock=` URL out of band.
     pub async fn open_with_unlock(&mut self, field: &str) {
-        self.get("/config/dsd-fp2").await;
+        let path = self.device_config_path();
+        self.get(&path).await;
         let url = dom::unlock_url(&self.last_body, field).unwrap_or_else(|| {
             panic!("no unlock affordance for {field:?} in:\n{}", self.last_body)
         });
@@ -749,8 +743,9 @@ impl UiWorld {
     pub async fn poll_status_until_value(&mut self, field: &str, expected: &str) {
         const MAX_POLLS: usize = 80;
         const POLL_INTERVAL: Duration = Duration::from_millis(250);
+        let status_path = format!("{}/status", self.device_config_path());
         for _ in 0..MAX_POLLS {
-            self.hx_get("/config/dsd-fp2/status").await;
+            self.hx_get(&status_path).await;
             if dom::input(&self.last_body, field)
                 .map(|i| i.value)
                 .as_deref()

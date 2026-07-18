@@ -14,14 +14,14 @@ is no npm, no WASM, no client-side framework.
 
 It serves three surfaces, one nav:
 
-1. **Configuration** (`/`, deep pages at `/config/{service}`) — with an
-   `rp` target configured, `/` *is* rp's settings page (the same
-   schema-driven form `/config/rp` serves). Per-device configuration is
-   reached from the equipment page's Configure buttons, not from here —
-   the device list lives in one place. `/config/{service}` still resolves
-   every target kind (static driver, `rp`, roster-derived); without an
-   `rp` target, `/` falls back to the static-driver index (the pure
-   driver-config UI, transitional until the drivers map is removed).
+1. **Configuration** (`/`, deep pages at `/config/{service}`) — `/` *is*
+   rp's settings page (the same schema-driven form `/config/rp` serves).
+   Per-device configuration is reached from the equipment page's Configure
+   buttons, not from here — the device list lives in one place.
+   `/config/{service}` resolves the two target kinds: the literal `rp` and
+   roster-derived `rp:{kind}:{id}` (rp's equipment roster is the **only**
+   device source — #569, ADR-016 amendment 6; there is no static drivers
+   map).
 2. **Equipment page** (`/equipment`) — `rp`'s equipment roster: live
    connection state, a managed/foreign capability tier per device, and
    add / edit / remove of roster entries by editing `rp`'s config over REST.
@@ -30,9 +30,9 @@ It serves three surfaces, one nav:
    `rp`'s real-time event stream rendered server-side and pushed to the
    browser over SSE.
 
-The equipment and stream surfaces exist only when the BFF config carries an
-[`rp` target](#configuration); without one, `ui-htmx` is the pure driver-config
-UI it was in Phase 3.
+The [`rp` target](#configuration) is **required** — every surface is
+rp-backed, so an rp-less BFF has no purpose and a config without the block
+fails loudly at load.
 
 **JavaScript (htmx) is required.** The UI does not carry a no-JS fallback: the
 form submits via `hx-post` (no `method`/`action`), and the unlock/lock/retry
@@ -44,13 +44,13 @@ whole-app no-JS guarantee is also incompatible with the future real-time stream 
 Direct navigation/refresh still returns a full styled page (the `HX-Request`
 full-page-vs-fragment branch is core htmx, not a no-JS feature).
 
-It renders a configuration page for **any** rusty-photon driver, **generated from
-the driver's own JSON Schema** (`config.schema`) rather than a hand-built form:
-read the driver's current configuration, edit it, and apply changes — all by
-calling the driver's `config.get` / `config.schema` / `config.apply` ASCOM
-actions over HTTP (the cross-driver protocol; see
-[`config-actions.md`](config-actions.md)). One BFF configures any number of
-drivers, each addressed by service id under `/config/{service}`.
+It renders a configuration page for **any** rostered device's driver,
+**generated from the driver's own JSON Schema** (`config.schema`) rather than
+a hand-built form: read the driver's current configuration, edit it, and
+apply changes — all by calling the driver's `config.get` / `config.schema` /
+`config.apply` ASCOM actions over HTTP (the cross-driver protocol; see
+[`config-actions.md`](config-actions.md)). One BFF serves every device in
+rp's roster, each addressed under `/config/rp:{kind}:{id}`.
 
 Phase 2 shipped a hand-built `dsd-fp2`-only page; Phase 3b (this design) replaced
 the hardcoded field lists with a **schema-driven renderer** that walks any
@@ -182,18 +182,18 @@ in no driver's serial/transport dependencies.
 
 ## Routes
 
-The config routes are **service-scoped** (`{service}` is the driver's key in the
-BFF config's `drivers` map, the literal `rp`, or a roster-derived
-`rp:{kind}:{id}` key — see [Config-page targets](#config-page-targets)), so one
-BFF serves every configured driver.
+The config routes are **service-scoped** (`{service}` is the literal `rp` or
+a roster-derived `rp:{kind}:{id}` key — see
+[Config-page targets](#config-page-targets)), so one BFF serves rp and every
+rostered device.
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| `GET`  | `/` | The Configuration surface. With an `rp` target: renders rp's settings page — identical to `GET /config/rp`, form posts and restart affordances included. Without one: the index of static drivers (`/config/{service}` links only; roster-derived links live on the equipment page as its per-device Configure buttons). |
+| `GET`  | `/` | The Configuration surface: rp's settings page — identical to `GET /config/rp`, form posts and restart affordances included (device links live on the equipment page as its per-device Configure buttons). |
 | `GET`  | `/config/{service}` | Call `config.schema` + `config.get`; render the form generated from the schema, filled with current values. An optional `?unlock=<field>` query renders one locked/identity field (e.g. a device `unique_id`) editable — the read-only-by-default escape hatch. Resolve failures render honest, distinct cards: unknown `{service}` ("no configured driver"), rp unreachable while resolving a roster key (retryable), or a roster entry no client can be built from (e.g. malformed `alpaca_url` — links to the Equipment page to fix it). |
 | `POST` | `/config/{service}` | Re-fetch `config.schema` to coerce the form back into the full Config, call `config.apply`; render the result state (see below). |
 | `GET`  | `/config/{service}/status` | HTMX poll target during reconnect: try `config.schema` + `config.get`; when the driver answers, swap in the refreshed form. Honours the same optional `?unlock=` query. |
-| `POST` | `/config/{service}/restart` | Ask Sentinel to restart the driver's process (`POST {sentinel}/api/services/{service}/restart` — the driver's own service id names the discovered service); render the outcome (see [Restart via Sentinel](#restart-via-sentinel-post-configservicerestart)). |
+| `POST` | `/config/{service}/restart` | Ask Sentinel to restart the target's process and render the outcome (see [Restart via Sentinel](#restart-via-sentinel-post-configservicerestart)). The Sentinel-side name is `rp` for rp's own page; for a roster-derived device it is the discovered service whose `probe_port` matches the device's `alpaca_url` port. |
 | `GET`  | `/equipment` | The [equipment page](#equipment-page-equipment): rp's roster with live connection LEDs, capability tiers, and add/edit/remove affordances. |
 | `GET`  | `/equipment/{kind}/new` | Schema-generated "add device" form for one equipment kind (`cameras`, `filter_wheels`, `cover_calibrators`, `focusers`, `safety_monitors`, `switches`, `rotators`, `observing_conditions`, `domes`, `mount`). |
 | `POST` | `/equipment/{kind}/new` | Insert the new entry into rp's config (`GET /api/config` → splice → `PUT /api/config`); render the roster with the apply outcome. |
@@ -332,30 +332,29 @@ locked/identity field that the user unlocked.
 
 ## Config-page targets
 
-`/config/{service}` resolves its target in three ways; the page machinery
-(schema walk, tiers, merge, apply states) is identical for all three:
+`/config/{service}` resolves its target in two ways; the page machinery
+(schema walk, tiers, merge, apply states) is identical for both. (The former
+third kind — a static `drivers`-map entry — was retired by #569: rp's roster
+is the only device source.)
 
-1. **Static driver** — `{service}` is a key in the BFF config's `drivers` map;
-   the client is `AlpacaConfigClient` speaking the ASCOM action protocol.
-2. **`rp` itself** — the literal key `rp`, present when the BFF config carries
-   an [`rp` target](#configuration); the client is `RestConfigClient` speaking
-   the same protocol as plain REST (`GET /api/config`, `GET /api/config/schema`,
-   `PUT /api/config` — see [`config-actions.md`](config-actions.md) "REST
-   transport"). A static `drivers` entry named `rp` is rejected at startup to
-   keep the key unambiguous. Because rp classifies every change as
-   `restart_required` (it has no in-process reload), the apply result renders
-   the **restart callout** instead of the reconnect poll: "Saved — restart rp
-   to apply:" plus the changed paths. (Phase 4 will attach the "Restart via
-   Sentinel" affordance here.) rp's equipment arrays are `oneOf`-free but
-   *array-typed* — arrays of objects, which the schema walker skips — so on
-   the rp config page they round-trip untouched via the hidden blob, and are
-   edited on the [equipment page](#equipment-page-equipment) instead (where a
-   camera entry's integer-enum `cooler_targets_c` array renders as a checkbox
-   group like any other walked field). rp's optional blocks
+1. **`rp` itself** — the literal key `rp`; the client is `RestConfigClient`
+   speaking the same protocol as plain REST (`GET /api/config`,
+   `GET /api/config/schema`, `PUT /api/config` — see
+   [`config-actions.md`](config-actions.md) "REST transport"). Because rp
+   classifies every change as `restart_required` (it has no in-process
+   reload), the apply result renders the **restart callout** instead of the
+   reconnect poll: "Saved — restart rp to apply:" plus the changed paths,
+   with the "Restart via Sentinel" affordance inline. rp's equipment arrays
+   are `oneOf`-free but *array-typed* — arrays of objects, which the schema
+   walker skips — so on the rp config page they round-trip untouched via the
+   hidden blob, and are edited on the
+   [equipment page](#equipment-page-equipment) instead (where a camera
+   entry's integer-enum `cooler_targets_c` array renders as a checkbox group
+   like any other walked field). rp's optional blocks
    (`site`, `guider`, `plate_solver`, `planner`) blob-round-trip the same way
    under the standard composite-skip rule; the page edits the scalar leaves
    (`session`, `safety`, `imaging`, `centering`, `cooling`, `server`).
-3. **Roster-derived device** — a key of the form `rp:{kind}:{id}` (e.g.
+2. **Roster-derived device** — a key of the form `rp:{kind}:{id}` (e.g.
    `rp:cameras:main-cam`, `rp:mount:mount`), synthesized on demand from rp's
    config: the device's `alpaca_url` + device number come from its roster
    entry, and the ASCOM device type from which array it sits in
@@ -365,15 +364,16 @@ locked/identity field that the user unlocked.
    `observing_conditions`→`observingconditions`, `domes`→`dome`,
    `mount`→`telescope`). The BFF calls the
    device **without credentials** (rp redacts per-device auth, rightly), so a
-   driver behind auth renders the transport-error banner with a hint to add a
-   static `drivers` entry carrying credentials.
+   driver behind auth renders the transport-error banner; the doctor-minted
+   service credential (D6) is the path to authenticated devices, not a
+   second device list.
 
 ## Behavioral contracts
 
 ### Rendering the page (`GET /config/{service}`)
 
-- **Unknown service:** a `{service}` not in the `drivers` map → render an error
-  card ("No configured driver named …").
+- **Unknown service:** a `{service}` that is neither `rp` nor a roster
+  entry's key → render an error card ("No configured driver named …").
 - **Happy path:** `config.schema` + `config.get` succeed → render the
   schema-generated form filled with the effective config. Fields listed in
   `overrides[]` are disabled and annotated "pinned by a command-line override".
@@ -423,11 +423,19 @@ split); the BFF is just an authorised client of Sentinel's
 [Service Restart API](sentinel.md#service-restart-api). Two affordances lead
 here, both rendered only when the BFF has a `sentinel` block configured:
 
-- **The recovery hammer**: every driver config card carries a
-  "Restart via Sentinel" button (`hx-post="/config/{service}/restart"`,
-  swapping `#config-card`) in its footer — for a wedged or misbehaving driver,
-  independent of any config edit. The `rp` config page gets it too (rp's
-  Sentinel-side name is the `rp` convention).
+- **The recovery hammer**: a config card carries a "Restart via Sentinel"
+  button (`hx-post="/config/{service}/restart"`, swapping `#config-card`) in
+  its footer — for a wedged or misbehaving driver, independent of any config
+  edit. On rp's page the Sentinel-side name is the `rp` convention. On a
+  roster-derived device page the name is **derived, not configured**: the
+  BFF matches the device's `alpaca_url` port (explicit only — a portless
+  URL never matches via the scheme default) against Sentinel's discovered
+  services (`GET /api/services` `probe_port` —
+  [sentinel.md](sentinel.md#get-apiservices)), guarded to the sentinel
+  target's own host (loopback spellings are treated as one host) — Sentinel
+  restarts processes on its own box, so a device on another host must never
+  grow a button that would bounce an unrelated local service. No match, or
+  Sentinel unreachable at render time, degrades to no button.
 - **The `restart_required` escalation**: when `config.apply` returns a
   non-empty `restart_required[]`, the restart callout listing those paths
   offers the same restart button inline. rp reaches this on every apply
@@ -474,7 +482,7 @@ time):
 | `supportedactions` lists `config.get` | **Managed** | "Configure" → `/config/rp:{kind}:{id}` |
 | 2xx but no `config.*`; `/setup/v1/{type}/{n}/setup` reachable | **Setup page** | external link to the device's own setup UI |
 | 2xx but no `config.*`, no setup page | **Control only** | badge |
-| 401/403 | **Auth required** | badge + hint to add a static `drivers` entry with credentials |
+| 401/403 | **Auth required** | badge + hint that the BFF holds no credentials for it |
 | transport error / timeout | **Unreachable** | badge |
 
 Because `config.*` is self-advertising, any third-party server adopting the
@@ -586,21 +594,19 @@ terminates the browser's `EventSource` and holds its own connection to rp's
 
 ## Configuration
 
-The BFF has its own small config (it is not an ASCOM device), and since
-doctor-plan D3 its **source of truth is rp's roster** (ADR-016 decision 9):
-the default config is just the listening port and where rp is
-(`http://127.0.0.1:11115` — the single-box default), and the config targets
-come from the roster at request time. The static `drivers` map survives only
-as an **optional, empty-by-default override** — a third-party device rp does
-not manage, or a driver that needs its own credentials/CA; each entry is
-keyed by service id (the `{service}` path segment). Doctor's `--fix` never
-generates entries for it. The `rp` target also switches on the equipment
-page, the activity stream, and the `/config/rp` page; setting it to `null`
-explicitly leaves the BFF the pure driver-config UI of Phase 3 (with only
-the `drivers` entries you declare). Every block (`Config` and each nested
-target/auth struct) rejects unknown keys at deserialize
-(`deny_unknown_fields`), so a typo or a key removed by a schema change fails
-loudly at load instead of being silently ignored.
+The BFF has its own small config (it is not an ASCOM device), and its
+**source of truth is rp's roster** (ADR-016 decision 9, tightened by #569 /
+amendment 6): the config is the listening port and where rp is
+(`http://127.0.0.1:11115` — the single-box default), and every config target
+comes from the roster at request time — there is no second, hand-maintained
+device list. The `rp` target is **required**: an rp-less BFF has no purpose,
+so a config without the block (or with `"rp": null`) fails loudly at load.
+The retired `drivers` override map fails loudly the same way
+(`deny_unknown_fields` — the sentinel `services`-map precedent), with the
+deletion in doctor's `config.retired-keys` fix catalog. Every block
+(`Config` and each nested target/auth struct) rejects unknown keys at
+deserialize, so a typo or a key removed by a schema change fails loudly at
+load instead of being silently ignored.
 
 ```jsonc
 {
@@ -610,24 +616,12 @@ loudly at load instead of being silently ignored.
     "tls": null,               // optional { "cert": "...", "key": "..." } — serves HTTPS when set
     "auth": null               // optional { "username": "...", "password_hash": "..." } — HTTP Basic on every route
   },
-  // The rp roster is the source of truth. Absent means the single-box
-  // default below; write "rp": null to run without rp (pure driver UI).
+  // The rp roster is the source of truth; the block is REQUIRED (a config
+  // without it fails at load). All fields inside it have defaults.
   "rp": {
     "base_url": "http://127.0.0.1:11115",    // rp's REST base URL
     "auth": null,                            // optional Basic credentials for rp
     "ca_cert_path": null                     // optional PEM CA for a TLS-enabled rp
-  },
-  // Optional override entries — empty on a stock rig. For devices rp does
-  // not manage, or drivers needing their own credentials/CA.
-  "drivers": {
-    "third-party-dome": {
-      "name": "Legacy dome",                 // optional display name (defaults to the id)
-      "base_url": "http://127.0.0.1:7843",   // the driver's Alpaca base URL
-      "device_type": "dome",
-      "device_number": 0,
-      "auth": null,            // optional { "username": "...", "password": "..." }
-      "ca_cert_path": null     // optional PEM CA for a TLS-enabled driver
-    }
   },
   // Optional: where Sentinel's dashboard/REST API lives. Absent (the default)
   // means no restart affordances are rendered anywhere.
@@ -650,19 +644,17 @@ key was renamed to `bind_address` with this adoption — a config still carrying
 `bind` fails loudly at load (`deny_unknown_fields`) — and the default bind
 moved from loopback to all interfaces.
 
-The restart button names the driver's own service id, which Sentinel resolves
-against its [discovered services](sentinel.md#service-discovery)
-(`dsd-fp2` → the `rusty-photon-dsd-fp2` unit) — there is no per-driver
-wiring. The former `sentinel_service` override was deleted with Sentinel's
-`services` map (a config still carrying it fails loudly at load); an id
-Sentinel has not discovered simply surfaces Sentinel's 404 in the error
-banner.
+The restart button's Sentinel-side name is derived, never configured: `rp`
+on rp's own page, and on a device page the discovered service whose
+`probe_port` matches the device's `alpaca_url` (see
+[Restart via Sentinel](#restart-via-sentinel-post-configservicerestart)) —
+there is no per-driver wiring anywhere in this file.
 
 ### CLI Arguments
 
 | Argument | Description |
 |----------|-------------|
-| `-c, --config`     | Path to the BFF configuration file. If omitted, the path resolves to the platform config directory (`~/.config/rusty-photon/ui-htmx.json` on Linux, `%PROGRAMDATA%\rusty-photon\ui-htmx.json` on Windows) and is created with `Config::default()` on first start (binds `0.0.0.0:11120`, rp at `http://127.0.0.1:11115`, no driver overrides). An explicit `--config` naming a missing file stays a hard error. |
+| `-c, --config`     | Path to the BFF configuration file. If omitted, the path resolves to the platform config directory (`~/.config/rusty-photon/ui-htmx.json` on Linux, `%PROGRAMDATA%\rusty-photon\ui-htmx.json` on Windows) and is created with `Config::default()` on first start (binds `0.0.0.0:11120`, rp at `http://127.0.0.1:11115`). An explicit `--config` naming a missing file stays a hard error. |
 | `--port`           | BFF listen port (overrides `server.port`). |
 | `-l, --log-level`  | Log level: trace, debug, info, warn, error. |
 | `--service`        | Hidden: run as a Windows service (passed by the Windows service control manager; no-op on other platforms). |
@@ -674,14 +666,14 @@ combined with the subcommand (the mixed form would silently ignore them).
 
 ## Security
 
-- **The BFF holds driver credentials** (and rp's, for the `rp` target), in its
-  own config, never in the page. It authenticates with HTTP Basic auth and
-  trusts the Rusty Photon CA via `rusty-photon-tls` — the same client construction
-  `sentinel` uses. Config actions are protected by whatever server-wide
+- **The BFF holds rp's and Sentinel's credentials** in its own config, never
+  in the page. It authenticates with HTTP Basic auth and trusts the Rusty
+  Photon CA via `rusty-photon-tls` — the same client construction `sentinel`
+  uses. Config actions are protected by whatever server-wide
   `rp-auth`/`rusty-photon-tls` the target runs; the BFF is just an authorised client (see
   the plan's Security section). Roster-derived config targets are called
-  without credentials (rp redacts per-device auth) — an authed device needs its
-  own static `drivers` entry.
+  without credentials (rp redacts per-device auth) — the doctor-minted
+  service credential (D6) is the path to authenticated devices.
 - **Secrets are already redacted** by `config.get` (`********`), so they never
   reach the browser; the round-trip sentinel keeps them unchanged on apply.
 - **BFF-side TLS/auth is the shared server shape.** `server.tls` serves the UI
@@ -698,9 +690,10 @@ combined with the subcommand (the mixed form would silently ignore them).
 
 ### In Scope
 
-- A working configuration page for **any** configured driver, generated from its
-  `config.schema`: `GET` renders the current config, `POST` applies edits via
-  `config.apply`. One BFF serves many drivers at `/config/{service}`.
+- A working configuration page for **any** rostered device's driver,
+  generated from its `config.schema`: `GET` renders the current config,
+  `POST` applies edits via `config.apply`. One BFF serves the whole roster
+  at `/config/rp:{kind}:{id}`.
 - Validation surfacing (`status:"invalid"` → field-level errors, values
   preserved), plus BFF-side numeric coercion (schema-bounded) before apply.
 - The applying/reconnecting flow (`status:"applying"` → HTMX poll until the driver
@@ -719,9 +712,10 @@ combined with the subcommand (the mixed form would silently ignore them).
   chosen mock, live over the SSE proxy with cursor passthrough, `stream_gap`
   rendering, rp-unreachable self-healing, and the shared-nav night-vision
   toggle.
-- The **Restart via Sentinel** affordance (button per driver card when a
-  `sentinel` block is configured) and the restart callout's inline restart
-  button, both posting to `/config/{service}/restart` (Phase 4 of the
+- The **Restart via Sentinel** affordance (button per config card when a
+  `sentinel` block is configured; device pages derive the target service by
+  the `probe_port` match) and the restart callout's inline restart button,
+  both posting to `/config/{service}/restart` (Phase 4 of the
   config-actions plan).
 - **BFF-side TLS + HTTP Basic auth** via the shared `server` block
   (`rusty-photon-tls`/`rp-auth`, wrapping the whole router — see
@@ -766,12 +760,14 @@ Follows [`docs/skills/testing.md`](../skills/testing.md).
 
 `config_page.feature` is the canonical contract for the page behaviour, and —
 like every other service — it exercises the **real binaries end to end**. Each
-scenario spawns the real `ui-htmx` process and a real `dsd-fp2` driver in mock
-mode (via `bdd_infra::ServiceHandle`), points the BFF at the driver, and drives
-the BFF over HTTP, asserting on the HTML it actually renders. There is no
-in-process router and no stubbed `ConfigClient`: the production
-`ReqwestHttpClient` → `AlpacaConfigClient` path and the driver's real
-`config.get` / `config.apply` / in-process reload all run for real. The entry
+scenario spawns the real `ui-htmx` process, a real `rp` with the driver
+rostered as cover calibrator `dsd-fp2`, and a real `dsd-fp2` driver in mock
+mode (via `bdd_infra::ServiceHandle`), and drives the BFF over HTTP at the
+roster-derived `/config/rp:cover_calibrators:dsd-fp2`, asserting on the HTML
+it actually renders. There is no in-process router and no stubbed
+`ConfigClient`: the production `ReqwestHttpClient` → `AlpacaConfigClient`
+path and the driver's real `config.get` / `config.apply` / in-process reload
+all run for real. The entry
 point therefore uses `bdd_infra::bdd_main!` (child-process spawning, skipped
 under Miri), and both binaries are built with the driver's mock transport (it is
 feature-gated):
@@ -938,25 +934,27 @@ call end to end. Scenarios:
 - An invalid change re-renders the form with the driver's field-level error,
   the submitted value preserved.
 - An unreachable driver surfaces an error banner.
-- One BFF exposes the driver under two service ids: the index links to both and
-  each `/config/{service}` route renders independently (multi-driver routing).
 
 **Restart scenarios spawn a real Sentinel too** (`restart.feature`): the same
 `bdd_infra::ServiceHandle` pattern starts the workspace's real `sentinel`
 binary (dashboard on port 0, `bound_addr=` discovery) with
 `SENTINEL_SERVICE_MANAGER_DIR` pointing at a stub service-manager directory
 (see [sentinel.md §The test seam](sentinel.md#the-test-seam-sentinel_service_manager_dir))
-that lists the driver's unit, so discovery works without systemd. Scenarios:
+that lists the driver's unit; sentinel's config dir is seeded with a sibling
+`dsd-fp2.json` carrying the driver's real bound port, so discovery derives
+the `probe_port` the BFF's restart match resolves against. Scenarios:
 
-- The config card offers "Restart via Sentinel" when a sentinel block is
-  configured, and clicking it restarts the discovered unit (the stub's
-  `restarts.log` records it) and swaps in the reconnecting fragment, which
-  then serves the form again (the dsd-fp2 driver never actually died — the
-  stub restart is a stand-in — so the poll reconnects immediately).
+- The device config card offers "Restart via Sentinel" when a sentinel block
+  is configured (the port match names the discovered service), and clicking
+  it restarts the discovered unit (the stub's `restarts.log` records it) and
+  swaps in the reconnecting fragment, which then serves the form again (the
+  dsd-fp2 driver never actually died — the stub restart is a stand-in — so
+  the poll reconnects immediately).
 - A failing restart (the stub's `restart-fail` marker) surfaces Sentinel's
   `status:"failed"` detail in an error banner.
-- A driver whose service id Sentinel has not discovered surfaces the 404
-  reason.
+- A device whose driver Sentinel has not discovered renders no restart
+  button (no port match); rp's own restart against a Sentinel that has not
+  discovered rp surfaces the 404 reason.
 - With no `sentinel` block configured, the config card renders no restart
   affordance.
 
@@ -1004,17 +1002,22 @@ suites run everywhere the existing one does. Coverage:
   `ErrorNumber != 0` → error, `ACTION_NOT_IMPLEMENTED` mapping, HTTP-non-2xx →
   transport error. Mocks `HttpClient`. (The wire types are re-exported from
   `rusty_photon_config::actions`, so there is nothing driver-specific to test.)
-- `lib.rs`: multi-driver `AppState` (`from_config` builds every driver; rejects
-  URL-embedded credentials); the handler renders the "this driver does not expose
-  configuration" banner on `ACTION_NOT_IMPLEMENTED` and the "no configured driver"
-  card for an unknown `{service}` — error states the end-to-end suite can't
-  produce — driven in-process through `AppState::with_client` with a stub
-  `ConfigClient`. The `restart_required` escalation banner (no driver emits the
-  classification today) and the `recovery:"timeout"` warning are likewise driven
-  through stub `ConfigClient` / `SentinelClient` implementations.
+- `lib.rs`: `AppState::from_config` (builds the rp handle; rejects
+  URL-embedded credentials); the roster-derived restart match
+  (`resolve_sentinel_service` — port match, same-host guard, no-match and
+  sentinel-down degradation, restart POST targeting the matched name); the
+  handler renders the "this driver does not expose configuration" banner on
+  `ACTION_NOT_IMPLEMENTED` and the "no configured driver" card for an
+  unknown `{service}` — error states the end-to-end suite can't produce —
+  driven in-process through `AppState::with_client` with a stub
+  `ConfigClient`. The `restart_required` escalation banner (no driver emits
+  the classification today) and the `recovery:"timeout"` warning are
+  likewise driven through stub `ConfigClient` / `SentinelClient`
+  implementations.
 - `sentinel_client.rs`: `HttpSentinelClient` shapes the restart POST and parses
   each outcome (`ok`+recovery variants, `failed`+detail, 404, 409, transport
-  error). Mocks `HttpClient`.
+  error), and parses `GET /api/services` into `SentinelService` entries
+  (`probe_port` present, absent, null). Mocks `HttpClient`.
 - `pages`: the schema walker (`$ref` resolution, plain-object recursion,
   `anyOf`/`oneOf` skipping, `FieldKind` inference, the integer-enum-array →
   checkbox-group case incl. object-array skipping); schema-driven form ⇆ Config
@@ -1023,9 +1026,9 @@ suites run everywhere the existing one does. Coverage:
   leaves; multi-value checkbox-group merge incl. empty selection → empty array;
   redacted-secret round-trip); the locked/identity tier (disabled by
   default, editable when `__unlocked`/`?unlock=` names it, pinned still wins, a
-  forged `__unlocked` can't unlock a non-locked field); the index listing.
-- `config.rs`: defaults (single dsd-fp2), the multi-driver map, the optional
-  `rp` target, and JSON load.
+  forged `__unlocked` can't unlock a non-locked field).
+- `config.rs`: defaults, the required `rp` target (missing/null rejected),
+  the retired `drivers` key rejection, and JSON load.
 - `io.rs`: `ReqwestHttpClient` connection-refused error path (mirrors sentinel).
 - `driver_client.rs` (`RestConfigClient`): REST request shaping, 200-body
   parsing, 400/500 mapping — mocked `HttpClient`.
@@ -1048,19 +1051,19 @@ suites run everywhere the existing one does. Coverage:
 
 | Module | Description |
 |--------|-------------|
-| `config.rs` | `Config`, the shared `ServerConfig` (re-exported from `rusty-photon-server-config`), the `Drivers` map + `DriverTarget`, the optional `RpTarget` + `SentinelTarget`, defaults + JSON load. |
+| `config.rs` | `Config`, the shared `ServerConfig` (re-exported from `rusty-photon-server-config`), the required `RpTarget` + optional `SentinelTarget`, defaults + JSON load. |
 | `io.rs` | `HttpClient` trait (`#[cfg_attr(test, mockall::automock)]`) + `ReqwestHttpClient` (rusty-photon-tls CA trust + optional Basic auth). |
 | `driver_client.rs` | `ConfigClient` trait + `AlpacaConfigClient` (ASCOM action transport) + `RestConfigClient` (rp's plain-REST transport): request shaping, envelope parsing, error mapping. Re-exports the shared wire types from `rusty_photon_config::actions`. |
-| `sentinel_client.rs` | `SentinelClient` trait + `HttpSentinelClient`: `POST /api/services/{name}/restart` request shaping + outcome/404/409 parsing against Sentinel's REST API. |
+| `sentinel_client.rs` | `SentinelClient` trait + `HttpSentinelClient`: `POST /api/services/{name}/restart` request shaping + outcome/404/409 parsing, and `GET /api/services` (the `probe_port` listing the restart match resolves against). |
 | `rp_client.rs` | The non-config rp surface: `RpApi` trait (`equipment_status`, `session_status`) + its reqwest impl — the seam the equipment page and stream shell render from. |
 | `roster.rs` | The roster domain: `EquipKind` (kind ⇄ ASCOM-type mapping), `parse_roster` over rp's config value, the `rp:{kind}:{id}` key codec, and the insert/replace/remove config surgery with duplicate-id/singular-mount guards. |
-| `pages/mod.rs` | The schema-driven renderer: `FieldModel` (schema walker + `FieldKind`, incl. the integer-enum-array checkbox group and the array-item subschema entry point), `config_card`/`index`/fragment templates, the schema-driven `merge_form` coercion over duplicate-key-preserving form pairs, and the shared `layout` shell (nav tabs + night-vision toggle). |
+| `pages/mod.rs` | The schema-driven renderer: `FieldModel` (schema walker + `FieldKind`, incl. the integer-enum-array checkbox group and the array-item subschema entry point), `config_card`/fragment templates, the schema-driven `merge_form` coercion over duplicate-key-preserving form pairs, and the shared `layout` shell (nav tabs + night-vision toggle). |
 | `pages/equipment.rs` | The equipment page: roster join, tier badges, add/edit/remove forms, roster mutation via config surgery. |
 | `pages/stream.rs` | The activity stream page shell + per-event feed-card and strip-slot fragment renderers (pure `EventEnvelope → Markup` functions). |
 | `probe.rs` | The capability probe: bounded concurrent `supportedactions`/setup-page checks → tier. |
 | `sse_proxy.rs` | `/stream/events`: rp SSE client (incremental frame parser), envelope→fragment translation, cursor passthrough, shutdown token. |
 | `assets.rs` | `include_str!` of `assets/app.css` + `assets/htmx.min.js` + `assets/htmx-ext-sse.js`; asset routes. |
-| `lib.rs` | `build_router`, multi-driver `AppState` (+ rp target + Sentinel client), the `/config/{service}` (+ `/restart`), `/equipment*`, `/stream*` handlers, public exports. |
+| `lib.rs` | `build_router`, `AppState` (rp handle + Sentinel client + the roster-derived resolve incl. the restart port-match), the `/config/{service}` (+ `/restart`), `/equipment*`, `/stream*` handlers, public exports. |
 | `main.rs` | CLI (clap) + tracing init; lifecycle owned by `ServiceRunner` (axum — or `rusty_photon_tls::server::serve_tls` when `server.tls` is set — with the optional `rp_auth` layer, graceful shutdown, SSE shutdown token). |
 
 ## References
