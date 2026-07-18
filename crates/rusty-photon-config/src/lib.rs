@@ -141,11 +141,68 @@ fn sync_dir(_parent: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Carry the replaced file's mode and owner over to the staged temp file (Unix). The rename in
+/// [`save`] replaces the inode, so without this a privileged caller — doctor under sudo, the only
+/// practical way to run it against a packaged install's config root — would strand the config
+/// root-owned and unreadable by the service user. The invariant is that a save never changes who
+/// owns the file: the chown runs whenever the staged file's owner differs from the original's,
+/// and a chown that fails is a save error. For an unprivileged caller that only happens in an
+/// anomalous state (a config hand-chowned to another user), where the save now fails with
+/// `PermissionDenied` instead of silently re-owning the file to the writer — surfacing the
+/// anomaly beats papering over it.
+#[cfg(unix)]
+fn preserve_owner_and_mode(path: &Path, tmp: &tempfile::NamedTempFile) -> std::io::Result<()> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    // Deliberately follows a symlinked config to its target: the target's
+    // attributes are what the reading service effectively sees, while the
+    // link inode's are a fixed 0o777 and the link creator's uid — exactly
+    // the wrong thing to stamp onto the regular file the rename leaves in
+    // the link's place. The rename itself never follows the link, so the
+    // target is only ever read, never written.
+    let original = match std::fs::metadata(path) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    // Ownership before mode: chown clears setuid (and setgid on
+    // group-executable files) even for root, so the mode must be applied
+    // to the final owner.
+    let staged = tmp.as_file().metadata()?;
+    if (staged.uid(), staged.gid()) != (original.uid(), original.gid()) {
+        std::os::unix::fs::fchown(tmp.as_file(), Some(original.uid()), Some(original.gid()))
+            .map_err(|e| ownership_error(original.uid(), original.gid(), e))?;
+    }
+    tmp.as_file()
+        .set_permissions(std::fs::Permissions::from_mode(original.mode() & 0o7777))?;
+    tmp.as_file().sync_all()
+}
+
+/// Context for a failed ownership transfer in [`preserve_owner_and_mode`]:
+/// names the step and the owner being kept, so a packaged-install failure is
+/// diagnosable from the save error alone instead of a bare EPERM.
+#[cfg(unix)]
+fn ownership_error(uid: u32, gid: u32, e: std::io::Error) -> std::io::Error {
+    std::io::Error::new(
+        e.kind(),
+        format!("keeping the replaced file's owner {uid}:{gid}: {e}"),
+    )
+}
+
+#[cfg(not(unix))]
+fn preserve_owner_and_mode(_path: &Path, _tmp: &tempfile::NamedTempFile) -> std::io::Result<()> {
+    Ok(())
+}
+
 /// Atomically persist `value` as pretty JSON: create parent dirs, stage to a uniquely-named temp
 /// file in the same directory, fsync, rename into place, then fsync the directory (Unix) so the
-/// rename itself is durable.
+/// rename itself is durable. When a file is being replaced, its mode and owner survive onto the
+/// new inode (Unix), so a privileged caller never leaves a config the owning service can no
+/// longer read. A save that cannot keep the original owner — an unprivileged caller replacing a
+/// file owned by another user — fails with `PermissionDenied` rather than changing who owns it.
 pub fn save(path: &Path, value: &Value) -> std::io::Result<()> {
     let (tmp, parent) = stage_pretty_json(path, value)?;
+    preserve_owner_and_mode(path, &tmp)?;
     tmp.persist(path).map_err(|e| e.error)?;
     sync_dir(parent)
 }
@@ -350,6 +407,134 @@ mod tests {
         let on_disk: Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(on_disk, json!({ "server": { "port": 9 } }));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_preserves_the_replaced_files_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.json");
+        std::fs::write(&path, "{}").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+
+        save(&path, &json!({ "server": { "port": 1 } })).unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o7777;
+        assert_eq!(mode, 0o640, "the temp file's 0600 must not replace 0640");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_preserves_the_replaced_files_owner() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.json");
+        std::fs::write(&path, "{}").unwrap();
+        // Only root may hand a file to another owner, so the cross-owner
+        // case (a sudo'd doctor rewriting the service user's config) is
+        // exercised on privileged runs (root CI containers); unprivileged
+        // runs still pin the owner across the inode swap.
+        let cross_owner = std::os::unix::fs::chown(&path, Some(12345), Some(12345)).is_ok();
+        // The setuid bit doubles as an ordering probe: chown always clears
+        // it (setgid survives on non-group-executable files), so it only
+        // survives a cross-owner save if the mode is applied after the
+        // ownership transfer. Set after the chown above for the same reason.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o4640)).unwrap();
+        let before = std::fs::metadata(&path).unwrap();
+
+        save(&path, &json!({ "server": { "port": 1 } })).unwrap();
+
+        let after = std::fs::metadata(&path).unwrap();
+        assert_eq!(
+            (after.uid(), after.gid()),
+            (before.uid(), before.gid()),
+            "owner must survive the rename (cross-owner run: {cross_owner})"
+        );
+        if cross_owner {
+            assert_eq!((after.uid(), after.gid()), (12345, 12345));
+        }
+        assert_eq!(
+            after.permissions().mode() & 0o7777,
+            0o4640,
+            "setuid must survive the ownership transfer (cross-owner run: {cross_owner})"
+        );
+    }
+
+    /// A gid from `id -G` different from `primary`, if the environment has
+    /// one. An owner may hand a file to any group they belong to, so this
+    /// lets the ownership-transfer path run without privileges.
+    #[cfg(unix)]
+    fn supplementary_gid(primary: u32) -> Option<u32> {
+        let out = std::process::Command::new("id").arg("-G").output().ok()?;
+        String::from_utf8(out.stdout)
+            .ok()?
+            .split_whitespace()
+            .filter_map(|g| g.parse().ok())
+            .find(|g| *g != primary)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_transfers_group_ownership_back_to_the_original() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.json");
+        std::fs::write(&path, "{}").unwrap();
+        let primary = std::fs::metadata(&path).unwrap().gid();
+        let Some(other) = supplementary_gid(primary) else {
+            eprintln!("single-group environment; the cross-gid path needs the privileged tests");
+            return;
+        };
+        // Sandboxes with a single-mapping user namespace (bazel's
+        // linux-sandbox) cannot express the transfer at all (EINVAL);
+        // plain cargo runs and real machines can.
+        if std::os::unix::fs::chown(&path, None, Some(other)).is_err() {
+            eprintln!("environment cannot chgrp to a supplementary group; skipping");
+            return;
+        }
+
+        save(&path, &json!({ "server": { "port": 1 } })).unwrap();
+
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().gid(),
+            other,
+            "the staged file's primary gid must not replace the original's group"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_surfaces_a_stat_error_on_the_replaced_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.json");
+        // A self-looping symlink: the only stat outcome that is neither
+        // success nor NotFound and needs no privileges to set up.
+        std::os::unix::fs::symlink("c.json", &path).unwrap();
+
+        let err = save(&path, &json!({})).unwrap_err();
+
+        #[cfg(target_os = "linux")]
+        const ELOOP: i32 = 40;
+        #[cfg(not(target_os = "linux"))]
+        const ELOOP: i32 = 62;
+        assert_eq!(err.raw_os_error(), Some(ELOOP), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ownership_error_keeps_the_kind_and_names_the_owner() {
+        let e = ownership_error(
+            985,
+            985,
+            std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        );
+        assert_eq!(e.kind(), std::io::ErrorKind::PermissionDenied);
+        let msg = e.to_string();
+        assert!(
+            msg.contains("keeping the replaced file's owner 985:985"),
+            "{msg}"
+        );
     }
 
     #[test]
