@@ -1,5 +1,8 @@
 Feature: rp configuration page
-  The BFF serves rp's own configuration at /config/rp over rp's plain-REST
+  The BFF serves rp's own configuration at /config/rp — and, when an rp
+  target is configured, at / itself: the Configuration nav surface IS rp's
+  settings page (per-device configuration is reached from the equipment
+  page's Configure buttons instead). Both routes speak rp's plain-REST
   config API (GET /api/config, GET /api/config/schema, PUT /api/config) —
   the same schema-driven form machinery as any driver, through a REST
   transport instead of ASCOM actions. rp has no in-process reload
@@ -18,6 +21,13 @@ Feature: rp configuration page
     Given a running rp orchestrator with an empty roster
     And a BFF pointed at rp
     When I open the config page for "rp"
+    Then the page shows an input named "session.file_naming_pattern" with value "{target}_{filter}_{duration}s_{sequence:04}"
+    And the input named "server.port" is disabled
+
+  Scenario: With an rp target the configuration surface is rp's settings page
+    Given a running rp orchestrator with an empty roster
+    And a BFF pointed at rp
+    When I open the configuration index
     Then the page shows an input named "session.file_naming_pattern" with value "{target}_{filter}_{duration}s_{sequence:04}"
     And the input named "server.port" is disabled
 

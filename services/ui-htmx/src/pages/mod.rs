@@ -122,17 +122,6 @@ pub struct DriverLink {
     pub title: String,
 }
 
-/// The roster-derived section of the index (devices from rp's config, each
-/// with a synthesized `/config/rp:{kind}:{id}` page).
-pub enum RosterLinks {
-    /// No `rp` target in the BFF config — the section is not rendered.
-    NotConfigured,
-    /// rp did not answer; the section renders a note instead of links.
-    Unreachable(String),
-    /// The roster entries (possibly empty).
-    Entries(Vec<DriverLink>),
-}
-
 fn service_links(drivers: &[DriverLink]) -> Markup {
     html! {
         ul.service-list {
@@ -148,9 +137,12 @@ fn service_links(drivers: &[DriverLink]) -> Markup {
     }
 }
 
-/// The index: links to every configurable driver the BFF knows about, plus the
-/// devices in rp's equipment roster when an rp target is configured.
-pub fn index_page(drivers: &[DriverLink], roster: &RosterLinks) -> Markup {
+/// The static-driver index: the Configuration surface's fallback when no rp
+/// target is configured (with one, `/` renders rp's settings page instead —
+/// see the routes table in the design doc). Devices in rp's roster are
+/// reached from the equipment page's per-device Configure buttons, never
+/// listed here.
+pub fn index_page(drivers: &[DriverLink]) -> Markup {
     layout(
         "rusty-photon · configuration",
         html! {
@@ -163,24 +155,6 @@ pub fn index_page(drivers: &[DriverLink], roster: &RosterLinks) -> Markup {
                 p.subtitle { "No drivers are configured. Add them to the BFF config file." }
             } @else {
                 (service_links(drivers))
-            }
-            @match roster {
-                RosterLinks::NotConfigured => {}
-                RosterLinks::Unreachable(err) => {
-                    h2.section-head { "From rp's roster" }
-                    p.subtitle { "rp did not answer: " (err) }
-                }
-                RosterLinks::Entries(entries) => {
-                    h2.section-head { "From rp's roster" }
-                    @if entries.is_empty() {
-                        p.subtitle {
-                            "rp has no equipment configured yet — add devices on the "
-                            a href="/equipment" { "Equipment" } " page."
-                        }
-                    } @else {
-                        (service_links(entries))
-                    }
-                }
             }
         },
     )
@@ -1749,38 +1723,10 @@ mod tests {
                 title: "QHY Focuser".to_string(),
             },
         ];
-        let markup = index_page(&drivers, &RosterLinks::NotConfigured).into_string();
+        let markup = index_page(&drivers).into_string();
         assert!(markup.contains(r#"href="/config/dsd-fp2""#), "{markup}");
         assert!(markup.contains(r#"href="/config/qhy-focuser""#), "{markup}");
         assert!(markup.contains("QHY Focuser"), "{markup}");
-        // Without an rp target the roster section is absent entirely.
-        assert!(!markup.contains("From rp's roster"), "{markup}");
-    }
-
-    #[test]
-    fn index_page_renders_roster_links_and_states() {
-        let drivers = vec![DriverLink {
-            service: "dsd-fp2".to_string(),
-            title: "Deep Sky Dad FP2".to_string(),
-        }];
-        let entries = RosterLinks::Entries(vec![DriverLink {
-            service: "rp:cameras:main-cam".to_string(),
-            title: "Main Camera".to_string(),
-        }]);
-        let markup = index_page(&drivers, &entries).into_string();
-        assert!(markup.contains("From rp's roster"), "{markup}");
-        assert!(
-            markup.contains(r#"href="/config/rp:cameras:main-cam""#),
-            "{markup}"
-        );
-
-        let down = RosterLinks::Unreachable("connection refused".to_string());
-        let markup = index_page(&drivers, &down).into_string();
-        assert!(markup.contains("rp did not answer"), "{markup}");
-
-        let empty = RosterLinks::Entries(vec![]);
-        let markup = index_page(&drivers, &empty).into_string();
-        assert!(markup.contains("no equipment configured yet"), "{markup}");
     }
 
     // --- merge_form ----------------------------------------------------------
