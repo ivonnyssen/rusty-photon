@@ -6,7 +6,7 @@ use rcgen::{
     KeyUsagePurpose, SanType,
 };
 use rusty_photon_tls::error::{Result, TlsError};
-use rusty_photon_tls::permissions::write_restricted;
+use rusty_photon_tls::permissions::{refuse_symlink, write_restricted};
 use tracing::debug;
 
 /// Duration for CA certificate validity (10 years in days).
@@ -40,6 +40,7 @@ pub fn generate_ca(output_dir: &Path) -> Result<()> {
     let cert_path = output_dir.join("ca.pem");
     let key_path = output_dir.join("ca-key.pem");
 
+    refuse_symlink(&cert_path)?;
     fs::write(&cert_path, cert.pem())?;
     write_restricted(&key_path, key_pair.serialize_pem().as_bytes())?;
 
@@ -117,6 +118,7 @@ pub fn generate_service_cert(
     let cert_path = output_dir.join(format!("{service_name}.pem"));
     let key_path = output_dir.join(format!("{service_name}-key.pem"));
 
+    refuse_symlink(&cert_path)?;
     fs::write(&cert_path, service_cert.pem())?;
     write_restricted(&key_path, service_key.serialize_pem().as_bytes())?;
 
@@ -175,6 +177,44 @@ mod tests {
 
         let key_pem = fs::read_to_string(dir.path().join("ca-key.pem")).unwrap();
         assert!(key_pem.contains("BEGIN PRIVATE KEY"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn generate_ca_refuses_a_symlinked_cert_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target");
+        fs::write(&target, "existing").unwrap();
+        std::os::unix::fs::symlink(&target, dir.path().join("ca.pem")).unwrap();
+
+        let err = generate_ca(dir.path()).unwrap_err();
+        assert!(err.to_string().contains("symlink"), "{err}");
+        assert_eq!(
+            fs::read(&target).unwrap(),
+            b"existing",
+            "the symlink target must be untouched"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn generate_service_cert_refuses_a_symlinked_cert_path() {
+        let dir = tempfile::tempdir().unwrap();
+        generate_ca(dir.path()).unwrap();
+        let ca_cert = fs::read_to_string(dir.path().join("ca.pem")).unwrap();
+        let ca_key = fs::read_to_string(dir.path().join("ca-key.pem")).unwrap();
+        let target = dir.path().join("target");
+        fs::write(&target, "existing").unwrap();
+        std::os::unix::fs::symlink(&target, dir.path().join("sentinel.pem")).unwrap();
+
+        let err =
+            generate_service_cert(&ca_cert, &ca_key, "sentinel", &[], dir.path()).unwrap_err();
+        assert!(err.to_string().contains("symlink"), "{err}");
+        assert_eq!(
+            fs::read(&target).unwrap(),
+            b"existing",
+            "the symlink target must be untouched"
+        );
     }
 
     #[test]
