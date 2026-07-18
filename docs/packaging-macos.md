@@ -104,9 +104,11 @@ brew update && brew upgrade            # pick up last night's build
 
 Nightly formulas carry the full `<base>+nightly.<datetime>.g<sha>` version,
 which Homebrew orders correctly: above the plain `<base>` release, below
-the next patch release, monotonic across publishes (the stamp is UTC to
-the minute — the numeric token does all the ordering, the `g<sha>` token
-none).
+the next patch release, monotonic across publishes. The stamp is UTC to
+the minute and the numeric token does all the ordering (the `g<sha>`
+token none); published stamps can never tie on the minute because
+nightly runs serialize and each publish lands well after its stamp is
+minted.
 
 **Switching channels / rolling back.** `brew uninstall` the one channel's
 formulas, then install the other (configs are untouched by uninstall).

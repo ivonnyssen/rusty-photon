@@ -114,8 +114,11 @@ jobs:
           # Minute resolution, merged into one numeric segment: the g<sha>
           # suffix carries no order (hex compares lexically), so the
           # timestamp alone must sort a second same-day publish above the
-          # first. Same-minute stamps can't happen — the workflow-level
-          # concurrency group serializes runs.
+          # first. Minute ties between PUBLISHED stamps are impossible: the
+          # concurrency group serializes runs and a publish lands only
+          # after its run's multi-minute verified build legs, so the next
+          # run mints its stamp well after the previous publish. A failed
+          # run's stamp publishes nothing and orders against nothing.
           stamp=$(date -u +%Y%m%d%H%M)
           short=$(git rev-parse --short=7 HEAD)
           echo "date=${stamp:0:8}" >> "$GITHUB_OUTPUT"

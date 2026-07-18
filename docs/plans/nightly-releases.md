@@ -67,7 +67,8 @@ N5 depends only on N1+N2 (it repackages their already-verified `.deb`/
   `g<sha>` suffix compares as hex, not as history, so a second publish on
   the same UTC day could sort *below* the first and apt/dnf then refuse
   the upgrade — the minute component makes the timestamp carry all the
-  ordering:
+  ordering. Date-only examples elsewhere in this plan are historical
+  records of the pre-change shape and are left as written:
 
   | Target | Nightly version | Mechanics |
   |--------|-----------------|-----------|
