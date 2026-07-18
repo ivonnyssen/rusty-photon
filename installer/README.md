@@ -65,8 +65,9 @@ CI: the `msi` workflow (`.github/workflows/msi.yml`) runs both on
 `windows-latest` on PRs touching the packaging inputs and on demand;
 `release.yml` runs the same two scripts with `verify-msi.ps1` gating the
 release upload; and the `msi` leg of `nightly-packages.yml` runs them
-nightly with `build-msi.ps1 -NightlyVersion` and
-`verify-msi.ps1 -UpgradeFrom` (`docs/plans/nightly-releases.md` N3).
+nightly with `build-msi.ps1 -NightlyVersion`
+(`docs/plans/nightly-releases.md` N3; the former `-UpgradeFrom` upgrade
+proof is suspended pre-1.0 — issue #582).
 Operator guide: `docs/packaging-windows.md`.
 
 The build always defines two preprocessor variables: `Version` (the MSI

@@ -18,10 +18,9 @@
 #              installing is not a gate: nothing publishes unless every
 #              enabled leg passed its verifiers.
 #   msi      — the Windows suite MSI (ADR-015) with the nightly version
-#              stamp; its verifier additionally installs over the
-#              previously PUBLISHED nightly MSI, proving the
-#              AllowSameVersionUpgrades in-place upgrade that release-tag
-#              testing never exercises (phase N3).
+#              stamp, fresh-install verified (phase N3; the former
+#              upgrade-over-prior-nightly proof is suspended pre-1.0 —
+#              issue #582).
 #   macos    — per-service arm64 tarballs (the Homebrew formula payloads),
 #              lifecycle-verified through real brew (install → services →
 #              probe → uninstall) before anything publishes (phase N4).
