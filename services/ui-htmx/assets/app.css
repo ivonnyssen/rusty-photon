@@ -1,13 +1,18 @@
-/* ui-htmx — dark theme reusing the design tokens from the chosen activity-stream
- * mock (docs/plans/ui-design/mocks/7-stream-fold.html) so the configuration
- * pages are visually consistent with the eventual stream UI. */
+/* ui-htmx — dark theme derived from the chosen activity-stream mock
+ * (docs/plans/ui-design/mocks/7-stream-fold.html). The surface tones are
+ * lifted relative to the mock into an explicit elevation ladder
+ * (bg < panel < panel-2, each a visible step) — the mock's near-black
+ * values collapse into one another on ordinary screens; the night-vision
+ * filter multiplies whatever contrast the base theme has, so it inherits
+ * the same separation. */
 
 :root {
-  --bg: #08080a;
-  --panel: #0f0f12;
-  --edge: #1c1c22;
+  --bg: #0a0a0d;
+  --panel: #14141a;
+  --panel-2: #1b1b23;
+  --edge: #2a2a35;
   --text: #fafafa;
-  --dim: #9c9ca6;
+  --dim: #a5a5b0;
   --accent-a: #6366f1;
   --accent-b: #d946ef;
   --ok: #4ade80;
@@ -109,14 +114,16 @@ h1 { font-size: 22px; margin: 0 0 4px; }
   padding: 20px;
 }
 
-/* Each top-level config section is an enclosed sub-panel: grouping by
+fieldset { border: 0; margin: 0 0 8px; padding: 0; }
+/* A labeled config section is an enclosed sub-panel: grouping by
  * containment, not separator lines (drivers can serve several devices —
  * e.g. falcon's rotator + status switch — and their sections must read
- * as distinct boxes). */
-fieldset {
+ * as distinct boxes). Legendless fieldsets (the equipment add/edit form)
+ * are a single unlabeled group and get no chrome. */
+fieldset:has(> legend) {
   border: 1px solid var(--edge);
   border-radius: 8px;
-  background: #0b0b0e;
+  background: var(--panel-2);
   margin: 0 0 16px;
   padding: 16px 16px 2px;
 }
@@ -145,7 +152,7 @@ input:focus, select:focus { outline: none; border-color: var(--accent-a); }
 
 input[readonly], input:disabled, select:disabled {
   color: var(--dim);
-  background: #0b0b0e;
+  background: #121217;
   cursor: not-allowed;
 }
 
