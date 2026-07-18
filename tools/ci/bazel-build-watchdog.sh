@@ -153,7 +153,9 @@ dump_server_logs() {
 
 dump_hung_server() {
   echo "::group::bazel-build-watchdog: no output for ${STALL_SECS}s — dumping hung Bazel server"
-  pgrep -fl 'bazel|java' 2>/dev/null || true
+  # The client's own command line carries --remote_header with the cache
+  # credential, and -fl prints full command lines.
+  pgrep -fl 'bazel|java' 2>/dev/null | redact_bearer || true
   echo "--- TCP connections to port 443 (remote cache) ---"
   netstat -an 2>/dev/null | awk 'NR <= 2 || $0 ~ /[.:]443([^0-9]|$)/' || true
   # `bazel info output_base` would queue behind the wedged build command, so
@@ -170,7 +172,7 @@ dump_hung_server() {
     server_pid="$(server_pid_for_base "$output_base")" || continue
     echo "--- bazel server pid ${server_pid}, output base ${output_base} ---"
     if command -v jstack >/dev/null 2>&1; then
-      jstack "$server_pid" 2>&1 || echo "(jstack could not attach)"
+      jstack "$server_pid" 2>&1 | redact_bearer || echo "(jstack could not attach)"
     fi
     kill -QUIT "$server_pid" 2>/dev/null || true
     sleep 3
