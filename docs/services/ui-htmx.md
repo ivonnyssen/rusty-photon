@@ -14,10 +14,14 @@ is no npm, no WASM, no client-side framework.
 
 It serves three surfaces, one nav:
 
-1. **Configuration pages** (`/config/{service}`, index at `/`) — a
-   schema-driven config form for any rusty-photon driver (Phases 2–3), for
-   `rp` itself over its REST config API, and for devices discovered from
-   `rp`'s equipment roster (Phase 5).
+1. **Configuration** (`/`, deep pages at `/config/{service}`) — with an
+   `rp` target configured, `/` *is* rp's settings page (the same
+   schema-driven form `/config/rp` serves). Per-device configuration is
+   reached from the equipment page's Configure buttons, not from here —
+   the device list lives in one place. `/config/{service}` still resolves
+   every target kind (static driver, `rp`, roster-derived); without an
+   `rp` target, `/` falls back to the static-driver index (the pure
+   driver-config UI, transitional until the drivers map is removed).
 2. **Equipment page** (`/equipment`) — `rp`'s equipment roster: live
    connection state, a managed/foreign capability tier per device, and
    add / edit / remove of roster entries by editing `rp`'s config over REST.
@@ -185,7 +189,7 @@ BFF serves every configured driver.
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| `GET`  | `/` | Index: links to every configured driver (`/config/{service}`), the `rp` config page, and roster-derived devices when an `rp` target is configured. |
+| `GET`  | `/` | The Configuration surface. With an `rp` target: renders rp's settings page — identical to `GET /config/rp`, form posts and restart affordances included. Without one: the index of static drivers (`/config/{service}` links only; roster-derived links live on the equipment page as its per-device Configure buttons). |
 | `GET`  | `/config/{service}` | Call `config.schema` + `config.get`; render the form generated from the schema, filled with current values. An optional `?unlock=<field>` query renders one locked/identity field (e.g. a device `unique_id`) editable — the read-only-by-default escape hatch. Resolve failures render honest, distinct cards: unknown `{service}` ("no configured driver"), rp unreachable while resolving a roster key (retryable), or a roster entry no client can be built from (e.g. malformed `alpaca_url` — links to the Equipment page to fix it). |
 | `POST` | `/config/{service}` | Re-fetch `config.schema` to coerce the form back into the full Config, call `config.apply`; render the result state (see below). |
 | `GET`  | `/config/{service}/status` | HTMX poll target during reconnect: try `config.schema` + `config.get`; when the driver answers, swap in the refreshed form. Honours the same optional `?unlock=` query. |

@@ -436,7 +436,7 @@ async fn resolve_service(state: &AppState, service: &str) -> Result<DriverHandle
     );
     Ok(DriverHandle {
         title: entry.display_name().to_string(),
-        subtitle: format!("{} · {} (via rp roster)", entry.id, kind.ascom_type()),
+        subtitle: format!("{} · {}", entry.id, kind.ascom_type()),
         client: Arc::new(client),
         // Roster devices are hardware rp manages, not OS services Sentinel
         // supervises — no restart affordance.
@@ -485,7 +485,21 @@ pub fn build_router(state: AppState) -> Router {
     router.with_state(state)
 }
 
-async fn index(State(state): State<AppState>) -> Markup {
+/// The Configuration surface. With an rp target, `/` IS rp's settings page —
+/// the identical rendering to `GET /config/rp` (including the `?unlock=`
+/// escape hatch), so its form posts and restart affordances (which target
+/// the `/config/rp/...` routes) work unchanged. Devices are configured from
+/// the equipment page's per-device Configure buttons, so no device list
+/// renders here. Without an rp target, the static-driver index is the
+/// fallback (the pure driver-config UI).
+async fn index(
+    State(state): State<AppState>,
+    Query(query): Query<UnlockQuery>,
+    headers: HeaderMap,
+) -> Response {
+    if state.rp().is_some() {
+        return render_config_get(&state, "rp", query.unlock.as_deref(), &headers).await;
+    }
     let links: Vec<DriverLink> = state
         .drivers
         .iter()
@@ -494,22 +508,7 @@ async fn index(State(state): State<AppState>) -> Markup {
             title: handle.title.clone(),
         })
         .collect();
-    let roster = match state.rp() {
-        None => pages::RosterLinks::NotConfigured,
-        Some(rp) => match rp.config_client.get_config().await {
-            Ok(resp) => pages::RosterLinks::Entries(
-                roster::parse_roster(&resp.config)
-                    .iter()
-                    .map(|entry| DriverLink {
-                        service: entry.service_key(),
-                        title: entry.display_name().to_string(),
-                    })
-                    .collect(),
-            ),
-            Err(err) => pages::RosterLinks::Unreachable(err.to_string()),
-        },
-    };
-    pages::index_page(&links, &roster)
+    pages::index_page(&links).into_response()
 }
 
 async fn health() -> &'static str {
@@ -578,19 +577,24 @@ async fn config_get(
     Query(query): Query<UnlockQuery>,
     headers: HeaderMap,
 ) -> Response {
-    let title = page_title(&service);
-    let handle = match resolve_service(&state, &service).await {
+    render_config_get(&state, &service, query.unlock.as_deref(), &headers).await
+}
+
+/// `GET /config/{service}`'s rendering, shared with `GET /` (which renders
+/// the `rp` target's page as the Configuration surface).
+async fn render_config_get(
+    state: &AppState,
+    service: &str,
+    unlock: Option<&str>,
+    headers: &HeaderMap,
+) -> Response {
+    let title = page_title(service);
+    let handle = match resolve_service(state, service).await {
         Ok(handle) => handle,
-        Err(err) => {
-            return respond(
-                pages::resolve_failure_card(&service, &err),
-                &headers,
-                &title,
-            )
-        }
+        Err(err) => return respond(pages::resolve_failure_card(service, &err), headers, &title),
     };
-    let card = render_form(&handle, &service, query.unlock.as_deref(), None).await;
-    respond(card, &headers, &title)
+    let card = render_form(&handle, service, unlock, None).await;
+    respond(card, headers, &title)
 }
 
 async fn config_post(
