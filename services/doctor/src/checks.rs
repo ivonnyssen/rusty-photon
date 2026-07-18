@@ -20,25 +20,35 @@ pub struct Context {
     pub facts: PlatformFacts,
     pub mode: Mode,
     pub scans: Vec<ServiceScan>,
+    /// Device-surface facts: staged by the test seam, gathered from the
+    /// host on a real run, `None` when a staged scenario has no hardware
+    /// story (the family is then skipped — never probed under a mock).
+    pub hardware: Option<rusty_photon_doctor_checks::HardwareFacts>,
 }
 
 impl Context {
     /// Scan the config dir and derive the mode from the unit inventory.
-    pub fn gather(config_dir: PathBuf, facts: PlatformFacts) -> Self {
+    pub fn gather(config_dir: PathBuf, mut facts: PlatformFacts) -> Self {
         let mode = if facts.units.is_empty() {
             Mode::ConfigOnly
         } else {
             Mode::Packaged
         };
-        let scans = catalog::catalog()
+        let scans: Vec<ServiceScan> = catalog::catalog()
             .iter()
             .map(|entry| scan::scan_service(&config_dir, entry))
             .collect();
+        let hardware = facts.hardware.take().or_else(|| {
+            facts.probe_hardware.then(|| {
+                rusty_photon_doctor_checks::gather(&crate::hardware::probe_request(&scans, &facts))
+            })
+        });
         Self {
             config_dir,
             facts,
             mode,
             scans,
+            hardware,
         }
     }
 
@@ -68,6 +78,7 @@ pub fn run_all(ctx: &Context) -> Vec<Check> {
     checks.extend(url_conventions(ctx));
     checks.extend(tls_and_auth(ctx));
     checks.extend(rp_platform_defaults(ctx));
+    checks.extend(crate::hardware::checks(ctx));
     checks
 }
 
@@ -821,11 +832,47 @@ fn rp_platform_defaults(ctx: &Context) -> Vec<Check> {
     };
     let path = Path::new(&dir);
     if path.is_dir() {
-        checks.push(Check::ok(
-            "rp.data-directory",
-            Some("rp".to_string()),
-            format!("session.data_directory {dir} exists"),
-        ));
+        // Packaged Linux: existence is not enough — under systemd rp runs
+        // as the rusty-photon user, and a root-owned directory from a
+        // sudo'd first run is a classic way to strand session
+        // persistence. Judged from ownership and mode (gathered facts),
+        // so ACLs are invisible. Dev checkouts keep the existence-only
+        // check, and so do macOS/Windows installs — brew services run as
+        // the operator and the MSI's services as LocalSystem, so there is
+        // no rusty-photon user to judge for.
+        let unwritable = (ctx.mode == Mode::Packaged && ctx.facts.platform == Platform::Linux)
+            .then_some(ctx.hardware.as_ref())
+            .flatten()
+            .and_then(|hw| {
+                let node = hw.paths.get(&dir)?;
+                let user = hw.service_user?;
+                let identity = rusty_photon_doctor_checks::Identity {
+                    uid: user.uid,
+                    gids: vec![user.gid],
+                };
+                (!identity.can_write_dir(node)).then_some((node.mode, node.uid, node.gid))
+            });
+        match unwritable {
+            Some((mode, uid, gid)) => checks.push(Check::fail(
+                "rp.data-directory",
+                Some("rp".to_string()),
+                format!(
+                    "session.data_directory {dir} exists but is not writable by \
+                     the {} user (mode {mode:o}, uid {uid}, gid {gid}) — judged \
+                     from ownership and mode, so ACLs are invisible to this check",
+                    crate::hardware::SERVICE_USER
+                ),
+                Some(format!(
+                    "chown it to the service user: `chown {}: {dir}`",
+                    crate::hardware::SERVICE_USER
+                )),
+            )),
+            None => checks.push(Check::ok(
+                "rp.data-directory",
+                Some("rp".to_string()),
+                format!("session.data_directory {dir} exists"),
+            )),
+        }
     } else {
         checks.push(Check::fail(
             "rp.data-directory",

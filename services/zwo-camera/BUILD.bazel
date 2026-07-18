@@ -5,6 +5,7 @@ exports_files(
     [
         "Cargo.toml",
         "pkg/doctor.toml",
+        "pkg/90-rusty-photon-zwo.rules",
     ],
     visibility = ["//visibility:public"],
 )

@@ -12,6 +12,7 @@ pub mod catalog;
 pub mod checks;
 pub mod facts;
 pub mod fix;
+pub mod hardware;
 pub mod render;
 pub mod report;
 pub mod scan;

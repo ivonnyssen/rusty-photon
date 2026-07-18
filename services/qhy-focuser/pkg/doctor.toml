@@ -2,3 +2,8 @@
 # This service's own unit tests assert these values match its config defaults.
 class = "alpaca"
 port = 11113
+
+# Hardware identity (docs/services/doctor.md §Hardware).
+serial_pointer = "/serial/port"
+serial_default_unix = "/dev/ttyACM0"
+serial_default_windows = "COM3"

@@ -42,6 +42,12 @@ pub struct UnitFacts {
     /// Remediation text must use this name; catalog joins use `name`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_name: Option<String>,
+    /// The unit's `SupplementaryGroups=` names. systemd only — and the
+    /// only place group membership exists in this stack: no packaging step
+    /// ever edits `/etc/group`, so the hardware access checks judge
+    /// against this, never against login groups.
+    #[serde(default)]
+    pub supplementary_groups: Vec<String>,
 }
 
 fn default_true() -> bool {
@@ -62,6 +68,19 @@ pub struct PlatformFacts {
     /// gathered; the privilege check runs only on `Some`.
     #[serde(default)]
     pub polkit_grants_sentinel_restart: Option<bool>,
+    /// The device-surface facts (docs/services/doctor.md §Hardware).
+    /// Staged facts files may carry them; on a real run they stay `None`
+    /// here and the hardware family gathers them itself — it needs the
+    /// scanned configs to know what to probe.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hardware: Option<rusty_photon_doctor_checks::HardwareFacts>,
+    /// True only on facts gathered from the real host. A staged facts
+    /// file without a `hardware` object means "this scenario has no
+    /// hardware story" — probing the real host underneath it would make
+    /// every mock scenario's outcome depend on the machine running it —
+    /// so the hardware family probes only when this is set.
+    #[serde(skip)]
+    pub probe_hardware: bool,
 }
 
 impl PlatformFacts {
@@ -102,6 +121,8 @@ impl PlatformFacts {
                 platform: Platform::Linux,
                 units: Vec::new(),
                 polkit_grants_sentinel_restart: None,
+                hardware: None,
+                probe_hardware: true,
             }
         }
     }
@@ -145,6 +166,8 @@ fn gather_linux() -> PlatformFacts {
         platform: Platform::Linux,
         units,
         polkit_grants_sentinel_restart: polkit,
+        hardware: None,
+        probe_hardware: true,
     }
 }
 
@@ -162,14 +185,16 @@ fn list_systemd_units() -> Vec<UnitFacts> {
     parse_unit_file_listing(&listing)
         .into_iter()
         .map(|(name, enabled)| {
-            let condition_path = run(Command::new("systemctl").args(["cat", &name]))
-                .as_deref()
-                .and_then(parse_condition_path);
+            let unit_file = run(Command::new("systemctl").args(["cat", &name]));
             UnitFacts {
                 name,
                 enabled,
-                condition_path,
+                condition_path: unit_file.as_deref().and_then(parse_condition_path),
                 source_name: None,
+                supplementary_groups: unit_file
+                    .as_deref()
+                    .map(parse_supplementary_groups)
+                    .unwrap_or_default(),
             }
         })
         .collect()
@@ -194,6 +219,29 @@ pub fn parse_unit_file_listing(listing: &str) -> Vec<(String, bool)> {
             Some((stem.to_string(), enabled))
         })
         .collect()
+}
+
+/// Extract the `SupplementaryGroups=` names from a unit file dump
+/// (`systemctl cat`). Multiple assignments accumulate; an empty
+/// assignment resets the list — systemd's own semantics, which matter
+/// when a drop-in overrides the packaged unit.
+pub fn parse_supplementary_groups(unit_file: &str) -> Vec<String> {
+    let mut groups: Vec<String> = Vec::new();
+    for line in unit_file.lines() {
+        let Some(value) = line.trim().strip_prefix("SupplementaryGroups=") else {
+            continue;
+        };
+        if value.trim().is_empty() {
+            groups.clear();
+            continue;
+        }
+        for name in value.split_whitespace() {
+            if !groups.iter().any(|g| g == name) {
+                groups.push(name.to_string());
+            }
+        }
+    }
+    groups
 }
 
 /// Extract the `ConditionPathExists=` path from a unit file dump
@@ -254,6 +302,8 @@ fn gather_windows() -> PlatformFacts {
         platform: Platform::Windows,
         units,
         polkit_grants_sentinel_restart: None,
+        hardware: None,
+        probe_hardware: true,
     }
 }
 
@@ -271,6 +321,7 @@ pub fn parse_windows_service_listing(listing: &str) -> Vec<UnitFacts> {
                 enabled: start_type.trim().starts_with("Automatic"),
                 condition_path: None,
                 source_name: None,
+                supplementary_groups: Vec::new(),
             })
         })
         .collect()
@@ -285,6 +336,8 @@ fn gather_macos() -> PlatformFacts {
         platform: Platform::Macos,
         units,
         polkit_grants_sentinel_restart: None,
+        hardware: None,
+        probe_hardware: true,
     }
 }
 
@@ -313,6 +366,7 @@ pub fn parse_brew_services_listing(listing: &str) -> Vec<UnitFacts> {
                 // service the operator has wired up.
                 enabled: status != "none",
                 condition_path: None,
+                supplementary_groups: Vec::new(),
             })
         })
         .collect()
@@ -456,6 +510,30 @@ mod tests {
                 "the polkit fact is gathered only when sentinel is installed"
             );
         }
+    }
+
+    /// systemd's own semantics: assignments accumulate, an empty
+    /// assignment resets — which matters when a drop-in overrides the
+    /// packaged unit, and feeds the hardware access diagnosis.
+    #[test]
+    fn test_supplementary_groups_accumulate_and_reset() {
+        let unit = "[Service]\n\
+                    SupplementaryGroups=dialout plugdev\n\
+                    SupplementaryGroups=video dialout\n";
+        assert_eq!(
+            parse_supplementary_groups(unit),
+            vec!["dialout", "plugdev", "video"],
+            "multiple assignments accumulate, names deduplicate"
+        );
+        let reset = "SupplementaryGroups=dialout\n\
+                     SupplementaryGroups=\n\
+                     SupplementaryGroups=plugdev\n";
+        assert_eq!(
+            parse_supplementary_groups(reset),
+            vec!["plugdev"],
+            "an empty assignment resets the accumulated list"
+        );
+        assert!(parse_supplementary_groups("[Service]\nUser=rusty-photon\n").is_empty());
     }
 
     #[test]

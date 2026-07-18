@@ -10,10 +10,10 @@
 
 use std::sync::LazyLock;
 
-use rusty_photon_server_config::doctor_toml::{self, ServerClass};
+use rusty_photon_server_config::doctor_toml::{self, SerialMeta, ServerClass, UsbMeta};
 
 /// One packaged service the doctor knows about.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct CatalogEntry {
     /// The service name — the `services/<name>` directory, the `<name>.json`
     /// config file, and the `rusty-photon-<name>` unit stem.
@@ -22,6 +22,11 @@ pub struct CatalogEntry {
     pub class: ServerClass,
     /// The port the service defaults to when its config omits one.
     pub default_port: u16,
+    /// Where the config keeps its serial device path, for the six serial
+    /// drivers (docs/services/doctor.md §Hardware).
+    pub serial: Option<SerialMeta>,
+    /// The USB identity the device reports on the bus.
+    pub usb: Option<UsbMeta>,
 }
 
 impl CatalogEntry {
@@ -106,10 +111,46 @@ static CATALOG: LazyLock<Vec<CatalogEntry>> = LazyLock::new(|| {
                 name,
                 class: meta.class,
                 default_port: meta.port,
+                serial: meta.serial,
+                usb: meta.usb,
             }
         })
         .collect()
 });
+
+/// The udev rules the camera/focuser packages ship, embedded for the
+/// installed-content comparison and the `GROUP=` resolution check
+/// (docs/services/doctor.md §Hardware). sentinel's `50-*.rules` is a
+/// polkit rule, not udev, and stays out.
+pub struct UdevRule {
+    pub service: &'static str,
+    /// The file name packages install (into the udev rules directory).
+    pub file_name: &'static str,
+    pub content: &'static str,
+}
+
+pub static UDEV_RULES: &[UdevRule] = &[
+    UdevRule {
+        service: "qhy-camera",
+        file_name: "90-rusty-photon-qhy.rules",
+        content: include_str!("../../qhy-camera/pkg/90-rusty-photon-qhy.rules"),
+    },
+    UdevRule {
+        service: "zwo-camera",
+        file_name: "90-rusty-photon-zwo.rules",
+        content: include_str!("../../zwo-camera/pkg/90-rusty-photon-zwo.rules"),
+    },
+    UdevRule {
+        service: "zwo-focuser",
+        file_name: "90-rusty-photon-zwo-focuser.rules",
+        content: include_str!("../../zwo-focuser/pkg/90-rusty-photon-zwo-focuser.rules"),
+    },
+];
+
+/// The shipped udev rule of one service, when it ships one.
+pub fn udev_rule_for(service: &str) -> Option<&'static UdevRule> {
+    UDEV_RULES.iter().find(|r| r.service == service)
+}
 
 /// Every packaged service, alphabetical.
 pub fn catalog() -> &'static [CatalogEntry] {
@@ -159,5 +200,51 @@ mod tests {
         assert_eq!(entry.unit_name(), "rusty-photon-qhy-focuser");
         assert_eq!(entry.config_file(), "qhy-focuser.json");
         assert!(entry_for_unit("ssh.service").is_none());
+    }
+
+    /// The USB checks read identity from doctor.toml while udev grants
+    /// access by rule — one declared vendor drifting from its rule would
+    /// make the check assert a device the rule never covers.
+    #[test]
+    fn test_rule_shipping_services_declare_the_vendor_their_rule_matches() {
+        for rule in UDEV_RULES {
+            let entry = entry(rule.service).unwrap_or_else(|| {
+                panic!("{} ships a rule but is not in the catalog", rule.service)
+            });
+            let declared = entry.usb.as_ref().unwrap_or_else(|| {
+                panic!(
+                    "{} ships a udev rule but declares no usb_vendor",
+                    rule.service
+                )
+            });
+            let matched = rusty_photon_doctor_checks::udev::vendor_matches(rule.content);
+            assert_eq!(
+                matched,
+                vec![declared.vendor.clone()],
+                "{}: doctor.toml usb_vendor vs ATTRS{{idVendor}} in {}",
+                rule.service,
+                rule.file_name
+            );
+        }
+    }
+
+    /// Serial metadata reaches the catalog intact — the per-service parity
+    /// tests own the values; this guards the plumbing.
+    #[test]
+    fn test_serial_metadata_is_plumbed_through() {
+        let ppba = entry("ppba-driver").unwrap().serial.as_ref().unwrap();
+        assert_eq!(ppba.pointer, "/serial/port");
+        assert_eq!(ppba.gate, None);
+        let gti = entry("star-adventurer-gti")
+            .unwrap()
+            .serial
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            gti.gate,
+            Some(("/transport/kind".to_string(), "usb".to_string()))
+        );
+        assert!(entry("sentinel").unwrap().serial.is_none());
+        assert!(entry("sentinel").unwrap().usb.is_none());
     }
 }

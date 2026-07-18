@@ -2,3 +2,11 @@
 # This service's own unit tests assert these values match its config defaults.
 class = "alpaca"
 port = 11112
+
+# Hardware identity (docs/services/doctor.md §Hardware).
+serial_pointer = "/serial/port"
+serial_default_unix = "/dev/ttyUSB0"
+serial_default_windows = "COM3"
+usb_vendor = "0403"
+usb_product = "6015"
+usb_model = "PPBA"
