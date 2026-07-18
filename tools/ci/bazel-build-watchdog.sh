@@ -31,9 +31,11 @@
 # terminated abruptly … recvmsg:Connection reset by peer", exit 37) while the
 # server JVM survives as an orphan. The decisive evidence — a Java exception
 # or internal OOM on the server side — lands only in the output base's
-# server/jvm.out, which evaporates with the ephemeral runner. So on any
-# infrastructure-class bazel exit (code >= 32) this script echoes jvm.out
-# into the step log before propagating the exit code.
+# server/jvm.out and java.log, which evaporate with the ephemeral runner. So
+# on any infrastructure-class bazel exit (code >= 32) this script echoes both
+# into the step log before propagating the exit code. (A first capture showed
+# jvm.out clean on the abrupt-termination crash, so java.log — where the
+# server's logger records event-loop deaths and command aborts — is included.)
 #
 # Usage: bazel-build-watchdog.sh <command> [args...]
 # Tunables: WATCHDOG_STALL_SECS (default 300), WATCHDOG_POLL_SECS (default 15).
@@ -87,26 +89,32 @@ workspace_hash() {
   fi
 }
 
-# Echo the server's stderr/stdout capture (server/jvm.out) into the step log.
+# Echo the server's post-mortem evidence into the step log: the JVM's raw
+# stderr/stdout capture (server/jvm.out — fatal exceptions, OOM, crash
+# banners) and the server's own log (java.log — where a netty/event-loop
+# death or command abort lands without ever touching the JVM's stderr).
 # Works whether the server is alive, orphaned, or gone — it only needs the
-# file, located by workspace hash under the globbed roots (GitHub macOS
+# files, located by workspace hash under the globbed roots (GitHub macOS
 # runner location, macOS default, Linux).
-dump_server_jvm_out() {
+dump_server_logs() {
   local reason="$1" ws_hash dir printed=0
   if ! ws_hash="$(workspace_hash)"; then
-    echo "bazel-build-watchdog: ${reason} — cannot locate the server's output base (cause above); skipping jvm.out dump"
+    echo "bazel-build-watchdog: ${reason} — cannot locate the server's output base (cause above); skipping server-log dump"
     return
   fi
   for dir in "$HOME"/Library/Caches/bazel/_bazel_*/"$ws_hash" \
     /private/var/tmp/_bazel_*/"$ws_hash" \
     "$HOME"/.cache/bazel/_bazel_*/"$ws_hash"; do
-    [[ -s "$dir/server/jvm.out" ]] || continue
+    [[ -s "$dir/server/jvm.out" || -s "$dir/java.log" ]] || continue
     printed=1
-    echo "::group::bazel-build-watchdog: ${reason} — ${dir}/server/jvm.out"
+    echo "::group::bazel-build-watchdog: ${reason} — server logs under ${dir}"
+    echo "--- tail of ${dir}/server/jvm.out ---"
     tail -n 1000 "$dir/server/jvm.out" 2>/dev/null || true
+    echo "--- tail of ${dir}/java.log ---"
+    tail -n 1000 "$dir/java.log" 2>/dev/null || true
     echo "::endgroup::"
   done
-  ((printed)) || echo "bazel-build-watchdog: ${reason} — no non-empty server/jvm.out found"
+  ((printed)) || echo "bazel-build-watchdog: ${reason} — no non-empty server/jvm.out or java.log found"
 }
 
 dump_hung_server() {
@@ -185,7 +193,7 @@ if ((stalled)); then
   "$@"
   status=$?
   if ((status >= 32)); then
-    dump_server_jvm_out "retry exited ${status}"
+    dump_server_logs "retry exited ${status}"
   fi
   exit "$status"
 fi
@@ -196,6 +204,6 @@ fi
 # below and get no dump. Shell-level codes for a killed client (126+) land
 # in the same bucket, where the extra diagnostics are harmless.
 if ((status >= 32)); then
-  dump_server_jvm_out "bazel exited ${status}"
+  dump_server_logs "bazel exited ${status}"
 fi
 exit "$status"
