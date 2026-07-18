@@ -154,6 +154,12 @@ fn sync_dir(_parent: &Path) -> std::io::Result<()> {
 fn preserve_owner_and_mode(path: &Path, tmp: &tempfile::NamedTempFile) -> std::io::Result<()> {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
+    // Deliberately follows a symlinked config to its target: the target's
+    // attributes are what the reading service effectively sees, while the
+    // link inode's are a fixed 0o777 and the link creator's uid — exactly
+    // the wrong thing to stamp onto the regular file the rename leaves in
+    // the link's place. The rename itself never follows the link, so the
+    // target is only ever read, never written.
     let original = match std::fs::metadata(path) {
         Ok(meta) => meta,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
