@@ -32,6 +32,8 @@ pub struct Fp2World {
     pub last_supported_actions: Option<Vec<String>>,
     /// State for the shared TLS + auth smoke steps (`auth.feature`).
     pub tls_auth: TlsAuthState,
+    /// Doctor-subcommand smoke state (staged config file + run output).
+    pub doctor_smoke: bdd_infra::doctor_smoke::DoctorSmokeState,
 }
 
 impl TlsAuthSmokeWorld for Fp2World {
@@ -64,6 +66,20 @@ impl TlsAuthSmokeWorld for Fp2World {
         )
         .await;
         self.handle = Some(handle);
+    }
+}
+
+impl bdd_infra::doctor_smoke::DoctorSmokeWorld for Fp2World {
+    fn doctor_smoke(&mut self) -> &mut bdd_infra::doctor_smoke::DoctorSmokeState {
+        &mut self.doctor_smoke
+    }
+
+    /// The tls-auth smoke's base config plus a plain `server` block — the
+    /// full shape the service's own `deny_unknown_fields` load accepts.
+    fn valid_config(&self) -> serde_json::Value {
+        let mut config = self.base_test_config();
+        config["server"] = serde_json::json!({ "port": 0 });
+        config
     }
 }
 

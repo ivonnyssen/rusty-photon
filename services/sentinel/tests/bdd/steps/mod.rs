@@ -2,6 +2,7 @@
 
 pub mod auth_steps;
 pub mod dashboard_steps;
+pub mod doctor_steps;
 pub mod health_steps;
 pub mod lifecycle_steps;
 pub mod monitoring_steps;

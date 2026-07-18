@@ -103,6 +103,17 @@ enum Commands {
         #[arg(long, default_value = "info", value_parser = clap::value_parser!(Level))]
         log_level: Level,
     },
+    /// Diagnose this service's configuration without starting it
+    /// (docs/services/doctor.md). Read-only; exits 1 on failing checks.
+    Doctor {
+        /// Path to configuration file
+        #[arg(short, long)]
+        config: Option<PathBuf>,
+
+        /// Print the report as JSON instead of text
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn main() -> ServiceResult {
@@ -160,6 +171,8 @@ fn main() -> ServiceResult {
                 .map_err(report_from_boxed)
             }
         }
+        // No tracing init: doctor writes its report to stdout and exits.
+        Some(Commands::Doctor { config, json }) => rp::doctor::run(config, json),
         None => {
             // No subcommand serves (packaged units run a bare
             // `/usr/bin/rusty-photon-rp`; the Windows MSI's ServiceInstall

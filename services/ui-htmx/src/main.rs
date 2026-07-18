@@ -11,7 +11,14 @@ use ui_htmx::{build_router, load_config, AppState, Config};
 #[command(name = "ui-htmx")]
 #[command(about = "Server-rendered web configuration UI (BFF) for rusty-photon")]
 #[command(version)]
+// A top-level `--config` alongside a subcommand would parse but be
+// silently ignored (the subcommand carries its own); reject the mixed
+// form outright, same as rp's CLI.
+#[command(args_conflicts_with_subcommands = true)]
 struct Args {
+    #[command(subcommand)]
+    command: Option<Command>,
+
     /// Path to the BFF configuration file. Defaults to the platform
     /// config directory (e.g. `~/.config/rusty-photon/ui-htmx.json` on
     /// Linux); created with defaults on first start if absent (binds
@@ -33,6 +40,22 @@ struct Args {
     service: bool,
 }
 
+/// Subcommands; running with none starts the BFF.
+#[derive(clap::Subcommand)]
+enum Command {
+    /// Diagnose this service's configuration without starting it
+    /// (docs/services/doctor.md). Read-only; exits 1 on failing checks.
+    Doctor {
+        /// Path to configuration file
+        #[arg(short, long)]
+        config: Option<PathBuf>,
+
+        /// Print the report as JSON instead of text
+        #[arg(long)]
+        json: bool,
+    },
+}
+
 fn parse_log_level(s: &str) -> Result<Level, String> {
     s.parse()
         .map_err(|_| format!("Invalid log level: {s}. Use: trace, debug, info, warn, error"))
@@ -40,6 +63,11 @@ fn parse_log_level(s: &str) -> Result<Level, String> {
 
 fn main() -> ServiceResult {
     let args = Args::parse();
+
+    // Before tracing init: doctor writes its report to stdout and exits.
+    if let Some(Command::Doctor { config, json }) = args.command {
+        ui_htmx::doctor::run(config, json);
+    }
 
     // In Windows SCM service mode logs go to the rolling file under
     // %PROGRAMDATA%\rusty-photon\logs\; hold the guard until process exit so

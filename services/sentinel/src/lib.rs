@@ -8,6 +8,7 @@ pub mod config;
 pub mod corrective;
 pub mod dashboard;
 pub mod discovery;
+pub mod doctor;
 pub mod engine;
 pub mod error;
 pub mod health;

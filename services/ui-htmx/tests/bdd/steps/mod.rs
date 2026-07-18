@@ -1,6 +1,7 @@
 pub mod auth_steps;
 pub mod browser_steps;
 pub mod config_page_steps;
+pub mod doctor_steps;
 pub mod equipment_steps;
 pub mod fixtures_steps;
 pub mod restart_steps;

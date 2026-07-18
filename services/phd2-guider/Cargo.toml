@@ -24,6 +24,7 @@ base64 = { workspace = true }
 axum = { workspace = true }
 rp-fits = { workspace = true }
 rusty-photon-config = { workspace = true }
+rusty-photon-doctor-checks = { workspace = true }
 rusty-photon-server-config = { workspace = true }
 rusty-photon-service-lifecycle = { workspace = true }
 rp-tls = { workspace = true }

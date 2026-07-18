@@ -8,6 +8,7 @@ mod alpaca;
 pub mod camera;
 pub mod config;
 pub mod config_actions;
+pub mod doctor;
 pub mod error;
 pub mod fits;
 #[cfg(feature = "mock")]

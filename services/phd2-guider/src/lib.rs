@@ -9,6 +9,7 @@
 //! - [`client`] - PHD2 client for RPC communication
 //! - [`config`] - Configuration types and loading
 //! - `connection` - Internal connection management (not public)
+//! - [`doctor`] - The read-only `doctor` subcommand (docs/services/doctor.md)
 //! - [`error`] - Error types and Result alias
 //! - [`events`] - PHD2 event types and application state
 //! - [`fits`] - FITS file utilities for saving images
@@ -40,6 +41,7 @@
 pub mod client;
 pub mod config;
 pub(crate) mod connection;
+pub mod doctor;
 pub mod error;
 pub mod events;
 pub mod fits;

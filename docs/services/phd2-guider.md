@@ -14,6 +14,10 @@ The binary has two roles:
   [HTTP Service Mode](#http-service-mode-serve) below and
   `docs/services/rp.md` § "Guider Service".
 
+`phd2-guider doctor [--config <file>] [--json]` diagnoses this service's
+own config read-only without starting it — see
+[doctor.md §Per-service doctors](doctor.md).
+
 **Cross-Platform Support:** The service runs natively on Linux, macOS, and Windows, matching PHD2's platform support.
 
 ## Architecture Overview

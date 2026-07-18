@@ -297,3 +297,8 @@ cargo build --release -p filemonitor
 # From repository root
 ./target/release/filemonitor -c config.json
 ```
+
+`filemonitor doctor [--config <file>] [--json]` diagnoses this service's own
+config read-only without starting it — see
+[doctor.md §Per-service doctors](doctor.md). Top-level flags cannot be
+combined with the subcommand (the mixed form would silently ignore them).

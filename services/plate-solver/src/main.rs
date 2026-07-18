@@ -19,7 +19,14 @@ use tracing::Level;
     version,
     about = "rp-managed plate solver service"
 )]
+// A top-level `--config` alongside a subcommand would parse but be
+// silently ignored (the subcommand carries its own); reject the mixed
+// form outright, same as rp's CLI.
+#[command(args_conflicts_with_subcommands = true)]
 struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
+
     /// Path to the JSON config file. Defaults to the platform
     /// config directory (e.g. `~/.config/rusty-photon/plate-solver.json`
     /// on Linux). There is no built-in default config: the file must
@@ -37,8 +44,28 @@ struct Cli {
     service: bool,
 }
 
+/// Subcommands; running with none starts the HTTP service.
+#[derive(clap::Subcommand, Debug)]
+enum Command {
+    /// Diagnose this service's configuration without starting it
+    /// (docs/services/doctor.md). Read-only; exits 1 on failing checks.
+    Doctor {
+        /// Path to configuration file
+        #[arg(short, long)]
+        config: Option<PathBuf>,
+
+        /// Print the report as JSON instead of text
+        #[arg(long)]
+        json: bool,
+    },
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
+
+    if let Some(Command::Doctor { config, json }) = cli.command {
+        plate_solver::doctor::run(config, json);
+    }
 
     // In Windows SCM service mode logs go to the rolling file under
     // %PROGRAMDATA%\rusty-photon\logs\; hold the guard until process exit so

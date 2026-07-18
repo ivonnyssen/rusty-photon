@@ -185,6 +185,31 @@ pub struct SkySurveyCameraWorld {
 
     /// State for the shared TLS + auth smoke steps (`auth.feature`).
     pub tls_auth: TlsAuthState,
+
+    /// Doctor-subcommand smoke state (staged config file + run output)
+    pub doctor_smoke: bdd_infra::doctor_smoke::DoctorSmokeState,
+}
+
+impl bdd_infra::doctor_smoke::DoctorSmokeWorld for SkySurveyCameraWorld {
+    fn doctor_smoke(&mut self) -> &mut bdd_infra::doctor_smoke::DoctorSmokeState {
+        &mut self.doctor_smoke
+    }
+
+    fn valid_config(&self) -> serde_json::Value {
+        // The tls-auth smoke's base config plus the two fields
+        // `start_with_tls_auth` normally fills at spawn time: the
+        // mandatory `survey.cache_dir` (doctor only parses the config,
+        // so the directory need not exist) and a plain `server` block.
+        let mut config = TlsAuthSmokeWorld::base_test_config(self);
+        config["survey"]["cache_dir"] = Value::String(
+            std::env::temp_dir()
+                .join("sky-survey-camera-doctor-smoke-cache")
+                .to_string_lossy()
+                .to_string(),
+        );
+        config["server"] = serde_json::json!({ "port": 0 });
+        config
+    }
 }
 
 impl TlsAuthSmokeWorld for SkySurveyCameraWorld {

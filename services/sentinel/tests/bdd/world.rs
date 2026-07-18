@@ -65,6 +65,22 @@ pub struct SentinelWorld {
     // Service health supervision: a stub HTTP service whose /health answer
     // (an arbitrary status code) is flippable at runtime.
     pub health_stub: Option<FlippableHealthStub>,
+
+    // Doctor-subcommand smoke state (staged config file + run output)
+    pub doctor_smoke: bdd_infra::doctor_smoke::DoctorSmokeState,
+}
+
+impl bdd_infra::doctor_smoke::DoctorSmokeWorld for SentinelWorld {
+    fn doctor_smoke(&mut self) -> &mut bdd_infra::doctor_smoke::DoctorSmokeState {
+        &mut self.doctor_smoke
+    }
+
+    fn valid_config(&self) -> serde_json::Value {
+        // A fresh world's accumulated config: no monitors, notifiers, or
+        // transitions — the same minimal shape the monitoring scenarios
+        // stage, proven against sentinel's deny_unknown_fields load.
+        self.build_sentinel_config()
+    }
 }
 
 impl SentinelWorld {

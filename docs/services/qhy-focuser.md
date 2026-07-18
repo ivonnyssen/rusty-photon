@@ -166,6 +166,11 @@ installation); otherwise leave it empty and let the service generate one.
 | `-l, --log-level` | Log level: trace, debug, info, warn, error |
 | `--service` | Hidden: run as a Windows service (passed by the Windows service control manager; no-op on other platforms) |
 
+`qhy-focuser doctor [--config <file>] [--json]` diagnoses this service's own
+config read-only without starting it — see
+[doctor.md §Per-service doctors](doctor.md). Top-level flags cannot be
+combined with the subcommand (the mixed form would silently ignore them).
+
 ### Config actions
 
 The focuser exposes its configuration over HTTP as the vendor ASCOM actions

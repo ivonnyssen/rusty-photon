@@ -95,6 +95,24 @@ pub struct UiWorld {
     pub pki: Option<bdd_infra::tls_auth::PkiFixture>,
     /// Config JSON staged by a Given step for a custom-config BFF start.
     pub pending_config: Option<Value>,
+    /// Doctor-subcommand smoke state (staged config file + run output).
+    pub doctor_smoke: bdd_infra::doctor_smoke::DoctorSmokeState,
+}
+
+impl bdd_infra::doctor_smoke::DoctorSmokeWorld for UiWorld {
+    fn doctor_smoke(&mut self) -> &mut bdd_infra::doctor_smoke::DoctorSmokeState {
+        &mut self.doctor_smoke
+    }
+
+    fn valid_config(&self) -> serde_json::Value {
+        // The same shape `start_bff_with_drivers` stages: the shared core
+        // `server` block, no driver overrides, rp opted out.
+        json!({
+            "server": { "bind_address": "127.0.0.1", "port": 0 },
+            "drivers": {},
+            "rp": null
+        })
+    }
 }
 
 impl UiWorld {

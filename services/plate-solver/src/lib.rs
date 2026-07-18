@@ -6,6 +6,7 @@
 
 pub mod api;
 pub mod config;
+pub mod doctor;
 pub mod error;
 pub mod runner;
 pub mod supervision;

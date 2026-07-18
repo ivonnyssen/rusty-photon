@@ -1,5 +1,6 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 pub mod config;
+pub mod doctor;
 pub mod error;
 pub mod mcp_client;
 pub mod routes;

@@ -3434,6 +3434,11 @@ unknown keys at deserialize (`deny_unknown_fields`), so a typo or a key
 removed by a schema change fails loudly at load instead of being silently
 ignored.
 
+`rp doctor [--config <file>] [--json]` diagnoses this service's own config
+read-only without starting it — see
+[doctor.md §Per-service doctors](doctor.md). Unlike `serve`, it never writes
+the first-start scaffold.
+
 The running config is readable and editable over REST — `GET /api/config`,
 `GET /api/config/schema`, `PUT /api/config` (see
 [Configuration endpoints](#configuration) above): rp implements the shared

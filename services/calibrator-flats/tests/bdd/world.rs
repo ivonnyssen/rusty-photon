@@ -46,9 +46,25 @@ pub struct CalibratorFlatsWorld {
     /// State for the shared TLS + auth smoke steps.
     pub tls_auth: TlsAuthState,
 
+    /// Doctor-subcommand smoke state (staged config file + run output)
+    pub doctor_smoke: bdd_infra::doctor_smoke::DoctorSmokeState,
+
     // --- REST API state ---
     pub last_api_status: Option<u16>,
     pub last_api_body: Option<Value>,
+}
+
+impl bdd_infra::doctor_smoke::DoctorSmokeWorld for CalibratorFlatsWorld {
+    fn doctor_smoke(&mut self) -> &mut bdd_infra::doctor_smoke::DoctorSmokeState {
+        &mut self.doctor_smoke
+    }
+
+    fn valid_config(&self) -> serde_json::Value {
+        // The tls-auth smoke's base config plus a plain `server` block.
+        let mut config = TlsAuthSmokeWorld::base_test_config(self);
+        config["server"] = serde_json::json!({ "port": 0 });
+        config
+    }
 }
 
 impl TlsAuthSmokeWorld for CalibratorFlatsWorld {

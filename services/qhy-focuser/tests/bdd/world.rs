@@ -32,6 +32,21 @@ pub struct QhyFocuserWorld {
     pub last_response: Option<serde_json::Value>,
     /// Result of the last supported_actions query.
     pub last_supported_actions: Option<Vec<String>>,
+
+    /// Doctor-subcommand smoke state (staged config file + run output).
+    pub doctor_smoke: bdd_infra::doctor_smoke::DoctorSmokeState,
+}
+
+impl bdd_infra::doctor_smoke::DoctorSmokeWorld for QhyFocuserWorld {
+    fn doctor_smoke(&mut self) -> &mut bdd_infra::doctor_smoke::DoctorSmokeState {
+        &mut self.doctor_smoke
+    }
+
+    /// `Config::default()` serialised — by construction the full shape the
+    /// service's own `deny_unknown_fields` load accepts.
+    fn valid_config(&self) -> serde_json::Value {
+        serde_json::to_value(Config::default()).expect("config JSON serialisation")
+    }
 }
 
 impl QhyFocuserWorld {

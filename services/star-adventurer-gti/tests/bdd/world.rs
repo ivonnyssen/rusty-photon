@@ -60,6 +60,22 @@ pub struct StarAdventurerWorld {
 
     /// State for the shared TLS + auth smoke steps (`auth.feature`).
     pub tls_auth: TlsAuthState,
+
+    /// Doctor-subcommand smoke state (staged config file + run output).
+    pub doctor_smoke: bdd_infra::doctor_smoke::DoctorSmokeState,
+}
+
+impl bdd_infra::doctor_smoke::DoctorSmokeWorld for StarAdventurerWorld {
+    fn doctor_smoke(&mut self) -> &mut bdd_infra::doctor_smoke::DoctorSmokeState {
+        &mut self.doctor_smoke
+    }
+
+    /// The tls-auth smoke's base config is a full serialised [`Config`]
+    /// (`server` block included), so it is already the full shape the
+    /// service's own `deny_unknown_fields` load accepts.
+    fn valid_config(&self) -> serde_json::Value {
+        self.base_test_config()
+    }
 }
 
 impl TlsAuthSmokeWorld for StarAdventurerWorld {

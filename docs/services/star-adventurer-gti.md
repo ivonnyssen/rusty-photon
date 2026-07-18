@@ -1639,6 +1639,11 @@ behind a future config flag if hardware sessions show it's needed.
 | `-l, --log-level <LEVEL>` | `trace` / `debug` / `info` / `warn` / `error` |
 | `--service` | Hidden: run as a Windows service (passed by the Windows service control manager; no-op on other platforms) |
 
+`star-adventurer-gti doctor [--config <file>] [--json]` diagnoses this
+service's own config read-only without starting it — see
+[doctor.md §Per-service doctors](doctor.md). Top-level flags cannot be
+combined with the subcommand (the mixed form would silently ignore them).
+
 ### Config actions
 
 The mount exposes its configuration over HTTP as the vendor ASCOM actions
