@@ -81,10 +81,10 @@ $active = @('sentinel', 'ui-htmx', 'filemonitor', 'rp',
     'phd2-guider', 'zwo-camera', 'zwo-focuser')
 # Plain-HTTP services expose /health; Alpaca services answer the management
 # API. The cameras, zwo-focuser, phd2-guider and session-runner never
-# self-create a config (SDK-derived identity / built-in defaults); ui-htmx's
-# config comes from the MSI seed action, asserted separately.
+# self-create a config (SDK-derived identity / built-in defaults); ui-htmx
+# self-creates its default (the required rp target — no drivers map, #569).
 $healthProbe = @('sentinel', 'rp', 'ui-htmx', 'phd2-guider')
-$selfCreatesConfig = @('sentinel', 'rp', 'filemonitor') + $serial
+$selfCreatesConfig = @('sentinel', 'rp', 'filemonitor', 'ui-htmx') + $serial
 
 $dataDir = Join-Path $env:ProgramData 'rusty-photon'
 $logsDir = Join-Path $dataDir 'logs'
@@ -92,7 +92,7 @@ $installDir = Join-Path ${env:ProgramFiles} 'rusty-photon'
 $installLog = Join-Path $env:TEMP 'rusty-photon-msi-install.log'
 
 # Fresh-box preflight: the run asserts fresh-install invariants (gated
-# services have no config, the seeded ui-htmx map matches the feature set,
+# services have no config, ui-htmx self-creates its rp-target default,
 # configs self-create), which leftovers from a prior install would corrupt —
 # fail fast with a pointer instead of failing (or passing) for the wrong
 # reason mid-run. CI runners are always fresh; on a dev box, uninstall and
@@ -258,34 +258,26 @@ foreach ($svc in $gated) {
     Write-Host "== ${svc}: OK (gated: Manual + stopped, no config)"
 }
 
-# ---- seeded ui-htmx driver map ---------------------------------------------
+# ---- ui-htmx self-created config (no seed action since #569) ---------------
+# The config self-creates on first service start (it is in $selfCreatesConfig,
+# so the active-class loop below waits for it); here assert its shape: the
+# required rp target, and no retired drivers key.
 $uiCfgPath = Join-Path $dataDir 'ui-htmx.json'
-if (-not (Test-Path $uiCfgPath)) { Fail 'ui-htmx' "seeded $uiCfgPath missing" }
-$uiCfg = Get-Content $uiCfgPath -Raw | ConvertFrom-Json
-# The 11 Drivers-tree services (everything the seed script's table lists).
-$driverSet = @('filemonitor', 'ppba-driver', 'qhy-focuser', 'sky-survey-camera',
-    'star-adventurer-gti', 'pa-falcon-rotator', 'dsd-fp2', 'qhy-camera',
-    'zwo-camera', 'pa-scops-oag', 'zwo-focuser')
-$seeded = @($uiCfg.drivers.PSObject.Properties.Name) | Sort-Object
-$expected = @($driverSet) | Sort-Object
-if (($seeded -join ',') -ne ($expected -join ',')) {
-    Fail 'ui-htmx' "seeded drivers map [$($seeded -join ', ')] != installed driver set [$($expected -join ', ')]"
-}
-foreach ($d in $seeded) {
-    $entry = $uiCfg.drivers.$d
-    if ($entry.base_url -ne "http://127.0.0.1:$($ports[$d])") {
-        Fail 'ui-htmx' "seeded $d base_url is $($entry.base_url), expected port $($ports[$d])"
-    }
-}
-if (-not $uiCfg.PSObject.Properties['rp']) {
-    Fail 'ui-htmx' "rp feature installed but the seeded config has no rp target"
-}
-Write-Host "== ui-htmx: OK (seeded drivers map matches the installed feature set + rp target)"
 
 # ---- active class: RUNNING + config + probe --------------------------------
 foreach ($svc in $active) {
     $name = "rusty-photon-$svc"
     WaitFor $svc "service RUNNING" { (Get-Service -Name $name).Status -eq 'Running' }
+
+    if ($svc -eq 'ui-htmx' -and (Test-Path $uiCfgPath)) {
+        $uiCfg = Get-Content $uiCfgPath -Raw | ConvertFrom-Json
+        if ($uiCfg.PSObject.Properties['drivers']) {
+            Fail 'ui-htmx' "self-created config carries the retired drivers key"
+        }
+        if (-not $uiCfg.PSObject.Properties['rp']) {
+            Fail 'ui-htmx' "self-created config has no rp target"
+        }
+    }
 
     if ($selfCreatesConfig -contains $svc) {
         $cfg = Join-Path $dataDir "$svc.json"

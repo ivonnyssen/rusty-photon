@@ -171,22 +171,13 @@ pub fn unknown_config_files(config_dir: &Path, known: &[String]) -> Vec<String> 
 // views of other services' shapes, and must keep working as those shapes
 // grow fields doctor does not join across.
 
-/// ui-htmx: one `drivers` map entry. The retired `sentinel_service` field is
-/// read only to diagnose it (`config.retired-keys`) — since D3s the restart
-/// name is always the driver's own map key.
-#[derive(Debug, Deserialize, Default)]
-pub struct UiDriverView {
-    #[serde(default)]
-    pub base_url: Option<String>,
-    #[serde(default)]
-    pub sentinel_service: Option<Value>,
-}
-
-/// ui-htmx: the blocks doctor joins across.
+/// ui-htmx: the blocks doctor reads. The retired `drivers` override map is
+/// read only to diagnose it (`config.retired-keys`) — since #569 rp's
+/// equipment roster is the only device source.
 #[derive(Debug, Deserialize, Default)]
 pub struct UiHtmxView {
     #[serde(default)]
-    pub drivers: BTreeMap<String, UiDriverView>,
+    pub drivers: Option<Value>,
     #[serde(default)]
     pub sentinel: Option<Value>,
 }
@@ -417,10 +408,10 @@ mod tests {
             dir.path(),
             "ui-htmx.json",
             r#"{ "server": { "port": 11120 },
-                 "drivers": { "dsd-fp2": { "sentinel_service": "dsd-fp2" } } }"#,
+                 "drivers": {} }"#,
         );
         let scan = scan_service(dir.path(), catalog::entry("ui-htmx").unwrap());
         let ui: UiHtmxView = view(&scan).unwrap().unwrap();
-        assert!(ui.drivers["dsd-fp2"].sentinel_service.is_some());
+        assert!(ui.drivers.is_some(), "the retired map must be seen");
     }
 }

@@ -116,50 +116,6 @@ pub fn layout_with_nav(title: &str, active: NavTab, body: Markup) -> Markup {
     }
 }
 
-/// One driver link on the index.
-pub struct DriverLink {
-    pub service: String,
-    pub title: String,
-}
-
-fn service_links(drivers: &[DriverLink]) -> Markup {
-    html! {
-        ul.service-list {
-            @for d in drivers {
-                li {
-                    a href=(format!("/config/{}", d.service)) {
-                        span { (d.title) }
-                        span.svc-id { (d.service) }
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// The static-driver index: the Configuration surface's fallback when no rp
-/// target is configured (with one, `/` renders rp's settings page instead —
-/// see the routes table in the design doc). Devices in rp's roster are
-/// reached from the equipment page's per-device Configure buttons, never
-/// listed here.
-pub fn index_page(drivers: &[DriverLink]) -> Markup {
-    layout(
-        "rusty-photon · configuration",
-        html! {
-            h1 { "Configuration" }
-            p.subtitle {
-                "Per-device settings. Changes are applied by the driver and take "
-                "effect with a brief in-process reload."
-            }
-            @if drivers.is_empty() {
-                p.subtitle { "No drivers are configured. Add them to the BFF config file." }
-            } @else {
-                (service_links(drivers))
-            }
-        },
-    )
-}
-
 // --- the schema-derived field model -------------------------------------------
 
 /// How a submitted form value is coerced back into JSON for a single leaf,
@@ -1709,24 +1665,6 @@ mod tests {
             markup.contains("does not expose configuration actions"),
             "{markup}"
         );
-    }
-
-    #[test]
-    fn index_page_lists_drivers() {
-        let drivers = vec![
-            DriverLink {
-                service: "dsd-fp2".to_string(),
-                title: "Deep Sky Dad FP2".to_string(),
-            },
-            DriverLink {
-                service: "qhy-focuser".to_string(),
-                title: "QHY Focuser".to_string(),
-            },
-        ];
-        let markup = index_page(&drivers).into_string();
-        assert!(markup.contains(r#"href="/config/dsd-fp2""#), "{markup}");
-        assert!(markup.contains(r#"href="/config/qhy-focuser""#), "{markup}");
-        assert!(markup.contains("QHY Focuser"), "{markup}");
     }
 
     // --- merge_form ----------------------------------------------------------

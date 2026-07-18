@@ -126,6 +126,10 @@ pub struct ProbeSpec {
     /// The Alpaca API base (`{scheme}://{host}:{port}/api/v1`) the watchdog
     /// ladder probes and aborts against.
     pub alpaca_base: String,
+    /// The service's listening port (the `server.port` the URLs above embed).
+    /// Exposed through `GET /api/services` so clients (ui-htmx) can match a
+    /// device's `alpaca_url` to the service that serves it.
+    pub port: u16,
 }
 
 /// The shared registry the discovery loop maintains and every consumer (the
@@ -339,6 +343,7 @@ pub fn derive_probe(config_dir: &Path, service: &str) -> Option<ProbeSpec> {
     Some(ProbeSpec {
         health_url: format!("{base}{path_suffix}"),
         alpaca_base: format!("{base}/api/v1"),
+        port: server.port,
     })
 }
 
@@ -796,6 +801,7 @@ mod tests {
         let solver = derive_probe(dir.path(), "plate-solver").unwrap();
         assert_eq!(solver.health_url, "http://localhost:11131/health");
         assert_eq!(solver.alpaca_base, "http://localhost:11131/api/v1");
+        assert_eq!(solver.port, 11131);
         let driver = derive_probe(dir.path(), "dsd-fp2").unwrap();
         assert_eq!(
             driver.health_url,

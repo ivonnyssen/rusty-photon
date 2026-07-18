@@ -59,6 +59,19 @@ pub enum SentinelClientError {
     Decode(String),
 }
 
+/// One discovered service from `GET /api/services` — only the fields the BFF
+/// consumes. Lenient by design (no `deny_unknown_fields`): this is a read
+/// across binaries and must degrade, not refuse, as Sentinel's payload grows.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct SentinelService {
+    /// Discovered service name (`dsd-fp2`) — what the restart endpoint takes.
+    pub name: String,
+    /// The service's listening port from its config's `server` block; `None`
+    /// when Sentinel could not derive a probe for it.
+    #[serde(default)]
+    pub probe_port: Option<u16>,
+}
+
 /// Asks Sentinel to restart a supervised service. Handlers depend on this
 /// trait so tests can inject canned outcomes.
 #[async_trait]
@@ -66,6 +79,11 @@ pub trait SentinelClient: Send + Sync {
     /// `POST /api/services/{service}/restart` — `service` is the discovered
     /// service name (the unit name minus the `rusty-photon-` prefix).
     async fn restart(&self, service: &str) -> Result<RestartOutcome, SentinelClientError>;
+
+    /// `GET /api/services` — the discovered services with their listening
+    /// ports. The BFF matches a roster device's `alpaca_url` port against
+    /// this list to find the service supervising the device's driver.
+    async fn services(&self) -> Result<Vec<SentinelService>, SentinelClientError>;
 }
 
 /// `SentinelClient` backed by Sentinel's REST API.
@@ -108,6 +126,22 @@ impl SentinelClient for HttpSentinelClient {
                 &response.body,
             ))),
             409 => Err(SentinelClientError::Rejected(error_reason(&response.body))),
+            status => Err(SentinelClientError::Transport(format!(
+                "HTTP {status} from {url}"
+            ))),
+        }
+    }
+
+    async fn services(&self) -> Result<Vec<SentinelService>, SentinelClientError> {
+        let url = format!("{}/api/services", self.base_url);
+        let response = self
+            .http
+            .get(&url)
+            .await
+            .map_err(|e| SentinelClientError::Transport(e.to_string()))?;
+        match response.status {
+            200..=299 => serde_json::from_str(&response.body)
+                .map_err(|e| SentinelClientError::Decode(e.to_string())),
             status => Err(SentinelClientError::Transport(format!(
                 "HTTP {status} from {url}"
             ))),

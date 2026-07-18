@@ -1095,6 +1095,7 @@ mod tests {
                 probe: Some(crate::discovery::ProbeSpec {
                     health_url: "http://mount/management/v1/configureddevices".to_string(),
                     alpaca_base: "http://mount/api/v1".to_string(),
+                    port: 80,
                 }),
             },
         )])

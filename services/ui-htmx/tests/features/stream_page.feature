@@ -45,7 +45,3 @@ Feature: Activity stream
     Then an "operation" frame arrives mentioning "unreachable"
     And the event stream ends
 
-  Scenario: Without an rp target the stream page explains it is unavailable
-    Given a BFF with no rp target configured
-    When I open the stream page
-    Then the page explains that no rp orchestrator is configured

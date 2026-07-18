@@ -470,6 +470,28 @@ starting D1.
    services. macOS `brew services` run as the operator's own user and cross
    no privilege boundary.
 
+6. **The `drivers` override map is deleted entirely** (2026-07-18; modifies
+   decision 9 —
+   [#569](https://github.com/ivonnyssen/rusty-photon/issues/569), settled by
+   field review of the rig). Decision 9 kept the map as an empty-by-default
+   escape hatch for "a third-party device rp does not manage, or a driver
+   given a separate credential". Neither survives: **there are no devices
+   useful in this app's context that are not known to rp** — every device
+   belongs in rp's equipment roster (this is a statement about *devices*;
+   the driver *processes* stay supervised by sentinel, and the device/driver
+   separation stands exactly as planned) — and the separate-credential
+   rationale is superseded by decision 10(e) (doctor mints ui-htmx's
+   credential). So ui-htmx's config-page targets shrink to two kinds (`rp`
+   itself and roster-derived `rp:{kind}:{id}`), the `rp` target becomes
+   **required** (an rp-less BFF has no purpose; a config without the block
+   fails loudly), and a config still carrying `drivers` fails loudly at load
+   with the deletion in doctor's `config.retired-keys` fix catalog — the
+   sentinel `services`-map precedent. The restart affordance the map's keys
+   used to wire is **derived instead of configured**: sentinel's
+   `GET /api/services` exposes each discovered service's `probe_port`, and
+   the BFF matches a roster device's `alpaca_url` port (same-host guarded)
+   to find the service its restart button names.
+
 ## References
 
 - Plan (phases, verification matrix, flagged unknowns):
