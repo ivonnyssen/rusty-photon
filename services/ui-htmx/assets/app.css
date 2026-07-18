@@ -109,10 +109,21 @@ h1 { font-size: 22px; margin: 0 0 4px; }
   padding: 20px;
 }
 
-fieldset { border: 0; margin: 0 0 8px; padding: 0; }
-fieldset + fieldset { margin-top: 8px; padding-top: 16px; border-top: 1px solid var(--edge); }
+/* Each top-level config section is an enclosed sub-panel: grouping by
+ * containment, not separator lines (drivers can serve several devices —
+ * e.g. falcon's rotator + status switch — and their sections must read
+ * as distinct boxes). */
+fieldset {
+  border: 1px solid var(--edge);
+  border-radius: 8px;
+  background: #0b0b0e;
+  margin: 0 0 16px;
+  padding: 16px 16px 2px;
+}
 legend {
-  padding: 0; margin-bottom: 12px;
+  /* float removes the native render-on-the-border legend placement */
+  float: left; width: 100%;
+  padding: 0; margin: 0 0 14px;
   font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; color: var(--text);
 }
 
