@@ -168,6 +168,38 @@ fn create_test_config(port: u16) -> Phd2Config {
     }
 }
 
+/// Deadline for event waits. Every wait in this file is for a guaranteed
+/// event (the mock server always sends it, or a state machine always
+/// settles), so the deadline only decides when to declare failure. It is
+/// sized for contended CI runners; polls return the moment the condition
+/// holds, so healthy runs never feel it.
+const EVENT_DEADLINE: Duration = Duration::from_secs(30);
+
+/// Poll `probe` every 10 ms until it holds, panicking at [`EVENT_DEADLINE`].
+async fn wait_until<F, Fut>(what: &str, mut probe: F)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    tokio::time::timeout(EVENT_DEADLINE, async {
+        while !probe().await {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("{what} not observed within {EVENT_DEADLINE:?}"));
+}
+
+/// Wait until the client's reader task has processed the version event the
+/// mock server sends on connect — the observable proof the connection is
+/// fully up (`is_connected` flips earlier, on the socket alone).
+async fn wait_connected(client: &Phd2Client) {
+    wait_until("version event", || async move {
+        client.get_phd2_version().await.is_some()
+    })
+    .await;
+}
+
 // ============================================================================
 // Connection Tests
 // ============================================================================
@@ -184,8 +216,7 @@ async fn test_connect_and_receive_version() {
 
     client.connect().await.unwrap();
 
-    // Wait for version event to be processed
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_connected(&client).await;
 
     assert!(client.is_connected().await);
     let version = client.get_phd2_version().await;
@@ -206,7 +237,7 @@ async fn test_disconnect_clears_state() {
     let client = Phd2Client::new(config);
 
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_connected(&client).await;
     assert!(client.is_connected().await);
 
     client.disconnect().await.unwrap();
@@ -233,7 +264,7 @@ async fn test_get_app_state() {
     let config = create_test_config(port);
     let client = Phd2Client::new(config);
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_connected(&client).await;
 
     let state = client.get_app_state().await.unwrap();
     assert_eq!(state, phd2_guider::AppState::Guiding);
@@ -256,7 +287,7 @@ async fn test_get_app_state_stopped() {
     let config = create_test_config(port);
     let client = Phd2Client::new(config);
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_connected(&client).await;
 
     let state = client.get_app_state().await.unwrap();
     assert_eq!(state, phd2_guider::AppState::Stopped);
@@ -283,7 +314,7 @@ async fn test_is_equipment_connected() {
     let config = create_test_config(port);
     let client = Phd2Client::new(config);
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_connected(&client).await;
 
     let connected = client.is_equipment_connected().await.unwrap();
     assert!(connected);
@@ -309,7 +340,7 @@ async fn test_get_profiles() {
     let config = create_test_config(port);
     let client = Phd2Client::new(config);
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_connected(&client).await;
 
     let profiles = client.get_profiles().await.unwrap();
     assert_eq!(profiles.len(), 2);
@@ -339,7 +370,7 @@ async fn test_get_current_profile() {
     let config = create_test_config(port);
     let client = Phd2Client::new(config);
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_connected(&client).await;
 
     let profile = client.get_current_profile().await.unwrap();
     assert_eq!(profile.id, 1);
@@ -366,7 +397,7 @@ async fn test_get_current_equipment() {
     let config = create_test_config(port);
     let client = Phd2Client::new(config);
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_connected(&client).await;
 
     let equipment = client.get_current_equipment().await.unwrap();
     assert!(equipment.camera.is_some());
@@ -394,7 +425,7 @@ async fn test_start_guiding() {
     let config = create_test_config(port);
     let client = Phd2Client::new(config);
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_connected(&client).await;
 
     let settle = SettleParams::default();
     let result = client.start_guiding(&settle, false, None).await;
@@ -420,7 +451,7 @@ async fn test_start_guiding_with_roi() {
     let config = create_test_config(port);
     let client = Phd2Client::new(config);
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_connected(&client).await;
 
     let settle = SettleParams::default();
     let roi = Rect::new(100, 100, 200, 200);
@@ -445,7 +476,7 @@ async fn test_stop_guiding() {
     let config = create_test_config(port);
     let client = Phd2Client::new(config);
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_connected(&client).await;
 
     let result = client.stop_guiding().await;
     assert!(result.is_ok());
@@ -468,7 +499,7 @@ async fn test_pause_and_resume() {
     let config = create_test_config(port);
     let client = Phd2Client::new(config);
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_connected(&client).await;
 
     // Test pause (full)
     let result = client.pause(true).await;
@@ -492,7 +523,7 @@ async fn test_dither() {
     let config = create_test_config(port);
     let client = Phd2Client::new(config);
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_connected(&client).await;
 
     let settle = SettleParams::default();
     let result = client.dither(5.0, false, &settle).await;
@@ -520,7 +551,7 @@ async fn test_find_star() {
     let config = create_test_config(port);
     let client = Phd2Client::new(config);
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_connected(&client).await;
 
     let result = client.find_star(None).await;
     assert!(result.is_ok());
@@ -543,7 +574,7 @@ async fn test_get_lock_position() {
     let config = create_test_config(port);
     let client = Phd2Client::new(config);
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_connected(&client).await;
 
     let (x, y) = client.get_lock_position().await.unwrap();
     assert_eq!(x, 256.5);
@@ -567,7 +598,7 @@ async fn test_get_lock_position_no_star() {
     let config = create_test_config(port);
     let client = Phd2Client::new(config);
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_connected(&client).await;
 
     let result = client.get_lock_position().await;
     assert!(result.is_err());
@@ -590,7 +621,7 @@ async fn test_set_lock_position() {
     let config = create_test_config(port);
     let client = Phd2Client::new(config);
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_connected(&client).await;
 
     let result = client.set_lock_position(256.5, 512.3, true).await;
     assert!(result.is_ok());
@@ -617,7 +648,7 @@ async fn test_is_calibrated() {
     let config = create_test_config(port);
     let client = Phd2Client::new(config);
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_connected(&client).await;
 
     let calibrated = client.is_calibrated().await.unwrap();
     assert!(calibrated);
@@ -643,7 +674,7 @@ async fn test_get_calibration_data() {
     let config = create_test_config(port);
     let client = Phd2Client::new(config);
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_connected(&client).await;
 
     let data = client
         .get_calibration_data(phd2_guider::CalibrationTarget::Mount)
@@ -670,7 +701,7 @@ async fn test_clear_calibration() {
     let config = create_test_config(port);
     let client = Phd2Client::new(config);
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_connected(&client).await;
 
     let result = client
         .clear_calibration(phd2_guider::CalibrationTarget::Both)
@@ -695,7 +726,7 @@ async fn test_flip_calibration() {
     let config = create_test_config(port);
     let client = Phd2Client::new(config);
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_connected(&client).await;
 
     let result = client.flip_calibration().await;
     assert!(result.is_ok());
@@ -722,7 +753,7 @@ async fn test_get_exposure() {
     let config = create_test_config(port);
     let client = Phd2Client::new(config);
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_connected(&client).await;
 
     let exposure = client.get_exposure().await.unwrap();
     assert_eq!(exposure, 2000);
@@ -745,7 +776,7 @@ async fn test_set_exposure() {
     let config = create_test_config(port);
     let client = Phd2Client::new(config);
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_connected(&client).await;
 
     let result = client.set_exposure(1500).await;
     assert!(result.is_ok());
@@ -771,7 +802,7 @@ async fn test_get_exposure_durations() {
     let config = create_test_config(port);
     let client = Phd2Client::new(config);
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_connected(&client).await;
 
     let durations = client.get_exposure_durations().await.unwrap();
     assert_eq!(durations.len(), 5);
@@ -795,7 +826,7 @@ async fn test_get_camera_frame_size() {
     let config = create_test_config(port);
     let client = Phd2Client::new(config);
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_connected(&client).await;
 
     let (width, height) = client.get_camera_frame_size().await.unwrap();
     assert_eq!(width, 1280);
@@ -819,7 +850,7 @@ async fn test_capture_single_frame() {
     let config = create_test_config(port);
     let client = Phd2Client::new(config);
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_connected(&client).await;
 
     let result = client.capture_single_frame(Some(2000), None).await;
     assert!(result.is_ok());
@@ -849,7 +880,7 @@ async fn test_get_algo_param_names() {
     let config = create_test_config(port);
     let client = Phd2Client::new(config);
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_connected(&client).await;
 
     let names = client.get_algo_param_names(GuideAxis::Ra).await.unwrap();
     assert_eq!(names.len(), 3);
@@ -873,7 +904,7 @@ async fn test_get_algo_param() {
     let config = create_test_config(port);
     let client = Phd2Client::new(config);
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_connected(&client).await;
 
     let value = client
         .get_algo_param(GuideAxis::Ra, "Aggressiveness")
@@ -899,7 +930,7 @@ async fn test_set_algo_param() {
     let config = create_test_config(port);
     let client = Phd2Client::new(config);
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_connected(&client).await;
 
     let result = client.set_algo_param(GuideAxis::Dec, "MinMove", 0.2).await;
     assert!(result.is_ok());
@@ -926,7 +957,7 @@ async fn test_get_ccd_temperature() {
     let config = create_test_config(port);
     let client = Phd2Client::new(config);
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_connected(&client).await;
 
     let temp = client.get_ccd_temperature().await.unwrap();
     assert_eq!(temp, -10.5);
@@ -952,7 +983,7 @@ async fn test_get_cooler_status() {
     let config = create_test_config(port);
     let client = Phd2Client::new(config);
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_connected(&client).await;
 
     let status = client.get_cooler_status().await.unwrap();
     assert_eq!(status.temperature, -10.0);
@@ -976,7 +1007,7 @@ async fn test_set_cooler_state() {
     let config = create_test_config(port);
     let client = Phd2Client::new(config);
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_connected(&client).await;
 
     let result = client.set_cooler_state(true, Some(-15.0)).await;
     assert!(result.is_ok());
@@ -1006,7 +1037,7 @@ async fn test_get_star_image() {
     let config = create_test_config(port);
     let client = Phd2Client::new(config);
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_connected(&client).await;
 
     let image = client.get_star_image(15).await.unwrap();
     assert_eq!(image.frame, 1);
@@ -1034,7 +1065,7 @@ async fn test_save_image() {
     let config = create_test_config(port);
     let client = Phd2Client::new(config);
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_connected(&client).await;
 
     let path = client.save_image().await.unwrap();
     assert_eq!(path, "/path/to/image.fits");
@@ -1064,7 +1095,7 @@ async fn test_rpc_error_response() {
     let config = create_test_config(port);
     let client = Phd2Client::new(config);
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_connected(&client).await;
 
     let result = client.get_app_state().await;
     assert!(result.is_err());
@@ -1088,7 +1119,7 @@ async fn test_invalid_response_format() {
     let config = create_test_config(port);
     let client = Phd2Client::new(config);
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_connected(&client).await;
 
     let result = client.get_app_state().await;
     assert!(result.is_err());
@@ -1110,7 +1141,7 @@ async fn test_connect_equipment() {
 
     let client = Phd2Client::new(create_test_config(port));
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_connected(&client).await;
 
     let result = client.connect_equipment().await;
     assert!(result.is_ok());
@@ -1128,7 +1159,7 @@ async fn test_disconnect_equipment() {
 
     let client = Phd2Client::new(create_test_config(port));
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_connected(&client).await;
 
     let result = client.disconnect_equipment().await;
     assert!(result.is_ok());
@@ -1146,7 +1177,7 @@ async fn test_set_profile() {
 
     let client = Phd2Client::new(create_test_config(port));
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_connected(&client).await;
 
     let result = client.set_profile(1).await;
     assert!(result.is_ok());
@@ -1164,7 +1195,7 @@ async fn test_start_loop() {
 
     let client = Phd2Client::new(create_test_config(port));
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_connected(&client).await;
 
     let result = client.start_loop().await;
     assert!(result.is_ok());
@@ -1182,7 +1213,7 @@ async fn test_stop_capture() {
 
     let client = Phd2Client::new(create_test_config(port));
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_connected(&client).await;
 
     let result = client.stop_capture().await;
     assert!(result.is_ok());
@@ -1200,7 +1231,7 @@ async fn test_is_paused() {
 
     let client = Phd2Client::new(create_test_config(port));
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_connected(&client).await;
 
     let result = client.is_paused().await;
     assert!(result.is_ok());
@@ -1219,7 +1250,7 @@ async fn test_get_use_subframes() {
 
     let client = Phd2Client::new(create_test_config(port));
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_connected(&client).await;
 
     let result = client.get_use_subframes().await;
     assert!(result.is_ok());
@@ -1238,7 +1269,7 @@ async fn test_shutdown_phd2() {
 
     let client = Phd2Client::new(create_test_config(port));
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_connected(&client).await;
 
     let result = client.shutdown_phd2().await;
     assert!(result.is_ok());
@@ -1257,7 +1288,7 @@ async fn test_get_cached_app_state_initial() {
 
     let client = Phd2Client::new(create_test_config(port));
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_connected(&client).await;
 
     // Cached state should be None initially (no AppState events received)
     let cached = client.get_cached_app_state().await;
@@ -1277,7 +1308,7 @@ async fn test_is_reconnecting() {
 
     let client = Phd2Client::new(create_test_config(port));
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_connected(&client).await;
 
     // Should not be reconnecting when connected
     let reconnecting = client.is_reconnecting().await;
@@ -1296,7 +1327,7 @@ async fn test_stop_reconnection() {
 
     let client = Phd2Client::new(create_test_config(port));
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_connected(&client).await;
 
     // Should be safe to call even when not reconnecting
     client.stop_reconnection().await;
@@ -1314,7 +1345,7 @@ async fn test_find_star_with_roi() {
 
     let client = Phd2Client::new(create_test_config(port));
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_connected(&client).await;
 
     let roi = Rect::new(100, 100, 200, 200);
     let result = client.find_star(Some(roi)).await;
@@ -1347,7 +1378,9 @@ async fn test_empty_line_handling() {
     let config = create_test_config(port);
     let client = Phd2Client::new(config);
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(150)).await;
+    // The garbage lines precede the RPC response in stream order, so a
+    // reader that survives them answers the call — no fixed delay needed.
+    wait_connected(&client).await;
 
     // Client should still work after receiving empty lines
     let state = client.get_app_state().await.unwrap();
@@ -1373,10 +1406,12 @@ async fn test_app_state_event_processing() {
     let client = Phd2Client::new(config);
     client.connect().await.unwrap();
 
-    // Wait for the AppState event to be processed
-    tokio::time::sleep(Duration::from_millis(150)).await;
-
-    // The cached app state should be updated
+    // The AppState event is guaranteed; wait for it to land in the cache.
+    let c = &client;
+    wait_until("cached AppState", || async move {
+        c.get_cached_app_state().await.is_some()
+    })
+    .await;
     let cached_state = client.get_cached_app_state().await;
     assert_eq!(cached_state, Some(phd2_guider::AppState::Guiding));
 
@@ -1403,7 +1438,9 @@ async fn test_malformed_json_handling() {
     let config = create_test_config(port);
     let client = Phd2Client::new(config);
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(150)).await;
+    // The garbage lines precede the RPC response in stream order, so a
+    // reader that survives them answers the call — no fixed delay needed.
+    wait_connected(&client).await;
 
     // Client should still work after receiving malformed JSON
     let state = client.get_app_state().await.unwrap();
@@ -1415,74 +1452,89 @@ async fn test_malformed_json_handling() {
 #[tokio::test]
 #[cfg_attr(miri, ignore)] // Miri can't call socket syscalls
 async fn test_reconnect_max_retries_exceeded() {
-    // Test that max_retries limit is respected (connection.rs:149-153)
-    // Use a port that nothing is listening on
-    let port = 19999; // Unlikely to have anything listening
+    // Test that the reconnect loop's max_retries check is respected.
+    // Reconnection only ever starts from the reader task's connection-loss
+    // path — a failed *initial* connect never spawns it — so the test must
+    // connect first and then lose the server. Dropping the server also
+    // frees its port, so every retry genuinely fails.
+    let server = MockPhd2Server::new();
+    let port = server.port();
+    server.run_and_disconnect_after(100);
 
     let mut config = create_test_config(port);
     config.reconnect.enabled = true;
-    config.reconnect.interval = Duration::from_secs(1);
+    config.reconnect.interval = Duration::from_millis(50);
     config.reconnect.max_retries = Some(2); // Only try twice
     config.connection_timeout = Duration::from_secs(1);
 
     let client = Phd2Client::new(config);
 
-    // Subscribe to events to catch the ReconnectFailed event
+    // Subscribe before connecting so no event can be missed.
     let mut events = client.subscribe();
 
-    // Try to connect - this will fail immediately
-    let result = client.connect().await;
-    assert!(result.is_err());
+    client.connect().await.unwrap();
+    wait_connected(&client).await;
 
-    // Wait for reconnection attempts to complete (2 retries * ~1 second each + margin)
-    tokio::time::sleep(Duration::from_millis(4000)).await;
-
-    // Check that reconnection has stopped
-    assert!(!client.is_reconnecting().await);
-
-    // We should have received a ReconnectFailed event
-    let mut found_failed_event = false;
-    while let Ok(event) = events.try_recv() {
-        if let phd2_guider::Phd2Event::ReconnectFailed { reason } = event {
-            assert!(reason.contains("Max retries"));
-            found_failed_event = true;
-            break;
+    // The server drop triggers reconnection, whose retries exhaust; the
+    // ReconnectFailed broadcast is the deterministic terminal signal.
+    let reason = tokio::time::timeout(EVENT_DEADLINE, async {
+        loop {
+            if let Ok(phd2_guider::Phd2Event::ReconnectFailed { reason }) = events.recv().await {
+                return reason;
+            }
         }
-    }
-    // The event might have been sent before we subscribed, so just verify state
-    // The important thing is that reconnection stopped
-    let _ = found_failed_event;
+    })
+    .await
+    .expect("no ReconnectFailed event within the deadline");
+    assert!(reason.contains("Max retries"), "{reason}");
+
+    let c = &client;
+    wait_until("reconnection settled", || async move {
+        !c.is_reconnecting().await
+    })
+    .await;
 }
 
 #[tokio::test]
 #[cfg_attr(miri, ignore)] // Miri can't call socket syscalls
 async fn test_reconnect_disabled_during_reconnection() {
-    // Test that disabling auto-reconnect stops reconnection (connection.rs:139-143)
-    let port = 19998; // Unlikely to have anything listening
+    // Test that disabling auto-reconnect stops the reconnect loop at its
+    // next top-of-loop check. Reconnection only ever starts from the
+    // reader task's connection-loss path, so connect first, then lose the
+    // server. The retry budget (1000 × 50 ms) keeps the task observably
+    // reconnecting for far longer than this test runs, and the disabled
+    // check runs at each loop top, so the stop lands within one interval.
+    let server = MockPhd2Server::new();
+    let port = server.port();
+    server.run_and_disconnect_after(100);
 
     let mut config = create_test_config(port);
     config.reconnect.enabled = true;
-    config.reconnect.interval = Duration::from_secs(2);
-    config.reconnect.max_retries = Some(10); // Many retries
+    config.reconnect.interval = Duration::from_millis(50);
+    config.reconnect.max_retries = Some(1000);
     config.connection_timeout = Duration::from_secs(1);
 
     let client = Phd2Client::new(config);
+    client.connect().await.unwrap();
+    wait_connected(&client).await;
 
-    // Try to connect - this will fail and start reconnection
-    let result = client.connect().await;
-    assert!(result.is_err());
-
-    // Wait a bit for reconnection to start
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // Wait for the reconnection task to be observably running.
+    let c = &client;
+    wait_until(
+        "reconnection start",
+        || async move { c.is_reconnecting().await },
+    )
+    .await;
 
     // Disable auto-reconnect while reconnecting
     client.set_auto_reconnect_enabled(false);
 
-    // Wait for the reconnection task to notice and stop
-    tokio::time::sleep(Duration::from_millis(1000)).await;
-
-    // Should no longer be reconnecting
-    assert!(!client.is_reconnecting().await);
+    // Wait for the reconnection task to notice and stop.
+    wait_until(
+        "reconnection stop",
+        || async move { !c.is_reconnecting().await },
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -1505,25 +1557,25 @@ async fn test_server_disconnect_triggers_reconnection() {
 
     // Connect successfully
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_connected(&client).await;
     assert!(client.is_connected().await);
 
-    // Wait for server to disconnect
-    tokio::time::sleep(Duration::from_millis(300)).await;
-
-    // Should receive ConnectionLost event
-    let mut _found_connection_lost = false;
-    while let Ok(event) = events.try_recv() {
-        if matches!(event, phd2_guider::Phd2Event::ConnectionLost { .. }) {
-            _found_connection_lost = true;
-            break;
+    // The server drops the stream after its delay; the ConnectionLost
+    // broadcast is the deterministic loss signal (we subscribed before
+    // connecting, so it cannot be missed).
+    tokio::time::timeout(EVENT_DEADLINE, async {
+        loop {
+            if let Ok(phd2_guider::Phd2Event::ConnectionLost { .. }) = events.recv().await {
+                return;
+            }
         }
-    }
+    })
+    .await
+    .expect("no ConnectionLost event within the deadline");
 
-    // Wait a bit for reconnection to start/fail
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    // Connection should be lost now
+    // The connected flag flips before the broadcast, and the dropped
+    // listener can never accept a reconnect, so the loss is already
+    // observable and final.
     assert!(!client.is_connected().await);
 
     // Stop reconnection to clean up
