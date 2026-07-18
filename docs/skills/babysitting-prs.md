@@ -91,7 +91,7 @@ while :; do
   pending=$(gh pr checks "$1" --json bucket --jq '[.[] | select(.bucket == "pending")] | length')
   [ "$failed" -gt 0 ]     && { echo "check failed"; exit 0; }
   [ "$rounds" -gt "$2" ]  && { echo "new Copilot round"; exit 0; }
-  [ "$pending" -eq 0 ]    && { echo "all checks done"; exit 0; }
+  [ "$pending" -eq 0 ]    && { echo "no checks pending"; exit 0; }
   sleep 60
 done
 ```
