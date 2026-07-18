@@ -6,7 +6,7 @@ use rcgen::{
     KeyUsagePurpose, SanType,
 };
 use rusty_photon_tls::error::{Result, TlsError};
-use rusty_photon_tls::permissions::set_restricted_permissions;
+use rusty_photon_tls::permissions::write_restricted;
 use tracing::debug;
 
 /// Duration for CA certificate validity (10 years in days).
@@ -41,8 +41,7 @@ pub fn generate_ca(output_dir: &Path) -> Result<()> {
     let key_path = output_dir.join("ca-key.pem");
 
     fs::write(&cert_path, cert.pem())?;
-    fs::write(&key_path, key_pair.serialize_pem())?;
-    set_restricted_permissions(&key_path)?;
+    write_restricted(&key_path, key_pair.serialize_pem().as_bytes())?;
 
     debug!("Generated CA certificate: {}", cert_path.display());
     debug!("Generated CA private key: {}", key_path.display());
@@ -107,8 +106,7 @@ pub fn generate_service_cert(
     let key_path = output_dir.join(format!("{service_name}-key.pem"));
 
     fs::write(&cert_path, service_cert.pem())?;
-    fs::write(&key_path, service_key.serialize_pem())?;
-    set_restricted_permissions(&key_path)?;
+    write_restricted(&key_path, service_key.serialize_pem().as_bytes())?;
 
     debug!(
         "Generated service certificate for '{}': {}",

@@ -17,7 +17,7 @@ pub mod renew;
 use std::path::{Path, PathBuf};
 
 use rand::distr::{Alphanumeric, SampleString};
-use rusty_photon_tls::permissions::set_restricted_permissions;
+use rusty_photon_tls::permissions::write_restricted;
 use serde_json::json;
 use tracing::debug;
 
@@ -151,10 +151,8 @@ pub fn mint_credential(config_dir: &Path) -> Result<String, String> {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("could not create {}: {e}", parent.display()))?;
     }
-    std::fs::write(&path, format!("{password}\n"))
+    write_restricted(&path, format!("{password}\n").as_bytes())
         .map_err(|e| format!("could not write {}: {e}", path.display()))?;
-    set_restricted_permissions(&path)
-        .map_err(|e| format!("could not restrict {}: {e}", path.display()))?;
     debug!(path = %path.display(), "wrote the observatory credential");
     Ok(password)
 }

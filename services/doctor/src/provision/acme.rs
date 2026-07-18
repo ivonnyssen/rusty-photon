@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use rusty_photon_tls::error::{Result, TlsError};
-use rusty_photon_tls::permissions::set_restricted_permissions;
+use rusty_photon_tls::permissions::{set_restricted_permissions, write_restricted};
 use tokio::sync::Mutex;
 use tracing::{debug, info};
 
@@ -271,8 +271,7 @@ pub async fn issue_certificate(
     // Persist new credentials if account was just created
     if let Some(creds_json) = new_creds {
         std::fs::create_dir_all(pki_dir)?;
-        std::fs::write(&account_path, &creds_json)?;
-        set_restricted_permissions(&account_path)?;
+        write_restricted(&account_path, creds_json.as_bytes())?;
         info!(
             "Saved ACME account credentials to {}",
             account_path.display()

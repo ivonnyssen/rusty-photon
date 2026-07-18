@@ -26,12 +26,37 @@ pub fn set_restricted_permissions(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Create `path` (truncating any previous content), restrict it while it
+/// is still empty, then write `contents` — secret bytes never exist on
+/// disk under the umask-default mode.
+pub fn write_restricted(path: &Path, contents: &[u8]) -> Result<()> {
+    use std::io::Write;
+    let mut file = std::fs::File::create(path)?;
+    set_restricted_permissions(path)?;
+    file.write_all(contents)?;
+    Ok(())
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
-    #[cfg(unix)]
     use super::*;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt as _;
+
+    #[test]
+    fn write_restricted_writes_the_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("secret.key");
+        write_restricted(&path, b"KEY-BYTES").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"KEY-BYTES");
+        #[cfg(unix)]
+        {
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "mode {mode:o}");
+        }
+    }
 
     #[cfg(unix)]
     #[test]

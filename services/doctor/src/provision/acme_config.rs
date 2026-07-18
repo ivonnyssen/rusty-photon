@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use rusty_photon_tls::error::{Result, TlsError};
-use rusty_photon_tls::permissions::set_restricted_permissions;
+use rusty_photon_tls::permissions::write_restricted;
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 
@@ -97,8 +97,7 @@ pub fn save_acme_config(config: &AcmeConfig, path: &Path) -> Result<()> {
     }
     let json = serde_json::to_string_pretty(config)
         .map_err(|e| TlsError::Config(format!("failed to serialize ACME config: {e}")))?;
-    std::fs::write(path, json)?;
-    set_restricted_permissions(path)?;
+    write_restricted(path, json.as_bytes())?;
     debug!("Saved ACME config to {}", path.display());
     Ok(())
 }
