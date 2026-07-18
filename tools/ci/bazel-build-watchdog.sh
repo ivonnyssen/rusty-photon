@@ -73,11 +73,17 @@ workspace_hash() {
     ! [[ -e "$ws_root/MODULE.bazel" || -e "$ws_root/WORKSPACE.bazel" || -e "$ws_root/WORKSPACE" ]]; do
     ws_root="$(dirname "$ws_root")"
   done
-  [[ "$ws_root" == "/" ]] && return 1
+  if [[ "$ws_root" == "/" ]]; then
+    echo "bazel-build-watchdog: no MODULE.bazel/WORKSPACE at or above $PWD" >&2
+    return 1
+  fi
   if command -v md5 >/dev/null 2>&1; then
     md5 -q -s "$ws_root"
-  else
+  elif command -v md5sum >/dev/null 2>&1; then
     printf '%s' "$ws_root" | md5sum | cut -d' ' -f1
+  else
+    echo "bazel-build-watchdog: neither md5 nor md5sum available to hash the workspace path" >&2
+    return 1
   fi
 }
 
@@ -88,7 +94,7 @@ workspace_hash() {
 dump_server_jvm_out() {
   local reason="$1" ws_hash dir printed=0
   if ! ws_hash="$(workspace_hash)"; then
-    echo "bazel-build-watchdog: ${reason} — no MODULE.bazel/WORKSPACE at or above $PWD; cannot locate jvm.out"
+    echo "bazel-build-watchdog: ${reason} — cannot locate the server's output base (cause above); skipping jvm.out dump"
     return
   fi
   for dir in "$HOME"/Library/Caches/bazel/_bazel_*/"$ws_hash" \
@@ -112,7 +118,7 @@ dump_hung_server() {
   # locate the server through the on-disk pid files instead.
   local ws_hash pidfile server_pid output_base
   if ! ws_hash="$(workspace_hash)"; then
-    echo "(no MODULE.bazel/WORKSPACE at or above $PWD — cannot locate the server's output base)"
+    echo "(cannot locate the server's output base — cause above)"
     echo "::endgroup::"
     return
   fi
