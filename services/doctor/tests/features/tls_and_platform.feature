@@ -17,12 +17,12 @@ Feature: TLS material and platform default diagnosis
     Given a config directory with "qhy-focuser.json" containing:
       """
       { "server": { "port": 11113,
-          "tls": { "cert": "/nonexistent/cert.pem", "key": "/nonexistent/key.pem" } } }
+          "tls": { "cert": "{missing}/cert.pem", "key": "{missing}/key.pem" } } }
       """
     When I run doctor with --json
     Then doctor exits with code 1
     And the report contains a "fail" check named "tls.paths" for service "qhy-focuser"
-    And that check's detail mentions "/nonexistent/cert.pem"
+    And that check's detail mentions "{missing}/cert.pem"
 
   Scenario: TLS material that exists passes
     Given a config directory containing PEM files "cert.pem" and "key.pem"
@@ -59,11 +59,11 @@ Feature: TLS material and platform default diagnosis
     Given a config directory with "rp.json" containing:
       """
       { "server": { "port": 11115 },
-        "session": { "data_directory": "/nonexistent/rusty-photon-data" } }
+        "session": { "data_directory": "{missing}/rusty-photon-data" } }
       """
     When I run doctor with --json
     Then the report contains a "fail" check named "rp.data-directory" for service "rp"
-    And that check's detail mentions "/nonexistent/rusty-photon-data"
+    And that check's detail mentions "{missing}/rusty-photon-data"
 
   Scenario: An rp data_directory that exists passes
     Given a config directory with an existing data directory

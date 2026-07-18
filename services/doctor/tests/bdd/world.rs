@@ -108,6 +108,26 @@ impl DoctorWorld {
         self.config_dir().join("pki")
     }
 
+    /// Absolute path (forward slashes on every platform) to a never-created
+    /// directory inside the scenario's scratch dir. Feature files write the
+    /// `{missing}` token where a config value must point at files that do
+    /// not exist while staying genuinely absolute: a literal like
+    /// `/nonexistent` is drive-relative on Windows, and doctor refuses to
+    /// judge paths it cannot anchor.
+    pub fn missing_dir(&self) -> String {
+        self.temp
+            .path()
+            .join("missing")
+            .to_str()
+            .expect("utf8 scratch path")
+            .replace('\\', "/")
+    }
+
+    /// Expand the `{missing}` token against this scenario's world.
+    pub fn expand(&self, text: &str) -> String {
+        text.replace("{missing}", &self.missing_dir())
+    }
+
     /// The credential plaintext from the canonical pki copy.
     pub fn credential(&self) -> String {
         std::fs::read_to_string(self.pki_dir().join("credential"))

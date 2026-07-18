@@ -77,6 +77,7 @@ fn contains_check(world: &mut DoctorWorld, status: String, name: String) {
 
 #[then(expr = "that check's detail mentions {string}")]
 fn check_detail_mentions(world: &mut DoctorWorld, needle: String) {
+    let needle = world.expand(&needle);
     let check = world.last_check.as_ref().expect("no check matched yet");
     let detail = check["detail"].as_str().expect("check has a detail");
     assert!(
