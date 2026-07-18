@@ -259,17 +259,29 @@ async fn order_with_retry(
 
 /// Run every post-renewal hook in order, even after one fails — a skipped
 /// hook is a remote machine keeping its old certificate. Any failure is an
-/// overall error (exit 2) naming the hook.
+/// overall error (exit 2) naming the hook. Hook output is captured, never
+/// inherited: doctor's stdout is reserved for its own report (`--json`
+/// consumers parse it), so a chatty hook must not write through to it.
 fn run_hooks(hooks: &[String]) -> Result<(), String> {
     let mut failed: Vec<String> = Vec::new();
     for hook in hooks {
         debug!(hook, "running post-renewal hook");
-        let status = shell_command(hook).status();
-        match status {
-            Ok(status) if status.success() => {}
-            Ok(status) => {
-                debug!(hook, %status, "post-renewal hook failed");
-                failed.push(format!("`{hook}` ({status})"));
+        let output = shell_command(hook).output();
+        match output {
+            Ok(output) if output.status.success() => {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                debug!(hook, output = %stdout.trim(), "post-renewal hook succeeded");
+            }
+            Ok(output) => {
+                let status = output.status;
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let snippet = stderr.trim().chars().take(200).collect::<String>();
+                debug!(hook, %status, stderr = %snippet, "post-renewal hook failed");
+                if snippet.is_empty() {
+                    failed.push(format!("`{hook}` ({status})"));
+                } else {
+                    failed.push(format!("`{hook}` ({status}: {snippet})"));
+                }
             }
             Err(e) => {
                 debug!(hook, "post-renewal hook could not run: {e}");
@@ -297,8 +309,13 @@ fn shell_command(hook: &str) -> std::process::Command {
 
 #[cfg(windows)]
 fn shell_command(hook: &str) -> std::process::Command {
+    use std::os::windows::process::CommandExt;
     let mut command = std::process::Command::new("cmd");
-    command.arg("/C").arg(hook);
+    // raw_arg: std's argument quoting wraps the hook in escaped quotes,
+    // which cmd.exe does not unescape — a hook with a quoted path (or any
+    // redirect) reaches cmd mangled and silently does nothing. cmd wants
+    // the line verbatim after /C.
+    command.arg("/C").raw_arg(hook);
     command
 }
 
@@ -432,9 +449,13 @@ mod tests {
         } else {
             format!("echo ran > '{}'", marker.display())
         };
-        let hooks = vec!["exit 7".to_string(), write_marker];
+        let hooks = vec!["echo scp-failed >&2 && exit 7".to_string(), write_marker];
         let err = run_hooks(&hooks).unwrap_err();
         assert!(err.contains("exit 7"), "{err}");
+        assert!(
+            err.contains("scp-failed"),
+            "the failure must carry the hook's stderr: {err}"
+        );
         assert!(
             marker.is_file(),
             "the hook after the failing one must still run"
