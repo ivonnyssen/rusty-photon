@@ -24,15 +24,20 @@ pub enum SdkOutcome {
 
 /// The `config.full-shape` check: the file at `config_path` against the
 /// service's own typed load path (`load` is that path, mapped to serde's
-/// message on failure). An absent file is `ok` — the service writes its
-/// defaults on first start.
-fn full_shape(config_path: &Path, load: impl FnOnce(&Path) -> Result<(), String>) -> Check {
+/// message on failure). An absent file is `ok` — most services write their
+/// defaults on first start, config-gated ones stay inert, and either way
+/// there is nothing to validate (central doctor's inventory and
+/// `units.config-gated` checks own that judgment).
+pub fn full_shape_check(
+    config_path: &Path,
+    load: impl FnOnce(&Path) -> Result<(), String>,
+) -> Check {
     if !config_path.exists() {
         return Check::ok(
             "config.full-shape",
             None,
             format!(
-                "no config file at {}; the service writes its defaults on first start",
+                "no config file at {}; nothing to validate",
                 config_path.display()
             ),
         );
@@ -59,7 +64,7 @@ fn full_shape(config_path: &Path, load: impl FnOnce(&Path) -> Result<(), String>
 /// `fail`: this binary cannot see unit state, so unplugged-on-purpose and
 /// unplugged-by-accident are indistinguishable here — central doctor's
 /// unit-aware hardware checks carry that judgment.
-fn sdk_devices(outcome: SdkOutcome) -> Check {
+pub fn sdk_devices_check(outcome: SdkOutcome) -> Check {
     match outcome {
         SdkOutcome::Devices(models) if models.is_empty() => Check::warn(
             "hardware.sdk-devices",
@@ -88,8 +93,8 @@ fn sdk_devices(outcome: SdkOutcome) -> Check {
 /// Run a service's `doctor` subcommand: assemble the checks, render text
 /// or JSON, and map to the shared exit-code contract (0 = no failures,
 /// 1 = at least one `fail`, 2 = the run itself broke). Pure — the caller
-/// prints `output` to stdout and exits with `code` — so the whole
-/// subcommand is testable without a process.
+/// prints `output` (always newline-terminated) to stdout and exits with
+/// `code` — so the whole subcommand is testable without a process.
 pub fn run(
     service: &str,
     version: &str,
@@ -98,15 +103,32 @@ pub fn run(
     sdk: Option<SdkOutcome>,
     json: bool,
 ) -> (String, i32) {
-    let mut checks = vec![full_shape(config_path, load)];
+    let mut checks = vec![full_shape_check(config_path, load)];
     if let Some(outcome) = sdk {
-        checks.push(sdk_devices(outcome));
+        checks.push(sdk_devices_check(outcome));
     }
+    emit(service, version, config_path, checks, json)
+}
+
+/// Assemble `checks` into a `mode: service` report and render it — the
+/// composition point for services whose subcommand carries extra checks
+/// beyond the standard pair (qhy-camera's Windows DLL diagnostics). Most
+/// services go through [`run`] instead.
+pub fn emit(
+    service: &str,
+    version: &str,
+    config_path: &Path,
+    checks: Vec<Check>,
+    json: bool,
+) -> (String, i32) {
     let report = Report::for_service(version, service, config_path.to_path_buf(), checks);
     let output = if json {
         match serde_json::to_string_pretty(&report) {
-            Ok(json) => json,
-            Err(error) => return (format!("cannot serialize report: {error}"), 2),
+            Ok(mut json) => {
+                json.push('\n');
+                json
+            }
+            Err(error) => return (format!("cannot serialize report: {error}\n"), 2),
         }
     } else {
         crate::render::render(&report)
@@ -144,7 +166,7 @@ mod tests {
         assert_eq!(report.service.as_deref(), Some("qhy-camera"));
         assert_eq!(report.checks[0].name, "config.full-shape");
         assert_eq!(report.checks[0].status, Status::Ok);
-        assert!(report.checks[0].detail.contains("defaults on first start"));
+        assert!(report.checks[0].detail.contains("nothing to validate"));
     }
 
     #[test]

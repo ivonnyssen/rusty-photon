@@ -23,8 +23,6 @@ rp-harness = [
     "dep:rmcp",
     "dep:rp-ephemeris",
     "dep:rp-fits",
-    "dep:serde_json",
-    "dep:tempfile",
 ]
 # Enables the `conformu` module: a direct ConformU-CLI runner used by services'
 # conformu_integration tests. No extra deps (it uses tokio::process, already a
@@ -41,13 +39,13 @@ tls-auth = [
     "dep:reqwest",
     "dep:rp-auth",
     "dep:rp-tls",
-    "dep:serde_json",
-    "dep:tempfile",
     "dep:uuid",
 ]
 
 [dependencies]
 libc = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 
@@ -64,9 +62,4 @@ rp-auth = { workspace = true, optional = true }
 rp-ephemeris = { workspace = true, optional = true }
 rp-fits = { workspace = true, optional = true }
 rp-tls = { workspace = true, optional = true }
-serde_json = { workspace = true, optional = true }
-tempfile = { workspace = true, optional = true }
 uuid = { workspace = true, optional = true }
-
-[dev-dependencies]
-tempfile = { workspace = true }

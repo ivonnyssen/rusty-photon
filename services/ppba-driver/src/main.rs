@@ -25,8 +25,15 @@ struct Localizations;
 #[derive(Parser, LocalizedParser)]
 #[command(name = "ppba-driver")]
 #[command(version)]
+// A top-level `--config` alongside a subcommand would parse but be
+// silently ignored (the subcommand carries its own); reject the mixed
+// form outright, same as rp's CLI.
+#[command(args_conflicts_with_subcommands = true)]
 #[localized(about = "cli-about")]
 struct Args {
+    #[command(subcommand)]
+    command: Option<Command>,
+
     /// Path to configuration file
     #[arg(short, long)]
     #[localized(help = "cli-help-config")]
@@ -63,6 +70,23 @@ struct Args {
     service: bool,
 }
 
+/// Subcommands. Help text is not localized — the LocalizedParser derive
+/// localizes only the top-level args (rp's CLI sets the same precedent).
+#[derive(clap::Subcommand)]
+enum Command {
+    /// Diagnose this service's configuration without starting it
+    /// (docs/services/doctor.md). Read-only; exits 1 on failing checks.
+    Doctor {
+        /// Path to configuration file
+        #[arg(short, long)]
+        config: Option<PathBuf>,
+
+        /// Print the report as JSON instead of text
+        #[arg(long)]
+        json: bool,
+    },
+}
+
 fn parse_log_level(s: &str) -> Result<Level, String> {
     s.parse().map_err(|_| {
         rusty_photon_i18n::fl_active(|loader| fl!(loader, "error-invalid-log-level", value = s))
@@ -78,6 +102,10 @@ fn parse_log_level(s: &str) -> Result<Level, String> {
 fn main() -> ServiceResult {
     let (loader, i18n_status) = rusty_photon_i18n::init(fluent_language_loader!(), &Localizations);
     let args = Args::parse_localized(&loader);
+
+    if let Some(Command::Doctor { config, json }) = args.command {
+        ppba_driver::doctor::run(config, json);
+    }
 
     // Setup tracing. In Windows SCM service mode logs go to the rolling file
     // under %PROGRAMDATA%\rusty-photon\logs\; hold the guard until process exit

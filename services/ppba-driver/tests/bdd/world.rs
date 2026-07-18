@@ -32,10 +32,23 @@ pub struct PpbaWorld {
     /// Throwaway PKI + per-run credentials for the TLS/auth scenarios
     pub pki: Option<bdd_infra::tls_auth::PkiFixture>,
 
+    /// Doctor-subcommand smoke state (staged config file + run output)
+    pub doctor_smoke: bdd_infra::doctor_smoke::DoctorSmokeState,
+
     /// Parsed JSON body of the last config.get / config.apply / config.schema action.
     pub last_response: Option<serde_json::Value>,
     /// Result of the last supported_actions query.
     pub last_supported_actions: Option<Vec<String>>,
+}
+
+impl bdd_infra::doctor_smoke::DoctorSmokeWorld for PpbaWorld {
+    fn doctor_smoke(&mut self) -> &mut bdd_infra::doctor_smoke::DoctorSmokeState {
+        &mut self.doctor_smoke
+    }
+
+    fn valid_config(&self) -> serde_json::Value {
+        crate::steps::infrastructure::default_test_config()
+    }
 }
 
 impl PpbaWorld {

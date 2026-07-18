@@ -13,6 +13,10 @@ use tracing::{debug, Level};
 #[command(name = "qhy-camera")]
 #[command(about = "ASCOM Alpaca Camera (+ FilterWheel) driver for QHYCCD hardware")]
 #[command(version)]
+// A top-level `--config` alongside a subcommand would parse but be
+// silently ignored (the subcommand carries its own); reject the mixed
+// form outright, same as rp's CLI.
+#[command(args_conflicts_with_subcommands = true)]
 struct Args {
     /// Path to configuration file. Defaults to the platform config
     /// directory (e.g. `~/.config/rusty-photon/qhy-camera.json` on Linux).
@@ -46,12 +50,21 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Diagnose the QHYCCD Windows installation: qhyccd.dll resolution, the
-    /// loaded SDK version vs. the pinned build-time version, and All-in-One
-    /// driver-pack presence (see docs/services/qhy-camera.md § "Windows:
-    /// qhyccd.dll resolution"). Windows-focused; on other platforms it only
-    /// prints a note.
-    Doctor,
+    /// Diagnose this service's configuration and what the QHYCCD SDK can
+    /// see, without starting it (docs/services/doctor.md). Read-only; exits
+    /// 1 on failing checks. On Windows this also diagnoses the QHYCCD
+    /// installation: qhyccd.dll resolution and the loaded SDK version vs.
+    /// the pinned build-time version (see docs/services/qhy-camera.md
+    /// § "Windows: qhyccd.dll resolution").
+    Doctor {
+        /// Path to configuration file
+        #[arg(short, long)]
+        config: Option<PathBuf>,
+
+        /// Print the report as JSON instead of text
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn parse_log_level(s: &str) -> std::result::Result<Level, String> {
@@ -61,26 +74,19 @@ fn parse_log_level(s: &str) -> std::result::Result<Level, String> {
 
 fn main() -> ServiceResult {
     let args = Args::parse();
+
+    if let Some(Command::Doctor { config, json }) = args.command {
+        qhy_camera::doctor::run(config, json);
+    }
+
     // In Windows SCM service mode logs go to the rolling file under
     // %PROGRAMDATA%\rusty-photon\logs\; hold the guard until process exit so
     // the final lines flush on SCM Stop. Console mode logs to stderr as before.
-    let tracing_guard = rusty_photon_service_lifecycle::init_service_tracing(
+    let _tracing_guard = rusty_photon_service_lifecycle::init_service_tracing(
         "qhy-camera",
         args.log_level,
         args.service,
     );
-
-    if let Some(Command::Doctor) = args.command {
-        // Interactive diagnostic — never starts the server. The exit code
-        // reflects overall health (DR3).
-        let code = qhy_camera::doctor::run();
-        // process::exit bypasses destructors, so drop the tracing guard
-        // explicitly to flush buffered log lines first — inert in console
-        // mode, but `--service doctor` is expressible and the guard then
-        // owns the rolling-file writer.
-        drop(tracing_guard);
-        std::process::exit(code);
-    }
 
     let config_path = rusty_photon_config::resolve_config_path("qhy-camera", args.config)?;
     let overrides = CliOverrides {

@@ -23,6 +23,7 @@ pub mod backend;
 mod camera;
 mod config;
 mod config_actions;
+pub mod doctor;
 mod error;
 
 pub use camera::ZwoCamera;

@@ -26,6 +26,7 @@
 pub mod backend;
 mod config;
 mod config_actions;
+pub mod doctor;
 mod error;
 mod focuser;
 

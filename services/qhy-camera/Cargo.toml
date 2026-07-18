@@ -31,6 +31,7 @@ workspace = true
 ascom-alpaca = { workspace = true, features = ["server", "camera", "filter_wheel"] }
 qhyccd-rs = { workspace = true }
 rusty-photon-config = { workspace = true }
+rusty-photon-doctor-checks = { workspace = true }
 rusty-photon-server-config = { workspace = true }
 rusty-photon-driver = { workspace = true }
 rusty-photon-service-lifecycle = { workspace = true }
