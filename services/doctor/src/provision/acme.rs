@@ -318,12 +318,14 @@ fn write_atomic(path: &Path, contents: &str, restrict: bool) -> Result<()> {
     let tmp = path.with_file_name(tmp_name);
     {
         use std::io::Write;
+        // Restrict while the file is still empty: key bytes must never
+        // exist on disk under the umask-default mode.
         let mut file = std::fs::File::create(&tmp)?;
+        if restrict {
+            set_restricted_permissions(&tmp)?;
+        }
         file.write_all(contents.as_bytes())?;
         file.sync_all()?;
-    }
-    if restrict {
-        set_restricted_permissions(&tmp)?;
     }
     std::fs::rename(&tmp, path)?;
     Ok(())

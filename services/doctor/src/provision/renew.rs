@@ -188,8 +188,12 @@ async fn renew_acme(
         .map_err(|e| format!("could not load {}: {e}", config_path.display()))?;
     let pki = super::pki_dir(config_dir);
     let cert_path = acme_config::acme_cert_path(&pki);
+    let key_path = acme_config::acme_key_path(&pki);
 
+    // A pair with either half missing cannot serve, so both count as due —
+    // renewal is also the recovery path for half-lost material.
     let due = force
+        || !key_path.is_file()
         || match std::fs::read_to_string(&cert_path) {
             Err(_) => {
                 debug!(cert = %cert_path.display(), "wildcard certificate missing; due");
@@ -347,6 +351,64 @@ mod tests {
         let pki = super::super::pki_dir(dir.path());
         cert::generate_ca(&pki).unwrap();
         (dir, pki)
+    }
+
+    #[tokio::test]
+    async fn test_acme_leg_treats_a_missing_key_as_due() {
+        // A healthy cert with its key half gone cannot serve, so it must be
+        // due. The bogus provider proves the due gate was passed (the order
+        // build is the first thing after it) without any network.
+        let (dir, pki) = stage_tree();
+        stage_pair(
+            &pki,
+            "placeholder",
+            time::OffsetDateTime::now_utc() + time::Duration::days(300),
+            &["localhost"],
+        );
+        std::fs::rename(
+            pki.join("placeholder.pem"),
+            acme_config::acme_cert_path(&pki),
+        )
+        .unwrap();
+        std::fs::remove_file(pki.join("placeholder-key.pem")).unwrap();
+        std::fs::write(
+            dir.path().join("acme.json"),
+            serde_json::json!({
+                "email": "ops@example.com",
+                "domain": "observatory.test",
+                "dns_provider": "no-such-provider",
+                "dns_credentials": { "api_token": "tok" },
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let err = renew(dir.path(), false).await.unwrap_err();
+        assert!(
+            err.message.contains("unsupported DNS provider"),
+            "a missing acme-key.pem must pass the due gate: {}",
+            err.message
+        );
+
+        // The same tree with the key present is outside the window: no-op.
+        stage_pair(
+            &pki,
+            "placeholder",
+            time::OffsetDateTime::now_utc() + time::Duration::days(300),
+            &["localhost"],
+        );
+        std::fs::rename(
+            pki.join("placeholder.pem"),
+            acme_config::acme_cert_path(&pki),
+        )
+        .unwrap();
+        std::fs::rename(
+            pki.join("placeholder-key.pem"),
+            acme_config::acme_key_path(&pki),
+        )
+        .unwrap();
+        let (applied, _) = renew(dir.path(), false).await.unwrap();
+        assert!(applied.is_empty(), "{applied:?}");
     }
 
     #[tokio::test]
