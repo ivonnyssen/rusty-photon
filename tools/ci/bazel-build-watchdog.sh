@@ -26,6 +26,15 @@
 # A genuine build failure exits straight through with its own exit code;
 # only output silence triggers the retry.
 #
+# A second failure mode shares the same phase of the build: instead of going
+# silent, the client's gRPC command stream to the server resets ("Server
+# terminated abruptly … recvmsg:Connection reset by peer", exit 37) while the
+# server JVM survives as an orphan. The decisive evidence — a Java exception
+# or internal OOM on the server side — lands only in the output base's
+# server/jvm.out, which evaporates with the ephemeral runner. So on any
+# infrastructure-class bazel exit (code >= 32) this script echoes jvm.out
+# into the step log before propagating the exit code.
+#
 # Usage: bazel-build-watchdog.sh <command> [args...]
 # Tunables: WATCHDOG_STALL_SECS (default 300), WATCHDOG_POLL_SECS (default 15).
 
@@ -52,33 +61,60 @@ LOG="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/bazel-watchdog-output.log"
 # would misread -f %m as a filesystem query and print the mount point.
 mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0; }
 
+# The output base directory is named md5(<workspace root>) — the directory
+# holding MODULE.bazel / WORKSPACE, found by walking up like Bazel does, so
+# this works from a subdirectory too — which pins every dump below to OUR
+# server, never another workspace's. Prints the hash; fails if no workspace
+# marker exists at or above $PWD. (`bazel info output_base` is not an option:
+# it would queue an RPC behind a wedged or dead build command.)
+workspace_hash() {
+  local ws_root="$PWD"
+  while [[ "$ws_root" != "/" ]] &&
+    ! [[ -e "$ws_root/MODULE.bazel" || -e "$ws_root/WORKSPACE.bazel" || -e "$ws_root/WORKSPACE" ]]; do
+    ws_root="$(dirname "$ws_root")"
+  done
+  [[ "$ws_root" == "/" ]] && return 1
+  if command -v md5 >/dev/null 2>&1; then
+    md5 -q -s "$ws_root"
+  else
+    printf '%s' "$ws_root" | md5sum | cut -d' ' -f1
+  fi
+}
+
+# Echo the server's stderr/stdout capture (server/jvm.out) into the step log.
+# Works whether the server is alive, orphaned, or gone — it only needs the
+# file, located by workspace hash under the globbed roots (GitHub macOS
+# runner location, macOS default, Linux).
+dump_server_jvm_out() {
+  local reason="$1" ws_hash dir printed=0
+  if ! ws_hash="$(workspace_hash)"; then
+    echo "bazel-build-watchdog: ${reason} — no MODULE.bazel/WORKSPACE at or above $PWD; cannot locate jvm.out"
+    return
+  fi
+  for dir in "$HOME"/Library/Caches/bazel/_bazel_*/"$ws_hash" \
+    /private/var/tmp/_bazel_*/"$ws_hash" \
+    "$HOME"/.cache/bazel/_bazel_*/"$ws_hash"; do
+    [[ -s "$dir/server/jvm.out" ]] || continue
+    printed=1
+    echo "::group::bazel-build-watchdog: ${reason} — ${dir}/server/jvm.out"
+    tail -n 1000 "$dir/server/jvm.out" 2>/dev/null || true
+    echo "::endgroup::"
+  done
+  ((printed)) || echo "bazel-build-watchdog: ${reason} — no non-empty server/jvm.out found"
+}
+
 dump_hung_server() {
   echo "::group::bazel-build-watchdog: no output for ${STALL_SECS}s — dumping hung Bazel server"
   pgrep -fl 'bazel|java' 2>/dev/null || true
   echo "--- TCP connections to port 443 (remote cache) ---"
   netstat -an 2>/dev/null | awk 'NR <= 2 || $0 ~ /[.:]443([^0-9]|$)/' || true
   # `bazel info output_base` would queue behind the wedged build command, so
-  # locate the server through the on-disk pid files instead. The output base
-  # directory is named md5(<workspace root>) — the directory holding
-  # MODULE.bazel / WORKSPACE, found by walking up like Bazel does, so this
-  # works from a subdirectory too — which pins this to OUR server, never
-  # another workspace's. The globbed roots cover the GitHub macOS runner
-  # location, the macOS default, and Linux.
-  local ws_root ws_hash pidfile server_pid output_base
-  ws_root="$PWD"
-  while [[ "$ws_root" != "/" ]] &&
-    ! [[ -e "$ws_root/MODULE.bazel" || -e "$ws_root/WORKSPACE.bazel" || -e "$ws_root/WORKSPACE" ]]; do
-    ws_root="$(dirname "$ws_root")"
-  done
-  if [[ "$ws_root" == "/" ]]; then
+  # locate the server through the on-disk pid files instead.
+  local ws_hash pidfile server_pid output_base
+  if ! ws_hash="$(workspace_hash)"; then
     echo "(no MODULE.bazel/WORKSPACE at or above $PWD — cannot locate the server's output base)"
     echo "::endgroup::"
     return
-  fi
-  if command -v md5 >/dev/null 2>&1; then
-    ws_hash="$(md5 -q -s "$ws_root")"
-  else
-    ws_hash="$(printf '%s' "$ws_root" | md5sum | cut -d' ' -f1)"
   fi
   for pidfile in "$HOME"/Library/Caches/bazel/_bazel_*/"$ws_hash"/server/server.pid.txt \
     /private/var/tmp/_bazel_*/"$ws_hash"/server/server.pid.txt \
@@ -100,6 +136,8 @@ dump_hung_server() {
     sleep 3
     echo "--- tail of ${output_base}/java.log ---"
     tail -n 1000 "$output_base/java.log" 2>/dev/null || true
+    echo "--- tail of ${output_base}/server/jvm.out ---"
+    tail -n 1000 "$output_base/server/jvm.out" 2>/dev/null || true
     kill -KILL "$server_pid" 2>/dev/null || true
   done
   echo "::endgroup::"
@@ -138,6 +176,20 @@ status=$?
 
 if ((stalled)); then
   echo "bazel-build-watchdog: build stalled; server killed, retrying once on a fresh server"
-  exec "$@"
+  "$@"
+  status=$?
+  if ((status >= 32)); then
+    dump_server_jvm_out "retry exited ${status}"
+  fi
+  exit "$status"
+fi
+
+# Bazel reserves exit codes >= 32 for infrastructure failures (36 local
+# environment, 37 unhandled exception / "Server terminated abruptly", 38
+# transient remote issues); ordinary build/test failures (1/2/3/4/8) stay
+# below and get no dump. Shell-level codes for a killed client (126+) land
+# in the same bucket, where the extra diagnostics are harmless.
+if ((status >= 32)); then
+  dump_server_jvm_out "bazel exited ${status}"
 fi
 exit "$status"
