@@ -194,10 +194,12 @@ metadata, never gating capture.
 need to interpret the frame without re-deriving it from a plate
 solve. Built at capture time from three sources:
 
-1. `focal_length_mm` is operator-supplied via `equipment.cameras[].focal_length_mm`.
-   It captures the optical train (telescope, reducers, extenders) which has no
-   ASCOM Alpaca property — even the optional `Telescope.FocalLength` ignores
-   anything screwed in front of the camera.
+1. `focal_length_mm` is operator-supplied on the optical train that
+   terminates in this camera (`equipment.optical_trains[].focal_length_mm`
+   — see [Optical Trains](#optical-trains)). It captures the light path
+   (telescope, reducers, extenders) which has no ASCOM Alpaca property —
+   even the optional `Telescope.FocalLength` ignores anything screwed in
+   front of the camera.
 2. `pixel_size_x_um` / `pixel_size_y_um` come from `cam.pixel_size_x()` /
    `cam.pixel_size_y()` (Alpaca `PixelSizeX` / `PixelSizeY`, microns),
    cached on `CameraEntry` at connect time.
@@ -214,12 +216,13 @@ fov_deg                       = pixel_scale_arcsec_per_pixel × sensor_size_px /
 ```
 
 The block is omitted (serializes as absent, not `null`) when any of
-its inputs is unavailable: `focal_length_mm` was not configured for
-this camera, the camera's `pixel_size_*` read failed at connect time,
-or the camera's `camera_*_size` read failed at connect time. Each
-missing input is logged at `debug!` (at connect time for the cached
-fields; at capture time for the missing focal length). Capture
-continues — `optics` is auxiliary metadata, not gating.
+its inputs is unavailable: the camera terminates no optical train (or
+its train omits `focal_length_mm`), the camera's `pixel_size_*` read
+failed at connect time, or the camera's `camera_*_size` read failed at
+connect time. Each missing input is logged at `debug!` (at connect
+time for the cached fields; at capture time for the missing focal
+length). Capture continues — `optics` is auxiliary metadata, not
+gating.
 
 Per-frame variation (binning swaps, focal reducers screwed in
 mid-session) is out of scope. The persisted block reflects the
@@ -778,9 +781,9 @@ the exact parameter types and return structure.
 
 | Action | Parameters | Returns | Description |
 |--------|-----------|---------|-------------|
-| `start_guiding` | recalibrate (optional), settle_pixels / settle_time / settle_timeout (optional; per-call > `guider` config > service default, field by field) | state, rms_ra_px, rms_dec_px, total_rms_px, sample_count | Start guiding loop, block until settled |
+| `start_guiding` | recalibrate (optional), settle_pixels / settle_time / settle_timeout (optional; per-call > `equipment.mount.guiding` config > service default, field by field) | state, rms_ra_px, rms_dec_px, total_rms_px, sample_count | Start guiding loop, block until settled |
 | `stop_guiding` | — | state | Stop guiding loop, block until confirmed (idempotent) |
-| `dither` | pixels (optional; falls back to `guider.dither_pixels`), ra_only (optional), settle_* as in `start_guiding` | state, rms_ra_px, rms_dec_px, total_rms_px, sample_count | Send dither command, block until re-settled |
+| `dither` | pixels (optional; falls back to the guiding config's `dither_pixels`), ra_only (optional), settle_* as in `start_guiding` | state, rms_ra_px, rms_dec_px, total_rms_px, sample_count | Send dither command, block until re-settled |
 | `pause_guiding` | full (optional) | state | Pause guide corrections (e.g., during readout); `full` also pauses looping |
 | `resume_guiding` | — | state | Resume paused guiding |
 | `get_guiding_stats` | — | app_state, guiding, rms_ra_px, rms_dec_px, total_rms_px, snr, star_mass, sample_count | Read current guiding statistics (cheap; safe to poll) |
@@ -788,7 +791,8 @@ the exact parameter types and return structure.
 All guider quantities are **guide-camera pixels** (a pixel scale only
 exists after PHD2 calibration, so arcsecond thresholds are not
 accepted). The tools proxy to the guider service and error with
-"guider not configured" when the `guider` config block is absent.
+"guider not configured" when the `equipment.mount.guiding` config
+block is absent.
 
 **Compute (image analysis)**
 
@@ -1781,6 +1785,84 @@ a mount that does not expose the property), the validation is
 skipped with a `debug!()` log. See
 [Site Validation Against the ASCOM Mount](#site-validation-against-the-ascom-mount).
 
+### Optical Trains
+
+`equipment.optical_trains` models each camera's light path as an
+ordered list of roster device ids, objective side first, terminating
+in a camera. Membership expresses coupling, position expresses optical
+order, and rp derives focus pairing and ordering, rotation effects,
+and the guider's focus dependency from the lists instead of being told
+each pairing per workflow. The design rationale and the phasing of the
+consumers live in
+[`docs/plans/optical-trains.md`](../plans/optical-trains.md); the
+decisions recorded there are fixed.
+
+```jsonc
+"optical_trains": [
+  { "id": "main",  "purpose": "imaging", "focal_length_mm": 1000.0,
+    "devices": ["main-focuser", "main-fw", "falcon", "main-cam"] },
+  { "id": "guide", "purpose": "guiding", "focal_length_mm": 200.0,
+    "devices": ["main-focuser", "guide-focuser", "guide-cam"] }
+]
+```
+
+Semantics:
+
+- `devices` entries are roster ids from `equipment.cameras[]`,
+  `equipment.focusers[]`, `equipment.rotators[]`, and
+  `equipment.filter_wheels[]` — active devices only; passive optics
+  (OAG bodies, reducers, flatteners) are not modeled. A device that
+  physically affects several cameras (a drawtube focuser in front of
+  an off-axis pick-off, a filter drawer in front of it) appears in
+  several trains.
+- `purpose` is `"imaging"` (the default when omitted) or `"guiding"`.
+  The guiding train tells rp which camera's focus and rotation state
+  the guider depends on; at most one train may carry it, and it
+  requires `equipment.mount.guiding`.
+- `focal_length_mm` is the effective focal length of that light path
+  in millimetres — a positive finite number, rejected at load
+  otherwise. Optional: omitted, captures through that train's camera
+  carry no `optics` block, exactly like a camera outside any train.
+- Trains attach implicitly to the singular `equipment.mount`. Devices
+  left out of every train stay legal and behave exactly as today —
+  trains are enrichment, not a gate.
+
+Validation happens at load and on `PUT /api/config`. Per-field
+invariants (the `purpose` enum, `focal_length_mm` positivity) are
+enforced in the field types at deserialize; the cross-array graph
+rules run in the shared `validate_config` pass, reporting dotted
+`FieldError` paths (`equipment.optical_trains.0.devices.2`) that name
+the offending entry:
+
+- train ids are unique;
+- every `devices` entry exists in the roster as a camera, focuser,
+  rotator, or filter wheel; no id repeats within one train;
+- the last entry is a camera, cameras appear nowhere but last, and a
+  camera terminates at most one train;
+- devices shared between trains appear in a consistent relative order
+  across them (the merged order relation is acyclic);
+- at most one train has `purpose: "guiding"`, and a guiding train
+  requires `equipment.mount.guiding`.
+
+Derivation rules — the questions the derived train model answers.
+Consumers land phase by phase per the plan:
+
+| Question | Rule |
+|---|---|
+| Which focuser focuses camera C? | Last focuser in C's train list |
+| AF sequence after a refocus trigger on train T | Shared focusers of T upstream-first (each run in the train where it is terminal), then T's terminal focuser |
+| What does moving focuser F invalidate? | Focus of every train containing F |
+| What does rotator R rotate? | Every train containing R (when one is the guiding train, the rotate-while-guiding ladder applies — plan phase T4) |
+| What does a filter change on wheel W invalidate? | Focus offset of trains containing W (per-filter offsets: backlog) |
+| Pixel-scale conversions | Train `focal_length_mm` + the camera's reported pixel size |
+
+Today's consumer is the exposure document's `optics` block
+([Core Fields](#core-fields-owned-by-rp)): capture resolves
+`focal_length_mm` through the captured camera's train. Train-aware
+tools (`auto_focus` by train, `refocus_train`, the first rotator
+verbs), the mount motion gate, and the guiding integration follow in
+the plan's later phases.
+
 ### Guider Service
 
 The guider service is an **rp-managed service** that wraps PHD2 and
@@ -1792,9 +1874,13 @@ Mode". Like the plate solver, it is a separate process because PHD2
 itself is an external program with its own crash/restart behavior;
 Sentinel can supervise and restart it via the standard
 rp-managed-service flow. `rp` talks to it through the
-`crates/rp-guider` HTTP client, configured by the optional top-level
-`guider` block (url, timeout, settle defaults, dither amount); the
-same client backs the safety enforcer's stop-guiding-on-unsafe step.
+`crates/rp-guider` HTTP client, configured by the optional
+`equipment.mount.guiding` block (url, timeout, settle defaults, dither
+amount, `recalibrate_above_deg`); the same client backs the safety
+enforcer's stop-guiding-on-unsafe step. Guiding is mount-scoped by
+construction — the guider corrects and dithers by moving the mount,
+which moves every train on it — so the block lives inside
+`equipment.mount` and cannot be configured without one.
 
 PHD2 uses JSON-RPC over TCP, which is the one exception to the Alpaca-only
 rule — there is no Alpaca guider device type. The guider service encapsulates
@@ -3230,7 +3316,7 @@ the disconnection is an immediate trigger for Sentinel to attempt recovery.
 | Park | `park_started` | `park_complete` | `max_duration_ms` from the `park_started` envelope (rp-computed worst-case traverse: `(180° / rate + settle) × 2`, floored at `MIN_PARK_DEADLINE`) |
 | Move focuser | `move_focuser_started` | `move_focuser_complete` | `max_duration_ms` from the `move_focuser_started` envelope (rp-computed: `(\|target − current\| / steps_per_sec) × 2`, floored at `MIN_FOCUSER_DEADLINE`) |
 | Focus | `focus_started` | `focus_complete` | configurable max focus time |
-| Guide settle | `guide_started` | `guide_settled` | `max_duration_ms` from the `guide_started` envelope (the resolved settle timeout + the guider service's 10 s backstop grace; omitted when no settle timeout is configured per-call or in the `guider` block). `dither_started` → `dither_settled` carries the same deadline shape |
+| Guide settle | `guide_started` | `guide_settled` | `max_duration_ms` from the `guide_started` envelope (the resolved settle timeout + the guider service's 10 s backstop grace; omitted when no settle timeout is configured per-call or in the `equipment.mount.guiding` block). `dither_started` → `dither_settled` carries the same deadline shape |
 | Centering | `centering_started` | `centering_complete` | `max_duration_ms` from the `centering_started` envelope (rp-computed advisory outer-loop deadline: `max_attempts × (duration + centering.solve_time_estimate + centering.slew_overhead_estimate)`; per-iteration ops carry their own deadlines) |
 
 #### Corrective Actions
@@ -3450,8 +3536,18 @@ start. This is what the `ui-htmx` equipment page edits.
 The `mount` field is singular: exactly one mount is the typical
 deployment. Piggyback rigs share that one mount across multiple optical
 trains — `cameras`, `focusers`, and `filter_wheels` stay plural for the
-trains; `mount` stays singular. Multi-mount support is in
-[Future Considerations](#future-considerations). `mount.settle_after_slew`
+trains (declared in `equipment.optical_trains`, see
+[Optical Trains](#optical-trains)); `mount` stays singular. Multi-mount
+support is in
+[Future Considerations](#future-considerations). The optional
+`mount.guiding` block configures the guider rp-managed service —
+guiding is mount-scoped, so it nests here rather than at top level.
+The retired shapes from before the optical-trains model — a top-level
+`guider` block, `cameras[].focal_length_mm`, and the `camera_id`
+back-references on `focusers[]` / `filter_wheels[]` — are rejected at
+load by `deny_unknown_fields` like any other unknown key (pre-1.0 hard
+cutover; existing configs need a one-time hand edit).
+`mount.settle_after_slew`
 is applied by `slew` after the mount reports `Slewing == false`; per-call
 `settle_after` on `slew` overrides this value (including `"0s"` to skip
 when the config sets a non-zero default). `mount.slew_rate_arcsec_per_sec`
@@ -3494,7 +3590,6 @@ return a structured "site not configured" error.
         "cooler_targets_c": [-10, 5],
         "gain": 100,
         "offset": 50,
-        "focal_length_mm": 1000.0,
         "readout_time_estimate": "8s",
         "auth": {
           "username": "observatory",
@@ -3509,20 +3604,41 @@ return a structured "site not configured" error.
         "device_number": 0,
         "cooler_targets_c": [],
         "gain": 200,
-        "offset": 30,
-        "focal_length_mm": 200.0
+        "offset": 30
+      }
+    ],
+    "optical_trains": [
+      {
+        "id": "main",
+        "purpose": "imaging",
+        "focal_length_mm": 1000.0,
+        "devices": ["main-focuser", "main-fw", "falcon", "main-cam"]
+      },
+      {
+        "id": "guide",
+        "purpose": "guiding",
+        "focal_length_mm": 200.0,
+        "devices": ["main-focuser", "guide-focuser", "guide-cam"]
       }
     ],
     "mount": {
       "alpaca_url": "http://localhost:11122",
       "device_number": 0,
       "settle_after_slew": "3s",
-      "slew_rate_arcsec_per_sec": 7200
+      "slew_rate_arcsec_per_sec": 7200,
+      "guiding": {
+        "url": "http://localhost:11130",
+        "timeout": "90s",
+        "settle_pixels": 0.8,
+        "settle_time": "10s",
+        "settle_timeout": "60s",
+        "dither_pixels": 5,
+        "recalibrate_above_deg": 5.0
+      }
     },
     "focusers": [
       {
         "id": "main-focuser",
-        "camera_id": "main-cam",
         "alpaca_url": "http://localhost:11113",
         "device_number": 0,
         "min_position": 0,
@@ -3531,7 +3647,6 @@ return a structured "site not configured" error.
       },
       {
         "id": "guide-focuser",
-        "camera_id": "guide-cam",
         "alpaca_url": "http://localhost:11113",
         "device_number": 1,
         "auth": {
@@ -3543,7 +3658,6 @@ return a structured "site not configured" error.
     "filter_wheels": [
       {
         "id": "main-fw",
-        "camera_id": "main-cam",
         "alpaca_url": "http://localhost:11123",
         "device_number": 0,
         "filters": ["Luminance", "Red", "Green", "Blue", "Ha", "OIII", "SII"]
@@ -3586,14 +3700,6 @@ return a structured "site not configured" error.
       }
     ],
     "domes": []
-  },
-  "guider": {
-    "url": "http://localhost:11130",
-    "timeout": "90s",
-    "settle_pixels": 0.8,
-    "settle_time": "10s",
-    "settle_timeout": "60s",
-    "dither_pixels": 5
   },
   "plate_solver": {
     "url": "http://localhost:11131",
@@ -3719,6 +3825,10 @@ services/rp/src/
     filter_wheel.rs     Filter wheel wrapper (set/get position)
     safety_monitor.rs   SafetyMonitor wrapper (poll is_safe)
     cover_calibrator.rs CoverCalibrator wrapper (cover open/close, calibrator on/off)
+    trains.rs           TrainModel: the derived optical-train coupling
+                        model (§ Optical Trains) — graph validation +
+                        the derivation queries (focuser-for-camera,
+                        AF sequence, invalidations, focal length)
 
   # Services (non-Alpaca integrations, backing built-in MCP tools)
   # Per-service HTTP clients live in workspace crates following the

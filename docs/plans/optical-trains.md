@@ -46,8 +46,8 @@ is not involved beyond its existing config-shape checks.
 
 | Phase | Description | Status | Branch / PR |
 |-------|-------------|--------|-------------|
-| T0 | This plan | In review | feature/optical-trains-plan |
-| T1 | Config schema + validation + derived coupling model in rp (`optical_trains`, `equipment.mount.guiding`, back-ref removal, `focal_length_mm` migration) | Not started | |
+| T0 | This plan | Merged | [#579](https://github.com/ivonnyssen/rusty-photon/pull/579) |
+| T1 | Config schema + validation + derived coupling model in rp (`optical_trains`, `equipment.mount.guiding`, back-ref removal, `focal_length_mm` migration) | In progress | feature/optical-trains-t1 |
 | T2 | Train-aware MCP tools: `auto_focus` by train, `refocus_train` sequence expansion, first rotator verbs | Not started | |
 | T3 | Mount motion gate (dither/slew/flip vs. in-flight exposures) | Not started | |
 | T4 | Guiding integration: rotate×guide ladder, guide-AF trigger + escalation via PHD2 metrics | Not started | |
