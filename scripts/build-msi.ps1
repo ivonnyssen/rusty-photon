@@ -118,8 +118,14 @@ if ($NightlyVersion) {
         # the version the build actually produces.
         Die "-NightlyVersion base '$($m.Groups[1].Value)' != workspace version '$version'"
     }
-    $day = [datetime]::ParseExact($m.Groups[2].Value, 'yyyyMMddHHmm',
-        [Globalization.CultureInfo]::InvariantCulture)
+    try {
+        $day = [datetime]::ParseExact($m.Groups[2].Value, 'yyyyMMddHHmm',
+            [Globalization.CultureInfo]::InvariantCulture)
+    } catch {
+        # The regex only guarantees 12 digits; this rejects impossible
+        # date-times (month 13, hour 25) with the script's error shape.
+        Die "-NightlyVersion stamp '$($m.Groups[2].Value)' is not a real UTC date-time (yyyymmddhhmm)"
+    }
     # YYDDD: 2-digit year x 1000 + day-of-year. Fits the 65535 per-field
     # authoring cap through 2065; fail loudly rather than truncate beyond it.
     $yyddd = ($day.Year % 100) * 1000 + $day.DayOfYear
