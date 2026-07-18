@@ -161,7 +161,7 @@ block moves into it as `equipment.mount.guiding`:
 
     { "id": "guide", "purpose": "guiding",
       "focal_length_mm": 360.0,
-      "devices": ["zwo-eaf", "scops-oag", "qhy715c"] }
+      "devices": ["zwo-eaf", "scops-focuser", "qhy715c"] }
   ],
   "mount": {
     "alpaca_url": "http://localhost:11122",
@@ -178,13 +178,20 @@ block moves into it as `equipment.mount.guiding`:
 }
 ```
 
-`devices` entries are roster ids; rp resolves each id's kind from the
-roster. `purpose` is `"imaging" | "guiding"`. The OAG-behind-rotator variant
-of the same rig inserts `"falcon-rotator"` into the guide list before
-`"scops-oag"` — that single edit flips every derived rotation behavior.
+`devices` entries are roster ids, and every entry is an *active* roster
+device — `scops-focuser` here is the pa-scops-oag Focuser (the OAG's guide
+helical), not the passive OAG body, which v1 does not model. rp resolves
+each id's kind from the roster. `purpose` is `"imaging" | "guiding"`. The
+OAG-behind-rotator variant of the same rig inserts `"falcon-rotator"` into
+the guide list before `"scops-focuser"` — that single edit flips every
+derived rotation behavior.
 
-Validation at load (cross-array rules, so a `validate_config` pass rather
-than field newtypes):
+Validation at load. Per-field invariants (the `purpose` enum,
+`focal_length_mm` positivity, the `recalibrate_above_deg` range) are
+enforced in the field types at deserialize, per the parse-don't-validate
+convention in [development-workflow.md](../skills/development-workflow.md);
+the `validate_config` pass is reserved for the cross-array graph rules,
+which cannot live in a single field's type:
 
 - every id exists in the roster and is a focuser, rotator, filter wheel, or
   (terminal only) camera;
