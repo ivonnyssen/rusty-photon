@@ -308,8 +308,13 @@ fn run_hooks(hooks: &[String]) -> Result<(), String> {
         let output = shell_command(hook).output();
         match output {
             Ok(output) if output.status.success() => {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                debug!(hook, output = %stdout.trim(), "post-renewal hook succeeded");
+                // Length only: a hook's stdout can carry key material,
+                // which must not land in logs even at debug level.
+                debug!(
+                    hook,
+                    stdout_bytes = output.stdout.len(),
+                    "post-renewal hook succeeded"
+                );
             }
             Ok(output) => {
                 let status = output.status;
