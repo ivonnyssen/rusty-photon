@@ -89,7 +89,11 @@ while :; do
     --jq '[.[] | select(.user.login == "copilot-pull-request-reviewer[bot]")] | length')
   failed=$(gh pr checks "$1" --json bucket --jq '[.[] | select(.bucket == "fail")] | length')
   pending=$(gh pr checks "$1" --json bucket --jq '[.[] | select(.bucket == "pending")] | length')
-  [ "$failed" -gt 0 ]     && { echo "check failed"; exit 0; }
+  if [ "$failed" -gt 0 ]; then
+    sleep 15  # a job re-run's attempt switch can transiently surface the prior attempt's fail
+    failed=$(gh pr checks "$1" --json bucket --jq '[.[] | select(.bucket == "fail")] | length')
+    [ "$failed" -gt 0 ] && { echo "check failed"; exit 0; }
+  fi
   [ "$rounds" -gt "$2" ]  && { echo "new Copilot round"; exit 0; }
   [ "$pending" -eq 0 ]    && { echo "no checks pending"; exit 0; }
   sleep 60
