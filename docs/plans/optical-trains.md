@@ -47,7 +47,7 @@ is not involved beyond its existing config-shape checks.
 | Phase | Description | Status | Branch / PR |
 |-------|-------------|--------|-------------|
 | T0 | This plan | In review | feature/optical-trains-plan |
-| T1 | Config schema + validation + derived coupling model in rp (`optical_trains`, `mount.guiding`, back-ref removal, `focal_length_mm` migration) | Not started | |
+| T1 | Config schema + validation + derived coupling model in rp (`optical_trains`, `equipment.mount.guiding`, back-ref removal, `focal_length_mm` migration) | Not started | |
 | T2 | Train-aware MCP tools: `auto_focus` by train, `refocus_train` sequence expansion, first rotator verbs | Not started | |
 | T3 | Mount motion gate (dither/slew/flip vs. in-flight exposures) | Not started | |
 | T4 | Guiding integration: rotate×guide ladder, guide-AF trigger + escalation via PHD2 metrics | Not started | |
@@ -84,10 +84,11 @@ Backlog (explicitly deferred, see Decisions 4 and 9):
    list shape admits them later without breaking.
 
 3. **Guiding is mount-scoped.** The guider corrects and dithers by moving the
-   mount, which moves every train on it — so the guider block moves to
-   `mount.guiding`, stating the invariant in the schema (no mount, no
-   guiding). The guide train carries `purpose: "guiding"`, which tells rp
-   *which camera's* focus and rotation state the guider depends on.
+   mount, which moves every train on it — so the top-level `guider` block
+   moves to `equipment.mount.guiding` (the mount's existing home), stating
+   the invariant in the schema (no mount, no guiding). The guide train
+   carries `purpose: "guiding"`, which tells rp *which camera's* focus and
+   rotation state the guider depends on.
 
 4. **Rotate on a guide-coupled train is a ladder.** The sequence is always
    pause guiding → rotate → re-select star → resume. If PHD2 reports a
@@ -95,7 +96,7 @@ Backlog (explicitly deferred, see Decisions 4 and 9):
    rotator angle with each calibration and adjusts the calibration for the
    current angle when guiding restarts — exact for any Δθ, no
    recalibration. Otherwise rp calls `clear_calibration` when
-   |Δθ| > `mount.guiding.recalibrate_above_deg` (default 5°; below that the
+   |Δθ| > `equipment.mount.guiding.recalibrate_above_deg` (default 5°; below that the
    cross-axis leak, sin Δθ, sits inside guiding's noise floor). The angle
    cannot be injected through PHD2's API — PHD2 must genuinely connect to a
    rotator driver — so the Linux bridge is backlog, and on Windows the
@@ -147,7 +148,9 @@ Backlog (explicitly deferred, see Decisions 4 and 9):
 
 ### Config schema
 
-New block inside rp's `equipment`, plus the relocated guider block:
+New block inside rp's `equipment`, plus the relocated guider block. The
+mount keeps its current home at `equipment.mount`; the top-level `guider`
+block moves into it as `equipment.mount.guiding`:
 
 ```jsonc
 "equipment": {
@@ -160,18 +163,18 @@ New block inside rp's `equipment`, plus the relocated guider block:
       "focal_length_mm": 360.0,
       "devices": ["zwo-eaf", "scops-oag", "qhy715c"] }
   ],
+  "mount": {
+    "alpaca_url": "http://localhost:11122",
+    "guiding": {
+      "url": "http://localhost:11130",
+      "timeout": "90s",
+      "settle_pixels": 0.8, "settle_time": "10s", "settle_timeout": "60s",
+      "dither_pixels": 5,
+      "recalibrate_above_deg": 5.0
+    }
+  }
   // cameras[], focusers[], rotators[] etc. unchanged, minus the removed
   // camera_id back-refs; CameraConfig loses focal_length_mm
-},
-"mount": {
-  "alpaca_url": "http://localhost:11122",
-  "guiding": {
-    "url": "http://localhost:11130",
-    "timeout": "90s",
-    "settle_pixels": 0.8, "settle_time": "10s", "settle_timeout": "60s",
-    "dither_pixels": 5,
-    "recalibrate_above_deg": 5.0
-  }
 }
 ```
 
@@ -189,8 +192,8 @@ than field newtypes):
 - shared devices appear in a consistent relative order across trains (the
   merged order relation is acyclic);
 - at most one `purpose: "guiding"` train;
-- `mount.guiding` requires `mount`; a guiding train requires
-  `mount.guiding`.
+- `equipment.mount.guiding` requires `equipment.mount`; a guiding train
+  requires `equipment.mount.guiding`.
 
 ### Derivation rules
 
