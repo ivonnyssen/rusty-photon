@@ -115,12 +115,12 @@ the date, because it is the only ordered part of the version: the
 `g<sha>` suffix compares as hex, so a second publish on the same day
 must out-sort the first on the timestamp alone.
 
-Nightly rpms carry `<base>^<date>.g<sha>` (e.g.
-`0.1.0^20260712.gba09dc9`); rpm's `^` separator sorts the same way, so
-`dnf` upgrades in place identically. One wrinkle: GitHub rewrites `^`
+Nightly rpms carry `<base>^<datetime>.g<sha>` (e.g.
+`0.1.0^202607120507.gba09dc9`); rpm's `^` separator sorts the same way,
+so `dnf` upgrades in place identically. One wrinkle: GitHub rewrites `^`
 to `.` in uploaded asset names, so the *file* is called
-`…-0.1.0.<date>.g<sha>-1.<arch>.rpm` while `rpm -q` after install shows
-the true `^` version. `SHA256SUMS.txt` lists the dot-rendered names, so
+`…-0.1.0.<datetime>.g<sha>-1.<arch>.rpm` while `rpm -q` after install
+shows the true `^` version. `SHA256SUMS.txt` lists the dot-rendered names, so
 checksums verify against the files as downloaded.
 
 ### Package repositories (recommended)
