@@ -83,7 +83,8 @@ beyond the round count it started with, any **check failed**, or **no
 checks pending**. The shape:
 
 ```sh
-# watch-pr.sh <pr> <copilot-round-baseline>
+# watch-pr.sh <pr-number> <copilot-round-baseline>
+# ($1 must be the numeric PR id: the gh api call below cannot take a URL/branch)
 while :; do
   rounds=$(gh api --paginate "repos/{owner}/{repo}/pulls/$1/reviews" \
     | jq -s '[.[][] | select(.user.login == "copilot-pull-request-reviewer[bot]")] | length')
