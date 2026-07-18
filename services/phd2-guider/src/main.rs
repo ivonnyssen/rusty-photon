@@ -49,6 +49,18 @@ enum Commands {
     /// Service Mode")
     Serve,
 
+    /// Diagnose this service's configuration without starting it
+    /// (docs/services/doctor.md). Read-only; exits 1 on failing checks.
+    Doctor {
+        /// Path to configuration file
+        #[arg(short, long)]
+        config: Option<PathBuf>,
+
+        /// Print the report as JSON instead of text
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Connect to PHD2 and show status
     Status,
 
@@ -136,6 +148,10 @@ enum Commands {
 fn main() -> ServiceResult {
     let args = Args::parse();
 
+    if let Some(Commands::Doctor { config, json }) = args.command {
+        phd2_guider::doctor::run(config, json);
+    }
+
     // In Windows SCM service mode logs go to the rolling file under
     // %PROGRAMDATA%\rusty-photon\logs\; hold the guard until process exit so
     // the final lines flush on SCM Stop. Console mode logs to stderr as before.
@@ -196,6 +212,9 @@ fn main() -> ServiceResult {
                 // Handled by the early return above; kept for match
                 // exhaustiveness.
                 Commands::Serve => {}
+                // Handled by the early dispatch in `main` (which exits
+                // the process); kept for match exhaustiveness.
+                Commands::Doctor { .. } => {}
                 Commands::Status => run_status(&client).await?,
                 Commands::Monitor => run_monitor(&client, shutdown).await?,
                 Commands::Connect => run_connect(&client).await?,

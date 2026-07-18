@@ -181,6 +181,8 @@ pub struct RpWorld {
     /// Shared PKI + credentials fixture for the TLS/auth connectivity suites
     /// (`tls.feature`, `auth.feature`).
     pub pki: Option<bdd_infra::tls_auth::PkiFixture>,
+    /// Doctor-subcommand smoke state (staged config file + run output)
+    pub doctor_smoke: bdd_infra::doctor_smoke::DoctorSmokeState,
 
     // --- Document HTTP API test state (Phase 7 Step 6) ---
     /// Pinned data directory across rp lifecycle. The cross-restart
@@ -247,6 +249,28 @@ pub struct RpWorld {
     /// In-process SkyView stub serving cutouts to `sky-survey-camera`.
     /// Held on the world so the axum task isn't cancelled mid-scenario.
     pub sky_view_stub: Option<SkyViewStub>,
+}
+
+impl bdd_infra::doctor_smoke::DoctorSmokeWorld for RpWorld {
+    fn doctor_smoke(&mut self) -> &mut bdd_infra::doctor_smoke::DoctorSmokeState {
+        &mut self.doctor_smoke
+    }
+
+    fn valid_config(&self) -> serde_json::Value {
+        // The minimal shape rp's own `load_config` accepts: `session` and
+        // `equipment` are the two required blocks, `server` is the shared
+        // core shape (D1). Nothing is started, so the data directory is
+        // never created.
+        serde_json::json!({
+            "session": {
+                "data_directory": std::env::temp_dir()
+                    .join("rp-doctor-smoke")
+                    .to_string_lossy()
+            },
+            "equipment": {},
+            "server": { "port": 0 }
+        })
+    }
 }
 
 impl RpWorld {

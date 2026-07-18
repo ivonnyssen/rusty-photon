@@ -32,6 +32,24 @@ pub struct ScopsWorld {
     pub last_response: Option<serde_json::Value>,
     /// Result of the last supported_actions query.
     pub last_supported_actions: Option<Vec<String>>,
+
+    /// Doctor-subcommand smoke state (staged config file + run output)
+    pub doctor_smoke: bdd_infra::doctor_smoke::DoctorSmokeState,
+}
+
+impl bdd_infra::doctor_smoke::DoctorSmokeWorld for ScopsWorld {
+    fn doctor_smoke(&mut self) -> &mut bdd_infra::doctor_smoke::DoctorSmokeState {
+        &mut self.doctor_smoke
+    }
+
+    fn valid_config(&self) -> serde_json::Value {
+        // The library defaults with the mock serial port and a plain
+        // `server` block — the same shape the suite's start path parses.
+        let mut config = serde_json::to_value(Config::default()).unwrap();
+        config["serial"]["port"] = serde_json::json!("/dev/mock");
+        config["server"] = serde_json::json!({ "port": 0 });
+        config
+    }
 }
 
 impl ScopsWorld {

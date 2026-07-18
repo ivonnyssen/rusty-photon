@@ -20,7 +20,14 @@ use pa_scops_oag::{Config, ServerBuilder};
 #[command(name = "pa-scops-oag")]
 #[command(about = "ASCOM Alpaca driver for the Pegasus Astro Scops OAG focuser")]
 #[command(version)]
+// A top-level `--config` alongside a subcommand would parse but be
+// silently ignored (the subcommand carries its own); reject the mixed
+// form outright, same as rp's CLI.
+#[command(args_conflicts_with_subcommands = true)]
 struct Args {
+    #[command(subcommand)]
+    command: Option<Command>,
+
     /// Path to configuration file
     #[arg(short, long)]
     config: Option<PathBuf>,
@@ -43,6 +50,22 @@ struct Args {
     service: bool,
 }
 
+/// Subcommands; running with none starts the ASCOM Alpaca driver.
+#[derive(clap::Subcommand)]
+enum Command {
+    /// Diagnose this service's configuration without starting it
+    /// (docs/services/doctor.md). Read-only; exits 1 on failing checks.
+    Doctor {
+        /// Path to configuration file
+        #[arg(short, long)]
+        config: Option<PathBuf>,
+
+        /// Print the report as JSON instead of text
+        #[arg(long)]
+        json: bool,
+    },
+}
+
 fn parse_log_level(s: &str) -> Result<Level, String> {
     s.parse().map_err(|_| {
         format!(
@@ -54,6 +77,10 @@ fn parse_log_level(s: &str) -> Result<Level, String> {
 
 fn main() -> ServiceResult {
     let args = Args::parse();
+
+    if let Some(Command::Doctor { config, json }) = args.command {
+        pa_scops_oag::doctor::run(config, json);
+    }
 
     // In Windows SCM service mode logs go to the rolling file under
     // %PROGRAMDATA%\rusty-photon\logs\; hold the guard until process exit so

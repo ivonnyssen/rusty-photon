@@ -37,6 +37,14 @@ pub struct DoctorWorld {
     pub tls_https_status: Option<u16>,
     /// The service whose cert pair the TLS roundtrip serves.
     pub tls_roundtrip_service: Option<String>,
+    /// The port the last stub management endpoint bound (aggregation
+    /// scenarios point the staged config's `server.port` at it).
+    pub stub_port: Option<u16>,
+    /// Shutdown handles keeping stub endpoints alive; dropped with the
+    /// world at scenario end.
+    pub stub_shutdowns: Vec<tokio::sync::oneshot::Sender<()>>,
+    /// The stub per-service binary staged for the shell-out probe.
+    pub stub_binary: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -72,6 +80,9 @@ impl DoctorWorld {
             acme_flags: None,
             tls_https_status: None,
             tls_roundtrip_service: None,
+            stub_port: None,
+            stub_shutdowns: Vec::new(),
+            stub_binary: None,
         }
     }
 
@@ -126,7 +137,27 @@ impl DoctorWorld {
             condition_path: None,
             source_name: None,
             supplementary_groups: Vec::new(),
+            active: None,
+            binary_path: None,
         });
+    }
+
+    /// Stage aggregation facts on an already-added unit: its run state and
+    /// (for the shell-out path) the binary to run.
+    pub fn set_unit_probe_facts(
+        &mut self,
+        name: &str,
+        active: bool,
+        binary_path: Option<std::path::PathBuf>,
+    ) {
+        let unit = self
+            .facts
+            .units
+            .iter_mut()
+            .find(|u| u.name == name)
+            .unwrap_or_else(|| panic!("no staged unit named {name}"));
+        unit.active = Some(active);
+        unit.binary_path = binary_path;
     }
 
     /// The staged hardware facts, created on first touch — scenarios that

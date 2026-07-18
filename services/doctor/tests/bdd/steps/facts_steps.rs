@@ -34,6 +34,8 @@ fn disabled_unit(world: &mut DoctorWorld, unit: String) {
         condition_path: None,
         source_name: None,
         supplementary_groups: Vec::new(),
+        active: None,
+        binary_path: None,
     });
 }
 
@@ -62,6 +64,8 @@ fn push_gated_unit(world: &mut DoctorWorld, unit: String, gate: PathBuf) {
         condition_path: Some(gate),
         source_name: None,
         supplementary_groups: Vec::new(),
+        active: None,
+        binary_path: None,
     });
 }
 

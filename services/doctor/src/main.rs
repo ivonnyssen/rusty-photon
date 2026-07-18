@@ -227,8 +227,13 @@ fn run_tls_issue(cli: &Cli) -> ExitCode {
         };
 
     if cli.json {
-        let report =
-            Report::new(ctx.mode, config_dir.clone(), Vec::new()).with_fixes_applied(applied);
+        let report = Report::new(
+            env!("CARGO_PKG_VERSION"),
+            ctx.mode,
+            config_dir.clone(),
+            Vec::new(),
+        )
+        .with_fixes_applied(applied);
         if let Err(code) = print_json(&report) {
             return code;
         }
@@ -335,8 +340,13 @@ fn run_auth_rotate(cli: &Cli) -> ExitCode {
     }
 
     if cli.json {
-        let report =
-            Report::new(ctx.mode, config_dir.clone(), Vec::new()).with_fixes_applied(applied);
+        let report = Report::new(
+            env!("CARGO_PKG_VERSION"),
+            ctx.mode,
+            config_dir.clone(),
+            Vec::new(),
+        )
+        .with_fixes_applied(applied);
         if let Err(code) = print_json(&report) {
             return code;
         }

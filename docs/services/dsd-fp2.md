@@ -395,6 +395,11 @@ is recoverable: the next startup re-mints a fresh one.
 | `-l, --log-level`  | Log level: trace, debug, info, warn, error |
 | `--service`        | Hidden: run as a Windows service (passed by the Windows service control manager; no-op on other platforms) |
 
+`dsd-fp2 doctor [--config <file>] [--json]` diagnoses this service's own
+config read-only without starting it — see
+[doctor.md §Per-service doctors](doctor.md). Top-level flags cannot be
+combined with the subcommand (the mixed form would silently ignore them).
+
 ## Config Actions
 
 The driver exposes its own configuration over HTTP as two vendor ASCOM

@@ -2,6 +2,7 @@
 pub mod config;
 pub mod config_actions;
 pub mod cooling;
+pub mod doctor;
 pub mod equipment;
 pub mod error;
 pub mod events;

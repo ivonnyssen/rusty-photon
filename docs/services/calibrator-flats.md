@@ -241,6 +241,11 @@ plain, unauthenticated HTTP; a plan file without a `server` block keeps
 loading (port 11170 on all interfaces). `--port` / `--bind-address`
 override `server.port` / `server.bind_address` from the command line.
 
+`calibrator-flats doctor [--config <file>] [--json]` diagnoses this
+service's own config read-only without starting it — see
+[doctor.md §Per-service doctors](doctor.md). Top-level flags cannot be
+combined with the subcommand (the mixed form would silently ignore them).
+
 The plan is part of `rp`'s plugin configuration:
 
 ```json

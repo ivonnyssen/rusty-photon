@@ -11,6 +11,7 @@ exports_files(
 
 _INTRA_WORKSPACE_DEPS = [
     "//crates/rusty-photon-config:rusty-photon-config",
+    "//crates/rusty-photon-doctor-checks:rusty-photon-doctor-checks",
     "//crates/rusty-photon-driver:rusty-photon-driver",
     "//crates/rusty-photon-server-config:rusty-photon-server-config",
     "//crates/rp-auth:rp-auth",
@@ -193,18 +194,26 @@ rust_test(
         proc_macro_dev = True,
     ),
     crate_root = "tests/bdd.rs",
-    data = ["Cargo.toml"] + glob(["tests/features/**"]),
+    # The scenarios run in-process, except the doctor smoke: it spawns the
+    # mock-feature binary via bdd_infra::run_once, discovered through
+    # PA_FALCON_ROTATOR_BINARY below.
+    data = [
+        "Cargo.toml",
+        ":pa-falcon-rotator_mock",
+    ] + glob(["tests/features/**"]),
     edition = "2021",
     env = {
         "BDD_PACKAGE_DIR": "services/pa-falcon-rotator",
+        "PA_FALCON_ROTATOR_BINARY": "$(rootpath :pa-falcon-rotator_mock)",
+        "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :pa-falcon-rotator_mock)",
     },
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,
     ),
     # rules_rust defaults CARGO_PKG_NAME to the crate name ("bdd"), but
-    # bdd-infra derives {PKG_UPPER_SNAKE}_BINARY from it — keep it aligned
-    # with the service name even though no `*_BINARY` env is read in-process.
+    # bdd-infra derives {PKG_UPPER_SNAKE}_BINARY from it — it must be the
+    # service name.
     rustc_env = {"CARGO_PKG_NAME": "pa-falcon-rotator"},
     tags = ["bdd"],
     use_libtest_harness = False,

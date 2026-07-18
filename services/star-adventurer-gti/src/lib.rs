@@ -8,6 +8,7 @@ pub mod codec;
 pub mod config;
 pub mod config_actions;
 pub mod coordinates;
+pub mod doctor;
 pub mod error;
 pub mod manager;
 pub mod mount_device;

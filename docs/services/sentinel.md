@@ -773,6 +773,11 @@ config file is created there on first start if none exists — the same
 convention as the driver services (see
 [ADR-012](../decisions/012-service-packaging-architecture.md)).
 
+`sentinel doctor [--config <file>] [--json]` diagnoses this service's own
+config read-only without starting it — see
+[doctor.md §Per-service doctors](doctor.md). Top-level flags cannot be
+combined with the subcommand (the mixed form would silently ignore them).
+
 ## Port
 
 11114 (dashboard, configurable)

@@ -8,6 +8,7 @@ pub mod codec;
 pub mod config;
 pub mod config_actions;
 pub mod device;
+pub mod doctor;
 pub mod error;
 pub mod manager;
 #[cfg(feature = "mock")]

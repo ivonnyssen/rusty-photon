@@ -27,6 +27,7 @@ rmcp = { workspace = true, features = ["client", "transport-streamable-http-clie
 rp-auth = { workspace = true }
 rusty-photon-tls = { workspace = true }
 rusty-photon-config = { workspace = true }
+rusty-photon-doctor-checks = { workspace = true }
 rusty-photon-server-config = { workspace = true }
 rusty-photon-service-lifecycle = { workspace = true }
 

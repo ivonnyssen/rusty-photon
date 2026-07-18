@@ -48,6 +48,17 @@ pub struct UnitFacts {
     /// against this, never against login groups.
     #[serde(default)]
     pub supplementary_groups: Vec<String>,
+    /// Whether the unit is running right now. A real gather always answers;
+    /// `None` on a staged facts file means the scenario has no aggregation
+    /// story, and the per-service probes skip the unit
+    /// (docs/services/doctor.md §Aggregation).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active: Option<bool>,
+    /// The service binary the unit runs — systemd's `ExecStart=`, the SCM
+    /// image path, the brew-linked binary. The shell-out target when the
+    /// unit is installed but not active.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binary_path: Option<PathBuf>,
 }
 
 fn default_true() -> bool {
@@ -187,17 +198,61 @@ fn list_systemd_units() -> Vec<UnitFacts> {
         .map(|(name, enabled)| {
             let unit_file = run(Command::new("systemctl").args(["cat", &name]));
             UnitFacts {
-                name,
-                enabled,
+                active: systemd_unit_is_active(&name),
+                binary_path: unit_file.as_deref().and_then(parse_exec_start),
                 condition_path: unit_file.as_deref().and_then(parse_condition_path),
                 source_name: None,
                 supplementary_groups: unit_file
                     .as_deref()
                     .map(parse_supplementary_groups)
                     .unwrap_or_default(),
+                name,
+                enabled,
             }
         })
         .collect()
+}
+
+/// Whether a systemd unit is active right now. `is-active --quiet` exits 0
+/// iff active; a command that cannot run at all leaves the fact ungathered.
+#[cfg(target_os = "linux")]
+fn systemd_unit_is_active(name: &str) -> Option<bool> {
+    match Command::new("systemctl")
+        .args(["is-active", "--quiet", &format!("{name}.service")])
+        .status()
+    {
+        Ok(status) => Some(status.success()),
+        Err(e) => {
+            debug!(unit = name, error = %e, "could not query the unit's active state");
+            None
+        }
+    }
+}
+
+/// Extract the executable from the effective `ExecStart=` assignment of a
+/// unit file dump (`systemctl cat`). systemd semantics: the last assignment
+/// wins and an empty one resets. Prefix modifiers (`@`, `-`, `:`, `+`, `!`)
+/// are stripped; the first whitespace-separated token is the executable.
+pub fn parse_exec_start(unit_file: &str) -> Option<PathBuf> {
+    let mut exec = None;
+    for line in unit_file.lines() {
+        let Some(value) = line.trim().strip_prefix("ExecStart=") else {
+            continue;
+        };
+        let value = value.trim();
+        if value.is_empty() {
+            exec = None;
+            continue;
+        }
+        let Some(first) = value.split_whitespace().next() else {
+            continue;
+        };
+        let binary = first.trim_start_matches(['@', '-', ':', '+', '!']);
+        if !binary.is_empty() {
+            exec = Some(PathBuf::from(binary));
+        }
+    }
+    exec
 }
 
 /// Parse `systemctl list-unit-files --no-legend --plain` lines
@@ -289,12 +344,14 @@ pub fn polkit_grants_sentinel_restart(rules_dirs: &[&Path]) -> bool {
 
 #[cfg(target_os = "windows")]
 fn gather_windows() -> PlatformFacts {
+    // Win32_Service (not Get-Service) because only the CIM class carries
+    // PathName — the installed binary the aggregation shell-out runs.
     let units = run(Command::new("powershell.exe").args([
         "-NoProfile",
         "-NonInteractive",
         "-Command",
-        "Get-Service -Name 'rusty-photon-*' -ErrorAction SilentlyContinue | \
-         ForEach-Object { \"$($_.Name)`t$($_.StartType)\" }",
+        "Get-CimInstance Win32_Service -Filter \"Name LIKE 'rusty-photon-%'\" | \
+         ForEach-Object { \"$($_.Name)`t$($_.StartMode)`t$($_.State)`t$($_.PathName)\" }",
     ]))
     .map(|listing| parse_windows_service_listing(&listing))
     .unwrap_or_default();
@@ -307,31 +364,66 @@ fn gather_windows() -> PlatformFacts {
     }
 }
 
-/// Parse `Name<TAB>StartType` lines from the `Get-Service` query.
+/// Parse `Name<TAB>StartMode<TAB>State<TAB>PathName` lines from the
+/// Win32_Service query. `StartMode` is `Auto`/`Manual`/`Disabled` (CIM
+/// vocabulary — Get-Service would say `Automatic`); `State` is `Running`
+/// while the service is up.
 pub fn parse_windows_service_listing(listing: &str) -> Vec<UnitFacts> {
     listing
         .lines()
         .filter_map(|line| {
-            let (name, start_type) = line.trim().split_once('\t')?;
+            let mut fields = line.trim().splitn(4, '\t');
+            let name = fields.next()?;
             if !name.starts_with("rusty-photon-") {
                 return None;
             }
+            let start_mode = fields.next().unwrap_or("");
+            let state = fields.next();
+            let path_name = fields.next();
             Some(UnitFacts {
                 name: name.to_string(),
-                enabled: start_type.trim().starts_with("Automatic"),
+                enabled: start_mode.trim().starts_with("Auto"),
                 condition_path: None,
                 source_name: None,
                 supplementary_groups: Vec::new(),
+                active: state.map(|s| s.trim() == "Running"),
+                binary_path: path_name.and_then(parse_windows_path_name),
             })
         })
         .collect()
 }
 
+/// The executable from a Win32_Service `PathName`: quoted
+/// (`"C:\Program Files\x\svc.exe" --service`) or bare. A bare path is cut
+/// at the first space — the MSI quotes every path it installs, so a bare
+/// value with spaces is not a shape this stack produces.
+pub fn parse_windows_path_name(path_name: &str) -> Option<PathBuf> {
+    let trimmed = path_name.trim();
+    if let Some(rest) = trimmed.strip_prefix('"') {
+        let end = rest.find('"')?;
+        return Some(PathBuf::from(&rest[..end]));
+    }
+    trimmed.split_whitespace().next().map(PathBuf::from)
+}
+
 #[cfg(target_os = "macos")]
 fn gather_macos() -> PlatformFacts {
-    let units = run(Command::new("brew").args(["services", "list"]))
+    let mut units = run(Command::new("brew").args(["services", "list"]))
         .map(|listing| parse_brew_services_listing(&listing))
         .unwrap_or_default();
+    // brew links each formula's binaries into `<prefix>/bin` under the unit
+    // stem's own name; only a path that actually exists is recorded.
+    if !units.is_empty() {
+        if let Some(prefix) = run(Command::new("brew").arg("--prefix")) {
+            let bin = PathBuf::from(prefix.trim()).join("bin");
+            for unit in &mut units {
+                let candidate = bin.join(&unit.name);
+                if candidate.is_file() {
+                    unit.binary_path = Some(candidate);
+                }
+            }
+        }
+    }
     PlatformFacts {
         platform: Platform::Macos,
         units,
@@ -367,6 +459,10 @@ pub fn parse_brew_services_listing(listing: &str) -> Vec<UnitFacts> {
                 enabled: status != "none",
                 condition_path: None,
                 supplementary_groups: Vec::new(),
+                active: Some(status == "started"),
+                // Filled by the gatherer from `brew --prefix` — a parse of
+                // the listing alone cannot know where binaries link.
+                binary_path: None,
             })
         })
         .collect()
@@ -442,15 +538,86 @@ mod tests {
     }
 
     #[test]
-    fn test_windows_service_listing_parses_start_types() {
-        let listing = "rusty-photon-rp\tAutomatic\n\
-                       rusty-photon-sentinel\tManual\n\
-                       Spooler\tAutomatic\n";
+    fn test_windows_service_listing_parses_start_modes_state_and_path() {
+        let listing = "rusty-photon-rp\tAuto\tRunning\t\"C:\\Program Files\\Rusty Photon\\rusty-photon-rp.exe\" --service\n\
+                       rusty-photon-sentinel\tManual\tStopped\tC:\\rp\\rusty-photon-sentinel.exe\n\
+                       Spooler\tAuto\tRunning\tC:\\Windows\\spoolsv.exe\n";
         let units = parse_windows_service_listing(listing);
         assert_eq!(units.len(), 2);
         assert!(units[0].enabled);
         assert_eq!(units[0].name, "rusty-photon-rp");
+        assert_eq!(units[0].active, Some(true));
+        assert_eq!(
+            units[0].binary_path,
+            Some(PathBuf::from(
+                "C:\\Program Files\\Rusty Photon\\rusty-photon-rp.exe"
+            )),
+            "a quoted PathName is cut at the closing quote, not the space"
+        );
         assert!(!units[1].enabled);
+        assert_eq!(units[1].active, Some(false));
+        assert_eq!(
+            units[1].binary_path,
+            Some(PathBuf::from("C:\\rp\\rusty-photon-sentinel.exe"))
+        );
+    }
+
+    /// Older tooling emitted `Name<TAB>StartType` only — the parser keeps
+    /// working (the aggregation facts just stay ungathered) so a staged
+    /// two-field listing never panics a diagnosis.
+    #[test]
+    fn test_windows_service_listing_tolerates_missing_columns() {
+        let units = parse_windows_service_listing("rusty-photon-rp\tAutomatic\n");
+        assert_eq!(units.len(), 1);
+        assert!(units[0].enabled, "Automatic still counts as enabled");
+        assert_eq!(units[0].active, None);
+        assert_eq!(units[0].binary_path, None);
+    }
+
+    #[test]
+    fn test_windows_path_name_shapes() {
+        assert_eq!(
+            parse_windows_path_name("\"C:\\a b\\svc.exe\" --service"),
+            Some(PathBuf::from("C:\\a b\\svc.exe"))
+        );
+        assert_eq!(
+            parse_windows_path_name("C:\\a\\svc.exe --service"),
+            Some(PathBuf::from("C:\\a\\svc.exe"))
+        );
+        assert_eq!(parse_windows_path_name("  "), None);
+        assert_eq!(parse_windows_path_name("\"unterminated"), None);
+    }
+
+    /// Mirrors the gather smoke test: on a systemd host `is-active` answers
+    /// (a unit that does not exist is not active); without systemctl the
+    /// fact stays ungathered. Either way the query must not panic.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_is_active_answers_for_an_unknown_unit_without_panicking() {
+        let state = systemd_unit_is_active("rusty-photon-doctor-test-ghost");
+        assert_ne!(state, Some(true), "a nonexistent unit must not be active");
+    }
+
+    #[test]
+    fn test_exec_start_takes_the_effective_assignment() {
+        let unit = "# /usr/lib/systemd/system/x.service\n\
+                    [Service]\n\
+                    ExecStart=/usr/bin/rusty-photon-ppba-driver --service\n";
+        assert_eq!(
+            parse_exec_start(unit),
+            Some(PathBuf::from("/usr/bin/rusty-photon-ppba-driver"))
+        );
+        // Prefix modifiers are stripped; the last assignment wins; an empty
+        // assignment resets — systemd's own override semantics.
+        let overridden = "ExecStart=/usr/bin/old\n\
+                          ExecStart=\n\
+                          ExecStart=@-/usr/bin/new arg\n";
+        assert_eq!(
+            parse_exec_start(overridden),
+            Some(PathBuf::from("/usr/bin/new"))
+        );
+        assert_eq!(parse_exec_start("ExecStart=/usr/bin/x\nExecStart=\n"), None);
+        assert_eq!(parse_exec_start("[Service]\nUser=rusty-photon\n"), None);
     }
 
     #[test]
@@ -462,7 +629,9 @@ mod tests {
         let units = parse_brew_services_listing(listing);
         assert_eq!(units.len(), 2);
         assert!(units[0].enabled);
+        assert_eq!(units[0].active, Some(true));
         assert!(!units[1].enabled);
+        assert_eq!(units[1].active, Some(false));
     }
 
     #[test]

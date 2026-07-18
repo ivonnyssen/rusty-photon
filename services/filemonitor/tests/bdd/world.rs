@@ -48,6 +48,22 @@ pub struct FilemonitorWorld {
     pub last_response: Option<Value>,
     pub last_supported_actions: Option<Vec<String>>,
     pub last_ascom_error: Option<ascom_alpaca::ASCOMError>,
+
+    /// Doctor-subcommand smoke state (staged config file + run output)
+    pub doctor_smoke: bdd_infra::doctor_smoke::DoctorSmokeState,
+}
+
+impl bdd_infra::doctor_smoke::DoctorSmokeWorld for FilemonitorWorld {
+    fn doctor_smoke(&mut self) -> &mut bdd_infra::doctor_smoke::DoctorSmokeState {
+        &mut self.doctor_smoke
+    }
+
+    fn valid_config(&self) -> Value {
+        // The suite's own config helper — the same shape every scenario's
+        // start path parses. Doctor only parses, so the placeholder
+        // monitored-file path is fine.
+        self.build_config_json()
+    }
 }
 
 impl FilemonitorWorld {

@@ -51,6 +51,17 @@ enum Commands {
         #[arg(long, hide = true)]
         service: bool,
     },
+    /// Diagnose this service's configuration without starting it
+    /// (docs/services/doctor.md). Read-only; exits 1 on failing checks.
+    Doctor {
+        /// Path to configuration file
+        #[arg(short, long)]
+        config: Option<PathBuf>,
+
+        /// Print the report as JSON instead of text
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn main() -> ServiceResult {
@@ -69,6 +80,8 @@ fn main() -> ServiceResult {
             let _tracing_guard = init_service_tracing("rp", log_level, service);
             run_serve(config, service)
         }
+        // No tracing init: doctor writes its report to stdout and exits.
+        Some(Commands::Doctor { config, json }) => rp::doctor::run(config, json),
         None => {
             // No subcommand serves (packaged units run a bare
             // `/usr/bin/rusty-photon-rp`; the Windows MSI's ServiceInstall

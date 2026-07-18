@@ -239,6 +239,11 @@ identical across the rusty-photon drivers.
 > CWD-local `config.json` must now pass `--config config.json`
 > explicitly.**
 
+`sky-survey-camera doctor [--config <file>] [--json]` diagnoses this
+service's own config read-only without starting it — see
+[doctor.md §Per-service doctors](doctor.md). Top-level flags cannot be
+combined with the subcommand (the mixed form would silently ignore them).
+
 ### Derived Quantities
 
 ```

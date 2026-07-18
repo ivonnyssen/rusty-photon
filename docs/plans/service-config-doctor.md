@@ -29,9 +29,9 @@ doctor *out* of the services rather than a component of them.
 | D2 | `rusty-photon-doctor` binary: catalog + service-config diagnosis (read-only) | Merged | #554 |
 | D3 | `--fix`; ui-htmx sources from rp's roster (its `drivers` map becomes an empty-by-default override) | Merged | #560 → #559 |
 | D3s | Sentinel discovers its services; delete the `services` map; policy → constants (privilege path shipped — polkit rule in the sentinel packages) | Merged | #559 |
-| D4 | `rusty-photon-doctor-checks` crate + generic hardware checks (no SDK) | In review | [#563](https://github.com/ivonnyssen/rusty-photon/pull/563) |
-| D5 | Per-service `doctor` subcommand + aggregation | Not started | |
-| D6 | Move the TLS + credential lifecycle `rp` → doctor; split `rp-tls`; certs to `~/.config/rusty-photon/pki`; doctor generates certs + mints one credential + writes TLS-on/auth-on config | In progress (two PRs: D6a move, D6b renewal) | `feature/doctor-d6-tls-credentials` |
+| D4 | `rusty-photon-doctor-checks` crate + generic hardware checks (no SDK) | Merged | [#563](https://github.com/ivonnyssen/rusty-photon/pull/563) |
+| D5 | Per-service `doctor` subcommand + aggregation | In review | [#568](https://github.com/ivonnyssen/rusty-photon/pull/568) |
+| D6 | Move the TLS + credential lifecycle `rp` → doctor; split `rp-tls`; certs to `~/.config/rusty-photon/pki`; doctor generates certs + mints one credential + writes TLS-on/auth-on config | D6a merged ([#564](https://github.com/ivonnyssen/rusty-photon/pull/564)); D6b renewal not started | |
 | D7 | Packaging, install-flow docs, on-rig verification | Not started | |
 
 ## Decisions (fixed — see [ADR-016](../decisions/016-service-config-ownership-and-doctor.md) for rationale)
@@ -571,6 +571,30 @@ a handful of calls to shared helpers.
 The precedent for this shape is already in the tree:
 `packaging/postinst.udev-stanza` is **shared** shell,
 `services/zwo-camera/pkg/90-rusty-photon-zwo.rules` is **per-service** data.
+
+D5's settled choices (contract in [doctor.md §Per-service
+doctors](../services/doctor.md)):
+
+- **All catalog services** carry the subcommand, not just the three SDK
+  services — the subcommand's `config.full-shape` check is where the
+  full-config typo detection D2 deferred actually materializes, and it
+  needs the binary that owns the typed shape. The SDK trio (qhy-camera,
+  zwo-camera, zwo-focuser) additionally enumerates.
+- **Enumeration only, never an open.** The SDK check reports what the SDK
+  sees (`ScanQHYCCD`, the ASI/EAF list calls); an open would recreate the
+  camera-lock class of bug against a running service, and the subcommand
+  must stay safe to run by hand at any time.
+- **Both aggregation paths land in D5**: running Alpaca service → HTTP
+  `configureddevices` probe (the phase's one network I/O — local
+  services only); installed-but-stopped service → shell out to the
+  binary's own `doctor --json`, parsed permissively, with version skew
+  degrading to a warning.
+- **The report schema re-homes** into `rusty-photon-doctor-checks` as its
+  canonical location (services serialize it from D5 on); central doctor
+  re-exports. Sequenced after D6a ([#564](https://github.com/ivonnyssen/rusty-photon/pull/564)),
+  which reworks the same doctor sources.
+- Per-service checks plan **no fixes** — `--fix` stays a central-doctor
+  concern, in one binary.
 
 ### The two probe paths are naturally exclusive
 

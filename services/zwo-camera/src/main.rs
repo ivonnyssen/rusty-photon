@@ -13,7 +13,14 @@ use zwo_camera::{load_effective_config, CliOverrides, ServerBuilder};
 #[command(name = "zwo-camera")]
 #[command(about = "ASCOM Alpaca driver for ZWO ASI cameras")]
 #[command(version)]
+// A top-level `--config` alongside a subcommand would parse but be
+// silently ignored (the subcommand carries its own); reject the mixed
+// form outright, same as rp's CLI.
+#[command(args_conflicts_with_subcommands = true)]
 struct Args {
+    #[command(subcommand)]
+    command: Option<Command>,
+
     /// Path to the JSON config file. When omitted, resolves to the
     /// platform config path (e.g. `~/.config/rusty-photon/zwo-camera.json` on
     /// Linux) via `rusty_photon_config::resolve_config_path`.
@@ -41,6 +48,23 @@ struct Args {
     simulation_empty: bool,
 }
 
+/// Subcommands; running with none starts the ASCOM Alpaca driver.
+#[derive(clap::Subcommand)]
+enum Command {
+    /// Diagnose this service's configuration and what the ASI SDK can see,
+    /// without starting it (docs/services/doctor.md). Read-only; exits 1
+    /// on failing checks.
+    Doctor {
+        /// Path to the JSON config file
+        #[arg(short, long)]
+        config: Option<PathBuf>,
+
+        /// Print the report as JSON instead of text
+        #[arg(long)]
+        json: bool,
+    },
+}
+
 fn parse_log_level(s: &str) -> Result<Level, String> {
     s.parse()
         .map_err(|_| format!("invalid log level: {s} (use trace, debug, info, warn, error)"))
@@ -48,6 +72,10 @@ fn parse_log_level(s: &str) -> Result<Level, String> {
 
 fn main() -> ServiceResult {
     let args = Args::parse();
+
+    if let Some(Command::Doctor { config, json }) = args.command {
+        zwo_camera::doctor::run(config, json);
+    }
 
     // In Windows SCM service mode logs go to the rolling file under
     // %PROGRAMDATA%\rusty-photon\logs\; hold the guard until process exit so

@@ -161,6 +161,7 @@ pub fn __bdd_bazel_chdir() {
     std::env::set_current_dir(&dir).unwrap_or_else(|e| panic!("bdd_main: chdir to {}: {}", dir, e));
 }
 
+pub mod doctor_smoke;
 pub mod sharding;
 
 #[cfg(feature = "rp-harness")]

@@ -1,5 +1,6 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 pub mod config_actions;
+pub mod doctor;
 
 use std::future::Future;
 use std::net::SocketAddr;

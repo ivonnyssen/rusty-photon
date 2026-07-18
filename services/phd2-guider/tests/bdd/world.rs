@@ -33,6 +33,34 @@ pub struct GuiderWorld {
 
     /// State for the shared TLS + auth smoke steps (`auth.feature`).
     pub tls_auth: TlsAuthState,
+
+    /// Doctor-subcommand smoke state (staged config file + run output)
+    pub doctor_smoke: bdd_infra::doctor_smoke::DoctorSmokeState,
+}
+
+impl bdd_infra::doctor_smoke::DoctorSmokeWorld for GuiderWorld {
+    fn doctor_smoke(&mut self) -> &mut bdd_infra::doctor_smoke::DoctorSmokeState {
+        &mut self.doctor_smoke
+    }
+
+    fn valid_config(&self) -> serde_json::Value {
+        // Not `base_test_config()`: that shape reads the spawned mock
+        // PHD2's port, and the doctor smoke never spawns one (doctor
+        // only parses the config, it never dials PHD2). Same shape,
+        // with the stock PHD2 port and a plain `server` block.
+        serde_json::json!({
+            "server": { "port": 0 },
+            "stop_timeout": "10s",
+            "phd2": {
+                "host": "127.0.0.1",
+                "port": 4400,
+                "connection_timeout": "2s",
+                "command_timeout": "5s",
+                "reconnect": { "enabled": true, "interval": "200ms" }
+            },
+            "settling": { "pixels": 0.5, "time": "10s", "timeout": "60s" }
+        })
+    }
 }
 
 impl TlsAuthSmokeWorld for GuiderWorld {

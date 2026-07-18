@@ -11,6 +11,7 @@
 
 pub mod assets;
 pub mod config;
+pub mod doctor;
 pub mod driver_client;
 /// Test-only `/fixtures/*` routes (UI-testing plan §9 Tier 1) — compiled ONLY
 /// under the `test-fixtures` cargo feature, so they ship nothing in the real

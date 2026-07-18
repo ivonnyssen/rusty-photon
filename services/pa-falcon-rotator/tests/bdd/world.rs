@@ -82,6 +82,21 @@ pub struct FalconRotatorWorld {
 
     /// State for the shared TLS + auth smoke steps (`auth.feature`).
     pub tls_auth: TlsAuthState,
+
+    /// Doctor-subcommand smoke state (staged config file + run output)
+    pub doctor_smoke: bdd_infra::doctor_smoke::DoctorSmokeState,
+}
+
+impl bdd_infra::doctor_smoke::DoctorSmokeWorld for FalconRotatorWorld {
+    fn doctor_smoke(&mut self) -> &mut bdd_infra::doctor_smoke::DoctorSmokeState {
+        &mut self.doctor_smoke
+    }
+
+    fn valid_config(&self) -> serde_json::Value {
+        let mut config = self.base_test_config();
+        config["server"] = serde_json::json!({ "port": 0 });
+        config
+    }
 }
 
 impl TlsAuthSmokeWorld for FalconRotatorWorld {
