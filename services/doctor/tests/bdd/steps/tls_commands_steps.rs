@@ -45,6 +45,11 @@ fn run_acme_no_domain(world: &mut DoctorWorld) {
     world.run_doctor_subcommand(&["tls", "issue", "--acme"], None);
 }
 
+#[when("I run doctor tls issue with --domain but no --acme")]
+fn run_domain_no_acme(world: &mut DoctorWorld) {
+    world.run_doctor_subcommand(&["tls", "issue", "--domain", "example.org"], None);
+}
+
 #[when("I run doctor tls issue with --acme and --domain but no --dns-provider")]
 fn run_acme_no_provider(world: &mut DoctorWorld) {
     world.run_doctor_subcommand(&["tls", "issue", "--acme", "--domain", "example.org"], None);

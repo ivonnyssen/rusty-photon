@@ -81,31 +81,31 @@ struct IssueArgs {
     #[arg(long)]
     acme: bool,
     /// Base domain (the wildcard certificate covers `*.<domain>`).
-    #[arg(long)]
+    #[arg(long, requires = "acme")]
     domain: Option<String>,
     /// DNS provider for the DNS-01 challenge (supported: cloudflare).
-    #[arg(long)]
+    #[arg(long, requires = "acme")]
     dns_provider: Option<String>,
     /// DNS provider API token.
-    #[arg(long)]
+    #[arg(long, requires = "acme")]
     dns_token: Option<String>,
     /// ACME account email for expiry notifications.
-    #[arg(long)]
+    #[arg(long, requires = "acme")]
     email: Option<String>,
     /// Use the Let's Encrypt staging endpoint.
-    #[arg(long)]
+    #[arg(long, requires = "acme")]
     staging: bool,
     /// Full ACME directory URL, overriding the Let's Encrypt endpoints
     /// entirely — an internal ACME CA such as step-ca.
-    #[arg(long)]
+    #[arg(long, requires = "acme")]
     directory_url: Option<String>,
     /// PEM trust anchor for the ACME server's own TLS endpoint, which
     /// private directories need.
-    #[arg(long)]
+    #[arg(long, requires = "acme")]
     acme_root: Option<PathBuf>,
     /// Wait between writing the DNS TXT record and requesting
     /// validation (default 15).
-    #[arg(long)]
+    #[arg(long, requires = "acme")]
     dns_propagation_seconds: Option<u64>,
     /// Restrict issuance to the named services (default: the installed
     /// set, derived from the catalog).
