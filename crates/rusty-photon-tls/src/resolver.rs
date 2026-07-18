@@ -281,6 +281,60 @@ mod tests {
     }
 
     #[test]
+    fn test_debug_output_names_paths_but_no_key_material() {
+        let (_dir, cert, key) = stage_pair();
+        let resolver = ReloadableCertResolver::load(&cert, &key).unwrap();
+        let debug = format!("{resolver:?}");
+        assert!(debug.contains("svc.pem"), "{debug}");
+        assert!(!debug.contains("PRIVATE"), "{debug}");
+    }
+
+    #[test]
+    fn test_load_rejects_a_pem_without_certificates() {
+        let (_dir, _cert, key) = stage_pair();
+        let err = ReloadableCertResolver::load(&key, &key).unwrap_err();
+        assert!(err.to_string().contains("no certificate"), "{err}");
+    }
+
+    #[test]
+    fn test_reload_skips_while_another_handshake_holds_the_state_lock() {
+        let (dir, cert, key) = stage_pair();
+        let resolver = ReloadableCertResolver::load(&cert, &key)
+            .unwrap()
+            .with_check_interval(Duration::ZERO);
+        let before = cert_der(&resolver);
+
+        let guard = resolver.state.try_lock().unwrap();
+        regenerate_pair(dir.path());
+        resolver.maybe_reload();
+        drop(guard);
+
+        assert_eq!(
+            cert_der(&resolver),
+            before,
+            "a contended check must skip, not block"
+        );
+    }
+
+    #[test]
+    fn test_garbage_rewrite_keeps_the_old_pair() {
+        let (_dir, cert, key) = stage_pair();
+        let resolver = ReloadableCertResolver::load(&cert, &key)
+            .unwrap()
+            .with_check_interval(Duration::ZERO);
+        let before = cert_der(&resolver);
+
+        std::fs::write(&cert, "not a certificate").unwrap();
+        resolver.maybe_reload();
+
+        assert_eq!(
+            cert_der(&resolver),
+            before,
+            "an unparseable rewrite must keep the previous pair"
+        );
+    }
+
+    #[test]
     fn test_a_large_interval_never_reloads() {
         let (dir, cert, key) = stage_pair();
         let resolver = ReloadableCertResolver::load(&cert, &key)

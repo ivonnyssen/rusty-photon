@@ -413,6 +413,78 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_renew_without_a_pki_tree_is_a_no_op() {
+        let dir = tempfile::tempdir().unwrap();
+        let (applied, warnings) = renew(dir.path(), false).await.unwrap();
+        assert!(applied.is_empty(), "{applied:?}");
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    #[tokio::test]
+    async fn test_a_cert_without_its_key_is_not_a_renewable_pair() {
+        let (dir, pki) = stage_tree();
+        std::fs::write(pki.join("orphan.pem"), "any content").unwrap();
+        let (applied, _) = renew(dir.path(), false).await.unwrap();
+        assert!(applied.is_empty(), "{applied:?}");
+        assert_eq!(
+            std::fs::read_to_string(pki.join("orphan.pem")).unwrap(),
+            "any content"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_an_unparseable_pair_is_reissued() {
+        let (dir, pki) = stage_tree();
+        std::fs::write(pki.join("qhy-focuser.pem"), "garbage").unwrap();
+        std::fs::write(pki.join("qhy-focuser-key.pem"), "garbage").unwrap();
+
+        let (applied, _) = renew(dir.path(), false).await.unwrap();
+        assert_eq!(applied.len(), 1, "{applied:?}");
+        let renewed = std::fs::read_to_string(pki.join("qhy-focuser.pem")).unwrap();
+        let not_after = expiry::not_after(&renewed).unwrap();
+        assert!(!due_within(not_after, SELF_SIGNED_RENEWAL_WINDOW_DAYS));
+    }
+
+    #[tokio::test]
+    async fn test_renew_fails_naming_the_missing_ca_cert() {
+        let (dir, pki) = stage_tree();
+        stage_pair(
+            &pki,
+            "qhy-focuser",
+            time::OffsetDateTime::now_utc() + time::Duration::days(5),
+            &["localhost"],
+        );
+        std::fs::remove_file(pki.join("ca.pem")).unwrap();
+        let err = renew(dir.path(), false).await.unwrap_err();
+        assert!(err.message.contains("ca.pem"), "{}", err.message);
+    }
+
+    #[tokio::test]
+    async fn test_acme_leg_treats_an_unparseable_wildcard_cert_as_due() {
+        let (dir, pki) = stage_tree();
+        std::fs::write(acme_config::acme_cert_path(&pki), "garbage").unwrap();
+        std::fs::write(acme_config::acme_key_path(&pki), "garbage").unwrap();
+        std::fs::write(
+            dir.path().join("acme.json"),
+            serde_json::json!({
+                "email": "ops@example.com",
+                "domain": "observatory.test",
+                "dns_provider": "no-such-provider",
+                "dns_credentials": { "api_token": "tok" },
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let err = renew(dir.path(), false).await.unwrap_err();
+        assert!(
+            err.message.contains("unsupported DNS provider"),
+            "an unparseable wildcard certificate must pass the due gate: {}",
+            err.message
+        );
+    }
+
+    #[tokio::test]
     async fn test_renew_is_a_no_op_on_a_healthy_tree() {
         let (dir, pki) = stage_tree();
         let healthy = time::OffsetDateTime::now_utc() + time::Duration::days(300);
