@@ -10,6 +10,7 @@ pub mod client;
 pub mod config;
 pub mod error;
 pub mod permissions;
+pub mod resolver;
 pub mod server;
 pub mod test_cert;
 
