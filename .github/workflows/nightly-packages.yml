@@ -111,10 +111,18 @@ jobs:
         run: |
           base=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
           [ -n "$base" ] || { echo "could not read the workspace version" >&2; exit 1; }
-          date=$(date -u +%Y%m%d)
+          # Minute resolution, merged into one numeric segment: the g<sha>
+          # suffix carries no order (hex compares lexically), so the
+          # timestamp alone must sort a second same-day publish above the
+          # first. Minute ties between PUBLISHED stamps are impossible: the
+          # concurrency group serializes runs and a publish lands only
+          # after its run's multi-minute verified build legs, so the next
+          # run mints its stamp well after the previous publish. A failed
+          # run's stamp publishes nothing and orders against nothing.
+          stamp=$(date -u +%Y%m%d%H%M)
           short=$(git rev-parse --short=7 HEAD)
-          echo "date=$date" >> "$GITHUB_OUTPUT"
-          echo "nightly_version=${base}+nightly.${date}.g${short}" >> "$GITHUB_OUTPUT"
+          echo "date=${stamp:0:8}" >> "$GITHUB_OUTPUT"
+          echo "nightly_version=${base}+nightly.${stamp}.g${short}" >> "$GITHUB_OUTPUT"
 
   linux:
     needs: plan

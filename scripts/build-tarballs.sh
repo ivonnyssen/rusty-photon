@@ -31,7 +31,7 @@
 #                       cache from a previous run
 #   --version V         stamp V into the tarball filenames instead of the
 #                       workspace version (nightly channel: V like
-#                       0.1.0+nightly.20260713.gabc1234; must be the workspace
+#                       0.1.0+nightly.202607130507.gabc1234; must be the workspace
 #                       version or carry a +nightly. stamp on it). Artifacts
 #                       land in dist/V/.
 

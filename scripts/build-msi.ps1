@@ -28,7 +28,7 @@
 #   -SkipBuild       reuse target\release binaries from a previous run and
 #                    only re-run wix (installer-authoring inner loop)
 #   -NightlyVersion  full nightly version string, e.g.
-#                    0.1.0+nightly.20260712.gabc1234 (base must equal the
+#                    0.1.0+nightly.202607120507.gabc1234 (base must equal the
 #                    workspace version). Names the MSI + dist dir and rides
 #                    in ARP comments; ProductVersion is rendered from it as
 #                    <base>.<YYDDD> — Windows Installer compares only the
@@ -109,17 +109,23 @@ if ($version -notmatch '^\d+\.\d+\.\d+$') {
 $productVersion = $version
 $fullVersion = $version
 if ($NightlyVersion) {
-    $m = [regex]::Match($NightlyVersion, '^(\d+\.\d+\.\d+)\+nightly\.(\d{8})\.g[0-9a-f]{7,40}$')
+    $m = [regex]::Match($NightlyVersion, '^(\d+\.\d+\.\d+)\+nightly\.(\d{12})\.g[0-9a-f]{7,40}$')
     if (-not $m.Success) {
-        Die "-NightlyVersion '$NightlyVersion' is not <x.y.z>+nightly.<yyyymmdd>.g<sha>"
+        Die "-NightlyVersion '$NightlyVersion' is not <x.y.z>+nightly.<yyyymmddhhmm>.g<sha>"
     }
     if ($m.Groups[1].Value -ne $version) {
         # Same drift guard as release.yml's tag check: the stamp must carry
         # the version the build actually produces.
         Die "-NightlyVersion base '$($m.Groups[1].Value)' != workspace version '$version'"
     }
-    $day = [datetime]::ParseExact($m.Groups[2].Value, 'yyyyMMdd',
-        [Globalization.CultureInfo]::InvariantCulture)
+    try {
+        $day = [datetime]::ParseExact($m.Groups[2].Value, 'yyyyMMddHHmm',
+            [Globalization.CultureInfo]::InvariantCulture)
+    } catch {
+        # The regex only guarantees 12 digits; this rejects impossible
+        # date-times (month 13, hour 25) with the script's error shape.
+        Die "-NightlyVersion stamp '$($m.Groups[2].Value)' is not a real UTC date-time (yyyymmddhhmm)"
+    }
     # YYDDD: 2-digit year x 1000 + day-of-year. Fits the 65535 per-field
     # authoring cap through 2065; fail loudly rather than truncate beyond it.
     $yyddd = ($day.Year % 100) * 1000 + $day.DayOfYear

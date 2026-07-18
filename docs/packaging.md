@@ -65,13 +65,13 @@ scripts/build-packages.sh                  # all services, .deb only
 scripts/build-packages.sh --rpm            # also .rpm
 scripts/build-packages.sh --services qhy-camera,filemonitor
 scripts/build-packages.sh --skip-sdk-staging   # offline rebuild from cache
-scripts/build-packages.sh --deb-version 0.1.0+nightly.20260712.gba09dc9
+scripts/build-packages.sh --deb-version 0.1.0+nightly.202607120507.gba09dc9
                                            # nightly version stamp (CI / rollback builds)
 ```
 
 With `--rpm` and `--deb-version` together, the rpm version is derived
 from the deb stamp by rendering `+nightly.` as rpm's `^` snapshot
-separator (`0.1.0^20260712.gba09dc9`) — each packager renders its own
+separator (`0.1.0^202607120507.gba09dc9`) — each packager renders its own
 dialect of "sorts after the base release, before the next one".
 
 The script installs apt build prerequisites, stages the pinned native
@@ -106,18 +106,21 @@ debs and rpms are additionally published as a real `apt`/`dnf`
 repository (see [Package repositories](#package-repositories-recommended)
 below), which is the recommended way to consume the channel on Linux.
 
-Nightly debs carry the version `<base>+nightly.<date>.g<sha>` (e.g.
-`0.1.0+nightly.20260712.gba09dc9`), which dpkg sorts above the plain
-`<base>` release and below the next patch release — `apt` upgrades a
-release install to a nightly in place, and the next release upgrades
-over any nightly.
+Nightly debs carry the version `<base>+nightly.<datetime>.g<sha>` (e.g.
+`0.1.0+nightly.202607120507.gba09dc9`, UTC to the minute), which dpkg
+sorts above the plain `<base>` release and below the next patch release —
+`apt` upgrades a release install to a nightly in place, and the next
+release upgrades over any nightly. The stamp carries the time, not just
+the date, because it is the only ordered part of the version: the
+`g<sha>` suffix compares as hex, so a second publish on the same day
+must out-sort the first on the timestamp alone.
 
-Nightly rpms carry `<base>^<date>.g<sha>` (e.g.
-`0.1.0^20260712.gba09dc9`); rpm's `^` separator sorts the same way, so
-`dnf` upgrades in place identically. One wrinkle: GitHub rewrites `^`
+Nightly rpms carry `<base>^<datetime>.g<sha>` (e.g.
+`0.1.0^202607120507.gba09dc9`); rpm's `^` separator sorts the same way,
+so `dnf` upgrades in place identically. One wrinkle: GitHub rewrites `^`
 to `.` in uploaded asset names, so the *file* is called
-`…-0.1.0.<date>.g<sha>-1.<arch>.rpm` while `rpm -q` after install shows
-the true `^` version. `SHA256SUMS.txt` lists the dot-rendered names, so
+`…-0.1.0.<datetime>.g<sha>-1.<arch>.rpm` while `rpm -q` after install
+shows the true `^` version. `SHA256SUMS.txt` lists the dot-rendered names, so
 checksums verify against the files as downloaded.
 
 ### Package repositories (recommended)
@@ -214,7 +217,7 @@ install that the same downgrade way:
 
 ```sh
 git checkout <known-good-sha>
-scripts/build-packages.sh --deb-version "<base>+nightly.<date>.g<short-sha>"
+scripts/build-packages.sh --deb-version "<base>+nightly.<datetime>.g<short-sha>"
 ```
 
 (`<base>` = the workspace version at that commit.)

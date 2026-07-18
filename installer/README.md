@@ -74,7 +74,7 @@ The build always defines two preprocessor variables: `Version` (the MSI
 ProductVersion — the workspace version, or `<base>.<YYDDD>` on a nightly,
 whose 4th field Windows Installer ignores when comparing) and
 `FullVersion` (the human string for ARP comments — the same value on a
-release, the full `+nightly.<date>.g<sha>` string on a nightly). That two-
+release, the full `+nightly.<datetime>.g<sha>` string on a nightly). That two-
 field split is why `Package.wxs` sets `AllowSameVersionUpgrades`: every
 nightly compares equal to its base release, so same-version upgrades must
 be in range for nightly-over-nightly installs to upgrade in place.
