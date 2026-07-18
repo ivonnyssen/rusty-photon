@@ -189,6 +189,23 @@ if ($UpgradeFrom) {
         -not (Get-Service -Name 'rusty-photon-*' | Where-Object { $_.Status -ne 'Stopped' })
     } 60
     Remove-Item -Recurse -Force $logsDir -ErrorAction SilentlyContinue
+    # Pre-1.0 config migration (#569): nightlies before 2026-07-19 seeded
+    # ui-htmx.json with the since-retired `drivers` map, which the upgraded
+    # binary refuses to load (fail-loudly; doctor's config.retired-keys).
+    # Apply the documented remedy — delete the key — before the upgrade
+    # starts the new service (docs/packaging-windows.md §ui-htmx config).
+    # A no-op once the -UpgradeFrom baseline postdates #569; drop this
+    # block when that is always true.
+    $uiPrior = Join-Path $dataDir 'ui-htmx.json'
+    if (Test-Path $uiPrior) {
+        $cfg = Get-Content $uiPrior -Raw | ConvertFrom-Json
+        if ($cfg.PSObject.Properties['drivers']) {
+            $cfg.PSObject.Properties.Remove('drivers')
+            # UTF-8 without BOM (serde_json rejects a BOM).
+            [System.IO.File]::WriteAllText($uiPrior, (($cfg | ConvertTo-Json -Depth 10) + "`n"))
+            Write-Host "== upgrade seed: removed the retired drivers key from ui-htmx.json (#569 migration)"
+        }
+    }
     Write-Host "== upgrade seed: prior services stopped + logs cleared (asserts now reflect the upgraded install)"
 }
 
