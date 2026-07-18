@@ -320,7 +320,10 @@ service per ADR-014.
   [nightly-releases.md](nightly-releases.md)), not as a scheduler of its
   own — W5 delivers the scripts and the release-tag job; N3 wires the
   nightly leg, version stamping (`AllowSameVersionUpgrades`), and the
-  nightly-over-nightly upgrade check.
+  nightly-over-nightly upgrade check. (The upgrade check was **suspended
+  2026-07-18** — pre-1.0 config-schema churn reddened it with no product
+  signal; re-enable with doctor `--fix` in the loop once D7 ships doctor
+  in the packages, [#582](https://github.com/ivonnyssen/rusty-photon/issues/582).)
 - `docs/packaging-windows.md` (operator guide, `docs/packaging.md` gets a
   pointer): install/upgrade/remove, feature selection incl. silent
   `ADDLOCAL` recipes, prerequisites (QHY All-in-One, ZWO camera driver,

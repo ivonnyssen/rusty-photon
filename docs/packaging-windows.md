@@ -249,12 +249,15 @@ scripts\build-msi.ps1 -SkipBuild         # re-run wix only (installer loop)
 scripts\build-msi.ps1 -NightlyVersion "<base>+nightly.<date>.g<sha>"
                                          # nightly stamp (see Nightly channel)
 scripts\verify-msi.ps1                   # elevated, on a disposable box
-scripts\verify-msi.ps1 -Msi dist\<fullversion>\rusty-photon-<fullversion>-x64.msi `
-    -UpgradeFrom prior.msi               # + upgrade-over-prior proof
+scripts\verify-msi.ps1 -Msi dist\<fullversion>\rusty-photon-<fullversion>-x64.msi
                                          # (nightly builds land under the FULL
                                          # version; the -Msi default assumes a
                                          # release build)
 ```
+
+(The former `-UpgradeFrom` upgrade-over-prior proof is suspended pre-1.0 —
+re-enabled with doctor `--fix` in the loop once doctor ships in the
+packages, [#582](https://github.com/ivonnyssen/rusty-photon/issues/582).)
 
 `build-msi.ps1` stages the pinned native SDKs (QHYCCD import lib for the
 delay-load link; the ZWO MIT DLLs that become payloads), release-builds

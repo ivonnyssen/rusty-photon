@@ -33,7 +33,7 @@ deliberately reusable so the deferred `release.yml` generalization
 | N0 | Tech spike: hosted-arm64 verify, timings, asset naming, version dialects — settles the Orange Pi question | **Done** (2026-07-13; findings below — Orange Pi: no-go) | scratch branch `spike/n0-nightly-packaging` (deleted) |
 | N1 | Debian anchor: `nightly-packages.yml` shared spine + `.deb` legs (x86_64 + arm64), rolling release, docs | **Done** (2026-07-13; first publish = first post-merge run) | PR #508 |
 | N2 | Fedora: `.rpm` build on both arches + Fedora lifecycle verify leg | **Done** (2026-07-13; rpms first published by that day's scheduled run) | PR #513 |
-| N3 | Windows: suite-MSI leg (strictly after W5 of [windows-packaging.md](windows-packaging.md)) | **Done** (2026-07-13; first MSI publish = next scheduled run, whose msi job skips the upgrade seed gracefully — the run after proves MSI-over-MSI) | PR #509 |
+| N3 | Windows: suite-MSI leg (strictly after W5 of [windows-packaging.md](windows-packaging.md)) | **Done** (2026-07-13; first MSI publish = next scheduled run, whose msi job skips the upgrade seed gracefully — the run after proves MSI-over-MSI). The upgrade seed was **suspended 2026-07-18** pre-1.0 ([#582](https://github.com/ivonnyssen/rusty-photon/issues/582): re-enable with doctor `--fix` in the loop once D7 ships doctor in the packages) | PR #509 |
 | N4 | macOS: per-service arm64 tarballs + Homebrew tap channel + `verify-brew.sh` | **Done** (2026-07-13; first macOS publish = next scheduled run) | PR #519 |
 | N5 | Debian/Fedora package repositories: Cloudflare R2-hosted `apt`/`dnf` channels for the N1/N2 `.deb`/`.rpm` legs | **Done** (2026-07-16: #535 merged and, after PR #547's S3-API auth fix, the first publish landed the same day) | PRs #535, #547 |
 
@@ -335,7 +335,9 @@ the `msi` leg of `nightly-packages.yml` — not as a scheduler of its own
   *current* nightly MSI from the release (before assets are replaced),
   install it, then install the freshly built MSI over it — proving the
   `AllowSameVersionUpgrades` upgrade path that release-tag testing never
-  exercises. Skip gracefully when no prior nightly exists.
+  exercises. Skip gracefully when no prior nightly exists. (**Suspended
+  2026-07-18**, [#582](https://github.com/ivonnyssen/rusty-photon/issues/582) —
+  see the N3 status row.)
 
 **As built (N3):** `build-msi.ps1 -NightlyVersion <full string>`
 validates the stamp against the workspace version and renders the
@@ -344,15 +346,15 @@ passes the canonical string through — the plan job's output was renamed
 `deb_version` → `nightly_version` accordingly, deb consuming it
 verbatim). Both preprocessor variables are always defined (`Version` +
 `FullVersion`), so releases author their ARP comments the same way. The
-upgrade proof lives in `verify-msi.ps1 -UpgradeFrom <prior msi>`: it
-installs the prior MSI first, lets the main install run as the in-place
-upgrade, then asserts exactly one ARP entry survives and its comments
-match the MSI under test; the rest of the lifecycle then runs against
-the upgraded install (its invariants match a fresh one — the gated
-services still have no config, the ui-htmx seed no-ops on the existing
-file). The workflow downloads the prior MSI (`gh release download`)
-rather than the script, keeping the script network-free; the step skips
-gracefully while the channel has no MSI asset.
+upgrade proof lived in `verify-msi.ps1 -UpgradeFrom <prior msi>` (prior
+MSI installed first, the main install running as the in-place upgrade,
+then a single-surviving-ARP-entry assertion) with the workflow — not the
+script — downloading the prior MSI; it was proven live 2026-07-15 and
+**removed with the 2026-07-18 suspension**
+([#582](https://github.com/ivonnyssen/rusty-photon/issues/582)): pre-1.0
+config-schema churn reddened it with no product signal. The verifier is
+fresh-install only until doctor ships in the packages (D7), when the
+proof returns as install prior → upgrade → doctor `--fix` → verify.
 
 ### Phase N4 — macOS (Homebrew)
 
