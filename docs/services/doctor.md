@@ -307,6 +307,7 @@ convention and validated by nothing at runtime until the 2am 404.
 | `tls.absent` (D6a) | warn | An installed service has no `server.tls` block: it serves plain HTTP. Legal (absent still means off — ADR-016 decision 10(d)), and fixable: the provisioning pass issues a cert and writes the block. |
 | `auth.absent` (D6a) | warn | An installed service has no `server.auth` block: it answers unauthenticated. Same legality and fix as `tls.absent`. |
 | `auth.mismatch` (D6a) | warn | A client auth block's plaintext password does not verify (Argon2id) against the target service's `server.auth` hash — the client will get 401s. Suggestion-only: hand-set credentials are operator intent, so doctor reports the pair and suggests `doctor auth rotate` to re-align everything to the observatory credential. |
+| `tls.expiry` (D6b) | fail / warn | A configured `server.tls` certificate is **expired or unparseable** (fail — rustls loads an expired cert cleanly and only *clients* reject the handshake, so without this check the failure surfaces as every client erroring at night) or **inside its renewal window** (warn — 30 days for self-signed material, `renewal_days_before_expiry` for the ACME cert). Suggestion-only: the fix is `doctor tls renew` (or `tls issue --force` for a cert the renew legs don't own); `--fix` does not renew, because renewal belongs on the platform timer. |
 
 ### Platform defaults
 
@@ -560,20 +561,98 @@ their next restart (the existing `--fix` restart advice covers it).
   catalog — `rp_tls::cert::DEFAULT_SERVICES` (five hand-typed names of
   eighteen) is retired.
 - **`doctor tls issue --acme --domain <d> --dns-provider <p> --dns-token <t>
-  --email <e> [--staging]`** — the ACME path, unchanged in mechanism from
-  `rp init-tls --acme` (DNS-01, wildcard cert, account state persisted to
-  `acme.json`). Publicly-trusted certs need no CA distribution to clients.
+  --email <e> [--staging] [--directory-url <u>] [--acme-root <pem>]
+  [--dns-propagation-seconds <n>]`** — the ACME path, unchanged in mechanism
+  from `rp init-tls --acme` (DNS-01, wildcard cert, account state persisted
+  to `acme.json`). Publicly-trusted certs need no CA distribution to
+  clients. `--directory-url` overrides the Let's Encrypt endpoint entirely
+  (an internal ACME CA such as step-ca — or Pebble in tests); `--acme-root`
+  adds a PEM trust anchor for the ACME server's own TLS endpoint, which
+  such private directories need; `--dns-propagation-seconds` tunes the wait
+  between writing the TXT record and telling the server to validate
+  (default 15). All three persist into `acme.json` — renewal must replay
+  them unattended.
 - **`doctor auth rotate`** — mint + distribute, as above.
 - **`doctor auth hash-password [--stdin]`** — hash one password for
   hand-written configs (the third-party-driver escape hatch); prompt with
   confirmation, or read stdin.
-- **`doctor tls renew`** arrives with D6b (one-shot renewal for a platform
-  scheduler, plus the in-process cert hot-reload in `rusty-photon-tls`).
+- **`doctor tls renew [--force]`** — one-shot renewal for a platform
+  scheduler; §Renewal below.
 
 Subcommands report through the same report schema (`--json` works on all
 of them); provisioning actions appear in `fixes_applied` as non-pointer
-operations (`generate-ca`, `generate-cert`, `mint-credential`) next to the
-config-pointer ops, which the permissive parse lets older consumers skip.
+operations (`generate-ca`, `generate-cert`, `mint-credential`,
+`renew-acme` from D6b) next to the config-pointer ops, which the
+permissive parse lets older consumers skip.
+
+### Renewal — `doctor tls renew` (D6b)
+
+Renewal is a **one-shot command on a platform scheduler** (systemd timer /
+Windows scheduled task / launchd interval — certbot's shape; plan
+decision 2), not a background task in any service: renewing zwo-camera's
+cert must not require rp — or anything else — to be running. The command
+is a no-op unless material is inside its renewal window, so one daily
+timer serves self-signed installs (10-year certs: effectively never) and
+ACME installs (90→45-day certs: roughly every other month) alike. Two
+legs, both scoped to the resolved config root:
+
+1. **Self-signed** — every `<svc>.pem`/`<svc>-key.pem` pair in the pki
+   tree whose `not_after` is within 30 days is re-issued from the existing
+   CA, **preserving the old cert's SANs** (unioned with the current
+   hostname defaults, so `--extra-san` names given at issue time survive a
+   renewal that no longer knows the flag). The CA itself is never
+   regenerated — a CA inside its window gets a loud warning naming the
+   explicit operator act (delete `ca.pem`, re-issue, redistribute).
+2. **ACME** — runs only when `<config-root>/acme.json` exists (the read
+   side of the `tls issue --acme` contract: the file is written before the
+   first order is attempted, so renewal — not a hand-replayed `issue`
+   with every flag re-passed — is also the **recovery path** when that
+   first order failed). A missing `acme-cert.pem` therefore counts as
+   "due", as does one within `renewal_days_before_expiry`. The order
+   replays the persisted settings (directory URL, DNS provider and
+   credentials — `$VAR` indirection resolves here, at 3am, which is why
+   the env-var form matters; propagation wait; ACME trust root), retries
+   a failed order up to 3 times (a new order each attempt — a failed
+   DNS-01 authorization is dead), and rewrites the wildcard pair via
+   write-then-rename so a service reloading mid-renewal never reads a
+   torn file.
+
+After a successful ACME renewal, `post_renewal_hooks` from `acme.json`
+run in order (`sh -c` / `cmd /C`) — the multi-machine distribution hook
+from ADR-002. Every hook runs even if an earlier one fails; any failure
+exits 2, because a silently-failed hook means a remote machine keeps its
+old cert until it expires — exactly the unattended night-time failure
+this command exists to prevent. Exit 0 means "nothing was due" or
+"everything due was renewed"; the timer unit needs no logic. `--force`
+ignores the windows and renews everything both legs own (self-signed
+pairs re-issue; the ACME order runs) — the manual escape hatch and the
+test affordance.
+
+**The swap is in-process** (plan decisions 3–4): `rusty-photon-tls`'s
+acceptor serves through a `ReloadableCertResolver` — on a TLS handshake,
+at most once every 60 s, it re-stats the configured cert/key files and
+reloads the pair when an mtime changed. A pair that fails to load or
+whose key does not match its cert (the torn-write window, closed
+belt-and-suspenders by rustls' `keys_match`) is skipped with a `debug!`
+log and the old cert keeps serving until the next check. No signals, no
+watcher lifecycle, no new dependencies, portable to all three platforms
+— and no restart, so renewal can never interrupt an exposure. Services
+need no code or config change: the resolver is inside
+`build_tls_acceptor`. Auth rotation stays restart-based (decision 5).
+
+**Timer units (recorded here for D7** — sentinel's package carries the
+doctor binary and these units, plan decision 8**):**
+
+- systemd: `rusty-photon-renew.service` (`Type=oneshot`,
+  `ExecStart=/usr/bin/rusty-photon-doctor tls renew`, `User=rusty-photon`)
+  + `rusty-photon-renew.timer` (`OnCalendar=daily`,
+  `RandomizedDelaySec=1h`, `Persistent=true` — a powered-off-by-day
+  observatory machine still renews on next boot).
+- Windows: a Scheduled Task registered by the MSI, daily, running
+  `rusty-photon-doctor.exe tls renew` as LocalSystem (the account the
+  services already run as).
+- macOS: a `launchd` plist with `StartCalendarInterval` (daily) running
+  `rusty-photon-doctor tls renew` as the operator user brew services use.
 
 ## Report
 
@@ -634,8 +713,10 @@ that skipped everything); the text renderer summarizes them, prints
 
 ```
 doctor [--config-dir <path>] [--json] [--fix]
-doctor tls issue [--acme --domain <d> --dns-provider <p> --dns-token <t> --email <e> [--staging]]
+doctor tls issue [--acme --domain <d> --dns-provider <p> --dns-token <t> --email <e>
+                  [--staging] [--directory-url <u>] [--acme-root <pem>] [--dns-propagation-seconds <n>]]
                  [--services <name>...] [--extra-san <host-or-ip>...] [--force]
+doctor tls renew [--force]
 doctor auth rotate
 doctor auth hash-password [--stdin]
 ```
@@ -727,6 +808,27 @@ behavior; every knob in it was a CLI flag first.)
   command tests move here with the commands. On-host: a packaged install
   goes TLS-on/auth-on with one `--fix` and every service answers
   authenticated HTTPS after restart.
+- **D6b** — unit: `not_after` parsing and window arithmetic against
+  world-generated short-lived certs; SAN preservation across a re-issue;
+  order retry against a `MockAcmeClient` that fails then succeeds; the
+  resolver's reload/throttle/torn-pair mechanics against real files, plus
+  one full handshake proving a swapped pair is served without rebinding.
+  BDD (self-signed leg, no network): a pki tree staged with
+  near-expiry/expired pairs → `renew` re-issues exactly those, preserves
+  SANs, never touches the CA, and a fresh tree is a no-op with exit 0;
+  `tls.expiry` fails on an expired configured cert and warns inside the
+  window. BDD (ACME leg, `@pebble`): end-to-end against
+  [Pebble](https://github.com/letsencrypt/pebble) — Let's Encrypt's ACME
+  test server — plus its `pebble-challtestsrv` DNS sidecar: `tls issue
+  --acme --directory-url` obtains a real wildcard cert through the real
+  `instant-acme` order flow (closing the mock-only gap
+  [#541](https://github.com/ivonnyssen/rusty-photon/issues/541) called
+  out); `renew` no-ops outside the window, renews a short-validity cert
+  inside it, runs `post_renewal_hooks`, and exits 2 on a failing hook.
+  The `@pebble` scenarios need `PEBBLE_PATH` + `PEBBLE_CHALLTESTSRV_PATH`
+  (CI provisions both via `.github/actions/install-pebble`; locally the
+  suite announces loudly when it skips them — see
+  `docs/skills/testing.md`).
 
 ## MVP scope
 
@@ -746,11 +848,16 @@ credential and its distribution, `tls`/`auth`-on written by `--fix`, and the
 `tls`/`auth` subcommands. Writes cover config files and the pki tree; ACME
 is the one place doctor's network I/O leaves the host, and only when asked.
 
+**In D6b (§Renewal):** `doctor tls renew` (both legs, hooks, retry), the
+`tls.expiry` check, the ACME endpoint/trust/propagation knobs on
+`tls issue --acme`, and the in-process cert hot-reload in
+`rusty-photon-tls` — closing
+[#541](https://github.com/ivonnyssen/rusty-photon/issues/541). The timer
+units themselves ship with D7's packaging; §Renewal records them.
+
 **Deferred, tracked in the plan:**
-- Cert renewal: `doctor tls renew` + platform timers, in-process cert
-  hot-reload in `rusty-photon-tls`
-  ([#541](https://github.com/ivonnyssen/rusty-photon/issues/541)) — D6b.
-- Packaging (doctor ships in sentinel's package) and install-flow docs — D7.
+- Packaging (doctor ships in sentinel's package, with the renewal timer
+  units) and install-flow docs — D7.
 - `usb_*` identity declarations for qhy-focuser and star-adventurer-gti —
   measured whenever that hardware is next on a USB port; two lines of
   `doctor.toml` each.

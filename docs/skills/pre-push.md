@@ -376,7 +376,10 @@ BDD cucumber tests build and run under Bazel and are **part of the
 default test filter** (since PR #452): a plain `bazel test //...` runs
 them, and Bazel's result cache re-executes only the suites your change
 affects. The OmniSim-backed suites need `OMNISIM_PATH` or `OMNISIM_DIR`
-set. To narrow a run:
+set. Doctor's `@pebble` ACME scenarios additionally use `PEBBLE_PATH` +
+`PEBBLE_CHALLTESTSRV_PATH` when set, and skip loudly when not
+(`docs/skills/testing.md` §5.6 — CI always provisions them, so a local
+skip is not a green light for ACME-path changes). To narrow a run:
 
 ```bash
 bazel test //services/filemonitor:bdd    # a single service's suite

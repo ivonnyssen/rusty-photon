@@ -6,6 +6,25 @@ Accepted
 
 ## Updates
 
+**2026-07-18** — The certificate lifecycle was re-homed from `rp` to
+**doctor** (ADR-016 decision 10; the doctor plan's D6): `rp init-tls` is
+now `doctor tls issue [--acme]`, hashing is `doctor auth hash-password`,
+and all material lives **flat** under `<config-root>/pki` (no `certs/`
+subdirectory) with `acme.json` beside the service configs —
+`~/.rusty-photon/` is retired. Read path snippets in the historical
+sections below through that translation. In the same pass renewal
+([#541](https://github.com/ivonnyssen/rusty-photon/issues/541)) was
+**implemented, with a different scheduler than first designed here**: a
+one-shot `doctor tls renew` on a platform timer instead of a background
+task in `rp serve` — renewing any one service's certificate must not
+require another service to be running. §Automatic Certificate Renewal and
+§Certificate Hot-Reloading below were rewritten to the as-built design,
+and §Implementation Phases now carries status markers (their earlier
+absence let this ADR describe unbuilt renewal in the present tense for
+months — see #541). The operator-facing procedure lives in
+`docs/services/doctor.md` §Provisioning/§Renewal; this ADR keeps the
+rationale.
+
 **2026-04-22** — Upstream `ascom-alpaca-rs` replaced the exposed
 `Server::into_router() -> axum::Router` with `Server::into_service() ->
 AlpacaService` (an opaque `tower::Service`). Services now wrap it back
@@ -391,19 +410,22 @@ the ACME client runs on one host:
 | `staging`                     | No       | Use Let's Encrypt staging endpoint (default: `false`) |
 | `renewal_days_before_expiry`  | No       | Days before expiry to trigger renewal (default: `30`) |
 | `post_renewal_hooks`          | No       | Shell commands to run after successful renewal (e.g., distribute certs to remote machines) |
+| `directory_url` (D6b)         | No       | Full ACME directory URL, overriding the Let's Encrypt endpoints — an internal ACME CA (step-ca), or Pebble in tests |
+| `acme_root` (D6b)             | No       | Path to a PEM trust anchor for the ACME server's own TLS endpoint (private directories are not publicly trusted) |
+| `dns_propagation_seconds` (D6b) | No     | Wait between writing the TXT record and requesting validation (default: `15`) |
 
-#### File Layout
+#### File Layout (as of D6a: flat, under the config root)
 
 ```
-~/.rusty-photon/
-├── acme.json                  # ACME configuration (standalone)
+<config-root>/                 # e.g. /var/lib/rusty-photon/.config/rusty-photon
+├── acme.json                  # ACME configuration (standalone, 0600)
 ├── pki/
-│   ├── acme-account.json      # ACME account credentials (persistent)
+│   ├── acme-account.json      # ACME account credentials (persistent, 0600)
+│   ├── acme-cert.pem          # Wildcard certificate chain
+│   ├── acme-key.pem           # Wildcard private key (0600)
 │   ├── ca.pem                 # Self-signed CA (unused with ACME)
-│   ├── ca-key.pem
-│   └── certs/
-│       ├── acme-cert.pem      # Wildcard certificate chain
-│       └── acme-key.pem       # Wildcard private key
+│   ├── ca-key.pem             # (0600)
+│   └── credential             # Observatory credential (ADR-016; 0600)
 ```
 
 #### Service Config (Unchanged Structure)
@@ -457,76 +479,67 @@ ACME orchestration, certificate management, or CLI.
 Let's Encrypt certificates currently have a 90-day lifetime, moving to
 45 days by February 2028. Automated renewal is non-negotiable.
 
-#### Renewal Flow
+#### Renewal Flow (as built — D6b)
 
-When `rp serve` starts and `~/.rusty-photon/acme.json` exists:
+Renewal is a **one-shot `doctor tls renew` run by a platform scheduler**
+(systemd timer / Windows scheduled task / launchd interval; the units
+ship with the packaging, D7). The originally-designed background task in
+`rp serve` was rejected when renewal moved to doctor: it would make every
+other service's certificate hostage to rp running, and doctor already
+owns the rest of the lifecycle. The command is a no-op unless material
+is inside its renewal window, so the same daily timer is correct for
+self-signed installs (10-year certificates) and ACME installs alike.
 
-1. A background tokio task checks certificate expiry daily
-2. If within `renewal_days_before_expiry` of expiration:
-   a. Load ACME account from `~/.rusty-photon/pki/acme-account.json`
-   b. Create a new ACME order via `instant-acme`
-   c. Complete DNS-01 challenge via the configured `DnsProvider`
-   d. Finalize the order and retrieve the new certificate chain
-   e. Write the new cert and key to `~/.rusty-photon/pki/certs/`
-   f. Hot-swap the certificate in the running server (see below)
-   g. Execute `post_renewal_hooks` to distribute to remote machines
+When `<config-root>/acme.json` exists and `acme-cert.pem` is missing or
+within `renewal_days_before_expiry` of its `not_after`:
 
-#### Manual Fallback
+1. Load the persisted settings from `acme.json` — directory URL, DNS
+   provider and credentials (`$VAR` values resolve from the environment
+   here, unattended), propagation wait, optional ACME trust root
+2. Load or create the ACME account from `pki/acme-account.json`
+3. Create a new order via `instant-acme`, complete the DNS-01 challenge
+   via the configured `DnsProvider`, finalize, retrieve the chain —
+   retrying a failed order up to 3 times (a failed authorization is
+   dead; each attempt is a fresh order)
+4. Write the new pair to `pki/acme-cert.pem` / `acme-key.pem` via
+   write-then-rename, so a reloading service never reads a torn file
+5. Running services pick the pair up in-process (see Hot-Reloading)
+6. Execute `post_renewal_hooks` to distribute to remote machines; every
+   hook runs, and any failure exits 2 — a silently-failed hook is a
+   remote machine that expires unattended
 
-A `rp renew-tls` CLI command provides the same flow as a one-shot
-operation, for users who prefer cron/systemd timers or want to trigger
-renewal explicitly.
+Self-signed service pairs get the same treatment from the same command
+(re-issued from the existing CA inside a 30-day window, SANs preserved);
+the CA itself is never auto-renewed. The `tls.expiry` doctor check
+reports expired or expiring material on every diagnosis — an expired
+certificate otherwise loads cleanly and only *clients* reject the
+handshake, invisibly to the server.
 
-### Certificate Hot-Reloading
+### Certificate Hot-Reloading (as built — D6b)
 
-The current implementation uses `with_single_cert()` which bakes the
-certificate into the `ServerConfig` at startup. For ACME, certificates
-must be swappable without restarting services.
+`with_single_cert()` bakes the certificate into the `ServerConfig` at
+startup. For ACME, certificates must be swappable without restarting
+services — a restart-based swap would have to be scheduled around
+exposures, while an in-process swap removes the mid-exposure hazard
+entirely.
 
-#### ResolvesServerCert Implementation
+`rusty-photon-tls`'s `build_tls_acceptor` builds the `ServerConfig` with
+`.with_cert_resolver(...)` and a `ReloadableCertResolver`: a
+`ResolvesServerCert` implementation backed by an
+`RwLock<Arc<CertifiedKey>>` that also remembers the cert/key **paths and
+mtimes**. On a TLS handshake — throttled to at most one check every
+60 seconds — it re-stats both files and reloads the pair when an mtime
+changed. There is no file-watcher, no signal handler, and no new
+dependency; the mechanism is identical on Linux, macOS, and Windows, and
+it covers certs that arrive by any route — `doctor tls renew` locally or
+`post_renewal_hooks` `scp`-ing to a remote machine.
 
-Replace `with_single_cert()` with a custom `ResolvesServerCert`
-implementation backed by an `RwLock<Arc<CertifiedKey>>`:
-
-```rust
-#[derive(Debug)]
-pub struct ReloadableCertResolver {
-    current: RwLock<Arc<CertifiedKey>>,
-}
-
-impl ResolvesServerCert for ReloadableCertResolver {
-    fn resolve(&self, _hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
-        Some(self.current.read().unwrap().clone())
-    }
-}
-
-impl ReloadableCertResolver {
-    pub fn swap(&self, new_key: Arc<CertifiedKey>) {
-        *self.current.write().unwrap() = new_key;
-    }
-}
-```
-
-In `server.rs`:
-
-```rust
-// Before:
-.with_single_cert(certs, key)?
-
-// After:
-.with_cert_resolver(Arc::new(resolver))
-```
-
-This change is backward-compatible — self-signed certificates also use
-the resolver; they simply never get swapped.
-
-For remote machines receiving certs via `post_renewal_hooks`, services
-either:
-
-- Use a file-watcher (e.g., `tls-hot-reload` crate) to detect changes
-  and call `resolver.swap()` automatically
-- Restart on the next maintenance window — renewal happens at most once
-  every ~60 days, so a brief restart is acceptable
+A pair that fails to load, or whose key does not match its certificate
+(rustls' `keys_match` — the guard for the moment between the two file
+writes), is skipped with a debug log and the previous certificate keeps
+serving until the next check; the swap is atomic behind the `RwLock`.
+The change is invisible to services: self-signed certificates go through
+the same resolver and simply never change.
 
 ### ACME Library: instant-acme
 
@@ -595,25 +608,29 @@ cloudflare = "0.12"
 
 ### Implementation Phases
 
-#### Phase 1: Core ACME Infrastructure
+#### Phase 1: Core ACME Infrastructure — **shipped** (re-homed to doctor in D6a)
 
-- `DnsProvider` trait and Cloudflare implementation in `rp-tls`
+- `DnsProvider` trait and Cloudflare implementation (now doctor modules)
 - ACME account creation and persistence via `instant-acme`
 - DNS-01 challenge solver (create record → wait for propagation →
   respond to challenge → clean up record)
 - Certificate issuance flow (order → challenge → finalize → download)
-- Extend `rp init-tls` CLI with `--acme` flags
+- The `--acme` flags (originally on `rp init-tls`, now on
+  `doctor tls issue`)
 
-#### Phase 2: Certificate Hot-Reloading
+#### Phase 2: Certificate Hot-Reloading — **shipped** (D6b, reshaped)
 
-- `ReloadableCertResolver` in `rp-tls`
-- Modify `server.rs` to use `with_cert_resolver` (backward-compatible)
-- Background renewal task in `rp serve`
-- `rp renew-tls` manual command
+- `ReloadableCertResolver` in `rusty-photon-tls` (mtime re-check on
+  handshake — no watcher)
+- `server.rs` uses `with_cert_resolver` (backward-compatible)
+- One-shot `doctor tls renew` on a platform timer — **replacing** the
+  originally-planned background task in `rp serve` and the separate
+  `rp renew-tls` command (see Updates, 2026-07-18)
 
-#### Phase 3: Polish and Testing
+#### Phase 3: Polish and Testing — **shipped** (D6b)
 
-- Staging/production toggle (`--staging`)
+- Staging/production toggle (`--staging`), plus `directory_url` /
+  `acme_root` for non-Let's-Encrypt directories
 - Configuration validation and helpful error messages
 - BDD tests using [Pebble](https://github.com/letsencrypt/pebble)
   (Let's Encrypt's official ACME test server) for end-to-end flows
