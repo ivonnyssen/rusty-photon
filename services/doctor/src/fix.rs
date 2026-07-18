@@ -7,7 +7,10 @@
 //! so a crash mid-fix never corrupts a config, and every field doctor does
 //! not touch is preserved (the mutation is on the raw JSON value, not a
 //! typed round-trip; `save` normalizes formatting to the same
-//! pretty-printed shape `config.apply` writes).
+//! pretty-printed shape `config.apply` writes). `save` also carries the
+//! replaced file's owner and mode onto the new inode, so a sudo'd doctor —
+//! the only way to reach a packaged install's `0750` config root — never
+//! strands a config root-owned and unreadable by its service.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -313,6 +316,49 @@ mod tests {
             back["device_overrides"]["keep"], true,
             "untouched fields survive"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_apply_fixes_preserves_owner_and_mode() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sentinel.json");
+        std::fs::write(&path, r#"{ "server": {}, "services": {} }"#).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        // Root (privileged CI) exercises the real failure shape: a sudo'd
+        // doctor rewriting a config owned by the service user. Unprivileged
+        // runs still pin owner and mode across the inode swap.
+        let cross_owner = std::os::unix::fs::chown(&path, Some(12345), Some(12345)).is_ok();
+        let before = std::fs::metadata(&path).unwrap();
+
+        let checks = vec![Check::fail(
+            "config.retired-keys",
+            Some("sentinel".to_string()),
+            "retired",
+            None,
+        )
+        .with_fixes(vec![FixOp::RemoveKey {
+            service: "sentinel".to_string(),
+            pointer: "/services".to_string(),
+        }])];
+        let applied = apply_fixes(dir.path(), &checks).unwrap();
+        assert_eq!(applied.len(), 1);
+
+        let after = std::fs::metadata(&path).unwrap();
+        assert_eq!(
+            after.permissions().mode() & 0o7777,
+            0o640,
+            "mode must survive the fix write"
+        );
+        assert_eq!(
+            (after.uid(), after.gid()),
+            (before.uid(), before.gid()),
+            "owner must survive the fix write (cross-owner run: {cross_owner})"
+        );
+        if cross_owner {
+            assert_eq!((after.uid(), after.gid()), (12345, 12345));
+        }
     }
 
     #[test]

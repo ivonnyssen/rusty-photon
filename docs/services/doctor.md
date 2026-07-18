@@ -456,6 +456,13 @@ Write mechanics:
   touch is preserved — the mutation is on the raw JSON value, not a typed
   round-trip — though `save` normalizes formatting to the same
   pretty-printed shape `config.apply` writes.
+- The write preserves the replaced file's **owner and mode** across the
+  rename's inode swap. On a packaged Linux install the config root is
+  `0750 rusty-photon:rusty-photon`, so doctor runs under sudo — without
+  the preservation every fixed config would come out root-owned and
+  unreadable by its service. A failed chown aborts the write rather than
+  proceeding: dropping the service user's access is worse than not
+  writing at all.
 - Doctor reads files directly and holds no override layers, so a fix can
   never bake a transient value into a file (the plan's layer-aware persist
   rule is satisfied by construction).

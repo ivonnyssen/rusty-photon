@@ -141,11 +141,44 @@ fn sync_dir(_parent: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Carry the replaced file's mode and owner over to the staged temp file (Unix). The rename in
+/// [`save`] replaces the inode, so without this a privileged caller — doctor under sudo, the only
+/// practical way to run it against a packaged install's config root — would strand the config
+/// root-owned and unreadable by the service user. Ownership is only changed when it differs;
+/// unprivileged callers always write their own files, so they never reach the chown. A failed
+/// chown is a save error: silently proceeding would drop the service user's access, which is
+/// worse than not writing at all.
+#[cfg(unix)]
+fn preserve_owner_and_mode(path: &Path, tmp: &tempfile::NamedTempFile) -> std::io::Result<()> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    let original = match std::fs::metadata(path) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    tmp.as_file()
+        .set_permissions(std::fs::Permissions::from_mode(original.mode() & 0o7777))?;
+    let staged = tmp.as_file().metadata()?;
+    if (staged.uid(), staged.gid()) != (original.uid(), original.gid()) {
+        std::os::unix::fs::fchown(tmp.as_file(), Some(original.uid()), Some(original.gid()))?;
+    }
+    tmp.as_file().sync_all()
+}
+
+#[cfg(not(unix))]
+fn preserve_owner_and_mode(_path: &Path, _tmp: &tempfile::NamedTempFile) -> std::io::Result<()> {
+    Ok(())
+}
+
 /// Atomically persist `value` as pretty JSON: create parent dirs, stage to a uniquely-named temp
 /// file in the same directory, fsync, rename into place, then fsync the directory (Unix) so the
-/// rename itself is durable.
+/// rename itself is durable. When a file is being replaced, its mode and owner survive onto the
+/// new inode (Unix), so a privileged caller never leaves a config the owning service can no
+/// longer read.
 pub fn save(path: &Path, value: &Value) -> std::io::Result<()> {
     let (tmp, parent) = stage_pretty_json(path, value)?;
+    preserve_owner_and_mode(path, &tmp)?;
     tmp.persist(path).map_err(|e| e.error)?;
     sync_dir(parent)
 }
@@ -350,6 +383,48 @@ mod tests {
         let on_disk: Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(on_disk, json!({ "server": { "port": 9 } }));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_preserves_the_replaced_files_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.json");
+        std::fs::write(&path, "{}").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+
+        save(&path, &json!({ "server": { "port": 1 } })).unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o7777;
+        assert_eq!(mode, 0o640, "the temp file's 0600 must not replace 0640");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_preserves_the_replaced_files_owner() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.json");
+        std::fs::write(&path, "{}").unwrap();
+        // Only root may hand a file to another owner, so the cross-owner
+        // case (a sudo'd doctor rewriting the service user's config) is
+        // exercised on privileged runs (root CI containers); unprivileged
+        // runs still pin the owner across the inode swap.
+        let cross_owner = std::os::unix::fs::chown(&path, Some(12345), Some(12345)).is_ok();
+        let before = std::fs::metadata(&path).unwrap();
+
+        save(&path, &json!({ "server": { "port": 1 } })).unwrap();
+
+        let after = std::fs::metadata(&path).unwrap();
+        assert_eq!(
+            (after.uid(), after.gid()),
+            (before.uid(), before.gid()),
+            "owner must survive the rename (cross-owner run: {cross_owner})"
+        );
+        if cross_owner {
+            assert_eq!((after.uid(), after.gid()), (12345, 12345));
+        }
     }
 
     #[test]
