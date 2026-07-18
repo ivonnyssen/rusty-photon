@@ -1,9 +1,10 @@
-//! rusty-photon-doctor-checks: the no-SDK hardware facts and predicates
-//! behind doctor's `hardware.*` check family (docs/services/doctor.md
-//! §Hardware). Central doctor consumes it today; the D5 per-service
-//! `doctor` subcommands will call the same helpers — ADR-016 decision 6:
-//! the similarity between hardware-touching doctors lives in a shared
-//! library, not a shared binary.
+//! rusty-photon-doctor-checks: what central doctor and the per-service
+//! `doctor` subcommands share (docs/services/doctor.md) — ADR-016
+//! decision 6: the similarity between doctors lives in a shared library,
+//! not a shared binary. That is the no-SDK hardware facts and predicates
+//! behind the `hardware.*` check family, and, since D5, the canonical
+//! report schema, the text renderer, and the per-service runner every
+//! service binary's `doctor` subcommand calls.
 //!
 //! Everything here is read-only: `stat`, directory listings, and inventory
 //! queries. Nothing ever opens a device — a running service holds its
@@ -13,6 +14,9 @@
 
 pub mod access;
 pub mod facts;
+pub mod render;
+pub mod report;
+pub mod service;
 pub mod udev;
 
 pub use access::Identity;
