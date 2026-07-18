@@ -11,14 +11,18 @@ never learns device usage (which camera is the guide cam belongs to `rp`).
 decision record; [`docs/plans/service-config-doctor.md`](../plans/service-config-doctor.md)
 tracks the phases.
 
-This document specifies the **D2–D4 scope: diagnosis, repair, and the
-no-SDK hardware checks**. A default run examines the config directory, the
-platform's service manager, and the host's device surface (device nodes,
-USB inventory, udev rules — all read-only), prints a report, and writes
-nothing; `--fix` (D3) additionally applies the machine-applicable fixes
-and re-diagnoses. Per-service SDK-side hardware checks (D5) and the TLS +
-credential lifecycle (D6) extend this binary later; their contracts are
-recorded in the plan and folded in here as they land.
+This document specifies the **D2–D5 scope: diagnosis, repair, the no-SDK
+hardware checks, and the per-service doctors**. A default run examines the
+config directory, the platform's service manager, and the host's device
+surface (device nodes, USB inventory, udev rules — all read-only), prints
+a report, and writes nothing; `--fix` (D3) additionally applies the
+machine-applicable fixes and re-diagnoses. From D5 on, every packaged
+service binary also answers `doctor` itself — its own full-config
+validation, plus SDK-side hardware enumeration on the services that link a
+vendor blob — and central doctor aggregates those answers into the one
+report (§Per-service doctors). The TLS + credential lifecycle (D6) extends
+this binary later; its contract is recorded in the plan and folded in here
+as it lands.
 
 Doctor is a one-shot CLI, not a long-running service: no server, no config
 file of its own, no unit. It lives at `services/doctor` (cargo binary
@@ -33,10 +37,12 @@ graph LR
     configs["config dir<br/>&lt;svc&gt;.json × N"] --> doctor
     sm["service manager<br/>systemd / SCM / brew"] -->|read-only queries| doctor
     hw["device surface<br/>/dev, sysfs, group db, udev rules<br/>(via rusty-photon-doctor-checks)"] -->|read-only probes| doctor
+    svc_up["running Alpaca service<br/>/management/v1/configureddevices"] -->|HTTP query| doctor
+    svc_down["installed, stopped service<br/>rusty-photon-&lt;svc&gt; doctor --json"] -->|shell-out| doctor
     doctor --> report["report<br/>text or --json"]
 ```
 
-Four inputs, one output. A default run is read-only: config files are
+Six inputs, one output. A default run is read-only: config files are
 parsed but never written, every service-manager interaction is a query
 (`list-unit-files`, `show`), never a verb, and every hardware probe is a
 stat, a directory listing, or a read-only inventory query — doctor never
@@ -322,6 +328,87 @@ missing group or udev rule is package/host surgery outside config files,
 and the firmware helper needs network and root. Every failure carries a
 concrete suggestion instead.
 
+## Per-service doctors and aggregation (D5)
+
+The D4 checks stop exactly where a vendor SDK starts (ADR-016 decision 5:
+a doctor that links every vendor blob recreates the file conflict ADR-014
+fixed). D5 crosses that line from the other side: **every packaged service
+binary answers `doctor` itself**, using only what it already links, and
+central doctor aggregates the answers.
+
+### The per-service subcommand
+
+```
+rusty-photon-<svc> doctor [--config <file>] [--json]
+```
+
+Every catalog service binary carries the subcommand. It is additive to the
+existing CLI — a plain flag invocation (what the units run) still starts
+the service — and the run is strictly read-only: it resolves the config
+path the way the service itself does (`--config`, else
+`rusty_photon_config::resolve_config_path`), but never materializes the
+scaffold or mints identities. Output and exit codes follow central
+doctor's contract exactly (text by default, `--json` for the schema, exit
+0/1/2), with `mode: "service"` and the service binary's own version in
+`doctor_version`.
+
+Two checks, the second only on services that link an SDK:
+
+| Check | Services | Trigger |
+|---|---|---|
+| `config.full-shape` | all | The service's config file does not survive the service's **own typed load path** — the same parse a start would perform, `deny_unknown_fields` included, so a typo'd key anywhere in the file is named here (the detail carries serde's path and message). This is the full-config validation D2 deferred: central doctor knows only the shared blocks; the binary that owns the shape validates all of it. An absent file is `ok` — the service writes its defaults on first start, and saying otherwise would fail every fresh install. |
+| `hardware.sdk-devices` | qhy-camera, zwo-camera, zwo-focuser | The SDK cannot see the hardware: enumeration (`ScanQHYCCD`, the ASI/EAF list calls) errors (`fail` — with the D4 `hardware.usb-device` check this splits "not on the bus" from "on the bus but the SDK is blind", which is the firmware/driver signature), or enumerates zero devices (`warn` — the binary cannot see unit state, so unplugged-on-purpose and unplugged-by-accident are indistinguishable here; the D4 checks carry the unit-aware severity). `ok` lists the models the SDK reports. **Enumeration only, never an open** — an open against a device the running service holds is the camera-lock class of bug, and the subcommand must stay safe to run by hand at any time. |
+
+Per-service checks plan no fixes in D5 — machine-applicable repair stays a
+central-doctor concern, so `--fix` semantics live in exactly one binary.
+
+The shared machinery — schema, check constructors, config-load harness,
+text/JSON rendering, exit-code mapping — lives in
+`rusty-photon-doctor-checks` (ADR-016 decision 6: the similarity between
+central doctor and the per-service doctors is a library, not a binary).
+With D5 that crate becomes the **canonical home of the report schema**,
+and central doctor re-exports it; a service's subcommand is its clap
+variant plus a closure handing its typed load to the shared runner.
+
+### Aggregation — the two probe paths
+
+On a packaged host, central doctor extends its diagnosis through each
+installed service, and the two paths are naturally exclusive:
+
+- **Unit active** → the service already enumerated its hardware at
+  startup, so doctor asks it over HTTP: `GET
+  /management/v1/configureddevices` against the service's effective port
+  (Alpaca-class services only — core services expose no management API and
+  are fully covered by the config-side checks). The connection follows the
+  service's own config: HTTPS when its `server.tls` is set (doctor's
+  root-of-trust from the D6 lifecycle), credentials from the D6 machinery
+  when `server.auth` is on. `service.devices` reports the inventory; an
+  active unit that does not answer its own port is a `fail` (that is
+  tomorrow's 2am failure); an authenticated endpoint doctor holds no
+  credential for is a `warn` — the answer proves liveness but not
+  inventory.
+- **Unit installed but not active** → nothing holds the device, and this
+  is precisely the case being debugged: doctor shells out to the unit's
+  own binary — the path the service manager records (systemd `ExecStart=`,
+  the SCM image path, the brew formula bin), `doctor --json --config
+  <dir>/<svc>.json` — and merges the returned checks into the report with
+  the `service` field set. The parse is permissive in both directions
+  (ADR-016 decision 7): unknown fields, statuses, and ops degrade instead
+  of refusing. A binary that predates the subcommand (version skew across
+  nightlies) fails the shell-out without producing a report; that is a
+  `warn` under `service.doctor-probe` naming the skew, never a `fail` —
+  an old binary is not a broken rig.
+
+Both paths are bounded: the HTTP probe by a short request timeout, the
+shell-out by a generous one (an SDK bus scan takes seconds). A timeout is
+reported under the same names — an answer that never comes is a diagnosis,
+not a crash.
+
+For hermetic tests the mock seam extends accordingly: staged unit facts
+carry the binary path (BDD points it at a stub that emits a canned
+report), and the HTTP probe targets whatever port the staged config
+declares, so a scenario can stand up a stub management endpoint.
+
 ## Repair — `--fix` (D3)
 
 `doctor --fix` runs the same diagnosis, applies every **machine-applicable
@@ -373,11 +460,17 @@ Write mechanics:
 ## Report
 
 One schema, shared by the text renderer and `--json`, and — from D5 on — by
-the per-service `doctor` subcommands central doctor aggregates. It therefore
-versions and parses **permissively** (`#[serde(default)]`, unknown fields
-tolerated) — the inverse of the config convention, so a doctor and a service
-from different nightlies degrade to a partial report instead of refusing to
-run (ADR-016 decision 7).
+the per-service `doctor` subcommands central doctor aggregates. Its
+canonical home is `rusty-photon-doctor-checks` (central doctor re-exports
+it), because from D5 every service binary serializes it. It versions and
+parses **permissively** (`#[serde(default)]`, unknown fields tolerated,
+unknown `status`/`mode`/`op` values degrade to explicit `Unknown`
+variants) — the inverse of the config convention, so a doctor and a
+service from different nightlies degrade to a partial report instead of
+refusing to run (ADR-016 decision 7). `mode` is `"service"` in a
+per-service report; `doctor_version` always carries the **emitting**
+binary's version, which is what makes version skew visible in an
+aggregated report.
 
 ```json
 {
@@ -425,13 +518,18 @@ doctor [--config-dir <path>] [--json] [--fix]
 ```
 
 - Default run diagnoses and prints the human-readable report to stdout;
-  it writes nothing.
+  it writes nothing. On a packaged host the diagnosis includes the
+  per-service probes (§Aggregation); a dev checkout has no units to probe.
 - `--fix` applies the machine-applicable fixes (see §Repair), re-diagnoses,
   and reports the post-fix state.
 - `--json` prints the report JSON instead.
 - `--platform-facts <file>` exists only under the `mock` feature (tests).
 - Logging goes to stderr via `tracing` (`debug!` throughout; the report is
   the product, not the log).
+
+The per-service subcommand (`rusty-photon-<svc> doctor [--config <file>]
+[--json]`, §Per-service doctors) mirrors this contract: same output modes,
+same exit codes, no flags beyond these.
 
 Exit codes:
 
@@ -456,7 +554,9 @@ deliberate: a config-repair tool with its own config file would need a doctor.
   per-check tests against tempdir fixtures; the `doctor-checks` crate's pure
   predicates against staged facts, and its gatherer against fake root trees;
   report schema round-trip including a forward-compatibility case (unknown
-  fields, unknown status value from a newer service).
+  fields, unknown status/mode/op values from a newer binary); the shared
+  service-doctor runner against a fake typed-load closure (typo'd key named,
+  absent file ok, exit-code mapping).
 - **BDD** (`services/doctor/tests`, built with the `mock` feature) — seed a
   scratch config dir and a platform-facts file with known-broken states (port
   collision, dangling watchdog service, retired D3s keys, unparseable JSON,
@@ -468,7 +568,17 @@ deliberate: a config-repair tool with its own config file would need a doctor.
   For hardware: stage `hardware` facts (nodes, USB inventory, groups, rule
   contents) and assert each check's fail/warn split against enabled and
   disabled units, plus that a facts file without a `hardware` object skips
-  the family.
+  the family. For aggregation: staged unit facts point the shell-out at
+  stub binaries (canned report, canned garbage, canned clap error for the
+  skew case) and the HTTP probe at a stub management endpoint; assert the
+  merge, the `service` attribution, and that a degraded probe warns
+  instead of failing.
+- **Per-service BDD** — the subcommand itself follows the smoke-suite
+  convention (the tls-auth precedent): one scenario per service asserting
+  `doctor --json` exits 0 on a valid config and exits 1 naming the key on
+  a typo'd one, with the deep behavior (rendering, absent-file, SDK
+  enumeration against the sim/mock backends) covered once in
+  representatives and the shared runner's unit tests.
 - **On-host** (D2 gate, per the plan's all-platforms requirement) — the real
   inspectors validated against a packaged Linux host, the Windows VM (SCM),
   and macOS (brew services). The D4 gatherer gets the same three legs, plus
@@ -477,16 +587,17 @@ deliberate: a config-repair tool with its own config file would need a doctor.
 
 ## MVP scope
 
-**In D2–D4 (this document):** everything above — derived catalog,
+**In D2–D5 (this document):** everything above — derived catalog,
 config-root resolution, platform inspectors, the check list including the
-no-SDK hardware family, the `rusty-photon-doctor-checks` crate, the report
-schema, text + `--json` rendering, exit codes, and `--fix`. No network I/O;
-writes happen only under `--fix`, only to config files; hardware probes
-never open a device.
+no-SDK hardware family, the `rusty-photon-doctor-checks` crate (now also
+the schema's canonical home and the shared service-doctor runner), the
+per-service `doctor` subcommands on all catalog services, aggregation over
+both probe paths, text + `--json` rendering, exit codes, and `--fix`.
+Network I/O is exactly the aggregation probe against local services —
+nothing leaves the host; writes happen only under `--fix`, only to config
+files; hardware probes never open a device, SDK checks enumerate only.
 
 **Deferred, tracked in the plan:**
-- Per-service `doctor` subcommands (full-config validation, SDK-side
-  hardware checks) + aggregation over the report schema — D5.
 - TLS + credential lifecycle (cert generation, ACME, `hash-password`,
   minted observatory credential) — D6.
 - Packaging and install-flow docs — D7.
