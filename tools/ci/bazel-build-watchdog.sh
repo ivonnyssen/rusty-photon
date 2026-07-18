@@ -76,7 +76,7 @@ workspace_hash() {
     ws_root="$(dirname "$ws_root")"
   done
   if [[ "$ws_root" == "/" ]]; then
-    echo "bazel-build-watchdog: no MODULE.bazel/WORKSPACE at or above $PWD" >&2
+    echo "bazel-build-watchdog: no MODULE.bazel/WORKSPACE.bazel/WORKSPACE at or above $PWD" >&2
     return 1
   fi
   if command -v md5 >/dev/null 2>&1; then
@@ -89,6 +89,20 @@ workspace_hash() {
   fi
 }
 
+# Print the live server pid for an output base, if any: pidfile present, pid
+# alive, and its command line naming exactly this output base (guards against
+# a stale pidfile whose pid the OS has recycled; -ww: unlimited width, no
+# truncation).
+server_pid_for_base() {
+  local output_base="$1" pid pidfile="$1/server/server.pid.txt"
+  [[ -f "$pidfile" ]] || return 1
+  pid="$(<"$pidfile")"
+  kill -0 "$pid" 2>/dev/null || return 1
+  ps -ww -o command= -p "$pid" 2>/dev/null |
+    grep -Fq -- "--output_base=$output_base" || return 1
+  printf '%s' "$pid"
+}
+
 # Echo the server's post-mortem evidence into the step log: the JVM's raw
 # stderr/stdout capture (server/jvm.out — fatal exceptions, OOM, crash
 # banners) and the server's own log (java.log — where a netty/event-loop
@@ -97,7 +111,7 @@ workspace_hash() {
 # files, located by workspace hash under the globbed roots (GitHub macOS
 # runner location, macOS default, Linux).
 dump_server_logs() {
-  local reason="$1" ws_hash dir printed=0
+  local reason="$1" ws_hash dir server_pid printed=0
   if ! ws_hash="$(workspace_hash)"; then
     echo "bazel-build-watchdog: ${reason} — cannot locate the server's output base (cause above); skipping server-log dump"
     return
@@ -105,16 +119,26 @@ dump_server_logs() {
   for dir in "$HOME"/Library/Caches/bazel/_bazel_*/"$ws_hash" \
     /private/var/tmp/_bazel_*/"$ws_hash" \
     "$HOME"/.cache/bazel/_bazel_*/"$ws_hash"; do
-    [[ -s "$dir/server/jvm.out" || -s "$dir/java.log" ]] || continue
+    [[ -d "$dir/server" ]] || continue
     printed=1
     echo "::group::bazel-build-watchdog: ${reason} — server logs under ${dir}"
+    # The abrupt-termination crash leaves the server alive as an orphan with
+    # its log tail still buffered (a first capture showed java.log ending
+    # mid-line, minutes stale). SIGQUIT is non-destructive: it makes the JVM
+    # dump its thread stacks and flush, turning the tails below into actual
+    # evidence of the surviving server's state.
+    if server_pid="$(server_pid_for_base "$dir")"; then
+      echo "--- server pid ${server_pid} still alive; SIGQUIT for thread dump + log flush ---"
+      kill -QUIT "$server_pid" 2>/dev/null || true
+      sleep 3
+    fi
     echo "--- tail of ${dir}/server/jvm.out ---"
     tail -n 1000 "$dir/server/jvm.out" 2>/dev/null || true
     echo "--- tail of ${dir}/java.log ---"
     tail -n 1000 "$dir/java.log" 2>/dev/null || true
     echo "::endgroup::"
   done
-  ((printed)) || echo "bazel-build-watchdog: ${reason} — no non-empty server/jvm.out or java.log found"
+  ((printed)) || echo "bazel-build-watchdog: ${reason} — no server directory found for workspace hash ${ws_hash}"
 }
 
 dump_hung_server() {
@@ -124,24 +148,16 @@ dump_hung_server() {
   netstat -an 2>/dev/null | awk 'NR <= 2 || $0 ~ /[.:]443([^0-9]|$)/' || true
   # `bazel info output_base` would queue behind the wedged build command, so
   # locate the server through the on-disk pid files instead.
-  local ws_hash pidfile server_pid output_base
+  local ws_hash server_pid output_base
   if ! ws_hash="$(workspace_hash)"; then
     echo "(cannot locate the server's output base — cause above)"
     echo "::endgroup::"
     return
   fi
-  for pidfile in "$HOME"/Library/Caches/bazel/_bazel_*/"$ws_hash"/server/server.pid.txt \
-    /private/var/tmp/_bazel_*/"$ws_hash"/server/server.pid.txt \
-    "$HOME"/.cache/bazel/_bazel_*/"$ws_hash"/server/server.pid.txt; do
-    [[ -f "$pidfile" ]] || continue
-    server_pid="$(<"$pidfile")"
-    kill -0 "$server_pid" 2>/dev/null || continue
-    output_base="$(dirname "$(dirname "$pidfile")")"
-    # Guard against a stale pidfile whose pid the OS has recycled: the server's
-    # startup args carry its own output base, so only touch a process whose
-    # command line names exactly this one (-ww: unlimited width, no truncation).
-    ps -ww -o command= -p "$server_pid" 2>/dev/null |
-      grep -Fq -- "--output_base=$output_base" || continue
+  for output_base in "$HOME"/Library/Caches/bazel/_bazel_*/"$ws_hash" \
+    /private/var/tmp/_bazel_*/"$ws_hash" \
+    "$HOME"/.cache/bazel/_bazel_*/"$ws_hash"; do
+    server_pid="$(server_pid_for_base "$output_base")" || continue
     echo "--- bazel server pid ${server_pid}, output base ${output_base} ---"
     if command -v jstack >/dev/null 2>&1; then
       jstack "$server_pid" 2>&1 || echo "(jstack could not attach)"
