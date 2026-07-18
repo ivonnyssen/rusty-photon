@@ -157,12 +157,15 @@ fn preserve_owner_and_mode(path: &Path, tmp: &tempfile::NamedTempFile) -> std::i
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(e) => return Err(e),
     };
-    tmp.as_file()
-        .set_permissions(std::fs::Permissions::from_mode(original.mode() & 0o7777))?;
+    // Ownership before mode: chown clears setuid (and setgid on
+    // group-executable files) even for root, so the mode must be applied
+    // to the final owner.
     let staged = tmp.as_file().metadata()?;
     if (staged.uid(), staged.gid()) != (original.uid(), original.gid()) {
         std::os::unix::fs::fchown(tmp.as_file(), Some(original.uid()), Some(original.gid()))?;
     }
+    tmp.as_file()
+        .set_permissions(std::fs::Permissions::from_mode(original.mode() & 0o7777))?;
     tmp.as_file().sync_all()
 }
 
@@ -403,7 +406,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn save_preserves_the_replaced_files_owner() {
-        use std::os::unix::fs::MetadataExt;
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("c.json");
         std::fs::write(&path, "{}").unwrap();
@@ -412,6 +415,11 @@ mod tests {
         // exercised on privileged runs (root CI containers); unprivileged
         // runs still pin the owner across the inode swap.
         let cross_owner = std::os::unix::fs::chown(&path, Some(12345), Some(12345)).is_ok();
+        // The setuid bit doubles as an ordering probe: chown always clears
+        // it (setgid survives on non-group-executable files), so it only
+        // survives a cross-owner save if the mode is applied after the
+        // ownership transfer. Set after the chown above for the same reason.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o4640)).unwrap();
         let before = std::fs::metadata(&path).unwrap();
 
         save(&path, &json!({ "server": { "port": 1 } })).unwrap();
@@ -425,6 +433,11 @@ mod tests {
         if cross_owner {
             assert_eq!((after.uid(), after.gid()), (12345, 12345));
         }
+        assert_eq!(
+            after.permissions().mode() & 0o7777,
+            0o4640,
+            "setuid must survive the ownership transfer (cross-owner run: {cross_owner})"
+        );
     }
 
     #[test]
