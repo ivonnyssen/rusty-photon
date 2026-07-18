@@ -39,8 +39,9 @@ Arguments: $ARGUMENTS
    triage guidance.
 3. Fixing anything means the full quality gate before pushing
    (AGENTS.md rule 4) and the commit-author convention (rule 6).
-4. Between events, pace checks to what is actually pending (Copilot
-   rounds ~5–10 min; windows-latest legs 40–90 min) rather than busy
-   polling. For unattended babysitting, wrap this command in `/loop`.
+4. Between events, run the background watcher the skill doc mandates
+   (§Pacing) — exit on new review / failed check / all checks done —
+   rather than sleeping on assumed durations. For unattended
+   babysitting, wrap this command in `/loop`.
 5. When the exit criteria hold, report merge readiness — checks, review
    rounds, thread status — and stop. Never merge the PR yourself.
