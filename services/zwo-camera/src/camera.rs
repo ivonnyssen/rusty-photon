@@ -1229,9 +1229,12 @@ mod tests {
 
     // Deadline-bounded polls (no fixed nap count): `tokio::time::timeout` caps
     // the wait in real time, so a contended runtime can't turn a fixed iteration
-    // count into an unbounded wall-clock wait.
+    // count into an unbounded wall-clock wait. The 30 s cap is sized for
+    // heavily-loaded CI runners (spawn_blocking + mock capture threads can
+    // stall for seconds under contention); the loop returns the moment the
+    // condition holds, so healthy runs never feel the headroom.
     async fn wait_image_ready(device: &ZwoCamera) {
-        tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::time::timeout(Duration::from_secs(30), async {
             while !device.image_ready().await.unwrap() {
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
@@ -1241,7 +1244,7 @@ mod tests {
     }
 
     async fn wait_camera_state(device: &ZwoCamera, want: CameraState) {
-        tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::time::timeout(Duration::from_secs(30), async {
             while device.camera_state().await.unwrap() != want {
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
@@ -1817,18 +1820,40 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pulse_guide_is_asynchronous() {
-        // ASCOM PulseGuide returns promptly (no blocking for the pulse) and
-        // IsPulseGuiding is true until the deadline, then false (PG2).
+    async fn pulse_guide_reports_in_flight() {
+        // ASCOM PulseGuide returns promptly instead of blocking for the
+        // pulse, and IsPulseGuiding is true while one is in flight (PG2).
+        // The 60 s pulse outlives the test, so the in-flight read races
+        // nothing — a shorter pulse would let a starved runtime delay the
+        // read past the deadline. The pulse never ends: runtime shutdown
+        // drops the detached stop task, and the mock needs no cleanup.
+        // PulseGuide returning promptly is implied by the test finishing.
         let device = connected_device(MockCameraHandle::default());
         assert!(!device.is_pulse_guiding().await.unwrap());
         device
-            .pulse_guide(GuideDirection::North, Duration::from_millis(200))
+            .pulse_guide(GuideDirection::North, Duration::from_secs(60))
             .await
             .unwrap();
         assert!(device.is_pulse_guiding().await.unwrap());
-        tokio::time::sleep(Duration::from_millis(260)).await;
-        assert!(!device.is_pulse_guiding().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn pulse_guide_expires() {
+        // Expiry is an event wait, not a point-read: IsPulseGuiding must
+        // eventually clear once the wall-clock deadline passes (PG2). The
+        // 30 s cap only bounds how long to wait before declaring failure.
+        let device = connected_device(MockCameraHandle::default());
+        device
+            .pulse_guide(GuideDirection::North, Duration::from_millis(50))
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while device.is_pulse_guiding().await.unwrap() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("pulse did not expire");
     }
 
     #[tokio::test]

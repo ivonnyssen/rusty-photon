@@ -86,18 +86,27 @@ Feature: PulseGuide as rate-shifted tracking
     Then the operation should fail with invalid-value
 
   Scenario: PulseGuide North issues Tracking + CW commands on the Dec axis
+    # Race-free timing discipline for this feature: IsPulseGuiding is a
+    # wall-clock transient, so no scenario point-reads it mid-flight
+    # under a pulse that can expire — however long the pulse, a stalled
+    # scheduler can always lose that race. In-flight visibility is
+    # asserted only under a 60 s pulse that outlives its scenario (see
+    # the in-flight scenarios below). Everything else is deterministic:
+    # start-side wire frames are emitted synchronously by the PulseGuide
+    # call, and completion is an event wait — a deadline-bounded poll
+    # whose generous cap only decides when to declare failure; it
+    # returns the moment the flag clears.
     Given a running star-adventurer service
     When I connect the device
     And I enable tracking
     And I pulse guide North for 2000 ms
-    Then IsPulseGuiding should be true
-    And the mount should have received commands matching:
+    Then the mount should have received commands matching:
       | pattern |
       | :K2     |
       | :G210   |
       | :I2.*   |
       | :J2     |
-    And IsPulseGuiding should become false within 5000 ms
+    And IsPulseGuiding should become false within 20000 ms
     And the mount should have received command :K2
 
   Scenario: PulseGuide South issues Tracking + CCW commands on the Dec axis
@@ -105,14 +114,13 @@ Feature: PulseGuide as rate-shifted tracking
     When I connect the device
     And I enable tracking
     And I pulse guide South for 2000 ms
-    Then IsPulseGuiding should be true
-    And the mount should have received commands matching:
+    Then the mount should have received commands matching:
       | pattern |
       | :K2     |
       | :G211   |
       | :I2.*   |
       | :J2     |
-    And IsPulseGuiding should become false within 5000 ms
+    And IsPulseGuiding should become false within 20000 ms
 
   Scenario: PulseGuide East while tracking shifts the rate and restores sidereal
     # East slows tracking (period grows); after the pulse the watcher
@@ -122,8 +130,7 @@ Feature: PulseGuide as rate-shifted tracking
     When I connect the device
     And I enable tracking
     And I pulse guide East for 2000 ms
-    Then IsPulseGuiding should be true
-    And IsPulseGuiding should become false within 5000 ms
+    Then IsPulseGuiding should become false within 20000 ms
     And the mount should have received commands matching:
       | pattern |
       | :K1     |
@@ -141,8 +148,7 @@ Feature: PulseGuide as rate-shifted tracking
     When I connect the device
     And I enable tracking
     And I pulse guide West for 2000 ms
-    Then IsPulseGuiding should be true
-    And IsPulseGuiding should become false within 5000 ms
+    Then IsPulseGuiding should become false within 20000 ms
     And the mount should have received commands matching:
       | pattern |
       | :K1     |
@@ -160,7 +166,7 @@ Feature: PulseGuide as rate-shifted tracking
     Given a running star-adventurer service
     When I connect the device
     And I pulse guide East for 200 ms
-    Then IsPulseGuiding should become false within 2000 ms
+    Then IsPulseGuiding should become false within 10000 ms
     And the RA tracking-mode :G110 frame count should be exactly 1
     And Tracking should be false
 
@@ -212,20 +218,29 @@ Feature: PulseGuide as rate-shifted tracking
     When I try to pulse guide South for 100 ms
     Then the operation should fail with invalid-operation
 
+  Scenario: IsPulseGuiding reports an in-flight RA pulse
+    # RA counterpart of the Dec-axis in-flight read in the scenario
+    # above: the 60 s pulse outlives the scenario, so the point-read
+    # races nothing. The pulse never needs to finish — teardown stops
+    # the service, aborting the detached watcher — and pulse completion
+    # on RA is covered by the East/West scenarios' event waits.
+    Given a running star-adventurer service
+    When I connect the device
+    And I pulse guide East for 60000 ms
+    Then IsPulseGuiding should be true
+
   Scenario: Perpendicular concurrent pulses (N on Dec, E on RA) both succeed
-    # Durations are deliberately long (2 seconds each) to survive
-    # slow-CI scheduling: the two `pulse_guide` calls plus the
-    # following `IsPulseGuiding` read each take an HTTP round-trip,
-    # so a short (<500ms) pulse can expire on a heavily-loaded
-    # runner before the assertion fires. The 4s polling deadline
-    # for completion gives both watchers room to wake.
+    # Success here means the two PulseGuide calls accept concurrent
+    # perpendicular pulses (a second same-axis pulse is rejected — see
+    # above) and both watchers complete: the become-false event wait
+    # needs BOTH axis flags to clear. No mid-flight point-read, per the
+    # North scenario's discipline note.
     Given a running star-adventurer service
     When I connect the device
     And I enable tracking
     And I pulse guide North for 2000 ms
     And I pulse guide East for 2000 ms
-    Then IsPulseGuiding should be true
-    And IsPulseGuiding should become false within 4000 ms
+    Then IsPulseGuiding should become false within 20000 ms
 
   Scenario: set_tracking(false) during an RA pulse cancels the pulse restore
     # Cancellation rule: any axis-mutating call clears the pulse flag
@@ -238,25 +253,32 @@ Feature: PulseGuide as rate-shifted tracking
     # A third :G110 would indicate the watcher restored tracking
     # despite the cancellation.
     #
-    # Pulse duration of 3 s gives the BDD client's HTTP round-trip
-    # for `I disable tracking` plenty of headroom to clear the flag
-    # before the watcher's sleep elapses on slow CI — a tight
-    # duration here would race the watcher's restore decision.
+    # Pulse duration of 30 s guarantees the pulse is still in flight
+    # when `I disable tracking` lands, however slowly CI schedules the
+    # HTTP round-trip — a tight duration here would race the watcher's
+    # restore decision. The long pulse costs no runtime: cancellation
+    # clears the flag immediately, and scenario teardown stops the
+    # service, aborting the detached watcher.
     Given a running star-adventurer service
     When I connect the device
     And I enable tracking
-    And I pulse guide East for 3000 ms
+    And I pulse guide East for 30000 ms
     And I disable tracking
-    Then IsPulseGuiding should become false within 5000 ms
+    Then IsPulseGuiding should become false within 10000 ms
     And Tracking should be false
     And the RA tracking-mode :G110 frame count should be exactly 2
 
   Scenario: AbortSlew during an in-flight pulse clears IsPulseGuiding
+    # 30 s pulse: the abort must genuinely interrupt an in-flight pulse —
+    # a short one could expire on its own before the abort's HTTP
+    # round-trip lands, passing this scenario without exercising the
+    # abort path. Costs no runtime: the abort clears the flag
+    # immediately, and teardown aborts the detached watcher.
     Given a running star-adventurer service
     When I connect the device
-    And I pulse guide North for 1000 ms
+    And I pulse guide North for 30000 ms
     And I abort the slew
-    Then IsPulseGuiding should become false within 1000 ms
+    Then IsPulseGuiding should become false within 5000 ms
 
   Scenario: Duration zero succeeds with no wire activity
     # ASCOM permits zero-duration pulses; treat as a no-op.

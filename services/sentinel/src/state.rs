@@ -68,6 +68,11 @@ pub struct ServiceHealthStatus {
     /// Backoff-scheduled earliest next autonomous restart; `None` when none
     /// is scheduled.
     pub next_restart_epoch_ms: Option<u64>,
+    /// The service's listening port, derived by discovery from its config's
+    /// `server` block (`None` when no probe is derivable). Exposed through
+    /// `GET /api/services` so clients can match a device URL to its service.
+    #[serde(default)]
+    pub probe_port: Option<u16>,
     #[serde(with = "humantime_serde")]
     pub poll_interval: Duration,
 }
@@ -78,6 +83,7 @@ impl ServiceHealthStatus {
         name: String,
         unit: String,
         run_state: RunState,
+        probe_port: Option<u16>,
         poll_interval: Duration,
     ) -> Self {
         Self {
@@ -90,6 +96,7 @@ impl ServiceHealthStatus {
             restarts_in_outage: 0,
             total_restarts: 0,
             next_restart_epoch_ms: None,
+            probe_port,
             poll_interval,
         }
     }
@@ -164,6 +171,7 @@ impl SharedState {
                 Some(slot) => {
                     slot.unit = svc.unit.clone();
                     slot.run_state = svc.state;
+                    slot.probe_port = svc.probe.as_ref().map(|p| p.port);
                     if !svc.state.supervised() {
                         slot.health = ServiceHealth::Unknown;
                         slot.consecutive_failures = 0;
@@ -175,6 +183,7 @@ impl SharedState {
                     svc.name.clone(),
                     svc.unit.clone(),
                     svc.state,
+                    svc.probe.as_ref().map(|p| p.port),
                     poll_interval,
                 )),
             }
@@ -451,6 +460,7 @@ mod tests {
             "svc".to_string(),
             "rusty-photon-svc".to_string(),
             RunState::Running,
+            None,
             Duration::from_secs(30),
         );
         status.health = ServiceHealth::Down;
@@ -465,6 +475,7 @@ mod tests {
             "another".to_string(),
             "rusty-photon-another".to_string(),
             RunState::Running,
+            None,
             Duration::from_secs(5),
         );
         state.set_service_health(other);

@@ -1,10 +1,9 @@
 Feature: Repair — doctor --fix
   A default doctor run is read-only. --fix applies the machine-applicable
   fixes the checks planned — a port collision moved back to a free catalog
-  default, a retired D3s key deleted, a ui-htmx driver URL's wrong localhost
-  port corrected, a spurious /api/v1 suffix stripped from a ui-htmx driver
-  URL — then re-diagnoses and reports the post-fix state, exit code
-  included. Writes go through the same atomic save path the services' own
+  default, a retired key deleted (sentinel's services map, ui-htmx's
+  drivers map) — then re-diagnoses and reports the post-fix state, exit
+  code included. Writes go through the same atomic save path the services' own
   config.apply uses, every field doctor does not touch is preserved (the
   formatting normalizes to the pretty-printed shape config.apply writes),
   and a second --fix run applies nothing. Judgment calls stay suggestions:
@@ -53,55 +52,19 @@ Feature: Repair — doctor --fix
     And the config file "sentinel.json" has the string "http://localhost:11115" at "/operation_watchdog/rp_url"
     And the report has no checks named "config.retired-keys"
 
-  Scenario: A retired ui-htmx sentinel_service field is deleted
+  Scenario: The retired ui-htmx drivers map is deleted
     Given a config directory with "ui-htmx.json" containing:
       """
       { "server": { "port": 11120 },
         "drivers": {
-          "qhy-focuser": { "base_url": "http://localhost:11113", "sentinel_service": "qhy-focuser" } },
+          "qhy-focuser": { "base_url": "http://localhost:11113" } },
         "sentinel": { "base_url": "http://localhost:11114" } }
       """
     When I run doctor with --fix and --json
     Then doctor exits with code 0
     And the report records an applied fix for check "config.retired-keys" on service "ui-htmx"
-    And the config file "ui-htmx.json" has no value at "/drivers/qhy-focuser/sentinel_service"
-    And the config file "ui-htmx.json" has the string "http://localhost:11113" at "/drivers/qhy-focuser/base_url"
-
-  Scenario: A wrong localhost driver port is rewritten to the service's effective port
-    Given a config directory with "qhy-focuser.json" containing:
-      """
-      { "server": { "port": 11113 } }
-      """
-    And a config file "ui-htmx.json" containing:
-      """
-      { "server": { "port": 11120 },
-        "drivers": {
-          "qhy-focuser": { "base_url": "http://localhost:11114" } } }
-      """
-    When I run doctor with --fix and --json
-    Then doctor exits with code 0
-    And the report records an applied fix for check "joins.ui-htmx-driver-port" on service "ui-htmx"
-    And the config file "ui-htmx.json" has the string "http://localhost:11113" at "/drivers/qhy-focuser/base_url"
-
-  Scenario: A spurious /api/v1 suffix is stripped from a ui-htmx driver URL only
-    Given a config directory with "ui-htmx.json" containing:
-      """
-      { "server": { "port": 11120 },
-        "drivers": {
-          "qhy-focuser": { "base_url": "http://localhost:11113/api/v1" } } }
-      """
-    And a config file "rp.json" containing:
-      """
-      { "server": { "port": 11115 },
-        "equipment": {
-          "cameras": [ { "alpaca_url": "http://localhost:11121/api/v1" } ] } }
-      """
-    When I run doctor with --fix and --json
-    Then doctor exits with code 0
-    And the report records an applied fix for check "urls.spurious-suffix" on service "ui-htmx"
-    And the config file "ui-htmx.json" has the string "http://localhost:11113" at "/drivers/qhy-focuser/base_url"
-    And the config file "rp.json" has the string "http://localhost:11121/api/v1" at "/equipment/cameras/0/alpaca_url"
-    And the report contains a "warn" check named "urls.spurious-suffix" for service "rp"
+    And the config file "ui-htmx.json" has no value at "/drivers"
+    And the config file "ui-htmx.json" has the string "http://localhost:11114" at "/sentinel/base_url"
 
   Scenario: A second --fix run applies nothing
     Given a config directory with "sentinel.json" containing:

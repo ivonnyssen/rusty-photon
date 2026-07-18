@@ -116,76 +116,6 @@ pub fn layout_with_nav(title: &str, active: NavTab, body: Markup) -> Markup {
     }
 }
 
-/// One driver link on the index.
-pub struct DriverLink {
-    pub service: String,
-    pub title: String,
-}
-
-/// The roster-derived section of the index (devices from rp's config, each
-/// with a synthesized `/config/rp:{kind}:{id}` page).
-pub enum RosterLinks {
-    /// No `rp` target in the BFF config — the section is not rendered.
-    NotConfigured,
-    /// rp did not answer; the section renders a note instead of links.
-    Unreachable(String),
-    /// The roster entries (possibly empty).
-    Entries(Vec<DriverLink>),
-}
-
-fn service_links(drivers: &[DriverLink]) -> Markup {
-    html! {
-        ul.service-list {
-            @for d in drivers {
-                li {
-                    a href=(format!("/config/{}", d.service)) {
-                        span { (d.title) }
-                        span.svc-id { (d.service) }
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// The index: links to every configurable driver the BFF knows about, plus the
-/// devices in rp's equipment roster when an rp target is configured.
-pub fn index_page(drivers: &[DriverLink], roster: &RosterLinks) -> Markup {
-    layout(
-        "rusty-photon · configuration",
-        html! {
-            h1 { "Configuration" }
-            p.subtitle {
-                "Per-device settings. Changes are applied by the driver and take "
-                "effect with a brief in-process reload."
-            }
-            @if drivers.is_empty() {
-                p.subtitle { "No drivers are configured. Add them to the BFF config file." }
-            } @else {
-                (service_links(drivers))
-            }
-            @match roster {
-                RosterLinks::NotConfigured => {}
-                RosterLinks::Unreachable(err) => {
-                    h2.section-head { "From rp's roster" }
-                    p.subtitle { "rp did not answer: " (err) }
-                }
-                RosterLinks::Entries(entries) => {
-                    h2.section-head { "From rp's roster" }
-                    @if entries.is_empty() {
-                        p.subtitle {
-                            "rp has no equipment configured yet — add devices on the "
-                            a href="/equipment" { "Equipment" } " page."
-                        }
-                    } @else {
-                        (service_links(entries))
-                    }
-                }
-            }
-        },
-    )
-}
-
 // --- the schema-derived field model -------------------------------------------
 
 /// How a submitted form value is coerced back into JSON for a single leaf,
@@ -1735,52 +1665,6 @@ mod tests {
             markup.contains("does not expose configuration actions"),
             "{markup}"
         );
-    }
-
-    #[test]
-    fn index_page_lists_drivers() {
-        let drivers = vec![
-            DriverLink {
-                service: "dsd-fp2".to_string(),
-                title: "Deep Sky Dad FP2".to_string(),
-            },
-            DriverLink {
-                service: "qhy-focuser".to_string(),
-                title: "QHY Focuser".to_string(),
-            },
-        ];
-        let markup = index_page(&drivers, &RosterLinks::NotConfigured).into_string();
-        assert!(markup.contains(r#"href="/config/dsd-fp2""#), "{markup}");
-        assert!(markup.contains(r#"href="/config/qhy-focuser""#), "{markup}");
-        assert!(markup.contains("QHY Focuser"), "{markup}");
-        // Without an rp target the roster section is absent entirely.
-        assert!(!markup.contains("From rp's roster"), "{markup}");
-    }
-
-    #[test]
-    fn index_page_renders_roster_links_and_states() {
-        let drivers = vec![DriverLink {
-            service: "dsd-fp2".to_string(),
-            title: "Deep Sky Dad FP2".to_string(),
-        }];
-        let entries = RosterLinks::Entries(vec![DriverLink {
-            service: "rp:cameras:main-cam".to_string(),
-            title: "Main Camera".to_string(),
-        }]);
-        let markup = index_page(&drivers, &entries).into_string();
-        assert!(markup.contains("From rp's roster"), "{markup}");
-        assert!(
-            markup.contains(r#"href="/config/rp:cameras:main-cam""#),
-            "{markup}"
-        );
-
-        let down = RosterLinks::Unreachable("connection refused".to_string());
-        let markup = index_page(&drivers, &down).into_string();
-        assert!(markup.contains("rp did not answer"), "{markup}");
-
-        let empty = RosterLinks::Entries(vec![]);
-        let markup = index_page(&drivers, &empty).into_string();
-        assert!(markup.contains("no equipment configured yet"), "{markup}");
     }
 
     // --- merge_form ----------------------------------------------------------

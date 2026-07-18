@@ -368,6 +368,9 @@ async fn services_handler(State(dashboard): State<DashboardState>) -> impl IntoR
                 "restarts_in_outage": s.restarts_in_outage,
                 "total_restarts": s.total_restarts,
                 "next_restart_epoch_ms": s.next_restart_epoch_ms,
+                // The service's listening port from its config's `server`
+                // block; null when discovery could not derive a probe.
+                "probe_port": s.probe_port,
                 // Integer ms on the wire, like polling_interval_ms above.
                 "poll_interval_ms": duration_to_ms_for_js(s.poll_interval),
             })
@@ -532,6 +535,7 @@ mod tests {
                 "<script>svc</script>".to_string(),
                 "rusty-photon-svc".to_string(),
                 RunState::Running,
+                None,
                 Duration::from_secs(30),
             ));
             s.add_notification(NotificationRecord {
@@ -692,6 +696,7 @@ mod tests {
                 restarts_in_outage: 0,
                 total_restarts: 3,
                 next_restart_epoch_ms: None,
+                probe_port: Some(11131),
                 poll_interval: Duration::from_secs(30),
             });
         }
@@ -721,6 +726,7 @@ mod tests {
         assert_eq!(json[0]["restarts_in_outage"], 0);
         assert_eq!(json[0]["total_restarts"], 3);
         assert_eq!(json[0]["next_restart_epoch_ms"], serde_json::Value::Null);
+        assert_eq!(json[0]["probe_port"], 11131);
         assert_eq!(json[0]["poll_interval_ms"], 30000);
     }
 

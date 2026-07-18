@@ -1,12 +1,13 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 //! `ui-htmx` — the server-rendered web configuration UI (BFF) for rusty-photon.
 //!
-//! A client of the drivers (not part of `rp`): it reads and writes each driver's
-//! configuration through the driver's own `config.get` / `config.schema` /
-//! `config.apply` ASCOM actions, rendering the form **generically from the
-//! driver's JSON Schema** (see [`pages`]) with axum + Maud + HTMX. One BFF
-//! configures **any** number of drivers, addressed by service id under
-//! `/config/{service}`. See
+//! A client of rp and the drivers (not part of `rp`): every config target
+//! derives from rp's equipment roster (`rp:{kind}:{id}`) or is rp itself —
+//! there is no second, hand-maintained device list (#569). Device pages read
+//! and write the driver's configuration through its own `config.get` /
+//! `config.schema` / `config.apply` ASCOM actions, rendering the form
+//! **generically from the driver's JSON Schema** (see [`pages`]) with axum +
+//! Maud + HTMX. See
 //! [`docs/services/ui-htmx.md`](../../../docs/services/ui-htmx.md).
 
 pub mod assets;
@@ -57,7 +58,7 @@ pub use sentinel_client::{
     HttpSentinelClient, RestartOutcome, SentinelClient, SentinelClientError,
 };
 
-use pages::{Banner, DriverLink, FieldModel, Page};
+use pages::{Banner, FieldModel, Page};
 
 /// One configured driver: its display strings plus the client that speaks the
 /// config-action protocol to it.
@@ -66,11 +67,12 @@ struct DriverHandle {
     title: String,
     subtitle: String,
     client: Arc<dyn ConfigClient>,
-    /// This driver's name at Sentinel (the `{name}` in
-    /// `POST /api/services/{name}/restart` — the discovered unit minus its
-    /// `rusty-photon-` prefix, which is the driver's own service id). `Some`
-    /// only when the BFF has a `sentinel` block configured — it gates every
-    /// restart affordance.
+    /// This target's name at Sentinel (the `{name}` in
+    /// `POST /api/services/{name}/restart`): `rp` for rp's own page, and for
+    /// a roster-derived device the discovered service whose `probe_port`
+    /// matches the device's `alpaca_url` (see [`resolve_sentinel_service`]).
+    /// `Some` only when the BFF has a `sentinel` block configured — it gates
+    /// every restart affordance.
     sentinel_service: Option<String>,
 }
 
@@ -106,14 +108,18 @@ pub struct RpState {
     pub(crate) stream_auth: Option<(String, String)>,
 }
 
-/// Shared handler state: every configured driver, keyed by service id, plus
-/// the optional rp-backed surface state and the optional Sentinel restart
-/// client the restart affordances call.
+/// Shared handler state: the pre-built handles (production holds only the
+/// reserved `rp` entry; tests inject stubs under arbitrary ids), the
+/// rp-backed surface state, and the optional Sentinel restart client the
+/// restart affordances call.
 #[derive(Clone)]
 pub struct AppState {
-    drivers: Arc<BTreeMap<String, DriverHandle>>,
+    handles: Arc<BTreeMap<String, DriverHandle>>,
     rp: Option<Arc<RpState>>,
     sentinel: Option<Arc<dyn SentinelClient>>,
+    /// The sentinel target's normalized host (see [`normalized_host`]) — the
+    /// same-host guard for the roster-derived restart match.
+    sentinel_host: Option<String>,
     /// Ends open SSE proxy streams on service shutdown — axum's graceful
     /// shutdown does not close them on its own (axum #2673); `main` links this
     /// to the `ServiceRunner` shutdown (the same pattern as rp's `sse_shutdown`).
@@ -179,11 +185,10 @@ fn build_http_client(
 const RP_SERVICE: &str = "rp";
 
 impl AppState {
-    /// Build the production state: an `AlpacaConfigClient` over a `reqwest`-backed
-    /// `HttpClient` (CA trust + optional Basic auth) for every configured driver,
-    /// plus — when an `rp` target is configured — a `RestConfigClient` under the
-    /// reserved `rp` key for rp's own config page, plus an `HttpSentinelClient`
-    /// when a `sentinel` block is configured.
+    /// Build the production state: a `RestConfigClient` under the reserved
+    /// `rp` key for rp's own config page (the required `rp` target), plus an
+    /// `HttpSentinelClient` when a `sentinel` block is configured. Every
+    /// device target is roster-derived at request time ([`resolve_service`]).
     pub fn from_config(config: &Config) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let sentinel: Option<Arc<dyn SentinelClient>> = match &config.sentinel {
             Some(target) => {
@@ -197,96 +202,65 @@ impl AppState {
             }
             None => None,
         };
+        let sentinel_host = config
+            .sentinel
+            .as_ref()
+            .and_then(|t| normalized_host(&t.base_url));
 
-        let mut drivers = BTreeMap::new();
-        for (service, target) in &config.drivers.0 {
-            // `rp` is reserved for the rp target so `/config/rp` is unambiguous.
-            if service == RP_SERVICE {
-                return Err(format!(
-                    "the drivers map must not contain an entry named {RP_SERVICE:?}; \
-                     configure the rp orchestrator via the top-level `rp` target instead"
-                )
-                .into());
-            }
-            let http = build_http_client(
-                &format!("driver {service:?}"),
-                &target.base_url,
-                target.auth.as_ref(),
-                target.ca_cert_path.as_deref(),
-            )?;
-            let client = AlpacaConfigClient::new(
-                http,
-                &target.base_url,
-                &target.device_type,
-                target.device_number,
-            );
-            // The restart affordances render only with a Sentinel to call;
-            // the Sentinel-side name is the driver's own service id (Sentinel
-            // discovers the `rusty-photon-{id}` unit and strips the prefix).
-            let sentinel_service = sentinel.as_ref().map(|_| service.clone());
-            drivers.insert(
-                service.clone(),
-                DriverHandle {
-                    title: target.name.clone().unwrap_or_else(|| service.clone()),
-                    subtitle: format!("{service} · {}", target.device_type),
-                    client: Arc::new(client),
-                    sentinel_service,
-                },
-            );
-        }
-        let mut rp_state = None;
-        if let Some(rp) = &config.rp {
-            let http = build_http_client(
-                "rp",
-                &rp.base_url,
-                rp.auth.as_ref(),
+        let rp = &config.rp;
+        let http = build_http_client(
+            "rp",
+            &rp.base_url,
+            rp.auth.as_ref(),
+            rp.ca_cert_path.as_deref(),
+        )?;
+        let config_client: Arc<dyn ConfigClient> =
+            Arc::new(RestConfigClient::new(Arc::clone(&http), &rp.base_url));
+        let mut handles = BTreeMap::new();
+        handles.insert(
+            RP_SERVICE.to_string(),
+            DriverHandle {
+                title: "rp".to_string(),
+                subtitle: "rp · orchestrator (REST)".to_string(),
+                client: Arc::clone(&config_client),
+                // rp has no in-process reload — every apply is
+                // restart-required — so the Sentinel affordance matters
+                // most here. Sentinel-side name: the `rp` convention.
+                sentinel_service: sentinel.as_ref().map(|_| RP_SERVICE.to_string()),
+            },
+        );
+        let rp_state = Some(Arc::new(RpState {
+            api: Arc::new(rp_client::RestRpApi::new(Arc::clone(&http), &rp.base_url)),
+            config_client,
+            probe_http: Arc::new(
+                probe::ReqwestProbeHttp::new(rp.ca_cert_path.as_deref())
+                    .map_err(|e| format!("rp target: {e}"))?,
+            ),
+            ca_cert_path: rp.ca_cert_path.clone(),
+            base_url: rp.base_url.clone(),
+            stream_client: rusty_photon_tls::client::build_reqwest_client(
                 rp.ca_cert_path.as_deref(),
-            )?;
-            let config_client: Arc<dyn ConfigClient> =
-                Arc::new(RestConfigClient::new(Arc::clone(&http), &rp.base_url));
-            drivers.insert(
-                RP_SERVICE.to_string(),
-                DriverHandle {
-                    title: "rp".to_string(),
-                    subtitle: "rp · orchestrator (REST)".to_string(),
-                    client: Arc::clone(&config_client),
-                    // rp has no in-process reload — every apply is
-                    // restart-required — so the Sentinel affordance matters
-                    // most here. Sentinel-side name: the `rp` convention.
-                    sentinel_service: sentinel.as_ref().map(|_| RP_SERVICE.to_string()),
-                },
-            );
-            rp_state = Some(Arc::new(RpState {
-                api: Arc::new(rp_client::RestRpApi::new(Arc::clone(&http), &rp.base_url)),
-                config_client,
-                probe_http: Arc::new(
-                    probe::ReqwestProbeHttp::new(rp.ca_cert_path.as_deref())
-                        .map_err(|e| format!("rp target: {e}"))?,
-                ),
-                ca_cert_path: rp.ca_cert_path.clone(),
-                base_url: rp.base_url.clone(),
-                stream_client: rusty_photon_tls::client::build_reqwest_client(
-                    rp.ca_cert_path.as_deref(),
-                )
-                .map_err(|e| format!("rp target: failed to build stream client: {e}"))?,
-                stream_auth: rp
-                    .auth
-                    .as_ref()
-                    .map(|a| (a.username.clone(), a.password.clone())),
-            }));
-        }
+            )
+            .map_err(|e| format!("rp target: failed to build stream client: {e}"))?,
+            stream_auth: rp
+                .auth
+                .as_ref()
+                .map(|a| (a.username.clone(), a.password.clone())),
+        }));
         Ok(Self {
-            drivers: Arc::new(drivers),
+            handles: Arc::new(handles),
             rp: rp_state,
             sentinel,
+            sentinel_host,
             sse_shutdown: tokio_util::sync::CancellationToken::new(),
         })
     }
 
-    /// Build single-driver state from an explicit client (tests inject a stub).
+    /// Build single-handle state from an explicit client (tests inject a stub
+    /// to drive handler paths the end-to-end suite can't produce).
     pub fn with_client(service: &str, client: Arc<dyn ConfigClient>) -> Self {
-        let mut drivers = BTreeMap::new();
-        drivers.insert(
+        let mut handles = BTreeMap::new();
+        handles.insert(
             service.to_string(),
             DriverHandle {
                 title: service.to_string(),
@@ -296,22 +270,23 @@ impl AppState {
             },
         );
         Self {
-            drivers: Arc::new(drivers),
+            handles: Arc::new(handles),
             rp: None,
             sentinel: None,
+            sentinel_host: None,
             sse_shutdown: tokio_util::sync::CancellationToken::new(),
         }
     }
 
     /// [`AppState::with_client`] plus a Sentinel client (tests inject stubs for
-    /// both), with the Sentinel-side name being the service id (as always).
+    /// both), with the Sentinel-side name being the service id.
     pub fn with_client_and_sentinel(
         service: &str,
         client: Arc<dyn ConfigClient>,
         sentinel: Arc<dyn SentinelClient>,
     ) -> Self {
-        let mut drivers = BTreeMap::new();
-        drivers.insert(
+        let mut handles = BTreeMap::new();
+        handles.insert(
             service.to_string(),
             DriverHandle {
                 title: service.to_string(),
@@ -321,9 +296,10 @@ impl AppState {
             },
         );
         Self {
-            drivers: Arc::new(drivers),
+            handles: Arc::new(handles),
             rp: None,
             sentinel: Some(sentinel),
+            sentinel_host: None,
             sse_shutdown: tokio_util::sync::CancellationToken::new(),
         }
     }
@@ -336,8 +312,8 @@ impl AppState {
         api: Arc<dyn rp_client::RpApi>,
         probe_http: Arc<dyn probe::ProbeHttp>,
     ) -> Self {
-        let mut drivers = BTreeMap::new();
-        drivers.insert(
+        let mut handles = BTreeMap::new();
+        handles.insert(
             RP_SERVICE.to_string(),
             DriverHandle {
                 title: "rp".to_string(),
@@ -347,8 +323,9 @@ impl AppState {
             },
         );
         Self {
-            drivers: Arc::new(drivers),
+            handles: Arc::new(handles),
             sentinel: None,
+            sentinel_host: None,
             rp: Some(Arc::new(RpState {
                 config_client,
                 api,
@@ -382,6 +359,74 @@ impl AppState {
         }
         self
     }
+
+    /// Attach a Sentinel client + target base URL to the test state (mirrors
+    /// production's `sentinel` block, enabling the roster-derived restart
+    /// match in [`resolve_service`]).
+    #[must_use]
+    pub fn with_sentinel_client(
+        mut self,
+        sentinel: Arc<dyn SentinelClient>,
+        base_url: &str,
+    ) -> Self {
+        self.sentinel = Some(sentinel);
+        self.sentinel_host = normalized_host(base_url);
+        self
+    }
+}
+
+/// The URL's host, lowercased, with every loopback spelling (`localhost`,
+/// `127.0.0.1`, `[::1]`) collapsed to one class — so "same host" comparisons
+/// treat a sentinel at `127.0.0.1` and a device at `localhost` as one box.
+fn normalized_host(url: &str) -> Option<String> {
+    let host = reqwest::Url::parse(url)
+        .ok()?
+        .host_str()?
+        .to_ascii_lowercase();
+    Some(match host.as_str() {
+        "localhost" | "127.0.0.1" | "[::1]" | "::1" => "loopback".to_string(),
+        _ => host,
+    })
+}
+
+/// The Sentinel-side name of the service serving `alpaca_url`, when there is
+/// one: the device URL's port is matched against Sentinel's discovered
+/// services (`GET /api/services` `probe_port`), guarded to the sentinel
+/// target's own host — Sentinel restarts processes on its own box, so a
+/// device on another host must never grow a restart button that would bounce
+/// an unrelated local service. The port must be explicit in the URL: falling
+/// back to the scheme default (80/443) would let a mistyped portless URL
+/// match an unrelated service. The lookup is time-bounded — the affordance
+/// is page decoration, and a hung Sentinel must not stall rendering the
+/// form. Sentinel unreachable or slow, no port, or no match degrades to no
+/// affordance (the page still renders).
+async fn resolve_sentinel_service(
+    sentinel: &dyn SentinelClient,
+    sentinel_host: &str,
+    alpaca_url: &str,
+) -> Option<String> {
+    // The same bound sentinel's own health probes use.
+    const LOOKUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+    if normalized_host(alpaca_url)? != sentinel_host {
+        return None;
+    }
+    let port = reqwest::Url::parse(alpaca_url).ok()?.port()?;
+    match tokio::time::timeout(LOOKUP_TIMEOUT, sentinel.services()).await {
+        Ok(Ok(services)) => services
+            .into_iter()
+            .find(|s| s.probe_port == Some(port))
+            .map(|s| s.name),
+        Ok(Err(e)) => {
+            tracing::debug!("sentinel service list unavailable, no restart affordance: {e}");
+            None
+        }
+        Err(_) => {
+            tracing::debug!(
+                "sentinel service list timed out after {LOOKUP_TIMEOUT:?}, no restart affordance"
+            );
+            None
+        }
+    }
 }
 
 /// Why [`resolve_service`] found no usable driver behind a `/config/{service}`
@@ -400,14 +445,16 @@ pub(crate) enum ResolveError {
     BadRosterEntry(String),
 }
 
-/// Resolve a `/config/{service}` key to its driver handle: a static entry from
-/// the config's `drivers` map (or the reserved `rp` entry), else a
-/// **roster-derived** `rp:{kind}:{id}` target synthesized from rp's config —
-/// the device's `alpaca_url`/number from its roster entry, the ASCOM type from
-/// its kind, called without credentials (rp redacts per-device auth; an authed
-/// device needs its own static `drivers` entry).
+/// Resolve a `/config/{service}` key to its driver handle: the reserved `rp`
+/// entry (or a test-injected handle), else a **roster-derived**
+/// `rp:{kind}:{id}` target synthesized from rp's config — the device's
+/// `alpaca_url`/number from its roster entry, the ASCOM type from its kind,
+/// called without credentials (rp redacts per-device auth; an authed device
+/// is configured from its own setup UI or the driver's config file). With a
+/// `sentinel` block configured, the device's supervising service is derived
+/// by [`resolve_sentinel_service`] so the page can offer Restart-via-Sentinel.
 async fn resolve_service(state: &AppState, service: &str) -> Result<DriverHandle, ResolveError> {
-    if let Some(handle) = state.drivers.get(service) {
+    if let Some(handle) = state.handles.get(service) {
         return Ok(handle.clone());
     }
     let (kind, id) = roster::parse_service_key(service).ok_or(ResolveError::Unknown)?;
@@ -434,13 +481,17 @@ async fn resolve_service(state: &AppState, service: &str) -> Result<DriverHandle
         kind.ascom_type(),
         entry.device_number,
     );
+    let sentinel_service = match (&state.sentinel, &state.sentinel_host) {
+        (Some(sentinel), Some(host)) => {
+            resolve_sentinel_service(sentinel.as_ref(), host, &entry.alpaca_url).await
+        }
+        _ => None,
+    };
     Ok(DriverHandle {
         title: entry.display_name().to_string(),
-        subtitle: format!("{} · {} (via rp roster)", entry.id, kind.ascom_type()),
+        subtitle: format!("{} · {}", entry.id, kind.ascom_type()),
         client: Arc::new(client),
-        // Roster devices are hardware rp manages, not OS services Sentinel
-        // supervises — no restart affordance.
-        sentinel_service: None,
+        sentinel_service,
     })
 }
 
@@ -485,31 +536,17 @@ pub fn build_router(state: AppState) -> Router {
     router.with_state(state)
 }
 
-async fn index(State(state): State<AppState>) -> Markup {
-    let links: Vec<DriverLink> = state
-        .drivers
-        .iter()
-        .map(|(service, handle)| DriverLink {
-            service: service.clone(),
-            title: handle.title.clone(),
-        })
-        .collect();
-    let roster = match state.rp() {
-        None => pages::RosterLinks::NotConfigured,
-        Some(rp) => match rp.config_client.get_config().await {
-            Ok(resp) => pages::RosterLinks::Entries(
-                roster::parse_roster(&resp.config)
-                    .iter()
-                    .map(|entry| DriverLink {
-                        service: entry.service_key(),
-                        title: entry.display_name().to_string(),
-                    })
-                    .collect(),
-            ),
-            Err(err) => pages::RosterLinks::Unreachable(err.to_string()),
-        },
-    };
-    pages::index_page(&links, &roster)
+/// The Configuration surface: `/` IS rp's settings page — the identical
+/// rendering to `GET /config/rp` (including the `?unlock=` escape hatch), so
+/// its form posts and restart affordances (which target the `/config/rp/...`
+/// routes) work unchanged. Devices are configured from the equipment page's
+/// per-device Configure buttons, so no device list renders here.
+async fn index(
+    State(state): State<AppState>,
+    Query(query): Query<UnlockQuery>,
+    headers: HeaderMap,
+) -> Response {
+    render_config_get(&state, RP_SERVICE, query.unlock.as_deref(), &headers).await
 }
 
 async fn health() -> &'static str {
@@ -578,19 +615,24 @@ async fn config_get(
     Query(query): Query<UnlockQuery>,
     headers: HeaderMap,
 ) -> Response {
-    let title = page_title(&service);
-    let handle = match resolve_service(&state, &service).await {
+    render_config_get(&state, &service, query.unlock.as_deref(), &headers).await
+}
+
+/// `GET /config/{service}`'s rendering, shared with `GET /` (which renders
+/// the `rp` target's page as the Configuration surface).
+async fn render_config_get(
+    state: &AppState,
+    service: &str,
+    unlock: Option<&str>,
+    headers: &HeaderMap,
+) -> Response {
+    let title = page_title(service);
+    let handle = match resolve_service(state, service).await {
         Ok(handle) => handle,
-        Err(err) => {
-            return respond(
-                pages::resolve_failure_card(&service, &err),
-                &headers,
-                &title,
-            )
-        }
+        Err(err) => return respond(pages::resolve_failure_card(service, &err), headers, &title),
     };
-    let card = render_form(&handle, &service, query.unlock.as_deref(), None).await;
-    respond(card, &headers, &title)
+    let card = render_form(&handle, service, unlock, None).await;
+    respond(card, headers, &title)
 }
 
 async fn config_post(
@@ -734,8 +776,15 @@ async fn config_restart(
     headers: HeaderMap,
 ) -> Response {
     let title = page_title(&service);
-    let Some(handle) = state.drivers.get(&service) else {
-        return respond(pages::unknown_service_card(&service), &headers, &title);
+    let handle = match resolve_service(&state, &service).await {
+        Ok(handle) => handle,
+        Err(err) => {
+            return respond(
+                pages::resolve_failure_card(&service, &err),
+                &headers,
+                &title,
+            )
+        }
     };
     let (Some(sentinel), Some(name)) = (&state.sentinel, &handle.sentinel_service) else {
         // The affordances that post here only render with a Sentinel
@@ -772,54 +821,26 @@ mod tests {
     use super::*;
     use serde_json::{json, Value};
 
-    fn config_with_base_url(base_url: &str) -> Config {
-        let json = serde_json::json!({
-            "drivers": { "dsd-fp2": { "base_url": base_url } }
-        });
-        serde_json::from_value(json).expect("driver config parses")
-    }
-
     #[test]
-    fn from_config_rejects_url_credentials() {
-        let config = config_with_base_url("http://obs:secret@127.0.0.1:11119");
-        match AppState::from_config(&config) {
-            Ok(_) => panic!("expected from_config to reject credentials in base_url"),
-            Err(e) => assert!(
-                e.to_string().contains("must not contain credentials"),
-                "{e}"
-            ),
-        }
-    }
-
-    #[test]
-    fn from_config_accepts_plain_url() {
-        AppState::from_config(&config_with_base_url("http://127.0.0.1:11119")).unwrap();
-    }
-
-    #[test]
-    fn from_config_builds_every_driver() {
-        let json = r#"{
-            "drivers": {
-                "dsd-fp2": { "base_url": "http://127.0.0.1:11119" },
-                "qhy-focuser": { "base_url": "http://127.0.0.1:11113", "device_type": "focuser" }
-            }
-        }"#;
+    fn from_config_serves_the_rp_config_page() {
+        let json = r#"{ "rp": { "base_url": "http://127.0.0.1:11115" } }"#;
         let config: Config = serde_json::from_str(json).unwrap();
         let state = AppState::from_config(&config).unwrap();
-        assert!(state.drivers.contains_key("dsd-fp2"));
-        assert!(state.drivers.contains_key("qhy-focuser"));
-        assert_eq!(
-            state.drivers.get("qhy-focuser").unwrap().subtitle,
-            "qhy-focuser · focuser"
-        );
+        let rp = state.handles.get("rp").unwrap();
+        assert_eq!(rp.title, "rp");
+        assert_eq!(rp.subtitle, "rp · orchestrator (REST)");
+        // The rp entry is the only pre-built handle; devices resolve from
+        // the roster at request time.
+        assert_eq!(state.handles.len(), 1);
     }
 
     #[test]
     fn from_config_rejects_sentinel_url_credentials() {
         // The sentinel target goes through the same `build_http_client`
-        // validation as drivers/rp: embedded credentials would leak into
-        // error strings and request-URL debug logs.
-        let json = r#"{ "sentinel": { "base_url": "http://obs:secret@127.0.0.1:11114" } }"#;
+        // validation as rp: embedded credentials would leak into error
+        // strings and request-URL debug logs.
+        let json =
+            r#"{ "rp": {}, "sentinel": { "base_url": "http://obs:secret@127.0.0.1:11114" } }"#;
         let config: Config = serde_json::from_str(json).unwrap();
         match AppState::from_config(&config) {
             Ok(_) => panic!("expected from_config to reject credentials in sentinel base_url"),
@@ -828,36 +849,6 @@ mod tests {
                 "{e}"
             ),
         }
-    }
-
-    #[test]
-    fn from_config_rejects_a_driver_named_rp() {
-        // `rp` is reserved for the rp target so `/config/rp` stays unambiguous.
-        let json = r#"{ "drivers": { "rp": { "base_url": "http://127.0.0.1:11115" } } }"#;
-        let config: Config = serde_json::from_str(json).unwrap();
-        match AppState::from_config(&config) {
-            Ok(_) => panic!("expected from_config to reject a driver named rp"),
-            Err(e) => assert!(
-                e.to_string()
-                    .contains(r#"must not contain an entry named "rp""#),
-                "{e}"
-            ),
-        }
-    }
-
-    #[test]
-    fn from_config_with_rp_target_serves_the_rp_config_page() {
-        let json = r#"{
-            "rp": { "base_url": "http://127.0.0.1:11115" },
-            "drivers": { "dsd-fp2": { "base_url": "http://127.0.0.1:11119" } }
-        }"#;
-        let config: Config = serde_json::from_str(json).unwrap();
-        let state = AppState::from_config(&config).unwrap();
-        let rp = state.drivers.get("rp").unwrap();
-        assert_eq!(rp.title, "rp");
-        assert_eq!(rp.subtitle, "rp · orchestrator (REST)");
-        // Override entries coexist with the rp entry.
-        assert!(state.drivers.contains_key("dsd-fp2"));
     }
 
     #[test]
@@ -871,6 +862,22 @@ mod tests {
                 "{e}"
             ),
         }
+    }
+
+    #[test]
+    fn normalized_host_collapses_loopback_spellings() {
+        for url in [
+            "http://localhost:11114",
+            "http://127.0.0.1:11114",
+            "http://[::1]:11114",
+        ] {
+            assert_eq!(normalized_host(url).as_deref(), Some("loopback"), "{url}");
+        }
+        assert_eq!(
+            normalized_host("https://Pi.LOCAL:11114").as_deref(),
+            Some("pi.local")
+        );
+        assert!(normalized_host("not a url").is_none());
     }
 
     /// A `ConfigClient` whose actions report the target is not a config-capable
@@ -1031,6 +1038,195 @@ mod tests {
         ) -> Result<ConfigApplyResponse, ConfigClientError> {
             unreachable!("apply is not exercised by this test")
         }
+    }
+
+    /// A roster with one usable cover-calibrator entry on the loopback box.
+    struct GoodRoster;
+
+    #[async_trait::async_trait]
+    impl ConfigClient for GoodRoster {
+        async fn get_config(&self) -> Result<ConfigGetResponse, ConfigClientError> {
+            Ok(ConfigGetResponse {
+                config: json!({ "equipment": { "cover_calibrators": [{
+                    "id": "flat",
+                    "alpaca_url": "http://127.0.0.1:11119",
+                    "device_number": 0
+                }]}}),
+                overrides: vec![],
+            })
+        }
+        async fn get_schema(&self) -> Result<ConfigSchemaResponse, ConfigClientError> {
+            unreachable!("these tests stop at resolve")
+        }
+        async fn apply_config(
+            &self,
+            _config: &Value,
+        ) -> Result<ConfigApplyResponse, ConfigClientError> {
+            unreachable!("apply is not exercised by this test")
+        }
+    }
+
+    fn sentinel_listing(services: Vec<sentinel_client::SentinelService>) -> Arc<StubSentinel> {
+        Arc::new(StubSentinel {
+            result: Ok(outcome("ok", Some("healthy"), None)),
+            services,
+            last_service: std::sync::Mutex::new(None),
+        })
+    }
+
+    fn listed(name: &str, probe_port: Option<u16>) -> sentinel_client::SentinelService {
+        serde_json::from_value(json!({ "name": name, "probe_port": probe_port }))
+            .expect("SentinelService parses")
+    }
+
+    #[tokio::test]
+    async fn roster_device_gains_restart_name_via_port_match() {
+        // The device's alpaca_url port (11119) matches the discovered
+        // service's probe_port — the handle carries that service's name.
+        let sentinel = sentinel_listing(vec![
+            listed("qhy-focuser", Some(11113)),
+            listed("dsd-fp2", Some(11119)),
+        ]);
+        let state = rp_state_with_config_client(Arc::new(GoodRoster))
+            .with_sentinel_client(sentinel, "http://localhost:11114");
+        let handle = resolve_service(&state, "rp:cover_calibrators:flat")
+            .await
+            .unwrap();
+        assert_eq!(handle.sentinel_service.as_deref(), Some("dsd-fp2"));
+    }
+
+    #[tokio::test]
+    async fn roster_device_without_a_port_match_gets_no_restart_name() {
+        let sentinel = sentinel_listing(vec![listed("qhy-focuser", Some(11113))]);
+        let state = rp_state_with_config_client(Arc::new(GoodRoster))
+            .with_sentinel_client(sentinel, "http://127.0.0.1:11114");
+        let handle = resolve_service(&state, "rp:cover_calibrators:flat")
+            .await
+            .unwrap();
+        assert!(handle.sentinel_service.is_none());
+    }
+
+    #[tokio::test]
+    async fn portless_device_url_never_matches() {
+        // No explicit port on the alpaca_url: the scheme default (80) must
+        // NOT be used for the match — a mistyped URL would otherwise grow a
+        // restart button for an unrelated service listening there.
+        let sentinel = sentinel_listing(vec![listed("web-thing", Some(80))]);
+        assert!(
+            resolve_sentinel_service(sentinel.as_ref(), "loopback", "http://127.0.0.1")
+                .await
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn roster_device_on_a_foreign_host_never_matches() {
+        // Same port, but sentinel supervises a different box — a restart
+        // button here would bounce an unrelated local service.
+        let sentinel = sentinel_listing(vec![listed("dsd-fp2", Some(11119))]);
+        let state = rp_state_with_config_client(Arc::new(GoodRoster))
+            .with_sentinel_client(sentinel, "http://rig.example:11114");
+        let handle = resolve_service(&state, "rp:cover_calibrators:flat")
+            .await
+            .unwrap();
+        assert!(handle.sentinel_service.is_none());
+    }
+
+    /// A `SentinelClient` that is unreachable for both calls.
+    struct DownSentinel;
+
+    #[async_trait::async_trait]
+    impl SentinelClient for DownSentinel {
+        async fn restart(&self, _service: &str) -> Result<RestartOutcome, SentinelClientError> {
+            Err(SentinelClientError::Transport(
+                "connection refused".to_string(),
+            ))
+        }
+
+        async fn services(
+            &self,
+        ) -> Result<Vec<sentinel_client::SentinelService>, SentinelClientError> {
+            Err(SentinelClientError::Transport(
+                "connection refused".to_string(),
+            ))
+        }
+    }
+
+    /// A `SentinelClient` whose service listing never answers.
+    struct HangingSentinel;
+
+    #[async_trait::async_trait]
+    impl SentinelClient for HangingSentinel {
+        async fn restart(&self, _service: &str) -> Result<RestartOutcome, SentinelClientError> {
+            unreachable!("the hung listing never yields a restart name")
+        }
+
+        async fn services(
+            &self,
+        ) -> Result<Vec<sentinel_client::SentinelService>, SentinelClientError> {
+            std::future::pending().await
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn roster_device_with_hung_sentinel_times_out_to_no_restart_name() {
+        // A hung Sentinel must not stall the page render: the lookup is
+        // time-bounded and degrades to no affordance.
+        let state = rp_state_with_config_client(Arc::new(GoodRoster))
+            .with_sentinel_client(Arc::new(HangingSentinel), "http://127.0.0.1:11114");
+        let handle = resolve_service(&state, "rp:cover_calibrators:flat")
+            .await
+            .unwrap();
+        assert!(handle.sentinel_service.is_none());
+    }
+
+    #[tokio::test]
+    async fn roster_device_with_sentinel_unreachable_gets_no_restart_name() {
+        // Sentinel down at render time degrades to no affordance — the page
+        // must still resolve and render.
+        let state = rp_state_with_config_client(Arc::new(GoodRoster))
+            .with_sentinel_client(Arc::new(DownSentinel), "http://127.0.0.1:11114");
+        let handle = resolve_service(&state, "rp:cover_calibrators:flat")
+            .await
+            .unwrap();
+        assert!(handle.sentinel_service.is_none());
+    }
+
+    #[tokio::test]
+    async fn config_restart_unknown_service_renders_the_resolve_failure_card() {
+        // The restart POST shares resolve_service — a hand-crafted POST to an
+        // unknown key gets the same honest card as GET.
+        let state = AppState::with_client("dsd-fp2", Arc::new(StaticConfigDriver));
+        let response = config_restart(
+            State(state),
+            Path("does-not-exist".to_string()),
+            HeaderMap::new(),
+        )
+        .await;
+        let html = body_of(response).await;
+        assert!(html.contains("No configured driver named"), "{html}");
+    }
+
+    #[tokio::test]
+    async fn config_restart_roster_key_restarts_the_matched_service() {
+        let sentinel = sentinel_listing(vec![listed("dsd-fp2", Some(11119))]);
+        let state = rp_state_with_config_client(Arc::new(GoodRoster)).with_sentinel_client(
+            Arc::clone(&sentinel) as Arc<dyn SentinelClient>,
+            "http://127.0.0.1:11114",
+        );
+        let response = config_restart(
+            State(state),
+            Path("rp:cover_calibrators:flat".to_string()),
+            HeaderMap::new(),
+        )
+        .await;
+        let html = body_of(response).await;
+        assert!(html.contains("Restart requested via Sentinel"), "{html}");
+        assert_eq!(
+            sentinel.last_service.lock().unwrap().as_deref(),
+            Some("dsd-fp2"),
+            "the restart must target the port-matched service"
+        );
     }
 
     #[tokio::test]
@@ -1298,6 +1494,7 @@ mod tests {
     /// side service name it was asked to restart.
     struct StubSentinel {
         result: Result<RestartOutcome, SentinelClientError>,
+        services: Vec<sentinel_client::SentinelService>,
         last_service: std::sync::Mutex<Option<String>>,
     }
 
@@ -1305,6 +1502,7 @@ mod tests {
         fn new(result: Result<RestartOutcome, SentinelClientError>) -> Arc<Self> {
             Arc::new(Self {
                 result,
+                services: Vec::new(),
                 last_service: std::sync::Mutex::new(None),
             })
         }
@@ -1315,6 +1513,12 @@ mod tests {
         async fn restart(&self, service: &str) -> Result<RestartOutcome, SentinelClientError> {
             *self.last_service.lock().unwrap() = Some(service.to_string());
             self.result.clone()
+        }
+
+        async fn services(
+            &self,
+        ) -> Result<Vec<sentinel_client::SentinelService>, SentinelClientError> {
+            Ok(self.services.clone())
         }
     }
 

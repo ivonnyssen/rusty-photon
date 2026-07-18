@@ -159,8 +159,7 @@ the Linux `/etc/rusty-photon` path). Exceptions: the config-gated four
 (above) never write one; the two cameras, `zwo-focuser`, and
 `phd2-guider` run on built-in defaults without writing a file until
 settings are saved (via ui-htmx `config.apply`) or one is created by
-hand; and `ui-htmx`'s own config is seeded by the installer (below). To
-change settings:
+hand. To change settings:
 
 ```powershell
 notepad $env:ProgramData\rusty-photon\<svc>.json
@@ -174,13 +173,16 @@ pa-scops-oag, dsd-fp2, star-adventurer-gti, qhy-camera, zwo-camera.
 Services with `config.apply` support (via ui-htmx) rewrite these files at
 runtime — hand-edits and UI edits share the same file.
 
-**ui-htmx driver map**: on first install the MSI seeds
-`%ProgramData%\rusty-photon\ui-htmx.json` with a `drivers` map matching
-the set of services actually installed (plus the `rp` target when rp is
-selected), so the config UI works out of the box. The seed runs only if
-the file does not exist — upgrades and re-installs never overwrite your
-edits; after adding features to an existing install, add the new
-service's entry by hand (or delete the file and let a repair re-seed it).
+**ui-htmx config**: self-created like every other service — the default
+(the required `rp` target on localhost) is correct for every install,
+since the device list lives in rp's equipment roster, not in ui-htmx
+config (#569). The former install-time driver-map seed action is gone
+with the map itself. **Upgrading an install whose config predates #569**
+(it was seeded with a `drivers` map): the new service refuses to start
+until the retired top-level `drivers` key is deleted from
+`%ProgramData%\rusty-photon\ui-htmx.json` — the pre-1.0 fail-loudly
+contract; doctor's `config.retired-keys` fix does the deletion where
+doctor is available.
 
 ## Logs
 

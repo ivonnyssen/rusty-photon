@@ -31,11 +31,6 @@ async fn driver_not_running(world: &mut UiWorld) {
     world.start_bff_with_unreachable_driver().await;
 }
 
-#[given(r#"a dsd-fp2 driver running and also exposed as "dsd-fp2-alt""#)]
-async fn driver_running_multi(world: &mut UiWorld) {
-    world.start_driver_and_multi_bff("/dev/ttyACM0", 4096).await;
-}
-
 #[given("the driver's bound port is pinned so a reload keeps the same address")]
 async fn pin_driver_port(world: &mut UiWorld) {
     world.pin_driver_port().await;
@@ -45,7 +40,8 @@ async fn pin_driver_port(world: &mut UiWorld) {
 
 #[when("I open the dsd-fp2 config page")]
 async fn open_page(world: &mut UiWorld) {
-    world.get("/config/dsd-fp2").await;
+    let path = world.device_config_path();
+    world.get(&path).await;
 }
 
 #[when(regex = r"^I open the dsd-fp2 config page with ([\w.]+) unlocked$")]
@@ -60,8 +56,8 @@ async fn open_index(world: &mut UiWorld) {
     world.get("/").await;
 }
 
-// The service key may be a static drivers-map id (`dsd-fp2`), the reserved
-// `rp`, or a roster-derived `rp:{kind}:{id}` key — hence the `:` in the class.
+// The service key is the reserved `rp` or a roster-derived `rp:{kind}:{id}`
+// key — hence the `:` in the class.
 #[when(regex = r#"^I open the config page for "([\w:-]+)"$"#)]
 async fn open_named_config_page(world: &mut UiWorld, service: String) {
     world.get(&format!("/config/{service}")).await;
@@ -92,16 +88,6 @@ async fn poll_until_served(world: &mut UiWorld, value: String) {
 }
 
 // --- Then: assert on the rendered HTML --------------------------------------
-
-#[then(regex = r#"^the index links to "([\w-]+)"$"#)]
-fn index_links_to(world: &mut UiWorld, service: String) {
-    let css = format!(r#"a[href="/config/{service}"]"#);
-    assert!(
-        dom::matches(&world.last_body, &css),
-        "missing index link to {service:?}:\n{}",
-        world.last_body
-    );
-}
 
 #[then(regex = r#"^the page shows the value "([^"]+)"$"#)]
 fn page_shows_value(world: &mut UiWorld, expected: String) {
@@ -173,11 +159,12 @@ fn reports_reloading(world: &mut UiWorld) {
     );
 }
 
-#[then("the page polls /config/dsd-fp2/status every 1s for reconnection")]
+#[then("the page polls the device's status route every 1s for reconnection")]
 fn polls_for_reconnection(world: &mut UiWorld) {
+    let status_path = format!("{}/status", world.device_config_path());
     assert_eq!(
         dom::attr(&world.last_body, "#config-card", "hx-get").as_deref(),
-        Some("/config/dsd-fp2/status"),
+        Some(status_path.as_str()),
         "reconnecting card should poll the status route:\n{}",
         world.last_body
     );

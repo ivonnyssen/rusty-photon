@@ -27,7 +27,7 @@ doctor *out* of the services rather than a component of them.
 | D0 | This plan + [ADR-016](../decisions/016-service-config-ownership-and-doctor.md) (config ownership + the SDK line) | Merged | #539 |
 | D1 | `rusty-photon-server-config` (core + Alpaca shapes); all 18 services adopt; TLS/auth for the 9 that lack it; `bind_address` everywhere (default `0.0.0.0`); per-service TLS+auth smoke scenarios | Merged | #549 (follow-up: [#550](https://github.com/ivonnyssen/rusty-photon/issues/550), smoke-fixture dedupe) |
 | D2 | `rusty-photon-doctor` binary: catalog + service-config diagnosis (read-only) | Merged | #554 |
-| D3 | `--fix`; ui-htmx sources from rp's roster (its `drivers` map becomes an empty-by-default override) | Merged | #560 → #559 |
+| D3 | `--fix`; ui-htmx sources from rp's roster (its `drivers` map becomes an empty-by-default override; the map was later deleted entirely — [#569](https://github.com/ivonnyssen/rusty-photon/issues/569), ADR-016 amendment 6) | Merged | #560 → #559 |
 | D3s | Sentinel discovers its services; delete the `services` map; policy → constants (privilege path shipped — polkit rule in the sentinel packages) | Merged | #559 |
 | D4 | `rusty-photon-doctor-checks` crate + generic hardware checks (no SDK) | Merged | [#563](https://github.com/ivonnyssen/rusty-photon/pull/563) |
 | D5 | Per-service `doctor` subcommand + aggregation | In review | [#568](https://github.com/ivonnyssen/rusty-photon/pull/568) |
@@ -58,7 +58,8 @@ doctor *out* of the services rather than a component of them.
 
 3. **Doctor is a standalone binary, not a component of the services.** It links
    no service crate. It knows the catalog, the two shared `ServerConfig` shapes
-   (core and Alpaca — see D1), and ui-htmx's `drivers` map; everything else in
+   (core and Alpaca — see D1), and the known cross-reference blocks (sentinel's
+   `operation_watchdog`, rp's `equipment`/`session`); everything else in
    every config file is opaque `serde_json::Value` it steps around.
 
 4. **Doctor's scope is service config, never device usage.** "Is `/dev/ttyUSB0`
@@ -253,8 +254,9 @@ them):
 7. **Config root** — `--config-dir` > the packaged `/etc/rusty-photon`
    symlink (Unix) > the platform default the services themselves resolve.
 8. **Parse scope** — JSON syntax + the catalog-declared `server` shape + the
-   known cross-reference blocks (ui-htmx `drivers`/`sentinel`, sentinel
-   `services`/`operation_watchdog`, rp `equipment[].alpaca_url`/`session`).
+   known cross-reference blocks (ui-htmx `sentinel`, sentinel
+   `services`/`operation_watchdog`, rp `equipment[].alpaca_url`/`session`;
+   ui-htmx's `drivers` map left the list when #569 retired it).
    Full-shape typo detection is honestly deferred to D5's per-service
    subcommands.
 
@@ -318,6 +320,14 @@ shrinks to its listening port and where rp is (`localhost` by default on the
 single box). The static `drivers` map survives only as an optional override —
 a third-party device rp does not manage, or a driver given a separate
 credential — empty for a stock rig, and `--fix` leaves it that way.
+
+> **Tightened 2026-07-18** ([#569](https://github.com/ivonnyssen/rusty-photon/issues/569),
+> ADR-016 amendment 6): the override did not survive field review — the
+> `drivers` map is deleted entirely, the `rp` target is required, a config
+> still carrying the map fails loudly with the deletion in doctor's
+> `config.retired-keys` catalog, and the restart affordance is derived by
+> matching a roster device's `alpaca_url` port against sentinel's
+> `GET /api/services` `probe_port`.
 
 The liveness objection ("if rp is down the UI goes blind") dissolves against
 the recovery model: when rp will not start you `ssh` in and run `doctor`, you

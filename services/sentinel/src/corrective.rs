@@ -510,6 +510,7 @@ mod tests {
             probe: Some(ProbeSpec {
                 health_url: "http://svc/management/v1/configureddevices".to_string(),
                 alpaca_base: "http://svc/api/v1".to_string(),
+                port: 80,
             }),
         }
     }

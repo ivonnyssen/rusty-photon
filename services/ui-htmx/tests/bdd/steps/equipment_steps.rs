@@ -186,19 +186,6 @@ fn rp_config_contains_once(world: &mut UiWorld, needle: String) {
     );
 }
 
-#[then("the page explains that no rp orchestrator is configured")]
-fn no_rp_explained(world: &mut UiWorld) {
-    assert!(
-        dom::text_contains(
-            &world.last_body,
-            ".banner.error",
-            "No rp orchestrator is configured"
-        ),
-        "missing no-rp explanation:\n{}",
-        world.last_body
-    );
-}
-
 /// CSS id of a roster kind section from its display heading.
 fn section_css(section: &str) -> String {
     let key = section.to_lowercase().replace(' ', "_");

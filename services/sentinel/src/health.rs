@@ -161,6 +161,7 @@ impl ServiceHealthSupervisor {
                 restarts_in_outage,
                 total_restarts,
                 next_restart_epoch_ms,
+                probe_port: snapshot.probe.as_ref().map(|p| p.port),
                 poll_interval: self.ctx.policy.poll_interval,
             });
     }
@@ -702,6 +703,7 @@ mod tests {
             probe: probe.then(|| ProbeSpec {
                 health_url: format!("http://localhost:1/{SVC}/health"),
                 alpaca_base: "http://localhost:1/api/v1".to_string(),
+                port: 1,
             }),
         }
     }

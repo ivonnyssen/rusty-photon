@@ -701,6 +701,7 @@ name — an empty array when nothing is discovered:
   "restarts_in_outage": 0,
   "total_restarts": 3,
   "next_restart_epoch_ms": null,
+  "probe_port": 11131,
   "poll_interval_ms": 30000
 }]
 ```
@@ -714,6 +715,11 @@ name — an empty array when nothing is discovered:
   (resets on recovery); `total_restarts` counts them since sentinel started.
 - `next_restart_epoch_ms` is the backoff-scheduled earliest next autonomous
   restart, or `null` when none is scheduled.
+- `probe_port` is the service's listening port from its config's `server`
+  block (what the derived probe URLs embed), or `null` when no probe is
+  derivable. Clients use it to match a device URL to the service behind it:
+  ui-htmx resolves a roster device's `alpaca_url` port against this list to
+  offer that device's Restart-via-Sentinel affordance.
 
 The dashboard is server-rendered HTML with vanilla JavaScript, built with `format!()` in `services/sentinel/src/dashboard.rs`. (An experimental `sentinel-app` Leptos/WASM frontend was scaffolded and later abandoned; it was removed in 2026-06 — see [docs/plans/archive/sentinel-app-leptos-dashboard.md](../plans/archive/sentinel-app-leptos-dashboard.md).)
 
