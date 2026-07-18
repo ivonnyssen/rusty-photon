@@ -353,9 +353,15 @@ pub async fn build_dns_provider(
             })?;
             Ok(Box::new(ChalltestsrvDnsProvider::new(base_url)))
         }
-        other => Err(TlsError::Config(format!(
-            "unsupported DNS provider: '{other}'. Supported providers: cloudflare"
-        ))),
+        other => {
+            #[cfg(feature = "mock")]
+            let supported = "cloudflare, challtestsrv";
+            #[cfg(not(feature = "mock"))]
+            let supported = "cloudflare";
+            Err(TlsError::Config(format!(
+                "unsupported DNS provider: '{other}'. Supported providers: {supported}"
+            )))
+        }
     }
 }
 

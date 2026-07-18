@@ -232,6 +232,19 @@ pub struct AcmeArgs {
 pub async fn run_acme(config_dir: &Path, args: AcmeArgs) -> Result<(), String> {
     let pki = pki_dir(config_dir);
 
+    // Persisted absolute: renewal replays acme.json from a scheduler whose
+    // working directory is arbitrary, so a relative --acme-root (anchored
+    // at the invoking shell's cwd, like any CLI path) must be resolved
+    // now, not at 3am.
+    let acme_root = args
+        .acme_root
+        .as_ref()
+        .map(|p| {
+            std::path::absolute(p)
+                .map_err(|e| format!("could not resolve --acme-root {}: {e}", p.display()))
+        })
+        .transpose()?;
+
     let mut dns_credentials = std::collections::HashMap::new();
     dns_credentials.insert("api_token".to_string(), args.dns_token.clone());
     let config = acme_config::AcmeConfig {
@@ -243,10 +256,7 @@ pub async fn run_acme(config_dir: &Path, args: AcmeArgs) -> Result<(), String> {
         renewal_days_before_expiry: 30,
         post_renewal_hooks: vec![],
         directory_url: args.directory_url.clone(),
-        acme_root: args
-            .acme_root
-            .as_ref()
-            .map(|p| p.to_string_lossy().into_owned()),
+        acme_root: acme_root.as_ref().map(|p| p.to_string_lossy().into_owned()),
         dns_propagation_seconds: args.dns_propagation_seconds.unwrap_or(15),
     };
 
@@ -262,7 +272,7 @@ pub async fn run_acme(config_dir: &Path, args: AcmeArgs) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     let acme_client = acme::RealAcmeClient::new(
         dns_provider.as_ref(),
-        args.acme_root.clone(),
+        acme_root,
         std::time::Duration::from_secs(config.dns_propagation_seconds),
     );
 
@@ -437,5 +447,40 @@ mod tests {
         assert!(key.ends_with("qhy-focuser-key.pem"), "{key}");
         assert!(std::path::Path::new(cert).is_absolute());
         assert!(!cert.contains("certs"), "flat pki: {cert}");
+    }
+
+    #[tokio::test]
+    async fn test_run_acme_persists_a_relative_acme_root_as_absolute() {
+        // A renewal timer runs with an arbitrary working directory, so the
+        // persisted acme.json must carry an absolute trust-anchor path even
+        // when the operator passed a relative one. acme.json is persisted
+        // before the DNS provider is built, so a bogus provider name lets
+        // this assert on the file without any network.
+        let dir = tempfile::tempdir().unwrap();
+        let err = run_acme(
+            dir.path(),
+            AcmeArgs {
+                domain: "observatory.test".to_string(),
+                dns_provider: "no-such-provider".to_string(),
+                dns_token: "tok".to_string(),
+                email: "t@observatory.test".to_string(),
+                staging: false,
+                directory_url: None,
+                acme_root: Some(std::path::PathBuf::from("relative/pebble-ca.pem")),
+                dns_propagation_seconds: None,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("unsupported DNS provider"), "{err}");
+
+        let saved = std::fs::read_to_string(dir.path().join("acme.json")).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&saved).unwrap();
+        let root = value["acme_root"].as_str().unwrap();
+        assert!(
+            std::path::Path::new(root).is_absolute(),
+            "persisted acme_root must be absolute: {root}"
+        );
+        assert!(root.ends_with("pebble-ca.pem"), "{root}");
     }
 }
