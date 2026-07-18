@@ -266,6 +266,19 @@ mod tests {
     }
 
     #[test]
+    fn test_plan_client_wiring_skips_a_missing_sentinel_config() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(plan_client_wiring(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn test_plan_client_wiring_skips_an_unparseable_sentinel_config() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("sentinel.json"), "{ not json").unwrap();
+        assert!(plan_client_wiring(dir.path()).is_empty());
+    }
+
+    #[test]
     fn test_ensure_material_creates_ca_and_service_pairs_flat() {
         let dir = tempfile::tempdir().unwrap();
         let applied = ensure_material(dir.path(), &services(&["ppba-driver"]), &[], false).unwrap();
