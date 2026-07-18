@@ -433,7 +433,7 @@ async fn resolve_service(state: &AppState, service: &str) -> Result<DriverHandle
     );
     Ok(DriverHandle {
         title: entry.display_name().to_string(),
-        subtitle: format!("{} · {} (via rp roster)", entry.id, kind.ascom_type()),
+        subtitle: format!("{} · {}", entry.id, kind.ascom_type()),
         client: Arc::new(client),
         // Roster devices are hardware rp manages, not OS services Sentinel
         // supervises — no restart affordance.
