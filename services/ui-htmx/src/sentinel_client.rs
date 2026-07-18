@@ -242,6 +242,50 @@ mod tests {
         assert!(matches!(err, SentinelClientError::Decode(_)), "{err:?}");
     }
 
+    fn services_client_returning(status: u16, body: &str) -> HttpSentinelClient {
+        let body = body.to_string();
+        let mut mock = MockHttpClient::new();
+        mock.expect_get()
+            .withf(|url| url == "http://sentinel:11114/api/services")
+            .returning(move |_| {
+                let body = body.clone();
+                Box::pin(async move { Ok(HttpResponse { status, body }) })
+            });
+        HttpSentinelClient::new(Arc::new(mock), "http://sentinel:11114/")
+    }
+
+    #[tokio::test]
+    async fn services_parses_names_and_probe_ports() {
+        // Lenient by design: extra fields are stepped around, and a missing
+        // or null probe_port (no derivable probe) parses as None.
+        let client = services_client_returning(
+            200,
+            r#"[{"name":"dsd-fp2","probe_port":11119,"health":"up"},
+                {"name":"rp","probe_port":null},
+                {"name":"filemonitor"}]"#,
+        );
+        let services = client.services().await.unwrap();
+        assert_eq!(services.len(), 3);
+        assert_eq!(services[0].name, "dsd-fp2");
+        assert_eq!(services[0].probe_port, Some(11119));
+        assert_eq!(services[1].probe_port, None);
+        assert_eq!(services[2].probe_port, None);
+    }
+
+    #[tokio::test]
+    async fn services_malformed_body_is_a_decode_error() {
+        let client = services_client_returning(200, "not json");
+        let err = client.services().await.unwrap_err();
+        assert!(matches!(err, SentinelClientError::Decode(_)), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn services_unexpected_status_is_a_transport_error() {
+        let client = services_client_returning(500, "boom");
+        let err = client.services().await.unwrap_err();
+        assert!(matches!(err, SentinelClientError::Transport(_)), "{err:?}");
+    }
+
     #[tokio::test]
     async fn non_envelope_error_body_is_surfaced_verbatim() {
         let client = client_returning(404, "plain text");

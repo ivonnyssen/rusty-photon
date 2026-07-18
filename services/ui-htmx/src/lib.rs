@@ -1109,6 +1109,53 @@ mod tests {
         assert!(handle.sentinel_service.is_none());
     }
 
+    /// A `SentinelClient` that is unreachable for both calls.
+    struct DownSentinel;
+
+    #[async_trait::async_trait]
+    impl SentinelClient for DownSentinel {
+        async fn restart(&self, _service: &str) -> Result<RestartOutcome, SentinelClientError> {
+            Err(SentinelClientError::Transport(
+                "connection refused".to_string(),
+            ))
+        }
+
+        async fn services(
+            &self,
+        ) -> Result<Vec<sentinel_client::SentinelService>, SentinelClientError> {
+            Err(SentinelClientError::Transport(
+                "connection refused".to_string(),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn roster_device_with_sentinel_unreachable_gets_no_restart_name() {
+        // Sentinel down at render time degrades to no affordance — the page
+        // must still resolve and render.
+        let state = rp_state_with_config_client(Arc::new(GoodRoster))
+            .with_sentinel_client(Arc::new(DownSentinel), "http://127.0.0.1:11114");
+        let handle = resolve_service(&state, "rp:cover_calibrators:flat")
+            .await
+            .unwrap();
+        assert!(handle.sentinel_service.is_none());
+    }
+
+    #[tokio::test]
+    async fn config_restart_unknown_service_renders_the_resolve_failure_card() {
+        // The restart POST shares resolve_service — a hand-crafted POST to an
+        // unknown key gets the same honest card as GET.
+        let state = AppState::with_client("dsd-fp2", Arc::new(StaticConfigDriver));
+        let response = config_restart(
+            State(state),
+            Path("does-not-exist".to_string()),
+            HeaderMap::new(),
+        )
+        .await;
+        let html = body_of(response).await;
+        assert!(html.contains("No configured driver named"), "{html}");
+    }
+
     #[tokio::test]
     async fn config_restart_roster_key_restarts_the_matched_service() {
         let sentinel = sentinel_listing(vec![listed("dsd-fp2", Some(11119))]);
