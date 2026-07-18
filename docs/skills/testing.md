@@ -462,6 +462,18 @@ fixture behind every service's `auth.feature`:
   ui-htmx, …) keep their own scenario sets but build on `PkiFixture` and
   `wait_until_ready` instead of hand-rolled cert plumbing.
 
+**Doctor smoke (always available, no feature)** — the shared fixture behind
+every service's `doctor.feature`
+([doctor.md §Per-service doctors](../services/doctor.md)):
+`DoctorSmokeState` + `DoctorSmokeWorld` + `doctor_smoke_steps!` in
+`bdd_infra::doctor_smoke`. The World embeds the state, implements the trait
+(`valid_config()` — a config JSON the service's own `deny_unknown_fields`
+load accepts in full), and invokes the macro in its `doctor_steps.rs`; the
+feature file is the byte-identical service-neutral `doctor.feature` (copy
+ppba-driver's). The two scenarios spawn the suite's staged binary with
+`doctor --json` and assert the clean-report and unknown-key contracts; the
+runner's deep behavior is unit-tested in `rusty-photon-doctor-checks`.
+
 Under Bazel, BDD targets link the matching crate variant:
 `//crates/bdd-infra:bdd-infra_tls_auth`, or
 `:bdd-infra_rp_harness_tls_auth` when the suite also spawns rp.
