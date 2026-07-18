@@ -171,20 +171,22 @@ fn preserve_owner_and_mode(path: &Path, tmp: &tempfile::NamedTempFile) -> std::i
     let staged = tmp.as_file().metadata()?;
     if (staged.uid(), staged.gid()) != (original.uid(), original.gid()) {
         std::os::unix::fs::fchown(tmp.as_file(), Some(original.uid()), Some(original.gid()))
-            .map_err(|e| {
-                std::io::Error::new(
-                    e.kind(),
-                    format!(
-                        "keeping the replaced file's owner {}:{}: {e}",
-                        original.uid(),
-                        original.gid()
-                    ),
-                )
-            })?;
+            .map_err(|e| ownership_error(original.uid(), original.gid(), e))?;
     }
     tmp.as_file()
         .set_permissions(std::fs::Permissions::from_mode(original.mode() & 0o7777))?;
     tmp.as_file().sync_all()
+}
+
+/// Context for a failed ownership transfer in [`preserve_owner_and_mode`]:
+/// names the step and the owner being kept, so a packaged-install failure is
+/// diagnosable from the save error alone instead of a bare EPERM.
+#[cfg(unix)]
+fn ownership_error(uid: u32, gid: u32, e: std::io::Error) -> std::io::Error {
+    std::io::Error::new(
+        e.kind(),
+        format!("keeping the replaced file's owner {uid}:{gid}: {e}"),
+    )
 }
 
 #[cfg(not(unix))]
@@ -456,6 +458,82 @@ mod tests {
             after.permissions().mode() & 0o7777,
             0o4640,
             "setuid must survive the ownership transfer (cross-owner run: {cross_owner})"
+        );
+    }
+
+    /// A gid from `id -G` different from `primary`, if the environment has
+    /// one. An owner may hand a file to any group they belong to, so this
+    /// lets the ownership-transfer path run without privileges.
+    #[cfg(unix)]
+    fn supplementary_gid(primary: u32) -> Option<u32> {
+        let out = std::process::Command::new("id").arg("-G").output().ok()?;
+        String::from_utf8(out.stdout)
+            .ok()?
+            .split_whitespace()
+            .filter_map(|g| g.parse().ok())
+            .find(|g| *g != primary)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_transfers_group_ownership_back_to_the_original() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.json");
+        std::fs::write(&path, "{}").unwrap();
+        let primary = std::fs::metadata(&path).unwrap().gid();
+        let Some(other) = supplementary_gid(primary) else {
+            eprintln!("single-group environment; the cross-gid path needs the privileged tests");
+            return;
+        };
+        // Sandboxes with a single-mapping user namespace (bazel's
+        // linux-sandbox) cannot express the transfer at all (EINVAL);
+        // plain cargo runs and real machines can.
+        if std::os::unix::fs::chown(&path, None, Some(other)).is_err() {
+            eprintln!("environment cannot chgrp to a supplementary group; skipping");
+            return;
+        }
+
+        save(&path, &json!({ "server": { "port": 1 } })).unwrap();
+
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().gid(),
+            other,
+            "the staged file's primary gid must not replace the original's group"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_surfaces_a_stat_error_on_the_replaced_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.json");
+        // A self-looping symlink: the only stat outcome that is neither
+        // success nor NotFound and needs no privileges to set up.
+        std::os::unix::fs::symlink("c.json", &path).unwrap();
+
+        let err = save(&path, &json!({})).unwrap_err();
+
+        #[cfg(target_os = "linux")]
+        const ELOOP: i32 = 40;
+        #[cfg(not(target_os = "linux"))]
+        const ELOOP: i32 = 62;
+        assert_eq!(err.raw_os_error(), Some(ELOOP), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ownership_error_keeps_the_kind_and_names_the_owner() {
+        let e = ownership_error(
+            985,
+            985,
+            std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        );
+        assert_eq!(e.kind(), std::io::ErrorKind::PermissionDenied);
+        let msg = e.to_string();
+        assert!(
+            msg.contains("keeping the replaced file's owner 985:985"),
+            "{msg}"
         );
     }
 
