@@ -177,7 +177,12 @@ runtime — hand-edits and UI edits share the same file.
 (the required `rp` target on localhost) is correct for every install,
 since the device list lives in rp's equipment roster, not in ui-htmx
 config (#569). The former install-time driver-map seed action is gone
-with the map itself.
+with the map itself. **Upgrading an install whose config predates #569**
+(it was seeded with a `drivers` map): the new service refuses to start
+until the retired top-level `drivers` key is deleted from
+`%ProgramData%\rusty-photon\ui-htmx.json` — the pre-1.0 fail-loudly
+contract; doctor's `config.retired-keys` fix does the deletion where
+doctor is available.
 
 ## Logs
 
