@@ -111,10 +111,15 @@ jobs:
         run: |
           base=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
           [ -n "$base" ] || { echo "could not read the workspace version" >&2; exit 1; }
-          date=$(date -u +%Y%m%d)
+          # Minute resolution, merged into one numeric segment: the g<sha>
+          # suffix carries no order (hex compares lexically), so the
+          # timestamp alone must sort a second same-day publish above the
+          # first. Same-minute stamps can't happen — the workflow-level
+          # concurrency group serializes runs.
+          stamp=$(date -u +%Y%m%d%H%M)
           short=$(git rev-parse --short=7 HEAD)
-          echo "date=$date" >> "$GITHUB_OUTPUT"
-          echo "nightly_version=${base}+nightly.${date}.g${short}" >> "$GITHUB_OUTPUT"
+          echo "date=${stamp:0:8}" >> "$GITHUB_OUTPUT"
+          echo "nightly_version=${base}+nightly.${stamp}.g${short}" >> "$GITHUB_OUTPUT"
 
   linux:
     needs: plan

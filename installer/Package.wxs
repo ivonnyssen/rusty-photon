@@ -42,7 +42,7 @@
     <Property Id="ARPHELPLINK" Value="https://github.com/ivonnyssen/rusty-photon" />
     <Property Id="ARPURLINFOABOUT" Value="https://github.com/ivonnyssen/rusty-photon" />
     <!-- The full version string (releases: x.y.z; nightlies: the
-         +nightly.<date>.g<sha> string). ProductVersion renders a nightly's
+         +nightly.<datetime>.g<sha> string). ProductVersion renders a nightly's
          date as an opaque numeric 4th field, so this comment is what lets
          Programs & Features tell nightlies apart. -->
     <Property Id="ARPCOMMENTS" Value="rusty-photon $(var.FullVersion)" />

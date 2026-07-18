@@ -60,14 +60,19 @@ N5 depends only on N1+N2 (it repackages their already-verified `.deb`/
   always one coherent SHA with a complete asset set. A flaky leg means "no
   nightly today" plus a tracking issue — never a mixed-SHA release.
 - **Version dialects.** One version job computes the base version (from
-  the workspace `Cargo.toml`) + UTC date + short SHA, and each packager
-  renders its own dialect of "sorts after 0.1.0, before 0.1.1, upgrades in
-  place":
+  the workspace `Cargo.toml`) + UTC date-time to the minute + short SHA,
+  and each packager renders its own dialect of "sorts after 0.1.0, before
+  0.1.1, upgrades in place". The stamp was date-only until 2026-07-18
+  ([#584](https://github.com/ivonnyssen/rusty-photon/issues/584)): the
+  `g<sha>` suffix compares as hex, not as history, so a second publish on
+  the same UTC day could sort *below* the first and apt/dnf then refuse
+  the upgrade — the minute component makes the timestamp carry all the
+  ordering:
 
   | Target | Nightly version | Mechanics |
   |--------|-----------------|-----------|
-  | Debian `.deb` | `0.1.0+nightly.20260712.gabc1234` | dpkg sorts `+…` above `0.1.0`, below `0.1.1`; `apt` upgrades over an on-demand `0.1.0-1` install |
-  | Fedora `.rpm` | `0.1.0^20260712.gabc1234` | rpm forbids `+` in Version; `^` is rpm's post-release snapshot operator with the same ordering |
+  | Debian `.deb` | `0.1.0+nightly.202607120507.gabc1234` | dpkg sorts `+…` above `0.1.0`, below `0.1.1`; `apt` upgrades over an on-demand `0.1.0-1` install |
+  | Fedora `.rpm` | `0.1.0^202607120507.gabc1234` | rpm forbids `+` in Version; `^` is rpm's post-release snapshot operator with the same ordering |
   | Windows MSI | ProductVersion `0.1.0.<YYDDD>` | Windows Installer compares only the first three ProductVersion fields; a 4th field is legal to author and **display-only** — it shows as the version in ARP, which is why we keep it (a plain `0.1.0` would render the stable release and every nightly identically there). Upgrade logic thus sees every nightly as `0.1.0`, hence `MajorUpgrade AllowSameVersionUpgrades="yes"`; the full string travels in the filename and ARP comments. `YYDDD` = 2-digit year × 1000 + day-of-year (within the 65535 per-field authoring cap through 2065). The date deliberately does NOT ride in the *compared* third field — `0.1.<YYDDD>` would sort above every future release |
   | macOS | full string in the tarball filename + tap formula `version` | no installer database; Homebrew compares formula versions (see flagged unknowns for the `+` tokenization check) |
 

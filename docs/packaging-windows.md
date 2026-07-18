@@ -125,7 +125,7 @@ msiexec /qn /i rusty-photon-<fullversion>-x64.msi ADDLOCAL=ALL
 ```
 
 The MSI filename carries the full nightly version
-(`rusty-photon-<base>+nightly.<date>.g<sha>-x64.msi`), but Windows
+(`rusty-photon-<base>+nightly.<datetime>.g<sha>-x64.msi`), but Windows
 Installer's numeric ProductVersion cannot: nightlies author
 `<base>.<YYDDD>` (two-digit year × 1000 + day-of-year), and Windows
 Installer compares only the first three fields, so upgrade logic sees
@@ -145,7 +145,7 @@ and install it:
 
 ```powershell
 git checkout <known-good-sha>
-scripts\build-msi.ps1 -NightlyVersion "<base>+nightly.<date>.g<short-sha>"
+scripts\build-msi.ps1 -NightlyVersion "<base>+nightly.<datetime>.g<short-sha>"
 ```
 
 (`<base>` = the workspace version at that commit — the stamp's base must
@@ -246,7 +246,7 @@ the .NET SDK:
 scripts\build-msi.ps1                    # stage SDKs, build, wix build
 scripts\build-msi.ps1 -SkipSdkStaging    # offline rebuild from cache
 scripts\build-msi.ps1 -SkipBuild         # re-run wix only (installer loop)
-scripts\build-msi.ps1 -NightlyVersion "<base>+nightly.<date>.g<sha>"
+scripts\build-msi.ps1 -NightlyVersion "<base>+nightly.<datetime>.g<sha>"
                                          # nightly stamp (see Nightly channel)
 scripts\verify-msi.ps1                   # elevated, on a disposable box
 scripts\verify-msi.ps1 -Msi dist\<fullversion>\rusty-photon-<fullversion>-x64.msi

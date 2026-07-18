@@ -33,11 +33,11 @@
 #                       cache from a previous run
 #   --deb-version V     stamp V as the .deb version instead of the workspace
 #                       version (nightly channel: V like
-#                       0.1.0+nightly.20260712.gabc1234). cargo deb uses the
-#                       string verbatim — no -1 revision is appended.
+#                       0.1.0+nightly.202607120507.gabc1234). cargo deb uses
+#                       the string verbatim — no -1 revision is appended.
 #                       With --rpm, the rpm version is derived from V by
 #                       rendering the +nightly. stamp as rpm's ^ snapshot
-#                       separator (0.1.0^20260712.gabc1234), so V must carry
+#                       separator (0.1.0^202607120507.gabc1234), so V must carry
 #                       one. Artifacts land in dist/V/.
 
 set -eu
