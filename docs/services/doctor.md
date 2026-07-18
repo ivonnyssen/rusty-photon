@@ -646,6 +646,11 @@ watcher lifecycle, no new dependencies, portable to all three platforms
 — and no restart, so renewal can never interrupt an exposure. Services
 need no code or config change: the resolver is inside
 `build_tls_acceptor`. Auth rotation stays restart-based (decision 5).
+Because the trigger is the files' **mtime**, a `post_renewal_hooks`
+command that distributes certs to another machine must not preserve
+timestamps — `scp -p` or `rsync -a`/`-t` land a renewed pair the remote
+services never notice until restart; plain `scp`/`cp` update the mtime
+and hot-reload works.
 
 **Timer units (recorded here for D7** — sentinel's package carries the
 doctor binary and these units, plan decision 8**):**

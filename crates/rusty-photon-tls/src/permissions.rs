@@ -32,10 +32,10 @@ pub fn set_restricted_permissions(path: &Path) -> Result<()> {
 /// another process can open the umask-mode file and hold the fd across the
 /// later restriction. `mode` only applies when the file is newly created,
 /// so an existing file (a rotation overwrite) is restricted explicitly too.
-pub fn create_restricted(path: &Path) -> Result<std::fs::File> {
-    // Refuse to write through a symlink (best-effort — checked before the
-    // open): doctor runs as root on packaged hosts, so a pki-dir writer
-    // must not be able to redirect a secret write to an arbitrary target.
+/// Refuse a symlink target (best-effort — checked before the open):
+/// doctor runs as root on packaged hosts, so a pki-dir writer must not be
+/// able to redirect a provisioning write to an arbitrary target.
+pub fn refuse_symlink(path: &Path) -> Result<()> {
     if let Ok(meta) = std::fs::symlink_metadata(path) {
         if meta.file_type().is_symlink() {
             return Err(crate::error::TlsError::Other(format!(
@@ -44,6 +44,11 @@ pub fn create_restricted(path: &Path) -> Result<std::fs::File> {
             )));
         }
     }
+    Ok(())
+}
+
+pub fn create_restricted(path: &Path) -> Result<std::fs::File> {
+    refuse_symlink(path)?;
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
     #[cfg(unix)]

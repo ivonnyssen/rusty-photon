@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use rusty_photon_tls::error::{Result, TlsError};
-use rusty_photon_tls::permissions::{create_restricted, write_restricted};
+use rusty_photon_tls::permissions::{create_restricted, refuse_symlink, write_restricted};
 use tokio::sync::Mutex;
 use tracing::{debug, info};
 
@@ -318,10 +318,13 @@ fn write_atomic(path: &Path, contents: &str, restrict: bool) -> Result<()> {
     {
         use std::io::Write;
         // Key bytes must never be readable through any fd another process
-        // could hold: the staged file is born 0600, not chmod'd after.
+        // could hold: the staged file is born 0600, not chmod'd after. The
+        // certificate branch refuses symlinks too — a planted temp-sibling
+        // link must not redirect the write.
         let mut file = if restrict {
             create_restricted(&tmp)?
         } else {
+            refuse_symlink(&tmp)?;
             std::fs::File::create(&tmp)?
         };
         file.write_all(contents.as_bytes())?;

@@ -532,7 +532,9 @@ mtimes**. On a TLS handshake — throttled to at most one check every
 changed. There is no file-watcher, no signal handler, and no new
 dependency; the mechanism is identical on Linux, macOS, and Windows, and
 it covers certs that arrive by any route — `doctor tls renew` locally or
-`post_renewal_hooks` `scp`-ing to a remote machine.
+`post_renewal_hooks` `scp`-ing to a remote machine — provided the copy
+updates the file's mtime (plain `scp`/`cp` do; timestamp-preserving
+`scp -p` / `rsync -a` defeat the trigger).
 
 A pair that fails to load, or whose key does not match its certificate
 (rustls' `keys_match` — the guard for the moment between the two file
