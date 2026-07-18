@@ -512,7 +512,9 @@ Key files and `credential` are `0600` and owned by the service user on
 packaged hosts (doctor runs privileged there and chowns what it writes).
 The CA is **never regenerated** while `ca.pem` exists — replacing it
 invalidates every distributed trust anchor, so that is an explicit operator
-act (delete the file, re-run).
+act: delete `ca.pem` and `ca-key.pem`, then `doctor tls issue --force` so
+every service pair is re-issued from the new CA (without `--force` existing
+pairs are kept and still chain to the old CA), and redistribute the anchor.
 
 ### The observatory credential
 
@@ -609,7 +611,9 @@ legs, both scoped to the resolved config root:
    hostname defaults, so `--extra-san` names given at issue time survive a
    renewal that no longer knows the flag). The CA itself is never
    regenerated — a CA inside its window gets a loud warning naming the
-   explicit operator act (delete `ca.pem`, re-issue, redistribute).
+   explicit operator act (delete `ca.pem` and `ca-key.pem`, then
+   `doctor tls issue --force` so every service pair is re-issued from
+   the new CA, and redistribute the anchor).
 2. **ACME** — runs only when `<config-root>/acme.json` exists (the read
    side of the `tls issue --acme` contract: the file is written before the
    first order is attempted, so renewal — not a hand-replayed `issue`

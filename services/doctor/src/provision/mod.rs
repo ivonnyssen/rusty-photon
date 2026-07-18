@@ -67,7 +67,10 @@ pub fn absolute_pki_dir(config_dir: &Path) -> PathBuf {
 /// service whose pair is missing. `force` re-issues service certificates
 /// from the existing CA — never the CA itself: replacing it invalidates
 /// every distributed trust anchor, so that is an explicit operator act
-/// (delete `ca.pem`, re-run). Returns the provisioning actions performed.
+/// (delete `ca.pem` and `ca-key.pem`, re-run with `--force` so every
+/// service pair chains to the new CA — without it existing pairs are
+/// kept and still chain to the old one). Returns the provisioning
+/// actions performed.
 pub fn ensure_material(
     config_dir: &Path,
     services: &[String],

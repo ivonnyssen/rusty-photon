@@ -95,8 +95,10 @@ fn renew_self_signed(
                 warnings.push(format!(
                     "{} expires {not_after} and is never auto-renewed — replacing \
                      the CA invalidates every distributed trust anchor, so delete \
-                     ca.pem, re-run `doctor tls issue`, and redistribute the new \
-                     anchor deliberately",
+                     ca.pem and ca-key.pem, re-run `doctor tls issue --force` so \
+                     every service pair is re-issued from the new CA (without \
+                     --force existing pairs are kept and still chain to the old \
+                     one), and redistribute the new anchor deliberately",
                     ca_cert_path.display()
                 ));
             }
