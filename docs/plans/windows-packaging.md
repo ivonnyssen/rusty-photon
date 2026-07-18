@@ -287,8 +287,9 @@ service per ADR-014.
   Windows box / `windows-latest`): silent install with all features →
   every auto-start service `RUNNING` (`sc query`), gated four present but
   stopped → configs self-created in `%PROGRAMDATA%` with minted
-  `unique_id`s → the seeded `ui-htmx.json` `drivers` map matches the
-  installed feature set → HTTP port probes (`/management/apiversions` for
+  `unique_id`s → the self-created `ui-htmx.json` carries the required `rp`
+  target and no retired `drivers` key (#569 — formerly a seeded-map
+  assertion) → HTTP port probes (`/management/apiversions` for
   Alpaca services) → log files appearing under `...\logs\` → kill one service
   process and observe SCM restart it (failure-actions proof) → feature
   remove → full uninstall: services gone, Program Files clean, configs and

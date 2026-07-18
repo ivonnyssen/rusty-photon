@@ -269,7 +269,14 @@ foreach ($svc in $active) {
     $name = "rusty-photon-$svc"
     WaitFor $svc "service RUNNING" { (Get-Service -Name $name).Status -eq 'Running' }
 
-    if ($svc -eq 'ui-htmx' -and (Test-Path $uiCfgPath)) {
+    if ($selfCreatesConfig -contains $svc) {
+        $cfg = Join-Path $dataDir "$svc.json"
+        WaitFor $svc "config self-created at $cfg" { Test-Path $cfg } 30
+    }
+
+    # After the self-create wait, so a fresh install can never race past the
+    # shape assertions before ui-htmx has written its file.
+    if ($svc -eq 'ui-htmx') {
         $uiCfg = Get-Content $uiCfgPath -Raw | ConvertFrom-Json
         if ($uiCfg.PSObject.Properties['drivers']) {
             Fail 'ui-htmx' "self-created config carries the retired drivers key"
@@ -277,11 +284,6 @@ foreach ($svc in $active) {
         if (-not $uiCfg.PSObject.Properties['rp']) {
             Fail 'ui-htmx' "self-created config has no rp target"
         }
-    }
-
-    if ($selfCreatesConfig -contains $svc) {
-        $cfg = Join-Path $dataDir "$svc.json"
-        WaitFor $svc "config self-created at $cfg" { Test-Path $cfg } 30
     }
 
     $port = $ports[$svc]
