@@ -73,8 +73,9 @@ fn due_within(not_after: time::OffsetDateTime, window_days: i64) -> bool {
 }
 
 /// The self-signed leg: re-issue every due `<svc>.pem`/`<svc>-key.pem`
-/// pair from the existing CA, preserving the old certificate's DNS SANs
-/// (unioned with the hostname defaults by `cert::generate_service_cert`).
+/// pair from the existing CA, preserving the old certificate's DNS and IP
+/// SANs (unioned with the hostname and loopback defaults by
+/// `cert::generate_service_cert`).
 /// The CA is never re-issued — one inside its window only earns a warning.
 fn renew_self_signed(
     config_dir: &Path,
@@ -130,7 +131,7 @@ fn renew_self_signed(
             Ok(not_after) if !force && !due_within(not_after, SELF_SIGNED_RENEWAL_WINDOW_DAYS) => {
                 debug!(service, %not_after, "outside the renewal window");
             }
-            Ok(_) => due.push((service.to_string(), expiry::dns_sans(&pem))),
+            Ok(_) => due.push((service.to_string(), expiry::sans(&pem))),
             Err(e) => {
                 // An unparseable pair is exactly what `tls.expiry` sends
                 // operators here to fix.
@@ -432,7 +433,7 @@ mod tests {
             &pki,
             "qhy-focuser",
             due,
-            &["localhost", "observatory.local"],
+            &["localhost", "observatory.local", "192.0.2.7"],
         );
 
         let (applied, _) = renew(dir.path(), false).await.unwrap();
@@ -446,9 +447,13 @@ mod tests {
             !due_within(not_after, SELF_SIGNED_RENEWAL_WINDOW_DAYS),
             "the re-issued pair must leave the window"
         );
-        let sans = expiry::dns_sans(&renewed);
+        let sans = expiry::sans(&renewed);
         assert!(sans.contains(&"observatory.local".to_string()), "{sans:?}");
         assert!(sans.contains(&"localhost".to_string()), "{sans:?}");
+        assert!(
+            sans.contains(&"192.0.2.7".to_string()),
+            "an IP SAN must survive the re-issue: {sans:?}"
+        );
     }
 
     #[tokio::test]

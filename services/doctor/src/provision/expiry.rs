@@ -12,16 +12,31 @@ pub fn not_after(cert_pem: &str) -> Result<time::OffsetDateTime, String> {
     with_leaf(cert_pem, |cert| cert.validity().not_after.to_datetime())
 }
 
-/// The leaf certificate's DNS subject alternative names, in order. Empty
-/// when the certificate cannot be parsed or carries none — renewal treats
-/// an unreadable SAN list as "nothing extra to preserve".
-pub fn dns_sans(cert_pem: &str) -> Vec<String> {
+/// The leaf certificate's DNS and IP subject alternative names, in order,
+/// IPs in string form. Empty when the certificate cannot be parsed or
+/// carries none — renewal treats an unreadable SAN list as "nothing extra
+/// to preserve".
+pub fn sans(cert_pem: &str) -> Vec<String> {
     with_leaf(cert_pem, |cert| {
         let mut sans = Vec::new();
         if let Ok(Some(extension)) = cert.subject_alternative_name() {
             for name in &extension.value.general_names {
-                if let GeneralName::DNSName(dns) = name {
-                    sans.push((*dns).to_string());
+                match name {
+                    GeneralName::DNSName(dns) => sans.push((*dns).to_string()),
+                    // String form: `generate_service_cert` re-parses these
+                    // back into IP SANs, so renewal round-trips them.
+                    GeneralName::IPAddress(bytes) => match bytes.len() {
+                        4 => {
+                            let octets: [u8; 4] = (*bytes).try_into().unwrap_or_default();
+                            sans.push(std::net::IpAddr::from(octets).to_string());
+                        }
+                        16 => {
+                            let octets: [u8; 16] = (*bytes).try_into().unwrap_or_default();
+                            sans.push(std::net::IpAddr::from(octets).to_string());
+                        }
+                        _ => {}
+                    },
+                    _ => {}
                 }
             }
         }
@@ -75,17 +90,17 @@ mod tests {
     }
 
     #[test]
-    fn test_dns_sans_lists_dns_names_only() {
+    fn test_sans_lists_dns_names_and_ip_addresses() {
         let expires = time::OffsetDateTime::now_utc() + time::Duration::days(30);
         let pem = cert_pem(expires, &["localhost", "observatory.local"]);
         assert_eq!(
-            dns_sans(&pem),
+            sans(&pem),
             vec!["localhost".to_string(), "observatory.local".to_string()]
         );
     }
 
     #[test]
-    fn test_dns_sans_of_garbage_is_empty() {
-        assert!(dns_sans("not a pem").is_empty());
+    fn test_sans_of_garbage_is_empty() {
+        assert!(sans("not a pem").is_empty());
     }
 }

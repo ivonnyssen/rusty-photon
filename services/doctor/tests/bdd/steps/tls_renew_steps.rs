@@ -103,7 +103,7 @@ fn cert_outside_renewal_window(world: &mut DoctorWorld, name: String) {
 
 #[then(expr = "the certificate {string} carries the SAN {string}")]
 fn cert_carries_san(world: &mut DoctorWorld, name: String, san: String) {
-    let sans = doctor::provision::expiry::dns_sans(&pki_pem(world, &name));
+    let sans = doctor::provision::expiry::sans(&pki_pem(world, &name));
     assert!(sans.contains(&san), "{name} SANs {sans:?} lack {san:?}");
 }
 

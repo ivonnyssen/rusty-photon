@@ -555,9 +555,11 @@ their next restart (the existing `--fix` restart advice covers it).
 
 - **`doctor tls issue`** — the cert step alone (CA-if-absent + missing
   service certs), without touching configs. `--services <name>...`
-  restricts to named services; `--extra-san <host-or-ip>...` adds SANs;
-  `--force` re-issues service certs from the existing CA (never the CA
-  itself). The service set defaults to the installed set, derived from the
+  restricts to named services; `--extra-san <host-or-ip>...` adds SANs —
+  a value that parses as an address becomes an **IP SAN** (D6b), which is
+  what a client dialing the service by LAN IP verifies against, and
+  renewal preserves both kinds; `--force` re-issues service certs from
+  the existing CA (never the CA itself). The service set defaults to the installed set, derived from the
   catalog — `rp_tls::cert::DEFAULT_SERVICES` (five hand-typed names of
   eighteen) is retired.
 - **`doctor tls issue --acme --domain <d> --dns-provider <p> --dns-token <t>

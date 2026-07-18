@@ -70,8 +70,16 @@ pub fn generate_service_cert(
     let issuer = Issuer::from_ca_cert_pem(ca_cert_pem, &ca_key)
         .map_err(|e| TlsError::Other(format!("failed to load CA issuer: {e}")))?;
 
+    // An extra SAN that parses as an address becomes an IP SAN — clients
+    // dialing a service by LAN IP verify against IP SANs, not a DNS SAN
+    // that happens to look like one.
+    let (extra_ips, extra_dns): (Vec<String>, Vec<String>) = extra_sans
+        .iter()
+        .cloned()
+        .partition(|san| san.parse::<std::net::IpAddr>().is_ok());
+
     // Build service cert params
-    let mut params = CertificateParams::new(build_dns_sans(extra_sans))
+    let mut params = CertificateParams::new(build_dns_sans(&extra_dns))
         .map_err(|e| TlsError::Other(format!("invalid SAN: {e}")))?;
 
     params
@@ -87,17 +95,21 @@ pub fn generate_service_cert(
     params.not_after =
         time::OffsetDateTime::now_utc() + time::Duration::days(SERVICE_VALIDITY_DAYS);
 
-    // Add IP SANs
-    params
-        .subject_alt_names
-        .push(SanType::IpAddress(std::net::IpAddr::V4(
-            std::net::Ipv4Addr::LOCALHOST,
-        )));
-    params
-        .subject_alt_names
-        .push(SanType::IpAddress(std::net::IpAddr::V6(
-            std::net::Ipv6Addr::LOCALHOST,
-        )));
+    // Add IP SANs: both loopbacks always, plus the extra addresses.
+    let mut ips = vec![
+        std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+        std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST),
+    ];
+    for extra in &extra_ips {
+        if let Ok(ip) = extra.parse::<std::net::IpAddr>() {
+            if !ips.contains(&ip) {
+                ips.push(ip);
+            }
+        }
+    }
+    for ip in ips {
+        params.subject_alt_names.push(SanType::IpAddress(ip));
+    }
 
     let service_key = KeyPair::generate()?;
     let service_cert = params.signed_by(&service_key, &issuer)?;
@@ -209,6 +221,49 @@ mod tests {
         .unwrap();
 
         assert!(certs_dir.path().join("test-service.pem").exists());
+    }
+
+    #[test]
+    fn generate_service_cert_turns_ip_extra_sans_into_ip_sans() {
+        use x509_parser::prelude::{FromDer, GeneralName, X509Certificate};
+
+        let ca_dir = tempfile::tempdir().unwrap();
+        generate_ca(ca_dir.path()).unwrap();
+        let ca_cert_pem = fs::read_to_string(ca_dir.path().join("ca.pem")).unwrap();
+        let ca_key_pem = fs::read_to_string(ca_dir.path().join("ca-key.pem")).unwrap();
+
+        let certs_dir = tempfile::tempdir().unwrap();
+        generate_service_cert(
+            &ca_cert_pem,
+            &ca_key_pem,
+            "test-service",
+            &["observatory.local".to_string(), "192.0.2.7".to_string()],
+            certs_dir.path(),
+        )
+        .unwrap();
+
+        let pem = fs::read_to_string(certs_dir.path().join("test-service.pem")).unwrap();
+        let (_, parsed) = x509_parser::pem::parse_x509_pem(pem.as_bytes()).unwrap();
+        let (_, cert) = X509Certificate::from_der(&parsed.contents).unwrap();
+        let san = cert.subject_alternative_name().unwrap().unwrap();
+        let mut dns = Vec::new();
+        let mut ips = Vec::new();
+        for name in &san.value.general_names {
+            match name {
+                GeneralName::DNSName(d) => dns.push((*d).to_string()),
+                GeneralName::IPAddress(bytes) => ips.push(bytes.to_vec()),
+                _ => {}
+            }
+        }
+        assert!(dns.contains(&"observatory.local".to_string()), "{dns:?}");
+        assert!(
+            !dns.contains(&"192.0.2.7".to_string()),
+            "an address must not be a DNS SAN: {dns:?}"
+        );
+        assert!(
+            ips.contains(&vec![192, 0, 2, 7]),
+            "the address must be an IP SAN: {ips:?}"
+        );
     }
 
     #[test]

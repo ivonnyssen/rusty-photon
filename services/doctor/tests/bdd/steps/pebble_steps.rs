@@ -77,7 +77,7 @@ fn certificate_covers(world: &mut DoctorWorld, name: String, san: String) {
     let path = world.pki_dir().join(&name);
     let pem = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
-    let sans = doctor::provision::expiry::dns_sans(&pem);
+    let sans = doctor::provision::expiry::sans(&pem);
     assert!(sans.contains(&san), "{name} SANs {sans:?} lack {san:?}");
 }
 
