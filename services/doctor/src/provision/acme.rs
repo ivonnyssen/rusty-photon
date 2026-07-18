@@ -508,6 +508,12 @@ mod tests {
         assert_eq!(mode, 0o600, "key mode {mode:o}");
     }
 
+    #[test]
+    fn write_atomic_rejects_a_path_without_a_file_name() {
+        let err = write_atomic(Path::new("/"), "x", false).unwrap_err();
+        assert!(err.to_string().contains("no file name"), "{err}");
+    }
+
     #[tokio::test]
     async fn real_acme_client_invalid_credentials_returns_parse_error() {
         let dns = super::super::dns::MockDnsProvider::new();

@@ -1007,6 +1007,57 @@ fn rp_platform_defaults(ctx: &Context) -> Vec<Check> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;
+    use rusty_photon_doctor_checks::report::Status;
+
+    fn config_only_ctx(config_dir: &Path) -> Context {
+        let facts: PlatformFacts =
+            serde_json::from_value(serde_json::json!({ "platform": "linux" })).unwrap();
+        Context::gather(config_dir.to_path_buf(), facts)
+    }
+
+    #[test]
+    fn test_tls_expiry_fails_on_an_unreadable_certificate() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = config_only_ctx(dir.path());
+        let scan = &ctx.scans[0];
+        // A directory at the cert path: read_to_string errors while the
+        // path itself exists.
+        let check = tls_expiry(&ctx, scan, dir.path());
+        assert_eq!(check.status, Status::Fail);
+        assert!(
+            check.detail.contains("could not be read"),
+            "{}",
+            check.detail
+        );
+    }
+
+    #[test]
+    fn test_expiry_window_days_reads_the_acme_config_for_the_wildcard() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("acme.json"),
+            serde_json::json!({
+                "email": "ops@example.com",
+                "domain": "observatory.test",
+                "dns_provider": "cloudflare",
+                "dns_credentials": { "api_token": "tok" },
+                "renewal_days_before_expiry": 33,
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let ctx = config_only_ctx(dir.path());
+        assert_eq!(expiry_window_days(&ctx, Path::new("pki/acme-cert.pem")), 33);
+        // A self-signed pair keeps the 30-day default even with acme.json.
+        assert_eq!(expiry_window_days(&ctx, Path::new("pki/rp.pem")), 30);
+    }
+
+    #[test]
+    fn test_expiry_window_days_defaults_without_acme_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = config_only_ctx(dir.path());
+        assert_eq!(expiry_window_days(&ctx, Path::new("pki/acme-cert.pem")), 30);
+    }
 
     #[test]
     fn test_start_command_speaks_each_platforms_language() {

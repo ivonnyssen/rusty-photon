@@ -472,16 +472,45 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_an_unparseable_pair_is_reissued() {
+    async fn test_an_unparseable_certificate_is_reissued() {
+        // The key half parses fine, so this exercises the certificate
+        // parse arm rather than the broken-key gate.
         let (dir, pki) = stage_tree();
         std::fs::write(pki.join("qhy-focuser.pem"), "garbage").unwrap();
-        std::fs::write(pki.join("qhy-focuser-key.pem"), "garbage").unwrap();
+        let key = rcgen::KeyPair::generate().unwrap();
+        std::fs::write(pki.join("qhy-focuser-key.pem"), key.serialize_pem()).unwrap();
 
         let (applied, _) = renew(dir.path(), false).await.unwrap();
         assert_eq!(applied.len(), 1, "{applied:?}");
         let renewed = std::fs::read_to_string(pki.join("qhy-focuser.pem")).unwrap();
         let not_after = expiry::not_after(&renewed).unwrap();
         assert!(!due_within(not_after, SELF_SIGNED_RENEWAL_WINDOW_DAYS));
+    }
+
+    #[tokio::test]
+    async fn test_an_unreadable_certificate_file_is_reissued() {
+        // Invalid UTF-8: the file exists but read_to_string errors.
+        let (dir, pki) = stage_tree();
+        std::fs::write(pki.join("qhy-focuser.pem"), [0xff, 0xfe, 0x00]).unwrap();
+        let key = rcgen::KeyPair::generate().unwrap();
+        std::fs::write(pki.join("qhy-focuser-key.pem"), key.serialize_pem()).unwrap();
+
+        let (applied, _) = renew(dir.path(), false).await.unwrap();
+        assert_eq!(applied.len(), 1, "{applied:?}");
+        expiry::not_after(&std::fs::read_to_string(pki.join("qhy-focuser.pem")).unwrap()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_an_unreadable_key_file_makes_a_healthy_pair_due() {
+        let (dir, pki) = stage_tree();
+        let healthy = time::OffsetDateTime::now_utc() + time::Duration::days(300);
+        stage_pair(&pki, "qhy-focuser", healthy, &["localhost"]);
+        std::fs::write(pki.join("qhy-focuser-key.pem"), [0xff, 0xfe, 0x00]).unwrap();
+
+        let (applied, _) = renew(dir.path(), false).await.unwrap();
+        assert_eq!(applied.len(), 1, "an unreadable key must make the pair due");
+        let renewed_key = std::fs::read_to_string(pki.join("qhy-focuser-key.pem")).unwrap();
+        rcgen::KeyPair::from_pem(&renewed_key).unwrap();
     }
 
     #[tokio::test]
@@ -502,7 +531,10 @@ mod tests {
     async fn test_acme_leg_treats_an_unparseable_wildcard_cert_as_due() {
         let (dir, pki) = stage_tree();
         std::fs::write(acme_config::acme_cert_path(&pki), "garbage").unwrap();
-        std::fs::write(acme_config::acme_key_path(&pki), "garbage").unwrap();
+        // A parseable key, so the due verdict comes from the certificate
+        // parse arm rather than the broken-key gate.
+        let key = rcgen::KeyPair::generate().unwrap();
+        std::fs::write(acme_config::acme_key_path(&pki), key.serialize_pem()).unwrap();
         std::fs::write(
             dir.path().join("acme.json"),
             serde_json::json!({
