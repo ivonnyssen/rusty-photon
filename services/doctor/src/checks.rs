@@ -667,10 +667,11 @@ fn tls_and_auth(ctx: &Context) -> Vec<Check> {
                     "TLS cert and key exist".to_string(),
                 ));
             }
-            // Expiry is judged only on an absolute certificate path whose
-            // file exists — missing or ungradable stays tls.paths' concern.
+            // Expiry is judged only when tls.paths is clean — a missing or
+            // ungradable pair stays tls.paths' concern, and an expiry
+            // verdict beside a failing pair would read as contradictory.
             let cert_file = tls.resolved_cert_path();
-            if relative.is_empty() && !tls.cert.trim().is_empty() && cert_file.is_file() {
+            if missing.is_empty() && relative.is_empty() {
                 checks.push(tls_expiry(ctx, scan, &cert_file));
             }
         }
