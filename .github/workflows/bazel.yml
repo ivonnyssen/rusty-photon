@@ -116,6 +116,8 @@ jobs:
       # workflows install it via the same composite action.
       - name: Install ASCOM OmniSim
         uses: ./.github/actions/install-omnisim
+      - name: Install Pebble
+        uses: ./.github/actions/install-pebble
 
       # qhy-camera links the proprietary QHYCCD SDK + libusb; `bazel build //...`
       # compiles libqhyccd-sys on every OS, so provision both.

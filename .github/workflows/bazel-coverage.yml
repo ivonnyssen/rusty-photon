@@ -79,6 +79,8 @@ jobs:
       # forwarded into test sandboxes by .bazelrc `build:ci --test_env=OMNISIM_PATH`.
       - name: Install ASCOM OmniSim
         uses: ./.github/actions/install-omnisim
+      - name: Install Pebble
+        uses: ./.github/actions/install-pebble
 
       # `bazel coverage //...` instruments + compiles libqhyccd-sys (qhy-camera),
       # so provision the proprietary QHYCCD SDK + libusb. Linux only: the action
