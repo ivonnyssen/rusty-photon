@@ -171,19 +171,23 @@ implementation:
 
 - **systemd** (Linux) — `systemctl list-unit-files 'rusty-photon-*'` for the
   inventory and enablement, `systemctl cat <unit>` for the
-  `ConditionPathExists=` gate. Polkit facts come from a heuristic scan of
+  `ConditionPathExists=` gate, `SupplementaryGroups=`, and the `ExecStart=`
+  binary (the aggregation shell-out target), and `systemctl is-active` for
+  the run state. Polkit facts come from a heuristic scan of
   `/etc/polkit-1/rules.d` and `/usr/share/polkit-1/rules.d` (the vendor dir
   the sentinel packages ship their rule to) for the manage-units action, the
   `rusty-photon-` unit prefix, and the `"rusty-photon"` user literal.
-- **SCM** (Windows) — PowerShell `Get-Service rusty-photon-*` / `sc.exe qc`
-  for the inventory and start type.
+- **SCM** (Windows) — PowerShell over CIM (`Get-CimInstance Win32_Service`,
+  not `Get-Service` — only the CIM class carries the image path) for the
+  inventory, start mode, run state, and `PathName`.
 - **brew services** (macOS) — `brew services list` filtered to
-  `rusty-photon-*` formulas.
+  `rusty-photon-*` formulas for the inventory and run state; the shell-out
+  binary is the `brew --prefix`-linked `bin/<unit-stem>` when it exists.
 
 The inspector reports a platform-neutral inventory (unit name, enabled,
-active, plus platform-specific facts where they exist); checks that depend on
-a fact one platform lacks (systemd conditions, polkit, systemd's
-`SupplementaryGroups=`) simply do not run on the other platforms.
+active, the unit's binary, plus platform-specific facts where they exist);
+checks that depend on a fact one platform lacks (systemd conditions, polkit,
+systemd's `SupplementaryGroups=`) simply do not run on the other platforms.
 
 ### The hardware gatherer
 

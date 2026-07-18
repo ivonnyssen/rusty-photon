@@ -8,6 +8,7 @@
 
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
+pub mod aggregate;
 pub mod catalog;
 pub mod checks;
 pub mod facts;
@@ -84,13 +85,28 @@ fn packaged_config_dir(packaged: &Path) -> Result<Option<PathBuf>, String> {
     }
 }
 
-/// Run the whole diagnosis: scan, check, report.
+/// Run the whole diagnosis: scan, check, probe the per-service doctors,
+/// report.
 pub fn diagnose(config_dir: PathBuf, facts: PlatformFacts) -> Report {
+    let (ctx, mut checks) = diagnose_static(config_dir, facts);
+    checks.extend(aggregate::checks(&ctx));
+    Report::new(env!("CARGO_PKG_VERSION"), ctx.mode, ctx.config_dir, checks)
+}
+
+/// The pure half of the diagnosis: everything except the per-service
+/// aggregation probes. The `--fix` loop iterates on this — the aggregation
+/// checks plan no fixes, so probing (HTTP requests, shell-outs with SDK bus
+/// scans) on every intermediate round would be pure cost — and appends the
+/// probes once, on the final report.
+fn diagnose_static(
+    config_dir: PathBuf,
+    facts: PlatformFacts,
+) -> (checks::Context, Vec<report::Check>) {
     debug!(config_dir = %config_dir.display(), platform = ?facts.platform,
            units = facts.units.len(), "gathering context");
     let ctx = checks::Context::gather(config_dir, facts);
     let checks = checks::run_all(&ctx);
-    Report::new(ctx.mode, ctx.config_dir, checks)
+    (ctx, checks)
 }
 
 /// One fix can unlock the next (a freed default port makes another
@@ -110,17 +126,19 @@ const MAX_FIX_ROUNDS: usize = 4;
 pub fn diagnose_and_fix(config_dir: PathBuf, facts: PlatformFacts) -> Result<Report, String> {
     let mut applied = provision_material(&config_dir, &facts)?;
     for round in 0..MAX_FIX_ROUNDS {
-        let report = diagnose(config_dir.clone(), facts.clone());
-        let planned: usize = report.checks.iter().map(|c| c.fixes.len()).sum();
+        let (ctx, mut checks) = diagnose_static(config_dir.clone(), facts.clone());
+        let planned: usize = checks.iter().map(|c| c.fixes.len()).sum();
         // The sentinel client-block wiring is provisioning-pass work, not a
         // check's fix plan — planned fresh each round so a second run plans
         // (and applies) nothing.
         let client_ops = provision::plan_client_wiring(&config_dir);
         if planned == 0 && client_ops.is_empty() {
             debug!(round, applied = applied.len(), "fix rounds converged");
+            checks.extend(aggregate::checks(&ctx));
+            let report = Report::new(env!("CARGO_PKG_VERSION"), ctx.mode, ctx.config_dir, checks);
             return Ok(report.with_fixes_applied(applied));
         }
-        let mut round_applied = fix::apply_fixes(&config_dir, &report.checks)?;
+        let mut round_applied = fix::apply_fixes(&config_dir, &checks)?;
         round_applied.extend(fix::apply_ops(&config_dir, client_ops, false)?);
         if round_applied.is_empty() {
             // Planned targets were already gone (a concurrent edit landed

@@ -582,6 +582,8 @@ mod tests {
                 condition_path: None,
                 source_name: None,
                 supplementary_groups: vec!["plugdev".to_string()],
+                active: None,
+                binary_path: None,
             }],
             polkit_grants_sentinel_restart: None,
             hardware: None,

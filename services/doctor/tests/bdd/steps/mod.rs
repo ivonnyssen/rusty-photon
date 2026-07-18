@@ -1,3 +1,4 @@
+pub mod aggregation_steps;
 pub mod config_steps;
 pub mod facts_steps;
 pub mod fix_steps;

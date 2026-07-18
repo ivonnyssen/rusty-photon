@@ -26,6 +26,7 @@ hostname = "0.4"
 instant-acme = { workspace = true }
 rand = { workspace = true }
 rcgen = { workspace = true }
+reqwest = { workspace = true }
 rp-auth = { workspace = true }
 rpassword = { workspace = true }
 rusty-photon-config = { workspace = true }
@@ -46,7 +47,6 @@ axum = { workspace = true }
 bdd-infra = { workspace = true }
 cucumber = { workspace = true }
 mockall = { workspace = true }
-reqwest = { workspace = true }
 rustls = { workspace = true }
 rustls-pemfile = { workspace = true }
 tempfile = { workspace = true }

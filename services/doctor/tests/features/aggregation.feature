@@ -1,0 +1,98 @@
+Feature: Aggregation over the per-service doctors
+
+  On a packaged host, central doctor extends its diagnosis through each
+  installed service (docs/services/doctor.md, Aggregation section). An
+  active Alpaca-class service is asked over HTTP for its configured
+  devices; an installed-but-stopped unit's own binary is run as
+  "doctor --json" and its checks merge into the report. Staged units
+  without a run state have no aggregation story and are skipped.
+
+  Scenario: an active Alpaca service reports its device inventory
+    Given a stub management endpoint serving two configured devices
+    And a config file "ppba-driver.json" pointing at the stub endpoint
+    And platform facts where unit "rusty-photon-ppba-driver" is installed and active
+    When I run doctor with --json
+    Then the report contains an "ok" check named "service.devices" for service "ppba-driver"
+    And that check's detail mentions "2 configured device(s)"
+    And that check's detail mentions "Stub Camera"
+
+  Scenario: an active service that does not answer its own port is a failure
+    Given a config file "ppba-driver.json" declaring a port nothing listens on
+    And platform facts where unit "rusty-photon-ppba-driver" is installed and active
+    When I run doctor with --json
+    Then the report contains a "fail" check named "service.devices" for service "ppba-driver"
+    And that check's detail mentions "does not answer"
+    And doctor exits with code 1
+
+  Scenario: an authenticated endpoint doctor holds no credential for proves liveness only
+    Given a stub management endpoint that requires authentication
+    And a config file "ppba-driver.json" pointing at the stub endpoint with auth enabled
+    And platform facts where unit "rusty-photon-ppba-driver" is installed and active
+    When I run doctor with --json
+    Then the report contains a "warn" check named "service.devices" for service "ppba-driver"
+    And that check's detail mentions "liveness is proven"
+
+  Scenario: the staged observatory credential unlocks an authenticated endpoint
+    Given a staged observatory credential
+    And a stub management endpoint that requires authentication
+    And a config file "ppba-driver.json" pointing at the stub endpoint with auth enabled
+    And platform facts where unit "rusty-photon-ppba-driver" is installed and active
+    When I run doctor with --json
+    Then the report contains an "ok" check named "service.devices" for service "ppba-driver"
+    And that check's detail mentions "2 configured device(s)"
+
+  Scenario: an active TLS service is probed over HTTPS with doctor's own trust root
+    Given a config file "ppba-driver.json" containing:
+      """
+      {}
+      """
+    And doctor tls issue has already run
+    And an HTTPS stub management endpoint for "ppba-driver" serving two configured devices
+    And platform facts where unit "rusty-photon-ppba-driver" is installed and active
+    When I run doctor with --json
+    Then the report contains an "ok" check named "service.devices" for service "ppba-driver"
+    And that check's detail mentions "2 configured device(s)"
+
+  Scenario: a stopped unit's own doctor report merges into the aggregate
+    Given a stub per-service doctor for "ppba-driver" whose report has a failing "config.full-shape" check
+    And a config file "ppba-driver.json" containing:
+      """
+      { "server": { "port": 11112 } }
+      """
+    And platform facts where unit "rusty-photon-ppba-driver" is installed but stopped, with the stub binary
+    When I run doctor with --json
+    Then the report contains a "fail" check named "config.full-shape" for service "ppba-driver"
+    And that check's detail mentions "typo_key"
+    And doctor exits with code 1
+
+  Scenario: a binary that predates the doctor subcommand is version skew, not a broken rig
+    Given a stub per-service binary for "ppba-driver" that does not know the doctor subcommand
+    And a config file "ppba-driver.json" containing:
+      """
+      { "server": { "port": 11112 } }
+      """
+    And platform facts where unit "rusty-photon-ppba-driver" is installed but stopped, with the stub binary
+    When I run doctor with --json
+    Then the report contains a "warn" check named "service.doctor-probe" for service "ppba-driver"
+    And that check's detail mentions "did not produce a doctor report"
+    And the report has no checks named "service.devices"
+
+  Scenario: a stopped unit whose binary path is unknown is reported, not skipped
+    Given a config file "ppba-driver.json" containing:
+      """
+      { "server": { "port": 11112 } }
+      """
+    And platform facts where unit "rusty-photon-ppba-driver" is installed but stopped, with no known binary path
+    When I run doctor with --json
+    Then the report contains a "warn" check named "service.doctor-probe" for service "ppba-driver"
+    And that check's detail mentions "records no binary path"
+
+  Scenario: staged units without a run state have no aggregation story
+    Given a config file "ppba-driver.json" containing:
+      """
+      { "server": { "port": 11112 } }
+      """
+    And platform facts with an enabled unit "rusty-photon-ppba-driver"
+    When I run doctor with --json
+    Then the report has no checks named "service.devices"
+    And the report has no checks named "service.doctor-probe"
