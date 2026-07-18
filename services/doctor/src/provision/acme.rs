@@ -1,5 +1,6 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use rusty_photon_tls::error::{Result, TlsError};
@@ -41,19 +42,40 @@ pub trait AcmeClient: Send + Sync {
 /// Real ACME client using `instant-acme`.
 ///
 /// Stores the account handle after `create_or_load_account` so that
-/// `order_certificate` can use it. Holds a DNS provider reference
-/// for solving DNS-01 challenges.
+/// `order_certificate` can use it. Holds a DNS provider reference for
+/// solving DNS-01 challenges, an optional extra trust anchor for the ACME
+/// server's own TLS endpoint (private directories such as step-ca or
+/// Pebble), and the wait between writing a TXT record and requesting
+/// validation.
 pub struct RealAcmeClient<'a> {
     dns_provider: &'a dyn DnsProvider,
+    acme_root: Option<PathBuf>,
+    propagation_wait: Duration,
     account: Arc<Mutex<Option<instant_acme::Account>>>,
 }
 
 impl<'a> RealAcmeClient<'a> {
-    pub fn new(dns_provider: &'a dyn DnsProvider) -> Self {
+    pub fn new(
+        dns_provider: &'a dyn DnsProvider,
+        acme_root: Option<PathBuf>,
+        propagation_wait: Duration,
+    ) -> Self {
         Self {
             dns_provider,
+            acme_root,
+            propagation_wait,
             account: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// The account builder, trusting the configured extra root when one is
+    /// set.
+    fn account_builder(&self) -> Result<instant_acme::AccountBuilder> {
+        let builder = match &self.acme_root {
+            Some(root) => instant_acme::Account::builder_with_root(root),
+            None => instant_acme::Account::builder(),
+        };
+        builder.map_err(|e| TlsError::Acme(format!("failed to create account builder: {e}")))
     }
 }
 
@@ -65,14 +87,14 @@ impl AcmeClient for RealAcmeClient<'_> {
         directory_url: String,
         existing_credentials_json: Option<String>,
     ) -> Result<Option<String>> {
-        use instant_acme::{Account, AccountCredentials, NewAccount};
+        use instant_acme::{AccountCredentials, NewAccount};
 
         if let Some(json) = existing_credentials_json {
             debug!("Loading ACME account from credentials");
             let credentials: AccountCredentials = serde_json::from_str(&json)
                 .map_err(|e| TlsError::Acme(format!("failed to parse account credentials: {e}")))?;
-            let account = Account::builder()
-                .map_err(|e| TlsError::Acme(format!("failed to create account builder: {e}")))?
+            let account = self
+                .account_builder()?
                 .from_credentials(credentials)
                 .await
                 .map_err(|e| TlsError::Acme(format!("failed to load account: {e}")))?;
@@ -88,8 +110,8 @@ impl AcmeClient for RealAcmeClient<'_> {
                 only_return_existing: false,
             };
 
-            let (account, credentials) = Account::builder()
-                .map_err(|e| TlsError::Acme(format!("failed to create account builder: {e}")))?
+            let (account, credentials) = self
+                .account_builder()?
                 .create(&new_account, directory_url, None)
                 .await
                 .map_err(|e| TlsError::Acme(format!("failed to create ACME account: {e}")))?;
@@ -157,8 +179,11 @@ impl AcmeClient for RealAcmeClient<'_> {
                 .create_txt_record(&challenge_fqdn, &dns_value)
                 .await?;
 
-            debug!("Waiting 15 seconds for DNS propagation");
-            tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+            debug!(
+                "Waiting {}s for DNS propagation",
+                self.propagation_wait.as_secs()
+            );
+            tokio::time::sleep(self.propagation_wait).await;
 
             challenge
                 .set_ready()
@@ -209,7 +234,7 @@ pub async fn issue_certificate(
     acme_client: &dyn AcmeClient,
 ) -> Result<()> {
     let account_path = acme_config::acme_account_path(pki_dir);
-    let directory_url = acme_config::directory_url(config.staging).to_string();
+    let directory_url = config.resolved_directory_url();
 
     // Load existing credentials if available
     let existing_creds = if account_path.exists() {
@@ -239,19 +264,40 @@ pub async fn issue_certificate(
     let (cert_chain_pem, private_key_pem) =
         acme_client.order_certificate(config.domain.clone()).await?;
 
-    // Write certificate and key (flat pki tree — no certs/ subdirectory)
+    // Write certificate and key (flat pki tree — no certs/ subdirectory).
+    // Each file lands via write-then-rename so a service hot-reloading the
+    // pair mid-write never reads a torn file.
     std::fs::create_dir_all(pki_dir)?;
 
     let cert_path = acme_config::acme_cert_path(pki_dir);
     let key_path = acme_config::acme_key_path(pki_dir);
 
-    std::fs::write(&cert_path, &cert_chain_pem)?;
-    std::fs::write(&key_path, &private_key_pem)?;
-    set_restricted_permissions(&key_path)?;
+    write_atomic(&cert_path, &cert_chain_pem, false)?;
+    write_atomic(&key_path, &private_key_pem, true)?;
 
     info!("Certificate written to {}", cert_path.display());
     info!("Private key written to {}", key_path.display());
 
+    Ok(())
+}
+
+/// Write `contents` to a `.tmp` sibling and rename it over `path`.
+/// `restrict` applies 0600 to the temp file first, so the final file never
+/// exists with open permissions.
+fn write_atomic(path: &Path, contents: &str, restrict: bool) -> Result<()> {
+    let mut tmp_name = path
+        .file_name()
+        .map(std::ffi::OsString::from)
+        .ok_or_else(|| {
+            TlsError::Other(format!("{} has no file name to write to", path.display()))
+        })?;
+    tmp_name.push(".tmp");
+    let tmp = path.with_file_name(tmp_name);
+    std::fs::write(&tmp, contents)?;
+    if restrict {
+        set_restricted_permissions(&tmp)?;
+    }
+    std::fs::rename(&tmp, path)?;
     Ok(())
 }
 
@@ -270,6 +316,9 @@ mod tests {
             staging: true,
             renewal_days_before_expiry: 30,
             post_renewal_hooks: vec![],
+            directory_url: None,
+            acme_root: None,
+            dns_propagation_seconds: 15,
         }
     }
 
@@ -397,10 +446,34 @@ mod tests {
         );
     }
 
+    #[test]
+    fn write_atomic_replaces_the_file_and_leaves_no_tmp_sibling() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("acme-cert.pem");
+        std::fs::write(&path, "OLD").unwrap();
+        write_atomic(&path, "NEW", false).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "NEW");
+        assert!(
+            !dir.path().join("acme-cert.pem.tmp").exists(),
+            "the temp sibling must be renamed away"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_atomic_restricts_before_the_rename() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("acme-key.pem");
+        write_atomic(&path, "KEY", true).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "key mode {mode:o}");
+    }
+
     #[tokio::test]
     async fn real_acme_client_invalid_credentials_returns_parse_error() {
         let dns = super::super::dns::MockDnsProvider::new();
-        let client = RealAcmeClient::new(&dns);
+        let client = RealAcmeClient::new(&dns, None, Duration::from_secs(15));
         let result = client
             .create_or_load_account(
                 "test@example.com".to_string(),

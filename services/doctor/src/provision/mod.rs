@@ -11,6 +11,8 @@ pub mod acme;
 pub mod acme_config;
 pub mod cert;
 pub mod dns;
+pub mod expiry;
+pub mod renew;
 
 use std::path::{Path, PathBuf};
 
@@ -203,31 +205,49 @@ pub fn plan_client_wiring(config_dir: &Path) -> Vec<(String, FixOp)> {
     ops
 }
 
+/// Everything `doctor tls issue --acme` collects from its flags. All of it
+/// persists into `acme.json` — renewal must replay these settings
+/// unattended.
+#[derive(Debug, Clone)]
+pub struct AcmeArgs {
+    pub domain: String,
+    pub dns_provider: String,
+    pub dns_token: String,
+    pub email: String,
+    pub staging: bool,
+    /// Overrides the Let's Encrypt endpoints entirely (an internal ACME CA,
+    /// or Pebble in tests).
+    pub directory_url: Option<String>,
+    /// A PEM trust anchor for the ACME server's own TLS endpoint.
+    pub acme_root: Option<PathBuf>,
+    /// Wait between writing the TXT record and requesting validation;
+    /// `None` keeps the 15s default.
+    pub dns_propagation_seconds: Option<u64>,
+}
+
 /// Run the ACME issuance flow: persist `acme.json` beside the configs
 /// **first** (that is the contract renewal picks up from, whether or not
 /// the order succeeds), then build the DNS provider and order a wildcard
 /// certificate into the flat pki tree.
-#[allow(clippy::too_many_arguments)]
-pub async fn run_acme(
-    config_dir: &Path,
-    domain: &str,
-    dns_provider_name: &str,
-    dns_token: &str,
-    email: &str,
-    staging: bool,
-) -> Result<(), String> {
+pub async fn run_acme(config_dir: &Path, args: AcmeArgs) -> Result<(), String> {
     let pki = pki_dir(config_dir);
 
     let mut dns_credentials = std::collections::HashMap::new();
-    dns_credentials.insert("api_token".to_string(), dns_token.to_string());
+    dns_credentials.insert("api_token".to_string(), args.dns_token.clone());
     let config = acme_config::AcmeConfig {
-        email: email.to_string(),
-        domain: domain.to_string(),
-        dns_provider: dns_provider_name.to_string(),
+        email: args.email.clone(),
+        domain: args.domain.clone(),
+        dns_provider: args.dns_provider.clone(),
         dns_credentials,
-        staging,
+        staging: args.staging,
         renewal_days_before_expiry: 30,
         post_renewal_hooks: vec![],
+        directory_url: args.directory_url.clone(),
+        acme_root: args
+            .acme_root
+            .as_ref()
+            .map(|p| p.to_string_lossy().into_owned()),
+        dns_propagation_seconds: args.dns_propagation_seconds.unwrap_or(15),
     };
 
     let config_path = config_dir.join("acme.json");
@@ -237,19 +257,23 @@ pub async fn run_acme(
 
     let resolved =
         acme_config::resolve_credentials(&config.dns_credentials).map_err(|e| e.to_string())?;
-    let dns_provider = dns::build_dns_provider(&config.dns_provider, &resolved, domain)
+    let dns_provider = dns::build_dns_provider(&config.dns_provider, &resolved, &config.domain)
         .await
         .map_err(|e| e.to_string())?;
-    let acme_client = acme::RealAcmeClient::new(dns_provider.as_ref());
+    let acme_client = acme::RealAcmeClient::new(
+        dns_provider.as_ref(),
+        args.acme_root.clone(),
+        std::time::Duration::from_secs(config.dns_propagation_seconds),
+    );
 
     acme::issue_certificate(&config, &pki, &acme_client)
         .await
         .map_err(|e| e.to_string())?;
 
-    println!("ACME certificate issued for *.{domain}:");
+    println!("ACME certificate issued for *.{}:", config.domain);
     println!("  cert: {}", acme_config::acme_cert_path(&pki).display());
     println!("  key:  {}", acme_config::acme_key_path(&pki).display());
-    if staging {
+    if config.staging {
         println!("  environment: STAGING (not trusted by browsers)");
     }
     Ok(())

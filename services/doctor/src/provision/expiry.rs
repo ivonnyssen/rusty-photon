@@ -1,0 +1,91 @@
+//! Certificate expiry and SAN inspection (docs/services/doctor.md
+//! §Renewal, the `tls.expiry` check).
+//!
+//! Reads the leaf certificate — the first PEM block, which is the entity
+//! certificate in every chain doctor writes — so the same functions serve
+//! the self-signed pairs and the ACME wildcard chain.
+
+use x509_parser::prelude::{FromDer, GeneralName, X509Certificate};
+
+/// The leaf certificate's `notAfter`.
+pub fn not_after(cert_pem: &str) -> Result<time::OffsetDateTime, String> {
+    with_leaf(cert_pem, |cert| cert.validity().not_after.to_datetime())
+}
+
+/// The leaf certificate's DNS subject alternative names, in order. Empty
+/// when the certificate cannot be parsed or carries none — renewal treats
+/// an unreadable SAN list as "nothing extra to preserve".
+pub fn dns_sans(cert_pem: &str) -> Vec<String> {
+    with_leaf(cert_pem, |cert| {
+        let mut sans = Vec::new();
+        if let Ok(Some(extension)) = cert.subject_alternative_name() {
+            for name in &extension.value.general_names {
+                if let GeneralName::DNSName(dns) = name {
+                    sans.push((*dns).to_string());
+                }
+            }
+        }
+        sans
+    })
+    .unwrap_or_default()
+}
+
+/// Parse the first PEM block as an X.509 certificate and apply `f`.
+fn with_leaf<T>(cert_pem: &str, f: impl FnOnce(&X509Certificate<'_>) -> T) -> Result<T, String> {
+    let (_, pem) = x509_parser::pem::parse_x509_pem(cert_pem.as_bytes())
+        .map_err(|e| format!("not PEM: {e}"))?;
+    let (_, cert) = X509Certificate::from_der(&pem.contents)
+        .map_err(|e| format!("not an X.509 certificate: {e}"))?;
+    Ok(f(&cert))
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+mod tests {
+    use super::*;
+
+    /// A self-signed certificate with a known validity window and SAN set.
+    fn cert_pem(not_after: time::OffsetDateTime, sans: &[&str]) -> String {
+        let mut params =
+            rcgen::CertificateParams::new(sans.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+                .unwrap();
+        params.not_before = not_after - time::Duration::days(365);
+        params.not_after = not_after;
+        let key = rcgen::KeyPair::generate().unwrap();
+        params.self_signed(&key).unwrap().pem()
+    }
+
+    #[test]
+    fn test_not_after_reads_the_declared_date() {
+        // X.509 truncates to whole seconds; compare at that granularity.
+        let expected = time::OffsetDateTime::now_utc()
+            .replace_nanosecond(0)
+            .unwrap()
+            + time::Duration::days(42);
+        let pem = cert_pem(expected, &["localhost"]);
+        assert_eq!(not_after(&pem).unwrap(), expected);
+    }
+
+    #[test]
+    fn test_not_after_rejects_garbage() {
+        not_after("not a pem").unwrap_err();
+        not_after("-----BEGIN CERTIFICATE-----\nbm90IGEgY2VydA==\n-----END CERTIFICATE-----\n")
+            .unwrap_err();
+    }
+
+    #[test]
+    fn test_dns_sans_lists_dns_names_only() {
+        let expires = time::OffsetDateTime::now_utc() + time::Duration::days(30);
+        let pem = cert_pem(expires, &["localhost", "observatory.local"]);
+        assert_eq!(
+            dns_sans(&pem),
+            vec!["localhost".to_string(), "observatory.local".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_dns_sans_of_garbage_is_empty() {
+        assert!(dns_sans("not a pem").is_empty());
+    }
+}

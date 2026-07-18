@@ -103,9 +103,11 @@ fn apply_op(value: &mut Value, op: &FixOp, overwrite: bool) -> bool {
         // Provisioning actions are performed against the pki tree, never as
         // config-pointer ops; an unknown op from a newer binary cannot be
         // applied at all.
-        FixOp::GenerateCa | FixOp::GenerateCert { .. } | FixOp::MintCredential | FixOp::Unknown => {
-            false
-        }
+        FixOp::GenerateCa
+        | FixOp::GenerateCert { .. }
+        | FixOp::MintCredential
+        | FixOp::RenewAcme { .. }
+        | FixOp::Unknown => false,
     }
 }
 
@@ -257,7 +259,14 @@ mod tests {
             },
             false,
         ));
-        for op in [FixOp::GenerateCa, FixOp::MintCredential, FixOp::Unknown] {
+        for op in [
+            FixOp::GenerateCa,
+            FixOp::MintCredential,
+            FixOp::RenewAcme {
+                domain: "observatory.example.com".to_string(),
+            },
+            FixOp::Unknown,
+        ] {
             assert!(
                 !apply_op(&mut v, &op, true),
                 "{op} is never a config-pointer application"

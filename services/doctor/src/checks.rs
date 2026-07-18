@@ -796,6 +796,12 @@ fn tls_and_auth(ctx: &Context) -> Vec<Check> {
                     ),
                 ));
             }
+            // Expiry is judged only on a certificate file that exists — a
+            // missing one stays tls.paths' concern.
+            let cert_file = anchored_path(&ctx.config_dir, &tls.resolved_cert_path());
+            if !tls.cert.trim().is_empty() && cert_file.is_file() {
+                checks.push(tls_expiry(ctx, scan, &cert_file));
+            }
         }
         if server.auth.is_some() && server.tls.is_none() {
             checks.push(Check::warn(
@@ -974,12 +980,101 @@ fn tls_material_present(config_dir: &Path, raw: &str, resolved: &Path) -> bool {
     if raw.trim().is_empty() {
         return false;
     }
-    let anchored = if resolved.is_absolute() {
+    anchored_path(config_dir, resolved).is_file()
+}
+
+/// A resolved TLS path anchored the way the service will open it: absolute
+/// stays as-is, a relative remainder anchors at the config dir.
+fn anchored_path(config_dir: &Path, resolved: &Path) -> PathBuf {
+    if resolved.is_absolute() {
         resolved.to_path_buf()
     } else {
         config_dir.join(resolved)
+    }
+}
+
+/// `tls.expiry` (D6b): grade an existing configured certificate's
+/// `not_after`. Expired or unparseable fails — rustls loads an expired
+/// certificate cleanly and only *clients* reject the handshake, so without
+/// this check the failure surfaces as every client erroring at night.
+/// Inside the renewal window warns. Suggestion-only: renewal belongs on
+/// the platform timer, so `--fix` never renews.
+fn tls_expiry(ctx: &Context, scan: &ServiceScan, cert_file: &Path) -> Check {
+    let suggestion = "run `doctor tls renew` (the platform timer's command), or \
+                      `doctor tls issue --force` for a certificate the renew legs \
+                      don't own"
+        .to_string();
+    let pem = match std::fs::read_to_string(cert_file) {
+        Ok(pem) => pem,
+        Err(e) => {
+            return Check::fail(
+                "tls.expiry",
+                svc(scan),
+                format!("{} could not be read: {e}", cert_file.display()),
+                Some(suggestion),
+            )
+        }
     };
-    anchored.is_file()
+    let not_after = match crate::provision::expiry::not_after(&pem) {
+        Ok(not_after) => not_after,
+        Err(e) => {
+            return Check::fail(
+                "tls.expiry",
+                svc(scan),
+                format!(
+                    "{} is not a parseable certificate ({e}) — the service \
+                     cannot serve it",
+                    cert_file.display()
+                ),
+                Some(suggestion),
+            )
+        }
+    };
+    let now = time::OffsetDateTime::now_utc();
+    if not_after <= now {
+        return Check::fail(
+            "tls.expiry",
+            svc(scan),
+            format!(
+                "{} expired {not_after} — the server still loads it, and every \
+                 client rejects the handshake",
+                cert_file.display()
+            ),
+            Some(suggestion),
+        );
+    }
+    let window_days = expiry_window_days(ctx, cert_file);
+    if not_after - now <= time::Duration::days(window_days) {
+        return Check::warn(
+            "tls.expiry",
+            svc(scan),
+            format!(
+                "{} expires {not_after}, inside its {window_days}-day renewal \
+                 window",
+                cert_file.display()
+            ),
+            Some(suggestion),
+        );
+    }
+    Check::ok(
+        "tls.expiry",
+        svc(scan),
+        format!("certificate valid until {not_after}"),
+    )
+}
+
+/// The warn window: 30 days for self-signed material,
+/// `renewal_days_before_expiry` from `acme.json` for the ACME wildcard
+/// pair.
+fn expiry_window_days(ctx: &Context, cert_file: &Path) -> i64 {
+    if cert_file.file_name().is_some_and(|n| n == "acme-cert.pem") {
+        if let Ok(config) =
+            crate::provision::acme_config::load_acme_config(&ctx.config_dir.join("acme.json"))
+        {
+            return i64::from(config.renewal_days_before_expiry);
+        }
+    }
+    30
 }
 
 // ---- rp platform defaults ----
