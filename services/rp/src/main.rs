@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 use rusty_photon_service_lifecycle::{
-    init_service_tracing, init_tracing, report_from_boxed, ServiceResult, ServiceRunner, Shutdown,
+    init_service_tracing, ServiceResult, ServiceRunner, Shutdown,
 };
 use tracing::{debug, Level};
 
@@ -51,58 +51,6 @@ enum Commands {
         #[arg(long, hide = true)]
         service: bool,
     },
-    /// Hash a password for use in service auth configuration
-    HashPassword {
-        /// Log level (trace, debug, info, warn, error)
-        #[arg(long, default_value = "info", value_parser = clap::value_parser!(Level))]
-        log_level: Level,
-
-        /// Read password from stdin (no prompt, no confirmation)
-        #[arg(long)]
-        stdin: bool,
-    },
-    /// Generate TLS certificates for all services
-    InitTls {
-        /// Output directory (default: ~/.rusty-photon/pki)
-        #[arg(long)]
-        output_dir: Option<String>,
-
-        /// Services to generate certs for (default: all known services)
-        #[arg(long)]
-        services: Option<Vec<String>>,
-
-        /// Additional SANs (hostnames or IPs) to include in certificates
-        #[arg(long)]
-        extra_san: Option<Vec<String>>,
-
-        /// Use ACME/Let's Encrypt instead of self-signed CA
-        #[arg(long)]
-        acme: bool,
-
-        /// Domain for ACME wildcard certificate (requires --acme)
-        #[arg(long, requires = "acme")]
-        domain: Option<String>,
-
-        /// DNS provider for ACME challenge (e.g., "cloudflare") (requires --acme)
-        #[arg(long, requires = "acme")]
-        dns_provider: Option<String>,
-
-        /// DNS provider API token (requires --acme)
-        #[arg(long, requires = "acme")]
-        dns_token: Option<String>,
-
-        /// Email for ACME account registration (requires --acme)
-        #[arg(long, requires = "acme")]
-        email: Option<String>,
-
-        /// Use Let's Encrypt staging environment (requires --acme)
-        #[arg(long, requires = "acme")]
-        staging: bool,
-
-        /// Log level (trace, debug, info, warn, error)
-        #[arg(long, default_value = "info", value_parser = clap::value_parser!(Level))]
-        log_level: Level,
-    },
     /// Diagnose this service's configuration without starting it
     /// (docs/services/doctor.md). Read-only; exits 1 on failing checks.
     Doctor {
@@ -131,45 +79,6 @@ fn main() -> ServiceResult {
             // stderr as before.
             let _tracing_guard = init_service_tracing("rp", log_level, service);
             run_serve(config, service)
-        }
-        Some(Commands::HashPassword { log_level, stdin }) => {
-            init_tracing(log_level);
-            rp::hash_password_cmd::run(stdin).map_err(report_from_boxed)
-        }
-        Some(Commands::InitTls {
-            output_dir,
-            services,
-            extra_san,
-            acme,
-            domain,
-            dns_provider,
-            dns_token,
-            email,
-            staging,
-            log_level,
-        }) => {
-            init_tracing(log_level);
-            if acme {
-                let rt = tokio::runtime::Builder::new_multi_thread()
-                    .enable_all()
-                    .build()?;
-                rt.block_on(rp::tls_cmd::run_acme(
-                    output_dir.as_deref(),
-                    domain.as_deref(),
-                    dns_provider.as_deref(),
-                    dns_token.as_deref(),
-                    email.as_deref(),
-                    staging,
-                ))
-                .map_err(report_from_boxed)
-            } else {
-                rp::tls_cmd::run(
-                    output_dir.as_deref(),
-                    services.as_deref(),
-                    &extra_san.unwrap_or_default(),
-                )
-                .map_err(report_from_boxed)
-            }
         }
         // No tracing init: doctor writes its report to stdout and exits.
         Some(Commands::Doctor { config, json }) => rp::doctor::run(config, json),

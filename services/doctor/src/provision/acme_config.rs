@@ -1,14 +1,13 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use rusty_photon_tls::error::{Result, TlsError};
+use rusty_photon_tls::permissions::set_restricted_permissions;
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 
-use crate::config::expand_tilde;
-use crate::error::{Result, TlsError};
-use crate::permissions::set_restricted_permissions;
-
-/// ACME configuration stored at `~/.rusty-photon/acme.json`.
+/// ACME configuration stored at `<config-root>/acme.json`, beside the
+/// service configs.
 ///
 /// This is standalone and decoupled from any service config, supporting
 /// multi-machine deployments where the ACME client runs on one host.
@@ -38,24 +37,21 @@ fn default_renewal_days() -> u32 {
     30
 }
 
-/// Default path for the ACME configuration file: `~/.rusty-photon/acme.json`.
-pub fn default_acme_config_path() -> PathBuf {
-    expand_tilde("~/.rusty-photon/acme.json")
-}
-
 /// Path to the ACME account credentials file within the PKI directory.
 pub fn acme_account_path(pki_dir: &Path) -> PathBuf {
     pki_dir.join("acme-account.json")
 }
 
-/// Path to the ACME wildcard certificate file within the PKI directory.
+/// Path to the ACME wildcard certificate file within the (flat) PKI
+/// directory.
 pub fn acme_cert_path(pki_dir: &Path) -> PathBuf {
-    pki_dir.join("certs").join("acme-cert.pem")
+    pki_dir.join("acme-cert.pem")
 }
 
-/// Path to the ACME wildcard private key file within the PKI directory.
+/// Path to the ACME wildcard private key file within the (flat) PKI
+/// directory.
 pub fn acme_key_path(pki_dir: &Path) -> PathBuf {
-    pki_dir.join("certs").join("acme-key.pem")
+    pki_dir.join("acme-key.pem")
 }
 
 /// Load ACME configuration from a JSON file.
@@ -200,37 +196,20 @@ mod tests {
     }
 
     #[test]
-    fn path_helpers_return_expected_paths() {
-        let pki_dir = Path::new("/home/user/.rusty-photon/pki");
+    fn path_helpers_return_flat_pki_paths() {
+        let pki_dir = Path::new("/var/lib/rusty-photon/.config/rusty-photon/pki");
         assert_eq!(
             acme_account_path(pki_dir),
-            PathBuf::from("/home/user/.rusty-photon/pki/acme-account.json")
+            PathBuf::from("/var/lib/rusty-photon/.config/rusty-photon/pki/acme-account.json")
         );
         assert_eq!(
             acme_cert_path(pki_dir),
-            PathBuf::from("/home/user/.rusty-photon/pki/certs/acme-cert.pem")
+            PathBuf::from("/var/lib/rusty-photon/.config/rusty-photon/pki/acme-cert.pem")
         );
         assert_eq!(
             acme_key_path(pki_dir),
-            PathBuf::from("/home/user/.rusty-photon/pki/certs/acme-key.pem")
+            PathBuf::from("/var/lib/rusty-photon/.config/rusty-photon/pki/acme-key.pem")
         );
-    }
-
-    #[test]
-    fn default_acme_config_path_under_home() {
-        if std::env::var_os("HOME").is_some() || std::env::var_os("USERPROFILE").is_some() {
-            let path = default_acme_config_path();
-            assert!(
-                !path.starts_with("~"),
-                "tilde should be expanded: {}",
-                path.display()
-            );
-            assert!(
-                path.to_string_lossy().contains("acme.json"),
-                "should end with acme.json: {}",
-                path.display()
-            );
-        }
     }
 
     #[test]

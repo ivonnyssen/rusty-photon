@@ -161,7 +161,7 @@ pub async fn run_with_client_ctx(
                 tracing::warn!(
                     "Authentication is enabled but TLS is not. \
                      Credentials will be transmitted in cleartext. \
-                     Consider enabling TLS (see `rp init-tls`)."
+                     Consider enabling TLS (see `doctor --fix`)."
                 );
             }
             rp_auth::layer(app, auth)
@@ -170,7 +170,7 @@ pub async fn run_with_client_ctx(
     };
 
     let bind_addr = config.server.socket_addr();
-    let listener = rp_tls::server::bind_dual_stack_tokio(bind_addr)
+    let listener = rusty_photon_tls::server::bind_dual_stack_tokio(bind_addr)
         .await
         .map_err(|e| SkySurveyCameraError::Bind(format!("bind {bind_addr}: {e}")))?;
     let local = listener
@@ -195,10 +195,12 @@ pub async fn run_with_client_ctx(
     // SIGTERM at the end of each scenario.
     let serve = async {
         match config.server.tls {
-            Some(ref tls_config) => rp_tls::server::serve_tls(listener, app, tls_config, shutdown)
-                .await
-                .map_err(|e| SkySurveyCameraError::Server(e.to_string())),
-            None => rp_tls::server::serve_plain(listener, app, shutdown)
+            Some(ref tls_config) => {
+                rusty_photon_tls::server::serve_tls(listener, app, tls_config, shutdown)
+                    .await
+                    .map_err(|e| SkySurveyCameraError::Server(e.to_string()))
+            }
+            None => rusty_photon_tls::server::serve_plain(listener, app, shutdown)
                 .await
                 .map_err(|e| SkySurveyCameraError::Server(e.to_string())),
         }

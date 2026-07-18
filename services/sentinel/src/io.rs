@@ -37,7 +37,7 @@ impl ReqwestHttpClient {
     /// path is added as a trusted root, allowing connections to services using
     /// certificates signed by the Rusty Photon CA.
     pub fn new(ca_cert_path: Option<&std::path::Path>) -> crate::Result<Self> {
-        let client = rp_tls::client::build_reqwest_client(ca_cert_path).map_err(|e| {
+        let client = rusty_photon_tls::client::build_reqwest_client(ca_cert_path).map_err(|e| {
             crate::SentinelError::Config(format!("failed to build HTTP client: {e}"))
         })?;
         Ok(Self { client, auth: None })
@@ -45,8 +45,10 @@ impl ReqwestHttpClient {
 
     /// Create a new HTTP client with CA trust and HTTP Basic Auth credentials.
     ///
-    /// The credentials are sent with every request via the `Authorization: Basic`
-    /// header, enabling connections to auth-enabled services.
+    /// The credentials are sent via the `Authorization: Basic` header on
+    /// `https://` requests only — a plain-http peer never sees them (it
+    /// answers 401 instead, which is still proof of life for the probes),
+    /// so the observatory credential cannot leak in cleartext.
     pub fn with_auth(
         ca_cert_path: Option<&std::path::Path>,
         username: String,
@@ -73,6 +75,17 @@ impl ReqwestHttpClient {
             })?;
         Ok(Self { client, auth: None })
     }
+
+    /// The credentials to attach for `url` — only over TLS. Plain-http
+    /// requests carry no `Authorization` header so the observatory
+    /// credential never rides an unencrypted connection.
+    fn credentials_for(&self, url: &str) -> Option<&(String, String)> {
+        if url.starts_with("https://") {
+            self.auth.as_ref()
+        } else {
+            None
+        }
+    }
 }
 
 #[async_trait]
@@ -80,7 +93,7 @@ impl HttpClient for ReqwestHttpClient {
     async fn get(&self, url: &str) -> crate::Result<HttpResponse> {
         tracing::debug!("GET {}", url);
         let mut request = self.client.get(url);
-        if let Some((ref user, ref pass)) = self.auth {
+        if let Some((user, pass)) = self.credentials_for(url) {
             request = request.basic_auth(user, Some(pass));
         }
         let response = request
@@ -101,7 +114,7 @@ impl HttpClient for ReqwestHttpClient {
     async fn put_form(&self, url: &str, params: &[(&str, &str)]) -> crate::Result<HttpResponse> {
         tracing::debug!("PUT {}", url);
         let mut request = self.client.put(url).form(params);
-        if let Some((ref user, ref pass)) = self.auth {
+        if let Some((user, pass)) = self.credentials_for(url) {
             request = request.basic_auth(user, Some(pass));
         }
         let response = request
@@ -122,7 +135,7 @@ impl HttpClient for ReqwestHttpClient {
     async fn post_form(&self, url: &str, params: &[(&str, &str)]) -> crate::Result<HttpResponse> {
         tracing::debug!("POST {}", url);
         let mut request = self.client.post(url).form(params);
-        if let Some((ref user, ref pass)) = self.auth {
+        if let Some((user, pass)) = self.credentials_for(url) {
             request = request.basic_auth(user, Some(pass));
         }
         let response = request
@@ -149,6 +162,20 @@ mod tests {
 
     /// A URL that will always refuse connections (port 1 is reserved and unbound)
     const UNREACHABLE_URL: &str = "http://127.0.0.1:1/test";
+
+    #[test]
+    fn credentials_attach_only_over_https() {
+        let client = ReqwestHttpClient {
+            client: reqwest::Client::new(),
+            auth: Some(("observatory".to_string(), "secret".to_string())),
+        };
+        assert!(client
+            .credentials_for("https://localhost:11112/health")
+            .is_some());
+        assert!(client
+            .credentials_for("http://localhost:11112/health")
+            .is_none());
+    }
 
     #[tokio::test]
     async fn get_connection_refused_returns_http_error() {

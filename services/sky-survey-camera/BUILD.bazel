@@ -13,13 +13,13 @@ exports_files(
 # reader/writer surface, on rp-auth for the `ClientAuthConfig` used by
 # `pointing.telescope.auth` (telescope-following mode reuses `rp`'s
 # mount-auth shape verbatim) plus the inbound `server.auth` Basic-Auth
-# layer, and on rp-tls for the optional `server.tls` HTTPS serve path
+# layer, and on rusty-photon-tls for the optional `server.tls` HTTPS serve path
 # (both via the shared rusty-photon-server-config `server` block).
 
 _INTRA_WORKSPACE_DEPS = [
     "//crates/rp-auth:rp-auth",
     "//crates/rp-fits:rp-fits",
-    "//crates/rp-tls:rp-tls",
+    "//crates/rusty-photon-tls:rusty-photon-tls",
     "//crates/rusty-photon-config:rusty-photon-config",
     "//crates/rusty-photon-doctor-checks:rusty-photon-doctor-checks",
     "//crates/rusty-photon-driver:rusty-photon-driver",

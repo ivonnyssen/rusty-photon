@@ -35,7 +35,7 @@ exports_files(
 
 _INTRA_WORKSPACE_DEPS = [
     "//crates/rp-auth:rp-auth",
-    "//crates/rp-tls:rp-tls",
+    "//crates/rusty-photon-tls:rusty-photon-tls",
     "//crates/rusty-photon-config:rusty-photon-config",
     "//crates/rusty-photon-doctor-checks:rusty-photon-doctor-checks",
     "//crates/rusty-photon-driver:rusty-photon-driver",

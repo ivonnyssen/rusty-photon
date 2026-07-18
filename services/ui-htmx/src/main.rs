@@ -108,7 +108,7 @@ fn main() -> ServiceResult {
                         warn!(
                             "Authentication is enabled but TLS is not. \
                              Credentials will be transmitted in cleartext. \
-                             Consider enabling TLS (see `rp init-tls`)."
+                             Consider enabling TLS (see `doctor --fix`)."
                         );
                     }
                     rp_auth::layer(app, auth)
@@ -135,7 +135,8 @@ fn main() -> ServiceResult {
             match &config.server.tls {
                 Some(tls) => {
                     debug!("Serving HTTPS (server.tls configured)");
-                    rp_tls::server::serve_tls(listener, app, tls, shutdown_signal).await?;
+                    rusty_photon_tls::server::serve_tls(listener, app, tls, shutdown_signal)
+                        .await?;
                 }
                 None => {
                     axum::serve(listener, app)

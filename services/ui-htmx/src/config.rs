@@ -84,7 +84,7 @@ pub struct DriverTarget {
     /// Optional HTTP Basic credentials for an auth-enabled driver.
     #[serde(default)]
     pub auth: Option<DriverAuth>,
-    /// Optional PEM CA path for a TLS-enabled driver (trusted via `rp-tls`).
+    /// Optional PEM CA path for a TLS-enabled driver (trusted via `rusty-photon-tls`).
     #[serde(default)]
     pub ca_cert_path: Option<PathBuf>,
 }
@@ -98,7 +98,7 @@ pub struct SentinelTarget {
     /// Optional HTTP Basic credentials for an auth-enabled dashboard.
     #[serde(default)]
     pub auth: Option<DriverAuth>,
-    /// Optional PEM CA path for a TLS-enabled dashboard (trusted via `rp-tls`).
+    /// Optional PEM CA path for a TLS-enabled dashboard (trusted via `rusty-photon-tls`).
     #[serde(default)]
     pub ca_cert_path: Option<PathBuf>,
 }
@@ -124,7 +124,7 @@ pub struct RpTarget {
     /// Optional HTTP Basic credentials for an auth-enabled rp.
     #[serde(default)]
     pub auth: Option<DriverAuth>,
-    /// Optional PEM CA path for a TLS-enabled rp (trusted via `rp-tls`).
+    /// Optional PEM CA path for a TLS-enabled rp (trusted via `rusty-photon-tls`).
     #[serde(default)]
     pub ca_cert_path: Option<PathBuf>,
 }

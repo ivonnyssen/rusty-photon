@@ -227,6 +227,23 @@ build:ci --experimental_ui_max_stdouterr_bytes=10485760
 test:ci --test_output=errors
 test:ci --test_summary=terse
 
+# Tests draw from the same CPU pool as any local action (each test reserves
+# cpu:1), so on the 4-vCPU hosted runners at most 4 suites execute at once.
+# The BDD suites are sleep/IO-bound, not CPU-bound — each spawns a private
+# OmniSim + its service binary and waits on HTTP — so CPU-based scheduling
+# under-uses the runner exactly when it matters most: a shared-crate change or
+# dep bump invalidates every suite and the BDD step degenerates into a ~4-wide
+# tail (observed: 313-378s critical path on ubuntu, ~34 test executions with
+# rp:bdd/session-runner:bdd 8-way sharded). Overcommit the CPU pool 2x and cap
+# concurrent tests at 8, for TEST invocations only: `bazel build` keeps the
+# real-core pool for compilation. Like --spawn_strategy above, these are
+# scheduling/execution-only knobs — they don't enter action keys or the
+# analysis cache, so build-vs-test values may differ freely. Memory holds: 8
+# concurrent OmniSim spawns ≈ 2-3 GB against 16 GB Linux/Windows runners, and
+# HOST_CPUS scales the pool down with macOS's smaller core count.
+test:ci --local_test_jobs=8
+test:ci --local_resources=cpu=HOST_CPUS*2
+
 # --remote_timeout is the per-RPC idle/inactivity timeout for remote-cache
 # operations, NOT a total transfer cap — healthy byte-flowing transfers survive
 # it; it only bites an RPC that has stalled with no bytes moving. Originally
@@ -480,6 +497,14 @@ coverage:coverage --test_timeout=900
 # conformu is excluded from coverage too: it drives the external ConformU tool
 # (not instrumented) and only runs when CONFORMU_PATH is set.
 coverage:coverage --test_tag_filters=-requires-cargo,-conformu
+# Coverage keeps un-overcommitted test scheduling: instrumented BDD suites run
+# much heavier than plain ones (rp:bdd ~400s warm against the 900s cap above,
+# with a hang history under instrumentation), so the 2x CPU overcommit that
+# test:ci applies to the PR gate is reset here. bazel-coverage.yml passes
+# --config=ci before --config=coverage, so these later values win. Revisit
+# once the PR gate has soak time at 8-wide.
+coverage:coverage --local_test_jobs=auto
+coverage:coverage --local_resources=cpu=HOST_CPUS
 
 # --- Local overrides -------------------------------------------------------
 

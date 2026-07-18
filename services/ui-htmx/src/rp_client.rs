@@ -100,7 +100,7 @@ pub trait RpApi: Send + Sync {
     async fn session_status(&self) -> Result<String, ConfigClientError>;
 }
 
-/// Production [`RpApi`] over the shared [`HttpClient`] (rp-tls CA trust +
+/// Production [`RpApi`] over the shared [`HttpClient`] (rusty-photon-tls CA trust +
 /// optional Basic auth — the same client the `RestConfigClient` uses).
 pub struct RestRpApi {
     http: Arc<dyn HttpClient>,

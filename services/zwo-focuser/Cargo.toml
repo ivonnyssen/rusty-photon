@@ -31,7 +31,7 @@ ascom-alpaca = { workspace = true, features = ["server", "focuser"] }
 # `focuser` only (ADR-014): this binary links libEAFFocuser and nothing else —
 # the ASI/EFW SDKs belong to their own services.
 zwo-rs = { workspace = true, features = ["focuser"] }
-rp-tls = { workspace = true }
+rusty-photon-tls = { workspace = true }
 rp-auth = { workspace = true }
 rusty-photon-config = { workspace = true }
 rusty-photon-doctor-checks = { workspace = true }

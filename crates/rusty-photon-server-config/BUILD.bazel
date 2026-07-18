@@ -8,7 +8,7 @@ exports_files(
 
 _INTRA_WORKSPACE_DEPS = [
     "//crates/rp-auth:rp-auth",
-    "//crates/rp-tls:rp-tls",
+    "//crates/rusty-photon-tls:rusty-photon-tls",
 ]
 
 rust_library(

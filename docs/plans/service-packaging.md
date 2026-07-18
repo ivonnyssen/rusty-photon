@@ -492,7 +492,7 @@ Runs on Debian arm64 (the rig) and x86_64 dev boxes:
   findings documented in `docs/packaging.md` — no surprises.
 - **Discovery: off by default is the intended behavior** (confirmed by
   Igor during this verification). Nothing binds UDP 32227: every service
-  self-serves through rp-tls via `Server::into_service()`, which bypasses
+  self-serves through rusty-photon-tls via `Server::into_service()`, which bypasses
   ascom-alpaca's discovery responder. That is correct for this family —
   rusty-photon puts up to 14 Alpaca servers on one host, which would
   collide on the discovery port (and a unicast query against a REUSEPORT

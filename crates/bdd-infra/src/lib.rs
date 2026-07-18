@@ -460,7 +460,7 @@ impl Drop for ServiceHandle {
 /// Uses the same binary discovery as [`ServiceHandle::start`]. Panics if the
 /// binary cannot be found.
 ///
-/// Use this for one-shot commands like `rp init-tls` that are not
+/// Use this for one-shot commands like `doctor tls issue` that are not
 /// long-running servers. When `stdin_data` is `Some`, the data is piped to the
 /// process's stdin.
 pub fn run_once(
@@ -1197,9 +1197,10 @@ mod tests {
     // -----------------------------------------------------------------------
     // run_once tests
     //
-    // These exercise rp's one-shot subcommands (`init-tls`, `hash-password`).
-    // rp must be pre-built — we either rely on the conventional env var being
-    // set (Bazel path) or build it ourselves for the Cargo path.
+    // These exercise doctor's one-shot subcommands (`tls issue`,
+    // `auth hash-password`) plus rp's serve failure path. The binaries must
+    // be pre-built — we either rely on the conventional env var being set
+    // (Bazel path) or find them in the target dir for the Cargo path.
     // -----------------------------------------------------------------------
 
     /// Ensure `RP_BINARY` points at a pre-built `rp` binary, caching the
@@ -1220,17 +1221,35 @@ mod tests {
         std::env::set_var("RP_BINARY", &binary);
     }
 
+    /// [`ensure_rp_binary`]'s twin for the doctor binary, which owns the
+    /// one-shot provisioning commands since doctor-plan D6a.
+    fn ensure_doctor_binary() {
+        let _lock = CWD_LOCK.lock().unwrap();
+        if std::env::var_os("DOCTOR_BINARY").is_some() {
+            return;
+        }
+        let binary = require_binary("doctor");
+        std::env::set_var("DOCTOR_BINARY", &binary);
+    }
+
     #[test]
     fn test_run_once_successful_command() {
-        ensure_rp_binary();
+        ensure_doctor_binary();
         let dir = tempfile::tempdir().unwrap();
         let output = run_once(
-            "rp",
-            &["init-tls", "--output-dir", dir.path().to_str().unwrap()],
+            "doctor",
+            &["--config-dir", dir.path().to_str().unwrap(), "tls", "issue"],
             None,
         );
-        assert!(output.status.success(), "init-tls should succeed");
-        assert!(dir.path().join("ca.pem").exists(), "CA cert should exist");
+        assert!(
+            output.status.success(),
+            "tls issue should succeed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            dir.path().join("pki").join("ca.pem").exists(),
+            "CA cert should exist under the config root's pki tree"
+        );
     }
 
     #[test]
@@ -1251,10 +1270,10 @@ mod tests {
 
     #[test]
     fn test_run_once_with_stdin() {
-        ensure_rp_binary();
+        ensure_doctor_binary();
         let output = run_once(
-            "rp",
-            &["hash-password", "--stdin"],
+            "doctor",
+            &["auth", "hash-password", "--stdin"],
             Some(b"test-password\n"),
         );
 

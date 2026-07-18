@@ -94,6 +94,27 @@ The `server` block is the shared `ServerConfig` from
 `bind_address` (default `0.0.0.0`), and optional `tls`/`auth`. Absent
 `tls`/`auth` means plain, unauthenticated HTTP.
 
+### The observatory probe credential
+
+Two optional top-level keys wire sentinel into a doctor-provisioned rig
+(`doctor --fix` writes both — see
+[`doctor.md` §Provisioning](doctor.md#provisioning--tls-and-the-observatory-credential-d6a)):
+
+```json
+{
+  "ca_cert": "/var/lib/rusty-photon/.config/rusty-photon/pki/ca.pem",
+  "service_auth": { "username": "observatory", "password": "<plaintext>" }
+}
+```
+
+`ca_cert` is the CA the HTTP clients trust for TLS-enabled peers.
+`service_auth` is the observatory credential's plaintext copy: when set, the
+health-supervision probes send it as HTTP Basic auth **and verify TLS
+against `ca_cert`** (credentials never ride an unverified connection);
+when absent, probes are unauthenticated and skip certificate verification
+(a challenge still proves aliveness). `doctor auth rotate` overwrites the
+password in place.
+
 ### Service discovery
 
 Sentinel has **no configured service registry**. It discovers the services it
@@ -524,13 +545,15 @@ promoted):
 | restart budget | `300s` | Time budget for a restart command *and* its recovery wait together — shared by the REST endpoint, the watchdog ladder, and health supervision. |
 
 The probe is a `GET` of the service's
-[derived health URL](#deriving-the-health-probe-url). Alive means a `200`,
-**or a `401`/`403`** — an auth-enabled service that challenges an
-unauthenticated probe has proven it is up, and sentinel holds no credentials
-for its peers (that changes in doctor-plan D6, but aliveness must not depend
-on it). Any other status, a timeout, or a connection error counts as a failed
-probe. The response body is never parsed (health bodies are not uniform
-across services).
+[derived health URL](#deriving-the-health-probe-url), carrying the
+[observatory credential](#the-observatory-probe-credential) as HTTP Basic
+auth when `service_auth` is configured. Alive means a `200`, **or a
+`401`/`403`** — a service that challenges the probe has proven it is up
+(the target may hold a hand-set credential, and aliveness must not depend
+on the pair matching; `doctor` diagnoses a mismatched pair as
+`auth.mismatch`). Any other status, a timeout, or a connection error counts
+as a failed probe. The response body is never parsed (health bodies are not
+uniform across services).
 
 ### Behavior
 

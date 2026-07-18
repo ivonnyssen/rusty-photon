@@ -34,11 +34,11 @@ conformu = []
 # `tls_auth_smoke_steps!` macro every service's BDD suite uses to prove the
 # shared server config's TLS + Basic Auth gate. Opt-in so consumers that only
 # need `ServiceHandle` (e.g. conformu integration tests) don't compile
-# reqwest and the rp-tls/rp-auth crypto stack.
+# reqwest and the rusty-photon-tls/rp-auth crypto stack.
 tls-auth = [
     "dep:reqwest",
     "dep:rp-auth",
-    "dep:rp-tls",
+    "dep:rusty-photon-tls",
     "dep:uuid",
 ]
 
@@ -61,5 +61,5 @@ rmcp = { workspace = true, optional = true, features = [
 rp-auth = { workspace = true, optional = true }
 rp-ephemeris = { workspace = true, optional = true }
 rp-fits = { workspace = true, optional = true }
-rp-tls = { workspace = true, optional = true }
+rusty-photon-tls = { workspace = true, optional = true }
 uuid = { workspace = true, optional = true }

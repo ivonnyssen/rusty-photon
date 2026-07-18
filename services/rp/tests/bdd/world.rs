@@ -181,26 +181,8 @@ pub struct RpWorld {
     /// Shared PKI + credentials fixture for the TLS/auth connectivity suites
     /// (`tls.feature`, `auth.feature`).
     pub pki: Option<bdd_infra::tls_auth::PkiFixture>,
-    /// Temp directory holding CLI-generated PKI — the `init-tls` output
-    /// directory of the `tls_setup.feature` / `acme_setup.feature` scenarios.
-    pub tls_pki_dir: Option<tempfile::TempDir>,
-    /// Stored CA cert PEM for idempotency comparison
-    pub tls_ca_cert_pem: Option<String>,
-    /// Last HTTPS response status for TLS validation tests
-    pub tls_https_status: Option<u16>,
-
-    // --- ACME test state ---
-    /// Last command output (for ACME CLI tests)
-    pub last_command_output: Option<std::process::Output>,
-
     /// Doctor-subcommand smoke state (staged config file + run output)
     pub doctor_smoke: bdd_infra::doctor_smoke::DoctorSmokeState,
-
-    // --- hash-password CLI test state (hash_password.feature) ---
-    /// Plaintext password fed to the rp hash-password CLI via stdin
-    pub auth_password: Option<String>,
-    /// Hash output from rp hash-password CLI
-    pub auth_hash_output: Option<String>,
 
     // --- Document HTTP API test state (Phase 7 Step 6) ---
     /// Pinned data directory across rp lifecycle. The cross-restart

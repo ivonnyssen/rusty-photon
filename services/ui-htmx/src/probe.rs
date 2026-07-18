@@ -47,7 +47,7 @@ pub trait ProbeHttp: Send + Sync {
 /// bounded by roughly one timeout, not the roster size.
 const PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
 
-/// Production [`ProbeHttp`]: a `reqwest` client with rp-tls CA trust (an
+/// Production [`ProbeHttp`]: a `reqwest` client with rusty-photon-tls CA trust (an
 /// observatory runs one CA, so the rp target's CA also vouches for the
 /// devices) and a per-request timeout.
 pub struct ReqwestProbeHttp {
@@ -56,7 +56,7 @@ pub struct ReqwestProbeHttp {
 
 impl ReqwestProbeHttp {
     pub fn new(ca_cert_path: Option<&std::path::Path>) -> Result<Self, String> {
-        let client = rp_tls::client::build_reqwest_client(ca_cert_path)
+        let client = rusty_photon_tls::client::build_reqwest_client(ca_cert_path)
             .map_err(|e| format!("failed to build probe HTTP client: {e}"))?;
         Ok(Self { client })
     }

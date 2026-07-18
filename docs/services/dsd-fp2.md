@@ -81,7 +81,7 @@ Module responsibilities:
   per the shared-transport contract). Cover and calibrator state derive
   from the cached snapshot.
 - **Server builder** (`lib.rs`): Wires the device into an
-  `ascom_alpaca::Server` with TLS and auth (via `rp-tls`, `rp-auth`)
+  `ascom_alpaca::Server` with TLS and auth (via `rusty-photon-tls`, `rp-auth`)
   and returns a `BoundServer`.
 - **Mock mode** (`mock.rs`, feature `mock`):
   `MockTransportFactory` returns in-process `MockFrameTransport`s
@@ -539,12 +539,12 @@ down and rebuild from the new file.
   supervisor across reloads under the service-lifetime transport model.)
 - **Clean HTTP rebind.** The rebuilt server binds the same `server.port` while a
   client's keep-alive connections may still linger on it. The listener is created
-  with `SO_REUSEADDR` (`rp_tls::server::bind_dual_stack`), so the rebind succeeds
+  with `SO_REUSEADDR` (`rusty_photon_tls::server::bind_dual_stack`), so the rebind succeeds
   immediately instead of failing with `AddrInUse`. (`SO_REUSEADDR` does not permit
   two live listeners on the port, so it can't mask an "already running" error.)
   A `config_actions.feature` scenario drives a full apply → reload → rebind cycle
   over the wire (pinning the OS-assigned port so the same port is rebound),
-  guarding this OS-sensitive path in CI; `rp-tls` adds a focused unit test that
+  guarding this OS-sensitive path in CI; `rusty-photon-tls` adds a focused unit test that
   rebinds a port with a lingering connection.
 
 ## Error Handling

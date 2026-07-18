@@ -799,7 +799,7 @@ driver itself). The FFI crate is the long pole (~40–50% of effort); once
 - **Backport** the SDK-free-simulation / feature-gated-link improvement to
   `qhyccd-rs` so `qhy-camera`'s default build can also be pure-Rust.
 - Per-serial connect-time tuning; `FullWellCapacity`; TLS / Basic Auth via
-  `rp-tls` / `rp-auth`.
+  `rusty-photon-tls` / `rp-auth`.
 
 ## Packaging
 

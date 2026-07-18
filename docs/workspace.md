@@ -84,7 +84,7 @@ listed here.
 | Crate | Location | Purpose |
 |-------|----------|---------|
 | [bdd-infra](../crates/bdd-infra/) | `crates/bdd-infra` | Shared BDD test infrastructure: `ServiceHandle` for spawning, managing, and stopping service binaries. The binary is located from the caller's package name (`env!("CARGO_PKG_NAME")`) via the conventional `{PACKAGE_UPPER_SNAKE}_BINARY` env override, else the Cargo / llvm-cov target dir (`$CARGO_TARGET_DIR` / `$CARGO_LLVM_COV_TARGET_DIR`, target-triple-aware), else by walking up for `target/debug/<pkg>`. See [testing.md](skills/testing.md) Section 5.1. |
-| [rp-tls](../crates/rp-tls/) | `crates/rp-tls` | Opt-in TLS for inter-service communication: certificate generation, dual-stack TCP binding, TLS/plain serving, and client CA trust. See [ADR-002](decisions/002-tls-for-inter-service-communication.md). |
+| [rusty-photon-tls](../crates/rusty-photon-tls/) | `crates/rusty-photon-tls` | Opt-in TLS serving for inter-service communication: dual-stack TCP binding, TLS/plain serving, client CA trust, and the shared `TlsConfig` type. Certificate *provisioning* (self-signed issuance, ACME, DNS-01) lives in `services/doctor` (`doctor tls issue`; see [doctor.md](services/doctor.md)). See [ADR-002](decisions/002-tls-for-inter-service-communication.md). |
 | [rp-auth](../crates/rp-auth/) | `crates/rp-auth` | Opt-in HTTP Basic Auth: Argon2id credential hashing/verification, axum tower middleware, and config types. See [ADR-003](decisions/003-authentication-for-device-access.md). |
 | [rp-ephemeris](../crates/rp-ephemeris/) | `crates/rp-ephemeris` | Astronomical math: `Ephemeris` trait + `ErfarsEphemeris` impl wrapping the `erfars` ERFA bindings (BSD-licensed clean-room derivative of IAU SOFA). Pure functions for sidereal time, alt/az, transit, rise/set, twilight, sun + moon position. See [`docs/crates/rp-ephemeris.md`](crates/rp-ephemeris.md) for the crate design (panic safety, NaN-degradation, time scales); [`rp-planning-tools.md`](plans/archive/rp-planning-tools.md) for the original implementation plan. |
 | [rp-catalog](../crates/rp-catalog/) | `crates/rp-catalog` | Embedded Messier + NGC + IC catalog (~13k objects, openNGC source, CC-BY-SA-4.0 attribution). `Catalog::resolve(name)` does case- and whitespace-insensitive lookup with alias support. See [`rp-planning-tools.md`](plans/archive/rp-planning-tools.md). |
@@ -175,8 +175,6 @@ persistence/         — redb document store + FITS cache (cache/document/fits)
 planner/             — Observation planning (catalog/decision/primitives/convenience)
 session.rs           — SessionManager, orchestrator invocation
 routes.rs            — Axum router (REST + MCP + SSE endpoints)
-hash_password_cmd.rs — `rp hash-password` subcommand (Argon2id hashing)
-tls_cmd.rs           — `rp init-tls` subcommand (CA + per-service certs)
 lib.rs               — ServerBuilder (two-phase: build → start)
 main.rs              — Entry point
 ```
