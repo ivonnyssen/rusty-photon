@@ -851,8 +851,10 @@ fn auth_mismatch(ctx: &Context) -> Vec<Check> {
 fn tls_expiry(ctx: &Context, scan: &ServiceScan, cert_file: &Path) -> Check {
     let suggestion = "run `doctor tls renew` (the platform timer's command) for \
                       doctor-issued material (`doctor tls issue --force` re-issues \
-                      it with fresh SANs); a certificate doctor did not issue must \
-                      be replaced by whatever issued it"
+                      it with fresh SANs); the ACME wildcard renews only while \
+                      `acme.json` still sits beside the configs — re-run `doctor \
+                      tls issue --acme` if it is gone; a certificate doctor did \
+                      not issue must be replaced by whatever issued it"
         .to_string();
     let pem = match std::fs::read_to_string(cert_file) {
         Ok(pem) => pem,
