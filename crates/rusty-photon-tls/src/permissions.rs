@@ -33,6 +33,17 @@ pub fn set_restricted_permissions(path: &Path) -> Result<()> {
 /// later restriction. `mode` only applies when the file is newly created,
 /// so an existing file (a rotation overwrite) is restricted explicitly too.
 pub fn create_restricted(path: &Path) -> Result<std::fs::File> {
+    // Refuse to write through a symlink (best-effort — checked before the
+    // open): doctor runs as root on packaged hosts, so a pki-dir writer
+    // must not be able to redirect a secret write to an arbitrary target.
+    if let Ok(meta) = std::fs::symlink_metadata(path) {
+        if meta.file_type().is_symlink() {
+            return Err(crate::error::TlsError::Other(format!(
+                "refusing to write {}: it is a symlink",
+                path.display()
+            )));
+        }
+    }
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
     #[cfg(unix)]
@@ -62,6 +73,24 @@ mod tests {
     use super::*;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt as _;
+
+    #[cfg(unix)]
+    #[test]
+    fn write_restricted_refuses_a_symlink_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target");
+        std::fs::write(&target, "existing").unwrap();
+        let link = dir.path().join("secret.key");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let err = write_restricted(&link, b"KEY").unwrap_err();
+        assert!(err.to_string().contains("symlink"), "{err}");
+        assert_eq!(
+            std::fs::read(&target).unwrap(),
+            b"existing",
+            "the symlink target must be untouched"
+        );
+    }
 
     #[test]
     fn write_restricted_writes_the_content() {
