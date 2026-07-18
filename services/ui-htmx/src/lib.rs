@@ -394,8 +394,10 @@ fn normalized_host(url: &str) -> Option<String> {
 /// services (`GET /api/services` `probe_port`), guarded to the sentinel
 /// target's own host — Sentinel restarts processes on its own box, so a
 /// device on another host must never grow a restart button that would bounce
-/// an unrelated local service. Sentinel-unreachable or no match degrades to
-/// no affordance (the page still renders).
+/// an unrelated local service. The port must be explicit in the URL: falling
+/// back to the scheme default (80/443) would let a mistyped portless URL
+/// match an unrelated service. Sentinel-unreachable, no port, or no match
+/// degrades to no affordance (the page still renders).
 async fn resolve_sentinel_service(
     sentinel: &dyn SentinelClient,
     sentinel_host: &str,
@@ -404,9 +406,7 @@ async fn resolve_sentinel_service(
     if normalized_host(alpaca_url)? != sentinel_host {
         return None;
     }
-    let port = reqwest::Url::parse(alpaca_url)
-        .ok()?
-        .port_or_known_default()?;
+    let port = reqwest::Url::parse(alpaca_url).ok()?.port()?;
     match sentinel.services().await {
         Ok(services) => services
             .into_iter()
@@ -1094,6 +1094,19 @@ mod tests {
             .await
             .unwrap();
         assert!(handle.sentinel_service.is_none());
+    }
+
+    #[tokio::test]
+    async fn portless_device_url_never_matches() {
+        // No explicit port on the alpaca_url: the scheme default (80) must
+        // NOT be used for the match — a mistyped URL would otherwise grow a
+        // restart button for an unrelated service listening there.
+        let sentinel = sentinel_listing(vec![listed("web-thing", Some(80))]);
+        assert!(
+            resolve_sentinel_service(sentinel.as_ref(), "loopback", "http://127.0.0.1")
+                .await
+                .is_none()
+        );
     }
 
     #[tokio::test]

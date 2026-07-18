@@ -428,7 +428,8 @@ here, both rendered only when the BFF has a `sentinel` block configured:
   its footer — for a wedged or misbehaving driver, independent of any config
   edit. On rp's page the Sentinel-side name is the `rp` convention. On a
   roster-derived device page the name is **derived, not configured**: the
-  BFF matches the device's `alpaca_url` port against Sentinel's discovered
+  BFF matches the device's `alpaca_url` port (explicit only — a portless
+  URL never matches via the scheme default) against Sentinel's discovered
   services (`GET /api/services` `probe_port` —
   [sentinel.md](sentinel.md#get-apiservices)), guarded to the sentinel
   target's own host (loopback spellings are treated as one host) — Sentinel
