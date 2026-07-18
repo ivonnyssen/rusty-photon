@@ -868,19 +868,25 @@ impl Default for CachedCameraMeta {
 }
 
 fn camera_registry(cam: Arc<dyn ascom_alpaca::api::Camera>) -> crate::equipment::EquipmentRegistry {
-    camera_registry_with_focal_length(cam, None)
+    camera_registry_with_meta(cam, CachedCameraMeta::default())
 }
 
-fn camera_registry_with_focal_length(
-    cam: Arc<dyn ascom_alpaca::api::Camera>,
-    focal_length_mm: Option<f64>,
-) -> crate::equipment::EquipmentRegistry {
-    camera_registry_with_meta(cam, focal_length_mm, CachedCameraMeta::default())
+/// A train model with a single camera-only train over the fixture
+/// camera "cam", carrying `focal_length_mm` — the optics-block input
+/// `do_capture` resolves through `McpHandler::trains`.
+fn cam_trains(focal_length_mm: f64) -> crate::equipment::trains::TrainModel {
+    let equipment: crate::config::EquipmentConfig = serde_json::from_value(serde_json::json!({
+        "cameras": [{"id": "cam", "alpaca_url": "http://localhost:1"}],
+        "optical_trains": [
+            {"id": "main", "focal_length_mm": focal_length_mm, "devices": ["cam"]}
+        ]
+    }))
+    .unwrap();
+    crate::equipment::trains::TrainModel::try_from_equipment(&equipment).unwrap()
 }
 
 fn camera_registry_with_meta(
     cam: Arc<dyn ascom_alpaca::api::Camera>,
-    focal_length_mm: Option<f64>,
     meta: CachedCameraMeta,
 ) -> crate::equipment::EquipmentRegistry {
     crate::equipment::EquipmentRegistry {
@@ -897,7 +903,6 @@ fn camera_registry_with_meta(
                 cooler_targets_c: Vec::new(),
                 gain: None,
                 offset: None,
-                focal_length_mm,
                 readout_time_estimate: None,
                 auth: None,
             },
@@ -927,7 +932,6 @@ fn filter_wheel_registry(
             connected: true,
             config: crate::config::FilterWheelConfig {
                 id: "fw".to_string(),
-                camera_id: String::new(),
                 alpaca_url: "http://localhost:1".to_string(),
                 device_number: 0,
                 filters: vec!["Lum".to_string(), "Red".to_string()],
@@ -982,7 +986,6 @@ fn focuser_registry(
             connected: true,
             config: crate::config::FocuserConfig {
                 id: "foc".to_string(),
-                camera_id: String::new(),
                 alpaca_url: "http://localhost:1".to_string(),
                 device_number: 0,
                 min_position,
@@ -1014,6 +1017,7 @@ fn mount_registry(
                 device_number: 0,
                 settle_after_slew,
                 slew_rate_arcsec_per_sec: Default::default(),
+                guiding: None,
                 auth: None,
             },
             device: Some(mount),
@@ -1060,6 +1064,7 @@ fn disconnected_mount_registry() -> crate::equipment::EquipmentRegistry {
                 device_number: 0,
                 settle_after_slew: None,
                 slew_rate_arcsec_per_sec: Default::default(),
+                guiding: None,
                 auth: None,
             },
             device: None,
@@ -1197,7 +1202,6 @@ async fn test_get_camera_info_max_adu_unavailable_when_cache_none() {
     // for "zero". This replaces the old live-read failure test.
     let registry = camera_registry_with_meta(
         Arc::new(MockCamera::default()),
-        None,
         CachedCameraMeta {
             max_adu: None,
             ..CachedCameraMeta::default()
@@ -1227,7 +1231,6 @@ async fn test_get_camera_info_reads_max_adu_and_sensor_from_cache_not_live() {
     };
     let registry = camera_registry_with_meta(
         Arc::new(cam),
-        None,
         CachedCameraMeta {
             max_adu: Some(4242),
             sensor_width_px: Some(3000),
@@ -1262,7 +1265,6 @@ async fn test_get_camera_info_sensor_size_unavailable_when_cache_none() {
     // surfaces as a tool_error.
     let registry = camera_registry_with_meta(
         Arc::new(MockCamera::default()),
-        None,
         CachedCameraMeta {
             sensor_width_px: None,
             ..CachedCameraMeta::default()
@@ -1446,7 +1448,6 @@ async fn test_capture_caches_i32_when_max_adu_above_u16_max() {
     let cam = MockCamera::default();
     let registry = camera_registry_with_meta(
         Arc::new(cam),
-        None,
         CachedCameraMeta {
             max_adu: Some(1 << 20),
             ..CachedCameraMeta::default()
@@ -1557,6 +1558,7 @@ async fn test_capture_filename_uses_uuid8_suffix() {
 
 async fn capture_and_read_sidecar(
     registry: crate::equipment::EquipmentRegistry,
+    trains: crate::equipment::trains::TrainModel,
 ) -> ExposureDocument {
     let temp = tempfile::tempdir().unwrap();
     let cache = ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent"));
@@ -1568,7 +1570,8 @@ async fn capture_and_read_sidecar(
         },
         cache,
         None,
-    );
+    )
+    .with_trains(trains);
     let result = handler
         .capture_inner(
             CaptureParams {
@@ -1603,8 +1606,8 @@ async fn test_capture_persists_optics_when_focal_length_configured() {
     //   pixel_scale = 206.265 × 3.76 / 1000 ≈ 0.7755564 arcsec/px
     //   fov         = 0.7755564 × 1024 / 3600 ≈ 0.220603 deg
     let cam = MockCamera::default();
-    let registry = camera_registry_with_focal_length(Arc::new(cam), Some(1000.0));
-    let doc = capture_and_read_sidecar(registry).await;
+    let registry = camera_registry(Arc::new(cam));
+    let doc = capture_and_read_sidecar(registry, cam_trains(1000.0)).await;
     let optics = doc.optics.expect("optics block should be present");
     assert_eq!(optics.focal_length_mm, 1000.0);
     assert_eq!(optics.pixel_size_x_um, 3.76);
@@ -1626,8 +1629,8 @@ async fn test_capture_persists_optics_when_focal_length_configured() {
 #[tokio::test]
 async fn test_capture_omits_optics_when_focal_length_missing() {
     let cam = MockCamera::default();
-    let registry = camera_registry_with_focal_length(Arc::new(cam), None);
-    let doc = capture_and_read_sidecar(registry).await;
+    let registry = camera_registry(Arc::new(cam));
+    let doc = capture_and_read_sidecar(registry, Default::default()).await;
     assert!(
         doc.optics.is_none(),
         "optics must be omitted when focal_length_mm is not configured"
@@ -1642,14 +1645,13 @@ async fn test_capture_omits_optics_when_pixel_size_unavailable() {
     let cam = MockCamera::default();
     let registry = camera_registry_with_meta(
         Arc::new(cam),
-        Some(1000.0),
         CachedCameraMeta {
             pixel_size_x_um: None,
             pixel_size_y_um: None,
             ..CachedCameraMeta::default()
         },
     );
-    let doc = capture_and_read_sidecar(registry).await;
+    let doc = capture_and_read_sidecar(registry, cam_trains(1000.0)).await;
     assert!(
         doc.optics.is_none(),
         "optics must be omitted when cached pixel_size is None"
@@ -1663,14 +1665,13 @@ async fn test_capture_omits_optics_when_sensor_size_unavailable() {
     let cam = MockCamera::default();
     let registry = camera_registry_with_meta(
         Arc::new(cam),
-        Some(1000.0),
         CachedCameraMeta {
             sensor_width_px: None,
             sensor_height_px: None,
             ..CachedCameraMeta::default()
         },
     );
-    let doc = capture_and_read_sidecar(registry).await;
+    let doc = capture_and_read_sidecar(registry, cam_trains(1000.0)).await;
     assert!(
         doc.optics.is_none(),
         "optics must be omitted when cached sensor size is None"
@@ -1688,13 +1689,12 @@ async fn test_capture_does_not_call_invariant_metadata_methods_on_device() {
     let cam = MockCameraNoMetadata;
     let registry = camera_registry_with_meta(
         Arc::new(cam),
-        Some(1000.0),
         // Populate the cache with realistic values so the U16-cache path
         // is taken and the optics block is built — exercising every
         // place `do_capture` consumes a cached metadata field.
         CachedCameraMeta::default(),
     );
-    let doc = capture_and_read_sidecar(registry).await;
+    let doc = capture_and_read_sidecar(registry, cam_trains(1000.0)).await;
     assert_eq!(doc.max_adu, Some(MOCK_CAMERA_MAX_ADU));
     let optics = doc.optics.expect(
         "optics block should be present (cached pixel/sensor + configured focal_length_mm)",
@@ -2370,7 +2370,6 @@ async fn test_move_focuser_not_connected() {
             connected: false,
             config: crate::config::FocuserConfig {
                 id: "foc".to_string(),
-                camera_id: String::new(),
                 alpaca_url: "http://localhost:1".to_string(),
                 device_number: 0,
                 min_position: None,
@@ -2425,7 +2424,6 @@ async fn test_get_focuser_position_not_connected() {
             connected: false,
             config: crate::config::FocuserConfig {
                 id: "foc".to_string(),
-                camera_id: String::new(),
                 alpaca_url: "http://localhost:1".to_string(),
                 device_number: 0,
                 min_position: None,
@@ -3672,6 +3670,7 @@ fn handler_with_site_and_mount() -> McpHandler {
         device_number: 0,
         settle_after_slew: None,
         slew_rate_arcsec_per_sec: Default::default(),
+        guiding: None,
         auth: None,
     };
     // Skip the connect-time HTTP fetch by hand-building a registry
@@ -4571,7 +4570,6 @@ fn auto_focus_registry(starting_position: i32) -> crate::equipment::EquipmentReg
                 cooler_targets_c: Vec::new(),
                 gain: None,
                 offset: None,
-                focal_length_mm: None,
                 readout_time_estimate: None,
                 auth: None,
             },
@@ -4593,7 +4591,6 @@ fn auto_focus_registry(starting_position: i32) -> crate::equipment::EquipmentReg
             connected: true,
             config: crate::config::FocuserConfig {
                 id: "foc".to_string(),
-                camera_id: String::new(),
                 alpaca_url: "http://localhost:1".to_string(),
                 device_number: 0,
                 min_position: None,
@@ -5263,6 +5260,7 @@ async fn slew_deadline_overflow_falls_back_without_panic() {
                     1e-20,
                 )
                 .unwrap(),
+                guiding: None,
                 auth: None,
             },
             device: Some(Arc::new(MockTelescope::default())),

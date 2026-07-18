@@ -2,17 +2,20 @@
 Feature: Guider MCP tools
   The guiding tools (start_guiding, stop_guiding, dither, pause_guiding,
   resume_guiding, get_guiding_stats) proxy to the guider rp-managed
-  service over HTTP. All quantities are guide-camera pixels. Settle
+  service over HTTP. All quantities are guide-camera pixels. The
+  guider is configured at equipment.mount.guiding — guiding is
+  mount-scoped, so the block cannot exist without a mount. Settle
   parameters merge field by field: a per-call value wins over the
-  guider block's settle_* config default, and a field unset in both is
-  omitted from the wire so the service's own settling config applies.
-  The dither amount falls back from the pixels parameter to
-  guider.dither_pixels. The settle-blocking calls emit operation
-  triples ending in settled (guide_started/guide_settled/guide_failed,
+  guiding block's settle_* config default, and a field unset in both
+  is omitted from the wire so the service's own settling config
+  applies. The dither amount falls back from the pixels parameter to
+  the guiding block's dither_pixels. The settle-blocking calls emit
+  operation triples ending in settled
+  (guide_started/guide_settled/guide_failed,
   dither_started/dither_settled/dither_failed), with the settle
   deadline carried on the started envelope when a settle timeout is
   known; stop_guiding emits the guide_stopped point event with reason
-  "requested". Without a guider block every tool errors with "guider
+  "requested". Without a guiding block every tool errors with "guider
   not configured"; service errors propagate as code plus message.
 
   Scenario: Tool catalog includes the guider tools

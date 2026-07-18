@@ -112,7 +112,6 @@ mod tests {
     fn focuser_config_for(url: &str) -> config::FocuserConfig {
         config::FocuserConfig {
             id: "main-focuser".to_string(),
-            camera_id: String::new(),
             alpaca_url: url.to_string(),
             device_number: 0,
             min_position: None,
@@ -132,7 +131,6 @@ mod tests {
     async fn connect_focuser_invalid_url_returns_disconnected_entry() {
         let cfg = config::FocuserConfig {
             id: "main-focuser".to_string(),
-            camera_id: String::new(),
             alpaca_url: "not-a-url".to_string(),
             device_number: 0,
             min_position: None,
@@ -153,7 +151,6 @@ mod tests {
         // `Ok(Err(e))` arm of `connect_focuser`'s match.
         let cfg = config::FocuserConfig {
             id: "main-focuser".to_string(),
-            camera_id: String::new(),
             alpaca_url: "http://127.0.0.1:1".to_string(),
             device_number: 0,
             min_position: None,

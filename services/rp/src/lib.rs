@@ -186,11 +186,29 @@ impl ServerBuilder {
             None => (None, None),
         };
 
+        // The derived optical-train model (rp.md § Optical Trains).
+        // `load_config` already ran the same graph validation, so a
+        // failure here is a code bug — surface it loud regardless.
+        let trains = crate::equipment::trains::TrainModel::try_from_equipment(&config.equipment)
+            .map_err(|errors| {
+                let msg = errors
+                    .first()
+                    .map(|e| format!("{} {}", e.path, e.msg))
+                    .unwrap_or_else(|| "optical_trains validation failed".to_string());
+                crate::error::RpError::Config(msg)
+            })?;
+
         // Build the guider HTTP client when the operator configured
-        // one — same aborts-loud posture as the plate solver. The
-        // client Arc is shared between the MCP tools and the safety
-        // enforcer's stop-guiding-on-unsafe step.
-        let (guider_client, guider_defaults) = match &config.guider {
+        // one (`equipment.mount.guiding`) — same aborts-loud posture
+        // as the plate solver. The client Arc is shared between the
+        // MCP tools and the safety enforcer's stop-guiding-on-unsafe
+        // step.
+        let guiding_config = config
+            .equipment
+            .mount
+            .as_ref()
+            .and_then(|m| m.guiding.as_ref());
+        let (guider_client, guider_defaults) = match guiding_config {
             Some(g_cfg) => {
                 let client = rp_guider::GuiderServiceClient::new(g_cfg.url.clone(), g_cfg.timeout)
                     .map_err(|e| {
@@ -216,6 +234,7 @@ impl ServerBuilder {
         .with_session_manager(session.clone())
         .with_plate_solver(plate_solver_client, plate_solver_default_radius)
         .with_guider(guider_client.clone(), guider_defaults)
+        .with_trains(trains)
         .with_centering_config(config.centering.clone())
         .with_cooling(cooling);
 

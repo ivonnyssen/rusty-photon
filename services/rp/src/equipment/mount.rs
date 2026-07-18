@@ -114,6 +114,7 @@ mod tests {
             device_number: 0,
             settle_after_slew: None,
             slew_rate_arcsec_per_sec: Default::default(),
+            guiding: None,
             auth: None,
         }
     }

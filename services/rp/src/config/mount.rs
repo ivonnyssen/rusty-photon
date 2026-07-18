@@ -78,6 +78,13 @@ pub struct MountConfig {
     /// slow-stepper rate; set per-rig for a tighter bound.
     #[serde(default)]
     pub slew_rate_arcsec_per_sec: SlewRateArcsecPerSec,
+    /// Optional guider rp-managed service (rp.md § Guider Service).
+    /// Guiding is mount-scoped — the guider corrects and dithers by
+    /// moving the mount — so the block nests here; a guider without a
+    /// mount is unrepresentable. `None` ⇒ the guiding MCP tools report
+    /// "guider not configured".
+    #[serde(default)]
+    pub guiding: Option<super::guiding::GuidingConfig>,
     /// Optional HTTP Basic Auth credentials for connecting to auth-enabled Alpaca services
     #[serde(default)]
     pub auth: Option<rp_auth::config::ClientAuthConfig>,

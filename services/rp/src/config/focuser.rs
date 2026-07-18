@@ -57,8 +57,6 @@ impl TryFrom<f64> for FocuserStepsPerSec {
 #[serde(deny_unknown_fields)]
 pub struct FocuserConfig {
     pub id: String,
-    #[serde(default)]
-    pub camera_id: String,
     pub alpaca_url: String,
     #[serde(default)]
     pub device_number: u32,
@@ -130,7 +128,6 @@ mod tests {
                     "focusers": [
                         {
                             "id": "main-focuser",
-                            "camera_id": "main-cam",
                             "alpaca_url": "http://localhost:11113",
                             "device_number": 2,
                             "min_position": 0,
@@ -146,7 +143,6 @@ mod tests {
 
         let config = load_config(&path).unwrap();
         let f = &config.equipment.focusers[0];
-        assert_eq!(f.camera_id, "main-cam");
         assert_eq!(f.device_number, 2);
         assert_eq!(f.min_position, Some(0));
         assert_eq!(f.max_position, Some(100000));

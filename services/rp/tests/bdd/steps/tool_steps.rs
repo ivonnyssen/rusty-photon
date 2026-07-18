@@ -2,7 +2,9 @@
 
 use cucumber::{given, then, when};
 
-use bdd_infra::rp_harness::{CameraConfig, FilterWheelConfig, McpTestClient, OmniSimHandle};
+use bdd_infra::rp_harness::{
+    CameraConfig, FilterWheelConfig, McpTestClient, MountConfig, OmniSimHandle,
+};
 use bdd_infra::ServiceHandle;
 
 use crate::world::RpWorld;
@@ -320,6 +322,17 @@ pub fn add_filter_wheel(world: &mut RpWorld) {
 pub async fn start_rp(world: &mut RpWorld) {
     if world.rp.as_ref().is_some_and(|h| h.is_running()) {
         return;
+    }
+
+    // Guiding is mount-scoped (`equipment.mount.guiding`), so a scenario
+    // that configured a guider stub implies a mount; point it at the
+    // simulator when the scenario didn't configure one itself.
+    if world.guider.is_some() && world.mount.is_none() {
+        world.mount = Some(MountConfig {
+            alpaca_url: world.omnisim_url(),
+            device_number: 0,
+            settle_after_slew: None,
+        });
     }
 
     let config = world.build_config();

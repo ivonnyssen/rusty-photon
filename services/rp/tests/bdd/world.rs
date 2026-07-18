@@ -15,9 +15,9 @@ use std::time::Duration;
 use bdd_infra::rp_harness::{
     CameraConfig, CoverCalibratorConfig, DomeConfig, FilterWheelConfig, FocuserConfig,
     GuiderConfig, GuiderStub, McpTestClient, MountConfig, ObservingConditionsConfig, OmniSimHandle,
-    OrchestratorInvocation, PlannerTargetConfig, PlateSolverConfig, PlateSolverStub, ReceivedEvent,
-    RotatorConfig, RpConfigBuilder, SafetyMonitorConfig, SseClient, SwitchConfig, TestOrchestrator,
-    WebhookReceiver,
+    OpticalTrainConfig, OrchestratorInvocation, PlannerTargetConfig, PlateSolverConfig,
+    PlateSolverStub, ReceivedEvent, RotatorConfig, RpConfigBuilder, SafetyMonitorConfig, SseClient,
+    SwitchConfig, TestOrchestrator, WebhookReceiver,
 };
 use bdd_infra::sky_survey_camera_harness::SkyViewStub;
 use bdd_infra::ServiceHandle;
@@ -58,6 +58,9 @@ pub struct RpWorld {
     pub cover_calibrators: Vec<CoverCalibratorConfig>,
     /// Focuser configs accumulated via Given steps
     pub focusers: Vec<FocuserConfig>,
+    /// Optical trains accumulated via Given steps, emitted as
+    /// `equipment.optical_trains`.
+    pub optical_trains: Vec<OpticalTrainConfig>,
     /// Singular mount config — at most one per `rp` deployment.
     pub mount: Option<MountConfig>,
     /// Optional plate-solver service config emitted into rp's
@@ -68,9 +71,11 @@ pub struct RpWorld {
     /// the world so its request log stays accessible to `Then`
     /// steps and the spawned axum task isn't cancelled mid-scenario.
     pub plate_solver_stub: Option<PlateSolverStub>,
-    /// Optional guider service config emitted into rp's `guider`
-    /// block. Set by the BDD `Given a stub guider ...` steps after
-    /// spawning the stub.
+    /// Optional guider service config emitted into rp's
+    /// `equipment.mount.guiding` block. Set by the BDD `Given a stub
+    /// guider ...` steps after spawning the stub; `start_rp` adds a
+    /// simulator mount when none is configured (guiding is
+    /// mount-scoped).
     pub guider: Option<GuiderConfig>,
     /// Handle to the in-process stub guider server (same lifecycle
     /// rationale as `plate_solver_stub`).
@@ -324,6 +329,9 @@ impl RpWorld {
         }
         for foc in &self.focusers {
             builder.add_focuser(foc.clone());
+        }
+        for train in &self.optical_trains {
+            builder.add_optical_train(train.clone());
         }
         if let Some(mount) = &self.mount {
             builder.with_mount(mount.clone());
