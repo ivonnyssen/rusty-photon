@@ -64,19 +64,18 @@ Feature: Client-target joins (#607)
     Then the report contains a "warn" check named "joins.client-auth" for service "ui-htmx"
     And that check's detail mentions "does not verify"
 
-  Scenario: rp's plate-solver client has no CA-trust field, so a scheme mismatch is suggestion-only
+  Scenario: --fix rewrites rp's plate-solver scheme and CA trust once the target is provisioned
     Given a config file "plate-solver.json" containing:
       """
-      { "server": { "port": 11131, "tls": { "cert": "/pki/acme-cert.pem", "key": "/pki/acme-key.pem" } } }
+      { "server": { "port": 11131 } }
       """
     And a config file "rp.json" containing:
       """
       { "server": { "port": 11115 }, "plate_solver": { "url": "http://localhost:11131" } }
       """
     When I run doctor with --fix and --json
-    Then the report contains a "fail" check named "joins.client-transport" for service "rp"
-    And that check's detail mentions "no field"
-    And the config file "rp.json" has the string "http://localhost:11131" at "/plate_solver/url"
+    Then the config file "rp.json" has the string "https://localhost:11131" at "/plate_solver/url"
+    And the config file "rp.json" has "/ca_cert" pointing at the pki file "ca.pem"
 
   Scenario: rp's guider client is missing an auth field entirely, reported without a fix
     Given a config file "phd2-guider.json" containing:

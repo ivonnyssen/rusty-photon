@@ -282,9 +282,10 @@ pub struct RpSessionView {
 
 /// rp: the URL-only client target block shared by `plate_solver` and
 /// (nested inside `equipment.mount.guiding`) the guider — neither carries
-/// an auth/CA-trust field yet (docs/services/doctor.md §Client-target
+/// a per-target auth field yet (docs/services/doctor.md §Client-target
 /// joins notes this as a known gap: `--fix` cannot wire what the schema
-/// has no field for).
+/// has no field for). CA trust is a separate, top-level `RpView::ca_cert`
+/// shared by every rp client (issue #609 / PR #612), not per-target.
 #[derive(Debug, Deserialize, Default)]
 pub struct RpUrlTargetView {
     #[serde(default)]
@@ -302,6 +303,8 @@ pub struct RpView {
     pub session: Option<RpSessionView>,
     #[serde(default)]
     pub plate_solver: Option<RpUrlTargetView>,
+    #[serde(default)]
+    pub ca_cert: Option<String>,
 }
 
 impl RpView {
@@ -466,6 +469,16 @@ mod tests {
         let view: RpView =
             serde_json::from_str(r#"{ "equipment": { "mount": { "alpaca_url": "x" } } }"#).unwrap();
         assert!(view.mount_guiding_url().is_none());
+    }
+
+    #[test]
+    fn test_rp_view_reads_the_top_level_ca_cert() {
+        let view: RpView =
+            serde_json::from_str(r#"{ "equipment": {}, "ca_cert": "/pki/ca.pem" }"#).unwrap();
+        assert_eq!(view.ca_cert.as_deref(), Some("/pki/ca.pem"));
+
+        let view: RpView = serde_json::from_str(r#"{ "equipment": {} }"#).unwrap();
+        assert!(view.ca_cert.is_none());
     }
 
     #[test]

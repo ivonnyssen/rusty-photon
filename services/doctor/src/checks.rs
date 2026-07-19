@@ -1008,10 +1008,8 @@ fn rewrite_scheme(url: &str, new_scheme: &str) -> Option<String> {
 /// not a hardware-style installed/enabled split).
 ///
 /// `scheme_fix` plans the scheme rewrite when the client's schema supports
-/// one (`None` for rp's plate-solver/guider clients, which carry no
-/// CA-trust field at all — a scheme flip alone would trade one failure for
-/// another). `ca_cert` is `Some((pointer, already_present))` when the
-/// client schema carries a CA-trust field.
+/// one. `ca_cert` is `Some((pointer, already_present))` when the client
+/// schema carries a CA-trust field.
 fn transport_check(
     ctx: &Context,
     client_service: &str,
@@ -1244,23 +1242,37 @@ fn ui_htmx_one_target(ctx: &Context, name: &str, target: Option<&ClientTargetVie
 }
 
 /// rp's plate-solver/guider clients: `docs/services/doctor.md
-/// §Client-target joins` — a bare `url`, no `auth`/`ca_cert_path` field
-/// yet, so both checks below run suggestion-only.
+/// §Client-target joins`. CA trust is `rp`'s single top-level `ca_cert`
+/// field (issue #609 / PR #612), shared by both targets, so the transport
+/// check is fully fix-eligible once that field or its provisioning
+/// material exists. Neither target carries a per-target credential field
+/// yet, so `joins.client-auth` still runs suggestion-only.
 fn rp_client_joins(ctx: &Context) -> Vec<Check> {
     let mut checks = Vec::new();
     let Some(rp) = ctx.scan("rp").and_then(|s| scan::view::<RpView>(s)?.ok()) else {
         return checks;
     };
+    let ca_cert_present = rp.ca_cert.is_some();
     if let Some(url) = rp.mount_guiding_url() {
-        checks.extend(rp_one_target(ctx, "equipment.mount.guiding.url", &url));
+        checks.extend(rp_one_target(
+            ctx,
+            "equipment.mount.guiding.url",
+            &url,
+            ca_cert_present,
+        ));
     }
     if let Some(url) = rp.plate_solver.and_then(|p| p.url) {
-        checks.extend(rp_one_target(ctx, "plate_solver.url", &url));
+        checks.extend(rp_one_target(
+            ctx,
+            "plate_solver.url",
+            &url,
+            ca_cert_present,
+        ));
     }
     checks
 }
 
-fn rp_one_target(ctx: &Context, field: &str, url: &str) -> Vec<Check> {
+fn rp_one_target(ctx: &Context, field: &str, url: &str, ca_cert_present: bool) -> Vec<Check> {
     let mut checks = Vec::new();
     let Some((scheme, host, port)) = parse_target_url(url) else {
         return checks;
@@ -1268,8 +1280,25 @@ fn rp_one_target(ctx: &Context, field: &str, url: &str) -> Vec<Check> {
     let Some(resolved) = resolve_join_target(ctx, &host, port) else {
         return checks;
     };
+
+    let target_tls_on = resolved.server().is_some_and(|s| s.tls.is_some());
+    let scheme_fix = (scheme.eq_ignore_ascii_case("https") != target_tls_on)
+        .then(|| rewrite_scheme(url, if target_tls_on { "https" } else { "http" }))
+        .flatten()
+        .map(|value| crate::report::FixOp::SetString {
+            service: "rp".to_string(),
+            pointer: format!("/{}", field.replace('.', "/")),
+            value,
+        });
+
     checks.extend(transport_check(
-        ctx, "rp", field, &scheme, resolved, None, None,
+        ctx,
+        "rp",
+        field,
+        &scheme,
+        resolved,
+        scheme_fix,
+        Some(("/ca_cert".to_string(), ca_cert_present)),
     ));
     checks.extend(credential_check(ctx, "rp", field, resolved, None, None));
     checks
@@ -1801,7 +1830,7 @@ mod tests {
     }
 
     #[test]
-    fn test_rp_plate_solver_scheme_mismatch_is_suggestion_only() {
+    fn test_rp_plate_solver_scheme_mismatch_is_flagged_and_fixed() {
         let dir = tempfile::tempdir().unwrap();
         write_json(
             dir.path(),
@@ -1822,17 +1851,80 @@ mod tests {
             .find(|c| c.name == "joins.client-transport")
             .expect("a scheme mismatch must be reported");
         assert_eq!(transport.status, Status::Fail);
-        assert!(
-            transport.fixes.is_empty(),
-            "rp has no CA-trust field to fix into: {transport:?}"
+        match &transport.fixes[..] {
+            [crate::report::FixOp::SetString {
+                service,
+                pointer,
+                value,
+            }] => {
+                assert_eq!(service, "rp");
+                assert_eq!(pointer, "/plate_solver/url");
+                assert_eq!(value, "https://localhost:11131");
+            }
+            other => unreachable!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_rp_plate_solver_flags_missing_ca_trust_for_a_self_signed_target() {
+        let dir = tempfile::tempdir().unwrap();
+        stage_pki(dir.path(), "s3cret-pw");
+        write_json(
+            dir.path(),
+            "plate-solver.json",
+            serde_json::json!({ "server": { "port": 11131,
+                "tls": { "cert": "/pki/plate-solver.pem", "key": "/pki/plate-solver-key.pem" } } }),
         );
+        write_json(
+            dir.path(),
+            "rp.json",
+            serde_json::json!({ "server": { "port": 11115 },
+                "plate_solver": { "url": "https://localhost:11131" } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        let checks = rp_client_joins(&ctx);
+        let transport = checks
+            .iter()
+            .find(|c| c.name == "joins.client-transport")
+            .expect("missing CA trust must be reported");
+        assert_eq!(transport.status, Status::Fail);
         assert!(
-            transport
-                .detail
-                .contains("no field `doctor --fix` can safely rewrite"),
+            transport.detail.contains("self-signed"),
             "{}",
             transport.detail
         );
+        match &transport.fixes[..] {
+            [crate::report::FixOp::SetString {
+                service,
+                pointer,
+                value,
+            }] => {
+                assert_eq!(service, "rp");
+                assert_eq!(pointer, "/ca_cert");
+                assert!(value.ends_with("pki/ca.pem"), "{value}");
+            }
+            other => unreachable!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_rp_ca_cert_already_present_is_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        stage_pki(dir.path(), "s3cret-pw");
+        write_json(
+            dir.path(),
+            "plate-solver.json",
+            serde_json::json!({ "server": { "port": 11131,
+                "tls": { "cert": "/pki/plate-solver.pem", "key": "/pki/plate-solver-key.pem" } } }),
+        );
+        write_json(
+            dir.path(),
+            "rp.json",
+            serde_json::json!({ "server": { "port": 11115 }, "ca_cert": "/pki/ca.pem",
+                "plate_solver": { "url": "https://localhost:11131" } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        assert!(rp_client_joins(&ctx).is_empty());
     }
 
     #[test]

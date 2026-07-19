@@ -360,11 +360,15 @@ single top-level `ca_cert`, already wired unconditionally by
 credential are equally fix-eligible; `operation_watchdog.rp_url`'s scheme
 is fix-eligible too, but carries no separate `joins.client-auth` check —
 its credential is the shared `service_auth` pair, `auth.mismatch`'s
-territory already. **rp's `plate_solver`/`guiding` clients have no
-`auth`/`ca_cert_path` field at all yet** (they carry a bare `url`), so
-both checks run suggestion-only for them: a scheme flip alone would trade
-a connection-refused error for a TLS-trust error, so `--fix` plans
-nothing and the detail says why. Closing that gap needs a config-schema
+territory already. rp's `plate_solver.url` and
+`equipment.mount.guiding.url` share rp's single top-level `ca_cert`
+field (issue #609 / PR #612, `CA_ONLY_WIRING_SERVICES` in
+`provision/mod.rs`), not a per-target one, so `joins.client-transport`
+is fully fix-eligible for both: the scheme is rewritten in place and
+`/ca_cert` is written from the resolved pki tree, same as every other
+CA-trust fix. **Neither target carries a credential field at all yet**
+(they carry a bare `url`, no `auth`), so `joins.client-auth` still runs
+suggestion-only for them — closing that half needs a config-schema
 change to rp's HTTP clients, not a doctor check — tracked as follow-up
 work, not in this issue's scope (see §MVP scope).
 
@@ -892,11 +896,13 @@ behavior; every knob in it was a CLI flag first.)
   service-doctor runner against a fake typed-load closure (typo'd key named,
   absent file ok, exit-code mapping). For client-target joins
   ([#607](https://github.com/ivonnyssen/rusty-photon/issues/607)): scheme
-  mismatch in both directions, the ACME-vs-self-signed CA-trust split,
-  absent-vs-wrong credential handling, rp's plate-solver/guider
-  suggestion-only path (no fix planned), a non-loopback host resolving to
-  nothing, and that the scheme-rewrite helper never introduces the
-  trailing slash a URL-parser round trip would.
+  mismatch in both directions, the ACME-vs-self-signed CA-trust split
+  (including rp's shared top-level `ca_cert`, wired the same way once
+  #609/PR #612 gave rp that field), absent-vs-wrong credential handling,
+  rp's plate-solver/guider `joins.client-auth` suggestion-only path (no
+  fix planned — no credential field exists yet), a non-loopback host
+  resolving to nothing, and that the scheme-rewrite helper never
+  introduces the trailing slash a URL-parser round trip would.
 - **BDD** (`services/doctor/tests`, built with the `mock` feature) — seed a
   scratch config dir and a platform-facts file with known-broken states (port
   collision, dangling watchdog service, retired D3s keys, unparseable JSON,
@@ -990,20 +996,25 @@ the install-flow docs in the per-platform packaging guides, and the
 pki-ownership alignment under sudo (the #572 remainder).
 
 **Client-target joins ([#607](https://github.com/ivonnyssen/rusty-photon/issues/607)):**
-`joins.client-transport` and `joins.client-auth` (§Diagnosis), fully
-fix-eligible for ui-htmx's `rp`/`sentinel` targets and sentinel's
-per-monitor `scheme`/`auth`, suggestion-only for rp's plate-solver/guider
-clients and sentinel's `operation_watchdog.rp_url` scheme (the latter has
-no auth check of its own — `auth.mismatch` already owns it).
+`joins.client-transport` and `joins.client-auth` (§Diagnosis).
+`joins.client-transport` is fully fix-eligible for ui-htmx's
+`rp`/`sentinel` targets, sentinel's per-monitor `scheme`, sentinel's
+`operation_watchdog.rp_url` scheme, and rp's plate-solver/guider clients
+(rp's shared top-level `ca_cert`, closed by #609/PR #612). `joins.client-auth`
+is fully fix-eligible for ui-htmx's targets and sentinel's per-monitor
+`auth`; it stays suggestion-only for rp's plate-solver/guider clients
+(neither carries a credential field yet), and does not run at all for
+`operation_watchdog.rp_url` (its credential is the shared `service_auth`
+pair — `auth.mismatch` already owns it).
 
 **Deferred, tracked in the plan:**
 - `usb_*` identity declarations for qhy-focuser and star-adventurer-gti —
   measured whenever that hardware is next on a USB port; two lines of
   `doctor.toml` each.
-- An `auth`/`ca_cert_path` field on rp's `plate_solver`/`guiding` client
-  configs (`services/rp/src/config/plate_solver.rs`,
-  `services/rp/src/config/guiding.rs`) — both clients build a bare
-  `reqwest::Client` today with no CA trust and no credential support, so
-  `joins.client-transport`/`joins.client-auth` can diagnose but not fix a
-  mismatch against either target. Out of #607's scope: it is an rp
+- An `auth` field on rp's `plate_solver`/`guiding` client configs
+  (`services/rp/src/config/plate_solver.rs`,
+  `services/rp/src/config/guiding.rs`) — CA trust closed by #609/PR #612
+  (rp's shared top-level `ca_cert`), but neither client carries a
+  credential field, so `joins.client-auth` can diagnose but not fix a
+  401 against either target. Out of #607's scope: it is an rp
   HTTP-client change, not a doctor check.
