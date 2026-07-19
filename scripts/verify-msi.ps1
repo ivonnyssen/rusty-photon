@@ -284,6 +284,21 @@ sc.exe control rusty-photon-filemonitor paramchange | Out-Null
 if ($LASTEXITCODE -ne 0) { Fail 'filemonitor' "sc control paramchange failed ($LASTEXITCODE)" }
 Write-Host "== filemonitor: OK (accepted ParamChange)"
 
+# ---- doctor: shipped binary + renewal scheduled task ------------------------
+# Doctor rides in Core with sentinel (no rusty-photon-doctor package). A
+# diagnosis may legitimately find problems on the verify box (exit 1);
+# exit 2 would mean the binary crashed. `tls renew` with nothing staged is
+# the scheduled task's steady state and must exit 0.
+$doctorExe = Join-Path $installDir 'rusty-photon-doctor.exe'
+if (-not (Test-Path $doctorExe)) { Fail 'doctor' "rusty-photon-doctor.exe not installed" }
+& $doctorExe --json | Out-Null
+if ($LASTEXITCODE -gt 1) { Fail 'doctor' "rusty-photon-doctor --json exited $LASTEXITCODE" }
+& $doctorExe tls renew | Out-Null
+if ($LASTEXITCODE -ne 0) { Fail 'doctor' "tls renew (nothing due) exited $LASTEXITCODE" }
+$null = cmd /c "schtasks /Query /TN rusty-photon-renew >nul 2>&1"
+if ($LASTEXITCODE -ne 0) { Fail 'doctor' "scheduled task rusty-photon-renew not registered" }
+Write-Host "== doctor: OK (binary runs; renewal task registered)"
+
 # ---- feature remove: per-device split stays honest --------------------------
 Write-Host "== modify: REMOVE=ZwoCamera"
 $code = Msiexec @('/i', "`"$Msi`"", '/qn', '/norestart', 'REMOVE=ZwoCamera')
@@ -325,6 +340,10 @@ foreach ($svc in $allServices) {
 }
 if (Get-ChildItem -Path $installDir -Filter '*.exe' -ErrorAction SilentlyContinue) {
     Fail 'msiexec' "exes left under $installDir after uninstall"
+}
+$null = cmd /c "schtasks /Query /TN rusty-photon-renew >nul 2>&1"
+if ($LASTEXITCODE -eq 0) {
+    Fail 'doctor' "scheduled task rusty-photon-renew survived uninstall"
 }
 # deb `remove` parity: self-created configs and logs are untracked by the MSI
 # and survive uninstall; purge is a documented manual step.

@@ -49,6 +49,10 @@ priority = "optional"
 depends = "$auto, adduser"
 assets = [
     ["target/release/sentinel", "usr/bin/rusty-photon-sentinel", "755"],
+    # Doctor rides in this package (no rusty-photon-doctor package exists):
+    # sentinel is the always-installed supervisor, so its artifact carries
+    # the operator tool and the renewal units below.
+    ["target/release/doctor", "usr/bin/rusty-photon-doctor", "755"],
     # Scoped grant (restart of rusty-photon-* units only) without which the
     # unprivileged NoNewPrivileges unit could restart nothing via systemctl.
     # Vendor rules dir, not /etc: polkitd reads both, and /etc is the local
@@ -57,8 +61,18 @@ assets = [
 ]
 maintainer-scripts = "pkg/"
 
-[package.metadata.deb.systemd-units]
+[[package.metadata.deb.systemd-units]]
 unit-name = "rusty-photon-sentinel"
+unit-scripts = "pkg/"
+enable = true
+start = true
+restart-after-upgrade = true
+
+# The renewal timer: enable + start arms rusty-photon-renew.timer; the
+# oneshot service it triggers is static (no [Install]) and runs
+# `rusty-photon-doctor tls renew` daily.
+[[package.metadata.deb.systemd-units]]
+unit-name = "rusty-photon-renew"
 unit-scripts = "pkg/"
 enable = true
 start = true
@@ -70,7 +84,10 @@ summary = "Observatory monitoring and notification service"
 license = "MIT OR Apache-2.0"
 assets = [
     { source = "target/release/sentinel", dest = "/usr/bin/rusty-photon-sentinel", mode = "755" },
+    { source = "target/release/doctor", dest = "/usr/bin/rusty-photon-doctor", mode = "755" },
     { source = "pkg/rusty-photon-sentinel.service", dest = "/usr/lib/systemd/system/rusty-photon-sentinel.service", mode = "644" },
+    { source = "pkg/rusty-photon-renew.service", dest = "/usr/lib/systemd/system/rusty-photon-renew.service", mode = "644" },
+    { source = "pkg/rusty-photon-renew.timer", dest = "/usr/lib/systemd/system/rusty-photon-renew.timer", mode = "644" },
     { source = "pkg/50-rusty-photon-sentinel.rules", dest = "/usr/share/polkit-1/rules.d/50-rusty-photon-sentinel.rules", mode = "644" },
 ]
 post_install_script = """
@@ -80,6 +97,7 @@ install -d -m 0750 -o rusty-photon -g rusty-photon /var/lib/rusty-photon /var/li
 systemctl daemon-reload
 if [ "$1" -eq 1 ]; then
     systemctl enable rusty-photon-sentinel.service
+    systemctl enable rusty-photon-renew.timer
 fi
 """
 # rpm scriptlet arg $1 = package instances remaining after the operation.
@@ -93,6 +111,8 @@ pre_uninstall_script = """
 if [ "$1" -eq 0 ]; then
     systemctl stop rusty-photon-sentinel.service || true
     systemctl disable rusty-photon-sentinel.service || true
+    systemctl stop rusty-photon-renew.timer || true
+    systemctl disable rusty-photon-renew.timer || true
 fi
 """
 # rpm has no purge lifecycle: erase preserves the runtime-created config and

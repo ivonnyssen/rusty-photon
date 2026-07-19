@@ -53,6 +53,14 @@ Alpaca UDP discovery is deliberately not served: with this many Alpaca
 servers on one host they would collide on the discovery port. Point
 clients (N.I.N.A. etc.) at `host:port` directly using the table above.
 
+The sentinel package additionally carries the operator tool
+`/usr/bin/rusty-photon-doctor` (diagnosis, `--fix` repair, and the TLS +
+credential lifecycle — [docs/services/doctor.md](services/doctor.md))
+plus the TLS renewal units `rusty-photon-renew.service` /
+`rusty-photon-renew.timer`. There is no separate doctor package:
+sentinel is the always-installed supervisor, so its artifact is the
+delivery vehicle (ADR-016).
+
 ## Building packages
 
 Packages are built natively on the target architecture — nightly in CI on
@@ -259,6 +267,45 @@ so a broken device is never advertised on the network. Until the device is
 attached (and its path matches the config), the unit sits in a
 restart-every-5s loop; it comes up by itself once the hardware appears.
 The cameras and the network-only services serve with no hardware attached.
+
+## First wiring: rusty-photon-doctor
+
+The installer puts bytes on disk; doctor wires the configs (ADR-016).
+After installing — or later adding — packages, run once:
+
+```sh
+sudo rusty-photon-doctor          # diagnose (exit 0 clean, 1 = findings)
+sudo rusty-photon-doctor --fix    # converge; a re-run shows the clean bill
+```
+
+`--fix` repairs what the checks flag (retired config keys, missing
+joins, fixable shapes) and — see
+[doctor.md §Provisioning](services/doctor.md) — can generate TLS
+material and mint + distribute the observatory credential for every
+installed service. Running it while services are live is fine
+(warn-and-proceed, atomic writes); services pick fixed configs up on
+their next restart: `sudo systemctl restart 'rusty-photon-*'`.
+Everything doctor writes under sudo is chowned back to the
+`rusty-photon` user, pki material included.
+
+### TLS renewal
+
+The sentinel package ships `rusty-photon-renew.timer` (daily, jittered,
+`Persistent=true`), running `rusty-photon-doctor tls renew` as the
+`rusty-photon` user — a no-op until certificates exist and are inside
+their renewal window, so it is safe armed on every install. The deb
+starts the timer on install; the rpm (Fedora convention) enables it to
+arm on the next boot, or start it once by hand:
+
+```sh
+sudo systemctl start rusty-photon-renew.timer
+systemctl list-timers rusty-photon-renew.timer   # shows the next fire
+```
+
+Running services pick renewed certificates up without a restart
+(mtime-triggered in-process reload; ADR-002). Sentinel's watchdog
+deliberately ignores the renew unit — it is a scheduled job, not a
+daemon to supervise.
 
 ## Configuration
 

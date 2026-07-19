@@ -63,6 +63,13 @@ pub async fn renew(
             applied: applied.clone(),
             warnings: warnings.clone(),
         })?;
+    // A `sudo … tls renew` (the manual escape hatch) rewrites pairs
+    // root-owned; the scheduled run as the service user is a no-op here.
+    super::align_pki_ownership(config_dir).map_err(|message| RenewError {
+        message,
+        applied: applied.clone(),
+        warnings: warnings.clone(),
+    })?;
 
     Ok((applied, warnings))
 }

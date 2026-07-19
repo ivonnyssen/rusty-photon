@@ -189,6 +189,43 @@ EOF
     doc.install "ZWO-SDK-LICENSE.txt"
 EOF
         fi
+        if [ "$s" = sentinel ]; then
+            # Doctor rides in this formula (no rusty-photon-doctor formula
+            # exists). The renewal plist is authored here, not shipped in
+            # the tarball, so its paths are this keg's opt_bin/var; a
+            # formula manages one brew service (the sentinel daemon), so
+            # the plist is loaded by the operator (see caveats).
+            cat <<'EOF'
+    bin.install "rusty-photon-doctor"
+    (prefix/"rusty-photon-renew.plist").write <<~EOS
+      <?xml version="1.0" encoding="UTF-8"?>
+      <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+      <plist version="1.0">
+      <dict>
+        <key>Label</key>
+        <string>space.rustyphoton.renew</string>
+        <key>ProgramArguments</key>
+        <array>
+          <string>#{opt_bin}/rusty-photon-doctor</string>
+          <string>tls</string>
+          <string>renew</string>
+        </array>
+        <key>StartCalendarInterval</key>
+        <dict>
+          <key>Hour</key>
+          <integer>3</integer>
+          <key>Minute</key>
+          <integer>0</integer>
+        </dict>
+        <key>StandardOutPath</key>
+        <string>#{var}/log/rusty-photon-renew.log</string>
+        <key>StandardErrorPath</key>
+        <string>#{var}/log/rusty-photon-renew.log</string>
+      </dict>
+      </plist>
+    EOS
+EOF
+        fi
         cat <<EOF
   end
 
@@ -227,13 +264,39 @@ EOF
   end
 EOF
         fi
-        cat <<EOF
+        if [ "$s" = sentinel ]; then
+            cat <<'EOF'
+
+  def caveats
+    <<~EOS
+      This formula also installs rusty-photon-doctor (the diagnosis and
+      repair tool; there is no separate doctor formula). To arm the daily
+      TLS renewal job — a no-op until `rusty-photon-doctor tls issue` has
+      staged certificates — load the bundled launchd plist once:
+        launchctl bootstrap gui/$UID #{prefix}/rusty-photon-renew.plist
+      Details: docs/packaging-macos.md in the rusty-photon repo.
+    EOS
+  end
+EOF
+        fi
+        if [ "$s" = sentinel ]; then
+            cat <<EOF
+
+  test do
+    assert_match "$s", shell_output("#{bin}/rusty-photon-$s --help")
+    assert_match "doctor", shell_output("#{bin}/rusty-photon-doctor --help")
+  end
+end
+EOF
+        else
+            cat <<EOF
 
   test do
     assert_match "$s", shell_output("#{bin}/rusty-photon-$s --help")
   end
 end
 EOF
+        fi
     } > "$out"
     echo "rendered $out"
 done

@@ -120,8 +120,11 @@ password in place.
 Sentinel has **no configured service registry**. It discovers the services it
 supervises from the platform service manager: at startup and every 60 s
 thereafter it enumerates the installed `rusty-photon-*` service units
-(excluding its own) and derives everything the retired `services` map used to
-spell out. The rule (ADR-016 decision 8) is not "static vs. dynamic" but
+(excluding its own, and excluding scheduled-job units — currently
+`rusty-photon-renew`, the TLS renewal oneshot its own package ships:
+supervising a job would restart-loop a failed run, and a dashboard row
+for it would be noise) and derives everything the retired `services` map
+used to spell out. The rule (ADR-016 decision 8) is not "static vs. dynamic" but
 *whether the source of truth can be down when you need it*: asking a dead
 driver how to restart itself fails that test; asking the service manager —
 which is alive precisely when the driver is not — passes it. Discovery is
@@ -783,6 +786,14 @@ convention as the driver services (see
 config read-only without starting it — see
 [doctor.md §Per-service doctors](doctor.md). Top-level flags cannot be
 combined with the subcommand (the mixed form would silently ignore them).
+
+Sentinel's package is also the delivery vehicle for central doctor
+(ADR-016 decision: no separate `rusty-photon-doctor` package): the
+deb/rpm, the MSI Core feature, and the Homebrew formula each carry the
+`rusty-photon-doctor` binary plus the platform's daily TLS-renewal
+scheduling (`rusty-photon-renew.service`/`.timer` on Linux, a Scheduled
+Task on Windows, a launchd plist in the keg on macOS — see
+[doctor.md §Renewal](doctor.md) and the per-platform packaging guides).
 
 ## Port
 

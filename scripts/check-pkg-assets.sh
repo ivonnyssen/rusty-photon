@@ -8,10 +8,14 @@ fail=0
 err() { echo "check-pkg-assets: $*" >&2; fail=1; }
 
 # Print the body of one TOML table (from its [header] to the next [header]),
-# so key checks are position-independent within the section.
+# so key checks are position-independent within the section. Array-of-tables
+# entries ([[header]], sentinel's two systemd-units) print as one body.
 toml_section() { # $1=file $2=exact table name
-    awk -v want="[$2]" '
-        /^\[/ { in_section = ($0 == want); next }
+    # Only bare [header] / [[header]] lines bound a section: scriptlet
+    # bodies inside multi-line strings legitimately start lines with
+    # "[ -e ..." tests, which are not headers.
+    awk -v w1="[$2]" -v w2="[[$2]]" '
+        /^\[\[?[A-Za-z0-9_.-]+\]\]?$/ { in_section = ($0 == w1 || $0 == w2); next }
         in_section { print }
     ' "$1"
 }
@@ -80,6 +84,49 @@ for pkgdir in services/*/pkg; do
         sentinel)
             [ -f "$pkgdir/50-rusty-photon-sentinel.rules" ] \
                 || err "$svc: missing pkg/50-rusty-photon-sentinel.rules"
+            # Sentinel's package also carries the doctor binary and the TLS
+            # renewal units (no rusty-photon-doctor package exists; plan
+            # decision 8) — assert the whole delivery contract so drift in
+            # any one of the pieces is caught here, not on a rig.
+            renew_service="$pkgdir/rusty-photon-renew.service"
+            renew_timer="$pkgdir/rusty-photon-renew.timer"
+            if [ ! -f "$renew_service" ]; then
+                err "$svc: missing $renew_service"
+            else
+                grep -q '^Type=oneshot$' "$renew_service" \
+                    || err "$svc: rusty-photon-renew.service must be Type=oneshot"
+                grep -q '^ExecStart=/usr/bin/rusty-photon-doctor tls renew$' "$renew_service" \
+                    || err "$svc: rusty-photon-renew.service must ExecStart rusty-photon-doctor tls renew"
+                grep -q '^User=rusty-photon$' "$renew_service" \
+                    || err "$svc: rusty-photon-renew.service must run as the service user"
+                grep -q '^\[Install\]' "$renew_service" \
+                    && err "$svc: rusty-photon-renew.service must stay static (no [Install]; the timer arms it)"
+            fi
+            if [ ! -f "$renew_timer" ]; then
+                err "$svc: missing $renew_timer"
+            else
+                grep -q '^OnCalendar=daily$' "$renew_timer" \
+                    || err "$svc: rusty-photon-renew.timer must fire OnCalendar=daily"
+                grep -q '^Persistent=true$' "$renew_timer" \
+                    || err "$svc: rusty-photon-renew.timer must be Persistent (catch up after power-off)"
+                grep -q '^WantedBy=timers.target$' "$renew_timer" \
+                    || err "$svc: rusty-photon-renew.timer must be WantedBy=timers.target"
+            fi
+            toml_section "$toml" "package.metadata.deb" \
+                | grep -q '"target/release/doctor", "usr/bin/rusty-photon-doctor", "755"' \
+                || err "$svc: deb assets must ship target/release/doctor as usr/bin/rusty-photon-doctor"
+            toml_section "$toml" "package.metadata.deb.systemd-units" \
+                | grep -q '^unit-name = "rusty-photon-renew"$' \
+                || err "$svc: deb systemd-units must carry a rusty-photon-renew entry (enables the timer)"
+            rpm_section=$(toml_section "$toml" "package.metadata.generate-rpm")
+            echo "$rpm_section" | grep -q 'dest = "/usr/bin/rusty-photon-doctor"' \
+                || err "$svc: rpm assets must ship the doctor binary"
+            echo "$rpm_section" | grep -q 'dest = "/usr/lib/systemd/system/rusty-photon-renew.service"' \
+                || err "$svc: rpm assets must ship rusty-photon-renew.service"
+            echo "$rpm_section" | grep -q 'dest = "/usr/lib/systemd/system/rusty-photon-renew.timer"' \
+                || err "$svc: rpm assets must ship rusty-photon-renew.timer"
+            echo "$rpm_section" | grep -q 'systemctl enable rusty-photon-renew.timer' \
+                || err "$svc: rpm post_install must enable rusty-photon-renew.timer"
             ;;
         qhy-camera)
             [ -f "$pkgdir/90-rusty-photon-qhy.rules" ] \
@@ -275,6 +322,21 @@ if [ -f "$pkg_wxs" ]; then
                 ;;
         esac
     done
+
+    # Doctor rides in Core with sentinel (no rusty-photon-doctor package):
+    # the sentinel fragment must ship the exe, Package.wxs must register /
+    # remove the renewal scheduled task around it, and build-msi.ps1 must
+    # build the doctor crate so the bind finds the exe.
+    grep -Fq 'Name="rusty-photon-doctor.exe" Source="!(bindpath.bin)\doctor.exe"' installer/fragments/sentinel.wxs \
+        || err "installer: sentinel fragment must install bindpath.bin\\doctor.exe as rusty-photon-doctor.exe"
+    grep -q 'Id="RegisterRenewTask"' "$pkg_wxs" \
+        || err "installer: Package.wxs must register the rusty-photon-renew scheduled task"
+    grep -q 'Id="UnregisterRenewTask"' "$pkg_wxs" \
+        || err "installer: Package.wxs must unregister the renewal task on uninstall"
+    grep -Fq 'tls renew' "$pkg_wxs" \
+        || err "installer: the renewal task must run rusty-photon-doctor tls renew"
+    grep -Fq '"doctor"' scripts/build-msi.ps1 \
+        || err "installer: build-msi.ps1 \$allServices must include doctor"
 fi
 
 # The QHY Windows pin lives in four shipped places; they must all match the

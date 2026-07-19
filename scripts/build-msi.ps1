@@ -228,11 +228,14 @@ Write-Host "ZWO SDK blobs staged: ZWO_SDK_LIB_DIR=$zwoLib"
 # not depend on the invoking shell's environment.
 $env:RUSTFLAGS = "-C target-feature=+crt-static"
 
+# "doctor" is not a Windows service: its exe ships inside Core with
+# sentinel (as rusty-photon-doctor.exe) and backs the renewal scheduled
+# task, so it builds — and must exist — like the service binaries.
 $allServices = @(
     "sentinel", "ui-htmx", "filemonitor", "ppba-driver", "qhy-focuser",
     "sky-survey-camera", "star-adventurer-gti", "pa-falcon-rotator",
     "dsd-fp2", "qhy-camera", "pa-scops-oag", "rp", "session-runner",
-    "plate-solver", "phd2-guider", "calibrator-flats"
+    "plate-solver", "phd2-guider", "calibrator-flats", "doctor"
 )
 
 if (-not $SkipBuild) {

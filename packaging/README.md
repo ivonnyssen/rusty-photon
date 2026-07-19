@@ -35,7 +35,13 @@ sentinel ships `50-rusty-photon-sentinel.rules` into
 `/usr/share/polkit-1/rules.d/` (the scoped polkit grant that lets its
 unprivileged `NoNewPrivileges=yes` unit run `systemctl restart
 rusty-photon-<svc>` — restart verb and `rusty-photon-*` units only; no
-postinst stanza needed, polkitd hot-reloads rules.d);
+postinst stanza needed, polkitd hot-reloads rules.d) **plus the doctor
+delivery** — `target/release/doctor` as `/usr/bin/rusty-photon-doctor`
+in the assets and `rusty-photon-renew.service`/`.timer` in `pkg/` (the
+daily TLS renewal; a second `[[package.metadata.deb.systemd-units]]`
+entry enables and starts the timer, the rpm scriptlets enable it — no
+`rusty-photon-doctor` package exists, sentinel's artifact is the
+vehicle);
 qhy-camera the firmware helper; zwo-camera and zwo-focuser each their own
 committed `ZWO-SDK-LICENSE.txt` (checker-`cmp`'d against the copy vendored
 with the libzwo-sys headers) plus a gitignored `lib/` dir into which
