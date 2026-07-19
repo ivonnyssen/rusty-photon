@@ -399,17 +399,25 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 }
 
 /// Strip a trailing `:port` from a `Host` header value, respecting
-/// bracketed IPv6 literals (`[::1]:8443`).
-fn strip_host_port(host: &str) -> &str {
-    if host.starts_with('[') {
-        return match host.find(']') {
-            Some(end) => &host[..=end],
-            None => host,
-        };
+/// bracketed IPv6 literals (`[::1]:8443`). Returns `None` when the result
+/// can't be a syntactically valid `Location` authority — a syntactically
+/// valid unbracketed authority (hostname or IPv4) never contains `:`, so
+/// anything that still does (e.g. an unbracketed IPv6 literal like
+/// `Host: ::1`, invalid per RFC 7230 but not unheard of from a malformed
+/// client) falls back to the caller's local IP instead of producing a
+/// malformed redirect.
+fn strip_host_port(host: &str) -> Option<&str> {
+    if let Some(rest) = host.strip_prefix('[') {
+        return rest.find(']').map(|end| &host[..end + 2]);
     }
-    match host.rsplit_once(':') {
+    let name = match host.rsplit_once(':') {
         Some((name, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => name,
         _ => host,
+    };
+    if name.contains(':') {
+        None
+    } else {
+        Some(name)
     }
 }
 
@@ -429,7 +437,7 @@ fn build_redirect_response(request: &ParsedRequest, local_addr: SocketAddr) -> S
     let host = request
         .host
         .as_deref()
-        .map(strip_host_port)
+        .and_then(strip_host_port)
         .map(str::to_string)
         .unwrap_or_else(|| format_ip_for_url(local_addr.ip()));
     let location = format!("https://{host}:{}{}", local_addr.port(), request.target);
@@ -586,18 +594,43 @@ mod tests {
 
     #[test]
     fn strip_host_port_handles_ipv4_and_hostnames() {
-        assert_eq!(strip_host_port("127.0.0.1:11121"), "127.0.0.1");
-        assert_eq!(strip_host_port("filemonitor.local"), "filemonitor.local");
+        assert_eq!(strip_host_port("127.0.0.1:11121"), Some("127.0.0.1"));
+        assert_eq!(
+            strip_host_port("filemonitor.local"),
+            Some("filemonitor.local")
+        );
         assert_eq!(
             strip_host_port("filemonitor.local:11121"),
-            "filemonitor.local"
+            Some("filemonitor.local")
         );
     }
 
     #[test]
     fn strip_host_port_handles_bracketed_ipv6() {
-        assert_eq!(strip_host_port("[::1]:11121"), "[::1]");
-        assert_eq!(strip_host_port("[::1]"), "[::1]");
+        assert_eq!(strip_host_port("[::1]:11121"), Some("[::1]"));
+        assert_eq!(strip_host_port("[::1]"), Some("[::1]"));
+    }
+
+    #[test]
+    fn strip_host_port_rejects_unbracketed_ipv6() {
+        // "Host: ::1" is invalid per RFC 7230 (IPv6 literals must be
+        // bracketed), but a malformed client could still send it; without
+        // this guard it would produce a garbled Location authority.
+        assert_eq!(strip_host_port("::1"), None);
+    }
+
+    #[test]
+    fn build_redirect_response_falls_back_to_local_ip_for_unbracketed_ipv6_host() {
+        let request = ParsedRequest {
+            target: "/health".to_string(),
+            host: Some("::1".to_string()),
+        };
+        let local_addr: SocketAddr = "127.0.0.1:11121".parse().unwrap();
+        let response = build_redirect_response(&request, local_addr);
+        assert!(
+            response.contains("Location: https://127.0.0.1:11121/health\r\n"),
+            "{response}"
+        );
     }
 
     #[test]
