@@ -244,12 +244,19 @@ export RUSTFLAGS
 # features (ADR-014) and both binaries would link — and need at runtime —
 # every SDK dylib again. Everything else batches into one invocation.
 build_args=""
+needs_doctor=0
 for s in $SERVICES; do
     case "$s" in
         zwo-camera | zwo-focuser) ;;
         *) build_args="$build_args -p $s" ;;
     esac
+    # Sentinel's tarball carries the doctor binary (no rusty-photon-doctor
+    # formula exists), so its build needs the doctor crate too.
+    [ "$s" = sentinel ] && needs_doctor=1
 done
+if [ "$needs_doctor" = 1 ]; then
+    build_args="$build_args -p doctor"
+fi
 if [ -n "$build_args" ]; then
     echo "Building release binaries:$build_args"
     # shellcheck disable=SC2086 # word-splitting the -p list is intended
@@ -267,6 +274,9 @@ fi
 for s in $SERVICES; do
     strip "target/release/$s"
 done
+if [ "$needs_doctor" = 1 ]; then
+    strip target/release/doctor
+fi
 
 # ---- package -----------------------------------------------------------
 DIST="dist/$VERSION"
@@ -285,6 +295,13 @@ for s in $SERVICES; do
     cp "target/release/$s" "$stage/rusty-photon-$s"
     contents="rusty-photon-$s"
     case "$s" in
+        sentinel)
+            # Doctor rides with sentinel (plan decision 8); the renewal
+            # launchd plist is authored by the formula at install time, so
+            # the tarball only carries the binary.
+            cp target/release/doctor "$stage/rusty-photon-doctor"
+            contents="$contents rusty-photon-doctor"
+            ;;
         zwo-camera)
             mkdir "$stage/lib"
             cp "$ZWO_CACHE/libASICamera2.dylib" "$stage/lib/"

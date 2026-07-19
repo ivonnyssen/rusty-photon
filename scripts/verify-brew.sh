@@ -345,6 +345,24 @@ for s in $SERVICES; do
         [ -e "$PREFIX/opt/rusty-photon-zwo-focuser$SUFFIX/lib/libEAFFocuser.dylib" ] \
             || fail "$s" "bundled libEAFFocuser.dylib missing from the keg"
     fi
+    if [ "$s" = sentinel ]; then
+        # Doctor rides in this formula (no rusty-photon-doctor formula):
+        # the second binary must be installed and runnable, the renewal
+        # plist rendered into the keg with this keg's paths, and the
+        # timer's steady-state command (`tls renew`, nothing due) exit 0.
+        doctor="$PREFIX/bin/rusty-photon-doctor"
+        [ -x "$doctor" ] || fail "$s" "rusty-photon-doctor missing after install"
+        code=0
+        "$doctor" --json > /dev/null 2>&1 || code=$?
+        [ "$code" -le 1 ] || fail "$s" "rusty-photon-doctor --json exited $code"
+        "$doctor" tls renew > /dev/null 2>&1 \
+            || fail "$s" "rusty-photon-doctor tls renew (nothing due) did not exit 0"
+        plist="$PREFIX/opt/rusty-photon-sentinel$SUFFIX/rusty-photon-renew.plist"
+        [ -f "$plist" ] || fail "$s" "rusty-photon-renew.plist missing from the keg"
+        grep -q "rusty-photon-doctor" "$plist" \
+            || fail "$s" "renewal plist does not run rusty-photon-doctor"
+        plutil -lint "$plist" > /dev/null || fail "$s" "renewal plist does not lint"
+    fi
 
     cfg="$CFG_DIR/$s.json"
     if is_gated "$s"; then

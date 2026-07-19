@@ -28,8 +28,8 @@ folded in here as it lands.
 
 Doctor is a one-shot CLI, not a long-running service: no server, no config
 file of its own, no unit. It lives at `services/doctor` (cargo binary
-`doctor`) and is installed as `rusty-photon-doctor` when packaging arrives
-(D7, riding in sentinel's package).
+`doctor`) and installs as `rusty-photon-doctor`, riding in sentinel's
+package on every platform (D7 — there is no separate doctor package).
 
 ## Architecture
 
@@ -137,8 +137,13 @@ joins the catalog when it is packaged):
 | calibrator-flats | core | 11170 |
 
 Doctor itself never appears in the catalog: it is a one-shot binary with no
-unit and no port, and when D7 gives it a `pkg/` directory the packaging
-scripts and the completeness check gain a carve-out for unit-less packages.
+unit and no port. It also has no `pkg/` directory — the packaging rides
+entirely in sentinel's (plan decision 8): sentinel's deb/rpm assets, MSI
+Core feature, and Homebrew formula each carry the `rusty-photon-doctor`
+binary and the renewal scheduling for their platform, so the `services/*/pkg`
+discovery loops and the catalog completeness check never see a doctor
+"service" at all. `scripts/check-pkg-assets.sh` asserts the whole delivery
+contract inside its sentinel case.
 
 ### Config-root resolution
 
@@ -662,19 +667,41 @@ timestamps — `scp -p` or `rsync -a`/`-t` land a renewed pair the remote
 services never notice until restart; plain `scp`/`cp` update the mtime
 and hot-reload works.
 
-**Timer units (recorded here for D7** — sentinel's package carries the
-doctor binary and these units, plan decision 8**):**
+**Timer units** (shipped in sentinel's package — it carries the doctor
+binary and these units; plan decision 8, D7):
 
-- systemd: `rusty-photon-renew.service` (`Type=oneshot`,
-  `ExecStart=/usr/bin/rusty-photon-doctor tls renew`, `User=rusty-photon`)
+- systemd: `services/sentinel/pkg/rusty-photon-renew.service`
+  (`Type=oneshot`, `ExecStart=/usr/bin/rusty-photon-doctor tls renew`,
+  `User=rusty-photon`, no `[Install]` — static, timer-armed)
   + `rusty-photon-renew.timer` (`OnCalendar=daily`,
   `RandomizedDelaySec=1h`, `Persistent=true` — a powered-off-by-day
-  observatory machine still renews on next boot).
-- Windows: a Scheduled Task registered by the MSI, daily, running
-  `rusty-photon-doctor.exe tls renew` as LocalSystem (the account the
-  services already run as).
-- macOS: a `launchd` plist with `StartCalendarInterval` (daily) running
-  `rusty-photon-doctor tls renew` as the operator user brew services use.
+  observatory machine still renews on next boot). The deb enables and
+  starts the timer on install; the rpm enables it (Fedora convention —
+  it arms on the next boot, or `systemctl start rusty-photon-renew.timer`
+  once by hand). Both packagers enable on the timer's **first
+  appearance** — a fresh install or the upgrade that first ships it —
+  and preserve an operator's explicit disable on later upgrades. Sentinel's service discovery deliberately skips the
+  `renew` unit: it is a job, not a daemon — supervising it would
+  restart-loop a failed 3am run.
+- Windows: the MSI registers a Scheduled Task `rusty-photon-renew`
+  (daily, 03:00) running `rusty-photon-doctor.exe tls renew` as
+  LocalSystem — the account the services already run as; uninstall
+  removes it.
+- macOS: sentinel's formula installs `rusty-photon-renew.plist`
+  (`StartCalendarInterval` daily, 03:00) into its keg; a formula manages
+  one brew service (the sentinel daemon), so the operator loads the
+  plist once — `launchctl bootstrap gui/$UID <keg>/rusty-photon-renew.plist`
+  (the formula's caveats print the exact command). It runs as the
+  operator user brew services use.
+
+**Ownership under sudo.** Provisioning and renewal end by aligning the
+pki tree (and `acme.json`) with the config root's owner: a
+`sudo rusty-photon-doctor --fix` on a packaged host creates fresh key
+material root-owned — files with no original whose owner
+`rusty_photon_config::save` could preserve — and without the alignment
+the services could not read their keys and the renewal timer (which runs
+as the service user) could not renew them. Unprivileged runs are a
+no-op (every owner already matches); a failed chown aborts loudly.
 
 ## Report
 
@@ -874,12 +901,14 @@ is the one place doctor's network I/O leaves the host, and only when asked.
 `tls.expiry` check, the ACME endpoint/trust/propagation knobs on
 `tls issue --acme`, and the in-process cert hot-reload in
 `rusty-photon-tls` — closing
-[#541](https://github.com/ivonnyssen/rusty-photon/issues/541). The timer
-units themselves ship with D7's packaging; §Renewal records them.
+[#541](https://github.com/ivonnyssen/rusty-photon/issues/541).
+
+**In D7 (§Renewal, §The derived catalog):** the packaging — doctor and
+the renewal scheduling ship in sentinel's deb/rpm/MSI Core/brew formula,
+the install-flow docs in the per-platform packaging guides, and the
+pki-ownership alignment under sudo (the #572 remainder).
 
 **Deferred, tracked in the plan:**
-- Packaging (doctor ships in sentinel's package, with the renewal timer
-  units) and install-flow docs — D7.
 - `usb_*` identity declarations for qhy-focuser and star-adventurer-gti —
   measured whenever that hardware is next on a USB port; two lines of
   `doctor.toml` each.

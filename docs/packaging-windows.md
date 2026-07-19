@@ -18,7 +18,12 @@ One `rusty-photon-<version>-x64.msi` for the whole family, downloaded from
 the GitHub Releases page. The installer presents a feature tree:
 
 - **Core** (required): `sentinel` (watchdog/notifications) and `ui-htmx`
-  (web config UI). Any install includes them.
+  (web config UI). Any install includes them. Core also installs
+  `rusty-photon-doctor.exe` (diagnosis, `--fix` repair, and the TLS +
+  credential lifecycle — [docs/services/doctor.md](services/doctor.md);
+  there is no separate doctor package) and registers the Scheduled Task
+  `rusty-photon-renew` (daily, 03:00, LocalSystem) running
+  `rusty-photon-doctor.exe tls renew`; uninstall removes the task.
 - **Drivers** (optional, off by default): one sub-feature per device
   driver.
 - **Automation** (optional): `rp`, `session-runner`, `plate-solver`,
@@ -101,6 +106,24 @@ config — the Windows default is `COM3`), the service sits in a
 restart-every-5s loop driven by the failure actions; it comes up by
 itself once the hardware appears. The cameras and the network-only
 services serve with no hardware attached.
+
+## First wiring: rusty-photon-doctor
+
+The installer puts bytes on disk; doctor wires the configs (ADR-016).
+After installing — or later modifying — the feature set, run once from an
+elevated prompt:
+
+```powershell
+& "$env:ProgramFiles\rusty-photon\rusty-photon-doctor.exe"          # diagnose
+& "$env:ProgramFiles\rusty-photon\rusty-photon-doctor.exe" --fix    # converge
+```
+
+Services pick fixed configs up on their next restart
+(`Restart-Service rusty-photon-*`). The `rusty-photon-renew` Scheduled
+Task runs `tls renew` daily as LocalSystem — a no-op until certificates
+exist and are inside their renewal window; running services pick renewed
+certificates up without a restart (mtime-triggered in-process reload).
+Verify the task with `schtasks /Query /TN rusty-photon-renew`.
 
 ## Upgrading
 

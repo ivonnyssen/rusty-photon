@@ -30,9 +30,9 @@ doctor *out* of the services rather than a component of them.
 | D3 | `--fix`; ui-htmx sources from rp's roster (its `drivers` map becomes an empty-by-default override; the map was later deleted entirely — [#569](https://github.com/ivonnyssen/rusty-photon/issues/569), ADR-016 amendment 6) | Merged | #560 → #559 |
 | D3s | Sentinel discovers its services; delete the `services` map; policy → constants (privilege path shipped — polkit rule in the sentinel packages) | Merged | #559 |
 | D4 | `rusty-photon-doctor-checks` crate + generic hardware checks (no SDK) | Merged | [#563](https://github.com/ivonnyssen/rusty-photon/pull/563) |
-| D5 | Per-service `doctor` subcommand + aggregation | In review | [#568](https://github.com/ivonnyssen/rusty-photon/pull/568) |
-| D6 | Move the TLS + credential lifecycle `rp` → doctor; split `rp-tls`; certs to `~/.config/rusty-photon/pki`; doctor generates certs + mints one credential + writes TLS-on/auth-on config | D6a merged ([#564](https://github.com/ivonnyssen/rusty-photon/pull/564)); D6b renewal in review ([#573](https://github.com/ivonnyssen/rusty-photon/pull/573)) | |
-| D7 | Packaging, install-flow docs, on-rig verification | Not started | |
+| D5 | Per-service `doctor` subcommand + aggregation | Merged | [#568](https://github.com/ivonnyssen/rusty-photon/pull/568) |
+| D6 | Move the TLS + credential lifecycle `rp` → doctor; split `rp-tls`; certs to `~/.config/rusty-photon/pki`; doctor generates certs + mints one credential + writes TLS-on/auth-on config | Merged | D6a [#564](https://github.com/ivonnyssen/rusty-photon/pull/564); D6b [#573](https://github.com/ivonnyssen/rusty-photon/pull/573) |
+| D7 | Packaging (doctor + renewal timers ride sentinel's artifacts), install-flow docs, on-rig verification | In review | [#589](https://github.com/ivonnyssen/rusty-photon/pull/589) |
 
 ## Decisions (fixed — see [ADR-016](../decisions/016-service-config-ownership-and-doctor.md) for rationale)
 
@@ -231,9 +231,11 @@ The full D2 specification is the design doc,
 them):
 
 1. **Location** — `services/doctor` (cargo binary `doctor`, installed as
-   `rusty-photon-doctor` at D7). No `pkg/` until D7, so doctor stays out of
-   its own catalog; D7 needs a packaging carve-out for a unit-less one-shot
-   binary.
+   `rusty-photon-doctor` since D7). It never gets a `pkg/` dir: the
+   packaging rides entirely in sentinel's artifacts (decision 8 below), so
+   doctor stays out of its own catalog and the `services/*/pkg` discovery
+   loops — the unit-less one-shot carve-out turned out to be "no
+   enrollment at all", not a relaxed contract.
 2. **Catalog mechanism** — per-service metadata files,
    `services/<svc>/pkg/doctor.toml` (`class = "alpaca"|"core"`, `port`).
    Each service unit-tests its own file against its own config defaults;
@@ -515,7 +517,7 @@ the implementation and later phases inherit them):
    wiring a newly installed service, recovery for a forgotten credential
    is reading it there, and `doctor auth rotate` overwrites it and
    re-runs distribution.
-8. **Doctor ships in sentinel's package** (D7 implements). Sentinel is the
+8. **Doctor ships in sentinel's package** (implemented in D7). Sentinel is the
    always-installed supervisor; its deb/rpm/MSI/brew artifact carries the
    doctor binary and the renewal timer units. No separate
    `rusty-photon-doctor` package, and no service package grows a doctor
@@ -703,7 +705,7 @@ permissive in both directions across the binary boundary.
   package.** ~~Its own `rusty-photon-doctor` package that the operator
   installs deliberately, or bundled into a common package.~~ Sentinel's
   deb/rpm/MSI/brew artifact carries the doctor binary and the renewal timer
-  units; D7 implements. Decision 1's operator-run model is unchanged — only
+  units; implemented in D7. Decision 1's operator-run model is unchanged — only
   the delivery vehicle is bundled.
 
 ## Future considerations

@@ -34,6 +34,14 @@ Feature: Service discovery
     Then the services response lists "dsd-fp2" with run state "running"
     And the services response does not list "sentinel"
 
+  Scenario: The TLS renewal job unit is not discovered or supervised
+    Given a discovered unit "rusty-photon-renew" in state "failed"
+    And a discovered unit "rusty-photon-dsd-fp2" in state "running"
+    And sentinel is running with no monitors
+    When the services endpoint is requested
+    Then the services response lists "dsd-fp2" with run state "running"
+    And the services response does not list "renew"
+
   Scenario: A service installed while sentinel runs is discovered on the next cycle
     Given a discovered unit "rusty-photon-dsd-fp2" in state "running"
     And sentinel is running with no monitors

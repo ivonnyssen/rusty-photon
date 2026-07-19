@@ -430,6 +430,27 @@ for s in $SERVICES; do
         # JS-rules polkitd reads vendor rules).
         cx test -f /usr/share/polkit-1/rules.d/50-rusty-photon-sentinel.rules \
             || fail "$s" "polkit rule not installed at /usr/share/polkit-1/rules.d"
+        # Doctor rides in this package (no rusty-photon-doctor package
+        # exists): the binary must be installed and runnable, and the
+        # renewal timer armed. A diagnosis may legitimately find problems
+        # in the container (exit 1); exit 2 would mean the binary crashed.
+        cx test -x /usr/bin/rusty-photon-doctor \
+            || fail "$s" "rusty-photon-doctor not installed at /usr/bin"
+        code=0
+        cx rusty-photon-doctor --json > /dev/null 2>&1 || code=$?
+        [ "$code" -le 1 ] || fail "$s" "rusty-photon-doctor --json exited $code"
+        # `tls renew` with nothing staged is the timer's steady state and
+        # must exit 0 — this is exactly what the daily unit will run.
+        cx rusty-photon-doctor tls renew > /dev/null 2>&1 \
+            || fail "$s" "rusty-photon-doctor tls renew (nothing due) did not exit 0"
+        cx systemctl is-enabled --quiet rusty-photon-renew.timer \
+            || fail "$s" "rusty-photon-renew.timer not enabled"
+        if [ "$FLAVOR" != rpm ]; then
+            # deb postinst starts the timer; rpm (Fedora convention)
+            # enables only — it arms on the next boot.
+            cx systemctl is-active --quiet rusty-photon-renew.timer \
+                || fail "$s" "rusty-photon-renew.timer not active (postinst starts it)"
+        fi
     fi
     if [ "$s" = zwo-camera ]; then
         # RUNPATH proof: the SONAME-less bundled blob resolves from the shared

@@ -100,6 +100,41 @@
          the device list lives in rp's equipment roster, not in ui-htmx
          config. -->
 
+    <!-- The TLS renewal scheduled task (docs/services/doctor.md §Renewal):
+         daily "rusty-photon-doctor.exe tls renew" as LocalSystem — the
+         account the services already run as, so the pki tree under
+         %ProgramData% keeps one owner. Registered via schtasks (WiX has no
+         native scheduled-task element); /Create /F makes repair and
+         upgrade re-registration idempotent. Deferred + no-impersonate:
+         runs elevated, after the doctor binary lands. The rollback action
+         keeps a failed install from leaving a task behind; full uninstall
+         removes it. On a major upgrade the old product is removed first
+         (MajorUpgrade's afterInstallValidate default), so its unregister
+         cannot clobber the new registration. -->
+    <CustomAction Id="RegisterRenewTask"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand="&quot;[System64Folder]schtasks.exe&quot; /Create /F /TN rusty-photon-renew /SC DAILY /ST 03:00 /RU SYSTEM /TR &quot;\&quot;[INSTALLFOLDER]rusty-photon-doctor.exe\&quot; tls renew&quot;"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="check" />
+    <CustomAction Id="RollbackRenewTask"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand="&quot;[System64Folder]schtasks.exe&quot; /Delete /F /TN rusty-photon-renew"
+                  Execute="rollback"
+                  Impersonate="no"
+                  Return="ignore" />
+    <CustomAction Id="UnregisterRenewTask"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand="&quot;[System64Folder]schtasks.exe&quot; /Delete /F /TN rusty-photon-renew"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="ignore" />
+    <InstallExecuteSequence>
+      <Custom Action="RollbackRenewTask" Before="RegisterRenewTask" Condition="NOT REMOVE" />
+      <Custom Action="RegisterRenewTask" After="InstallFiles" Condition="NOT REMOVE" />
+      <Custom Action="UnregisterRenewTask" After="InstallInitialize" Condition="REMOVE=&quot;ALL&quot;" />
+    </InstallExecuteSequence>
+
     <!-- Feature tree. Level 1 = installed by default (Core is also
          non-deselectable); Level 2 = off by default, selectable in the
          feature tree / via ADDLOCAL. Feature Ids are the check-pkg-assets.sh
