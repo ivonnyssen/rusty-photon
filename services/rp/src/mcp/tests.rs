@@ -4632,12 +4632,13 @@ async fn auto_focus_happy_path_emits_focus_complete_and_returns_curve() {
             AutoFocusToolParams {
                 camera_id: Some("cam".to_string()),
                 focuser_id: Some("foc".to_string()),
+                train_id: None,
                 duration: Some(Duration::from_millis(100)),
                 step_size: Some(20),
                 half_width: Some(100),
                 min_area: Some(4),
                 max_area: Some(2000),
-                threshold_sigma: 5.0,
+                threshold_sigma: Some(5.0),
                 min_fit_points: None,
             },
             None,
@@ -4707,17 +4708,516 @@ async fn auto_focus_happy_path_emits_focus_complete_and_returns_curve() {
         temperature_c
     );
 
-    // The handler emits `focus_complete` at the end of the success
-    // branch (mcp/built_in/auto_focus.rs line 157 in the post-split
-    // tree). The event_bus exposed by `test_handler` is an empty-
-    // config bus, so subscribers list is empty; we instead inspect
-    // the handler.event_bus via a probe — the most readable assertion
-    // is that the whole pipeline produced an Ok result without an
-    // error, which is what the body checks above. The event itself
-    // is an outbound webhook side-effect and is exercised by the
-    // event_delivery BDD scenarios. Coverage of lines 157-166 is the
-    // primary objective and is achieved as soon as `Ok(result)` is
-    // returned.
+    // The handler emits `focus_complete` at the end of
+    // `run_auto_focus_step`'s success branch. The event_bus exposed by
+    // `test_handler` is an empty-config bus, so subscribers list is
+    // empty; the most readable assertion is that the whole pipeline
+    // produced an Ok result without an error, which is what the body
+    // checks above. The event itself is an outbound webhook
+    // side-effect and is exercised by the event_delivery BDD
+    // scenarios.
+}
+
+// -----------------------------------------------------------------------
+// Train addressing on auto_focus + the refocus_train expansion.
+//
+// These pin the resolution and pre-motion validation paths that need
+// no live devices: addressing conflicts, unknown trains, the
+// guiding-train refusal, the config-block requirement, and the
+// train-block parameter fallback (proven by the error advancing past
+// "missing required parameter" to device resolution against an empty
+// registry). The full sweep-through-train path runs in
+// auto_focus.feature / refocus_train.feature against OmniSim.
+// -----------------------------------------------------------------------
+
+/// The reference-rig train shape: main = [main-focuser → main-cam]
+/// (imaging, with an auto_focus block unless `with_block` is false),
+/// guide = [main-focuser → guide-focuser → guide-cam] (guiding).
+fn reference_trains(with_block: bool) -> crate::equipment::trains::TrainModel {
+    let mut main = serde_json::json!({
+        "id": "main",
+        "focal_length_mm": 1000.0,
+        "devices": ["main-focuser", "main-cam"]
+    });
+    if with_block {
+        main["auto_focus"] = serde_json::json!({
+            "duration": "100ms", "step_size": 100, "half_width": 200,
+            "min_area": 5, "max_area": 65536
+        });
+    }
+    let equipment: crate::config::EquipmentConfig = serde_json::from_value(serde_json::json!({
+        "cameras": [
+            {"id": "main-cam", "alpaca_url": "http://localhost:1"},
+            {"id": "guide-cam", "alpaca_url": "http://localhost:1"}
+        ],
+        "focusers": [
+            {"id": "main-focuser", "alpaca_url": "http://localhost:1"},
+            {"id": "guide-focuser", "alpaca_url": "http://localhost:1"}
+        ],
+        "mount": {
+            "alpaca_url": "http://localhost:1",
+            "guiding": {"url": "http://localhost:1"}
+        },
+        "optical_trains": [
+            main,
+            {"id": "guide", "purpose": "guiding",
+             "devices": ["main-focuser", "guide-focuser", "guide-cam"]}
+        ]
+    }))
+    .unwrap();
+    crate::equipment::trains::TrainModel::try_from_equipment(&equipment).unwrap()
+}
+
+fn af_params_with_train(train_id: &str) -> AutoFocusToolParams {
+    AutoFocusToolParams {
+        camera_id: None,
+        focuser_id: None,
+        train_id: Some(train_id.to_string()),
+        duration: None,
+        step_size: None,
+        half_width: None,
+        min_area: None,
+        max_area: None,
+        threshold_sigma: None,
+        min_fit_points: None,
+    }
+}
+
+#[tokio::test]
+async fn auto_focus_rejects_train_id_combined_with_an_explicit_id() {
+    let handler = test_handler(empty_registry()).with_trains(reference_trains(true));
+    let mut params = af_params_with_train("main");
+    params.camera_id = Some("main-cam".to_string());
+    let result = handler.auto_focus_inner(params, None).await;
+    assert_tool_error(result, "mutually exclusive");
+}
+
+#[tokio::test]
+async fn auto_focus_rejects_an_unknown_train() {
+    let handler = test_handler(empty_registry()).with_trains(reference_trains(true));
+    let result = handler
+        .auto_focus_inner(af_params_with_train("nonexistent"), None)
+        .await;
+    assert_tool_error(result, "train not found");
+}
+
+#[tokio::test]
+async fn auto_focus_refuses_the_guiding_train() {
+    let handler = test_handler(empty_registry()).with_trains(reference_trains(true));
+    let result = handler
+        .auto_focus_inner(af_params_with_train("guide"), None)
+        .await;
+    assert_tool_error(result, "guiding train");
+}
+
+#[tokio::test]
+async fn auto_focus_rejects_a_train_without_a_focuser() {
+    // `cam_trains` builds a camera-only train "main".
+    let handler = test_handler(empty_registry()).with_trains(cam_trains(200.0));
+    let result = handler
+        .auto_focus_inner(af_params_with_train("main"), None)
+        .await;
+    assert_tool_error(result, "has no focuser");
+}
+
+#[tokio::test]
+async fn auto_focus_train_block_fills_the_sweep_parameters() {
+    // Against an empty registry the call must advance past every
+    // "missing required parameter" check (the block filled them all)
+    // and fail at device resolution instead.
+    let handler = test_handler(empty_registry()).with_trains(reference_trains(true));
+    let result = handler
+        .auto_focus_inner(af_params_with_train("main"), None)
+        .await;
+    assert_tool_error(result, "camera not found: main-cam");
+}
+
+#[tokio::test]
+async fn auto_focus_train_without_a_block_still_requires_sweep_parameters() {
+    let handler = test_handler(empty_registry()).with_trains(reference_trains(false));
+    let result = handler
+        .auto_focus_inner(af_params_with_train("main"), None)
+        .await;
+    assert_tool_error(result, "missing required parameter: duration");
+}
+
+fn refocus_params(train_id: &str) -> super::built_in::auto_focus::RefocusTrainParams {
+    super::built_in::auto_focus::RefocusTrainParams {
+        train_id: Some(train_id.to_string()),
+        reason: None,
+    }
+}
+
+#[tokio::test]
+async fn refocus_train_rejects_an_unknown_train() {
+    let handler = test_handler(empty_registry()).with_trains(reference_trains(true));
+    let result = handler
+        .refocus_train_inner(refocus_params("nonexistent"), None)
+        .await;
+    assert_tool_error(result, "train not found");
+}
+
+#[tokio::test]
+async fn refocus_train_rejects_a_train_without_focusers() {
+    let handler = test_handler(empty_registry()).with_trains(cam_trains(200.0));
+    let result = handler
+        .refocus_train_inner(refocus_params("main"), None)
+        .await;
+    assert_tool_error(result, "has no focusers");
+}
+
+#[tokio::test]
+async fn refocus_train_refuses_a_guiding_train_step() {
+    // Refocusing the guiding train itself always expands to a
+    // guide-train AF step (its own terminal focuser).
+    let handler = test_handler(empty_registry()).with_trains(reference_trains(true));
+    let result = handler
+        .refocus_train_inner(refocus_params("guide"), None)
+        .await;
+    assert_tool_error(result, "guiding train");
+}
+
+#[tokio::test]
+async fn refocus_train_requires_the_run_trains_auto_focus_block() {
+    let handler = test_handler(empty_registry()).with_trains(reference_trains(false));
+    let result = handler
+        .refocus_train_inner(refocus_params("main"), None)
+        .await;
+    assert_tool_error(result, "auto_focus config block");
+}
+
+// The success-path and handshake tests below run real V-curve sweeps
+// over `auto_focus_registry`'s fixture devices — BDD cannot pin the
+// success payload because OmniSim's camera image is focuser-
+// independent (flat HFR, non-deterministic fit outcome).
+
+/// Trains over the fixture registry: main = [foc → cam] with an
+/// auto_focus block matching the fixture sweep (step 20, ±100), plus
+/// optionally a guiding train sharing "foc".
+fn fixture_trains(with_guiding: bool) -> crate::equipment::trains::TrainModel {
+    let mut trains = vec![serde_json::json!({
+        "id": "main",
+        "devices": ["foc", "cam"],
+        "auto_focus": {"duration": "100ms", "step_size": 20, "half_width": 100,
+                       "min_area": 4, "max_area": 2000}
+    })];
+    let mut equipment = serde_json::json!({
+        "cameras": [
+            {"id": "cam", "alpaca_url": "http://localhost:1"},
+            {"id": "guide-cam", "alpaca_url": "http://localhost:1"}
+        ],
+        "focusers": [{"id": "foc", "alpaca_url": "http://localhost:1"}]
+    });
+    if with_guiding {
+        trains.push(serde_json::json!({
+            "id": "guide", "purpose": "guiding", "devices": ["foc", "guide-cam"]
+        }));
+        equipment["mount"] = serde_json::json!({
+            "alpaca_url": "http://localhost:1",
+            "guiding": {"url": "http://localhost:1"}
+        });
+    }
+    equipment["optical_trains"] = serde_json::Value::Array(trains);
+    let equipment: crate::config::EquipmentConfig = serde_json::from_value(equipment).unwrap();
+    crate::equipment::trains::TrainModel::try_from_equipment(&equipment).unwrap()
+}
+
+fn stats_with_guiding(guiding: bool) -> GuidingStats {
+    GuidingStats {
+        app_state: if guiding { "Guiding" } else { "Stopped" }.to_string(),
+        guiding,
+        rms_ra_px: None,
+        rms_dec_px: None,
+        total_rms_px: None,
+        snr: None,
+        star_mass: None,
+        sample_count: 0,
+    }
+}
+
+#[tokio::test]
+async fn refocus_train_success_payload_over_the_fixture_registry() {
+    const STARTING_POSITION: i32 = 11_000;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut handler =
+        test_handler(auto_focus_registry(STARTING_POSITION)).with_trains(fixture_trains(false));
+    handler.session_config = SessionConfig {
+        data_directory: dir.path().to_string_lossy().into_owned(),
+    };
+
+    let result = handler
+        .refocus_train_inner(refocus_params("main"), None)
+        .await;
+    let call = result.expect("refocus_train protocol error");
+    assert!(
+        !call.is_error.unwrap_or(false),
+        "expected success; got: {:?}",
+        call.content
+    );
+    let body = ok_text(call);
+    assert_eq!(body["train_id"], "main");
+    assert_eq!(body["reason"], "manual");
+    assert_eq!(body["guiding_paused"], false);
+    let steps = body["steps"].as_array().expect("steps array");
+    assert_eq!(steps.len(), 1);
+    assert_eq!(steps[0]["focuser_id"], "foc");
+    assert_eq!(steps[0]["train_id"], "main");
+    assert_eq!(steps[0]["camera_id"], "cam");
+    // The synthesised V-curve is symmetric about the starting
+    // position; the auto_focus happy-path test pins the ±2·step_size
+    // tolerance, so here presence + plausibility suffices.
+    assert!(steps[0]["best_position"].is_i64());
+    assert!(steps[0]["best_hfr"].is_f64());
+    assert!(steps[0]["samples_used"].is_u64());
+}
+
+#[tokio::test]
+async fn refocus_train_pauses_and_resumes_around_a_guiding_coupled_step() {
+    const STARTING_POSITION: i32 = 11_000;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut mock = MockGuiderClient::new();
+    mock.expect_guiding_stats()
+        .times(1)
+        .returning(|| Ok(stats_with_guiding(true)));
+    mock.expect_pause_guiding()
+        .with(mockall::predicate::eq(false))
+        .times(1)
+        .returning(|_| Ok(()));
+    mock.expect_resume_guiding().times(1).returning(|| Ok(()));
+    let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(mock);
+    let mut handler = test_handler(auto_focus_registry(STARTING_POSITION))
+        .with_guider(Some(client), GuiderDefaults::default())
+        .with_trains(fixture_trains(true));
+    handler.session_config = SessionConfig {
+        data_directory: dir.path().to_string_lossy().into_owned(),
+    };
+
+    let result = handler
+        .refocus_train_inner(refocus_params("main"), None)
+        .await;
+    let call = result.expect("refocus_train protocol error");
+    assert!(
+        !call.is_error.unwrap_or(false),
+        "expected success; got: {:?}",
+        call.content
+    );
+    assert_eq!(ok_text(call)["guiding_paused"], true);
+}
+
+#[tokio::test]
+async fn refocus_train_skips_the_handshake_when_not_guiding() {
+    const STARTING_POSITION: i32 = 11_000;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut mock = MockGuiderClient::new();
+    mock.expect_guiding_stats()
+        .times(1)
+        .returning(|| Ok(stats_with_guiding(false)));
+    // No pause/resume expectations: reaching either would panic.
+    let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(mock);
+    let mut handler = test_handler(auto_focus_registry(STARTING_POSITION))
+        .with_guider(Some(client), GuiderDefaults::default())
+        .with_trains(fixture_trains(true));
+    handler.session_config = SessionConfig {
+        data_directory: dir.path().to_string_lossy().into_owned(),
+    };
+
+    let result = handler
+        .refocus_train_inner(refocus_params("main"), None)
+        .await;
+    let call = result.expect("refocus_train protocol error");
+    assert!(!call.is_error.unwrap_or(false));
+    assert_eq!(ok_text(call)["guiding_paused"], false);
+}
+
+#[tokio::test]
+async fn refocus_train_step_failure_still_resumes_guiding() {
+    // Empty registry: the step fails at device resolution, after the
+    // pause. mockall's drop check enforces that resume still ran.
+    let mut mock = MockGuiderClient::new();
+    mock.expect_guiding_stats()
+        .times(1)
+        .returning(|| Ok(stats_with_guiding(true)));
+    mock.expect_pause_guiding().times(1).returning(|_| Ok(()));
+    mock.expect_resume_guiding().times(1).returning(|| Ok(()));
+    let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(mock);
+    let handler = test_handler(empty_registry())
+        .with_guider(Some(client), GuiderDefaults::default())
+        .with_trains(fixture_trains(true));
+
+    let result = handler
+        .refocus_train_inner(refocus_params("main"), None)
+        .await;
+    assert_tool_error(
+        result,
+        "step 1 (focuser 'foc' in train 'main') failed: camera not found: cam",
+    );
+}
+
+#[tokio::test]
+async fn refocus_train_resume_failure_after_success_is_an_error() {
+    const STARTING_POSITION: i32 = 11_000;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut mock = MockGuiderClient::new();
+    mock.expect_guiding_stats()
+        .times(1)
+        .returning(|| Ok(stats_with_guiding(true)));
+    mock.expect_pause_guiding().times(1).returning(|_| Ok(()));
+    mock.expect_resume_guiding()
+        .times(1)
+        .returning(|| Err(GuiderError::Internal("boom".to_string())));
+    let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(mock);
+    let mut handler = test_handler(auto_focus_registry(STARTING_POSITION))
+        .with_guider(Some(client), GuiderDefaults::default())
+        .with_trains(fixture_trains(true));
+    handler.session_config = SessionConfig {
+        data_directory: dir.path().to_string_lossy().into_owned(),
+    };
+
+    let result = handler
+        .refocus_train_inner(refocus_params("main"), None)
+        .await;
+    assert_tool_error(result, "resuming guiding failed");
+}
+
+// -----------------------------------------------------------------------
+// Rotator tool addressing. The happy-path move (device motion, poll,
+// events, moved_trains) runs against OmniSim in rotator.feature; these
+// pin the shared addressing/validation paths that need no device.
+// -----------------------------------------------------------------------
+
+use super::built_in::rotator::{MoveRotatorParams, RotatorPositionParams};
+
+fn move_rotator_params(
+    rotator_id: Option<&str>,
+    train_id: Option<&str>,
+    angle: Option<f64>,
+) -> MoveRotatorParams {
+    MoveRotatorParams {
+        rotator_id: rotator_id.map(str::to_string),
+        train_id: train_id.map(str::to_string),
+        angle,
+    }
+}
+
+/// One two-rotator train over an offline roster: [r1, r2, cam].
+fn two_rotator_trains() -> crate::equipment::trains::TrainModel {
+    let equipment: crate::config::EquipmentConfig = serde_json::from_value(serde_json::json!({
+        "cameras": [{"id": "cam", "alpaca_url": "http://localhost:1"}],
+        "rotators": [
+            {"id": "r1", "alpaca_url": "http://localhost:1"},
+            {"id": "r2", "alpaca_url": "http://localhost:1"}
+        ],
+        "optical_trains": [
+            {"id": "main", "devices": ["r1", "r2", "cam"]}
+        ]
+    }))
+    .unwrap();
+    crate::equipment::trains::TrainModel::try_from_equipment(&equipment).unwrap()
+}
+
+#[tokio::test]
+async fn move_rotator_rejects_both_addressing_forms() {
+    let handler = test_handler(empty_registry());
+    let result = handler
+        .move_rotator(Parameters(move_rotator_params(
+            Some("r"),
+            Some("main"),
+            Some(5.0),
+        )))
+        .await;
+    assert_tool_error(result, "exactly one of rotator_id or train_id");
+}
+
+#[tokio::test]
+async fn move_rotator_rejects_missing_addressing() {
+    let handler = test_handler(empty_registry());
+    let result = handler
+        .move_rotator(Parameters(move_rotator_params(None, None, Some(5.0))))
+        .await;
+    assert_tool_error(result, "exactly one of rotator_id or train_id");
+}
+
+#[tokio::test]
+async fn move_rotator_requires_an_angle() {
+    let handler = test_handler(empty_registry());
+    let result = handler
+        .move_rotator(Parameters(move_rotator_params(Some("r"), None, None)))
+        .await;
+    assert_tool_error(result, "missing required parameter: angle");
+}
+
+#[tokio::test]
+async fn move_rotator_validates_the_angle_before_device_resolution() {
+    // The rotator does not exist in the registry; an in-range angle
+    // would error "rotator not found", so the "angle out of range"
+    // error proves the validation order.
+    let handler = test_handler(empty_registry());
+    for bad in [360.0, -0.1, f64::NAN, f64::INFINITY] {
+        let result = handler
+            .move_rotator(Parameters(move_rotator_params(Some("r"), None, Some(bad))))
+            .await;
+        assert_tool_error(result, "angle out of range");
+    }
+}
+
+#[tokio::test]
+async fn move_rotator_rejects_an_unknown_rotator() {
+    let handler = test_handler(empty_registry());
+    let result = handler
+        .move_rotator(Parameters(move_rotator_params(Some("r"), None, Some(5.0))))
+        .await;
+    assert_tool_error(result, "rotator not found: r");
+}
+
+#[tokio::test]
+async fn move_rotator_rejects_an_unknown_train() {
+    let handler = test_handler(empty_registry());
+    let result = handler
+        .move_rotator(Parameters(move_rotator_params(
+            None,
+            Some("nonexistent"),
+            Some(5.0),
+        )))
+        .await;
+    assert_tool_error(result, "train not found");
+}
+
+#[tokio::test]
+async fn move_rotator_rejects_a_train_without_a_rotator() {
+    let handler = test_handler(empty_registry()).with_trains(cam_trains(200.0));
+    let result = handler
+        .move_rotator(Parameters(move_rotator_params(
+            None,
+            Some("main"),
+            Some(5.0),
+        )))
+        .await;
+    assert_tool_error(result, "has no rotator");
+}
+
+#[tokio::test]
+async fn move_rotator_asks_for_the_explicit_id_on_a_two_rotator_train() {
+    let handler = test_handler(empty_registry()).with_trains(two_rotator_trains());
+    let result = handler
+        .move_rotator(Parameters(move_rotator_params(
+            None,
+            Some("main"),
+            Some(5.0),
+        )))
+        .await;
+    assert_tool_error(result, "pass rotator_id");
+}
+
+#[tokio::test]
+async fn get_rotator_position_shares_the_addressing_resolution() {
+    let handler = test_handler(empty_registry()).with_trains(cam_trains(200.0));
+    let result = handler
+        .get_rotator_position(Parameters(RotatorPositionParams {
+            rotator_id: None,
+            train_id: Some("main".to_string()),
+        }))
+        .await;
+    assert_tool_error(result, "has no rotator");
 }
 
 // -----------------------------------------------------------------------
@@ -5686,7 +6186,7 @@ async fn unpark_failure_emits_started_then_failed() {
 
 use crate::config::GuiderDefaults;
 use crate::mcp::built_in::guider::{
-    DitherParams, GetGuidingStatsParams, PauseGuidingParams, ResumeGuidingParams,
+    DitherParams, DitherUnit, GetGuidingStatsParams, PauseGuidingParams, ResumeGuidingParams,
     StartGuidingParams, StopGuidingParams,
 };
 use rp_guider::{GuiderError, GuidingStats, MockGuiderClient, SettledOutcome};
@@ -5713,6 +6213,7 @@ fn start_params_empty() -> StartGuidingParams {
 fn dither_params_empty() -> DitherParams {
     DitherParams {
         pixels: None,
+        unit: None,
         ra_only: None,
         settle_pixels: None,
         settle_time: None,
@@ -6041,6 +6542,143 @@ async fn dither_with_no_amount_available_errors_without_an_rpc() {
     let handler = handler_with_guider(|_| {}, GuiderDefaults::default());
     let result = handler.dither(Parameters(dither_params_empty())).await;
     assert_tool_error(result, "dither_pixels");
+}
+
+/// Registry with two disconnected cameras carrying cached pixel
+/// sizes: "guide-cam" 3.76 µm and "main-cam" 2.9 µm. The dither unit
+/// conversion reads only the cached connect-time values, so no live
+/// device is needed.
+fn dither_dual_camera_registry() -> crate::equipment::EquipmentRegistry {
+    let entry = |id: &str, pixel_size_x_um: f64| crate::equipment::CameraEntry {
+        id: id.to_string(),
+        connected: false,
+        config: crate::config::CameraConfig {
+            id: id.to_string(),
+            name: "mock".to_string(),
+            alpaca_url: "http://localhost:1".to_string(),
+            device_type: String::new(),
+            device_number: 0,
+            cooler_targets_c: Vec::new(),
+            gain: None,
+            offset: None,
+            readout_time_estimate: None,
+            auth: None,
+        },
+        device: None,
+        max_adu: None,
+        pixel_size_x_um: Some(pixel_size_x_um),
+        pixel_size_y_um: Some(pixel_size_x_um),
+        sensor_width_px: None,
+        sensor_height_px: None,
+    };
+    crate::equipment::EquipmentRegistry {
+        cameras: vec![entry("guide-cam", 3.76), entry("main-cam", 2.9)],
+        ..Default::default()
+    }
+}
+
+/// A guiding train (200 mm, "guide-cam") and optionally one imaging
+/// train (1000 mm, "main-cam") — the dither unit-conversion inputs.
+fn dither_trains(include_imaging: bool) -> crate::equipment::trains::TrainModel {
+    let mut trains = vec![serde_json::json!(
+        {"id": "guide", "purpose": "guiding", "focal_length_mm": 200.0,
+         "devices": ["guide-cam"]}
+    )];
+    if include_imaging {
+        trains.push(serde_json::json!(
+            {"id": "main", "focal_length_mm": 1000.0, "devices": ["main-cam"]}
+        ));
+    }
+    let equipment: crate::config::EquipmentConfig = serde_json::from_value(serde_json::json!({
+        "cameras": [
+            {"id": "guide-cam", "alpaca_url": "http://localhost:1"},
+            {"id": "main-cam", "alpaca_url": "http://localhost:1"}
+        ],
+        "mount": {
+            "alpaca_url": "http://localhost:1",
+            "guiding": {"url": "http://localhost:1"}
+        },
+        "optical_trains": trains
+    }))
+    .unwrap();
+    crate::equipment::trains::TrainModel::try_from_equipment(&equipment).unwrap()
+}
+
+fn dither_handler_with_trains(expected_amount_px: f64, include_imaging: bool) -> McpHandler {
+    let mut mock = MockGuiderClient::new();
+    mock.expect_dither()
+        .withf(move |req| (req.amount_px - expected_amount_px).abs() < 1e-9)
+        .returning(|_| Ok(settled_outcome()));
+    let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(mock);
+    test_handler(dither_dual_camera_registry())
+        .with_guider(Some(client), GuiderDefaults::default())
+        .with_trains(dither_trains(include_imaging))
+}
+
+#[tokio::test]
+async fn dither_converts_arcsec_at_the_guiding_train_pixel_scale() {
+    // 10″ at guide scale 206.265 × 3.76 µm / 200 mm ≈ 3.8778 ″/px.
+    let expected = 10.0 / (206.265 * 3.76 / 200.0);
+    let handler = dither_handler_with_trains(expected, false);
+    let result = handler
+        .dither(Parameters(DitherParams {
+            pixels: Some(10.0),
+            unit: Some(DitherUnit::Arcsec),
+            ..dither_params_empty()
+        }))
+        .await
+        .unwrap();
+    assert!(!result.is_error.unwrap_or(false));
+}
+
+#[tokio::test]
+async fn dither_converts_main_px_through_both_train_pixel_scales() {
+    // 10 main-camera px → arcsec at the imaging train's scale
+    // (206.265 × 2.9 / 1000) → guide px at the guiding train's scale.
+    let expected = 10.0 * (206.265 * 2.9 / 1000.0) / (206.265 * 3.76 / 200.0);
+    let handler = dither_handler_with_trains(expected, true);
+    let result = handler
+        .dither(Parameters(DitherParams {
+            pixels: Some(10.0),
+            unit: Some(DitherUnit::MainPx),
+            ..dither_params_empty()
+        }))
+        .await
+        .unwrap();
+    assert!(!result.is_error.unwrap_or(false));
+}
+
+#[tokio::test]
+async fn dither_arcsec_without_a_guiding_train_errors_without_an_rpc() {
+    // Trains default to empty on the test handler; no mock
+    // expectation — reaching the client would panic.
+    let handler = handler_with_guider(|_| {}, GuiderDefaults::default());
+    let result = handler
+        .dither(Parameters(DitherParams {
+            pixels: Some(10.0),
+            unit: Some(DitherUnit::Arcsec),
+            ..dither_params_empty()
+        }))
+        .await;
+    assert_tool_error(result, "guiding train");
+}
+
+#[tokio::test]
+async fn dither_unit_without_explicit_pixels_errors_without_an_rpc() {
+    let handler = handler_with_guider(
+        |_| {},
+        GuiderDefaults {
+            dither_pixels: Some(3.5),
+            ..GuiderDefaults::default()
+        },
+    );
+    let result = handler
+        .dither(Parameters(DitherParams {
+            unit: Some(DitherUnit::Arcsec),
+            ..dither_params_empty()
+        }))
+        .await;
+    assert_tool_error(result, "explicit pixels");
 }
 
 #[tokio::test]

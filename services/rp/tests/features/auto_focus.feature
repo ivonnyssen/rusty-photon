@@ -131,3 +131,61 @@ Feature: Auto-focus compound tool
     Then 5 FITS files should exist in the pinned data directory
     And every sidecar JSON in the pinned data directory should contain an "image_analysis" section
     And no sidecar JSON in the pinned data directory should contain an "auto_focus" section
+
+  # --- Train addressing (rp.md § Optical Trains): train_id resolves the
+  # train's terminal camera + terminal focuser, and per-call sweep
+  # parameters fall back field by field to the train's auto_focus
+  # config block. The standard block used below pins duration 100ms,
+  # step_size 100, half_width 200, min_area 5, max_area 65536 — a
+  # 5-point grid around the focuser's current position.
+
+  Scenario: auto_focus via train addressing uses the train's devices and config block
+    Given rp's data_directory is pinned to a fresh tempdir
+    And a running Alpaca simulator
+    And rp is running with a camera and a focuser on the simulator in train "main" with the standard auto_focus block
+    And an MCP client connected to rp
+    When the MCP client calls auto_focus with train "main"
+    Then 5 FITS files should exist in the pinned data directory
+
+  Scenario: Per-call sweep parameters override the train's auto_focus block
+    Given rp's data_directory is pinned to a fresh tempdir
+    And a running Alpaca simulator
+    And rp is running with a camera and a focuser on the simulator in train "main" with the standard auto_focus block
+    And an MCP client connected to rp
+    When the MCP client calls auto_focus with train "main" and step_size 50
+    Then 9 FITS files should exist in the pinned data directory
+
+  Scenario: auto_focus rejects train_id combined with an explicit device id
+    Given rp is running with an offline focuser train without an auto_focus block
+    And an MCP client connected to rp
+    When the MCP client calls auto_focus with train "main" and camera "main-cam"
+    Then the tool call should return an error
+    And the error message should contain "mutually exclusive"
+
+  Scenario: auto_focus with an unknown train returns an error
+    Given rp is running with an offline focuser train without an auto_focus block
+    And an MCP client connected to rp
+    When the MCP client calls auto_focus with train "nonexistent"
+    Then the tool call should return an error
+    And the error message should contain "train not found"
+
+  Scenario: auto_focus on a train without a focuser returns an error
+    Given rp is running with an offline camera-only train
+    And an MCP client connected to rp
+    When the MCP client calls auto_focus with train "main"
+    Then the tool call should return an error
+    And the error message should contain "no focuser"
+
+  Scenario: auto_focus on the guiding train is refused until the guiding integration
+    Given rp is running with an offline reference rig and mount guiding
+    And an MCP client connected to rp
+    When the MCP client calls auto_focus with train "guide"
+    Then the tool call should return an error
+    And the error message should contain "guiding train"
+
+  Scenario: Train addressing without a config block still requires the sweep parameters
+    Given rp is running with an offline focuser train without an auto_focus block
+    And an MCP client connected to rp
+    When the MCP client calls auto_focus with train "main"
+    Then the tool call should return an error
+    And the error message should contain "duration"

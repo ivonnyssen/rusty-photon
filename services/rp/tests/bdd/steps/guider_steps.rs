@@ -14,7 +14,9 @@ use std::time::Duration;
 use cucumber::{given, then, when};
 use serde_json::{Map, Value};
 
-use bdd_infra::rp_harness::{CannedGuiding, GuiderConfig, GuiderStub, GuiderStubBehavior};
+use bdd_infra::rp_harness::{
+    CannedGuiding, GuiderConfig, GuiderStub, GuiderStubBehavior, MountConfig, OpticalTrainConfig,
+};
 
 use crate::steps::tool_steps::{add_camera, ensure_mcp_client, ensure_omnisim, start_rp};
 use crate::world::RpWorld;
@@ -84,6 +86,73 @@ async fn rp_with_camera_and_unbound_guider(world: &mut RpWorld) {
     start_rp(world).await;
 }
 
+#[given("a stub guider reporting guiding inactive")]
+async fn stub_guider_not_guiding(world: &mut RpWorld) {
+    let stub = GuiderStub::start(GuiderStubBehavior::Canned(CannedGuiding {
+        guiding: false,
+        ..CannedGuiding::default()
+    }))
+    .await;
+    world.guider = Some(GuiderConfig::url_only(stub.url.clone()));
+    world.guider_stub = Some(stub);
+}
+
+// --- Given steps: dither-unit train compositions ---------------------
+
+#[given(
+    expr = "rp is running with the simulator camera in a guiding train with focal length {float}"
+)]
+async fn rp_with_camera_in_guiding_train(world: &mut RpWorld, focal_length_mm: f64) {
+    ensure_omnisim(world).await;
+    add_camera(world);
+    push_guiding_train_for_camera(world, Some(focal_length_mm));
+    start_rp(world).await;
+}
+
+#[given("rp is running with the simulator camera in a guiding train without a focal length")]
+async fn rp_with_camera_in_guiding_train_no_focal(world: &mut RpWorld) {
+    ensure_omnisim(world).await;
+    add_camera(world);
+    push_guiding_train_for_camera(world, None);
+    start_rp(world).await;
+}
+
+/// A disconnected guide camera (invalid URL fails client construction
+/// before the connect retry loop) in a guiding train, with an offline
+/// mount so no simulator is needed: the pixel-size conversion input is
+/// the piece that's missing.
+#[given("rp is running with an offline camera in a guiding train")]
+async fn rp_with_offline_camera_in_guiding_train(world: &mut RpWorld) {
+    crate::steps::rotator_steps::add_offline_camera(world, "main-cam");
+    push_guiding_train_for_camera(world, Some(200.0));
+    world.mount = Some(MountConfig {
+        alpaca_url: "not-a-url".to_string(),
+        device_number: 0,
+        settle_after_slew: None,
+    });
+    start_rp(world).await;
+}
+
+#[given(
+    "rp is running with the simulator camera in a guiding train and two offline imaging trains"
+)]
+async fn rp_with_guiding_train_and_two_imaging_trains(world: &mut RpWorld) {
+    ensure_omnisim(world).await;
+    add_camera(world);
+    push_guiding_train_for_camera(world, Some(200.0));
+    for id in ["first", "second"] {
+        crate::steps::rotator_steps::add_offline_camera(world, &format!("{id}-cam"));
+        world.optical_trains.push(OpticalTrainConfig {
+            id: id.to_string(),
+            purpose: Some("imaging".to_string()),
+            focal_length_mm: Some(500.0),
+            devices: vec![format!("{id}-cam")],
+            auto_focus: None,
+        });
+    }
+    start_rp(world).await;
+}
+
 // --- When steps -----------------------------------------------------
 
 #[when("the MCP client calls \"start_guiding\" with no arguments")]
@@ -124,6 +193,21 @@ async fn call_dither(world: &mut RpWorld, pixels: f64, ra_only: String) {
 #[when("the MCP client calls \"dither\" with no arguments")]
 async fn call_dither_no_args(world: &mut RpWorld) {
     call_guider_tool(world, "dither", Map::new()).await;
+}
+
+#[when(expr = "the MCP client calls \"dither\" with pixels {float} and unit {string}")]
+async fn call_dither_with_unit(world: &mut RpWorld, pixels: f64, unit: String) {
+    let mut params = Map::new();
+    params.insert("pixels".to_string(), serde_json::json!(pixels));
+    params.insert("unit".to_string(), Value::String(unit));
+    call_guider_tool(world, "dither", params).await;
+}
+
+#[when(expr = "the MCP client calls \"dither\" with unit {string} and no pixels")]
+async fn call_dither_unit_only(world: &mut RpWorld, unit: String) {
+    let mut params = Map::new();
+    params.insert("unit".to_string(), Value::String(unit));
+    call_guider_tool(world, "dither", params).await;
 }
 
 #[when("the MCP client calls \"pause_guiding\" with full true")]
@@ -216,6 +300,43 @@ async fn stub_start_with_recalibrate(world: &mut RpWorld) {
         request.get("recalibrate").and_then(|v| v.as_bool()),
         Some(true),
         "recalibrate mismatch in {request}"
+    );
+}
+
+/// Self-consistency of the documented conversion: the amount the stub
+/// received equals `arcsec / (206.265 × pixel_size_x_um /
+/// focal_length_mm)`, with the pixel size read straight from the
+/// simulator camera's Alpaca API (the same connect-time property rp
+/// caches).
+#[then(
+    expr = "the forwarded dither amount should equal {float} arcseconds at the guiding train's {float} mm pixel scale"
+)]
+async fn stub_dither_amount_from_arcsec(world: &mut RpWorld, arcsec: f64, focal_length_mm: f64) {
+    let url = format!("{}/api/v1/camera/0/pixelsizex", world.omnisim_url());
+    let body: Value = reqwest::Client::new()
+        .get(&url)
+        .timeout(Duration::from_secs(5))
+        .send()
+        .await
+        .expect("failed to query the simulator camera's pixel size")
+        .json()
+        .await
+        .expect("pixel-size response was not JSON");
+    let pixel_size_x_um = body
+        .get("Value")
+        .and_then(Value::as_f64)
+        .unwrap_or_else(|| panic!("no numeric Value in pixel-size response: {body}"));
+
+    let scale_arcsec_per_px = 206.265 * pixel_size_x_um / focal_length_mm;
+    let expected_px = arcsec / scale_arcsec_per_px;
+    let request = last_stub_request_to(world, "/dither").await;
+    let actual = request
+        .get("amount_px")
+        .and_then(Value::as_f64)
+        .unwrap_or_else(|| panic!("no numeric amount_px in {request}"));
+    assert!(
+        (actual - expected_px).abs() < 1e-9,
+        "amount_px: expected {expected_px} ({arcsec}\" at {scale_arcsec_per_px}\"/px), got {actual}"
     );
 }
 
@@ -344,6 +465,17 @@ async fn last_stub_request_to(world: &RpWorld, path_suffix: &str) -> Value {
     requests
         .pop()
         .unwrap_or_else(|| panic!("stub guider received no request to ...{path_suffix}"))
+}
+
+/// A guiding train terminating in the scenario's `main-cam`.
+fn push_guiding_train_for_camera(world: &mut RpWorld, focal_length_mm: Option<f64>) {
+    world.optical_trains.push(OpticalTrainConfig {
+        id: "guide".to_string(),
+        purpose: Some("guiding".to_string()),
+        focal_length_mm,
+        devices: vec!["main-cam".to_string()],
+        auto_focus: None,
+    });
 }
 
 fn parse_humantime(s: &str) -> Duration {

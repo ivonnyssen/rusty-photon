@@ -133,6 +133,41 @@ async fn mcp_call_auto_focus_with_min_fit_points(world: &mut RpWorld, min_fit_po
     call_auto_focus(world, args).await;
 }
 
+// Train addressing: bare `train_id` (sweep parameters come from the
+// train's auto_focus config block), a per-call override on top, and
+// the mutually-exclusive combination with an explicit device id.
+
+#[when(expr = "the MCP client calls auto_focus with train {string}")]
+async fn mcp_call_auto_focus_with_train(world: &mut RpWorld, train_id: String) {
+    let mut args = Map::new();
+    args.insert("train_id".into(), Value::String(train_id));
+    call_auto_focus(world, args).await;
+}
+
+#[when(expr = "the MCP client calls auto_focus with train {string} and step_size {int}")]
+async fn mcp_call_auto_focus_with_train_and_step(
+    world: &mut RpWorld,
+    train_id: String,
+    step_size: i64,
+) {
+    let mut args = Map::new();
+    args.insert("train_id".into(), Value::String(train_id));
+    args.insert("step_size".into(), Value::from(step_size));
+    call_auto_focus(world, args).await;
+}
+
+#[when(expr = "the MCP client calls auto_focus with train {string} and camera {string}")]
+async fn mcp_call_auto_focus_with_train_and_camera(
+    world: &mut RpWorld,
+    train_id: String,
+    camera_id: String,
+) {
+    let mut args = Map::new();
+    args.insert("train_id".into(), Value::String(train_id));
+    args.insert("camera_id".into(), Value::String(camera_id));
+    call_auto_focus(world, args).await;
+}
+
 // --- Then steps ---
 
 #[then(expr = "{int} FITS files should exist in the pinned data directory")]

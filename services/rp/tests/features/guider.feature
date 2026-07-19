@@ -9,7 +9,15 @@ Feature: Guider MCP tools
   guiding block's settle_* config default, and a field unset in both
   is omitted from the wire so the service's own settling config
   applies. The dither amount falls back from the pixels parameter to
-  the guiding block's dither_pixels. The settle-blocking calls emit
+  the guiding block's dither_pixels. dither's optional unit
+  (guide_px default, main_px, arcsec) interprets the per-call pixels
+  amount; rp converts to guide-camera pixels before the proxy call
+  using the train pixel-scale derivation 206.265 x pixel_size_x_um /
+  focal_length_mm (guiding train's scale for arcsec; main_px
+  additionally needs exactly one imaging train). A non-default unit
+  requires an explicit per-call pixels amount — the dither_pixels
+  config default is always guide-camera pixels — and the error names
+  whichever conversion input is missing. The settle-blocking calls emit
   operation triples ending in settled
   (guide_started/guide_settled/guide_failed,
   dither_started/dither_settled/dither_failed), with the settle
@@ -113,6 +121,71 @@ Feature: Guider MCP tools
     When the MCP client calls "dither" with no arguments
     Then the tool call should return an error
     And the error message should contain "dither_pixels"
+
+  Scenario: dither converts an arcsecond amount at the guiding train's pixel scale
+    Given a running Alpaca simulator
+    And a stub guider returning canned guiding stats
+    And a test webhook receiver subscribed to "dither_started"
+    And rp is running with the simulator camera in a guiding train with focal length 200.0
+    And an MCP client connected to rp
+    When the MCP client calls "dither" with pixels 10.0 and unit "arcsec"
+    Then the guider result should contain "state" with value "guiding"
+    And the forwarded dither amount should equal 10.0 arcseconds at the guiding train's 200.0 mm pixel scale
+    And the "dither_started" event payload field "unit" should be "arcsec"
+    And the "dither_started" event payload should contain a "requested_amount"
+
+  Scenario: dither unit arcsec without a guiding train returns an error
+    Given a running Alpaca simulator
+    And a stub guider returning canned guiding stats
+    And rp is running with a camera on the simulator
+    And an MCP client connected to rp
+    When the MCP client calls "dither" with pixels 10.0 and unit "arcsec"
+    Then the tool call should return an error
+    And the error message should contain "guiding train"
+
+  Scenario: dither unit arcsec with a guiding train lacking a focal length returns an error
+    Given a running Alpaca simulator
+    And a stub guider returning canned guiding stats
+    And rp is running with the simulator camera in a guiding train without a focal length
+    And an MCP client connected to rp
+    When the MCP client calls "dither" with pixels 10.0 and unit "arcsec"
+    Then the tool call should return an error
+    And the error message should contain "focal_length_mm"
+
+  Scenario: dither unit arcsec with a disconnected guide camera returns an error
+    Given a stub guider returning canned guiding stats
+    And rp is running with an offline camera in a guiding train
+    And an MCP client connected to rp
+    When the MCP client calls "dither" with pixels 10.0 and unit "arcsec"
+    Then the tool call should return an error
+    And the error message should contain "pixel size"
+
+  Scenario: dither unit main_px requires exactly one imaging train
+    Given a running Alpaca simulator
+    And a stub guider returning canned guiding stats
+    And rp is running with the simulator camera in a guiding train and two offline imaging trains
+    And an MCP client connected to rp
+    When the MCP client calls "dither" with pixels 10.0 and unit "main_px"
+    Then the tool call should return an error
+    And the error message should contain "imaging train"
+
+  Scenario: dither with a unit but no explicit pixels amount returns an error
+    Given a running Alpaca simulator
+    And a stub guider returning canned guiding stats
+    And rp is running with a camera on the simulator and guider dither_pixels 3.5
+    And an MCP client connected to rp
+    When the MCP client calls "dither" with unit "arcsec" and no pixels
+    Then the tool call should return an error
+    And the error message should contain "explicit pixels"
+
+  Scenario: dither rejects an unknown unit
+    Given a running Alpaca simulator
+    And a stub guider returning canned guiding stats
+    And rp is running with a camera on the simulator
+    And an MCP client connected to rp
+    When the MCP client calls "dither" with pixels 10.0 and unit "parsecs"
+    Then the tool call should return an error
+    And the error message should contain "unknown variant"
 
   Scenario: dither emits the dither operation events
     Given a running Alpaca simulator
