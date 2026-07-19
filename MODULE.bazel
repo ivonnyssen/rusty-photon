@@ -27,7 +27,7 @@ bazel_dep(name = "platforms", version = "1.0.0")
 # is always the root module — this never needs to resolve for a downstream consumer.
 bazel_dep(name = "buildifier_prebuilt", version = "8.5.1.2", dev_dependency = True)
 
-# Three pinned patches to rules_rust. See docs/plans/archive/bazel-migration.md.
+# Four pinned patches to rules_rust. See docs/plans/archive/bazel-migration.md.
 #
 # 1. collect_coverage_extra_objects.patch — BDD rust_tests spawn the service
 #    binary as a child process; the collector merges the child's profraw but
@@ -74,6 +74,22 @@ bazel_dep(name = "buildifier_prebuilt", version = "8.5.1.2", dev_dependency = Tr
 #    `--strategy=TestRunner=sandboxed` did — and that would also break BDD's
 #    port binding). No upstream issue filed for this one yet.
 #
+# 4. process_wrapper_read_retry.patch — process_wrapper reads its `--arg-file`
+#    inputs with a single unretried `File::open`, and on windows-latest that
+#    open rarely fails with a transient ERROR_ACCESS_DENIED on a runfile that
+#    exists and reads fine moments later (issue #587 family 2: the
+#    service-lifecycle `rust_doc_test` died on a varying
+#    `_bs.linksearchpaths` file, 4 hits in one evening). Defender is ruled
+#    out — GitHub's runner images disable real-time protection and exclude
+#    `C:\` at the image level — so the residual suspect is a transient
+#    delete-pending/planting window in the same bazelbuild/bazel#18580-class
+#    family as patch 3. The patch retries the open (3 attempts, short
+#    backoff) on Windows os errors 5/32, prints a warning per retry so
+#    occurrences stay countable in test logs, and appends the path's
+#    filesystem state to a final failure so a persistent denial is
+#    diagnosable from the error alone. Inert on the happy path and on
+#    non-Windows. No upstream issue filed yet.
+#
 # Upstream has no equivalent hooks for 1-2 (collect_coverage PRs #3490/#3808
 # unmerged; HEAD identical), so these are carried until upstreamed. The
 # `bazel/cargo target parity` CI job guards that the patches still apply and
@@ -85,6 +101,7 @@ single_version_override(
         "//third_party/patches:collect_coverage_extra_objects.patch",
         "//third_party/patches:instrumented_files_include_data.patch",
         "//third_party/patches:rustdoc_test_windows_external_repo_path.patch",
+        "//third_party/patches:process_wrapper_read_retry.patch",
     ],
 )
 
