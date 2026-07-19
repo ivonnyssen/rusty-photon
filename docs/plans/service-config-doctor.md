@@ -31,7 +31,7 @@ doctor *out* of the services rather than a component of them.
 | D3s | Sentinel discovers its services; delete the `services` map; policy → constants (privilege path shipped — polkit rule in the sentinel packages) | Merged | #559 |
 | D4 | `rusty-photon-doctor-checks` crate + generic hardware checks (no SDK) | Merged | [#563](https://github.com/ivonnyssen/rusty-photon/pull/563) |
 | D5 | Per-service `doctor` subcommand + aggregation | In review | [#568](https://github.com/ivonnyssen/rusty-photon/pull/568) |
-| D6 | Move the TLS + credential lifecycle `rp` → doctor; split `rp-tls`; certs to `~/.config/rusty-photon/pki`; doctor generates certs + mints one credential + writes TLS-on/auth-on config | D6a merged ([#564](https://github.com/ivonnyssen/rusty-photon/pull/564)); D6b renewal not started | |
+| D6 | Move the TLS + credential lifecycle `rp` → doctor; split `rp-tls`; certs to `~/.config/rusty-photon/pki`; doctor generates certs + mints one credential + writes TLS-on/auth-on config | D6a merged ([#564](https://github.com/ivonnyssen/rusty-photon/pull/564)); D6b renewal in review ([#573](https://github.com/ivonnyssen/rusty-photon/pull/573)) | |
 | D7 | Packaging, install-flow docs, on-rig verification | Not started | |
 
 ## Decisions (fixed — see [ADR-016](../decisions/016-service-config-ownership-and-doctor.md) for rationale)
@@ -672,7 +672,14 @@ permissive in both directions across the binary boundary.
   swap.~~ **Resolved (D6 decisions 2–4):** one-shot `doctor tls renew` on a
   platform scheduler; the swap is in-process hot reload
   (`ReloadableCertResolver`) triggered by a throttled mtime re-check.
-  Implementation is the D6b PR.
+  Implemented in the D6b PR, which also folds in #541's smaller calls:
+  `acme.json`'s `$VAR` credential indirection becomes live (renew resolves
+  it unattended), the fixed DNS-propagation sleep becomes configurable plus
+  an order-level retry, `post_renewal_hooks` execute, and the ACME order
+  flow gets its first end-to-end coverage (Pebble-backed BDD — see
+  `docs/services/doctor.md` §Renewal and `docs/skills/testing.md`).
+  ADR-002's renewal sections were rewritten to the as-built design with
+  phase status markers, closing the documentation defect #541 opened with.
 - **Credential rotation and recovery UX (D6) — resolved (D6 decisions 5
   and 7).** `doctor auth rotate` re-runs distribution; services pick up a
   rotated `server.auth` by restart (rotation is operator-initiated and rare —

@@ -20,7 +20,8 @@ fn valid_config(world: &mut DoctorWorld, name: String, port: u16) {
 #[given(expr = "a config directory with {string} containing:")]
 #[given(expr = "a config file {string} containing:")]
 fn config_containing(world: &mut DoctorWorld, name: String, step: &Step) {
-    world.write_config(&name, docstring(step));
+    let content = world.expand(docstring(step));
+    world.write_config(&name, &content);
 }
 
 #[given(expr = "a config directory where {string} is not valid JSON")]

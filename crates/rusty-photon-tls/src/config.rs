@@ -54,31 +54,6 @@ impl TlsConfig {
     }
 }
 
-/// Default PKI directory: `~/.rusty-photon/pki`
-pub fn default_pki_dir() -> PathBuf {
-    expand_tilde("~/.rusty-photon/pki")
-}
-
-/// Default certs subdirectory: `~/.rusty-photon/pki/certs`
-pub fn default_certs_dir() -> PathBuf {
-    default_pki_dir().join("certs")
-}
-
-/// Build a `TlsConfig` pointing to the default cert locations for a service.
-pub fn default_tls_config_for_service(service_name: &str) -> TlsConfig {
-    let certs_dir = default_certs_dir();
-    TlsConfig {
-        cert: certs_dir
-            .join(format!("{service_name}.pem"))
-            .to_string_lossy()
-            .into_owned(),
-        key: certs_dir
-            .join(format!("{service_name}-key.pem"))
-            .to_string_lossy()
-            .into_owned(),
-    }
-}
-
 /// CA cert and key filenames within the PKI directory.
 pub fn ca_cert_path(pki_dir: &Path) -> PathBuf {
     pki_dir.join("ca.pem")
@@ -116,7 +91,7 @@ mod tests {
 
     #[test]
     fn expand_tilde_with_home() {
-        let expanded = expand_tilde("~/.rusty-photon/pki/ca.pem");
+        let expanded = expand_tilde("~/pki/ca.pem");
         // Should not start with ~ after expansion (assuming HOME is set)
         if std::env::var_os("HOME").is_some() || std::env::var_os("USERPROFILE").is_some() {
             assert!(!expanded.starts_with("~"));
@@ -132,19 +107,12 @@ mod tests {
     #[test]
     fn resolved_paths_expand_tilde() {
         let config = TlsConfig {
-            cert: "~/.rusty-photon/pki/certs/rp.pem".to_string(),
-            key: "~/.rusty-photon/pki/certs/rp-key.pem".to_string(),
+            cert: "~/pki/rp.pem".to_string(),
+            key: "~/pki/rp-key.pem".to_string(),
         };
         if std::env::var_os("HOME").is_some() || std::env::var_os("USERPROFILE").is_some() {
             assert!(!config.resolved_cert_path().starts_with("~"));
             assert!(!config.resolved_key_path().starts_with("~"));
         }
-    }
-
-    #[test]
-    fn default_tls_config_for_service_has_correct_paths() {
-        let config = default_tls_config_for_service("ppba-driver");
-        assert!(config.cert.contains("ppba-driver.pem"));
-        assert!(config.key.contains("ppba-driver-key.pem"));
     }
 }

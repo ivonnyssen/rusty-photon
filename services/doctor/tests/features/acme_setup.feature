@@ -11,6 +11,11 @@ Feature: ACME certificate setup via doctor tls issue --acme
     Then the command exits with a non-zero status
     And stderr contains "domain"
 
+  Scenario: ACME-only flags are rejected without --acme
+    When I run doctor tls issue with --domain but no --acme
+    Then the command exits with a non-zero status
+    And stderr contains "acme"
+
   Scenario: tls issue --acme fails without --dns-provider
     When I run doctor tls issue with --acme and --domain but no --dns-provider
     Then the command exits with a non-zero status

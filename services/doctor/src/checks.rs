@@ -610,26 +610,26 @@ fn tls_and_auth(ctx: &Context) -> Vec<Check> {
             continue;
         };
         if let Some(tls) = &server.tls {
+            // Per path: empty or absent-on-disk is a failure; a relative
+            // path is ungradable — the service resolves it against its own
+            // working directory (`TlsConfig::resolved_*_path` only expands
+            // `~`), which doctor cannot know, so claiming presence either
+            // way would be a guess.
             let mut missing: Vec<String> = Vec::new();
+            let mut relative: Vec<String> = Vec::new();
             for (raw, resolved) in [
                 (&tls.cert, tls.resolved_cert_path()),
                 (&tls.key, tls.resolved_key_path()),
             ] {
-                if !tls_material_present(&ctx.config_dir, raw, &resolved) {
-                    missing.push(if raw.trim().is_empty() {
-                        "<empty path>".to_string()
-                    } else {
-                        raw.clone()
-                    });
+                if raw.trim().is_empty() {
+                    missing.push("<empty path>".to_string());
+                } else if !resolved.is_absolute() {
+                    relative.push(raw.clone());
+                } else if !resolved.is_file() {
+                    missing.push(raw.clone());
                 }
             }
-            if missing.is_empty() {
-                checks.push(Check::ok(
-                    "tls.paths",
-                    svc(scan),
-                    "TLS cert and key exist".to_string(),
-                ));
-            } else {
+            if !missing.is_empty() {
                 checks.push(Check::fail(
                     "tls.paths",
                     svc(scan),
@@ -644,6 +644,35 @@ fn tls_and_auth(ctx: &Context) -> Vec<Check> {
                             .to_string(),
                     ),
                 ));
+            } else if !relative.is_empty() {
+                checks.push(Check::warn(
+                    "tls.paths",
+                    svc(scan),
+                    format!(
+                        "server.tls uses relative paths ({}): the service resolves \
+                         them against its own working directory, which doctor \
+                         cannot know, so the material cannot be judged",
+                        relative.join(", ")
+                    ),
+                    Some(
+                        "use absolute paths — doctor-issued material always is, and \
+                         `doctor --fix` writes absolute paths"
+                            .to_string(),
+                    ),
+                ));
+            } else {
+                checks.push(Check::ok(
+                    "tls.paths",
+                    svc(scan),
+                    "TLS cert and key exist".to_string(),
+                ));
+            }
+            // Expiry is judged only when tls.paths is clean — a missing or
+            // ungradable pair stays tls.paths' concern, and an expiry
+            // verdict beside a failing pair would read as contradictory.
+            let cert_file = tls.resolved_cert_path();
+            if missing.is_empty() && relative.is_empty() {
+                checks.push(tls_expiry(ctx, scan, &cert_file));
             }
         }
         if server.auth.is_some() && server.tls.is_none() {
@@ -814,21 +843,91 @@ fn auth_mismatch(ctx: &Context) -> Vec<Check> {
     checks
 }
 
-/// Whether one piece of TLS material is present as a real file. `resolved`
-/// is the path the service itself will open (`TlsConfig::resolved_*_path`,
-/// which expands `~`); a relative remainder is anchored at the config dir.
-/// Empty paths and directories are absent — the service would fail to read
-/// either.
-fn tls_material_present(config_dir: &Path, raw: &str, resolved: &Path) -> bool {
-    if raw.trim().is_empty() {
-        return false;
-    }
-    let anchored = if resolved.is_absolute() {
-        resolved.to_path_buf()
-    } else {
-        config_dir.join(resolved)
+/// `tls.expiry` (D6b): grade an existing configured certificate's
+/// `not_after`. Expired or unparseable fails — rustls loads an expired
+/// certificate cleanly and only *clients* reject the handshake, so without
+/// this check the failure surfaces as every client erroring at night.
+/// Inside the renewal window warns. Suggestion-only: renewal belongs on
+/// the platform timer, so `--fix` never renews.
+fn tls_expiry(ctx: &Context, scan: &ServiceScan, cert_file: &Path) -> Check {
+    let suggestion = "run `doctor tls renew` (the platform timer's command) for \
+                      doctor-issued material (`doctor tls issue --force` re-issues \
+                      it with fresh SANs); the ACME wildcard renews only while \
+                      `acme.json` still sits beside the configs — re-run `doctor \
+                      tls issue --acme` if it is gone; a certificate doctor did \
+                      not issue must be replaced by whatever issued it"
+        .to_string();
+    let pem = match std::fs::read_to_string(cert_file) {
+        Ok(pem) => pem,
+        Err(e) => {
+            return Check::fail(
+                "tls.expiry",
+                svc(scan),
+                format!("{} could not be read: {e}", cert_file.display()),
+                Some(suggestion),
+            )
+        }
     };
-    anchored.is_file()
+    let not_after = match crate::provision::expiry::not_after(&pem) {
+        Ok(not_after) => not_after,
+        Err(e) => {
+            return Check::fail(
+                "tls.expiry",
+                svc(scan),
+                format!(
+                    "{} is not a parseable certificate ({e}) — the service \
+                     cannot serve it",
+                    cert_file.display()
+                ),
+                Some(suggestion),
+            )
+        }
+    };
+    let now = time::OffsetDateTime::now_utc();
+    if not_after <= now {
+        return Check::fail(
+            "tls.expiry",
+            svc(scan),
+            format!(
+                "{} expired {not_after} — the server still loads it, and every \
+                 client rejects the handshake",
+                cert_file.display()
+            ),
+            Some(suggestion),
+        );
+    }
+    let window_days = expiry_window_days(ctx, cert_file);
+    if not_after - now <= time::Duration::days(window_days) {
+        return Check::warn(
+            "tls.expiry",
+            svc(scan),
+            format!(
+                "{} expires {not_after}, inside its {window_days}-day renewal \
+                 window",
+                cert_file.display()
+            ),
+            Some(suggestion),
+        );
+    }
+    Check::ok(
+        "tls.expiry",
+        svc(scan),
+        format!("certificate valid until {not_after}"),
+    )
+}
+
+/// The warn window: 30 days for self-signed material,
+/// `renewal_days_before_expiry` from `acme.json` for the ACME wildcard
+/// pair.
+fn expiry_window_days(ctx: &Context, cert_file: &Path) -> i64 {
+    if cert_file.file_name().is_some_and(|n| n == "acme-cert.pem") {
+        if let Ok(config) =
+            crate::provision::acme_config::load_acme_config(&ctx.config_dir.join("acme.json"))
+        {
+            return i64::from(config.renewal_days_before_expiry);
+        }
+    }
+    30
 }
 
 // ---- rp platform defaults ----
@@ -909,6 +1008,57 @@ fn rp_platform_defaults(ctx: &Context) -> Vec<Check> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;
+    use rusty_photon_doctor_checks::report::Status;
+
+    fn config_only_ctx(config_dir: &Path) -> Context {
+        let facts: PlatformFacts =
+            serde_json::from_value(serde_json::json!({ "platform": "linux" })).unwrap();
+        Context::gather(config_dir.to_path_buf(), facts)
+    }
+
+    #[test]
+    fn test_tls_expiry_fails_on_an_unreadable_certificate() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = config_only_ctx(dir.path());
+        let scan = &ctx.scans[0];
+        // A directory at the cert path: read_to_string errors while the
+        // path itself exists.
+        let check = tls_expiry(&ctx, scan, dir.path());
+        assert_eq!(check.status, Status::Fail);
+        assert!(
+            check.detail.contains("could not be read"),
+            "{}",
+            check.detail
+        );
+    }
+
+    #[test]
+    fn test_expiry_window_days_reads_the_acme_config_for_the_wildcard() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("acme.json"),
+            serde_json::json!({
+                "email": "ops@example.com",
+                "domain": "observatory.test",
+                "dns_provider": "cloudflare",
+                "dns_credentials": { "api_token": "tok" },
+                "renewal_days_before_expiry": 33,
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let ctx = config_only_ctx(dir.path());
+        assert_eq!(expiry_window_days(&ctx, Path::new("pki/acme-cert.pem")), 33);
+        // A self-signed pair keeps the 30-day default even with acme.json.
+        assert_eq!(expiry_window_days(&ctx, Path::new("pki/rp.pem")), 30);
+    }
+
+    #[test]
+    fn test_expiry_window_days_defaults_without_acme_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = config_only_ctx(dir.path());
+        assert_eq!(expiry_window_days(&ctx, Path::new("pki/acme-cert.pem")), 30);
+    }
 
     #[test]
     fn test_start_command_speaks_each_platforms_language() {
@@ -924,40 +1074,5 @@ mod tests {
             start_command(Platform::Macos, "rusty-photon-rp-nightly"),
             "brew services start rusty-photon-rp-nightly"
         );
-    }
-
-    #[test]
-    fn test_tls_material_present_matches_service_resolution() {
-        let dir = tempfile::tempdir().unwrap();
-        let pem = dir.path().join("cert.pem");
-        std::fs::write(&pem, "stub").unwrap();
-
-        // Absolute existing file: present; empty and whitespace paths: absent.
-        assert!(tls_material_present(
-            dir.path(),
-            pem.to_str().unwrap(),
-            &pem
-        ));
-        assert!(!tls_material_present(dir.path(), "", Path::new("")));
-        assert!(!tls_material_present(dir.path(), "  ", Path::new("  ")));
-
-        // A directory is not usable TLS material.
-        assert!(!tls_material_present(
-            dir.path(),
-            dir.path().to_str().unwrap(),
-            dir.path()
-        ));
-
-        // A relative resolved path anchors at the config dir.
-        assert!(tls_material_present(
-            dir.path(),
-            "cert.pem",
-            Path::new("cert.pem")
-        ));
-        assert!(!tls_material_present(
-            dir.path(),
-            "missing.pem",
-            Path::new("missing.pem")
-        ));
     }
 }

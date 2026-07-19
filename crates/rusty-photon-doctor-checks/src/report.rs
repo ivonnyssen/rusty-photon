@@ -87,6 +87,11 @@ pub enum FixOp {
     /// Provisioning action: the observatory credential was minted and its
     /// canonical `pki/credential` copy written.
     MintCredential,
+    /// Provisioning action: the ACME wildcard pair for `*.<domain>` was
+    /// renewed under the pki tree.
+    RenewAcme {
+        domain: String,
+    },
     /// An op this doctor build does not know — a plan from a newer binary.
     /// Never emitted, only parsed; it cannot be applied.
     #[serde(other)]
@@ -104,7 +109,10 @@ impl FixOp {
             | FixOp::SetObject { service, .. }
             | FixOp::RemoveKey { service, .. }
             | FixOp::GenerateCert { service } => Some(service),
-            FixOp::GenerateCa | FixOp::MintCredential | FixOp::Unknown => None,
+            FixOp::GenerateCa
+            | FixOp::MintCredential
+            | FixOp::RenewAcme { .. }
+            | FixOp::Unknown => None,
         }
     }
 }
@@ -136,6 +144,9 @@ impl std::fmt::Display for FixOp {
             }
             FixOp::MintCredential => {
                 write!(f, "pki: minted the observatory credential")
+            }
+            FixOp::RenewAcme { domain } => {
+                write!(f, "pki: renewed the ACME wildcard pair for *.{domain}")
             }
             FixOp::Unknown => write!(f, "an operation this doctor build does not know"),
         }
@@ -409,6 +420,9 @@ mod tests {
                 service: "dsd-fp2".to_string(),
             },
             FixOp::MintCredential,
+            FixOp::RenewAcme {
+                domain: "observatory.example.com".to_string(),
+            },
         ];
         let json = serde_json::to_string(&ops).unwrap();
         for tag in [
@@ -416,6 +430,7 @@ mod tests {
             r#""op":"generate-ca""#,
             r#""op":"generate-cert""#,
             r#""op":"mint-credential""#,
+            r#""op":"renew-acme""#,
         ] {
             assert!(json.contains(tag), "{tag} missing from {json}");
         }
@@ -425,6 +440,7 @@ mod tests {
         assert_eq!(ops[1].service(), None);
         assert_eq!(ops[2].service(), Some("dsd-fp2"));
         assert_eq!(ops[3].service(), None);
+        assert_eq!(ops[4].service(), None);
     }
 
     #[test]
@@ -451,6 +467,13 @@ mod tests {
         assert_eq!(
             FixOp::MintCredential.to_string(),
             "pki: minted the observatory credential"
+        );
+        assert_eq!(
+            FixOp::RenewAcme {
+                domain: "observatory.example.com".to_string()
+            }
+            .to_string(),
+            "pki: renewed the ACME wildcard pair for *.observatory.example.com"
         );
     }
 

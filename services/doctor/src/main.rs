@@ -62,38 +62,62 @@ enum TlsCommand {
     /// Create the CA (if absent) and a certificate pair for each installed
     /// service that lacks one, under `<config-root>/pki`. Configs are
     /// never touched — that is `--fix`'s provisioning pass.
-    Issue {
-        /// Request a publicly-trusted wildcard certificate via ACME
-        /// (DNS-01) instead of self-signed issuance.
-        #[arg(long)]
-        acme: bool,
-        /// Base domain (the wildcard certificate covers `*.<domain>`).
-        #[arg(long)]
-        domain: Option<String>,
-        /// DNS provider for the DNS-01 challenge (supported: cloudflare).
-        #[arg(long)]
-        dns_provider: Option<String>,
-        /// DNS provider API token.
-        #[arg(long)]
-        dns_token: Option<String>,
-        /// ACME account email for expiry notifications.
-        #[arg(long)]
-        email: Option<String>,
-        /// Use the Let's Encrypt staging endpoint.
-        #[arg(long)]
-        staging: bool,
-        /// Restrict issuance to the named services (default: the installed
-        /// set, derived from the catalog).
-        #[arg(long, num_args = 1..)]
-        services: Vec<String>,
-        /// Additional subject alternative names for the service certs.
-        #[arg(long, num_args = 1..)]
-        extra_san: Vec<String>,
-        /// Re-issue service certificates even when a pair exists. Never
-        /// re-issues the CA.
+    Issue(Box<IssueArgs>),
+    /// One-shot renewal for a platform scheduler: re-issue every
+    /// self-signed pair inside its 30-day window from the existing CA
+    /// (never the CA itself), and re-order the ACME wildcard pair when
+    /// acme.json exists and the pair is missing or due. A no-op otherwise.
+    Renew {
+        /// Ignore the renewal windows and renew everything both legs own.
         #[arg(long)]
         force: bool,
     },
+}
+
+#[derive(Debug, clap::Args)]
+struct IssueArgs {
+    /// Request a publicly-trusted wildcard certificate via ACME
+    /// (DNS-01) instead of self-signed issuance.
+    #[arg(long)]
+    acme: bool,
+    /// Base domain (the wildcard certificate covers `*.<domain>`).
+    #[arg(long, requires = "acme")]
+    domain: Option<String>,
+    /// DNS provider for the DNS-01 challenge (supported: cloudflare).
+    #[arg(long, requires = "acme")]
+    dns_provider: Option<String>,
+    /// DNS provider API token.
+    #[arg(long, requires = "acme")]
+    dns_token: Option<String>,
+    /// ACME account email for expiry notifications.
+    #[arg(long, requires = "acme")]
+    email: Option<String>,
+    /// Use the Let's Encrypt staging endpoint.
+    #[arg(long, requires = "acme")]
+    staging: bool,
+    /// Full ACME directory URL, overriding the Let's Encrypt endpoints
+    /// entirely — an internal ACME CA such as step-ca.
+    #[arg(long, requires = "acme")]
+    directory_url: Option<String>,
+    /// PEM trust anchor for the ACME server's own TLS endpoint, which
+    /// private directories need.
+    #[arg(long, requires = "acme")]
+    acme_root: Option<PathBuf>,
+    /// Wait between writing the DNS TXT record and requesting
+    /// validation (default 15).
+    #[arg(long, requires = "acme")]
+    dns_propagation_seconds: Option<u64>,
+    /// Restrict issuance to the named services (default: the installed
+    /// set, derived from the catalog).
+    #[arg(long, num_args = 1..)]
+    services: Vec<String>,
+    /// Additional subject alternative names for the service certs.
+    #[arg(long, num_args = 1..)]
+    extra_san: Vec<String>,
+    /// Re-issue service certificates even when a pair exists. Never
+    /// re-issues the CA.
+    #[arg(long)]
+    force: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -121,8 +145,11 @@ fn main() -> ExitCode {
     match &cli.command {
         None => run_diagnosis(&cli),
         Some(Command::Tls {
-            command: TlsCommand::Issue { .. },
+            command: TlsCommand::Issue(_),
         }) => run_tls_issue(&cli),
+        Some(Command::Tls {
+            command: TlsCommand::Renew { force },
+        }) => run_tls_renew(&cli, *force),
         Some(Command::Auth {
             command: AuthCommand::Rotate,
         }) => run_auth_rotate(&cli),
@@ -178,18 +205,7 @@ fn run_diagnosis(cli: &Cli) -> ExitCode {
 /// pairs, or the ACME wildcard path with --acme. Exit 0 on success.
 fn run_tls_issue(cli: &Cli) -> ExitCode {
     let Some(Command::Tls {
-        command:
-            TlsCommand::Issue {
-                acme,
-                domain,
-                dns_provider,
-                dns_token,
-                email,
-                staging,
-                services,
-                extra_san,
-                force,
-            },
+        command: TlsCommand::Issue(issue),
     }) = &cli.command
     else {
         return ExitCode::from(2);
@@ -199,32 +215,64 @@ fn run_tls_issue(cli: &Cli) -> ExitCode {
         Err(code) => return code,
     };
 
-    if *acme {
+    if issue.acme {
+        let required = [
+            ("--domain", &issue.domain),
+            ("--dns-provider", &issue.dns_provider),
+            ("--dns-token", &issue.dns_token),
+            ("--email", &issue.email),
+        ];
+        for (flag, value) in required {
+            if value.is_none() {
+                eprintln!("doctor: {flag} is required with --acme");
+                return ExitCode::from(2);
+            }
+        }
+        let (Some(domain), Some(dns_provider), Some(dns_token), Some(email)) = (
+            &issue.domain,
+            &issue.dns_provider,
+            &issue.dns_token,
+            &issue.email,
+        ) else {
+            return ExitCode::from(2);
+        };
         return run_tls_issue_acme(
             &config_dir,
-            domain.as_deref(),
-            dns_provider.as_deref(),
-            dns_token.as_deref(),
-            email.as_deref(),
-            *staging,
+            doctor::provision::AcmeArgs {
+                domain: domain.clone(),
+                dns_provider: dns_provider.clone(),
+                dns_token: dns_token.clone(),
+                email: email.clone(),
+                staging: issue.staging,
+                directory_url: issue.directory_url.clone(),
+                acme_root: issue.acme_root.clone(),
+                dns_propagation_seconds: issue.dns_propagation_seconds,
+            },
         );
     }
 
     let ctx = doctor::checks::Context::gather(config_dir.clone(), facts);
-    let service_set = if services.is_empty() {
+    let service_set = if issue.services.is_empty() {
         ctx.installed_services()
     } else {
-        services.clone()
+        issue.services.clone()
     };
-    debug!(?service_set, force, "issuing self-signed certificates");
-    let applied =
-        match doctor::provision::ensure_material(&config_dir, &service_set, extra_san, *force) {
-            Ok(applied) => applied,
-            Err(e) => {
-                eprintln!("doctor: {e}");
-                return ExitCode::from(2);
-            }
-        };
+    debug!(
+        ?service_set,
+        issue.force, "issuing self-signed certificates"
+    );
+    let applied = match doctor::provision::ensure_material(
+        &config_dir,
+        &service_set,
+        &issue.extra_san,
+        issue.force,
+    ) {
+        Ok(applied) => applied,
+        Err(e) => {
+            eprintln!("doctor: {e}");
+            return ExitCode::from(2);
+        }
+    };
 
     if cli.json {
         let report = Report::new(
@@ -253,32 +301,7 @@ fn run_tls_issue(cli: &Cli) -> ExitCode {
 /// The ACME leg of `tls issue`. The configuration is persisted to
 /// `<config-root>/acme.json` before the order is attempted — that is the
 /// contract renewal picks up from, whether or not the order succeeds.
-fn run_tls_issue_acme(
-    config_dir: &std::path::Path,
-    domain: Option<&str>,
-    dns_provider: Option<&str>,
-    dns_token: Option<&str>,
-    email: Option<&str>,
-    staging: bool,
-) -> ExitCode {
-    let required = [
-        ("--domain", domain),
-        ("--dns-provider", dns_provider),
-        ("--dns-token", dns_token),
-        ("--email", email),
-    ];
-    for (flag, value) in required {
-        if value.is_none() {
-            eprintln!("doctor: {flag} is required with --acme");
-            return ExitCode::from(2);
-        }
-    }
-    let (Some(domain), Some(dns_provider), Some(dns_token), Some(email)) =
-        (domain, dns_provider, dns_token, email)
-    else {
-        return ExitCode::from(2);
-    };
-
+fn run_tls_issue_acme(config_dir: &std::path::Path, args: doctor::provision::AcmeArgs) -> ExitCode {
     let runtime = match tokio::runtime::Runtime::new() {
         Ok(runtime) => runtime,
         Err(e) => {
@@ -286,17 +309,64 @@ fn run_tls_issue_acme(
             return ExitCode::from(2);
         }
     };
-    match runtime.block_on(doctor::provision::run_acme(
-        config_dir,
-        domain,
-        dns_provider,
-        dns_token,
-        email,
-        staging,
-    )) {
+    match runtime.block_on(doctor::provision::run_acme(config_dir, args)) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("doctor: {e}");
+            ExitCode::from(2)
+        }
+    }
+}
+
+/// `doctor tls renew`: the one-shot both platform timers run. Exit 0 means
+/// nothing was due or everything due was renewed; warnings (a CA inside
+/// its window) go to stderr either way; exit 2 means a renewal or a
+/// post-renewal hook failed.
+fn run_tls_renew(cli: &Cli, force: bool) -> ExitCode {
+    let (config_dir, facts) = match resolve_inputs(cli) {
+        Ok(inputs) => inputs,
+        Err(code) => return code,
+    };
+    let ctx = doctor::checks::Context::gather(config_dir.clone(), facts);
+    let runtime = match tokio::runtime::Runtime::new() {
+        Ok(runtime) => runtime,
+        Err(e) => {
+            eprintln!("doctor: could not start the async runtime: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    debug!(force, "running certificate renewal");
+    let (applied, warnings, failure) =
+        match runtime.block_on(doctor::provision::renew::renew(&config_dir, force)) {
+            Ok((applied, warnings)) => (applied, warnings, None),
+            Err(e) => (e.applied, e.warnings, Some(e.message)),
+        };
+    for warning in &warnings {
+        eprintln!("doctor: warning: {warning}");
+    }
+    if cli.json {
+        let report = Report::new(
+            env!("CARGO_PKG_VERSION"),
+            ctx.mode,
+            config_dir.clone(),
+            Vec::new(),
+        )
+        .with_fixes_applied(applied);
+        if let Err(code) = print_json(&report) {
+            return code;
+        }
+    } else {
+        if applied.is_empty() && failure.is_none() {
+            println!("nothing to renew");
+        }
+        for fix in &applied {
+            println!("{}", fix.op);
+        }
+    }
+    match failure {
+        None => ExitCode::SUCCESS,
+        Some(message) => {
+            eprintln!("doctor: {message}");
             ExitCode::from(2)
         }
     }

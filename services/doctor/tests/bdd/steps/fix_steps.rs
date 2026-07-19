@@ -44,6 +44,7 @@ fn config_has_number(world: &mut DoctorWorld, name: String, expected: i64, point
 
 #[then(expr = "the config file {string} has the string {string} at {string}")]
 fn config_has_string(world: &mut DoctorWorld, name: String, expected: String, pointer: String) {
+    let expected = world.expand(&expected);
     let value = world.config_value(&name);
     assert_eq!(
         value.pointer(&pointer),

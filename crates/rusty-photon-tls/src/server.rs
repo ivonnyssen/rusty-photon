@@ -1,14 +1,14 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use rustls::pki_types::CertificateDer;
 use socket2::{Domain, Protocol, Socket, Type};
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 use tracing::debug;
 
 use crate::config::TlsConfig;
-use crate::error::{Result, TlsError};
+use crate::error::Result;
+use crate::resolver::ReloadableCertResolver;
 
 /// Bind a TCP listener with dual-stack (IPv4+IPv6) support.
 ///
@@ -53,32 +53,27 @@ pub async fn bind_dual_stack_tokio(addr: SocketAddr) -> Result<TcpListener> {
     Ok(listener)
 }
 
-/// Load TLS certificate and key from a `TlsConfig`, returning a `TlsAcceptor`.
+/// Load TLS certificate and key from a `TlsConfig`, returning a `TlsAcceptor`
+/// that hot-reloads the pair when the files change on disk (see
+/// [`ReloadableCertResolver`]).
 pub fn build_tls_acceptor(tls_config: &TlsConfig) -> Result<TlsAcceptor> {
-    crate::install_default_crypto_provider();
-
     let cert_path = tls_config.resolved_cert_path();
     let key_path = tls_config.resolved_key_path();
 
     debug!("Loading TLS cert from {}", cert_path.display());
     debug!("Loading TLS key from {}", key_path.display());
 
-    let cert_pem = std::fs::read_to_string(&cert_path)?;
-    let key_pem = std::fs::read_to_string(&key_path)?;
+    let resolver = ReloadableCertResolver::load(cert_path, key_path)?;
+    Ok(acceptor_from_resolver(resolver))
+}
 
-    let certs: Vec<CertificateDer> = rustls_pemfile::certs(&mut cert_pem.as_bytes())
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| TlsError::Pem(format!("failed to parse cert PEM: {e}")))?;
-
-    let key = rustls_pemfile::private_key(&mut key_pem.as_bytes())
-        .map_err(|e| TlsError::Pem(format!("failed to parse key PEM: {e}")))?
-        .ok_or_else(|| TlsError::Pem("no private key found in PEM file".to_string()))?;
-
+/// Wrap a [`ReloadableCertResolver`] into a `TlsAcceptor` — the seam tests
+/// use to shorten the resolver's check interval before serving.
+pub fn acceptor_from_resolver(resolver: ReloadableCertResolver) -> TlsAcceptor {
     let server_config = rustls::ServerConfig::builder()
         .with_no_client_auth()
-        .with_single_cert(certs, key)?;
-
-    Ok(TlsAcceptor::from(Arc::new(server_config)))
+        .with_cert_resolver(Arc::new(resolver));
+    TlsAcceptor::from(Arc::new(server_config))
 }
 
 /// Serve an axum router over TLS on the given listener.
@@ -102,7 +97,7 @@ where
             .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0)))
     );
 
-    axum_server_tls(listener, router, acceptor, shutdown).await
+    serve_tls_with_acceptor(listener, router, acceptor, shutdown).await
 }
 
 /// Serve an axum router over plain HTTP on the given listener.
@@ -126,11 +121,12 @@ where
     Ok(())
 }
 
-/// Internal: run an axum TLS server loop using tokio-rustls.
+/// Run an axum TLS server loop using tokio-rustls with a caller-built
+/// acceptor (e.g. one from [`acceptor_from_resolver`]).
 ///
 /// Accepts TCP connections, wraps them with TLS, and serves the router.
 /// Stops accepting new connections when `shutdown` completes.
-async fn axum_server_tls<F>(
+pub async fn serve_tls_with_acceptor<F>(
     listener: TcpListener,
     router: axum::Router,
     acceptor: TlsAcceptor,
@@ -190,6 +186,7 @@ where
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;
+    use crate::error::TlsError;
 
     #[test]
     fn bind_dual_stack_on_port_zero() {

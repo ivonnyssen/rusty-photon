@@ -50,6 +50,13 @@ test --test_tag_filters=-requires-cargo,-conformu
 test --test_env=OMNISIM_PATH
 test --test_env=OMNISIM_DIR
 
+# Forward the Pebble locators the same way (doctor's @pebble ACME BDD
+# scenarios — docs/skills/testing.md §5.6). Unlike OmniSim these are
+# optional: the doctor suite skips the @pebble scenarios loudly when
+# either is unset, so a dev box without Pebble stays green.
+test --test_env=PEBBLE_PATH
+test --test_env=PEBBLE_CHALLTESTSRV_PATH
+
 # The `omnisim` resource pool. Every OmniSim-spawning BDD action (the four
 # suites rp:bdd / calibrator-flats:bdd / session-runner:bdd /
 # operation-watchdog-e2e:bdd, and each shard of a sharded suite) is tagged
@@ -315,6 +322,13 @@ build:windows --jobs=8
 # harmlessly. Forwarding by name (not --test_env=PATH) keeps the action key
 # stable across push vs pull_request events.
 build:ci --test_env=OMNISIM_PATH
+
+# Forward the install-pebble action's pinned binary paths the same way and
+# for the same reason (doctor's @pebble ACME BDD scenarios). Unset outside
+# the workflows that install Pebble, which is harmless — the suite skips
+# the scenarios loudly.
+build:ci --test_env=PEBBLE_PATH
+build:ci --test_env=PEBBLE_CHALLTESTSRV_PATH
 
 # Forward CONFORMU_PATH the same way and for the same reason: on build:ci so the
 # --test_env SET is identical across every CI invocation sharing one server

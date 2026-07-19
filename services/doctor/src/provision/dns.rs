@@ -252,10 +252,81 @@ impl DnsProvider for CloudflareDnsProvider {
     }
 }
 
+// ---------------------------------------------------------------------------
+// pebble-challtestsrv provider (mock builds only)
+// ---------------------------------------------------------------------------
+
+/// DNS provider driving Pebble's `pebble-challtestsrv` management API —
+/// the BDD suite's DNS-01 leg. Exists only in `mock` builds: it is a test
+/// server's API, never an operator's DNS.
+#[cfg(feature = "mock")]
+#[derive(Debug)]
+pub struct ChalltestsrvDnsProvider {
+    /// The management base URL, e.g. `http://127.0.0.1:8055`.
+    base_url: String,
+    client: reqwest::Client,
+}
+
+#[cfg(feature = "mock")]
+impl ChalltestsrvDnsProvider {
+    pub fn new(base_url: &str) -> Self {
+        Self {
+            base_url: base_url.trim_end_matches('/').to_string(),
+            client: reqwest::Client::new(),
+        }
+    }
+
+    async fn post(&self, endpoint: &str, body: serde_json::Value) -> Result<()> {
+        let url = format!("{}/{endpoint}", self.base_url);
+        let response = self
+            .client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| {
+                TlsError::DnsProvider(format!("challtestsrv request to {url} failed: {e}"))
+            })?;
+        if !response.status().is_success() {
+            return Err(TlsError::DnsProvider(format!(
+                "challtestsrv {url} answered {}",
+                response.status()
+            )));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(feature = "mock")]
+#[async_trait]
+impl DnsProvider for ChalltestsrvDnsProvider {
+    async fn create_txt_record(&self, fqdn: &str, value: &str) -> Result<()> {
+        debug!("challtestsrv set-txt: {} = {}", fqdn, value);
+        // challtestsrv hosts are fully-qualified — the trailing dot matters.
+        self.post(
+            "set-txt",
+            serde_json::json!({ "host": format!("{fqdn}."), "value": value }),
+        )
+        .await
+    }
+
+    async fn delete_txt_record(&self, fqdn: &str) -> Result<()> {
+        debug!("challtestsrv clear-txt: {}", fqdn);
+        self.post(
+            "clear-txt",
+            serde_json::json!({ "host": format!("{fqdn}.") }),
+        )
+        .await
+    }
+}
+
 /// Build a DNS provider from a provider name and credentials.
 ///
 /// Currently supports:
 /// - `"cloudflare"` — requires `api_token` in credentials
+/// - `"challtestsrv"` (mock builds only) — Pebble's DNS sidecar; the
+///   `api_token` credential slot carries its management base URL, which is
+///   how `--dns-token` reaches it without a test-only flag
 pub async fn build_dns_provider(
     provider_name: &str,
     credentials: &HashMap<String, String>,
@@ -271,9 +342,26 @@ pub async fn build_dns_provider(
             let provider = CloudflareDnsProvider::new(api_token, domain).await?;
             Ok(Box::new(provider))
         }
-        other => Err(TlsError::Config(format!(
-            "unsupported DNS provider: '{other}'. Supported providers: cloudflare"
-        ))),
+        #[cfg(feature = "mock")]
+        "challtestsrv" => {
+            let base_url = credentials.get("api_token").ok_or_else(|| {
+                TlsError::Config(
+                    "the challtestsrv DNS provider requires its management base URL \
+                     in the 'api_token' credential slot"
+                        .to_string(),
+                )
+            })?;
+            Ok(Box::new(ChalltestsrvDnsProvider::new(base_url)))
+        }
+        other => {
+            #[cfg(feature = "mock")]
+            let supported = "cloudflare, challtestsrv";
+            #[cfg(not(feature = "mock"))]
+            let supported = "cloudflare";
+            Err(TlsError::Config(format!(
+                "unsupported DNS provider: '{other}'. Supported providers: {supported}"
+            )))
+        }
     }
 }
 

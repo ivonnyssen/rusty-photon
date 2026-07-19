@@ -92,12 +92,12 @@ Feature: Repair — doctor --fix
     Given a config directory with "rp.json" containing:
       """
       { "server": { "port": 11115,
-          "tls": { "cert": "/nonexistent/cert.pem", "key": "/nonexistent/key.pem" } } }
+          "tls": { "cert": "{missing}/cert.pem", "key": "{missing}/key.pem" } } }
       """
     When I run doctor with --fix and --json
     Then doctor exits with code 1
     And the report contains a "fail" check named "tls.paths" for service "rp"
-    And the config file "rp.json" has the string "/nonexistent/cert.pem" at "/server/tls/cert"
+    And the config file "rp.json" has the string "{missing}/cert.pem" at "/server/tls/cert"
 
   Scenario: The JSON report carries the machine-applicable fix plan
     Given a config directory with "sentinel.json" containing:

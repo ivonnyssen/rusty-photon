@@ -764,6 +764,32 @@ default store is not redirectable on Windows or macOS, and a shared
 store leaks persisted settings (e.g. the telescope site) between
 concurrently running suites.
 
+#### 5.6 Pebble: end-to-end ACME scenarios in doctor's suite
+
+Doctor's `@pebble`-tagged scenarios run the real `instant-acme` order
+flow against [Pebble](https://github.com/letsencrypt/pebble) (Let's
+Encrypt's official ACME test server) plus its `pebble-challtestsrv` DNS
+sidecar — the only coverage of the ACME network path that is not a mock
+(see `docs/services/doctor.md` §Renewal). The harness lives in
+`services/doctor/tests/bdd` (single consumer — not `bdd-infra`): each
+scenario spawns a private Pebble on dynamic ports with a
+`rusty_photon_tls::test_cert`-minted certificate for its HTTPS endpoint,
+points Pebble's validating resolver at the sidecar, and drives the
+doctor binary with `--directory-url`/`--acme-root`.
+
+Two environment variables locate the binaries, mirroring
+`OMNISIM_PATH`: **`PEBBLE_PATH`** and **`PEBBLE_CHALLTESTSRV_PATH`**
+(both forwarded into Bazel test actions via `--test_env` in `.bazelrc`).
+Unlike OmniSim they are **optional**: when either is unset, the suite
+skips the `@pebble` scenarios and prints a loud
+`skipping N @pebble scenarios` notice — the rest of doctor's suite runs
+normally, so a dev box without Pebble stays green while never
+*silently* under-testing. CI always provisions both binaries
+(`.github/actions/install-pebble`, pinned + SHA-verified like
+install-omnisim), so every PR exercises the scenarios on all three
+platforms. To run them locally, download the two binaries from a Pebble
+release and export the two variables.
+
 ---
 
 ### 6. Unit Test Rules

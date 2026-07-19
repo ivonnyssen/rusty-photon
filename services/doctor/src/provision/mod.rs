@@ -11,11 +11,13 @@ pub mod acme;
 pub mod acme_config;
 pub mod cert;
 pub mod dns;
+pub mod expiry;
+pub mod renew;
 
 use std::path::{Path, PathBuf};
 
 use rand::distr::{Alphanumeric, SampleString};
-use rusty_photon_tls::permissions::set_restricted_permissions;
+use rusty_photon_tls::permissions::write_restricted;
 use serde_json::json;
 use tracing::debug;
 
@@ -65,7 +67,10 @@ pub fn absolute_pki_dir(config_dir: &Path) -> PathBuf {
 /// service whose pair is missing. `force` re-issues service certificates
 /// from the existing CA — never the CA itself: replacing it invalidates
 /// every distributed trust anchor, so that is an explicit operator act
-/// (delete `ca.pem`, re-run). Returns the provisioning actions performed.
+/// (delete `ca.pem` and `ca-key.pem`, re-run with `--force` so every
+/// service pair chains to the new CA — without it existing pairs are
+/// kept and still chain to the old one). Returns the provisioning
+/// actions performed.
 pub fn ensure_material(
     config_dir: &Path,
     services: &[String],
@@ -149,10 +154,8 @@ pub fn mint_credential(config_dir: &Path) -> Result<String, String> {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("could not create {}: {e}", parent.display()))?;
     }
-    std::fs::write(&path, format!("{password}\n"))
+    write_restricted(&path, format!("{password}\n").as_bytes())
         .map_err(|e| format!("could not write {}: {e}", path.display()))?;
-    set_restricted_permissions(&path)
-        .map_err(|e| format!("could not restrict {}: {e}", path.display()))?;
     debug!(path = %path.display(), "wrote the observatory credential");
     Ok(password)
 }
@@ -203,31 +206,59 @@ pub fn plan_client_wiring(config_dir: &Path) -> Vec<(String, FixOp)> {
     ops
 }
 
+/// Everything `doctor tls issue --acme` collects from its flags. All of it
+/// persists into `acme.json` — renewal must replay these settings
+/// unattended.
+#[derive(Debug, Clone)]
+pub struct AcmeArgs {
+    pub domain: String,
+    pub dns_provider: String,
+    pub dns_token: String,
+    pub email: String,
+    pub staging: bool,
+    /// Overrides the Let's Encrypt endpoints entirely (an internal ACME CA,
+    /// or Pebble in tests).
+    pub directory_url: Option<String>,
+    /// A PEM trust anchor for the ACME server's own TLS endpoint.
+    pub acme_root: Option<PathBuf>,
+    /// Wait between writing the TXT record and requesting validation;
+    /// `None` keeps the 15s default.
+    pub dns_propagation_seconds: Option<u64>,
+}
+
 /// Run the ACME issuance flow: persist `acme.json` beside the configs
 /// **first** (that is the contract renewal picks up from, whether or not
 /// the order succeeds), then build the DNS provider and order a wildcard
 /// certificate into the flat pki tree.
-#[allow(clippy::too_many_arguments)]
-pub async fn run_acme(
-    config_dir: &Path,
-    domain: &str,
-    dns_provider_name: &str,
-    dns_token: &str,
-    email: &str,
-    staging: bool,
-) -> Result<(), String> {
+pub async fn run_acme(config_dir: &Path, args: AcmeArgs) -> Result<(), String> {
     let pki = pki_dir(config_dir);
 
+    // Persisted absolute: renewal replays acme.json from a scheduler whose
+    // working directory is arbitrary, so a relative --acme-root (anchored
+    // at the invoking shell's cwd, like any CLI path) must be resolved
+    // now, not at 3am.
+    let acme_root = args
+        .acme_root
+        .as_ref()
+        .map(|p| {
+            std::path::absolute(p)
+                .map_err(|e| format!("could not resolve --acme-root {}: {e}", p.display()))
+        })
+        .transpose()?;
+
     let mut dns_credentials = std::collections::HashMap::new();
-    dns_credentials.insert("api_token".to_string(), dns_token.to_string());
+    dns_credentials.insert("api_token".to_string(), args.dns_token.clone());
     let config = acme_config::AcmeConfig {
-        email: email.to_string(),
-        domain: domain.to_string(),
-        dns_provider: dns_provider_name.to_string(),
+        email: args.email.clone(),
+        domain: args.domain.clone(),
+        dns_provider: args.dns_provider.clone(),
         dns_credentials,
-        staging,
+        staging: args.staging,
         renewal_days_before_expiry: 30,
         post_renewal_hooks: vec![],
+        directory_url: args.directory_url.clone(),
+        acme_root: acme_root.as_ref().map(|p| p.to_string_lossy().into_owned()),
+        dns_propagation_seconds: args.dns_propagation_seconds.unwrap_or(15),
     };
 
     let config_path = config_dir.join("acme.json");
@@ -237,19 +268,23 @@ pub async fn run_acme(
 
     let resolved =
         acme_config::resolve_credentials(&config.dns_credentials).map_err(|e| e.to_string())?;
-    let dns_provider = dns::build_dns_provider(&config.dns_provider, &resolved, domain)
+    let dns_provider = dns::build_dns_provider(&config.dns_provider, &resolved, &config.domain)
         .await
         .map_err(|e| e.to_string())?;
-    let acme_client = acme::RealAcmeClient::new(dns_provider.as_ref());
+    let acme_client = acme::RealAcmeClient::new(
+        dns_provider.as_ref(),
+        acme_root,
+        std::time::Duration::from_secs(config.dns_propagation_seconds),
+    );
 
     acme::issue_certificate(&config, &pki, &acme_client)
         .await
         .map_err(|e| e.to_string())?;
 
-    println!("ACME certificate issued for *.{domain}:");
+    println!("ACME certificate issued for *.{}:", config.domain);
     println!("  cert: {}", acme_config::acme_cert_path(&pki).display());
     println!("  key:  {}", acme_config::acme_key_path(&pki).display());
-    if staging {
+    if config.staging {
         println!("  environment: STAGING (not trusted by browsers)");
     }
     Ok(())
@@ -413,5 +448,40 @@ mod tests {
         assert!(key.ends_with("qhy-focuser-key.pem"), "{key}");
         assert!(std::path::Path::new(cert).is_absolute());
         assert!(!cert.contains("certs"), "flat pki: {cert}");
+    }
+
+    #[tokio::test]
+    async fn test_run_acme_persists_a_relative_acme_root_as_absolute() {
+        // A renewal timer runs with an arbitrary working directory, so the
+        // persisted acme.json must carry an absolute trust-anchor path even
+        // when the operator passed a relative one. acme.json is persisted
+        // before the DNS provider is built, so a bogus provider name lets
+        // this assert on the file without any network.
+        let dir = tempfile::tempdir().unwrap();
+        let err = run_acme(
+            dir.path(),
+            AcmeArgs {
+                domain: "observatory.test".to_string(),
+                dns_provider: "no-such-provider".to_string(),
+                dns_token: "tok".to_string(),
+                email: "t@observatory.test".to_string(),
+                staging: false,
+                directory_url: None,
+                acme_root: Some(std::path::PathBuf::from("relative/pebble-ca.pem")),
+                dns_propagation_seconds: None,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("unsupported DNS provider"), "{err}");
+
+        let saved = std::fs::read_to_string(dir.path().join("acme.json")).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&saved).unwrap();
+        let root = value["acme_root"].as_str().unwrap();
+        assert!(
+            std::path::Path::new(root).is_absolute(),
+            "persisted acme_root must be absolute: {root}"
+        );
+        assert!(root.ends_with("pebble-ca.pem"), "{root}");
     }
 }

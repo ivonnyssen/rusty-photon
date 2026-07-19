@@ -11,7 +11,7 @@ fn check_matches(check: &Value, status: &str, name: &str, service: Option<&str>)
         && service.is_none_or(|s| check["service"] == s)
 }
 
-fn find_check(world: &mut DoctorWorld, status: &str, name: &str, service: Option<&str>) {
+pub fn find_check(world: &mut DoctorWorld, status: &str, name: &str, service: Option<&str>) {
     let found = world
         .checks()
         .iter()
@@ -77,6 +77,7 @@ fn contains_check(world: &mut DoctorWorld, status: String, name: String) {
 
 #[then(expr = "that check's detail mentions {string}")]
 fn check_detail_mentions(world: &mut DoctorWorld, needle: String) {
+    let needle = world.expand(&needle);
     let check = world.last_check.as_ref().expect("no check matched yet");
     let detail = check["detail"].as_str().expect("check has a detail");
     assert!(
