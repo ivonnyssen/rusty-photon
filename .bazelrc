@@ -235,20 +235,28 @@ test:ci --test_output=errors
 test:ci --test_summary=terse
 
 # Tests draw from the same CPU pool as any local action (each test reserves
-# cpu:1), so on the 4-vCPU hosted runners at most 4 suites execute at once.
-# The BDD suites are sleep/IO-bound, not CPU-bound — each spawns a private
-# OmniSim + its service binary and waits on HTTP — so CPU-based scheduling
+# cpu:1), so left alone at most HOST_CPUS suites execute at once. The BDD
+# suites are sleep/IO-bound, not CPU-bound — each spawns a private OmniSim +
+# its service binary and waits on HTTP — so strictly CPU-based scheduling
 # under-uses the runner exactly when it matters most: a shared-crate change or
-# dep bump invalidates every suite and the BDD step degenerates into a ~4-wide
-# tail (observed: 313-378s critical path on ubuntu, ~34 test executions with
-# rp:bdd/session-runner:bdd 8-way sharded). Overcommit the CPU pool 2x and cap
-# concurrent tests at 8, for TEST invocations only: `bazel build` keeps the
-# real-core pool for compilation. Like --spawn_strategy above, these are
-# scheduling/execution-only knobs — they don't enter action keys or the
-# analysis cache, so build-vs-test values may differ freely. Memory holds: 8
-# concurrent OmniSim spawns ≈ 2-3 GB against 16 GB Linux/Windows runners, and
-# HOST_CPUS scales the pool down with macOS's smaller core count.
-test:ci --local_test_jobs=8
+# dep bump invalidates every suite and the BDD step degenerates into a
+# HOST_CPUS-wide tail (observed: 313-378s critical path on ubuntu, ~34 test
+# executions with rp:bdd/session-runner:bdd 8-way sharded). But the opposite
+# extreme — a fixed --local_test_jobs=8 against the 3-core macOS / 4-core
+# Linux+Windows hosted runners — oversubscribed the box ~2x and traded the
+# tail for timeout flakes in the suites that do burn CPU. Split the difference
+# at cores+1: one suite's worth of overcommit keeps the runner busy through
+# I/O waits without starving the CPU-bound suites. Bazel's resource
+# expressions offer only `-` and `*` (no `+`) and Math.round the result, so
+# *1.25 encodes cores+1 exactly across the 3-4-core runner fleet
+# (3 -> 3.75 -> 4, 4 -> 5); revisit the factor if larger runners ever join.
+# The 2x CPU pool stays as a non-binding backstop (6 on macOS, 8 elsewhere —
+# always above the job cap) so declared cpu weights never bind below it. TEST
+# invocations only: `bazel build` keeps the real-core pool for compilation.
+# Like --spawn_strategy above, these are scheduling/execution-only knobs —
+# they don't enter action keys or the analysis cache, so build-vs-test values
+# may differ freely.
+test:ci --local_test_jobs=HOST_CPUS*1.25
 test:ci --local_resources=cpu=HOST_CPUS*2
 
 # --remote_timeout is the per-RPC idle/inactivity timeout for remote-cache
