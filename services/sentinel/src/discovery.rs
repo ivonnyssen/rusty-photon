@@ -299,8 +299,14 @@ struct ServerView {
 }
 
 /// Derive `service`'s probe URLs from `<config_dir>/<service>.json`. `None`
-/// when the file is missing or its `server` block unreadable.
-pub fn derive_probe(config_dir: &Path, service: &str) -> Option<ProbeSpec> {
+/// when the file is missing or its `server` block unreadable. A
+/// `probe_domain` makes every URL dial `<service>.<probe_domain>` instead
+/// of the bind-derived host.
+pub fn derive_probe(
+    config_dir: &Path,
+    service: &str,
+    probe_domain: Option<&str>,
+) -> Option<ProbeSpec> {
     let path = config_dir.join(format!("{service}.json"));
     let content = std::fs::read_to_string(&path).ok()?;
     let value: serde_json::Value = match serde_json::from_str(&content) {
@@ -333,13 +339,20 @@ pub fn derive_probe(config_dir: &Path, service: &str) -> Option<ProbeSpec> {
         "http"
     };
     // Same-host-bound by definition: a wildcard bind means localhost; a
-    // specific bind address is honored (it may be loopback-only).
-    let host = match server.bind_address {
-        Some(addr) if !addr.is_unspecified() => match addr {
-            std::net::IpAddr::V4(v4) => v4.to_string(),
-            std::net::IpAddr::V6(v6) => format!("[{v6}]"),
+    // specific bind address is honored (it may be loopback-only). A
+    // configured probe domain overrides both — an ACME wildcard
+    // certificate's SANs are DNS names only, so a probe dialing localhost
+    // or an IP would fail hostname verification; `<service>.<domain>` is
+    // the name the certificate can match, and it must resolve locally.
+    let host = match probe_domain {
+        Some(domain) => format!("{service}.{domain}"),
+        None => match server.bind_address {
+            Some(addr) if !addr.is_unspecified() => match addr {
+                std::net::IpAddr::V4(v4) => v4.to_string(),
+                std::net::IpAddr::V6(v6) => format!("[{v6}]"),
+            },
+            _ => "localhost".to_string(),
         },
-        _ => "localhost".to_string(),
     };
     let base = format!("{scheme}://{host}:{}", server.port);
     let path_suffix = if NON_ALPACA_SERVICES.contains(&service) {
@@ -359,6 +372,7 @@ pub fn derive_probe(config_dir: &Path, service: &str) -> Option<ProbeSpec> {
 pub async fn discover(
     manager: &Arc<dyn ServiceManager>,
     config_dir: Option<&Path>,
+    probe_domain: Option<&str>,
 ) -> crate::Result<HashMap<String, DiscoveredService>> {
     let units = manager.enumerate().await?;
     let mut services = HashMap::with_capacity(units.len());
@@ -374,7 +388,7 @@ pub async fn discover(
             debug!("ignoring scheduled-job unit '{}'", unit.unit);
             continue;
         }
-        let probe = config_dir.and_then(|dir| derive_probe(dir, name));
+        let probe = config_dir.and_then(|dir| derive_probe(dir, name, probe_domain));
         services.insert(
             name.to_string(),
             DiscoveredService {
@@ -809,11 +823,11 @@ mod tests {
             r#"{"server":{"port":11119,"discovery_port":null},"device":{}}"#,
         )
         .unwrap();
-        let solver = derive_probe(dir.path(), "plate-solver").unwrap();
+        let solver = derive_probe(dir.path(), "plate-solver", None).unwrap();
         assert_eq!(solver.health_url, "http://localhost:11131/health");
         assert_eq!(solver.alpaca_base, "http://localhost:11131/api/v1");
         assert_eq!(solver.port, 11131);
-        let driver = derive_probe(dir.path(), "dsd-fp2").unwrap();
+        let driver = derive_probe(dir.path(), "dsd-fp2", None).unwrap();
         assert_eq!(
             driver.health_url,
             "http://localhost:11119/management/v1/configureddevices"
@@ -828,7 +842,7 @@ mod tests {
             r#"{"server":{"port":11115,"tls":{"cert":"c.pem","key":"k.pem"}}}"#,
         )
         .unwrap();
-        let spec = derive_probe(dir.path(), "rp").unwrap();
+        let spec = derive_probe(dir.path(), "rp", None).unwrap();
         assert_eq!(spec.health_url, "https://localhost:11115/health");
     }
 
@@ -840,7 +854,7 @@ mod tests {
             r#"{"server":{"port":11115,"tls":null,"auth":null}}"#,
         )
         .unwrap();
-        let spec = derive_probe(dir.path(), "rp").unwrap();
+        let spec = derive_probe(dir.path(), "rp", None).unwrap();
         assert_eq!(spec.health_url, "http://localhost:11115/health");
     }
 
@@ -853,7 +867,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            derive_probe(dir.path(), "rp").unwrap().health_url,
+            derive_probe(dir.path(), "rp", None).unwrap().health_url,
             "http://127.0.0.1:11115/health"
         );
         std::fs::write(
@@ -862,22 +876,51 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            derive_probe(dir.path(), "ui-htmx").unwrap().health_url,
+            derive_probe(dir.path(), "ui-htmx", None)
+                .unwrap()
+                .health_url,
             "http://localhost:11120/health",
             "a wildcard bind probes localhost"
         );
     }
 
     #[test]
+    fn derive_probe_domain_replaces_the_host_in_every_url() {
+        // The override wins over the wildcard-bind default and over a
+        // specific bind address alike, and lands in both derived URLs;
+        // scheme and port derivation are untouched.
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("rp.json"),
+            r#"{"server":{"port":11115,"bind_address":"127.0.0.1","tls":{"cert":"c.pem","key":"k.pem"}}}"#,
+        )
+        .unwrap();
+        let spec = derive_probe(dir.path(), "rp", Some("rig.example.com")).unwrap();
+        assert_eq!(spec.health_url, "https://rp.rig.example.com:11115/health");
+        assert_eq!(spec.alpaca_base, "https://rp.rig.example.com:11115/api/v1");
+        std::fs::write(
+            dir.path().join("dsd-fp2.json"),
+            r#"{"server":{"port":11119}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            derive_probe(dir.path(), "dsd-fp2", Some("rig.example.com"))
+                .unwrap()
+                .health_url,
+            "http://dsd-fp2.rig.example.com:11119/management/v1/configureddevices"
+        );
+    }
+
+    #[test]
     fn derive_probe_missing_or_malformed_is_none() {
         let dir = tempfile::TempDir::new().unwrap();
-        assert!(derive_probe(dir.path(), "absent").is_none());
+        assert!(derive_probe(dir.path(), "absent", None).is_none());
         std::fs::write(dir.path().join("broken.json"), "{not json").unwrap();
-        assert!(derive_probe(dir.path(), "broken").is_none());
+        assert!(derive_probe(dir.path(), "broken", None).is_none());
         std::fs::write(dir.path().join("portless.json"), r#"{"server":{}}"#).unwrap();
-        assert!(derive_probe(dir.path(), "portless").is_none());
+        assert!(derive_probe(dir.path(), "portless", None).is_none());
         std::fs::write(dir.path().join("serverless.json"), r#"{"device":{}}"#).unwrap();
-        assert!(derive_probe(dir.path(), "serverless").is_none());
+        assert!(derive_probe(dir.path(), "serverless", None).is_none());
     }
 
     #[test]
@@ -886,7 +929,7 @@ mod tests {
         // the config, and probing :0 would report a healthy service as down.
         let dir = tempfile::TempDir::new().unwrap();
         std::fs::write(dir.path().join("rp.json"), r#"{"server":{"port":0}}"#).unwrap();
-        assert!(derive_probe(dir.path(), "rp").is_none());
+        assert!(derive_probe(dir.path(), "rp", None).is_none());
     }
 
     #[test]
@@ -898,7 +941,7 @@ mod tests {
             r#"{"server":{"port":11115,"future_field":{"x":1}}}"#,
         )
         .unwrap();
-        assert!(derive_probe(dir.path(), "rp").is_some());
+        assert!(derive_probe(dir.path(), "rp", None).is_some());
     }
 
     #[tokio::test]
@@ -975,7 +1018,7 @@ mod tests {
         .unwrap();
         let manager: Arc<dyn ServiceManager> =
             Arc::new(StubServiceManager::new(dir.path().to_path_buf()));
-        let services = discover(&manager, Some(dir.path())).await.unwrap();
+        let services = discover(&manager, Some(dir.path()), None).await.unwrap();
         assert_eq!(services.len(), 1, "self and foreign units are excluded");
         let solver = &services["plate-solver"];
         assert_eq!(solver.unit, "rusty-photon-plate-solver");

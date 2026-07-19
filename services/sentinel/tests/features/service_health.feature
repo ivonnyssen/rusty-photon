@@ -18,6 +18,12 @@ Feature: Service health supervision
   normal priority and every later one escalates with a message that says
   the service is still unhealthy. All restart paths share one in-flight
   slot per service, so an autonomous restart never races a manual one.
+  Probe URLs dial the host derived from the supervised service's bind
+  address — localhost for a wildcard bind — unless the optional
+  probe_domain config key is set, in which case every probe dials
+  <service>.<probe_domain> instead (the name an ACME wildcard
+  certificate's DNS-only SANs can match; it must resolve to the local
+  host).
 
   Scenario: A healthy running service is probed and never restarted
     Given a stub service whose health endpoint answers 200
@@ -57,6 +63,16 @@ Feature: Service health supervision
     Then the service manager records at least 2 restarts of "rusty-photon-plate-solver" within 15 seconds
     And the notification history records an escalated still-unhealthy notification for "plate-solver"
     And the dashboard reports a scheduled next restart for "plate-solver"
+
+  # The stub is healthy on localhost, so "down" proves the probes dialed
+  # plate-solver.rig.invalid — .invalid is the reserved TLD that never
+  # resolves — instead of the local host.
+  Scenario: A configured probe domain replaces the local probe host
+    Given a stub service whose health endpoint answers 200
+    And the stub service is discovered as "plate-solver" in state "running"
+    And a probe domain "rig.invalid" is configured
+    And sentinel is running with no monitors
+    Then the dashboard reports service "plate-solver" health "down"
 
   Scenario: A failed unit is restarted without an HTTP probe
     Given a discovered unit "rusty-photon-qhy-focuser" in state "failed"

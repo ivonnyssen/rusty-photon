@@ -310,6 +310,7 @@ impl SentinelBuilder {
         let supervision = DiscoverySupervisor::new(
             Arc::clone(&manager),
             self.config_dir.clone(),
+            config.probe_domain.as_ref().map(|d| d.as_str().to_string()),
             SupervisionContext {
                 policy,
                 registry: Arc::clone(&registry),

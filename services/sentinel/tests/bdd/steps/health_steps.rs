@@ -21,6 +21,11 @@ fn stub_discovered_as(world: &mut SentinelWorld, service: String, state: String)
     world.discover_health_stub_as(&service, &state);
 }
 
+#[given(expr = "a probe domain {string} is configured")]
+fn probe_domain_configured(world: &mut SentinelWorld, domain: String) {
+    world.sentinel_probe_domain = Some(domain);
+}
+
 #[given("sentinel is running with notifiers and no monitors")]
 async fn sentinel_with_notifiers(world: &mut SentinelWorld) {
     world.sentinel_has_notifiers = true;
