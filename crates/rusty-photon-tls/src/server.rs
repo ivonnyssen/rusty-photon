@@ -395,11 +395,16 @@ fn parse_request_head(head: &[u8]) -> Option<ParsedRequest> {
     // thing. Absolute-form (`http://host/path`) and authority-form (`CONNECT
     // host:port`) targets are proxy-only requests that don't belong on this
     // port; redirecting them would either be malformed or, worse, let a
-    // client-supplied target steer the `Location` header's authority.
+    // client-supplied target steer the `Location` header's authority. A
+    // target is also rejected if it contains a bare `\r`/`\n`: splitting on
+    // the literal "\r\n" sequence doesn't stop a lone CR or LF from hiding
+    // inside what otherwise looks like a valid `/path` token, and
+    // interpolating one into the `Location` header verbatim would let a
+    // crafted request inject its own header line into our response (CWE-113).
     match target {
         "*" if method == "OPTIONS" => {}
         "*" => return None,
-        t if t.starts_with('/') => {}
+        t if t.starts_with('/') && !t.contains(['\r', '\n']) => {}
         _ => return None,
     }
 
@@ -413,8 +418,13 @@ fn parse_request_head(head: &[u8]) -> Option<ParsedRequest> {
                 let value = value.trim();
                 // An empty/whitespace-only Host value (e.g. "Host: \r\n")
                 // must fall back to the local IP, not build a Location with
-                // a missing authority (`https://:<port>...`).
-                if !value.is_empty() {
+                // a missing authority (`https://:<port>...`). Same for a
+                // value smuggling a bare `\r`/`\n` — that's the same
+                // header-injection risk as the target check above, and
+                // "invalid" here means "don't echo it", not "reject the
+                // whole request": the client still gets a redirect, just to
+                // the local IP instead of its claimed Host.
+                if !value.is_empty() && !value.contains(['\r', '\n']) {
                     host = Some(value.to_string());
                 }
             }
@@ -565,6 +575,25 @@ mod tests {
         let parsed = parse_request_head(b"GET / HTTP/1.1\r\nHost: \r\n").unwrap();
         assert_eq!(parsed.host, None);
         let parsed = parse_request_head(b"GET / HTTP/1.1\r\nHost:    \r\n").unwrap();
+        assert_eq!(parsed.host, None);
+    }
+
+    #[test]
+    fn parse_request_head_rejects_a_target_smuggling_a_bare_newline() {
+        // Splitting on the literal "\r\n" sequence doesn't stop a lone LF
+        // from hiding inside what otherwise parses as a valid /path token;
+        // letting it through would inject a header line into our response
+        // via build_redirect_response's Location interpolation (CWE-113).
+        assert!(parse_request_head(b"GET /path\nInjected:x HTTP/1.1\r\n").is_none());
+    }
+
+    #[test]
+    fn parse_request_head_treats_a_host_value_smuggling_a_bare_newline_as_absent() {
+        // Same injection risk as the target check, but for the Host header:
+        // an embedded bare LF must not be echoed into the Location value.
+        let parsed =
+            parse_request_head(b"GET / HTTP/1.1\r\nHost: example.com\nInjected: y\r\n\r\n")
+                .unwrap();
         assert_eq!(parsed.host, None);
     }
 
