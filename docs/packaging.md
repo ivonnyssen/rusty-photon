@@ -32,18 +32,18 @@ doubles as the PHD2 CLI via subcommands.)
 | Service | Port | Notes |
 |---------|------|-------|
 | filemonitor | 11111 | Alpaca SafetyMonitor |
-| ppba-driver | 11112 | serial (dialout) |
-| qhy-focuser | 11113 | serial (dialout) |
+| ppba-driver | 11112 | serial (dialout, plugdev) |
+| qhy-focuser | 11113 | serial (dialout, plugdev) |
 | sentinel | 11114 | dashboard: `/` |
 | rp | 11115 | orchestrator API |
 | sky-survey-camera | 11116 | config-gated (see below) |
-| star-adventurer-gti | 11117 | serial (dialout) |
-| pa-falcon-rotator | 11118 | serial (dialout) |
-| dsd-fp2 | 11119 | serial (dialout) |
+| star-adventurer-gti | 11117 | serial (dialout, plugdev) |
+| pa-falcon-rotator | 11118 | serial (dialout, plugdev) |
+| dsd-fp2 | 11119 | serial (dialout, plugdev) |
 | ui-htmx | 11120 | web config UI |
 | qhy-camera | 11121 | USB camera; needs the firmware helper (below) |
 | zwo-camera | 11122 | USB camera; its SDK blob bundled |
-| pa-scops-oag | 11123 | serial (dialout) |
+| pa-scops-oag | 11123 | serial (dialout, plugdev) |
 | zwo-focuser | 11124 | USB focuser; its SDK blob bundled |
 | phd2-guider | 11130 | guider service wrapping PHD2 (PHD2 installed separately, below) |
 | plate-solver | 11131 | config-gated; needs ASTAP (below) |

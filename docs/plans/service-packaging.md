@@ -172,7 +172,7 @@ Per-class deltas:
 
 | Class | Services | Delta |
 |-------|----------|-------|
-| serial | ppba-driver, qhy-focuser, pa-falcon-rotator, dsd-fp2, star-adventurer-gti | `SupplementaryGroups=dialout` |
+| serial | ppba-driver, qhy-focuser, pa-falcon-rotator, pa-scops-oag, dsd-fp2, star-adventurer-gti | `SupplementaryGroups=dialout plugdev` |
 | USB camera | qhy-camera, zwo-camera | `SupplementaryGroups=plugdev`, `RestrictAddressFamilies` += `AF_NETLINK` (libusb hotplug), no `MemoryDenyWriteExecute` (vendor blob caution) |
 | network-only | filemonitor, sentinel, rp, ui-htmx, plate-solver, calibrator-flats, sky-survey-camera | `PrivateDevices=yes`, `MemoryDenyWriteExecute=yes` |
 

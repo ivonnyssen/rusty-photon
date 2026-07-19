@@ -237,7 +237,11 @@ fn serial_node(ctx: &Context, hw: &HardwareFacts, scan: &ServiceScan, checks: &m
 
 /// Will the service user's open() succeed? Linux, packaged mode — the
 /// judgment needs the unit's `SupplementaryGroups=` and the service user,
-/// neither of which exists on a dev checkout.
+/// neither of which exists on a dev checkout. The verdict models what the
+/// kernel grants: the union of the unit's groups and the account's own
+/// memberships (systemd initializes the process group list from both), so
+/// a node openable only via an account-level membership still passes —
+/// with the granting mechanism named in the detail.
 fn serial_access(
     ctx: &Context,
     hw: &HardwareFacts,
@@ -261,21 +265,40 @@ fn serial_access(
             .iter()
             .filter_map(|name| hw.groups.get(name).copied()),
     );
+    let unit_identity = Identity {
+        uid: user.uid,
+        gids: gids.clone(),
+    };
+    gids.extend(
+        hw.service_user_groups
+            .iter()
+            .filter_map(|name| hw.groups.get(name).copied()),
+    );
     let identity = Identity {
         uid: user.uid,
         gids,
     };
     if identity.can_read_write(node) {
-        checks.push(Check::ok(
-            "hardware.serial-access",
-            svc(scan),
-            format!("{path} is openable by the {SERVICE_USER} user"),
-        ));
+        let detail = if unit_identity.can_read_write(node) {
+            format!("{path} is openable by the {SERVICE_USER} user")
+        } else {
+            format!(
+                "{path} is openable by the {SERVICE_USER} user via its \
+                 account-level{} membership — the unit declares no matching \
+                 SupplementaryGroups=",
+                hw.group_name(node.gid)
+                    .map(|g| format!(" {g} group"))
+                    .unwrap_or_else(|| " group".to_string()),
+            )
+        };
+        checks.push(Check::ok("hardware.serial-access", svc(scan), detail));
         return;
     }
     let owning_group = hw.group_name(node.gid);
-    let missing_membership =
-        owning_group.is_some_and(|g| !unit.supplementary_groups.iter().any(|s| s == g));
+    let missing_membership = owning_group.is_some_and(|g| {
+        !unit.supplementary_groups.iter().any(|s| s == g)
+            && !hw.service_user_groups.iter().any(|s| s == g)
+    });
     let detail = format!(
         "{path} (mode {:o}, uid {}, gid {}{}) is not openable by the \
          {SERVICE_USER} user — judged from ownership and mode, so ACLs are \

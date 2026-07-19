@@ -82,6 +82,12 @@ pub struct HardwareFacts {
     /// The `rusty-photon` service user, when it exists.
     #[serde(default)]
     pub service_user: Option<UserFacts>,
+    /// Group names whose member list names the service user — its
+    /// account-level supplementary memberships. A service process holds
+    /// the union of these and its unit's `SupplementaryGroups=`, so
+    /// access checks must credit both.
+    #[serde(default)]
+    pub service_user_groups: Vec<String>,
     /// Content of the **effective** installed copy of each expected udev
     /// rule file (`/etc/udev/rules.d` shadows `/run`, then `/usr/lib`,
     /// then `/lib` — udev's own precedence). Absent key = not installed.
@@ -146,6 +152,7 @@ pub fn gather(req: &ProbeRequest) -> HardwareFacts {
     {
         facts.groups = unix::groups(Path::new("/etc/group"));
         facts.service_user = unix::user(Path::new("/etc/passwd"), &req.service_user);
+        facts.service_user_groups = unix::user_groups(Path::new("/etc/group"), &req.service_user);
     }
     #[cfg(target_os = "linux")]
     {
@@ -251,6 +258,33 @@ mod unix {
                 let _password = fields.next()?;
                 let gid: u32 = fields.next()?.parse().ok()?;
                 Some((name.to_string(), gid))
+            })
+            .collect()
+    }
+
+    /// The groups whose member list names the given user — the account's
+    /// supplementary memberships in `/etc/group` format
+    /// (`name:x:gid:member1,member2`). The primary group lives in the
+    /// passwd entry, never here, so this list is exactly the supplementary
+    /// set. Same heuristic reach as [`groups`]: NSS-only memberships are
+    /// invisible.
+    pub fn user_groups(group_file: &Path, user: &str) -> Vec<String> {
+        let Ok(content) = std::fs::read_to_string(group_file) else {
+            debug!(path = %group_file.display(), "group database unreadable");
+            return Vec::new();
+        };
+        content
+            .lines()
+            .filter_map(|line| {
+                let mut fields = line.split(':');
+                let name = fields.next()?;
+                let _password = fields.next()?;
+                let _gid = fields.next()?;
+                let members = fields.next()?;
+                members
+                    .split(',')
+                    .any(|member| member == user)
+                    .then(|| name.to_string())
             })
             .collect()
     }
@@ -567,6 +601,28 @@ mod tests {
         );
         assert!(!groups.contains_key("ghost"), "absent group stays absent");
         assert_eq!(groups.len(), 3, "the malformed line is skipped");
+
+        let members = dir.path().join("group-members");
+        std::fs::write(
+            &members,
+            "root:x:0:\n\
+             dialout:x:20:igor\n\
+             plugdev:x:46:igor,rusty-photon\n\
+             video:x:44:rusty-photon-two\n\
+             malformed line\n",
+        )
+        .unwrap();
+        assert_eq!(
+            unix::user_groups(&members, "rusty-photon"),
+            vec!["plugdev".to_string()],
+            "membership is exact — a member name merely containing the \
+             user does not count, and empty member lists never match"
+        );
+        assert!(
+            unix::user_groups(&members, "ghost").is_empty(),
+            "a user in no member list has no supplementary groups"
+        );
+        assert!(unix::user_groups(&dir.path().join("absent"), "rusty-photon").is_empty());
 
         let passwd = dir.path().join("passwd");
         std::fs::write(

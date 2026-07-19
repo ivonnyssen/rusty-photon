@@ -70,7 +70,9 @@ not:
    the purged service's config + state; the shared user/home/symlink stay.
 4. **One shared system user `rusty-photon`** (system account, home
    `/var/lib/rusty-photon`, no shell). Hardware privilege is scoped per
-   *unit*, not per user, via `SupplementaryGroups=dialout` (serial class)
+   *unit*, not per user, via `SupplementaryGroups=dialout plugdev` (serial
+   class — dialout is the distro default for tty nodes, plugdev is where
+   openocd-class udev rules put FTDI-based serial nodes)
    and `SupplementaryGroups=plugdev` (camera class). Maintainer scripts stay
    byte-identical across packages (service name derived from
    `$DPKG_MAINTSCRIPT_PACKAGE`), enforced by `scripts/check-pkg-assets.sh`.

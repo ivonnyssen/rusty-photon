@@ -88,6 +88,11 @@ fn service_user(world: &mut DoctorWorld, uid: u32, gid: u32) {
     world.hardware().service_user = Some(UserFacts { uid, gid });
 }
 
+#[given(expr = "hardware facts where the rusty-photon user belongs to host group {string}")]
+fn service_user_group(world: &mut DoctorWorld, name: String) {
+    world.hardware().service_user_groups.push(name);
+}
+
 #[given(expr = "hardware facts with a USB device {string} reporting product string {string}")]
 fn usb_device_with_model(world: &mut DoctorWorld, id: String, model: String) {
     let (vendor, product) = parse_vid_pid(&id);

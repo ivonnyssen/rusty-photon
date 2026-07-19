@@ -44,6 +44,19 @@ Feature: Hardware checks (no SDK)
     Then the report contains an "ok" check named "hardware.serial-node" for service "ppba-driver"
     And the report contains an "ok" check named "hardware.serial-access" for service "ppba-driver"
 
+  Scenario: Account-level membership opens a node the unit's groups do not
+    Given platform facts with an enabled unit "rusty-photon-ppba-driver"
+    And the unit "rusty-photon-ppba-driver" confers supplementary group "dialout"
+    And hardware facts with a character device "/dev/ttyUSB0" owned by uid 0 gid 46 with mode "0660"
+    And hardware facts where host group "dialout" has gid 20
+    And hardware facts where host group "plugdev" has gid 46
+    And hardware facts where the rusty-photon user has uid 990 and gid 990
+    And hardware facts where the rusty-photon user belongs to host group "plugdev"
+    When I run doctor with --json
+    Then the report contains an "ok" check named "hardware.serial-node" for service "ppba-driver"
+    And the report contains an "ok" check named "hardware.serial-access" for service "ppba-driver"
+    And that check's detail mentions "account-level plugdev group membership"
+
   Scenario: A device the unit's groups cannot open names the missing membership
     Given platform facts with an enabled unit "rusty-photon-ppba-driver"
     And hardware facts with a character device "/dev/ttyUSB0" owned by uid 0 gid 20 with mode "0660"

@@ -58,7 +58,10 @@ packaged services by the presence of `pkg/` dirs, so adding a service means:
 
 1. copy `postinst.common` / `postrm.common` into `services/<svc>/pkg/`,
 2. write `rusty-photon-<svc>.service` (start from filemonitor's and apply
-   the service-class delta from the plan: serial → `SupplementaryGroups=dialout`;
+   the service-class delta from the plan: serial → `SupplementaryGroups=dialout plugdev`
+   (the distro default group for tty nodes plus the group openocd-class
+   udev rules put FTDI-based serial nodes in — on stock Debian-family
+   hosts the Pegasus devices come up group-owned by `plugdev`);
    camera → `plugdev` + `AF_NETLINK`; network-only → `PrivateDevices=yes` +
    `MemoryDenyWriteExecute=yes`). Reload-capable services (those calling
    `ServiceRunner::with_reload`) add `ExecReload=/bin/kill -HUP $MAINPID`;

@@ -49,6 +49,18 @@ for pkgdir in services/*/pkg; do
                     || err "$svc: no-default-config service must gate on ConditionPathExists=<XDG config path>"
                 ;;
         esac
+        # Serial-class services confer both dialout (the distro default
+        # group for tty nodes) and plugdev (where openocd-class udev rules
+        # put FTDI-based serial nodes). Debian's base-passwd ships plugdev;
+        # RPM-family distros do not, so the rpm scriptlet must create it.
+        case "$svc" in
+            ppba-driver|qhy-focuser|pa-falcon-rotator|pa-scops-oag|dsd-fp2|star-adventurer-gti)
+                grep -q '^SupplementaryGroups=dialout plugdev$' "$unit" \
+                    || err "$svc: serial unit must carry SupplementaryGroups=dialout plugdev"
+                toml_section "$toml" "package.metadata.generate-rpm" | grep -q 'groupadd -r plugdev' \
+                    || err "$svc: rpm post_install_script must create the plugdev group"
+                ;;
+        esac
     fi
 
     # postrm is byte-identical everywhere. postinst is byte-identical too,
