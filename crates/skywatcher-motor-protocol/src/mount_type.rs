@@ -8,10 +8,14 @@
 //!
 //! ```text
 //! 0x0C_30_03
-//!   ^^         firmware version (0x0C)
-//!      ^^      firmware version (0x30)
+//!   ^^         firmware, second wire byte (0x0C)
+//!      ^^      firmware, first wire byte (0x30)
 //!         ^^   mount-type ID (0x03 = EQ family, includes the Star Adventurer GTi)
 //! ```
+//!
+//! The two firmware bytes keep their wire order in the probe table's
+//! annotation (`fw 0x30/0x0C`); the low-byte-first decode moves the pair
+//! above the type byte, reversing them within the integer.
 //!
 //! The same split INDI eqmod applies: `MountCode = MCVersion & 0xFF`
 //! (`indi-eqmod/skywatcher.cpp`).
