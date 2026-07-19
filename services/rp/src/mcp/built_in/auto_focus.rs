@@ -968,8 +968,12 @@ impl McpHandler {
                 .collect();
             if fresh.len() >= frames_per_step as usize {
                 fresh.sort_by_key(|f| f.frame);
-                fresh.truncate(frames_per_step as usize);
+                // The returned watermark covers the FULL fresh set —
+                // frames beyond the sample-set truncation below were
+                // exposed at this position and must not leak into the
+                // next one should its refresh read fail.
                 let max_frame = fresh.iter().map(|f| f.frame).max().unwrap_or(watermark);
+                fresh.truncate(frames_per_step as usize);
                 let mut valid: Vec<f64> = fresh
                     .iter()
                     .filter(|f| !f.star_lost)
