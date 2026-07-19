@@ -2811,8 +2811,10 @@ samples at the sweep edges are the expected bracket shape, exactly
 like starless captures in the capture sweep.
 
 Fit, recovery, and result mirror the capture sweep (`min_fit_points`
-valid samples required; `not_enough_stars` / `monotonic_curve`
-errors; the focuser moves to the fitted minimum on success), with
+valid samples required; samples weighted by their valid-frame count —
+the capture sweep's star-count weighting, one metric over;
+`not_enough_stars` / `monotonic_curve` errors; the focuser moves to
+the fitted minimum on success), with
 two shape differences: the result reports `best_hfd` (PHD2's
 half-flux **diameter**, in guide-camera pixels) instead of
 `best_hfr`, and `curve_points` entries are

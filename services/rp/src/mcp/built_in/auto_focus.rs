@@ -860,7 +860,12 @@ impl McpHandler {
                     .await?;
                 watermark = max_frame.max(watermark);
                 if let Some(hfd) = sample {
-                    fit_samples.push((position, hfd, 1));
+                    // Weight by the valid-frame count behind the
+                    // median — the capture sweep's star-count
+                    // weighting, one metric over: a position where
+                    // most frames were invalid contributes a noisier
+                    // median and should pull the fit less.
+                    fit_samples.push((position, hfd, frames_used));
                 }
                 curve_points.push(serde_json::json!({
                     "position": position,
