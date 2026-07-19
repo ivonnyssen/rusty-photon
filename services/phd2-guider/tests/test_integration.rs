@@ -2488,12 +2488,22 @@ fn test_serve_with_connection_flags_still_reads_an_existing_default_config() {
     let xdg = tempfile::tempdir().expect("create temp dir");
     write_xdg_default_config(xdg.path());
 
-    let bound = spawn_with_xdg_and_wait_bound(xdg.path(), &["--host", "127.0.0.1"]);
-
-    assert!(
-        bound.is_some(),
-        "serve with flags must load the existing default-path config (port 0) and print bound_addr="
+    let bound = spawn_with_xdg_and_wait_bound(xdg.path(), &["--host", "127.0.0.1"]).expect(
+        "serve with flags must load the existing default-path config and print bound_addr=",
     );
+
+    // The file pins port 0 (kernel-assigned): a default-config fallback that
+    // ignored the file would bind the fixed default 11130 instead.
+    let port: u16 = bound
+        .rsplit(':')
+        .next()
+        .and_then(|p| p.trim().parse().ok())
+        .expect("bound_addr= line must end in a port");
+    assert_ne!(
+        port, 11130,
+        "the existing default-path config must win over in-memory defaults"
+    );
+    assert_ne!(port, 0, "the printed port must be the kernel-assigned one");
 }
 
 // ----------------------------------------------------------------------------

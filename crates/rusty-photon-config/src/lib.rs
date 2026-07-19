@@ -264,9 +264,9 @@ pub fn resolve_and_init(
 ) -> Result<PathBuf, ConfigError> {
     let is_explicit = explicit.is_some();
     let path = resolve_config_path(service, explicit)?;
-    if !is_explicit && init_file_if_absent(&path, default)? {
-        tracing::info!("Created default config at {}", path.display());
-    }
+    // Minting runs first: a first start with identity pointers then writes the
+    // scaffold once, with the ids already filled, and the init step below
+    // finds the file present.
     if !identity_pointers.is_empty() {
         let outcome = materialize_identity(&path, default, identity_pointers)?;
         if outcome.wrote {
@@ -278,6 +278,9 @@ pub fn resolve_and_init(
         } else {
             tracing::debug!("Device UniqueID(s) already present; not minting");
         }
+    }
+    if !is_explicit && init_file_if_absent(&path, default)? {
+        tracing::info!("Created default config at {}", path.display());
     }
     Ok(path)
 }
