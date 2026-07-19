@@ -2750,6 +2750,50 @@ async fn test_golden_deep_sky_escalation_event_runs_the_full_refocus_train() {
 }
 
 #[tokio::test]
+async fn test_golden_deep_sky_recovery_clears_the_flip_restart_flag() {
+    // A crash between the flip trigger's stop-guiding and its restart
+    // leaves session.flip_restart_guiding persisted as true; the
+    // recovery branch must clear it, or a later flip on the resumed
+    // run would restart guiding the invocation never asked for.
+    let doc = make_doc(crate::document::corpus::golden_deep_sky());
+    let mut params = deep_sky_params(
+        &doc,
+        json!({
+            "focus": false,
+            "centering": false,
+            "max_frames": 1,
+            "park_on_finish": false
+        }),
+    );
+    // The engine injects `_recovery` on a recovery invocation
+    // (routes.rs); the exec harness emulates that injection.
+    params["_recovery"] = json!({ "reason": "safety_interruption" });
+    let tools = MockTools::new(|_, tool, _| match tool {
+        "unpark" | "set_tracking" | "slew" | "record_exposure" => Ok(json!({})),
+        "get_next_target" => Ok(planned_recommendation(Value::Null, Value::Null)),
+        "capture" => Ok(json!({ "image_path": "/tmp/light.fits", "document_id": "doc-1" })),
+        other => panic!("unexpected tool call `{other}`"),
+    });
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let mut blackboard = Blackboard::load(dir.path().join("session.json"))
+            .await
+            .unwrap();
+        blackboard
+            .set_path(&["flip_restart_guiding".to_owned()], json!(true))
+            .unwrap();
+        blackboard.persist().await.unwrap();
+    }
+    let (outcome, session) = run_in(&dir, &doc, &params, &tools, &MockClock::new()).await;
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert_eq!(
+        session["flip_restart_guiding"],
+        json!(false),
+        "recovery must clear the crashed flip's restart flag"
+    );
+}
+
+#[tokio::test]
 async fn test_golden_deep_sky_watch_triggers_stay_silent_for_a_null_train_id() {
     // The watch legally emits train_id: null when rp has no guiding
     // train configured; the triggers must stay silent rather than

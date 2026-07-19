@@ -248,7 +248,8 @@
             "set": {
               "session.target_name": "null",
               "session.imaging": "false",
-              "session.guiding": "false"
+              "session.guiding": "false",
+              "session.flip_restart_guiding": "false"
             }
           }
         ]
