@@ -1658,7 +1658,6 @@ mod tests {
     #[test]
     fn test_ui_htmx_rp_flags_missing_ca_trust_for_a_self_signed_target() {
         let dir = tempfile::tempdir().unwrap();
-        // codeql[rust/hard-coded-cryptographic-value] synthetic test fixture, not a real credential
         stage_pki(dir.path(), "s3cret-pw");
         write_json(
             dir.path(),
@@ -1704,7 +1703,6 @@ mod tests {
     #[test]
     fn test_ui_htmx_rp_acme_target_needs_no_ca_cert_path() {
         let dir = tempfile::tempdir().unwrap();
-        // codeql[rust/hard-coded-cryptographic-value] synthetic test fixture, not a real credential
         stage_pki(dir.path(), "s3cret-pw");
         write_json(
             dir.path(),
@@ -1729,9 +1727,7 @@ mod tests {
     #[test]
     fn test_ui_htmx_rp_auth_absent_is_flagged_and_fixed() {
         let dir = tempfile::tempdir().unwrap();
-        // codeql[rust/hard-coded-cryptographic-value] synthetic test fixture, not a real credential
         stage_pki(dir.path(), "s3cret-pw");
-        // codeql[rust/hard-coded-cryptographic-value] synthetic test fixture, not a real credential
         let hash = rp_auth::credentials::hash_password("s3cret-pw").unwrap();
         write_json(
             dir.path(),
@@ -1770,7 +1766,6 @@ mod tests {
     #[test]
     fn test_ui_htmx_rp_auth_mismatch_is_suggestion_only() {
         let dir = tempfile::tempdir().unwrap();
-        // codeql[rust/hard-coded-cryptographic-value] synthetic test fixture, not a real credential
         let hash = rp_auth::credentials::hash_password("correct-pw").unwrap();
         write_json(
             dir.path(),
@@ -1801,7 +1796,6 @@ mod tests {
     #[test]
     fn test_ui_htmx_rp_matching_credential_and_scheme_is_silent() {
         let dir = tempfile::tempdir().unwrap();
-        // codeql[rust/hard-coded-cryptographic-value] synthetic test fixture, not a real credential
         let hash = rp_auth::credentials::hash_password("s3cret-pw").unwrap();
         write_json(
             dir.path(),
@@ -1926,7 +1920,6 @@ mod tests {
     #[test]
     fn test_rp_plate_solver_flags_missing_ca_trust_for_a_self_signed_target() {
         let dir = tempfile::tempdir().unwrap();
-        // codeql[rust/hard-coded-cryptographic-value] synthetic test fixture, not a real credential
         stage_pki(dir.path(), "s3cret-pw");
         write_json(
             dir.path(),
@@ -2008,7 +2001,6 @@ mod tests {
     #[test]
     fn test_rp_ca_cert_already_present_is_left_alone() {
         let dir = tempfile::tempdir().unwrap();
-        // codeql[rust/hard-coded-cryptographic-value] synthetic test fixture, not a real credential
         stage_pki(dir.path(), "s3cret-pw");
         write_json(
             dir.path(),
@@ -2029,7 +2021,6 @@ mod tests {
     #[test]
     fn test_rp_guider_auth_gap_is_suggestion_only() {
         let dir = tempfile::tempdir().unwrap();
-        // codeql[rust/hard-coded-cryptographic-value] synthetic test fixture, not a real credential
         let hash = rp_auth::credentials::hash_password("s3cret-pw").unwrap();
         write_json(
             dir.path(),
@@ -2062,9 +2053,7 @@ mod tests {
     #[test]
     fn test_sentinel_monitor_scheme_and_auth_are_flagged_and_fixed() {
         let dir = tempfile::tempdir().unwrap();
-        // codeql[rust/hard-coded-cryptographic-value] synthetic test fixture, not a real credential
         stage_pki(dir.path(), "s3cret-pw");
-        // codeql[rust/hard-coded-cryptographic-value] synthetic test fixture, not a real credential
         let hash = rp_auth::credentials::hash_password("s3cret-pw").unwrap();
         write_json(
             dir.path(),
@@ -2121,7 +2110,6 @@ mod tests {
     #[test]
     fn test_sentinel_watchdog_rp_url_scheme_is_flagged_without_a_duplicate_auth_check() {
         let dir = tempfile::tempdir().unwrap();
-        // codeql[rust/hard-coded-cryptographic-value] synthetic test fixture, not a real credential
         let hash = rp_auth::credentials::hash_password("x").unwrap();
         write_json(
             dir.path(),
