@@ -51,7 +51,10 @@ fn temp_config_reference_trains(world: &mut RpWorld) {
             },
             "optical_trains": [
                 { "id": "main", "purpose": "imaging", "focal_length_mm": 1000.0,
-                  "devices": ["main-focuser", "main-fw", "falcon", "main-cam"] },
+                  "devices": ["main-focuser", "main-fw", "falcon", "main-cam"],
+                  "auto_focus": { "duration": "3s", "step_size": 100,
+                                  "half_width": 1000, "min_area": 4,
+                                  "max_area": 500 } },
                 { "id": "guide", "purpose": "guiding", "focal_length_mm": 200.0,
                   "devices": ["main-focuser", "guide-focuser", "guide-cam"] }
             ]
@@ -70,6 +73,7 @@ async fn rp_with_camera_in_train(world: &mut RpWorld, focal_length_mm: f64) {
         purpose: Some("imaging".to_string()),
         focal_length_mm: Some(focal_length_mm),
         devices: vec!["main-cam".to_string()],
+        auto_focus: None,
     });
     start_rp(world).await;
 }

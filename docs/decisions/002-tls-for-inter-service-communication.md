@@ -483,7 +483,7 @@ Let's Encrypt certificates currently have a 90-day lifetime, moving to
 
 Renewal is a **one-shot `doctor tls renew` run by a platform scheduler**
 (systemd timer / Windows scheduled task / launchd interval; the units
-ship with the packaging, D7). The originally-designed background task in
+ship in sentinel's package since D7). The originally-designed background task in
 `rp serve` was rejected when renewal moved to doctor: it would make every
 other service's certificate hostage to rp running, and doctor already
 owns the rest of the lifecycle. The command is a no-op unless material

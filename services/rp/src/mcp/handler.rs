@@ -137,6 +137,7 @@ impl McpHandler {
                 + Self::tool_router_focuser()
                 + Self::tool_router_mount()
                 + Self::tool_router_auto_focus()
+                + Self::tool_router_rotator()
                 + Self::tool_router_plate_solve()
                 + Self::tool_router_guider()
                 + Self::tool_router_center_on_target()

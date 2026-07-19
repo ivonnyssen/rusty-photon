@@ -40,6 +40,11 @@ pub struct CannedGuiding {
     pub snr: f64,
     /// Star mass reported by `guiding/stats`.
     pub star_mass: f64,
+    /// Whether `guiding/stats` reports an active guiding loop
+    /// (`guiding: true`, `app_state: "Guiding"`). `false` reports a
+    /// stopped guider (`app_state: "Stopped"`) — the state
+    /// refocus_train's pause/resume handshake checks before pausing.
+    pub guiding: bool,
 }
 
 impl Default for CannedGuiding {
@@ -51,6 +56,7 @@ impl Default for CannedGuiding {
             sample_count: 12,
             snr: 25.0,
             star_mass: 5432.0,
+            guiding: true,
         }
     }
 }
@@ -275,8 +281,8 @@ async fn stats_handler(
     }
     let c = canned(&state);
     Json(serde_json::json!({
-        "app_state": "Guiding",
-        "guiding": true,
+        "app_state": if c.guiding { "Guiding" } else { "Stopped" },
+        "guiding": c.guiding,
         "rms_ra_px": c.rms_ra_px,
         "rms_dec_px": c.rms_dec_px,
         "total_rms_px": c.total_rms_px,

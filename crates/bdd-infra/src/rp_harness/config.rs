@@ -221,6 +221,24 @@ pub struct OpticalTrainConfig {
     /// carry no `optics` block).
     pub focal_length_mm: Option<f64>,
     pub devices: Vec<String>,
+    /// Per-train V-curve sweep parameters (`optical_trains[].auto_focus`).
+    /// `None` ⇒ omit the block.
+    pub auto_focus: Option<TrainAutoFocusConfig>,
+}
+
+/// The `optical_trains[].auto_focus` block: the five sweep parameters
+/// the `auto_focus` tool requires per call, as train-scoped config
+/// (rp.md § Optical Trains). Optional fields the block also accepts
+/// (`threshold_sigma`, `min_fit_points`) are omitted — scenarios that
+/// need them can grow this struct.
+#[derive(Debug, Clone)]
+pub struct TrainAutoFocusConfig {
+    /// Per-frame exposure, humantime string (e.g. `"100ms"`).
+    pub duration: String,
+    pub step_size: i64,
+    pub half_width: i64,
+    pub min_area: i64,
+    pub max_area: i64,
 }
 
 /// Overrides for rp's top-level `cooling` block (rp.md § Camera
@@ -668,6 +686,15 @@ impl RpConfigBuilder {
                 if let Some(f) = t.focal_length_mm {
                     obj["focal_length_mm"] = serde_json::json!(f);
                 }
+                if let Some(af) = &t.auto_focus {
+                    obj["auto_focus"] = serde_json::json!({
+                        "duration": af.duration,
+                        "step_size": af.step_size,
+                        "half_width": af.half_width,
+                        "min_area": af.min_area,
+                        "max_area": af.max_area,
+                    });
+                }
                 obj
             })
             .collect();
@@ -913,12 +940,20 @@ mod tests {
             purpose: Some("imaging".to_string()),
             focal_length_mm: Some(1000.0),
             devices: vec!["main-focuser".to_string(), "main-cam".to_string()],
+            auto_focus: Some(TrainAutoFocusConfig {
+                duration: "100ms".to_string(),
+                step_size: 100,
+                half_width: 200,
+                min_area: 5,
+                max_area: 65_536,
+            }),
         });
         b.add_optical_train(OpticalTrainConfig {
             id: "guide".to_string(),
             purpose: None,
             focal_length_mm: None,
             devices: vec!["guide-cam".to_string()],
+            auto_focus: None,
         });
         let cfg = b.build();
         let trains = cfg["equipment"]["optical_trains"].as_array().unwrap();
@@ -930,6 +965,16 @@ mod tests {
             trains[0]["devices"],
             serde_json::json!(["main-focuser", "main-cam"])
         );
+        assert_eq!(
+            trains[0]["auto_focus"],
+            serde_json::json!({
+                "duration": "100ms",
+                "step_size": 100,
+                "half_width": 200,
+                "min_area": 5,
+                "max_area": 65_536,
+            })
+        );
         assert!(
             trains[1].get("purpose").is_none(),
             "a None purpose must omit the field so rp's imaging default applies"
@@ -937,6 +982,10 @@ mod tests {
         assert!(
             trains[1].get("focal_length_mm").is_none(),
             "a None focal length must omit the field (no optics block)"
+        );
+        assert!(
+            trains[1].get("auto_focus").is_none(),
+            "a None auto_focus must omit the block"
         );
     }
 

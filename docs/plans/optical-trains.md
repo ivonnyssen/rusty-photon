@@ -47,8 +47,8 @@ is not involved beyond its existing config-shape checks.
 | Phase | Description | Status | Branch / PR |
 |-------|-------------|--------|-------------|
 | T0 | This plan | Merged | [#579](https://github.com/ivonnyssen/rusty-photon/pull/579) |
-| T1 | Config schema + validation + derived coupling model in rp (`optical_trains`, `equipment.mount.guiding`, back-ref removal, `focal_length_mm` migration) | In progress | feature/optical-trains-t1 |
-| T2 | Train-aware MCP tools: `auto_focus` by train, `refocus_train` sequence expansion, first rotator verbs | Not started | |
+| T1 | Config schema + validation + derived coupling model in rp (`optical_trains`, `equipment.mount.guiding`, back-ref removal, `focal_length_mm` migration) | Merged | [#586](https://github.com/ivonnyssen/rusty-photon/pull/586) |
+| T2 | Train-aware MCP tools: `auto_focus` by train, `refocus_train` sequence expansion, first rotator verbs | In progress | feature/optical-trains-t2 |
 | T3 | Mount motion gate (dither/slew/flip vs. in-flight exposures) | Not started | |
 | T4 | Guiding integration: rotate×guide ladder, guide-AF trigger + escalation via PHD2 metrics | Not started | |
 | T5 | DSL train addressing (`deep_sky` takes one train id, not three device ids) | Not started | |
@@ -235,12 +235,20 @@ which cannot live in a single field's type:
 
 - `auto_focus` accepts `train_id` as an alternative to the
   `camera_id`+`focuser_id` pair (mutually exclusive; explicit ids keep
-  working). For the guiding train it runs the PHD2-metric sweep of
-  Decision 6 instead of capturing.
+  working). For the guiding train the sweep is PHD2-metric-based per
+  Decision 6 — that sweep is T4's deliverable (it needs the rig
+  verification below), so until T4 lands, guide-train addressing is
+  refused with an error naming the deferral rather than ever
+  capturing through the guide camera.
 - New `refocus_train {train_id, reason}`: expands one trigger into the
   dependency-ordered AF runs of Decision 7, including the pause/resume
   handshake when the guiding train is involved. Emits the existing
-  `focus_*` events per step.
+  `focus_*` events per step (wrapped in a `refocus_*` operation
+  triple). Per-step sweep parameters come from a per-train
+  `optical_trains[].auto_focus` config block (steps span trains, so
+  per-call parameters cannot serve them). Expansions that include an
+  AF step run *in* the guiding train error until T4, like
+  `auto_focus`.
 - First rotator verbs (`move_rotator`, position readback), accepting
   `rotator_id` or `train_id`; rotators graduate from roster-membership-only.
 - `dither` gains optional `unit: "guide_px" | "main_px" | "arcsec"` backed

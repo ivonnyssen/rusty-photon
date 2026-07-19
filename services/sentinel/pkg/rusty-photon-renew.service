@@ -1,0 +1,35 @@
+[Unit]
+Description=Rusty Photon TLS certificate renewal (one-shot; armed by rusty-photon-renew.timer)
+# Persistent=true catch-up runs can fire right at boot; ACME orders need
+# the network up (self-signed renewals do not care).
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/rusty-photon-doctor tls renew
+User=rusty-photon
+Group=rusty-photon
+Environment=RUST_LOG=info
+Environment=HOME=/var/lib/rusty-photon
+WorkingDirectory=/var/lib/rusty-photon
+
+# Same hardening family as the daemon units. The pki tree lives under
+# /var/lib/rusty-photon, and post-renewal hooks (operator-defined, sh -c)
+# run inside this sandbox — a hook needing more than the network and that
+# tree gets it via a systemd drop-in.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/rusty-photon
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictRealtime=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+UMask=0027

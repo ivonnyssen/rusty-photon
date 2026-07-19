@@ -63,6 +63,57 @@ pub fn absolute_pki_dir(config_dir: &Path) -> PathBuf {
     std::path::absolute(pki_dir(config_dir)).unwrap_or_else(|_| pki_dir(config_dir))
 }
 
+/// Align the pki tree (and `acme.json` beside the configs) with the config
+/// root's owner.
+///
+/// Provisioning as root on a packaged host (`sudo rusty-photon-doctor
+/// --fix`) creates key material root-owned; the services — and the renewal
+/// timer, which runs as the service user — could then neither read nor
+/// renew it. A fresh file has no original whose owner
+/// `rusty_photon_config::save` could preserve, so the tree is aligned
+/// wholesale: every entry whose owner differs from the config root's is
+/// chowned to match. For an unprivileged caller on its own tree every
+/// owner already matches and this is a no-op. Symlinks are skipped (doctor
+/// never creates one there; following it would chown the target). A failed
+/// chown is an error: a silently root-owned key breaks TLS at the next
+/// service start.
+#[cfg(unix)]
+pub fn align_pki_ownership(config_dir: &Path) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(root_meta) = std::fs::metadata(config_dir) else {
+        return Ok(());
+    };
+    let (uid, gid) = (root_meta.uid(), root_meta.gid());
+    let mut paths = vec![config_dir.join("acme.json")];
+    let pki = pki_dir(config_dir);
+    if let Ok(entries) = std::fs::read_dir(&pki) {
+        paths.push(pki);
+        paths.extend(entries.flatten().map(|e| e.path()));
+    }
+    for path in paths {
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if meta.file_type().is_symlink() || (meta.uid() == uid && meta.gid() == gid) {
+            continue;
+        }
+        std::os::unix::fs::chown(&path, Some(uid), Some(gid)).map_err(|e| {
+            format!(
+                "could not chown {} to the config root's owner (uid {uid}, gid {gid}): {e} — \
+                 the services and the renewal timer run as that user and need this material",
+                path.display()
+            )
+        })?;
+        debug!(path = %path.display(), uid, gid, "aligned ownership with the config root");
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub fn align_pki_ownership(_config_dir: &Path) -> Result<(), String> {
+    Ok(())
+}
+
 /// Create the CA if absent and issue a certificate pair for every listed
 /// service whose pair is missing. `force` re-issues service certificates
 /// from the existing CA — never the CA itself: replacing it invalidates
@@ -93,6 +144,7 @@ pub fn ensure_material(
     }
 
     if services.is_empty() {
+        align_pki_ownership(config_dir)?;
         return Ok(applied);
     }
     let ca_cert_pem = std::fs::read_to_string(&ca_cert)
@@ -116,6 +168,7 @@ pub fn ensure_material(
             },
         });
     }
+    align_pki_ownership(config_dir)?;
     Ok(applied)
 }
 
@@ -157,6 +210,7 @@ pub fn mint_credential(config_dir: &Path) -> Result<String, String> {
     write_restricted(&path, format!("{password}\n").as_bytes())
         .map_err(|e| format!("could not write {}: {e}", path.display()))?;
     debug!(path = %path.display(), "wrote the observatory credential");
+    align_pki_ownership(config_dir)?;
     Ok(password)
 }
 
@@ -265,6 +319,9 @@ pub async fn run_acme(config_dir: &Path, args: AcmeArgs) -> Result<(), String> {
     acme_config::save_acme_config(&config, &config_path)
         .map_err(|e| format!("could not save {}: {e}", config_path.display()))?;
     debug!(path = %config_path.display(), "saved the ACME configuration");
+    // Align before the order too: if it fails, acme.json is renewal's
+    // recovery input, and the timer runs unprivileged.
+    align_pki_ownership(config_dir)?;
 
     let resolved =
         acme_config::resolve_credentials(&config.dns_credentials).map_err(|e| e.to_string())?;
@@ -280,6 +337,7 @@ pub async fn run_acme(config_dir: &Path, args: AcmeArgs) -> Result<(), String> {
     acme::issue_certificate(&config, &pki, &acme_client)
         .await
         .map_err(|e| e.to_string())?;
+    align_pki_ownership(config_dir)?;
 
     println!("ACME certificate issued for *.{}:", config.domain);
     println!("  cert: {}", acme_config::acme_cert_path(&pki).display());
@@ -298,6 +356,101 @@ mod tests {
 
     fn services(names: &[&str]) -> Vec<String> {
         names.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_align_pki_ownership_is_a_noop_on_a_self_owned_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        let pki = pki_dir(dir.path());
+        std::fs::create_dir_all(&pki).unwrap();
+        std::fs::write(pki.join("credential"), "secret\n").unwrap();
+        align_pki_ownership(dir.path()).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_align_pki_ownership_rehomes_a_foreign_owned_file() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = tempfile::tempdir().unwrap();
+        let pki = pki_dir(dir.path());
+        std::fs::create_dir_all(&pki).unwrap();
+        let key = pki.join("ca-key.pem");
+        std::fs::write(&key, "key material").unwrap();
+        let acme = dir.path().join("acme.json");
+        std::fs::write(&acme, "{}").unwrap();
+        // Only a privileged run (a mapped-root userns: `unshare -r
+        // --map-auto` around the test binary) can create the cross-owner
+        // state; unprivileged, the chowns fail and the assertions reduce
+        // to the no-op case.
+        let cross_owner = std::os::unix::fs::chown(&key, Some(12345), Some(12345)).is_ok();
+        let _ = std::os::unix::fs::chown(&acme, Some(12345), Some(12345));
+        align_pki_ownership(dir.path()).unwrap();
+        let root = std::fs::metadata(dir.path()).unwrap();
+        for path in [&key, &acme] {
+            let meta = std::fs::metadata(path).unwrap();
+            assert_eq!(meta.uid(), root.uid(), "cross-owner run: {cross_owner}");
+            assert_eq!(meta.gid(), root.gid(), "cross-owner run: {cross_owner}");
+        }
+    }
+
+    /// A gid from `id -G` different from `primary`, if the environment has
+    /// one. An owner may hand a file to any group they belong to, so this
+    /// lets the alignment chown run without privileges.
+    #[cfg(unix)]
+    fn supplementary_gid(primary: u32) -> Option<u32> {
+        let out = std::process::Command::new("id").arg("-G").output().ok()?;
+        String::from_utf8(out.stdout)
+            .ok()?
+            .split_whitespace()
+            .filter_map(|g| g.parse().ok())
+            .find(|g| *g != primary)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_align_pki_ownership_chowns_a_group_stray_without_privileges() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = tempfile::tempdir().unwrap();
+        let pki = pki_dir(dir.path());
+        std::fs::create_dir_all(&pki).unwrap();
+        let file = pki.join("sentinel-key.pem");
+        std::fs::write(&file, "key material").unwrap();
+        let root = std::fs::metadata(dir.path()).unwrap();
+        let Some(other) = supplementary_gid(root.gid()) else {
+            eprintln!("single-group environment; the cross-owner path needs the privileged tests");
+            return;
+        };
+        // Sandboxes with a single-mapping user namespace cannot express
+        // the chgrp at all (EINVAL); plain cargo runs and real machines can.
+        if std::os::unix::fs::chown(&file, None, Some(other)).is_err() {
+            eprintln!("environment cannot chgrp to a supplementary group; skipping");
+            return;
+        }
+        align_pki_ownership(dir.path()).unwrap();
+        let meta = std::fs::metadata(&file).unwrap();
+        assert_eq!(meta.gid(), root.gid(), "gid must return to the root's");
+        assert_eq!(meta.uid(), root.uid());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_align_pki_ownership_skips_symlinks() {
+        let dir = tempfile::tempdir().unwrap();
+        let pki = pki_dir(dir.path());
+        std::fs::create_dir_all(&pki).unwrap();
+        // A dangling symlink: without the skip, the follow-the-link chown
+        // would error on the missing target and fail the alignment.
+        std::os::unix::fs::symlink("/nonexistent-target", pki.join("stray-link")).unwrap();
+        align_pki_ownership(dir.path()).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_align_pki_ownership_tolerates_a_missing_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        align_pki_ownership(dir.path()).unwrap();
+        align_pki_ownership(&dir.path().join("never-created")).unwrap();
     }
 
     #[test]

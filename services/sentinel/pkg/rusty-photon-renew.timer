@@ -1,0 +1,14 @@
+[Unit]
+Description=Daily Rusty Photon TLS renewal
+
+[Timer]
+# Daily with jitter; Persistent catches up a machine that was powered
+# off at the scheduled moment. The command is a no-op unless a cert is
+# inside its renewal window, so the daily cadence serves self-signed
+# (10-year) and ACME (90-day) installs alike.
+OnCalendar=daily
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

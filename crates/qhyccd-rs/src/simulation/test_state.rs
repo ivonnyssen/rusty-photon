@@ -48,7 +48,7 @@ fn test_stop_exposure() {
     let mut state = SimulatedCameraState::new(config);
 
     // Set exposure time via parameter (start_exposure reads from this)
-    state.parameters.insert(Control::Exposure, 10_000_000.0); // 10 seconds - long enough for image generation and test
+    state.parameters.insert(Control::Exposure, 10_000_000.0); // 10 s — the exposure clock starts after frame generation, so the assertions below land well inside the window
     state.start_exposure();
 
     // Exposure should be in progress
@@ -76,7 +76,7 @@ fn test_abort_exposure() {
     let mut state = SimulatedCameraState::new(config);
 
     // Set exposure time via parameter (start_exposure reads from this)
-    state.parameters.insert(Control::Exposure, 10_000_000.0); // 10 seconds - long enough for image generation and test
+    state.parameters.insert(Control::Exposure, 10_000_000.0); // 10 s — the exposure clock starts after frame generation, so the assertions below land well inside the window
     state.start_exposure();
 
     // Exposure should be in progress

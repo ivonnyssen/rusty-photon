@@ -143,6 +143,9 @@ pub struct RpWorld {
     pub last_compute_snr_result: Option<Value>,
     /// Last auto_focus result
     pub last_auto_focus_result: Option<Value>,
+    /// Last successful rotator-tool result (move_rotator,
+    /// get_rotator_position)
+    pub last_rotator_result: Option<Value>,
     /// Last plate_solve result
     pub last_plate_solve_result: Option<Value>,
     /// Last successful guider-tool result (start_guiding, dither,

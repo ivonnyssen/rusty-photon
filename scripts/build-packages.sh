@@ -261,12 +261,19 @@ export RUSTFLAGS
 # features (ADR-014) and both binaries would link — and need at runtime —
 # every SDK blob again. Everything else batches into one invocation.
 build_args=""
+needs_doctor=0
 for s in $SERVICES; do
     case "$s" in
         zwo-camera | zwo-focuser) ;;
         *) build_args="$build_args -p $s" ;;
     esac
+    # Sentinel's package carries the doctor binary (no rusty-photon-doctor
+    # package exists), so its build needs the doctor crate too.
+    [ "$s" = sentinel ] && needs_doctor=1
 done
+if [ "$needs_doctor" = 1 ]; then
+    build_args="$build_args -p doctor"
+fi
 if [ -n "$build_args" ]; then
     echo "Building release binaries:$build_args"
     # shellcheck disable=SC2086 # word-splitting the -p list is intended
@@ -287,6 +294,9 @@ command -v strip > /dev/null 2>&1 || die "strip not found (install binutils)"
 for s in $SERVICES; do
     strip "target/release/$s"
 done
+if [ "$needs_doctor" = 1 ]; then
+    strip target/release/doctor
+fi
 
 # ---- package -----------------------------------------------------------
 VERSION=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
