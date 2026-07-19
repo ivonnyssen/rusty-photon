@@ -116,9 +116,12 @@ pub struct Config {
     /// setting rather than per-target — matching the `ca_cert` field
     /// doctor already wires into sentinel, session-runner, and
     /// calibrator-flats (`services/doctor/src/provision/mod.rs`
-    /// `CLIENT_WIRING_SERVICES`). `None` (the default) means only the
-    /// platform trust store applies, so an https target signed by the
-    /// observatory's self-signed CA fails certificate verification.
+    /// `CLIENT_WIRING_SERVICES`). `Some` becomes the client's **only**
+    /// trusted root (`tls_certs_only`, ADR-002) — it replaces, not adds
+    /// to, the platform trust store, so a public-CA `https://` target
+    /// becomes unreachable alongside the observatory CA. `None` (the
+    /// default) uses the platform trust store, so an https target signed
+    /// by the observatory's self-signed CA fails certificate verification.
     #[serde(default)]
     pub ca_cert: Option<String>,
 }

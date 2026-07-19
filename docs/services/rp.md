@@ -1885,12 +1885,15 @@ skipped with a `debug!()` log. See
 **CA trust for `https://` devices.** An `alpaca_url` may be `https://`
 when the device's own service is TLS-enabled (e.g. via doctor's D6
 provisioning). `rp`'s Alpaca client verifies that certificate against
-the platform trust store plus the top-level `ca_cert` config (see
-[Configuration](#configuration)) — an observatory runs one
-self-signed CA, so one rp-level setting covers every device, the
-plate-solver service, and the guider service alike. Without `ca_cert`
-set, an `https://` device signed by that CA fails certificate
-verification regardless of per-device `auth` credentials.
+the top-level `ca_cert` config (see [Configuration](#configuration)) —
+an observatory runs one self-signed CA, so one rp-level setting covers
+every device, the plate-solver service, and the guider service alike.
+Setting `ca_cert` makes it the client's **only** trusted root
+(`tls_certs_only`, ADR-002): the platform trust store no longer
+applies, so a public-CA `https://` target becomes unreachable
+alongside the observatory CA. Without `ca_cert` set, an `https://`
+device signed by that CA fails certificate verification regardless of
+per-device `auth` credentials.
 
 ### Optical Trains
 
@@ -4050,10 +4053,14 @@ service. An observatory runs one self-signed CA (doctor's D6
 provisioning), so this is a single rp-level setting rather than a
 per-device or per-service one; `doctor --fix` writes it automatically
 once the CA exists (`services/doctor/src/provision/mod.rs`
-`CA_ONLY_WIRING_SERVICES`). Omitted (the default), only the platform
-trust store applies, so an `https://` target signed by the observatory
-CA fails certificate verification regardless of the device's `auth`
-credentials — see [ASCOM Alpaca Devices](#ascom-alpaca-devices).
+`CA_ONLY_WIRING_SERVICES`). Setting it makes it the client's **only**
+trusted root (`tls_certs_only`, ADR-002) — it replaces, not adds to,
+the platform trust store, so a public-CA `https://` target becomes
+unreachable alongside the observatory CA. Omitted (the default), only
+the platform trust store applies, so an `https://` target signed by
+the observatory CA fails certificate verification regardless of the
+device's `auth` credentials — see
+[ASCOM Alpaca Devices](#ascom-alpaca-devices).
 
 The `site` block is required for the ephemeris and planner tools
 (`compute_alt_az`, `get_twilight`, `get_next_target`, …); when present

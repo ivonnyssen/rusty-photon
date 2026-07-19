@@ -491,7 +491,7 @@ mod tests {
         let untrusting_client = build_alpaca_client(&url, None, None).unwrap();
         assert!(
             untrusting_client.get_devices().await.is_err(),
-            "client without the CA must reject the self-signed certificate"
+            "client without the CA must reject the CA-signed certificate as untrusted"
         );
 
         shutdown_tx.send(()).ok();

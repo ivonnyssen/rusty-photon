@@ -10,10 +10,14 @@ use crate::error::{Result, TlsError};
 /// thin wrapper over this for callers with no further customization.
 ///
 /// When `ca_cert_path` is `Some`, the PEM-encoded CA certificate at that path
-/// is added as a trusted root. This allows the client to connect to services
-/// using certificates signed by the Rusty Photon CA.
+/// becomes the client's **only** trusted root (`tls_certs_only`, ADR-002) —
+/// this replaces, not adds to, the platform/built-in trust store, so a
+/// public-CA `https://` endpoint becomes unreachable through this builder
+/// alongside the observatory CA. This allows the client to connect to
+/// services using certificates signed by the Rusty Photon CA.
 ///
-/// When `ca_cert_path` is `None`, returns a default builder.
+/// When `ca_cert_path` is `None`, returns a default builder using the
+/// platform trust store.
 pub fn client_builder(ca_cert_path: Option<&Path>) -> Result<reqwest::ClientBuilder> {
     crate::install_default_crypto_provider();
 
