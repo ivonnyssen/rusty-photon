@@ -88,6 +88,12 @@ impl<'a> RealAcmeClient<'a> {
 /// rejects.
 const BAD_NONCE_ATTEMPTS: u32 = 3;
 
+/// The error for an authorization that offers no DNS-01 challenge —
+/// wildcard orders are validated by DNS-01 only.
+fn no_dns01_challenge_error() -> TlsError {
+    TlsError::Acme("no DNS-01 challenge offered by server".to_string())
+}
+
 /// True when the server rejected the request's anti-replay nonce — the one
 /// ACME error RFC 8555 (section 6.5) defines as retryable with the fresh
 /// nonce the rejection carries.
@@ -166,22 +172,16 @@ impl AcmeClient for RealAcmeClient<'_> {
                 only_return_existing: false,
             };
 
-            // Builder construction is local and unsigned; keep its failures
-            // under their own context by building eagerly. `create` consumes
-            // the builder, so retry attempts rebuild it — by then the first
-            // build has succeeded, and the rejected registration was never
-            // processed server-side.
-            let mut builder =
-                Some(self.account_builder().map_err(|e| {
-                    TlsError::Acme(format!("failed to create account builder: {e}"))
-                })?);
+            // Builder construction is local and unsigned; probe it eagerly
+            // so its failures keep their own context. `create` consumes a
+            // builder, so every attempt below constructs a fresh one — safe,
+            // because a rejected registration was never processed
+            // server-side.
+            self.account_builder()
+                .map_err(|e| TlsError::Acme(format!("failed to create account builder: {e}")))?;
             let (account, credentials) =
                 with_bad_nonce_retry!("failed to create ACME account", async {
-                    let builder = match builder.take() {
-                        Some(builder) => builder,
-                        None => self.account_builder()?,
-                    };
-                    builder
+                    self.account_builder()?
                         .create(&new_account, directory_url.clone(), None)
                         .await
                 })?;
@@ -273,9 +273,9 @@ impl AcmeClient for RealAcmeClient<'_> {
                     continue;
                 }
 
-                let mut challenge = auth.challenge(ChallengeType::Dns01).ok_or_else(|| {
-                    TlsError::Acme("no DNS-01 challenge offered by server".to_string())
-                })?;
+                let mut challenge = auth
+                    .challenge(ChallengeType::Dns01)
+                    .ok_or_else(no_dns01_challenge_error)?;
 
                 let key_auth = challenge.key_authorization();
                 let dns_value = key_auth.dns_value();
@@ -676,6 +676,55 @@ mod tests {
         assert!(msg.contains("failed to create order"), "{msg}");
         assert!(msg.contains("timed out"), "{msg}");
         assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn no_dns01_challenge_error_names_the_missing_challenge_type() {
+        let msg = no_dns01_challenge_error().to_string();
+        assert!(msg.contains("no DNS-01 challenge"), "{msg}");
+    }
+
+    #[tokio::test]
+    async fn real_acme_client_unreadable_root_fails_account_creation_with_builder_context() {
+        let dns = super::super::dns::MockDnsProvider::new();
+        let client = RealAcmeClient::new(
+            &dns,
+            Some(PathBuf::from("/nonexistent/acme-root.pem")),
+            Duration::from_secs(15),
+        );
+        let err = client
+            .create_or_load_account(
+                "test@example.com".to_string(),
+                "https://acme.example.com/directory".to_string(),
+                None,
+            )
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("failed to create account builder"), "{msg}");
+    }
+
+    #[tokio::test]
+    async fn real_acme_client_unreadable_root_fails_account_load_with_builder_context() {
+        let dns = super::super::dns::MockDnsProvider::new();
+        let client = RealAcmeClient::new(
+            &dns,
+            Some(PathBuf::from("/nonexistent/acme-root.pem")),
+            Duration::from_secs(15),
+        );
+        // Parseable credentials ("AAAA" is valid URL-safe base64), so the
+        // failure comes from the builder, not the credential parse.
+        let credentials_json = r#"{"id": "https://acme.example.com/acct/1", "key_pkcs8": "AAAA", "directory": "https://acme.example.com/directory"}"#;
+        let err = client
+            .create_or_load_account(
+                "test@example.com".to_string(),
+                "https://acme.example.com/directory".to_string(),
+                Some(credentials_json.to_string()),
+            )
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("failed to create account builder"), "{msg}");
     }
 
     #[tokio::test]
