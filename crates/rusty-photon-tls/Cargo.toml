@@ -29,5 +29,7 @@ hyper-util = { version = "0.1", features = ["tokio", "server-auto", "service"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-tokio = { workspace = true, features = ["full"] }
+# test-util: unlocks paused tokio time (start_paused) for the stalled-TLS-
+# handshake timeout test, instead of a real multi-second sleep.
+tokio = { workspace = true, features = ["full", "test-util"] }
 reqwest = { workspace = true }

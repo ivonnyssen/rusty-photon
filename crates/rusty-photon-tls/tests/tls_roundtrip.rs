@@ -372,3 +372,27 @@ async fn plain_http_roundtrip() {
     shutdown_tx.send(()).ok();
     server_handle.await.ok();
 }
+
+#[tokio::test(start_paused = true)]
+async fn stalled_tls_handshake_is_dropped_after_the_timeout() {
+    let (_pki_dir, bound_addr, shutdown_tx, server_handle) =
+        start_tls_server_with_health_route().await;
+
+    let mut socket = tokio::net::TcpStream::connect(bound_addr).await.unwrap();
+    // The 0x16 first byte routes the server to the TLS acceptor; stalling
+    // without completing the ClientHello must not hold the connection (and
+    // its spawned task) open forever.
+    socket.write_all(&[0x16]).await.unwrap();
+
+    tokio::time::advance(std::time::Duration::from_secs(11)).await;
+
+    let mut buf = [0u8; 1];
+    let n = socket.read(&mut buf).await.unwrap();
+    assert_eq!(
+        n, 0,
+        "the stalled handshake should be dropped, not held open"
+    );
+
+    shutdown_tx.send(()).ok();
+    server_handle.await.ok();
+}

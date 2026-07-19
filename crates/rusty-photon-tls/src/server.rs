@@ -31,6 +31,16 @@ const PLAINTEXT_IO_TIMEOUT: Duration = Duration::from_secs(5);
 /// headers) while looking for the blank line that ends them.
 const MAX_REQUEST_HEAD_BYTES: usize = 8 * 1024;
 
+/// Bound on how long a TLS handshake may take once a `0x16` first byte is
+/// seen. A client (or attacker) that starts a handshake and then stalls
+/// would otherwise hold `acceptor.accept()` — and its spawned task — open
+/// indefinitely, defeating the same resource-sink guarantee the plaintext
+/// path already gets. Longer than `PLAINTEXT_IO_TIMEOUT` because a genuine
+/// handshake, unlike the plaintext redirect's single request/response, can
+/// span multiple round trips on a slow or high-latency link (ADR-002's
+/// remote-observatory-over-VPN case).
+const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Bind a TCP listener with dual-stack (IPv4+IPv6) support.
 ///
 /// This replicates the socket2 binding logic from `ascom-alpaca-rs`'s
@@ -214,10 +224,17 @@ async fn handle_connection(
     }
 
     if first_byte[0] == TLS_HANDSHAKE_CONTENT_TYPE {
-        let tls_stream = match acceptor.accept(stream).await {
-            Ok(s) => s,
-            Err(e) => {
+        let tls_stream = match timeout(TLS_HANDSHAKE_TIMEOUT, acceptor.accept(stream)).await {
+            Ok(Ok(s)) => s,
+            Ok(Err(e)) => {
                 debug!("TLS handshake failed from {}: {}", remote_addr, e);
+                return;
+            }
+            Err(_) => {
+                debug!(
+                    "TLS handshake from {} did not complete within {:?}; dropping",
+                    remote_addr, TLS_HANDSHAKE_TIMEOUT
+                );
                 return;
             }
         };
