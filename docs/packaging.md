@@ -312,10 +312,8 @@ daemon to supervise.
 Packages ship no config files. Daemons self-create their config on first
 start at `/var/lib/rusty-photon/.config/rusty-photon/<svc>.json` (the
 shared user's XDG path), reachable via the `/etc/rusty-photon` symlink.
-Exceptions: the config-gated three (above) never write one, and the two
-cameras, zwo-focuser, and phd2-guider run on built-in defaults without
-writing a file until settings are saved (via ui-htmx `config.apply`) or
-one is created by hand at that path. To change settings:
+Exceptions: the config-gated three (above) never write one. To change
+settings:
 
 ```sh
 sudo -e /etc/rusty-photon/<svc>.json
@@ -524,16 +522,22 @@ remote viewing in one.
    to on). The service reconnects on its own within seconds of PHD2
    appearing.
 
-Leave phd2-guider on its built-in defaults — do **not** create
-`/etc/rusty-photon/phd2-guider.json`. A config file lets sentinel derive
-a health-probe URL, and its supervision counts anything but `200` or an
-auth challenge (`401`/`403`) as a failed probe (see
-[sentinel.md §Service Health Supervision](services/sentinel.md#service-health-supervision)):
-the `503` that means "PHD2 is not running right now" — the normal
-daytime state of a rig — would restart-loop the guider service to no
-effect. Without the file the service stays discovered but unprobed
-(health `unknown`), which is the intended posture until PHD2 runs
-around the clock.
+Like every other daemon (see [Configuration](#configuration)),
+phd2-guider self-creates its config on first start, which also gives
+sentinel a health-probe URL to derive — the guider is supervised from
+then on. Know what that means while PHD2 is off: supervision counts
+anything but `200` or an auth challenge (`401`/`403`) as a failed probe
+(see
+[sentinel.md §Service Health Supervision](services/sentinel.md#service-health-supervision)),
+and the guider's `503` means "PHD2 is not running right now" — a state
+a service restart cannot cure, so on a parked rig supervision
+restart-loops the guider to no effect (issue #595 tracks teaching
+sentinel the difference). Until that lands, when PHD2 will be off for
+long stretches either leave its VNC session running (it is idle-cheap)
+or stop the guider explicitly —
+`sudo systemctl stop rusty-photon-phd2-guider` — sentinel leaves
+operator-stopped services alone, and the next `systemctl start` resumes
+supervision.
 
 ## Removing
 
