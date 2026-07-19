@@ -1,16 +1,20 @@
 //! Sky-Watcher mount-type identification.
 //!
 //! The `:e<axis>` (motor-board-version) reply is the only Sky-Watcher command
-//! that meaningfully identifies the device on the wire. Its 24-bit payload
-//! packs the mount-type ID in the high byte and the firmware-version major /
-//! minor in the mid / low bytes:
+//! that meaningfully identifies the device on the wire. After the codec's
+//! low-byte-first hex decode, its 24-bit payload packs the mount-type ID in
+//! the **low** byte and the firmware version in the upper bytes — the GTi's
+//! wire reply `=03300C\r` (measured on the real mount) decodes to:
 //!
 //! ```text
-//! 0x03_30_0C
-//!   ^^         mount-type ID (0x03 = EQ family, includes the Star Adventurer GTi)
-//!      ^^      firmware version major (0x30)
-//!         ^^   firmware version minor (0x0C)
+//! 0x0C_30_03
+//!   ^^         firmware version (0x0C)
+//!      ^^      firmware version (0x30)
+//!         ^^   mount-type ID (0x03 = EQ family, includes the Star Adventurer GTi)
 //! ```
+//!
+//! The same split INDI eqmod applies: `MountCode = MCVersion & 0xFF`
+//! (`indi-eqmod/skywatcher.cpp`).
 //!
 //! [`MountType::from_motor_board_version`] is the whitelist gate used by the
 //! `star-adventurer-gti` driver's connect handshake to refuse to talk to a
@@ -20,8 +24,8 @@
 //!
 //! [issue]: https://github.com/ivonnyssen/rusty-photon/issues/254
 
-/// Sky-Watcher motor-controller mount-type families, keyed off the high byte
-/// of the `:e` motor-board-version reply.
+/// Sky-Watcher motor-controller mount-type families, keyed off the type byte
+/// (low byte after decode) of the `:e` motor-board-version reply.
 ///
 /// The byte values are documented in the Sky-Watcher motor-controller command
 /// set and cross-checked against the INDI `indi-eqmod` reference driver.
@@ -53,21 +57,25 @@ pub enum MountType {
 }
 
 impl MountType {
-    /// Extract the mount-type byte (high byte of the 24-bit value) from a
-    /// `:e` reply and look it up against the whitelist.
+    /// Extract the mount-type byte (**low** byte of the 24-bit value) from
+    /// a `:e` reply and look it up against the whitelist.
     ///
     /// `version` is the [`crate::Response::U24`] payload of the
     /// [`crate::Command::InquireMotorBoardVersion`] reply, with the codec's
     /// low-byte-first hex decoding (see [`crate::codec::decode_u24`])
     /// already applied — i.e. for the GTi probe the wire reply
-    /// `=0C3003\r` decodes to `0x0003_300C`, which is what the caller
-    /// passes in.
+    /// `=03300C\r` decodes to `0x000C_3003`, which is what the caller
+    /// passes in. The mount-type ID rides in the low byte of that value
+    /// (`0x03`), the upper bytes are the firmware version — the same
+    /// split INDI eqmod applies (`MountCode = MCVersion & 0xFF`,
+    /// `indi-eqmod/skywatcher.cpp`) and the split verified against the
+    /// real Star Adventurer GTi over USB.
     ///
-    /// Returns `Ok(MountType)` when the high byte is in the whitelist;
+    /// Returns `Ok(MountType)` when the low byte is in the whitelist;
     /// returns `Err(byte)` carrying the unrecognised mount-type byte
     /// otherwise so the driver can quote it in operator-facing diagnostics.
     pub fn from_motor_board_version(version: u32) -> Result<Self, u8> {
-        let mount_id = ((version >> 16) & 0xFF) as u8;
+        let mount_id = (version & 0xFF) as u8;
         match mount_id {
             0x00 => Ok(Self::Eq6),
             0x01 => Ok(Self::Heq5),
@@ -91,27 +99,29 @@ mod tests {
 
     #[test]
     fn gti_probe_value_decodes_to_eq3_family() {
-        // The Star Adventurer GTi probe value (documented in
-        // docs/references/skywatcher-motor-controller-command-set.md) is
-        // 0x03_30_0C — the value the driver must accept on every connect.
+        // The Star Adventurer GTi probe: wire `=03300C\r` (measured on the
+        // real mount over USB; also the probe table in
+        // docs/references/skywatcher-motor-controller-command-set.md)
+        // decodes low-byte-first to 0x000C_3003 — the value the driver
+        // must accept on every connect.
         assert_eq!(
-            MountType::from_motor_board_version(0x0003_300C).unwrap(),
+            MountType::from_motor_board_version(0x000C_3003).unwrap(),
             MountType::Eq3
         );
     }
 
     #[test]
-    fn whitelisted_high_bytes_decode_to_named_variants() {
+    fn whitelisted_type_bytes_decode_to_named_variants() {
         for (version, expected) in [
             (0x0000_0000_u32, MountType::Eq6),
-            (0x0001_FFFF, MountType::Heq5),
-            (0x0002_0000, MountType::Eq5),
-            (0x0003_0000, MountType::Eq3),
-            (0x0004_0000, MountType::Eq8),
-            (0x0005_0000, MountType::AzEq6),
-            (0x0006_0000, MountType::AzEq5),
-            (0x0080_0000, MountType::StarAdventurer),
-            (0x0082_0000, MountType::AzGti),
+            (0x00FF_FF01, MountType::Heq5),
+            (0x0000_0002, MountType::Eq5),
+            (0x0000_0003, MountType::Eq3),
+            (0x0000_0004, MountType::Eq8),
+            (0x0000_0005, MountType::AzEq6),
+            (0x0000_0006, MountType::AzEq5),
+            (0x0000_0080, MountType::StarAdventurer),
+            (0x0000_0082, MountType::AzGti),
         ] {
             assert_eq!(
                 MountType::from_motor_board_version(version).unwrap(),
@@ -123,10 +133,10 @@ mod tests {
 
     #[test]
     fn firmware_bytes_do_not_affect_lookup() {
-        // The mid + low bytes are firmware major/minor and must not gate the
-        // whitelist; only the high byte (mount-type ID) is consulted.
-        for low_bytes in [0x0000_u32, 0xABCD, 0xFFFF, 0x300C] {
-            let v = 0x0003_0000 | low_bytes;
+        // The high + mid bytes are firmware version and must not gate the
+        // whitelist; only the low byte (mount-type ID) is consulted.
+        for firmware_bytes in [0x0000_u32, 0xABCD, 0xFFFF, 0x0C30] {
+            let v = (firmware_bytes << 8) | 0x03;
             assert_eq!(
                 MountType::from_motor_board_version(v).unwrap(),
                 MountType::Eq3,
@@ -141,24 +151,24 @@ mod tests {
         // family (0x80..) per the documented byte assignments. A reply with
         // this byte must be rejected so the driver doesn't proceed to issue
         // mount-specific commands against an unknown device.
-        let err = MountType::from_motor_board_version(0x0007_0000).unwrap_err();
+        let err = MountType::from_motor_board_version(0x0000_0007).unwrap_err();
         assert_eq!(err, 0x07);
 
         // The QHY focuser misroute that motivated issue #254 returned data
         // that — were the bytes shuffled to look like a `:e` reply — would
         // decode to something unlike any Sky-Watcher mount-type ID. Pick a
-        // plausible "wrong device" high byte and confirm it's rejected.
-        let err = MountType::from_motor_board_version(0x00FF_0000).unwrap_err();
+        // plausible "wrong device" type byte and confirm it's rejected.
+        let err = MountType::from_motor_board_version(0x0000_00FF).unwrap_err();
         assert_eq!(err, 0xFF);
     }
 
     #[test]
-    fn only_the_high_byte_is_consulted_for_rejection() {
-        // A version whose high byte is unknown must reject regardless of how
+    fn only_the_type_byte_is_consulted_for_rejection() {
+        // A version whose low byte is unknown must reject regardless of how
         // sensible the firmware bytes look. Symmetric to the
         // `firmware_bytes_do_not_affect_lookup` test for the accept path.
         assert_eq!(
-            MountType::from_motor_board_version(0x0099_300C).unwrap_err(),
+            MountType::from_motor_board_version(0x0C30_0099).unwrap_err(),
             0x99
         );
     }

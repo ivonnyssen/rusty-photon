@@ -183,8 +183,9 @@ pub struct MockMountState {
     pub tmr_freq: u32,
     pub high_speed_ratio_ra: u32,
     pub high_speed_ratio_dec: u32,
-    /// Motor-board version. Defaults to `0x03300C` per the GTi probe table
-    /// in the design doc (mount-type byte `0x03`, fw `0x30`/`0x0C`).
+    /// Motor-board version. Defaults to `0x000C_3003` — the decode of the
+    /// GTi probe table's wire reply `=03300C\r` (mount-type byte `0x03` in
+    /// the low byte, fw `0x30`/`0x0C` above it).
     pub motor_board_version: u32,
     /// Every command frame received, in arrival order. Tests assert against
     /// this to verify the driver issued the expected wire commands.
@@ -216,7 +217,7 @@ impl Default for MockMountState {
             // common one; tests that care will override.
             high_speed_ratio_ra: 32,
             high_speed_ratio_dec: 32,
-            motor_board_version: 0x0003_300C,
+            motor_board_version: 0x000C_3003,
             command_log: Vec::new(),
             fail_command: None,
             pending_replies: std::collections::VecDeque::new(),
@@ -675,7 +676,7 @@ mod tests {
         assert_eq!(s.cpr_ra, 0x0037_5F00);
         assert_eq!(s.cpr_dec, 0x0037_5F00);
         assert_eq!(s.tmr_freq, 0x00F4_2400);
-        assert_eq!(s.motor_board_version, 0x0003_300C);
+        assert_eq!(s.motor_board_version, 0x000C_3003);
         assert_eq!(s.high_speed_ratio_ra, 32);
         assert_eq!(s.high_speed_ratio_dec, 32);
     }
