@@ -137,8 +137,9 @@ hostname verification and report a healthy fleet as down. With
 SAN. The names must resolve to the local host (hosts file or local
 resolver) — the same requirement the ACME flip imposes on every other
 client, because sentinel stays same-host-bound either way. The value must
-be a bare DNS domain: a scheme, port, path, or whitespace in it fails
-config load with the field named.
+be a bare DNS domain of letter/digit/hyphen labels: a scheme, port, path,
+whitespace, empty label, or any character a certificate's DNS SAN could
+never carry fails config load with the field named.
 
 ### Service discovery
 

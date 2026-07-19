@@ -15,8 +15,9 @@ const PUSHOVER_USER_KEY_ENV: &str = "PUSHOVER_USER_KEY";
 /// bind-derived host, so https probes verify against an ACME wildcard
 /// certificate whose SANs are DNS names only (see
 /// `docs/services/sentinel.md` §The probe-host override). The names must
-/// resolve to the local host. Anything that is not a bare domain — a
-/// scheme, port, path, or whitespace — is rejected at config load.
+/// resolve to the local host. Anything that is not a bare DNS domain of
+/// letter/digit/hyphen labels — a scheme, port, path, whitespace, empty
+/// label, or underscore — is rejected at config load.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct ProbeDomain(String);
@@ -31,15 +32,21 @@ impl TryFrom<String> for ProbeDomain {
     type Error = String;
 
     fn try_from(value: String) -> std::result::Result<Self, Self::Error> {
-        if value.is_empty()
-            || value.contains(|c: char| c.is_whitespace())
-            || value.contains(['/', ':', '@', '?', '#'])
-            || value.starts_with('.')
-            || value.ends_with('.')
-        {
+        // Letter/digit/hyphen labels (RFC 952/1123 shape): anything else — a
+        // scheme, port, path, whitespace, empty label, or a character a
+        // certificate's DNS SAN could never carry — is a config mistake
+        // better caught at load than as probes failing at 3am.
+        let valid_label = |label: &str| {
+            !label.is_empty()
+                && label.len() <= 63
+                && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+        };
+        if !value.split('.').all(valid_label) {
             return Err(format!(
-                "probe_domain must be a bare DNS domain \
-                 (no scheme, port, path, or whitespace): '{value}'"
+                "probe_domain must be a bare DNS domain of letter/digit/hyphen \
+                 labels (no scheme, port, path, or whitespace): '{value}'"
             ));
         }
         Ok(Self(value))
@@ -908,7 +915,17 @@ mod tests {
     }
 
     #[test]
+    fn probe_domain_accepts_letter_digit_hyphen_labels() {
+        for good in ["rig-01.Example.com", "xn--rg-eka.example.com", "a.b.c"] {
+            let json = format!(r#"{{ "probe_domain": "{good}" }}"#);
+            let config: Config = serde_json::from_str(&json).unwrap();
+            assert_eq!(config.probe_domain.unwrap().as_str(), good);
+        }
+    }
+
+    #[test]
     fn probe_domain_rejects_anything_but_a_bare_domain() {
+        let long_label = format!("{}.example.com", "a".repeat(64));
         for bad in [
             "",
             " ",
@@ -918,6 +935,11 @@ mod tests {
             "rig.example.com/path",
             ".rig.example.com",
             "rig.example.com.",
+            "rig..example.com",
+            "-rig.example.com",
+            "rig-.example.com",
+            "rig_1.example.com",
+            long_label.as_str(),
         ] {
             let json = format!(r#"{{ "probe_domain": {} }}"#, serde_json::json!(bad));
             let err = serde_json::from_str::<Config>(&json).unwrap_err();
