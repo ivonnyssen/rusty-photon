@@ -306,7 +306,8 @@ async fn read_request_head(stream: &mut TcpStream) -> Option<ParsedRequest> {
         if let Some(headers_end) = find_subslice(&buf, b"\r\n\r\n") {
             return parse_request_head(&buf[..headers_end]);
         }
-        if buf.len() >= MAX_REQUEST_HEAD_BYTES {
+        let read_len = capped_read_len(buf.len(), chunk.len());
+        if read_len == 0 {
             return None;
         }
 
@@ -314,11 +315,21 @@ async fn read_request_head(stream: &mut TcpStream) -> Option<ParsedRequest> {
         if remaining.is_zero() {
             return None;
         }
-        match timeout(remaining, stream.read(&mut chunk)).await {
+        match timeout(remaining, stream.read(&mut chunk[..read_len])).await {
             Ok(Ok(0)) | Ok(Err(_)) | Err(_) => return None,
             Ok(Ok(n)) => buf.extend_from_slice(&chunk[..n]),
         }
     }
+}
+
+/// How many more bytes [`read_request_head`] may read into its 512-byte
+/// chunk buffer without letting the accumulated head exceed
+/// [`MAX_REQUEST_HEAD_BYTES`] — a single `read()` filling the whole chunk
+/// could otherwise overshoot the advertised cap by up to `chunk_len` bytes.
+fn capped_read_len(buf_len: usize, chunk_len: usize) -> usize {
+    MAX_REQUEST_HEAD_BYTES
+        .saturating_sub(buf_len)
+        .min(chunk_len)
 }
 
 /// `true`-shaped result only when `head` starts with `METHOD target
@@ -338,7 +349,17 @@ fn parse_request_head(head: &[u8]) -> Option<ParsedRequest> {
     if method.is_empty() || !method.bytes().all(|b| b.is_ascii_uppercase()) {
         return None;
     }
-    if target.is_empty() || !version.starts_with("HTTP/") {
+    if !version.starts_with("HTTP/") {
+        return None;
+    }
+    // Restrict to origin-form targets (`/path`) and the OPTIONS asterisk-form
+    // (`*`) — the only shapes a redirect can append after `https://host:port`
+    // and still mean the same thing. Absolute-form (`http://host/path`) and
+    // authority-form (`CONNECT host:port`) targets are proxy-only requests
+    // that don't belong on this port; redirecting them would either be
+    // malformed or, worse, let a client-supplied target steer the `Location`
+    // header's authority.
+    if target != "*" && !target.starts_with('/') {
         return None;
     }
 
@@ -493,6 +514,35 @@ mod tests {
         // sniff routes it to the acceptor instead), but the parser must
         // still reject it defensively rather than mis-parse binary noise.
         assert!(parse_request_head(&[0x16, 0x03, 0x01, 0x00, 0x05]).is_none());
+    }
+
+    #[test]
+    fn parse_request_head_accepts_asterisk_target() {
+        let parsed = parse_request_head(b"OPTIONS * HTTP/1.1\r\n").unwrap();
+        assert_eq!(parsed.target, "*");
+    }
+
+    #[test]
+    fn parse_request_head_rejects_absolute_form_target() {
+        // A proxy-style absolute-form target would otherwise be appended
+        // verbatim after `https://host:port`, producing a malformed (or
+        // attacker-steerable) `Location` header.
+        assert!(parse_request_head(b"GET http://evil.example/path HTTP/1.1\r\n").is_none());
+    }
+
+    #[test]
+    fn parse_request_head_rejects_authority_form_target() {
+        // CONNECT's authority-form target ("host:port", no leading slash)
+        // is a proxy request shape, not a same-origin path.
+        assert!(parse_request_head(b"CONNECT evil.example:443 HTTP/1.1\r\n").is_none());
+    }
+
+    #[test]
+    fn capped_read_len_never_lets_the_buffer_exceed_the_cap() {
+        assert_eq!(capped_read_len(0, 512), 512);
+        assert_eq!(capped_read_len(MAX_REQUEST_HEAD_BYTES - 100, 512), 100);
+        assert_eq!(capped_read_len(MAX_REQUEST_HEAD_BYTES, 512), 0);
+        assert_eq!(capped_read_len(MAX_REQUEST_HEAD_BYTES + 1, 512), 0);
     }
 
     #[test]
