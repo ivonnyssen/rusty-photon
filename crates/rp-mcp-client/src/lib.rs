@@ -178,7 +178,7 @@ impl RpMcpClient {
 /// subscription, a completion POST) apply the identical policy instead of
 /// re-deriving it. The returned header is marked sensitive.
 pub fn basic_authorization(
-    mcp_url: &str,
+    url: &str,
     service_auth: Option<&ClientAuthConfig>,
     ca_cert: Option<&Path>,
 ) -> Result<Option<HeaderValue>, ConnectError> {
@@ -187,16 +187,16 @@ pub fn basic_authorization(
     };
     if ca_cert.is_none() {
         warn!(
-            url = %mcp_url,
+            url = %url,
             "service_auth is configured without ca_cert; connecting UNAUTHENTICATED \
              (credentials only ride verified HTTPS — configure ca_cert to send them)"
         );
         return Ok(None);
     }
-    if !mcp_url.starts_with("https://") {
+    if !url.starts_with("https://") {
         warn!(
-            url = %mcp_url,
-            "service_auth is configured but the MCP URL is not https; connecting \
+            url = %url,
+            "service_auth is configured but the URL is not https; connecting \
              UNAUTHENTICATED (credentials only ride verified HTTPS)"
         );
         return Ok(None);
