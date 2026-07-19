@@ -1998,7 +1998,14 @@ Consumers of the derived model:
   tool; trains are an alternative spelling, not a replacement. This
   is what lets a workflow document take a single `train_id`
   parameter — the shipped `deep_sky.json` does
-  (session-runner.md § `deep_sky.json`).
+  (session-runner.md § `deep_sky.json`). Every train-addressable
+  tool's input schema publishes its alternatives as a top-level
+  `oneOf` of **presence-only** branches (each carrying nothing but
+  `required`, e.g. `[{"required": ["camera_id"]}, {"required":
+  ["train_id"]}]`; `refocus_train` simply marks `train_id` required)
+  so schema-driven validators — session-runner's layer-2 catalog
+  validation — can fail a call that names no alternative, or
+  several, before anything moves.
 - `refocus_train` expands one trigger into the dependency-ordered AF
   sequence, with a guiding pause/resume handshake around steps that
   move a guiding-train focuser — see the

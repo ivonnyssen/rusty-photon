@@ -845,7 +845,14 @@ Three layers, all sharing one implementation:
    Poll-trigger tools validate the same way. When a tool's schema pins
    `additionalProperties: false`, every argument **name** (literal or
    `$expr`) must be a declared property — a misspelled argument must not
-   silently travel to the tool. Implementation
+   silently travel to the tool. A top-level `oneOf` whose branches are
+   **presence-only** (each object carrying nothing but a `required` name
+   list) is the addressing-alternatives contract rp's train-addressable
+   tools publish (`camera_id` or `train_id`, …): exactly one branch must
+   be fully present among the call's argument names — literal or `$expr`
+   — and the combinator is excluded from the literal-value check, which
+   could not see `$expr` names. Value-constraining `oneOf`s are not
+   touched. Implementation
    (`src/document/catalog.rs`): literal values are checked with a real
    JSON-Schema validator against the tool's input schema (top-level
    `required` / `additionalProperties` stripped — those two are enforced
@@ -1167,11 +1174,15 @@ the document simplifies when it lands:
 **Triggers.** Five reactive rules. The three imaging-loop rules are
 gated `while session.imaging == true` so they stay silent during
 acquisition and shutdown; the two guide-watch rules are gated only on
-`when params.guide == true` — rp emits their events exclusively while
-guiding is active, the metric sweep re-checks that precondition at the
-tool, and an `imaging` gate would race the acquisition's commit `set`
-(a firing evaluated in that gap would be dropped for the rest of the
-watch episode, since the degraded event fires once per episode):
+`when params.guide == true && event.train_id != null` — rp emits their
+events exclusively while guiding is active, the metric sweep re-checks
+that precondition at the tool, and an `imaging` gate would race the
+acquisition's commit `set` (a firing evaluated in that gap would be
+dropped for the rest of the watch episode, since the degraded event
+fires once per episode). The `train_id` half keeps them silent when
+the watch runs without a guiding train and legally emits
+`train_id: null` — a null-addressed sweep would only spam the
+catch-log:
 
 - `refocus-after-frames` — on `exposure_complete`, when
   `session.frames_since_focus` reaches `refocus_every` (a parameter;

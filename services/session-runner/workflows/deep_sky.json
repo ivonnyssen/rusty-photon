@@ -172,7 +172,7 @@
     {
       "id": "guide-af-on-degraded",
       "on": { "event": "guide_focus_degraded" },
-      "when": "params.guide == true",
+      "when": "params.guide == true && event.train_id != null",
       "do": [
         {
           "try": [
@@ -196,7 +196,7 @@
     {
       "id": "refocus-on-escalation",
       "on": { "event": "guide_focus_escalation" },
-      "when": "params.guide == true",
+      "when": "params.guide == true && event.train_id != null",
       "do": [
         {
           "try": [

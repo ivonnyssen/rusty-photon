@@ -165,6 +165,39 @@ fn check_tool_call(
         }
     }
 
+    // 2b. Addressing alternatives: a top-level `oneOf` whose branches
+    //     are presence-only (each object carrying nothing but a
+    //     `required` name list) declares mutually exclusive argument
+    //     sets — rp's train-addressable tools publish
+    //     `camera_id`-or-`train_id` this way. Exactly one branch must
+    //     be fully present among the call's argument names (literal or
+    //     `$expr` — like check 2, this is a name-presence rule, so it
+    //     covers both kinds). Value combinators (branches constraining
+    //     anything beyond presence) are left to check 4.
+    if let Some(branches) = presence_one_of(schema) {
+        let satisfied = branches
+            .iter()
+            .filter(|branch| branch.iter().all(|name| args.contains_key(*name)))
+            .count();
+        if satisfied != 1 {
+            let alternatives = branches
+                .iter()
+                .map(|branch| branch.join(" + "))
+                .collect::<Vec<_>>()
+                .join(", or ");
+            let problem = if satisfied == 0 {
+                "requires exactly one of"
+            } else {
+                "accepts only one of"
+            };
+            issues.push(ValidationIssue {
+                pointer: node_ptr.to_owned(),
+                message: format!("tool `{tool}` {problem}: {alternatives}"),
+                expr_span: None,
+            });
+        }
+    }
+
     // 3. Unknown argument names, when the schema is closed.
     if schema.get("additionalProperties") == Some(&Value::Bool(false)) {
         let properties = schema.get("properties").and_then(Value::as_object);
@@ -196,6 +229,12 @@ fn check_tool_call(
     let mut stripped = schema.clone();
     stripped.remove("required");
     stripped.remove("additionalProperties");
+    if presence_one_of(&stripped).is_some() {
+        // Check 2b enforced the presence combinator against both
+        // argument kinds; validating it here against the literal-only
+        // object would falsely fail `$expr`-addressed calls.
+        stripped.remove("oneOf");
+    }
     match jsonschema::validator_for(&Value::Object(stripped)) {
         Ok(validator) => {
             for error in validator.iter_errors(&Value::Object(literals)) {
@@ -220,4 +259,23 @@ fn check_tool_call(
             });
         }
     }
+}
+
+/// The schema's top-level `oneOf` as a presence combinator: every branch
+/// an object carrying **only** a `required` array of strings. Returns the
+/// branches' name lists, or `None` when the `oneOf` is absent or any
+/// branch constrains more than presence (those stay check 4's business).
+fn presence_one_of(schema: &Map<String, Value>) -> Option<Vec<Vec<&str>>> {
+    let branches = schema.get("oneOf")?.as_array()?;
+    branches
+        .iter()
+        .map(|branch| {
+            let object = branch.as_object()?;
+            if object.len() != 1 {
+                return None;
+            }
+            let names = object.get("required")?.as_array()?;
+            names.iter().map(Value::as_str).collect()
+        })
+        .collect()
 }

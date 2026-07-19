@@ -12,6 +12,7 @@ use super::super::handler::McpHandler;
 use super::super::{resolve_device, tool_error, tool_success};
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(extend("oneOf" = [{"required": ["filter_wheel_id"]}, {"required": ["train_id"]}]))]
 pub struct SetFilterParams {
     /// Filter wheel device ID; mutually exclusive with `train_id`.
     #[serde(default)]

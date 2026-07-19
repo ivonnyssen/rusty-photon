@@ -14,6 +14,7 @@ use super::super::{resolve_device, tool_error, tool_success};
 use crate::imaging;
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(extend("oneOf" = [{"required": ["camera_id"]}, {"required": ["train_id"]}]))]
 pub struct CenterOnTargetToolParams {
     /// Camera that captures each iteration's frame; mutually
     /// exclusive with `train_id`.

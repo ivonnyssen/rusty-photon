@@ -379,7 +379,19 @@ tool table and session-runner.md § `deep_sky.json`):
   neither carries a `while` gate: the events only exist during active
   guiding, the metric sweep re-checks that at the tool, and a
   blackboard gate would race the acquisition commit and silently drop
-  a once-per-episode firing.
+  a once-per-episode firing. The `when` gate additionally requires
+  `event.train_id != null` (the watch legally emits null without a
+  guiding train).
+- **Addressing alternatives are published in the tool schemas** as
+  presence-only `oneOf` branches, and session-runner's layer-2 catalog
+  validation enforces them against the combined literal + `$expr`
+  argument-name set (excluding them from the literal-value check,
+  which cannot see `$expr` names). Making the addressing fields
+  `Option` had silently dropped them from the schemas' `required`
+  lists, so a document naming no alternative validated clean and
+  failed only at run time — this restores the fail-fast, and extends
+  it to the T2 tools (`auto_focus`, the rotator verbs, `refocus_train`)
+  that had the same gap.
 - **Guiding adoption rides T5** (the old #464 remaining slice): the
   watch triggers are meaningless in an unguided document, so
   `deep_sky.json` gains `guide` (default `false` — guiding needs a

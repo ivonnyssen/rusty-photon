@@ -2750,6 +2750,44 @@ async fn test_golden_deep_sky_escalation_event_runs_the_full_refocus_train() {
 }
 
 #[tokio::test]
+async fn test_golden_deep_sky_watch_triggers_stay_silent_for_a_null_train_id() {
+    // The watch legally emits train_id: null when rp has no guiding
+    // train configured; the triggers must stay silent rather than
+    // spam a doomed null-addressed sweep into the catch-log once per
+    // event.
+    let doc = make_doc(crate::document::corpus::golden_deep_sky());
+    let params = deep_sky_params(
+        &doc,
+        json!({
+            "focus": false,
+            "centering": false,
+            "guide": true,
+            "max_frames": 1,
+            "park_on_finish": false
+        }),
+    );
+    let tools = MockTools::new(|_, tool, _| match tool {
+        "unpark" | "set_tracking" | "slew" | "record_exposure" | "start_guiding"
+        | "stop_guiding" => Ok(json!({})),
+        "get_next_target" => Ok(planned_recommendation(Value::Null, Value::Null)),
+        "capture" => Ok(json!({ "image_path": "/tmp/light.fits", "document_id": "doc-1" })),
+        other => panic!("unexpected tool call `{other}` — a null train_id must not fire a sweep"),
+    });
+    let events = buffered_events(&[
+        (
+            "guide_focus_degraded",
+            json!({ "train_id": null, "baseline_hfd": 2.0, "current_hfd": 3.0, "window": 10 }),
+        ),
+        (
+            "guide_focus_escalation",
+            json!({ "train_id": null, "baseline_hfd": 2.0, "current_hfd": 3.0 }),
+        ),
+    ]);
+    let (outcome, _) = run_params_with_events(&doc, &params, &tools, events).await;
+    assert_eq!(outcome, RunOutcome::Completed);
+}
+
+#[tokio::test]
 async fn test_golden_deep_sky_watch_triggers_stay_silent_without_guide() {
     // guide defaults to false: the watch events must not fire the
     // triggers — an unguided document did not start the loop the

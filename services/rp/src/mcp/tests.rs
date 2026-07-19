@@ -1784,6 +1784,52 @@ async fn set_filter_through_a_train_with_several_wheels_is_ambiguous() {
     );
 }
 
+#[test]
+fn train_addressable_tool_schemas_declare_their_addressing_alternatives() {
+    // session-runner's layer-2 catalog validation fails a document
+    // fast when a call satisfies none (or several) of a tool's
+    // addressing alternatives — but only if the tool's input schema
+    // declares them. Presence-only `oneOf` branches (each object
+    // carrying nothing but `required`) are the published contract.
+    for (schema, expected) in [
+        (
+            schemars::schema_for!(CaptureParams),
+            serde_json::json!([{"required": ["camera_id"]}, {"required": ["train_id"]}]),
+        ),
+        (
+            schemars::schema_for!(SetFilterParams),
+            serde_json::json!([{"required": ["filter_wheel_id"]}, {"required": ["train_id"]}]),
+        ),
+        (
+            schemars::schema_for!(CenterOnTargetToolParams),
+            serde_json::json!([{"required": ["camera_id"]}, {"required": ["train_id"]}]),
+        ),
+        (
+            schemars::schema_for!(crate::mcp::built_in::auto_focus::AutoFocusToolParams),
+            serde_json::json!([{"required": ["camera_id", "focuser_id"]}, {"required": ["train_id"]}]),
+        ),
+        (
+            schemars::schema_for!(crate::mcp::built_in::rotator::MoveRotatorParams),
+            serde_json::json!([{"required": ["rotator_id"]}, {"required": ["train_id"]}]),
+        ),
+        (
+            schemars::schema_for!(crate::mcp::built_in::rotator::RotatorPositionParams),
+            serde_json::json!([{"required": ["rotator_id"]}, {"required": ["train_id"]}]),
+        ),
+    ] {
+        let value = serde_json::to_value(&schema).unwrap();
+        assert_eq!(
+            value["oneOf"], expected,
+            "schema missing its addressing oneOf: {value}"
+        );
+    }
+    let refocus = serde_json::to_value(schemars::schema_for!(
+        crate::mcp::built_in::auto_focus::RefocusTrainParams
+    ))
+    .unwrap();
+    assert_eq!(refocus["required"], serde_json::json!(["train_id"]));
+}
+
 #[tokio::test]
 async fn center_on_target_rejects_both_camera_and_train_addressing() {
     let handler = test_handler(camera_registry(Arc::new(MockCamera::default())));
