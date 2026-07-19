@@ -20,7 +20,9 @@ use std::time::Duration;
 
 use serde_json::Value;
 use tokio::sync::mpsc;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
+
+use crate::config::RpConnection;
 
 use crate::engine::{EngineEvent, EventIntake};
 
@@ -52,12 +54,41 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// background task that exits when the returned intake is dropped; a
 /// failed first attempt is retried there too — a dead stream never
 /// blocks the session.
-pub async fn subscribe(events_url: String) -> EventIntake {
+pub async fn subscribe(events_url: String, connection: &RpConnection) -> EventIntake {
     let (tx, rx) = mpsc::channel(EVENT_BUFFER);
-    let client = reqwest::Client::new();
-    let first = connect(&client, &events_url, None).await;
-    tokio::spawn(client_loop(client, events_url, tx, first));
+    let (client, auth) = event_client(connection);
+    let auth_header = rp_mcp_client::basic_authorization(&events_url, auth, connection.ca_path())
+        .unwrap_or_else(|e| {
+            warn!(error = %e, "cannot build the events Authorization header; subscribing unauthenticated");
+            None
+        });
+    let first = connect(&client, &events_url, None, auth_header.as_ref()).await;
+    tokio::spawn(client_loop(client, events_url, tx, first, auth_header));
     EventIntake::new(rx)
+}
+
+/// The subscription's HTTP client and the credential it may present —
+/// CA trust + credentials per ADR-017, the same policy the MCP legs
+/// apply. A broken CA file must not wedge the invoke path, so that
+/// failure degrades to a default-trust client — but then the credential
+/// is **withheld**: the credential is only ever paired with the client
+/// that actually carries its CA pin, so `service_auth` can never ride a
+/// connection that lost it. The routine reconnect loop surfaces the
+/// consequence loudly.
+fn event_client(
+    connection: &RpConnection,
+) -> (reqwest::Client, Option<&rp_mcp_client::ClientAuthConfig>) {
+    match rusty_photon_tls::client::build_reqwest_client(connection.ca_path()) {
+        Ok(client) => (client, connection.auth()),
+        Err(e) => {
+            warn!(
+                error = %e,
+                "cannot build the CA-trusting event client; using default trust and \
+                 subscribing UNAUTHENTICATED (the credential is withheld without its CA pin)"
+            );
+            (reqwest::Client::new(), None)
+        }
+    }
 }
 
 /// One subscribe attempt, capped at [`CONNECT_TIMEOUT`] end to end;
@@ -67,8 +98,12 @@ async fn connect(
     client: &reqwest::Client,
     url: &str,
     last_seq: Option<u64>,
+    auth: Option<&reqwest::header::HeaderValue>,
 ) -> Option<reqwest::Response> {
     let mut request = client.get(url).header("accept", "text/event-stream");
+    if let Some(header) = auth {
+        request = request.header(reqwest::header::AUTHORIZATION, header.clone());
+    }
     if let Some(id) = last_seq {
         request = request.header("last-event-id", id.to_string());
     }
@@ -100,6 +135,7 @@ async fn client_loop(
     url: String,
     tx: mpsc::Sender<EngineEvent>,
     first: Option<reqwest::Response>,
+    auth: Option<reqwest::header::HeaderValue>,
 ) {
     let mut last_seq: Option<u64> = None;
     let mut connection = first;
@@ -113,7 +149,7 @@ async fn client_loop(
         }
         connection = tokio::select! {
             _ = tx.closed() => return,
-            connected = connect(&client, &url, last_seq) => connected,
+            connected = connect(&client, &url, last_seq, auth.as_ref()) => connected,
         };
     }
 }
@@ -346,7 +382,7 @@ mod tests {
         }])
         .await;
 
-        let mut intake = subscribe(url).await;
+        let mut intake = subscribe(url, &RpConnection::default()).await;
         assert_eq!(
             next_event(&mut intake).await,
             EngineEvent {
@@ -384,7 +420,7 @@ mod tests {
         ])
         .await;
 
-        let mut intake = subscribe(url).await;
+        let mut intake = subscribe(url, &RpConnection::default()).await;
         for n in 1..=3 {
             assert_eq!(next_event(&mut intake).await.payload, json!({ "n": n }));
         }
@@ -412,7 +448,7 @@ mod tests {
         }])
         .await;
 
-        let _intake = subscribe(url).await;
+        let _intake = subscribe(url, &RpConnection::default()).await;
         assert!(
             heads.try_recv().is_ok(),
             "subscribe must complete the initial connect before returning"
@@ -431,7 +467,10 @@ mod tests {
 
         let mut intake = timeout(
             Duration::from_secs(60),
-            subscribe(format!("http://{addr}/api/events/subscribe")),
+            subscribe(
+                format!("http://{addr}/api/events/subscribe"),
+                &RpConnection::default(),
+            ),
         )
         .await
         .expect("subscribe must time out a wedged endpoint, not hang the /invoke path");
@@ -455,7 +494,7 @@ mod tests {
         ])
         .await;
 
-        let mut intake = subscribe(url).await;
+        let mut intake = subscribe(url, &RpConnection::default()).await;
         assert_eq!(next_event(&mut intake).await.event, "tick");
     }
 
@@ -476,7 +515,7 @@ mod tests {
         ])
         .await;
 
-        let intake = subscribe(url).await;
+        let intake = subscribe(url, &RpConnection::default()).await;
         // First connection established…
         heads.recv().await.unwrap();
         drop(intake);
@@ -560,5 +599,38 @@ mod tests {
         assert!(engine_event(frame(Some("stream_error"), "{}")).is_none());
         assert!(engine_event(frame(Some("tick"), "not json")).is_none());
         assert!(engine_event(frame(None, "{\"payload\":1}")).is_none());
+    }
+
+    fn authed_connection(ca_cert: Option<&str>) -> RpConnection {
+        RpConnection {
+            service_auth: Some(rp_mcp_client::ClientAuthConfig {
+                username: "observatory".to_owned(),
+                password: "secret".to_owned(),
+            }),
+            ca_cert: ca_cert.map(std::path::PathBuf::from),
+        }
+    }
+
+    #[test]
+    fn test_an_unusable_ca_pin_withholds_the_credential() {
+        // The CA path is configured but unreadable: the client falls back
+        // to default trust, and the credential must fall away with the
+        // pin — it is never paired with a client that lost it.
+        let connection = authed_connection(Some("/nonexistent/ca.pem"));
+        let (_client, auth) = event_client(&connection);
+        assert!(auth.is_none(), "credential must be withheld");
+    }
+
+    #[test]
+    fn test_a_buildable_client_keeps_the_credential_for_the_policy_check() {
+        // No CA configured: the default client builds fine and the
+        // credential passes through — `basic_authorization` downstream
+        // still refuses to emit a header without a CA.
+        let connection = authed_connection(None);
+        let (_client, auth) = event_client(&connection);
+        assert!(auth.is_some());
+        let header =
+            rp_mcp_client::basic_authorization("https://localhost:1/x", auth, None).unwrap();
+        assert!(header.is_none(), "no CA, no header");
     }
 }

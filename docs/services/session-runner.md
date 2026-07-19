@@ -901,7 +901,9 @@ rejected — it names the blackboard file.
   "workflows_dir": "/var/lib/rusty-photon/workflows",
   "state_dir": "/var/lib/rusty-photon/session-runner",
   "mcp_server_url": null,       // rp MCP endpoint for standalone /validate only
-  "events_url": null            // override; default derives from mcp_server_url origin
+  "events_url": null,           // override; default derives from mcp_server_url origin
+  "service_auth": null,         // optional { "username", "password" } presented to rp
+  "ca_cert": null               // optional PEM CA path for a TLS-enabled rp
 }
 ```
 
@@ -912,11 +914,24 @@ rejected — it names the blackboard file.
 | `state_dir` | path | required | Blackboard persistence directory |
 | `mcp_server_url` | string or null | null | `rp` MCP endpoint used only by standalone `/validate` catalog validation; invocations always use the URL delivered in the `/invoke` payload |
 | `events_url` | string or null | null | Explicit SSE endpoint; null derives `<mcp origin>/api/events/subscribe` |
+| `service_auth` | object or null | null | HTTP Basic credentials presented to `rp` — MCP calls and the event stream alike. The D6 observatory credential; doctor `--fix` wires it (see [doctor.md](doctor.md) §Provisioning) |
+| `ca_cert` | string or null | null | PEM CA path used to trust a TLS-enabled `rp` for the same connections |
 
 The `server` block is the shared `ServerConfig` from
 `crates/rusty-photon-server-config` (see ADR-016): `port`, `bind_address`
 (default `0.0.0.0`), and optional `tls`/`auth`. Absent `tls`/`auth` means
 plain, unauthenticated HTTP.
+
+`service_auth` / `ca_cert` apply to session-runner **as a client of rp**
+— every MCP connection (the configured `mcp_server_url` and per-invoke
+URLs equally), the derived events subscription, and the completion POST
+(`/api/plugins/{id}/complete`). The MCP client is
+built through the shared `rp-mcp-client` crate
+([ADR-017](../decisions/017-standard-mcp-client-construction.md)), which
+enforces the credentials-only-over-verified-HTTPS policy: `service_auth`
+without `ca_cert` (or on a non-HTTPS URL) is **not sent** — the client
+connects unauthenticated and logs a loud warning, so plaintext
+credentials never travel over cleartext.
 
 Unknown configuration keys are rejected at load — a misspelled field must
 not silently fall back to a default. CLI: `--config <path>` (default: the
@@ -1286,7 +1301,7 @@ services/session-runner/
     blackboard.rs      session.* state + atomic persistence
     engine/            Tree execution, safe points, trigger queue, resume
     events.rs          SSE client (Last-Event-ID replay)
-    mcp_client.rs      rmcp Streamable HTTP client to rp's /mcp
+    mcp_client.rs      rp-mcp-client (ADR-017) wrapper to rp's /mcp
     routes.rs          Axum router: POST /invoke, POST /validate, GET /health
 ```
 

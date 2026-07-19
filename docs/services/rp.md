@@ -739,6 +739,13 @@ Workflow plugins connect to this endpoint as MCP clients during their
 active workflow. The orchestrator itself also uses the same tool
 implementations internally.
 
+The endpoint sits behind the same server-wide `server.tls` /
+`server.auth` as every other route — there is no unauthenticated MCP
+carve-out. First-party MCP clients are built through the shared
+`rp-mcp-client` crate, which presents the D6 observatory credential over
+verified TLS only
+([ADR-017](../decisions/017-standard-mcp-client-construction.md)).
+
 ### Tool Catalog
 
 The catalog is built at startup from three sources, all of which appear

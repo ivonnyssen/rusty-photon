@@ -214,18 +214,30 @@ pub fn mint_credential(config_dir: &Path) -> Result<String, String> {
     Ok(password)
 }
 
-/// The client-block wiring `--fix` distributes into sentinel.json once the
-/// material exists: the plaintext credential into an absent `service_auth`,
-/// the CA path into an absent `ca_cert`. Present (non-null) blocks are
-/// operator intent and get no op. Empty when sentinel has no usable config
-/// or the material is not there to point at.
+/// The services whose configs carry an rp/service client block — the
+/// shared `service_auth` / `ca_cert` field pair: sentinel's probe client
+/// and the MCP clients (session-runner, calibrator-flats — ADR-017).
+const CLIENT_WIRING_SERVICES: &[&str] = &["sentinel", "session-runner", "calibrator-flats"];
+
+/// The client-block wiring `--fix` distributes into each client service's
+/// config once the material exists: the plaintext credential into an
+/// absent `service_auth`, the CA path into an absent `ca_cert`. Present
+/// (non-null) blocks are operator intent and get no op. Empty when the
+/// service has no usable config or the material is not there to point at.
 pub fn plan_client_wiring(config_dir: &Path) -> Vec<(String, FixOp)> {
-    let path = config_dir.join("sentinel.json");
+    CLIENT_WIRING_SERVICES
+        .iter()
+        .flat_map(|service| plan_service_client_wiring(config_dir, service))
+        .collect()
+}
+
+fn plan_service_client_wiring(config_dir: &Path, service: &str) -> Vec<(String, FixOp)> {
+    let path = config_dir.join(format!("{service}.json"));
     let Ok(content) = std::fs::read_to_string(&path) else {
         return Vec::new();
     };
     let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else {
-        debug!(path = %path.display(), "sentinel.json is not valid JSON; no client wiring");
+        debug!(path = %path.display(), "config is not valid JSON; no client wiring");
         return Vec::new();
     };
     let mut ops = Vec::new();
@@ -237,7 +249,7 @@ pub fn plan_client_wiring(config_dir: &Path) -> Vec<(String, FixOp)> {
             ops.push((
                 "auth.absent".to_string(),
                 FixOp::SetObject {
-                    service: "sentinel".to_string(),
+                    service: service.to_string(),
                     pointer: "/service_auth".to_string(),
                     value: json!({ "username": CREDENTIAL_USERNAME, "password": password }),
                 },
@@ -250,7 +262,7 @@ pub fn plan_client_wiring(config_dir: &Path) -> Vec<(String, FixOp)> {
             ops.push((
                 "tls.absent".to_string(),
                 FixOp::SetString {
-                    service: "sentinel".to_string(),
+                    service: service.to_string(),
                     pointer: "/ca_cert".to_string(),
                     value: ca.to_string_lossy().into_owned(),
                 },
@@ -589,6 +601,42 @@ mod tests {
         )
         .unwrap();
         assert!(plan_client_wiring(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn test_plan_client_wiring_covers_the_mcp_client_services() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("session-runner.json"),
+            r#"{ "workflows_dir": "/w", "state_dir": "/s" }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("calibrator-flats.json"),
+            r#"{ "camera_id": "c", "filter_wheel_id": "f", "calibrator_id": "cc", "filters": [] }"#,
+        )
+        .unwrap();
+        ensure_material(dir.path(), &[], &[], false).unwrap();
+        ensure_credential(dir.path()).unwrap();
+
+        // No sentinel.json staged: exactly the two MCP clients get wired,
+        // each with both halves.
+        let ops = plan_client_wiring(dir.path());
+        assert_eq!(ops.len(), 4, "{ops:?}");
+        for wired in ["session-runner", "calibrator-flats"] {
+            assert!(
+                ops.iter().any(|(check, op)| check == "auth.absent"
+                    && matches!(op, FixOp::SetObject { service, pointer, .. }
+                        if service == wired && pointer == "/service_auth")),
+                "missing service_auth wiring for {wired}: {ops:?}"
+            );
+            assert!(
+                ops.iter().any(|(check, op)| check == "tls.absent"
+                    && matches!(op, FixOp::SetString { service, pointer, .. }
+                        if service == wired && pointer == "/ca_cert")),
+                "missing ca_cert wiring for {wired}: {ops:?}"
+            );
+        }
     }
 
     #[test]

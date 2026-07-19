@@ -109,6 +109,13 @@ pub async fn configure_default_equipment(world: &mut SessionRunnerWorld) {
 /// service is started again — a recovery scenario that kills and restarts
 /// session-runner needs the new process to find the old one's blackboard.
 pub async fn start_session_runner_service(world: &mut SessionRunnerWorld) {
+    start_session_runner_service_with(world, Value::Null).await;
+}
+
+/// Like [`start_session_runner_service`], merging `extra` top-level fields
+/// into the config — the rp client wiring (`mcp_server_url`,
+/// `service_auth`, `ca_cert`) for the mcp_client_auth scenarios.
+pub async fn start_session_runner_service_with(world: &mut SessionRunnerWorld, extra: Value) {
     if world.session_runner.is_some() {
         return;
     }
@@ -137,11 +144,17 @@ pub async fn start_session_runner_service(world: &mut SessionRunnerWorld) {
         world.state_dir = Some(tempfile::tempdir().expect("cannot create a state_dir"));
     }
 
-    let config = serde_json::json!({
+    let mut config = serde_json::json!({
         "server": { "port": 0 },
         "workflows_dir": world.workflows_dir.as_ref().expect("just ensured").path(),
         "state_dir": world.state_dir.as_ref().expect("just ensured").path(),
     });
+    if let Value::Object(extra) = extra {
+        let map = config.as_object_mut().expect("config is an object");
+        for (key, value) in extra {
+            map.insert(key, value);
+        }
+    }
     let config_path = write_temp_config_file("session-runner-config", &config).await;
 
     world.session_runner = Some(ServiceHandle::start(env!("CARGO_PKG_NAME"), &config_path).await);

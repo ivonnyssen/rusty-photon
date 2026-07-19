@@ -1,22 +1,20 @@
-//! MCP client for calling rp's built-in tools via rmcp.
+//! MCP client for calling rp's built-in tools, built on the standard
+//! `rp-mcp-client` crate (ADR-017): CA-pinned TLS and the observatory
+//! credential over verified HTTPS only.
 
+use std::path::Path;
 use std::time::Duration;
 
-use rmcp::model::CallToolRequestParams;
-use rmcp::service::RunningService;
-use rmcp::transport::StreamableHttpClientTransport;
-use rmcp::ServiceExt;
+use rp_mcp_client::{ClientAuthConfig, RpMcpClient};
 use serde::Deserialize;
 use serde_json::Value;
 use tracing::debug;
 
 use crate::error::{CalibratorFlatsError, Result};
 
-/// MCP client backed by rmcp's Streamable HTTP transport.
+/// MCP client for one `rp` session.
 pub struct McpClient {
-    peer: rmcp::Peer<rmcp::RoleClient>,
-    // Keep the running service alive so the connection isn't dropped.
-    _service: RunningService<rmcp::RoleClient, ()>,
+    inner: RpMcpClient,
 }
 
 /// Result from the `capture` tool.
@@ -44,19 +42,18 @@ pub struct ImageStats {
 }
 
 impl McpClient {
-    /// Connect to an MCP server at the given URL.
-    pub async fn new(mcp_url: &str) -> Result<Self> {
+    /// Connect to an MCP server at the given URL, presenting
+    /// `service_auth` per the ADR-017 credential policy.
+    pub async fn new(
+        mcp_url: &str,
+        service_auth: Option<&ClientAuthConfig>,
+        ca_cert: Option<&Path>,
+    ) -> Result<Self> {
         debug!(url = %mcp_url, "connecting MCP client");
-        let transport = StreamableHttpClientTransport::from_uri(mcp_url);
-        let service = ()
-            .serve(transport)
+        let inner = RpMcpClient::connect(mcp_url, service_auth, ca_cert)
             .await
             .map_err(|e| CalibratorFlatsError::ToolCall(format!("MCP connect: {}", e)))?;
-        let peer = service.peer().clone();
-        Ok(Self {
-            peer,
-            _service: service,
-        })
+        Ok(Self { inner })
     }
 
     pub async fn capture(&self, camera_id: &str, duration: Duration) -> Result<CaptureResult> {
@@ -147,40 +144,14 @@ impl McpClient {
     ) -> Result<T> {
         debug!(tool = %tool_name, "calling MCP tool");
 
-        let mut params = CallToolRequestParams::new(tool_name.to_string());
-        if let Some(obj) = arguments.as_object() {
-            params.arguments = Some(obj.clone());
-        }
-
-        let result = self
-            .peer
-            .call_tool(params)
+        let args = arguments.as_object().cloned().unwrap_or_default();
+        let value = self
+            .inner
+            .call_tool(tool_name, args)
             .await
             .map_err(|e| CalibratorFlatsError::ToolCall(format!("{}: {}", tool_name, e)))?;
 
-        if result.is_error.unwrap_or(false) {
-            let msg = result
-                .content
-                .first()
-                .and_then(|c| c.as_text())
-                .map(|tc| tc.text.clone())
-                .unwrap_or_else(|| "unknown error".to_string());
-            return Err(CalibratorFlatsError::ToolCall(format!(
-                "{}: {}",
-                tool_name, msg
-            )));
-        }
-
-        let text = result
-            .content
-            .first()
-            .and_then(|c| c.as_text())
-            .map(|tc| tc.text.clone())
-            .ok_or_else(|| {
-                CalibratorFlatsError::ToolCall(format!("{}: no content in response", tool_name))
-            })?;
-
-        serde_json::from_str(&text).map_err(|e| {
+        serde_json::from_value(value).map_err(|e| {
             CalibratorFlatsError::ToolCall(format!("{}: failed to parse result: {}", tool_name, e))
         })
     }

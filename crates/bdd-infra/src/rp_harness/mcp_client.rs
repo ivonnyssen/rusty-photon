@@ -1,15 +1,17 @@
-//! Persistent MCP test client using rmcp.
+//! Persistent MCP test client, backed by the standard `rp-mcp-client`
+//! crate (ADR-017).
 //!
-//! [`McpTestClient`] wraps a single rmcp session. It is created once per
+//! [`McpTestClient`] wraps a single MCP session. It is created once per
 //! scenario (typically in an "MCP client connected to rp" Given step) and
 //! reused for all tool calls within that scenario — mirroring how a real
-//! MCP client (e.g. calibrator-flats) works.
+//! MCP client (e.g. calibrator-flats) works. [`McpTestClient::connect_authed`]
+//! is the TLS + Basic-auth variant for the scenarios that prove rp's /mcp
+//! honors the server-wide `server.tls` / `server.auth`.
 
+use std::path::Path;
 use std::time::Duration;
 
-use rmcp::model::CallToolRequestParams;
-use rmcp::transport::StreamableHttpClientTransport;
-use rmcp::ServiceExt;
+use rp_mcp_client::{ClientAuthConfig, McpCallError, RpMcpClient};
 use serde_json::Value;
 
 /// Upper bound on a single MCP request (`call_tool` / `list_tools`).
@@ -30,67 +32,73 @@ use serde_json::Value;
 /// real message; only a true hang trips this bound.
 const MCP_CALL_TIMEOUT: Duration = Duration::from_secs(360);
 
-/// A persistent MCP client backed by a single rmcp session.
+/// A persistent MCP client backed by a single session.
 pub struct McpTestClient {
-    // Keep the running service alive so the session isn't dropped.
-    _service: rmcp::service::RunningService<rmcp::RoleClient, ()>,
-    peer: rmcp::Peer<rmcp::RoleClient>,
+    client: RpMcpClient,
 }
 
 impl McpTestClient {
-    /// Connect to an MCP server and perform the initialize handshake.
+    /// Connect to an MCP server over plain HTTP and perform the initialize
+    /// handshake.
     pub async fn connect(mcp_url: &str) -> Result<Self, String> {
-        let transport = StreamableHttpClientTransport::from_uri(mcp_url);
-        let service = ().serve(transport).await.map_err(|e| format!("MCP connect: {}", e))?;
-        let peer = service.peer().clone();
-        Ok(Self {
-            _service: service,
-            peer,
-        })
+        let client = RpMcpClient::connect(mcp_url, None, None)
+            .await
+            .map_err(|e| format!("MCP connect: {}", e))?;
+        Ok(Self { client })
+    }
+
+    /// Connect over TLS trusting the scenario CA but presenting no
+    /// credentials — the client for proving an auth-enabled rp refuses an
+    /// unauthenticated MCP session (as opposed to a TLS trust failure).
+    pub async fn connect_tls(mcp_url: &str, ca_cert: &Path) -> Result<Self, String> {
+        let client = RpMcpClient::connect(mcp_url, None, Some(ca_cert))
+            .await
+            .map_err(|e| format!("MCP connect: {}", e))?;
+        Ok(Self { client })
+    }
+
+    /// Connect over TLS presenting HTTP Basic credentials — the
+    /// authenticated path the mcp_auth scenarios exercise. `ca_cert` is the
+    /// scenario CA (e.g. `PkiFixture::ca_path`); per the ADR-017 policy the
+    /// credential is only sent because the CA is given and the URL is https.
+    pub async fn connect_authed(
+        mcp_url: &str,
+        username: &str,
+        password: &str,
+        ca_cert: &Path,
+    ) -> Result<Self, String> {
+        let auth = ClientAuthConfig {
+            username: username.to_owned(),
+            password: password.to_owned(),
+        };
+        let client = RpMcpClient::connect(mcp_url, Some(&auth), Some(ca_cert))
+            .await
+            .map_err(|e| format!("MCP connect: {}", e))?;
+        Ok(Self { client })
     }
 
     /// Call an MCP tool and return the parsed JSON result or error message.
     pub async fn call_tool(&self, tool_name: &str, arguments: Value) -> Result<Value, String> {
-        let mut params = CallToolRequestParams::new(tool_name.to_string());
-        if let Some(obj) = arguments.as_object() {
-            params.arguments = Some(obj.clone());
+        let args = arguments.as_object().cloned().unwrap_or_default();
+        let call = self.client.call_tool(tool_name, args);
+        match tokio::time::timeout(MCP_CALL_TIMEOUT, call).await {
+            Err(_) => Err(format!(
+                "{}: MCP call timed out after {}s with no response — the rp MCP \
+                 transport was almost certainly torn down mid-request (see MCP_CALL_TIMEOUT)",
+                tool_name,
+                MCP_CALL_TIMEOUT.as_secs()
+            )),
+            Ok(Err(McpCallError::Tool(message))) => Err(message),
+            Ok(Err(e @ (McpCallError::Request(_) | McpCallError::Malformed(_)))) => {
+                Err(format!("{}: {}", tool_name, e))
+            }
+            Ok(Ok(value)) => Ok(value),
         }
-
-        let result = tokio::time::timeout(MCP_CALL_TIMEOUT, self.peer.call_tool(params))
-            .await
-            .map_err(|_| {
-                format!(
-                    "{}: MCP call timed out after {}s with no response — the rp MCP \
-                     transport was almost certainly torn down mid-request (see MCP_CALL_TIMEOUT)",
-                    tool_name,
-                    MCP_CALL_TIMEOUT.as_secs()
-                )
-            })?
-            .map_err(|e| format!("{}: {}", tool_name, e))?;
-
-        if result.is_error.unwrap_or(false) {
-            let msg = result
-                .content
-                .first()
-                .and_then(|c| c.as_text())
-                .map(|tc| tc.text.clone())
-                .unwrap_or_else(|| "unknown error".to_string());
-            return Err(msg);
-        }
-
-        let text = result
-            .content
-            .first()
-            .and_then(|c| c.as_text())
-            .map(|tc| tc.text.clone())
-            .unwrap_or_else(|| "{}".to_string());
-
-        serde_json::from_str(&text).map_err(|e| format!("failed to parse tool result: {}", e))
     }
 
     /// List all available MCP tools and return their names.
     pub async fn list_tools(&self) -> Result<Vec<String>, String> {
-        let tools = tokio::time::timeout(MCP_CALL_TIMEOUT, self.peer.list_all_tools())
+        let tools = tokio::time::timeout(MCP_CALL_TIMEOUT, self.client.list_tools())
             .await
             .map_err(|_| {
                 format!(
@@ -101,6 +109,6 @@ impl McpTestClient {
             })?
             .map_err(|e| format!("list_tools: {}", e))?;
 
-        Ok(tools.into_iter().map(|t| t.name.to_string()).collect())
+        Ok(tools.into_iter().map(|t| t.name).collect())
     }
 }

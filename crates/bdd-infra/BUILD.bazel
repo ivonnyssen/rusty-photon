@@ -49,6 +49,7 @@ rust_library(
     deps = [
         "//crates/rp-ephemeris",
         "//crates/rp-fits",
+        "//crates/rp-mcp-client",
     ] + all_crate_deps(normal = True),
 )
 
@@ -119,6 +120,7 @@ rust_library(
         "//crates/rp-auth",
         "//crates/rp-ephemeris",
         "//crates/rp-fits",
+        "//crates/rp-mcp-client",
         "//crates/rusty-photon-tls",
     ] + all_crate_deps(normal = True),
 )

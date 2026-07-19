@@ -48,11 +48,11 @@ async fn invoke_handler(
     let plan_clone = plan.clone();
 
     tokio::spawn(async move {
-        let mcp = match McpClient::new(&mcp_url).await {
+        let mcp = match McpClient::new(&mcp_url, plan_clone.rp_auth(), plan_clone.rp_ca()).await {
             Ok(c) => c,
             Err(e) => {
                 warn!(workflow_id = %wf_id, error = %e, "failed to connect MCP client");
-                post_failure(&mcp_url, &wf_id, &e.to_string()).await;
+                post_failure(&mcp_url, &wf_id, &e.to_string(), &plan_clone).await;
                 return;
             }
         };
@@ -64,11 +64,11 @@ async fn invoke_handler(
                     total_frames = result.total_frames,
                     "flat calibration completed"
                 );
-                post_completion(&mcp_url, &wf_id, &result).await;
+                post_completion(&mcp_url, &wf_id, &result, &plan_clone).await;
             }
             Err(e) => {
                 warn!(workflow_id = %wf_id, error = %e, "flat calibration failed");
-                post_failure(&mcp_url, &wf_id, &e.to_string()).await;
+                post_failure(&mcp_url, &wf_id, &e.to_string(), &plan_clone).await;
             }
         }
     });
@@ -94,6 +94,7 @@ async fn post_completion(
     mcp_server_url: &str,
     workflow_id: &str,
     result: &workflow::WorkflowResult,
+    plan: &FlatPlan,
 ) {
     let base_url = mcp_server_url.trim_end_matches("/mcp");
     let url = format!("{}/api/plugins/{}/complete", base_url, workflow_id);
@@ -121,11 +122,10 @@ async fn post_completion(
         }
     });
 
-    let client = reqwest::Client::new();
-    let _ = client.post(&url).json(&body).send().await;
+    post_to_rp(&url, &body, plan).await;
 }
 
-async fn post_failure(mcp_server_url: &str, workflow_id: &str, error: &str) {
+async fn post_failure(mcp_server_url: &str, workflow_id: &str, error: &str, plan: &FlatPlan) {
     let base_url = mcp_server_url.trim_end_matches("/mcp");
     let url = format!("{}/api/plugins/{}/complete", base_url, workflow_id);
 
@@ -137,6 +137,27 @@ async fn post_failure(mcp_server_url: &str, workflow_id: &str, error: &str) {
         }
     });
 
-    let client = reqwest::Client::new();
-    let _ = client.post(&url).json(&body).send().await;
+    post_to_rp(&url, &body, plan).await;
+}
+
+/// POST a completion body to `rp`, trusting and authenticating per the
+/// ADR-017 policy — the same legs the MCP client uses.
+async fn post_to_rp(url: &str, body: &Value, plan: &FlatPlan) {
+    let client = match rusty_photon_tls::client::build_reqwest_client(plan.rp_ca()) {
+        Ok(client) => client,
+        Err(e) => {
+            warn!(%url, error = %e, "cannot build HTTP client for the completion post");
+            return;
+        }
+    };
+    let auth_header = rp_mcp_client::basic_authorization(url, plan.rp_auth(), plan.rp_ca())
+        .unwrap_or_else(|e| {
+            warn!(%url, error = %e, "cannot build the completion Authorization header");
+            None
+        });
+    let mut request = client.post(url).json(body);
+    if let Some(header) = auth_header {
+        request = request.header(reqwest::header::AUTHORIZATION, header);
+    }
+    let _ = request.send().await;
 }

@@ -225,6 +225,8 @@ block for its HTTP endpoint (`/invoke`, `/health`):
     "tls": null,
     "auth": null
   },
+  "service_auth": null,
+  "ca_cert": null,
   "camera_id": "main-cam",
   "filter_wheel_id": "main-fw",
   "calibrator_id": "flat-panel",
@@ -240,6 +242,18 @@ The `server` block is the shared `ServerConfig` from
 plain, unauthenticated HTTP; a plan file without a `server` block keeps
 loading (port 11170 on all interfaces). `--port` / `--bind-address`
 override `server.port` / `server.bind_address` from the command line.
+
+`service_auth` (optional `{ "username", "password" }`) and `ca_cert`
+(optional PEM CA path) apply to calibrator-flats **as a client of rp's
+MCP server**. The `mcp_server_url` itself still arrives per-invocation in
+the `/invoke` payload; credentials are config-scoped and never ride the
+request body. The MCP client is built through the shared `rp-mcp-client`
+crate ([ADR-017](../decisions/017-standard-mcp-client-construction.md)),
+which enforces the credentials-only-over-verified-HTTPS policy:
+`service_auth` without `ca_cert` (or on a non-HTTPS URL) is **not
+sent** — the client connects unauthenticated and logs a loud warning.
+Doctor `--fix` wires both fields with the D6 observatory credential (see
+[doctor.md](doctor.md) §Provisioning).
 
 `calibrator-flats doctor [--config <file>] [--json]` diagnoses this
 service's own config read-only without starting it — see
@@ -281,6 +295,8 @@ The plan is part of `rp`'s plugin configuration:
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `server` | object | `{ "port": 11170 }` | The service's HTTP endpoint (own config file only, not the plugin registration) — the shared `ServerConfig` shape above |
+| `service_auth` | object or null | null | HTTP Basic credentials presented to `rp`'s MCP server (own config file only) — the D6 observatory credential |
+| `ca_cert` | string or null | null | PEM CA path used to trust a TLS-enabled `rp` (own config file only) |
 | `camera_id` | string | required | Camera to use for flat exposures |
 | `filter_wheel_id` | string | required | Filter wheel to use |
 | `calibrator_id` | string | required | CoverCalibrator device to control |
@@ -303,7 +319,7 @@ services/calibrator-flats/src/
   error.rs           Error types (thiserror)
   routes.rs          Axum router: POST /invoke
   workflow.rs        Flat calibration algorithm (iterative exposure + batch capture)
-  mcp_client.rs      MCP client: rmcp Streamable HTTP client to rp's /mcp endpoint
+  mcp_client.rs      MCP client: rp-mcp-client (ADR-017) wrapper to rp's /mcp endpoint
 ```
 
 ## Testing Strategy

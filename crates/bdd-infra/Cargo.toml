@@ -20,9 +20,9 @@ rp-harness = [
     "dep:chrono",
     "dep:humantime",
     "dep:reqwest",
-    "dep:rmcp",
     "dep:rp-ephemeris",
     "dep:rp-fits",
+    "dep:rp-mcp-client",
 ]
 # Enables the `conformu` module: a direct ConformU-CLI runner used by services'
 # conformu_integration tests. No extra deps (it uses tokio::process, already a
@@ -54,12 +54,9 @@ axum = { workspace = true, optional = true }
 chrono = { workspace = true, optional = true }
 humantime = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
-rmcp = { workspace = true, optional = true, features = [
-    "client",
-    "transport-streamable-http-client-reqwest",
-] }
 rp-auth = { workspace = true, optional = true }
 rp-ephemeris = { workspace = true, optional = true }
 rp-fits = { workspace = true, optional = true }
+rp-mcp-client = { workspace = true, optional = true }
 rusty-photon-tls = { workspace = true, optional = true }
 uuid = { workspace = true, optional = true }

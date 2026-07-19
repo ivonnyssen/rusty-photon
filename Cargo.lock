@@ -399,10 +399,10 @@ dependencies = [
  "humantime",
  "libc",
  "reqwest 0.13.4",
- "rmcp",
  "rp-auth",
  "rp-ephemeris",
  "rp-fits",
+ "rp-mcp-client",
  "rusty-photon-tls",
  "serde_json",
  "tempfile",
@@ -570,8 +570,8 @@ dependencies = [
  "libc",
  "mockall",
  "reqwest 0.13.4",
- "rmcp",
  "rp-auth",
+ "rp-mcp-client",
  "rusty-photon-config",
  "rusty-photon-doctor-checks",
  "rusty-photon-server-config",
@@ -4343,6 +4343,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "rp-mcp-client"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "reqwest 0.13.4",
+ "rmcp",
+ "rp-auth",
+ "rusty-photon-tls",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "rp-plate-solver"
 version = "0.1.0"
 dependencies = [
@@ -5068,8 +5083,8 @@ dependencies = [
  "jsonschema",
  "proptest",
  "reqwest 0.13.4",
- "rmcp",
  "rp-auth",
+ "rp-mcp-client",
  "rusty-photon-config",
  "rusty-photon-server-config",
  "rusty-photon-service-lifecycle",
