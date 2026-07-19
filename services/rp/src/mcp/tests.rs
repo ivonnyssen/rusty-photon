@@ -98,6 +98,10 @@ struct MockCamera {
     /// camera to Idle with no image). Without either state knob the
     /// mock reports `Exposing`, a camera mid-exposure.
     report_idle_state: bool,
+    /// When set, `image_ready` reports `false` for the first N calls
+    /// and errors thereafter — drives the aborted-idle re-check's
+    /// read-error arm.
+    fail_image_ready_after: Option<u32>,
 }
 
 impl_mock_device!(MockCamera);
@@ -118,6 +122,15 @@ impl ascom_alpaca::api::Camera for MockCamera {
     async fn image_ready(&self) -> ascom_alpaca::ASCOMResult<bool> {
         if self.fail_image_ready {
             return Err(ASCOMError::invalid_operation("readout failed"));
+        }
+        if let Some(after) = self.fail_image_ready_after {
+            let n = self
+                .image_ready_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if n >= after {
+                return Err(ASCOMError::invalid_operation("link dropped mid-poll"));
+            }
+            return Ok(false);
         }
         if self.never_ready {
             return Ok(false);
@@ -1232,6 +1245,32 @@ async fn test_capture_surfaces_an_aborted_exposure_instead_of_waiting_out_the_ba
         started.elapsed() < Duration::from_secs(5),
         "the aborted exposure must surface promptly, not at the readout backstop"
     );
+}
+
+#[tokio::test]
+async fn test_capture_surfaces_a_read_error_on_the_aborted_idle_recheck() {
+    // The re-check that guards the aborted-idle classification must
+    // pass a failed ImageReady read through as a read error — not
+    // misreport a transport failure as an aborted exposure.
+    let cam = MockCamera {
+        report_idle_state: true,
+        // Two not-ready polls build the idle streak; the re-check is
+        // the third read and errors.
+        fail_image_ready_after: Some(2),
+        ..Default::default()
+    };
+    let handler = test_handler(camera_registry(Arc::new(cam)));
+    let result = handler
+        .capture_inner(
+            CaptureParams {
+                camera_id: Some("cam".into()),
+                train_id: None,
+                duration: Duration::from_millis(100),
+            },
+            None,
+        )
+        .await;
+    assert_tool_error(result, "error checking image ready: ");
 }
 
 // -----------------------------------------------------------------------

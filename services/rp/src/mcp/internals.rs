@@ -699,11 +699,24 @@ impl McpHandler {
                             Ok(CameraState::Idle) => {
                                 idle_streak += 1;
                                 if idle_streak >= 2 {
-                                    if let Ok(true) = cam.image_ready().await {
-                                        break;
+                                    match cam.image_ready().await {
+                                        Ok(true) => break,
+                                        Ok(false) => {
+                                            return Err(
+                                                "exposure aborted: camera is idle with no image"
+                                                    .to_string(),
+                                            )
+                                        }
+                                        // A read error is a read error, not
+                                        // an abort — same treatment as the
+                                        // outer poll's Err arm.
+                                        Err(e) => {
+                                            return Err(format!(
+                                                "error checking image ready: {}",
+                                                e
+                                            ))
+                                        }
                                     }
-                                    return Err("exposure aborted: camera is idle with no image"
-                                        .to_string());
                                 }
                             }
                             _ => idle_streak = 0,
