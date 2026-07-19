@@ -341,6 +341,34 @@ async fn non_http_garbage_on_tls_port_is_dropped_without_a_response() {
     server_handle.await.ok();
 }
 
+#[tokio::test(start_paused = true)]
+async fn slow_first_byte_and_stalled_head_share_one_deadline() {
+    let (_pki_dir, bound_addr, shutdown_tx, server_handle) =
+        start_tls_server_with_health_route().await;
+
+    let mut socket = tokio::net::TcpStream::connect(bound_addr).await.unwrap();
+
+    // Let a chunk of the PLAINTEXT_IO_TIMEOUT budget pass before the first
+    // byte even arrives, then stall before ever completing a request line.
+    // If the byte peek and the head-read each started their own
+    // independent PLAINTEXT_IO_TIMEOUT, the connection would still be open
+    // past the advertised 5s total (4s + 2s here); a single shared deadline
+    // must not allow that.
+    tokio::time::advance(std::time::Duration::from_secs(4)).await;
+    socket.write_all(b"G").await.unwrap();
+    tokio::time::advance(std::time::Duration::from_secs(2)).await;
+
+    let mut buf = [0u8; 1];
+    let n = socket.read(&mut buf).await.unwrap();
+    assert_eq!(
+        n, 0,
+        "connection should be dropped by the shared 5s deadline (4s + 2s > 5s), not still open"
+    );
+
+    shutdown_tx.send(()).ok();
+    server_handle.await.ok();
+}
+
 #[tokio::test]
 async fn plain_http_roundtrip() {
     // Start plain HTTP server

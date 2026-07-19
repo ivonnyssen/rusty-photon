@@ -21,10 +21,11 @@ use crate::resolver::ReloadableCertResolver;
 const TLS_HANDSHAKE_CONTENT_TYPE: u8 = 0x16;
 
 /// Bound on how long a non-TLS connection may take, in total, to produce a
-/// recognizable HTTP request head before it is dropped. Applied to the
-/// initial byte peek and to reading the request head, so a connection that
-/// never sends anything — or trickles bytes forever — cannot become a
-/// resource sink on the TLS port.
+/// recognizable HTTP request head before it is dropped. A single deadline
+/// computed once (in `handle_connection`) covers both the initial byte peek
+/// and reading the request head, so a connection that never sends anything —
+/// or trickles bytes forever — cannot become a resource sink on the TLS port
+/// for longer than this, not this budget twice over.
 const PLAINTEXT_IO_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Bound on the buffered size of a plaintext request head (request line +
@@ -203,8 +204,19 @@ async fn handle_connection(
     acceptor: TlsAcceptor,
     router: axum::Router,
 ) {
+    // One deadline shared across the initial byte peek and (if this turns
+    // out to be plaintext) the request-head read, so the total resource-sink
+    // bound is PLAINTEXT_IO_TIMEOUT exactly — not that budget twice over
+    // from two independently-started timeouts.
+    let deadline = Instant::now() + PLAINTEXT_IO_TIMEOUT;
+
     let mut first_byte = [0u8; 1];
-    let peeked = match timeout(PLAINTEXT_IO_TIMEOUT, stream.peek(&mut first_byte)).await {
+    let peeked = match timeout(
+        deadline.saturating_duration_since(Instant::now()),
+        stream.peek(&mut first_byte),
+    )
+    .await
+    {
         Ok(Ok(n)) => n,
         Ok(Err(e)) => {
             debug!("Failed to peek connection from {}: {}", remote_addr, e);
@@ -256,15 +268,20 @@ async fn handle_connection(
         "Non-TLS byte from {} on the TLS port; treating as plaintext HTTP",
         remote_addr
     );
-    redirect_plaintext_http(stream, remote_addr).await;
+    redirect_plaintext_http(stream, remote_addr, deadline).await;
 }
 
 /// Answer a connection that didn't start with a TLS handshake byte: parse a
 /// bounded plaintext HTTP request head and reply with a redirect to the same
 /// host and port under `https://`. Anything that doesn't resolve to a
-/// parseable HTTP request within the bound is dropped without a response —
-/// only bytes that look like HTTP earn a reply on the TLS port.
-async fn redirect_plaintext_http(mut stream: TcpStream, remote_addr: SocketAddr) {
+/// parseable HTTP request within `deadline` (the same deadline the caller
+/// already started for the byte peek) is dropped without a response — only
+/// bytes that look like HTTP earn a reply on the TLS port.
+async fn redirect_plaintext_http(
+    mut stream: TcpStream,
+    remote_addr: SocketAddr,
+    deadline: Instant,
+) {
     let local_addr = match stream.local_addr() {
         Ok(addr) => addr,
         Err(e) => {
@@ -276,7 +293,7 @@ async fn redirect_plaintext_http(mut stream: TcpStream, remote_addr: SocketAddr)
         }
     };
 
-    let Some(request) = read_request_head(&mut stream).await else {
+    let Some(request) = read_request_head(&mut stream, deadline).await else {
         debug!(
             "Dropping non-HTTP plaintext connection from {}",
             remote_addr
@@ -304,15 +321,16 @@ struct ParsedRequest {
 }
 
 /// Read a plaintext request head (request line + headers) up to the blank
-/// line that ends them, bounded by [`MAX_REQUEST_HEAD_BYTES`] and
-/// [`PLAINTEXT_IO_TIMEOUT`]. Returns `None` if the connection closes, times
+/// line that ends them, bounded by [`MAX_REQUEST_HEAD_BYTES`] and by
+/// `deadline` — shared with the caller's initial byte peek, so the total
+/// time this connection may occupy a task is [`PLAINTEXT_IO_TIMEOUT`], not
+/// that budget twice over. Returns `None` if the connection closes, times
 /// out, exceeds the size bound, or the bytes read so far don't look like an
 /// HTTP request line — every `None` case means the caller drops the
 /// connection without a response.
-async fn read_request_head(stream: &mut TcpStream) -> Option<ParsedRequest> {
+async fn read_request_head(stream: &mut TcpStream, deadline: Instant) -> Option<ParsedRequest> {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 512];
-    let deadline = Instant::now() + PLAINTEXT_IO_TIMEOUT;
 
     loop {
         if let Some(line_end) = find_subslice(&buf, b"\r\n") {
