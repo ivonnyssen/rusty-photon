@@ -15,10 +15,13 @@ pub struct FilterWheelEntry {
     pub device: Option<Arc<dyn FilterWheel>>,
 }
 
-pub(super) async fn connect_filter_wheel(config: &config::FilterWheelConfig) -> FilterWheelEntry {
+pub(super) async fn connect_filter_wheel(
+    config: &config::FilterWheelConfig,
+    ca_cert_path: Option<&std::path::Path>,
+) -> FilterWheelEntry {
     debug!(fw_id = %config.id, alpaca_url = %config.alpaca_url, device_number = config.device_number, "connecting to filter wheel");
 
-    let client = match build_alpaca_client(&config.alpaca_url, config.auth.as_ref()) {
+    let client = match build_alpaca_client(&config.alpaca_url, config.auth.as_ref(), ca_cert_path) {
         Ok(c) => c,
         Err(e) => {
             error!(fw_id = %config.id, error = %e, "failed to create Alpaca client for filter wheel");

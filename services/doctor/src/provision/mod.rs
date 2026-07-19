@@ -214,24 +214,41 @@ pub fn mint_credential(config_dir: &Path) -> Result<String, String> {
     Ok(password)
 }
 
-/// The services whose configs carry an rp/service client block — the
+/// The services whose configs carry a full rp/service client block — the
 /// shared `service_auth` / `ca_cert` field pair: sentinel's probe client
 /// and the MCP clients (session-runner, calibrator-flats — ADR-017).
 const CLIENT_WIRING_SERVICES: &[&str] = &["sentinel", "session-runner", "calibrator-flats"];
 
+/// Services with only a `ca_cert` setting — no `service_auth`, because
+/// they carry no shared-observatory-credential client role. `rp`'s
+/// outbound Alpaca / plate-solver / guider clients trust the observatory
+/// CA the same way, but device credentials are per-device `auth` blocks,
+/// not the D6 shared credential (issue #609).
+const CA_ONLY_WIRING_SERVICES: &[&str] = &["rp"];
+
 /// The client-block wiring `--fix` distributes into each client service's
 /// config once the material exists: the plaintext credential into an
-/// absent `service_auth`, the CA path into an absent `ca_cert`. Present
-/// (non-null) blocks are operator intent and get no op. Empty when the
-/// service has no usable config or the material is not there to point at.
+/// absent `service_auth` (skipped for [`CA_ONLY_WIRING_SERVICES`]), the CA
+/// path into an absent `ca_cert`. Present (non-null) blocks are operator
+/// intent and get no op. Empty when the service has no usable config or
+/// the material is not there to point at.
 pub fn plan_client_wiring(config_dir: &Path) -> Vec<(String, FixOp)> {
     CLIENT_WIRING_SERVICES
         .iter()
-        .flat_map(|service| plan_service_client_wiring(config_dir, service))
+        .flat_map(|service| plan_service_client_wiring(config_dir, service, true))
+        .chain(
+            CA_ONLY_WIRING_SERVICES
+                .iter()
+                .flat_map(|service| plan_service_client_wiring(config_dir, service, false)),
+        )
         .collect()
 }
 
-fn plan_service_client_wiring(config_dir: &Path, service: &str) -> Vec<(String, FixOp)> {
+fn plan_service_client_wiring(
+    config_dir: &Path,
+    service: &str,
+    wire_auth: bool,
+) -> Vec<(String, FixOp)> {
     let path = config_dir.join(format!("{service}.json"));
     let Ok(content) = std::fs::read_to_string(&path) else {
         return Vec::new();
@@ -241,9 +258,10 @@ fn plan_service_client_wiring(config_dir: &Path, service: &str) -> Vec<(String, 
         return Vec::new();
     };
     let mut ops = Vec::new();
-    if value
-        .get("service_auth")
-        .is_none_or(serde_json::Value::is_null)
+    if wire_auth
+        && value
+            .get("service_auth")
+            .is_none_or(serde_json::Value::is_null)
     {
         if let Some(password) = read_credential(config_dir) {
             ops.push((
@@ -637,6 +655,39 @@ mod tests {
                 "missing ca_cert wiring for {wired}: {ops:?}"
             );
         }
+    }
+
+    #[test]
+    fn test_plan_client_wiring_wires_rp_ca_cert_only_not_service_auth() {
+        // rp (issue #609) is CA-only: it has no shared-observatory-
+        // credential client role, so `--fix` must never propose a
+        // `/service_auth` op for it even once the credential exists —
+        // rp's `deny_unknown_fields` Config has no such field and would
+        // reject the config on the next load.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("rp.json"),
+            r#"{ "session": { "data_directory": "/d" }, "equipment": {} }"#,
+        )
+        .unwrap();
+        ensure_material(dir.path(), &[], &[], false).unwrap();
+        ensure_credential(dir.path()).unwrap();
+
+        let ops = plan_client_wiring(dir.path());
+        assert_eq!(ops.len(), 1, "{ops:?}");
+        assert!(matches!(
+            &ops[0],
+            (check, FixOp::SetString { service, pointer, .. })
+                if check == "tls.absent" && service == "rp" && pointer == "/ca_cert"
+        ));
+
+        // Present (even explicit null-turned-string) `ca_cert` gets no op.
+        std::fs::write(
+            dir.path().join("rp.json"),
+            r#"{ "session": { "data_directory": "/d" }, "equipment": {}, "ca_cert": "/x/ca.pem" }"#,
+        )
+        .unwrap();
+        assert!(plan_client_wiring(dir.path()).is_empty());
     }
 
     #[test]

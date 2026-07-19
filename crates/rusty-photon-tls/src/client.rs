@@ -4,14 +4,17 @@ use tracing::debug;
 
 use crate::error::{Result, TlsError};
 
-/// Build a `reqwest::Client` with optional CA certificate trust.
+/// Build a `reqwest::ClientBuilder` with optional CA certificate trust,
+/// for callers that need to layer their own timeouts, headers, or other
+/// customization before calling `.build()`. [`build_reqwest_client`] is a
+/// thin wrapper over this for callers with no further customization.
 ///
 /// When `ca_cert_path` is `Some`, the PEM-encoded CA certificate at that path
 /// is added as a trusted root. This allows the client to connect to services
 /// using certificates signed by the Rusty Photon CA.
 ///
-/// When `ca_cert_path` is `None`, returns a default client.
-pub fn build_reqwest_client(ca_cert_path: Option<&Path>) -> Result<reqwest::Client> {
+/// When `ca_cert_path` is `None`, returns a default builder.
+pub fn client_builder(ca_cert_path: Option<&Path>) -> Result<reqwest::ClientBuilder> {
     crate::install_default_crypto_provider();
 
     let mut builder = reqwest::Client::builder();
@@ -27,11 +30,15 @@ pub fn build_reqwest_client(ca_cert_path: Option<&Path>) -> Result<reqwest::Clie
         builder = builder.tls_certs_only([ca_cert]);
     }
 
-    let client = builder
-        .build()
-        .map_err(|e| TlsError::Other(format!("failed to build reqwest client: {e}")))?;
+    Ok(builder)
+}
 
-    Ok(client)
+/// Build a `reqwest::Client` with optional CA certificate trust. See
+/// [`client_builder`] for the customizable variant.
+pub fn build_reqwest_client(ca_cert_path: Option<&Path>) -> Result<reqwest::Client> {
+    client_builder(ca_cert_path)?
+        .build()
+        .map_err(|e| TlsError::Other(format!("failed to build reqwest client: {e}")))
 }
 
 #[cfg(test)]
@@ -62,5 +69,21 @@ mod tests {
     fn build_client_with_missing_ca_returns_error() {
         let result = build_reqwest_client(Some(Path::new("/nonexistent/ca.pem")));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn client_builder_missing_ca_returns_error() {
+        let result = client_builder(Some(Path::new("/nonexistent/ca.pem")));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn client_builder_allows_further_customization() {
+        let client = client_builder(None)
+            .unwrap()
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .build()
+            .unwrap();
+        drop(client);
     }
 }

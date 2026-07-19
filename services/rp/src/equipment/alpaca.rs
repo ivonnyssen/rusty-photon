@@ -129,18 +129,23 @@ pub(super) const ALPACA_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// surfaces as a fast, legible equipment error instead of a hang.
 pub(super) const ALPACA_READ_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Build an Alpaca client with per-request timeouts and optional HTTP
-/// Basic Auth credentials.
+/// Build an Alpaca client with per-request timeouts, optional HTTP Basic
+/// Auth credentials, and optional CA certificate trust.
 ///
 /// Both the auth and no-auth paths go through `new_with_client` so the
 /// timeouts apply uniformly — the no-auth path must **not** fall back to
 /// `Client::new`, whose default reqwest client has no timeout (the #319
 /// hang). See [`ALPACA_READ_TIMEOUT`].
+///
+/// `ca_cert_path` is the observatory CA (`Config::ca_cert_path`, rp.md
+/// §Configuration): without it, an `https://` `alpaca_url` signed by that
+/// CA fails certificate verification regardless of `auth` (issue #609).
 pub(super) fn build_alpaca_client(
     url: &str,
     auth: Option<&ClientAuthConfig>,
+    ca_cert_path: Option<&std::path::Path>,
 ) -> Result<Client, Box<dyn std::error::Error + Send + Sync>> {
-    let mut builder = reqwest::Client::builder()
+    let mut builder = rusty_photon_tls::client::client_builder(ca_cert_path)?
         .user_agent("rusty-photon-rp")
         .connect_timeout(ALPACA_CONNECT_TIMEOUT)
         .read_timeout(ALPACA_READ_TIMEOUT);
@@ -214,7 +219,7 @@ mod tests {
 
     #[test]
     fn build_alpaca_client_without_auth() {
-        build_alpaca_client("http://localhost:11111", None).unwrap();
+        build_alpaca_client("http://localhost:11111", None, None).unwrap();
     }
 
     #[test]
@@ -223,12 +228,22 @@ mod tests {
             username: "observatory".to_string(),
             password: "secret".to_string(),
         };
-        build_alpaca_client("http://localhost:11111", Some(&auth)).unwrap();
+        build_alpaca_client("http://localhost:11111", Some(&auth), None).unwrap();
     }
 
     #[test]
     fn build_alpaca_client_with_invalid_url_fails() {
-        let result = build_alpaca_client("not-a-url", None);
+        let result = build_alpaca_client("not-a-url", None, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn build_alpaca_client_with_missing_ca_cert_fails() {
+        let result = build_alpaca_client(
+            "http://localhost:11111",
+            None,
+            Some(std::path::Path::new("/nonexistent/ca.pem")),
+        );
         assert!(result.is_err());
     }
 
@@ -392,7 +407,7 @@ mod tests {
             get(|| async { std::future::pending::<Json<serde_json::Value>>().await }),
         );
         let stub = spawn_stub(app).await;
-        let client = build_alpaca_client(&stub.url(), None).unwrap();
+        let client = build_alpaca_client(&stub.url(), None, None).unwrap();
 
         let outcome = tokio::time::timeout(Duration::from_secs(120), client.get_devices()).await;
         let inner = outcome.expect("get_devices must return via the read timeout, not hang");
@@ -401,5 +416,85 @@ mod tests {
         if inner.is_ok() {
             panic!("a silently-stalled device must surface as an error, not a value");
         }
+    }
+
+    // ----- CA trust wiring (issue #609) --------------------------------
+    //
+    // Proves `build_alpaca_client` actually plumbs `ca_cert_path` into the
+    // underlying reqwest client, not just that the parameter parses: a
+    // client trusting the observatory CA connects to a device serving a
+    // CA-signed certificate; a client without that trust rejects it. This
+    // is the end-to-end proof for the gap issue #609 describes — the
+    // config field alone (`Config::ca_cert`) doesn't guarantee the client
+    // it feeds actually verifies against it.
+    #[tokio::test]
+    async fn ca_trusting_client_connects_to_ca_signed_alpaca_server() {
+        use axum::{routing::get, Json, Router};
+
+        let pki_dir = tempfile::tempdir().unwrap();
+        rusty_photon_tls::test_cert::generate_ca(pki_dir.path()).unwrap();
+        let ca_cert_pem = std::fs::read_to_string(pki_dir.path().join("ca.pem")).unwrap();
+        let ca_key_pem = std::fs::read_to_string(pki_dir.path().join("ca-key.pem")).unwrap();
+        let certs_dir = pki_dir.path().join("certs");
+        rusty_photon_tls::test_cert::generate_service_cert(
+            &ca_cert_pem,
+            &ca_key_pem,
+            "test-alpaca",
+            &certs_dir,
+        )
+        .unwrap();
+        let tls_config = rusty_photon_tls::config::TlsConfig {
+            cert: certs_dir
+                .join("test-alpaca.pem")
+                .to_string_lossy()
+                .into_owned(),
+            key: certs_dir
+                .join("test-alpaca-key.pem")
+                .to_string_lossy()
+                .into_owned(),
+        };
+
+        let addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let listener = rusty_photon_tls::server::bind_dual_stack_tokio(addr)
+            .await
+            .unwrap();
+        let bound_addr = listener.local_addr().unwrap();
+        let router = Router::new().route(
+            "/management/v1/configureddevices",
+            get(|| async {
+                Json(serde_json::json!({
+                    "Value": [],
+                    "ErrorNumber": 0,
+                    "ErrorMessage": ""
+                }))
+            }),
+        );
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let server_handle = tokio::spawn(async move {
+            rusty_photon_tls::server::serve_tls(listener, router, &tls_config, async {
+                shutdown_rx.await.ok();
+            })
+            .await
+            .unwrap();
+        });
+
+        let url = format!("https://localhost:{}", bound_addr.port());
+        let ca_path = pki_dir.path().join("ca.pem");
+
+        let trusting_client = build_alpaca_client(&url, None, Some(&ca_path)).unwrap();
+        let devices = trusting_client
+            .get_devices()
+            .await
+            .expect("client trusting the CA must connect");
+        assert_eq!(devices.count(), 0);
+
+        let untrusting_client = build_alpaca_client(&url, None, None).unwrap();
+        assert!(
+            untrusting_client.get_devices().await.is_err(),
+            "client without the CA must reject the self-signed certificate"
+        );
+
+        shutdown_tx.send(()).ok();
+        server_handle.await.ok();
     }
 }

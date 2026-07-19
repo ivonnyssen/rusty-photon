@@ -44,10 +44,13 @@ pub struct CameraEntry {
     pub sensor_height_px: Option<u32>,
 }
 
-pub(super) async fn connect_camera(config: &config::CameraConfig) -> CameraEntry {
+pub(super) async fn connect_camera(
+    config: &config::CameraConfig,
+    ca_cert_path: Option<&std::path::Path>,
+) -> CameraEntry {
     debug!(camera_id = %config.id, alpaca_url = %config.alpaca_url, device_number = config.device_number, "connecting to camera");
 
-    let client = match build_alpaca_client(&config.alpaca_url, config.auth.as_ref()) {
+    let client = match build_alpaca_client(&config.alpaca_url, config.auth.as_ref(), ca_cert_path) {
         Ok(c) => c,
         Err(e) => {
             error!(camera_id = %config.id, error = %e, "failed to create Alpaca client for camera");
@@ -305,7 +308,7 @@ mod tests {
             );
 
         let stub = spawn_stub(app).await;
-        let entry = connect_camera(&camera_config_for(&stub.url())).await;
+        let entry = connect_camera(&camera_config_for(&stub.url()), None).await;
         assert!(entry.connected, "expected entry to be connected");
         assert!(entry.device.is_some(), "expected entry to hold a device");
         assert_eq!(entry.max_adu, Some(65535));
@@ -397,7 +400,7 @@ mod tests {
             );
 
         let stub = spawn_stub(app).await;
-        let entry = connect_camera(&camera_config_for(&stub.url())).await;
+        let entry = connect_camera(&camera_config_for(&stub.url()), None).await;
         assert!(entry.connected, "expected entry to be connected");
         assert!(entry.device.is_some(), "expected entry to hold a device");
         assert_eq!(
@@ -420,7 +423,7 @@ mod tests {
     /// cached metadata field `None`. No stub server is involved.
     #[tokio::test]
     async fn connect_camera_client_build_failure_returns_disconnected_entry() {
-        let entry = connect_camera(&camera_config_for("not-a-url")).await;
+        let entry = connect_camera(&camera_config_for("not-a-url"), None).await;
         assert!(
             !entry.connected,
             "entry must be disconnected when the client cannot be built"
@@ -461,7 +464,7 @@ mod tests {
         let stub = spawn_stub(app).await;
         let mut config = camera_config_for(&stub.url());
         config.device_number = 1;
-        let entry = connect_camera(&config).await;
+        let entry = connect_camera(&config, None).await;
 
         assert!(
             !entry.connected,
@@ -492,7 +495,7 @@ mod tests {
         );
 
         let stub = spawn_stub(app).await;
-        let entry = connect_camera(&camera_config_for(&stub.url())).await;
+        let entry = connect_camera(&camera_config_for(&stub.url()), None).await;
         assert!(
             !entry.connected,
             "entry must be disconnected when get_devices keeps failing"
@@ -535,7 +538,7 @@ mod tests {
             );
 
         let stub = spawn_stub(app).await;
-        let entry = connect_camera(&camera_config_for(&stub.url())).await;
+        let entry = connect_camera(&camera_config_for(&stub.url()), None).await;
         assert!(
             !entry.connected,
             "entry must be disconnected when set_connected keeps failing"

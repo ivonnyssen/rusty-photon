@@ -15,10 +15,13 @@ pub struct FocuserEntry {
     pub device: Option<Arc<dyn Focuser>>,
 }
 
-pub(super) async fn connect_focuser(config: &config::FocuserConfig) -> FocuserEntry {
+pub(super) async fn connect_focuser(
+    config: &config::FocuserConfig,
+    ca_cert_path: Option<&std::path::Path>,
+) -> FocuserEntry {
     debug!(focuser_id = %config.id, alpaca_url = %config.alpaca_url, device_number = config.device_number, "connecting to focuser");
 
-    let client = match build_alpaca_client(&config.alpaca_url, config.auth.as_ref()) {
+    let client = match build_alpaca_client(&config.alpaca_url, config.auth.as_ref(), ca_cert_path) {
         Ok(c) => c,
         Err(e) => {
             error!(focuser_id = %config.id, error = %e, "failed to create Alpaca client for focuser");
@@ -138,7 +141,7 @@ mod tests {
             steps_per_sec: Default::default(),
             auth: None,
         };
-        let entry = connect_focuser(&cfg).await;
+        let entry = connect_focuser(&cfg, None).await;
         assert_eq!(entry.id, "main-focuser");
         assert!(!entry.connected);
         assert!(entry.device.is_none());
@@ -158,7 +161,7 @@ mod tests {
             steps_per_sec: Default::default(),
             auth: None,
         };
-        let entry = connect_focuser(&cfg).await;
+        let entry = connect_focuser(&cfg, None).await;
         assert_eq!(entry.id, "main-focuser");
         assert!(!entry.connected);
         assert!(entry.device.is_none());
@@ -186,7 +189,7 @@ mod tests {
             }),
         );
         let stub = spawn_stub(app).await;
-        let entry = connect_focuser(&focuser_config_for(&stub.url())).await;
+        let entry = connect_focuser(&focuser_config_for(&stub.url()), None).await;
         assert!(!entry.connected);
         assert!(entry.device.is_none());
     }
@@ -227,7 +230,7 @@ mod tests {
                 }),
             );
         let stub = spawn_stub(app).await;
-        let entry = connect_focuser(&focuser_config_for(&stub.url())).await;
+        let entry = connect_focuser(&focuser_config_for(&stub.url()), None).await;
         assert!(!entry.connected);
         assert!(entry.device.is_none());
     }
@@ -245,7 +248,7 @@ mod tests {
             get(|| async { std::future::pending::<Json<serde_json::Value>>().await }),
         );
         let stub = spawn_stub(app).await;
-        let entry = connect_focuser(&focuser_config_for(&stub.url())).await;
+        let entry = connect_focuser(&focuser_config_for(&stub.url()), None).await;
         assert!(!entry.connected);
         assert!(entry.device.is_none());
     }
@@ -288,7 +291,7 @@ mod tests {
     #[tokio::test]
     async fn connect_focuser_success_returns_connected_entry() {
         let stub = spawn_stub(ok_focuser_router()).await;
-        let entry = connect_focuser(&focuser_config_for(&stub.url())).await;
+        let entry = connect_focuser(&focuser_config_for(&stub.url()), None).await;
         assert!(entry.connected, "expected entry to be connected");
         assert!(entry.device.is_some(), "expected entry to hold a device");
         assert_eq!(entry.id, "main-focuser");
@@ -305,7 +308,7 @@ mod tests {
             focusers: vec![focuser_config_for(&stub.url())],
             ..Default::default()
         };
-        let registry = EquipmentRegistry::new(&equipment_cfg).await;
+        let registry = EquipmentRegistry::new(&equipment_cfg, None).await;
         assert_eq!(registry.focusers.len(), 1);
 
         let found = registry

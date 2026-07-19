@@ -87,7 +87,8 @@ impl ServerBuilder {
         let bind_addr = config.server.socket_addr();
 
         debug!("initializing equipment registry");
-        let equipment = Arc::new(EquipmentRegistry::new(&config.equipment).await);
+        let equipment =
+            Arc::new(EquipmentRegistry::new(&config.equipment, config.ca_cert_path()).await);
 
         // Validate the configured site against the mount's reported
         // SiteLatitude/SiteLongitude. A mismatch beyond 0.01° aborts
@@ -175,13 +176,16 @@ impl ServerBuilder {
         // wrapper config validation.
         let (plate_solver_client, plate_solver_default_radius) = match &config.plate_solver {
             Some(ps_cfg) => {
-                let client =
-                    rp_plate_solver::PlateSolverClient::new(ps_cfg.url.clone(), ps_cfg.timeout)
-                        .map_err(|e| {
-                            crate::error::RpError::Config(format!(
-                                "plate_solver: failed to build HTTP client: {e}"
-                            ))
-                        })?;
+                let client = rp_plate_solver::PlateSolverClient::new(
+                    ps_cfg.url.clone(),
+                    ps_cfg.timeout,
+                    config.ca_cert_path(),
+                )
+                .map_err(|e| {
+                    crate::error::RpError::Config(format!(
+                        "plate_solver: failed to build HTTP client: {e}"
+                    ))
+                })?;
                 let arc: Arc<dyn rp_plate_solver::PlateSolveClient> = Arc::new(client);
                 (Some(arc), ps_cfg.default_search_radius_deg)
             }
@@ -212,12 +216,16 @@ impl ServerBuilder {
             .and_then(|m| m.guiding.as_ref());
         let (guider_client, guider_defaults) = match guiding_config {
             Some(g_cfg) => {
-                let client = rp_guider::GuiderServiceClient::new(g_cfg.url.clone(), g_cfg.timeout)
-                    .map_err(|e| {
-                        crate::error::RpError::Config(format!(
-                            "guider: failed to build HTTP client: {e}"
-                        ))
-                    })?;
+                let client = rp_guider::GuiderServiceClient::new(
+                    g_cfg.url.clone(),
+                    g_cfg.timeout,
+                    config.ca_cert_path(),
+                )
+                .map_err(|e| {
+                    crate::error::RpError::Config(format!(
+                        "guider: failed to build HTTP client: {e}"
+                    ))
+                })?;
                 let arc: Arc<dyn rp_guider::GuiderClient> = Arc::new(client);
                 (Some(arc), g_cfg.defaults())
             }

@@ -17,10 +17,11 @@ pub struct ObservingConditionsEntry {
 
 pub(super) async fn connect_observing_conditions(
     config: &config::ObservingConditionsConfig,
+    ca_cert_path: Option<&std::path::Path>,
 ) -> ObservingConditionsEntry {
     debug!(oc_id = %config.id, alpaca_url = %config.alpaca_url, device_number = config.device_number, "connecting to observing conditions");
 
-    let client = match build_alpaca_client(&config.alpaca_url, config.auth.as_ref()) {
+    let client = match build_alpaca_client(&config.alpaca_url, config.auth.as_ref(), ca_cert_path) {
         Ok(c) => c,
         Err(e) => {
             error!(oc_id = %config.id, error = %e, "failed to create Alpaca client for observing conditions");
@@ -171,7 +172,7 @@ mod tests {
     #[tokio::test]
     async fn connect_observing_conditions_success_returns_connected_entry() {
         let stub = spawn_stub(two_oc_router()).await;
-        let entry = connect_observing_conditions(&oc_config_for(&stub.url(), 0)).await;
+        let entry = connect_observing_conditions(&oc_config_for(&stub.url(), 0), None).await;
         assert!(entry.connected, "expected entry to be connected");
         assert!(entry.device.is_some(), "expected entry to hold a device");
         assert_eq!(entry.id, "ppba-weather");
@@ -182,7 +183,7 @@ mod tests {
     #[tokio::test]
     async fn connect_observing_conditions_skips_to_the_requested_index() {
         let stub = spawn_stub(two_oc_router()).await;
-        let entry = connect_observing_conditions(&oc_config_for(&stub.url(), 1)).await;
+        let entry = connect_observing_conditions(&oc_config_for(&stub.url(), 1), None).await;
         assert!(entry.connected, "expected entry to be connected");
         assert!(entry.device.is_some(), "expected entry to hold a device");
     }
@@ -203,14 +204,14 @@ mod tests {
             }),
         );
         let stub = spawn_stub(app).await;
-        let entry = connect_observing_conditions(&oc_config_for(&stub.url(), 0)).await;
+        let entry = connect_observing_conditions(&oc_config_for(&stub.url(), 0), None).await;
         assert!(!entry.connected);
         assert!(entry.device.is_none());
     }
 
     #[tokio::test]
     async fn connect_observing_conditions_client_build_failure_returns_disconnected_entry() {
-        let entry = connect_observing_conditions(&oc_config_for("not-a-url", 0)).await;
+        let entry = connect_observing_conditions(&oc_config_for("not-a-url", 0), None).await;
         assert!(!entry.connected);
         assert!(entry.device.is_none());
     }
@@ -230,7 +231,7 @@ mod tests {
             }),
         );
         let stub = spawn_stub(app).await;
-        let entry = connect_observing_conditions(&oc_config_for(&stub.url(), 0)).await;
+        let entry = connect_observing_conditions(&oc_config_for(&stub.url(), 0), None).await;
         assert!(!entry.connected);
         assert!(entry.device.is_none());
     }
@@ -266,7 +267,7 @@ mod tests {
                 }),
             );
         let stub = spawn_stub(app).await;
-        let entry = connect_observing_conditions(&oc_config_for(&stub.url(), 0)).await;
+        let entry = connect_observing_conditions(&oc_config_for(&stub.url(), 0), None).await;
         assert!(!entry.connected);
         assert!(entry.device.is_none());
     }

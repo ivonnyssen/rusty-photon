@@ -17,10 +17,11 @@ pub struct CoverCalibratorEntry {
 
 pub(super) async fn connect_cover_calibrator(
     config: &config::CoverCalibratorConfig,
+    ca_cert_path: Option<&std::path::Path>,
 ) -> CoverCalibratorEntry {
     debug!(cc_id = %config.id, alpaca_url = %config.alpaca_url, device_number = config.device_number, "connecting to cover calibrator");
 
-    let client = match build_alpaca_client(&config.alpaca_url, config.auth.as_ref()) {
+    let client = match build_alpaca_client(&config.alpaca_url, config.auth.as_ref(), ca_cert_path) {
         Ok(c) => c,
         Err(e) => {
             error!(cc_id = %config.id, error = %e, "failed to create Alpaca client for cover calibrator");
