@@ -885,6 +885,20 @@ mod tests {
     }
 
     #[test]
+    fn derive_probe_brackets_an_ipv6_bind_address() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("rp.json"),
+            r#"{"server":{"port":11115,"bind_address":"::1"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            derive_probe(dir.path(), "rp", None).unwrap().health_url,
+            "http://[::1]:11115/health"
+        );
+    }
+
+    #[test]
     fn derive_probe_domain_replaces_the_host_in_every_url() {
         // The override wins over the wildcard-bind default and over a
         // specific bind address alike, and lands in both derived URLs;

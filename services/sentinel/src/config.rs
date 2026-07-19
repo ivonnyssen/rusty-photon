@@ -894,6 +894,14 @@ mod tests {
     }
 
     #[test]
+    fn probe_domain_serializes_back_to_the_bare_string() {
+        let config: Config =
+            serde_json::from_str(r#"{ "probe_domain": "rig.example.com" }"#).unwrap();
+        let json = serde_json::to_value(&config).unwrap();
+        assert_eq!(json["probe_domain"], "rig.example.com");
+    }
+
+    #[test]
     fn probe_domain_defaults_to_absent() {
         let config: Config = serde_json::from_str("{}").unwrap();
         assert_eq!(config.probe_domain, None);
