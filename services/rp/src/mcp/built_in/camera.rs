@@ -155,7 +155,8 @@ impl McpHandler {
                 tool
             ))),
             (None, None) => Err(Box::new(tool_error!(
-                "missing required parameter: camera_id"
+                "{}: pass exactly one of camera_id or train_id",
+                tool
             ))),
             (Some(id), None) => Ok(id.to_string()),
             (None, Some(train_id)) => {

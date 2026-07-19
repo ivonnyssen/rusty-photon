@@ -1706,7 +1706,7 @@ async fn capture_rejects_both_camera_and_train_addressing() {
 }
 
 #[tokio::test]
-async fn capture_with_neither_address_names_the_missing_camera_id() {
+async fn capture_with_neither_address_names_both_alternatives() {
     let handler = test_handler(camera_registry(Arc::new(MockCamera::default())));
     let result = handler
         .capture_inner(
@@ -1718,7 +1718,7 @@ async fn capture_with_neither_address_names_the_missing_camera_id() {
             None,
         )
         .await;
-    assert_tool_error(result, "missing required parameter: camera_id");
+    assert_tool_error(result, "capture: pass exactly one of camera_id or train_id");
 }
 
 #[tokio::test]
@@ -1780,7 +1780,7 @@ async fn set_filter_rejects_both_wheel_and_train_addressing() {
 }
 
 #[tokio::test]
-async fn set_filter_with_neither_address_names_the_missing_wheel_id() {
+async fn set_filter_with_neither_address_names_both_alternatives() {
     let handler = test_handler(filter_wheel_registry(Arc::new(MockFilterWheel::default())));
     let result = handler
         .set_filter(Parameters(SetFilterParams {
@@ -1789,7 +1789,10 @@ async fn set_filter_with_neither_address_names_the_missing_wheel_id() {
             filter_name: "Lum".into(),
         }))
         .await;
-    assert_tool_error(result, "missing required parameter: filter_wheel_id");
+    assert_tool_error(
+        result,
+        "set_filter: pass exactly one of filter_wheel_id or train_id",
+    );
 }
 
 #[tokio::test]

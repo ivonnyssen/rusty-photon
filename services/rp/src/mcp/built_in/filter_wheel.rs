@@ -138,7 +138,7 @@ impl McpHandler {
                 "set_filter: train_id is mutually exclusive with filter_wheel_id"
             ))),
             (None, None) => Err(Box::new(tool_error!(
-                "missing required parameter: filter_wheel_id"
+                "set_filter: pass exactly one of filter_wheel_id or train_id"
             ))),
             (Some(id), None) => Ok(id.to_string()),
             (None, Some(train_id)) => {
