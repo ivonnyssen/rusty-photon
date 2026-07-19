@@ -1242,7 +1242,8 @@ fn ui_htmx_one_target(ctx: &Context, name: &str, target: Option<&ClientTargetVie
         return checks;
     };
 
-    let field = format!("{name}.base_url");
+    let transport_field = format!("{name}.base_url");
+    let auth_field = format!("{name}.auth");
     let target_tls_on = resolved.server().is_some_and(|s| s.tls.is_some());
     let expected = expected_scheme(target_tls_on);
     let scheme_fix = (!scheme.eq_ignore_ascii_case(expected))
@@ -1257,7 +1258,7 @@ fn ui_htmx_one_target(ctx: &Context, name: &str, target: Option<&ClientTargetVie
     checks.extend(transport_check(
         ctx,
         "ui-htmx",
-        &field,
+        &transport_field,
         &scheme,
         resolved,
         scheme_fix,
@@ -1272,7 +1273,7 @@ fn ui_htmx_one_target(ctx: &Context, name: &str, target: Option<&ClientTargetVie
     checks.extend(credential_check(
         ctx,
         "ui-htmx",
-        &field,
+        &auth_field,
         resolved,
         Some(format!("/{name}/auth")),
         target.auth.as_ref(),
@@ -1404,7 +1405,8 @@ fn sentinel_monitor_target(ctx: &Context, idx: usize, monitor: &MonitorView) -> 
     let Some(resolved) = resolve_join_target(ctx, &monitor.host, monitor.port) else {
         return checks;
     };
-    let field = format!("monitors[{idx}]");
+    let transport_field = format!("monitors[{idx}].scheme");
+    let auth_field = format!("monitors[{idx}].auth");
     let target_tls_on = resolved.server().is_some_and(|s| s.tls.is_some());
     let expected = expected_scheme(target_tls_on);
     let scheme_fix =
@@ -1419,7 +1421,7 @@ fn sentinel_monitor_target(ctx: &Context, idx: usize, monitor: &MonitorView) -> 
     checks.extend(transport_check(
         ctx,
         "sentinel",
-        &field,
+        &transport_field,
         &monitor.scheme,
         resolved,
         scheme_fix,
@@ -1428,7 +1430,7 @@ fn sentinel_monitor_target(ctx: &Context, idx: usize, monitor: &MonitorView) -> 
     checks.extend(credential_check(
         ctx,
         "sentinel",
-        &field,
+        &auth_field,
         resolved,
         Some(format!("/monitors/{idx}/auth")),
         monitor.auth.as_ref(),
