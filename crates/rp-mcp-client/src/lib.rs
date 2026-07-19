@@ -1,3 +1,4 @@
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 //! The standard authenticated MCP client for `rp`'s `/mcp` endpoint
 //! ([ADR-017](../../../docs/decisions/017-standard-mcp-client-construction.md)).
 //!
