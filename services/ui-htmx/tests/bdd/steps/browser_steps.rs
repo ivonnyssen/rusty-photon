@@ -27,7 +27,8 @@ const GRACEFUL_STOP_BUDGET: Duration = Duration::from_secs(4);
 
 #[when("I load the dsd-fp2 config page in a browser")]
 async fn load_in_browser(world: &mut UiWorld) {
-    world.browser_goto("/config/dsd-fp2").await;
+    let path = world.device_config_path();
+    world.browser_goto(&path).await;
 }
 
 #[then("the browser renders the configuration form")]
