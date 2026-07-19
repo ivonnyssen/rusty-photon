@@ -1,13 +1,17 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use hyper_util::rt::TokioIo;
 use hyper_util::service::TowerToHyperService;
 use socket2::{Domain, Protocol, Socket, Type};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::time::timeout;
+// tokio's Instant, not std's: identical to std::time::Instant in production,
+// but also tracks tokio's paused/virtual clock under `#[tokio::test(start_paused
+// = true)]` — std::time::Instant would silently ignore tokio::time::advance(),
+// making the shared-deadline logic below untestable under paused time.
+use tokio::time::{timeout, timeout_at, Instant};
 use tokio_rustls::TlsAcceptor;
 use tracing::debug;
 
@@ -211,12 +215,7 @@ async fn handle_connection(
     let deadline = Instant::now() + PLAINTEXT_IO_TIMEOUT;
 
     let mut first_byte = [0u8; 1];
-    let peeked = match timeout(
-        deadline.saturating_duration_since(Instant::now()),
-        stream.peek(&mut first_byte),
-    )
-    .await
-    {
+    let peeked = match timeout_at(deadline, stream.peek(&mut first_byte)).await {
         Ok(Ok(n)) => n,
         Ok(Err(e)) => {
             debug!("Failed to peek connection from {}: {}", remote_addr, e);
@@ -346,11 +345,10 @@ async fn read_request_head(stream: &mut TcpStream, deadline: Instant) -> Option<
             return None;
         }
 
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
+        if Instant::now() >= deadline {
             return None;
         }
-        match timeout(remaining, stream.read(&mut chunk[..read_len])).await {
+        match timeout_at(deadline, stream.read(&mut chunk[..read_len])).await {
             Ok(Ok(0)) | Ok(Err(_)) | Err(_) => return None,
             Ok(Ok(n)) => buf.extend_from_slice(&chunk[..n]),
         }
