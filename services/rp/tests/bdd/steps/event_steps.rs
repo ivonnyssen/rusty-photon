@@ -182,6 +182,14 @@ async fn event_payload_field_equals(
     field: String,
     expected: String,
 ) {
+    // Webhook delivery is asynchronous — the POST may still be in
+    // flight when the tool call returns, so wait for the event
+    // before reading it.
+    assert!(
+        world.wait_for_events(&event_type, 1).await,
+        "expected to receive '{}' event within timeout",
+        event_type
+    );
     let events = world.received_events.read().await;
     let event = events
         .iter()
@@ -206,6 +214,12 @@ async fn event_payload_field_equals(
 
 #[then(expr = "the {string} event payload should contain a {string}")]
 async fn event_payload_contains_field(world: &mut RpWorld, event_type: String, field: String) {
+    // Same asynchronous-delivery wait as `event_payload_field_equals`.
+    assert!(
+        world.wait_for_events(&event_type, 1).await,
+        "expected to receive '{}' event within timeout",
+        event_type
+    );
     let events = world.received_events.read().await;
     let event = events
         .iter()
@@ -286,22 +300,30 @@ async fn event_emitted_before(world: &mut RpWorld, first: String, second: String
 
 #[then(expr = "the last {string} event should have been emitted after the {string} event")]
 async fn last_event_emitted_after(world: &mut RpWorld, first: String, second: String) {
-    assert!(
-        world.wait_for_events(&first, 1).await,
-        "expected to receive '{}' event within timeout",
-        first
-    );
     let second_seq = first_seq_of(world, &second).await;
-    let events = world.received_events.read().await;
-    let last_seq = events
-        .iter()
-        .filter(|e| e.event_type == first)
-        .filter_map(|e| e.event_seq)
-        .max()
-        .unwrap_or_else(|| panic!("'{first}' events carried no event_seq"));
-    assert!(
-        last_seq > second_seq,
-        "expected the last '{first}' (seq {last_seq}) to be emitted after '{second}' (seq {second_seq})"
+    // Webhook delivery is asynchronous, so the later `{first}`
+    // emission this step is really about may still be in flight when
+    // it runs — poll until a `{first}` with a sequence above
+    // `{second}`'s arrives instead of snapshotting the current max
+    // (10 s bound, matching `wait_for_events`).
+    let mut observed_max: Option<u64> = None;
+    for _ in 0..40 {
+        {
+            let events = world.received_events.read().await;
+            observed_max = events
+                .iter()
+                .filter(|e| e.event_type == first)
+                .filter_map(|e| e.event_seq)
+                .max();
+        }
+        if observed_max.is_some_and(|last_seq| last_seq > second_seq) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    panic!(
+        "expected a '{first}' emitted after '{second}' (seq {second_seq}); \
+         highest '{first}' seq observed: {observed_max:?}"
     );
 }
 
