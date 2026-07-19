@@ -1668,7 +1668,10 @@ mod tests {
             }] => {
                 assert_eq!(service, "ui-htmx");
                 assert_eq!(pointer, "/rp/ca_cert_path");
-                assert!(value.ends_with("pki/ca.pem"), "{value}");
+                assert!(
+                    std::path::Path::new(value).ends_with("pki/ca.pem"),
+                    "{value}"
+                );
             }
             other => unreachable!("{other:?}"),
         }
@@ -1901,7 +1904,10 @@ mod tests {
             }] => {
                 assert_eq!(service, "rp");
                 assert_eq!(pointer, "/ca_cert");
-                assert!(value.ends_with("pki/ca.pem"), "{value}");
+                assert!(
+                    std::path::Path::new(value).ends_with("pki/ca.pem"),
+                    "{value}"
+                );
             }
             other => unreachable!("{other:?}"),
         }
