@@ -166,11 +166,22 @@ impl AcmeClient for RealAcmeClient<'_> {
                 only_return_existing: false,
             };
 
-            // `create` consumes the builder, so a retry rebuilds it — cheap,
-            // and the rejected registration was never processed server-side.
+            // Builder construction is local and unsigned; keep its failures
+            // under their own context by building eagerly. `create` consumes
+            // the builder, so retry attempts rebuild it — by then the first
+            // build has succeeded, and the rejected registration was never
+            // processed server-side.
+            let mut builder =
+                Some(self.account_builder().map_err(|e| {
+                    TlsError::Acme(format!("failed to create account builder: {e}"))
+                })?);
             let (account, credentials) =
                 with_bad_nonce_retry!("failed to create ACME account", async {
-                    self.account_builder()?
+                    let builder = match builder.take() {
+                        Some(builder) => builder,
+                        None => self.account_builder()?,
+                    };
+                    builder
                         .create(&new_account, directory_url.clone(), None)
                         .await
                 })?;
