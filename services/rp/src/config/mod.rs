@@ -4,8 +4,9 @@
 //! Each domain-specific block lives in a sibling module:
 //! [`session`], [`site`], [`equipment`] (plus the per-device-type
 //! configs [`camera`], [`focuser`], [`mount`], [`filter_wheel`],
-//! [`cover_calibrator`]), [`imaging`], [`plate_solver`], [`guider`],
-//! [`server`].
+//! [`cover_calibrator`], the [`optical_train`] light-path lists, and
+//! the mount-scoped [`guiding`] service block), [`imaging`],
+//! [`plate_solver`], [`server`].
 //! The submodules' public types are re-exported here so existing
 //! `crate::config::CameraConfig` callsites keep working unchanged.
 
@@ -17,10 +18,11 @@ pub mod dome;
 pub mod equipment;
 pub mod filter_wheel;
 pub mod focuser;
-pub mod guider;
+pub mod guiding;
 pub mod imaging;
 pub mod mount;
 pub mod observing_conditions;
+pub mod optical_train;
 pub mod plate_solver;
 pub mod rotator;
 pub mod safety;
@@ -38,10 +40,11 @@ pub use dome::DomeConfig;
 pub use equipment::EquipmentConfig;
 pub use filter_wheel::FilterWheelConfig;
 pub use focuser::FocuserConfig;
-pub use guider::{GuiderConfig, GuiderDefaults};
+pub use guiding::{GuiderDefaults, GuidingConfig};
 pub use imaging::ImagingConfig;
 pub use mount::MountConfig;
 pub use observing_conditions::ObservingConditionsConfig;
+pub use optical_train::{FocalLengthMm, OpticalTrainConfig, TrainPurpose};
 pub use plate_solver::PlateSolverConfig;
 pub use rotator::RotatorConfig;
 pub use safety::SafetyConfig;
@@ -104,13 +107,6 @@ pub struct Config {
     /// infrastructure, not part of the equipment surface.
     #[serde(default)]
     pub plate_solver: Option<PlateSolverConfig>,
-    /// Optional guider service. When `None`, the guiding MCP tools
-    /// (`start_guiding`, `stop_guiding`, `dither`, ...) return
-    /// `guider not configured` and the safety enforcer skips its
-    /// stop-guiding step. Same optional-infrastructure shape as
-    /// `plate_solver`.
-    #[serde(default)]
-    pub guider: Option<GuiderConfig>,
     #[serde(default = "server::default_server")]
     pub server: ServerConfig,
 }
@@ -172,6 +168,14 @@ pub fn validate_config(config: &Config) -> Vec<FieldError> {
     }
     for (index, cam) in config.equipment.cameras.iter().enumerate() {
         errors.extend(cam.field_errors(index));
+    }
+    // The optical-train graph rules (roster existence, terminal camera,
+    // order consistency, the one-guiding-train rule) live with the
+    // derived model so validation and derivation cannot drift apart.
+    if let Err(train_errors) =
+        crate::equipment::trains::TrainModel::try_from_equipment(&config.equipment)
+    {
+        errors.extend(train_errors);
     }
     errors
 }
@@ -309,7 +313,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_config_flags_site_and_camera_fields_with_dotted_paths() {
+    fn validate_config_flags_site_camera_and_train_fields_with_dotted_paths() {
         let mut config: Config = serde_json::from_value(default_scaffold()).unwrap();
         config.site = Some(crate::config::SiteConfig {
             latitude_degrees: 91.0,
@@ -319,7 +323,7 @@ mod tests {
             serde_json::from_value(serde_json::json!({
                 "id": "bad-cam",
                 "alpaca_url": "http://localhost:11120",
-                "focal_length_mm": -1.0
+                "cooler_targets_c": [-12]
             }))
             .unwrap(),
             serde_json::from_value(serde_json::json!({
@@ -328,6 +332,11 @@ mod tests {
             }))
             .unwrap(),
         ];
+        config.equipment.optical_trains = vec![serde_json::from_value(serde_json::json!({
+            "id": "main",
+            "devices": ["ghost-focuser", "good-cam"]
+        }))
+        .unwrap()];
 
         let errors = validate_config(&config);
         let paths: Vec<&str> = errors.iter().map(|e| e.path.as_str()).collect();
@@ -336,13 +345,19 @@ mod tests {
             vec![
                 "site.latitude_degrees",
                 "site.longitude_degrees",
-                "equipment.cameras.0.focal_length_mm",
+                "equipment.cameras.0.cooler_targets_c",
+                "equipment.optical_trains.0.devices.0",
             ]
         );
         assert!(
             errors[2].msg.contains("bad-cam"),
             "camera errors name the device id for humans: {:?}",
             errors[2]
+        );
+        assert!(
+            errors[3].msg.contains("ghost-focuser"),
+            "train errors name the offending device id: {:?}",
+            errors[3]
         );
     }
 
@@ -392,20 +407,33 @@ mod tests {
                     "cooler_targets_c": [-10, 5],
                     "gain": 100,
                     "offset": 50,
-                    "focal_length_mm": 1000.0,
                     "readout_time_estimate": "8s",
                     "auth": { "username": "observatory", "password": "secret" }
+                }],
+                "optical_trains": [{
+                    "id": "main",
+                    "purpose": "imaging",
+                    "focal_length_mm": 1000.0,
+                    "devices": ["main-focuser", "main-fw", "main-cam"]
                 }],
                 "mount": {
                     "alpaca_url": "http://localhost:11122",
                     "device_number": 0,
                     "settle_after_slew": "3s",
                     "slew_rate_arcsec_per_sec": 7200.0,
+                    "guiding": {
+                        "url": "http://localhost:11130",
+                        "timeout": "90s",
+                        "settle_pixels": 0.8,
+                        "settle_time": "10s",
+                        "settle_timeout": "1m",
+                        "dither_pixels": 5.0,
+                        "recalibrate_above_deg": 5.0
+                    },
                     "auth": { "username": "observatory", "password": "secret" }
                 },
                 "focusers": [{
                     "id": "main-focuser",
-                    "camera_id": "main-cam",
                     "alpaca_url": "http://localhost:11113",
                     "device_number": 0,
                     "min_position": 0,
@@ -415,7 +443,6 @@ mod tests {
                 }],
                 "filter_wheels": [{
                     "id": "main-fw",
-                    "camera_id": "main-cam",
                     "alpaca_url": "http://localhost:11123",
                     "device_number": 0,
                     "filters": ["L", "R", "G", "B"],
@@ -453,14 +480,6 @@ mod tests {
                 "warm_target_c": 10.0
             },
             "plate_solver": { "url": "http://localhost:11131", "timeout": "1m", "default_search_radius_deg": 3.0 },
-            "guider": {
-                "url": "http://localhost:11130",
-                "timeout": "90s",
-                "settle_pixels": 0.8,
-                "settle_time": "10s",
-                "settle_timeout": "1m",
-                "dither_pixels": 5.0
-            },
             "server": {
                 "port": 11115,
                 "bind_address": "127.0.0.1",
@@ -486,9 +505,9 @@ mod tests {
             ("/cooling/max_cooldown", "20m"),
             ("/cooling/warmup_step_interval", "2m"),
             ("/plate_solver/timeout", "1m"),
-            ("/guider/timeout", "1m 30s"),
-            ("/guider/settle_time", "10s"),
-            ("/guider/settle_timeout", "1m"),
+            ("/equipment/mount/guiding/timeout", "1m 30s"),
+            ("/equipment/mount/guiding/settle_time", "10s"),
+            ("/equipment/mount/guiding/settle_timeout", "1m"),
         ] {
             assert_eq!(
                 value.pointer(pointer).and_then(Value::as_str),

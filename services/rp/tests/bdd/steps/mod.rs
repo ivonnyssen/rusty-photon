@@ -24,6 +24,7 @@ pub mod measure_basic_steps;
 pub mod measure_stars_steps;
 pub mod mount_steps;
 pub mod operation_event_steps;
+pub mod optical_trains_steps;
 pub mod plate_solve_steps;
 pub mod safety_steps;
 pub mod session_steps;

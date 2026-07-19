@@ -8,6 +8,7 @@ use super::filter_wheel::FilterWheelConfig;
 use super::focuser::FocuserConfig;
 use super::mount::MountConfig;
 use super::observing_conditions::ObservingConditionsConfig;
+use super::optical_train::OpticalTrainConfig;
 use super::rotator::RotatorConfig;
 use super::safety_monitor::SafetyMonitorConfig;
 use super::switch::SwitchConfig;
@@ -17,6 +18,12 @@ use super::switch::SwitchConfig;
 pub struct EquipmentConfig {
     #[serde(default)]
     pub cameras: Vec<CameraConfig>,
+    /// Optical trains (rp.md § Optical Trains): ordered roster
+    /// device-id lists, objective side first, terminating in a camera.
+    /// The cross-array graph rules are validated by
+    /// `crate::equipment::trains::TrainModel::try_from_equipment`.
+    #[serde(default)]
+    pub optical_trains: Vec<OpticalTrainConfig>,
     #[serde(default)]
     pub mount: Option<MountConfig>,
     #[serde(default)]

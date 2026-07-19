@@ -753,6 +753,7 @@ mod tests {
                 device_number: 0,
                 settle_after_slew: None,
                 slew_rate_arcsec_per_sec: Default::default(),
+                guiding: None,
                 auth: None,
             }),
             ..Default::default()
@@ -787,6 +788,7 @@ mod tests {
                 device_number: 0,
                 settle_after_slew: None,
                 slew_rate_arcsec_per_sec: Default::default(),
+                guiding: None,
                 auth: None,
             }),
             ..Default::default()
@@ -891,7 +893,6 @@ mod tests {
                 cooler_targets_c: Vec::new(),
                 gain: None,
                 offset: None,
-                focal_length_mm: None,
                 readout_time_estimate: None,
                 auth: None,
             }

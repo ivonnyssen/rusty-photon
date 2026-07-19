@@ -18,7 +18,9 @@ use crate::world::RpWorld;
 
 /// Write a scenario-private rp config (port 0, temp data directory, the given
 /// `equipment` block) and remember its path for later file assertions.
-fn write_scenario_config(world: &mut RpWorld, equipment: Value) {
+/// `pub(crate)`: the optical-trains validation steps stage their configs
+/// through the same path.
+pub(crate) fn write_scenario_config(world: &mut RpWorld, equipment: Value) {
     let dir = tempfile::tempdir().expect("create temp dir for rp config");
     let config = serde_json::json!({
         "session": { "data_directory": dir.path().join("data").to_string_lossy() },
@@ -55,7 +57,7 @@ fn last_response_json(world: &RpWorld) -> &Value {
         .expect("last config response was not JSON — check the request step ran")
 }
 
-async fn send_put_config(world: &mut RpWorld, body: String) {
+pub(crate) async fn send_put_config(world: &mut RpWorld, body: String) {
     let client = reqwest::Client::new();
     let response = client
         .put(format!("{}/api/config", world.rp_url()))

@@ -167,10 +167,10 @@ pub struct PlateSolverConfig {
     pub default_search_radius_deg: Option<f64>,
 }
 
-/// Guider service config — emitted as the top-level `guider` block
-/// in rp's JSON config (parallel to `plate_solver`; the guider is an
-/// rp-managed service, not equipment). All thresholds are
-/// guide-camera pixels.
+/// Guider service config — emitted as the `equipment.mount.guiding`
+/// block in rp's JSON config (guiding is mount-scoped: the guider
+/// corrects and dithers by moving the mount, so rp rejects the block
+/// anywhere else). All thresholds are guide-camera pixels.
 #[derive(Debug, Clone)]
 pub struct GuiderConfig {
     pub url: String,
@@ -187,6 +187,9 @@ pub struct GuiderConfig {
     /// Default `dither` amount when the per-call `pixels` parameter
     /// is omitted.
     pub dither_pixels: Option<f64>,
+    /// Rotation threshold above which rp clears the PHD2 calibration
+    /// when rotating a guide-coupled train. `None` ⇒ rp's default (5°).
+    pub recalibrate_above_deg: Option<f64>,
 }
 
 impl GuiderConfig {
@@ -199,8 +202,25 @@ impl GuiderConfig {
             settle_time: None,
             settle_timeout: None,
             dither_pixels: None,
+            recalibrate_above_deg: None,
         }
     }
+}
+
+/// One `equipment.optical_trains[]` entry (rp.md § Optical Trains):
+/// an ordered list of roster device ids, objective side first,
+/// terminating in a camera.
+#[derive(Debug, Clone)]
+pub struct OpticalTrainConfig {
+    pub id: String,
+    /// `"imaging"` or `"guiding"`. `None` ⇒ omit the field (rp
+    /// defaults to imaging).
+    pub purpose: Option<String>,
+    /// Effective focal length of the light path in millimetres.
+    /// `None` ⇒ omit the field (captures through this train's camera
+    /// carry no `optics` block).
+    pub focal_length_mm: Option<f64>,
+    pub devices: Vec<String>,
 }
 
 /// Overrides for rp's top-level `cooling` block (rp.md § Camera
@@ -259,10 +279,15 @@ pub struct RpConfigBuilder {
     /// top-level `plate_solver` block from the emitted config so
     /// rp's `plate_solve` MCP tool reports "not configured".
     pub plate_solver: Option<PlateSolverConfig>,
-    /// Optional guider service config. `None` ⇒ omit the top-level
-    /// `guider` block so rp's guiding MCP tools report "not
-    /// configured".
+    /// Optional guider service config, emitted as
+    /// `equipment.mount.guiding`. `None` ⇒ omit the block so rp's
+    /// guiding MCP tools report "not configured". Setting it requires
+    /// a mount ([`RpConfigBuilder::build`] panics otherwise) — guiding
+    /// is mount-scoped by rp's schema.
     pub guider: Option<GuiderConfig>,
+    /// Optical trains (`equipment.optical_trains`): ordered device-id
+    /// lists, objective side first, terminating in a camera.
+    pub optical_trains: Vec<OpticalTrainConfig>,
     /// Optional `(latitude_degrees, longitude_degrees)` site block.
     /// Required for ephemeris-driven scenarios (planner, twilight,
     /// alt/az MCP tools) and for exercising the mount-side site
@@ -373,11 +398,19 @@ impl RpConfigBuilder {
         self
     }
 
-    /// Set the guider service config (overwrites any prior call).
-    /// When unset, the emitted rp config has no `guider` block and
-    /// the guiding MCP tools report "not configured".
+    /// Set the guider service config (overwrites any prior call),
+    /// emitted as `equipment.mount.guiding` — call [`Self::with_mount`]
+    /// too, or [`Self::build`] panics. When unset, the emitted rp
+    /// config has no guiding block and the guiding MCP tools report
+    /// "not configured".
     pub fn with_guider(&mut self, guider: GuiderConfig) -> &mut Self {
         self.guider = Some(guider);
+        self
+    }
+
+    /// Append an optical train (`equipment.optical_trains[]`).
+    pub fn add_optical_train(&mut self, train: OpticalTrainConfig) -> &mut Self {
+        self.optical_trains.push(train);
         self
     }
 
@@ -467,19 +500,12 @@ impl RpConfigBuilder {
             })
             .collect();
 
-        let first_camera_id = self
-            .cameras
-            .first()
-            .map(|c| c.id.as_str())
-            .unwrap_or("main-cam");
-
         let filter_wheels: Vec<Value> = self
             .filter_wheels
             .iter()
             .map(|fw| {
                 serde_json::json!({
                     "id": fw.id,
-                    "camera_id": first_camera_id,
                     "alpaca_url": fw.alpaca_url,
                     "device_number": fw.device_number,
                     "filters": fw.filters
@@ -613,10 +639,38 @@ impl RpConfigBuilder {
                 if let Some(d) = m.settle_after_slew {
                     obj["settle_after_slew"] = serde_json::json!(format!("{}ms", d.as_millis()));
                 }
+                if let Some(g) = &self.guider {
+                    obj["guiding"] = guiding_block(g);
+                }
                 obj
             }
-            None => Value::Null,
+            None => {
+                assert!(
+                    self.guider.is_none(),
+                    "guiding is mount-scoped (equipment.mount.guiding): \
+                     call with_mount before with_guider"
+                );
+                Value::Null
+            }
         };
+
+        let optical_trains: Vec<Value> = self
+            .optical_trains
+            .iter()
+            .map(|t| {
+                let mut obj = serde_json::json!({
+                    "id": t.id,
+                    "devices": t.devices,
+                });
+                if let Some(p) = &t.purpose {
+                    obj["purpose"] = serde_json::json!(p);
+                }
+                if let Some(f) = t.focal_length_mm {
+                    obj["focal_length_mm"] = serde_json::json!(f);
+                }
+                obj
+            })
+            .collect();
 
         let mut config = serde_json::json!({
             "session": {
@@ -626,6 +680,7 @@ impl RpConfigBuilder {
             },
             "equipment": {
                 "cameras": cameras,
+                "optical_trains": optical_trains,
                 "mount": mount_value,
                 "focusers": focusers,
                 "filter_wheels": filter_wheels,
@@ -711,28 +766,6 @@ impl RpConfigBuilder {
             config["plate_solver"] = block;
         }
 
-        if let Some(g) = &self.guider {
-            let mut block = serde_json::json!({
-                "url": g.url,
-            });
-            if let Some(t) = g.timeout {
-                block["timeout"] = serde_json::json!(format!("{}ms", t.as_millis()));
-            }
-            if let Some(p) = g.settle_pixels {
-                block["settle_pixels"] = serde_json::json!(p);
-            }
-            if let Some(t) = g.settle_time {
-                block["settle_time"] = serde_json::json!(format!("{}ms", t.as_millis()));
-            }
-            if let Some(t) = g.settle_timeout {
-                block["settle_timeout"] = serde_json::json!(format!("{}ms", t.as_millis()));
-            }
-            if let Some(p) = g.dither_pixels {
-                block["dither_pixels"] = serde_json::json!(p);
-            }
-            config["guider"] = block;
-        }
-
         if let Some((solve, slew_overhead)) = self.centering {
             config["centering"] = serde_json::json!({
                 "solve_time_estimate": format!("{}ms", solve.as_millis()),
@@ -759,6 +792,33 @@ impl RpConfigBuilder {
 
         config
     }
+}
+
+/// Serialize a [`GuiderConfig`] into the `equipment.mount.guiding`
+/// block shape, omitting `None` fields so rp's defaults apply.
+fn guiding_block(g: &GuiderConfig) -> Value {
+    let mut block = serde_json::json!({
+        "url": g.url,
+    });
+    if let Some(t) = g.timeout {
+        block["timeout"] = serde_json::json!(format!("{}ms", t.as_millis()));
+    }
+    if let Some(p) = g.settle_pixels {
+        block["settle_pixels"] = serde_json::json!(p);
+    }
+    if let Some(t) = g.settle_time {
+        block["settle_time"] = serde_json::json!(format!("{}ms", t.as_millis()));
+    }
+    if let Some(t) = g.settle_timeout {
+        block["settle_timeout"] = serde_json::json!(format!("{}ms", t.as_millis()));
+    }
+    if let Some(p) = g.dither_pixels {
+        block["dither_pixels"] = serde_json::json!(p);
+    }
+    if let Some(d) = g.recalibrate_above_deg {
+        block["recalibrate_above_deg"] = serde_json::json!(d);
+    }
+    block
 }
 
 /// Build a JSON config for the calibrator-flats service from a flat plan.
@@ -825,14 +885,8 @@ mod tests {
     }
 
     #[test]
-    fn filter_wheel_camera_id_follows_first_camera() {
+    fn filter_wheel_entry_carries_no_pairing_back_reference() {
         let mut b = RpConfigBuilder::new();
-        b.add_camera(CameraConfig {
-            id: "imaging-cam".to_string(),
-            alpaca_url: "http://127.0.0.1:1234".to_string(),
-            device_number: 0,
-            cooler_targets_c: Vec::new(),
-        });
         b.add_filter_wheel(FilterWheelConfig {
             id: "main-fw".to_string(),
             alpaca_url: "http://127.0.0.1:1234".to_string(),
@@ -840,9 +894,49 @@ mod tests {
             filters: vec!["Luminance".to_string()],
         });
         let cfg = b.build();
+        let fw = &cfg["equipment"]["filter_wheels"][0];
+        assert_eq!(fw["id"], "main-fw");
+        assert!(
+            fw.get("camera_id").is_none(),
+            "camera pairing lives in optical_trains, not on the wheel; got: {fw}"
+        );
+    }
+
+    #[test]
+    fn optical_trains_empty_by_default_and_emit_in_order() {
+        let cfg = RpConfigBuilder::new().build();
+        assert_eq!(cfg["equipment"]["optical_trains"], serde_json::json!([]));
+
+        let mut b = RpConfigBuilder::new();
+        b.add_optical_train(OpticalTrainConfig {
+            id: "main".to_string(),
+            purpose: Some("imaging".to_string()),
+            focal_length_mm: Some(1000.0),
+            devices: vec!["main-focuser".to_string(), "main-cam".to_string()],
+        });
+        b.add_optical_train(OpticalTrainConfig {
+            id: "guide".to_string(),
+            purpose: None,
+            focal_length_mm: None,
+            devices: vec!["guide-cam".to_string()],
+        });
+        let cfg = b.build();
+        let trains = cfg["equipment"]["optical_trains"].as_array().unwrap();
+        assert_eq!(trains.len(), 2);
+        assert_eq!(trains[0]["id"], "main");
+        assert_eq!(trains[0]["purpose"], "imaging");
+        assert_eq!(trains[0]["focal_length_mm"], 1000.0);
         assert_eq!(
-            cfg["equipment"]["filter_wheels"][0]["camera_id"],
-            "imaging-cam"
+            trains[0]["devices"],
+            serde_json::json!(["main-focuser", "main-cam"])
+        );
+        assert!(
+            trains[1].get("purpose").is_none(),
+            "a None purpose must omit the field so rp's imaging default applies"
+        );
+        assert!(
+            trains[1].get("focal_length_mm").is_none(),
+            "a None focal length must omit the field (no optics block)"
         );
     }
 
@@ -958,21 +1052,36 @@ mod tests {
     }
 
     #[test]
-    fn guider_block_omitted_by_default() {
-        let cfg = RpConfigBuilder::new().build();
+    fn guiding_block_omitted_by_default() {
+        let mut b = RpConfigBuilder::new();
+        b.with_mount(MountConfig {
+            alpaca_url: "http://127.0.0.1:11122".to_string(),
+            device_number: 0,
+            settle_after_slew: None,
+        });
+        let cfg = b.build();
         assert!(
-            cfg.get("guider").is_none(),
-            "expected guider key to be absent when not set, got: {:?}",
-            cfg.get("guider")
+            cfg["equipment"]["mount"].get("guiding").is_none(),
+            "expected mount.guiding to be absent when no guider is set, got: {:?}",
+            cfg["equipment"]["mount"].get("guiding")
         );
     }
 
     #[test]
-    fn with_guider_emits_url_only_block() {
+    fn with_guider_emits_url_only_block_under_the_mount() {
         let mut b = RpConfigBuilder::new();
+        b.with_mount(MountConfig {
+            alpaca_url: "http://127.0.0.1:11122".to_string(),
+            device_number: 0,
+            settle_after_slew: None,
+        });
         b.with_guider(GuiderConfig::url_only("http://127.0.0.1:11130".to_string()));
         let cfg = b.build();
-        let g = &cfg["guider"];
+        assert!(
+            cfg.get("guider").is_none(),
+            "the retired top-level guider block must never be emitted"
+        );
+        let g = &cfg["equipment"]["mount"]["guiding"];
         assert_eq!(g["url"], "http://127.0.0.1:11130");
         for field in [
             "timeout",
@@ -980,6 +1089,7 @@ mod tests {
             "settle_time",
             "settle_timeout",
             "dither_pixels",
+            "recalibrate_above_deg",
         ] {
             assert!(
                 g.get(field).is_none(),
@@ -991,6 +1101,11 @@ mod tests {
     #[test]
     fn with_guider_emits_full_overrides() {
         let mut b = RpConfigBuilder::new();
+        b.with_mount(MountConfig {
+            alpaca_url: "http://127.0.0.1:11122".to_string(),
+            device_number: 0,
+            settle_after_slew: None,
+        });
         b.with_guider(GuiderConfig {
             url: "http://127.0.0.1:11130".to_string(),
             timeout: Some(std::time::Duration::from_secs(120)),
@@ -998,15 +1113,25 @@ mod tests {
             settle_time: Some(std::time::Duration::from_secs(8)),
             settle_timeout: Some(std::time::Duration::from_secs(40)),
             dither_pixels: Some(5.0),
+            recalibrate_above_deg: Some(10.0),
         });
         let cfg = b.build();
-        let g = &cfg["guider"];
+        let g = &cfg["equipment"]["mount"]["guiding"];
         assert_eq!(g["url"], "http://127.0.0.1:11130");
         assert_eq!(g["timeout"], "120000ms");
         assert_eq!(g["settle_pixels"], 0.8);
         assert_eq!(g["settle_time"], "8000ms");
         assert_eq!(g["settle_timeout"], "40000ms");
         assert_eq!(g["dither_pixels"], 5.0);
+        assert_eq!(g["recalibrate_above_deg"], 10.0);
+    }
+
+    #[test]
+    #[should_panic(expected = "guiding is mount-scoped")]
+    fn with_guider_without_mount_panics_at_build() {
+        let mut b = RpConfigBuilder::new();
+        b.with_guider(GuiderConfig::url_only("http://127.0.0.1:11130".to_string()));
+        b.build();
     }
 
     #[test]

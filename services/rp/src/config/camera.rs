@@ -58,17 +58,6 @@ pub struct CameraConfig {
     pub gain: Option<i32>,
     #[serde(default)]
     pub offset: Option<i32>,
-    /// Effective focal length of the optical train feeding this camera,
-    /// in millimetres. Used at capture time to derive pixel scale and FOV
-    /// for the exposure document's `optics` block. The value lives in
-    /// config because the optical train (telescope + reducer/extender) has
-    /// no ASCOM Alpaca property — even the optional
-    /// `Telescope.FocalLength` does not reflect anything screwed in front
-    /// of the camera. Omitted → no `optics` block on captures from this
-    /// camera. See `docs/services/rp.md` §"Core Fields" for the derivation
-    /// and failure modes.
-    #[serde(default)]
-    pub focal_length_mm: Option<f64>,
     /// Estimated sensor readout + download time for this camera, feeding
     /// the predictive exposure deadline (§2.4 of the predictive-deadlines
     /// plan): `predicted = exposure duration + readout_time_estimate`. There
@@ -98,17 +87,6 @@ impl CameraConfig {
     /// onto its field; the message names the camera id for humans.
     pub fn field_errors(&self, index: usize) -> Vec<FieldError> {
         let mut errors = Vec::new();
-        if let Some(f) = self.focal_length_mm {
-            if !(f > 0.0 && f.is_finite()) {
-                errors.push(FieldError {
-                    path: format!("equipment.cameras.{index}.focal_length_mm"),
-                    msg: format!(
-                        "must be a positive finite number; got {f} (camera '{}')",
-                        self.id
-                    ),
-                });
-            }
-        }
         let off_grid: Vec<i32> = self
             .cooler_targets_c
             .iter()
@@ -154,8 +132,11 @@ impl CameraConfig {
 mod tests {
     use crate::config::load_config;
 
+    /// The pre-train `focal_length_mm` camera key was retired to
+    /// `equipment.optical_trains[].focal_length_mm`; a config still
+    /// carrying it must fail loudly at load (rp.md § Configuration).
     #[test]
-    fn camera_config_focal_length_round_trips() {
+    fn camera_config_rejects_retired_focal_length_key() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.json");
         std::fs::write(
@@ -176,37 +157,8 @@ mod tests {
         )
         .unwrap();
 
-        let config = load_config(&path).unwrap();
-        let cam = &config.equipment.cameras[0];
-        assert_eq!(cam.focal_length_mm, Some(540.0));
-    }
-
-    #[test]
-    fn camera_config_focal_length_defaults_to_none() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("config.json");
-        std::fs::write(
-            &path,
-            r#"{
-                "session": {"data_directory": "/tmp/rp-test"},
-                "equipment": {
-                    "cameras": [
-                        {
-                            "id": "main-cam",
-                            "alpaca_url": "http://localhost:11120"
-                        }
-                    ]
-                },
-                "server": { "port": 0 }
-            }"#,
-        )
-        .unwrap();
-
-        let config = load_config(&path).unwrap();
-        assert!(
-            config.equipment.cameras[0].focal_length_mm.is_none(),
-            "omitted focal_length_mm must deserialize to None"
-        );
+        let err = load_config(&path).unwrap_err().to_string();
+        assert!(err.contains("focal_length_mm"), "{err}");
     }
 
     #[test]
@@ -459,36 +411,6 @@ mod tests {
             grid,
             vec![-40, -35, -30, -25, -20, -15, -10, -5, 0, 5, 10, 15],
             "the enum must list every 5 °C rung from -40 to +15, ascending"
-        );
-    }
-
-    #[test]
-    fn camera_config_rejects_non_positive_focal_length() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("config.json");
-        std::fs::write(
-            &path,
-            r#"{
-                "session": {"data_directory": "/tmp/rp-test"},
-                "equipment": {
-                    "cameras": [
-                        {
-                            "id": "main-cam",
-                            "alpaca_url": "http://localhost:11120",
-                            "focal_length_mm": -100.0
-                        }
-                    ]
-                },
-                "server": { "port": 0 }
-            }"#,
-        )
-        .unwrap();
-
-        let err = load_config(&path).unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("focal_length_mm") && msg.contains("main-cam"),
-            "expected focal_length diagnostic naming the camera, got: {msg}"
         );
     }
 }

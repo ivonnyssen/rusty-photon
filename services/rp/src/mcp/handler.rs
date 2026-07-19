@@ -72,8 +72,13 @@ pub struct McpHandler {
     /// Operator-set guiding defaults (settle threshold/time/timeout,
     /// dither amount) applied when the per-call MCP parameters are
     /// omitted. Mirrors the non-connection fields of
-    /// `GuiderConfig`.
+    /// `GuidingConfig`.
     pub guider_defaults: crate::config::GuiderDefaults,
+    /// The derived optical-train model (rp.md § Optical Trains).
+    /// `do_capture` resolves each camera's `focal_length_mm` through
+    /// it for the exposure document's `optics` block. The default
+    /// (no trains) is the pre-train behavior — no optics block.
+    pub trains: crate::equipment::trains::TrainModel,
     /// Per-rig estimates sizing the advisory `center_on_target` deadline
     /// (§2.5) carried on `centering_started`. Wired by
     /// `with_centering_config` from the `centering` block in rp config;
@@ -115,6 +120,7 @@ impl McpHandler {
             plate_solver_default_search_radius_deg: None,
             guider: None,
             guider_defaults: crate::config::GuiderDefaults::default(),
+            trains: crate::equipment::trains::TrainModel::default(),
             centering: crate::config::CenteringConfig::default(),
             cooling: None,
             // Pattern (c) merge: each `built_in/<category>.rs`
@@ -202,6 +208,14 @@ impl McpHandler {
     ) -> Self {
         self.guider = client;
         self.guider_defaults = defaults;
+        self
+    }
+
+    /// Wire the derived optical-train model. The lib.rs build path
+    /// calls this with the model built from `equipment.optical_trains`;
+    /// tests without trains keep the empty default (no optics block).
+    pub fn with_trains(mut self, trains: crate::equipment::trains::TrainModel) -> Self {
+        self.trains = trains;
         self
     }
 

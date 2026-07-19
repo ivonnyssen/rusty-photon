@@ -572,14 +572,14 @@ impl McpHandler {
             .as_ref()
             .cloned()
             .ok_or_else(|| format!("camera not connected: {}", camera_id))?;
-        // Snapshot the operator-supplied focal length and the five
+        // Snapshot the train-derived focal length and the five
         // invariant physical-sensor properties cached at connect time.
         // `cam_entry` is a borrow off `self.equipment`; the snapshot
         // copies out the `Copy`/`Option<Copy>` values so the borrow does
         // not have to outlive the `await`s below — which is also what
         // lets `do_capture` avoid the 5 Alpaca round-trips per exposure
         // it used to pay for these properties (see `CameraEntry` docs).
-        let focal_length_mm = cam_entry.config.focal_length_mm;
+        let focal_length_mm = self.trains.focal_length_for_camera(camera_id);
         // Per-camera readout estimate sizes the predictive exposure deadline
         // (§2.4). Omitted in config → the conservative built-in default. rp
         // does not enforce this; it rides the `exposure_started` envelope for

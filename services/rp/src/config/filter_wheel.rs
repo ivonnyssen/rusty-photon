@@ -5,8 +5,6 @@ use serde::{Deserialize, Serialize};
 #[serde(deny_unknown_fields)]
 pub struct FilterWheelConfig {
     pub id: String,
-    #[serde(default)]
-    pub camera_id: String,
     pub alpaca_url: String,
     #[serde(default)]
     pub device_number: u32,
