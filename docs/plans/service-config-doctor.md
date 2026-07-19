@@ -32,7 +32,7 @@ doctor *out* of the services rather than a component of them.
 | D4 | `rusty-photon-doctor-checks` crate + generic hardware checks (no SDK) | Merged | [#563](https://github.com/ivonnyssen/rusty-photon/pull/563) |
 | D5 | Per-service `doctor` subcommand + aggregation | Merged | [#568](https://github.com/ivonnyssen/rusty-photon/pull/568) |
 | D6 | Move the TLS + credential lifecycle `rp` → doctor; split `rp-tls`; certs to `~/.config/rusty-photon/pki`; doctor generates certs + mints one credential + writes TLS-on/auth-on config | Merged | D6a [#564](https://github.com/ivonnyssen/rusty-photon/pull/564); D6b [#573](https://github.com/ivonnyssen/rusty-photon/pull/573) |
-| D7 | Packaging (doctor + renewal timers ride sentinel's artifacts), install-flow docs, on-rig verification | In progress | |
+| D7 | Packaging (doctor + renewal timers ride sentinel's artifacts), install-flow docs, on-rig verification | In review | [#589](https://github.com/ivonnyssen/rusty-photon/pull/589) |
 
 ## Decisions (fixed — see [ADR-016](../decisions/016-service-config-ownership-and-doctor.md) for rationale)
 
