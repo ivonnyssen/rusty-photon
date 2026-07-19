@@ -370,7 +370,12 @@ CA-trust fix. **Neither target carries a credential field at all yet**
 (they carry a bare `url`, no `auth`), so `joins.client-auth` still runs
 suggestion-only for them — closing that half needs a config-schema
 change to rp's HTTP clients, not a doctor check — tracked as follow-up
-work, not in this issue's scope (see §MVP scope).
+work, not in this issue's scope (see §MVP scope). A CA-trust gap is
+always reported once a target's certificate is self-signed and the
+client's CA field is absent, regardless of whether doctor's own
+`pki/ca.pem` exists locally yet — only the *fix* is gated on that file's
+presence, so a from-scratch config dir (TLS provisioned before the CA leg
+ever ran) still surfaces the gap instead of silently skipping it.
 
 Because `joins.client-transport`/`joins.client-auth` read the *target's*
 `server.tls`/`server.auth`, and those are themselves written by

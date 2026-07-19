@@ -1046,13 +1046,14 @@ fn transport_check(
     if target_tls_on && !target_uses_acme_cert(target) {
         if let Some((pointer, present)) = ca_cert {
             if !present {
+                let field_name = pointer.rsplit('/').next().unwrap_or(pointer.as_str());
                 let ca_path = rusty_photon_tls::config::ca_cert_path(
                     &crate::provision::absolute_pki_dir(&ctx.config_dir),
                 );
                 if ca_path.is_file() {
                     problems.push(format!(
                         "{} serves a self-signed certificate, but {client_field} has \
-                         no ca_cert_path to trust it",
+                         no {field_name} to trust it",
                         target.entry.name
                     ));
                     fixes.push(crate::report::FixOp::SetString {
@@ -1060,6 +1061,13 @@ fn transport_check(
                         pointer,
                         value: ca_path.to_string_lossy().into_owned(),
                     });
+                } else {
+                    problems.push(format!(
+                        "{} serves a self-signed certificate, but {client_field} has \
+                         no {field_name} to trust it, and doctor's own CA material \
+                         does not exist yet for `--fix` to wire in",
+                        target.entry.name
+                    ));
                 }
             }
         }
@@ -1911,6 +1919,42 @@ mod tests {
             }
             other => unreachable!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn test_rp_plate_solver_reports_missing_ca_trust_even_without_local_ca_pem() {
+        let dir = tempfile::tempdir().unwrap();
+        // No stage_pki: doctor's own pki/ca.pem does not exist on this
+        // config dir, so the gap can only be reported, never fixed.
+        write_json(
+            dir.path(),
+            "plate-solver.json",
+            serde_json::json!({ "server": { "port": 11131,
+                "tls": { "cert": "/pki/plate-solver.pem", "key": "/pki/plate-solver-key.pem" } } }),
+        );
+        write_json(
+            dir.path(),
+            "rp.json",
+            serde_json::json!({ "server": { "port": 11115 },
+                "plate_solver": { "url": "https://localhost:11131" } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        let checks = rp_client_joins(&ctx);
+        let transport = checks
+            .iter()
+            .find(|c| c.name == "joins.client-transport")
+            .expect("missing CA trust must be reported even when ca.pem is absent");
+        assert_eq!(transport.status, Status::Fail);
+        assert!(
+            transport.detail.contains("self-signed") && transport.detail.contains("ca_cert"),
+            "{}",
+            transport.detail
+        );
+        assert!(
+            transport.fixes.is_empty(),
+            "no fix is possible without doctor's own CA material: {:?}",
+            transport.fixes
+        );
     }
 
     #[test]
