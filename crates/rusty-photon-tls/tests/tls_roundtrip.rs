@@ -3,9 +3,21 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 
 use std::net::SocketAddr;
+use std::time::Duration;
 
 use axum::{routing::get, Router};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+/// Safety-net bound for a read that a `#[tokio::test(start_paused = true)]`
+/// test expects to complete "immediately" once the connection under test
+/// closes. Deliberately far larger than any of the server's own timeout
+/// constants: under a paused clock this resolves in virtual time only (real
+/// wall-clock cost stays near zero either way), but a duration close to the
+/// server's own timeouts can lose a race against them — tokio's paused-clock
+/// auto-advance can jump straight to *this* timer instead of first letting
+/// the connection-handling task run out its own (possibly multi-step)
+/// shutdown, turning a working implementation into a false "Elapsed".
+const HANG_GUARD: Duration = Duration::from_secs(300);
 
 #[tokio::test]
 async fn https_roundtrip_with_generated_certs() {
@@ -359,7 +371,10 @@ async fn slow_first_byte_and_stalled_head_share_one_deadline() {
     tokio::time::advance(std::time::Duration::from_secs(2)).await;
 
     let mut buf = [0u8; 1];
-    let n = socket.read(&mut buf).await.unwrap();
+    let n = tokio::time::timeout(HANG_GUARD, socket.read(&mut buf))
+        .await
+        .expect("the server should close the connection, not hang forever")
+        .unwrap();
     assert_eq!(
         n, 0,
         "connection should be dropped by the shared 5s deadline (4s + 2s > 5s), not still open"
@@ -424,20 +439,20 @@ async fn oversized_plaintext_head_without_a_terminator_is_dropped() {
     }
 
     let mut buf = Vec::new();
-    let result = tokio::time::timeout(
+    // A clean EOF with no bytes, or a reset from the server closing while
+    // data was still unread, both mean no response was sent back — and
+    // `read_to_end` appends whatever it read before an error, too, so check
+    // `buf` either way rather than only on the `Ok` outcome.
+    let _ = tokio::time::timeout(
         std::time::Duration::from_secs(10),
         socket.read_to_end(&mut buf),
     )
     .await
     .expect("an oversized head should be dropped promptly, not held open");
-    // A clean EOF with no bytes, or a reset from the server closing while
-    // data was still unread — both mean no response was sent back.
-    if let Ok(_n) = result {
-        assert!(
-            buf.is_empty(),
-            "no response bytes should be sent back for an unterminated oversized head: {buf:?}"
-        );
-    }
+    assert!(
+        buf.is_empty(),
+        "no response bytes should be sent back for an unterminated oversized head: {buf:?}"
+    );
 
     shutdown_tx.send(()).ok();
     server_handle.await.ok();
@@ -488,7 +503,10 @@ async fn a_connection_that_never_sends_a_byte_is_dropped_after_the_timeout() {
     tokio::time::advance(std::time::Duration::from_secs(6)).await;
 
     let mut buf = [0u8; 1];
-    let n = socket.read(&mut buf).await.unwrap();
+    let n = tokio::time::timeout(HANG_GUARD, socket.read(&mut buf))
+        .await
+        .expect("the server should close the connection, not hang forever")
+        .unwrap();
     assert_eq!(
         n, 0,
         "a connection that never sends a byte should be dropped after the timeout"
@@ -539,7 +557,10 @@ async fn stalled_tls_handshake_is_dropped_after_the_timeout() {
     tokio::time::advance(std::time::Duration::from_secs(11)).await;
 
     let mut buf = [0u8; 1];
-    let n = socket.read(&mut buf).await.unwrap();
+    let n = tokio::time::timeout(HANG_GUARD, socket.read(&mut buf))
+        .await
+        .expect("the server should close the connection, not hang forever")
+        .unwrap();
     assert_eq!(
         n, 0,
         "the stalled handshake should be dropped, not held open"
