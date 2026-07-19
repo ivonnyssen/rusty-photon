@@ -301,14 +301,24 @@ async fn redirect_plaintext_http(
     };
 
     let response = build_redirect_response(&request, local_addr);
-    if let Err(e) = stream.write_all(response.as_bytes()).await {
-        debug!(
-            "Failed to write the plaintext redirect to {}: {}",
-            remote_addr, e
-        );
-        return;
+    match timeout_at(deadline, stream.write_all(response.as_bytes())).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            debug!(
+                "Failed to write the plaintext redirect to {}: {}",
+                remote_addr, e
+            );
+            return;
+        }
+        Err(_) => {
+            debug!(
+                "Timed out writing the plaintext redirect to {}",
+                remote_addr
+            );
+            return;
+        }
     }
-    let _ = stream.shutdown().await;
+    let _ = timeout_at(deadline, stream.shutdown()).await;
 }
 
 /// A minimally-parsed plaintext HTTP request head.
@@ -472,26 +482,56 @@ fn is_tchar(b: u8) -> bool {
         )
 }
 
+/// A hostname/IPv4 authority is built only from letters, digits, hyphens
+/// and dots (`_` is technically illegal DNS but common enough in the wild
+/// to allow). Anything else — `@`, `/`, `?`, `#`, whitespace, backslash —
+/// is a URI delimiter or userinfo separator that a downstream URL parser
+/// could read differently than intended if reflected verbatim into the
+/// `Location` authority (e.g. `Host: trusted.local@evil.example` parsed
+/// with userinfo `trusted.local` and actual host `evil.example`).
+fn is_host_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_')
+}
+
+/// A bracketed IPv6 literal is built only from hex digits, `:` (and `.`
+/// for an IPv4-mapped form like `::ffff:192.0.2.1`).
+fn is_ipv6_literal_byte(b: u8) -> bool {
+    b.is_ascii_hexdigit() || matches!(b, b':' | b'.')
+}
+
 /// Strip a trailing `:port` from a `Host` header value, respecting
 /// bracketed IPv6 literals (`[::1]:8443`). Returns `None` when the result
-/// can't be a syntactically valid `Location` authority — a syntactically
-/// valid unbracketed authority (hostname or IPv4) never contains `:`, so
-/// anything that still does (e.g. an unbracketed IPv6 literal like
-/// `Host: ::1`, invalid per RFC 7230 but not unheard of from a malformed
-/// client) falls back to the caller's local IP instead of producing a
-/// malformed redirect.
+/// can't be a syntactically valid `Location` authority, in which case the
+/// caller falls back to its own local IP instead of producing a malformed
+/// or misleading redirect: an unbracketed IPv6 literal (`Host: ::1`,
+/// invalid per RFC 7230 but not unheard of from a malformed client), a
+/// bracketed literal with invalid trailing bytes, or a hostname/IPv4
+/// containing characters outside `is_host_byte` (see its doc comment for
+/// why that's a redirect-confusion risk, not just cosmetics).
 fn strip_host_port(host: &str) -> Option<&str> {
     if let Some(rest) = host.strip_prefix('[') {
-        return rest.find(']').map(|end| &host[..end + 2]);
+        let end = rest.find(']')?;
+        let literal = &rest[..end];
+        if literal.is_empty() || !literal.bytes().all(is_ipv6_literal_byte) {
+            return None;
+        }
+        let after = &rest[end + 1..];
+        if !after.is_empty() {
+            let port = after.strip_prefix(':')?;
+            if port.is_empty() || !port.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+        }
+        return Some(&host[..end + 2]);
     }
     let name = match host.rsplit_once(':') {
         Some((name, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => name,
         _ => host,
     };
-    if name.contains(':') {
-        None
-    } else {
+    if !name.is_empty() && name.bytes().all(is_host_byte) {
         Some(name)
+    } else {
+        None
     }
 }
 
@@ -742,6 +782,27 @@ mod tests {
     }
 
     #[test]
+    fn strip_host_port_rejects_userinfo_and_uri_delimiters() {
+        // A URL parser downstream of the redirect could read
+        // "trusted.local@evil.example" as userinfo "trusted.local" for
+        // host "evil.example" — reflecting these bytes verbatim would be a
+        // redirect-confusion risk, so fall back to the local IP instead.
+        assert_eq!(strip_host_port("trusted.local@evil.example"), None);
+        assert_eq!(strip_host_port("good.local/evil"), None);
+        assert_eq!(strip_host_port("good.local?x=1"), None);
+        assert_eq!(strip_host_port("good.local#frag"), None);
+        assert_eq!(strip_host_port("good.local evil"), None);
+    }
+
+    #[test]
+    fn strip_host_port_rejects_bracketed_ipv6_with_invalid_trailing_bytes() {
+        assert_eq!(strip_host_port("[::1]evil.example"), None);
+        assert_eq!(strip_host_port("[::1]:notaport"), None);
+        assert_eq!(strip_host_port("[not-hex]"), None);
+        assert_eq!(strip_host_port("[]"), None);
+    }
+
+    #[test]
     fn build_redirect_response_falls_back_to_local_ip_for_unbracketed_ipv6_host() {
         let request = ParsedRequest {
             target: "/health".to_string(),
@@ -752,6 +813,20 @@ mod tests {
         assert!(
             response.contains("Location: https://127.0.0.1:11121/health\r\n"),
             "{response}"
+        );
+    }
+
+    #[test]
+    fn build_redirect_response_falls_back_to_local_ip_for_a_host_smuggling_userinfo() {
+        let request = ParsedRequest {
+            target: "/health".to_string(),
+            host: Some("trusted.local@evil.example".to_string()),
+        };
+        let local_addr: SocketAddr = "127.0.0.1:11121".parse().unwrap();
+        let response = build_redirect_response(&request, local_addr);
+        assert!(
+            response.contains("Location: https://127.0.0.1:11121/health\r\n"),
+            "must not reflect the userinfo-smuggling Host into the Location authority: {response}"
         );
     }
 
