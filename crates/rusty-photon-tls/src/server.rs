@@ -514,7 +514,17 @@ fn build_redirect_response(request: &ParsedRequest, local_addr: SocketAddr) -> S
         .and_then(strip_host_port)
         .map(str::to_string)
         .unwrap_or_else(|| format_ip_for_url(local_addr.ip()));
-    let location = format!("https://{host}:{}{}", local_addr.port(), request.target);
+    // "*" (OPTIONS's server-wide form) is a request-line-only construct —
+    // it isn't valid URI-path syntax, so appended as-is it would produce a
+    // Location like "https://host:port*" with no path separator. Map it to
+    // the root path instead of rejecting the request outright, so an
+    // OPTIONS * client still gets redirected rather than silently dropped.
+    let path = if request.target == "*" {
+        "/"
+    } else {
+        request.target.as_str()
+    };
+    let location = format!("https://{host}:{}{}", local_addr.port(), path);
     format!(
         "HTTP/1.1 308 Permanent Redirect\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
     )
@@ -774,5 +784,21 @@ mod tests {
         let local_addr: SocketAddr = "192.168.1.5:11121".parse().unwrap();
         let response = build_redirect_response(&request, local_addr);
         assert!(response.contains("Location: https://192.168.1.5:11121/health?ClientID=1\r\n"));
+    }
+
+    #[test]
+    fn build_redirect_response_maps_asterisk_target_to_root_path() {
+        // "*" isn't valid URI-path syntax; appended verbatim it would
+        // produce a Location with no path separator ("https://host:port*").
+        let request = ParsedRequest {
+            target: "*".to_string(),
+            host: Some("127.0.0.1:9999".to_string()),
+        };
+        let local_addr: SocketAddr = "127.0.0.1:11121".parse().unwrap();
+        let response = build_redirect_response(&request, local_addr);
+        assert!(
+            response.contains("Location: https://127.0.0.1:11121/\r\n"),
+            "{response}"
+        );
     }
 }
