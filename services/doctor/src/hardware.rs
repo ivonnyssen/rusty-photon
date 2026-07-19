@@ -285,7 +285,7 @@ fn serial_access(
             format!(
                 "{path} is openable by the {SERVICE_USER} user via its \
                  account-level{} membership — the unit declares no matching \
-                 SupplementaryGroups=",
+                 SupplementaryGroups= entry",
                 hw.group_name(node.gid)
                     .map(|g| format!(" {g} group"))
                     .unwrap_or_else(|| " group".to_string()),

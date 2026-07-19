@@ -20,6 +20,10 @@ rust_library(
 rust_test(
     name = "rusty-photon-doctor-checks_unit_test",
     size = "small",
+    # The gather() test's Windows leg shells out to PowerShell twice
+    # (COM-port + USB inventory); a cold CI runner can push the suite past
+    # small's default 60s.
+    timeout = "moderate",
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,
