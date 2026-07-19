@@ -845,6 +845,74 @@ exactly — `null` when the latest step omitted the measurement, so the
 snapshot never reports stale telemetry. RMS comes from the rolling
 window; all nullable fields are `null` when no samples exist.
 
+#### `GET /api/v1/guiding/metrics`
+
+The per-frame star-metric window backing rp's guide-focus features
+(rp.md § Guide Focus Watch and the guide-train `auto_focus` sweep):
+the last **50** `GuideStep` / `StarLost` events, oldest first,
+cleared together with the RMS window when `guiding/start` is issued.
+Read-only; never blocks and bypasses the mutating-request queue.
+
+```json
+{
+  "guiding": true,
+  "frames": [
+    { "frame": 41, "hfd": 2.31, "snr": 24.8, "star_mass": 5120.0, "star_lost": false },
+    { "frame": 42, "hfd": null, "snr": 3.1, "star_mass": null, "star_lost": true }
+  ]
+}
+```
+
+- A `GuideStep` event appends an entry with `star_lost: false` and
+  the metric fields exactly as PHD2 reported them (`null` where the
+  event omitted a measurement — older PHD2 versions have no `HFD`).
+- A `StarLost` event appends `star_lost: true` with whatever metrics
+  the event carried.
+- `frame` is PHD2's own frame counter — consumers poll for freshness
+  by watermark (`frame` greater than the last one they acted on),
+  never by array position.
+- `guiding` is derived from a fresh `get_app_state`, as in `stats`.
+
+#### `GET /api/v1/equipment`
+
+Read-only passthrough of PHD2's `get_current_equipment`: each
+equipment slot's `{ "name", "connected" }`, `null` for slots the
+current profile does not configure. Bypasses the mutating queue.
+
+```json
+{
+  "camera":  { "name": "QHY5III715C", "connected": true },
+  "mount":   { "name": "On Camera", "connected": true },
+  "aux_mount": null,
+  "ao":      null,
+  "rotator": null
+}
+```
+
+The `rotator` slot is what rp's rotate-while-guiding ladder branches
+on (rp.md § Rotator Tool Details): PHD2 with a connected rotator
+records the rotation angle with each calibration and adjusts on its
+own; without one, rp decides between clearing the calibration and
+accepting the cross-axis leak.
+
+#### `POST /api/v1/calibration/clear`
+
+Clear PHD2's stored calibration; PHD2 recalibrates on the next guide
+start. Body optional: `{ "which": "mount" | "ao" | "both" }`,
+default `"mount"`. Mutating (queues behind the single-flight mutex).
+
+Response: `{ "state": "cleared" }`.
+
+#### `POST /api/v1/star/reselect`
+
+Auto-select a guide star on the current frame (PHD2 `find_star`,
+full frame). Used by rp after a rotation of the guide field moved
+the star. Requires frames to be flowing (looping or guiding); when
+PHD2 cannot find a star, the RPC error surfaces as `guide_failed`
+with PHD2's text. Mutating.
+
+Response: `{ "state": "selected" }`.
+
 #### `GET /health`
 
 `200 {"status": "ok"}` while the TCP connection to PHD2 is
@@ -864,13 +932,20 @@ The service accumulates PHD2 `GuideStep` events into a rolling window
 - The window survives a guiding stop (last-known stats remain
   readable) and is lost on service restart.
 
+The same event pump feeds the **metrics ring** behind
+`GET /api/v1/guiding/metrics`: per-frame `{frame, hfd, snr,
+star_mass, star_lost}` entries (also 50, also cleared on
+`guiding/start`), recording `StarLost` events alongside guide steps
+so consumers can tell a degraded star from a vanished one.
+
 ### Concurrency
 
 Mutating requests (`guiding/start`, `guiding/stop`, `pause`,
-`resume`, `dither`) serialize behind a single-flight mutex —
-overlapping requests **queue, not error** (plate-solver precedent).
-PHD2 is a single guiding head; concurrent settle waits are
-meaningless. `stats` and `health` do not take the mutex.
+`resume`, `dither`, `calibration/clear`, `star/reselect`) serialize
+behind a single-flight mutex — overlapping requests **queue, not
+error** (plate-solver precedent). PHD2 is a single guiding head;
+concurrent settle waits are meaningless. `stats`, `metrics`,
+`equipment`, and `health` do not take the mutex.
 
 ### Error envelope
 

@@ -49,8 +49,8 @@ is not involved beyond its existing config-shape checks.
 | T0 | This plan | Merged | [#579](https://github.com/ivonnyssen/rusty-photon/pull/579) |
 | T1 | Config schema + validation + derived coupling model in rp (`optical_trains`, `equipment.mount.guiding`, back-ref removal, `focal_length_mm` migration) | Merged | [#586](https://github.com/ivonnyssen/rusty-photon/pull/586) |
 | T2 | Train-aware MCP tools: `auto_focus` by train, `refocus_train` sequence expansion, first rotator verbs | Merged | [#591](https://github.com/ivonnyssen/rusty-photon/pull/591) |
-| T3 | Mount motion gate (dither/slew/flip vs. in-flight exposures) | In progress | feature/optical-trains-t3 |
-| T4 | Guiding integration: rotate×guide ladder, guide-AF trigger + escalation via PHD2 metrics | Not started | |
+| T3 | Mount motion gate (dither/slew/flip vs. in-flight exposures) | Merged | [#594](https://github.com/ivonnyssen/rusty-photon/pull/594) |
+| T4 | Guiding integration: rotate×guide ladder, guide-AF trigger + escalation via PHD2 metrics | In progress | feature/optical-trains-t4 |
 | T5 | DSL train addressing (`deep_sky` takes one train id, not three device ids) | Not started | |
 | T6 | ui-htmx `/equipment` grouped by train; membership editing | Not started | |
 
@@ -299,6 +299,42 @@ output only), step the guide focuser, read HFD per `GuideStep`, V-curve fit,
 treat `StarLost` as a bracket edge. If HFD does not stream in the chosen
 pause mode, fall back to `get_star_image` polling. Trigger thresholds
 (HFD-trend window, escalation deadline) are T4 design-pass parameters.
+
+Settled in the T4 design pass (contracts in rp.md § Guide-train sweep,
+§ Guide Focus Watch, § Rotator Tool Details; endpoints in phd2-guider.md):
+
+- **The trigger and escalation are events, not rp-initiated actions.**
+  rp's orchestration split (rp owns primitives + monitors, the
+  orchestrator owns sequencing) decides it: only the orchestrator knows
+  when a refocus fits between exposures, and an rp-fired full sequence
+  would collide with in-flight captures on the main camera. rp ships the
+  `focus_watch` monitor emitting `guide_focus_degraded` /
+  `guide_focus_escalation`; the DSL trigger wiring that invokes
+  `refocus_train` on them is T5's deliverable alongside train addressing.
+- **The metric sweep runs under active corrections** (PHD2 only emits
+  `GuideStep` while guiding; a defocusing star drifts little). Whether
+  HFD streams in paused modes stays a rig-verification item, with
+  `get_star_image` polling as the recorded fallback.
+- **Sampling**: `frames_per_step` (default 3) fresh frames per position
+  by frame-number watermark, median HFD per position; `star_lost` /
+  null-HFD frames are invalid, and a position that fills with invalid
+  frames is a null sample (the bracket edge). Same parabolic fit,
+  errors, and recovery as the capture sweep.
+- **Watch thresholds** (`equipment.mount.guiding.focus_watch`, optional
+  block): `window` 10, `degrade_ratio` 1.25, `cooldown` 10m,
+  `escalation_deadline` 10m; baseline re-arms on guiding-train
+  `focus_complete`/`refocus_complete`.
+- **Per-purpose `auto_focus` block fields**: imaging keeps the five
+  capture fields; the guiding train takes `step_size`/`half_width`
+  (+ `frames_per_step`, `min_fit_points`) and rejects capture-only
+  fields at load — and vice versa.
+- **Guider service surface**: four new endpoints — `GET /guiding/metrics`
+  (50-entry per-frame HFD/SNR/StarMass + StarLost ring), `GET /equipment`,
+  `POST /calibration/clear`, `POST /star/reselect` — no new PHD2 client
+  code (the library verbs all exist).
+- **Decision 9 warning** = `guide_rotator_unmodeled` point event (plus
+  log) when `start_guiding` settles with a rotator-coupled guide camera
+  and no PHD2 rotator.
 
 ### DSL and UI (T5, T6)
 
