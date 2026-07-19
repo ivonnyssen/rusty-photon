@@ -379,7 +379,13 @@ fn parse_request_head(head: &[u8]) -> Option<ParsedRequest> {
     let target = parts.next()?;
     let version = parts.next()?;
 
-    if method.is_empty() || !method.bytes().all(|b| b.is_ascii_uppercase()) {
+    // RFC 7230 §3.1.1: method is a `token` (1*tchar), not restricted to
+    // uppercase letters — extension methods like WebDAV's PROPFIND/MKCOL or
+    // SSDP's M-SEARCH are syntactically valid and would otherwise be
+    // silently dropped instead of redirected. The method is never echoed
+    // into the response, so broadening this doesn't reopen any injection
+    // surface; a bare '\r'/'\n' still isn't a tchar and stays rejected.
+    if method.is_empty() || !method.bytes().all(is_tchar) {
         return None;
     }
     // HTTP/1.x only: the HTTP/2 cleartext preface ("PRI * HTTP/2.0\r\n\r\n...")
@@ -439,6 +445,31 @@ fn parse_request_head(head: &[u8]) -> Option<ParsedRequest> {
 
 fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack.windows(needle.len()).position(|w| w == needle)
+}
+
+/// RFC 7230 §3.2.6 `tchar` — the character class allowed in an HTTP method
+/// token (and header field-names, though this crate only uses it for the
+/// method): any alphanumeric ASCII byte, plus a fixed set of punctuation.
+/// Notably excludes whitespace and control characters (including `\r`/`\n`).
+fn is_tchar(b: u8) -> bool {
+    b.is_ascii_alphanumeric()
+        || matches!(
+            b,
+            b'!' | b'#'
+                | b'$'
+                | b'%'
+                | b'&'
+                | b'\''
+                | b'*'
+                | b'+'
+                | b'-'
+                | b'.'
+                | b'^'
+                | b'_'
+                | b'`'
+                | b'|'
+                | b'~'
+        )
 }
 
 /// Strip a trailing `:port` from a `Host` header value, respecting
@@ -600,6 +631,25 @@ mod tests {
     #[test]
     fn parse_request_head_rejects_non_http_bytes() {
         assert!(parse_request_head(b"random garbage bytes, not HTTP at all").is_none());
+    }
+
+    #[test]
+    fn parse_request_head_accepts_rfc7230_extension_methods() {
+        // Method is a `token` (1*tchar) per RFC 7230 §3.1.1, not restricted
+        // to uppercase letters — WebDAV's PROPFIND and SSDP's M-SEARCH (with
+        // a hyphen, a valid tchar) are syntactically valid and must be
+        // redirected, not silently dropped.
+        let parsed = parse_request_head(b"PROPFIND /calendar HTTP/1.1\r\n").unwrap();
+        assert_eq!(parsed.target, "/calendar");
+        let parsed = parse_request_head(b"M-SEARCH /device HTTP/1.1\r\n").unwrap();
+        assert_eq!(parsed.target, "/device");
+    }
+
+    #[test]
+    fn parse_request_head_rejects_a_method_smuggling_a_bare_newline() {
+        // A bare CR/LF is never a tchar, so this must still be rejected even
+        // under the broadened method check.
+        assert!(parse_request_head(b"GET\nInjectedX /path HTTP/1.1\r\n").is_none());
     }
 
     #[test]
