@@ -349,18 +349,25 @@ fn parse_request_head(head: &[u8]) -> Option<ParsedRequest> {
     if method.is_empty() || !method.bytes().all(|b| b.is_ascii_uppercase()) {
         return None;
     }
-    if !version.starts_with("HTTP/") {
+    // HTTP/1.x only: the HTTP/2 cleartext preface ("PRI * HTTP/2.0\r\n\r\n...")
+    // is a fixed 24-byte magic string that otherwise parses as a well-formed
+    // request line (method `PRI`, target `*`) — accepting `HTTP/2.0` here
+    // would redirect that non-HTTP-1.x prelude instead of dropping it.
+    if !version.starts_with("HTTP/1.") {
         return None;
     }
     // Restrict to origin-form targets (`/path`) and the OPTIONS asterisk-form
-    // (`*`) — the only shapes a redirect can append after `https://host:port`
-    // and still mean the same thing. Absolute-form (`http://host/path`) and
-    // authority-form (`CONNECT host:port`) targets are proxy-only requests
-    // that don't belong on this port; redirecting them would either be
-    // malformed or, worse, let a client-supplied target steer the `Location`
-    // header's authority.
-    if target != "*" && !target.starts_with('/') {
-        return None;
+    // (`*`, valid only for OPTIONS per RFC 7230 §5.3.4) — the only shapes a
+    // redirect can append after `https://host:port` and still mean the same
+    // thing. Absolute-form (`http://host/path`) and authority-form (`CONNECT
+    // host:port`) targets are proxy-only requests that don't belong on this
+    // port; redirecting them would either be malformed or, worse, let a
+    // client-supplied target steer the `Location` header's authority.
+    match target {
+        "*" if method == "OPTIONS" => {}
+        "*" => return None,
+        t if t.starts_with('/') => {}
+        _ => return None,
     }
 
     let mut host = None;
@@ -520,6 +527,21 @@ mod tests {
     fn parse_request_head_accepts_asterisk_target() {
         let parsed = parse_request_head(b"OPTIONS * HTTP/1.1\r\n").unwrap();
         assert_eq!(parsed.target, "*");
+    }
+
+    #[test]
+    fn parse_request_head_rejects_asterisk_target_for_non_options_methods() {
+        // "*" is only meaningful for OPTIONS (RFC 7230 §5.3.4); other
+        // methods sending it are not a request shape we redirect.
+        assert!(parse_request_head(b"GET * HTTP/1.1\r\n").is_none());
+    }
+
+    #[test]
+    fn parse_request_head_rejects_http2_cleartext_preface() {
+        // The HTTP/2 client connection preface starts with a fixed line
+        // that otherwise parses as a well-formed HTTP/1.x request line
+        // (method PRI, target *); it must be dropped, not redirected.
+        assert!(parse_request_head(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n").is_none());
     }
 
     #[test]
