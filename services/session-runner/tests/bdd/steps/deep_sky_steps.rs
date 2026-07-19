@@ -25,8 +25,9 @@ use cucumber::gherkin::Step;
 use cucumber::{given, then, when};
 
 use bdd_infra::rp_harness::{
-    CannedWcs, ComputedSky, ExposurePlanConfig, OmniSimHandle, PlannerTargetConfig,
-    PlateSolverConfig, PlateSolverStub, StubBehavior,
+    CannedGuiding, CannedWcs, ComputedSky, ExposurePlanConfig, GuiderConfig, GuiderStub,
+    GuiderStubBehavior, OmniSimHandle, OpticalTrainConfig, PlannerTargetConfig, PlateSolverConfig,
+    PlateSolverStub, StubBehavior, TrainAutoFocusConfig,
 };
 
 use crate::steps::infrastructure::{
@@ -185,6 +186,112 @@ pub async fn mount_matches_site_and_target(world: &mut SessionRunnerWorld) {
         .expect("failed to sync the simulated mount onto the first target");
 }
 
+// ---------------------------------------------------------------------------
+// Given steps: the guider stub
+// ---------------------------------------------------------------------------
+
+/// A guider stub whose every endpoint canned-succeeds with a static
+/// active loop — the guided-cadence scenario only needs start, dither,
+/// and stop to answer.
+#[given("a stub guider accepting guide commands")]
+async fn stub_guider_accepting_commands(world: &mut SessionRunnerWorld) {
+    start_guider_stub(world, CannedGuiding::default()).await;
+}
+
+/// A guider stub in lifecycle mode: inactive (no frames, no HFD
+/// script consumption) until the document's `start_guiding` lands, so
+/// rp's focus watch fires its events only during the run — after the
+/// engine's event intake is open.
+#[given(expr = "a lifecycle stub guider with the HFD script {string}")]
+async fn lifecycle_stub_guider(world: &mut SessionRunnerWorld, script: String) {
+    let metrics_hfd_script: Vec<f64> = script
+        .split(',')
+        .map(|s| s.trim().parse().expect("HFD script entries are numbers"))
+        .collect();
+    start_guider_stub(
+        world,
+        CannedGuiding {
+            lifecycle: true,
+            metrics_hfd_script,
+            ..CannedGuiding::default()
+        },
+    )
+    .await;
+}
+
+async fn start_guider_stub(world: &mut SessionRunnerWorld, canned: CannedGuiding) {
+    let stub = GuiderStub::start(GuiderStubBehavior::Canned(canned)).await;
+    let mut guider = GuiderConfig::url_only(stub.url.clone());
+    // The document's dither call carries no amount: rp falls back to
+    // the guiding config's dither_pixels, which is rig geometry and
+    // belongs in rp's config, not in workflow parameters.
+    guider.dither_pixels = Some(1.5);
+    world.guider = Some(guider);
+    world.guider_stub = Some(stub);
+}
+
+/// rp's Guide Focus Watch config (`equipment.mount.guiding.focus_watch`).
+/// Cooldown is left long so a degradation fires exactly once.
+#[given(
+    expr = "the stub guider has a focus watch of window {int}, poll interval {string}, and escalation deadline {string}"
+)]
+async fn stub_guider_focus_watch(
+    world: &mut SessionRunnerWorld,
+    window: i64,
+    poll_interval: String,
+    escalation_deadline: String,
+) {
+    let guider = world
+        .guider
+        .as_mut()
+        .expect("add the stub guider before its focus watch");
+    guider.focus_watch = Some(serde_json::json!({
+        "window": window,
+        "degrade_ratio": 1.25,
+        "cooldown": "10m",
+        "escalation_deadline": escalation_deadline,
+        "poll_interval": poll_interval,
+    }));
+}
+
+/// The guiding train the watch events name: the simulator's focuser as
+/// its terminal focuser (the metric sweep moves it) and an offline
+/// guide camera (the metric sweep never captures, so the roster entry
+/// only has to exist).
+#[given(
+    expr = "a guiding train {string} on the simulator's focuser with a metric auto_focus block"
+)]
+async fn guiding_train_on_simulator_focuser(world: &mut SessionRunnerWorld, train_id: String) {
+    ensure_omnisim(world).await;
+    world.focusers.push(bdd_infra::rp_harness::FocuserConfig {
+        id: "guide-focuser".to_string(),
+        alpaca_url: world.omnisim_url(),
+        device_number: 0,
+        min_position: None,
+        max_position: None,
+    });
+    world.cameras.push(bdd_infra::rp_harness::CameraConfig {
+        id: "guide-cam".to_string(),
+        alpaca_url: "not-a-url".to_string(),
+        device_number: 0,
+        cooler_targets_c: Vec::new(),
+    });
+    world.optical_trains.push(OpticalTrainConfig {
+        id: train_id,
+        purpose: Some("guiding".to_string()),
+        focal_length_mm: None,
+        devices: vec!["guide-focuser".to_string(), "guide-cam".to_string()],
+        auto_focus: Some(TrainAutoFocusConfig {
+            duration: None,
+            step_size: 50,
+            half_width: 100,
+            min_area: None,
+            max_area: None,
+            frames_per_step: Some(2),
+        }),
+    });
+}
+
 #[given("a stub plate solver echoing the first target")]
 async fn stub_plate_solver_echoing_first_target(world: &mut SessionRunnerWorld) {
     let first = *world
@@ -224,7 +331,7 @@ async fn rp_with_camera_mount_and_workflow(
 ) {
     configure_deep_sky_equipment(world, false).await;
     start_session_runner_service(world).await;
-    register_deep_sky(world, &workflow, step, false);
+    register_deep_sky(world, &workflow, step);
     start_rp_service(world).await;
 }
 
@@ -239,7 +346,7 @@ async fn rp_with_camera_mount_focuser_and_workflow(
 ) {
     configure_deep_sky_equipment(world, true).await;
     start_session_runner_service(world).await;
-    register_deep_sky(world, &workflow, step, true);
+    register_deep_sky(world, &workflow, step);
     start_rp_service(world).await;
 }
 
@@ -347,39 +454,72 @@ async fn sse_shows_at_least(world: &mut SessionRunnerWorld, minimum: usize, even
     );
 }
 
+#[then(expr = "the stub guider should have received exactly {int} {string} request(s)")]
+async fn stub_guider_received_exactly(
+    world: &mut SessionRunnerWorld,
+    expected: usize,
+    path_suffix: String,
+) {
+    let stub = world
+        .guider_stub
+        .as_ref()
+        .expect("no guider stub — add the 'a stub guider …' step");
+    let requests = stub.requests_to(&path_suffix).await;
+    assert_eq!(
+        requests.len(),
+        expected,
+        "expected exactly {expected} request(s) to '{path_suffix}', saw {}",
+        requests.len()
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// The deep-sky equipment set: one camera and the singular mount, plus
-/// a focuser for the refocus scenarios. No filter wheel — the
-/// scenarios leave the document's `filter` parameter at its empty
+/// The deep-sky equipment set: one camera and the singular mount —
+/// plus, for the refocus scenarios, a focuser and the imaging train's
+/// `auto_focus` block (the document is train-addressed, so sweep
+/// geometry lives on the train, not in parameters). No filter wheel —
+/// the scenarios leave the document's `filter` parameter at its empty
 /// default and give their planner targets unfiltered exposure plans
 /// (if any), so `set_filter` never runs.
 async fn configure_deep_sky_equipment(world: &mut SessionRunnerWorld, with_focuser: bool) {
     ensure_omnisim(world).await;
     crate::steps::infrastructure::ensure_camera(world);
     crate::steps::infrastructure::ensure_mount(world);
-    if with_focuser {
+    let (devices, auto_focus) = if with_focuser {
         crate::steps::infrastructure::ensure_focuser(world);
-    }
+        (
+            vec!["main-focuser".to_string(), "main-cam".to_string()],
+            Some(TrainAutoFocusConfig {
+                duration: Some("100ms".to_string()),
+                step_size: 100,
+                half_width: 200,
+                min_area: Some(5),
+                max_area: Some(65536),
+                frames_per_step: None,
+            }),
+        )
+    } else {
+        (vec!["main-cam".to_string()], None)
+    };
+    world.optical_trains.push(OpticalTrainConfig {
+        id: "main".to_string(),
+        purpose: Some("imaging".to_string()),
+        focal_length_mm: None,
+        devices,
+        auto_focus,
+    });
 }
 
 /// Register the shipped deep_sky document as the orchestrator's
 /// workflow, with the scenario table's parameters on top of the fixed
-/// device ids. Table rows are `| name | value |` (no header); values
-/// are coerced in order: boolean, integer, number, else string (so
-/// humantime durations like `500ms` stay strings).
-fn register_deep_sky(
-    world: &mut SessionRunnerWorld,
-    workflow: &str,
-    step: &Step,
-    with_focuser: bool,
-) {
-    let mut parameters = serde_json::json!({ "camera_id": "main-cam" });
-    if with_focuser {
-        parameters["focuser_id"] = serde_json::json!("main-focuser");
-    }
+/// imaging-train id. Table rows are `| name | value |` (no header);
+/// values are coerced in order: boolean, integer, number, else string
+/// (so humantime durations like `500ms` stay strings).
+fn register_deep_sky(world: &mut SessionRunnerWorld, workflow: &str, step: &Step) {
+    let mut parameters = serde_json::json!({ "train_id": "main" });
     let table = step
         .table
         .as_ref()

@@ -25,7 +25,7 @@ pub async fn ensure_omnisim(world: &mut SessionRunnerWorld) {
 // its URL).
 
 pub fn ensure_camera(world: &mut SessionRunnerWorld) {
-    if world.cameras.is_empty() {
+    if !world.cameras.iter().any(|c| c.id == "main-cam") {
         world.cameras.push(bdd_infra::rp_harness::CameraConfig {
             id: "main-cam".to_string(),
             alpaca_url: world.omnisim_url(),
@@ -77,7 +77,7 @@ pub fn ensure_mount(world: &mut SessionRunnerWorld) {
 }
 
 pub fn ensure_focuser(world: &mut SessionRunnerWorld) {
-    if world.focusers.is_empty() {
+    if !world.focusers.iter().any(|f| f.id == "main-focuser") {
         world.focusers.push(bdd_infra::rp_harness::FocuserConfig {
             id: "main-focuser".to_string(),
             alpaca_url: world.omnisim_url(),

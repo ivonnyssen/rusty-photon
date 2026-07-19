@@ -667,6 +667,7 @@ impl McpHandler {
             // most likely to bite (a long sky-survey download in CI). The
             // boundary is informational; the emit cadence is unchanged.
             let mut last_progress_at = started_at;
+            let mut idle_streak: u32 = 0;
             loop {
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 match cam.image_ready().await {
@@ -675,14 +676,37 @@ impl McpHandler {
                         // A transient `camera_state` read error is non-fatal —
                         // `ImageReady` stays the primary signal and the deadline
                         // below still bounds the wait.
-                        if let Ok(CameraState::Error) = cam.camera_state().await {
-                            let detail = cam
-                                .image_array()
-                                .await
-                                .err()
-                                .map(|e| e.to_string())
-                                .unwrap_or_else(|| "camera reported error state".to_string());
-                            return Err(format!("exposure failed: {}", detail));
+                        match cam.camera_state().await {
+                            Ok(CameraState::Error) => {
+                                let detail = cam
+                                    .image_array()
+                                    .await
+                                    .err()
+                                    .map(|e| e.to_string())
+                                    .unwrap_or_else(|| "camera reported error state".to_string());
+                                return Err(format!("exposure failed: {}", detail));
+                            }
+                            // An aborted exposure (the safety enforcer's
+                            // best-effort AbortExposure, an operator abort)
+                            // returns the camera to Idle with no image —
+                            // waiting out the readout backstop here would
+                            // hold the shared motion-gate permit for the
+                            // whole grace window, blocking the recovery
+                            // slew that follows a safety interruption. Two
+                            // consecutive Idle reads (plus a final
+                            // ImageReady re-check) guard against a driver
+                            // flapping through Idle as readout completes.
+                            Ok(CameraState::Idle) => {
+                                idle_streak += 1;
+                                if idle_streak >= 2 {
+                                    if let Ok(true) = cam.image_ready().await {
+                                        break;
+                                    }
+                                    return Err("exposure aborted: camera is idle with no image"
+                                        .to_string());
+                                }
+                            }
+                            _ => idle_streak = 0,
                         }
                         let now = Instant::now();
                         if now >= deadline {

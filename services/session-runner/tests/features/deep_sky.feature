@@ -3,10 +3,18 @@ Feature: Deep-sky workflow document
   The shipped deep_sky.json drives a full night cycle against rp's real
   planner: unpark and start tracking, then a dispatch loop that asks
   get_next_target after every frame — on a target change it slews,
-  optionally plate-solve-centers and auto-focuses, then captures one
-  frame per pass and records it via record_exposure — ending at the
-  max_frames budget, at dawn, or when every target's integration goal
-  is met, and optionally parking. Because the planner evaluates real ephemeris at
+  optionally plate-solve-centers and auto-focuses, optionally starts
+  guiding, then captures one frame per pass, records it via
+  record_exposure, and dithers on the dither_every cadence — ending at
+  the max_frames budget, at dawn, or when every target's integration
+  goal is met, stopping guiding and optionally parking. The document
+  is train-addressed: it takes a single train_id (the imaging train)
+  and rp resolves the camera, filter wheel, and focuser through the
+  train, with sweep geometry coming from the train's auto_focus config
+  block rather than parameters. rp's guide-focus-watch events name the
+  guiding train, and the document's triggers answer them: a guide-only
+  metric auto_focus on guide_focus_degraded, the full refocus_train on
+  guide_focus_escalation. Because the planner evaluates real ephemeris at
   wall-clock now, every scenario computes its observing site to fit the
   clock: an equatorial site at the anti-solar longitude is always in
   deep astronomical night, and celestial-equator targets placed by hour
@@ -133,17 +141,16 @@ Feature: Deep-sky workflow document
       | refocus_hfr_factor | 0    |
       | centering         | false |
       | park_on_finish    | false |
-      | focus_exposure    | 100ms |
-      | focus_step_size   | 100   |
-      | focus_half_width  | 200   |
     And an SSE client is watching rp's event stream
     When a session is started via the REST API
     Then the session ends within 180 seconds
     # One sweep at acquisition, one from the refocus-after-frames
-    # trigger after the second light frame. focus_started is emitted at
-    # sweep begin, so the count holds whether or not the V-curve fit
-    # succeeds against the simulator's images (the document try-wraps
-    # auto_focus and continues on a failed fit).
+    # trigger after the second light frame — both train-addressed, the
+    # sweep geometry coming from the imaging train's auto_focus block.
+    # focus_started is emitted at sweep begin, so the count holds
+    # whether or not the V-curve fit succeeds against the simulator's
+    # images (the document try-wraps auto_focus and continues on a
+    # failed fit).
     And the SSE stream should show exactly 2 "focus_started" events
 
   Scenario: A due meridian flip re-slews to the target between exposures, never during one
@@ -196,3 +203,62 @@ Feature: Deep-sky workflow document
     # whose exposure completed just before the safety abort landed.
     And the SSE stream should show between 6 and 7 "exposure_complete" events
     And the SSE stream should show exactly 2 "safety_changed" events
+
+  Scenario: A guided session starts guiding after acquisition, dithers on cadence, and stops before parking
+    Given a running Alpaca simulator
+    And an observing site where it is astronomical night with one planner target
+    And the simulated mount matches the site and points at the first target
+    And a stub guider accepting guide commands
+    And rp is running with a camera, a mount, and the session-runner orchestrator running the "deep_sky" workflow with parameters:
+      | exposure       | 500ms |
+      | max_frames     | 3     |
+      | focus          | false |
+      | centering      | false |
+      | park_on_finish | true  |
+      | guide          | true  |
+      | dither_every   | 2     |
+    And an SSE client is watching rp's event stream
+    When a session is started via the REST API
+    Then the session ends within 120 seconds
+    # Guiding starts once (one target, one acquisition), the one dither
+    # lands after the second recorded frame, and guiding stops at
+    # shutdown before the park.
+    And the SSE stream should show exactly 1 "guide_settled" event
+    And the SSE stream should show exactly 1 "dither_settled" event
+    And the SSE stream should show exactly 1 "guide_stopped" event
+    And the SSE stream should show exactly 1 "park_complete" event
+    And no "dither_settled" event should fall between an "exposure_started" and its "exposure_complete"
+    And the stub guider should have received exactly 1 "/guiding/start" request
+    And the stub guider should have received exactly 1 "/dither" request
+    And the stub guider should have received exactly 1 "/guiding/stop" request
+
+  Scenario: The guide focus watch events drive the document's refocus triggers end to end
+    Given a running Alpaca simulator
+    And an observing site where it is astronomical night with one planner target
+    And the simulated mount matches the site and points at the first target
+    # Lifecycle mode: the stub serves no guide frames until the
+    # document starts guiding, so rp's watch degrades (2.0 -> 3.0)
+    # only during the run — the engine's intake sees the events.
+    And a lifecycle stub guider with the HFD script "2.0,3.0"
+    And the stub guider has a focus watch of window 3, poll interval "250ms", and escalation deadline "3s"
+    And a guiding train "guide" on the simulator's focuser with a metric auto_focus block
+    And rp is running with a camera, a mount, and the session-runner orchestrator running the "deep_sky" workflow with parameters:
+      | exposure       | 2s    |
+      | max_frames     | 8     |
+      | focus          | false |
+      | centering      | false |
+      | park_on_finish | false |
+      | guide          | true  |
+    And an SSE client is watching rp's event stream
+    When a session is started via the REST API
+    Then the session ends within 240 seconds
+    # guide_focus_degraded fires the document's guide-only metric
+    # auto_focus (focus_started proves the wiring); the episode stays
+    # degraded past the deadline, and guide_focus_escalation fires the
+    # full refocus_train (refocus_started proves it). Sweep success is
+    # deliberately not asserted — the stub's flat post-degradation HFD
+    # makes every fit fail, and the document try-wraps both calls.
+    And the SSE stream should show at least 1 "guide_focus_degraded" events
+    And the SSE stream should show at least 1 "focus_started" events
+    And the SSE stream should show at least 1 "guide_focus_escalation" events
+    And the SSE stream should show at least 1 "refocus_started" events

@@ -6,12 +6,20 @@ use rmcp::{tool, tool_router};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
+use crate::equipment::trains::TrainDeviceKind;
+
 use super::super::handler::McpHandler;
 use super::super::{resolve_device, tool_error, tool_success};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SetFilterParams {
-    pub filter_wheel_id: String,
+    /// Filter wheel device ID; mutually exclusive with `train_id`.
+    #[serde(default)]
+    pub filter_wheel_id: Option<String>,
+    /// Optical train whose sole filter wheel changes; mutually
+    /// exclusive with `filter_wheel_id`.
+    #[serde(default)]
+    pub train_id: Option<String>,
     pub filter_name: String,
 }
 
@@ -27,12 +35,15 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<SetFilterParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let (fw_entry, fw) = resolve_device!(
-            self,
-            find_filter_wheel,
-            &params.filter_wheel_id,
-            "filter wheel"
-        );
+        let filter_wheel_id = match self.resolve_filter_wheel_addressing(
+            params.filter_wheel_id.as_deref(),
+            params.train_id.as_deref(),
+        ) {
+            Ok(id) => id,
+            Err(e) => return Ok(*e),
+        };
+        let (fw_entry, fw) =
+            resolve_device!(self, find_filter_wheel, &filter_wheel_id, "filter wheel");
 
         let position = match fw_entry
             .config
@@ -62,13 +73,13 @@ impl McpHandler {
         self.event_bus.emit(
             "filter_switch",
             serde_json::json!({
-                "filter_wheel_id": params.filter_wheel_id,
+                "filter_wheel_id": filter_wheel_id,
                 "filter_name": params.filter_name,
             }),
         );
 
         Ok(tool_success!({
-            "filter_wheel_id": params.filter_wheel_id,
+            "filter_wheel_id": filter_wheel_id,
             "filter_name": params.filter_name,
             "position": position,
         }))
@@ -106,5 +117,52 @@ impl McpHandler {
             "filter_name": filter_name,
             "position": position,
         }))
+    }
+}
+
+impl McpHandler {
+    /// Resolve `set_filter`'s `filter_wheel_id` / `train_id`
+    /// addressing: exactly one must be present, and a train must
+    /// contain exactly one filter wheel (the sole-rotator rule of the
+    /// rotator tools, applied to wheels). Returns the resolved roster
+    /// id, or the ready-to-return error `CallToolResult` (boxed —
+    /// `clippy::result_large_err`).
+    fn resolve_filter_wheel_addressing(
+        &self,
+        filter_wheel_id: Option<&str>,
+        train_id: Option<&str>,
+    ) -> Result<String, Box<CallToolResult>> {
+        match (filter_wheel_id, train_id) {
+            (Some(_), Some(_)) => Err(Box::new(tool_error!(
+                "set_filter: train_id is mutually exclusive with filter_wheel_id"
+            ))),
+            (None, None) => Err(Box::new(tool_error!(
+                "missing required parameter: filter_wheel_id"
+            ))),
+            (Some(id), None) => Ok(id.to_string()),
+            (None, Some(train_id)) => {
+                let Some(train) = self.trains.train(train_id) else {
+                    return Err(Box::new(tool_error!("train not found: {}", train_id)));
+                };
+                let wheels: Vec<&str> = train
+                    .devices
+                    .iter()
+                    .filter(|d| d.kind == TrainDeviceKind::FilterWheel)
+                    .map(|d| d.id.as_str())
+                    .collect();
+                match wheels.as_slice() {
+                    [] => Err(Box::new(tool_error!(
+                        "train '{}' has no filter wheel",
+                        train_id
+                    ))),
+                    [id] => Ok((*id).to_string()),
+                    many => Err(Box::new(tool_error!(
+                        "train '{}' has {} filter wheels; pass filter_wheel_id",
+                        train_id,
+                        many.len()
+                    ))),
+                }
+            }
+        }
     }
 }

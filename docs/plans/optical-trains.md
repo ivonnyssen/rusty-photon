@@ -375,7 +375,11 @@ tool table and session-runner.md § `deep_sky.json`):
   `guide_focus_degraded` → guide-only metric `auto_focus` on
   `event.train_id`; `guide_focus_escalation` → full `refocus_train` on
   `event.train_id`. Both trigger bodies are try/catch-logged — a failed
-  recovery sweep degrades the night, ending it would be worse.
+  recovery sweep degrades the night, ending it would be worse — and
+  neither carries a `while` gate: the events only exist during active
+  guiding, the metric sweep re-checks that at the tool, and a
+  blackboard gate would race the acquisition commit and silently drop
+  a once-per-episode firing.
 - **Guiding adoption rides T5** (the old #464 remaining slice): the
   watch triggers are meaningless in an unguided document, so
   `deep_sky.json` gains `guide` (default `false` — guiding needs a

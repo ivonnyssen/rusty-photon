@@ -67,6 +67,16 @@ pub struct CannedGuiding {
     /// no-minimum fit error that produces; a two-element script like
     /// `[2.0, 3.0]` drives the focus-watch degradation scenarios.
     pub metrics_hfd_script: Vec<f64>,
+    /// When `true`, the stub models PHD2's guide-loop lifecycle
+    /// instead of the static `guiding` flag: stats and metrics report
+    /// no active loop (and metrics serve **no frames**, consuming no
+    /// script entries) until a `/guiding/start` request lands, and go
+    /// inactive again on `/guiding/stop`. This is what lets a
+    /// focus-watch scenario fire its events only after the document
+    /// under test starts guiding — with the static flag the watch
+    /// would degrade before the session even begins and the events
+    /// would be lost to the engine's from-run-start intake.
+    pub lifecycle: bool,
 }
 
 impl Default for CannedGuiding {
@@ -82,6 +92,7 @@ impl Default for CannedGuiding {
             settle_delay: std::time::Duration::ZERO,
             phd2_rotator_connected: false,
             metrics_hfd_script: vec![2.5],
+            lifecycle: false,
         }
     }
 }
@@ -117,8 +128,25 @@ struct StubState {
     requests: Arc<RwLock<Vec<(String, Value)>>>,
     /// Count of `guiding/metrics` requests served — indexes
     /// `CannedGuiding::metrics_hfd_script` and advances the fake
-    /// frame counter (see the field's doc).
+    /// frame counter (see the field's doc). In lifecycle mode only
+    /// active-loop requests count.
     metrics_polls: Arc<std::sync::atomic::AtomicU64>,
+    /// Whether the lifecycle-mode guide loop is currently active
+    /// (`CannedGuiding::lifecycle`); unused for the static flag.
+    lifecycle_active: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl StubState {
+    /// The guiding state reported by stats and metrics: the lifecycle
+    /// state in lifecycle mode, the static `guiding` flag otherwise.
+    fn effective_guiding(&self, c: &CannedGuiding) -> bool {
+        if c.lifecycle {
+            self.lifecycle_active
+                .load(std::sync::atomic::Ordering::SeqCst)
+        } else {
+            c.guiding
+        }
+    }
 }
 
 impl GuiderStub {
@@ -130,6 +158,7 @@ impl GuiderStub {
             behavior,
             requests: requests.clone(),
             metrics_polls: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            lifecycle_active: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
 
         let app = Router::new()
@@ -265,6 +294,11 @@ async fn settle_handler(
     if !c.settle_delay.is_zero() {
         tokio::time::sleep(c.settle_delay).await;
     }
+    if c.lifecycle && uri.path().ends_with("/guiding/start") {
+        state
+            .lifecycle_active
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
     Json(serde_json::json!({
         "state": "guiding",
         "rms_ra_px": c.rms_ra_px,
@@ -282,6 +316,11 @@ async fn stop_handler(
 ) -> axum::response::Response {
     if let Some(err) = record_and_check(&state, &uri, body).await {
         return err;
+    }
+    if canned(&state).lifecycle {
+        state
+            .lifecycle_active
+            .store(false, std::sync::atomic::Ordering::SeqCst);
     }
     Json(serde_json::json!({ "state": "stopped" })).into_response()
 }
@@ -317,9 +356,10 @@ async fn stats_handler(
         return err;
     }
     let c = canned(&state);
+    let guiding = state.effective_guiding(c);
     Json(serde_json::json!({
-        "app_state": if c.guiding { "Guiding" } else { "Stopped" },
-        "guiding": c.guiding,
+        "app_state": if guiding { "Guiding" } else { "Stopped" },
+        "guiding": guiding,
         "rms_ra_px": c.rms_ra_px,
         "rms_dec_px": c.rms_dec_px,
         "total_rms_px": c.total_rms_px,
@@ -343,6 +383,12 @@ async fn metrics_handler(
         return err;
     }
     let c = canned(&state);
+    if c.lifecycle && !state.effective_guiding(c) {
+        // No guide loop, no frames — and no script consumption, so
+        // the script's first entry is what the watch sees once the
+        // document under test actually starts guiding.
+        return Json(serde_json::json!({ "guiding": false, "frames": [] })).into_response();
+    }
     let poll = state
         .metrics_polls
         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -362,7 +408,8 @@ async fn metrics_handler(
             })
         })
         .collect();
-    Json(serde_json::json!({ "guiding": c.guiding, "frames": frames })).into_response()
+    Json(serde_json::json!({ "guiding": state.effective_guiding(c), "frames": frames }))
+        .into_response()
 }
 
 async fn equipment_handler(
@@ -586,5 +633,57 @@ mod tests {
             assert_eq!(body["error"], code);
             assert_eq!(body["message"], "boom");
         }
+    }
+
+    #[tokio::test]
+    async fn lifecycle_mode_follows_start_and_stop_and_serves_no_frames_while_inactive() {
+        let stub = GuiderStub::start(GuiderStubBehavior::Canned(CannedGuiding {
+            lifecycle: true,
+            metrics_hfd_script: vec![2.0, 3.0],
+            ..CannedGuiding::default()
+        }))
+        .await;
+        let client = reqwest::Client::new();
+        let get = |path: &str| {
+            let url = format!("{}{path}", stub.url);
+            let client = client.clone();
+            async move {
+                client
+                    .get(url)
+                    .send()
+                    .await
+                    .unwrap()
+                    .json::<Value>()
+                    .await
+                    .unwrap()
+            }
+        };
+
+        // Inactive: stats and metrics say so, no frames, no script use.
+        assert_eq!(get("/api/v1/guiding/stats").await["guiding"], false);
+        let idle = get("/api/v1/guiding/metrics").await;
+        assert_eq!(idle["guiding"], false);
+        assert!(idle["frames"].as_array().unwrap().is_empty());
+
+        // Start activates the loop; the first active metrics request
+        // serves the script's FIRST entry — idle polls consumed none.
+        client
+            .post(format!("{}/api/v1/guiding/start", stub.url))
+            .json(&serde_json::json!({}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(get("/api/v1/guiding/stats").await["app_state"], "Guiding");
+        let active = get("/api/v1/guiding/metrics").await;
+        assert_eq!(active["guiding"], true);
+        assert_eq!(active["frames"][0]["hfd"], 2.0);
+
+        // Stop deactivates again.
+        client
+            .post(format!("{}/api/v1/guiding/stop", stub.url))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(get("/api/v1/guiding/stats").await["guiding"], false);
     }
 }

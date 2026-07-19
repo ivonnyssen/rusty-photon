@@ -1,26 +1,23 @@
 {
   "version": 1,
   "name": "deep-sky",
-  "description": "Classic multi-target deep-sky imaging session: unpark and start tracking, then a dispatch loop that asks rp's planner for the best target after every frame — changing filter whenever the recommended one differs from the wheel's current, acquiring on target change (slew, optional plate-solve centering, optional auto-focus), capturing one frame per pass, and recording it via record_exposure so rp's progress counters rotate exposure plans, balance targets, and end the session once every integration goal is met — with reactive refocusing and meridian-flip handling, ending at the frame budget or when the planner declares the session over (end_of_session) and optionally parking. get_next_target supplies filter/duration_secs from the target's first incomplete exposures[] entry with the exposure/filter parameters as fallback for plan-less targets; there is no guiding or dithering (rp has no guider tools yet) — see docs/services/session-runner.md § deep_sky.json.",
+  "description": "Classic multi-target deep-sky imaging session, addressed by optical train: unpark and start tracking, then a dispatch loop that asks rp's planner for the best target after every frame — changing filter whenever the recommended one differs from the wheel's current, acquiring on target change (stop guiding if active, slew, optional plate-solve centering, optional auto-focus, optional start of guiding), capturing one frame per pass, recording it via record_exposure so rp's progress counters rotate exposure plans, balance targets, and end the session once every integration goal is met, and dithering every dither_every recorded frames — with reactive refocusing, meridian-flip handling, and rp's guide-focus-watch events answered by a guide-only metric auto_focus (guide_focus_degraded) or the full refocus_train (guide_focus_escalation), ending at the frame budget or when the planner declares the session over (end_of_session), stopping guiding and optionally parking. The single train_id parameter names the imaging train: rp resolves the camera, filter wheel, and focuser through it, and auto-focus sweep geometry comes from the train's auto_focus config block. get_next_target supplies filter/duration_secs from the target's first incomplete exposures[] entry with the exposure/filter parameters as fallback for plan-less targets — see docs/services/session-runner.md § deep_sky.json.",
   "parameters": {
-    "camera_id": { "type": "string", "required": true },
+    "train_id": { "type": "string", "required": true },
     "exposure": { "type": "duration", "default": "300s" },
     "max_frames": { "type": "integer", "default": 0 },
-    "filter_wheel_id": { "type": "string", "default": "" },
     "filter": { "type": "string", "default": "" },
     "centering": { "type": "boolean", "default": true },
     "centering_exposure": { "type": "duration", "default": "5s" },
     "centering_tolerance_arcsec": { "type": "number", "default": 60 },
     "centering_max_attempts": { "type": "integer", "default": 5 },
     "focus": { "type": "boolean", "default": true },
-    "focuser_id": { "type": "string", "default": "" },
-    "focus_exposure": { "type": "duration", "default": "3s" },
-    "focus_step_size": { "type": "integer", "default": 100 },
-    "focus_half_width": { "type": "integer", "default": 500 },
     "focus_min_area": { "type": "integer", "default": 5 },
     "focus_max_area": { "type": "integer", "default": 65536 },
     "refocus_every": { "type": "integer", "default": 0 },
     "refocus_hfr_factor": { "type": "number", "default": 1.2 },
+    "guide": { "type": "boolean", "default": false },
+    "dither_every": { "type": "integer", "default": 0 },
     "meridian_margin": { "type": "number", "default": 300 },
     "park_on_finish": { "type": "boolean", "default": true }
   },
@@ -37,15 +34,7 @@
           "try": [
             {
               "tool": "auto_focus",
-              "args": {
-                "camera_id": { "$expr": "params.camera_id" },
-                "focuser_id": { "$expr": "params.focuser_id" },
-                "duration": { "$expr": "params.focus_exposure" },
-                "step_size": { "$expr": "params.focus_step_size" },
-                "half_width": { "$expr": "params.focus_half_width" },
-                "min_area": { "$expr": "params.focus_min_area" },
-                "max_area": { "$expr": "params.focus_max_area" }
-              }
+              "args": { "train_id": { "$expr": "params.train_id" } }
             },
             { "set": { "session.last_focus_hfr": "result.best_hfr" } }
           ],
@@ -84,15 +73,7 @@
               "try": [
                 {
                   "tool": "auto_focus",
-                  "args": {
-                    "camera_id": { "$expr": "params.camera_id" },
-                    "focuser_id": { "$expr": "params.focuser_id" },
-                    "duration": { "$expr": "params.focus_exposure" },
-                    "step_size": { "$expr": "params.focus_step_size" },
-                    "half_width": { "$expr": "params.focus_half_width" },
-                    "min_area": { "$expr": "params.focus_min_area" },
-                    "max_area": { "$expr": "params.focus_max_area" }
-                  }
+                  "args": { "train_id": { "$expr": "params.train_id" } }
                 },
                 { "set": { "session.last_focus_hfr": "result.best_hfr" } }
               ],
@@ -125,6 +106,29 @@
           }
         },
         {
+          "if": "session.guiding == true",
+          "then": [
+            {
+              "try": [{ "tool": "stop_guiding", "args": {} }],
+              "catch": [
+                {
+                  "log": {
+                    "level": "info",
+                    "message": "stop_guiding failed before the flip; flipping anyway",
+                    "values": { "error": "error.message" }
+                  }
+                }
+              ]
+            },
+            {
+              "set": {
+                "session.flip_restart_guiding": "true",
+                "session.guiding": "false"
+              }
+            }
+          ]
+        },
+        {
           "tool": "slew",
           "args": {
             "ra": { "$expr": "session.target_ra" },
@@ -137,12 +141,80 @@
             {
               "tool": "center_on_target",
               "args": {
-                "camera_id": { "$expr": "params.camera_id" },
+                "train_id": { "$expr": "params.train_id" },
                 "ra": { "$expr": "session.target_ra" },
                 "dec": { "$expr": "session.target_dec" },
                 "duration": { "$expr": "params.centering_exposure" },
                 "tolerance_arcsec": { "$expr": "params.centering_tolerance_arcsec" },
                 "max_attempts": { "$expr": "params.centering_max_attempts" }
+              }
+            }
+          ]
+        },
+        {
+          "if": "session.flip_restart_guiding == true",
+          "then": [
+            {
+              "tool": "start_guiding",
+              "args": {},
+              "retry": { "max_attempts": 3, "backoff": "30s" }
+            },
+            {
+              "set": {
+                "session.guiding": "true",
+                "session.flip_restart_guiding": "false"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "guide-af-on-degraded",
+      "on": { "event": "guide_focus_degraded" },
+      "when": "params.guide == true",
+      "do": [
+        {
+          "try": [
+            {
+              "tool": "auto_focus",
+              "args": { "train_id": { "$expr": "event.train_id" } }
+            }
+          ],
+          "catch": [
+            {
+              "log": {
+                "level": "info",
+                "message": "guide-only refocus failed; the watch will escalate if the trend persists",
+                "values": { "error": "error.message" }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "refocus-on-escalation",
+      "on": { "event": "guide_focus_escalation" },
+      "when": "params.guide == true",
+      "do": [
+        {
+          "try": [
+            {
+              "tool": "refocus_train",
+              "args": {
+                "train_id": { "$expr": "event.train_id" },
+                "reason": "guide_focus_escalation"
+              }
+            },
+            { "set": { "session.frames_since_focus": "0" } }
+          ],
+          "catch": [
+            {
+              "log": {
+                "level": "info",
+                "message": "escalated refocus failed; continuing at the current focus position",
+                "values": { "error": "error.message" }
               }
             }
           ]
@@ -153,31 +225,10 @@
   "root": {
     "sequence": [
       {
-        "id": "guard-focuser-id",
-        "if": "params.focus == true && params.focuser_id == ''",
-        "then": [
-          {
-            "fail": {
-              "message": "'focus is enabled but focuser_id is empty — supply focuser_id or invoke with focus: false'"
-            }
-          }
-        ]
-      },
-      {
-        "id": "guard-filter-wheel-id",
-        "if": "params.filter != '' && params.filter_wheel_id == ''",
-        "then": [
-          {
-            "fail": {
-              "message": "'filter is set but filter_wheel_id is empty — supply filter_wheel_id or drop the filter parameter'"
-            }
-          }
-        ]
-      },
-      {
         "set": {
           "session.total_frames": "has(session.total_frames) ? session.total_frames : 0",
           "session.frames_since_focus": "has(session.frames_since_focus) ? session.frames_since_focus : 0",
+          "session.frames_since_dither": "has(session.frames_since_dither) ? session.frames_since_dither : 0",
           "session.report.total_frames": "has(session.report.total_frames) ? session.report.total_frames : 0",
           "session.current_filter": "has(session.current_filter) ? session.current_filter : ''"
         }
@@ -196,7 +247,8 @@
           {
             "set": {
               "session.target_name": "null",
-              "session.imaging": "false"
+              "session.imaging": "false",
+              "session.guiding": "false"
             }
           }
         ]
@@ -242,19 +294,9 @@
                     "if": "session.pass_filter != '' && session.pass_filter != session.current_filter",
                     "then": [
                       {
-                        "if": "params.filter_wheel_id == ''",
-                        "then": [
-                          {
-                            "fail": {
-                              "message": "'the exposure plan names a filter but filter_wheel_id is empty — supply filter_wheel_id or remove filters from the target exposures[] in rp config'"
-                            }
-                          }
-                        ]
-                      },
-                      {
                         "tool": "set_filter",
                         "args": {
-                          "filter_wheel_id": { "$expr": "params.filter_wheel_id" },
+                          "train_id": { "$expr": "params.train_id" },
                           "filter_name": { "$expr": "session.pass_filter" }
                         }
                       },
@@ -266,6 +308,24 @@
                     "if": "session.target_name != session.pass_target",
                     "then": [
                       { "set": { "session.imaging": "false" } },
+                      {
+                        "if": "session.guiding == true",
+                        "then": [
+                          {
+                            "try": [{ "tool": "stop_guiding", "args": {} }],
+                            "catch": [
+                              {
+                                "log": {
+                                  "level": "info",
+                                  "message": "stop_guiding failed before the target switch; slewing anyway",
+                                  "values": { "error": "error.message" }
+                                }
+                              }
+                            ]
+                          },
+                          { "set": { "session.guiding": "false" } }
+                        ]
+                      },
                       {
                         "log": {
                           "level": "info",
@@ -290,7 +350,7 @@
                           {
                             "tool": "center_on_target",
                             "args": {
-                              "camera_id": { "$expr": "params.camera_id" },
+                              "train_id": { "$expr": "params.train_id" },
                               "ra": { "$expr": "session.pass_ra" },
                               "dec": { "$expr": "session.pass_dec" },
                               "duration": { "$expr": "params.centering_exposure" },
@@ -307,15 +367,7 @@
                             "try": [
                               {
                                 "tool": "auto_focus",
-                                "args": {
-                                  "camera_id": { "$expr": "params.camera_id" },
-                                  "focuser_id": { "$expr": "params.focuser_id" },
-                                  "duration": { "$expr": "params.focus_exposure" },
-                                  "step_size": { "$expr": "params.focus_step_size" },
-                                  "half_width": { "$expr": "params.focus_half_width" },
-                                  "min_area": { "$expr": "params.focus_min_area" },
-                                  "max_area": { "$expr": "params.focus_max_area" }
-                                }
+                                "args": { "train_id": { "$expr": "params.train_id" } }
                               },
                               { "set": { "session.last_focus_hfr": "result.best_hfr" } }
                             ],
@@ -333,11 +385,22 @@
                         ]
                       },
                       {
+                        "if": "params.guide == true",
+                        "then": [
+                          {
+                            "tool": "start_guiding",
+                            "args": {},
+                            "retry": { "max_attempts": 3, "backoff": "30s" }
+                          }
+                        ]
+                      },
+                      {
                         "set": {
                           "session.target_name": "session.pass_target",
                           "session.target_ra": "session.pass_ra",
                           "session.target_dec": "session.pass_dec",
-                          "session.imaging": "true"
+                          "session.imaging": "true",
+                          "session.guiding": "params.guide == true"
                         }
                       }
                     ]
@@ -346,7 +409,7 @@
                     "id": "light-frame",
                     "tool": "capture",
                     "args": {
-                      "camera_id": { "$expr": "params.camera_id" },
+                      "train_id": { "$expr": "params.train_id" },
                       "duration": { "$expr": "session.pass_duration" }
                     }
                   },
@@ -374,10 +437,30 @@
                   {
                     "set": {
                       "session.total_frames": "session.total_frames + 1",
-                      "session.frames_since_focus": "session.frames_since_focus + 1"
+                      "session.frames_since_focus": "session.frames_since_focus + 1",
+                      "session.frames_since_dither": "session.frames_since_dither + 1"
                     }
                   },
                   { "set": { "session.report.total_frames": "session.total_frames" } },
+                  {
+                    "id": "dither-on-cadence",
+                    "if": "params.guide == true && params.dither_every > 0 && session.frames_since_dither >= params.dither_every",
+                    "then": [
+                      {
+                        "try": [{ "tool": "dither", "args": {} }],
+                        "catch": [
+                          {
+                            "log": {
+                              "level": "info",
+                              "message": "dither failed; continuing undithered",
+                              "values": { "error": "error.message" }
+                            }
+                          }
+                        ]
+                      },
+                      { "set": { "session.frames_since_dither": "0" } }
+                    ]
+                  },
                   {
                     "if": "params.max_frames > 0 && session.total_frames >= params.max_frames",
                     "then": [
@@ -407,6 +490,25 @@
             "dispatch_converged": "result.converged"
           }
         }
+      },
+      {
+        "id": "stop-guiding-on-shutdown",
+        "if": "session.guiding == true",
+        "then": [
+          {
+            "try": [{ "tool": "stop_guiding", "args": {} }],
+            "catch": [
+              {
+                "log": {
+                  "level": "info",
+                  "message": "stop_guiding failed at shutdown; parking anyway",
+                  "values": { "error": "error.message" }
+                }
+              }
+            ]
+          },
+          { "set": { "session.guiding": "false" } }
+        ]
       },
       {
         "if": "params.park_on_finish == true",

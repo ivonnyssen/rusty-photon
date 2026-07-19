@@ -10,9 +10,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bdd_infra::rp_harness::{
-    CameraConfig, CoverCalibratorConfig, FilterWheelConfig, FocuserConfig, IcrsCoord, MountConfig,
-    PlannerTargetConfig, PlateSolverConfig, PlateSolverStub, ReceivedEvent, RpConfigBuilder,
-    SafetyMonitorConfig, SseClient, WebhookReceiver,
+    CameraConfig, CoverCalibratorConfig, FilterWheelConfig, FocuserConfig, GuiderConfig,
+    GuiderStub, IcrsCoord, MountConfig, OpticalTrainConfig, PlannerTargetConfig, PlateSolverConfig,
+    PlateSolverStub, ReceivedEvent, RpConfigBuilder, SafetyMonitorConfig, SseClient,
+    WebhookReceiver,
 };
 use bdd_infra::tls_auth::{TlsAuthSmokeWorld, TlsAuthState};
 use bdd_infra::ServiceHandle;
@@ -46,6 +47,13 @@ pub struct SessionRunnerWorld {
     /// Singular mount (deep_sky.feature's scenarios).
     pub mount: Option<MountConfig>,
     pub focusers: Vec<FocuserConfig>,
+    /// Optical trains — the deep-sky document is train-addressed, so
+    /// its scenarios always carry at least the imaging train.
+    pub optical_trains: Vec<OpticalTrainConfig>,
+    /// Guider service config pointing at the scenario's stub
+    /// (`equipment.mount.guiding`), plus the stub handle itself.
+    pub guider: Option<GuiderConfig>,
+    pub guider_stub: Option<GuiderStub>,
     /// Safety monitors gating the session (recovery.feature's safety
     /// interruption scenario).
     pub safety_monitors: Vec<SafetyMonitorConfig>,
@@ -185,6 +193,12 @@ impl SessionRunnerWorld {
         }
         for focuser in &self.focusers {
             builder.add_focuser(focuser.clone());
+        }
+        for train in &self.optical_trains {
+            builder.add_optical_train(train.clone());
+        }
+        if let Some(guider) = &self.guider {
+            builder.with_guider(guider.clone());
         }
         for sm in &self.safety_monitors {
             builder.add_safety_monitor(sm.clone());

@@ -386,7 +386,7 @@ emits only `_complete` / `_failed`, with no `_started`.) Point events
 | `guide_failed` | error | Guiding start or settle failed |
 | `guide_stopped` | reason (`requested` \| `safety`) | Guiding stopped (point event) |
 | `guide_rotator_unmodeled` | rotator_id, train_id | `start_guiding` settled with a rotator-coupled guide camera but PHD2 reports no connected rotator (point event — see [Guider Service](#guider-service)) |
-| `guide_focus_degraded` | train_id, baseline_hfd, current_hfd, window | The [Guide Focus Watch](#guide-focus-watch)'s trailing HFD median exceeded `baseline × degrade_ratio` (point event; held by `cooldown`). `train_id` names the guiding train, so a workflow trigger can address the guide-only sweep without knowing the rig |
+| `guide_focus_degraded` | train_id, baseline_hfd, current_hfd, window | The [Guide Focus Watch](#guide-focus-watch)'s trailing HFD median exceeded `baseline × degrade_ratio` (point event; held by `cooldown`). `train_id` names the guiding train (null when the watch runs without one), so a workflow trigger can address the guide-only sweep without knowing the rig |
 | `guide_focus_escalation` | train_id, baseline_hfd, current_hfd | A degradation episode is still degraded `escalation_deadline` after `guide_focus_degraded` — the full `refocus_train` sequence is indicated (point event; once per episode). `train_id` names the guiding train |
 | `dither_started` | pixels, ra_only, settle_pixels, settle_time, settle_timeout | Dither command sent; deadline as on `guide_started` |
 | `dither_settled` | rms_ra_px, rms_dec_px, total_rms_px, sample_count | Post-dither settle complete |
@@ -2057,7 +2057,14 @@ Queueing semantics (Decision 5 of the
   its own: every holder is already deadline-bounded (captures by
   `duration` plus the readout backstop, slews and dithers by their
   own predictive deadlines and settle timeouts), so the longest
-  possible wait is the sum of the holders' own ceilings.
+  possible wait is the sum of the holders' own ceilings. An
+  **aborted** exposure releases much sooner than the backstop: the
+  capture poll treats a camera back at `Idle` with no image (two
+  consecutive reads, plus a final `ImageReady` re-check) as an
+  aborted exposure and fails the capture promptly — otherwise the
+  safety enforcer's `AbortExposure` would leave the shared permit
+  held for the whole readout grace, blocking the recovery slew that
+  follows a safety interruption.
 - When an exclusive request cannot start immediately, rp emits the
   point event `mount_motion_pending {operation}` and then blocks.
   The operation's own `*_started` envelope is emitted only **after**

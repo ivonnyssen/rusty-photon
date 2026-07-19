@@ -15,9 +15,14 @@ use crate::imaging;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CenterOnTargetToolParams {
-    /// Camera that captures each iteration's frame.
+    /// Camera that captures each iteration's frame; mutually
+    /// exclusive with `train_id`.
     #[serde(default)]
     pub camera_id: Option<String>,
+    /// Optical train whose terminal camera captures each iteration's
+    /// frame; mutually exclusive with `camera_id`.
+    #[serde(default)]
+    pub train_id: Option<String>,
     /// Target right ascension, decimal hours, [0, 24).
     #[serde(default)]
     pub ra: Option<f64>,
@@ -63,9 +68,13 @@ impl McpHandler {
         // Body validation in input order so the missing-parameter
         // outline always points at the first missing field — same
         // convention as `auto_focus` / `measure_basic`.
-        let camera_id = match params.camera_id.as_deref() {
-            Some(s) => s.to_string(),
-            None => return Ok(tool_error!("missing required parameter: camera_id")),
+        let camera_id = match self.resolve_camera_addressing(
+            "center_on_target",
+            params.camera_id.as_deref(),
+            params.train_id.as_deref(),
+        ) {
+            Ok(id) => id,
+            Err(e) => return Ok(*e),
         };
         let ra = match params.ra {
             Some(v) => v,

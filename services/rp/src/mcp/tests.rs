@@ -93,6 +93,11 @@ struct MockCamera {
     /// that failed an exposure (e.g. sky-survey-camera's mount read
     /// timing out). Drives the `do_capture` failed-exposure path.
     report_error_state: bool,
+    /// When set, `camera_state` reports `Idle` — simulating an aborted
+    /// exposure (the safety enforcer's AbortExposure returns the
+    /// camera to Idle with no image). Without either state knob the
+    /// mock reports `Exposing`, a camera mid-exposure.
+    report_idle_state: bool,
 }
 
 impl_mock_device!(MockCamera);
@@ -134,8 +139,10 @@ impl ascom_alpaca::api::Camera for MockCamera {
         use ascom_alpaca::api::camera::CameraState;
         Ok(if self.report_error_state {
             CameraState::Error
-        } else {
+        } else if self.report_idle_state {
             CameraState::Idle
+        } else {
+            CameraState::Exposing
         })
     }
 
@@ -1087,7 +1094,8 @@ async fn test_capture_start_exposure_fails() {
     let result = handler
         .capture_inner(
             CaptureParams {
-                camera_id: "cam".into(),
+                camera_id: Some("cam".into()),
+                train_id: None,
                 duration: Duration::from_millis(100),
             },
             None,
@@ -1106,7 +1114,8 @@ async fn test_capture_image_ready_error() {
     let result = handler
         .capture_inner(
             CaptureParams {
-                camera_id: "cam".into(),
+                camera_id: Some("cam".into()),
+                train_id: None,
                 duration: Duration::from_millis(100),
             },
             None,
@@ -1125,7 +1134,8 @@ async fn test_capture_image_array_fails() {
     let result = handler
         .capture_inner(
             CaptureParams {
-                camera_id: "cam".into(),
+                camera_id: Some("cam".into()),
+                train_id: None,
                 duration: Duration::from_millis(100),
             },
             None,
@@ -1154,7 +1164,8 @@ async fn test_capture_failed_exposure_surfaces_error_not_hang() {
         Duration::from_secs(5),
         handler.capture_inner(
             CaptureParams {
-                camera_id: "cam".into(),
+                camera_id: Some("cam".into()),
+                train_id: None,
                 duration: Duration::from_millis(100),
             },
             None,
@@ -1173,21 +1184,54 @@ async fn test_capture_times_out_when_camera_never_ready() {
     // clock so the ~120 s deadline is reached without real waiting.
     let cam = MockCamera {
         never_ready: true,
-        // report_error_state defaults false → camera_state == Idle, so the
-        // Error branch never trips and only the deadline can end the loop.
+        // Neither state knob is set → camera_state == Exposing, so
+        // neither the Error branch nor the aborted-idle detection
+        // trips and only the deadline can end the loop.
         ..Default::default()
     };
     let handler = test_handler(camera_registry(Arc::new(cam)));
     let result = handler
         .capture_inner(
             CaptureParams {
-                camera_id: "cam".into(),
+                camera_id: Some("cam".into()),
+                train_id: None,
                 duration: Duration::from_millis(100),
             },
             None,
         )
         .await;
     assert_tool_error(result, "timeout waiting for image_ready");
+}
+
+#[tokio::test]
+async fn test_capture_surfaces_an_aborted_exposure_instead_of_waiting_out_the_backstop() {
+    // A safety abort (AbortExposure) returns the camera to Idle with
+    // no image. The poll must surface that within a few cycles — an
+    // imaging-train capture holds the motion gate shared, and waiting
+    // out the ~120 s readout backstop here would block the recovery
+    // slew that follows a safety interruption.
+    let cam = MockCamera {
+        never_ready: true,
+        report_idle_state: true,
+        ..Default::default()
+    };
+    let handler = test_handler(camera_registry(Arc::new(cam)));
+    let started = std::time::Instant::now();
+    let result = handler
+        .capture_inner(
+            CaptureParams {
+                camera_id: Some("cam".into()),
+                train_id: None,
+                duration: Duration::from_millis(100),
+            },
+            None,
+        )
+        .await;
+    assert_tool_error(result, "exposure aborted: camera is idle with no image");
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "the aborted exposure must surface promptly, not at the readout backstop"
+    );
 }
 
 // -----------------------------------------------------------------------
@@ -1292,7 +1336,8 @@ async fn test_set_filter_set_position_fails() {
     let handler = test_handler(filter_wheel_registry(Arc::new(fw)));
     let result = handler
         .set_filter(Parameters(SetFilterParams {
-            filter_wheel_id: "fw".into(),
+            filter_wheel_id: Some("fw".into()),
+            train_id: None,
             filter_name: "Lum".into(),
         }))
         .await;
@@ -1419,7 +1464,8 @@ async fn test_capture_write_fits_fails() {
     let result = handler
         .capture_inner(
             CaptureParams {
-                camera_id: "cam".into(),
+                camera_id: Some("cam".into()),
+                train_id: None,
                 duration: Duration::from_millis(100),
             },
             None,
@@ -1467,7 +1513,8 @@ async fn test_capture_caches_i32_when_max_adu_above_u16_max() {
     let result = handler
         .capture_inner(
             CaptureParams {
-                camera_id: "cam".into(),
+                camera_id: Some("cam".into()),
+                train_id: None,
                 duration: Duration::from_millis(100),
             },
             None,
@@ -1520,7 +1567,8 @@ async fn test_capture_filename_uses_uuid8_suffix() {
     let result = handler
         .capture_inner(
             CaptureParams {
-                camera_id: "cam".into(),
+                camera_id: Some("cam".into()),
+                train_id: None,
                 duration: Duration::from_millis(100),
             },
             None,
@@ -1553,6 +1601,236 @@ async fn test_capture_filename_uses_uuid8_suffix() {
 }
 
 // -----------------------------------------------------------------------
+// Train addressing — capture / set_filter / center_on_target
+// -----------------------------------------------------------------------
+
+/// One imaging train `main` = [fw, cam] plus `two-wheels` =
+/// [fw-a, fw-b, cam2] for the several-wheels ambiguity case.
+fn wheel_trains() -> crate::equipment::trains::TrainModel {
+    let equipment: crate::config::EquipmentConfig = serde_json::from_value(serde_json::json!({
+        "cameras": [
+            {"id": "cam", "alpaca_url": "http://localhost:1"},
+            {"id": "cam2", "alpaca_url": "http://localhost:1"}
+        ],
+        "filter_wheels": [
+            {"id": "fw", "alpaca_url": "http://localhost:1", "filters": ["Lum"]},
+            {"id": "fw-a", "alpaca_url": "http://localhost:1", "filters": ["Lum"]},
+            {"id": "fw-b", "alpaca_url": "http://localhost:1", "filters": ["Lum"]}
+        ],
+        "optical_trains": [
+            {"id": "main", "devices": ["fw", "cam"]},
+            {"id": "two-wheels", "devices": ["fw-a", "fw-b", "cam2"]}
+        ]
+    }))
+    .unwrap();
+    crate::equipment::trains::TrainModel::try_from_equipment(&equipment).unwrap()
+}
+
+#[tokio::test]
+async fn capture_addressed_by_train_resolves_the_terminal_camera() {
+    let handler = test_handler(camera_registry(Arc::new(MockCamera::default())))
+        .with_trains(cam_trains(1000.0));
+    let result = handler
+        .capture_inner(
+            CaptureParams {
+                camera_id: None,
+                train_id: Some("main".into()),
+                duration: Duration::from_millis(100),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(
+        !result.is_error.unwrap_or(false),
+        "capture failed: {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn capture_rejects_both_camera_and_train_addressing() {
+    let handler = test_handler(camera_registry(Arc::new(MockCamera::default())));
+    let result = handler
+        .capture_inner(
+            CaptureParams {
+                camera_id: Some("cam".into()),
+                train_id: Some("main".into()),
+                duration: Duration::from_millis(100),
+            },
+            None,
+        )
+        .await;
+    assert_tool_error(
+        result,
+        "capture: train_id is mutually exclusive with camera_id",
+    );
+}
+
+#[tokio::test]
+async fn capture_with_neither_address_names_the_missing_camera_id() {
+    let handler = test_handler(camera_registry(Arc::new(MockCamera::default())));
+    let result = handler
+        .capture_inner(
+            CaptureParams {
+                camera_id: None,
+                train_id: None,
+                duration: Duration::from_millis(100),
+            },
+            None,
+        )
+        .await;
+    assert_tool_error(result, "missing required parameter: camera_id");
+}
+
+#[tokio::test]
+async fn capture_through_an_unknown_train_is_rejected() {
+    let handler = test_handler(camera_registry(Arc::new(MockCamera::default())));
+    let result = handler
+        .capture_inner(
+            CaptureParams {
+                camera_id: None,
+                train_id: Some("nope".into()),
+                duration: Duration::from_millis(100),
+            },
+            None,
+        )
+        .await;
+    assert_tool_error(result, "train not found: nope");
+}
+
+#[tokio::test]
+async fn set_filter_addressed_by_train_resolves_the_sole_wheel() {
+    let handler = test_handler(filter_wheel_registry(Arc::new(MockFilterWheel::default())))
+        .with_trains(wheel_trains());
+    let result = handler
+        .set_filter(Parameters(SetFilterParams {
+            filter_wheel_id: None,
+            train_id: Some("main".into()),
+            filter_name: "Lum".into(),
+        }))
+        .await
+        .unwrap();
+    assert!(
+        !result.is_error.unwrap_or(false),
+        "set_filter failed: {result:?}"
+    );
+    let text = result
+        .content
+        .first()
+        .and_then(|c| c.as_text())
+        .map(|tc| tc.text.clone())
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(json["filter_wheel_id"], "fw");
+}
+
+#[tokio::test]
+async fn set_filter_rejects_both_wheel_and_train_addressing() {
+    let handler = test_handler(filter_wheel_registry(Arc::new(MockFilterWheel::default())));
+    let result = handler
+        .set_filter(Parameters(SetFilterParams {
+            filter_wheel_id: Some("fw".into()),
+            train_id: Some("main".into()),
+            filter_name: "Lum".into(),
+        }))
+        .await;
+    assert_tool_error(
+        result,
+        "set_filter: train_id is mutually exclusive with filter_wheel_id",
+    );
+}
+
+#[tokio::test]
+async fn set_filter_with_neither_address_names_the_missing_wheel_id() {
+    let handler = test_handler(filter_wheel_registry(Arc::new(MockFilterWheel::default())));
+    let result = handler
+        .set_filter(Parameters(SetFilterParams {
+            filter_wheel_id: None,
+            train_id: None,
+            filter_name: "Lum".into(),
+        }))
+        .await;
+    assert_tool_error(result, "missing required parameter: filter_wheel_id");
+}
+
+#[tokio::test]
+async fn set_filter_through_a_wheelless_train_names_the_train() {
+    let handler = test_handler(filter_wheel_registry(Arc::new(MockFilterWheel::default())))
+        .with_trains(cam_trains(1000.0));
+    let result = handler
+        .set_filter(Parameters(SetFilterParams {
+            filter_wheel_id: None,
+            train_id: Some("main".into()),
+            filter_name: "Lum".into(),
+        }))
+        .await;
+    assert_tool_error(result, "train 'main' has no filter wheel");
+}
+
+#[tokio::test]
+async fn set_filter_through_a_train_with_several_wheels_is_ambiguous() {
+    let handler = test_handler(filter_wheel_registry(Arc::new(MockFilterWheel::default())))
+        .with_trains(wheel_trains());
+    let result = handler
+        .set_filter(Parameters(SetFilterParams {
+            filter_wheel_id: None,
+            train_id: Some("two-wheels".into()),
+            filter_name: "Lum".into(),
+        }))
+        .await;
+    assert_tool_error(
+        result,
+        "train 'two-wheels' has 2 filter wheels; pass filter_wheel_id",
+    );
+}
+
+#[tokio::test]
+async fn center_on_target_rejects_both_camera_and_train_addressing() {
+    let handler = test_handler(camera_registry(Arc::new(MockCamera::default())));
+    let result = handler
+        .center_on_target_inner(
+            CenterOnTargetToolParams {
+                camera_id: Some("cam".into()),
+                train_id: Some("main".into()),
+                ra: Some(1.0),
+                dec: Some(10.0),
+                duration: Some(Duration::from_millis(100)),
+                tolerance_arcsec: Some(60.0),
+                max_attempts: Some(3),
+            },
+            None,
+        )
+        .await;
+    assert_tool_error(
+        result,
+        "center_on_target: train_id is mutually exclusive with camera_id",
+    );
+}
+
+#[tokio::test]
+async fn center_on_target_addressed_by_train_resolves_before_mount_checks() {
+    // No mount is configured, so a resolved train camera must get as
+    // far as the mount-resolution error — proof the train resolved.
+    let handler = test_handler(camera_registry(Arc::new(MockCamera::default())))
+        .with_trains(cam_trains(1000.0));
+    let result = handler
+        .center_on_target_inner(
+            CenterOnTargetToolParams {
+                camera_id: None,
+                train_id: Some("main".into()),
+                ra: Some(1.0),
+                dec: Some(10.0),
+                duration: Some(Duration::from_millis(100)),
+                tolerance_arcsec: Some(60.0),
+                max_attempts: Some(3),
+            },
+            None,
+        )
+        .await;
+    assert_tool_error(result, "no mount configured");
+}
+
+// -----------------------------------------------------------------------
 // capture — optics block in sidecar
 // -----------------------------------------------------------------------
 
@@ -1575,7 +1853,8 @@ async fn capture_and_read_sidecar(
     let result = handler
         .capture_inner(
             CaptureParams {
-                camera_id: "cam".into(),
+                camera_id: Some("cam".into()),
+                train_id: None,
                 duration: Duration::from_millis(100),
             },
             None,
@@ -1812,7 +2091,8 @@ async fn test_set_filter_polling_error() {
     let handler = test_handler(filter_wheel_registry(Arc::new(fw)));
     let result = handler
         .set_filter(Parameters(SetFilterParams {
-            filter_wheel_id: "fw".into(),
+            filter_wheel_id: Some("fw".into()),
+            train_id: None,
             filter_name: "Lum".into(),
         }))
         .await;
@@ -2131,7 +2411,8 @@ async fn test_set_filter_filter_not_found() {
     let handler = test_handler(filter_wheel_registry(Arc::new(fw)));
     let result = handler
         .set_filter(Parameters(SetFilterParams {
-            filter_wheel_id: "fw".into(),
+            filter_wheel_id: Some("fw".into()),
+            train_id: None,
             filter_name: "Ultraviolet".into(), // not in mock's filter list
         }))
         .await;
@@ -6729,6 +7010,7 @@ async fn centering_started_carries_outer_loop_deadline() {
         .center_on_target_inner(
             CenterOnTargetToolParams {
                 camera_id: Some("cam".to_string()),
+                train_id: None,
                 ra: Some(0.7123),
                 dec: Some(41.269),
                 duration: Some(Duration::from_millis(100)),
@@ -6948,7 +7230,8 @@ async fn capture_through_an_imaging_train_camera_waits_for_motion() {
             handler
                 .capture_inner(
                     CaptureParams {
-                        camera_id: "cam".into(),
+                        camera_id: Some("cam".into()),
+                        train_id: None,
                         duration: Duration::from_millis(100),
                     },
                     None,
@@ -6980,7 +7263,8 @@ async fn capture_through_an_untrained_camera_ignores_the_gate() {
         Duration::from_secs(30),
         handler.capture_inner(
             CaptureParams {
-                camera_id: "cam".into(),
+                camera_id: Some("cam".into()),
+                train_id: None,
                 duration: Duration::from_millis(100),
             },
             None,

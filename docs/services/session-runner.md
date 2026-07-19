@@ -1073,8 +1073,9 @@ when enabled, acquisition stops any active guiding before the slew
 and starts guiding (3 attempts, 30 s backoff) after centering and
 focus — a guided session that cannot guide fails loudly instead of
 silently capturing trailed frames all night. `dither_every` (default
-`0` = off) dithers after every N recorded light frames; a failed
-dither is logged, not fatal. Shutdown and the meridian-flip trigger
+`0` = off) dithers after every N recorded light frames; the dither
+amount is rig geometry and comes from rp's `guiding.dither_pixels`
+config, not a parameter, and a failed dither is logged, not fatal. Shutdown and the meridian-flip trigger
 stop and restart guiding around their mount motion the same way.
 The full document lives in `workflows/deep_sky.json`; the shape:
 
@@ -1163,8 +1164,14 @@ the document simplifies when it lands:
   disambiguated dawn by frames-captured progress in the document; the
   heuristic is gone.)
 
-**Triggers.** Five reactive rules, all gated `while session.imaging ==
-true` so they stay silent during acquisition and shutdown:
+**Triggers.** Five reactive rules. The three imaging-loop rules are
+gated `while session.imaging == true` so they stay silent during
+acquisition and shutdown; the two guide-watch rules are gated only on
+`when params.guide == true` — rp emits their events exclusively while
+guiding is active, the metric sweep re-checks that precondition at the
+tool, and an `imaging` gate would race the acquisition's commit `set`
+(a firing evaluated in that gap would be dropped for the rest of the
+watch episode, since the degraded event fires once per episode):
 
 - `refocus-after-frames` — on `exposure_complete`, when
   `session.frames_since_focus` reaches `refocus_every` (a parameter;
@@ -1185,12 +1192,12 @@ true` so they stay silent during acquisition and shutdown:
   `once`/`cooldown` bookkeeping.
 - `guide-af-on-degraded` — on `guide_focus_degraded` (rp's
   [Guide Focus Watch](rp.md), emitted only while the watch is
-  configured and guiding), additionally gated on `session.guiding`:
-  run the guide-only metric `auto_focus` on `event.train_id` — the
-  guiding train named by the event, so the document needs no
-  guide-train parameter. Sweep geometry comes from that train's
-  `auto_focus` block; re-fire pacing is the watch's own `cooldown`.
-- `refocus-on-escalation` — on `guide_focus_escalation` (same gates):
+  configured and guiding): run the guide-only metric `auto_focus` on
+  `event.train_id` — the guiding train named by the event, so the
+  document needs no guide-train parameter. Sweep geometry comes from
+  that train's `auto_focus` block; re-fire pacing is the watch's own
+  `cooldown`.
+- `refocus-on-escalation` — on `guide_focus_escalation` (same gate):
   run the full `refocus_train` on `event.train_id` — shared focusers
   first, then the guide differential (rp.md § `refocus_train`
   Contract) — and reset `session.frames_since_focus`.
