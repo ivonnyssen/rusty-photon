@@ -4,7 +4,11 @@ Feature: ACME certificate setup via doctor tls issue --acme
   --dns-provider, --dns-token, and --email; account state persists to
   acme.json beside the service configs (the config root, not the pki
   directory), so a later renewal run can pick it up without re-passing
-  every flag.
+  every flag. With the Cloudflare provider the domain must sit at least
+  one label below its zone apex (rig.example.com in the example.com
+  zone, giving <service>.rig.example.com names): the enclosing zone is
+  found by walking parent labels, and the apex itself is rejected so
+  the wildcard never covers sibling hostnames in the zone.
 
   Scenario: tls issue --acme fails without --domain
     When I run doctor tls issue with --acme but no --domain
