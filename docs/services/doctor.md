@@ -1035,6 +1035,4 @@ pair — `auth.mismatch` already owns it).
   warning** that sentinel's requests to it will fail the handshake.
   Self-heals on the next `--fix`; wiring `/ca_cert` presence into both
   transport checks (mirroring rp's fix above) would close the
-  visibility gap. Not fixed here — flagged by Copilot review as a
-  low-confidence suggestion on PR #627, judged real but out of scope for
-  this PR's diff.
+  visibility gap.

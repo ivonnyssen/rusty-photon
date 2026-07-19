@@ -947,21 +947,28 @@ fn is_loopback_host(host: &str) -> bool {
     matches!(host, "127.0.0.1" | "localhost" | "::1")
 }
 
-/// The one local, participating catalog service (parsed server block) a
-/// client's `host:port` names, or `None` when the host is not this
-/// machine, no service claims the port, the service's own block does not
-/// parse (`config.server-shape` owns that diagnosis), or more than one
-/// participating service claims the port — an ambiguous join `ports.collision`
-/// already reports as its own `fail`, so this self-limits rather than
-/// guessing which of the colliding services the client actually meant.
+/// The one local, participating catalog service a client's `host:port`
+/// names, or `None` when the host is not this machine, no service claims
+/// the port, the service's own block does not parse or its config file
+/// does not exist (`config.server-shape` owns that diagnosis; writing a
+/// join verdict against an unreadable or absent block would be
+/// guesswork — mirrors `tls_auth_absent`'s identical distinction), or
+/// more than one participating service claims the port — an ambiguous
+/// join `ports.collision` already reports as its own `fail`, so this
+/// self-limits rather than guessing which of the colliding services the
+/// client actually meant. A config file that simply omits `server`
+/// entirely (`ServerBlock::BlockAbsent`) is not guesswork, though — it is
+/// the documented "plain HTTP, no auth, catalog default port" state, so
+/// it still resolves.
 fn resolve_join_target<'a>(ctx: &'a Context, host: &str, port: u16) -> Option<&'a ServiceScan> {
     if !is_loopback_host(host) {
         return None;
     }
-    let mut matches = ctx
-        .scans
-        .iter()
-        .filter(|s| ctx.participates(s) && s.server().is_some() && s.effective_port() == port);
+    let mut matches = ctx.scans.iter().filter(|s| {
+        ctx.participates(s)
+            && !matches!(s.server, ServerBlock::Invalid(_) | ServerBlock::FileAbsent)
+            && s.effective_port() == port
+    });
     let target = matches.next()?;
     matches.next().is_none().then_some(target)
 }
@@ -1853,6 +1860,33 @@ mod tests {
         );
         let ctx = config_only_ctx(dir.path());
         assert!(ui_htmx_target_joins(&ctx).is_empty());
+    }
+
+    #[test]
+    fn test_a_target_with_no_server_block_still_joins_on_its_catalog_default() {
+        let dir = tempfile::tempdir().unwrap();
+        // rp.json has no "server" key at all — it applies its documented
+        // plain-HTTP, no-auth, catalog-default-port (11115) behavior. That
+        // is a known state, not guesswork, so the join must still resolve.
+        write_json(dir.path(), "rp.json", serde_json::json!({}));
+        write_json(
+            dir.path(),
+            "ui-htmx.json",
+            serde_json::json!({ "server": { "port": 11120 },
+                "rp": { "base_url": "https://127.0.0.1:11115" } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        let checks = ui_htmx_target_joins(&ctx);
+        let transport = checks
+            .iter()
+            .find(|c| c.name == "joins.client-transport")
+            .expect("a plain-HTTP-by-default target against an https client must be reported");
+        assert_eq!(transport.status, Status::Fail);
+        assert!(
+            transport.detail.contains("uses https"),
+            "{}",
+            transport.detail
+        );
     }
 
     #[test]
