@@ -44,7 +44,7 @@ pub use guiding::{GuiderDefaults, GuidingConfig};
 pub use imaging::ImagingConfig;
 pub use mount::MountConfig;
 pub use observing_conditions::ObservingConditionsConfig;
-pub use optical_train::{FocalLengthMm, OpticalTrainConfig, TrainPurpose};
+pub use optical_train::{FocalLengthMm, OpticalTrainConfig, TrainAutoFocusConfig, TrainPurpose};
 pub use plate_solver::PlateSolverConfig;
 pub use rotator::RotatorConfig;
 pub use safety::SafetyConfig;

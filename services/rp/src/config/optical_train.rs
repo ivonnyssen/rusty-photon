@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -49,6 +51,86 @@ impl TryFrom<f64> for FocalLengthMm {
     }
 }
 
+/// A positive focuser-step count for the V-curve sweep grid
+/// (`auto_focus.step_size`). Parse-don't-validate: zero, negative,
+/// and i32-overflowing values are rejected at deserialize with the
+/// field named.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(try_from = "i64")]
+pub struct SweepStepSize(i32);
+
+impl SweepStepSize {
+    pub fn value(self) -> i32 {
+        self.0
+    }
+}
+
+impl TryFrom<i64> for SweepStepSize {
+    type Error = String;
+
+    fn try_from(value: i64) -> Result<Self, Self::Error> {
+        match i32::try_from(value) {
+            Ok(v) if v > 0 => Ok(Self(v)),
+            _ => Err(format!(
+                "auto_focus.step_size must be a positive integer, got {value}"
+            )),
+        }
+    }
+}
+
+/// A positive sweep half-width in focuser steps
+/// (`auto_focus.half_width`), validated like [`SweepStepSize`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(try_from = "i64")]
+pub struct SweepHalfWidth(i32);
+
+impl SweepHalfWidth {
+    pub fn value(self) -> i32 {
+        self.0
+    }
+}
+
+impl TryFrom<i64> for SweepHalfWidth {
+    type Error = String;
+
+    fn try_from(value: i64) -> Result<Self, Self::Error> {
+        match i32::try_from(value) {
+            Ok(v) if v > 0 => Ok(Self(v)),
+            _ => Err(format!(
+                "auto_focus.half_width must be a positive integer, got {value}"
+            )),
+        }
+    }
+}
+
+/// Per-train V-curve sweep parameters (`optical_trains[].auto_focus`,
+/// rp.md § Optical Trains): the five fields the `auto_focus` tool
+/// requires per call, as train-scoped config. Backs train-addressed
+/// `auto_focus` calls (per-call parameters override field by field)
+/// and is required on every train a `refocus_train` expansion runs in.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TrainAutoFocusConfig {
+    /// Per-frame exposure for every point in the sweep.
+    #[serde(with = "humantime_serde")]
+    #[schemars(with = "String")]
+    pub duration: Duration,
+    pub step_size: SweepStepSize,
+    pub half_width: SweepHalfWidth,
+    /// Minimum component pixel area for the per-frame `measure_basic`.
+    pub min_area: usize,
+    /// Maximum component pixel area for the per-frame `measure_basic`.
+    pub max_area: usize,
+    /// Per-frame `measure_basic` threshold in sigma units. Omitted →
+    /// the tool default (5.0).
+    #[serde(default)]
+    pub threshold_sigma: Option<f64>,
+    /// Minimum non-null HFR samples for the parabolic fit. Omitted →
+    /// the tool default (5).
+    #[serde(default)]
+    pub min_fit_points: Option<usize>,
+}
+
 /// One `equipment.optical_trains[]` entry (rp.md § Optical Trains): an
 /// ordered list of roster device ids, objective side first,
 /// terminating in a camera. Membership expresses coupling, position
@@ -71,6 +153,12 @@ pub struct OpticalTrainConfig {
     /// Roster device ids, objective side first. The last entry must be
     /// a camera; the rest are focusers, rotators, and filter wheels.
     pub devices: Vec<String>,
+    /// V-curve sweep parameters for focusing this train. Omitted → the
+    /// train cannot be auto-focused by `refocus_train`, and
+    /// train-addressed `auto_focus` calls must pass every sweep
+    /// parameter per call.
+    #[serde(default)]
+    pub auto_focus: Option<TrainAutoFocusConfig>,
 }
 
 #[cfg(test)]
@@ -212,6 +300,118 @@ mod tests {
 
         let err = load_config(&path).unwrap_err().to_string();
         assert!(err.contains("camera_id"), "{err}");
+    }
+
+    #[test]
+    fn optical_train_auto_focus_block_round_trips() {
+        let (_dir, path) = write_config(
+            r#"{
+                "session": {"data_directory": "/tmp/rp-test"},
+                "equipment": {
+                    "cameras": [
+                        {"id": "main-cam", "alpaca_url": "http://localhost:11120"}
+                    ],
+                    "optical_trains": [
+                        {"id": "main", "devices": ["main-cam"],
+                         "auto_focus": {"duration": "3s", "step_size": 100,
+                                        "half_width": 1000, "min_area": 4,
+                                        "max_area": 500}}
+                    ]
+                },
+                "server": { "port": 0 }
+            }"#,
+        );
+
+        let config = load_config(&path).unwrap();
+        let block = config.equipment.optical_trains[0]
+            .auto_focus
+            .as_ref()
+            .unwrap();
+        assert_eq!(block.duration, Duration::from_secs(3));
+        assert_eq!(block.step_size.value(), 100);
+        assert_eq!(block.half_width.value(), 1000);
+        assert_eq!(block.min_area, 4);
+        assert_eq!(block.max_area, 500);
+        assert!(block.threshold_sigma.is_none());
+        assert!(block.min_fit_points.is_none());
+
+        let value = serde_json::to_value(&config).unwrap();
+        assert_eq!(
+            value.pointer("/equipment/optical_trains/0/auto_focus/duration"),
+            Some(&serde_json::json!("3s"))
+        );
+        assert_eq!(
+            value.pointer("/equipment/optical_trains/0/auto_focus/step_size"),
+            Some(&serde_json::json!(100))
+        );
+    }
+
+    #[test]
+    fn auto_focus_block_rejects_non_positive_sweep_fields_at_parse() {
+        for (field, bad, named) in [
+            (
+                "step_size",
+                serde_json::json!(0),
+                "auto_focus.step_size must be a positive integer",
+            ),
+            (
+                "half_width",
+                serde_json::json!(-5),
+                "auto_focus.half_width must be a positive integer",
+            ),
+        ] {
+            let mut config = serde_json::json!({
+                "session": {"data_directory": "/tmp/rp-test"},
+                "equipment": {
+                    "optical_trains": [
+                        {"id": "main", "devices": ["main-cam"],
+                         "auto_focus": {"duration": "3s", "step_size": 100,
+                                        "half_width": 1000, "min_area": 4,
+                                        "max_area": 500}}
+                    ]
+                },
+                "server": { "port": 0 }
+            });
+            config["equipment"]["optical_trains"][0]["auto_focus"][field] = bad;
+            let (_dir, path) = write_config(&config.to_string());
+
+            let err = load_config(&path).unwrap_err().to_string();
+            assert!(err.contains(named), "{field}: {err}");
+        }
+    }
+
+    #[test]
+    fn auto_focus_block_rejects_unknown_field() {
+        let (_dir, path) = write_config(
+            r#"{
+                "session": {"data_directory": "/tmp/rp-test"},
+                "equipment": {
+                    "optical_trains": [
+                        {"id": "main", "devices": ["main-cam"],
+                         "auto_focus": {"duration": "3s", "step_size": 100,
+                                        "half_width": 1000, "min_area": 4,
+                                        "max_area": 500, "sweep_mode": "fast"}}
+                    ]
+                },
+                "server": { "port": 0 }
+            }"#,
+        );
+
+        let err = load_config(&path).unwrap_err().to_string();
+        assert!(err.contains("sweep_mode"), "{err}");
+    }
+
+    #[test]
+    fn sweep_newtype_validation_boundaries() {
+        assert_eq!(SweepStepSize::try_from(1i64).unwrap().value(), 1);
+        assert!(SweepStepSize::try_from(0i64)
+            .unwrap_err()
+            .contains("auto_focus.step_size"));
+        assert!(SweepStepSize::try_from(i64::from(i32::MAX) + 1).is_err());
+        assert_eq!(SweepHalfWidth::try_from(200i64).unwrap().value(), 200);
+        assert!(SweepHalfWidth::try_from(-1i64)
+            .unwrap_err()
+            .contains("auto_focus.half_width"));
     }
 
     #[test]

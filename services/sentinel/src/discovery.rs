@@ -37,6 +37,13 @@ pub const UNIT_PREFIX: &str = "rusty-photon-";
 /// meaningfully supervise or restart itself).
 const SELF_SERVICE: &str = "sentinel";
 
+/// Scheduled-job units excluded from discovery: these are one-shot jobs,
+/// not daemons — supervising one would restart-loop a failed run (a failed
+/// 3am renewal would re-run against the same broken hook forever) and a
+/// dashboard row for it would be noise. `renew` is the TLS renewal oneshot
+/// the sentinel package ships (`rusty-photon-renew.service` + `.timer`).
+const JOB_SERVICES: &[&str] = &["renew"];
+
 /// The services that answer `GET /health` instead of the Alpaca management
 /// API — exactly the non-Alpaca services. Everything else discovered is an
 /// Alpaca driver probed at `/management/v1/configureddevices`. A new
@@ -361,6 +368,10 @@ pub async fn discover(
             continue;
         };
         if name == SELF_SERVICE {
+            continue;
+        }
+        if JOB_SERVICES.contains(&name) {
+            debug!("ignoring scheduled-job unit '{}'", unit.unit);
             continue;
         }
         let probe = config_dir.and_then(|dir| derive_probe(dir, name));

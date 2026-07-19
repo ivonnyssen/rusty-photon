@@ -49,22 +49,27 @@ pub async fn renew(
     let mut applied = Vec::new();
     let mut warnings = Vec::new();
 
-    renew_self_signed(config_dir, force, &mut applied, &mut warnings).map_err(|message| {
-        RenewError {
-            message,
-            applied: applied.clone(),
-            warnings: warnings.clone(),
-        }
-    })?;
+    renew_self_signed(config_dir, force, &mut applied, &mut warnings)
+        .map_err(|message| renew_error(message, &applied, &warnings))?;
     renew_acme(config_dir, force, &mut applied)
         .await
-        .map_err(|message| RenewError {
-            message,
-            applied: applied.clone(),
-            warnings: warnings.clone(),
-        })?;
+        .map_err(|message| renew_error(message, &applied, &warnings))?;
+    // A `sudo … tls renew` (the manual escape hatch) rewrites pairs
+    // root-owned; the scheduled run as the service user is a no-op here.
+    super::align_pki_ownership(config_dir)
+        .map_err(|message| renew_error(message, &applied, &warnings))?;
 
     Ok((applied, warnings))
+}
+
+/// A [`RenewError`] carrying whatever had already been applied and warned
+/// before the failing step — the caller reports partial progress.
+fn renew_error(message: String, applied: &[AppliedFix], warnings: &[String]) -> RenewError {
+    RenewError {
+        message,
+        applied: applied.to_vec(),
+        warnings: warnings.to_vec(),
+    }
 }
 
 /// Whether a certificate with this `not_after` is due inside `window_days`.

@@ -10,7 +10,11 @@ sources, no generator — the same explicitness rule as the Linux
 - `Package.wxs` — product, stable UpgradeCode + major upgrades, directory
   layout (`Program Files\rusty-photon`, `%ProgramData%\rusty-photon` +
   `\logs`), the `WixUI_FeatureTree` UI, the feature tree (Core / Drivers /
-  Automation), and the ui-htmx seed custom action.
+  Automation), and the `rusty-photon-renew` scheduled-task custom actions
+  (daily `rusty-photon-doctor.exe tls renew` as LocalSystem, registered
+  via `schtasks` — WiX has no native scheduled-task element; removed on
+  uninstall, rollback-guarded). The former ui-htmx seed custom action is
+  gone (#569).
 - `fragments/<svc>.wxs` — one fragment per packaged service (the Linux
   package set plus session-runner). Each installs
   `rusty-photon-<svc>.exe` (renamed from the Cargo bin), a Windows service
@@ -18,16 +22,16 @@ sources, no generator — the same explicitness rule as the Linux
   restart-after-5s failure actions **plus the failure-actions flag** (see
   below), and a per-port firewall exception. The two zwo fragments bundle
   their MIT SDK DLL (ADR-013/014); `zwo-sdk-license.wxs` is the shared
-  license component.
-- `seed-ui-htmx-config.ps1` — deferred custom action: seeds
-  `%ProgramData%\rusty-photon\ui-htmx.json` from the installed driver set,
-  only if the file does not exist.
+  license component. The sentinel fragment additionally installs
+  `rusty-photon-doctor.exe` (doctor ships in Core with sentinel — no
+  separate package; the renewal scheduled task in `Package.wxs` runs it).
 - `License.rtf` — the MIT license text shown by the installer UI
   (the family is MIT OR Apache-2.0; both full texts install with Core).
 
 `scripts/check-pkg-assets.sh` asserts the fragment contract (fragment per
 service, service name, exe rename, `--service`, failure actions + flag,
-firewall port, demand-start on exactly the gated four, seed-table parity,
+firewall port, demand-start on exactly the gated four, the doctor
+exe + renewal-task wiring,
 QHY/ZWO pin parity). Run it after any edit here.
 
 ## Fragment contract notes

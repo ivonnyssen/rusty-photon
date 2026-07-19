@@ -47,6 +47,12 @@ table in [docs/packaging.md](packaging.md#what-gets-installed);
 Alpaca UDP discovery is deliberately not served (same reasoning as Linux);
 point clients at `host:port` directly.
 
+The sentinel formula additionally installs `rusty-photon-doctor`
+(diagnosis, `--fix` repair, and the TLS + credential lifecycle —
+[docs/services/doctor.md](services/doctor.md); there is no separate
+doctor formula) and renders `rusty-photon-renew.plist` into its keg —
+see [TLS renewal](#tls-renewal) below.
+
 ## Installing
 
 ```sh
@@ -150,6 +156,46 @@ restart as `brew services restart rusty-photon-<svc>` — nothing to
 configure (see [sentinel.md §Service discovery](services/sentinel.md#service-discovery)).
 brew has no `systemctl is-active` equivalent, so post-restart recovery
 confirmation is skipped on macOS.
+
+## First wiring: rusty-photon-doctor
+
+The formulas put bytes on disk; doctor wires the configs (ADR-016).
+After installing — or later adding — formulas, run once as the user the
+services run as (under `sudo brew services`, prefix with `sudo`):
+
+```sh
+rusty-photon-doctor          # diagnose (exit 0 clean, 1 = findings)
+rusty-photon-doctor --fix    # converge; a re-run shows the clean bill
+```
+
+Services pick fixed configs up on their next
+`brew services restart rusty-photon-<svc>`.
+
+### TLS renewal
+
+A formula manages exactly one `brew services` daemon (sentinel itself),
+so the daily renewal job ships as a plain launchd plist in sentinel's
+keg. Arm it once — the formula's caveats print the same commands. The
+symlink uses the upgrade-stable opt path, and it must land in
+`~/Library/LaunchAgents` because launchd only auto-loads jobs from
+there on login:
+
+```sh
+ln -sfv "$(brew --prefix rusty-photon-sentinel)/rusty-photon-renew.plist" ~/Library/LaunchAgents/
+launchctl bootstrap gui/$UID ~/Library/LaunchAgents/rusty-photon-renew.plist
+```
+
+(Headless installs running `sudo brew services` link into
+`/Library/LaunchDaemons` and load the system domain instead:
+`sudo launchctl bootstrap system /Library/LaunchDaemons/rusty-photon-renew.plist`.) The job
+runs `rusty-photon-doctor tls renew` daily at 03:00 — a no-op until
+certificates exist and are inside their renewal window. Running services
+pick renewed certificates up without a restart (mtime-triggered
+in-process reload). Unlike the Linux timer's `Persistent=true`, launchd
+does not fire calendar jobs missed while powered off — a machine
+habitually off at 03:00 should renew manually now and then
+(`rusty-photon-doctor tls renew`); self-signed ten-year certificates
+never practically need it.
 
 ## Camera specifics
 

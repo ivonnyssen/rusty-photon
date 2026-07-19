@@ -4,10 +4,13 @@
 //! All six proxy to the guider rp-managed service (the `phd2-guider`
 //! binary's `serve` mode) through the `rp-guider` HTTP client on
 //! `McpHandler::guider`; `None` there means every tool errors with
-//! "guider not configured". Quantities are **guide-camera pixels**
-//! (`*_px`, `settle_pixels`) — the service rejects arcseconds-style
-//! thresholds because a pixel scale only exists after PHD2
-//! calibration.
+//! "guider not configured". Wire quantities are **guide-camera
+//! pixels** (`*_px`, `settle_pixels`) — the service rejects
+//! arcseconds-style thresholds because a pixel scale only exists
+//! after PHD2 calibration. `dither`'s optional `unit` converts a
+//! per-call `main_px` / `arcsec` amount to guide pixels *in rp*
+//! before the proxy call, via the train pixel-scale derivation
+//! (rp.md § Optical Trains).
 //!
 //! The settle-blocking operations emit operation-event triples that
 //! terminate in `*_settled` rather than `*_complete`:
@@ -62,13 +65,44 @@ pub struct StartGuidingParams {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct StopGuidingParams {}
 
+/// Unit of a `dither` amount. The guider service itself only speaks
+/// guide-camera pixels; the other units are converted by rp via the
+/// train pixel-scale derivation (rp.md § Optical Trains).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DitherUnit {
+    /// Guide-camera pixels (the wire unit; today's behavior).
+    #[default]
+    GuidePx,
+    /// Main-camera pixels — requires exactly one imaging train.
+    MainPx,
+    /// Arcseconds on the sky.
+    Arcsec,
+}
+
+impl DitherUnit {
+    fn name(self) -> &'static str {
+        match self {
+            DitherUnit::GuidePx => "guide_px",
+            DitherUnit::MainPx => "main_px",
+            DitherUnit::Arcsec => "arcsec",
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct DitherParams {
-    /// Dither offset in guide-camera pixels. Falls back to
-    /// `guider.dither_pixels` from rp config; an error when neither
+    /// Dither offset, interpreted in `unit` (guide-camera pixels by
+    /// default). Falls back to `guider.dither_pixels` from rp config
+    /// when `unit` is absent or `guide_px`; an error when neither
     /// is set.
     #[serde(default)]
     pub pixels: Option<f64>,
+    /// Unit of `pixels`: `guide_px` (default), `main_px`, or
+    /// `arcsec`. Non-default units require an explicit `pixels`
+    /// amount and a guiding train with `focal_length_mm`.
+    #[serde(default)]
+    pub unit: Option<DitherUnit>,
     /// Restrict the dither to the RA axis (declination drift stays
     /// untouched). Defaults to false.
     #[serde(default)]
@@ -202,10 +236,43 @@ impl McpHandler {
         let Some(client) = self.guider.clone() else {
             return Ok(tool_error!("dither: guider not configured"));
         };
-        let Some(amount_px) = params.pixels.or(self.guider_defaults.dither_pixels) else {
-            return Ok(tool_error!(
-                "dither: missing required argument: provide pixels or configure guider.dither_pixels"
-            ));
+        // Resolve the amount to guide-camera pixels (the wire unit).
+        // Non-default units convert the explicit per-call amount via
+        // the train pixel scales; the `dither_pixels` config default
+        // is guide-camera pixels by definition, so it only backs the
+        // default unit.
+        let unit = params.unit.unwrap_or_default();
+        let amount_px = match (params.pixels, unit) {
+            (None, DitherUnit::GuidePx) => {
+                let Some(px) = self.guider_defaults.dither_pixels else {
+                    return Ok(tool_error!(
+                        "dither: missing required argument: provide pixels or configure guider.dither_pixels"
+                    ));
+                };
+                px
+            }
+            (None, unit) => {
+                return Ok(tool_error!(
+                    "dither: unit '{}' requires an explicit pixels amount (the dither_pixels config default is guide-camera pixels)",
+                    unit.name()
+                ));
+            }
+            (Some(p), DitherUnit::GuidePx) => p,
+            (Some(p), DitherUnit::Arcsec) => match self.guide_pixel_scale_arcsec_per_px() {
+                Ok(scale) => p / scale,
+                Err(e) => return Ok(tool_error!("{}", e)),
+            },
+            (Some(p), DitherUnit::MainPx) => {
+                let main_scale = match self.main_pixel_scale_arcsec_per_px() {
+                    Ok(s) => s,
+                    Err(e) => return Ok(tool_error!("{}", e)),
+                };
+                let guide_scale = match self.guide_pixel_scale_arcsec_per_px() {
+                    Ok(s) => s,
+                    Err(e) => return Ok(tool_error!("{}", e)),
+                };
+                p * main_scale / guide_scale
+            }
         };
         let settle = self.merge_settle(
             params.settle_pixels,
@@ -218,6 +285,8 @@ impl McpHandler {
         let started_at = chrono::Utc::now();
         let started_payload = serde_json::json!({
             "pixels": amount_px,
+            "unit": unit.name(),
+            "requested_amount": params.pixels,
             "ra_only": ra_only,
             "settle_pixels": settle.as_ref().and_then(|s| s.pixels),
             "settle_time": humantime_or_null(settle.as_ref().and_then(|s| s.time)),
@@ -324,6 +393,67 @@ impl McpHandler {
 }
 
 impl McpHandler {
+    /// The guiding train's pixel scale in arcsec per pixel:
+    /// `206.265 × pixel_size_x_um / focal_length_mm` (square pixels
+    /// assumed — the x-axis size is used, read from the camera at
+    /// connect time).
+    fn guide_pixel_scale_arcsec_per_px(&self) -> Result<f64, String> {
+        let Some(train) = self.trains.guiding_train() else {
+            return Err(
+                "dither: unit conversion requires a guiding train with focal_length_mm".to_string(),
+            );
+        };
+        self.train_pixel_scale_arcsec_per_px(train)
+    }
+
+    /// The single imaging train's pixel scale — `main_px` is only
+    /// well-defined when exactly one imaging train exists.
+    fn main_pixel_scale_arcsec_per_px(&self) -> Result<f64, String> {
+        let imaging: Vec<_> = self
+            .trains
+            .trains()
+            .iter()
+            .filter(|t| t.purpose == crate::config::TrainPurpose::Imaging)
+            .collect();
+        match imaging.as_slice() {
+            [train] => self.train_pixel_scale_arcsec_per_px(train),
+            [] => Err("dither: unit 'main_px' requires exactly one imaging train (found none)"
+                .to_string()),
+            many => Err(format!(
+                "dither: unit 'main_px' requires exactly one imaging train (found {}); use unit 'arcsec' or 'guide_px'",
+                many.len()
+            )),
+        }
+    }
+
+    fn train_pixel_scale_arcsec_per_px(
+        &self,
+        train: &crate::equipment::trains::Train,
+    ) -> Result<f64, String> {
+        let Some(focal_length_mm) = train.focal_length_mm else {
+            return Err(format!(
+                "dither: train '{}' has no focal_length_mm",
+                train.id
+            ));
+        };
+        let Some(camera_id) = train.camera_id() else {
+            return Err(format!("dither: train '{}' has no camera", train.id));
+        };
+        let Some(entry) = self.equipment.find_camera(camera_id) else {
+            return Err(format!("dither: camera not found: {camera_id}"));
+        };
+        // A driver can report 0 (or garbage) for an unpopulated
+        // property — OmniSim reads 0 before connect, for instance. A
+        // non-positive size would turn the conversion into a division
+        // by zero, so treat it the same as an absent read.
+        match entry.pixel_size_x_um {
+            Some(px) if px.is_finite() && px > 0.0 => Ok(206.265 * px / focal_length_mm),
+            _ => Err(format!(
+                "dither: pixel size of camera '{camera_id}' unavailable (connect-time read failed or camera not connected)"
+            )),
+        }
+    }
+
     /// Merge per-call settle parameters over the rp-config defaults,
     /// field by field. `None` when every field ends up unset — the
     /// wire then omits `settle` entirely and the guider service's own

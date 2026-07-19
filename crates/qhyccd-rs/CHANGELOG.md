@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Simulated exposures now capture their start timestamp *after* the frame is
+  pre-generated, so frame-generation time no longer counts against the
+  simulated exposure duration (on a loaded machine it could consume — or
+  instantly complete — short exposures). Per-pixel noise in generated frames
+  comes from an internal xorshift stream instead of a `rand` uniform sample
+  per pixel, making simulated frame generation substantially cheaper in
+  unoptimized builds; `rand` is still used for per-frame seeds and star
+  placement.
+
 ### Added
 
 - `libqhyccd-sys`'s `build.rs` honors a `QHYCCD_SDK_DIR` override on macOS

@@ -169,6 +169,19 @@ Feature: Optical trains configuration
     Then the config response status should be 400
     And the config response body should contain "unknown variant `solar`"
 
+  Scenario Outline: A train auto_focus block with a non-positive sweep field is rejected at parse
+    Given a temp rp config with the reference optical trains
+    And rp is started with that config file
+    When I GET /api/config
+    And I PUT /api/config with the fetched config after setting "/equipment/optical_trains/0/auto_focus/<field>" to "<value>"
+    Then the config response status should be 400
+    And the config response body should contain "<named>"
+
+    Examples:
+      | field      | value | named                                          |
+      | step_size  | 0     | auto_focus.step_size must be a positive integer  |
+      | half_width | -5    | auto_focus.half_width must be a positive integer |
+
   Scenario Outline: Retired pre-train config keys are rejected as unknown fields
     Given a temp rp config with the reference optical trains
     And rp is started with that config file

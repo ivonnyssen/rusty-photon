@@ -27,6 +27,8 @@ pub mod mount_steps;
 pub mod operation_event_steps;
 pub mod optical_trains_steps;
 pub mod plate_solve_steps;
+pub mod refocus_train_steps;
+pub mod rotator_steps;
 pub mod safety_steps;
 pub mod session_steps;
 pub mod sky_survey_camera_steps;

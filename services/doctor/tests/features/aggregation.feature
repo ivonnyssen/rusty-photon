@@ -107,6 +107,12 @@ Feature: Aggregation over the per-service doctors
     Then the report has no checks named "service.devices"
     And the report has no checks named "service.doctor-probe"
 
+  Scenario: the TLS renewal job unit is not a service and is never probed
+    Given platform facts where unit "rusty-photon-renew" is installed and active
+    When I run doctor with --json
+    Then the report has no checks named "service.devices"
+    And the report has no checks named "service.doctor-probe"
+
   Scenario: a TLS service without a pki tree warns instead of probing unverified
     Given a config file "ppba-driver.json" with a tls block but no pki tree
     And platform facts where unit "rusty-photon-ppba-driver" is installed and active

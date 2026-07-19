@@ -53,6 +53,14 @@ Alpaca UDP discovery is deliberately not served: with this many Alpaca
 servers on one host they would collide on the discovery port. Point
 clients (N.I.N.A. etc.) at `host:port` directly using the table above.
 
+The sentinel package additionally carries the operator tool
+`/usr/bin/rusty-photon-doctor` (diagnosis, `--fix` repair, and the TLS +
+credential lifecycle — [docs/services/doctor.md](services/doctor.md))
+plus the TLS renewal units `rusty-photon-renew.service` /
+`rusty-photon-renew.timer`. There is no separate doctor package:
+sentinel is the always-installed supervisor, so its artifact is the
+delivery vehicle (ADR-016).
+
 ## Building packages
 
 Packages are built natively on the target architecture — nightly in CI on
@@ -260,6 +268,45 @@ attached (and its path matches the config), the unit sits in a
 restart-every-5s loop; it comes up by itself once the hardware appears.
 The cameras and the network-only services serve with no hardware attached.
 
+## First wiring: rusty-photon-doctor
+
+The installer puts bytes on disk; doctor wires the configs (ADR-016).
+After installing — or later adding — packages, run once:
+
+```sh
+sudo rusty-photon-doctor          # diagnose (exit 0 clean, 1 = findings)
+sudo rusty-photon-doctor --fix    # converge; a re-run shows the clean bill
+```
+
+`--fix` repairs what the checks flag (retired config keys, missing
+joins, fixable shapes) and — see
+[doctor.md §Provisioning](services/doctor.md) — can generate TLS
+material and mint + distribute the observatory credential for every
+installed service. Running it while services are live is fine
+(warn-and-proceed, atomic writes); services pick fixed configs up on
+their next restart: `sudo systemctl restart 'rusty-photon-*'`.
+Everything doctor writes under sudo is chowned back to the
+`rusty-photon` user, pki material included.
+
+### TLS renewal
+
+The sentinel package ships `rusty-photon-renew.timer` (daily, jittered,
+`Persistent=true`), running `rusty-photon-doctor tls renew` as the
+`rusty-photon` user — a no-op until certificates exist and are inside
+their renewal window, so it is safe armed on every install. The deb
+starts the timer on install; the rpm (Fedora convention) enables it to
+arm on the next boot, or start it once by hand:
+
+```sh
+sudo systemctl start rusty-photon-renew.timer
+systemctl list-timers rusty-photon-renew.timer   # shows the next fire
+```
+
+Running services pick renewed certificates up without a restart
+(mtime-triggered in-process reload; ADR-002). Sentinel's watchdog
+deliberately ignores the renew unit — it is a scheduled job, not a
+daemon to supervise.
+
 ## Configuration
 
 Packages ship no config files. Daemons self-create their config on first
@@ -326,10 +373,67 @@ access to their USB VID (the service user is in `plugdev` via the unit's
 ## plate-solver: ASTAP
 
 ASTAP is an external runtime dependency, deliberately not a package
-dependency: install it separately (arm64/amd64 `.deb` from the
-[ASTAP site](https://www.hnsky.org/astap.htm), plus a star database) and
-point `astap_binary_path` / `astap_db_directory` in
-`/etc/rusty-photon/plate-solver.json` at it.
+dependency (bring-your-own, [ADR-005](decisions/005-plate-solver.md)):
+you install the solver and a star database yourself and point the
+service's config at them. The service is config-gated — the packaged
+unit stays inert until `plate-solver.json` exists.
+
+1. **Install the solver binary.** The wrapper drives `astap_cli`, the
+   command-line solver — the GUI program is not needed. Download the
+   zip for your architecture from the
+   [ASTAP downloads](https://www.hnsky.org/astap.htm) (SourceForge
+   `linux_installer/`, e.g.
+   `astap_command-line_version_Linux_aarch64.zip` on a Pi,
+   `…_amd64.zip` on x86_64), then:
+
+   ```sh
+   unzip astap_command-line_version_Linux_*.zip
+   sudo install -m 755 astap_cli /usr/local/bin/astap_cli
+   ```
+
+2. **Install a star database.** Upstream's own rule: with a field of
+   view of 0.6° or larger, any of D05/D20/D50/D80 works — they are all
+   Gaia-derived to a similar depth, at increasing star density (and
+   size: D05 ≈ 100 MB up to D80 ≈ 1.25 GB). D05 is plenty for typical
+   deg-class refractor fields (the reference rig's 360 mm + IMX178
+   ≈ 1.2° × 0.8° solves with it; it is also what CI pins). Go denser
+   (D50/D80) only below ~0.6°, and to W08 for very wide fields
+   (> 20°). Either install the database `.deb` from the same site
+   (confirm where it lands with `dpkg -L`) or unzip the database zip
+   into a directory of your choice. Whichever way, `astap_db_directory`
+   must point at the *specific* directory holding that database's
+   files — the examples here and in the
+   [service docs](services/plate-solver.md) use `/opt/astap/d05`.
+
+3. **Write the config.** Create
+   `/etc/rusty-photon/plate-solver.json` (both keys are mandatory —
+   there is no built-in default, which is exactly why the unit gates
+   on the file):
+
+   ```json
+   {
+     "server": { "port": 11131 },
+     "astap_binary_path": "/usr/local/bin/astap_cli",
+     "astap_db_directory": "/opt/astap/d05"
+   }
+   ```
+
+   The file (and both paths) must be readable by the `rusty-photon`
+   user — the service validates them at startup and again on every
+   `/health` probe. See
+   [docs/services/plate-solver.md](services/plate-solver.md) for the
+   full config surface (timeouts, concurrency, hints).
+
+4. **Start and verify.**
+
+   ```sh
+   sudo systemctl start rusty-photon-plate-solver
+   curl -s -w '\n%{http_code}\n' http://127.0.0.1:11131/health
+   ```
+
+   `200` with `{"status":"ok"}` means binary and database both check
+   out; `503` carries `{"status":"binary_unavailable"}` or
+   `{"status":"db_unavailable"}`, naming the check that failed.
 
 ## Removing
 

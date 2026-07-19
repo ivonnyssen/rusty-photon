@@ -52,6 +52,10 @@ pub struct Train {
     pub purpose: TrainPurpose,
     pub focal_length_mm: Option<f64>,
     pub devices: Vec<TrainDevice>,
+    /// The train's V-curve sweep parameters
+    /// (`optical_trains[].auto_focus`), carried through for the
+    /// train-addressed `auto_focus` fallback and `refocus_train`.
+    pub auto_focus: Option<crate::config::TrainAutoFocusConfig>,
 }
 
 impl Train {
@@ -272,6 +276,7 @@ impl TrainModel {
                     purpose: train.purpose,
                     focal_length_mm: train.focal_length_mm.map(|f| f.value()),
                     devices,
+                    auto_focus: train.auto_focus.clone(),
                 });
             }
         }
@@ -486,6 +491,21 @@ mod tests {
 
     fn paths(errors: &[FieldError]) -> Vec<&str> {
         errors.iter().map(|e| e.path.as_str()).collect()
+    }
+
+    #[test]
+    fn auto_focus_block_is_carried_onto_the_validated_train() {
+        let mut config = reference_rig();
+        config.optical_trains[0].auto_focus = serde_json::from_value(serde_json::json!({
+            "duration": "100ms", "step_size": 10, "half_width": 50,
+            "min_area": 5, "max_area": 2000
+        }))
+        .unwrap();
+        let model = TrainModel::try_from_equipment(&config).unwrap();
+        let block = model.train("main").unwrap().auto_focus.as_ref().unwrap();
+        assert_eq!(block.step_size.value(), 10);
+        assert_eq!(block.half_width.value(), 50);
+        assert!(model.train("guide").unwrap().auto_focus.is_none());
     }
 
     #[test]

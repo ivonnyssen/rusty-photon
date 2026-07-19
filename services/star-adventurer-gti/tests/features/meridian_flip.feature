@@ -66,7 +66,10 @@ Feature: Meridian-flip support
     Then the mount should have received command :G101
 
   Scenario: SetSideOfPier(East) marks Slewing while the flip is in progress
-    Given a star-adventurer service configured with flip_policy enabled
+    # The long post-slew settle keeps Slewing true after the flip motion
+    # completes, so the assertion observes a window that outlives the
+    # scenario instead of racing the flip's natural completion.
+    Given a star-adventurer service configured with flip_policy enabled and a 600 second post-slew settle
     When I connect the device
     And I set SideOfPier to East
     Then Slewing should be true

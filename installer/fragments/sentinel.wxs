@@ -57,6 +57,13 @@
                               Protocol="tcp"
                               Scope="any" />
       </Component>
+      <!-- Doctor rides in Core with sentinel (no rusty-photon-doctor
+           package exists): the operator diagnosis/repair tool, and the
+           binary the renewal scheduled task registered by Package.wxs
+           runs daily. -->
+      <Component Id="DoctorExe">
+        <File Id="DoctorExeFile" Name="rusty-photon-doctor.exe" Source="!(bindpath.bin)\doctor.exe" KeyPath="yes" />
+      </Component>
     </ComponentGroup>
   </Fragment>
 </Wix>
