@@ -236,22 +236,24 @@ pub fn init_file_if_absent(path: &Path, default: &Value) -> Result<bool, ConfigE
 ///
 /// 1. Resolve the config path: the explicit `--config` value if given, else
 ///    the platform default.
-/// 2. When the path is the platform default, persist `default` there on first
-///    start, so a packaged install materializes an editable file — and so
-///    same-host consumers that derive facts from the file (sentinel's health
-///    probes, doctor) can read it. An explicit path is never self-created by
-///    this step: what a missing explicit file then means is the caller's
-///    policy — strict-config services treat it as a hard load error (a typo'd
-///    `--config` must not silently run on defaults), while the `config.apply`
-///    drivers deliberately fall back to in-memory defaults.
-/// 3. Mint device identity: every `identity_pointers` entry that is absent or
+/// 2. Mint device identity: every `identity_pointers` entry that is absent or
 ///    empty receives a fresh UUIDv4 ([`materialize_identity`]), persisted to
 ///    the resolved path — explicit **or** default, because a minted ASCOM
 ///    `UniqueID` is only an identity if the service re-reads the same value on
 ///    every future start. Minting is the one step that will create a missing
 ///    explicit file — and only when it actually fills an id: a `default`
 ///    whose pointers already hold non-empty ids has nothing to persist, so a
-///    missing explicit file stays absent.
+///    missing explicit file stays absent. Minting runs before step 3 so a
+///    pointered first start writes the scaffold once, ids already filled.
+/// 3. When the path is the platform default and no file exists yet, persist
+///    `default` there, so a packaged install materializes an editable file on
+///    first start — and so same-host consumers that derive facts from the
+///    file (sentinel's health probes, doctor) can read it. An explicit path
+///    is never self-created by this step: what a missing explicit file means
+///    is the caller's policy — strict-config services treat it as a hard load
+///    error (a typo'd `--config` must not silently run on defaults), while
+///    the `config.apply` drivers deliberately fall back to in-memory
+///    defaults.
 ///
 /// Services whose device identities come from elsewhere (camera SDK serials)
 /// or that expose no devices pass `&[]` — declining minting is a visible
