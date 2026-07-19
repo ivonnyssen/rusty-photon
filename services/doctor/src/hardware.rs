@@ -295,10 +295,10 @@ fn serial_access(
         return;
     }
     let owning_group = hw.group_name(node.gid);
-    let missing_membership = owning_group.is_some_and(|g| {
-        !unit.supplementary_groups.iter().any(|s| s == g)
-            && !hw.service_user_groups.iter().any(|s| s == g)
-    });
+    // Membership is missing only when the process's full group set (primary
+    // + unit + account) does not hold the owning group — a held group that
+    // still cannot open the node is a mode problem, not a membership one.
+    let missing_membership = owning_group.is_some() && !identity.gids.contains(&node.gid);
     let detail = format!(
         "{path} (mode {:o}, uid {}, gid {}{}) is not openable by the \
          {SERVICE_USER} user — judged from ownership and mode, so ACLs are \

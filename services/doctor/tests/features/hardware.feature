@@ -68,6 +68,15 @@ Feature: Hardware checks (no SDK)
     And that check's suggestion mentions "SupplementaryGroups=dialout"
     And doctor exits with code 1
 
+  Scenario: A node owned by a held group with a bad mode points at the mode, not membership
+    Given platform facts with an enabled unit "rusty-photon-ppba-driver"
+    And hardware facts with a character device "/dev/ttyUSB0" owned by uid 0 gid 990 with mode "0600"
+    And hardware facts where host group "rusty-photon" has gid 990
+    And hardware facts where the rusty-photon user has uid 990 and gid 990
+    When I run doctor with --json
+    Then the report contains a "fail" check named "hardware.serial-access" for service "ppba-driver"
+    And that check's suggestion mentions "ownership or mode"
+
   Scenario: A UDP-transport mount has no serial device to check
     Given a config file "star-adventurer-gti.json" containing:
       """
