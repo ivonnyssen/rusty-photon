@@ -2444,18 +2444,37 @@ fn write_xdg_default_config(xdg: &std::path::Path) -> std::path::PathBuf {
 #[test]
 #[cfg_attr(miri, ignore)]
 #[cfg(target_os = "linux")]
-fn test_packaged_serve_path_bootstraps_the_platform_config() {
+fn test_packaged_serve_path_materializes_the_default_config_on_first_start() {
     // The packaged path: bare binary, no --config, no connection flags
-    // (systemd passes no arguments). Serve must bootstrap the platform
-    // config path via resolve_and_init and read it.
+    // (systemd passes no arguments). First start must materialize the
+    // default config at the platform path via resolve_and_init. The wait
+    // is on the file appearing, not on bound_addr=: materialization
+    // happens before the bind, so the assertion holds even if the
+    // config's default port is unavailable in the test environment.
     let xdg = tempfile::tempdir().expect("create temp dir");
-    write_xdg_default_config(xdg.path());
+    let expected = xdg.path().join("rusty-photon").join("phd2-guider.json");
 
-    let bound = spawn_with_xdg_and_wait_bound(xdg.path(), &[]);
+    let mut child = phd2_guider_command()
+        .env("XDG_CONFIG_HOME", xdg.path())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn phd2-guider");
 
-    assert!(
-        bound.is_some(),
-        "packaged serve path must bootstrap the platform config and print bound_addr= within 10s"
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !expected.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+
+    let content = std::fs::read_to_string(&expected)
+        .expect("first start must materialize the default config at the platform path");
+    let config: serde_json::Value = serde_json::from_str(&content).expect("valid JSON scaffold");
+    assert_eq!(
+        config.pointer("/server/port").and_then(|v| v.as_u64()),
+        Some(11130),
+        "materialized scaffold must be the serialized default config"
     );
 }
 
