@@ -16,3 +16,4 @@ pub mod imaging;
 pub mod mount;
 pub mod planner;
 pub mod plate_solve;
+pub mod rotator;
