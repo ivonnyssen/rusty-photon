@@ -1023,3 +1023,18 @@ pair — `auth.mismatch` already owns it).
   credential field, so `joins.client-auth` can diagnose but not fix a
   401 against either target. Out of #607's scope: it is an rp
   HTTP-client change, not a doctor check.
+- `joins.client-transport` does not evaluate CA trust for sentinel's
+  downstream targets (`operation_watchdog.rp_url`, per-monitor
+  `host`/`port`) at all — both pass `ca_cert: None` into `transport_check`
+  because sentinel's single top-level `ca_cert` is already unconditionally
+  wired by `plan_client_wiring` (D6a) whenever `pki/ca.pem` exists. That
+  pass runs only inside `--fix`, though, and checks field-presence
+  directly (not whole-block-absence, so it is not #607's original
+  ui-htmx bug) — so between a self-signed target's TLS being provisioned
+  and the next `--fix`, a **plain, read-only `doctor` run gives no
+  warning** that sentinel's requests to it will fail the handshake.
+  Self-heals on the next `--fix`; wiring `/ca_cert` presence into both
+  transport checks (mirroring rp's fix above) would close the
+  visibility gap. Not fixed here — flagged by Copilot review as a
+  low-confidence suggestion on PR #627, judged real but out of scope for
+  this PR's diff.
