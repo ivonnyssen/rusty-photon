@@ -358,6 +358,30 @@ mod tests {
     }
 
     #[test]
+    fn a_clear_calibration_body_maps_every_target() {
+        for (body, expected) in [
+            ("{}", crate::types::CalibrationTarget::Mount),
+            (
+                r#"{"which": "mount"}"#,
+                crate::types::CalibrationTarget::Mount,
+            ),
+            (r#"{"which": "ao"}"#, crate::types::CalibrationTarget::AO),
+            (
+                r#"{"which": "both"}"#,
+                crate::types::CalibrationTarget::Both,
+            ),
+        ] {
+            let parsed: ClearCalibrationBody = serde_json::from_str(body).unwrap();
+            assert_eq!(
+                crate::types::CalibrationTarget::from(parsed.which),
+                expected,
+                "body {body}"
+            );
+        }
+        assert!(serde_json::from_str::<ClearCalibrationBody>(r#"{"which": "camera"}"#).is_err());
+    }
+
+    #[test]
     fn a_dither_body_requires_amount_px() {
         let err = serde_json::from_str::<DitherBody>(r#"{"ra_only": true}"#).unwrap_err();
         assert!(err.to_string().contains("amount_px"));

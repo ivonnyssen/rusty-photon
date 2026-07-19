@@ -467,6 +467,99 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_t4_endpoints_answer_with_their_canned_shapes() {
+        let stub = GuiderStub::start(GuiderStubBehavior::Canned(CannedGuiding {
+            phd2_rotator_connected: true,
+            metrics_hfd_script: vec![2.0, 3.0],
+            ..CannedGuiding::default()
+        }))
+        .await;
+        let client = reqwest::Client::new();
+
+        let equipment: Value = client
+            .get(format!("{}/api/v1/equipment", stub.url))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(equipment["rotator"]["name"], "Stub Rotator");
+
+        // Metrics advance 5 frames per poll and follow the script.
+        let m1: Value = client
+            .get(format!("{}/api/v1/guiding/metrics", stub.url))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(m1["guiding"], true);
+        let f1 = m1["frames"].as_array().unwrap();
+        assert_eq!(f1.last().unwrap()["frame"], 5);
+        assert_eq!(f1[0]["hfd"], 2.0);
+        let m2: Value = client
+            .get(format!("{}/api/v1/guiding/metrics", stub.url))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let f2 = m2["frames"].as_array().unwrap();
+        assert_eq!(f2.last().unwrap()["frame"], 10);
+        assert_eq!(f2[0]["hfd"], 3.0);
+
+        let cleared: Value = client
+            .post(format!("{}/api/v1/calibration/clear", stub.url))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(cleared["state"], "cleared");
+
+        let selected: Value = client
+            .post(format!("{}/api/v1/star/reselect", stub.url))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(selected["state"], "selected");
+
+        let clear_requests = stub.requests_to("/calibration/clear").await;
+        assert_eq!(clear_requests.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn the_t4_endpoints_map_the_error_behavior() {
+        let stub = GuiderStub::start(GuiderStubBehavior::Error {
+            code: "internal".to_string(),
+            message: "boom".to_string(),
+        })
+        .await;
+        let client = reqwest::Client::new();
+        for (method, path) in [
+            ("get", "/api/v1/guiding/metrics"),
+            ("get", "/api/v1/equipment"),
+            ("post", "/api/v1/calibration/clear"),
+            ("post", "/api/v1/star/reselect"),
+        ] {
+            let request = if method == "get" {
+                client.get(format!("{}{}", stub.url, path))
+            } else {
+                client.post(format!("{}{}", stub.url, path))
+            };
+            let response = request.send().await.unwrap();
+            assert_eq!(response.status().as_u16(), 500, "{path}");
+        }
+    }
+
+    #[tokio::test]
     async fn error_behavior_maps_codes_to_the_service_statuses() {
         for (code, expected_status) in [
             ("invalid_request", 400),

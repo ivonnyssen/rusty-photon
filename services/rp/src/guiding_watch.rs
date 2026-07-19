@@ -53,11 +53,14 @@ impl WatchCore {
         }
     }
 
-    /// Drop the baseline and any open episode — a fresh focus (or a
-    /// guiding restart) is a fresh reference.
+    /// Drop the baseline, any open episode, and the cooldown — a
+    /// fresh focus (or a guiding restart) is a fresh reference, and a
+    /// trend degrading against it deserves a fresh event rather than
+    /// suppression left over from the previous episode.
     pub fn rearm(&mut self) {
         self.baseline = None;
         self.episode = None;
+        self.cooldown_until = None;
     }
 
     /// One observation: `valid_hfds` are the metrics ring's valid
@@ -211,27 +214,28 @@ pub fn spawn(
 /// Whether an rp event means the guiding train's focus changed — a
 /// metric `focus_complete` in the guiding train, a capture
 /// `focus_complete` on a guiding-member focuser, or a
-/// `refocus_complete` whose steps ran there.
+/// `refocus_complete` with a step that did either (a shared
+/// guiding-member focuser swept in an imaging train changes the
+/// guide focus just the same).
 fn rearms_baseline(
     event: &str,
     payload: &serde_json::Value,
     guiding_train_id: Option<&str>,
     guiding_focusers: &[String],
 ) -> bool {
+    let step_touches_guiding = |step: &serde_json::Value| {
+        let train_matches =
+            guiding_train_id.is_some_and(|id| step["train_id"].as_str() == Some(id));
+        let focuser_matches = step["focuser_id"]
+            .as_str()
+            .is_some_and(|f| guiding_focusers.iter().any(|g| g == f));
+        train_matches || focuser_matches
+    };
     match event {
-        "focus_complete" => {
-            let train_matches =
-                guiding_train_id.is_some_and(|id| payload["train_id"].as_str() == Some(id));
-            let focuser_matches = payload["focuser_id"]
-                .as_str()
-                .is_some_and(|f| guiding_focusers.iter().any(|g| g == f));
-            train_matches || focuser_matches
-        }
-        "refocus_complete" => payload["steps"].as_array().is_some_and(|steps| {
-            steps
-                .iter()
-                .any(|s| guiding_train_id.is_some_and(|id| s["train_id"].as_str() == Some(id)))
-        }),
+        "focus_complete" => step_touches_guiding(payload),
+        "refocus_complete" => payload["steps"]
+            .as_array()
+            .is_some_and(|steps| steps.iter().any(step_touches_guiding)),
         _ => false,
     }
 }
@@ -328,6 +332,32 @@ mod tests {
     }
 
     #[test]
+    fn rearm_clears_the_cooldown_so_a_fresh_baseline_can_fire() {
+        let mut core = WatchCore::new(config(
+            3,
+            1.25,
+            Duration::from_secs(3600),
+            Duration::from_secs(3600),
+        ));
+        let t0 = Instant::now();
+        assert!(core.observe(true, &[2.0, 2.0, 2.0], t0).is_empty());
+        let degraded = [2.0, 2.0, 2.0, 3.0, 3.0, 3.0];
+        assert_eq!(core.observe(true, &degraded, t0).len(), 1);
+
+        // A refocus re-arms; the new baseline degrading again fires
+        // immediately — the old episode's cooldown must not linger.
+        core.rearm();
+        assert!(core
+            .observe(true, &[2.0, 2.0, 2.0], t0 + Duration::from_secs(1))
+            .is_empty());
+        assert_eq!(
+            core.observe(true, &degraded, t0 + Duration::from_secs(2))
+                .len(),
+            1
+        );
+    }
+
+    #[test]
     fn not_guiding_resets_the_baseline() {
         let mut core = WatchCore::new(config(
             3,
@@ -374,6 +404,13 @@ mod tests {
                 "refocus_complete",
                 serde_json::json!({ "steps": [{ "train_id": "main" }] }),
                 false,
+            ),
+            (
+                "refocus_complete",
+                serde_json::json!({ "steps": [
+                    { "train_id": "main", "focuser_id": "guide-focuser" }
+                ] }),
+                true,
             ),
             ("exposure_complete", serde_json::json!({}), false),
         ] {

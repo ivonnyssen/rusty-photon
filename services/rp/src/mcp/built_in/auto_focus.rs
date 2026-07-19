@@ -840,15 +840,21 @@ impl McpHandler {
 
         let emitter = progress_sink.as_ref().map(|s| s as &dyn ProgressEmitter);
         let result: Result<GuideAfOutcome, String> = async {
-            // Watermark from the current window so pre-move frames
-            // never count as samples for the first position.
-            let mut watermark = latest_frame(client.guiding_metrics().await.ok().as_ref());
-
+            let mut watermark = 0;
             let mut curve_points = Vec::with_capacity(grid.len());
             let mut fit_samples: Vec<(i32, f64, u32)> = Vec::new();
             for &position in &grid {
                 self.do_move_focuser_blocking(focuser_id, position, emitter)
                     .await?;
+                // Watermark from the ring *after* the move settles, so
+                // frames exposed during the focuser motion — at a
+                // stale focus — never count toward this position.
+                // Best-effort: on a failed read the previous
+                // position's high-water mark still guards staleness,
+                // and the collect loop below surfaces a persistent
+                // metrics failure as its own error.
+                watermark =
+                    latest_frame(client.guiding_metrics().await.ok().as_ref()).max(watermark);
                 let (sample, frames_used, max_frame) = self
                     .collect_guide_sample(client.as_ref(), watermark, sweep.frames_per_step)
                     .await?;
@@ -928,33 +934,34 @@ impl McpHandler {
 
     /// Collect one metric-sweep sample: poll the guider metrics
     /// window until `frames_per_step` frames above `watermark` have
-    /// arrived, then report the median HFD of the valid ones —
-    /// `None` when every fresh frame was invalid (star lost or no
-    /// HFD), the expected bracket shape at deep defocus. Also
-    /// returns the highest frame number seen, the next position's
-    /// watermark.
+    /// arrived, then report the median HFD of the valid ones among
+    /// **exactly the earliest `frames_per_step` fresh frames** — a
+    /// slow poll never inflates the sample set past the documented
+    /// size. `None` when every considered frame was invalid (star
+    /// lost or no HFD), the expected bracket shape at deep defocus.
+    /// Also returns the highest considered frame number, the next
+    /// position's fallback watermark.
     async fn collect_guide_sample(
         &self,
         client: &dyn rp_guider::GuiderClient,
         watermark: u64,
         frames_per_step: u32,
     ) -> Result<(Option<f64>, u32, u64), String> {
-        let deadline = std::time::Instant::now() + GUIDE_FRAME_TIMEOUT * frames_per_step.max(1);
-        let mut max_frame = watermark;
+        let deadline = tokio::time::Instant::now() + GUIDE_FRAME_TIMEOUT * frames_per_step.max(1);
         loop {
             let metrics = client
                 .guiding_metrics()
                 .await
                 .map_err(|e| format!("failed to read guider metrics: {e}"))?;
-            let fresh: Vec<&rp_guider::FrameMetrics> = metrics
+            let mut fresh: Vec<&rp_guider::FrameMetrics> = metrics
                 .frames
                 .iter()
                 .filter(|f| f.frame > watermark)
                 .collect();
-            if let Some(latest) = fresh.iter().map(|f| f.frame).max() {
-                max_frame = max_frame.max(latest);
-            }
             if fresh.len() >= frames_per_step as usize {
+                fresh.sort_by_key(|f| f.frame);
+                fresh.truncate(frames_per_step as usize);
+                let max_frame = fresh.iter().map(|f| f.frame).max().unwrap_or(watermark);
                 let mut valid: Vec<f64> = fresh
                     .iter()
                     .filter(|f| !f.star_lost)
@@ -968,7 +975,7 @@ impl McpHandler {
                 let median = valid[valid.len() / 2];
                 return Ok((Some(median), frames_used, max_frame));
             }
-            if std::time::Instant::now() >= deadline {
+            if tokio::time::Instant::now() >= deadline {
                 return Err(format!(
                     "timeout waiting for {frames_per_step} fresh guide frames \
                      (got {} within the per-position ceiling)",

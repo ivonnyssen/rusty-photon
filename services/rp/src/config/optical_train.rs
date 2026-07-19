@@ -452,6 +452,11 @@ mod tests {
         assert!(SweepHalfWidth::try_from(-1i64)
             .unwrap_err()
             .contains("auto_focus.half_width"));
+        assert_eq!(FramesPerStep::try_from(3i64).unwrap().value(), 3);
+        assert!(FramesPerStep::try_from(0i64)
+            .unwrap_err()
+            .contains("auto_focus.frames_per_step"));
+        assert!(FramesPerStep::try_from(-2i64).is_err());
     }
 
     #[test]

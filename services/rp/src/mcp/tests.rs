@@ -4836,6 +4836,284 @@ async fn auto_focus_rejects_capture_parameters_for_the_guiding_train() {
     assert_tool_error(result, "capture-based");
 }
 
+/// Minimal mock rotator for the rotate-while-guiding ladder tests:
+/// moves land instantly (is_moving false), `position` reports
+/// `position_value` before a move and the last commanded angle after.
+#[derive(Default)]
+struct MockRotator {
+    fail_position: bool,
+    fail_move: bool,
+    position_value: std::sync::Mutex<f64>,
+}
+
+impl_mock_device!(MockRotator);
+
+#[async_trait::async_trait]
+impl ascom_alpaca::api::Rotator for MockRotator {
+    async fn can_reverse(&self) -> ascom_alpaca::ASCOMResult<bool> {
+        Ok(false)
+    }
+
+    async fn is_moving(&self) -> ascom_alpaca::ASCOMResult<bool> {
+        Ok(false)
+    }
+
+    async fn position(&self) -> ascom_alpaca::ASCOMResult<f64> {
+        if self.fail_position {
+            return Err(ASCOMError::invalid_operation("position unavailable"));
+        }
+        Ok(*self.position_value.lock().unwrap())
+    }
+
+    async fn mechanical_position(&self) -> ascom_alpaca::ASCOMResult<f64> {
+        Ok(*self.position_value.lock().unwrap())
+    }
+
+    async fn move_absolute(&self, position: f64) -> ascom_alpaca::ASCOMResult<()> {
+        if self.fail_move {
+            return Err(ASCOMError::invalid_operation("motor fault"));
+        }
+        *self.position_value.lock().unwrap() = position;
+        Ok(())
+    }
+
+    async fn reverse(&self) -> ascom_alpaca::ASCOMResult<bool> {
+        Ok(false)
+    }
+
+    async fn set_reverse(&self, _: bool) -> ascom_alpaca::ASCOMResult<()> {
+        Err(ASCOMError::NOT_IMPLEMENTED)
+    }
+
+    async fn target_position(&self) -> ascom_alpaca::ASCOMResult<f64> {
+        Ok(*self.position_value.lock().unwrap())
+    }
+
+    async fn move_(&self, _: f64) -> ascom_alpaca::ASCOMResult<()> {
+        Err(ASCOMError::NOT_IMPLEMENTED)
+    }
+
+    async fn move_mechanical(&self, _: f64) -> ascom_alpaca::ASCOMResult<()> {
+        Err(ASCOMError::NOT_IMPLEMENTED)
+    }
+
+    async fn sync(&self, _: f64) -> ascom_alpaca::ASCOMResult<()> {
+        Err(ASCOMError::NOT_IMPLEMENTED)
+    }
+}
+
+fn rotator_registry(
+    rot: Arc<dyn ascom_alpaca::api::Rotator>,
+) -> crate::equipment::EquipmentRegistry {
+    crate::equipment::EquipmentRegistry {
+        rotators: vec![crate::equipment::RotatorEntry {
+            id: "rot".to_string(),
+            connected: true,
+            config: crate::config::RotatorConfig {
+                id: "rot".to_string(),
+                name: None,
+                alpaca_url: "http://localhost:1".to_string(),
+                device_number: 0,
+                auth: None,
+            },
+            device: Some(rot),
+        }],
+        ..Default::default()
+    }
+}
+
+/// A guiding train containing the mock rotator "rot" (terminating in
+/// an offline camera) — the ladder-engagement shape.
+fn rotator_guiding_trains() -> crate::equipment::trains::TrainModel {
+    let equipment: crate::config::EquipmentConfig = serde_json::from_value(serde_json::json!({
+        "cameras": [{"id": "gcam", "alpaca_url": "http://localhost:1"}],
+        "rotators": [{"id": "rot", "alpaca_url": "http://localhost:1"}],
+        "mount": {
+            "alpaca_url": "http://localhost:1",
+            "guiding": {"url": "http://localhost:1"}
+        },
+        "optical_trains": [
+            {"id": "guide", "purpose": "guiding", "devices": ["rot", "gcam"]}
+        ]
+    }))
+    .unwrap();
+    crate::equipment::trains::TrainModel::try_from_equipment(&equipment).unwrap()
+}
+
+fn move_rot_params(angle: f64) -> MoveRotatorParams {
+    MoveRotatorParams {
+        rotator_id: Some("rot".to_string()),
+        train_id: None,
+        angle: Some(angle),
+    }
+}
+
+fn ladder_handler(rot: MockRotator, configure: impl FnOnce(&mut MockGuiderClient)) -> McpHandler {
+    let mut mock = MockGuiderClient::new();
+    configure(&mut mock);
+    let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(mock);
+    test_handler(rotator_registry(Arc::new(rot)))
+        .with_trains(rotator_guiding_trains())
+        .with_guider(Some(client), GuiderDefaults::default())
+}
+
+#[tokio::test]
+async fn ladder_pause_failure_aborts_before_any_motion() {
+    let handler = ladder_handler(MockRotator::default(), |mock| {
+        mock.expect_guiding_stats()
+            .returning(|| Ok(guiding_stats_active()));
+        mock.expect_pause_guiding()
+            .returning(|_| Err(rp_guider::GuiderError::Internal("boom".to_string())));
+    });
+    let result = handler
+        .move_rotator(Parameters(move_rot_params(10.0)))
+        .await;
+    assert_tool_error(result, "failed to pause guiding before rotating");
+}
+
+#[tokio::test]
+async fn ladder_pre_move_read_failure_resumes_and_errors() {
+    let rot = MockRotator {
+        fail_position: true,
+        ..Default::default()
+    };
+    let handler = ladder_handler(rot, |mock| {
+        mock.expect_guiding_stats()
+            .returning(|| Ok(guiding_stats_active()));
+        mock.expect_pause_guiding().returning(|_| Ok(()));
+        mock.expect_resume_guiding().times(1).returning(|| Ok(()));
+    });
+    let result = handler
+        .move_rotator(Parameters(move_rot_params(10.0)))
+        .await;
+    assert_tool_error(result, "failed to read the pre-move sky angle");
+}
+
+#[tokio::test]
+async fn ladder_move_failure_still_reselects_and_resumes() {
+    let rot = MockRotator {
+        fail_move: true,
+        ..Default::default()
+    };
+    let handler = ladder_handler(rot, |mock| {
+        mock.expect_guiding_stats()
+            .returning(|| Ok(guiding_stats_active()));
+        mock.expect_pause_guiding().returning(|_| Ok(()));
+        mock.expect_reselect_star().times(1).returning(|| Ok(()));
+        mock.expect_resume_guiding().times(1).returning(|| Ok(()));
+    });
+    let result = handler
+        .move_rotator(Parameters(move_rot_params(10.0)))
+        .await;
+    assert_tool_error(result, "failed to move rotator");
+}
+
+#[tokio::test]
+async fn ladder_equipment_read_failure_resumes_and_errors() {
+    let handler = ladder_handler(MockRotator::default(), |mock| {
+        mock.expect_guiding_stats()
+            .returning(|| Ok(guiding_stats_active()));
+        mock.expect_pause_guiding().returning(|_| Ok(()));
+        mock.expect_current_equipment()
+            .returning(|| Err(rp_guider::GuiderError::Internal("down".to_string())));
+        mock.expect_resume_guiding().times(1).returning(|| Ok(()));
+    });
+    let result = handler
+        .move_rotator(Parameters(move_rot_params(10.0)))
+        .await;
+    assert_tool_error(result, "failed to read PHD2 equipment");
+}
+
+fn equipment_without_rotator() -> rp_guider::PhdEquipment {
+    rp_guider::PhdEquipment {
+        camera: None,
+        mount: None,
+        aux_mount: None,
+        ao: None,
+        rotator: None,
+    }
+}
+
+#[tokio::test]
+async fn ladder_clear_calibration_failure_resumes_and_errors() {
+    let handler = ladder_handler(MockRotator::default(), |mock| {
+        mock.expect_guiding_stats()
+            .returning(|| Ok(guiding_stats_active()));
+        mock.expect_pause_guiding().returning(|_| Ok(()));
+        mock.expect_current_equipment()
+            .returning(|| Ok(equipment_without_rotator()));
+        mock.expect_clear_calibration()
+            .returning(|| Err(rp_guider::GuiderError::Internal("rpc".to_string())));
+        mock.expect_resume_guiding().times(1).returning(|| Ok(()));
+    });
+    let result = handler
+        .move_rotator(Parameters(move_rot_params(90.0)))
+        .await;
+    assert_tool_error(result, "failed to clear the PHD2 calibration");
+}
+
+#[tokio::test]
+async fn ladder_resume_failure_after_success_tail_is_a_hard_error() {
+    let handler = ladder_handler(MockRotator::default(), |mock| {
+        mock.expect_guiding_stats()
+            .returning(|| Ok(guiding_stats_active()));
+        mock.expect_pause_guiding().returning(|_| Ok(()));
+        mock.expect_current_equipment()
+            .returning(|| Ok(equipment_without_rotator()));
+        mock.expect_reselect_star().returning(|| Ok(()));
+        mock.expect_resume_guiding()
+            .returning(|| Err(rp_guider::GuiderError::Internal("gone".to_string())));
+    });
+    // A 2° move stays under the 5° threshold: no calibration clear,
+    // so the failure is isolated to the resume.
+    let result = handler.move_rotator(Parameters(move_rot_params(2.0))).await;
+    assert_tool_error(result, "failed to resume guiding after rotating");
+}
+
+#[tokio::test]
+async fn ladder_runs_bare_when_the_stats_read_fails() {
+    let handler = ladder_handler(MockRotator::default(), |mock| {
+        mock.expect_guiding_stats()
+            .returning(|| Err(rp_guider::GuiderError::Internal("down".to_string())));
+    });
+    let json = ok_text(
+        handler
+            .move_rotator(Parameters(move_rot_params(45.0)))
+            .await
+            .unwrap(),
+    );
+    assert!(json["guiding_ladder"].is_null());
+}
+
+#[tokio::test]
+async fn ladder_success_reports_the_calibration_decision() {
+    let handler = ladder_handler(MockRotator::default(), |mock| {
+        mock.expect_guiding_stats()
+            .returning(|| Ok(guiding_stats_active()));
+        mock.expect_pause_guiding()
+            .with(mockall::predicate::eq(false))
+            .times(1)
+            .returning(|_| Ok(()));
+        mock.expect_current_equipment()
+            .returning(|| Ok(equipment_without_rotator()));
+        mock.expect_clear_calibration()
+            .times(1)
+            .returning(|| Ok(()));
+        mock.expect_reselect_star().times(1).returning(|| Ok(()));
+        mock.expect_resume_guiding().times(1).returning(|| Ok(()));
+    });
+    let json = ok_text(
+        handler
+            .move_rotator(Parameters(move_rot_params(90.0)))
+            .await
+            .unwrap(),
+    );
+    let ladder = &json["guiding_ladder"];
+    assert_eq!(ladder["phd2_has_rotator"], false);
+    assert_eq!(ladder["calibration_cleared"], true);
+    assert!((ladder["delta_deg"].as_f64().unwrap() - 90.0).abs() < 1e-9);
+}
+
 /// A guiding train terminating in the mock-focuser fixture's "foc",
 /// with a metric block giving a 5-position grid around the focuser's
 /// starting position.
@@ -4872,9 +5150,11 @@ fn guiding_stats_active() -> rp_guider::GuidingStats {
 
 /// A mock guider whose metrics responses follow `hfd_script` one call
 /// at a time (the last value repeats), each response carrying three
-/// fresh frames — so a sweep with the default `frames_per_step` (3)
-/// consumes exactly one response per grid position, and the script
-/// indexes align call-for-position after the initial watermark fetch.
+/// fresh frames. A sweep with the default `frames_per_step` (3)
+/// makes two calls per grid position — the post-move watermark
+/// refresh, then the collect — so position N's sample comes from
+/// script index `2N + 1` (odd indexes; the refresh responses only
+/// contribute frame numbers).
 fn scripted_metrics_guider(hfd_script: Vec<f64>) -> MockGuiderClient {
     let mut mock = MockGuiderClient::new();
     mock.expect_guiding_stats()
@@ -4902,12 +5182,13 @@ fn scripted_metrics_guider(hfd_script: Vec<f64>) -> MockGuiderClient {
 
 #[tokio::test]
 async fn guide_train_auto_focus_fits_the_scripted_v_curve() {
-    // Script: call 0 is the watermark fetch, calls 1–5 serve the five
-    // grid positions with a symmetric V — the fitted minimum is the
-    // center, i.e. the focuser's starting position.
+    // Odd script indexes serve the five positions' collect calls
+    // with a symmetric V — the fitted minimum is the center, i.e.
+    // the focuser's starting position. Even indexes back the
+    // watermark refreshes and contribute frame numbers only.
     let foc = MockFocuser::default();
     let start = foc.position_value;
-    let mock = scripted_metrics_guider(vec![9.0, 4.0, 3.0, 2.0, 3.0, 4.0]);
+    let mock = scripted_metrics_guider(vec![9.0, 4.0, 9.0, 3.0, 9.0, 2.0, 9.0, 3.0, 9.0, 4.0]);
     let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(mock);
     let handler = test_handler(focuser_registry(Arc::new(foc), None, None))
         .with_trains(guide_sweep_trains())
@@ -4929,6 +5210,130 @@ async fn guide_train_auto_focus_fits_the_scripted_v_curve() {
         points.iter().all(|p| p.get("document_id").is_none()),
         "metric sweeps capture nothing"
     );
+}
+
+#[tokio::test]
+async fn guide_train_auto_focus_surfaces_a_stats_read_failure() {
+    let mut mock = MockGuiderClient::new();
+    mock.expect_guiding_stats()
+        .returning(|| Err(rp_guider::GuiderError::Internal("down".to_string())));
+    let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(mock);
+    let handler = test_handler(focuser_registry(
+        Arc::new(MockFocuser::default()),
+        None,
+        None,
+    ))
+    .with_trains(guide_sweep_trains())
+    .with_guider(Some(client), GuiderDefaults::default());
+    let result = handler
+        .auto_focus_inner(af_params_with_train("guide"), None)
+        .await;
+    assert_tool_error(result, "stats unavailable");
+}
+
+#[tokio::test]
+async fn guide_train_auto_focus_rejects_a_clamped_grid_below_min_fit_points() {
+    // Bounds clamp the ±100 grid to two positions — fewer than the
+    // default min_fit_points of five, rejected before any motion.
+    let foc = MockFocuser::default();
+    let start = foc.position_value;
+    let mock = scripted_metrics_guider(vec![2.5]);
+    let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(mock);
+    let handler = test_handler(focuser_registry(
+        Arc::new(foc),
+        Some(start - 50),
+        Some(start),
+    ))
+    .with_trains(guide_sweep_trains())
+    .with_guider(Some(client), GuiderDefaults::default());
+    let result = handler
+        .auto_focus_inner(af_params_with_train("guide"), None)
+        .await;
+    assert_tool_error(result, "fewer than min_fit_points");
+}
+
+#[tokio::test]
+async fn guide_train_auto_focus_rejects_a_minimum_outside_the_sampled_range() {
+    // A convex but one-sided curve: the fitted vertex lies beyond the
+    // right edge of the grid, so the visible curve is monotonic over
+    // the sampled range.
+    let mock = scripted_metrics_guider(vec![9.0, 62.5, 9.0, 40.0, 9.0, 22.5, 9.0, 10.0, 9.0, 2.5]);
+    let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(mock);
+    let handler = test_handler(focuser_registry(
+        Arc::new(MockFocuser::default()),
+        None,
+        None,
+    ))
+    .with_trains(guide_sweep_trains())
+    .with_guider(Some(client), GuiderDefaults::default());
+    let result = handler
+        .auto_focus_inner(af_params_with_train("guide"), None)
+        .await;
+    assert_tool_error(result, "outside the sampled range");
+}
+
+#[tokio::test(start_paused = true)]
+async fn guide_train_auto_focus_times_out_when_frames_stop_flowing() {
+    // The mock always returns the same three frames: after the first
+    // position consumes them, no fresh frames ever arrive and the
+    // per-position ceiling expires (paused clock — no real waiting).
+    let mut mock = MockGuiderClient::new();
+    mock.expect_guiding_stats()
+        .returning(|| Ok(guiding_stats_active()));
+    mock.expect_guiding_metrics().returning(|| {
+        Ok(rp_guider::GuidingMetrics {
+            guiding: true,
+            frames: (1..=3)
+                .map(|frame| rp_guider::FrameMetrics {
+                    frame,
+                    hfd: Some(2.5),
+                    snr: Some(20.0),
+                    star_mass: Some(1000.0),
+                    star_lost: false,
+                })
+                .collect(),
+        })
+    });
+    let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(mock);
+    let handler = test_handler(focuser_registry(
+        Arc::new(MockFocuser::default()),
+        None,
+        None,
+    ))
+    .with_trains(guide_sweep_trains())
+    .with_guider(Some(client), GuiderDefaults::default());
+    let result = handler
+        .auto_focus_inner(af_params_with_train("guide"), None)
+        .await;
+    assert_tool_error(result, "timeout waiting for");
+}
+
+#[tokio::test]
+async fn refocus_train_runs_a_metric_step_and_reports_best_hfd() {
+    // The guide train's expansion is its single terminal focuser as a
+    // metric step; the scripted V gives a deterministic success
+    // payload with no camera involved.
+    let foc = MockFocuser::default();
+    let start = foc.position_value;
+    let mock = scripted_metrics_guider(vec![9.0, 4.0, 9.0, 3.0, 9.0, 2.0, 9.0, 3.0, 9.0, 4.0]);
+    let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(mock);
+    let handler = test_handler(focuser_registry(Arc::new(foc), None, None))
+        .with_trains(guide_sweep_trains())
+        .with_guider(Some(client), GuiderDefaults::default());
+    let json = ok_text(
+        handler
+            .refocus_train_inner(refocus_params("guide"), None)
+            .await
+            .unwrap(),
+    );
+    assert_eq!(json["guiding_paused"], false);
+    let steps = json["steps"].as_array().unwrap();
+    assert_eq!(steps.len(), 1);
+    assert_eq!(steps[0]["focuser_id"], "foc");
+    assert_eq!(steps[0]["train_id"], "guide");
+    assert!(steps[0]["camera_id"].is_null());
+    assert_eq!(steps[0]["best_position"], start);
+    assert!(steps[0]["best_hfd"].as_f64().is_some());
 }
 
 #[tokio::test]

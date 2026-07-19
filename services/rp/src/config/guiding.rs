@@ -273,7 +273,7 @@ fn default_guiding_timeout() -> Duration {
 mod tests {
     use std::time::Duration;
 
-    use super::RecalibrateAboveDeg;
+    use super::{FocusWatchConfig, RecalibrateAboveDeg};
     use crate::config::load_config;
     use crate::config::test_support::MINIMAL_CONFIG_JSON;
 
@@ -428,6 +428,37 @@ mod tests {
             msg.contains("dither_every_n_exposures") || msg.contains("unknown field"),
             "expected unknown-field diagnostic, got: {msg}"
         );
+    }
+
+    #[test]
+    fn focus_watch_defaults_and_newtype_boundaries() {
+        let watch = FocusWatchConfig::default();
+        assert_eq!(watch.window.value(), 10);
+        assert_eq!(watch.degrade_ratio.value(), 1.25);
+        assert_eq!(watch.cooldown, Duration::from_secs(600));
+        assert_eq!(watch.escalation_deadline, Duration::from_secs(600));
+        assert_eq!(watch.poll_interval, Duration::from_secs(5));
+
+        let parsed: FocusWatchConfig = serde_json::from_value(serde_json::json!({
+            "window": 3, "degrade_ratio": 1.5, "cooldown": "1m",
+            "escalation_deadline": "2m", "poll_interval": "250ms"
+        }))
+        .unwrap();
+        assert_eq!(parsed.window.value(), 3);
+        assert_eq!(parsed.degrade_ratio.value(), 1.5);
+        assert_eq!(parsed.poll_interval, Duration::from_millis(250));
+
+        let window_err =
+            serde_json::from_value::<FocusWatchConfig>(serde_json::json!({ "window": 2 }))
+                .unwrap_err()
+                .to_string();
+        assert!(window_err.contains("focus_watch.window must be an integer >= 3"));
+        for bad_ratio in [1.0, 0.5, f64::NAN] {
+            let err = serde_json::from_value::<FocusWatchConfig>(
+                serde_json::json!({ "degrade_ratio": bad_ratio }),
+            );
+            assert!(err.is_err(), "degrade_ratio {bad_ratio} must be rejected");
+        }
     }
 
     #[test]

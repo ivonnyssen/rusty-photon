@@ -560,6 +560,80 @@ mod tests {
     }
 
     #[test]
+    fn an_imaging_block_missing_the_capture_fields_reports_every_gap() {
+        let mut config = reference_rig();
+        // Only the geometry: duration, min_area, and max_area are all
+        // missing — every arm reports at once.
+        config.optical_trains[0].auto_focus =
+            serde_json::from_value(serde_json::json!({ "step_size": 10, "half_width": 50 }))
+                .unwrap();
+        let errors = TrainModel::try_from_equipment(&config).unwrap_err();
+        assert_eq!(
+            paths(&errors),
+            vec![
+                "equipment.optical_trains.0.auto_focus.duration",
+                "equipment.optical_trains.0.auto_focus.min_area",
+                "equipment.optical_trains.0.auto_focus.max_area",
+            ]
+        );
+        assert!(errors[0].msg.contains("required for an imaging train"));
+    }
+
+    #[test]
+    fn an_imaging_block_rejects_frames_per_step() {
+        let mut config = reference_rig();
+        config.optical_trains[0].auto_focus = serde_json::from_value(serde_json::json!({
+            "duration": "100ms", "step_size": 10, "half_width": 50,
+            "min_area": 4, "max_area": 500, "frames_per_step": 3
+        }))
+        .unwrap();
+        let errors = TrainModel::try_from_equipment(&config).unwrap_err();
+        assert_eq!(
+            paths(&errors),
+            vec!["equipment.optical_trains.0.auto_focus.frames_per_step"]
+        );
+        assert!(errors[0].msg.contains("only applies to the guiding train"));
+    }
+
+    #[test]
+    fn a_guiding_block_rejects_every_capture_field() {
+        let mut config = reference_rig();
+        config.optical_trains[1].auto_focus = serde_json::from_value(serde_json::json!({
+            "duration": "100ms", "step_size": 10, "half_width": 50,
+            "min_area": 4, "max_area": 500, "threshold_sigma": 4.0
+        }))
+        .unwrap();
+        let errors = TrainModel::try_from_equipment(&config).unwrap_err();
+        assert_eq!(
+            paths(&errors),
+            vec![
+                "equipment.optical_trains.1.auto_focus.duration",
+                "equipment.optical_trains.1.auto_focus.min_area",
+                "equipment.optical_trains.1.auto_focus.max_area",
+                "equipment.optical_trains.1.auto_focus.threshold_sigma",
+            ]
+        );
+        assert!(errors[0]
+            .msg
+            .contains("does not apply to the guiding train"));
+    }
+
+    #[test]
+    fn a_purpose_appropriate_block_passes_on_both_train_kinds() {
+        let mut config = reference_rig();
+        config.optical_trains[0].auto_focus = serde_json::from_value(serde_json::json!({
+            "duration": "100ms", "step_size": 10, "half_width": 50,
+            "min_area": 4, "max_area": 500
+        }))
+        .unwrap();
+        config.optical_trains[1].auto_focus = serde_json::from_value(serde_json::json!({
+            "step_size": 10, "half_width": 50, "frames_per_step": 2
+        }))
+        .unwrap();
+        TrainModel::try_from_equipment(&config).unwrap();
+    }
+
+    #[test]
     fn auto_focus_block_is_carried_onto_the_validated_train() {
         let mut config = reference_rig();
         config.optical_trains[0].auto_focus = serde_json::from_value(serde_json::json!({

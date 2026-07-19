@@ -2159,9 +2159,12 @@ guide loop, and is idle otherwise:
 
 - **Baseline**: the median HFD of the first `window` (default 10)
   valid frames after guiding becomes active. The watch subscribes
-  to rp's own event stream and re-arms the baseline after any
-  `focus_complete` or `refocus_complete` that involved the guiding
-  train — a fresh focus is a fresh reference.
+  to rp's own event stream and re-arms after any `focus_complete`
+  or `refocus_complete` that involved the guiding train **or moved
+  one of its focusers** (a shared focuser swept in an imaging train
+  changes the guide focus just the same) — a fresh focus is a fresh
+  reference, and re-arming also clears the cooldown so a trend
+  degrading against the new baseline fires immediately.
 - **Degraded**: the median HFD of the trailing `window` frames
   exceeds `baseline × degrade_ratio` (default `1.25`). Emit
   `guide_focus_degraded {baseline_hfd, current_hfd, window}` once,
@@ -2788,15 +2791,18 @@ Requirements, checked before any motion:
   fresh frames collected per grid position.
 
 Per grid position: `move_focuser` (the guiding train's terminal
-focuser), then poll the metrics window until `frames_per_step`
-frames with a frame number above the position's watermark arrive
-(bounded by a fixed 30 s-per-frame ceiling — guide exposures are
-seconds; expiry errors the run). Frames flagged `star_lost` or with
-a null HFD are counted as **invalid**: a position that accumulates
-`frames_per_step` invalid frames before enough valid ones is
-recorded as a null sample — at deep defocus the star genuinely
-vanishes, so null samples at the sweep edges are the expected
-bracket shape, exactly like starless captures in the capture sweep.
+focuser), then refresh the freshness watermark from the metrics
+window — frames exposed *during* the focuser motion, at a stale
+focus, never count — and poll until `frames_per_step` frames above
+it arrive (bounded by a fixed 30 s-per-frame ceiling — guide
+exposures are seconds; expiry errors the run). The **earliest**
+`frames_per_step` fresh frames form the position's sample set, so a
+slow poll cannot inflate it; the sample is the median HFD of the
+valid ones among them. Frames flagged `star_lost` or with a null
+HFD are **invalid**: a sample set with no valid frame records a
+null sample — at deep defocus the star genuinely vanishes, so null
+samples at the sweep edges are the expected bracket shape, exactly
+like starless captures in the capture sweep.
 
 Fit, recovery, and result mirror the capture sweep (`min_fit_points`
 valid samples required; `not_enough_stars` / `monotonic_curve`
