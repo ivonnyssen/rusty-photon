@@ -394,6 +394,45 @@ mod tests {
         }
     }
 
+    /// A gid from `id -G` different from `primary`, if the environment has
+    /// one. An owner may hand a file to any group they belong to, so this
+    /// lets the alignment chown run without privileges.
+    #[cfg(unix)]
+    fn supplementary_gid(primary: u32) -> Option<u32> {
+        let out = std::process::Command::new("id").arg("-G").output().ok()?;
+        String::from_utf8(out.stdout)
+            .ok()?
+            .split_whitespace()
+            .filter_map(|g| g.parse().ok())
+            .find(|g| *g != primary)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_align_pki_ownership_chowns_a_group_stray_without_privileges() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = tempfile::tempdir().unwrap();
+        let pki = pki_dir(dir.path());
+        std::fs::create_dir_all(&pki).unwrap();
+        let file = pki.join("sentinel-key.pem");
+        std::fs::write(&file, "key material").unwrap();
+        let root = std::fs::metadata(dir.path()).unwrap();
+        let Some(other) = supplementary_gid(root.gid()) else {
+            eprintln!("single-group environment; the cross-owner path needs the privileged tests");
+            return;
+        };
+        // Sandboxes with a single-mapping user namespace cannot express
+        // the chgrp at all (EINVAL); plain cargo runs and real machines can.
+        if std::os::unix::fs::chown(&file, None, Some(other)).is_err() {
+            eprintln!("environment cannot chgrp to a supplementary group; skipping");
+            return;
+        }
+        align_pki_ownership(dir.path()).unwrap();
+        let meta = std::fs::metadata(&file).unwrap();
+        assert_eq!(meta.gid(), root.gid(), "gid must return to the root's");
+        assert_eq!(meta.uid(), root.uid());
+    }
+
     #[cfg(unix)]
     #[test]
     fn test_align_pki_ownership_skips_symlinks() {
