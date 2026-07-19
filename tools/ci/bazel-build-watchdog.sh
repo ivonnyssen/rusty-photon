@@ -36,6 +36,13 @@
 # into the step log before propagating the exit code. (A first capture showed
 # jvm.out clean on the abrupt-termination crash, so java.log — where the
 # server's logger records event-loop deaths and command aborts — is included.)
+# Every post-mortem of that crash shows the same picture: the server JVM
+# alive and healthy, idle after cleanly tearing down the interrupted command
+# — only the loopback stream died. So exit 37 specifically is retried once
+# after the dump: the new client reconnects to the surviving server and
+# resumes warm, with the in-memory analysis graph intact. Other
+# infrastructure exits stay fatal — none of them carries evidence that the
+# server is reusable.
 #
 # Usage: bazel-build-watchdog.sh <command> [args...]
 # Tunables: WATCHDOG_STALL_SECS (default 300), WATCHDOG_POLL_SECS (default 15).
@@ -233,5 +240,20 @@ fi
 # in the same bucket, where the extra diagnostics are harmless.
 if ((status >= 32)); then
   dump_server_logs "bazel exited ${status}"
+fi
+
+# The abrupt-termination crash: the client's loopback gRPC stream dies
+# mid-command while the server JVM survives, healthy and idle (see header).
+# Reconnecting to that server resumes the build warm, so one retry converts
+# a whole-job rerun on a fresh VM into an in-job recovery. The dump above
+# already ran, so the evidence is preserved either way; if the server turns
+# out unusable after all, the step's timeout-minutes bounds the retry.
+if ((status == 37)); then
+  echo "bazel-build-watchdog: bazel exited 37 with the server left alive; retrying once against the surviving server"
+  "$@"
+  status=$?
+  if ((status >= 32)); then
+    dump_server_logs "retry exited ${status}"
+  fi
 fi
 exit "$status"

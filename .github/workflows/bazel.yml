@@ -163,9 +163,12 @@ jobs:
           # wedged connection pool), leaving the job to burn the full timeout.
           # The watchdog detects the output silence, dumps the hung server's
           # thread stacks + socket state into the step log, kills the server,
-          # and retries once on a warm output base. Linux has never shown the
-          # stall and Windows has its own diagnostics above, so both keep the
-          # plain invocation.
+          # and retries once on a warm output base. It also handles the
+          # abrupt gRPC-reset variant (exit 37, client's loopback stream to
+          # the server dies while the server survives): dump the server logs,
+          # then retry once against the still-alive server. Linux has never
+          # shown the stall and Windows has its own diagnostics above, so
+          # both keep the plain invocation.
           if [[ "$RUNNER_OS" == "macOS" ]]; then
             bash tools/ci/bazel-build-watchdog.sh bazel build --config=ci "${REMOTE_FLAGS[@]}" //...
           else
