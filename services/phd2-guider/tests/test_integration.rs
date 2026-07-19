@@ -2402,6 +2402,31 @@ fn test_no_subcommand_starts_the_http_service() {
     );
 }
 
+/// Terminate a spawned service with SIGTERM and wait for a clean exit,
+/// falling back to SIGKILL on timeout. SIGTERM (not `Child::kill`) matters
+/// under `bazel coverage`: the lifecycle runner's handler exits cleanly, so
+/// the child flushes its llvm-cov profile and its `main.rs` lines count.
+#[cfg(target_os = "linux")]
+fn terminate_gracefully(child: &mut std::process::Child) {
+    let _ = Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return,
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return;
+            }
+        }
+    }
+}
+
 /// Spawn the binary with `XDG_CONFIG_HOME` pointed at `xdg` and wait (bounded)
 /// for the `bound_addr=` discovery line. Linux-only callers: the platform
 /// default config path honors `XDG_CONFIG_HOME` only there.
@@ -2425,8 +2450,7 @@ fn spawn_with_xdg_and_wait_bound(xdg: &std::path::Path, extra_args: &[&str]) -> 
     });
     let bound = rx.recv_timeout(Duration::from_secs(10)).ok().flatten();
 
-    let _ = child.kill();
-    let _ = child.wait();
+    terminate_gracefully(&mut child);
     bound
 }
 
@@ -2465,8 +2489,7 @@ fn test_packaged_serve_path_materializes_the_default_config_on_first_start() {
     while !expected.exists() && std::time::Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(50));
     }
-    let _ = child.kill();
-    let _ = child.wait();
+    terminate_gracefully(&mut child);
 
     let content = std::fs::read_to_string(&expected)
         .expect("first start must materialize the default config at the platform path");
