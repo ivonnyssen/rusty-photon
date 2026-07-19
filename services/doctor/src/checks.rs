@@ -11,7 +11,8 @@ use crate::catalog::{self, CatalogEntry};
 use crate::facts::{Platform, PlatformFacts};
 use crate::report::{Check, Mode};
 use crate::scan::{
-    self, unknown_config_files, RpView, SentinelView, ServerBlock, ServiceScan, UiHtmxView,
+    self, unknown_config_files, ClientAuthView, ClientTargetView, MonitorView, RpView,
+    SentinelView, ServerBlock, ServiceScan, UiHtmxView,
 };
 
 /// Everything the checks look at.
@@ -87,6 +88,7 @@ pub fn run_all(ctx: &Context) -> Vec<Check> {
     checks.extend(name_joins(ctx));
     checks.extend(url_conventions(ctx));
     checks.extend(tls_and_auth(ctx));
+    checks.extend(client_target_joins(ctx));
     checks.extend(rp_platform_defaults(ctx));
     checks.extend(crate::hardware::checks(ctx));
     checks
@@ -258,13 +260,12 @@ fn config_parsing(ctx: &Context) -> Vec<Check> {
 }
 
 /// The known cross-reference blocks must parse for the join checks to see
-/// them; a shape error there is its own diagnosis. (ui-htmx has no arm:
-/// since #569 its view reads only the retired `drivers` key, as an opaque
-/// `Value` that cannot fail to parse.)
+/// them; a shape error there is its own diagnosis.
 fn known_blocks(scan: &ServiceScan) -> Vec<Check> {
     let result = match scan.entry.name {
         "sentinel" => scan::view::<SentinelView>(scan).map(|r| r.map(|_| ())),
         "rp" => scan::view::<RpView>(scan).map(|r| r.map(|_| ())),
+        "ui-htmx" => scan::view::<UiHtmxView>(scan).map(|r| r.map(|_| ())),
         _ => None,
     };
     match result {
@@ -930,6 +931,441 @@ fn expiry_window_days(ctx: &Context, cert_file: &Path) -> i64 {
     30
 }
 
+// ---- Client-target joins ----
+//
+// A client's config points a URL (or, for sentinel's monitors, a
+// scheme/host/port triple) at another catalog service. These checks join
+// that URL against the *named* service's own `server.tls`/`server.auth` —
+// the gap #607 named: provisioning upgrades a service's server side, but
+// nothing told doctor to look at who points at it.
+
+/// Doctor diagnoses one config directory, so a client→target join only
+/// resolves when the URL's host names *this* machine — a different host
+/// names a service in a config file doctor cannot see. This covers every
+/// client target's shipped default (all loopback).
+fn is_loopback_host(host: &str) -> bool {
+    matches!(host, "127.0.0.1" | "localhost" | "::1")
+}
+
+/// The one local, participating catalog service (parsed server block) a
+/// client's `host:port` names, or `None` when the host is not this
+/// machine, no service claims the port, or the service's own block does
+/// not parse (`config.server-shape` owns that diagnosis).
+fn resolve_join_target<'a>(ctx: &'a Context, host: &str, port: u16) -> Option<&'a ServiceScan> {
+    if !is_loopback_host(host) {
+        return None;
+    }
+    ctx.scans
+        .iter()
+        .find(|s| ctx.participates(s) && s.server().is_some() && s.effective_port() == port)
+}
+
+/// Whether `target`'s configured certificate is the ACME wildcard pair —
+/// publicly trusted, so an absent client `ca_cert_path` is not a problem —
+/// versus doctor's self-signed CA, which every client must be told to
+/// trust explicitly. Mirrors `expiry_window_days`'s file-name convention.
+fn target_uses_acme_cert(target: &ServiceScan) -> bool {
+    target
+        .server()
+        .and_then(|s| s.tls.as_ref())
+        .is_some_and(|tls| {
+            tls.resolved_cert_path()
+                .file_name()
+                .is_some_and(|n| n == "acme-cert.pem")
+        })
+}
+
+/// Parse a client URL into `(scheme, host, port)` — `None` when it does
+/// not parse or omits an explicit port (every rusty-photon service URL
+/// carries one; a bare default like `https://host/` names nothing in the
+/// catalog anyway).
+fn parse_target_url(url: &str) -> Option<(String, String, u16)> {
+    let parsed = reqwest::Url::parse(url).ok()?;
+    let host = parsed.host_str()?.to_string();
+    let port = parsed.port()?;
+    Some((parsed.scheme().to_string(), host, port))
+}
+
+/// Rewrite a URL's scheme, preserving everything after `://` byte-for-byte —
+/// the `--fix` value for a client target whose scheme lives inside a full
+/// URL string. A parse-and-reserialize round trip (`Url::set_scheme` +
+/// `to_string`) would normalize an origin-only URL by appending a trailing
+/// `/` (`http://host:port` becomes `http://host:port/`), which several
+/// client call sites (e.g. ui-htmx's `sse_proxy`) concatenate a
+/// `/`-prefixed path onto without trimming, turning a healthy URL into a
+/// double-slashed one that 404s.
+fn rewrite_scheme(url: &str, new_scheme: &str) -> Option<String> {
+    let parsed = reqwest::Url::parse(url).ok()?;
+    let rest = url.strip_prefix(parsed.scheme())?.strip_prefix("://")?;
+    Some(format!("{new_scheme}://{rest}"))
+}
+
+/// `joins.client-transport`: does `scheme` (as `client_field` declares it)
+/// match what `target` actually serves, and — when it does, and `target`'s
+/// material is doctor's self-signed CA rather than a publicly-trusted ACME
+/// cert — can this client trust it. Either gap breaks every request to
+/// `target`, so both grade `fail` (mirrors `tls.paths`: a definite break,
+/// not a hardware-style installed/enabled split).
+///
+/// `scheme_fix` plans the scheme rewrite when the client's schema supports
+/// one (`None` for rp's plate-solver/guider clients, which carry no
+/// CA-trust field at all — a scheme flip alone would trade one failure for
+/// another). `ca_cert` is `Some((pointer, already_present))` when the
+/// client schema carries a CA-trust field.
+fn transport_check(
+    ctx: &Context,
+    client_service: &str,
+    client_field: &str,
+    scheme: &str,
+    target: &ServiceScan,
+    scheme_fix: Option<crate::report::FixOp>,
+    ca_cert: Option<(String, bool)>,
+) -> Option<Check> {
+    let target_tls_on = target.server().is_some_and(|s| s.tls.is_some());
+    let client_https = scheme.eq_ignore_ascii_case("https");
+    let mut problems = Vec::new();
+    let mut fixes = Vec::new();
+
+    if client_https != target_tls_on {
+        problems.push(format!(
+            "{client_field} uses {scheme}, but {} {} TLS",
+            target.entry.name,
+            if target_tls_on {
+                "serves"
+            } else {
+                "does not serve"
+            }
+        ));
+        match scheme_fix {
+            Some(fix) => fixes.push(fix),
+            None => problems.push(format!(
+                "{client_service} has no field `doctor --fix` can safely rewrite for \
+                 this target yet"
+            )),
+        }
+    }
+
+    if target_tls_on && !target_uses_acme_cert(target) {
+        if let Some((pointer, present)) = ca_cert {
+            if !present {
+                let ca_path = rusty_photon_tls::config::ca_cert_path(
+                    &crate::provision::absolute_pki_dir(&ctx.config_dir),
+                );
+                if ca_path.is_file() {
+                    problems.push(format!(
+                        "{} serves a self-signed certificate, but {client_field} has \
+                         no ca_cert_path to trust it",
+                        target.entry.name
+                    ));
+                    fixes.push(crate::report::FixOp::SetString {
+                        service: client_service.to_string(),
+                        pointer,
+                        value: ca_path.to_string_lossy().into_owned(),
+                    });
+                }
+            }
+        }
+    }
+
+    if problems.is_empty() {
+        return None;
+    }
+    let suggestion = if fixes.is_empty() {
+        format!("fix {client_field} by hand — no machine-applicable fix exists for this yet")
+    } else {
+        "run `doctor --fix` to align the client with its target's TLS state".to_string()
+    };
+    Some(
+        Check::fail(
+            "joins.client-transport",
+            Some(client_service.to_string()),
+            format!("{} — every request will fail", problems.join("; ")),
+            Some(suggestion),
+        )
+        .with_fixes(fixes),
+    )
+}
+
+/// The client-side credential value `{username, password}` — the plaintext
+/// observatory credential, when minted. Mirrors
+/// `provision::plan_service_client_wiring`'s inline shape.
+fn plan_client_auth_value(ctx: &Context) -> Option<serde_json::Value> {
+    let password = crate::provision::read_credential(&ctx.config_dir)?;
+    Some(serde_json::json!({
+        "username": crate::provision::CREDENTIAL_USERNAME,
+        "password": password,
+    }))
+}
+
+/// `joins.client-auth`: does `target` require authentication, and if so,
+/// can this client supply a credential that verifies against it. Warn,
+/// matching `auth.mismatch`'s severity — a wrong or missing credential
+/// 401s every request, but (as with that check) a *present* mismatched
+/// credential may be intentional, so only the absent case is fix-eligible.
+/// `auth_pointer` is `None` for rp's plate-solver/guider clients, which
+/// carry no credential field at all.
+fn credential_check(
+    ctx: &Context,
+    client_service: &str,
+    client_field: &str,
+    target: &ServiceScan,
+    auth_pointer: Option<String>,
+    current: Option<&ClientAuthView>,
+) -> Option<Check> {
+    let target_auth = target.server().and_then(|s| s.auth.as_ref())?;
+    let credential = current.and_then(|c| Some((c.username.as_deref()?, c.password.as_deref()?)));
+    match credential {
+        None => {
+            let fixes = match (&auth_pointer, plan_client_auth_value(ctx)) {
+                (Some(pointer), Some(value)) => vec![crate::report::FixOp::SetObject {
+                    service: client_service.to_string(),
+                    pointer: pointer.clone(),
+                    value,
+                }],
+                _ => Vec::new(),
+            };
+            let suggestion = if auth_pointer.is_some() {
+                "run `doctor --fix` to wire the observatory credential".to_string()
+            } else {
+                format!(
+                    "{client_service} has no credential field for this target yet — \
+                     wiring one needs a config-schema change"
+                )
+            };
+            Some(
+                Check::warn(
+                    "joins.client-auth",
+                    Some(client_service.to_string()),
+                    format!(
+                        "{} requires authentication, but {client_field} carries no \
+                         credential — every request will get 401",
+                        target.entry.name
+                    ),
+                    Some(suggestion),
+                )
+                .with_fixes(fixes),
+            )
+        }
+        Some((username, password)) => {
+            if username == target_auth.username
+                && rp_auth::credentials::verify_password(password, &target_auth.password_hash)
+            {
+                return None;
+            }
+            Some(Check::warn(
+                "joins.client-auth",
+                Some(client_service.to_string()),
+                format!(
+                    "{client_field}'s credential does not verify against {}'s \
+                     server.auth — every request will get 401",
+                    target.entry.name
+                ),
+                Some(
+                    "run `doctor auth rotate` to re-align every copy, or fix the pair \
+                     by hand"
+                        .to_string(),
+                ),
+            ))
+        }
+    }
+}
+
+fn client_target_joins(ctx: &Context) -> Vec<Check> {
+    let mut checks = Vec::new();
+    checks.extend(ui_htmx_target_joins(ctx));
+    checks.extend(rp_client_joins(ctx));
+    checks.extend(sentinel_client_joins(ctx));
+    checks
+}
+
+/// ui-htmx's `rp` (required) and `sentinel` (optional) targets — both
+/// carry `base_url` + `auth` + `ca_cert_path`, so both the transport and
+/// credential checks are fully fix-eligible.
+fn ui_htmx_target_joins(ctx: &Context) -> Vec<Check> {
+    let mut checks = Vec::new();
+    let Some(ui_scan) = ctx.scan("ui-htmx").filter(|s| ctx.participates(s)) else {
+        return checks;
+    };
+    let Some(ui) = scan::view::<UiHtmxView>(ui_scan).and_then(Result::ok) else {
+        return checks;
+    };
+    checks.extend(ui_htmx_one_target(ctx, "rp", ui.rp.as_ref()));
+    checks.extend(ui_htmx_one_target(ctx, "sentinel", ui.sentinel.as_ref()));
+    checks
+}
+
+fn ui_htmx_one_target(ctx: &Context, name: &str, target: Option<&ClientTargetView>) -> Vec<Check> {
+    let mut checks = Vec::new();
+    let Some(target) = target else {
+        return checks;
+    };
+    let Some(base_url) = target.base_url.as_deref() else {
+        return checks;
+    };
+    let Some((scheme, host, port)) = parse_target_url(base_url) else {
+        return checks;
+    };
+    let Some(resolved) = resolve_join_target(ctx, &host, port) else {
+        return checks;
+    };
+
+    let field = format!("{name}.base_url");
+    let target_tls_on = resolved.server().is_some_and(|s| s.tls.is_some());
+    let scheme_fix = (scheme.eq_ignore_ascii_case("https") != target_tls_on)
+        .then(|| rewrite_scheme(base_url, if target_tls_on { "https" } else { "http" }))
+        .flatten()
+        .map(|value| crate::report::FixOp::SetString {
+            service: "ui-htmx".to_string(),
+            pointer: format!("/{name}/base_url"),
+            value,
+        });
+
+    checks.extend(transport_check(
+        ctx,
+        "ui-htmx",
+        &field,
+        &scheme,
+        resolved,
+        scheme_fix,
+        Some((
+            format!("/{name}/ca_cert_path"),
+            target.ca_cert_path.is_some(),
+        )),
+    ));
+    checks.extend(credential_check(
+        ctx,
+        "ui-htmx",
+        &field,
+        resolved,
+        Some(format!("/{name}/auth")),
+        target.auth.as_ref(),
+    ));
+    checks
+}
+
+/// rp's plate-solver/guider clients: `docs/services/doctor.md
+/// §Client-target joins` — a bare `url`, no `auth`/`ca_cert_path` field
+/// yet, so both checks below run suggestion-only.
+fn rp_client_joins(ctx: &Context) -> Vec<Check> {
+    let mut checks = Vec::new();
+    let Some(rp) = ctx.scan("rp").and_then(|s| scan::view::<RpView>(s)?.ok()) else {
+        return checks;
+    };
+    if let Some(url) = rp.mount_guiding_url() {
+        checks.extend(rp_one_target(ctx, "equipment.mount.guiding.url", &url));
+    }
+    if let Some(url) = rp.plate_solver.and_then(|p| p.url) {
+        checks.extend(rp_one_target(ctx, "plate_solver.url", &url));
+    }
+    checks
+}
+
+fn rp_one_target(ctx: &Context, field: &str, url: &str) -> Vec<Check> {
+    let mut checks = Vec::new();
+    let Some((scheme, host, port)) = parse_target_url(url) else {
+        return checks;
+    };
+    let Some(resolved) = resolve_join_target(ctx, &host, port) else {
+        return checks;
+    };
+    checks.extend(transport_check(
+        ctx, "rp", field, &scheme, resolved, None, None,
+    ));
+    checks.extend(credential_check(ctx, "rp", field, resolved, None, None));
+    checks
+}
+
+/// sentinel's other client targets: the operation watchdog's `rp_url`
+/// (scheme only — its credential is the shared `service_auth` pair,
+/// already covered by `auth.mismatch`) and each Alpaca monitor (scheme
+/// plus its own `auth`, which `auth.mismatch` does not see).
+fn sentinel_client_joins(ctx: &Context) -> Vec<Check> {
+    let mut checks = Vec::new();
+    let Some(sentinel) = ctx
+        .scan("sentinel")
+        .and_then(|s| scan::view::<SentinelView>(s)?.ok())
+    else {
+        return checks;
+    };
+    if let Some(rp_url) = sentinel
+        .operation_watchdog
+        .as_ref()
+        .and_then(|w| w.rp_url.as_deref())
+    {
+        checks.extend(sentinel_watchdog_target(ctx, rp_url));
+    }
+    for (idx, monitor) in sentinel.monitors.iter().enumerate() {
+        checks.extend(sentinel_monitor_target(ctx, idx, monitor));
+    }
+    checks
+}
+
+fn sentinel_watchdog_target(ctx: &Context, rp_url: &str) -> Vec<Check> {
+    let Some((scheme, host, port)) = parse_target_url(rp_url) else {
+        return Vec::new();
+    };
+    let Some(resolved) = resolve_join_target(ctx, &host, port) else {
+        return Vec::new();
+    };
+    let target_tls_on = resolved.server().is_some_and(|s| s.tls.is_some());
+    let scheme_fix = (scheme.eq_ignore_ascii_case("https") != target_tls_on)
+        .then(|| rewrite_scheme(rp_url, if target_tls_on { "https" } else { "http" }))
+        .flatten()
+        .map(|value| crate::report::FixOp::SetString {
+            service: "sentinel".to_string(),
+            pointer: "/operation_watchdog/rp_url".to_string(),
+            value,
+        });
+    transport_check(
+        ctx,
+        "sentinel",
+        "operation_watchdog.rp_url",
+        &scheme,
+        resolved,
+        scheme_fix,
+        None,
+    )
+    .into_iter()
+    .collect()
+}
+
+fn sentinel_monitor_target(ctx: &Context, idx: usize, monitor: &MonitorView) -> Vec<Check> {
+    let mut checks = Vec::new();
+    let Some(resolved) = resolve_join_target(ctx, &monitor.host, monitor.port) else {
+        return checks;
+    };
+    let field = format!("monitors[{idx}]");
+    let target_tls_on = resolved.server().is_some_and(|s| s.tls.is_some());
+    let scheme_fix = (monitor.scheme.eq_ignore_ascii_case("https") != target_tls_on).then(|| {
+        crate::report::FixOp::SetString {
+            service: "sentinel".to_string(),
+            pointer: format!("/monitors/{idx}/scheme"),
+            value: (if target_tls_on { "https" } else { "http" }).to_string(),
+        }
+    });
+    // No per-monitor ca_cert_path: monitors trust sentinel's single
+    // top-level `ca_cert`, which the existing client-wiring pass already
+    // provisions unconditionally once the CA exists.
+    checks.extend(transport_check(
+        ctx,
+        "sentinel",
+        &field,
+        &monitor.scheme,
+        resolved,
+        scheme_fix,
+        None,
+    ));
+    checks.extend(credential_check(
+        ctx,
+        "sentinel",
+        &field,
+        resolved,
+        Some(format!("/monitors/{idx}/auth")),
+        monitor.auth.as_ref(),
+    ));
+    checks
+}
+
 // ---- rp platform defaults ----
 
 fn rp_platform_defaults(ctx: &Context) -> Vec<Check> {
@@ -1073,6 +1509,461 @@ mod tests {
         assert_eq!(
             start_command(Platform::Macos, "rusty-photon-rp-nightly"),
             "brew services start rusty-photon-rp-nightly"
+        );
+    }
+
+    // ---- Client-target joins ----
+
+    fn write_json(dir: &Path, name: &str, value: serde_json::Value) {
+        std::fs::write(dir.join(name), value.to_string()).unwrap();
+    }
+
+    /// A minted observatory credential on disk — what `--fix`'s
+    /// provisioning pass leaves behind before these checks ever run.
+    fn stage_pki(dir: &Path, password: &str) {
+        std::fs::create_dir_all(dir.join("pki")).unwrap();
+        std::fs::write(dir.join("pki/ca.pem"), "stub-ca-pem").unwrap();
+        std::fs::write(dir.join("pki/credential"), format!("{password}\n")).unwrap();
+    }
+
+    #[test]
+    fn test_is_loopback_host() {
+        assert!(is_loopback_host("127.0.0.1"));
+        assert!(is_loopback_host("localhost"));
+        assert!(is_loopback_host("::1"));
+        assert!(!is_loopback_host("10.0.0.5"));
+        assert!(!is_loopback_host("rig.local"));
+    }
+
+    #[test]
+    fn test_parse_target_url_requires_an_explicit_port() {
+        assert_eq!(
+            parse_target_url("https://host:11115/x"),
+            Some(("https".to_string(), "host".to_string(), 11115))
+        );
+        assert!(parse_target_url("https://host/x").is_none());
+        assert!(parse_target_url("not a url").is_none());
+    }
+
+    #[test]
+    fn test_rewrite_scheme_preserves_the_url_verbatim_without_adding_a_trailing_slash() {
+        // A parse-and-reserialize round trip would normalize
+        // "http://host:port" into "http://host:port/" — several client
+        // call sites concatenate a "/"-prefixed path onto the base URL
+        // without trimming, so a stray trailing slash would 404 them.
+        assert_eq!(
+            rewrite_scheme("http://127.0.0.1:11115", "https").unwrap(),
+            "https://127.0.0.1:11115"
+        );
+        assert_eq!(
+            rewrite_scheme("https://host:11114/dash?x=1", "http").unwrap(),
+            "http://host:11114/dash?x=1"
+        );
+        assert!(rewrite_scheme("not a url", "https").is_none());
+    }
+
+    #[test]
+    fn test_ui_htmx_rp_scheme_mismatch_is_flagged_and_fixed() {
+        let dir = tempfile::tempdir().unwrap();
+        write_json(
+            dir.path(),
+            "rp.json",
+            serde_json::json!({ "server": { "port": 11115,
+                "tls": { "cert": "/pki/acme-cert.pem", "key": "/pki/acme-key.pem" } } }),
+        );
+        write_json(
+            dir.path(),
+            "ui-htmx.json",
+            serde_json::json!({ "server": { "port": 11120 },
+                "rp": { "base_url": "http://127.0.0.1:11115" } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        let checks = ui_htmx_target_joins(&ctx);
+        let transport = checks
+            .iter()
+            .find(|c| c.name == "joins.client-transport")
+            .expect("a transport mismatch must be reported");
+        assert_eq!(transport.status, Status::Fail);
+        assert!(
+            transport.detail.contains("uses http"),
+            "{}",
+            transport.detail
+        );
+        match &transport.fixes[..] {
+            [crate::report::FixOp::SetString {
+                service,
+                pointer,
+                value,
+            }] => {
+                assert_eq!(service, "ui-htmx");
+                assert_eq!(pointer, "/rp/base_url");
+                assert_eq!(value, "https://127.0.0.1:11115");
+            }
+            other => unreachable!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_ui_htmx_rp_flags_missing_ca_trust_for_a_self_signed_target() {
+        let dir = tempfile::tempdir().unwrap();
+        stage_pki(dir.path(), "s3cret-pw");
+        write_json(
+            dir.path(),
+            "rp.json",
+            serde_json::json!({ "server": { "port": 11115,
+                "tls": { "cert": "/pki/rp.pem", "key": "/pki/rp-key.pem" } } }),
+        );
+        write_json(
+            dir.path(),
+            "ui-htmx.json",
+            serde_json::json!({ "server": { "port": 11120 },
+                "rp": { "base_url": "https://127.0.0.1:11115" } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        let checks = ui_htmx_target_joins(&ctx);
+        let transport = checks
+            .iter()
+            .find(|c| c.name == "joins.client-transport")
+            .expect("missing CA trust must be reported");
+        assert_eq!(transport.status, Status::Fail);
+        assert!(
+            transport.detail.contains("self-signed"),
+            "{}",
+            transport.detail
+        );
+        match &transport.fixes[..] {
+            [crate::report::FixOp::SetString {
+                service,
+                pointer,
+                value,
+            }] => {
+                assert_eq!(service, "ui-htmx");
+                assert_eq!(pointer, "/rp/ca_cert_path");
+                assert!(value.ends_with("pki/ca.pem"), "{value}");
+            }
+            other => unreachable!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_ui_htmx_rp_acme_target_needs_no_ca_cert_path() {
+        let dir = tempfile::tempdir().unwrap();
+        stage_pki(dir.path(), "s3cret-pw");
+        write_json(
+            dir.path(),
+            "rp.json",
+            serde_json::json!({ "server": { "port": 11115,
+                "tls": { "cert": "/pki/acme-cert.pem", "key": "/pki/acme-key.pem" } } }),
+        );
+        write_json(
+            dir.path(),
+            "ui-htmx.json",
+            serde_json::json!({ "server": { "port": 11120 },
+                "rp": { "base_url": "https://127.0.0.1:11115" } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        let checks = ui_htmx_target_joins(&ctx);
+        assert!(
+            checks.iter().all(|c| c.name != "joins.client-transport"),
+            "a publicly-trusted ACME cert needs no client-side CA: {checks:?}"
+        );
+    }
+
+    #[test]
+    fn test_ui_htmx_rp_auth_absent_is_flagged_and_fixed() {
+        let dir = tempfile::tempdir().unwrap();
+        stage_pki(dir.path(), "s3cret-pw");
+        let hash = rp_auth::credentials::hash_password("s3cret-pw").unwrap();
+        write_json(
+            dir.path(),
+            "rp.json",
+            serde_json::json!({ "server": { "port": 11115,
+                "auth": { "username": "observatory", "password_hash": hash } } }),
+        );
+        write_json(
+            dir.path(),
+            "ui-htmx.json",
+            serde_json::json!({ "server": { "port": 11120 },
+                "rp": { "base_url": "http://127.0.0.1:11115" } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        let checks = ui_htmx_target_joins(&ctx);
+        let auth = checks
+            .iter()
+            .find(|c| c.name == "joins.client-auth")
+            .expect("a missing credential must be reported");
+        assert_eq!(auth.status, Status::Warn);
+        match &auth.fixes[..] {
+            [crate::report::FixOp::SetObject {
+                service,
+                pointer,
+                value,
+            }] => {
+                assert_eq!(service, "ui-htmx");
+                assert_eq!(pointer, "/rp/auth");
+                assert_eq!(value["username"], "observatory");
+                assert_eq!(value["password"], "s3cret-pw");
+            }
+            other => unreachable!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_ui_htmx_rp_auth_mismatch_is_suggestion_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let hash = rp_auth::credentials::hash_password("correct-pw").unwrap();
+        write_json(
+            dir.path(),
+            "rp.json",
+            serde_json::json!({ "server": { "port": 11115,
+                "auth": { "username": "observatory", "password_hash": hash } } }),
+        );
+        write_json(
+            dir.path(),
+            "ui-htmx.json",
+            serde_json::json!({ "server": { "port": 11120 },
+                "rp": { "base_url": "http://127.0.0.1:11115",
+                        "auth": { "username": "observatory", "password": "wrong-pw" } } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        let checks = ui_htmx_target_joins(&ctx);
+        let auth = checks
+            .iter()
+            .find(|c| c.name == "joins.client-auth")
+            .expect("a wrong credential must be reported");
+        assert_eq!(auth.status, Status::Warn);
+        assert!(
+            auth.fixes.is_empty(),
+            "a present credential is operator intent, never clobbered"
+        );
+    }
+
+    #[test]
+    fn test_ui_htmx_rp_matching_credential_and_scheme_is_silent() {
+        let dir = tempfile::tempdir().unwrap();
+        let hash = rp_auth::credentials::hash_password("s3cret-pw").unwrap();
+        write_json(
+            dir.path(),
+            "rp.json",
+            serde_json::json!({ "server": { "port": 11115,
+                "tls": { "cert": "/pki/acme-cert.pem", "key": "/pki/acme-key.pem" },
+                "auth": { "username": "observatory", "password_hash": hash } } }),
+        );
+        write_json(
+            dir.path(),
+            "ui-htmx.json",
+            serde_json::json!({ "server": { "port": 11120 },
+                "rp": { "base_url": "https://127.0.0.1:11115",
+                        "auth": { "username": "observatory", "password": "s3cret-pw" } } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        assert!(ui_htmx_target_joins(&ctx).is_empty());
+    }
+
+    #[test]
+    fn test_ui_htmx_sentinel_target_absent_is_a_noop() {
+        let dir = tempfile::tempdir().unwrap();
+        write_json(
+            dir.path(),
+            "sentinel.json",
+            serde_json::json!({ "server": { "port": 11114,
+                "tls": { "cert": "/pki/sentinel.pem", "key": "/pki/sentinel-key.pem" } } }),
+        );
+        write_json(
+            dir.path(),
+            "ui-htmx.json",
+            serde_json::json!({ "server": { "port": 11120 },
+                "rp": { "base_url": "http://127.0.0.1:11115" } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        // rp itself does not participate (no config, no unit), and
+        // ui-htmx's optional sentinel block is absent — nothing to join.
+        assert!(ui_htmx_target_joins(&ctx).is_empty());
+    }
+
+    #[test]
+    fn test_non_loopback_host_is_never_joined() {
+        let dir = tempfile::tempdir().unwrap();
+        write_json(
+            dir.path(),
+            "rp.json",
+            serde_json::json!({ "server": { "port": 11115,
+                "tls": { "cert": "/pki/rp.pem", "key": "/pki/rp-key.pem" } } }),
+        );
+        write_json(
+            dir.path(),
+            "ui-htmx.json",
+            serde_json::json!({ "server": { "port": 11120 },
+                "rp": { "base_url": "http://10.0.0.5:11115" } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        assert!(ui_htmx_target_joins(&ctx).is_empty());
+    }
+
+    #[test]
+    fn test_rp_plate_solver_scheme_mismatch_is_suggestion_only() {
+        let dir = tempfile::tempdir().unwrap();
+        write_json(
+            dir.path(),
+            "plate-solver.json",
+            serde_json::json!({ "server": { "port": 11131,
+                "tls": { "cert": "/pki/acme-cert.pem", "key": "/pki/acme-key.pem" } } }),
+        );
+        write_json(
+            dir.path(),
+            "rp.json",
+            serde_json::json!({ "server": { "port": 11115 },
+                "plate_solver": { "url": "http://localhost:11131" } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        let checks = rp_client_joins(&ctx);
+        let transport = checks
+            .iter()
+            .find(|c| c.name == "joins.client-transport")
+            .expect("a scheme mismatch must be reported");
+        assert_eq!(transport.status, Status::Fail);
+        assert!(
+            transport.fixes.is_empty(),
+            "rp has no CA-trust field to fix into: {transport:?}"
+        );
+        assert!(
+            transport
+                .detail
+                .contains("no field `doctor --fix` can safely rewrite"),
+            "{}",
+            transport.detail
+        );
+    }
+
+    #[test]
+    fn test_rp_guider_auth_gap_is_suggestion_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let hash = rp_auth::credentials::hash_password("s3cret-pw").unwrap();
+        write_json(
+            dir.path(),
+            "phd2-guider.json",
+            serde_json::json!({ "server": { "port": 11130,
+                "auth": { "username": "observatory", "password_hash": hash } } }),
+        );
+        write_json(
+            dir.path(),
+            "rp.json",
+            serde_json::json!({ "server": { "port": 11115 },
+                "equipment": { "mount": { "alpaca_url": "http://localhost:11117",
+                                           "guiding": { "url": "http://localhost:11130" } } } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        let checks = rp_client_joins(&ctx);
+        let auth = checks
+            .iter()
+            .find(|c| c.name == "joins.client-auth")
+            .expect("a missing credential field must still be reported");
+        assert_eq!(auth.status, Status::Warn);
+        assert!(auth.fixes.is_empty());
+        assert!(
+            auth.detail.contains("equipment.mount.guiding.url"),
+            "{}",
+            auth.detail
+        );
+    }
+
+    #[test]
+    fn test_sentinel_monitor_scheme_and_auth_are_flagged_and_fixed() {
+        let dir = tempfile::tempdir().unwrap();
+        stage_pki(dir.path(), "s3cret-pw");
+        let hash = rp_auth::credentials::hash_password("s3cret-pw").unwrap();
+        write_json(
+            dir.path(),
+            "ppba-driver.json",
+            serde_json::json!({ "server": { "port": 11112,
+                "tls": { "cert": "/pki/acme-cert.pem", "key": "/pki/acme-key.pem" },
+                "auth": { "username": "observatory", "password_hash": hash } } }),
+        );
+        write_json(
+            dir.path(),
+            "sentinel.json",
+            serde_json::json!({ "server": { "port": 11114 },
+                "monitors": [ { "type": "alpaca_safety_monitor", "name": "PPBA",
+                                 "host": "localhost", "port": 11112, "scheme": "http" } ] }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        let checks = sentinel_client_joins(&ctx);
+        let transport = checks
+            .iter()
+            .find(|c| c.name == "joins.client-transport")
+            .expect("a monitor scheme mismatch must be reported");
+        assert_eq!(transport.status, Status::Fail);
+        match &transport.fixes[..] {
+            [crate::report::FixOp::SetString {
+                service,
+                pointer,
+                value,
+            }] => {
+                assert_eq!(service, "sentinel");
+                assert_eq!(pointer, "/monitors/0/scheme");
+                assert_eq!(value, "https");
+            }
+            other => unreachable!("{other:?}"),
+        }
+        let auth = checks
+            .iter()
+            .find(|c| c.name == "joins.client-auth")
+            .expect("a missing per-monitor credential must be reported");
+        match &auth.fixes[..] {
+            [crate::report::FixOp::SetObject {
+                service,
+                pointer,
+                value,
+            }] => {
+                assert_eq!(service, "sentinel");
+                assert_eq!(pointer, "/monitors/0/auth");
+                assert_eq!(value["username"], "observatory");
+                assert_eq!(value["password"], "s3cret-pw");
+            }
+            other => unreachable!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_sentinel_watchdog_rp_url_scheme_is_flagged_without_a_duplicate_auth_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let hash = rp_auth::credentials::hash_password("x").unwrap();
+        write_json(
+            dir.path(),
+            "rp.json",
+            serde_json::json!({ "server": { "port": 11115,
+                "tls": { "cert": "/pki/acme-cert.pem", "key": "/pki/acme-key.pem" },
+                "auth": { "username": "observatory", "password_hash": hash } } }),
+        );
+        write_json(
+            dir.path(),
+            "sentinel.json",
+            serde_json::json!({ "server": { "port": 11114 },
+                "operation_watchdog": { "rp_url": "http://localhost:11115" } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        let checks = sentinel_client_joins(&ctx);
+        let transport = checks
+            .iter()
+            .find(|c| c.name == "joins.client-transport")
+            .expect("the watchdog's scheme mismatch must be reported");
+        match &transport.fixes[..] {
+            [crate::report::FixOp::SetString {
+                service,
+                pointer,
+                value,
+            }] => {
+                assert_eq!(service, "sentinel");
+                assert_eq!(pointer, "/operation_watchdog/rp_url");
+                assert_eq!(value, "https://localhost:11115");
+            }
+            other => unreachable!("{other:?}"),
+        }
+        // rp's auth requirement is `auth.mismatch`'s job (sentinel's
+        // shared `service_auth`), not this join's.
+        assert!(
+            checks.iter().all(|c| c.name != "joins.client-auth"),
+            "{checks:?}"
         );
     }
 }

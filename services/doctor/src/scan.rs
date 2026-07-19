@@ -172,12 +172,30 @@ pub fn unknown_config_files(config_dir: &Path, known: &[String]) -> Vec<String> 
 // grow fields doctor does not join across.
 
 /// ui-htmx: the retired `drivers` override map, read only to diagnose it
-/// (`config.retired-keys`) — since #569 rp's equipment roster is the only
-/// device source, and doctor joins across nothing else in this file.
+/// (`config.retired-keys`), plus the `rp`/`sentinel` client targets doctor
+/// joins against their own server TLS/auth state (docs/services/doctor.md
+/// §Client-target joins).
 #[derive(Debug, Deserialize, Default)]
 pub struct UiHtmxView {
     #[serde(default)]
     pub drivers: Option<Value>,
+    #[serde(default)]
+    pub rp: Option<ClientTargetView>,
+    #[serde(default)]
+    pub sentinel: Option<ClientTargetView>,
+}
+
+/// A `base_url` client target with an optional credential and CA-trust
+/// path — ui-htmx's `rp`/`sentinel` blocks (`services/ui-htmx/src/config.rs`
+/// `RpTarget`/`SentinelTarget`).
+#[derive(Debug, Deserialize, Default, Clone)]
+pub struct ClientTargetView {
+    #[serde(default)]
+    pub base_url: Option<String>,
+    #[serde(default)]
+    pub auth: Option<ClientAuthView>,
+    #[serde(default)]
+    pub ca_cert_path: Option<String>,
 }
 
 /// sentinel: one watchdog operation family.
@@ -189,18 +207,55 @@ pub struct WatchdogOperationView {
 
 #[derive(Debug, Deserialize, Default)]
 pub struct WatchdogView {
+    /// The rp instance the watchdog subscribes to — a client target doctor
+    /// joins against rp's own server TLS state (docs/services/doctor.md
+    /// §Client-target joins). Its auth is the shared `service_auth`
+    /// pair below, already covered by `auth.mismatch`.
+    #[serde(default)]
+    pub rp_url: Option<String>,
     #[serde(default)]
     pub operations: BTreeMap<String, WatchdogOperationView>,
 }
 
-/// sentinel: the doctor-written observatory credential its health probes
-/// present to supervised services (docs/services/sentinel.md).
-#[derive(Debug, Deserialize, Default)]
+/// A plaintext HTTP Basic credential — sentinel's doctor-written
+/// `service_auth`/per-monitor `auth`, and ui-htmx's client target `auth`
+/// (docs/services/sentinel.md, docs/services/doctor.md §Client-target
+/// joins).
+#[derive(Debug, Deserialize, Default, Clone)]
 pub struct ClientAuthView {
     #[serde(default)]
     pub username: Option<String>,
     #[serde(default)]
     pub password: Option<String>,
+}
+
+/// sentinel: one Alpaca safety monitor's connection facts — a client
+/// target doctor joins against the named service's own TLS/auth state.
+/// Defaults mirror `services/sentinel/src/config.rs`'s `MonitorConfig`;
+/// fields doctor does not join across (`name`, `device_number`,
+/// `polling_interval`) are read leniently and ignored.
+#[derive(Debug, Deserialize)]
+pub struct MonitorView {
+    #[serde(default = "default_monitor_host")]
+    pub host: String,
+    #[serde(default = "default_monitor_port")]
+    pub port: u16,
+    #[serde(default = "default_monitor_scheme")]
+    pub scheme: String,
+    #[serde(default)]
+    pub auth: Option<ClientAuthView>,
+}
+
+fn default_monitor_host() -> String {
+    "localhost".to_string()
+}
+
+fn default_monitor_port() -> u16 {
+    11111
+}
+
+fn default_monitor_scheme() -> String {
+    "http".to_string()
 }
 
 /// sentinel: the blocks doctor joins across. The retired `services` map is
@@ -214,6 +269,8 @@ pub struct SentinelView {
     pub operation_watchdog: Option<WatchdogView>,
     #[serde(default)]
     pub service_auth: Option<ClientAuthView>,
+    #[serde(default)]
+    pub monitors: Vec<MonitorView>,
 }
 
 /// rp: the session block field doctor checks.
@@ -223,14 +280,28 @@ pub struct RpSessionView {
     pub data_directory: Option<String>,
 }
 
+/// rp: the URL-only client target block shared by `plate_solver` and
+/// (nested inside `equipment.mount.guiding`) the guider — neither carries
+/// an auth/CA-trust field yet (docs/services/doctor.md §Client-target
+/// joins notes this as a known gap: `--fix` cannot wire what the schema
+/// has no field for).
+#[derive(Debug, Deserialize, Default)]
+pub struct RpUrlTargetView {
+    #[serde(default)]
+    pub url: Option<String>,
+}
+
 /// rp: the blocks doctor reads. `equipment` stays a `Value` — device usage
-/// is opaque; only each entry's `alpaca_url` is extracted.
+/// is opaque; only each entry's `alpaca_url` and the mount's nested
+/// `guiding.url` are extracted.
 #[derive(Debug, Deserialize, Default)]
 pub struct RpView {
     #[serde(default)]
     pub equipment: Option<Value>,
     #[serde(default)]
     pub session: Option<RpSessionView>,
+    #[serde(default)]
+    pub plate_solver: Option<RpUrlTargetView>,
 }
 
 impl RpView {
@@ -250,6 +321,19 @@ impl RpView {
             }
         }
         urls
+    }
+
+    /// The guider service's URL at `equipment.mount.guiding.url` — `mount`
+    /// is a singular object (at most one mount per rp deployment), unlike
+    /// the plural array kinds `alpaca_urls` walks.
+    pub fn mount_guiding_url(&self) -> Option<String> {
+        self.equipment
+            .as_ref()?
+            .get("mount")?
+            .get("guiding")?
+            .get("url")?
+            .as_str()
+            .map(str::to_string)
     }
 }
 
@@ -355,6 +439,99 @@ mod tests {
             vec!["http://localhost:11121", "http://localhost:11117"]
         );
         assert_eq!(view.session.unwrap().data_directory.unwrap(), "/var/lib/x");
+    }
+
+    #[test]
+    fn test_rp_view_reads_plate_solver_and_mount_guiding_urls() {
+        let view: RpView = serde_json::from_str(
+            r#"{ "equipment": { "mount": { "alpaca_url": "http://localhost:11117",
+                                            "guiding": { "url": "http://localhost:11130" } } },
+                 "plate_solver": { "url": "http://localhost:11131", "timeout": "1m" } }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            view.mount_guiding_url().as_deref(),
+            Some("http://localhost:11130")
+        );
+        assert_eq!(
+            view.plate_solver.unwrap().url.as_deref(),
+            Some("http://localhost:11131")
+        );
+    }
+
+    #[test]
+    fn test_rp_view_mount_guiding_url_absent_without_a_mount_or_guider() {
+        let view: RpView = serde_json::from_str(r#"{ "equipment": {} }"#).unwrap();
+        assert!(view.mount_guiding_url().is_none());
+        let view: RpView =
+            serde_json::from_str(r#"{ "equipment": { "mount": { "alpaca_url": "x" } } }"#).unwrap();
+        assert!(view.mount_guiding_url().is_none());
+    }
+
+    #[test]
+    fn test_ui_htmx_view_reads_rp_and_sentinel_targets() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "ui-htmx.json",
+            r#"{ "server": { "port": 11120 },
+                 "rp": { "base_url": "http://127.0.0.1:11115" },
+                 "sentinel": { "base_url": "https://127.0.0.1:11114",
+                               "auth": { "username": "observatory", "password": "s3cret" },
+                               "ca_cert_path": "/pki/ca.pem" } }"#,
+        );
+        let scan = scan_service(dir.path(), catalog::entry("ui-htmx").unwrap());
+        let ui: UiHtmxView = view(&scan).unwrap().unwrap();
+        let rp = ui.rp.unwrap();
+        assert_eq!(rp.base_url.as_deref(), Some("http://127.0.0.1:11115"));
+        assert!(rp.auth.is_none());
+        assert!(rp.ca_cert_path.is_none());
+        let sentinel = ui.sentinel.unwrap();
+        assert_eq!(
+            sentinel.base_url.as_deref(),
+            Some("https://127.0.0.1:11114")
+        );
+        assert_eq!(
+            sentinel.auth.unwrap().username.as_deref(),
+            Some("observatory")
+        );
+        assert_eq!(sentinel.ca_cert_path.as_deref(), Some("/pki/ca.pem"));
+    }
+
+    #[test]
+    fn test_sentinel_view_reads_monitors_and_watchdog_rp_url_leniently() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "sentinel.json",
+            r#"{ "server": { "port": 11114 },
+                 "monitors": [ { "type": "alpaca_safety_monitor", "name": "Roof",
+                                  "host": "localhost", "port": 11119, "scheme": "http",
+                                  "device_number": 0, "polling_interval": "30s" } ],
+                 "operation_watchdog": { "rp_url": "http://localhost:11115" } }"#,
+        );
+        let scan = scan_service(dir.path(), catalog::entry("sentinel").unwrap());
+        let sentinel: SentinelView = view(&scan).unwrap().unwrap();
+        assert_eq!(sentinel.monitors.len(), 1);
+        assert_eq!(sentinel.monitors[0].port, 11119);
+        assert_eq!(sentinel.monitors[0].scheme, "http");
+        assert!(sentinel.monitors[0].auth.is_none());
+        assert_eq!(
+            sentinel.operation_watchdog.unwrap().rp_url.as_deref(),
+            Some("http://localhost:11115")
+        );
+    }
+
+    #[test]
+    fn test_sentinel_view_monitor_defaults_mirror_sentinels_own_config() {
+        let view: SentinelView = serde_json::from_str(
+            r#"{ "monitors": [ { "type": "alpaca_safety_monitor", "name": "Roof" } ] }"#,
+        )
+        .unwrap();
+        let monitor = &view.monitors[0];
+        assert_eq!(monitor.host, "localhost");
+        assert_eq!(monitor.port, 11111);
+        assert_eq!(monitor.scheme, "http");
     }
 
     #[test]
