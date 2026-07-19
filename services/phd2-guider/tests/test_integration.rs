@@ -2402,6 +2402,81 @@ fn test_no_subcommand_starts_the_http_service() {
     );
 }
 
+/// Spawn the binary with `XDG_CONFIG_HOME` pointed at `xdg` and wait (bounded)
+/// for the `bound_addr=` discovery line. Linux-only callers: the platform
+/// default config path honors `XDG_CONFIG_HOME` only there.
+#[cfg(target_os = "linux")]
+fn spawn_with_xdg_and_wait_bound(xdg: &std::path::Path, extra_args: &[&str]) -> Option<String> {
+    let mut child = phd2_guider_command()
+        .args(extra_args)
+        .env("XDG_CONFIG_HOME", xdg)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn phd2-guider");
+
+    let stdout = child.stdout.take().expect("stdout piped");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let bound = BufReader::new(stdout)
+            .lines()
+            .find_map(|line| line.ok().filter(|l| l.starts_with("bound_addr=")));
+        let _ = tx.send(bound);
+    });
+    let bound = rx.recv_timeout(Duration::from_secs(10)).ok().flatten();
+
+    let _ = child.kill();
+    let _ = child.wait();
+    bound
+}
+
+/// Write a port-0 config at the platform-default path under `xdg` so the
+/// packaged-path tests never collide on the default 11130.
+#[cfg(target_os = "linux")]
+fn write_xdg_default_config(xdg: &std::path::Path) -> std::path::PathBuf {
+    let dir = xdg.join("rusty-photon");
+    std::fs::create_dir_all(&dir).expect("create xdg config dir");
+    let path = dir.join("phd2-guider.json");
+    std::fs::write(&path, r#"{"server": {"port": 0}}"#).expect("write config");
+    path
+}
+
+#[test]
+#[cfg_attr(miri, ignore)]
+#[cfg(target_os = "linux")]
+fn test_packaged_serve_path_bootstraps_the_platform_config() {
+    // The packaged path: bare binary, no --config, no connection flags
+    // (systemd passes no arguments). Serve must bootstrap the platform
+    // config path via resolve_and_init and read it.
+    let xdg = tempfile::tempdir().expect("create temp dir");
+    write_xdg_default_config(xdg.path());
+
+    let bound = spawn_with_xdg_and_wait_bound(xdg.path(), &[]);
+
+    assert!(
+        bound.is_some(),
+        "packaged serve path must bootstrap the platform config and print bound_addr= within 10s"
+    );
+}
+
+#[test]
+#[cfg_attr(miri, ignore)]
+#[cfg(target_os = "linux")]
+fn test_serve_with_connection_flags_still_reads_an_existing_default_config() {
+    // Serve with an explicit --host but no --config: an existing file at the
+    // platform default path wins over the in-memory-defaults fallback (the
+    // flags-applied fallback is only for a missing file).
+    let xdg = tempfile::tempdir().expect("create temp dir");
+    write_xdg_default_config(xdg.path());
+
+    let bound = spawn_with_xdg_and_wait_bound(xdg.path(), &["--host", "127.0.0.1"]);
+
+    assert!(
+        bound.is_some(),
+        "serve with flags must load the existing default-path config (port 0) and print bound_addr="
+    );
+}
+
 // ----------------------------------------------------------------------------
 // Config File Tests
 // ----------------------------------------------------------------------------
