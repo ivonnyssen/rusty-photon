@@ -23,8 +23,8 @@ thiserror = { workspace = true }
 reqwest = { workspace = true }
 axum = { workspace = true }
 async-trait = { workspace = true }
-rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest"] }
 rp-auth = { workspace = true }
+rp-mcp-client = { workspace = true }
 rusty-photon-tls = { workspace = true }
 rusty-photon-config = { workspace = true }
 rusty-photon-doctor-checks = { workspace = true }

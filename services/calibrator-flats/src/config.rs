@@ -45,6 +45,26 @@ pub struct FlatPlan {
     pub brightness: Option<u32>,
     /// Filters to capture flats for
     pub filters: Vec<FilterPlan>,
+    /// HTTP Basic credentials presented to `rp` — MCP calls and the
+    /// completion POST alike. The D6 observatory credential; doctor
+    /// `--fix` wires it (ADR-017).
+    #[serde(default)]
+    pub service_auth: Option<rp_mcp_client::ClientAuthConfig>,
+    /// PEM CA path used to trust a TLS-enabled `rp`. Per the ADR-017
+    /// policy, `service_auth` is only sent when this is set and the URL
+    /// is https.
+    #[serde(default)]
+    pub ca_cert: Option<String>,
+}
+
+impl FlatPlan {
+    pub fn rp_auth(&self) -> Option<&rp_mcp_client::ClientAuthConfig> {
+        self.service_auth.as_ref()
+    }
+
+    pub fn rp_ca(&self) -> Option<&std::path::Path> {
+        self.ca_cert.as_deref().map(std::path::Path::new)
+    }
 }
 
 /// calibrator-flats' default `server` block when the plan file omits it:

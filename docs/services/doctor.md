@@ -526,7 +526,10 @@ can write **both forms everywhere they belong**:
 - the **Argon2id hash** into each installed service's `server.auth`;
 - the **plaintext** into each client auth block — rp's `equipment[].auth`
   entries, sentinel's service-probe `auth`, ui-htmx's `rp`/`sentinel`
-  targets — alongside the CA path each client trusts.
+  targets, and the MCP clients' `service_auth` (session-runner,
+  calibrator-flats — see
+  [ADR-017](../decisions/017-standard-mcp-client-construction.md)) —
+  alongside the CA path each client trusts.
 
 `doctor auth rotate` overwrites `pki/credential` with a fresh mint and
 re-runs the same distribution; services pick the new `server.auth` up at

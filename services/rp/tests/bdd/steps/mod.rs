@@ -20,6 +20,7 @@ pub mod focuser_steps;
 pub mod guider_steps;
 pub mod image_http_api_steps;
 pub mod image_stats_steps;
+pub mod mcp_auth_steps;
 pub mod measure_basic_steps;
 pub mod measure_stars_steps;
 pub mod mount_steps;

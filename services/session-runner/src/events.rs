@@ -20,7 +20,9 @@ use std::time::Duration;
 
 use serde_json::Value;
 use tokio::sync::mpsc;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
+
+use crate::config::RpConnection;
 
 use crate::engine::{EngineEvent, EventIntake};
 
@@ -52,11 +54,25 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// background task that exits when the returned intake is dropped; a
 /// failed first attempt is retried there too — a dead stream never
 /// blocks the session.
-pub async fn subscribe(events_url: String) -> EventIntake {
+pub async fn subscribe(events_url: String, connection: &RpConnection) -> EventIntake {
     let (tx, rx) = mpsc::channel(EVENT_BUFFER);
-    let client = reqwest::Client::new();
-    let first = connect(&client, &events_url, None).await;
-    tokio::spawn(client_loop(client, events_url, tx, first));
+    // CA trust + credentials per ADR-017 — the same policy the MCP legs
+    // apply. Both failures degrade to an untrusted/unauthenticated
+    // subscription (loudly): a broken CA file must not wedge the invoke
+    // path, and the routine reconnect loop surfaces the consequence.
+    let client = rusty_photon_tls::client::build_reqwest_client(connection.ca_path())
+        .unwrap_or_else(|e| {
+            warn!(error = %e, "cannot build the CA-trusting event client; using default trust");
+            reqwest::Client::new()
+        });
+    let auth_header =
+        rp_mcp_client::basic_authorization(&events_url, connection.auth(), connection.ca_path())
+            .unwrap_or_else(|e| {
+                warn!(error = %e, "cannot build the events Authorization header; subscribing unauthenticated");
+                None
+            });
+    let first = connect(&client, &events_url, None, auth_header.as_ref()).await;
+    tokio::spawn(client_loop(client, events_url, tx, first, auth_header));
     EventIntake::new(rx)
 }
 
@@ -67,8 +83,12 @@ async fn connect(
     client: &reqwest::Client,
     url: &str,
     last_seq: Option<u64>,
+    auth: Option<&reqwest::header::HeaderValue>,
 ) -> Option<reqwest::Response> {
     let mut request = client.get(url).header("accept", "text/event-stream");
+    if let Some(header) = auth {
+        request = request.header(reqwest::header::AUTHORIZATION, header.clone());
+    }
     if let Some(id) = last_seq {
         request = request.header("last-event-id", id.to_string());
     }
@@ -100,6 +120,7 @@ async fn client_loop(
     url: String,
     tx: mpsc::Sender<EngineEvent>,
     first: Option<reqwest::Response>,
+    auth: Option<reqwest::header::HeaderValue>,
 ) {
     let mut last_seq: Option<u64> = None;
     let mut connection = first;
@@ -113,7 +134,7 @@ async fn client_loop(
         }
         connection = tokio::select! {
             _ = tx.closed() => return,
-            connected = connect(&client, &url, last_seq) => connected,
+            connected = connect(&client, &url, last_seq, auth.as_ref()) => connected,
         };
     }
 }
@@ -346,7 +367,7 @@ mod tests {
         }])
         .await;
 
-        let mut intake = subscribe(url).await;
+        let mut intake = subscribe(url, &RpConnection::default()).await;
         assert_eq!(
             next_event(&mut intake).await,
             EngineEvent {
@@ -384,7 +405,7 @@ mod tests {
         ])
         .await;
 
-        let mut intake = subscribe(url).await;
+        let mut intake = subscribe(url, &RpConnection::default()).await;
         for n in 1..=3 {
             assert_eq!(next_event(&mut intake).await.payload, json!({ "n": n }));
         }
@@ -412,7 +433,7 @@ mod tests {
         }])
         .await;
 
-        let _intake = subscribe(url).await;
+        let _intake = subscribe(url, &RpConnection::default()).await;
         assert!(
             heads.try_recv().is_ok(),
             "subscribe must complete the initial connect before returning"
@@ -431,7 +452,10 @@ mod tests {
 
         let mut intake = timeout(
             Duration::from_secs(60),
-            subscribe(format!("http://{addr}/api/events/subscribe")),
+            subscribe(
+                format!("http://{addr}/api/events/subscribe"),
+                &RpConnection::default(),
+            ),
         )
         .await
         .expect("subscribe must time out a wedged endpoint, not hang the /invoke path");
@@ -455,7 +479,7 @@ mod tests {
         ])
         .await;
 
-        let mut intake = subscribe(url).await;
+        let mut intake = subscribe(url, &RpConnection::default()).await;
         assert_eq!(next_event(&mut intake).await.event, "tick");
     }
 
@@ -476,7 +500,7 @@ mod tests {
         ])
         .await;
 
-        let intake = subscribe(url).await;
+        let intake = subscribe(url, &RpConnection::default()).await;
         // First connection established…
         heads.recv().await.unwrap();
         drop(intake);

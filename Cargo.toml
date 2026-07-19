@@ -8,6 +8,7 @@ members = [
   "crates/rp-ephemeris",
   "crates/rp-fits",
   "crates/rp-guider",
+  "crates/rp-mcp-client",
   "crates/rp-plate-solver",
   "crates/rusty-photon-tls",
   "crates/rusty-photon-config",
@@ -143,6 +144,7 @@ axum = "0.8"
 tower = "0.5"
 reqwest = { version = "0.13.4", features = ["form", "json"] }
 rp-auth = { path = "crates/rp-auth" }
+rp-mcp-client = { path = "crates/rp-mcp-client" }
 rp-catalog = { path = "crates/rp-catalog" }
 rp-ephemeris = { path = "crates/rp-ephemeris" }
 rp-fits = { path = "crates/rp-fits" }

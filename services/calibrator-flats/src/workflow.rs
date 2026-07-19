@@ -248,6 +248,8 @@ mod tests {
             max_iterations,
             initial_duration: initial,
             brightness: None,
+            service_auth: None,
+            ca_cert: None,
             filters: vec![FilterPlan {
                 name: "L".into(),
                 count: 1,

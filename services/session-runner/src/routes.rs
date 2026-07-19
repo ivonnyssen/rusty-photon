@@ -27,7 +27,7 @@ use serde_json::{json, Map, Value};
 use tracing::{debug, info, warn};
 
 use crate::blackboard::Blackboard;
-use crate::config::Config;
+use crate::config::{Config, RpConnection};
 use crate::document::{
     bind_parameters, resolve_workflow_path, validate_against_catalog, Document, ToolSpec,
     ValidationIssue,
@@ -138,7 +138,7 @@ async fn validate(
             ),
         );
     };
-    let catalog = match fetch_catalog(mcp_url).await {
+    let catalog = match fetch_catalog(mcp_url, &config.rp_connection()).await {
         Ok(catalog) => catalog,
         Err(message) => {
             return (
@@ -161,8 +161,8 @@ async fn load_workflow_source(config: &Config, name: &str) -> Result<String, Str
         .map_err(|e| format!("cannot read workflow `{name}` at {}: {e}", path.display()))
 }
 
-async fn fetch_catalog(mcp_url: &str) -> Result<Vec<ToolSpec>, String> {
-    let client = McpClient::connect(mcp_url)
+async fn fetch_catalog(mcp_url: &str, connection: &RpConnection) -> Result<Vec<ToolSpec>, String> {
+    let client = McpClient::connect(mcp_url, connection.auth(), connection.ca_path())
         .await
         .map_err(|e| format!("rp unreachable: {e}"))?;
     client.list_tools().await.map_err(|e| e.to_string())
@@ -262,7 +262,14 @@ async fn invoke(
 
     // Layer 2: the live tool catalog. Unlike /validate, an unreachable rp
     // is a hard error here — the invocation cannot proceed without it.
-    let mcp = match McpClient::connect(&request.mcp_server_url).await {
+    let connection = config.rp_connection();
+    let mcp = match McpClient::connect(
+        &request.mcp_server_url,
+        connection.auth(),
+        connection.ca_path(),
+    )
+    .await
+    {
         Ok(mcp) => mcp,
         Err(e) => return error_response(StatusCode::BAD_GATEWAY, e.to_string()),
     };
@@ -319,7 +326,7 @@ async fn invoke(
             rp_base_url(&request.mcp_server_url)
         )
     });
-    let intake = events::subscribe(events_url).await;
+    let intake = events::subscribe(events_url, &connection).await;
 
     tokio::spawn(run_session(
         document,
@@ -329,6 +336,7 @@ async fn invoke(
         intake,
         request.workflow_id,
         request.mcp_server_url,
+        connection,
     ));
 
     (StatusCode::OK, Json(ack))
@@ -347,6 +355,7 @@ fn rp_base_url(mcp_server_url: &str) -> &str {
 /// `Completed`/`Failed` post to `rp` and delete the blackboard once
 /// acknowledged; `Terminated` posts nothing and keeps the blackboard for
 /// the recovery invocation.
+#[allow(clippy::too_many_arguments)]
 async fn run_session<T: ToolClient + Sync>(
     document: Document,
     params: Value,
@@ -355,6 +364,7 @@ async fn run_session<T: ToolClient + Sync>(
     events: EventIntake,
     workflow_id: String,
     mcp_server_url: String,
+    connection: RpConnection,
 ) {
     let outcome = run(
         &document,
@@ -376,7 +386,8 @@ async fn run_session<T: ToolClient + Sync>(
             completion_result(&document.name, "failed", Some(&error.message), &blackboard),
         ),
     };
-    let acknowledged = post_completion(&mcp_server_url, &workflow_id, status, result).await;
+    let acknowledged =
+        post_completion(&mcp_server_url, &workflow_id, status, result, &connection).await;
     if acknowledged {
         if let Err(e) = tokio::fs::remove_file(blackboard.path()).await {
             if e.kind() != std::io::ErrorKind::NotFound {
@@ -418,12 +429,14 @@ fn completion_result(
 /// unacknowledged path: blackboard kept, warning logged.
 const COMPLETION_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// POST the completion to `rp`; `true` when acknowledged (2xx).
+/// POST the completion to `rp`; `true` when acknowledged (2xx). Trusts
+/// and authenticates per the ADR-017 policy, like every other rp leg.
 async fn post_completion(
     mcp_server_url: &str,
     workflow_id: &str,
     status: &str,
     result: Value,
+    connection: &RpConnection,
 ) -> bool {
     let url = format!(
         "{}/api/plugins/{workflow_id}/complete",
@@ -431,17 +444,24 @@ async fn post_completion(
     );
     let body = json!({ "status": status, "result": result });
     debug!(%url, %status, "posting completion");
-    let client = match reqwest::Client::builder()
-        .timeout(COMPLETION_TIMEOUT)
-        .build()
-    {
+    let client = match rusty_photon_tls::client::build_reqwest_client(connection.ca_path()) {
         Ok(client) => client,
         Err(e) => {
             warn!(%url, error = %e, "cannot build HTTP client for the completion post");
             return false;
         }
     };
-    match client.post(&url).json(&body).send().await {
+    let auth_header =
+        rp_mcp_client::basic_authorization(&url, connection.auth(), connection.ca_path())
+            .unwrap_or_else(|e| {
+                warn!(%url, error = %e, "cannot build the completion Authorization header");
+                None
+            });
+    let mut request = client.post(&url).timeout(COMPLETION_TIMEOUT).json(&body);
+    if let Some(header) = auth_header {
+        request = request.header(reqwest::header::AUTHORIZATION, header);
+    }
+    match request.send().await {
         Ok(response) if response.status().is_success() => true,
         Ok(response) => {
             warn!(%url, status = %response.status(), "completion was not acknowledged");
@@ -493,6 +513,8 @@ mod tests {
             state_dir,
             mcp_server_url: None,
             events_url: None,
+            service_auth: None,
+            ca_cert: None,
         }
     }
 
@@ -823,6 +845,7 @@ mod tests {
             EventIntake::disconnected(),
             "wf-1".to_owned(),
             mcp_url,
+            RpConnection::default(),
         )
         .await;
         (blackboard_path, rx)

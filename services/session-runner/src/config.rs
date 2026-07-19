@@ -36,6 +36,45 @@ pub struct Config {
     /// `<mcp origin>/api/events/subscribe`.
     #[serde(default)]
     pub events_url: Option<String>,
+    /// HTTP Basic credentials presented to `rp` — MCP calls, the event
+    /// stream, and the completion POST alike. The D6 observatory
+    /// credential; doctor `--fix` wires it (ADR-017).
+    #[serde(default)]
+    pub service_auth: Option<rp_mcp_client::ClientAuthConfig>,
+    /// PEM CA path used to trust a TLS-enabled `rp` for the same
+    /// connections. Per the ADR-017 policy, `service_auth` is only sent
+    /// when this is set and the URL is https.
+    #[serde(default)]
+    pub ca_cert: Option<String>,
+}
+
+impl Config {
+    /// The client-side trust + credentials for every connection to `rp`,
+    /// cloned out for the tasks that outlive the request handler.
+    pub fn rp_connection(&self) -> RpConnection {
+        RpConnection {
+            service_auth: self.service_auth.clone(),
+            ca_cert: self.ca_cert.as_ref().map(PathBuf::from),
+        }
+    }
+}
+
+/// The client-side credentials/trust for `rp` connections (MCP, the event
+/// stream, the completion POST), derived from [`Config`].
+#[derive(Clone, Debug, Default)]
+pub struct RpConnection {
+    pub service_auth: Option<rp_mcp_client::ClientAuthConfig>,
+    pub ca_cert: Option<PathBuf>,
+}
+
+impl RpConnection {
+    pub fn auth(&self) -> Option<&rp_mcp_client::ClientAuthConfig> {
+        self.service_auth.as_ref()
+    }
+
+    pub fn ca_path(&self) -> Option<&Path> {
+        self.ca_cert.as_deref()
+    }
 }
 
 /// session-runner's default `server` block when the config file omits it:
