@@ -168,7 +168,7 @@ mod tests {
         // sensible the firmware bytes look. Symmetric to the
         // `firmware_bytes_do_not_affect_lookup` test for the accept path.
         assert_eq!(
-            MountType::from_motor_board_version(0x0C30_0099).unwrap_err(),
+            MountType::from_motor_board_version(0x000C_3099).unwrap_err(),
             0x99
         );
     }

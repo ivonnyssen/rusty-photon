@@ -1277,7 +1277,7 @@ mod tests {
         // the EQ family and `0x82` for AZ-GTi).
         let factory = CapturingMockFactory::new();
         let state = Arc::clone(&factory.state);
-        state.lock().await.motor_board_version = 0x0C30_00FF;
+        state.lock().await.motor_board_version = 0x000C_30FF;
         let m = MountManager::new(Config::default(), Arc::new(factory));
         let err = m
             .transport()
@@ -1506,7 +1506,7 @@ mod tests {
         // hardcoded default, so the verify-the-port hint is actionable.
         let factory = CapturingMockFactory::new();
         let state = Arc::clone(&factory.state);
-        state.lock().await.motor_board_version = 0x0C30_0099;
+        state.lock().await.motor_board_version = 0x000C_3099;
         let mut cfg = Config::default();
         if let TransportConfig::Usb(usb) = &mut cfg.transport {
             usb.port = "/dev/serial/by-id/usb-Foo_Bar-port0".into();
