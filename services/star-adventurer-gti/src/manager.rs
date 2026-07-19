@@ -714,7 +714,7 @@ mod tests {
         assert_eq!(params.cpr_ra, 0x0037_5F00);
         assert_eq!(params.cpr_dec, 0x0037_5F00);
         assert_eq!(params.tmr_freq, 0x00F4_2400);
-        assert_eq!(params.motor_board_version, 0x0003_300C);
+        assert_eq!(params.motor_board_version, 0x000C_3003);
         session.close().await.unwrap();
     }
 
@@ -1270,14 +1270,14 @@ mod tests {
 
     #[tokio::test]
     async fn handshake_rejects_unknown_mount_type_byte_without_issuing_mount_commands() {
-        // Seed a motor-board-version with a high byte outside the
-        // `MountType` whitelist before the handshake reaches the wire.
+        // Seed a motor-board-version whose type byte (low byte) is outside
+        // the `MountType` whitelist before the handshake reaches the wire.
         // `0xFF` is a plausible "wrong device" byte: no Sky-Watcher motor
         // controller reports it (the documented IDs top out at `0x06` for
         // the EQ family and `0x82` for AZ-GTi).
         let factory = CapturingMockFactory::new();
         let state = Arc::clone(&factory.state);
-        state.lock().await.motor_board_version = 0x00FF_0000;
+        state.lock().await.motor_board_version = 0x000C_30FF;
         let m = MountManager::new(Config::default(), Arc::new(factory));
         let err = m
             .transport()
@@ -1506,7 +1506,7 @@ mod tests {
         // hardcoded default, so the verify-the-port hint is actionable.
         let factory = CapturingMockFactory::new();
         let state = Arc::clone(&factory.state);
-        state.lock().await.motor_board_version = 0x0099_0000;
+        state.lock().await.motor_board_version = 0x000C_3099;
         let mut cfg = Config::default();
         if let TransportConfig::Usb(usb) = &mut cfg.transport {
             usb.port = "/dev/serial/by-id/usb-Foo_Bar-port0".into();
