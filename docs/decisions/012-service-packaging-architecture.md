@@ -70,10 +70,14 @@ not:
    the purged service's config + state; the shared user/home/symlink stay.
 4. **One shared system user `rusty-photon`** (system account, home
    `/var/lib/rusty-photon`, no shell). Hardware privilege is scoped per
-   *unit*, not per user, via `SupplementaryGroups=dialout plugdev` (serial
-   class — dialout is the distro default for tty nodes, plugdev is where
-   openocd-class udev rules put FTDI-based serial nodes)
-   and `SupplementaryGroups=plugdev` (camera class). Maintainer scripts stay
+   *unit*, not per user. Serial-class units confer `dialout` (the distro
+   default group for tty nodes) plus, on Debian only, `plugdev` (where
+   Debian's openocd-class udev rules put FTDI-based serial nodes; the
+   group is base-passwd's and is never created on rpm-family hosts, so
+   the rpm unit variant stays dialout-only). Camera-class packages ship
+   udev rules assigning device nodes to the service account's own
+   `rusty-photon` group, so their units need no supplementary groups at
+   all. Maintainer scripts stay
    byte-identical across packages (service name derived from
    `$DPKG_MAINTSCRIPT_PACKAGE`), enforced by `scripts/check-pkg-assets.sh`.
 5. **Hardened unit template with three service classes** (serial / USB

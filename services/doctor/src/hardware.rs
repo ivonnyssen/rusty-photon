@@ -604,7 +604,7 @@ mod tests {
                 enabled: true,
                 condition_path: None,
                 source_name: None,
-                supplementary_groups: vec!["plugdev".to_string()],
+                supplementary_groups: Vec::new(),
                 active: None,
                 binary_path: None,
             }],

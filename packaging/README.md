@@ -58,17 +58,22 @@ packaged services by the presence of `pkg/` dirs, so adding a service means:
 
 1. copy `postinst.common` / `postrm.common` into `services/<svc>/pkg/`,
 2. write `rusty-photon-<svc>.service` (start from filemonitor's and apply
-   the service-class delta from the plan: serial → `SupplementaryGroups=dialout plugdev`
-   (the distro default group for tty nodes plus the group openocd-class
-   udev rules put FTDI-based serial nodes in — on stock Debian-family
-   hosts the Pegasus devices come up group-owned by `plugdev`);
-   camera → `plugdev` + `AF_NETLINK`; network-only → `PrivateDevices=yes` +
-   `MemoryDenyWriteExecute=yes`). Reload-capable services (those calling
-   `ServiceRunner::with_reload`) add `ExecReload=/bin/kill -HUP $MAINPID`;
-   services with no defaultable config gate on
+   the service-class delta from the plan: serial → per-flavor unit copies
+   under `pkg/deb/` and `pkg/rpm/`, identical except
+   `SupplementaryGroups=dialout plugdev` (deb) vs
+   `SupplementaryGroups=dialout` (rpm) — dialout is the distro default
+   group for tty nodes; plugdev is where Debian's openocd-class udev
+   rules put FTDI-based serial nodes, and it is a Debian base-passwd
+   group that must **never** be created on rpm-family hosts; camera →
+   `AF_NETLINK`, no supplementary groups (the package's udev rule assigns
+   nodes to the service's own `rusty-photon` group); network-only →
+   `PrivateDevices=yes` + `MemoryDenyWriteExecute=yes`). Reload-capable
+   services (those calling `ServiceRunner::with_reload`) add
+   `ExecReload=/bin/kill -HUP $MAINPID`; services with no defaultable
+   config gate on
    `ConditionPathExists=/var/lib/rusty-photon/.config/rusty-photon/<svc>.json`
-   instead of crash-looping on a fresh install (both lists are enforced by
-   the checker),
+   instead of crash-looping on a fresh install (all of these lists are
+   enforced by the checker),
 3. add the `[package.metadata.deb]` / `[package.metadata.generate-rpm]`
    blocks to the service's `Cargo.toml` (names all `rusty-photon-<svc>`;
    copy the rpm scriptlets from filemonitor's block — they carry the `$1`

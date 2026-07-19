@@ -105,13 +105,13 @@ Feature: Hardware checks (no SDK)
     When I run doctor with --json
     Then the report contains a "fail" check named "hardware.udev-rule" for service "qhy-camera"
     And that check's detail mentions "drops the entire rule line"
-    And that check's suggestion mentions "groupadd -r plugdev"
+    And that check's suggestion mentions "groupadd -r rusty-photon"
     And doctor exits with code 1
 
   Scenario: The packaged udev rule passes when installed intact with resolvable groups
     Given platform facts with an enabled unit "rusty-photon-qhy-camera"
     And the installed udev rule for "qhy-camera" is the packaged rule
-    And hardware facts where host group "plugdev" has gid 46
+    And hardware facts where host group "rusty-photon" has gid 990
     And hardware facts with a USB device "1618:c179" with no product string
     And hardware facts with a directory at "/lib/firmware/qhy"
     And hardware facts with an executable file at "/usr/local/sbin/fxload"
@@ -125,7 +125,7 @@ Feature: Hardware checks (no SDK)
   Scenario: An operator-edited udev rule warns without failing
     Given platform facts with an enabled unit "rusty-photon-qhy-camera"
     And the installed udev rule for "qhy-camera" is the packaged rule with a local edit appended
-    And hardware facts where host group "plugdev" has gid 46
+    And hardware facts where host group "rusty-photon" has gid 990
     When I run doctor with --json
     Then the report contains a "warn" check named "hardware.udev-rule" for service "qhy-camera"
     And that check's detail mentions "differs from the packaged rule"
@@ -140,7 +140,7 @@ Feature: Hardware checks (no SDK)
   Scenario: A partial firmware install names what is missing
     Given platform facts with an enabled unit "rusty-photon-qhy-camera"
     And the installed udev rule for "qhy-camera" is the packaged rule
-    And hardware facts where host group "plugdev" has gid 46
+    And hardware facts where host group "rusty-photon" has gid 990
     And hardware facts with a directory at "/lib/firmware/qhy"
     And hardware facts with a regular file at "/etc/udev/rules.d/85-qhyccd.rules"
     When I run doctor with --json

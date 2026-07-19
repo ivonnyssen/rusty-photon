@@ -94,7 +94,7 @@ maintainer-scripts = "pkg/"
 
 [package.metadata.deb.systemd-units]
 unit-name = "rusty-photon-star-adventurer-gti"
-unit-scripts = "pkg/"
+unit-scripts = "pkg/deb/"
 enable = true
 start = true
 restart-after-upgrade = true
@@ -105,11 +105,10 @@ summary = "ASCOM Alpaca Telescope driver for the SA GTi mount"
 license = "MIT OR Apache-2.0"
 assets = [
     { source = "target/release/star-adventurer-gti", dest = "/usr/bin/rusty-photon-star-adventurer-gti", mode = "755" },
-    { source = "pkg/rusty-photon-star-adventurer-gti.service", dest = "/usr/lib/systemd/system/rusty-photon-star-adventurer-gti.service", mode = "644" },
+    { source = "pkg/rpm/rusty-photon-star-adventurer-gti.service", dest = "/usr/lib/systemd/system/rusty-photon-star-adventurer-gti.service", mode = "644" },
 ]
 post_install_script = """
 getent passwd rusty-photon > /dev/null || useradd -r -d /var/lib/rusty-photon -s /sbin/nologin rusty-photon
-getent group plugdev > /dev/null || groupadd -r plugdev
 install -d -m 0750 -o rusty-photon -g rusty-photon /var/lib/rusty-photon /var/lib/rusty-photon/.config /var/lib/rusty-photon/.config/rusty-photon
 [ -e /etc/rusty-photon ] || ln -s /var/lib/rusty-photon/.config/rusty-photon /etc/rusty-photon
 systemctl daemon-reload

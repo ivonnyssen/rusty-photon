@@ -2,8 +2,11 @@
 #
 # ZWO EAF focusers (VID 03c3) ship their firmware in onboard flash — no
 # upload step, no vendor udev rules required — so this is the only rule
-# file the package needs: make the devices group-accessible to plugdev
-# instead of relying on ZWO's world-writable MODE="0666" rules.
+# file the package needs: make the devices group-accessible to the
+# rusty-photon service group (the account's own group, created with the
+# user by every package — never plugdev, a Debian base-passwd group
+# rpm-family hosts do not have) instead of relying on ZWO's
+# world-writable MODE="0666" rules.
 #
 # Named uniquely (not 90-rusty-photon-zwo.rules, zwo-camera's file) so
 # both packages can install their udev rule on the same host without a
@@ -11,4 +14,4 @@
 # zwo-camera's, but this file omits zwo-camera's extra usbfs_memory_mb bump —
 # that rule raises the usbfs buffer for bulk image transfers, which a
 # stepper-motor focuser (small status/position commands only) doesn't do.
-SUBSYSTEMS=="usb", ATTRS{idVendor}=="03c3", GROUP="plugdev", MODE="0660"
+SUBSYSTEMS=="usb", ATTRS{idVendor}=="03c3", GROUP="rusty-photon", MODE="0660"

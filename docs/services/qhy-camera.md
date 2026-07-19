@@ -887,10 +887,10 @@ Packaged as `rusty-photon-qhy-camera` (`.deb`/`.rpm`) per
 [ADR-013](../decisions/013-native-sdk-payload-policy.md) and
 [`docs/plans/service-packaging.md`](../plans/service-packaging.md):
 binary at `/usr/bin/rusty-photon-qhy-camera`, hardened
-`rusty-photon-qhy-camera.service` (camera class: `plugdev` +
-`AF_NETLINK`, no `PrivateDevices`/`MemoryDenyWriteExecute`), and a udev
-rule `90-rusty-photon-qhy.rules` granting `plugdev` members access to
-enumerated QHY cameras (VID `1618`).
+`rusty-photon-qhy-camera.service` (camera class: `AF_NETLINK`, no
+`PrivateDevices`/`MemoryDenyWriteExecute`, no supplementary groups), and
+a udev rule `90-rusty-photon-qhy.rules` assigning enumerated QHY cameras
+(VID `1618`) to the `rusty-photon` service group.
 
 QHYCCD's proprietary firmware is **never** bundled. After installing the
 package, run `/usr/sbin/rusty-photon-qhy-firmware-install` once as root:

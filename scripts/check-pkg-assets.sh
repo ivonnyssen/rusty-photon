@@ -29,9 +29,22 @@ for pkgdir in services/*/pkg; do
     unit="$pkgdir/$name.service"
     toml="services/$svc/Cargo.toml"
 
-    if [ ! -f "$unit" ]; then
-        err "$svc: missing $unit"
-    else
+    # Serial-class services keep per-flavor unit copies: Debian's unit
+    # confers plugdev on top of dialout (openocd-class udev rules there put
+    # FTDI serial nodes in plugdev, and base-passwd guarantees the group
+    # exists), while the rpm unit stays dialout-only — plugdev is a Debian
+    # group that must never be created on rpm-family hosts.
+    case "$svc" in
+        ppba-driver|qhy-focuser|pa-falcon-rotator|pa-scops-oag|dsd-fp2|star-adventurer-gti)
+            units="$pkgdir/deb/$name.service $pkgdir/rpm/$name.service" ;;
+        *)
+            units="$pkgdir/$name.service" ;;
+    esac
+    for unit in $units; do
+        if [ ! -f "$unit" ]; then
+            err "$svc: missing $unit"
+            continue
+        fi
         grep -q "^ExecStart=/usr/bin/$name\$" "$unit" \
             || err "$svc: ExecStart must be exactly /usr/bin/$name (config is XDG-resolved; no --config flag)"
         # Reload-capable services (ServiceRunner::with_reload) expose SIGHUP.
@@ -49,19 +62,45 @@ for pkgdir in services/*/pkg; do
                     || err "$svc: no-default-config service must gate on ConditionPathExists=<XDG config path>"
                 ;;
         esac
-        # Serial-class services confer both dialout (the distro default
-        # group for tty nodes) and plugdev (where openocd-class udev rules
-        # put FTDI-based serial nodes). Debian's base-passwd ships plugdev;
-        # RPM-family distros do not, so the rpm scriptlet must create it.
-        case "$svc" in
-            ppba-driver|qhy-focuser|pa-falcon-rotator|pa-scops-oag|dsd-fp2|star-adventurer-gti)
-                grep -q '^SupplementaryGroups=dialout plugdev$' "$unit" \
-                    || err "$svc: serial unit must carry SupplementaryGroups=dialout plugdev"
-                toml_section "$toml" "package.metadata.generate-rpm" | grep -q 'groupadd -r plugdev' \
-                    || err "$svc: rpm post_install_script must create the plugdev group"
-                ;;
-        esac
-    fi
+    done
+    case "$svc" in
+        ppba-driver|qhy-focuser|pa-falcon-rotator|pa-scops-oag|dsd-fp2|star-adventurer-gti)
+            deb_unit="$pkgdir/deb/$name.service"
+            rpm_unit="$pkgdir/rpm/$name.service"
+            if [ -f "$deb_unit" ] && [ -f "$rpm_unit" ]; then
+                grep -q '^SupplementaryGroups=dialout plugdev$' "$deb_unit" \
+                    || err "$svc: deb unit must carry SupplementaryGroups=dialout plugdev"
+                grep -q '^SupplementaryGroups=dialout$' "$rpm_unit" \
+                    || err "$svc: rpm unit must carry exactly SupplementaryGroups=dialout"
+                stripped_deb=$(mktemp); stripped_rpm=$(mktemp)
+                grep -v '^SupplementaryGroups=' "$deb_unit" > "$stripped_deb"
+                grep -v '^SupplementaryGroups=' "$rpm_unit" > "$stripped_rpm"
+                cmp -s "$stripped_deb" "$stripped_rpm" \
+                    || err "$svc: deb and rpm units must differ only in the SupplementaryGroups line"
+                rm -f "$stripped_deb" "$stripped_rpm"
+            fi
+            toml_section "$toml" "package.metadata.deb.systemd-units" \
+                | grep -q '^unit-scripts = "pkg/deb/"$' \
+                || err "$svc: deb systemd-units must take the unit from pkg/deb/"
+            toml_section "$toml" "package.metadata.generate-rpm" \
+                | grep -q "source = \"pkg/rpm/$name.service\"" \
+                || err "$svc: rpm assets must ship the pkg/rpm/ unit"
+            ;;
+        # Camera-class packages grant device access via the service
+        # account's own group: the udev rule assigns GROUP="rusty-photon"
+        # and the unit needs no SupplementaryGroups at all.
+        qhy-camera|zwo-camera|zwo-focuser)
+            for rule in "$pkgdir"/90-*.rules; do
+                [ -f "$rule" ] || continue
+                grep -q 'GROUP="rusty-photon"' "$rule" \
+                    || err "$svc: $(basename "$rule") must assign GROUP=\"rusty-photon\""
+                grep -q 'GROUP="plugdev"' "$rule" \
+                    && err "$svc: $(basename "$rule") must not assign plugdev"
+            done
+            grep -q '^SupplementaryGroups=' "$pkgdir/$name.service" \
+                && err "$svc: camera unit needs no SupplementaryGroups (nodes are rusty-photon-owned)"
+            ;;
+    esac
 
     # postrm is byte-identical everywhere. postinst is byte-identical too,
     # except the udev-shipping packages: theirs must equal postinst.common
@@ -206,6 +245,18 @@ if [ -f "$bp" ] && [ -f "$act" ]; then
         err "ZWO SDK ref pin mismatch: build-packages.sh='$z1' vs install-zwo-sdk default='$z2'"
     fi
 fi
+
+# plugdev is Debian's group (base-passwd ships it); nothing we ship may
+# create it on rpm-family hosts, and no rpm-side unit or rule may depend
+# on it.
+if grep -l 'groupadd -r plugdev' services/*/Cargo.toml > /dev/null 2>&1; then
+    err "rpm scriptlets must never create plugdev (Debian-only group): $(grep -l 'groupadd -r plugdev' services/*/Cargo.toml | tr '\n' ' ')"
+fi
+for rpm_unit in services/*/pkg/rpm/*.service; do
+    [ -f "$rpm_unit" ] || continue
+    grep -q 'plugdev' "$rpm_unit" \
+        && err "$rpm_unit: rpm units must not reference plugdev"
+done
 
 # ---- macOS tarballs (scripts/build-tarballs.sh, nightly-releases.md N4) -----
 # The mac build script carries its own copies of the SDK pins (its sha256

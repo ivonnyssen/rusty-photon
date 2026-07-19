@@ -819,10 +819,11 @@ Packaged as `rusty-photon-zwo-camera` (`.deb`/`.rpm`) per
 [ADR-013](../decisions/013-native-sdk-payload-policy.md) and
 [`docs/plans/service-packaging.md`](../plans/service-packaging.md):
 binary at `/usr/bin/rusty-photon-zwo-camera`, hardened
-`rusty-photon-zwo-camera.service` (camera class: `plugdev` +
-`AF_NETLINK`, no `PrivateDevices`/`MemoryDenyWriteExecute`), and a udev
-rule `90-rusty-photon-zwo.rules` granting `plugdev` members access to
-enumerated ZWO devices (VID `03c3`) plus the usbfs memory bump.
+`rusty-photon-zwo-camera.service` (camera class: `AF_NETLINK`, no
+`PrivateDevices`/`MemoryDenyWriteExecute`, no supplementary groups), and
+a udev rule `90-rusty-photon-zwo.rules` assigning enumerated ZWO devices
+(VID `03c3`) to the `rusty-photon` service group plus the usbfs memory
+bump.
 
 Unlike qhy-camera, the native SDK ships **inside the package**: ZWO's
 blobs are MIT-licensed, so `libASICamera2.so` — **exactly the one SDK this

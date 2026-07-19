@@ -473,16 +473,18 @@ hidraw node, so no explicit `KERNEL=="hidraw*"` line is needed. The singular
 an explicit hidraw line) matches only the USB node itself and leaves the
 hidraw node root-only.
 
-**The `plugdev` group is guaranteed by both package channels.** udev drops
-the *entire rule line at parse time* when `GROUP="plugdev"` cannot be
+**The `rusty-photon` group is guaranteed by both package channels.** udev
+drops the *entire rule line at parse time* when its `GROUP=` cannot be
 resolved (observed on a dev box where the rule file was hand-copied without
-any package install), so the group's existence is load-bearing. Debian-family
-hosts ship `plugdev` in `base-passwd`; the RPM `%post` scriptlet
-(`[package.metadata.generate-rpm]` in this service's `Cargo.toml`) runs
-`getent group plugdev || groupadd -r plugdev` *before* the udev reload, so
-the rule parses with the group present. A hand-installed rule file on a
-plugdev-less host (e.g. a Fedora dev box, outside any package) silently does
-nothing — use a resolvable group or ZWO's world-writable rules there.
+any package install), so the group's existence is load-bearing. The rule
+assigns the service account's own group — created together with the user
+by every package's install scriptlet *before* the udev reload, on both
+deb and rpm hosts, so the rule always parses with the group present.
+(Debian's `plugdev` is deliberately not used: it does not exist on
+rpm-family hosts and is never created there.) A hand-installed rule file
+on a host without the rusty-photon account (e.g. a dev box, outside any
+package) silently does nothing — use a resolvable group or ZWO's
+world-writable rules there.
 
 The MIT-licensed `libEAFFocuser.so` — **exactly the one SDK this binary links**
 (zwo-rs `focuser` feature,

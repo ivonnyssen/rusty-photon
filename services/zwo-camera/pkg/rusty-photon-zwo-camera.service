@@ -10,7 +10,6 @@ Restart=on-failure
 RestartSec=5
 User=rusty-photon
 Group=rusty-photon
-SupplementaryGroups=plugdev
 Environment=RUST_LOG=info
 Environment=HOME=/var/lib/rusty-photon
 WorkingDirectory=/var/lib/rusty-photon

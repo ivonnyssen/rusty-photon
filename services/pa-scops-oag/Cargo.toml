@@ -70,7 +70,7 @@ maintainer-scripts = "pkg/"
 
 [package.metadata.deb.systemd-units]
 unit-name = "rusty-photon-pa-scops-oag"
-unit-scripts = "pkg/"
+unit-scripts = "pkg/deb/"
 enable = true
 start = true
 restart-after-upgrade = true
@@ -81,11 +81,10 @@ summary = "ASCOM Alpaca Focuser driver for the Pegasus Astro Scops OAG"
 license = "MIT OR Apache-2.0"
 assets = [
     { source = "target/release/pa-scops-oag", dest = "/usr/bin/rusty-photon-pa-scops-oag", mode = "755" },
-    { source = "pkg/rusty-photon-pa-scops-oag.service", dest = "/usr/lib/systemd/system/rusty-photon-pa-scops-oag.service", mode = "644" },
+    { source = "pkg/rpm/rusty-photon-pa-scops-oag.service", dest = "/usr/lib/systemd/system/rusty-photon-pa-scops-oag.service", mode = "644" },
 ]
 post_install_script = """
 getent passwd rusty-photon > /dev/null || useradd -r -d /var/lib/rusty-photon -s /sbin/nologin rusty-photon
-getent group plugdev > /dev/null || groupadd -r plugdev
 install -d -m 0750 -o rusty-photon -g rusty-photon /var/lib/rusty-photon /var/lib/rusty-photon/.config /var/lib/rusty-photon/.config/rusty-photon
 [ -e /etc/rusty-photon ] || ln -s /var/lib/rusty-photon/.config/rusty-photon /etc/rusty-photon
 systemctl daemon-reload

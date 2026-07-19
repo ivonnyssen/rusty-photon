@@ -47,9 +47,11 @@ explicitly redistributable (the same blobs ship in indi-3rdparty).
    downloader packages for non-redistributable payloads.
 3. **udev rules are authored by us, in both packages** (trivial
    vendor-ID match rules; no copied SDK content): group-scoped access
-   (`GROUP="plugdev", MODE="0660"` — not world-writable 0666) plus the
-   usbfs memory bump, installed under `/usr/lib/udev/rules.d/`. The camera
-   units run with `SupplementaryGroups=plugdev`.
+   (`GROUP="rusty-photon", MODE="0660"` — the service account's own group,
+   never world-writable 0666 and never Debian's `plugdev`, which
+   rpm-family hosts lack) plus the usbfs memory bump, installed under
+   `/usr/lib/udev/rules.d/`. The camera units need no
+   `SupplementaryGroups=` — the service's primary group owns the nodes.
 
 ## Consequences
 
