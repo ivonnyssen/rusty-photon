@@ -180,11 +180,17 @@ fn check_tool_call(
             .filter(|branch| branch.iter().all(|name| args.contains_key(*name)))
             .count();
         if satisfied != 1 {
-            let alternatives = branches
+            let names = branches
                 .iter()
                 .map(|branch| branch.join(" + "))
-                .collect::<Vec<_>>()
-                .join(", or ");
+                .collect::<Vec<_>>();
+            let alternatives = match names.as_slice() {
+                [a, b] => format!("{a} or {b}"),
+                [.., last] if names.len() > 2 => {
+                    format!("{}, or {last}", names[..names.len() - 1].join(", "))
+                }
+                _ => names.join(""),
+            };
             let problem = if satisfied == 0 {
                 "requires exactly one of"
             } else {

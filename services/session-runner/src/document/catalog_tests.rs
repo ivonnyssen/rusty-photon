@@ -418,7 +418,7 @@ fn test_presence_one_of_fails_a_call_with_no_addressing() {
         findings(&document, &[train_addressable_capture_spec()]),
         vec![(
             "/root".to_owned(),
-            "tool `capture` requires exactly one of: camera_id, or train_id".to_owned()
+            "tool `capture` requires exactly one of: camera_id or train_id".to_owned()
         )]
     );
 }
@@ -433,7 +433,7 @@ fn test_presence_one_of_fails_a_call_with_both_alternatives() {
         findings(&document, &[train_addressable_capture_spec()]),
         vec![(
             "/root".to_owned(),
-            "tool `capture` accepts only one of: camera_id, or train_id".to_owned()
+            "tool `capture` accepts only one of: camera_id or train_id".to_owned()
         )]
     );
 }
@@ -466,7 +466,7 @@ fn test_presence_one_of_with_a_multi_name_branch_requires_the_full_pair() {
         findings(&document, &[auto_focus]),
         vec![(
             "/root".to_owned(),
-            "tool `auto_focus` requires exactly one of: camera_id + focuser_id, or train_id"
+            "tool `auto_focus` requires exactly one of: camera_id + focuser_id or train_id"
                 .to_owned()
         )]
     );
