@@ -2505,6 +2505,53 @@ fn test_packaged_serve_path_materializes_the_default_config_on_first_start() {
 #[test]
 #[cfg_attr(miri, ignore)]
 #[cfg(target_os = "linux")]
+fn test_packaged_serve_path_fails_loudly_when_the_config_dir_is_unwritable() {
+    // A config location that cannot be created must fail startup with an
+    // error — not run with config that could never persist.
+    // SAFETY: geteuid has no preconditions. Root ignores directory modes,
+    // so the unwritable premise doesn't hold there; skip.
+    if unsafe { libc::geteuid() } == 0 {
+        eprintln!("running as root; directory modes don't apply — skipping");
+        return;
+    }
+    use std::os::unix::fs::PermissionsExt;
+    let xdg = tempfile::tempdir().expect("create temp dir");
+    std::fs::set_permissions(xdg.path(), std::fs::Permissions::from_mode(0o555))
+        .expect("make config home read-only");
+
+    let mut child = phd2_guider_command()
+        .env("XDG_CONFIG_HOME", xdg.path())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn phd2-guider");
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        match child.try_wait().expect("poll child") {
+            Some(status) => break Some(status),
+            None if std::time::Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            None => break None,
+        }
+    };
+    // Restore write permission so tempdir cleanup can remove the directory.
+    let _ = std::fs::set_permissions(xdg.path(), std::fs::Permissions::from_mode(0o755));
+
+    let status = status.unwrap_or_else(|| {
+        terminate_gracefully(&mut child);
+        panic!("serve must exit promptly when the config dir is unwritable");
+    });
+    assert!(
+        !status.success(),
+        "an unwritable config dir must fail startup, not serve on unpersistable config"
+    );
+}
+
+#[test]
+#[cfg_attr(miri, ignore)]
+#[cfg(target_os = "linux")]
 fn test_serve_with_connection_flags_still_reads_an_existing_default_config() {
     // Serve with an explicit --host but no --config: an existing file at the
     // platform default path wins over the in-memory-defaults fallback (the
