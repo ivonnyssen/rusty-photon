@@ -7,9 +7,10 @@
 use crate::facts::PathFacts;
 
 /// The identity a service runs as: its uid plus **every** gid it holds —
-/// the primary from the user database and the supplementary groups its
-/// unit confers (`SupplementaryGroups=`; membership is per-unit in this
-/// stack, never `/etc/group`).
+/// the primary from the user database, the supplementary groups its unit
+/// confers (`SupplementaryGroups=`), and the account-level memberships
+/// from the group database. The kernel grants the union of all three, so
+/// callers judging access must populate `gids` with the union.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Identity {
     pub uid: u32,

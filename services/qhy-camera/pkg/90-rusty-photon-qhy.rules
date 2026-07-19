@@ -1,10 +1,13 @@
 # Rusty Photon QHYCCD camera access (installed by rusty-photon-qhy-camera).
 #
-# Enumerated QHY cameras (VID 1618) become group-accessible to plugdev
-# instead of world-writable. This file deliberately sorts after the SDK's
-# 85-qhyccd.rules (installed by rusty-photon-qhy-firmware-install) so it
-# tightens that file's blanket MODE="0666" to 0660 + plugdev.
-SUBSYSTEMS=="usb", ATTRS{idVendor}=="1618", GROUP="plugdev", MODE="0660"
+# Enumerated QHY cameras (VID 1618) become group-accessible to the
+# rusty-photon service group instead of world-writable. The group is the
+# service account's own, created with the user by every package — never
+# plugdev, a Debian base-passwd group that rpm-family hosts do not have.
+# This file deliberately sorts after the SDK's 85-qhyccd.rules (installed
+# by rusty-photon-qhy-firmware-install) so it tightens that file's blanket
+# MODE="0666" to 0660 + rusty-photon.
+SUBSYSTEMS=="usb", ATTRS{idVendor}=="1618", GROUP="rusty-photon", MODE="0660"
 # High-resolution sensors need more than the usbfs default (16 MB) for
 # bulk transfers; QHYCCD recommends 200 MB.
 ACTION=="add", SUBSYSTEMS=="usb", ATTRS{idVendor}=="1618", RUN+="/bin/sh -c 'echo 200 > /sys/module/usbcore/parameters/usbfs_memory_mb || true'"

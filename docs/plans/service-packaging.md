@@ -64,10 +64,12 @@ only the `release.yml` deb/rpm service-matrix generalization.
   `materialize_identity`; conffile semantics cannot express that).
 - **One shared system user** `rusty-photon` (home `/var/lib/rusty-photon`,
   no login shell). Hardware privileges are scoped per unit via
-  `SupplementaryGroups=` (`dialout` for serial, `plugdev` for cameras), not
-  via the user. Enables the shared-home XDG config model and the
-  rp ↔ plate-solver shared FITS tree, and keeps deb maintainer scripts
-  byte-identical across packages.
+  `SupplementaryGroups=` for serial services (`dialout`, plus `plugdev` on
+  deb only — see the per-class table), while camera packages assign device
+  nodes to the account's own `rusty-photon` group via their udev rules.
+  Enables the shared-home XDG config model and the rp ↔ plate-solver
+  shared FITS tree, and keeps deb maintainer scripts byte-identical
+  across packages.
 - **Formats:** `.deb` + `.rpm` only for the family — on Linux. (This
   decision has since been superseded per-OS: the Windows suite MSI covers
   the family per ADR-015 / [windows-packaging.md](windows-packaging.md),
@@ -172,8 +174,8 @@ Per-class deltas:
 
 | Class | Services | Delta |
 |-------|----------|-------|
-| serial | ppba-driver, qhy-focuser, pa-falcon-rotator, dsd-fp2, star-adventurer-gti | `SupplementaryGroups=dialout` |
-| USB camera | qhy-camera, zwo-camera | `SupplementaryGroups=plugdev`, `RestrictAddressFamilies` += `AF_NETLINK` (libusb hotplug), no `MemoryDenyWriteExecute` (vendor blob caution) |
+| serial | ppba-driver, qhy-focuser, pa-falcon-rotator, pa-scops-oag, dsd-fp2, star-adventurer-gti | per-flavor units: `SupplementaryGroups=dialout plugdev` (deb; plugdev is base-passwd's) vs `SupplementaryGroups=dialout` (rpm; plugdev is never created there) |
+| USB camera | qhy-camera, zwo-camera | no supplementary groups (udev rule assigns nodes `GROUP="rusty-photon"`), `RestrictAddressFamilies` += `AF_NETLINK` (libusb hotplug), no `MemoryDenyWriteExecute` (vendor blob caution) |
 | network-only | filemonitor, sentinel, rp, ui-htmx, plate-solver, calibrator-flats, sky-survey-camera | `PrivateDevices=yes`, `MemoryDenyWriteExecute=yes` |
 
 Reload-capable (get `ExecReload`): filemonitor, zwo-camera,

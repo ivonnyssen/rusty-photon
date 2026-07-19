@@ -3,10 +3,12 @@
 # ZWO ASI cameras and EFW filter wheels (VID 03c3) ship their firmware in
 # onboard flash — no upload step, no vendor udev rules required — so this
 # is the only rule file the package needs: make the devices
-# group-accessible to plugdev instead of relying on ZWO's world-writable
-# MODE="0666" rules. Named 90- for family consistency with
-# 90-rusty-photon-qhy.rules.
-SUBSYSTEMS=="usb", ATTRS{idVendor}=="03c3", GROUP="plugdev", MODE="0660"
+# group-accessible to the rusty-photon service group (the account's own
+# group, created with the user by every package — never plugdev, a Debian
+# base-passwd group rpm-family hosts do not have) instead of relying on
+# ZWO's world-writable MODE="0666" rules. Named 90- for family consistency
+# with 90-rusty-photon-qhy.rules.
+SUBSYSTEMS=="usb", ATTRS{idVendor}=="03c3", GROUP="rusty-photon", MODE="0660"
 # High-resolution sensors need more than the usbfs default (16 MB) for
 # bulk transfers; ZWO's own asi.rules applies the same 200 MB bump.
 ACTION=="add", SUBSYSTEMS=="usb", ATTRS{idVendor}=="03c3", RUN+="/bin/sh -c 'echo 200 > /sys/module/usbcore/parameters/usbfs_memory_mb || true'"

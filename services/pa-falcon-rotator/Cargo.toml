@@ -64,7 +64,7 @@ maintainer-scripts = "pkg/"
 
 [package.metadata.deb.systemd-units]
 unit-name = "rusty-photon-pa-falcon-rotator"
-unit-scripts = "pkg/"
+unit-scripts = "pkg/deb/"
 enable = true
 start = true
 restart-after-upgrade = true
@@ -75,7 +75,7 @@ summary = "ASCOM Alpaca Rotator driver for the Pegasus Falcon"
 license = "MIT OR Apache-2.0"
 assets = [
     { source = "target/release/pa-falcon-rotator", dest = "/usr/bin/rusty-photon-pa-falcon-rotator", mode = "755" },
-    { source = "pkg/rusty-photon-pa-falcon-rotator.service", dest = "/usr/lib/systemd/system/rusty-photon-pa-falcon-rotator.service", mode = "644" },
+    { source = "pkg/rpm/rusty-photon-pa-falcon-rotator.service", dest = "/usr/lib/systemd/system/rusty-photon-pa-falcon-rotator.service", mode = "644" },
 ]
 post_install_script = """
 getent passwd rusty-photon > /dev/null || useradd -r -d /var/lib/rusty-photon -s /sbin/nologin rusty-photon

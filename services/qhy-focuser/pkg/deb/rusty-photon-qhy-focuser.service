@@ -1,19 +1,20 @@
 [Unit]
-Description=Rusty Photon zwo-focuser - ASCOM Alpaca Focuser for the ZWO EAF (port 11124)
+Description=Rusty Photon qhy-focuser - ASCOM Alpaca Focuser for QHY Q-Focuser (port 11113)
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/rusty-photon-zwo-focuser
+ExecStart=/usr/bin/rusty-photon-qhy-focuser
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5
 User=rusty-photon
 Group=rusty-photon
+SupplementaryGroups=dialout plugdev
 Environment=RUST_LOG=info
 Environment=HOME=/var/lib/rusty-photon
 WorkingDirectory=/var/lib/rusty-photon
-StateDirectory=rusty-photon/zwo-focuser
+StateDirectory=rusty-photon/qhy-focuser
 
 NoNewPrivileges=yes
 ProtectSystem=strict
@@ -26,7 +27,7 @@ ProtectControlGroups=yes
 RestrictSUIDSGID=yes
 LockPersonality=yes
 RestrictRealtime=yes
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 UMask=0027
 
 [Install]

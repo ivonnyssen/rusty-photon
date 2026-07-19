@@ -116,7 +116,7 @@ blocker, not a size objection.
    `rp`. Doctor never needs to know a serial exists.
 
 5. **Hardware checks split at the SDK line.** Everything needing no vendor blob
-   — device node presence, writability, `plugdev` membership, udev rule
+   — device node presence, writability, group membership, udev rule
    installed *and parsed*, VID:PID in sysfs, firmware helper run — belongs to
    central doctor. Everything needing a blob belongs to a `doctor` subcommand
    on the service binary that already links it. Central doctor aggregates over

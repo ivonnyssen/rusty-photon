@@ -44,6 +44,19 @@ Feature: Hardware checks (no SDK)
     Then the report contains an "ok" check named "hardware.serial-node" for service "ppba-driver"
     And the report contains an "ok" check named "hardware.serial-access" for service "ppba-driver"
 
+  Scenario: Account-level membership opens a node the unit's groups do not
+    Given platform facts with an enabled unit "rusty-photon-ppba-driver"
+    And the unit "rusty-photon-ppba-driver" confers supplementary group "dialout"
+    And hardware facts with a character device "/dev/ttyUSB0" owned by uid 0 gid 46 with mode "0660"
+    And hardware facts where host group "dialout" has gid 20
+    And hardware facts where host group "plugdev" has gid 46
+    And hardware facts where the rusty-photon user has uid 990 and gid 990
+    And hardware facts where the rusty-photon user belongs to host group "plugdev"
+    When I run doctor with --json
+    Then the report contains an "ok" check named "hardware.serial-node" for service "ppba-driver"
+    And the report contains an "ok" check named "hardware.serial-access" for service "ppba-driver"
+    And that check's detail mentions "account-level plugdev group membership"
+
   Scenario: A device the unit's groups cannot open names the missing membership
     Given platform facts with an enabled unit "rusty-photon-ppba-driver"
     And hardware facts with a character device "/dev/ttyUSB0" owned by uid 0 gid 20 with mode "0660"
@@ -54,6 +67,15 @@ Feature: Hardware checks (no SDK)
     And that check's detail mentions "gid 20 = group dialout"
     And that check's suggestion mentions "SupplementaryGroups=dialout"
     And doctor exits with code 1
+
+  Scenario: A node owned by a held group with a bad mode points at the mode, not membership
+    Given platform facts with an enabled unit "rusty-photon-ppba-driver"
+    And hardware facts with a character device "/dev/ttyUSB0" owned by uid 0 gid 990 with mode "0600"
+    And hardware facts where host group "rusty-photon" has gid 990
+    And hardware facts where the rusty-photon user has uid 990 and gid 990
+    When I run doctor with --json
+    Then the report contains a "fail" check named "hardware.serial-access" for service "ppba-driver"
+    And that check's suggestion mentions "ownership or mode"
 
   Scenario: A UDP-transport mount has no serial device to check
     Given a config file "star-adventurer-gti.json" containing:
@@ -92,13 +114,13 @@ Feature: Hardware checks (no SDK)
     When I run doctor with --json
     Then the report contains a "fail" check named "hardware.udev-rule" for service "qhy-camera"
     And that check's detail mentions "drops the entire rule line"
-    And that check's suggestion mentions "groupadd -r plugdev"
+    And that check's suggestion mentions "groupadd -r rusty-photon"
     And doctor exits with code 1
 
   Scenario: The packaged udev rule passes when installed intact with resolvable groups
     Given platform facts with an enabled unit "rusty-photon-qhy-camera"
     And the installed udev rule for "qhy-camera" is the packaged rule
-    And hardware facts where host group "plugdev" has gid 46
+    And hardware facts where host group "rusty-photon" has gid 990
     And hardware facts with a USB device "1618:c179" with no product string
     And hardware facts with a directory at "/lib/firmware/qhy"
     And hardware facts with an executable file at "/usr/local/sbin/fxload"
@@ -112,7 +134,7 @@ Feature: Hardware checks (no SDK)
   Scenario: An operator-edited udev rule warns without failing
     Given platform facts with an enabled unit "rusty-photon-qhy-camera"
     And the installed udev rule for "qhy-camera" is the packaged rule with a local edit appended
-    And hardware facts where host group "plugdev" has gid 46
+    And hardware facts where host group "rusty-photon" has gid 990
     When I run doctor with --json
     Then the report contains a "warn" check named "hardware.udev-rule" for service "qhy-camera"
     And that check's detail mentions "differs from the packaged rule"
@@ -127,7 +149,7 @@ Feature: Hardware checks (no SDK)
   Scenario: A partial firmware install names what is missing
     Given platform facts with an enabled unit "rusty-photon-qhy-camera"
     And the installed udev rule for "qhy-camera" is the packaged rule
-    And hardware facts where host group "plugdev" has gid 46
+    And hardware facts where host group "rusty-photon" has gid 990
     And hardware facts with a directory at "/lib/firmware/qhy"
     And hardware facts with a regular file at "/etc/udev/rules.d/85-qhyccd.rules"
     When I run doctor with --json

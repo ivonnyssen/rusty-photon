@@ -57,13 +57,13 @@ mod tests {
 
     /// The shipped qhy rule's exact shape.
     const QHY_RULE: &str = r#"# Tighten the SDK's blanket MODE="0666".
-SUBSYSTEMS=="usb", ATTRS{idVendor}=="1618", GROUP="plugdev", MODE="0660"
+SUBSYSTEMS=="usb", ATTRS{idVendor}=="1618", GROUP="rusty-photon", MODE="0660"
 ACTION=="add", SUBSYSTEMS=="usb", ATTRS{idVendor}=="1618", RUN+="/bin/sh -c 'echo 200 > /sys/module/usbcore/parameters/usbfs_memory_mb || true'"
 "#;
 
     #[test]
     fn test_extracts_the_shipped_rule_shape() {
-        assert_eq!(group_assignments(QHY_RULE), vec!["plugdev"]);
+        assert_eq!(group_assignments(QHY_RULE), vec!["rusty-photon"]);
         assert_eq!(vendor_matches(QHY_RULE), vec!["1618"]);
     }
 
