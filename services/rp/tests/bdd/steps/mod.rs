@@ -22,6 +22,7 @@ pub mod image_http_api_steps;
 pub mod image_stats_steps;
 pub mod measure_basic_steps;
 pub mod measure_stars_steps;
+pub mod motion_gate_steps;
 pub mod mount_steps;
 pub mod operation_event_steps;
 pub mod optical_trains_steps;

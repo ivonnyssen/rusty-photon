@@ -76,6 +76,13 @@ bdd_infra::bdd_main! {
             let scenario_name = scenario.name.clone();
             Box::pin(async move {
                 if let Some(world) = maybe_world {
+                    // Abort background tool calls a failed scenario may not
+                    // have joined — each holds its own MCP session whose
+                    // streaming connection would block rp's graceful
+                    // shutdown below, same as the persistent client.
+                    for (_, handle) in world.background_calls.drain(..) {
+                        handle.abort();
+                    }
                     // Drop the MCP client and any SSE subscription first —
                     // their long-lived streaming HTTP connections would
                     // otherwise keep axum's graceful shutdown blocked, causing

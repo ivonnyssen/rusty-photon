@@ -48,8 +48,8 @@ is not involved beyond its existing config-shape checks.
 |-------|-------------|--------|-------------|
 | T0 | This plan | Merged | [#579](https://github.com/ivonnyssen/rusty-photon/pull/579) |
 | T1 | Config schema + validation + derived coupling model in rp (`optical_trains`, `equipment.mount.guiding`, back-ref removal, `focal_length_mm` migration) | Merged | [#586](https://github.com/ivonnyssen/rusty-photon/pull/586) |
-| T2 | Train-aware MCP tools: `auto_focus` by train, `refocus_train` sequence expansion, first rotator verbs | In progress | feature/optical-trains-t2 |
-| T3 | Mount motion gate (dither/slew/flip vs. in-flight exposures) | Not started | |
+| T2 | Train-aware MCP tools: `auto_focus` by train, `refocus_train` sequence expansion, first rotator verbs | Merged | [#591](https://github.com/ivonnyssen/rusty-photon/pull/591) |
+| T3 | Mount motion gate (dither/slew/flip vs. in-flight exposures) | In progress | feature/optical-trains-t3 |
 | T4 | Guiding integration: rotate×guide ladder, guide-AF trigger + escalation via PHD2 metrics | Not started | |
 | T5 | DSL train addressing (`deep_sky` takes one train id, not three device ids) | Not started | |
 | T6 | ui-htmx `/equipment` grouped by train; membership editing | Not started | |
@@ -68,6 +68,10 @@ Backlog (explicitly deferred, see Decisions 4 and 9):
 - Upstreaming an Alpaca rotator connection to PHD2 itself.
 - Multi-mount (`mount_id` on trains), passive path elements (reducers with
   derived focal length), per-filter focus offsets.
+- Doctor cross-check for driver-internal auto-flip: warn when rp
+  orchestrates a star-adventurer-gti mount whose driver config enables
+  `flip_policy.auto_flip_during_tracking` (incompatible with the T3 motion
+  gate — see rp.md § Mount Motion Gate).
 
 ## Decisions (fixed — settled interactively 2026-07-18)
 
@@ -259,13 +263,21 @@ which cannot live in a single field's type:
 An rp-internal readers-writer gate per mount. Exclusive: dither, slew,
 meridian flip, `center_on_target`'s slews. Shared: `capture` on any camera
 belonging to an imaging train. Pending exclusive blocks new shared acquires;
-queued exclusives run FIFO. Guide pulses bypass the gate.
+queued exclusives run FIFO. Guide pulses bypass the gate. Full contract
+(exemptions, the `mount_motion_pending` event, transitively bounded waits)
+in rp.md § Mount Motion Gate.
 
-Open question for T3: the GTi's `auto_flip_during_tracking`
+Settled in the T3 design pass — the GTi's `auto_flip_during_tracking`
 ([#510](https://github.com/ivonnyssen/rusty-photon/pull/510)) flips inside
-the driver, invisible to rp's gate. Options include rp subscribing to mount
-side-of-pier changes and invalidating in-flight subs, or routing unattended
-flips through rp. To be settled in the T3 design pass.
+the driver, invisible to rp's gate: **prevention over detection**. The gate
+presumes rp is the sole source of non-guiding mount motion, so
+driver-planned auto-flip must stay disabled on rp-orchestrated rigs — its
+shipped default, and the posture the GTi design doc already states ("hosts
+like rp own flip timing themselves via `SetSideOfPier`"). rp does not
+subscribe to side-of-pier changes or invalidate in-flight subs; that
+detection machinery waits until a rig actually needs it. A doctor
+cross-check (warn when rp orchestrates a GTi mount whose driver config
+enables auto-flip) is backlog, below.
 
 ### Guiding integration (T4)
 
@@ -313,7 +325,9 @@ grouping.
 
 **Deferred:** the Linux PHD2 rotator bridge, PHD2 upstream patch,
 multi-mount, passive path elements, per-filter focus offsets,
-driver-initiated flip coordination (unless T3's design pass pulls it in).
+driver-initiated flip coordination (T3's design pass settled it as
+prevention — keep driver auto-flip disabled on rp-orchestrated rigs — with
+a doctor cross-check as backlog).
 
 ## References
 

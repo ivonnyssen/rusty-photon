@@ -6221,6 +6221,161 @@ fn dither_params_empty() -> DitherParams {
     }
 }
 
+// -----------------------------------------------------------------------
+// Mount motion gate wiring tests (rp.md § Mount Motion Gate)
+// -----------------------------------------------------------------------
+// The gate's own queueing semantics are pinned in motion_gate.rs; these
+// pin the call-site wiring — which tools acquire which mode, that the
+// `*_started` envelope stays post-acquire, and that un-trained cameras
+// bypass the gate.
+
+#[tokio::test(start_paused = true)]
+async fn dither_takes_the_gate_exclusively_and_waits_for_shared_holders() {
+    let handler = handler_with_guider(
+        |mock| {
+            mock.expect_dither().returning(|_| Ok(settled_outcome()));
+        },
+        GuiderDefaults::default(),
+    );
+    let mut rx = handler.event_bus.subscribe();
+    let shared = handler.motion_gate.shared().await;
+
+    let dither = {
+        let handler = handler.clone();
+        tokio::spawn(async move {
+            handler
+                .dither(Parameters(DitherParams {
+                    pixels: Some(3.0),
+                    ..dither_params_empty()
+                }))
+                .await
+        })
+    };
+
+    // The pending event proves dither requested exclusive while the
+    // shared holder was live — and, per the gate contract, only after
+    // entering the fair queue.
+    let envelope = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+        .await
+        .expect("expected mount_motion_pending while the shared holder is live")
+        .unwrap();
+    assert_eq!(envelope.event, "mount_motion_pending");
+    assert_eq!(envelope.payload["operation"], "dither");
+    assert!(
+        !dither.is_finished(),
+        "dither must still be waiting on the gate"
+    );
+
+    drop(shared);
+    let json = ok_text(dither.await.unwrap().unwrap());
+    assert_eq!(json["state"], "guiding");
+
+    // dither_started must be the next emission — after the acquire,
+    // never while queued.
+    let started = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+        .await
+        .expect("expected dither_started after the gate released")
+        .unwrap();
+    assert_eq!(started.event, "dither_started");
+}
+
+#[tokio::test(start_paused = true)]
+async fn slew_takes_the_gate_exclusively_before_resolving_the_mount() {
+    let handler = test_handler(empty_registry());
+    let mut rx = handler.event_bus.subscribe();
+    let shared = handler.motion_gate.shared().await;
+
+    let slew = {
+        let handler = handler.clone();
+        tokio::spawn(async move {
+            handler
+                .slew_inner(
+                    SlewParams {
+                        ra: Some(10.0),
+                        dec: Some(45.0),
+                        settle_after: None,
+                    },
+                    None,
+                )
+                .await
+        })
+    };
+
+    let envelope = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+        .await
+        .expect("expected mount_motion_pending while the shared holder is live")
+        .unwrap();
+    assert_eq!(envelope.event, "mount_motion_pending");
+    assert_eq!(envelope.payload["operation"], "slew");
+    assert!(
+        !slew.is_finished(),
+        "slew must still be waiting on the gate"
+    );
+
+    // With no mount configured the slew then fails — after the gate,
+    // which is exactly the documented acquire-before-pointing-read
+    // ordering.
+    drop(shared);
+    assert_tool_error(slew.await.unwrap(), "no mount configured");
+}
+
+#[tokio::test(start_paused = true)]
+async fn capture_through_an_imaging_train_camera_waits_for_motion() {
+    let handler = test_handler(camera_registry(Arc::new(MockCamera::default())))
+        .with_trains(cam_trains(1000.0));
+    let exclusive = handler.motion_gate.exclusive("test").await;
+
+    let capture = {
+        let handler = handler.clone();
+        tokio::spawn(async move {
+            handler
+                .capture_inner(
+                    CaptureParams {
+                        camera_id: "cam".into(),
+                        duration: Duration::from_millis(100),
+                    },
+                    None,
+                )
+                .await
+        })
+    };
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        !capture.is_finished(),
+        "imaging-train capture must wait behind the exclusive holder"
+    );
+
+    drop(exclusive);
+    let json = ok_text(capture.await.unwrap().unwrap());
+    assert!(
+        json["image_path"].as_str().is_some(),
+        "capture must complete once the motion released the gate"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn capture_through_an_untrained_camera_ignores_the_gate() {
+    let handler = test_handler(camera_registry(Arc::new(MockCamera::default())));
+    let _exclusive = handler.motion_gate.exclusive("test").await;
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(30),
+        handler.capture_inner(
+            CaptureParams {
+                camera_id: "cam".into(),
+                duration: Duration::from_millis(100),
+            },
+            None,
+        ),
+    )
+    .await
+    .expect("an un-trained capture must not wait on the gate")
+    .unwrap();
+    let json = ok_text(result);
+    assert!(json["image_path"].as_str().is_some());
+}
+
 /// Build a handler with a configured guider client. Pass
 /// `configure` to wire up mock expectations before the handler is
 /// built.

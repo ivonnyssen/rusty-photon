@@ -8,6 +8,7 @@ pub mod error;
 pub mod events;
 pub mod imaging;
 pub mod mcp;
+pub mod motion_gate;
 pub mod persistence;
 pub mod planner;
 pub mod routes;

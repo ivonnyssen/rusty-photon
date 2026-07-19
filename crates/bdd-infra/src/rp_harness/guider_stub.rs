@@ -45,6 +45,12 @@ pub struct CannedGuiding {
     /// stopped guider (`app_state: "Stopped"`) — the state
     /// refocus_train's pause/resume handshake checks before pausing.
     pub guiding: bool,
+    /// Delay applied before answering the settle-blocking endpoints
+    /// (`guiding/start`, `dither`). Zero (the default) answers
+    /// immediately; rp's motion-gate scenarios use a non-zero delay
+    /// to hold a dither in flight while a concurrent capture is
+    /// issued.
+    pub settle_delay: std::time::Duration,
 }
 
 impl Default for CannedGuiding {
@@ -57,6 +63,7 @@ impl Default for CannedGuiding {
             snr: 25.0,
             star_mass: 5432.0,
             guiding: true,
+            settle_delay: std::time::Duration::ZERO,
         }
     }
 }
@@ -228,6 +235,9 @@ async fn settle_handler(
         return err;
     }
     let c = canned(&state);
+    if !c.settle_delay.is_zero() {
+        tokio::time::sleep(c.settle_delay).await;
+    }
     Json(serde_json::json!({
         "state": "guiding",
         "rms_ra_px": c.rms_ra_px,

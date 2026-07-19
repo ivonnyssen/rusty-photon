@@ -1023,7 +1023,10 @@ Semantics and interactions:
   auto-flip breaks astrophotography frames and autoguiding. Operators
   running fully unattended sessions without a flip-aware host opt in.
   With `flip_policy.enabled = false`, `auto_flip_during_tracking` is
-  inert (the master switch disables every flip code path).
+  inert (the master switch disables every flip code path). In
+  particular, `rp`'s mount motion gate (rp.md § Mount Motion Gate)
+  presumes rp is the sole source of non-guiding mount motion — keep
+  auto-flip disabled on rp-orchestrated rigs.
 - **Offset semantics.** `0.0` (the default) flips exactly at meridian
   crossing. A small positive value (e.g. `+0.3`) waits until the
   target is that far past the meridian — the common astrophotography

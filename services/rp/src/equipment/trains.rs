@@ -334,6 +334,15 @@ impl TrainModel {
         self.train_for_camera(camera_id)?.terminal_focuser()
     }
 
+    /// Whether captures through this camera contend with mount
+    /// motion: true iff the camera terminates a train with
+    /// `purpose: "imaging"` (rp.md § Mount Motion Gate). Un-trained
+    /// and guiding-train cameras bypass the gate.
+    pub fn camera_in_imaging_train(&self, camera_id: &str) -> bool {
+        self.train_for_camera(camera_id)
+            .is_some_and(|t| t.purpose == TrainPurpose::Imaging)
+    }
+
     /// The train with `purpose: "guiding"`, if any. At most one —
     /// validation rejects a second.
     pub fn guiding_train(&self) -> Option<&Train> {
@@ -537,6 +546,12 @@ mod tests {
         assert_eq!(rotated, vec!["main"]);
 
         assert_eq!(model.guiding_train().unwrap().id, "guide");
+
+        // Motion-gate scope: only the imaging terminal contends with
+        // mount motion; the guide camera and un-trained cameras don't.
+        assert!(model.camera_in_imaging_train("main-cam"));
+        assert!(!model.camera_in_imaging_train("guide-cam"));
+        assert!(!model.camera_in_imaging_train("unknown-cam"));
     }
 
     /// Requirement 1 of the plan: main AF first (shared EAF runs in the

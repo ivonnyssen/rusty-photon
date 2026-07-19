@@ -79,6 +79,10 @@ pub struct McpHandler {
     /// it for the exposure document's `optics` block. The default
     /// (no trains) is the pre-train behavior — no optics block.
     pub trains: crate::equipment::trains::TrainModel,
+    /// The mount motion gate (rp.md § Mount Motion Gate). Behind an
+    /// `Arc` so every clone of the handler — rmcp clones it per MCP
+    /// connection — contends on the same gate.
+    pub motion_gate: Arc<crate::motion_gate::MotionGate>,
     /// Per-rig estimates sizing the advisory `center_on_target` deadline
     /// (§2.5) carried on `centering_started`. Wired by
     /// `with_centering_config` from the `centering` block in rp config;
@@ -104,6 +108,7 @@ impl McpHandler {
         image_cache: ImageCache,
         site: Option<rp_ephemeris::Site>,
     ) -> Self {
+        let motion_gate = Arc::new(crate::motion_gate::MotionGate::new(event_bus.clone()));
         Self {
             equipment,
             event_bus,
@@ -121,6 +126,7 @@ impl McpHandler {
             guider: None,
             guider_defaults: crate::config::GuiderDefaults::default(),
             trains: crate::equipment::trains::TrainModel::default(),
+            motion_gate,
             centering: crate::config::CenteringConfig::default(),
             cooling: None,
             // Pattern (c) merge: each `built_in/<category>.rs`

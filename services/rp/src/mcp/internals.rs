@@ -595,6 +595,19 @@ impl McpHandler {
         let cached_sensor_width_px = cam_entry.sensor_width_px;
         let cached_sensor_height_px = cam_entry.sensor_height_px;
 
+        // Imaging-train exposures contend with mount motion (rp.md
+        // § Mount Motion Gate): hold the gate shared for the whole
+        // pipeline, so a pending slew/dither delays this exposure's
+        // start rather than trailing its stars. Un-trained and
+        // guiding-train cameras bypass the gate — trains are
+        // enrichment, not a gate. `exposure_started` below is emitted
+        // only after the acquire, keeping its deadline honest.
+        let _motion_permit = if self.trains.camera_in_imaging_train(camera_id) {
+            Some(self.motion_gate.shared().await)
+        } else {
+            None
+        };
+
         let document_id = Uuid::new_v4().to_string();
         // The 8-char UUID suffix is the on-disk reverse-lookup key used by
         // the cache's disk-fallback resolution (see Phase 7 of
@@ -1173,6 +1186,11 @@ impl McpHandler {
         settle_after: Duration,
         progress: Option<&dyn ProgressEmitter>,
     ) -> std::result::Result<(f64, f64), String> {
+        // Mount motion (rp.md § Mount Motion Gate): exclusive acquire
+        // before the pre-slew pointing read, so the deadline predicted
+        // from it never includes gate wait and stays honest.
+        let _motion_permit = self.motion_gate.exclusive("slew").await;
+
         let operation_id = Uuid::new_v4().to_string();
         let started_at = chrono::Utc::now();
 
