@@ -183,6 +183,63 @@ impl TrainModel {
                 }
             }
 
+            // Per-purpose auto_focus block fields (rp.md § Optical
+            // Trains): the capture fields are required on imaging
+            // trains and rejected on the guiding train (its sweep is
+            // metric-based); frames_per_step the other way around.
+            if let Some(block) = &train.auto_focus {
+                let block_path = |field: &str| path(&format!(".auto_focus.{field}"));
+                match train.purpose {
+                    TrainPurpose::Imaging => {
+                        for (field, missing) in [
+                            ("duration", block.duration.is_none()),
+                            ("min_area", block.min_area.is_none()),
+                            ("max_area", block.max_area.is_none()),
+                        ] {
+                            if missing {
+                                errors.push(FieldError {
+                                    path: block_path(field),
+                                    msg: format!(
+                                        "auto_focus.{field} is required for an imaging \
+                                         train's capture sweep (train '{}')",
+                                        train.id
+                                    ),
+                                });
+                            }
+                        }
+                        if block.frames_per_step.is_some() {
+                            errors.push(FieldError {
+                                path: block_path("frames_per_step"),
+                                msg: format!(
+                                    "auto_focus.frames_per_step only applies to the guiding \
+                                     train's metric sweep (train '{}')",
+                                    train.id
+                                ),
+                            });
+                        }
+                    }
+                    TrainPurpose::Guiding => {
+                        for (field, present) in [
+                            ("duration", block.duration.is_some()),
+                            ("min_area", block.min_area.is_some()),
+                            ("max_area", block.max_area.is_some()),
+                            ("threshold_sigma", block.threshold_sigma.is_some()),
+                        ] {
+                            if present {
+                                errors.push(FieldError {
+                                    path: block_path(field),
+                                    msg: format!(
+                                        "auto_focus.{field} does not apply to the guiding \
+                                         train's metric sweep (train '{}')",
+                                        train.id
+                                    ),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+
             if train.devices.is_empty() {
                 errors.push(FieldError {
                     path: path(".devices"),

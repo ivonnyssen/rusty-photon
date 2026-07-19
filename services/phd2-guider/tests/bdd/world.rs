@@ -165,6 +165,13 @@ impl GuiderWorld {
     /// Spawn `mock_phd2` with an auto-assigned port and the given
     /// settle/stop behavior, parsing the bound port from its stdout.
     pub fn start_mock(&mut self, settle_mode: &str, stop_mode: &str) {
+        self.start_mock_env(settle_mode, stop_mode, &[]);
+    }
+
+    /// [`Self::start_mock`] with additional mock environment knobs
+    /// (e.g. `MOCK_PHD2_ROTATOR=connected` for the equipment
+    /// passthrough scenarios).
+    pub fn start_mock_env(&mut self, settle_mode: &str, stop_mode: &str, extra: &[(&str, &str)]) {
         let dir = self.temp_dir_path();
         let rpc_log = dir.join("rpc_log.jsonl");
         self.rpc_log_path = Some(rpc_log.clone());
@@ -173,8 +180,11 @@ impl GuiderWorld {
         cmd.env("MOCK_PHD2_PORT", "0")
             .env("MOCK_PHD2_SETTLE_MODE", settle_mode)
             .env("MOCK_PHD2_STOP_MODE", stop_mode)
-            .env("MOCK_PHD2_RPC_LOG", &rpc_log)
-            .stdout(Stdio::piped())
+            .env("MOCK_PHD2_RPC_LOG", &rpc_log);
+        for (key, value) in extra {
+            cmd.env(key, value);
+        }
+        cmd.stdout(Stdio::piped())
             // mock_phd2 logs verbosely to stderr; discard it so a full
             // pipe buffer can never deadlock the mock under parallel
             // scenarios (same policy as tests/test_integration.rs).

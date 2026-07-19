@@ -40,7 +40,7 @@ pub use dome::DomeConfig;
 pub use equipment::EquipmentConfig;
 pub use filter_wheel::FilterWheelConfig;
 pub use focuser::FocuserConfig;
-pub use guiding::{GuiderDefaults, GuidingConfig};
+pub use guiding::{FocusWatchConfig, GuiderDefaults, GuidingConfig};
 pub use imaging::ImagingConfig;
 pub use mount::MountConfig;
 pub use observing_conditions::ObservingConditionsConfig;

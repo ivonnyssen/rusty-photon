@@ -176,13 +176,6 @@ Feature: Auto-focus compound tool
     Then the tool call should return an error
     And the error message should contain "no focuser"
 
-  Scenario: auto_focus on the guiding train is refused until the guiding integration
-    Given rp is running with an offline reference rig and mount guiding
-    And an MCP client connected to rp
-    When the MCP client calls auto_focus with train "guide"
-    Then the tool call should return an error
-    And the error message should contain "guiding train"
-
   Scenario: Train addressing without a config block still requires the sweep parameters
     Given rp is running with an offline focuser train without an auto_focus block
     And an MCP client connected to rp

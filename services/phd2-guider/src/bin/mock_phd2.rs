@@ -29,6 +29,9 @@
 //!   MOCK_PHD2_RPC_LOG - Path to a JSON-lines file each received
 //!     {"method", "params"} is appended to (request-forwarding assertions;
 //!     the MOCK_ASTAP_ARGV_OUT equivalent)
+//!   MOCK_PHD2_ROTATOR - "connected" populates get_current_equipment's
+//!     rotator slot ({"name": "Mock Rotator", "connected": true});
+//!     unset/anything else reports null (no rotator in the profile)
 //!
 //! Command line argument takes precedence over environment variable for port.
 //! Default port is 4400 (same as PHD2).
@@ -206,12 +209,20 @@ fn emit_settle_sequence(writer: Arc<Mutex<TcpStream>>) {
         std::thread::sleep(pause);
         let _ = write_line(
             &writer,
-            r#"{"Event":"GuideStep","Frame":1,"Time":1.0,"Mount":"Mock Mount","dx":0.1,"dy":0.1,"RADistanceRaw":0.3,"DECDistanceRaw":-0.4,"SNR":25.1,"StarMass":5340.0}"#,
+            r#"{"Event":"GuideStep","Frame":1,"Time":1.0,"Mount":"Mock Mount","dx":0.1,"dy":0.1,"RADistanceRaw":0.3,"DECDistanceRaw":-0.4,"SNR":25.1,"StarMass":5340.0,"HFD":2.3}"#,
         );
         std::thread::sleep(pause);
         let _ = write_line(
             &writer,
-            r#"{"Event":"GuideStep","Frame":2,"Time":2.0,"Mount":"Mock Mount","dx":0.1,"dy":0.1,"RADistanceRaw":-0.3,"DECDistanceRaw":0.4,"SNR":25.1,"StarMass":5340.0}"#,
+            r#"{"Event":"GuideStep","Frame":2,"Time":2.0,"Mount":"Mock Mount","dx":0.1,"dy":0.1,"RADistanceRaw":-0.3,"DECDistanceRaw":0.4,"SNR":25.1,"StarMass":5340.0,"HFD":2.5}"#,
+        );
+        std::thread::sleep(pause);
+        // A star-lost frame after the guide steps: exercises the
+        // metrics ring's star_lost entries without perturbing the RMS
+        // window (StarLost carries no distances).
+        let _ = write_line(
+            &writer,
+            r#"{"Event":"StarLost","Frame":3,"Time":3.0,"StarMass":900.0,"SNR":3.1,"Status":"Lost"}"#,
         );
         std::thread::sleep(pause);
         match settle_mode.as_str() {
@@ -331,13 +342,23 @@ fn handle_request(
         ]),
         "get_profile" => serde_json::json!({"id": 1, "name": "Mock Profile"}),
         "set_profile" => serde_json::json!(0),
-        "get_current_equipment" => serde_json::json!({
-            "camera": {"name": "Mock Camera", "connected": false},
-            "mount": {"name": "Mock Mount", "connected": false},
-            "aux_mount": null,
-            "AO": null,
-            "rotator": null
-        }),
+        "get_current_equipment" => {
+            // MOCK_PHD2_ROTATOR=connected populates the rotator slot —
+            // the branch rp's rotate-while-guiding ladder takes when
+            // PHD2 adjusts calibration for rotation on its own.
+            let rotator = if std::env::var("MOCK_PHD2_ROTATOR").as_deref() == Ok("connected") {
+                serde_json::json!({"name": "Mock Rotator", "connected": true})
+            } else {
+                serde_json::Value::Null
+            };
+            serde_json::json!({
+                "camera": {"name": "Mock Camera", "connected": false},
+                "mount": {"name": "Mock Mount", "connected": false},
+                "aux_mount": null,
+                "AO": null,
+                "rotator": rotator
+            })
+        }
         "get_exposure" => serde_json::json!(1000),
         "set_exposure" => serde_json::json!(0),
         "get_exposure_durations" => serde_json::json!([100, 200, 500, 1000, 2000, 3000]),

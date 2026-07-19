@@ -27,6 +27,7 @@ use rmcp::model::CallToolResult;
 use rmcp::{tool, tool_router};
 use schemars::JsonSchema;
 use serde::Deserialize;
+use tracing::debug;
 
 use super::super::handler::McpHandler;
 use super::super::{tool_error, tool_success};
@@ -183,6 +184,7 @@ impl McpHandler {
                     started_at,
                     settled_payload(&outcome),
                 ));
+                self.warn_if_guide_rotator_unmodeled(client.as_ref()).await;
                 Ok(tool_success!({
                     "state": outcome.state,
                     "rms_ra_px": outcome.rms_ra_px,
@@ -476,6 +478,50 @@ impl McpHandler {
             timeout: timeout.or(self.guider_defaults.settle_timeout),
         };
         (!settle.is_empty()).then_some(settle)
+    }
+
+    /// Decision 9's setup warning (rp.md § Guider Service): the train
+    /// model says the guide camera is rotator-coupled, but PHD2 has
+    /// no connected rotator — rotations of the guide field will clear
+    /// calibration above `recalibrate_above_deg` instead of being
+    /// angle-adjusted by PHD2. Emitted after a successful
+    /// `start_guiding` settle; best-effort (an equipment read failure
+    /// only logs — the guiding start already succeeded).
+    async fn warn_if_guide_rotator_unmodeled(&self, client: &dyn rp_guider::GuiderClient) {
+        let Some(guiding) = self.trains.guiding_train() else {
+            return;
+        };
+        let Some(rotator_id) = guiding
+            .devices
+            .iter()
+            .find(|d| d.kind == crate::equipment::trains::TrainDeviceKind::Rotator)
+            .map(|d| d.id.clone())
+        else {
+            return;
+        };
+        match client.current_equipment().await {
+            Ok(equipment) => {
+                let phd2_has_rotator = equipment.rotator.map(|r| r.connected).unwrap_or(false);
+                if !phd2_has_rotator {
+                    tracing::warn!(
+                        rotator_id,
+                        train_id = %guiding.id,
+                        "the guide camera is rotator-coupled but PHD2 reports no connected \
+                         rotator; rotations will clear calibration above recalibrate_above_deg"
+                    );
+                    self.event_bus.emit(
+                        "guide_rotator_unmodeled",
+                        serde_json::json!({
+                            "rotator_id": rotator_id,
+                            "train_id": guiding.id,
+                        }),
+                    );
+                }
+            }
+            Err(e) => {
+                debug!(error = %e, "could not read PHD2 equipment for the rotator warning");
+            }
+        }
     }
 }
 

@@ -47,7 +47,9 @@ fn temp_config_reference_trains(world: &mut RpWorld) {
             ],
             "mount": {
                 "alpaca_url": "not-a-url",
-                "guiding": { "url": "http://127.0.0.1:1" }
+                "guiding": { "url": "http://127.0.0.1:1",
+                             "focus_watch": { "window": 3,
+                                              "degrade_ratio": 1.25 } }
             },
             "optical_trains": [
                 { "id": "main", "purpose": "imaging", "focal_length_mm": 1000.0,
@@ -56,7 +58,9 @@ fn temp_config_reference_trains(world: &mut RpWorld) {
                                   "half_width": 1000, "min_area": 4,
                                   "max_area": 500 } },
                 { "id": "guide", "purpose": "guiding", "focal_length_mm": 200.0,
-                  "devices": ["main-focuser", "guide-focuser", "guide-cam"] }
+                  "devices": ["main-focuser", "guide-focuser", "guide-cam"],
+                  "auto_focus": { "step_size": 50, "half_width": 500,
+                                  "frames_per_step": 3 } }
             ]
         }),
     );

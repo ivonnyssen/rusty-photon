@@ -27,6 +27,10 @@ pub fn build_router(ops: Arc<GuiderOps>) -> Router {
         .route("/api/v1/guiding/resume", post(resume_guiding))
         .route("/api/v1/dither", post(dither))
         .route("/api/v1/guiding/stats", get(stats))
+        .route("/api/v1/guiding/metrics", get(metrics))
+        .route("/api/v1/equipment", get(equipment))
+        .route("/api/v1/calibration/clear", post(clear_calibration))
+        .route("/api/v1/star/reselect", post(reselect_star))
         .route("/health", get(health))
         .with_state(ops)
 }
@@ -210,6 +214,80 @@ async fn stats(State(ops): State<Arc<GuiderOps>>) -> Result<Json<StatsResponse>,
         star_mass: stats.snapshot.star_mass,
         sample_count: stats.snapshot.sample_count,
     }))
+}
+
+/// Which calibration to clear; the serde names are the wire contract
+/// (`"mount"` default, `"ao"`, `"both"`).
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ClearCalibrationBody {
+    #[serde(default)]
+    which: ClearTarget,
+}
+
+#[derive(Debug, Default, Deserialize, Clone, Copy)]
+#[serde(rename_all = "lowercase")]
+enum ClearTarget {
+    #[default]
+    Mount,
+    Ao,
+    Both,
+}
+
+impl From<ClearTarget> for crate::types::CalibrationTarget {
+    fn from(t: ClearTarget) -> Self {
+        match t {
+            ClearTarget::Mount => Self::Mount,
+            ClearTarget::Ao => Self::AO,
+            ClearTarget::Both => Self::Both,
+        }
+    }
+}
+
+async fn metrics(
+    State(ops): State<Arc<GuiderOps>>,
+) -> Result<Json<serde_json::Value>, ServiceError> {
+    let metrics = ops.metrics().await?;
+    Ok(Json(serde_json::json!({
+        "guiding": metrics.guiding,
+        "frames": metrics.frames,
+    })))
+}
+
+/// Serialized by hand rather than via `types::Equipment`'s derive so
+/// the wire keeps the documented lowercase slot names (`ao`, not the
+/// RPC's `AO`) and every slot is present (`null` when unconfigured).
+async fn equipment(
+    State(ops): State<Arc<GuiderOps>>,
+) -> Result<Json<serde_json::Value>, ServiceError> {
+    let equipment = ops.equipment().await?;
+    let slot = |d: &Option<crate::types::EquipmentDevice>| match d {
+        Some(d) => serde_json::json!({ "name": d.name, "connected": d.connected }),
+        None => serde_json::Value::Null,
+    };
+    Ok(Json(serde_json::json!({
+        "camera": slot(&equipment.camera),
+        "mount": slot(&equipment.mount),
+        "aux_mount": slot(&equipment.aux_mount),
+        "ao": slot(&equipment.ao),
+        "rotator": slot(&equipment.rotator),
+    })))
+}
+
+async fn clear_calibration(
+    State(ops): State<Arc<GuiderOps>>,
+    bytes: axum::body::Bytes,
+) -> Result<Json<StateResponse>, ServiceError> {
+    let body: ClearCalibrationBody = parse_optional_body(&bytes)?;
+    ops.clear_calibration(body.which.into()).await?;
+    Ok(Json(StateResponse { state: "cleared" }))
+}
+
+async fn reselect_star(
+    State(ops): State<Arc<GuiderOps>>,
+) -> Result<Json<StateResponse>, ServiceError> {
+    ops.reselect_star().await?;
+    Ok(Json(StateResponse { state: "selected" }))
 }
 
 async fn health(State(ops): State<Arc<GuiderOps>>) -> impl IntoResponse {

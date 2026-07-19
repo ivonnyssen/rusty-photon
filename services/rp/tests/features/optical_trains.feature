@@ -215,3 +215,20 @@ Feature: Optical trains configuration
     And I fetch the document for the captured document_id
     Then the document response status should be 200
     And the document body should not contain "optics"
+
+  Scenario Outline: An auto_focus block field that does not fit the train's purpose is rejected
+    Given a temp rp config with the reference optical trains
+    And rp is started with that config file
+    When I GET /api/config
+    And I PUT /api/config with the fetched config after setting "<pointer>" to "<value>"
+    Then the config response status should be 400
+    And the config response body should contain "<named>"
+
+    Examples:
+      | pointer                                  | value                                                                                     | named                          |
+      | /equipment/optical_trains/0/auto_focus   | {"step_size": 100, "half_width": 1000, "min_area": 4, "max_area": 500}                    | duration                       |
+      | /equipment/optical_trains/0/auto_focus   | {"duration": "3s", "step_size": 100, "half_width": 1000, "min_area": 4, "max_area": 500, "frames_per_step": 3} | frames_per_step |
+      | /equipment/optical_trains/1/auto_focus   | {"step_size": 50, "half_width": 500, "duration": "3s"}                                    | duration                       |
+      | /equipment/optical_trains/1/auto_focus   | {"half_width": 500}                                                                       | step_size                      |
+      | /equipment/mount/guiding/focus_watch/window        | 2   | focus_watch.window        |
+      | /equipment/mount/guiding/focus_watch/degrade_ratio | 1.0 | focus_watch.degrade_ratio |

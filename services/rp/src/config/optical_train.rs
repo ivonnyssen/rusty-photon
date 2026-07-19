@@ -103,32 +103,71 @@ impl TryFrom<i64> for SweepHalfWidth {
     }
 }
 
+/// A positive fresh-frame count per metric-sweep position
+/// (`auto_focus.frames_per_step`), validated like [`SweepStepSize`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(try_from = "i64")]
+pub struct FramesPerStep(u32);
+
+impl FramesPerStep {
+    pub fn value(self) -> u32 {
+        self.0
+    }
+}
+
+impl TryFrom<i64> for FramesPerStep {
+    type Error = String;
+
+    fn try_from(value: i64) -> Result<Self, Self::Error> {
+        match u32::try_from(value) {
+            Ok(v) if v > 0 => Ok(Self(v)),
+            _ => Err(format!(
+                "auto_focus.frames_per_step must be a positive integer, got {value}"
+            )),
+        }
+    }
+}
+
 /// Per-train V-curve sweep parameters (`optical_trains[].auto_focus`,
-/// rp.md § Optical Trains): the five fields the `auto_focus` tool
-/// requires per call, as train-scoped config. Backs train-addressed
-/// `auto_focus` calls (per-call parameters override field by field)
-/// and is required on every train a `refocus_train` expansion runs in.
+/// rp.md § Optical Trains). Which fields apply depends on the train's
+/// purpose — imaging trains run the capture sweep (`duration`,
+/// `min_area`, `max_area` required, `threshold_sigma` optional), the
+/// guiding train the PHD2-metric sweep (`frames_per_step` optional;
+/// the capture fields rejected) — enforced with dotted-path errors in
+/// [`crate::equipment::trains::TrainModel::try_from_equipment`], so
+/// everything purpose-dependent is `Option` at the serde level. Backs
+/// train-addressed `auto_focus` calls (per-call parameters override
+/// field by field) and is required on every train a `refocus_train`
+/// expansion runs in.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TrainAutoFocusConfig {
-    /// Per-frame exposure for every point in the sweep.
-    #[serde(with = "humantime_serde")]
-    #[schemars(with = "String")]
-    pub duration: Duration,
+    /// Per-frame exposure for every point of a capture sweep.
+    #[serde(default, with = "humantime_serde::option")]
+    #[schemars(with = "Option<String>")]
+    pub duration: Option<Duration>,
     pub step_size: SweepStepSize,
     pub half_width: SweepHalfWidth,
-    /// Minimum component pixel area for the per-frame `measure_basic`.
-    pub min_area: usize,
-    /// Maximum component pixel area for the per-frame `measure_basic`.
-    pub max_area: usize,
-    /// Per-frame `measure_basic` threshold in sigma units. Omitted →
-    /// the tool default (5.0).
+    /// Minimum component pixel area for the per-frame `measure_basic`
+    /// (capture sweeps).
+    #[serde(default)]
+    pub min_area: Option<usize>,
+    /// Maximum component pixel area for the per-frame `measure_basic`
+    /// (capture sweeps).
+    #[serde(default)]
+    pub max_area: Option<usize>,
+    /// Per-frame `measure_basic` threshold in sigma units (capture
+    /// sweeps). Omitted → the tool default (5.0).
     #[serde(default)]
     pub threshold_sigma: Option<f64>,
-    /// Minimum non-null HFR samples for the parabolic fit. Omitted →
-    /// the tool default (5).
+    /// Minimum valid samples for the parabolic fit. Omitted → the
+    /// tool default (5). Applies to both sweep variants.
     #[serde(default)]
     pub min_fit_points: Option<usize>,
+    /// Fresh guide frames per metric-sweep position (guiding train
+    /// only). Omitted → the default (3).
+    #[serde(default)]
+    pub frames_per_step: Option<FramesPerStep>,
 }
 
 /// One `equipment.optical_trains[]` entry (rp.md § Optical Trains): an
@@ -327,13 +366,14 @@ mod tests {
             .auto_focus
             .as_ref()
             .unwrap();
-        assert_eq!(block.duration, Duration::from_secs(3));
+        assert_eq!(block.duration, Some(Duration::from_secs(3)));
         assert_eq!(block.step_size.value(), 100);
         assert_eq!(block.half_width.value(), 1000);
-        assert_eq!(block.min_area, 4);
-        assert_eq!(block.max_area, 500);
+        assert_eq!(block.min_area, Some(4));
+        assert_eq!(block.max_area, Some(500));
         assert!(block.threshold_sigma.is_none());
         assert!(block.min_fit_points.is_none());
+        assert!(block.frames_per_step.is_none());
 
         let value = serde_json::to_value(&config).unwrap();
         assert_eq!(

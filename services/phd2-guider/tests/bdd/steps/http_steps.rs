@@ -29,6 +29,11 @@ async fn mock_never_stops(world: &mut GuiderWorld) {
     world.start_mock("settle_ok", "never_stops");
 }
 
+#[given("a mock PHD2 with a connected rotator")]
+async fn mock_with_rotator(world: &mut GuiderWorld) {
+    world.start_mock_env("settle_ok", "stops", &[("MOCK_PHD2_ROTATOR", "connected")]);
+}
+
 #[given("the guider service is running")]
 async fn service_running(world: &mut GuiderWorld) {
     let port = world.mock.as_ref().expect("mock PHD2 not started").port;
@@ -151,6 +156,26 @@ async fn request_stats(world: &mut GuiderWorld) {
     get(world, "/api/v1/guiding/stats").await;
 }
 
+#[when("the client requests the guiding metrics")]
+async fn request_metrics(world: &mut GuiderWorld) {
+    get(world, "/api/v1/guiding/metrics").await;
+}
+
+#[when("the client requests the guider equipment")]
+async fn request_equipment(world: &mut GuiderWorld) {
+    get(world, "/api/v1/equipment").await;
+}
+
+#[when("the client clears the guider calibration")]
+async fn clear_calibration(world: &mut GuiderWorld) {
+    post(world, "/api/v1/calibration/clear", serde_json::json!({})).await;
+}
+
+#[when("the client re-selects the guide star")]
+async fn reselect_star(world: &mut GuiderWorld) {
+    post(world, "/api/v1/star/reselect", serde_json::json!({})).await;
+}
+
 #[when("the client probes the service health")]
 async fn probe_health(world: &mut GuiderWorld) {
     get(world, "/health").await;
@@ -210,6 +235,52 @@ async fn response_field_true(world: &mut GuiderWorld, field: String) {
 async fn response_error(world: &mut GuiderWorld, code: String) {
     let body = &world.last_response().body;
     assert_eq!(body["error"].as_str(), Some(code.as_str()), "in {body}");
+}
+
+#[then(expr = "the metrics window should hold {int} frames")]
+async fn metrics_window_len(world: &mut GuiderWorld, count: usize) {
+    let body = &world.last_response().body;
+    let frames = body["frames"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no frames array in {body}"));
+    assert_eq!(frames.len(), count, "frames in {body}");
+}
+
+#[then(expr = "metrics entry {int} should report frame {int}, hfd {float}, and star_lost false")]
+async fn metrics_entry_guide_step(world: &mut GuiderWorld, index: usize, frame: u64, hfd: f64) {
+    let body = &world.last_response().body;
+    let entry = &body["frames"][index - 1];
+    assert_eq!(entry["frame"].as_u64(), Some(frame), "entry {entry}");
+    approx(entry["hfd"].as_f64().expect("hfd"), hfd);
+    assert_eq!(entry["star_lost"].as_bool(), Some(false), "entry {entry}");
+}
+
+#[then(expr = "metrics entry {int} should be a star-lost frame with frame number {int}")]
+async fn metrics_entry_star_lost(world: &mut GuiderWorld, index: usize, frame: u64) {
+    let body = &world.last_response().body;
+    let entry = &body["frames"][index - 1];
+    assert_eq!(entry["frame"].as_u64(), Some(frame), "entry {entry}");
+    assert_eq!(entry["star_lost"].as_bool(), Some(true), "entry {entry}");
+    assert!(
+        entry["hfd"].is_null(),
+        "star-lost entry carries no hfd: {entry}"
+    );
+}
+
+#[then(expr = "the equipment {string} slot should be {string}")]
+async fn equipment_slot_named(world: &mut GuiderWorld, slot: String, name: String) {
+    let body = &world.last_response().body;
+    assert_eq!(
+        body[&slot]["name"].as_str(),
+        Some(name.as_str()),
+        "slot {slot} in {body}"
+    );
+}
+
+#[then(expr = "the equipment {string} slot should be null")]
+async fn equipment_slot_null(world: &mut GuiderWorld, slot: String) {
+    let body = &world.last_response().body;
+    assert!(body[&slot].is_null(), "slot {slot} in {body}");
 }
 
 #[then(expr = "the response error should be {string} mentioning {string}")]

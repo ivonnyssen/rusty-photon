@@ -596,6 +596,26 @@ mod tests {
         async fn guiding_stats(&self) -> Result<rp_guider::GuidingStats, rp_guider::GuiderError> {
             unreachable!("not exercised by this test")
         }
+
+        async fn guiding_metrics(
+            &self,
+        ) -> Result<rp_guider::GuidingMetrics, rp_guider::GuiderError> {
+            unreachable!("not exercised by this test")
+        }
+
+        async fn current_equipment(
+            &self,
+        ) -> Result<rp_guider::PhdEquipment, rp_guider::GuiderError> {
+            unreachable!("not exercised by this test")
+        }
+
+        async fn clear_calibration(&self) -> Result<(), rp_guider::GuiderError> {
+            unreachable!("not exercised by this test")
+        }
+
+        async fn reselect_star(&self) -> Result<(), rp_guider::GuiderError> {
+            unreachable!("not exercised by this test")
+        }
     }
 
     /// A guider service that never confirms the stop must not delay

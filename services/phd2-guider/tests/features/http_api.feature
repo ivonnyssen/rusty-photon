@@ -14,7 +14,10 @@ Feature: Guider HTTP service contract
 
   The mock PHD2 emits two guide steps with RADistanceRaw 0.3 and -0.3
   and DECDistanceRaw -0.4 and 0.4, so a settled response always
-  reports rms_ra_px 0.3, rms_dec_px 0.4, and total_rms_px 0.5.
+  reports rms_ra_px 0.3, rms_dec_px 0.4, and total_rms_px 0.5. The
+  steps carry HFD 2.3 and 2.5, and a StarLost event (frame 3) follows
+  them, so the per-frame metrics window always holds three entries —
+  the star-lost one flagged, never contributing an HFD.
 
   Scenario: Starting guiding blocks until PHD2 settles and reports the guiding RMS
     Given a mock PHD2 that settles successfully
@@ -128,6 +131,66 @@ Feature: Guider HTTP service contract
     And the response field "rms_ra_px" should be 0.3
     And the response field "snr" should be 25.1
     And the response field "sample_count" should be 2
+
+  Scenario: The metrics window reports per-frame star metrics including star-lost frames
+    Given a mock PHD2 that settles successfully
+    And the guider service is running
+    When the client starts guiding
+    And the client requests the guiding metrics
+    Then the response status should be 200
+    And the response field "guiding" should be true
+    And the metrics window should hold 3 frames
+    And metrics entry 1 should report frame 1, hfd 2.3, and star_lost false
+    And metrics entry 2 should report frame 2, hfd 2.5, and star_lost false
+    And metrics entry 3 should be a star-lost frame with frame number 3
+
+  Scenario: Starting guiding clears the metrics window along with the RMS window
+    Given a mock PHD2 that settles successfully
+    And the guider service is running
+    When the client starts guiding
+    And the client starts guiding
+    And the client requests the guiding metrics
+    Then the metrics window should hold 3 frames
+
+  Scenario: Equipment reports PHD2's slots with the unconfigured ones null
+    Given a mock PHD2 that settles successfully
+    And the guider service is running
+    When the client requests the guider equipment
+    Then the response status should be 200
+    And the equipment "camera" slot should be "Mock Camera"
+    And the equipment "rotator" slot should be null
+
+  Scenario: Equipment reports a connected rotator when PHD2 has one
+    Given a mock PHD2 with a connected rotator
+    And the guider service is running
+    When the client requests the guider equipment
+    Then the response status should be 200
+    And the equipment "rotator" slot should be "Mock Rotator"
+
+  Scenario: Clearing calibration forwards to PHD2 and defaults to the mount target
+    Given a mock PHD2 that settles successfully
+    And the guider service is running
+    When the client clears the guider calibration
+    Then the response status should be 200
+    And the response field "state" should be "cleared"
+    And the mock PHD2 should have received a "clear_calibration" request
+
+  Scenario: Re-selecting the guide star forwards find_star to PHD2
+    Given a mock PHD2 that settles successfully
+    And the guider service is running
+    When the client re-selects the guide star
+    Then the response status should be 200
+    And the response field "state" should be "selected"
+    And the mock PHD2 should have received a "find_star" request
+
+  Scenario: The calibration and star endpoints fail cleanly against an unreachable PHD2
+    Given the guider service is running against an unreachable PHD2
+    When the client clears the guider calibration
+    Then the response status should be 502
+    And the response error should be "phd2_unreachable"
+    When the client re-selects the guide star
+    Then the response status should be 502
+    And the response error should be "phd2_unreachable"
 
   Scenario: Health reports ok while PHD2 is connected
     Given a mock PHD2 that settles successfully

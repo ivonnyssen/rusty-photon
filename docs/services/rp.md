@@ -2153,8 +2153,9 @@ refocus fits between exposures — a workflow trigger on these events
 invokes `refocus_train` (DSL wiring is plan phase T5). rp never
 moves a focuser on its own initiative.
 
-Mechanics — the watch polls `GET /guiding/metrics` every 5 s while
-the guider reports an active guide loop, and is idle otherwise:
+Mechanics — the watch polls `GET /guiding/metrics` every
+`poll_interval` (default `"5s"`) while the guider reports an active
+guide loop, and is idle otherwise:
 
 - **Baseline**: the median HFD of the first `window` (default 10)
   valid frames after guiding becomes active. The watch subscribes
@@ -2180,9 +2181,10 @@ the guider reports an active guide loop, and is idle otherwise:
 
 All `focus_watch` fields are optional —
 `{ "window": 10, "degrade_ratio": 1.25, "cooldown": "10m",
-"escalation_deadline": "10m" }` are the defaults; `window` must be
-≥ 3 and `degrade_ratio` a finite number > 1.0, rejected at load
-otherwise. Omitting the block disables the watch entirely.
+"escalation_deadline": "10m", "poll_interval": "5s" }` are the
+defaults; `window` must be ≥ 3 and `degrade_ratio` a finite number
+> 1.0, rejected at load otherwise. Omitting the block disables the
+watch entirely.
 
 ### Plate Solver
 

@@ -4745,6 +4745,13 @@ fn reference_trains(with_block: bool) -> crate::equipment::trains::TrainModel {
             "min_area": 5, "max_area": 65536
         });
     }
+    let mut guide = serde_json::json!({
+        "id": "guide", "purpose": "guiding",
+        "devices": ["main-focuser", "guide-focuser", "guide-cam"]
+    });
+    if with_block {
+        guide["auto_focus"] = serde_json::json!({ "step_size": 50, "half_width": 200 });
+    }
     let equipment: crate::config::EquipmentConfig = serde_json::from_value(serde_json::json!({
         "cameras": [
             {"id": "main-cam", "alpaca_url": "http://localhost:1"},
@@ -4760,8 +4767,7 @@ fn reference_trains(with_block: bool) -> crate::equipment::trains::TrainModel {
         },
         "optical_trains": [
             main,
-            {"id": "guide", "purpose": "guiding",
-             "devices": ["main-focuser", "guide-focuser", "guide-cam"]}
+            guide
         ]
     }))
     .unwrap();
@@ -4802,12 +4808,180 @@ async fn auto_focus_rejects_an_unknown_train() {
 }
 
 #[tokio::test]
-async fn auto_focus_refuses_the_guiding_train() {
+async fn auto_focus_on_the_guiding_train_requires_active_guiding() {
+    // The guide train's metric block supplies the geometry; with no
+    // guider configured the sweep's precondition fails first.
     let handler = test_handler(empty_registry()).with_trains(reference_trains(true));
     let result = handler
         .auto_focus_inner(af_params_with_train("guide"), None)
         .await;
-    assert_tool_error(result, "guiding train");
+    assert_tool_error(result, "requires active guiding");
+}
+
+#[tokio::test]
+async fn auto_focus_on_a_blockless_guiding_train_requires_per_call_geometry() {
+    let handler = test_handler(empty_registry()).with_trains(reference_trains(false));
+    let result = handler
+        .auto_focus_inner(af_params_with_train("guide"), None)
+        .await;
+    assert_tool_error(result, "missing required parameter: step_size");
+}
+
+#[tokio::test]
+async fn auto_focus_rejects_capture_parameters_for_the_guiding_train() {
+    let handler = test_handler(empty_registry()).with_trains(reference_trains(true));
+    let mut params = af_params_with_train("guide");
+    params.duration = Some(Duration::from_secs(3));
+    let result = handler.auto_focus_inner(params, None).await;
+    assert_tool_error(result, "capture-based");
+}
+
+/// A guiding train terminating in the mock-focuser fixture's "foc",
+/// with a metric block giving a 5-position grid around the focuser's
+/// starting position.
+fn guide_sweep_trains() -> crate::equipment::trains::TrainModel {
+    let equipment: crate::config::EquipmentConfig = serde_json::from_value(serde_json::json!({
+        "cameras": [{"id": "gcam", "alpaca_url": "http://localhost:1"}],
+        "focusers": [{"id": "foc", "alpaca_url": "http://localhost:1"}],
+        "mount": {
+            "alpaca_url": "http://localhost:1",
+            "guiding": {"url": "http://localhost:1"}
+        },
+        "optical_trains": [
+            {"id": "guide", "purpose": "guiding",
+             "devices": ["foc", "gcam"],
+             "auto_focus": {"step_size": 50, "half_width": 100}}
+        ]
+    }))
+    .unwrap();
+    crate::equipment::trains::TrainModel::try_from_equipment(&equipment).unwrap()
+}
+
+fn guiding_stats_active() -> rp_guider::GuidingStats {
+    rp_guider::GuidingStats {
+        app_state: "Guiding".to_string(),
+        guiding: true,
+        rms_ra_px: None,
+        rms_dec_px: None,
+        total_rms_px: None,
+        snr: None,
+        star_mass: None,
+        sample_count: 0,
+    }
+}
+
+/// A mock guider whose metrics responses follow `hfd_script` one call
+/// at a time (the last value repeats), each response carrying three
+/// fresh frames — so a sweep with the default `frames_per_step` (3)
+/// consumes exactly one response per grid position, and the script
+/// indexes align call-for-position after the initial watermark fetch.
+fn scripted_metrics_guider(hfd_script: Vec<f64>) -> MockGuiderClient {
+    let mut mock = MockGuiderClient::new();
+    mock.expect_guiding_stats()
+        .returning(|| Ok(guiding_stats_active()));
+    let call = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    mock.expect_guiding_metrics().returning(move || {
+        let n = call.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let hfd = hfd_script[(n as usize).min(hfd_script.len() - 1)];
+        let frames = (n * 3 + 1..=n * 3 + 3)
+            .map(|frame| rp_guider::FrameMetrics {
+                frame,
+                hfd: Some(hfd),
+                snr: Some(20.0),
+                star_mass: Some(1000.0),
+                star_lost: false,
+            })
+            .collect();
+        Ok(rp_guider::GuidingMetrics {
+            guiding: true,
+            frames,
+        })
+    });
+    mock
+}
+
+#[tokio::test]
+async fn guide_train_auto_focus_fits_the_scripted_v_curve() {
+    // Script: call 0 is the watermark fetch, calls 1–5 serve the five
+    // grid positions with a symmetric V — the fitted minimum is the
+    // center, i.e. the focuser's starting position.
+    let foc = MockFocuser::default();
+    let start = foc.position_value;
+    let mock = scripted_metrics_guider(vec![9.0, 4.0, 3.0, 2.0, 3.0, 4.0]);
+    let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(mock);
+    let handler = test_handler(focuser_registry(Arc::new(foc), None, None))
+        .with_trains(guide_sweep_trains())
+        .with_guider(Some(client), GuiderDefaults::default());
+
+    let result = handler
+        .auto_focus_inner(af_params_with_train("guide"), None)
+        .await;
+    let json = ok_text(result.unwrap());
+    assert_eq!(json["best_position"], start);
+    assert_eq!(json["final_position"], start);
+    assert_eq!(json["samples_used"], 5);
+    let points = json["curve_points"].as_array().unwrap();
+    assert_eq!(points.len(), 5);
+    assert_eq!(points[0]["position"], start - 100);
+    assert_eq!(points[0]["hfd"], 4.0);
+    assert_eq!(points[0]["frames_used"], 3);
+    assert!(
+        points.iter().all(|p| p.get("document_id").is_none()),
+        "metric sweeps capture nothing"
+    );
+}
+
+#[tokio::test]
+async fn guide_train_auto_focus_reports_a_flat_curve_as_monotonic() {
+    let foc = MockFocuser::default();
+    let mock = scripted_metrics_guider(vec![2.5]);
+    let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(mock);
+    let handler = test_handler(focuser_registry(Arc::new(foc), None, None))
+        .with_trains(guide_sweep_trains())
+        .with_guider(Some(client), GuiderDefaults::default());
+
+    let result = handler
+        .auto_focus_inner(af_params_with_train("guide"), None)
+        .await;
+    assert_tool_error(result, "monotonic");
+}
+
+#[tokio::test]
+async fn guide_train_auto_focus_treats_star_lost_positions_as_null_samples() {
+    // Star-lost frames at the sweep's first position: the sample is
+    // null, and with only four valid positions against the default
+    // min_fit_points of five, the run reports the shortfall.
+    let foc = MockFocuser::default();
+    let mut mock = MockGuiderClient::new();
+    mock.expect_guiding_stats()
+        .returning(|| Ok(guiding_stats_active()));
+    let call = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    mock.expect_guiding_metrics().returning(move || {
+        let n = call.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let star_lost = n == 1;
+        let frames = (n * 3 + 1..=n * 3 + 3)
+            .map(|frame| rp_guider::FrameMetrics {
+                frame,
+                hfd: (!star_lost).then_some(3.0),
+                snr: Some(3.0),
+                star_mass: None,
+                star_lost,
+            })
+            .collect();
+        Ok(rp_guider::GuidingMetrics {
+            guiding: true,
+            frames,
+        })
+    });
+    let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(mock);
+    let handler = test_handler(focuser_registry(Arc::new(foc), None, None))
+        .with_trains(guide_sweep_trains())
+        .with_guider(Some(client), GuiderDefaults::default());
+
+    let result = handler
+        .auto_focus_inner(af_params_with_train("guide"), None)
+        .await;
+    assert_tool_error(result, "not enough valid guide samples");
 }
 
 #[tokio::test]
@@ -4867,14 +5041,15 @@ async fn refocus_train_rejects_a_train_without_focusers() {
 }
 
 #[tokio::test]
-async fn refocus_train_refuses_a_guiding_train_step() {
+async fn refocus_train_with_a_guiding_step_requires_active_guiding() {
     // Refocusing the guiding train itself always expands to a
-    // guide-train AF step (its own terminal focuser).
+    // guide-train metric step (its own terminal focuser); with no
+    // guider configured the expansion is refused before any motion.
     let handler = test_handler(empty_registry()).with_trains(reference_trains(true));
     let result = handler
         .refocus_train_inner(refocus_params("guide"), None)
         .await;
-    assert_tool_error(result, "guiding train");
+    assert_tool_error(result, "guide-train step requires active guiding");
 }
 
 #[tokio::test]
@@ -6418,6 +6593,7 @@ async fn start_guiding_forwards_config_settle_defaults() {
         settle_time: Some(Duration::from_secs(8)),
         settle_timeout: Some(Duration::from_secs(40)),
         dither_pixels: None,
+        ..GuiderDefaults::default()
     };
     let handler = handler_with_guider(
         |mock| {
@@ -6446,6 +6622,7 @@ async fn start_guiding_per_call_settle_overrides_config_field_by_field() {
         settle_time: Some(Duration::from_secs(8)),
         settle_timeout: Some(Duration::from_secs(40)),
         dither_pixels: None,
+        ..GuiderDefaults::default()
     };
     let handler = handler_with_guider(
         |mock| {
@@ -6480,6 +6657,7 @@ async fn start_guiding_emits_started_and_settled_with_the_settle_deadline() {
         settle_time: Some(Duration::from_secs(8)),
         settle_timeout: Some(Duration::from_secs(40)),
         dither_pixels: None,
+        ..GuiderDefaults::default()
     };
     let handler = handler_with_guider(
         |mock| {
@@ -6521,6 +6699,7 @@ async fn start_guiding_clamps_predicted_duration_to_the_timeout_when_settle_time
         settle_time: Some(Duration::from_secs(120)),
         settle_timeout: Some(Duration::from_secs(40)),
         dither_pixels: None,
+        ..GuiderDefaults::default()
     };
     let handler = handler_with_guider(
         |mock| {
@@ -6556,6 +6735,7 @@ async fn start_guiding_saturates_instead_of_overflowing_on_an_extreme_settle_tim
         settle_time: None,
         settle_timeout: Some(Duration::MAX),
         dither_pixels: None,
+        ..GuiderDefaults::default()
     };
     let handler = handler_with_guider(
         |mock| {
