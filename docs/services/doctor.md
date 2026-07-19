@@ -537,6 +537,12 @@ can write **both forms everywhere they belong**:
   [ADR-017](../decisions/017-standard-mcp-client-construction.md)) —
   alongside the CA path each client trusts.
 
+`rp` itself gets only the CA path, into its own top-level `ca_cert`
+(rp.md §Configuration) — it has no shared-observatory-credential client
+role (its outbound Alpaca/plate-solver/guider clients use per-device
+`auth` blocks or no auth at all), just the CA trust an `https://` target
+signed by the observatory CA requires (issue #609).
+
 `doctor auth rotate` overwrites `pki/credential` with a fresh mint and
 re-runs the same distribution; services pick the new `server.auth` up at
 their next restart (rotation is operator-initiated and rare — no reload

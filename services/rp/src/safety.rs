@@ -778,7 +778,7 @@ mod tests {
             }),
             ..Default::default()
         };
-        let equipment = Arc::new(EquipmentRegistry::new(&equipment_cfg).await);
+        let equipment = Arc::new(EquipmentRegistry::new(&equipment_cfg, None).await);
         assert!(
             equipment.mount.as_ref().is_some_and(|m| m.connected),
             "test setup: the stubbed mount must connect"
@@ -813,7 +813,7 @@ mod tests {
             }),
             ..Default::default()
         };
-        let equipment = Arc::new(EquipmentRegistry::new(&equipment_cfg).await);
+        let equipment = Arc::new(EquipmentRegistry::new(&equipment_cfg, None).await);
 
         let mut enforcer = enforcer_with(vec![ScriptedProbe::new("sm", vec![Ok(false)])]);
         enforcer.equipment = equipment;
@@ -941,7 +941,7 @@ mod tests {
             ],
             ..Default::default()
         };
-        let equipment = Arc::new(EquipmentRegistry::new(&equipment_cfg).await);
+        let equipment = Arc::new(EquipmentRegistry::new(&equipment_cfg, None).await);
         let event_bus = Arc::new(EventBus::from_config(&[]));
         let session = Arc::new(SessionManager::new(event_bus.clone(), &[]));
         let enforcer = SafetyEnforcer::from_registry(

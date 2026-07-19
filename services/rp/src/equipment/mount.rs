@@ -17,10 +17,13 @@ pub struct MountEntry {
     pub device: Option<Arc<dyn Telescope>>,
 }
 
-pub(super) async fn connect_mount(config: &config::MountConfig) -> MountEntry {
+pub(super) async fn connect_mount(
+    config: &config::MountConfig,
+    ca_cert_path: Option<&std::path::Path>,
+) -> MountEntry {
     debug!(alpaca_url = %config.alpaca_url, device_number = config.device_number, "connecting to mount");
 
-    let client = match build_alpaca_client(&config.alpaca_url, config.auth.as_ref()) {
+    let client = match build_alpaca_client(&config.alpaca_url, config.auth.as_ref(), ca_cert_path) {
         Ok(c) => c,
         Err(e) => {
             error!(error = %e, "failed to create Alpaca client for mount");
@@ -122,7 +125,7 @@ mod tests {
     #[tokio::test]
     async fn connect_mount_invalid_url_returns_disconnected_entry() {
         let cfg = mount_config_for("not-a-url");
-        let entry = connect_mount(&cfg).await;
+        let entry = connect_mount(&cfg, None).await;
         assert!(!entry.connected);
         assert!(entry.device.is_none());
     }
@@ -130,7 +133,7 @@ mod tests {
     #[tokio::test]
     async fn connect_mount_unreachable_returns_disconnected_entry() {
         let cfg = mount_config_for("http://127.0.0.1:1");
-        let entry = connect_mount(&cfg).await;
+        let entry = connect_mount(&cfg, None).await;
         assert!(!entry.connected);
         assert!(entry.device.is_none());
     }
@@ -148,7 +151,7 @@ mod tests {
             }),
         );
         let stub = spawn_stub(app).await;
-        let entry = connect_mount(&mount_config_for(&stub.url())).await;
+        let entry = connect_mount(&mount_config_for(&stub.url()), None).await;
         assert!(!entry.connected);
         assert!(entry.device.is_none());
     }
@@ -181,7 +184,7 @@ mod tests {
                 }),
             );
         let stub = spawn_stub(app).await;
-        let entry = connect_mount(&mount_config_for(&stub.url())).await;
+        let entry = connect_mount(&mount_config_for(&stub.url()), None).await;
         assert!(!entry.connected);
         assert!(entry.device.is_none());
     }
@@ -193,7 +196,7 @@ mod tests {
             get(|| async { std::future::pending::<Json<serde_json::Value>>().await }),
         );
         let stub = spawn_stub(app).await;
-        let entry = connect_mount(&mount_config_for(&stub.url())).await;
+        let entry = connect_mount(&mount_config_for(&stub.url()), None).await;
         assert!(!entry.connected);
         assert!(entry.device.is_none());
     }
@@ -229,7 +232,7 @@ mod tests {
     #[tokio::test]
     async fn connect_mount_success_returns_connected_entry() {
         let stub = spawn_stub(ok_mount_router()).await;
-        let entry = connect_mount(&mount_config_for(&stub.url())).await;
+        let entry = connect_mount(&mount_config_for(&stub.url()), None).await;
         assert!(entry.connected, "expected entry to be connected");
         assert!(entry.device.is_some(), "expected entry to hold a device");
     }
@@ -241,7 +244,7 @@ mod tests {
             mount: Some(mount_config_for(&stub.url())),
             ..Default::default()
         };
-        let registry = EquipmentRegistry::new(&equipment_cfg).await;
+        let registry = EquipmentRegistry::new(&equipment_cfg, None).await;
 
         let found = registry
             .find_mount()
@@ -313,7 +316,7 @@ mod tests {
             mount: Some(mount_config_for(stub_url)),
             ..Default::default()
         };
-        EquipmentRegistry::new(&equipment_cfg).await
+        EquipmentRegistry::new(&equipment_cfg, None).await
     }
 
     #[tokio::test]
@@ -328,7 +331,7 @@ mod tests {
 
     #[tokio::test]
     async fn validate_site_no_op_when_mount_absent() {
-        let registry = EquipmentRegistry::new(&config::EquipmentConfig::default()).await;
+        let registry = EquipmentRegistry::new(&config::EquipmentConfig::default(), None).await;
         let site = config::SiteConfig {
             latitude_degrees: 47.6062,
             longitude_degrees: -122.3321,

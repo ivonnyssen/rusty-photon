@@ -1882,6 +1882,19 @@ a mount that does not expose the property), the validation is
 skipped with a `debug!()` log. See
 [Site Validation Against the ASCOM Mount](#site-validation-against-the-ascom-mount).
 
+**CA trust for `https://` devices.** An `alpaca_url` may be `https://`
+when the device's own service is TLS-enabled (e.g. via doctor's D6
+provisioning). `rp`'s Alpaca client verifies that certificate against
+the top-level `ca_cert` config (see [Configuration](#configuration)) —
+an observatory runs one self-signed CA, so one rp-level setting covers
+every device, the plate-solver service, and the guider service alike.
+Setting `ca_cert` makes it the client's **only** trusted root
+(`tls_certs_only`, ADR-002): the platform trust store no longer
+applies, so a public-CA `https://` target becomes unreachable
+alongside the observatory CA. Without `ca_cert` set, an `https://`
+device signed by that CA fails certificate verification regardless of
+per-device `auth` credentials.
+
 ### Optical Trains
 
 `equipment.optical_trains` models each camera's light path as an
@@ -2119,7 +2132,9 @@ amount, `recalibrate_above_deg`); the same client backs the safety
 enforcer's stop-guiding-on-unsafe step. Guiding is mount-scoped by
 construction — the guider corrects and dithers by moving the mount,
 which moves every train on it — so the block lives inside
-`equipment.mount` and cannot be configured without one.
+`equipment.mount` and cannot be configured without one. Like every
+outbound client `rp` builds, it trusts the top-level `ca_cert` (see
+[Configuration](#configuration)) for an `https://` `url`.
 
 PHD2 uses JSON-RPC over TCP, which is the one exception to the Alpaca-only
 rule — there is no Alpaca guider device type. The guider service encapsulates
@@ -2212,6 +2227,9 @@ The choice of solver and the supervision posture are settled by
 [ADR-005](../decisions/005-plate-solver.md). The service's own design
 doc — HTTP contract, supervision contract, configuration, mock test
 double — lives at [`docs/services/plate-solver.md`](plate-solver.md).
+`rp`'s `crates/rp-plate-solver` client trusts the top-level `ca_cert`
+(see [Configuration](#configuration)) for an `https://` `plate_solver.url`,
+the same as every other outbound client `rp` builds.
 Implementation sequencing is in
 [`docs/plans/archive/plate-solver.md`](../plans/archive/plate-solver.md).
 
@@ -4028,6 +4046,22 @@ positive number rejected at load otherwise.
 (−40 … +15); off-grid values are rejected at load with the offending
 field named (see [Camera Cooling](#camera-cooling)).
 
+The top-level `ca_cert` names a PEM CA certificate `rp` trusts for
+every outbound HTTPS connection it makes as a client — Alpaca devices
+(`equipment.*[].alpaca_url`), the plate-solver service, and the guider
+service. An observatory runs one self-signed CA (doctor's D6
+provisioning), so this is a single rp-level setting rather than a
+per-device or per-service one; `doctor --fix` writes it automatically
+once the CA exists (`services/doctor/src/provision/mod.rs`
+`CA_ONLY_WIRING_SERVICES`). Setting it makes it the client's **only**
+trusted root (`tls_certs_only`, ADR-002) — it replaces, not adds to,
+the platform trust store, so a public-CA `https://` target becomes
+unreachable alongside the observatory CA. Omitted (the default), only
+the platform trust store applies, so an `https://` target signed by
+the observatory CA fails certificate verification regardless of the
+device's `auth` credentials — see
+[ASCOM Alpaca Devices](#ascom-alpaca-devices).
+
 The `site` block is required for the ephemeris and planner tools
 (`compute_alt_az`, `get_twilight`, `get_next_target`, …); when present
 it is validated against the ASCOM mount on connect — see
@@ -4274,7 +4308,8 @@ return a structured "site not configured" error.
       "username": "observatory",
       "password_hash": "$argon2id$v=19$m=19456,t=2,p=1$..."
     }
-  }
+  },
+  "ca_cert": "/etc/rusty-photon/pki/ca.pem"
 }
 ```
 

@@ -15,10 +15,13 @@ pub struct RotatorEntry {
     pub device: Option<Arc<dyn Rotator>>,
 }
 
-pub(super) async fn connect_rotator(config: &config::RotatorConfig) -> RotatorEntry {
+pub(super) async fn connect_rotator(
+    config: &config::RotatorConfig,
+    ca_cert_path: Option<&std::path::Path>,
+) -> RotatorEntry {
     debug!(rotator_id = %config.id, alpaca_url = %config.alpaca_url, device_number = config.device_number, "connecting to rotator");
 
-    let client = match build_alpaca_client(&config.alpaca_url, config.auth.as_ref()) {
+    let client = match build_alpaca_client(&config.alpaca_url, config.auth.as_ref(), ca_cert_path) {
         Ok(c) => c,
         Err(e) => {
             error!(rotator_id = %config.id, error = %e, "failed to create Alpaca client for rotator");
@@ -168,7 +171,7 @@ mod tests {
     #[tokio::test]
     async fn connect_rotator_success_returns_connected_entry() {
         let stub = spawn_stub(two_rotator_router()).await;
-        let entry = connect_rotator(&rotator_config_for(&stub.url(), 0)).await;
+        let entry = connect_rotator(&rotator_config_for(&stub.url(), 0), None).await;
         assert!(entry.connected, "expected entry to be connected");
         assert!(entry.device.is_some(), "expected entry to hold a device");
         assert_eq!(entry.id, "falcon");
@@ -179,7 +182,7 @@ mod tests {
     #[tokio::test]
     async fn connect_rotator_skips_to_the_requested_index() {
         let stub = spawn_stub(two_rotator_router()).await;
-        let entry = connect_rotator(&rotator_config_for(&stub.url(), 1)).await;
+        let entry = connect_rotator(&rotator_config_for(&stub.url(), 1), None).await;
         assert!(entry.connected, "expected entry to be connected");
         assert!(entry.device.is_some(), "expected entry to hold a device");
     }
@@ -199,14 +202,14 @@ mod tests {
             }),
         );
         let stub = spawn_stub(app).await;
-        let entry = connect_rotator(&rotator_config_for(&stub.url(), 0)).await;
+        let entry = connect_rotator(&rotator_config_for(&stub.url(), 0), None).await;
         assert!(!entry.connected);
         assert!(entry.device.is_none());
     }
 
     #[tokio::test]
     async fn connect_rotator_client_build_failure_returns_disconnected_entry() {
-        let entry = connect_rotator(&rotator_config_for("not-a-url", 0)).await;
+        let entry = connect_rotator(&rotator_config_for("not-a-url", 0), None).await;
         assert!(!entry.connected);
         assert!(entry.device.is_none());
     }
@@ -226,7 +229,7 @@ mod tests {
             }),
         );
         let stub = spawn_stub(app).await;
-        let entry = connect_rotator(&rotator_config_for(&stub.url(), 0)).await;
+        let entry = connect_rotator(&rotator_config_for(&stub.url(), 0), None).await;
         assert!(!entry.connected);
         assert!(entry.device.is_none());
     }
@@ -262,7 +265,7 @@ mod tests {
                 }),
             );
         let stub = spawn_stub(app).await;
-        let entry = connect_rotator(&rotator_config_for(&stub.url(), 0)).await;
+        let entry = connect_rotator(&rotator_config_for(&stub.url(), 0), None).await;
         assert!(!entry.connected);
         assert!(entry.device.is_none());
     }

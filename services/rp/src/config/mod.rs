@@ -109,6 +109,28 @@ pub struct Config {
     pub plate_solver: Option<PlateSolverConfig>,
     #[serde(default = "server::default_server")]
     pub server: ServerConfig,
+    /// PEM CA certificate `rp` trusts for every outbound HTTPS connection
+    /// it makes as a client: Alpaca devices (`equipment.*[].alpaca_url`),
+    /// the plate-solver service, and the guider service. An observatory
+    /// runs one CA (rusty_photon_tls), so this is a single rp-level
+    /// setting rather than per-target — matching the `ca_cert` field
+    /// doctor already wires into sentinel, session-runner, and
+    /// calibrator-flats (`services/doctor/src/provision/mod.rs`
+    /// `CLIENT_WIRING_SERVICES`). `Some` becomes the client's **only**
+    /// trusted root (`tls_certs_only`, ADR-002) — it replaces, not adds
+    /// to, the platform trust store, so a public-CA `https://` target
+    /// becomes unreachable alongside the observatory CA. `None` (the
+    /// default) uses the platform trust store, so an https target signed
+    /// by the observatory's self-signed CA fails certificate verification.
+    #[serde(default)]
+    pub ca_cert: Option<String>,
+}
+
+impl Config {
+    /// [`Config::ca_cert`] as a `Path`, for `rusty_photon_tls::client`.
+    pub fn ca_cert_path(&self) -> Option<&Path> {
+        self.ca_cert.as_deref().map(Path::new)
+    }
 }
 
 /// Minimal runnable scaffold `rp` writes on first start when no config
@@ -275,6 +297,38 @@ mod tests {
         assert_eq!(config.server.bind_address.to_string(), "0.0.0.0");
         assert_eq!(config.imaging.cache_max_mib, 1024);
         assert_eq!(config.imaging.cache_max_images, 8);
+    }
+
+    #[test]
+    fn ca_cert_omitted_defaults_to_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(&path, MINIMAL_CONFIG_JSON).unwrap();
+
+        let config = load_config(&path).unwrap();
+        assert!(config.ca_cert.is_none());
+        assert!(config.ca_cert_path().is_none());
+    }
+
+    #[test]
+    fn ca_cert_path_reflects_the_configured_string() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "session": {"data_directory": "/tmp/rp-test"},
+                "equipment": {},
+                "ca_cert": "/etc/rusty-photon/pki/ca.pem"
+            }"#,
+        )
+        .unwrap();
+
+        let config = load_config(&path).unwrap();
+        assert_eq!(
+            config.ca_cert_path(),
+            Some(Path::new("/etc/rusty-photon/pki/ca.pem"))
+        );
     }
 
     #[test]

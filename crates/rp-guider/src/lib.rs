@@ -264,10 +264,18 @@ impl GuiderServiceClient {
     /// [`SETTLE_BACKSTOP_MARGIN`] when that is longer, so a
     /// legitimate service-side `settle_timeout` error always arrives
     /// instead of a client-side cut.
-    pub fn new(base_url: String, timeout: Duration) -> Result<Self, reqwest::Error> {
+    ///
+    /// `ca_cert_path` is the observatory CA (rp.md §Configuration):
+    /// without it, an `https://` `base_url` signed by that CA fails
+    /// certificate verification (issue #609).
+    pub fn new(
+        base_url: String,
+        timeout: Duration,
+        ca_cert_path: Option<&std::path::Path>,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         // No client-level timeout: each request carries its own (see
         // `settle_request_timeout`).
-        let client = reqwest::Client::builder().build()?;
+        let client = rusty_photon_tls::client::client_builder(ca_cert_path)?.build()?;
         Ok(Self {
             client,
             base_url: trim_trailing_slash(base_url),
@@ -565,7 +573,7 @@ mod tests {
     }
 
     fn client_for(stub: &TestStub) -> GuiderServiceClient {
-        GuiderServiceClient::new(stub.url.clone(), Duration::from_secs(5)).unwrap()
+        GuiderServiceClient::new(stub.url.clone(), Duration::from_secs(5), None).unwrap()
     }
 
     #[tokio::test]
@@ -814,9 +822,12 @@ mod tests {
         // Port 1 is reserved and reliably refuses connections on
         // dev hosts and CI runners (same pattern rp-plate-solver's
         // unreachable test uses).
-        let client =
-            GuiderServiceClient::new("http://127.0.0.1:1".to_string(), Duration::from_secs(2))
-                .unwrap();
+        let client = GuiderServiceClient::new(
+            "http://127.0.0.1:1".to_string(),
+            Duration::from_secs(2),
+            None,
+        )
+        .unwrap();
         let err = client.stop_guiding().await.unwrap_err();
         assert!(matches!(err, GuiderError::ServiceUnreachable(_)));
     }
@@ -826,6 +837,7 @@ mod tests {
         let client = GuiderServiceClient::new(
             "http://localhost:11130/".to_string(),
             Duration::from_secs(5),
+            None,
         )
         .unwrap();
         assert_eq!(client.base_url(), "http://localhost:11130");
@@ -836,6 +848,7 @@ mod tests {
         let client = GuiderServiceClient::new(
             "http://localhost:11130".to_string(),
             Duration::from_secs(90),
+            None,
         )
         .unwrap();
 
@@ -872,6 +885,7 @@ mod tests {
         let client = GuiderServiceClient::new(
             "http://localhost:11130".to_string(),
             Duration::from_secs(90),
+            None,
         )
         .unwrap();
         let extreme = SettleOverride {
@@ -880,6 +894,18 @@ mod tests {
             timeout: Some(Duration::MAX),
         };
         assert_eq!(client.settle_request_timeout(Some(&extreme)), Duration::MAX);
+    }
+
+    #[test]
+    fn new_with_missing_ca_cert_fails() {
+        // Proves `ca_cert_path` is actually wired to the CA-trust
+        // builder, not silently dropped (issue #609).
+        let result = GuiderServiceClient::new(
+            "http://localhost:11130".to_string(),
+            Duration::from_secs(5),
+            Some(std::path::Path::new("/nonexistent/ca.pem")),
+        );
+        assert!(result.is_err());
     }
 
     #[test]

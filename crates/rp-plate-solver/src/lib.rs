@@ -123,8 +123,18 @@ impl PlateSolverClient {
     /// outer timeout. The outer timeout is the connection-side
     /// backstop for Tenet 1; per-request `SolveRequest::timeout`
     /// bounds the *solver* side independently.
-    pub fn new(base_url: String, http_timeout: Duration) -> Result<Self, reqwest::Error> {
-        let client = reqwest::Client::builder().timeout(http_timeout).build()?;
+    ///
+    /// `ca_cert_path` is the observatory CA (rp.md §Configuration):
+    /// without it, an `https://` `base_url` signed by that CA fails
+    /// certificate verification (issue #609).
+    pub fn new(
+        base_url: String,
+        http_timeout: Duration,
+        ca_cert_path: Option<&std::path::Path>,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let client = rusty_photon_tls::client::client_builder(ca_cert_path)?
+            .timeout(http_timeout)
+            .build()?;
         Ok(Self {
             client,
             base_url: trim_trailing_slash(base_url),
@@ -283,7 +293,8 @@ mod tests {
     #[tokio::test]
     async fn solve_happy_path_returns_outcome() {
         let stub = spawn_stub(StubBehavior::Success(ok_outcome())).await;
-        let client = PlateSolverClient::new(stub.url.clone(), Duration::from_secs(5)).unwrap();
+        let client =
+            PlateSolverClient::new(stub.url.clone(), Duration::from_secs(5), None).unwrap();
 
         let outcome = client
             .solve(SolveRequest {
@@ -303,7 +314,8 @@ mod tests {
     #[tokio::test]
     async fn solve_forwards_request_fields_verbatim() {
         let stub = spawn_stub(StubBehavior::Success(ok_outcome())).await;
-        let client = PlateSolverClient::new(stub.url.clone(), Duration::from_secs(5)).unwrap();
+        let client =
+            PlateSolverClient::new(stub.url.clone(), Duration::from_secs(5), None).unwrap();
 
         client
             .solve(SolveRequest {
@@ -329,7 +341,8 @@ mod tests {
     #[tokio::test]
     async fn solve_omits_unset_optional_fields() {
         let stub = spawn_stub(StubBehavior::Success(ok_outcome())).await;
-        let client = PlateSolverClient::new(stub.url.clone(), Duration::from_secs(5)).unwrap();
+        let client =
+            PlateSolverClient::new(stub.url.clone(), Duration::from_secs(5), None).unwrap();
 
         client
             .solve(SolveRequest {
@@ -369,7 +382,8 @@ mod tests {
             body: err_envelope("invalid_request", "malformed body"),
         })
         .await;
-        let client = PlateSolverClient::new(stub.url.clone(), Duration::from_secs(5)).unwrap();
+        let client =
+            PlateSolverClient::new(stub.url.clone(), Duration::from_secs(5), None).unwrap();
         let err = client
             .solve(SolveRequest {
                 fits_path: "/tmp/x.fits".to_string(),
@@ -393,7 +407,8 @@ mod tests {
             body: err_envelope("fits_not_found", "/tmp/missing.fits: No such file"),
         })
         .await;
-        let client = PlateSolverClient::new(stub.url.clone(), Duration::from_secs(5)).unwrap();
+        let client =
+            PlateSolverClient::new(stub.url.clone(), Duration::from_secs(5), None).unwrap();
         let err = client
             .solve(SolveRequest {
                 fits_path: "/tmp/missing.fits".to_string(),
@@ -411,7 +426,8 @@ mod tests {
             body: err_envelope("solve_failed", "ASTAP exited with code 1"),
         })
         .await;
-        let client = PlateSolverClient::new(stub.url.clone(), Duration::from_secs(5)).unwrap();
+        let client =
+            PlateSolverClient::new(stub.url.clone(), Duration::from_secs(5), None).unwrap();
         let err = client
             .solve(SolveRequest {
                 fits_path: "/tmp/x.fits".to_string(),
@@ -429,7 +445,8 @@ mod tests {
             body: err_envelope("solve_timeout", "wall-clock deadline expired"),
         })
         .await;
-        let client = PlateSolverClient::new(stub.url.clone(), Duration::from_secs(5)).unwrap();
+        let client =
+            PlateSolverClient::new(stub.url.clone(), Duration::from_secs(5), None).unwrap();
         let err = client
             .solve(SolveRequest {
                 fits_path: "/tmp/x.fits".to_string(),
@@ -447,7 +464,8 @@ mod tests {
             body: err_envelope("internal", "broken pipe"),
         })
         .await;
-        let client = PlateSolverClient::new(stub.url.clone(), Duration::from_secs(5)).unwrap();
+        let client =
+            PlateSolverClient::new(stub.url.clone(), Duration::from_secs(5), None).unwrap();
         let err = client
             .solve(SolveRequest {
                 fits_path: "/tmp/x.fits".to_string(),
@@ -467,7 +485,8 @@ mod tests {
     #[tokio::test]
     async fn solve_returns_internal_when_success_body_malformed() {
         let stub = spawn_stub(StubBehavior::SuccessMalformed).await;
-        let client = PlateSolverClient::new(stub.url.clone(), Duration::from_secs(5)).unwrap();
+        let client =
+            PlateSolverClient::new(stub.url.clone(), Duration::from_secs(5), None).unwrap();
         let err = client
             .solve(SolveRequest {
                 fits_path: "/tmp/x.fits".to_string(),
@@ -481,7 +500,8 @@ mod tests {
     #[tokio::test]
     async fn solve_returns_internal_when_error_body_not_envelope() {
         let stub = spawn_stub(StubBehavior::ErrorMalformed).await;
-        let client = PlateSolverClient::new(stub.url.clone(), Duration::from_secs(5)).unwrap();
+        let client =
+            PlateSolverClient::new(stub.url.clone(), Duration::from_secs(5), None).unwrap();
         let err = client
             .solve(SolveRequest {
                 fits_path: "/tmp/x.fits".to_string(),
@@ -502,9 +522,12 @@ mod tests {
         // Port 1 is reserved and reliably refuses connections on
         // dev hosts and CI runners (same pattern auto_focus uses
         // for the unreachable-focuser scenario).
-        let client =
-            PlateSolverClient::new("http://127.0.0.1:1".to_string(), Duration::from_secs(2))
-                .unwrap();
+        let client = PlateSolverClient::new(
+            "http://127.0.0.1:1".to_string(),
+            Duration::from_secs(2),
+            None,
+        )
+        .unwrap();
         let err = client
             .solve(SolveRequest {
                 fits_path: "/tmp/x.fits".to_string(),
@@ -520,8 +543,21 @@ mod tests {
         let client = PlateSolverClient::new(
             "http://localhost:11131/".to_string(),
             Duration::from_secs(5),
+            None,
         )
         .unwrap();
         assert_eq!(client.base_url(), "http://localhost:11131");
+    }
+
+    #[test]
+    fn new_with_missing_ca_cert_fails() {
+        // Proves `ca_cert_path` is actually wired to the CA-trust
+        // builder, not silently dropped (issue #609).
+        let result = PlateSolverClient::new(
+            "http://localhost:11131".to_string(),
+            Duration::from_secs(5),
+            Some(std::path::Path::new("/nonexistent/ca.pem")),
+        );
+        assert!(result.is_err());
     }
 }

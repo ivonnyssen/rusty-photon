@@ -6,6 +6,13 @@ exports_files(
     visibility = ["//visibility:public"],
 )
 
+# CA trust for an `https://` plate-solver `url` (issue #609) routes
+# through the serving crate directly, so it needs the explicit
+# intra-workspace deps list every Bazel target here shares.
+_INTRA_WORKSPACE_DEPS = [
+    "//crates/rusty-photon-tls:rusty-photon-tls",
+]
+
 # Production-clean library: no `mock` feature, no mockall in the
 # linked binary. Use this from rust_library / rust_binary targets.
 # Cargo gets the same shape via `[dev-dependencies] rp-plate-solver
@@ -20,7 +27,7 @@ rust_library(
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = ["//visibility:public"],
-    deps = all_crate_deps(normal = True),
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
 
 # Test-only variant exposing `MockPlateSolveClient` to downstream
@@ -38,7 +45,7 @@ rust_library(
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = ["//visibility:public"],
-    deps = all_crate_deps(normal = True),
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
 
 rust_test(
@@ -53,7 +60,7 @@ rust_test(
         proc_macro = True,
         proc_macro_dev = True,
     ),
-    deps = all_crate_deps(
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(
         normal = True,
         normal_dev = True,
     ),

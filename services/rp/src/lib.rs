@@ -87,7 +87,8 @@ impl ServerBuilder {
         let bind_addr = config.server.socket_addr();
 
         debug!("initializing equipment registry");
-        let equipment = Arc::new(EquipmentRegistry::new(&config.equipment).await);
+        let equipment =
+            Arc::new(EquipmentRegistry::new(&config.equipment, config.ca_cert_path()).await);
 
         // Validate the configured site against the mount's reported
         // SiteLatitude/SiteLongitude. A mismatch beyond 0.01° aborts
@@ -175,13 +176,16 @@ impl ServerBuilder {
         // wrapper config validation.
         let (plate_solver_client, plate_solver_default_radius) = match &config.plate_solver {
             Some(ps_cfg) => {
-                let client =
-                    rp_plate_solver::PlateSolverClient::new(ps_cfg.url.clone(), ps_cfg.timeout)
-                        .map_err(|e| {
-                            crate::error::RpError::Config(format!(
-                                "plate_solver: failed to build HTTP client: {e}"
-                            ))
-                        })?;
+                let client = rp_plate_solver::PlateSolverClient::new(
+                    ps_cfg.url.clone(),
+                    ps_cfg.timeout,
+                    config.ca_cert_path(),
+                )
+                .map_err(|e| {
+                    crate::error::RpError::Config(format!(
+                        "plate_solver: failed to build HTTP client: {e}"
+                    ))
+                })?;
                 let arc: Arc<dyn rp_plate_solver::PlateSolveClient> = Arc::new(client);
                 (Some(arc), ps_cfg.default_search_radius_deg)
             }
@@ -212,12 +216,16 @@ impl ServerBuilder {
             .and_then(|m| m.guiding.as_ref());
         let (guider_client, guider_defaults) = match guiding_config {
             Some(g_cfg) => {
-                let client = rp_guider::GuiderServiceClient::new(g_cfg.url.clone(), g_cfg.timeout)
-                    .map_err(|e| {
-                        crate::error::RpError::Config(format!(
-                            "guider: failed to build HTTP client: {e}"
-                        ))
-                    })?;
+                let client = rp_guider::GuiderServiceClient::new(
+                    g_cfg.url.clone(),
+                    g_cfg.timeout,
+                    config.ca_cert_path(),
+                )
+                .map_err(|e| {
+                    crate::error::RpError::Config(format!(
+                        "guider: failed to build HTTP client: {e}"
+                    ))
+                })?;
                 let arc: Arc<dyn rp_guider::GuiderClient> = Arc::new(client);
                 (Some(arc), g_cfg.defaults())
             }
@@ -459,5 +467,76 @@ impl BoundServer {
 
         debug!("rp service shut down");
         Ok(())
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+mod tests {
+    use super::*;
+
+    /// `ServerBuilder::build` aborts loud when the plate-solver client
+    /// can't be built — here, an invalid `ca_cert` path makes
+    /// `client_builder` fail. Pins the "plate_solver: failed to build
+    /// HTTP client" error path (issue #609's `ca_cert_path` plumbing).
+    #[tokio::test]
+    async fn build_fails_loud_when_plate_solver_client_cannot_be_built() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config: Config = serde_json::from_value(serde_json::json!({
+            "session": {"data_directory": dir.path().join("data").to_string_lossy()},
+            "equipment": {},
+            "plate_solver": {"url": "http://127.0.0.1:11131"},
+            "server": {"port": 0}
+        }))
+        .unwrap();
+        config.ca_cert = Some("/nonexistent/ca.pem".to_string());
+
+        // `BoundServer` isn't `Debug`, so `unwrap_err()` doesn't apply.
+        let err = ServerBuilder::new()
+            .with_config(config)
+            .with_config_path(dir.path().join("config.json"))
+            .build()
+            .await
+            .err()
+            .expect("build must fail when the client can't be constructed");
+        assert!(
+            err.to_string()
+                .contains("plate_solver: failed to build HTTP client"),
+            "{err}"
+        );
+    }
+
+    /// Same as above for the guider client, configured at
+    /// `equipment.mount.guiding`.
+    #[tokio::test]
+    async fn build_fails_loud_when_guider_client_cannot_be_built() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config: Config = serde_json::from_value(serde_json::json!({
+            "session": {"data_directory": dir.path().join("data").to_string_lossy()},
+            "equipment": {
+                "mount": {
+                    "alpaca_url": "http://127.0.0.1:11122",
+                    "guiding": {"url": "http://127.0.0.1:11130"}
+                }
+            },
+            "server": {"port": 0}
+        }))
+        .unwrap();
+        config.ca_cert = Some("/nonexistent/ca.pem".to_string());
+
+        // `BoundServer` isn't `Debug`, so `unwrap_err()` doesn't apply.
+        let err = ServerBuilder::new()
+            .with_config(config)
+            .with_config_path(dir.path().join("config.json"))
+            .build()
+            .await
+            .err()
+            .expect("build must fail when the client can't be constructed");
+        assert!(
+            err.to_string()
+                .contains("guider: failed to build HTTP client"),
+            "{err}"
+        );
     }
 }

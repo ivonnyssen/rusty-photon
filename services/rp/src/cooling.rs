@@ -731,7 +731,7 @@ mod tests {
             }]
         }))
         .unwrap();
-        let registry = EquipmentRegistry::new(&equipment_config).await;
+        let registry = EquipmentRegistry::new(&equipment_config, None).await;
         assert!(
             registry.cameras[0].connected,
             "stub camera must connect for the test to be meaningful"
@@ -1063,7 +1063,7 @@ mod tests {
             }]
         }))
         .unwrap();
-        let registry = EquipmentRegistry::new(&equipment_config).await;
+        let registry = EquipmentRegistry::new(&equipment_config, None).await;
         let bus = Arc::new(EventBus::from_config(&[]));
         let mut rx = bus.subscribe();
         let ctrl = Arc::new(CoolingController::new(

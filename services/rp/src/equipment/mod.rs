@@ -98,64 +98,71 @@ pub struct MountStatus {
 pub const SITE_MATCH_TOLERANCE_DEG: f64 = 0.01;
 
 impl EquipmentRegistry {
-    pub async fn new(equipment_config: &config::EquipmentConfig) -> Self {
+    /// `ca_cert_path` is the observatory CA (`Config::ca_cert_path`,
+    /// rp.md §Configuration), forwarded to every device's Alpaca client so
+    /// an `https://` `alpaca_url` signed by that CA verifies (issue #609).
+    pub async fn new(
+        equipment_config: &config::EquipmentConfig,
+        ca_cert_path: Option<&std::path::Path>,
+    ) -> Self {
         let mut cameras = Vec::new();
         let mut filter_wheels = Vec::new();
         let mut cover_calibrators = Vec::new();
         let mut focusers = Vec::new();
 
         for cam_config in &equipment_config.cameras {
-            let entry = camera::connect_camera(cam_config).await;
+            let entry = camera::connect_camera(cam_config, ca_cert_path).await;
             cameras.push(entry);
         }
 
         for fw_config in &equipment_config.filter_wheels {
-            let entry = filter_wheel::connect_filter_wheel(fw_config).await;
+            let entry = filter_wheel::connect_filter_wheel(fw_config, ca_cert_path).await;
             filter_wheels.push(entry);
         }
 
         for cc_config in &equipment_config.cover_calibrators {
-            let entry = cover_calibrator::connect_cover_calibrator(cc_config).await;
+            let entry = cover_calibrator::connect_cover_calibrator(cc_config, ca_cert_path).await;
             cover_calibrators.push(entry);
         }
 
         for foc_config in &equipment_config.focusers {
-            let entry = focuser::connect_focuser(foc_config).await;
+            let entry = focuser::connect_focuser(foc_config, ca_cert_path).await;
             focusers.push(entry);
         }
 
         let mut safety_monitors = Vec::new();
         for sm_config in &equipment_config.safety_monitors {
-            let entry = safety_monitor::connect_safety_monitor(sm_config).await;
+            let entry = safety_monitor::connect_safety_monitor(sm_config, ca_cert_path).await;
             safety_monitors.push(entry);
         }
 
         let mut switches = Vec::new();
         for switch_config in &equipment_config.switches {
-            let entry = switch::connect_switch(switch_config).await;
+            let entry = switch::connect_switch(switch_config, ca_cert_path).await;
             switches.push(entry);
         }
 
         let mut rotators = Vec::new();
         for rotator_config in &equipment_config.rotators {
-            let entry = rotator::connect_rotator(rotator_config).await;
+            let entry = rotator::connect_rotator(rotator_config, ca_cert_path).await;
             rotators.push(entry);
         }
 
         let mut observing_conditions = Vec::new();
         for oc_config in &equipment_config.observing_conditions {
-            let entry = observing_conditions::connect_observing_conditions(oc_config).await;
+            let entry =
+                observing_conditions::connect_observing_conditions(oc_config, ca_cert_path).await;
             observing_conditions.push(entry);
         }
 
         let mut domes = Vec::new();
         for dome_config in &equipment_config.domes {
-            let entry = dome::connect_dome(dome_config).await;
+            let entry = dome::connect_dome(dome_config, ca_cert_path).await;
             domes.push(entry);
         }
 
         let mount = match &equipment_config.mount {
-            Some(mount_config) => Some(mount::connect_mount(mount_config).await),
+            Some(mount_config) => Some(mount::connect_mount(mount_config, ca_cert_path).await),
             None => None,
         };
 
