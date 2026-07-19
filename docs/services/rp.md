@@ -2787,15 +2787,18 @@ Requirements, checked before any motion:
   **rejected** when passed per-call with a guiding `train_id`, and
   rejected at config load inside a guiding train's block — a
   parameter that cannot influence the run must not pretend to.
-- `frames_per_step` (config-block only, default `3`, positive):
-  fresh frames collected per grid position.
+- `frames_per_step` (config-block only, default `3`): a positive
+  integer of fresh frames per grid position, at most 50 — the
+  guider's metrics window; a larger value could never be satisfied
+  and is rejected at load.
 
 Per grid position: `move_focuser` (the guiding train's terminal
 focuser), then refresh the freshness watermark from the metrics
 window — frames exposed *during* the focuser motion, at a stale
 focus, never count — and poll until `frames_per_step` frames above
 it arrive (bounded by a fixed 30 s-per-frame ceiling — guide
-exposures are seconds; expiry errors the run). The **earliest**
+exposures are seconds; expiry errors the run, and a metrics
+response reporting guiding stopped fails it immediately). The **earliest**
 `frames_per_step` fresh frames form the position's sample set, so a
 slow poll cannot inflate it; the sample is the median HFD of the
 valid ones among them. Frames flagged `star_lost` or with a null

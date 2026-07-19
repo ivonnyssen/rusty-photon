@@ -105,9 +105,16 @@ impl TryFrom<i64> for SweepHalfWidth {
 
 /// A positive fresh-frame count per metric-sweep position
 /// (`auto_focus.frames_per_step`), validated like [`SweepStepSize`].
+/// Capped at the guider service's 50-entry metrics window — a larger
+/// value could never be satisfied and would guarantee per-position
+/// timeouts, so the misconfiguration fails at load instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(try_from = "i64")]
 pub struct FramesPerStep(u32);
+
+/// The guider service's per-frame metrics ring size (phd2-guider.md
+/// § `GET /api/v1/guiding/metrics`).
+const GUIDER_METRICS_WINDOW: i64 = 50;
 
 impl FramesPerStep {
     pub fn value(self) -> u32 {
@@ -120,9 +127,10 @@ impl TryFrom<i64> for FramesPerStep {
 
     fn try_from(value: i64) -> Result<Self, Self::Error> {
         match u32::try_from(value) {
-            Ok(v) if v > 0 => Ok(Self(v)),
+            Ok(v) if v > 0 && i64::from(v) <= GUIDER_METRICS_WINDOW => Ok(Self(v)),
             _ => Err(format!(
-                "auto_focus.frames_per_step must be a positive integer, got {value}"
+                "auto_focus.frames_per_step must be a positive integer at most \
+                 {GUIDER_METRICS_WINDOW} (the guider metrics window), got {value}"
             )),
         }
     }
@@ -453,10 +461,14 @@ mod tests {
             .unwrap_err()
             .contains("auto_focus.half_width"));
         assert_eq!(FramesPerStep::try_from(3i64).unwrap().value(), 3);
+        assert_eq!(FramesPerStep::try_from(50i64).unwrap().value(), 50);
         assert!(FramesPerStep::try_from(0i64)
             .unwrap_err()
             .contains("auto_focus.frames_per_step"));
         assert!(FramesPerStep::try_from(-2i64).is_err());
+        assert!(FramesPerStep::try_from(51i64)
+            .unwrap_err()
+            .contains("guider metrics window"));
     }
 
     #[test]

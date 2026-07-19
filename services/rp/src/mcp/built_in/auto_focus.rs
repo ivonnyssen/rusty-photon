@@ -953,6 +953,14 @@ impl McpHandler {
                 .guiding_metrics()
                 .await
                 .map_err(|e| format!("failed to read guider metrics: {e}"))?;
+            if !metrics.guiding {
+                // No fresh frames will ever arrive — fail now instead
+                // of burning the per-position ceiling.
+                return Err(
+                    "guiding stopped during the metric sweep (PHD2 is no longer guiding)"
+                        .to_string(),
+                );
+            }
             let mut fresh: Vec<&rp_guider::FrameMetrics> = metrics
                 .frames
                 .iter()
