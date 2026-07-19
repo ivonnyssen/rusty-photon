@@ -352,8 +352,11 @@ unit stays inert until `plate-solver.json` exists.
    ≈ 1.2° × 0.8° solves with it; it is also what CI pins). Go denser
    (D50/D80) only below ~0.6°, and to W08 for very wide fields
    (> 20°). Either install the database `.deb` from the same site
-   (lands under `/opt/astap` — confirm with `dpkg -L`) or unzip the
-   database zip into a directory of your choice.
+   (confirm where it lands with `dpkg -L`) or unzip the database zip
+   into a directory of your choice. Whichever way, `astap_db_directory`
+   must point at the *specific* directory holding that database's
+   files — the examples here and in the
+   [service docs](services/plate-solver.md) use `/opt/astap/d05`.
 
 3. **Write the config.** Create
    `/etc/rusty-photon/plate-solver.json` (both keys are mandatory —
@@ -364,7 +367,7 @@ unit stays inert until `plate-solver.json` exists.
    {
      "server": { "port": 11131 },
      "astap_binary_path": "/usr/local/bin/astap_cli",
-     "astap_db_directory": "/opt/astap"
+     "astap_db_directory": "/opt/astap/d05"
    }
    ```
 
@@ -378,11 +381,12 @@ unit stays inert until `plate-solver.json` exists.
 
    ```sh
    sudo systemctl start rusty-photon-plate-solver
-   curl -s http://127.0.0.1:11131/health
+   curl -s -w '\n%{http_code}\n' http://127.0.0.1:11131/health
    ```
 
-   `200` means binary and database both check out; `503` names the
-   path that does not.
+   `200` with `{"status":"ok"}` means binary and database both check
+   out; `503` carries `{"status":"binary_unavailable"}` or
+   `{"status":"db_unavailable"}`, naming the check that failed.
 
 ## Removing
 
