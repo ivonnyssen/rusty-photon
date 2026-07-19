@@ -478,7 +478,12 @@ mod tests {
             .unwrap();
         });
 
-        let url = format!("https://localhost:{}", bound_addr.port());
+        // The bound IPv4 loopback, not "localhost" — the listener is
+        // IPv4-only (bind_dual_stack only widens an IPv6 bind), and on a
+        // host where "localhost" resolves to ::1 first the connection
+        // could miss it. The generated cert's SANs include 127.0.0.1
+        // (see `generate_service_cert`), so this still exercises CA trust.
+        let url = format!("https://{bound_addr}");
         let ca_path = pki_dir.path().join("ca.pem");
 
         let trusting_client = build_alpaca_client(&url, None, Some(&ca_path)).unwrap();
