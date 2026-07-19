@@ -177,13 +177,26 @@ impl CloudflareApi for RealCloudflareApi {
 
 /// Cloudflare DNS provider using the `CloudflareApi` abstraction.
 ///
-/// The zone ID is resolved once at construction time by looking up
-/// the zone matching the provided domain.
+/// The zone ID is resolved once at construction time by walking the
+/// domain's parent labels until one matches a zone the API token can
+/// see. The domain itself must sit at least one label below the zone
+/// apex — the `<service>.<host>.<domain>` pattern — so the wildcard
+/// certificate never covers sibling hostnames in the zone.
 #[derive(derive_more::Debug)]
 pub struct CloudflareDnsProvider {
     #[debug(skip)]
     api: Box<dyn CloudflareApi>,
     zone_id: String,
+}
+
+/// The domain and each parent suffix that could be a registered zone
+/// (two labels minimum), longest first: the zone enclosing
+/// `rig.example.com` is registered as `example.com`.
+fn zone_candidates(domain: &str) -> Vec<String> {
+    let labels: Vec<&str> = domain.split('.').collect();
+    (0..labels.len().saturating_sub(1))
+        .map(|i| labels[i..].join("."))
+        .collect()
 }
 
 impl CloudflareDnsProvider {
@@ -199,21 +212,41 @@ impl CloudflareDnsProvider {
     /// Create a provider with a custom `CloudflareApi` implementation.
     /// Used internally and for testing.
     async fn with_api(api: Box<dyn CloudflareApi>, domain: &str) -> Result<Self> {
-        let zones = api.list_zones(domain.to_string()).await?;
+        // Cloudflare's zone name filter is an exact match, so each
+        // candidate suffix is its own query, longest first.
+        let candidates = zone_candidates(domain);
+        for candidate in &candidates {
+            let zones = api.list_zones(candidate.clone()).await?;
+            let Some(zone) = zones.first() else {
+                continue;
+            };
+            if candidate == domain {
+                return Err(TlsError::Config(format!(
+                    "domain '{domain}' is the apex of its Cloudflare zone — the ACME \
+                     wildcard '*.{domain}' would cover every hostname in the zone. Use a \
+                     host label under the zone (e.g. 'rig.{domain}') so services live at \
+                     '<service>.rig.{domain}'"
+                )));
+            }
+            debug!(
+                "Resolved Cloudflare zone '{}' (id '{}') for domain '{}'",
+                candidate, zone.id, domain
+            );
+            return Ok(Self {
+                api,
+                zone_id: zone.id.clone(),
+            });
+        }
 
-        let zone = zones.first().ok_or_else(|| {
-            TlsError::DnsProvider(format!("no Cloudflare zone found for domain '{domain}'"))
-        })?;
-
-        debug!(
-            "Resolved Cloudflare zone ID '{}' for domain '{}'",
-            zone.id, domain
-        );
-
-        Ok(Self {
-            api,
-            zone_id: zone.id.clone(),
-        })
+        let tried = if candidates.is_empty() {
+            domain.to_string()
+        } else {
+            candidates.join(", ")
+        };
+        Err(TlsError::DnsProvider(format!(
+            "no Cloudflare zone found for domain '{domain}' (tried: {tried}); the zone \
+             must be visible to the API token"
+        )))
     }
 }
 
@@ -408,76 +441,156 @@ mod tests {
     // CloudflareDnsProvider tests (via MockCloudflareApi)
     // -----------------------------------------------------------------------
 
-    #[tokio::test]
-    async fn cloudflare_provider_resolves_zone_id() {
+    fn zone_only_for(apex: &'static str, id: &'static str) -> MockCloudflareApi {
         let mut mock_api = MockCloudflareApi::new();
-        mock_api.expect_list_zones().returning(|_| {
-            Ok(vec![ZoneInfo {
-                id: "zone-123".to_string(),
-            }])
+        mock_api.expect_list_zones().returning(move |name| {
+            if name == apex {
+                Ok(vec![ZoneInfo { id: id.to_string() }])
+            } else {
+                Ok(vec![])
+            }
         });
+        mock_api
+    }
 
-        let provider = CloudflareDnsProvider::with_api(Box::new(mock_api), "example.com")
+    #[test]
+    fn zone_candidates_walks_parent_suffixes_longest_first() {
+        assert_eq!(
+            zone_candidates("svc.rig.example.com"),
+            vec!["svc.rig.example.com", "rig.example.com", "example.com"]
+        );
+    }
+
+    #[test]
+    fn zone_candidates_two_label_domain_is_its_own_only_candidate() {
+        assert_eq!(zone_candidates("example.com"), vec!["example.com"]);
+    }
+
+    #[test]
+    fn zone_candidates_single_label_domain_has_no_candidates() {
+        assert!(zone_candidates("localhost").is_empty());
+    }
+
+    #[tokio::test]
+    async fn cloudflare_provider_walks_parent_labels_to_resolve_zone() {
+        let mock_api = zone_only_for("example.com", "zone-123");
+
+        let provider = CloudflareDnsProvider::with_api(Box::new(mock_api), "rig.example.com")
             .await
             .unwrap();
         assert_eq!(provider.zone_id, "zone-123");
     }
 
     #[tokio::test]
-    async fn cloudflare_provider_no_zone_found_returns_error() {
+    async fn cloudflare_provider_rejects_zone_apex_domain() {
+        let mock_api = zone_only_for("example.com", "zone-123");
+
+        let err = CloudflareDnsProvider::with_api(Box::new(mock_api), "example.com")
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("apex"), "error should name the apex: {msg}");
+        assert!(
+            msg.contains("host label"),
+            "error should suggest a host label: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn cloudflare_provider_rejects_apex_of_a_subdomain_zone() {
+        // Both a subdomain zone and its parent are registered; the longest
+        // match wins, so the subdomain zone's apex is still rejected.
+        let mut mock_api = MockCloudflareApi::new();
+        mock_api.expect_list_zones().returning(|name| {
+            let id = match name.as_str() {
+                "rig.example.com" => "zone-sub",
+                "example.com" => "zone-parent",
+                _ => return Ok(vec![]),
+            };
+            Ok(vec![ZoneInfo { id: id.to_string() }])
+        });
+
+        let err = CloudflareDnsProvider::with_api(Box::new(mock_api), "rig.example.com")
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("apex"), "error: {err}");
+    }
+
+    #[tokio::test]
+    async fn cloudflare_provider_no_zone_found_names_the_walked_suffixes() {
         let mut mock_api = MockCloudflareApi::new();
         mock_api.expect_list_zones().returning(|_| Ok(vec![]));
 
-        let err = CloudflareDnsProvider::with_api(Box::new(mock_api), "missing.com")
+        let err = CloudflareDnsProvider::with_api(Box::new(mock_api), "rig.missing.com")
             .await
             .unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("no Cloudflare zone found"), "error: {msg}");
+        assert!(
+            msg.contains("rig.missing.com, missing.com"),
+            "error should list the walked suffixes: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn cloudflare_provider_single_label_domain_reports_no_zone_without_queries() {
+        let mut mock_api = MockCloudflareApi::new();
+        mock_api.expect_list_zones().never();
+
+        let err = CloudflareDnsProvider::with_api(Box::new(mock_api), "localhost")
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("no Cloudflare zone found"), "error: {msg}");
+        assert!(msg.contains("localhost"), "error: {msg}");
+    }
+
+    #[tokio::test]
+    async fn cloudflare_provider_zone_lookup_error_propagates() {
+        let mut mock_api = MockCloudflareApi::new();
+        mock_api
+            .expect_list_zones()
+            .returning(|_| Err(TlsError::DnsProvider("zone list failed".to_string())));
+
+        let err = CloudflareDnsProvider::with_api(Box::new(mock_api), "rig.example.com")
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("zone list failed"), "error: {err}");
     }
 
     #[tokio::test]
     async fn cloudflare_provider_creates_txt_record() {
-        let mut mock_api = MockCloudflareApi::new();
-        mock_api.expect_list_zones().returning(|_| {
-            Ok(vec![ZoneInfo {
-                id: "zone-abc".to_string(),
-            }])
-        });
+        let mut mock_api = zone_only_for("example.com", "zone-abc");
         mock_api
             .expect_create_txt_record_api()
             .withf(|zone_id, name, content| {
                 zone_id == "zone-abc"
-                    && name == "_acme-challenge.example.com"
+                    && name == "_acme-challenge.rig.example.com"
                     && content == "dns-value-xyz"
             })
             .returning(|_, _, _| Ok(()));
 
-        let provider = CloudflareDnsProvider::with_api(Box::new(mock_api), "example.com")
+        let provider = CloudflareDnsProvider::with_api(Box::new(mock_api), "rig.example.com")
             .await
             .unwrap();
         provider
-            .create_txt_record("_acme-challenge.example.com", "dns-value-xyz")
+            .create_txt_record("_acme-challenge.rig.example.com", "dns-value-xyz")
             .await
             .unwrap();
     }
 
     #[tokio::test]
     async fn cloudflare_provider_create_record_error_propagates() {
-        let mut mock_api = MockCloudflareApi::new();
-        mock_api.expect_list_zones().returning(|_| {
-            Ok(vec![ZoneInfo {
-                id: "zone-1".to_string(),
-            }])
-        });
+        let mut mock_api = zone_only_for("example.com", "zone-1");
         mock_api
             .expect_create_txt_record_api()
             .returning(|_, _, _| Err(TlsError::DnsProvider("API error".to_string())));
 
-        let provider = CloudflareDnsProvider::with_api(Box::new(mock_api), "example.com")
+        let provider = CloudflareDnsProvider::with_api(Box::new(mock_api), "rig.example.com")
             .await
             .unwrap();
         let err = provider
-            .create_txt_record("_acme-challenge.example.com", "val")
+            .create_txt_record("_acme-challenge.rig.example.com", "val")
             .await
             .unwrap_err();
         assert!(err.to_string().contains("API error"), "error: {err}");
@@ -485,12 +598,7 @@ mod tests {
 
     #[tokio::test]
     async fn cloudflare_provider_deletes_matching_records() {
-        let mut mock_api = MockCloudflareApi::new();
-        mock_api.expect_list_zones().returning(|_| {
-            Ok(vec![ZoneInfo {
-                id: "zone-del".to_string(),
-            }])
-        });
+        let mut mock_api = zone_only_for("example.com", "zone-del");
         mock_api.expect_list_txt_records().returning(|_, _| {
             Ok(vec![
                 RecordInfo {
@@ -506,45 +614,35 @@ mod tests {
             .times(2)
             .returning(|_, _| Ok(()));
 
-        let provider = CloudflareDnsProvider::with_api(Box::new(mock_api), "example.com")
+        let provider = CloudflareDnsProvider::with_api(Box::new(mock_api), "rig.example.com")
             .await
             .unwrap();
         provider
-            .delete_txt_record("_acme-challenge.example.com")
+            .delete_txt_record("_acme-challenge.rig.example.com")
             .await
             .unwrap();
     }
 
     #[tokio::test]
     async fn cloudflare_provider_delete_no_records_is_ok() {
-        let mut mock_api = MockCloudflareApi::new();
-        mock_api.expect_list_zones().returning(|_| {
-            Ok(vec![ZoneInfo {
-                id: "zone-empty".to_string(),
-            }])
-        });
+        let mut mock_api = zone_only_for("example.com", "zone-empty");
         mock_api
             .expect_list_txt_records()
             .returning(|_, _| Ok(vec![]));
         mock_api.expect_delete_record().never();
 
-        let provider = CloudflareDnsProvider::with_api(Box::new(mock_api), "example.com")
+        let provider = CloudflareDnsProvider::with_api(Box::new(mock_api), "rig.example.com")
             .await
             .unwrap();
         provider
-            .delete_txt_record("_acme-challenge.example.com")
+            .delete_txt_record("_acme-challenge.rig.example.com")
             .await
             .unwrap();
     }
 
     #[tokio::test]
     async fn cloudflare_provider_delete_record_error_propagates() {
-        let mut mock_api = MockCloudflareApi::new();
-        mock_api.expect_list_zones().returning(|_| {
-            Ok(vec![ZoneInfo {
-                id: "zone-err".to_string(),
-            }])
-        });
+        let mut mock_api = zone_only_for("example.com", "zone-err");
         mock_api.expect_list_txt_records().returning(|_, _| {
             Ok(vec![RecordInfo {
                 id: "rec-x".to_string(),
@@ -554,11 +652,11 @@ mod tests {
             .expect_delete_record()
             .returning(|_, _| Err(TlsError::DnsProvider("delete failed".to_string())));
 
-        let provider = CloudflareDnsProvider::with_api(Box::new(mock_api), "example.com")
+        let provider = CloudflareDnsProvider::with_api(Box::new(mock_api), "rig.example.com")
             .await
             .unwrap();
         let err = provider
-            .delete_txt_record("_acme-challenge.example.com")
+            .delete_txt_record("_acme-challenge.rig.example.com")
             .await
             .unwrap_err();
         assert!(err.to_string().contains("delete failed"), "error: {err}");
@@ -566,21 +664,16 @@ mod tests {
 
     #[tokio::test]
     async fn cloudflare_provider_list_records_error_propagates() {
-        let mut mock_api = MockCloudflareApi::new();
-        mock_api.expect_list_zones().returning(|_| {
-            Ok(vec![ZoneInfo {
-                id: "zone-le".to_string(),
-            }])
-        });
+        let mut mock_api = zone_only_for("example.com", "zone-le");
         mock_api
             .expect_list_txt_records()
             .returning(|_, _| Err(TlsError::DnsProvider("list failed".to_string())));
 
-        let provider = CloudflareDnsProvider::with_api(Box::new(mock_api), "example.com")
+        let provider = CloudflareDnsProvider::with_api(Box::new(mock_api), "rig.example.com")
             .await
             .unwrap();
         let err = provider
-            .delete_txt_record("_acme-challenge.example.com")
+            .delete_txt_record("_acme-challenge.rig.example.com")
             .await
             .unwrap_err();
         assert!(err.to_string().contains("list failed"), "error: {err}");

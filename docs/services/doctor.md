@@ -584,7 +584,11 @@ their next restart (the existing `--fix` restart advice covers it).
   [--dns-propagation-seconds <n>]`** — the ACME path, unchanged in mechanism
   from `rp init-tls --acme` (DNS-01, wildcard cert, account state persisted
   to `acme.json`). Publicly-trusted certs need no CA distribution to
-  clients. `--directory-url` overrides the Let's Encrypt endpoint entirely
+  clients. With the Cloudflare provider, `--domain` must sit at least one
+  label **below** its zone apex — `rig.example.com` in the `example.com`
+  zone, giving `<service>.rig.example.com` names: the enclosing zone is
+  found by walking parent labels, and the apex itself is rejected because
+  `*.<zone>` would also cover every sibling hostname in the zone. `--directory-url` overrides the Let's Encrypt endpoint entirely
   (an internal ACME CA such as step-ca — or Pebble in tests); `--acme-root`
   adds a PEM trust anchor for the ACME server's own TLS endpoint, which
   such private directories need; `--dns-propagation-seconds` tunes the wait

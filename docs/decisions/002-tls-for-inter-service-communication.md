@@ -6,6 +6,21 @@ Accepted
 
 ## Updates
 
+**2026-07-19** — Cloudflare zone resolution walks parent labels and
+**requires the domain to sit below the zone apex**
+([#613](https://github.com/ivonnyssen/rusty-photon/issues/613)):
+`--domain rig.example.com` resolves to the `example.com` zone, and
+`--domain example.com` is rejected — the `<service>.<host>.<domain>`
+pattern this ADR's examples always showed. Previously the lookup was an
+exact zone-name match, which both failed for sub-label domains and
+forced the wildcard to `*.<zone>`, where it is also valid for every
+sibling hostname in the zone — a key on an observatory machine must not
+cover unrelated infrastructure names. Consequence for §Multi-Machine
+Support: each machine can issue its own certificate under its own host
+label instead of receiving a copy of one shared key; `post_renewal_hooks`
+distribution remains for deployments that want the single shared scope
+(service names under one host label resolving to different machines).
+
 **2026-07-18** — The certificate lifecycle was re-homed from `rp` to
 **doctor** (ADR-016 decision 10; the doctor plan's D6): `rp init-tls` is
 now `doctor tls issue [--acme]`, hashing is `doctor auth hash-password`,
