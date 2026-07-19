@@ -115,6 +115,32 @@ when absent, probes are unauthenticated and skip certificate verification
 (a challenge still proves aliveness). `doctor auth rotate` overwrites the
 password in place.
 
+### The probe-host override (`probe_domain`)
+
+One optional top-level key overrides the host every
+[derived probe URL](#deriving-the-health-probe-url) dials:
+
+```json
+{
+  "probe_domain": "rig.example.com"
+}
+```
+
+Unset (the default), probe hosts come from the supervised service's
+`bind_address` — `localhost` for a wildcard bind, the literal address
+otherwise. That derivation breaks the moment services serve an ACME
+wildcard certificate (`*.<host>.<domain>`): a public CA issues DNS SANs
+only — never `localhost` or a private IP — so every https probe would fail
+hostname verification and report a healthy fleet as down. With
+`probe_domain` set, every derived URL's host is `<service>.<probe_domain>`
+(`https://qhy-camera.rig.example.com:11121/health`), matching the wildcard
+SAN. The names must resolve to the local host (hosts file or local
+resolver) — the same requirement the ACME flip imposes on every other
+client, because sentinel stays same-host-bound either way. The value must
+be a bare DNS domain of letter/digit/hyphen labels: a scheme, port, path,
+whitespace, empty label, or any character a certificate's DNS SAN could
+never carry fails config load with the field named.
+
 ### Service discovery
 
 Sentinel has **no configured service registry**. It discovers the services it
@@ -141,9 +167,11 @@ removed one dropped, without restarting sentinel.
 | restart budget, poll cadence, thresholds, backoff | constants — see [Service Health Supervision](#service-health-supervision) |
 
 Sentinel is same-host-bound by definition (it shells out to the service
-manager), so every derived URL targets the local host. Processes started by
-hand (`cargo run`) are not under the service manager and are therefore not
-discovered or supervised.
+manager), so every derived URL targets the local host — by address, or by a
+locally-resolving `<service>.<probe_domain>` name when the
+[probe-host override](#the-probe-host-override-probe_domain) is set.
+Processes started by hand (`cargo run`) are not under the service manager
+and are therefore not discovered or supervised.
 
 #### Enumeration and run states
 
@@ -183,7 +211,10 @@ probe needs: `port` (required), and whether `tls` is configured (scheme
 `server` block is read and unknown fields are tolerated (ADR-016 decision 7:
 strict parsing is for a service's own config; a cross-binary read from a
 possibly newer or older build must degrade, not refuse). The probe host is
-`localhost` (the service's `bind_address` when it names a specific address).
+`localhost` (the service's `bind_address` when it names a specific address) —
+unless the [`probe_domain` override](#the-probe-host-override-probe_domain)
+is set, which replaces it with `<service>.<probe_domain>` in every derived
+URL (the health probe and the watchdog ladder's Alpaca base alike).
 The probe path follows the service's **probe class**:
 
 - **Alpaca drivers** answer `GET {base}/management/v1/configureddevices` — no
@@ -399,7 +430,8 @@ operation family's `on_expiry` policy:
   stall, in order:
   1. **Health check** — `GET {base_url}/{device}/0/connected` with a 2 s
      timeout, where `base_url` is derived from the service's `<svc>.json`
-     (`{scheme}://localhost:{port}/api/v1` — see
+     (`{scheme}://{host}:{port}/api/v1` with the same host derivation as the
+     health probe — see
      [Service discovery](#deriving-the-health-probe-url)) and the device
      number is always `0` (one service per device, ADR-014). A clean `200`
      means the service is alive and the *operation* is stuck; anything else

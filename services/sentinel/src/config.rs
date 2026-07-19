@@ -10,6 +10,55 @@ const PUSHOVER_API_TOKEN_ENV: &str = "PUSHOVER_API_TOKEN";
 /// Environment variable name for overriding the Pushover user key
 const PUSHOVER_USER_KEY_ENV: &str = "PUSHOVER_USER_KEY";
 
+/// A bare DNS domain — the `probe_domain` config key's type. When set,
+/// every derived probe URL dials `<service>.<probe_domain>` instead of the
+/// bind-derived host, so https probes verify against an ACME wildcard
+/// certificate whose SANs are DNS names only (see
+/// `docs/services/sentinel.md` §The probe-host override). The names must
+/// resolve to the local host. Anything that is not a bare DNS domain of
+/// letter/digit/hyphen labels — a scheme, port, path, whitespace, empty
+/// label, or underscore — is rejected at config load.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct ProbeDomain(String);
+
+impl ProbeDomain {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for ProbeDomain {
+    type Error = String;
+
+    fn try_from(value: String) -> std::result::Result<Self, Self::Error> {
+        // Letter/digit/hyphen labels (RFC 952/1123 shape): anything else — a
+        // scheme, port, path, whitespace, empty label, or a character a
+        // certificate's DNS SAN could never carry — is a config mistake
+        // better caught at load than as probes failing at 3am.
+        let valid_label = |label: &str| {
+            !label.is_empty()
+                && label.len() <= 63
+                && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+        };
+        if !value.split('.').all(valid_label) {
+            return Err(format!(
+                "probe_domain must be a bare DNS domain of letter/digit/hyphen \
+                 labels (no scheme, port, path, or whitespace): '{value}'"
+            ));
+        }
+        Ok(Self(value))
+    }
+}
+
+impl From<ProbeDomain> for String {
+    fn from(value: ProbeDomain) -> Self {
+        value.0
+    }
+}
+
 /// Main configuration structure
 ///
 /// `deny_unknown_fields` so typoed or removed top-level keys fail loudly at
@@ -40,6 +89,11 @@ pub struct Config {
     /// auth challenge (401/403) still counts as proof of life.
     #[serde(default)]
     pub service_auth: Option<rp_auth::config::ClientAuthConfig>,
+    /// The probe-host override: when set, every derived probe URL dials
+    /// `<service>.<probe_domain>` instead of the bind-derived host. See
+    /// [`ProbeDomain`].
+    #[serde(default)]
+    pub probe_domain: Option<ProbeDomain>,
     /// Optional push-based operation watchdog. Absent means safety polling
     /// only (today's behavior). See [`OperationWatchdogConfig`].
     ///
@@ -61,6 +115,7 @@ impl Default for Config {
             server: default_server(),
             ca_cert: None,
             service_auth: None,
+            probe_domain: None,
             operation_watchdog: None,
         }
     }
@@ -836,6 +891,64 @@ mod tests {
         let json = r#"{ "webhooks": [] }"#;
         let err = serde_json::from_str::<Config>(json).unwrap_err();
         assert!(err.to_string().contains("webhooks"), "{err}");
+    }
+
+    #[test]
+    fn probe_domain_parses_a_bare_domain() {
+        let config: Config =
+            serde_json::from_str(r#"{ "probe_domain": "rig.example.com" }"#).unwrap();
+        assert_eq!(config.probe_domain.unwrap().as_str(), "rig.example.com");
+    }
+
+    #[test]
+    fn probe_domain_serializes_back_to_the_bare_string() {
+        let config: Config =
+            serde_json::from_str(r#"{ "probe_domain": "rig.example.com" }"#).unwrap();
+        let json = serde_json::to_value(&config).unwrap();
+        assert_eq!(json["probe_domain"], "rig.example.com");
+    }
+
+    #[test]
+    fn probe_domain_defaults_to_absent() {
+        let config: Config = serde_json::from_str("{}").unwrap();
+        assert_eq!(config.probe_domain, None);
+    }
+
+    #[test]
+    fn probe_domain_accepts_letter_digit_hyphen_labels() {
+        for good in ["rig-01.Example.com", "xn--rg-eka.example.com", "a.b.c"] {
+            let json = format!(r#"{{ "probe_domain": "{good}" }}"#);
+            let config: Config = serde_json::from_str(&json).unwrap();
+            assert_eq!(config.probe_domain.unwrap().as_str(), good);
+        }
+    }
+
+    #[test]
+    fn probe_domain_rejects_anything_but_a_bare_domain() {
+        let long_label = format!("{}.example.com", "a".repeat(64));
+        for bad in [
+            "",
+            " ",
+            "rig example.com",
+            "https://rig.example.com",
+            "rig.example.com:8080",
+            "rig.example.com/path",
+            ".rig.example.com",
+            "rig.example.com.",
+            "rig..example.com",
+            "-rig.example.com",
+            "rig-.example.com",
+            "rig_1.example.com",
+            long_label.as_str(),
+        ] {
+            let json = format!(r#"{{ "probe_domain": {} }}"#, serde_json::json!(bad));
+            let err = serde_json::from_str::<Config>(&json).unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("probe_domain must be a bare DNS domain"),
+                "'{bad}' should be rejected with the field named, got: {err}"
+            );
+        }
     }
 
     #[test]

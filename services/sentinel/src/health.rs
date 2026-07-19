@@ -419,6 +419,7 @@ pub struct DiscoverySupervisor {
     #[debug(skip)]
     manager: Arc<dyn ServiceManager>,
     config_dir: Option<PathBuf>,
+    probe_domain: Option<String>,
     ctx: SupervisionContext,
 }
 
@@ -426,11 +427,13 @@ impl DiscoverySupervisor {
     pub fn new(
         manager: Arc<dyn ServiceManager>,
         config_dir: Option<PathBuf>,
+        probe_domain: Option<String>,
         ctx: SupervisionContext,
     ) -> Self {
         Self {
             manager,
             config_dir,
+            probe_domain,
             ctx,
         }
     }
@@ -442,7 +445,13 @@ impl DiscoverySupervisor {
     /// dashboard binds, so the restart endpoint never races an empty
     /// registry at startup.
     pub(crate) async fn refresh(&self) -> Option<HashMap<String, DiscoveredService>> {
-        match discover(&self.manager, self.config_dir.as_deref()).await {
+        match discover(
+            &self.manager,
+            self.config_dir.as_deref(),
+            self.probe_domain.as_deref(),
+        )
+        .await
+        {
             Ok(services) => {
                 *self.ctx.registry.write().await = services.clone();
                 self.ctx
@@ -1196,6 +1205,7 @@ mod tests {
             };
             let supervisor = DiscoverySupervisor::new(
                 Arc::clone(&manager) as Arc<dyn ServiceManager>,
+                None,
                 None,
                 ctx,
             );

@@ -30,6 +30,7 @@ pub struct SentinelWorld {
     pub sentinel_transitions: Vec<serde_json::Value>,
     pub sentinel_has_notifiers: bool,
     pub sentinel_monitors: Vec<serde_json::Value>,
+    pub sentinel_probe_domain: Option<String>,
 
     // Result capture
     pub last_response_body: Option<String>,
@@ -171,6 +172,10 @@ impl SentinelWorld {
                 "port": 0
             }
         });
+
+        if let Some(domain) = &self.sentinel_probe_domain {
+            config["probe_domain"] = serde_json::json!(domain);
+        }
 
         if self.sentinel_has_notifiers {
             let mut pushover = serde_json::json!({
