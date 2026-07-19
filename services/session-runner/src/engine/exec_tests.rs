@@ -2750,6 +2750,48 @@ async fn test_golden_deep_sky_escalation_event_runs_the_full_refocus_train() {
 }
 
 #[tokio::test]
+async fn test_golden_deep_sky_shutdown_stop_failure_keeps_the_flag_and_still_parks() {
+    // A failed stop_guiding is logged, not fatal — but it must NOT
+    // clear session.guiding: the blackboard would otherwise claim a
+    // stopped loop the guider still runs, and later stop attempts
+    // would be skipped. The park still happens.
+    let doc = make_doc(crate::document::corpus::golden_deep_sky());
+    let params = deep_sky_params(
+        &doc,
+        json!({
+            "focus": false,
+            "centering": false,
+            "guide": true,
+            "max_frames": 1,
+            "park_on_finish": true
+        }),
+    );
+    let tools = MockTools::new(|_, tool, _| match tool {
+        "unpark" | "set_tracking" | "slew" | "record_exposure" | "start_guiding" | "park" => {
+            Ok(json!({}))
+        }
+        "get_next_target" => Ok(planned_recommendation(Value::Null, Value::Null)),
+        "capture" => Ok(json!({ "image_path": "/tmp/light.fits", "document_id": "doc-1" })),
+        "stop_guiding" => Err(ToolCallError::Failed("PHD2 went away".to_owned())),
+        other => panic!("unexpected tool call `{other}`"),
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let (outcome, session) = run_in(&dir, &doc, &params, &tools, &MockClock::new()).await;
+
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert_eq!(
+        session["guiding"],
+        json!(true),
+        "a failed stop must not pretend the loop stopped"
+    );
+    assert_eq!(
+        tools.call_names().last().map(String::as_str),
+        Some("park"),
+        "the park still happens after the logged stop failure"
+    );
+}
+
+#[tokio::test]
 async fn test_golden_deep_sky_recovery_clears_the_flip_restart_flag() {
     // A crash between the flip trigger's stop-guiding and its restart
     // leaves session.flip_restart_guiding persisted as true; the

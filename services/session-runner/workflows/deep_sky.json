@@ -109,7 +109,15 @@
           "if": "session.guiding == true",
           "then": [
             {
-              "try": [{ "tool": "stop_guiding", "args": {} }],
+              "try": [
+                { "tool": "stop_guiding", "args": {} },
+                {
+                  "set": {
+                    "session.flip_restart_guiding": "true",
+                    "session.guiding": "false"
+                  }
+                }
+              ],
               "catch": [
                 {
                   "log": {
@@ -119,12 +127,6 @@
                   }
                 }
               ]
-            },
-            {
-              "set": {
-                "session.flip_restart_guiding": "true",
-                "session.guiding": "false"
-              }
             }
           ]
         },
@@ -313,7 +315,10 @@
                         "if": "session.guiding == true",
                         "then": [
                           {
-                            "try": [{ "tool": "stop_guiding", "args": {} }],
+                            "try": [
+                              { "tool": "stop_guiding", "args": {} },
+                              { "set": { "session.guiding": "false" } }
+                            ],
                             "catch": [
                               {
                                 "log": {
@@ -323,8 +328,7 @@
                                 }
                               }
                             ]
-                          },
-                          { "set": { "session.guiding": "false" } }
+                          }
                         ]
                       },
                       {
@@ -497,7 +501,10 @@
         "if": "session.guiding == true",
         "then": [
           {
-            "try": [{ "tool": "stop_guiding", "args": {} }],
+            "try": [
+              { "tool": "stop_guiding", "args": {} },
+              { "set": { "session.guiding": "false" } }
+            ],
             "catch": [
               {
                 "log": {
@@ -507,8 +514,7 @@
                 }
               }
             ]
-          },
-          { "set": { "session.guiding": "false" } }
+          }
         ]
       },
       {

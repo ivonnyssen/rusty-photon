@@ -1084,6 +1084,10 @@ silently capturing trailed frames all night. `dither_every` (default
 amount is rig geometry and comes from rp's `guiding.dither_pixels`
 config, not a parameter, and a failed dither is logged, not fatal. Shutdown and the meridian-flip trigger
 stop and restart guiding around their mount motion the same way.
+Failed stops are logged, not fatal — and `session.guiding` clears only
+on a **successful** stop, so the blackboard never claims a stopped
+loop the guider still runs and the next handshake point retries the
+stop.
 The full document lives in `workflows/deep_sky.json`; the shape:
 
 ```jsonc
