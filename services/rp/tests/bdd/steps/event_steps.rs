@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use cucumber::{given, then};
+use cucumber::{given, then, when};
 
 use bdd_infra::rp_harness::WebhookReceiver;
 
@@ -20,6 +20,20 @@ async fn webhook_receiver_subscribed_to(world: &mut RpWorld, event_type: String)
 async fn webhook_receiver_subscribed_to_two(world: &mut RpWorld, event1: String, event2: String) {
     setup_webhook_receiver(world).await;
     add_event_plugin(world, vec![event1, event2]);
+}
+
+/// Comma-separated subscription list, for scenarios that assert
+/// ordering across more than two event types (motion_gate.feature).
+#[given(expr = "a test webhook receiver subscribed to the events {string}")]
+async fn webhook_receiver_subscribed_to_list(world: &mut RpWorld, event_types: String) {
+    setup_webhook_receiver(world).await;
+    add_event_plugin(
+        world,
+        event_types
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .collect(),
+    );
 }
 
 #[given(
@@ -204,6 +218,110 @@ async fn event_payload_contains_field(world: &mut RpWorld, event_type: String, f
         field,
         event_type,
         event.payload
+    );
+}
+
+// --- Mid-scenario waits (When keyword) ---------------------------------
+//
+// The `should receive` assertions above are `#[then]` steps, which
+// cucumber only matches under a Then keyword. The motion-gate
+// scenarios need to *wait* for an event mid-When (e.g. hold off the
+// dither call until the background capture's `exposure_started`
+// arrives), so the same wait is also exposed as a When step.
+
+#[when(expr = "the test webhook receiver has received an {string} event")]
+async fn has_received_event_an(world: &mut RpWorld, event_type: String) {
+    assert!(
+        world.wait_for_events(&event_type, 1).await,
+        "expected to receive '{}' event within timeout",
+        event_type
+    );
+}
+
+#[when(expr = "the test webhook receiver has received a {string} event")]
+async fn has_received_event_a(world: &mut RpWorld, event_type: String) {
+    assert!(
+        world.wait_for_events(&event_type, 1).await,
+        "expected to receive '{}' event within timeout",
+        event_type
+    );
+}
+
+// --- Emission-order assertions (event_seq based) -----------------------
+//
+// `{string} should have been received before {string}` above compares
+// webhook *arrival* instants, which is fine when emissions are far
+// apart but racy for back-to-back emissions (delivery POSTs are
+// concurrent). These variants compare the envelope's monotonic
+// `event_seq` — the emission order itself — so a gate release
+// followed microseconds later by the queued motion's `*_started`
+// still asserts deterministically.
+
+/// Wait for at least one event of the given type, then return the
+/// lowest `event_seq` among them (the first emission).
+async fn first_seq_of(world: &mut RpWorld, event_type: &str) -> u64 {
+    assert!(
+        world.wait_for_events(event_type, 1).await,
+        "expected to receive '{}' event within timeout",
+        event_type
+    );
+    let events = world.received_events.read().await;
+    events
+        .iter()
+        .filter(|e| e.event_type == event_type)
+        .filter_map(|e| e.event_seq)
+        .min()
+        .unwrap_or_else(|| panic!("'{event_type}' events carried no event_seq"))
+}
+
+#[then(expr = "the {string} event should have been emitted before the {string} event")]
+async fn event_emitted_before(world: &mut RpWorld, first: String, second: String) {
+    let first_seq = first_seq_of(world, &first).await;
+    let second_seq = first_seq_of(world, &second).await;
+    assert!(
+        first_seq < second_seq,
+        "expected '{first}' (seq {first_seq}) to be emitted before '{second}' (seq {second_seq})"
+    );
+}
+
+#[then(expr = "the last {string} event should have been emitted after the {string} event")]
+async fn last_event_emitted_after(world: &mut RpWorld, first: String, second: String) {
+    assert!(
+        world.wait_for_events(&first, 1).await,
+        "expected to receive '{}' event within timeout",
+        first
+    );
+    let second_seq = first_seq_of(world, &second).await;
+    let events = world.received_events.read().await;
+    let last_seq = events
+        .iter()
+        .filter(|e| e.event_type == first)
+        .filter_map(|e| e.event_seq)
+        .max()
+        .unwrap_or_else(|| panic!("'{first}' events carried no event_seq"));
+    assert!(
+        last_seq > second_seq,
+        "expected the last '{first}' (seq {last_seq}) to be emitted after '{second}' (seq {second_seq})"
+    );
+}
+
+#[then(expr = "the test webhook receiver should not have received a {string} event")]
+async fn should_not_receive_event_of_type(world: &mut RpWorld, event_type: String) {
+    // Absence cannot be polled for; give late deliveries a grace
+    // window before asserting (the emission under test, if it
+    // happened at all, predates the joined background calls by the
+    // stub's settle delay).
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let events = world.received_events.read().await;
+    let matching: Vec<_> = events
+        .iter()
+        .filter(|e| e.event_type == event_type)
+        .collect();
+    assert!(
+        matching.is_empty(),
+        "expected no '{}' events, but received {}",
+        event_type,
+        matching.len()
     );
 }
 

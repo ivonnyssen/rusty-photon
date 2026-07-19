@@ -281,6 +281,12 @@ impl McpHandler {
         );
         let ra_only = params.ra_only.unwrap_or(false);
 
+        // Mount motion (rp.md § Mount Motion Gate): exclusive acquire
+        // after parameter resolution (invalid calls fail fast above
+        // without waiting) and before `dither_started`, held through
+        // the settle. In-flight imaging-train exposures finish first.
+        let _motion_permit = self.motion_gate.exclusive("dither").await;
+
         let operation_id = uuid::Uuid::new_v4().to_string();
         let started_at = chrono::Utc::now();
         let started_payload = serde_json::json!({

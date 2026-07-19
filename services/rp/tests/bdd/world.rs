@@ -167,6 +167,13 @@ pub struct RpWorld {
     pub last_image_pixels_body: Option<Vec<u8>>,
     /// Last tool call result
     pub last_tool_result: Option<Result<Value, String>>,
+    /// In-flight tool calls issued on their own MCP session by the
+    /// "a second MCP client starts ... in the background" steps
+    /// (motion_gate.feature), as `(tool_name, handle)` pairs. Every
+    /// scenario that spawns one must join it via "the background
+    /// {tool} call should succeed" so a stray capture cannot hold
+    /// the shared simulator into the next scenario.
+    pub background_calls: Vec<(String, tokio::task::JoinHandle<Result<Value, String>>)>,
     /// Last tool list result
     pub last_tool_list: Option<Vec<String>>,
     /// Current filter from get_filter
