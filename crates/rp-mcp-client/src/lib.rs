@@ -97,6 +97,11 @@ impl RpMcpClient {
         let http_client = rusty_photon_tls::client::build_reqwest_client(ca_cert)?;
 
         let mut config = StreamableHttpClientTransportConfig::with_uri(mcp_url.to_owned());
+        // Hard invariant (ADR-017): rp terminates MCP sessions on safety
+        // transitions and consumers must observe a dead session — the
+        // transport must never re-establish one transparently, whatever
+        // rmcp's default becomes.
+        config.reinit_on_expired_session = false;
         if let Some(header) = basic_authorization(mcp_url, service_auth, ca_cert)? {
             config = config.custom_headers(
                 [(AUTHORIZATION, header)]
