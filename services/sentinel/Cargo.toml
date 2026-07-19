@@ -90,6 +90,16 @@ assets = [
     { source = "pkg/rusty-photon-renew.timer", dest = "/usr/lib/systemd/system/rusty-photon-renew.timer", mode = "644" },
     { source = "pkg/50-rusty-photon-sentinel.rules", dest = "/usr/share/polkit-1/rules.d/50-rusty-photon-sentinel.rules", mode = "644" },
 ]
+# The timer is enabled on its FIRST APPEARANCE, not only on first package
+# install: an upgrade from a pre-renewal rpm must arm it too (%pre runs
+# before the new payload lands, so the unit file's absence identifies
+# that upgrade), while later upgrades preserve an operator's explicit
+# disable — the deb-systemd-helper "was-enabled" semantics, hand-rolled.
+pre_install_script = """
+if [ "$1" -ge 2 ] && [ ! -e /usr/lib/systemd/system/rusty-photon-renew.timer ]; then
+    touch /run/rusty-photon-renew-first-appearance
+fi
+"""
 post_install_script = """
 getent passwd rusty-photon > /dev/null || useradd -r -d /var/lib/rusty-photon -s /sbin/nologin rusty-photon
 install -d -m 0750 -o rusty-photon -g rusty-photon /var/lib/rusty-photon /var/lib/rusty-photon/.config /var/lib/rusty-photon/.config/rusty-photon
@@ -97,7 +107,10 @@ install -d -m 0750 -o rusty-photon -g rusty-photon /var/lib/rusty-photon /var/li
 systemctl daemon-reload
 if [ "$1" -eq 1 ]; then
     systemctl enable rusty-photon-sentinel.service
+fi
+if [ "$1" -eq 1 ] || [ -e /run/rusty-photon-renew-first-appearance ]; then
     systemctl enable rusty-photon-renew.timer
+    rm -f /run/rusty-photon-renew-first-appearance
 fi
 """
 # rpm scriptlet arg $1 = package instances remaining after the operation.

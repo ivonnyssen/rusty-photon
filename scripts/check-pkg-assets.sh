@@ -335,7 +335,7 @@ if [ -f "$pkg_wxs" ]; then
         || err "installer: Package.wxs must unregister the renewal task on uninstall"
     grep -Fq 'tls renew' "$pkg_wxs" \
         || err "installer: the renewal task must run rusty-photon-doctor tls renew"
-    grep -Fq '"doctor"' scripts/build-msi.ps1 \
+    awk '/\$allServices = @\(/, /^\)/' scripts/build-msi.ps1 | grep -Fq '"doctor"' \
         || err "installer: build-msi.ps1 \$allServices must include doctor"
 fi
 

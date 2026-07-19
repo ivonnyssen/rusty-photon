@@ -175,14 +175,19 @@ Services pick fixed configs up on their next
 
 A formula manages exactly one `brew services` daemon (sentinel itself),
 so the daily renewal job ships as a plain launchd plist in sentinel's
-keg. Arm it once — the formula's caveats print the same command:
+keg. Arm it once — the formula's caveats print the same commands. The
+symlink uses the upgrade-stable opt path, and it must land in
+`~/Library/LaunchAgents` because launchd only auto-loads jobs from
+there on login:
 
 ```sh
-launchctl bootstrap gui/$UID "$(brew --prefix rusty-photon-sentinel)/rusty-photon-renew.plist"
+ln -sfv "$(brew --prefix rusty-photon-sentinel)/rusty-photon-renew.plist" ~/Library/LaunchAgents/
+launchctl bootstrap gui/$UID ~/Library/LaunchAgents/rusty-photon-renew.plist
 ```
 
-(Headless installs running `sudo brew services` load it into the system
-domain instead: `sudo launchctl bootstrap system <same path>`.) The job
+(Headless installs running `sudo brew services` link into
+`/Library/LaunchDaemons` and load the system domain instead:
+`sudo launchctl bootstrap system /Library/LaunchDaemons/rusty-photon-renew.plist`.) The job
 runs `rusty-photon-doctor tls renew` daily at 03:00 — a no-op until
 certificates exist and are inside their renewal window. Running services
 pick renewed certificates up without a restart (mtime-triggered

@@ -678,7 +678,9 @@ binary and these units, plan decision 8; D7**):**
   observatory machine still renews on next boot). The deb enables and
   starts the timer on install; the rpm enables it (Fedora convention —
   it arms on the next boot, or `systemctl start rusty-photon-renew.timer`
-  once by hand). Sentinel's service discovery deliberately skips the
+  once by hand). Both packagers enable on the timer's **first
+  appearance** — a fresh install or the upgrade that first ships it —
+  and preserve an operator's explicit disable on later upgrades. Sentinel's service discovery deliberately skips the
   `renew` unit: it is a job, not a daemon — supervising it would
   restart-loop a failed 3am run.
 - Windows: the MSI registers a Scheduled Task `rusty-photon-renew`

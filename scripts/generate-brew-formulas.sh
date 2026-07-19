@@ -272,8 +272,11 @@ EOF
       This formula also installs rusty-photon-doctor (the diagnosis and
       repair tool; there is no separate doctor formula). To arm the daily
       TLS renewal job — a no-op until `rusty-photon-doctor tls issue` has
-      staged certificates — load the bundled launchd plist once:
-        launchctl bootstrap gui/$UID #{prefix}/rusty-photon-renew.plist
+      staged certificates — link and load the bundled launchd plist once
+      (the opt path stays valid across upgrades, and launchd only
+      auto-loads jobs from the LaunchAgents directory):
+        ln -sfv #{opt_prefix}/rusty-photon-renew.plist ~/Library/LaunchAgents/
+        launchctl bootstrap gui/$UID ~/Library/LaunchAgents/rusty-photon-renew.plist
       Details: docs/packaging-macos.md in the rusty-photon repo.
     EOS
   end
