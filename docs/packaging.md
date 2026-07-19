@@ -415,7 +415,7 @@ remote viewing in one.
    git clone --depth 1 --branch v2.6.14 https://github.com/OpenPHDGuiding/phd2.git
    cmake -S phd2 -B phd2/tmp -DCMAKE_BUILD_TYPE=Release
    make -C phd2/tmp -j"$(nproc)"
-   sudo make -C phd2/tmp install     # installs /usr/bin/phd2
+   sudo make -C phd2/tmp install  # lands at /usr/bin/phd2 (PHD2's cmake sets the /usr prefix itself)
    ```
 
    Do **not** pass `-DUSE_SYSTEM_LIBINDI=1` on Debian or Raspberry Pi
@@ -429,7 +429,7 @@ remote viewing in one.
 
    ```sh
    sudo apt-get install -y tigervnc-standalone-server
-   vncpasswd                          # one-time: set the viewing password
+   tigervncpasswd                     # one-time: set the viewing password
    printf '#!/bin/sh\nexport GDK_BACKEND=x11\nexec phd2\n' > ~/.vnc/xstartup
    chmod +x ~/.vnc/xstartup
    tigervncserver :1 -localhost yes -geometry 1280x800
@@ -440,7 +440,13 @@ remote viewing in one.
    `GDK_BACKEND=x11` line is load-bearing — on a host where any Wayland
    session exists (a Raspberry Pi OS console, for example), GTK prefers
    the Wayland socket over `DISPLAY` and PHD2 would come up invisible
-   on the physical console instead of the VNC display.
+   on the physical console instead of the VNC display. The password
+   tool must be `tigervncpasswd`: on Raspberry Pi OS plain `vncpasswd`
+   is RealVNC's unrelated utility and writes a password file TigerVNC
+   cannot read. If `tigervncserver` reports the server "cleanly exited"
+   right after starting, PHD2 crashed on launch (`~/.vnc/<host>:1.log`
+   shows it) — a one-off on the very first start after installation has
+   been observed; starting the session again recovers.
 
 3. **Create the equipment profile (first run only).** Tunnel the
    display to your workstation and point any VNC viewer at
@@ -456,7 +462,7 @@ remote viewing in one.
    cleanly once (File → Exit — this ends the VNC session) and start it
    again with the `tigervncserver` line above: PHD2 persists its
    profile to `~/.PHDGuidingV2` on clean exit, not while running, and
-   an unsecured profile would be lost to a power cut.
+   an unsaved profile would be lost to a power cut.
 
 4. **Verify.**
 
