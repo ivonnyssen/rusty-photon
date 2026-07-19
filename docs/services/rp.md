@@ -388,6 +388,7 @@ emits only `_complete` / `_failed`, with no `_started`.) Point events
 | `dither_started` | pixels, ra_only, settle_pixels, settle_time, settle_timeout | Dither command sent; deadline as on `guide_started` |
 | `dither_settled` | rms_ra_px, rms_dec_px, total_rms_px, sample_count | Post-dither settle complete |
 | `dither_failed` | error | Dither or its settle failed |
+| `mount_motion_pending` | operation (`slew` \| `dither`) | A mount motion is queued behind the [mount motion gate](#mount-motion-gate) — in-flight imaging-train exposures (or an earlier queued motion) must finish first. Point event; the motion's own `*_started` triple follows once the gate is acquired |
 | `safety_changed` | monitor, new_state | SafetyMonitor transition |
 | `temperature_changed` | sensor, value | Significant temperature change |
 | `cooler_stabilized` | camera_id, target_c, floor_c (only when a floor was measured), power_pct (only when readable) | Cooldown selected and stabilized at a dark-library rung (§ Camera Cooling) |
@@ -762,19 +763,19 @@ the exact parameter types and return structure.
 
 | Action | Parameters | Returns | Description |
 |--------|-----------|---------|-------------|
-| `capture` | camera_id, duration, binning | image_path, document_id | Take an exposure, download `image_array`, save FITS file, create exposure document. Carries an **advisory predicted deadline** on `exposure_started`: `predicted = duration + camera.readout_time_estimate` (default 15 s when unset), `max = predicted + 30 s` readout headroom. rp does **not** enforce this (the camera driver owns the exposure); it rides the envelope as `predicted_duration_ms`/`max_duration_ms` for the Sentinel watchdog. rp's own readout backstop (a separate, more generous `duration + 120 s` ceiling) is unchanged |
+| `capture` | camera_id, duration, binning | image_path, document_id | Take an exposure, download `image_array`, save FITS file, create exposure document. Carries an **advisory predicted deadline** on `exposure_started`: `predicted = duration + camera.readout_time_estimate` (default 15 s when unset), `max = predicted + 30 s` readout headroom. rp does **not** enforce this (the camera driver owns the exposure); it rides the envelope as `predicted_duration_ms`/`max_duration_ms` for the Sentinel watchdog. rp's own readout backstop (a separate, more generous `duration + 120 s` ceiling) is unchanged. Through a camera terminating an imaging train, holds the [mount motion gate](#mount-motion-gate) shared for the whole pipeline (a pending mount motion delays the start) |
 | `get_camera_info` | camera_id | max_adu, exposure_min, exposure_max, sensor_x, sensor_y, bin_x, bin_y | Read camera capabilities and current settings |
 | `move_focuser` | focuser_id, position | actual_position | Move focuser to absolute position (blocks polling `is_moving` until idle). Bounded by a **predicted deadline**: `predicted = \|target − current\| / focuser.steps_per_sec` (current position read before the move); `max = max(predicted × 2, MIN_FOCUSER_DEADLINE = 5 s)`. If the pre-move read fails it falls back to a 120 s ceiling; `predicted`/`max` ride the `move_focuser_started` envelope as `predicted_duration_ms`/`max_duration_ms` |
 | `get_focuser_position` | focuser_id | position | Read current focuser position |
 | `get_focuser_temperature` | focuser_id | temperature_c | Read focuser temperature sensor |
 | `move_rotator` | rotator_id *or* train_id (exactly one), angle | rotator_id, angle, mechanical_angle, moved_trains | Move the rotator to an absolute **sky** angle in degrees (`0.0 ≤ angle < 360.0`, the ASCOM `Position` frame), blocking on `IsMoving` until idle (fixed 120 s ceiling; no predictive deadline — there is no rotator rate config yet). `train_id` resolves the train's sole rotator. `moved_trains` lists every train containing the rotator. See [Rotator Tool Details](#rotator-tool-details) |
 | `get_rotator_position` | rotator_id *or* train_id (exactly one) | rotator_id, angle, mechanical_angle, is_moving | Read the rotator's sky angle, mechanical angle, and motion state |
-| `slew` | ra, dec, settle_after (optional) | actual_ra, actual_dec | Slew the singular mount to coordinates (blocks until `Slewing == false` plus configured / per-call settle). Tracking must be on; ASCOM error propagates otherwise. Bounded by a **predicted deadline**: `predicted = great-circle(current, target) / mount.slew_rate_arcsec_per_sec + settle`; `max = max(predicted × 3, MIN_SLEW_DEADLINE = 30 s)`. The current pointing is read before the slew to size the deadline; if that read fails it falls back to a 300 s ceiling. On timeout `slew` best-effort aborts (unlike `park`); `predicted`/`max` ride the `slew_started` envelope as `predicted_duration_ms`/`max_duration_ms` |
+| `slew` | ra, dec, settle_after (optional) | actual_ra, actual_dec | Slew the singular mount to coordinates (blocks until `Slewing == false` plus configured / per-call settle). Tracking must be on; ASCOM error propagates otherwise. Bounded by a **predicted deadline**: `predicted = great-circle(current, target) / mount.slew_rate_arcsec_per_sec + settle`; `max = max(predicted × 3, MIN_SLEW_DEADLINE = 30 s)`. The current pointing is read before the slew to size the deadline; if that read fails it falls back to a 300 s ceiling. On timeout `slew` best-effort aborts (unlike `park`); `predicted`/`max` ride the `slew_started` envelope as `predicted_duration_ms`/`max_duration_ms`. Takes the [mount motion gate](#mount-motion-gate) exclusively — in-flight imaging-train exposures complete first |
 | `sync_mount` | ra, dec | — | Sync mount position to given coordinates |
 | `get_mount_position` | — | ra, dec | Read the mount's current pointing |
 | `get_tracking` | — | tracking, can_set_tracking | Read tracking state and `CanSetTracking` capability; fails loud on read error |
 | `set_tracking` | enabled | — | Enable or disable sidereal tracking |
-| `park` | — | — | Park the mount (blocks polling `AtPark` every 100 ms until it returns `true`). Bounded by a **predicted deadline**: rp can't read the park position via Alpaca, so it sizes a worst-case full-axis traverse — `predicted = 180° / mount.slew_rate_arcsec_per_sec + settle`; `max = max(predicted × 2, MIN_PARK_DEADLINE = 60 s)` (falls back to a 300 s ceiling with no mount configured); `predicted`/`max` ride the `park_started` envelope. `AtPark` is the ASCOM-canonical completion signal — `Slewing` is sticky on `MoveAxis` rate state and unrelated `SlewState` activity, so polling it would be over-conservative. Per ASCOM, a successful park clears `Tracking`. Unlike `slew`, does NOT auto-abort on timeout — call `abort_slew` to interrupt a stuck park |
+| `park` | — | — | Park the mount (blocks polling `AtPark` every 100 ms until it returns `true`). Bounded by a **predicted deadline**: rp can't read the park position via Alpaca, so it sizes a worst-case full-axis traverse — `predicted = 180° / mount.slew_rate_arcsec_per_sec + settle`; `max = max(predicted × 2, MIN_PARK_DEADLINE = 60 s)` (falls back to a 300 s ceiling with no mount configured); `predicted`/`max` ride the `park_started` envelope. `AtPark` is the ASCOM-canonical completion signal — `Slewing` is sticky on `MoveAxis` rate state and unrelated `SlewState` activity, so polling it would be over-conservative. Per ASCOM, a successful park clears `Tracking`. Unlike `slew`, does NOT auto-abort on timeout — call `abort_slew` to interrupt a stuck park. Exempt from the [mount motion gate](#mount-motion-gate): a terminal/emergency action must never queue behind an exposure |
 | `unpark` | — | — | Clear the mount's `AtPark` flag. Returns immediately. Does NOT auto-enable `Tracking`; call `set_tracking` before slewing |
 | `get_park_state` | — | at_park, can_park, can_unpark | Read park state and capabilities; fails loud on `AtPark` read error |
 | `abort_slew` | — | — | Abort an in-progress mount slew or park. Per ASCOM, only valid while `Slewing == true`; the natural Alpaca error propagates otherwise |
@@ -791,7 +792,7 @@ the exact parameter types and return structure.
 |--------|-----------|---------|-------------|
 | `start_guiding` | recalibrate (optional), settle_pixels / settle_time / settle_timeout (optional; per-call > `equipment.mount.guiding` config > service default, field by field) | state, rms_ra_px, rms_dec_px, total_rms_px, sample_count | Start guiding loop, block until settled |
 | `stop_guiding` | — | state | Stop guiding loop, block until confirmed (idempotent) |
-| `dither` | pixels (optional; falls back to the guiding config's `dither_pixels`), unit (optional: `guide_px` default \| `main_px` \| `arcsec`), ra_only (optional), settle_* as in `start_guiding` | state, rms_ra_px, rms_dec_px, total_rms_px, sample_count | Send dither command, block until re-settled. `unit` interprets the per-call `pixels` amount; rp converts to guide-camera pixels via train pixel scales — see the note below |
+| `dither` | pixels (optional; falls back to the guiding config's `dither_pixels`), unit (optional: `guide_px` default \| `main_px` \| `arcsec`), ra_only (optional), settle_* as in `start_guiding` | state, rms_ra_px, rms_dec_px, total_rms_px, sample_count | Send dither command, block until re-settled. `unit` interprets the per-call `pixels` amount; rp converts to guide-camera pixels via train pixel scales — see the note below. Takes the [mount motion gate](#mount-motion-gate) exclusively — in-flight imaging-train exposures complete first |
 | `pause_guiding` | full (optional) | state | Pause guide corrections (e.g., during readout); `full` also pauses looping |
 | `resume_guiding` | — | state | Resume paused guiding |
 | `get_guiding_stats` | — | app_state, guiding, rms_ra_px, rms_dec_px, total_rms_px, snr, star_mass, sample_count | Read current guiding statistics (cheap; safe to poll) |
@@ -854,7 +855,7 @@ boundary — but expose the same MCP tool surface as any other tool.
 |--------|-----------|---------|-------------|
 | `auto_focus` | camera_id + focuser_id *or* train_id (mutually exclusive); duration, step_size, half_width, min_area, max_area, threshold_sigma (optional), min_fit_points (optional) — with train_id, per-call sweep parameters fall back field by field to the train's `auto_focus` config block | best_position, best_hfr, final_position, samples_used, curve_points, temperature_c | Parabolic-fit V-curve auto-focus driving `move_focuser` + `capture` + `measure_basic` internally. `train_id` resolves the train's camera + terminal focuser; the guiding train is refused (guide-train AF reads PHD2 metrics — plan phase T4). See [`auto_focus` Contract](#auto_focus-contract). Implemented. |
 | `refocus_train` | train_id, reason (optional) | train_id, reason, guiding_paused, steps | Expand one refocus trigger into the train model's dependency-ordered AF sequence — shared focusers upstream-first (each run in the train where it is terminal), then the train's own terminal focuser — pausing guide corrections around the sequence when a step moves a guiding-train focuser. Sweep parameters come from each run train's `auto_focus` config block. See [`refocus_train` Contract](#refocus_train-contract). |
-| `center_on_target` | camera_id, ra, dec, duration, tolerance_arcsec, max_attempts | final_error_arcsec, attempts, final_ra, final_dec, iterations | Iterative `capture` + `plate_solve` + `sync_mount` + `slew` loop until residual ≤ `tolerance_arcsec`. Carries an **advisory outer-loop deadline** on `centering_started`: `per_iter = duration + centering.solve_time_estimate + centering.slew_overhead_estimate`, `predicted = per_iter`, `max = max_attempts × per_iter`. The watchdog tracks only this outer loop; each inner `slew`/`capture` carries its own deadline. See [`center_on_target` Contract](#center_on_target-contract). Implemented. |
+| `center_on_target` | camera_id, ra, dec, duration, tolerance_arcsec, max_attempts | final_error_arcsec, attempts, final_ra, final_dec, iterations | Iterative `capture` + `plate_solve` + `sync_mount` + `slew` loop until residual ≤ `tolerance_arcsec`. Carries an **advisory outer-loop deadline** on `centering_started`: `per_iter = duration + centering.solve_time_estimate + centering.slew_overhead_estimate`, `predicted = per_iter`, `max = max_attempts × per_iter`. The watchdog tracks only this outer loop; each inner `slew`/`capture` carries its own deadline, and each takes the [mount motion gate](#mount-motion-gate) in its own mode (slews exclusive, imaging-train captures shared). See [`center_on_target` Contract](#center_on_target-contract). Implemented. |
 
 **Planner — Ephemeris primitives**
 
@@ -1926,6 +1927,7 @@ Consumers land phase by phase per the plan:
 | What does moving focuser F invalidate? | Focus of every train containing F |
 | What does rotator R rotate? | Every train containing R (when one is the guiding train, the rotate-while-guiding ladder applies — plan phase T4) |
 | What does a filter change on wheel W invalidate? | Focus offset of trains containing W (per-filter offsets: backlog) |
+| Who is perturbed by dither/slew/flip? | Every train on the mount — serialized against imaging-train exposures by the [mount motion gate](#mount-motion-gate) |
 | Pixel-scale conversions | Train `focal_length_mm` + the camera's reported pixel size |
 
 Consumers of the derived model:
@@ -1949,6 +1951,9 @@ Consumers of the derived model:
   pixels via train pixel scales (train `focal_length_mm` + the
   camera's connect-time pixel size) — see the note under the Guider
   tool table.
+- The [mount motion gate](#mount-motion-gate) admits captures as
+  shared holders based on train membership: only captures through a
+  camera terminating an imaging train contend with mount motion.
 
 Auto-focus **on the guiding train itself** is deliberately not
 implemented in this phase: guide-train AF never captures through the
@@ -1957,8 +1962,92 @@ focuser and reads PHD2's star-metric stream, and that sweep arrives
 with the guiding integration (plan phase T4). Until then,
 train-addressed `auto_focus` and any `refocus_train` expansion that
 would run an AF step *in* the guiding train are refused with an
-error naming the deferral. The mount motion gate (T3) and the
-rotate-while-guiding ladder (T4) also follow in later phases.
+error naming the deferral. The rotate-while-guiding ladder also
+arrives with T4.
+
+### Mount Motion Gate
+
+Dither, slews, and meridian flips move every train on the mount, and
+any of them ruins an in-flight exposure on any imaging train. The
+motion gate is an rp-internal readers-writer gate on the singular
+mount that serializes the two: mount motion takes the gate
+**exclusively**, imaging-train exposures hold it **shared**. It has
+no configuration surface — it is always on, and a rig with no trains
+or no mount never contends on it.
+
+Acquisition rules:
+
+| Operation | Gate mode | Notes |
+|---|---|---|
+| `slew` — including `center_on_target`'s inner slews and orchestrator-driven meridian flips, which reach the mount as slews | Exclusive | Acquired before the pre-slew pointing read, so the predictive deadline never includes gate wait |
+| `dither` | Exclusive | Acquired after parameter and unit resolution (invalid calls fail fast without waiting), before the proxy call to the guider service; held through settle |
+| `capture` through a camera terminating an **imaging** train — including the internal captures of `auto_focus`, `refocus_train`, and `center_on_target` | Shared | Held for the full exposure-to-persistence pipeline; concurrent imaging-train captures share freely |
+
+Queueing semantics (Decision 5 of the
+[optical-trains plan](../plans/optical-trains.md)):
+
+- A **pending exclusive blocks new shared acquires** — no
+  starvation: in-flight subs complete, the motion runs and settles,
+  held captures then start. The queue is fair FIFO, so queued
+  motions run in arrival order and captures queued behind a motion
+  start as soon as it releases.
+- Waits are **transitively bounded** and the gate adds no timeout of
+  its own: every holder is already deadline-bounded (captures by
+  `duration` plus the readout backstop, slews and dithers by their
+  own predictive deadlines and settle timeouts), so the longest
+  possible wait is the sum of the holders' own ceilings.
+- When an exclusive request cannot start immediately, rp emits the
+  point event `mount_motion_pending {operation}` and then blocks.
+  The operation's own `*_started` envelope is emitted only **after**
+  the gate is acquired, so predictive deadlines never include gate
+  wait; the pending event is what fills that observability gap.
+  Shared acquires emit no pending event — `exposure_started`, also
+  emitted post-acquire, tells that story.
+
+Exemptions — operations that deliberately bypass the gate:
+
+- **Guide pulses.** PHD2 corrects the mount directly; pulses are
+  sub-arcsecond by design and are the one motion imaging coexists
+  with.
+- **`capture` through a camera outside any train, or in the guiding
+  train.** Trains are enrichment, not a gate (plan Decision 10): a
+  rig without trains behaves exactly as before this feature, and
+  guide-camera frames are not imaging subs.
+- **`park`.** Parking is a terminal or emergency action: the safety
+  enforcer (which aborts in-flight exposures *first*, then parks
+  directly against the device registry rather than through the MCP
+  tools) and an operator's park must never queue behind a
+  multi-minute sub. A park mid-exposure abandons the sub by intent.
+- **`unpark`, `sync_mount`, `abort_slew`.** The first two involve no
+  physical motion (`unpark` clears a flag, `sync_mount` re-labels
+  coordinates), and `abort_slew` stops motion — it must never queue
+  behind the very motion it is aborting.
+- **`start_guiding` / `stop_guiding`.** Guiding lifecycle sequencing
+  (calibration typically precedes imaging) is the orchestrator's
+  concern; the gate stays out of it.
+
+Focuser and rotator moves are not mount motion and take no part in
+the gate: they perturb only the trains containing them, and the
+compound tools that move them (`auto_focus`, `refocus_train`)
+already sequence their own captures around the moves. Coordinating a
+manual `move_rotator` against another train's exposure remains the
+orchestrator's concern (the rotate-while-guiding ladder is plan
+phase T4).
+
+**Driver-internal flips.** The gate presumes rp is the sole source
+of non-guiding mount motion. A driver that moves the mount on its
+own schedule — concretely, star-adventurer-gti's opt-in
+`flip_policy.auto_flip_during_tracking` — flips invisibly underneath
+the gate and would trail any in-flight sub. Settled as prevention
+over detection: driver-planned auto-flip **must stay disabled on
+rp-orchestrated rigs**, which is both its shipped default and the
+GTi design doc's stated posture (hosts like rp own flip timing
+themselves via `SetSideOfPier`); rp does not subscribe to
+`SideOfPier` changes or invalidate in-flight subs. A doctor
+cross-check (warn when rp orchestrates a GTi mount whose config
+enables auto-flip) is recorded as backlog in the optical-trains
+plan. When rp grows scheduled flips of its own, they will be
+rp-issued slews behind this gate like any other.
 
 ### Guider Service
 
@@ -4011,6 +4100,10 @@ services/rp/src/
   cooling.rs            Camera-cooling controller: setpoint-ladder
                         selection at session start, hold, warm-up ramp
                         (§ Camera Cooling)
+  motion_gate.rs        MotionGate: the mount readers-writer gate
+                        (§ Mount Motion Gate) — exclusive for
+                        slew/dither, shared for imaging-train
+                        captures, mount_motion_pending emission
 
   # Equipment layer
   equipment/
