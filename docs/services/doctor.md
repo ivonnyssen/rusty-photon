@@ -667,8 +667,8 @@ timestamps — `scp -p` or `rsync -a`/`-t` land a renewed pair the remote
 services never notice until restart; plain `scp`/`cp` update the mtime
 and hot-reload works.
 
-**Timer units (shipped in sentinel's package** — it carries the doctor
-binary and these units, plan decision 8; D7**):**
+**Timer units** (shipped in sentinel's package — it carries the doctor
+binary and these units; plan decision 8, D7):
 
 - systemd: `services/sentinel/pkg/rusty-photon-renew.service`
   (`Type=oneshot`, `ExecStart=/usr/bin/rusty-photon-doctor tls renew`,
