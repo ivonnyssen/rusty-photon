@@ -183,6 +183,63 @@ impl TrainModel {
                 }
             }
 
+            // Per-purpose auto_focus block fields (rp.md § Optical
+            // Trains): the capture fields are required on imaging
+            // trains and rejected on the guiding train (its sweep is
+            // metric-based); frames_per_step the other way around.
+            if let Some(block) = &train.auto_focus {
+                let block_path = |field: &str| path(&format!(".auto_focus.{field}"));
+                match train.purpose {
+                    TrainPurpose::Imaging => {
+                        for (field, missing) in [
+                            ("duration", block.duration.is_none()),
+                            ("min_area", block.min_area.is_none()),
+                            ("max_area", block.max_area.is_none()),
+                        ] {
+                            if missing {
+                                errors.push(FieldError {
+                                    path: block_path(field),
+                                    msg: format!(
+                                        "auto_focus.{field} is required for an imaging \
+                                         train's capture sweep (train '{}')",
+                                        train.id
+                                    ),
+                                });
+                            }
+                        }
+                        if block.frames_per_step.is_some() {
+                            errors.push(FieldError {
+                                path: block_path("frames_per_step"),
+                                msg: format!(
+                                    "auto_focus.frames_per_step only applies to the guiding \
+                                     train's metric sweep (train '{}')",
+                                    train.id
+                                ),
+                            });
+                        }
+                    }
+                    TrainPurpose::Guiding => {
+                        for (field, present) in [
+                            ("duration", block.duration.is_some()),
+                            ("min_area", block.min_area.is_some()),
+                            ("max_area", block.max_area.is_some()),
+                            ("threshold_sigma", block.threshold_sigma.is_some()),
+                        ] {
+                            if present {
+                                errors.push(FieldError {
+                                    path: block_path(field),
+                                    msg: format!(
+                                        "auto_focus.{field} does not apply to the guiding \
+                                         train's metric sweep (train '{}')",
+                                        train.id
+                                    ),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+
             if train.devices.is_empty() {
                 errors.push(FieldError {
                     path: path(".devices"),
@@ -500,6 +557,80 @@ mod tests {
 
     fn paths(errors: &[FieldError]) -> Vec<&str> {
         errors.iter().map(|e| e.path.as_str()).collect()
+    }
+
+    #[test]
+    fn an_imaging_block_missing_the_capture_fields_reports_every_gap() {
+        let mut config = reference_rig();
+        // Only the geometry: duration, min_area, and max_area are all
+        // missing — every arm reports at once.
+        config.optical_trains[0].auto_focus =
+            serde_json::from_value(serde_json::json!({ "step_size": 10, "half_width": 50 }))
+                .unwrap();
+        let errors = TrainModel::try_from_equipment(&config).unwrap_err();
+        assert_eq!(
+            paths(&errors),
+            vec![
+                "equipment.optical_trains.0.auto_focus.duration",
+                "equipment.optical_trains.0.auto_focus.min_area",
+                "equipment.optical_trains.0.auto_focus.max_area",
+            ]
+        );
+        assert!(errors[0].msg.contains("required for an imaging train"));
+    }
+
+    #[test]
+    fn an_imaging_block_rejects_frames_per_step() {
+        let mut config = reference_rig();
+        config.optical_trains[0].auto_focus = serde_json::from_value(serde_json::json!({
+            "duration": "100ms", "step_size": 10, "half_width": 50,
+            "min_area": 4, "max_area": 500, "frames_per_step": 3
+        }))
+        .unwrap();
+        let errors = TrainModel::try_from_equipment(&config).unwrap_err();
+        assert_eq!(
+            paths(&errors),
+            vec!["equipment.optical_trains.0.auto_focus.frames_per_step"]
+        );
+        assert!(errors[0].msg.contains("only applies to the guiding train"));
+    }
+
+    #[test]
+    fn a_guiding_block_rejects_every_capture_field() {
+        let mut config = reference_rig();
+        config.optical_trains[1].auto_focus = serde_json::from_value(serde_json::json!({
+            "duration": "100ms", "step_size": 10, "half_width": 50,
+            "min_area": 4, "max_area": 500, "threshold_sigma": 4.0
+        }))
+        .unwrap();
+        let errors = TrainModel::try_from_equipment(&config).unwrap_err();
+        assert_eq!(
+            paths(&errors),
+            vec![
+                "equipment.optical_trains.1.auto_focus.duration",
+                "equipment.optical_trains.1.auto_focus.min_area",
+                "equipment.optical_trains.1.auto_focus.max_area",
+                "equipment.optical_trains.1.auto_focus.threshold_sigma",
+            ]
+        );
+        assert!(errors[0]
+            .msg
+            .contains("does not apply to the guiding train"));
+    }
+
+    #[test]
+    fn a_purpose_appropriate_block_passes_on_both_train_kinds() {
+        let mut config = reference_rig();
+        config.optical_trains[0].auto_focus = serde_json::from_value(serde_json::json!({
+            "duration": "100ms", "step_size": 10, "half_width": 50,
+            "min_area": 4, "max_area": 500
+        }))
+        .unwrap();
+        config.optical_trains[1].auto_focus = serde_json::from_value(serde_json::json!({
+            "step_size": 10, "half_width": 50, "frames_per_step": 2
+        }))
+        .unwrap();
+        TrainModel::try_from_equipment(&config).unwrap();
     }
 
     #[test]

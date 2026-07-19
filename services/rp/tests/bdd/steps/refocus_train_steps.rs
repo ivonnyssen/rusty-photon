@@ -25,11 +25,12 @@ use crate::world::RpWorld;
 /// The sweep parameters every "standard auto_focus block" Given pins.
 fn standard_auto_focus_block() -> TrainAutoFocusConfig {
     TrainAutoFocusConfig {
-        duration: "100ms".to_string(),
+        duration: Some("100ms".to_string()),
         step_size: 100,
         half_width: 200,
-        min_area: 5,
-        max_area: 65_536,
+        min_area: Some(5),
+        max_area: Some(65_536),
+        frames_per_step: None,
     }
 }
 
@@ -132,42 +133,6 @@ async fn rp_with_offline_shared_trains(world: &mut RpWorld) {
         world,
         "guide",
         vec!["main-focuser".to_string(), "guide-cam".to_string()],
-    );
-    start_rp(world).await;
-}
-
-/// The reference-rig shape, entirely offline: shared `main-focuser`,
-/// a guide-local `guide-focuser`, and mount guiding on an unbound
-/// port. Refocusing "guide" expands to a guide-train AF step, which
-/// this phase refuses.
-#[given("rp is running with an offline reference rig and mount guiding")]
-async fn rp_with_offline_reference_rig(world: &mut RpWorld) {
-    for id in ["main-focuser", "guide-focuser"] {
-        world.focusers.push(FocuserConfig {
-            id: id.to_string(),
-            alpaca_url: "not-a-url".to_string(),
-            device_number: 0,
-            min_position: None,
-            max_position: None,
-        });
-    }
-    add_offline_camera(world, "main-cam");
-    add_offline_camera(world, "guide-cam");
-    offline_mount(world);
-    world.guider = Some(GuiderConfig::url_only("http://127.0.0.1:1".to_string()));
-    push_imaging_train_with_block(
-        world,
-        "main",
-        vec!["main-focuser".to_string(), "main-cam".to_string()],
-    );
-    push_guiding_train(
-        world,
-        "guide",
-        vec![
-            "main-focuser".to_string(),
-            "guide-focuser".to_string(),
-            "guide-cam".to_string(),
-        ],
     );
     start_rp(world).await;
 }

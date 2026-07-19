@@ -9,15 +9,16 @@ Feature: refocus_train compound tool
   V-curve run emitting the focus_started / focus_complete /
   focus_failed triple exactly as auto_focus does, wrapped in a
   refocus_started / refocus_complete / refocus_failed operation
-  triple. When mount guiding is configured and a step moves a focuser
-  belonging to the guiding train, rp reads the guider's stats and, if
-  guiding is active, pauses guide corrections (output only) before
-  the first step and resumes after the last — also on the failure
-  path. A stats read that fails or reports not-guiding skips the
-  handshake instead of blocking the refocus. Auto-focus steps that
-  would run in the guiding train itself are refused until the guiding
-  integration phase: guide-train AF reads PHD2 metrics and never
-  captures through the guide camera.
+  triple. When mount guiding is configured and a capture-based step
+  moves a focuser belonging to the guiding train, rp reads the
+  guider's stats and, if guiding is active, pauses guide corrections
+  (output only) before the first step and resumes after the last
+  capture-based step — also on the failure path. A stats read that
+  fails or reports not-guiding skips the handshake instead of
+  blocking the refocus. A step that runs in the guiding train itself
+  is the PHD2-metric sweep, runs last under active corrections, and
+  requires an active guide loop — its scenarios live in
+  guide_focus.feature.
 
   The simulator's camera image is focuser-independent (flat HFR), so
   a real sweep's parabolic-fit outcome is not deterministic here —
@@ -90,13 +91,6 @@ Feature: refocus_train compound tool
     And the "refocus_started" event payload field "reason" should be "temperature_drift"
     And the "refocus_started" event payload should contain a "steps"
     And the "refocus_started" event payload should contain a "guiding_paused"
-
-  Scenario: Refocusing the guiding train is refused until the guiding integration
-    Given rp is running with an offline reference rig and mount guiding
-    And an MCP client connected to rp
-    When the MCP client calls "refocus_train" with train "guide"
-    Then the tool call should return an error
-    And the error message should contain "guiding train"
 
   Scenario: refocus_train with an unknown train returns an error
     Given rp is running with an offline focuser train without an auto_focus block

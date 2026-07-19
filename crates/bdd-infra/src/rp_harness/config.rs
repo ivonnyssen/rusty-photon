@@ -190,6 +190,9 @@ pub struct GuiderConfig {
     /// Rotation threshold above which rp clears the PHD2 calibration
     /// when rotating a guide-coupled train. `None` ⇒ rp's default (5°).
     pub recalibrate_above_deg: Option<f64>,
+    /// The `focus_watch` sub-block (rp.md § Guide Focus Watch),
+    /// passed through as raw JSON. `None` ⇒ omit (watch disabled).
+    pub focus_watch: Option<Value>,
 }
 
 impl GuiderConfig {
@@ -203,6 +206,7 @@ impl GuiderConfig {
             settle_timeout: None,
             dither_pixels: None,
             recalibrate_above_deg: None,
+            focus_watch: None,
         }
     }
 }
@@ -226,19 +230,27 @@ pub struct OpticalTrainConfig {
     pub auto_focus: Option<TrainAutoFocusConfig>,
 }
 
-/// The `optical_trains[].auto_focus` block: the five sweep parameters
-/// the `auto_focus` tool requires per call, as train-scoped config
-/// (rp.md § Optical Trains). Optional fields the block also accepts
-/// (`threshold_sigma`, `min_fit_points`) are omitted — scenarios that
-/// need them can grow this struct.
+/// The `optical_trains[].auto_focus` block (rp.md § Optical Trains).
+/// Which fields rp accepts depends on the train's purpose — imaging
+/// blocks carry the capture fields, the guiding train's block the
+/// metric-sweep ones — so everything but the geometry is optional
+/// here and `None` fields are omitted from the emitted JSON.
+/// Optional fields the block also accepts (`threshold_sigma`,
+/// `min_fit_points`) are omitted — scenarios that need them can grow
+/// this struct.
 #[derive(Debug, Clone)]
 pub struct TrainAutoFocusConfig {
     /// Per-frame exposure, humantime string (e.g. `"100ms"`).
-    pub duration: String,
+    /// Capture sweeps only.
+    pub duration: Option<String>,
     pub step_size: i64,
     pub half_width: i64,
-    pub min_area: i64,
-    pub max_area: i64,
+    /// Capture sweeps only.
+    pub min_area: Option<i64>,
+    /// Capture sweeps only.
+    pub max_area: Option<i64>,
+    /// Metric (guiding-train) sweeps only.
+    pub frames_per_step: Option<i64>,
 }
 
 /// Overrides for rp's top-level `cooling` block (rp.md § Camera
@@ -687,13 +699,23 @@ impl RpConfigBuilder {
                     obj["focal_length_mm"] = serde_json::json!(f);
                 }
                 if let Some(af) = &t.auto_focus {
-                    obj["auto_focus"] = serde_json::json!({
-                        "duration": af.duration,
+                    let mut block = serde_json::json!({
                         "step_size": af.step_size,
                         "half_width": af.half_width,
-                        "min_area": af.min_area,
-                        "max_area": af.max_area,
                     });
+                    if let Some(d) = &af.duration {
+                        block["duration"] = serde_json::json!(d);
+                    }
+                    if let Some(v) = af.min_area {
+                        block["min_area"] = serde_json::json!(v);
+                    }
+                    if let Some(v) = af.max_area {
+                        block["max_area"] = serde_json::json!(v);
+                    }
+                    if let Some(v) = af.frames_per_step {
+                        block["frames_per_step"] = serde_json::json!(v);
+                    }
+                    obj["auto_focus"] = block;
                 }
                 obj
             })
@@ -845,6 +867,9 @@ fn guiding_block(g: &GuiderConfig) -> Value {
     if let Some(d) = g.recalibrate_above_deg {
         block["recalibrate_above_deg"] = serde_json::json!(d);
     }
+    if let Some(w) = &g.focus_watch {
+        block["focus_watch"] = w.clone();
+    }
     block
 }
 
@@ -941,11 +966,12 @@ mod tests {
             focal_length_mm: Some(1000.0),
             devices: vec!["main-focuser".to_string(), "main-cam".to_string()],
             auto_focus: Some(TrainAutoFocusConfig {
-                duration: "100ms".to_string(),
+                duration: Some("100ms".to_string()),
                 step_size: 100,
                 half_width: 200,
-                min_area: 5,
-                max_area: 65_536,
+                min_area: Some(5),
+                max_area: Some(65_536),
+                frames_per_step: None,
             }),
         });
         b.add_optical_train(OpticalTrainConfig {
@@ -1163,6 +1189,7 @@ mod tests {
             settle_timeout: Some(std::time::Duration::from_secs(40)),
             dither_pixels: Some(5.0),
             recalibrate_above_deg: Some(10.0),
+            focus_watch: Some(serde_json::json!({ "window": 5 })),
         });
         let cfg = b.build();
         let g = &cfg["equipment"]["mount"]["guiding"];
@@ -1173,6 +1200,7 @@ mod tests {
         assert_eq!(g["settle_timeout"], "40000ms");
         assert_eq!(g["dither_pixels"], 5.0);
         assert_eq!(g["recalibrate_above_deg"], 10.0);
+        assert_eq!(g["focus_watch"]["window"], 5);
     }
 
     #[test]

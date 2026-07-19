@@ -365,9 +365,9 @@ emits only `_complete` / `_failed`, with no `_started`.) Point events
 | `move_focuser_started` | focuser_id, position | Focuser begins move to the target position |
 | `move_focuser_complete` | focuser_id, position | Focuser idle at the read-back position |
 | `move_focuser_failed` | error | Focuser move failed or timed out |
-| `move_rotator_started` | rotator_id, angle | Rotator begins move to the target sky angle |
-| `move_rotator_complete` | rotator_id, angle, mechanical_angle, moved_trains | Rotator idle at the read-back angle; `moved_trains` lists the trains containing it |
-| `move_rotator_failed` | error | Rotator move failed or timed out |
+| `move_rotator_started` | rotator_id, angle, guiding_paused | Rotator move begins (before the ladder's pause, which is part of the operation); `guiding_paused` says whether the rotate-while-guiding ladder engaged for this move |
+| `move_rotator_complete` | rotator_id, angle, mechanical_angle, moved_trains, guiding_ladder | Rotator idle at the read-back angle; `moved_trains` lists the trains containing it, `guiding_ladder` the ladder outcome (`null` when it did not engage) |
+| `move_rotator_failed` | error | Rotator move failed or timed out (guiding re-selected/resumed best-effort when the ladder was engaged) |
 | `plate_solve_started` | document_id, image_path, use_mount_hints | Plate solve begins |
 | `plate_solve_complete` | ra_center, dec_center, pixel_scale_arcsec, rotation_deg, solver | Plate solve succeeded |
 | `plate_solve_failed` | error | Plate solve failed |
@@ -385,6 +385,9 @@ emits only `_complete` / `_failed`, with no `_started`.) Point events
 | `guide_settled` | rms_ra_px, rms_dec_px, total_rms_px, sample_count | Post-start settle complete |
 | `guide_failed` | error | Guiding start or settle failed |
 | `guide_stopped` | reason (`requested` \| `safety`) | Guiding stopped (point event) |
+| `guide_rotator_unmodeled` | rotator_id, train_id | `start_guiding` settled with a rotator-coupled guide camera but PHD2 reports no connected rotator (point event — see [Guider Service](#guider-service)) |
+| `guide_focus_degraded` | baseline_hfd, current_hfd, window | The [Guide Focus Watch](#guide-focus-watch)'s trailing HFD median exceeded `baseline × degrade_ratio` (point event; held by `cooldown`) |
+| `guide_focus_escalation` | baseline_hfd, current_hfd | A degradation episode is still degraded `escalation_deadline` after `guide_focus_degraded` — the full `refocus_train` sequence is indicated (point event; once per episode) |
 | `dither_started` | pixels, ra_only, settle_pixels, settle_time, settle_timeout | Dither command sent; deadline as on `guide_started` |
 | `dither_settled` | rms_ra_px, rms_dec_px, total_rms_px, sample_count | Post-dither settle complete |
 | `dither_failed` | error | Dither or its settle failed |
@@ -860,7 +863,7 @@ boundary — but expose the same MCP tool surface as any other tool.
 
 | Action | Parameters | Returns | Description |
 |--------|-----------|---------|-------------|
-| `auto_focus` | camera_id + focuser_id *or* train_id (mutually exclusive); duration, step_size, half_width, min_area, max_area, threshold_sigma (optional), min_fit_points (optional) — with train_id, per-call sweep parameters fall back field by field to the train's `auto_focus` config block | best_position, best_hfr, final_position, samples_used, curve_points, temperature_c | Parabolic-fit V-curve auto-focus driving `move_focuser` + `capture` + `measure_basic` internally. `train_id` resolves the train's camera + terminal focuser; the guiding train is refused (guide-train AF reads PHD2 metrics — plan phase T4). See [`auto_focus` Contract](#auto_focus-contract). Implemented. |
+| `auto_focus` | camera_id + focuser_id *or* train_id (mutually exclusive); duration, step_size, half_width, min_area, max_area, threshold_sigma (optional), min_fit_points (optional) — with train_id, per-call sweep parameters fall back field by field to the train's `auto_focus` config block | best_position, best_hfr (capture sweep) / best_hfd (metric sweep), final_position, samples_used, curve_points, temperature_c | Parabolic-fit V-curve auto-focus. Imaging addressing drives `move_focuser` + `capture` + `measure_basic` internally; addressing the **guiding train** runs the PHD2-metric sweep instead (median HFD of fresh guide frames per position; requires active guiding; never captures through the guide camera). See [`auto_focus` Contract](#auto_focus-contract). Implemented. |
 | `refocus_train` | train_id, reason (optional) | train_id, reason, guiding_paused, steps | Expand one refocus trigger into the train model's dependency-ordered AF sequence — shared focusers upstream-first (each run in the train where it is terminal), then the train's own terminal focuser — pausing guide corrections around the sequence when a step moves a guiding-train focuser. Sweep parameters come from each run train's `auto_focus` config block. See [`refocus_train` Contract](#refocus_train-contract). |
 | `center_on_target` | camera_id, ra, dec, duration, tolerance_arcsec, max_attempts | final_error_arcsec, attempts, final_ra, final_dec, iterations | Iterative `capture` + `plate_solve` + `sync_mount` + `slew` loop until residual ≤ `tolerance_arcsec`. Carries an **advisory outer-loop deadline** on `centering_started`: `per_iter = duration + centering.solve_time_estimate + centering.slew_overhead_estimate`, `predicted = per_iter`, `max = max_attempts × per_iter`. The watchdog tracks only this outer loop; each inner `slew`/`capture` carries its own deadline, and each takes the [mount motion gate](#mount-motion-gate) in its own mode (slews exclusive, imaging-train captures shared). See [`center_on_target` Contract](#center_on_target-contract). Implemented. |
 
@@ -965,12 +968,39 @@ result.
 
 `moved_trains` on the result lists every optical train containing
 the rotator — the trains whose field orientation the move changed.
-In this phase the list is informational: the rotate-while-guiding
-ladder (pause → rotate → re-select star → resume, with
-`clear_calibration` above `recalibrate_above_deg` when PHD2 reports
-no connected rotator) is plan phase T4, so rotating a rotator that
-sits in the guiding train while guiding is running will today lose
-the guide star.
+When the list includes the guiding train, the guider is configured,
+and the guider's stats report an active guide loop, `move_rotator`
+runs the **rotate-while-guiding ladder** around the move:
+
+1. **Pause guide corrections** (output-only — looping continues, so
+   the re-selection below has fresh frames). A pause failure aborts
+   the tool before any motion. The pause and the pre-move read are
+   part of the operation: `move_rotator_started` is emitted before
+   them, and their failures emit `move_rotator_failed` like any
+   other leg.
+2. Read the pre-move sky angle, then run the move as usual.
+3. **Calibration decision**: query the guider service for PHD2's
+   equipment. When PHD2 reports a **connected rotator**, stop there —
+   PHD2 stores the rotator angle with each calibration and adjusts
+   for the current angle when guiding resumes, exact for any Δθ.
+   Otherwise, when |Δθ| (the sky-angle change, folded to
+   [0°, 180°]) exceeds
+   `equipment.mount.guiding.recalibrate_above_deg` (default 5°),
+   clear PHD2's mount calibration — PHD2 recalibrates on the next
+   guide start. At or below the threshold the calibration is kept:
+   the cross-axis leak (sin Δθ) sits inside guiding's noise floor.
+4. **Re-select the guide star** (the rotation moved it), then
+   **resume corrections**.
+
+A move failure still runs re-select + resume (the field may have
+partially rotated) and reports the move error; a resume failure is a
+hard tool error on top of whatever preceded it — mirroring
+`refocus_train`'s handshake contract. When guiding is not active,
+the stats read fails, or no guider is configured, the move runs bare
+(Tenet 2: a mid-day rotation must not fail because PHD2 is closed).
+The result gains `guiding_ladder`: `null` when the ladder did not
+engage, else `{ "phd2_has_rotator": bool, "delta_deg": number,
+"calibration_cleared": bool }`.
 
 Both rotator tools address the device as `rotator_id` *or*
 `train_id` — exactly one; passing both or neither is an error.
@@ -1871,7 +1901,9 @@ decisions recorded there are fixed.
     "auto_focus": { "duration": "3s", "step_size": 100, "half_width": 1000,
                     "min_area": 4, "max_area": 500 } },
   { "id": "guide", "purpose": "guiding", "focal_length_mm": 200.0,
-    "devices": ["main-focuser", "guide-focuser", "guide-cam"] }
+    "devices": ["main-focuser", "guide-focuser", "guide-cam"],
+    "auto_focus": { "step_size": 50, "half_width": 500,
+                    "frames_per_step": 3 } }
 ]
 ```
 
@@ -1893,12 +1925,23 @@ Semantics:
   otherwise. Optional: omitted, captures through that train's camera
   carry no `optics` block, exactly like a camera outside any train.
 - `auto_focus` is an optional per-train block holding the V-curve
-  sweep parameters for focusing this train: the same five fields the
-  `auto_focus` tool requires per call (`duration`, `step_size`,
-  `half_width`, `min_area`, `max_area` — all required when the block
-  is present) plus optional `threshold_sigma` (default `5.0`) and
-  `min_fit_points` (default `5`). `step_size` and `half_width` must
-  be positive integers, rejected at load otherwise. The block backs
+  sweep parameters for focusing this train. Which fields it takes
+  depends on the train's `purpose`, validated at load with
+  dotted-path errors:
+  - **imaging** trains run the capture sweep: `duration`,
+    `step_size`, `half_width`, `min_area`, `max_area` (all required
+    when the block is present) plus optional `threshold_sigma`
+    (default `5.0`) and `min_fit_points` (default `5`).
+  - the **guiding** train runs the PHD2-metric sweep: `step_size`
+    and `half_width` (required) plus optional `frames_per_step`
+    (default `3`) and `min_fit_points`. The capture-only fields
+    (`duration`, `min_area`, `max_area`, `threshold_sigma`) are
+    rejected in a guiding train's block, as is `frames_per_step` in
+    an imaging train's — a knob that cannot influence the sweep
+    must not pretend to.
+
+  `step_size`, `half_width`, and `frames_per_step` must be positive
+  integers, rejected at load otherwise. The block backs
   train-addressed `auto_focus` calls (per-call parameters override it
   field by field) and is required on every train a `refocus_train`
   expansion runs in — sweep geometry is per-train, which is exactly
@@ -1932,7 +1975,7 @@ Consumers land phase by phase per the plan:
 | Which focuser focuses camera C? | Last focuser in C's train list |
 | AF sequence after a refocus trigger on train T | Shared focusers of T upstream-first (each run in the train where it is terminal), then T's terminal focuser |
 | What does moving focuser F invalidate? | Focus of every train containing F |
-| What does rotator R rotate? | Every train containing R (when one is the guiding train, the rotate-while-guiding ladder applies — plan phase T4) |
+| What does rotator R rotate? | Every train containing R (when one is the guiding train and guiding is active, `move_rotator` runs the rotate-while-guiding ladder — see [Rotator Tool Details](#rotator-tool-details)) |
 | What does a filter change on wheel W invalidate? | Focus offset of trains containing W (per-filter offsets: backlog) |
 | Who is perturbed by dither/slew/flip? | Every train on the mount — serialized against imaging-train exposures by the [mount motion gate](#mount-motion-gate) |
 | Pixel-scale conversions | Train `focal_length_mm` + the camera's reported pixel size |
@@ -1962,15 +2005,15 @@ Consumers of the derived model:
   shared holders based on train membership: only captures through a
   camera terminating an imaging train contend with mount motion.
 
-Auto-focus **on the guiding train itself** is deliberately not
-implemented in this phase: guide-train AF never captures through the
-guide camera (PHD2 may own it at the SDK level) — it moves the
-focuser and reads PHD2's star-metric stream, and that sweep arrives
-with the guiding integration (plan phase T4). Until then,
-train-addressed `auto_focus` and any `refocus_train` expansion that
-would run an AF step *in* the guiding train are refused with an
-error naming the deferral. The rotate-while-guiding ladder also
-arrives with T4.
+Auto-focus **on the guiding train itself** never captures through
+the guide camera (PHD2 may own it at the SDK level): train-addressed
+`auto_focus` and `refocus_train` steps that run in the guiding train
+use the PHD2-metric sweep — moving the focuser and reading PHD2's
+per-frame HFD — and require an active guide loop. See the
+[Guide-train sweep](#guide-train-sweep-phd2-metric-variant)
+contract, the rotate-while-guiding ladder under
+[Rotator Tool Details](#rotator-tool-details), and the
+[Guide Focus Watch](#guide-focus-watch).
 
 ### Mount Motion Gate
 
@@ -2089,6 +2132,65 @@ HTTP API. This means workflow plugins (e.g., a meridian flip plugin) can
 control guiding through the same MCP tool mechanism as any other equipment.
 Swapping in a different guiding backend requires only a different guider
 service that implements the same HTTP endpoints.
+
+Beyond the tools, rp consumes four more guider-service endpoints
+internally (phd2-guider.md § HTTP API): the per-frame **metrics**
+window (the guide-train sweep and the
+[Guide Focus Watch](#guide-focus-watch)), **equipment** (the
+rotate-while-guiding ladder's rotator branch), **calibration/clear**
+and **star/reselect** (the ladder's tail). When `start_guiding`
+settles and the guiding train contains a rotator but PHD2 reports no
+connected rotator, rp emits the point event
+`guide_rotator_unmodeled` (plus a warning log): rotations of the
+guide field will clear calibration above `recalibrate_above_deg`
+instead of being angle-adjusted by PHD2 — connecting the rotator in
+PHD2's profile is the better setup where the platform allows it.
+
+### Guide Focus Watch
+
+When `equipment.mount.guiding.focus_watch` is present, rp runs a
+background watch over the guider service's per-frame star metrics
+and turns a degrading HFD trend into **events, not actions**: the
+orchestrator owns sequencing (§ Orchestration), so it decides when a
+refocus fits between exposures — a workflow trigger on these events
+invokes `refocus_train` (DSL wiring is plan phase T5). rp never
+moves a focuser on its own initiative.
+
+Mechanics — the watch polls `GET /guiding/metrics` every
+`poll_interval` (default `"5s"`) while the guider reports an active
+guide loop, and is idle otherwise:
+
+- **Baseline**: the median HFD of the first `window` (default 10)
+  valid frames after guiding becomes active. The watch subscribes
+  to rp's own event stream and re-arms after any `focus_complete`
+  or `refocus_complete` that involved the guiding train **or moved
+  one of its focusers** (a shared focuser swept in an imaging train
+  changes the guide focus just the same) — a fresh focus is a fresh
+  reference, and re-arming also clears the cooldown so a trend
+  degrading against the new baseline fires immediately.
+- **Degraded**: the median HFD of the trailing `window` frames
+  exceeds `baseline × degrade_ratio` (default `1.25`). Emit
+  `guide_focus_degraded {baseline_hfd, current_hfd, window}` once,
+  then hold for `cooldown` (default `"10m"`) before the watch may
+  fire again.
+- **Escalation**: if the same degradation episode is still degraded
+  `escalation_deadline` (default `"10m"`) after
+  `guide_focus_degraded` fired — the guide-only AF the orchestrator
+  ran did not recover the trend, or none ran — emit
+  `guide_focus_escalation {baseline_hfd, current_hfd}` once per
+  episode. The full `refocus_train` sequence is the indicated
+  response: it covers the shared-focuser drift the guide-only sweep
+  cannot fix.
+- **Recovery** (trailing median back within the threshold) ends the
+  episode silently; frames flagged `star_lost` or with a null HFD
+  never enter a median.
+
+All `focus_watch` fields are optional —
+`{ "window": 10, "degrade_ratio": 1.25, "cooldown": "10m",
+"escalation_deadline": "10m", "poll_interval": "5s" }` are the
+defaults; `window` must be ≥ 3 and `degrade_ratio` a finite number
+> 1.0, rejected at load otherwise. Omitting the block disables the
+watch entirely.
 
 ### Plate Solver
 
@@ -2456,11 +2558,12 @@ without having to know the focus algorithm.
   - `train_id` — an `equipment.optical_trains[]` id, mutually
     exclusive with both explicit ids. Resolves `camera_id` to the
     train's terminal camera and `focuser_id` to its terminal focuser
-    (error when the train has no focuser). The **guiding train is
-    refused**: guide-train AF never captures through the guide camera
-    (PHD2 may own it at the SDK level) — it moves the focuser and
-    reads PHD2's star metrics, and that sweep arrives with the
-    guiding integration (plan phase T4).
+    (error when the train has no focuser). Addressing the **guiding
+    train** selects the PHD2-metric sweep instead of the capture
+    sweep — guide-train AF never captures through the guide camera
+    (PHD2 may own it at the SDK level); it moves the focuser and
+    reads PHD2's per-frame HFD. See
+    [Guide-train sweep](#guide-train-sweep-phd2-metric-variant).
 
   When addressed by `train_id`, every sweep parameter below
   additionally falls back, field by field, to the train's
@@ -2577,8 +2680,8 @@ without having to know the focus algorithm.
   no addressing at all → MCP error naming the conflict / the first
   missing field.
 - `train_id` unknown → MCP error naming the train.
-- The train has no focuser, or is the guiding train (see Input) →
-  MCP error naming the train and the reason.
+- The train has no focuser → MCP error naming the train and the
+  reason.
 - `camera_id` not found → MCP error naming the camera.
 - `focuser_id` not found → MCP error naming the focuser.
 - Camera or focuser not connected → MCP error.
@@ -2658,6 +2761,68 @@ and read their `image_analysis` sections.
   shadow logged at startup. Two plugins both claiming
   `auto_focus` remains a config-time error.
 
+##### Guide-train sweep (PHD2-metric variant)
+
+Addressing `auto_focus` with the guiding train's `train_id` runs the
+same V-curve algorithm with a different sample source: instead of
+`capture` + `measure_basic`, each grid position's sample is the
+**median HFD of fresh PHD2 guide frames**, read from the guider
+service's per-frame metrics window
+(phd2-guider.md § `GET /api/v1/guiding/metrics`). The guide camera
+is never captured through — PHD2 may own it at the SDK level.
+
+Requirements, checked before any motion:
+
+- `equipment.mount.guiding` is configured, and the guider's stats
+  report an **active guide loop** — PHD2 only emits `GuideStep`
+  (and with it HFD) while guiding, so without it there is nothing
+  to measure. Error: "guide-train auto_focus requires active
+  guiding". Guide **corrections stay active for the whole sweep**
+  by the same logic; a defocusing star drifts little, and the
+  alternative (paused output) stops the metric stream. (Whether
+  HFD in fact streams in PHD2's paused modes is a rig-verification
+  item; `get_star_image` polling is the recorded fallback should a
+  real rig contradict this.)
+- Sweep geometry comes from `step_size` + `half_width` — per-call
+  or from the guiding train's `auto_focus` block, same field-by-field
+  fallback as the capture sweep. The capture-only parameters
+  (`duration`, `min_area`, `max_area`, `threshold_sigma`) are
+  **rejected** when passed per-call with a guiding `train_id`, and
+  rejected at config load inside a guiding train's block — a
+  parameter that cannot influence the run must not pretend to.
+- `frames_per_step` (config-block only, default `3`): a positive
+  integer of fresh frames per grid position, at most 50 — the
+  guider's metrics window; a larger value could never be satisfied
+  and is rejected at load.
+
+Per grid position: `move_focuser` (the guiding train's terminal
+focuser), then refresh the freshness watermark from the metrics
+window — frames exposed *during* the focuser motion, at a stale
+focus, never count — and poll until `frames_per_step` frames above
+it arrive (bounded by a fixed 30 s-per-frame ceiling — guide
+exposures are seconds; expiry errors the run, and a metrics
+response reporting guiding stopped fails it immediately). The **earliest**
+`frames_per_step` fresh frames form the position's sample set, so a
+slow poll cannot inflate it; the sample is the median HFD of the
+valid ones among them. Frames flagged `star_lost` or with a null
+HFD are **invalid**: a sample set with no valid frame records a
+null sample — at deep defocus the star genuinely vanishes, so null
+samples at the sweep edges are the expected bracket shape, exactly
+like starless captures in the capture sweep.
+
+Fit, recovery, and result mirror the capture sweep (`min_fit_points`
+valid samples required; samples weighted by their valid-frame count —
+the capture sweep's star-count weighting, one metric over;
+`not_enough_stars` / `monotonic_curve` errors; the focuser moves to
+the fitted minimum on success), with
+two shape differences: the result reports `best_hfd` (PHD2's
+half-flux **diameter**, in guide-camera pixels) instead of
+`best_hfr`, and `curve_points` entries are
+`{position, hfd: f64 | null, frames_used: u32}` — there are no
+`document_id`s because nothing was captured. `focus_started` /
+`focus_complete` / `focus_failed` payloads gain
+`method: "capture" | "phd2_hfd"` on both sweep variants.
+
 #### `refocus_train` Contract
 
 A built-in compound tool that expands one refocus trigger on a train
@@ -2670,8 +2835,9 @@ which focusers are shared or which train each one focuses.
 - `train_id` — required, an `equipment.optical_trains[]` id.
 - `reason` — optional free-form string recorded on `refocus_started`
   and the result (e.g. `"temperature_drift"`, `"filter_change"`);
-  defaults to `"manual"`. The automatic triggers of plan phase T4
-  will pass their own reasons.
+  defaults to `"manual"`. An orchestrator reacting to the
+  [Guide Focus Watch](#guide-focus-watch) events passes reasons like
+  `"guide_focus_degraded"`.
 
 There are no per-call sweep parameters: steps span trains, and sweep
 geometry is per-train — each step takes its parameters from its
@@ -2683,22 +2849,33 @@ is *terminal* (capturing through that train's camera), then the
 train's own terminal focuser. Each step is one full V-curve run with
 the semantics of the [`auto_focus` Contract](#auto_focus-contract),
 including its per-step `focus_started` / `focus_complete` /
-`focus_failed` triple. Steps run strictly sequentially.
+`focus_failed` triple. A step whose run train is the **guiding
+train** is the
+[PHD2-metric sweep](#guide-train-sweep-phd2-metric-variant) — it
+requires an active guide loop, checked with the rest of the
+expansion before any motion. Steps run strictly sequentially, and
+the sequence derivation puts any guiding-train step last.
 
 **Guiding handshake**: when `equipment.mount.guiding` is configured
-and at least one step moves a focuser that is a member of the
-guiding train, rp reads the guider's stats first; if guiding is
-active, it pauses guide *corrections* (output-only — the guide
-camera keeps looping) before the first step and resumes after the
-last. Sweeping a guide-coupled focuser mid-correction defocuses the
-guide star under PHD2's feet; pausing output while the loop keeps
-running lets PHD2 re-acquire cleanly on resume. When the stats read
-fails or reports not-guiding, the sequence runs without the
+and at least one **capture-based** step moves a focuser that is a
+member of the guiding train, rp reads the guider's stats first; if
+guiding is active, it pauses guide *corrections* (output-only — the
+guide camera keeps looping) before the first step and resumes after
+the last capture-based step. Sweeping a guide-coupled focuser
+mid-correction defocuses the guide star under PHD2's feet; pausing
+output while the loop keeps running lets PHD2 re-acquire cleanly on
+resume. A guiding-train **metric** step runs *after* that resume,
+under active corrections — the metric sweep needs the `GuideStep`
+stream (see its contract), so an expansion never ends with
+corrections paused before its own guide step. When the stats read
+fails or reports not-guiding, capture-based steps run without the
 handshake (`guiding_paused: false`) — a broken guider service must
-not block a refocus (Tenet 2). A failed *pause* after stats reported
-active guiding is an error (the service is alive and refusing); a
-failed *resume* after the steps completed is also an error — a night
-with guiding silently left paused must not look like success.
+not block a refocus (Tenet 2) — but a guiding-train metric step
+still requires active guiding and errors without it. A failed
+*pause* after stats reported active guiding is an error (the
+service is alive and refusing); a failed *resume* after the
+capture-based steps completed is also an error — a night with
+guiding silently left paused must not look like success.
 
 **Events**: a `refocus_started` / `refocus_complete` /
 `refocus_failed` operation triple wraps the sequence (payloads in
@@ -2708,16 +2885,17 @@ per-step AF runs carry their own event triples).
 **Output**: `train_id`, `reason`, `guiding_paused`, and `steps` —
 one entry per completed AF run, in run order:
 `{focuser_id, train_id, camera_id, best_position, best_hfr,
-samples_used}`.
+samples_used}` for capture-based steps; a guiding-train metric step
+reports `best_hfd` instead of `best_hfr` and a `null` `camera_id`
+(nothing was captured).
 
 **Error cases**:
 - `train_id` unknown → MCP error naming the train.
 - The train has no focusers → MCP error (nothing to refocus).
-- The expansion contains an AF step run **in the guiding train** —
-  always the case when `train_id` *is* the guiding train, and
-  possible when a shared focuser is terminal only there → MCP error
-  naming the T4 deferral (guide-train AF is the PHD2-metric sweep;
-  see the `auto_focus` contract's train addressing).
+- The expansion contains a guiding-train metric step but the guider
+  is not configured, the stats read fails, or guiding is not active
+  → MCP error ("guide-train step requires active guiding"),
+  validated with the rest of the expansion before any motion.
 - A step's run train has no `auto_focus` config block → MCP error
   naming the train and the missing block. Validated for every step
   before any motion.
@@ -3914,7 +4092,9 @@ return a structured "site not configured" error.
         "id": "guide",
         "purpose": "guiding",
         "focal_length_mm": 200.0,
-        "devices": ["main-focuser", "guide-focuser", "guide-cam"]
+        "devices": ["main-focuser", "guide-focuser", "guide-cam"],
+        "auto_focus": { "step_size": 50, "half_width": 500,
+                        "frames_per_step": 3 }
       }
     ],
     "mount": {
@@ -3929,7 +4109,10 @@ return a structured "site not configured" error.
         "settle_time": "10s",
         "settle_timeout": "60s",
         "dither_pixels": 5,
-        "recalibrate_above_deg": 5.0
+        "recalibrate_above_deg": 5.0,
+        "focus_watch": { "window": 10, "degrade_ratio": 1.25,
+                         "cooldown": "10m",
+                         "escalation_deadline": "10m" }
       }
     },
     "focusers": [
@@ -4114,6 +4297,11 @@ services/rp/src/
                         (§ Mount Motion Gate) — exclusive for
                         slew/dither, shared for imaging-train
                         captures, mount_motion_pending emission
+  guiding_watch.rs      Guide Focus Watch (§ Guide Focus Watch):
+                        polls the guider's metrics window while
+                        guiding, baseline/degrade/escalation state,
+                        guide_focus_degraded / guide_focus_escalation
+                        emission — events only, never actions
 
   # Equipment layer
   equipment/
@@ -4227,11 +4415,16 @@ services/rp/src/
       auto_focus.rs     AutoFocusToolParams, RefocusTrainParams +
                           auto_focus + refocus_train tools +
                           AutoFocusAdapter (binds the imaging::tools::auto_focus
-                          traits to the handler's primitives).
+                          traits to the handler's primitives) + the
+                          guide-train PHD2-metric sweep (median HFD
+                          per position over the guider metrics
+                          window).
       rotator.rs        MoveRotatorParams, RotatorPositionParams +
                           move_rotator, get_rotator_position
                           (rotator_id / train_id addressing, blocking
-                          IsMoving poll on moves).
+                          IsMoving poll on moves, the
+                          rotate-while-guiding ladder around
+                          guiding-train moves).
       plate_solve.rs    PointingHint, PlateSolveParams + plate_solve
                           tool.
       guider.rs         6 guider param structs + the 6 guiding tools

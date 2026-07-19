@@ -45,13 +45,136 @@ pub struct GuidingConfig {
     #[serde(default)]
     pub dither_pixels: Option<f64>,
     /// Rotation threshold for the rotate-while-guiding ladder (rp.md
-    /// § Optical Trains, plan phase T4): when rp rotates a
-    /// guide-coupled train and PHD2 reports no connected rotator, a
-    /// |Δθ| above this many degrees clears the PHD2 calibration;
-    /// below it the cross-axis leak (sin Δθ) sits inside guiding's
-    /// noise floor. Defaults to 5°.
+    /// § Rotator Tool Details): when rp rotates a guide-coupled train
+    /// and PHD2 reports no connected rotator, a |Δθ| above this many
+    /// degrees clears the PHD2 calibration; below it the cross-axis
+    /// leak (sin Δθ) sits inside guiding's noise floor. Defaults
+    /// to 5°.
     #[serde(default)]
     pub recalibrate_above_deg: RecalibrateAboveDeg,
+    /// The Guide Focus Watch (rp.md § Guide Focus Watch). Omitted →
+    /// the watch is disabled.
+    #[serde(default)]
+    pub focus_watch: Option<FocusWatchConfig>,
+}
+
+/// The `focus_watch` sub-block: thresholds turning a degrading HFD
+/// trend into `guide_focus_degraded` / `guide_focus_escalation`
+/// events. Every field is optional; the block's presence enables the
+/// watch.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FocusWatchConfig {
+    /// Frames per median (baseline and trailing). Default 10.
+    #[serde(default)]
+    pub window: WatchWindow,
+    /// Degradation threshold: trailing median > baseline × ratio.
+    /// Default 1.25.
+    #[serde(default)]
+    pub degrade_ratio: DegradeRatio,
+    /// Minimum spacing between `guide_focus_degraded` emissions.
+    /// Default 10 minutes.
+    #[serde(default = "default_watch_cooldown", with = "humantime_serde")]
+    #[schemars(with = "String")]
+    pub cooldown: Duration,
+    /// How long a degradation episode may persist after the degraded
+    /// event before `guide_focus_escalation` fires. Default
+    /// 10 minutes.
+    #[serde(default = "default_watch_escalation", with = "humantime_serde")]
+    #[schemars(with = "String")]
+    pub escalation_deadline: Duration,
+    /// Metrics poll cadence while guiding is active. Default 5 s.
+    #[serde(default = "default_watch_poll", with = "humantime_serde")]
+    #[schemars(with = "String")]
+    pub poll_interval: Duration,
+}
+
+impl Default for FocusWatchConfig {
+    fn default() -> Self {
+        Self {
+            window: WatchWindow::default(),
+            degrade_ratio: DegradeRatio::default(),
+            cooldown: default_watch_cooldown(),
+            escalation_deadline: default_watch_escalation(),
+            poll_interval: default_watch_poll(),
+        }
+    }
+}
+
+fn default_watch_cooldown() -> Duration {
+    Duration::from_secs(600)
+}
+
+fn default_watch_escalation() -> Duration {
+    Duration::from_secs(600)
+}
+
+fn default_watch_poll() -> Duration {
+    Duration::from_secs(5)
+}
+
+/// The focus watch's median window in frames. Parse-don't-validate:
+/// a parabola of medians needs history — fewer than 3 frames is
+/// noise, rejected at load. Defaults to 10.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(try_from = "i64")]
+pub struct WatchWindow(u32);
+
+impl WatchWindow {
+    pub fn value(self) -> usize {
+        self.0 as usize
+    }
+}
+
+impl Default for WatchWindow {
+    fn default() -> Self {
+        Self(10)
+    }
+}
+
+impl TryFrom<i64> for WatchWindow {
+    type Error = String;
+
+    fn try_from(value: i64) -> Result<Self, Self::Error> {
+        match u32::try_from(value) {
+            Ok(v) if v >= 3 => Ok(Self(v)),
+            _ => Err(format!(
+                "focus_watch.window must be an integer >= 3, got {value}"
+            )),
+        }
+    }
+}
+
+/// The focus watch's degradation ratio. Must be a finite number
+/// strictly above 1.0 — at or below it the watch would fire on
+/// noise. Defaults to 1.25.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(try_from = "f64")]
+pub struct DegradeRatio(f64);
+
+impl DegradeRatio {
+    pub fn value(self) -> f64 {
+        self.0
+    }
+}
+
+impl Default for DegradeRatio {
+    fn default() -> Self {
+        Self(1.25)
+    }
+}
+
+impl TryFrom<f64> for DegradeRatio {
+    type Error = String;
+
+    fn try_from(value: f64) -> Result<Self, Self::Error> {
+        if !value.is_finite() || value <= 1.0 {
+            return Err(format!(
+                "focus_watch.degrade_ratio must be a finite number > 1.0, got {value}"
+            ));
+        }
+        Ok(Self(value))
+    }
 }
 
 /// Degrees of rotation above which the guiding calibration is cleared.
@@ -99,14 +222,29 @@ impl TryFrom<f64> for RecalibrateAboveDeg {
 /// The guiding defaults carried onto `McpHandler` (parallel to
 /// `plate_solver_default_search_radius_deg`): everything from
 /// [`GuidingConfig`] except the connection fields, which live inside
-/// the built client. `Default` (all `None`) is the not-configured
-/// shape tests start from.
-#[derive(Debug, Clone, Copy, Default)]
+/// the built client. `Default` (all `None`, threshold at 5°) is the
+/// not-configured shape tests start from.
+#[derive(Debug, Clone, Copy)]
 pub struct GuiderDefaults {
     pub settle_pixels: Option<f64>,
     pub settle_time: Option<Duration>,
     pub settle_timeout: Option<Duration>,
     pub dither_pixels: Option<f64>,
+    /// The rotate-while-guiding ladder's recalibration threshold, in
+    /// degrees (rp.md § Rotator Tool Details).
+    pub recalibrate_above_deg: f64,
+}
+
+impl Default for GuiderDefaults {
+    fn default() -> Self {
+        Self {
+            settle_pixels: None,
+            settle_time: None,
+            settle_timeout: None,
+            dither_pixels: None,
+            recalibrate_above_deg: RecalibrateAboveDeg::default().value(),
+        }
+    }
 }
 
 impl GuidingConfig {
@@ -117,6 +255,7 @@ impl GuidingConfig {
             settle_time: self.settle_time,
             settle_timeout: self.settle_timeout,
             dither_pixels: self.dither_pixels,
+            recalibrate_above_deg: self.recalibrate_above_deg.value(),
         }
     }
 }
@@ -134,7 +273,7 @@ fn default_guiding_timeout() -> Duration {
 mod tests {
     use std::time::Duration;
 
-    use super::RecalibrateAboveDeg;
+    use super::{FocusWatchConfig, RecalibrateAboveDeg};
     use crate::config::load_config;
     use crate::config::test_support::MINIMAL_CONFIG_JSON;
 
@@ -289,6 +428,37 @@ mod tests {
             msg.contains("dither_every_n_exposures") || msg.contains("unknown field"),
             "expected unknown-field diagnostic, got: {msg}"
         );
+    }
+
+    #[test]
+    fn focus_watch_defaults_and_newtype_boundaries() {
+        let watch = FocusWatchConfig::default();
+        assert_eq!(watch.window.value(), 10);
+        assert_eq!(watch.degrade_ratio.value(), 1.25);
+        assert_eq!(watch.cooldown, Duration::from_secs(600));
+        assert_eq!(watch.escalation_deadline, Duration::from_secs(600));
+        assert_eq!(watch.poll_interval, Duration::from_secs(5));
+
+        let parsed: FocusWatchConfig = serde_json::from_value(serde_json::json!({
+            "window": 3, "degrade_ratio": 1.5, "cooldown": "1m",
+            "escalation_deadline": "2m", "poll_interval": "250ms"
+        }))
+        .unwrap();
+        assert_eq!(parsed.window.value(), 3);
+        assert_eq!(parsed.degrade_ratio.value(), 1.5);
+        assert_eq!(parsed.poll_interval, Duration::from_millis(250));
+
+        let window_err =
+            serde_json::from_value::<FocusWatchConfig>(serde_json::json!({ "window": 2 }))
+                .unwrap_err()
+                .to_string();
+        assert!(window_err.contains("focus_watch.window must be an integer >= 3"));
+        for bad_ratio in [1.0, 0.5, f64::NAN] {
+            let err = serde_json::from_value::<FocusWatchConfig>(
+                serde_json::json!({ "degrade_ratio": bad_ratio }),
+            );
+            assert!(err.is_err(), "degrade_ratio {bad_ratio} must be rejected");
+        }
     }
 
     #[test]

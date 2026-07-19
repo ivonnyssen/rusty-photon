@@ -105,11 +105,37 @@ pub struct GuidingStats {
     pub snapshot: StatsSnapshot,
 }
 
+/// Per-frame metrics ring size, in events (`GuideStep` + `StarLost`).
+const METRICS_WINDOW: usize = 50;
+
+/// One entry of the per-frame metrics ring behind
+/// `GET /api/v1/guiding/metrics`: a `GuideStep`'s star metrics, or a
+/// `StarLost` marker (`star_lost: true`, no HFD).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct FrameMetrics {
+    pub frame: u64,
+    pub hfd: Option<f64>,
+    pub snr: Option<f64>,
+    pub star_mass: Option<f64>,
+    pub star_lost: bool,
+}
+
+/// Metrics endpoint payload: `guiding` derived from a fresh app-state
+/// RPC (as in `stats`) plus the ring, oldest first.
+#[derive(Debug)]
+pub struct GuidingMetrics {
+    pub guiding: bool,
+    pub frames: Vec<FrameMetrics>,
+}
+
 pub struct GuiderOps {
     client: Arc<Phd2Client>,
     /// Single-flight lock for mutating operations.
     op_lock: tokio::sync::Mutex<()>,
     stats: std::sync::Mutex<StatsWindow>,
+    /// Per-frame metrics ring (newest at the back), cleared together
+    /// with the RMS window on `guiding/start`.
+    metrics: std::sync::Mutex<std::collections::VecDeque<FrameMetrics>>,
     default_settle: SettleParams,
     stop_timeout: Duration,
 }
@@ -124,9 +150,20 @@ impl GuiderOps {
             client,
             op_lock: tokio::sync::Mutex::new(()),
             stats: std::sync::Mutex::new(StatsWindow::default()),
+            metrics: std::sync::Mutex::new(std::collections::VecDeque::with_capacity(
+                METRICS_WINDOW,
+            )),
             default_settle,
             stop_timeout,
         }
+    }
+
+    fn push_metrics(&self, entry: FrameMetrics) {
+        let mut ring = self.metrics.lock().unwrap_or_else(|e| e.into_inner());
+        if ring.len() == METRICS_WINDOW {
+            ring.pop_front();
+        }
+        ring.push_back(entry);
     }
 
     /// Merge a partial per-request settle override onto the config
@@ -153,13 +190,36 @@ impl GuiderOps {
             loop {
                 match rx.recv().await {
                     Ok(Phd2Event::GuideStep(step)) => {
-                        let mut window = ops.stats.lock().unwrap_or_else(|e| e.into_inner());
-                        window.push(
-                            step.ra_distance_raw,
-                            step.dec_distance_raw,
-                            step.snr,
-                            step.star_mass,
-                        );
+                        {
+                            let mut window = ops.stats.lock().unwrap_or_else(|e| e.into_inner());
+                            window.push(
+                                step.ra_distance_raw,
+                                step.dec_distance_raw,
+                                step.snr,
+                                step.star_mass,
+                            );
+                        }
+                        ops.push_metrics(FrameMetrics {
+                            frame: step.frame,
+                            hfd: step.hfd,
+                            snr: step.snr,
+                            star_mass: step.star_mass,
+                            star_lost: false,
+                        });
+                    }
+                    Ok(Phd2Event::StarLost {
+                        frame,
+                        star_mass,
+                        snr,
+                        ..
+                    }) => {
+                        ops.push_metrics(FrameMetrics {
+                            frame,
+                            hfd: None,
+                            snr: Some(snr),
+                            star_mass: Some(star_mass),
+                            star_lost: true,
+                        });
                     }
                     Ok(_) => {}
                     Err(broadcast::error::RecvError::Lagged(n)) => {
@@ -208,6 +268,10 @@ impl GuiderOps {
         {
             let mut window = self.stats.lock().unwrap_or_else(|e| e.into_inner());
             *window = StatsWindow::default();
+        }
+        {
+            let mut ring = self.metrics.lock().unwrap_or_else(|e| e.into_inner());
+            ring.clear();
         }
         debug!(
             pixels = settle.pixels,
@@ -308,6 +372,55 @@ impl GuiderOps {
             app_state,
             snapshot: self.stats_snapshot(),
         })
+    }
+
+    /// The per-frame metrics ring plus a fresh guiding flag —
+    /// read-only, no mutating mutex (mirrors `stats`).
+    pub async fn metrics(&self) -> Result<GuidingMetrics, ServiceError> {
+        let app_state = self
+            .client
+            .get_app_state()
+            .await
+            .map_err(ServiceError::from)?;
+        let frames = {
+            let ring = self.metrics.lock().unwrap_or_else(|e| e.into_inner());
+            ring.iter().cloned().collect()
+        };
+        Ok(GuidingMetrics {
+            guiding: app_state == AppState::Guiding,
+            frames,
+        })
+    }
+
+    /// PHD2's current equipment slots — read-only passthrough.
+    pub async fn equipment(&self) -> Result<crate::types::Equipment, ServiceError> {
+        self.client
+            .get_current_equipment()
+            .await
+            .map_err(ServiceError::from)
+    }
+
+    /// Clear PHD2's stored calibration; PHD2 recalibrates on the next
+    /// guide start.
+    pub async fn clear_calibration(
+        &self,
+        which: crate::types::CalibrationTarget,
+    ) -> Result<(), ServiceError> {
+        let _op = self.op_lock.lock().await;
+        self.client
+            .clear_calibration(which)
+            .await
+            .map_err(ServiceError::from)
+    }
+
+    /// Auto-select a guide star on the current frame (PHD2
+    /// `find_star`, full frame).
+    pub async fn reselect_star(&self) -> Result<(), ServiceError> {
+        let _op = self.op_lock.lock().await;
+        self.client
+            .find_star(None)
+            .await
+            .map_err(ServiceError::from)
     }
 
     fn stats_snapshot(&self) -> StatsSnapshot {

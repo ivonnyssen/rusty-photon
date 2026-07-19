@@ -51,6 +51,22 @@ pub struct CannedGuiding {
     /// to hold a dither in flight while a concurrent capture is
     /// issued.
     pub settle_delay: std::time::Duration,
+    /// Whether `GET /api/v1/equipment` reports a connected PHD2
+    /// rotator slot (`{"name": "Stub Rotator", "connected": true}`)
+    /// or `null` (the default) — the branch rp's
+    /// rotate-while-guiding ladder takes.
+    pub phd2_rotator_connected: bool,
+    /// HFD values served by `GET /api/v1/guiding/metrics`, one entry
+    /// per *request*: request N uses `metrics_hfd_script[min(N-1,
+    /// len-1)]` for every frame in that response (the last value
+    /// repeats). Each request advances the stub's frame counter by 5
+    /// and returns the trailing 12 frames at the current value, so
+    /// pollers always see fresh frame numbers. A one-element script
+    /// (the default, `[2.5]`) yields perfectly flat HFD — rp's
+    /// guide-sweep scenarios lean on the deterministic
+    /// no-minimum fit error that produces; a two-element script like
+    /// `[2.0, 3.0]` drives the focus-watch degradation scenarios.
+    pub metrics_hfd_script: Vec<f64>,
 }
 
 impl Default for CannedGuiding {
@@ -64,6 +80,8 @@ impl Default for CannedGuiding {
             star_mass: 5432.0,
             guiding: true,
             settle_delay: std::time::Duration::ZERO,
+            phd2_rotator_connected: false,
+            metrics_hfd_script: vec![2.5],
         }
     }
 }
@@ -97,6 +115,10 @@ pub struct GuiderStub {
 struct StubState {
     behavior: GuiderStubBehavior,
     requests: Arc<RwLock<Vec<(String, Value)>>>,
+    /// Count of `guiding/metrics` requests served — indexes
+    /// `CannedGuiding::metrics_hfd_script` and advances the fake
+    /// frame counter (see the field's doc).
+    metrics_polls: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl GuiderStub {
@@ -107,6 +129,7 @@ impl GuiderStub {
         let state = StubState {
             behavior,
             requests: requests.clone(),
+            metrics_polls: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         };
 
         let app = Router::new()
@@ -116,6 +139,10 @@ impl GuiderStub {
             .route("/api/v1/guiding/resume", post(resume_handler))
             .route("/api/v1/dither", post(settle_handler))
             .route("/api/v1/guiding/stats", get(stats_handler))
+            .route("/api/v1/guiding/metrics", get(metrics_handler))
+            .route("/api/v1/equipment", get(equipment_handler))
+            .route("/api/v1/calibration/clear", post(calibration_clear_handler))
+            .route("/api/v1/star/reselect", post(reselect_handler))
             .route("/health", get(health_handler))
             .with_state(state);
 
@@ -307,6 +334,83 @@ async fn health_handler(State(_state): State<StubState>) -> axum::response::Resp
     Json(serde_json::json!({ "status": "ok" })).into_response()
 }
 
+async fn metrics_handler(
+    State(state): State<StubState>,
+    uri: axum::http::Uri,
+    body: axum::body::Bytes,
+) -> axum::response::Response {
+    if let Some(err) = record_and_check(&state, &uri, body).await {
+        return err;
+    }
+    let c = canned(&state);
+    let poll = state
+        .metrics_polls
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let script = &c.metrics_hfd_script;
+    let hfd = script[(poll as usize).min(script.len().saturating_sub(1))];
+    // Advance 5 fake frames per poll and return the trailing 12, so
+    // watermark-based freshness checks always find new frames.
+    let frame_end = (poll + 1) * 5;
+    let frames: Vec<Value> = (frame_end.saturating_sub(11).max(1)..=frame_end)
+        .map(|frame| {
+            serde_json::json!({
+                "frame": frame,
+                "hfd": hfd,
+                "snr": c.snr,
+                "star_mass": c.star_mass,
+                "star_lost": false,
+            })
+        })
+        .collect();
+    Json(serde_json::json!({ "guiding": c.guiding, "frames": frames })).into_response()
+}
+
+async fn equipment_handler(
+    State(state): State<StubState>,
+    uri: axum::http::Uri,
+    body: axum::body::Bytes,
+) -> axum::response::Response {
+    if let Some(err) = record_and_check(&state, &uri, body).await {
+        return err;
+    }
+    let c = canned(&state);
+    let rotator = if c.phd2_rotator_connected {
+        serde_json::json!({ "name": "Stub Rotator", "connected": true })
+    } else {
+        Value::Null
+    };
+    Json(serde_json::json!({
+        "camera": { "name": "Stub Camera", "connected": true },
+        "mount": { "name": "Stub Mount", "connected": true },
+        "aux_mount": null,
+        "ao": null,
+        "rotator": rotator,
+    }))
+    .into_response()
+}
+
+async fn calibration_clear_handler(
+    State(state): State<StubState>,
+    uri: axum::http::Uri,
+    body: axum::body::Bytes,
+) -> axum::response::Response {
+    if let Some(err) = record_and_check(&state, &uri, body).await {
+        return err;
+    }
+    Json(serde_json::json!({ "state": "cleared" })).into_response()
+}
+
+async fn reselect_handler(
+    State(state): State<StubState>,
+    uri: axum::http::Uri,
+    body: axum::body::Bytes,
+) -> axum::response::Response {
+    if let Some(err) = record_and_check(&state, &uri, body).await {
+        return err;
+    }
+    Json(serde_json::json!({ "state": "selected" })).into_response()
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
@@ -360,6 +464,99 @@ mod tests {
 
         let starts = stub.requests_to("/guiding/start").await;
         assert_eq!(starts.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn the_t4_endpoints_answer_with_their_canned_shapes() {
+        let stub = GuiderStub::start(GuiderStubBehavior::Canned(CannedGuiding {
+            phd2_rotator_connected: true,
+            metrics_hfd_script: vec![2.0, 3.0],
+            ..CannedGuiding::default()
+        }))
+        .await;
+        let client = reqwest::Client::new();
+
+        let equipment: Value = client
+            .get(format!("{}/api/v1/equipment", stub.url))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(equipment["rotator"]["name"], "Stub Rotator");
+
+        // Metrics advance 5 frames per poll and follow the script.
+        let m1: Value = client
+            .get(format!("{}/api/v1/guiding/metrics", stub.url))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(m1["guiding"], true);
+        let f1 = m1["frames"].as_array().unwrap();
+        assert_eq!(f1.last().unwrap()["frame"], 5);
+        assert_eq!(f1[0]["hfd"], 2.0);
+        let m2: Value = client
+            .get(format!("{}/api/v1/guiding/metrics", stub.url))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let f2 = m2["frames"].as_array().unwrap();
+        assert_eq!(f2.last().unwrap()["frame"], 10);
+        assert_eq!(f2[0]["hfd"], 3.0);
+
+        let cleared: Value = client
+            .post(format!("{}/api/v1/calibration/clear", stub.url))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(cleared["state"], "cleared");
+
+        let selected: Value = client
+            .post(format!("{}/api/v1/star/reselect", stub.url))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(selected["state"], "selected");
+
+        let clear_requests = stub.requests_to("/calibration/clear").await;
+        assert_eq!(clear_requests.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn the_t4_endpoints_map_the_error_behavior() {
+        let stub = GuiderStub::start(GuiderStubBehavior::Error {
+            code: "internal".to_string(),
+            message: "boom".to_string(),
+        })
+        .await;
+        let client = reqwest::Client::new();
+        for (method, path) in [
+            ("get", "/api/v1/guiding/metrics"),
+            ("get", "/api/v1/equipment"),
+            ("post", "/api/v1/calibration/clear"),
+            ("post", "/api/v1/star/reselect"),
+        ] {
+            let request = if method == "get" {
+                client.get(format!("{}{}", stub.url, path))
+            } else {
+                client.post(format!("{}{}", stub.url, path))
+            };
+            let response = request.send().await.unwrap();
+            assert_eq!(response.status().as_u16(), 500, "{path}");
+        }
     }
 
     #[tokio::test]

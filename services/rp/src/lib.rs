@@ -6,6 +6,7 @@ pub mod doctor;
 pub mod equipment;
 pub mod error;
 pub mod events;
+pub mod guiding_watch;
 pub mod imaging;
 pub mod mcp;
 pub mod motion_gate;
@@ -222,6 +223,33 @@ impl ServerBuilder {
             }
             None => (None, crate::config::GuiderDefaults::default()),
         };
+
+        // The Guide Focus Watch (rp.md § Guide Focus Watch): spawned
+        // only when the operator configured `focus_watch`. Events
+        // only — the orchestrator owns the refocus response.
+        if let (Some(client), Some(watch_cfg)) = (
+            guider_client.clone(),
+            guiding_config.and_then(|g| g.focus_watch),
+        ) {
+            let guiding_train_id = trains.guiding_train().map(|t| t.id.clone());
+            let guiding_focusers: Vec<String> = trains
+                .guiding_train()
+                .map(|t| {
+                    t.devices
+                        .iter()
+                        .filter(|d| d.kind == crate::equipment::trains::TrainDeviceKind::Focuser)
+                        .map(|d| d.id.clone())
+                        .collect()
+                })
+                .unwrap_or_default();
+            crate::guiding_watch::spawn(
+                client,
+                event_bus.clone(),
+                watch_cfg,
+                guiding_train_id,
+                guiding_focusers,
+            );
+        }
 
         let mcp = McpHandler::new(
             equipment.clone(),

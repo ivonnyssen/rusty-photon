@@ -115,8 +115,52 @@ pub struct GuidingStats {
     pub sample_count: u32,
 }
 
+/// One entry of `GET /api/v1/guiding/metrics`: a PHD2 guide frame's
+/// star metrics, or a star-lost marker (`star_lost: true`, no HFD).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct FrameMetrics {
+    /// PHD2's own frame counter — poll for freshness by watermark,
+    /// never by array position.
+    pub frame: u64,
+    /// Half-flux diameter in guide-camera pixels; `None` when the
+    /// step omitted it (older PHD2) or the star was lost.
+    pub hfd: Option<f64>,
+    pub snr: Option<f64>,
+    pub star_mass: Option<f64>,
+    pub star_lost: bool,
+}
+
+/// Success body of `GET /api/v1/guiding/metrics`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct GuidingMetrics {
+    /// `true` iff PHD2's application state is `Guiding`.
+    pub guiding: bool,
+    /// The service's per-frame ring, oldest first (up to 50 entries,
+    /// cleared when guiding starts).
+    pub frames: Vec<FrameMetrics>,
+}
+
+/// One equipment slot of `GET /api/v1/equipment`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct EquipmentSlot {
+    pub name: String,
+    pub connected: bool,
+}
+
+/// Success body of `GET /api/v1/equipment` — PHD2's current
+/// equipment; slots the profile does not configure are `None`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PhdEquipment {
+    pub camera: Option<EquipmentSlot>,
+    pub mount: Option<EquipmentSlot>,
+    pub aux_mount: Option<EquipmentSlot>,
+    pub ao: Option<EquipmentSlot>,
+    pub rotator: Option<EquipmentSlot>,
+}
+
 /// Success body of the state-only endpoints (`stop`, `pause`,
-/// `resume`). Parsed to validate the response shape; callers get `()`.
+/// `resume`, `calibration/clear`, `star/reselect`). Parsed to
+/// validate the response shape; callers get `()`.
 #[derive(Debug, Deserialize)]
 struct StateOutcome {
     #[allow(dead_code)]
@@ -187,6 +231,21 @@ pub trait GuiderClient: Send + Sync {
     /// `GET /api/v1/guiding/stats` — read the current guiding state
     /// and rolling RMS statistics.
     async fn guiding_stats(&self) -> Result<GuidingStats, GuiderError>;
+
+    /// `GET /api/v1/guiding/metrics` — the service's per-frame star
+    /// metrics ring (HFD/SNR/star mass + star-lost markers).
+    async fn guiding_metrics(&self) -> Result<GuidingMetrics, GuiderError>;
+
+    /// `GET /api/v1/equipment` — PHD2's current equipment slots.
+    async fn current_equipment(&self) -> Result<PhdEquipment, GuiderError>;
+
+    /// `POST /api/v1/calibration/clear` — clear PHD2's stored mount
+    /// calibration; PHD2 recalibrates on the next guide start.
+    async fn clear_calibration(&self) -> Result<(), GuiderError>;
+
+    /// `POST /api/v1/star/reselect` — auto-select a guide star on
+    /// the current frame (after a rotation moved it).
+    async fn reselect_star(&self) -> Result<(), GuiderError>;
 }
 
 /// Concrete reqwest-backed implementation of [`GuiderClient`].
@@ -329,6 +388,32 @@ impl GuiderClient for GuiderServiceClient {
         let url = format!("{}/api/v1/guiding/stats", self.base_url);
         self.execute(self.client.get(&url).timeout(self.timeout))
             .await
+    }
+
+    async fn guiding_metrics(&self) -> Result<GuidingMetrics, GuiderError> {
+        let url = format!("{}/api/v1/guiding/metrics", self.base_url);
+        self.execute(self.client.get(&url).timeout(self.timeout))
+            .await
+    }
+
+    async fn current_equipment(&self) -> Result<PhdEquipment, GuiderError> {
+        let url = format!("{}/api/v1/equipment", self.base_url);
+        self.execute(self.client.get(&url).timeout(self.timeout))
+            .await
+    }
+
+    async fn clear_calibration(&self) -> Result<(), GuiderError> {
+        let url = format!("{}/api/v1/calibration/clear", self.base_url);
+        self.execute::<StateOutcome>(self.client.post(&url).timeout(self.timeout))
+            .await
+            .map(|_| ())
+    }
+
+    async fn reselect_star(&self) -> Result<(), GuiderError> {
+        let url = format!("{}/api/v1/star/reselect", self.base_url);
+        self.execute::<StateOutcome>(self.client.post(&url).timeout(self.timeout))
+            .await
+            .map(|_| ())
     }
 }
 
