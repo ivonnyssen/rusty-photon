@@ -377,7 +377,13 @@ fn parse_request_head(head: &[u8]) -> Option<ParsedRequest> {
         }
         if let Some((name, value)) = line.split_once(':') {
             if name.eq_ignore_ascii_case("host") {
-                host = Some(value.trim().to_string());
+                let value = value.trim();
+                // An empty/whitespace-only Host value (e.g. "Host: \r\n")
+                // must fall back to the local IP, not build a Location with
+                // a missing authority (`https://:<port>...`).
+                if !value.is_empty() {
+                    host = Some(value.to_string());
+                }
             }
         }
     }
@@ -507,6 +513,17 @@ mod tests {
     fn parse_request_head_without_host_header() {
         let parsed = parse_request_head(b"GET / HTTP/1.0\r\n").unwrap();
         assert_eq!(parsed.target, "/");
+        assert_eq!(parsed.host, None);
+    }
+
+    #[test]
+    fn parse_request_head_treats_empty_host_value_as_absent() {
+        // An empty/whitespace-only Host value must fall back to the local
+        // IP in build_redirect_response, not produce a Location with a
+        // missing authority ("https://:<port>...").
+        let parsed = parse_request_head(b"GET / HTTP/1.1\r\nHost: \r\n").unwrap();
+        assert_eq!(parsed.host, None);
+        let parsed = parse_request_head(b"GET / HTTP/1.1\r\nHost:    \r\n").unwrap();
         assert_eq!(parsed.host, None);
     }
 
