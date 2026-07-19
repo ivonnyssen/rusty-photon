@@ -1,14 +1,35 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
+use hyper_util::rt::TokioIo;
+use hyper_util::service::TowerToHyperService;
 use socket2::{Domain, Protocol, Socket, Type};
-use tokio::net::TcpListener;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::time::timeout;
 use tokio_rustls::TlsAcceptor;
 use tracing::debug;
 
 use crate::config::TlsConfig;
 use crate::error::Result;
 use crate::resolver::ReloadableCertResolver;
+
+/// First byte of a TLS handshake record (`ContentType::Handshake`,
+/// RFC 8446 §5.1) — distinguishes a real TLS client from a plaintext HTTP
+/// request landing on the TLS port (issue #610).
+const TLS_HANDSHAKE_CONTENT_TYPE: u8 = 0x16;
+
+/// Bound on how long a non-TLS connection may take, in total, to produce a
+/// recognizable HTTP request head before it is dropped. Applied to the
+/// initial byte peek and to reading the request head, so a connection that
+/// never sends anything — or trickles bytes forever — cannot become a
+/// resource sink on the TLS port.
+const PLAINTEXT_IO_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Bound on the buffered size of a plaintext request head (request line +
+/// headers) while looking for the blank line that ends them.
+const MAX_REQUEST_HEAD_BYTES: usize = 8 * 1024;
 
 /// Bind a TCP listener with dual-stack (IPv4+IPv6) support.
 ///
@@ -135,8 +156,6 @@ pub async fn serve_tls_with_acceptor<F>(
 where
     F: std::future::Future<Output = ()> + Send + 'static,
 {
-    use hyper_util::rt::TokioIo;
-    use hyper_util::service::TowerToHyperService;
     use tokio::pin;
 
     let shutdown = shutdown;
@@ -150,25 +169,7 @@ where
                 let router = router.clone();
 
                 tokio::spawn(async move {
-                    let tls_stream = match acceptor.accept(stream).await {
-                        Ok(s) => s,
-                        Err(e) => {
-                            debug!("TLS handshake failed from {}: {}", remote_addr, e);
-                            return;
-                        }
-                    };
-
-                    let io = TokioIo::new(tls_stream);
-                    let service = TowerToHyperService::new(router.into_service());
-
-                    if let Err(e) = hyper_util::server::conn::auto::Builder::new(
-                        hyper_util::rt::TokioExecutor::new(),
-                    )
-                    .serve_connection(io, service)
-                    .await
-                    {
-                        debug!("Error serving TLS connection from {}: {}", remote_addr, e);
-                    }
+                    handle_connection(stream, remote_addr, acceptor, router).await;
                 });
             }
             () = &mut shutdown => {
@@ -179,6 +180,228 @@ where
     }
 
     Ok(())
+}
+
+/// Dispatch one accepted connection on the TLS port: a genuine TLS
+/// handshake (first byte `0x16`) proceeds as before; anything else is
+/// handled as a possibly-plaintext HTTP request and answered with a
+/// redirect to `https://` on the same host and port, or dropped if it
+/// doesn't look like HTTP at all (issue #610).
+async fn handle_connection(
+    stream: TcpStream,
+    remote_addr: SocketAddr,
+    acceptor: TlsAcceptor,
+    router: axum::Router,
+) {
+    let mut first_byte = [0u8; 1];
+    let peeked = match timeout(PLAINTEXT_IO_TIMEOUT, stream.peek(&mut first_byte)).await {
+        Ok(Ok(n)) => n,
+        Ok(Err(e)) => {
+            debug!("Failed to peek connection from {}: {}", remote_addr, e);
+            return;
+        }
+        Err(_) => {
+            debug!(
+                "Timed out waiting for the first byte from {}; dropping",
+                remote_addr
+            );
+            return;
+        }
+    };
+    if peeked == 0 {
+        // Peer closed the connection before sending anything.
+        return;
+    }
+
+    if first_byte[0] == TLS_HANDSHAKE_CONTENT_TYPE {
+        let tls_stream = match acceptor.accept(stream).await {
+            Ok(s) => s,
+            Err(e) => {
+                debug!("TLS handshake failed from {}: {}", remote_addr, e);
+                return;
+            }
+        };
+
+        let io = TokioIo::new(tls_stream);
+        let service = TowerToHyperService::new(router.into_service());
+
+        if let Err(e) =
+            hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new())
+                .serve_connection(io, service)
+                .await
+        {
+            debug!("Error serving TLS connection from {}: {}", remote_addr, e);
+        }
+        return;
+    }
+
+    debug!(
+        "Non-TLS byte from {} on the TLS port; treating as plaintext HTTP",
+        remote_addr
+    );
+    redirect_plaintext_http(stream, remote_addr).await;
+}
+
+/// Answer a connection that didn't start with a TLS handshake byte: parse a
+/// bounded plaintext HTTP request head and reply with a redirect to the same
+/// host and port under `https://`. Anything that doesn't resolve to a
+/// parseable HTTP request within the bound is dropped without a response —
+/// only bytes that look like HTTP earn a reply on the TLS port.
+async fn redirect_plaintext_http(mut stream: TcpStream, remote_addr: SocketAddr) {
+    let local_addr = match stream.local_addr() {
+        Ok(addr) => addr,
+        Err(e) => {
+            debug!(
+                "Failed to read the local address for {}: {}",
+                remote_addr, e
+            );
+            return;
+        }
+    };
+
+    let Some(request) = read_request_head(&mut stream).await else {
+        debug!(
+            "Dropping non-HTTP plaintext connection from {}",
+            remote_addr
+        );
+        return;
+    };
+
+    let response = build_redirect_response(&request, local_addr);
+    if let Err(e) = stream.write_all(response.as_bytes()).await {
+        debug!(
+            "Failed to write the plaintext redirect to {}: {}",
+            remote_addr, e
+        );
+        return;
+    }
+    let _ = stream.shutdown().await;
+}
+
+/// A minimally-parsed plaintext HTTP request head.
+struct ParsedRequest {
+    /// The raw request-target from the request line (path + optional query).
+    target: String,
+    /// The `Host` header value, if present, port suffix and all.
+    host: Option<String>,
+}
+
+/// Read a plaintext request head (request line + headers) up to the blank
+/// line that ends them, bounded by [`MAX_REQUEST_HEAD_BYTES`] and
+/// [`PLAINTEXT_IO_TIMEOUT`]. Returns `None` if the connection closes, times
+/// out, exceeds the size bound, or the bytes read so far don't look like an
+/// HTTP request line — every `None` case means the caller drops the
+/// connection without a response.
+async fn read_request_head(stream: &mut TcpStream) -> Option<ParsedRequest> {
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 512];
+    let deadline = Instant::now() + PLAINTEXT_IO_TIMEOUT;
+
+    loop {
+        if let Some(line_end) = find_subslice(&buf, b"\r\n") {
+            // Bail as soon as the request line itself doesn't look like
+            // HTTP, rather than waiting out the full timeout on garbage.
+            parse_request_head(&buf[..line_end])?;
+        }
+        if let Some(headers_end) = find_subslice(&buf, b"\r\n\r\n") {
+            return parse_request_head(&buf[..headers_end]);
+        }
+        if buf.len() >= MAX_REQUEST_HEAD_BYTES {
+            return None;
+        }
+
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return None;
+        }
+        match timeout(remaining, stream.read(&mut chunk)).await {
+            Ok(Ok(0)) | Ok(Err(_)) | Err(_) => return None,
+            Ok(Ok(n)) => buf.extend_from_slice(&chunk[..n]),
+        }
+    }
+}
+
+/// `true`-shaped result only when `head` starts with `METHOD target
+/// HTTP/x.y` — the minimal shape needed before plaintext bytes on the TLS
+/// port earn a reply at all. `head` may be just the request line (no
+/// trailing headers yet) or a full head ending at the blank line.
+fn parse_request_head(head: &[u8]) -> Option<ParsedRequest> {
+    let text = std::str::from_utf8(head).ok()?;
+    let mut lines = text.split("\r\n");
+    let request_line = lines.next()?;
+
+    let mut parts = request_line.splitn(3, ' ');
+    let method = parts.next()?;
+    let target = parts.next()?;
+    let version = parts.next()?;
+
+    if method.is_empty() || !method.bytes().all(|b| b.is_ascii_uppercase()) {
+        return None;
+    }
+    if target.is_empty() || !version.starts_with("HTTP/") {
+        return None;
+    }
+
+    let mut host = None;
+    for line in lines {
+        if line.is_empty() {
+            break;
+        }
+        if let Some((name, value)) = line.split_once(':') {
+            if name.eq_ignore_ascii_case("host") {
+                host = Some(value.trim().to_string());
+            }
+        }
+    }
+
+    Some(ParsedRequest {
+        target: target.to_string(),
+        host,
+    })
+}
+
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack.windows(needle.len()).position(|w| w == needle)
+}
+
+/// Strip a trailing `:port` from a `Host` header value, respecting
+/// bracketed IPv6 literals (`[::1]:8443`).
+fn strip_host_port(host: &str) -> &str {
+    if host.starts_with('[') {
+        return match host.find(']') {
+            Some(end) => &host[..=end],
+            None => host,
+        };
+    }
+    match host.rsplit_once(':') {
+        Some((name, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => name,
+        _ => host,
+    }
+}
+
+fn format_ip_for_url(ip: std::net::IpAddr) -> String {
+    match ip {
+        std::net::IpAddr::V4(v4) => v4.to_string(),
+        std::net::IpAddr::V6(v6) => format!("[{v6}]"),
+    }
+}
+
+/// Build the minimal `308 Permanent Redirect` response: the `Host` header
+/// (port stripped) if the client sent one, else the connection's local IP —
+/// always paired with the TLS listener's own port, never whatever port (if
+/// any) the client's `Host` header claimed, so the redirect always lands
+/// back on this same TLS port.
+fn build_redirect_response(request: &ParsedRequest, local_addr: SocketAddr) -> String {
+    let host = request
+        .host
+        .as_deref()
+        .map(strip_host_port)
+        .map(str::to_string)
+        .unwrap_or_else(|| format_ip_for_url(local_addr.ip()));
+    let location = format!("https://{host}:{}{}", local_addr.port(), request.target);
+    format!(
+        "HTTP/1.1 308 Permanent Redirect\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    )
 }
 
 #[cfg(test)]
@@ -242,5 +465,80 @@ mod tests {
             }
             Err(e) => panic!("unexpected error: {e}"),
         }
+    }
+
+    #[test]
+    fn parse_request_head_extracts_target_and_host() {
+        let head = b"GET /setup/v1/camera/0/setup HTTP/1.1\r\nHost: 127.0.0.1:11121\r\nUser-Agent: test\r\n";
+        let parsed = parse_request_head(head).unwrap();
+        assert_eq!(parsed.target, "/setup/v1/camera/0/setup");
+        assert_eq!(parsed.host.as_deref(), Some("127.0.0.1:11121"));
+    }
+
+    #[test]
+    fn parse_request_head_without_host_header() {
+        let parsed = parse_request_head(b"GET / HTTP/1.0\r\n").unwrap();
+        assert_eq!(parsed.target, "/");
+        assert_eq!(parsed.host, None);
+    }
+
+    #[test]
+    fn parse_request_head_rejects_non_http_bytes() {
+        assert!(parse_request_head(b"random garbage bytes, not HTTP at all").is_none());
+    }
+
+    #[test]
+    fn parse_request_head_rejects_tls_handshake_bytes() {
+        // A real TLS ClientHello record never reaches this parser (the 0x16
+        // sniff routes it to the acceptor instead), but the parser must
+        // still reject it defensively rather than mis-parse binary noise.
+        assert!(parse_request_head(&[0x16, 0x03, 0x01, 0x00, 0x05]).is_none());
+    }
+
+    #[test]
+    fn strip_host_port_handles_ipv4_and_hostnames() {
+        assert_eq!(strip_host_port("127.0.0.1:11121"), "127.0.0.1");
+        assert_eq!(strip_host_port("filemonitor.local"), "filemonitor.local");
+        assert_eq!(
+            strip_host_port("filemonitor.local:11121"),
+            "filemonitor.local"
+        );
+    }
+
+    #[test]
+    fn strip_host_port_handles_bracketed_ipv6() {
+        assert_eq!(strip_host_port("[::1]:11121"), "[::1]");
+        assert_eq!(strip_host_port("[::1]"), "[::1]");
+    }
+
+    #[test]
+    fn build_redirect_response_uses_host_header_and_local_port() {
+        let request = ParsedRequest {
+            target: "/health".to_string(),
+            host: Some("127.0.0.1:9999".to_string()),
+        };
+        let local_addr: SocketAddr = "127.0.0.1:11121".parse().unwrap();
+        let response = build_redirect_response(&request, local_addr);
+        assert!(
+            response.starts_with("HTTP/1.1 308 Permanent Redirect\r\n"),
+            "{response}"
+        );
+        assert!(
+            response.contains("Location: https://127.0.0.1:11121/health\r\n"),
+            "the redirect must use the TLS listener's own port, not the client's Host header port: {response}"
+        );
+        assert!(response.contains("Content-Length: 0\r\n"), "{response}");
+        assert!(response.contains("Connection: close\r\n"), "{response}");
+    }
+
+    #[test]
+    fn build_redirect_response_falls_back_to_local_ip_without_host_header() {
+        let request = ParsedRequest {
+            target: "/health?ClientID=1".to_string(),
+            host: None,
+        };
+        let local_addr: SocketAddr = "192.168.1.5:11121".parse().unwrap();
+        let response = build_redirect_response(&request, local_addr);
+        assert!(response.contains("Location: https://192.168.1.5:11121/health?ClientID=1\r\n"));
     }
 }

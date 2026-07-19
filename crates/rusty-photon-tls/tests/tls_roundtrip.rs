@@ -5,6 +5,7 @@
 use std::net::SocketAddr;
 
 use axum::{routing::get, Router};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[tokio::test]
 async fn https_roundtrip_with_generated_certs() {
@@ -211,6 +212,130 @@ async fn swapped_pair_is_served_without_rebinding() {
     let url = format!("https://localhost:{}/health", bound_addr.port());
     let response = client.get(&url).send().await.unwrap();
     assert_eq!(response.status(), 200);
+
+    shutdown_tx.send(()).ok();
+    server_handle.await.ok();
+}
+
+/// Set up a TLS server (CA + service cert) on an OS-assigned port, returning
+/// the pki dir (kept alive for its `TempDir` drop), the bound address, a
+/// shutdown handle, and the server task's join handle.
+async fn start_tls_server_with_health_route() -> (
+    tempfile::TempDir,
+    SocketAddr,
+    tokio::sync::oneshot::Sender<()>,
+    tokio::task::JoinHandle<()>,
+) {
+    let pki_dir = tempfile::tempdir().unwrap();
+    let certs_dir = pki_dir.path().join("certs");
+
+    rusty_photon_tls::test_cert::generate_ca(pki_dir.path()).unwrap();
+    let ca_cert_pem = std::fs::read_to_string(pki_dir.path().join("ca.pem")).unwrap();
+    let ca_key_pem = std::fs::read_to_string(pki_dir.path().join("ca-key.pem")).unwrap();
+    rusty_photon_tls::test_cert::generate_service_cert(
+        &ca_cert_pem,
+        &ca_key_pem,
+        "test-service",
+        &certs_dir,
+    )
+    .unwrap();
+
+    let tls_config = rusty_photon_tls::config::TlsConfig {
+        cert: certs_dir
+            .join("test-service.pem")
+            .to_string_lossy()
+            .into_owned(),
+        key: certs_dir
+            .join("test-service-key.pem")
+            .to_string_lossy()
+            .into_owned(),
+    };
+
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let listener = rusty_photon_tls::server::bind_dual_stack_tokio(addr)
+        .await
+        .unwrap();
+    let bound_addr = listener.local_addr().unwrap();
+    let router = Router::new().route("/health", get(|| async { "ok" }));
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let server_handle = tokio::spawn(async move {
+        rusty_photon_tls::server::serve_tls(listener, router, &tls_config, async {
+            shutdown_rx.await.ok();
+        })
+        .await
+        .unwrap();
+    });
+
+    (pki_dir, bound_addr, shutdown_tx, server_handle)
+}
+
+#[tokio::test]
+async fn plaintext_http_request_is_redirected_to_https_same_port() {
+    let (pki_dir, bound_addr, shutdown_tx, server_handle) =
+        start_tls_server_with_health_route().await;
+
+    // A plain HTTP client hitting the TLS port gets a 308 to https on the
+    // same port — this is the misdirected-bookmark scenario from #610.
+    let plain_client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let url = format!("http://127.0.0.1:{}/health", bound_addr.port());
+    let response = plain_client.get(&url).send().await.unwrap();
+    assert_eq!(response.status(), 308);
+    let location = response
+        .headers()
+        .get("location")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert_eq!(
+        location,
+        format!("https://127.0.0.1:{}/health", bound_addr.port())
+    );
+
+    // A client that trusts the CA and follows redirects completes the round
+    // trip entirely over the same port.
+    let ca_path = pki_dir.path().join("ca.pem");
+    let following_client = rusty_photon_tls::client::build_reqwest_client(Some(&ca_path)).unwrap();
+    let response = following_client.get(&url).send().await.unwrap();
+    assert_eq!(response.status(), 200);
+    assert!(
+        response.url().as_str().starts_with("https://"),
+        "{}",
+        response.url()
+    );
+    assert_eq!(response.text().await.unwrap(), "ok");
+
+    shutdown_tx.send(()).ok();
+    server_handle.await.ok();
+}
+
+#[tokio::test]
+async fn non_http_garbage_on_tls_port_is_dropped_without_a_response() {
+    let (_pki_dir, bound_addr, shutdown_tx, server_handle) =
+        start_tls_server_with_health_route().await;
+
+    let mut socket = tokio::net::TcpStream::connect(bound_addr).await.unwrap();
+    socket
+        .write_all(b"not TLS and not an HTTP request, just garbage\n")
+        .await
+        .unwrap();
+    socket.shutdown().await.ok();
+
+    let mut buf = Vec::new();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        socket.read_to_end(&mut buf),
+    )
+    .await
+    .expect("the connection should close well within the bound, not hang")
+    .unwrap();
+    assert!(
+        buf.is_empty(),
+        "no response bytes should be sent back for non-HTTP garbage: {buf:?}"
+    );
 
     shutdown_tx.send(()).ok();
     server_handle.await.ok();
