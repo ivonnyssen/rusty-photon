@@ -212,9 +212,25 @@ impl CloudflareDnsProvider {
     /// Create a provider with a custom `CloudflareApi` implementation.
     /// Used internally and for testing.
     async fn with_api(api: Box<dyn CloudflareApi>, domain: &str) -> Result<Self> {
+        // Zone names never carry empty labels, so a malformed domain
+        // would walk only impossible candidates — reject it before any
+        // API query, and likewise a single-label domain, which no
+        // registrable zone (two labels minimum) can contain.
+        if domain.split('.').any(|label| label.is_empty()) {
+            return Err(TlsError::Config(format!(
+                "domain '{domain}' is malformed: a leading, trailing, or doubled dot \
+                 produces an empty label, which can never match a Cloudflare zone name"
+            )));
+        }
+        let candidates = zone_candidates(domain);
+        if candidates.is_empty() {
+            return Err(TlsError::Config(format!(
+                "domain '{domain}' has a single label, so no Cloudflare zone can \
+                 contain it; ACME domains follow '<host>.<zone>' (e.g. 'rig.example.com')"
+            )));
+        }
         // Cloudflare's zone name filter is an exact match, so each
         // candidate suffix is its own query, longest first.
-        let candidates = zone_candidates(domain);
         for candidate in &candidates {
             let zones = api.list_zones(candidate.clone()).await?;
             let Some(zone) = zones.first() else {
@@ -238,14 +254,10 @@ impl CloudflareDnsProvider {
             });
         }
 
-        let tried = if candidates.is_empty() {
-            domain.to_string()
-        } else {
-            candidates.join(", ")
-        };
         Err(TlsError::DnsProvider(format!(
-            "no Cloudflare zone found for domain '{domain}' (tried: {tried}); the zone \
-             must be visible to the API token"
+            "no Cloudflare zone found for domain '{domain}' (tried: {}); the zone \
+             must be visible to the API token",
+            candidates.join(", ")
         )))
     }
 }
@@ -533,7 +545,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cloudflare_provider_single_label_domain_reports_no_zone_without_queries() {
+    async fn cloudflare_provider_rejects_single_label_domain_without_queries() {
         let mut mock_api = MockCloudflareApi::new();
         mock_api.expect_list_zones().never();
 
@@ -541,8 +553,27 @@ mod tests {
             .await
             .unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("no Cloudflare zone found"), "error: {msg}");
-        assert!(msg.contains("localhost"), "error: {msg}");
+        assert!(msg.contains("single label"), "error: {msg}");
+        assert!(
+            !msg.contains("API token"),
+            "a shape problem must not blame the token: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn cloudflare_provider_rejects_domains_with_empty_labels_without_queries() {
+        for domain in ["rig.example.com.", ".example.com", "rig..example.com"] {
+            let mut mock_api = MockCloudflareApi::new();
+            mock_api.expect_list_zones().never();
+
+            let err = CloudflareDnsProvider::with_api(Box::new(mock_api), domain)
+                .await
+                .unwrap_err();
+            assert!(
+                err.to_string().contains("malformed"),
+                "'{domain}' should be rejected as malformed: {err}"
+            );
+        }
     }
 
     #[tokio::test]
