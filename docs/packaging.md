@@ -479,8 +479,8 @@ remote viewing in one.
 
 Leave phd2-guider on its built-in defaults — do **not** create
 `/etc/rusty-photon/phd2-guider.json`. A config file lets sentinel derive
-a health-probe URL, and its supervision counts any non-2xx answer as a
-failed probe (see
+a health-probe URL, and its supervision counts anything but `200` or an
+auth challenge (`401`/`403`) as a failed probe (see
 [sentinel.md §Service Health Supervision](services/sentinel.md#service-health-supervision)):
 the `503` that means "PHD2 is not running right now" — the normal
 daytime state of a rig — would restart-loop the guider service to no
