@@ -600,7 +600,13 @@ their next restart (the existing `--fix` restart advice covers it).
   such private directories need; `--dns-propagation-seconds` tunes the wait
   between writing the TXT record and telling the server to validate
   (default 15). All three persist into `acme.json` — renewal must replay
-  them unattended.
+  them unattended. Every signed ACME request retries a server-rejected
+  anti-replay nonce (RFC 8555 §6.5) at two levels — per HTTP request
+  inside instant-acme, plus a per-operation layer in doctor — because the
+  fresh nonce a rejection carries can itself be rejected: Let's Encrypt
+  does this when a request lands on a frontend with a diverged nonce pool,
+  and Pebble injects it deliberately (5% of valid nonces by default),
+  which the BDD suite inherits as a live exercise of the retry path.
 - **`doctor auth rotate`** — mint + distribute, as above.
 - **`doctor auth hash-password [--stdin]`** — hash one password for
   hand-written configs (the third-party-driver escape hatch); prompt with

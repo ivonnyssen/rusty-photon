@@ -74,13 +74,68 @@ impl<'a> RealAcmeClient<'a> {
 
     /// The account builder, trusting the configured extra root when one is
     /// set.
-    fn account_builder(&self) -> Result<instant_acme::AccountBuilder> {
-        let builder = match &self.acme_root {
+    fn account_builder(
+        &self,
+    ) -> std::result::Result<instant_acme::AccountBuilder, instant_acme::Error> {
+        match &self.acme_root {
             Some(root) => instant_acme::Account::builder_with_root(root),
             None => instant_acme::Account::builder(),
-        };
-        builder.map_err(|e| TlsError::Acme(format!("failed to create account builder: {e}")))
+        }
     }
+}
+
+/// Total attempts for an ACME operation whose request nonce the server
+/// rejects.
+const BAD_NONCE_ATTEMPTS: u32 = 3;
+
+/// The error for an authorization that offers no DNS-01 challenge —
+/// wildcard orders are validated by DNS-01 only.
+fn no_dns01_challenge_error() -> TlsError {
+    TlsError::Acme("no DNS-01 challenge offered by server".to_string())
+}
+
+/// True when the server rejected the request's anti-replay nonce — the one
+/// ACME error RFC 8555 (section 6.5) defines as retryable with the fresh
+/// nonce the rejection carries.
+fn is_bad_nonce(err: &instant_acme::Error) -> bool {
+    matches!(
+        err,
+        instant_acme::Error::Api(problem)
+            if problem.r#type.as_deref() == Some("urn:ietf:params:acme:error:badNonce")
+    )
+}
+
+/// Await `$op`, retrying while the ACME server rejects the request nonce.
+///
+/// instant-acme already retries a rejected nonce per HTTP request, but each
+/// replacement nonce can itself be rejected — Let's Encrypt does this when
+/// a request lands on a frontend whose nonce pool has diverged, and Pebble
+/// injects it deliberately (5% of valid nonces by default). This adds an
+/// operation-level layer on top, so issuance survives an unlucky streak.
+/// Any other failure — and a rejection once the attempts are spent — maps
+/// to `TlsError::Acme` prefixed with `$error_context`. A macro rather than
+/// a function so `$op` can reborrow the order or challenge handle on every
+/// attempt; an `AsyncFnMut` closure doing the same trips rustc's
+/// higher-ranked lifetime limits under `async_trait`'s boxed futures.
+macro_rules! with_bad_nonce_retry {
+    ($error_context:expr, $op:expr) => {{
+        let mut attempt = 1;
+        loop {
+            match $op.await {
+                Ok(value) => break Ok(value),
+                Err(e) if attempt < BAD_NONCE_ATTEMPTS && is_bad_nonce(&e) => {
+                    debug!(
+                        "ACME server rejected the request nonce \
+                         (attempt {attempt} of {BAD_NONCE_ATTEMPTS}): {}; \
+                         retrying with a fresh nonce",
+                        $error_context
+                    );
+                    attempt += 1;
+                }
+                Err(e) => break Err(TlsError::Acme(format!("{}: {e}", $error_context))),
+            }
+        }
+    }};
 }
 
 #[async_trait]
@@ -97,8 +152,11 @@ impl AcmeClient for RealAcmeClient<'_> {
             debug!("Loading ACME account from credentials");
             let credentials: AccountCredentials = serde_json::from_str(&json)
                 .map_err(|e| TlsError::Acme(format!("failed to parse account credentials: {e}")))?;
+            // Restoring an account sends no signed request (only the
+            // unsigned directory fetch), so no nonce can be rejected here.
             let account = self
-                .account_builder()?
+                .account_builder()
+                .map_err(|e| TlsError::Acme(format!("failed to create account builder: {e}")))?
                 .from_credentials(credentials)
                 .await
                 .map_err(|e| TlsError::Acme(format!("failed to load account: {e}")))?;
@@ -114,11 +172,19 @@ impl AcmeClient for RealAcmeClient<'_> {
                 only_return_existing: false,
             };
 
-            let (account, credentials) = self
-                .account_builder()?
-                .create(&new_account, directory_url, None)
-                .await
-                .map_err(|e| TlsError::Acme(format!("failed to create ACME account: {e}")))?;
+            // Builder construction is local and unsigned; probe it eagerly
+            // so its failures keep their own context. `create` consumes a
+            // builder, so every attempt below constructs a fresh one — safe,
+            // because a rejected registration was never processed
+            // server-side.
+            self.account_builder()
+                .map_err(|e| TlsError::Acme(format!("failed to create account builder: {e}")))?;
+            let (account, credentials) =
+                with_bad_nonce_retry!("failed to create ACME account", async {
+                    self.account_builder()?
+                        .create(&new_account, directory_url.clone(), None)
+                        .await
+                })?;
 
             *self.account.lock().await = Some(account);
 
@@ -145,10 +211,8 @@ impl AcmeClient for RealAcmeClient<'_> {
         let new_order = NewOrder::new(&identifiers);
 
         debug!("Creating ACME order for {}", wildcard);
-        let mut order = account
-            .new_order(&new_order)
-            .await
-            .map_err(|e| TlsError::Acme(format!("failed to create order: {e}")))?;
+        let mut order =
+            with_bad_nonce_retry!("failed to create order", account.new_order(&new_order))?;
 
         // Solve DNS-01 challenges
         let challenge_fqdn = format!("_acme-challenge.{domain}");
@@ -162,79 +226,105 @@ impl AcmeClient for RealAcmeClient<'_> {
             debug!("Pre-cleanup warning (non-fatal): {e}");
         }
 
-        let mut auths = order.authorizations();
-        while let Some(auth_result) = auths.next().await {
-            let mut auth = auth_result
-                .map_err(|e| TlsError::Acme(format!("failed to get authorization: {e}")))?;
+        // `Authorizations::next()` advances past an authorization before its
+        // state fetch can fail, so a rejected nonce there cannot be retried
+        // in place — it would silently skip that authorization. Restart the
+        // whole pass instead: fetched authorization states are cached on the
+        // order, and identifiers whose challenge is already submitted are
+        // skipped, so a restart re-sends nothing.
+        let mut fetch_attempt = 1;
+        let mut ready_identifiers = std::collections::HashSet::new();
+        'pass: loop {
+            let mut auths = order.authorizations();
+            while let Some(auth_result) = auths.next().await {
+                let mut auth = match auth_result {
+                    Ok(auth) => auth,
+                    Err(e) if fetch_attempt < BAD_NONCE_ATTEMPTS && is_bad_nonce(&e) => {
+                        debug!(
+                            "ACME server rejected the request nonce \
+                             (attempt {fetch_attempt} of {BAD_NONCE_ATTEMPTS}): \
+                             failed to get authorization; restarting the authorization pass"
+                        );
+                        fetch_attempt += 1;
+                        continue 'pass;
+                    }
+                    Err(e) => {
+                        return Err(TlsError::Acme(format!("failed to get authorization: {e}")));
+                    }
+                };
 
-            match auth.status {
-                AuthorizationStatus::Pending => {}
-                // The server reused a still-valid authorization (common on
-                // renewal); there is nothing to prove for it.
-                AuthorizationStatus::Valid => {
-                    debug!("Authorization already valid; skipping its challenge");
+                match auth.status {
+                    AuthorizationStatus::Pending => {}
+                    // The server reused a still-valid authorization (common on
+                    // renewal); there is nothing to prove for it.
+                    AuthorizationStatus::Valid => {
+                        debug!("Authorization already valid; skipping its challenge");
+                        continue;
+                    }
+                    other => {
+                        return Err(TlsError::Acme(format!(
+                            "authorization is {other:?} and cannot be completed"
+                        )));
+                    }
+                }
+
+                let identifier = auth.identifier().to_string();
+                if ready_identifiers.contains(&identifier) {
                     continue;
                 }
-                other => {
-                    return Err(TlsError::Acme(format!(
-                        "authorization is {other:?} and cannot be completed"
-                    )));
-                }
+
+                let mut challenge = auth
+                    .challenge(ChallengeType::Dns01)
+                    .ok_or_else(no_dns01_challenge_error)?;
+
+                let key_auth = challenge.key_authorization();
+                let dns_value = key_auth.dns_value();
+
+                debug!(
+                    "Setting up DNS-01 challenge for {} with value {}",
+                    challenge_fqdn, dns_value
+                );
+
+                self.dns_provider
+                    .create_txt_record(&challenge_fqdn, &dns_value)
+                    .await?;
+
+                debug!(
+                    "Waiting {}s for DNS propagation",
+                    self.propagation_wait.as_secs()
+                );
+                tokio::time::sleep(self.propagation_wait).await;
+
+                with_bad_nonce_retry!("failed to set challenge ready", challenge.set_ready())?;
+
+                debug!("Challenge marked as ready");
+                ready_identifiers.insert(identifier);
             }
-
-            let mut challenge = auth.challenge(ChallengeType::Dns01).ok_or_else(|| {
-                TlsError::Acme("no DNS-01 challenge offered by server".to_string())
-            })?;
-
-            let key_auth = challenge.key_authorization();
-            let dns_value = key_auth.dns_value();
-
-            debug!(
-                "Setting up DNS-01 challenge for {} with value {}",
-                challenge_fqdn, dns_value
-            );
-
-            self.dns_provider
-                .create_txt_record(&challenge_fqdn, &dns_value)
-                .await?;
-
-            debug!(
-                "Waiting {}s for DNS propagation",
-                self.propagation_wait.as_secs()
-            );
-            tokio::time::sleep(self.propagation_wait).await;
-
-            challenge
-                .set_ready()
-                .await
-                .map_err(|e| TlsError::Acme(format!("failed to set challenge ready: {e}")))?;
-
-            debug!("Challenge marked as ready");
+            break;
         }
 
         debug!("Polling order until ready");
-        order
-            .poll_ready(&RetryPolicy::default())
-            .await
-            .map_err(|e| TlsError::Acme(format!("order did not become ready: {e}")))?;
+        with_bad_nonce_retry!(
+            "order did not become ready",
+            order.poll_ready(&RetryPolicy::default())
+        )?;
 
         debug!("Cleaning up DNS challenge record");
         if let Err(e) = self.dns_provider.delete_txt_record(&challenge_fqdn).await {
             debug!("Warning: failed to clean up DNS record: {e}");
         }
 
-        // Finalize
+        // Finalize. A retry regenerates the key and CSR — the rejected
+        // finalize request was never processed, and the discarded key never
+        // left this process.
         debug!("Finalizing order (generating CSR)");
-        let private_key_pem = order
-            .finalize()
-            .await
-            .map_err(|e| TlsError::Acme(format!("failed to finalize order: {e}")))?;
+        let private_key_pem = with_bad_nonce_retry!("failed to finalize order", order.finalize())?;
 
         debug!("Polling for certificate");
-        let cert_chain_pem = order
-            .poll_certificate(&RetryPolicy::default())
-            .await
-            .map_err(|e| TlsError::Acme(format!("failed to retrieve certificate: {e}")))?;
+        let cert_chain_pem = with_bad_nonce_retry!(
+            "failed to retrieve certificate",
+            order.poll_certificate(&RetryPolicy::default())
+        )?;
 
         Ok((cert_chain_pem, private_key_pem))
     }
@@ -512,6 +602,129 @@ mod tests {
     fn write_atomic_rejects_a_path_without_a_file_name() {
         let err = write_atomic(Path::new("/"), "x", false).unwrap_err();
         assert!(err.to_string().contains("no file name"), "{err}");
+    }
+
+    fn bad_nonce_error() -> instant_acme::Error {
+        instant_acme::Error::Api(instant_acme::Problem {
+            r#type: Some("urn:ietf:params:acme:error:badNonce".to_string()),
+            detail: Some("JWS has an invalid anti-replay nonce".to_string()),
+            status: Some(400),
+            subproblems: vec![],
+        })
+    }
+
+    #[test]
+    fn is_bad_nonce_matches_only_the_bad_nonce_problem_type() {
+        assert!(is_bad_nonce(&bad_nonce_error()));
+        let other_problem = instant_acme::Error::Api(instant_acme::Problem {
+            r#type: Some("urn:ietf:params:acme:error:malformed".to_string()),
+            detail: None,
+            status: Some(400),
+            subproblems: vec![],
+        });
+        assert!(!is_bad_nonce(&other_problem));
+        assert!(!is_bad_nonce(&instant_acme::Error::Timeout(None)));
+    }
+
+    #[tokio::test]
+    async fn bad_nonce_retry_passes_a_first_try_success_through() {
+        let mut calls: u32 = 0;
+        let result: Result<u32> = with_bad_nonce_retry!("context", async {
+            calls += 1;
+            Ok::<_, instant_acme::Error>(7)
+        });
+        assert_eq!(result.unwrap(), 7);
+        assert_eq!(calls, 1);
+    }
+
+    #[tokio::test]
+    async fn bad_nonce_retry_retries_rejections_until_success() {
+        let mut calls: u32 = 0;
+        let result: Result<u32> = with_bad_nonce_retry!("context", async {
+            calls += 1;
+            if calls < BAD_NONCE_ATTEMPTS {
+                Err(bad_nonce_error())
+            } else {
+                Ok(7)
+            }
+        });
+        assert_eq!(result.unwrap(), 7);
+        assert_eq!(calls, BAD_NONCE_ATTEMPTS);
+    }
+
+    #[tokio::test]
+    async fn bad_nonce_retry_gives_up_once_the_attempts_are_spent() {
+        let mut calls: u32 = 0;
+        let result: Result<u32> = with_bad_nonce_retry!("failed to renew the order", async {
+            calls += 1;
+            Err::<u32, _>(bad_nonce_error())
+        });
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("failed to renew the order"), "{msg}");
+        assert!(msg.contains("badNonce"), "{msg}");
+        assert_eq!(calls, BAD_NONCE_ATTEMPTS);
+    }
+
+    #[tokio::test]
+    async fn bad_nonce_retry_propagates_other_errors_without_retrying() {
+        let mut calls: u32 = 0;
+        let result: Result<u32> = with_bad_nonce_retry!("failed to create order", async {
+            calls += 1;
+            Err::<u32, _>(instant_acme::Error::Timeout(None))
+        });
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("failed to create order"), "{msg}");
+        assert!(msg.contains("timed out"), "{msg}");
+        assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn no_dns01_challenge_error_names_the_missing_challenge_type() {
+        let msg = no_dns01_challenge_error().to_string();
+        assert!(msg.contains("no DNS-01 challenge"), "{msg}");
+    }
+
+    #[tokio::test]
+    async fn real_acme_client_unreadable_root_fails_account_creation_with_builder_context() {
+        let dns = super::super::dns::MockDnsProvider::new();
+        let client = RealAcmeClient::new(
+            &dns,
+            Some(PathBuf::from("/nonexistent/acme-root.pem")),
+            Duration::from_secs(15),
+        );
+        let err = client
+            .create_or_load_account(
+                "test@example.com".to_string(),
+                "https://acme.example.com/directory".to_string(),
+                None,
+            )
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("failed to create account builder"), "{msg}");
+    }
+
+    #[tokio::test]
+    async fn real_acme_client_unreadable_root_fails_account_load_with_builder_context() {
+        let dns = super::super::dns::MockDnsProvider::new();
+        let client = RealAcmeClient::new(
+            &dns,
+            Some(PathBuf::from("/nonexistent/acme-root.pem")),
+            Duration::from_secs(15),
+        );
+        // Parseable credentials ("AAAA" is valid URL-safe base64), so the
+        // failure comes from the builder, not the credential parse.
+        let credentials_json = r#"{"id": "https://acme.example.com/acct/1", "key_pkcs8": "AAAA", "directory": "https://acme.example.com/directory"}"#;
+        let err = client
+            .create_or_load_account(
+                "test@example.com".to_string(),
+                "https://acme.example.com/directory".to_string(),
+                Some(credentials_json.to_string()),
+            )
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("failed to create account builder"), "{msg}");
     }
 
     #[tokio::test]
