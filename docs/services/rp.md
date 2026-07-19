@@ -1972,8 +1972,11 @@ any of them ruins an in-flight exposure on any imaging train. The
 motion gate is an rp-internal readers-writer gate on the singular
 mount that serializes the two: mount motion takes the gate
 **exclusively**, imaging-train exposures hold it **shared**. It has
-no configuration surface — it is always on, and a rig with no trains
-or no mount never contends on it.
+no configuration surface — it is always on. Captures contend only
+through imaging-train cameras, so a rig with no imaging trains
+merely serializes motions against one another; and motions acquire
+before resolving the mount, so even a slew that will fail for want
+of a configured mount passes through the gate first.
 
 Acquisition rules:
 
