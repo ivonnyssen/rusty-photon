@@ -988,6 +988,18 @@ fn target_uses_acme_cert(target: &ServiceScan) -> bool {
         })
 }
 
+/// The scheme a target's current TLS state calls for — the single
+/// source of truth every scheme-mismatch check and fix compares
+/// against, so a garbage/unsupported scheme (e.g. `ftp`) is judged the
+/// same way everywhere rather than silently matching by accident.
+fn expected_scheme(target_tls_on: bool) -> &'static str {
+    if target_tls_on {
+        "https"
+    } else {
+        "http"
+    }
+}
+
 /// Parse a client URL into `(scheme, host, port)` — `None` when it does
 /// not parse or omits an explicit port (every rusty-photon service URL
 /// carries one; a bare default like `https://host/` names nothing in the
@@ -1036,11 +1048,10 @@ fn transport_check(
     ca_cert: Option<(String, bool)>,
 ) -> Option<Check> {
     let target_tls_on = target.server().is_some_and(|s| s.tls.is_some());
-    let client_https = scheme.eq_ignore_ascii_case("https");
     let mut problems = Vec::new();
     let mut fixes = Vec::new();
 
-    if client_https != target_tls_on {
+    if !scheme.eq_ignore_ascii_case(expected_scheme(target_tls_on)) {
         problems.push(format!(
             "{client_field} uses {scheme}, but {} {} TLS",
             target.entry.name,
@@ -1233,8 +1244,9 @@ fn ui_htmx_one_target(ctx: &Context, name: &str, target: Option<&ClientTargetVie
 
     let field = format!("{name}.base_url");
     let target_tls_on = resolved.server().is_some_and(|s| s.tls.is_some());
-    let scheme_fix = (scheme.eq_ignore_ascii_case("https") != target_tls_on)
-        .then(|| rewrite_scheme(base_url, if target_tls_on { "https" } else { "http" }))
+    let expected = expected_scheme(target_tls_on);
+    let scheme_fix = (!scheme.eq_ignore_ascii_case(expected))
+        .then(|| rewrite_scheme(base_url, expected))
         .flatten()
         .map(|value| crate::report::FixOp::SetString {
             service: "ui-htmx".to_string(),
@@ -1309,8 +1321,9 @@ fn rp_one_target(ctx: &Context, field: &str, url: &str, ca_cert_present: bool) -
     };
 
     let target_tls_on = resolved.server().is_some_and(|s| s.tls.is_some());
-    let scheme_fix = (scheme.eq_ignore_ascii_case("https") != target_tls_on)
-        .then(|| rewrite_scheme(url, if target_tls_on { "https" } else { "http" }))
+    let expected = expected_scheme(target_tls_on);
+    let scheme_fix = (!scheme.eq_ignore_ascii_case(expected))
+        .then(|| rewrite_scheme(url, expected))
         .flatten()
         .map(|value| crate::report::FixOp::SetString {
             service: "rp".to_string(),
@@ -1364,8 +1377,9 @@ fn sentinel_watchdog_target(ctx: &Context, rp_url: &str) -> Vec<Check> {
         return Vec::new();
     };
     let target_tls_on = resolved.server().is_some_and(|s| s.tls.is_some());
-    let scheme_fix = (scheme.eq_ignore_ascii_case("https") != target_tls_on)
-        .then(|| rewrite_scheme(rp_url, if target_tls_on { "https" } else { "http" }))
+    let expected = expected_scheme(target_tls_on);
+    let scheme_fix = (!scheme.eq_ignore_ascii_case(expected))
+        .then(|| rewrite_scheme(rp_url, expected))
         .flatten()
         .map(|value| crate::report::FixOp::SetString {
             service: "sentinel".to_string(),
@@ -1392,13 +1406,13 @@ fn sentinel_monitor_target(ctx: &Context, idx: usize, monitor: &MonitorView) -> 
     };
     let field = format!("monitors[{idx}]");
     let target_tls_on = resolved.server().is_some_and(|s| s.tls.is_some());
-    let scheme_fix = (monitor.scheme.eq_ignore_ascii_case("https") != target_tls_on).then(|| {
-        crate::report::FixOp::SetString {
+    let expected = expected_scheme(target_tls_on);
+    let scheme_fix =
+        (!monitor.scheme.eq_ignore_ascii_case(expected)).then(|| crate::report::FixOp::SetString {
             service: "sentinel".to_string(),
             pointer: format!("/monitors/{idx}/scheme"),
-            value: (if target_tls_on { "https" } else { "http" }).to_string(),
-        }
-    });
+            value: expected.to_string(),
+        });
     // No per-monitor ca_cert_path: monitors trust sentinel's single
     // top-level `ca_cert`, which the existing client-wiring pass already
     // provisions unconditionally once the CA exists.
@@ -1660,6 +1674,44 @@ mod tests {
                 assert_eq!(service, "ui-htmx");
                 assert_eq!(pointer, "/rp/base_url");
                 assert_eq!(value, "https://127.0.0.1:11115");
+            }
+            other => unreachable!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_an_unsupported_scheme_against_a_plain_http_target_is_flagged_and_fixed() {
+        let dir = tempfile::tempdir().unwrap();
+        // "ftp" is neither "http" nor "https" — a naive `!= "https"`
+        // comparison would treat it as equivalent to "http" and silently
+        // accept it against this plain-HTTP (no tls block) target.
+        write_json(
+            dir.path(),
+            "rp.json",
+            serde_json::json!({ "server": { "port": 11115 } }),
+        );
+        write_json(
+            dir.path(),
+            "ui-htmx.json",
+            serde_json::json!({ "server": { "port": 11120 },
+                "rp": { "base_url": "ftp://127.0.0.1:11115" } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        let checks = ui_htmx_target_joins(&ctx);
+        let transport = checks
+            .iter()
+            .find(|c| c.name == "joins.client-transport")
+            .expect("an unsupported scheme must be reported even against a plain-HTTP target");
+        assert_eq!(transport.status, Status::Fail);
+        match &transport.fixes[..] {
+            [crate::report::FixOp::SetString {
+                service,
+                pointer,
+                value,
+            }] => {
+                assert_eq!(service, "ui-htmx");
+                assert_eq!(pointer, "/rp/base_url");
+                assert_eq!(value, "http://127.0.0.1:11115");
             }
             other => unreachable!("{other:?}"),
         }
