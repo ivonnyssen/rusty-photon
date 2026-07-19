@@ -695,6 +695,9 @@ Default port: **11130** (matches the `guider.url` placeholder in
   `Phd2Config.auto_start` and the `Phd2ProcessManager` remain
   library/CLI functionality; under `serve` the operator (or their OS
   supervisor) owns the PHD2 process. Process adoption is future work.
+  For installing PHD2 itself on a packaged Linux host — and running it
+  headless — see
+  [docs/packaging.md §phd2-guider: PHD2](../packaging.md#phd2-guider-phd2).
 - It is **stateless across restarts** in the way that matters:
   guiding runs *in PHD2*, so a service restart never interrupts an
   active guide loop. The only state lost is the rolling RMS window,
