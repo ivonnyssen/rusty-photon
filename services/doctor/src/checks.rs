@@ -1251,7 +1251,10 @@ fn ui_htmx_one_target(ctx: &Context, name: &str, target: Option<&ClientTargetVie
         scheme_fix,
         Some((
             format!("/{name}/ca_cert_path"),
-            target.ca_cert_path.is_some(),
+            target
+                .ca_cert_path
+                .as_deref()
+                .is_some_and(|p| !p.is_empty()),
         )),
     ));
     checks.extend(credential_check(
@@ -1276,7 +1279,7 @@ fn rp_client_joins(ctx: &Context) -> Vec<Check> {
     let Some(rp) = ctx.scan("rp").and_then(|s| scan::view::<RpView>(s)?.ok()) else {
         return checks;
     };
-    let ca_cert_present = rp.ca_cert.is_some();
+    let ca_cert_present = rp.ca_cert.as_deref().is_some_and(|p| !p.is_empty());
     if let Some(url) = rp.mount_guiding_url() {
         checks.extend(rp_one_target(
             ctx,
@@ -1708,6 +1711,37 @@ mod tests {
     }
 
     #[test]
+    fn test_ui_htmx_empty_ca_cert_path_is_treated_as_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        stage_pki(dir.path(), "s3cret-pw");
+        write_json(
+            dir.path(),
+            "rp.json",
+            serde_json::json!({ "server": { "port": 11115,
+                "tls": { "cert": "/pki/rp.pem", "key": "/pki/rp-key.pem" } } }),
+        );
+        write_json(
+            dir.path(),
+            "ui-htmx.json",
+            serde_json::json!({ "server": { "port": 11120 },
+                "rp": { "base_url": "https://127.0.0.1:11115", "ca_cert_path": "" } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        let checks = ui_htmx_target_joins(&ctx);
+        let transport = checks
+            .iter()
+            .find(|c| c.name == "joins.client-transport")
+            .expect("an empty ca_cert_path must not be mistaken for a working one");
+        assert_eq!(transport.status, Status::Fail);
+        match &transport.fixes[..] {
+            [crate::report::FixOp::SetString { pointer, .. }] => {
+                assert_eq!(pointer, "/rp/ca_cert_path");
+            }
+            other => unreachable!("{other:?}"),
+        }
+    }
+
+    #[test]
     fn test_ui_htmx_rp_acme_target_needs_no_ca_cert_path() {
         let dir = tempfile::tempdir().unwrap();
         stage_pki(dir.path(), "s3cret-pw");
@@ -2050,6 +2084,37 @@ mod tests {
         );
         let ctx = config_only_ctx(dir.path());
         assert!(rp_client_joins(&ctx).is_empty());
+    }
+
+    #[test]
+    fn test_rp_empty_ca_cert_is_treated_as_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        stage_pki(dir.path(), "s3cret-pw");
+        write_json(
+            dir.path(),
+            "plate-solver.json",
+            serde_json::json!({ "server": { "port": 11131,
+                "tls": { "cert": "/pki/plate-solver.pem", "key": "/pki/plate-solver-key.pem" } } }),
+        );
+        write_json(
+            dir.path(),
+            "rp.json",
+            serde_json::json!({ "server": { "port": 11115 }, "ca_cert": "",
+                "plate_solver": { "url": "https://localhost:11131" } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        let checks = rp_client_joins(&ctx);
+        let transport = checks
+            .iter()
+            .find(|c| c.name == "joins.client-transport")
+            .expect("an empty ca_cert must not be mistaken for a working one");
+        assert_eq!(transport.status, Status::Fail);
+        match &transport.fixes[..] {
+            [crate::report::FixOp::SetString { pointer, .. }] => {
+                assert_eq!(pointer, "/ca_cert");
+            }
+            other => unreachable!("{other:?}"),
+        }
     }
 
     #[test]
