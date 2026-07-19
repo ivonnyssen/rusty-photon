@@ -2408,9 +2408,10 @@ fn test_no_subcommand_starts_the_http_service() {
 /// the child flushes its llvm-cov profile and its `main.rs` lines count.
 #[cfg(target_os = "linux")]
 fn terminate_gracefully(child: &mut std::process::Child) {
-    let _ = Command::new("kill")
-        .args(["-TERM", &child.id().to_string()])
-        .status();
+    // SAFETY: signalling a pid we spawned and still own.
+    unsafe {
+        libc::kill(child.id() as libc::pid_t, libc::SIGTERM);
+    }
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     loop {
         match child.try_wait() {
