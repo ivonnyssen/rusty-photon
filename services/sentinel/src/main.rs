@@ -85,6 +85,7 @@ fn main() -> ServiceResult {
         "sentinel",
         args.config,
         &serde_json::to_value(Config::default())?,
+        &[],
     )?;
     tracing::debug!("Loading configuration from {:?}", config_path);
     let mut config = load_config(&config_path)?;

@@ -1424,18 +1424,19 @@ On startup, before loading its configuration, the driver:
    *always* resolvable, so identity and park persistence are never
    disabled for lack of a `--config` flag. This is the same path used
    for [§Park persistence](#park-persistence).
-2. **Materializes the identity.** Via
-   `rusty_photon_config::materialize_identity` against the JSON pointer
-   `/mount/unique_id`. If that pointer is absent, `null`, non-string, or
-   an empty/whitespace string in the **file layer**, the driver mints a
-   fresh UUIDv4, writes it into the file, and persists atomically
-   (staged temp file → `fsync` → POSIX `rename` → parent-dir `fsync`,
-   the same durability pattern as `SetPark`). The operation is
-   **idempotent**: an id that already exists is never overwritten, and
-   nothing is written when there was nothing to fill. On a *fresh
-   install* (no file yet) the default scaffold written out is the
-   serialized `Config::default()`, so the operator gets a complete,
-   valid config file — minus the minted id — to edit.
+2. **Materializes the identity.** Via the shared
+   `rusty_photon_config::resolve_and_init` bootstrap (which performs
+   step 1's resolution and this step in one call), against the JSON
+   pointer `/mount/unique_id`. If that pointer is absent, `null`,
+   non-string, or an empty/whitespace string in the **file layer**, the
+   driver mints a fresh UUIDv4, writes it into the file, and persists
+   atomically (staged temp file → `fsync` → POSIX `rename` →
+   parent-dir `fsync`, the same durability pattern as `SetPark`). The
+   operation is **idempotent**: an id that already exists is never
+   overwritten. On a *fresh install* (no file yet) the default scaffold
+   written out is the serialized `Config::default()` with the minted id
+   filled in, so the operator gets a complete, valid config file to
+   edit.
 3. **Loads the config** from that path (which now always exists) and
    applies the CLI overrides (`--transport`, `--port`, `--baud`,
    `--server-port`).
@@ -1445,7 +1446,7 @@ CLI-override-applied effective config, so a transient `--port` is never
 baked into the persisted file. It touches only the `/mount/unique_id`
 pointer; like `SetPark`, it reads the document as a `serde_json::Value`
 and preserves every other field. The two writers never clobber each
-other: `materialize_identity` runs once at startup and `SetPark`'s
+other: the identity minting runs once at startup and `SetPark`'s
 `write_mount_fields_to_config` runs at runtime, both read-modify-write
 the same file as a `Value`, each mutate only their own keys
 (`mount.unique_id` vs. `mount.park_ra_ticks` / `mount.park_dec_ticks`),

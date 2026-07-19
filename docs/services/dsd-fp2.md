@@ -368,14 +368,16 @@ literal (`"dsd-fp2-001"`). Instead, on **first run** it mints a spec-compliant
 config path (see [Config-path resolution](#config-path-resolution)).
 
 The minting is done once at startup — before the config is read into the
-running server — by `rusty_photon_config::materialize_identity` (the shared
-`rusty-photon-config` crate). It is **idempotent**: it fills the id only when
-`cover_calibrator.unique_id` is absent or empty in the on-disk file, persists
-atomically only when it actually filled something, and **never overwrites** an
-id that already exists. It operates on the config *file*, not the
-CLI-override-applied effective config, so a transient `--port` is never baked
-in. The default `Config` therefore carries an **empty** `unique_id`; the value
-above is illustrative of a minted id.
+running server — by `rusty_photon_config::resolve_and_init` (the shared
+`rusty-photon-config` crate's canonical bootstrap, which also materializes the
+default config file on first start; see [Config-path
+resolution](#config-path-resolution)). Minting is **idempotent**: it fills the
+id only when `cover_calibrator.unique_id` is absent or empty in the on-disk
+file, persists atomically only when it actually filled something, and **never
+overwrites** an id that already exists. It operates on the config *file*, not
+the CLI-override-applied effective config, so a transient `--port` is never
+baked in. The default `Config` therefore carries an **empty** `unique_id`; the
+value above is illustrative of a minted id.
 
 The only escape hatch for changing the id is an explicit edit through the
 UI / `config.apply`. To prevent an operator from accidentally blanking the
@@ -389,7 +391,7 @@ is recoverable: the next startup re-mints a fresh one.
 
 | Argument | Description |
 |----------|-------------|
-| `-c, --config`     | Path to configuration file. If omitted, the driver resolves the platform default (e.g. `~/.config/rusty-photon/dsd-fp2.json` on Linux, `%PROGRAMDATA%\rusty-photon\dsd-fp2.json` on Windows) (read if present; created by `config.apply`). |
+| `-c, --config`     | Path to configuration file. If omitted, the driver resolves the platform default (e.g. `~/.config/rusty-photon/dsd-fp2.json` on Linux, `%PROGRAMDATA%\rusty-photon\dsd-fp2.json` on Windows), created on first start if absent. |
 | `--port`           | Serial port path (overrides `serial.port`; pins it as a CLI override) |
 | `--server-port`    | Server port (overrides `server.port`; pins it as a CLI override) |
 | `-l, --log-level`  | Log level: trace, debug, info, warn, error |
@@ -435,10 +437,15 @@ A persist target is **always** resolvable, in priority order:
    (`ProgramData` env var, `C:\ProgramData` fallback; a Windows service
    account's per-user profile is hidden, see ADR-015).
 
-Startup and reload **read** this path when the file exists, falling back to
-`Config::default()` otherwise. `config.apply` **writes** it, creating parent
-directories for the platform default. (This is a behaviour change from the
-pre-config-actions driver, which ignored any file when `--config` was omitted.)
+Startup bootstraps this path via `rusty_photon_config::resolve_and_init`: on
+first start the **platform default** path receives the serialized
+`Config::default()` (with the freshly-minted `unique_id`), so the file always
+exists from then on and same-host consumers that read it — sentinel's
+health-probe derivation, doctor — see it. A missing file at an **explicit**
+`--config` path is still only created by the identity minting, never by the
+default-materialization step. Startup and reload read the resolved path,
+falling back to `Config::default()` if the file is somehow absent;
+`config.apply` **writes** it, creating parent directories as needed.
 
 ### `config.get`
 

@@ -19,13 +19,13 @@ struct Args {
     #[arg(short, long)]
     config: Option<PathBuf>,
 
-    /// PHD2 host address
-    #[arg(long, default_value = "localhost")]
-    host: String,
+    /// PHD2 host address (default: localhost)
+    #[arg(long)]
+    host: Option<String>,
 
-    /// PHD2 port
-    #[arg(long, default_value = "4400")]
-    port: u16,
+    /// PHD2 port (default: 4400)
+    #[arg(long)]
+    port: Option<u16>,
 
     /// Log level
     #[arg(short, long, default_value = "info", value_parser = clap::value_parser!(Level))]
@@ -162,7 +162,7 @@ fn main() -> ServiceResult {
     );
 
     debug!(
-        "Parsed command line arguments: host={}, port={}, log_level={:?}",
+        "Parsed command line arguments: host={:?}, port={:?}, log_level={:?}",
         args.host, args.port, args.log_level
     );
 
@@ -174,15 +174,26 @@ fn main() -> ServiceResult {
             let command = args.command.unwrap_or(Commands::Serve);
 
             // Build configuration from CLI args or config file. An explicit
-            // --config must load; without one, `serve` also picks up the
-            // platform config path when the file exists there
-            // (systemd passes no arguments), and every mode falls back to
-            // defaults with the --host/--port flags applied.
+            // --config must load; without one, `serve` uses the platform
+            // config path (systemd passes no arguments) — materializing the
+            // default config there on first start when no --host/--port
+            // override is in play — and every remaining mode falls back to
+            // defaults with the --host/--port flags applied, writing nothing.
+            let is_serve = matches!(command, Commands::Serve);
             let config = if let Some(config_path) = &args.config {
                 debug!("Loading configuration from {:?}", config_path);
                 load_config(config_path)?
+            } else if is_serve && args.host.is_none() && args.port.is_none() {
+                let path = rusty_photon_config::resolve_and_init(
+                    "phd2-guider",
+                    None,
+                    &serde_json::to_value(Config::default())?,
+                    &[],
+                )?;
+                debug!("Loading configuration from default path {:?}", path);
+                load_config(&path)?
             } else {
-                let default_path = matches!(command, Commands::Serve)
+                let default_path = is_serve
                     .then(|| rusty_photon_config::resolve_config_path("phd2-guider", None).ok())
                     .flatten()
                     .filter(|p| p.exists());
@@ -191,14 +202,19 @@ fn main() -> ServiceResult {
                         debug!("Loading configuration from default path {:?}", path);
                         load_config(&path)?
                     }
-                    None => Config {
-                        phd2: Phd2Config {
-                            host: args.host,
-                            port: args.port,
+                    None => {
+                        let mut phd2 = Phd2Config::default();
+                        if let Some(host) = args.host.clone() {
+                            phd2.host = host;
+                        }
+                        if let Some(port) = args.port {
+                            phd2.port = port;
+                        }
+                        Config {
+                            phd2,
                             ..Default::default()
-                        },
-                        ..Default::default()
-                    },
+                        }
+                    }
                 }
             };
 

@@ -114,6 +114,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn default_scaffold_round_trips_through_load() {
+        // main() writes `Config::default()` to the platform path on first
+        // start (resolve_and_init); that serialized form must load back
+        // cleanly through the strict parse.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("qhy-camera.json");
+        let scaffold = serde_json::to_string_pretty(&Config::default()).unwrap();
+        std::fs::write(&path, scaffold).unwrap();
+        let c = load_effective_config(&path, &CliOverrides::default()).unwrap();
+        assert_eq!(c.server.port, 11121);
+    }
+
+    #[test]
     fn defaults_match_spec() {
         let c = Config::default();
         assert!(c.devices.is_empty());

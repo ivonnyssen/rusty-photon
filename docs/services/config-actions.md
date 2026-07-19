@@ -152,9 +152,9 @@ the tiers alongside the schema. The web UI evaluates them in precedence order:
 
 **Self-lockout guards:** a `server.port` change would make the driver rebind a
 port the BFF can't follow; disabling a device tears down the very endpoint the
-config actions live on; a `unique_id` is driver-owned (minted by
-`rusty_photon_config::materialize_identity`). These are read-only / locked so the
-UI can't edit away its own reachability.
+config actions live on; a `unique_id` is driver-owned (minted at startup by
+the `rusty_photon_config::resolve_and_init` bootstrap). These are read-only /
+locked so the UI can't edit away its own reachability.
 
 ## Driver coverage
 

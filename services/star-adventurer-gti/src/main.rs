@@ -100,36 +100,22 @@ fn main() -> ServiceResult {
         args.config, args.transport, args.port, args.server_port, args.log_level
     );
 
-    // Resolve a real config-file path up front: the explicit `--config`
+    // Bootstrap a real config-file path up front: the explicit `--config`
     // path if given, else the platform config dir
-    // (`~/.config/rusty-photon/star-adventurer-gti.json` on Linux). A
-    // path is *always* resolvable now, so identity persistence and park
-    // persistence are never disabled merely for lack of a `--config`
-    // flag.
-    let config_path =
-        rusty_photon_config::resolve_config_path("star-adventurer-gti", args.config.clone())?;
-    debug!("Resolved config path: {:?}", config_path);
-
-    // First-run identity: mint a spec-compliant UUIDv4 `UniqueID` into
-    // `mount.unique_id` if (and only if) it is absent or empty in the
-    // file layer, persisting atomically. Idempotent — an existing id is
-    // never overwritten. The default scaffold is the serialized
-    // `Config::default()`, so a fresh install gets a complete, valid
-    // config file with a real id on its very first launch.
-    let default_value = serde_json::to_value(Config::default())?;
-    let outcome = rusty_photon_config::materialize_identity(
-        &config_path,
-        &default_value,
+    // (`~/.config/rusty-photon/star-adventurer-gti.json` on Linux). A path
+    // is *always* resolvable, so identity persistence and park persistence
+    // are never disabled merely for lack of a `--config` flag. A fresh
+    // install gets a complete, valid config file — the serialized
+    // `Config::default()` with a spec-compliant UUIDv4 minted into
+    // `mount.unique_id` — on its very first launch; an existing id is
+    // never overwritten.
+    let config_path = rusty_photon_config::resolve_and_init(
+        "star-adventurer-gti",
+        args.config.clone(),
+        &serde_json::to_value(Config::default())?,
         &["/mount/unique_id"],
     )?;
-    if outcome.wrote {
-        debug!(
-            "Materialized device identity into {:?}: filled {:?}",
-            config_path, outcome.filled
-        );
-    } else {
-        debug!("Device identity already present in {:?}", config_path);
-    }
+    debug!("Resolved config path: {:?}", config_path);
 
     // Park persistence + config.apply target the *same* resolved config file.
     // Canonicalise it once so writes hit a stable absolute location even if the

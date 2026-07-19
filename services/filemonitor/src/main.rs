@@ -72,6 +72,7 @@ fn main() -> ServiceResult {
         "filemonitor",
         args.config,
         &serde_json::to_value(Config::default())?,
+        &[],
     )?;
     ServiceRunner::new("filemonitor")
         .with_reload()

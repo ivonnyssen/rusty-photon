@@ -192,6 +192,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn default_scaffold_round_trips_through_load() {
+        // main() writes `Config::default()` to the platform path on the
+        // packaged serve path's first start (resolve_and_init); that
+        // serialized form must load back cleanly through the strict parse.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("phd2-guider.json");
+        let scaffold = serde_json::to_string_pretty(&Config::default()).unwrap();
+        std::fs::write(&path, scaffold).unwrap();
+        let c = load_config(&path).unwrap();
+        assert_eq!(c.server.port, 11130);
+        assert_eq!(c.phd2.host, "localhost");
+        assert_eq!(c.phd2.port, 4400);
+    }
+
+    #[test]
     fn test_settle_params_default() {
         let params = SettleParams::default();
         assert_eq!(params.pixels, 0.5);

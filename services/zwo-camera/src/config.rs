@@ -113,6 +113,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn default_scaffold_round_trips_through_load() {
+        // main() writes `Config::default()` to the platform path on first
+        // start (resolve_and_init); that serialized form must load back
+        // cleanly through the strict parse.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("zwo-camera.json");
+        let scaffold = serde_json::to_string_pretty(&Config::default()).unwrap();
+        std::fs::write(&path, scaffold).unwrap();
+        let c = load_effective_config(&path, &CliOverrides::default()).unwrap();
+        assert_eq!(c.server.port, 11122);
+    }
+
+    #[test]
     fn default_config_uses_the_reserved_port() {
         let config = Config::default();
         assert_eq!(config.server.port, 11122);

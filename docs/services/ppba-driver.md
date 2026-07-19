@@ -139,7 +139,7 @@ installation.
 
 On **first run**, each device's `unique_id` is minted as a spec-compliant
 UUIDv4 and persisted to the config file via the shared
-`rusty_photon_config::materialize_identity` helper.
+`rusty_photon_config::resolve_and_init` bootstrap.
 Materialization is idempotent and **never overwrites** an id that already holds a
 non-empty value — only empty or absent ids are filled — so a device keeps the
 same identity across restarts. The defaults for both `unique_id` fields are

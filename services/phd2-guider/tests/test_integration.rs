@@ -2402,6 +2402,181 @@ fn test_no_subcommand_starts_the_http_service() {
     );
 }
 
+/// Terminate a spawned service with SIGTERM and wait for a clean exit,
+/// falling back to SIGKILL on timeout. SIGTERM (not `Child::kill`) matters
+/// under `bazel coverage`: the lifecycle runner's handler exits cleanly, so
+/// the child flushes its llvm-cov profile and its `main.rs` lines count.
+#[cfg(target_os = "linux")]
+fn terminate_gracefully(child: &mut std::process::Child) {
+    // SAFETY: signalling a pid we spawned and still own.
+    unsafe {
+        libc::kill(child.id() as libc::pid_t, libc::SIGTERM);
+    }
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return,
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return;
+            }
+        }
+    }
+}
+
+/// Spawn the binary with `XDG_CONFIG_HOME` pointed at `xdg` and wait (bounded)
+/// for the `bound_addr=` discovery line. Linux-only callers: the platform
+/// default config path honors `XDG_CONFIG_HOME` only there.
+#[cfg(target_os = "linux")]
+fn spawn_with_xdg_and_wait_bound(xdg: &std::path::Path, extra_args: &[&str]) -> Option<String> {
+    let mut child = phd2_guider_command()
+        .args(extra_args)
+        .env("XDG_CONFIG_HOME", xdg)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn phd2-guider");
+
+    let stdout = child.stdout.take().expect("stdout piped");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let bound = BufReader::new(stdout)
+            .lines()
+            .find_map(|line| line.ok().filter(|l| l.starts_with("bound_addr=")));
+        let _ = tx.send(bound);
+    });
+    let bound = rx.recv_timeout(Duration::from_secs(10)).ok().flatten();
+
+    terminate_gracefully(&mut child);
+    bound
+}
+
+/// Write a port-0 config at the platform-default path under `xdg` so the
+/// packaged-path tests never collide on the default 11130.
+#[cfg(target_os = "linux")]
+fn write_xdg_default_config(xdg: &std::path::Path) -> std::path::PathBuf {
+    let dir = xdg.join("rusty-photon");
+    std::fs::create_dir_all(&dir).expect("create xdg config dir");
+    let path = dir.join("phd2-guider.json");
+    std::fs::write(&path, r#"{"server": {"port": 0}}"#).expect("write config");
+    path
+}
+
+#[test]
+#[cfg_attr(miri, ignore)]
+#[cfg(target_os = "linux")]
+fn test_packaged_serve_path_materializes_the_default_config_on_first_start() {
+    // The packaged path: bare binary, no --config, no connection flags
+    // (systemd passes no arguments). First start must materialize the
+    // default config at the platform path via resolve_and_init. The wait
+    // is on the file appearing, not on bound_addr=: materialization
+    // happens before the bind, so the assertion holds even if the
+    // config's default port is unavailable in the test environment.
+    let xdg = tempfile::tempdir().expect("create temp dir");
+    let expected = xdg.path().join("rusty-photon").join("phd2-guider.json");
+
+    let mut child = phd2_guider_command()
+        .env("XDG_CONFIG_HOME", xdg.path())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn phd2-guider");
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !expected.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    terminate_gracefully(&mut child);
+
+    let content = std::fs::read_to_string(&expected)
+        .expect("first start must materialize the default config at the platform path");
+    let config: serde_json::Value = serde_json::from_str(&content).expect("valid JSON scaffold");
+    assert_eq!(
+        config.pointer("/server/port").and_then(|v| v.as_u64()),
+        Some(11130),
+        "materialized scaffold must be the serialized default config"
+    );
+}
+
+#[test]
+#[cfg_attr(miri, ignore)]
+#[cfg(target_os = "linux")]
+fn test_packaged_serve_path_fails_loudly_when_the_config_dir_is_unwritable() {
+    // A config location that cannot be created must fail startup with an
+    // error — not run with config that could never persist.
+    // SAFETY: geteuid has no preconditions. Root ignores directory modes,
+    // so the unwritable premise doesn't hold there; skip.
+    if unsafe { libc::geteuid() } == 0 {
+        eprintln!("running as root; directory modes don't apply — skipping");
+        return;
+    }
+    use std::os::unix::fs::PermissionsExt;
+    let xdg = tempfile::tempdir().expect("create temp dir");
+    std::fs::set_permissions(xdg.path(), std::fs::Permissions::from_mode(0o555))
+        .expect("make config home read-only");
+
+    let mut child = phd2_guider_command()
+        .env("XDG_CONFIG_HOME", xdg.path())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn phd2-guider");
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        match child.try_wait().expect("poll child") {
+            Some(status) => break Some(status),
+            None if std::time::Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            None => break None,
+        }
+    };
+    // Restore write permission so tempdir cleanup can remove the directory.
+    let _ = std::fs::set_permissions(xdg.path(), std::fs::Permissions::from_mode(0o755));
+
+    let status = status.unwrap_or_else(|| {
+        terminate_gracefully(&mut child);
+        panic!("serve must exit promptly when the config dir is unwritable");
+    });
+    assert!(
+        !status.success(),
+        "an unwritable config dir must fail startup, not serve on unpersistable config"
+    );
+}
+
+#[test]
+#[cfg_attr(miri, ignore)]
+#[cfg(target_os = "linux")]
+fn test_serve_with_connection_flags_still_reads_an_existing_default_config() {
+    // Serve with an explicit --host but no --config: an existing file at the
+    // platform default path wins over the in-memory-defaults fallback (the
+    // flags-applied fallback is only for a missing file).
+    let xdg = tempfile::tempdir().expect("create temp dir");
+    write_xdg_default_config(xdg.path());
+
+    let bound = spawn_with_xdg_and_wait_bound(xdg.path(), &["--host", "127.0.0.1"]).expect(
+        "serve with flags must load the existing default-path config and print bound_addr=",
+    );
+
+    // The file pins port 0 (kernel-assigned): a default-config fallback that
+    // ignored the file would bind the fixed default 11130 instead.
+    let port: u16 = bound
+        .rsplit(':')
+        .next()
+        .and_then(|p| p.trim().parse().ok())
+        .expect("bound_addr= line must end in a port");
+    assert_ne!(
+        port, 11130,
+        "the existing default-path config must win over in-memory defaults"
+    );
+    assert_ne!(port, 0, "the printed port must be the kernel-assigned one");
+}
+
 // ----------------------------------------------------------------------------
 // Config File Tests
 // ----------------------------------------------------------------------------

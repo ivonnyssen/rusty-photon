@@ -150,29 +150,17 @@ fn main() -> ServiceResult {
         args.log_level
     );
 
-    // Resolve the config path (explicit `--config`, else the platform
-    // config directory) and mint a UUIDv4 `UniqueID` for each device on first
-    // run. `materialize_identity` is idempotent: it only fills empty/absent ids,
-    // never overwrites an existing one, and persists atomically. When the file
-    // is absent it writes the default scaffold (with freshly-minted ids), so the
-    // subsequent load always succeeds.
-    let config_path = rusty_photon_config::resolve_config_path("ppba-driver", args.config.clone())?;
-    tracing::debug!("Resolved configuration path: {:?}", config_path);
-
-    let outcome = rusty_photon_config::materialize_identity(
-        &config_path,
+    // Bootstrap the config file: materialize the default on first start and mint
+    // a UUIDv4 `UniqueID` for each device, so the subsequent load always
+    // succeeds. Minting is idempotent — it only fills empty/absent ids and
+    // never overwrites an existing one.
+    let config_path = rusty_photon_config::resolve_and_init(
+        "ppba-driver",
+        args.config,
         &serde_json::to_value(Config::default())?,
         &["/switch/unique_id", "/observingconditions/unique_id"],
     )?;
-    if outcome.wrote {
-        tracing::debug!(
-            "Minted and persisted device identities at {:?}: {:?}",
-            config_path,
-            outcome.filled
-        );
-    } else {
-        tracing::debug!("Device identities already present at {:?}", config_path);
-    }
+    tracing::debug!("Resolved configuration path: {:?}", config_path);
 
     // CLI overrides are tracked (not just applied) so config.apply keeps them
     // out of the persisted file — a transient `--port` / `--enable-switch` is
