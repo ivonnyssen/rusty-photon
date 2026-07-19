@@ -247,8 +247,10 @@ pub fn init_file_if_absent(path: &Path, default: &Value) -> Result<bool, ConfigE
 ///    empty receives a fresh UUIDv4 ([`materialize_identity`]), persisted to
 ///    the resolved path — explicit **or** default, because a minted ASCOM
 ///    `UniqueID` is only an identity if the service re-reads the same value on
-///    every future start. This is the one case where a missing explicit file
-///    is created.
+///    every future start. Minting is the one step that will create a missing
+///    explicit file — and only when it actually fills an id: a `default`
+///    whose pointers already hold non-empty ids has nothing to persist, so a
+///    missing explicit file stays absent.
 ///
 /// Services whose device identities come from elsewhere (camera SDK serials)
 /// or that expose no devices pass `&[]` — declining minting is a visible
