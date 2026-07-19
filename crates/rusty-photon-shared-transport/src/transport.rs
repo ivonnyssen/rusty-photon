@@ -18,7 +18,7 @@ use std::io;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufStream};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UdpSocket;
 use tokio::time::timeout;
 
@@ -105,15 +105,21 @@ fn classify_io_error(e: io::Error, on_timeout: Duration) -> TransportError {
 /// Generic serial-stream frame transport.
 ///
 /// Wraps any `AsyncRead + AsyncWrite + Unpin + Send` (most commonly
-/// `tokio_serial::SerialStream`) in a [`BufStream`] for efficient
+/// `tokio_serial::SerialStream`) in a [`BufReader`] for efficient
 /// read-until-terminator handling. Constructed via a factory that
 /// owns the per-call configuration (port path, baud rate, terminator
 /// byte, max frame size).
+///
+/// Writes go straight to the wrapped stream with no [`BufWriter`]
+/// layer and no explicit flush — see [`FrameTransport::send_frame`]
+/// for why.
+///
+/// [`BufWriter`]: tokio::io::BufWriter
 pub struct SerialFrameTransport<S>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send,
 {
-    stream: BufStream<S>,
+    stream: BufReader<S>,
     terminator: u8,
     max_frame_size: usize,
     read_timeout: Duration,
@@ -130,7 +136,7 @@ where
     /// [`with_write_timeout`](Self::with_write_timeout).
     pub fn new(stream: S, terminator: u8, max_frame_size: usize) -> Self {
         Self {
-            stream: BufStream::new(stream),
+            stream: BufReader::new(stream),
             terminator,
             max_frame_size,
             read_timeout: DEFAULT_IO_TIMEOUT,
@@ -158,7 +164,7 @@ where
     /// in-progress frame would exceed `max_frame_size`.
     ///
     /// The size check fires **during** the read by consuming the
-    /// `BufStream`'s buffered chunks incrementally rather than calling
+    /// `BufReader`'s buffered chunks incrementally rather than calling
     /// `read_until` (which has no internal bound). A peer that streams
     /// indefinitely without a terminator therefore errors out as soon
     /// as the would-be frame crosses `max_frame_size`, instead of
@@ -213,11 +219,20 @@ where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send,
 {
     async fn send_frame(&mut self, bytes: &[u8]) -> Result<(), TransportError> {
-        let write_op = async {
-            self.stream.write_all(bytes).await?;
-            self.stream.flush().await
-        };
-        match timeout(self.write_timeout, write_op).await {
+        // Deliberately no `.flush()` after `write_all`: on Unix,
+        // `tokio_serial::SerialStream::poll_flush` issues a `tcdrain(2)`
+        // ioctl that blocks until the peer's UART hardware confirms
+        // transmission — a block that happens synchronously inside a
+        // single `poll()` call, so `tokio::time::timeout` below cannot
+        // preempt it once entered. A peer that enumerates but never
+        // services its endpoints (e.g. a bus-powered USB-CDC device
+        // whose firmware is dead) wedges the write forever instead of
+        // surfacing the honest `TransportError::Timeout` that drives
+        // the reconnect/restart ladder. `write_all` alone hands the
+        // bytes to the kernel's non-blocking write path; a
+        // non-responding peer is instead caught by `recv_frame`'s
+        // bounded read timeout.
+        match timeout(self.write_timeout, self.stream.get_mut().write_all(bytes)).await {
             Ok(Ok(())) => Ok(()),
             Ok(Err(e)) => Err(classify_io_error(e, self.write_timeout)),
             Err(_) => Err(TransportError::Timeout(self.write_timeout)),
@@ -417,6 +432,62 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(&out, b"ping\n");
+    }
+
+    // ============================================================================
+    // send_frame must never flush the wrapped stream: on Unix,
+    // `tokio_serial::SerialStream::poll_flush` issues a blocking `tcdrain(2)`
+    // ioctl that a `tokio::time::timeout` cannot preempt once entered, so a
+    // peer that enumerates but never services its endpoints (dead firmware
+    // behind a bus-powered USB-CDC port) wedges the write forever instead of
+    // surfacing an honest timeout. See issue #622.
+    // ============================================================================
+
+    /// Test-only AsyncRead/AsyncWrite whose `poll_flush` panics — standing
+    /// in for a stream where flushing would hang or block indefinitely
+    /// (e.g. a `tcdrain`-class ioctl against a dead peer). `poll_write`
+    /// always succeeds.
+    #[derive(Default)]
+    struct FlushPanicsStream;
+
+    impl tokio::io::AsyncRead for FlushPanicsStream {
+        fn poll_read(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            _buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    impl tokio::io::AsyncWrite for FlushPanicsStream {
+        fn poll_write(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            buf: &[u8],
+        ) -> std::task::Poll<io::Result<usize>> {
+            std::task::Poll::Ready(Ok(buf.len()))
+        }
+
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<io::Result<()>> {
+            panic!("send_frame must not flush the wrapped stream");
+        }
+
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn serial_frame_transport_send_frame_never_flushes_the_underlying_stream() {
+        let mut transport = SerialFrameTransport::new(FlushPanicsStream, b'\n', 32);
+        transport.send_frame(b"ping\n").await.unwrap();
     }
 
     #[tokio::test]
