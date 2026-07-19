@@ -355,9 +355,6 @@ async fn read_request_head(stream: &mut TcpStream, deadline: Instant) -> Option<
             return None;
         }
 
-        if Instant::now() >= deadline {
-            return None;
-        }
         match timeout_at(deadline, stream.read(&mut chunk[..read_len])).await {
             Ok(Ok(0)) | Ok(Err(_)) | Err(_) => return None,
             Ok(Ok(n)) => buf.extend_from_slice(&chunk[..n]),
@@ -642,6 +639,17 @@ mod tests {
     }
 
     #[test]
+    fn parse_request_head_ignores_a_header_line_without_a_colon() {
+        // A malformed header line with no ':' at all can't be split into a
+        // name/value pair — it's simply skipped, and a well-formed Host
+        // header later in the same request still gets picked up.
+        let head =
+            b"GET /health HTTP/1.1\r\nNotAHeaderLine\r\nHost: filemonitor.local\r\n".as_slice();
+        let parsed = parse_request_head(head).unwrap();
+        assert_eq!(parsed.host.as_deref(), Some("filemonitor.local"));
+    }
+
+    #[test]
     fn parse_request_head_without_host_header() {
         let parsed = parse_request_head(b"GET / HTTP/1.0\r\n").unwrap();
         assert_eq!(parsed.target, "/");
@@ -859,6 +867,20 @@ mod tests {
         let local_addr: SocketAddr = "192.168.1.5:11121".parse().unwrap();
         let response = build_redirect_response(&request, local_addr);
         assert!(response.contains("Location: https://192.168.1.5:11121/health?ClientID=1\r\n"));
+    }
+
+    #[test]
+    fn build_redirect_response_brackets_an_ipv6_local_addr_fallback() {
+        let request = ParsedRequest {
+            target: "/health".to_string(),
+            host: None,
+        };
+        let local_addr: SocketAddr = "[::1]:11121".parse().unwrap();
+        let response = build_redirect_response(&request, local_addr);
+        assert!(
+            response.contains("Location: https://[::1]:11121/health\r\n"),
+            "{response}"
+        );
     }
 
     #[test]

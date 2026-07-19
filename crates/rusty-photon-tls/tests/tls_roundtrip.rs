@@ -401,6 +401,130 @@ async fn plain_http_roundtrip() {
     server_handle.await.ok();
 }
 
+#[tokio::test]
+async fn oversized_plaintext_head_without_a_terminator_is_dropped() {
+    let (_pki_dir, bound_addr, shutdown_tx, server_handle) =
+        start_tls_server_with_health_route().await;
+
+    let mut socket = tokio::net::TcpStream::connect(bound_addr).await.unwrap();
+    // A valid-looking request line followed by more than MAX_REQUEST_HEAD_BYTES
+    // of header bytes but no terminating blank line: the head never resolves
+    // to a parseable request, so it must be dropped once the size cap is hit
+    // rather than waiting out the full I/O timeout.
+    socket.write_all(b"GET /health HTTP/1.1\r\n").await.unwrap();
+    let filler = b"X-Pad: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\n";
+    for _ in 0..(9 * 1024 / filler.len() + 1) {
+        // The server may already have dropped the connection (and thus the
+        // socket) by the time we've written past its size cap, which surfaces
+        // here as a write error rather than at the read below — either is
+        // fine, since both mean the server didn't wait for a terminator.
+        if socket.write_all(filler).await.is_err() {
+            break;
+        }
+    }
+
+    let mut buf = Vec::new();
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        socket.read_to_end(&mut buf),
+    )
+    .await
+    .expect("an oversized head should be dropped promptly, not held open");
+    // A clean EOF with no bytes, or a reset from the server closing while
+    // data was still unread — both mean no response was sent back.
+    if let Ok(_n) = result {
+        assert!(
+            buf.is_empty(),
+            "no response bytes should be sent back for an unterminated oversized head: {buf:?}"
+        );
+    }
+
+    shutdown_tx.send(()).ok();
+    server_handle.await.ok();
+}
+
+#[tokio::test]
+async fn malformed_tls_handshake_bytes_are_dropped_without_a_response() {
+    let (_pki_dir, bound_addr, shutdown_tx, server_handle) =
+        start_tls_server_with_health_route().await;
+
+    let mut socket = tokio::net::TcpStream::connect(bound_addr).await.unwrap();
+    // The 0x16 first byte routes to the TLS acceptor, but the rest isn't a
+    // valid ClientHello — rustls should reject it outright rather than
+    // stalling, exercising the handshake-error path distinctly from the
+    // handshake-timeout path covered by `stalled_tls_handshake_is_dropped_after_the_timeout`.
+    socket
+        .write_all(&[0x16, 0x03, 0x03, 0x00, 0x04, 0xde, 0xad, 0xbe, 0xef])
+        .await
+        .unwrap();
+
+    let mut buf = Vec::new();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        socket.read_to_end(&mut buf),
+    )
+    .await
+    .expect("a rejected handshake should close promptly, not hang")
+    .unwrap();
+    assert!(
+        buf.is_empty(),
+        "no plaintext response bytes for a failed TLS handshake: {buf:?}"
+    );
+
+    shutdown_tx.send(()).ok();
+    server_handle.await.ok();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_connection_that_never_sends_a_byte_is_dropped_after_the_timeout() {
+    let (_pki_dir, bound_addr, shutdown_tx, server_handle) =
+        start_tls_server_with_health_route().await;
+
+    // Connect but never write anything at all — the very first byte peek
+    // must still be bounded by PLAINTEXT_IO_TIMEOUT, distinct from the
+    // request-head-read timeout covered by other tests.
+    let mut socket = tokio::net::TcpStream::connect(bound_addr).await.unwrap();
+
+    tokio::time::advance(std::time::Duration::from_secs(6)).await;
+
+    let mut buf = [0u8; 1];
+    let n = socket.read(&mut buf).await.unwrap();
+    assert_eq!(
+        n, 0,
+        "a connection that never sends a byte should be dropped after the timeout"
+    );
+
+    shutdown_tx.send(()).ok();
+    server_handle.await.ok();
+}
+
+#[tokio::test]
+async fn a_connection_closed_before_any_byte_is_sent_is_handled_cleanly() {
+    let (_pki_dir, bound_addr, shutdown_tx, server_handle) =
+        start_tls_server_with_health_route().await;
+
+    // Connect and immediately close without sending anything: the server's
+    // first-byte peek sees EOF (0 bytes), which must be handled as a clean
+    // drop rather than panicking or hanging.
+    let socket = tokio::net::TcpStream::connect(bound_addr).await.unwrap();
+    drop(socket);
+
+    // If the server mishandled the immediate EOF it could panic the spawned
+    // task; give it a moment and then confirm the server is still healthy by
+    // completing a normal TLS request.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let url = format!("http://127.0.0.1:{}/health", bound_addr.port());
+    let response = client.get(&url).send().await.unwrap();
+    assert_eq!(response.status(), 308);
+
+    shutdown_tx.send(()).ok();
+    server_handle.await.ok();
+}
+
 #[tokio::test(start_paused = true)]
 async fn stalled_tls_handshake_is_dropped_after_the_timeout() {
     let (_pki_dir, bound_addr, shutdown_tx, server_handle) =
