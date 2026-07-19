@@ -34,11 +34,12 @@ use crate::error::TransportError;
 pub trait FrameTransport: Send {
     /// Send one whole frame.
     ///
-    /// For [`SerialFrameTransport`], writes `bytes` verbatim and flushes
-    /// — any in-frame terminator the protocol requires is the caller's
-    /// responsibility. For [`UdpFrameTransport`], emits exactly one
-    /// `send` call (one datagram on the wire). The bytes-on-the-wire
-    /// are the same as the bytes passed in.
+    /// For [`SerialFrameTransport`], writes `bytes` verbatim with no
+    /// explicit flush (see [`SerialFrameTransport::send_frame`] for
+    /// why) — any in-frame terminator the protocol requires is the
+    /// caller's responsibility. For [`UdpFrameTransport`], emits
+    /// exactly one `send` call (one datagram on the wire). The
+    /// bytes-on-the-wire are the same as the bytes passed in.
     async fn send_frame(&mut self, bytes: &[u8]) -> Result<(), TransportError>;
 
     /// Receive one whole frame, overwriting `buf`.
@@ -111,8 +112,8 @@ fn classify_io_error(e: io::Error, on_timeout: Duration) -> TransportError {
 /// byte, max frame size).
 ///
 /// Writes go straight to the wrapped stream with no [`BufWriter`]
-/// layer and no explicit flush — see [`FrameTransport::send_frame`]
-/// for why.
+/// layer and no explicit flush — see the
+/// [`send_frame`](Self::send_frame) impl below for why.
 ///
 /// [`BufWriter`]: tokio::io::BufWriter
 pub struct SerialFrameTransport<S>
