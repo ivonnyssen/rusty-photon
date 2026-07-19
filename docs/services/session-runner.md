@@ -1046,24 +1046,49 @@ Abridged to the load-bearing shape:
 The classic deep-sky session as a shipped first-party document: startup
 (unpark, tracking) → a dispatch loop (`get_next_target` → `set_filter`
 whenever the recommended filter differs from the wheel's current one →
-acquire on target change: slew → optional `center_on_target` → optional
-`auto_focus` → one `capture` per pass → `record_exposure`, re-asking
-the planner after every frame) → shutdown (optional `park`).
+acquire on target change: stop guiding if active, slew → optional
+`center_on_target` → optional `auto_focus` → optional `start_guiding` →
+one `capture` per pass → `record_exposure` → optional `dither` on the
+`dither_every` cadence, re-asking the planner after every frame) →
+shutdown (stop guiding, optional `park`).
+
+The document is **train-addressed**: it takes a single required
+`train_id` (the imaging train) and threads it to `capture`,
+`set_filter`, `center_on_target`, and `auto_focus` — rp resolves the
+train's camera, sole filter wheel, and terminal focuser
+(rp.md § Optical Trains). Sweep geometry comes from the train's
+`auto_focus` config block, so the document carries no step
+sizes or sweep exposures; the former `camera_id` / `focuser_id` /
+`filter_wheel_id` / `focus_exposure` / `focus_step_size` /
+`focus_half_width` parameters are retired (a pre-1.0 hard cutover of
+the document's parameter contract — rp's tools keep device-id
+addressing for direct callers). `focus_min_area` / `focus_max_area`
+remain as parameters because they are **measurement policy**, not
+sweep geometry: the HFR-degradation trigger's `measure_basic` call
+requires them (rp.md § `measure_basic` Contract — callers own that
+policy).
+
+Guiding is adopted behind the `guide` parameter (default `false`):
+when enabled, acquisition stops any active guiding before the slew
+and starts guiding (3 attempts, 30 s backoff) after centering and
+focus — a guided session that cannot guide fails loudly instead of
+silently capturing trailed frames all night. `dither_every` (default
+`0` = off) dithers after every N recorded light frames; a failed
+dither is logged, not fatal. Shutdown and the meridian-flip trigger
+stop and restart guiding around their mount motion the same way.
 The full document lives in `workflows/deep_sky.json`; the shape:
 
 ```jsonc
 {
   "root": { "sequence": [
-    /* fail-fast parameter guards, before any equipment motion:
-       focus enabled requires focuser_id; a filter requires
-       filter_wheel_id — misconfiguration fails the session loudly
-       instead of silently degrading the night */
     /* init: counter defaults; on a recovery invocation, null
-       session.target_name so the loop re-acquires (re-slew, re-center,
-       re-focus) before the next frame */
+       session.target_name and clear session.guiding so the loop
+       re-acquires (re-slew, re-center, re-focus, re-start guiding)
+       before the next frame */
     { "if": "has(params._recovery.reason)",
       "then": [ { "set": { "session.target_name": "null",
-                           "session.imaging": "false" } } ] },
+                           "session.imaging": "false",
+                           "session.guiding": "false" } } ] },
     /* unpark, set_tracking — both idempotent */
     { "repeat": { "while": "session.session_over != true", "max_iterations": 20000 },
       "body": [
@@ -1073,14 +1098,17 @@ The full document lives in `workflows/deep_sky.json`; the shape:
            filter/duration from the plan (result.filter /
            result.duration_secs, falling back to params.filter /
            params.exposure when the target has no plan), set_filter
-           when that differs from the wheel's current filter (the
-           planner rotates the plan as goals complete, so this fires
-           mid-target too); on target change slew, center, focus,
-           commit session.target_* and session.imaging = true; then
-           one capture at the pass duration, record_exposure, and
-           counter updates, ending when params.max_frames (> 0) is
-           reached */ ] },
-    /* shutdown: session.imaging = false, optional park */ ] }
+           (train-addressed) when that differs from the wheel's
+           current filter (the planner rotates the plan as goals
+           complete, so this fires mid-target too); on target change
+           stop_guiding if active, slew, center, focus, start_guiding
+           when params.guide, commit session.target_* and
+           session.imaging = true; then one capture at the pass
+           duration, record_exposure, counter updates, and a dither
+           every params.dither_every recorded frames, ending when
+           params.max_frames (> 0) is reached */ ] },
+    /* shutdown: session.imaging = false, stop_guiding if active,
+       optional park */ ] }
 }
 ```
 
@@ -1108,9 +1136,9 @@ the document simplifies when it lands:
   (`session.current_filter`) — so it fires on a target switch **and**
   when the planner rotates within a plan (Red after the Luminance
   goal completes), and centering/focus always run through the filter
-  the frame will use. A pass whose filter requires a wheel while
-  `filter_wheel_id` is empty fails the session loudly, mirroring the
-  parameter guard — before the slew, since the target cannot be
+  the frame will use. A pass whose filter names a wheel the train
+  does not contain fails the session loudly — the train-addressed
+  `set_filter` errors before the slew, since the target cannot be
   imaged as planned. `max_frames` (`0` = unbounded) remains an
   invocation parameter.
 - **Progress lives in `rp`.** After every light frame the document
@@ -1126,12 +1154,6 @@ the document simplifies when it lands:
   integration goal. rp's counters survive a safety interrupt/resume
   (same `rp` process), so a resumed dispatch continues where the
   night left off; they reset when a fresh session starts.
-- **No guiding, no dithering — yet.** When the document was written,
-  `rp` had no guider integration and catalog validation rightly
-  rejects a document naming unknown tools. The guider tools have since
-  landed (`start_guiding` / `stop_guiding` / `dither`, rp PR #475);
-  adopting them in this document is the remaining slice of rp issue
-  #464. Until it lands, the capture loop runs unguided.
 - **Dawn belongs to the planner.** `get_next_target` distinguishes dusk
   from dawn by the Sun's trend (rp issue #465, closed): `end_of_session`
   when the sky is bright and the Sun is rising, `wait_for_twilight` when
@@ -1141,14 +1163,14 @@ the document simplifies when it lands:
   disambiguated dawn by frames-captured progress in the document; the
   heuristic is gone.)
 
-**Triggers.** Three reactive rules, all gated `while session.imaging ==
+**Triggers.** Five reactive rules, all gated `while session.imaging ==
 true` so they stay silent during acquisition and shutdown:
 
 - `refocus-after-frames` — on `exposure_complete`, when
   `session.frames_since_focus` reaches `refocus_every` (a parameter;
-  `0` disables): re-run `auto_focus`. The frame counter only counts
-  light frames (the capture loop increments it), so a sweep's own
-  exposures cannot re-trigger it.
+  `0` disables): re-run `auto_focus` on the imaging train. The frame
+  counter only counts light frames (the capture loop increments it),
+  so a sweep's own exposures cannot re-trigger it.
 - `refocus-on-hfr-degradation` — on `exposure_complete`, when
   `auto_focus` has seeded `session.last_focus_hfr` and
   `refocus_hfr_factor` (> 0) is set: `measure_basic` the finished
@@ -1156,13 +1178,24 @@ true` so they stay silent during acquisition and shutdown:
   `cooldown: "15m"` bounds how often the measurement itself runs.
 - `flip-when-due` — poll `get_meridian_status` every 30 s; when
   `time_to_flip_seconds` drops under `meridian_margin` (default 300 s):
-  re-slew to the current target (the post-meridian slew is what flips a
-  GEM) and re-center. Self-limiting: after the flip the next crossing
-  is ~24 h out, so the gate goes false without `once`/`cooldown`
-  bookkeeping. Guiding is not stopped/restarted (no guider tools — the
-  gap above).
+  stop guiding if active, re-slew to the current target (the
+  post-meridian slew is what flips a GEM), re-center, and restart
+  guiding if it was stopped. Self-limiting: after the flip the next
+  crossing is ~24 h out, so the gate goes false without
+  `once`/`cooldown` bookkeeping.
+- `guide-af-on-degraded` — on `guide_focus_degraded` (rp's
+  [Guide Focus Watch](rp.md), emitted only while the watch is
+  configured and guiding), additionally gated on `session.guiding`:
+  run the guide-only metric `auto_focus` on `event.train_id` — the
+  guiding train named by the event, so the document needs no
+  guide-train parameter. Sweep geometry comes from that train's
+  `auto_focus` block; re-fire pacing is the watch's own `cooldown`.
+- `refocus-on-escalation` — on `guide_focus_escalation` (same gates):
+  run the full `refocus_train` on `event.train_id` — shared focusers
+  first, then the guide differential (rp.md § `refocus_train`
+  Contract) — and reset `session.frames_since_focus`.
 
-In both refocus triggers the `auto_focus` call is wrapped in `try` with
+In all four focus triggers the sweep call is wrapped in `try` with
 a logging `catch`: a failed focus sweep degrades the night, but ending
 the session over it would be worse (tenet: robustness). The skeleton's
 `handle-correction` trigger from earlier drafts is **not** shipped: no
@@ -1176,9 +1209,12 @@ blackboard + the planner: after a crash or safety interruption the same
 loop continues from the persisted counters with **zero** `once` markers.
 Startup is idempotent (unpark on an unparked mount is a no-op, tracking
 and filter re-assert their state), and a recovery invocation nulls
-`session.target_name` so the first loop pass re-acquires — re-slew,
-re-center, re-focus — before capturing again, regardless of what the
-interruption did to the mount.
+`session.target_name` and clears `session.guiding` (rp already stopped
+guiding, or the crash did) so the first loop pass re-acquires —
+re-slew, re-center, re-focus, re-start guiding — before capturing
+again, regardless of what the interruption did to the mount. A stale
+`session.guiding` flag costs at most one `stop_guiding` call, which is
+idempotent by rp's contract.
 
 ### `sky_flat.json` (the twilight-adaptation document)
 
@@ -1342,7 +1378,7 @@ Full three-process topology (OmniSim + `rp` + `session-runner`) via
 | Triggers | `triggers.feature` | a trigger action lands between exposures, never during one (proved by SSE seq order); `once` fires exactly once across three captures; cooldown suppresses firings inside its window; a poll trigger fires through its `when` gate |
 | Resume | `recovery.feature` | SIGKILL the engine mid-capture-loop → restart → re-invoke with recovery → progress continues without repeated frames (exposure totals prove it); `once` marker not re-run (`filter_switch` count proves it); an rp outage terminates the run (service stays healthy, blackboard kept) and the session resumes against the restarted rp; an rp restart with a pinned `session_state_file` re-invokes the engine **by itself** (`recovery.reason = "rp_restart"` — rp startup recovery) and the session completes with no repeated frames |
 | Safety | `recovery.feature` | a SafetyMonitor unsafe reading interrupts the session end-to-end through rp's own machinery (rp terminates the MCP session, the run terminates keeping its blackboard) and the safe transition re-invokes the engine with `recovery.reason = "safety_interruption"` — the resumed run captures exactly the remaining frames, the once marker is not re-run, and the completion deletes the blackboard. rp-side specifics (session `interrupted` status, `/mcp` 503 gate, `safety_changed` events) are pinned in rp's own `safety.feature` |
-| Deep-sky document | `deep_sky.feature` | the shipped `deep_sky.json` against a computed night sky (site + planner targets placed so a candidate is viable at test time): the full cycle completes (unpark → slew → center → capture ×N → park); the planner's exposure plan drives the capture duration (a 2 s plan finishes a session the 300 s parameter default could not); a target whose plan carries a `count` ends the session through `record_exposure` → exhaustion → `end_of_session` with exactly the goal's frame count and no `max_frames` budget; a session started after dawn (a computed morning site — Sun risen and climbing) ends on the planner's `end_of_session` with zero slews and zero frames; a target sinking below its per-target altitude floor switches the dispatch loop to the second target (a second slew, frames on both sides of it); `refocus_every` fires `auto_focus` from the trigger overlay (`focus_started` count proves it); a due meridian flip re-slews between exposures, never during one; a safety interruption resumes with re-acquisition (two `centering_complete`). Mid-plan filter rotation is pinned by `rp`'s own planner BDD plus the engine golden tests (no simulated filter wheel in the deep-sky harness) |
+| Deep-sky document | `deep_sky.feature` | the shipped `deep_sky.json` against a computed night sky (site + planner targets placed so a candidate is viable at test time): the full cycle completes (unpark → slew → center → capture ×N → park); the planner's exposure plan drives the capture duration (a 2 s plan finishes a session the 300 s parameter default could not); a target whose plan carries a `count` ends the session through `record_exposure` → exhaustion → `end_of_session` with exactly the goal's frame count and no `max_frames` budget; a session started after dawn (a computed morning site — Sun risen and climbing) ends on the planner's `end_of_session` with zero slews and zero frames; a target sinking below its per-target altitude floor switches the dispatch loop to the second target (a second slew, frames on both sides of it); `refocus_every` fires `auto_focus` from the trigger overlay (`focus_started` count proves it); a due meridian flip re-slews between exposures, never during one; a safety interruption resumes with re-acquisition (two `centering_complete`); a guided session (`guide: true` against the harness guider stub) starts guiding after acquisition, dithers on the `dither_every` cadence, and stops guiding before the park (`guiding_started` / `dither_complete` / `guiding_stopped` order proves it); rp's Guide Focus Watch escalating over a degrading stub HFD script fires the document's `refocus-on-escalation` trigger end-to-end (`refocus_started` proves the wiring — sweep success is not asserted, per the OmniSim flat-HFR rule). The full guided call cadence, the `guide-af-on-degraded` wiring, and the start-guiding retry-then-fail posture are pinned by the engine exec tests against scripted tool results. Mid-plan filter rotation is pinned by `rp`'s own planner BDD plus the engine golden tests (no simulated filter wheel in the deep-sky harness) |
 | Sky-flat document | `sky_flat.feature` | the shipped `sky_flat.json` end-to-end against OmniSim: a computed night site with the mount taught the site and synced near the zenith → the session slews to the zenith from live LST, captures exactly the plan's flats through both filters, and parks (a 0.5 target fraction with 1.0 tolerance makes every OmniSim frame in-band, so the counts are deterministic — the simulator's image content does not track exposure). The adaptation math (rescale-always, discard-and-recapture, both window closures, the budget fallback) is pinned by engine exec tests running the shipped document against scripted medians |
 
 The safety scenario exercises rp's real recovery re-invocation, and the
