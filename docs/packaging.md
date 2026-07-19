@@ -45,7 +45,7 @@ doubles as the PHD2 CLI via subcommands.)
 | zwo-camera | 11122 | USB camera; its SDK blob bundled |
 | pa-scops-oag | 11123 | serial (dialout) |
 | zwo-focuser | 11124 | USB focuser; its SDK blob bundled |
-| phd2-guider | 11130 | guider service wrapping PHD2 (PHD2 installed separately) |
+| phd2-guider | 11130 | guider service wrapping PHD2 (PHD2 installed separately, below) |
 | plate-solver | 11131 | config-gated; needs ASTAP (below) |
 | calibrator-flats | 11170 | config-gated |
 
@@ -387,6 +387,100 @@ unit stays inert until `plate-solver.json` exists.
    `200` with `{"status":"ok"}` means binary and database both check
    out; `503` carries `{"status":"binary_unavailable"}` or
    `{"status":"db_unavailable"}`, naming the check that failed.
+
+## phd2-guider: PHD2
+
+PHD2 is an external runtime dependency, deliberately not a package
+dependency (bring-your-own, same posture as ASTAP above): `phd2-guider`
+connects to an already-running PHD2 on `localhost:4400` and never spawns
+it — the operator owns the PHD2 process (see
+[phd2-guider.md §HTTP Service Mode](services/phd2-guider.md#http-service-mode-serve)).
+The service itself needs no setup: it runs on built-in defaults and
+keeps retrying the PHD2 connection in the background, so the install
+order does not matter and no service restart is ever needed.
+
+Debian and Raspberry Pi OS ship no `phd2` package, so on a rig host you
+build it from source (upstream's supported route — minutes, not hours,
+on a Pi 5 class machine). PHD2 is a GUI application, so a headless host
+also needs a persistent virtual display; TigerVNC provides that and
+remote viewing in one.
+
+1. **Build and install PHD2.**
+
+   ```sh
+   sudo apt-get install -y build-essential git cmake pkg-config \
+     libwxgtk3.2-dev wx-common wx3.2-i18n gettext zlib1g-dev libx11-dev \
+     libcurl4-gnutls-dev libcfitsio-dev libnova-dev libusb-1.0-0-dev \
+     libeigen3-dev libopencv-dev libgtest-dev
+   git clone --depth 1 --branch v2.6.14 https://github.com/OpenPHDGuiding/phd2.git
+   cmake -S phd2 -B phd2/tmp -DCMAKE_BUILD_TYPE=Release
+   make -C phd2/tmp -j"$(nproc)"
+   sudo make -C phd2/tmp install     # installs /usr/bin/phd2
+   ```
+
+   Do **not** pass `-DUSE_SYSTEM_LIBINDI=1` on Debian or Raspberry Pi
+   OS: their `libindi-dev` is 1.9.x and PHD2 requires INDI ≥ 2.0, so
+   the default configure — which downloads and builds PHD2's own INDI
+   client — is the working path. The default build also includes the
+   bundled vendor camera backends (QHY, ZWO, and friends), so guide
+   cameras connect natively with no INDI server involved.
+
+2. **Run PHD2 headless under TigerVNC.**
+
+   ```sh
+   sudo apt-get install -y tigervnc-standalone-server
+   vncpasswd                          # one-time: set the viewing password
+   printf '#!/bin/sh\nexport GDK_BACKEND=x11\nexec phd2\n' > ~/.vnc/xstartup
+   chmod +x ~/.vnc/xstartup
+   tigervncserver :1 -localhost yes -geometry 1280x800
+   ```
+
+   PHD2 *is* the VNC session: quitting PHD2 ends the session, and
+   `tigervncserver -kill :1` is the other way down. The
+   `GDK_BACKEND=x11` line is load-bearing — on a host where any Wayland
+   session exists (a Raspberry Pi OS console, for example), GTK prefers
+   the Wayland socket over `DISPLAY` and PHD2 would come up invisible
+   on the physical console instead of the VNC display.
+
+3. **Create the equipment profile (first run only).** Tunnel the
+   display to your workstation and point any VNC viewer at
+   `localhost:5901`:
+
+   ```sh
+   ssh -L 5901:127.0.0.1:5901 <rig-host>
+   ```
+
+   Complete PHD2's first-light wizard. Equipment choices are
+   site-specific and out of scope here; the built-in camera/mount
+   simulator makes a fine smoke-test profile. Afterwards quit PHD2
+   cleanly once (File → Exit — this ends the VNC session) and start it
+   again with the `tigervncserver` line above: PHD2 persists its
+   profile to `~/.PHDGuidingV2` on clean exit, not while running, and
+   an unsecured profile would be lost to a power cut.
+
+4. **Verify.**
+
+   ```sh
+   curl -s -w '\n%{http_code}\n' http://127.0.0.1:11130/health
+   ```
+
+   `200` with `{"status":"ok"}` means phd2-guider holds a live
+   connection to PHD2. `503` with `{"status":"unavailable"}` means it
+   does not — PHD2 is not running, or its event server is disabled
+   (PHD2's Tools → Enable Server, a per-profile setting that defaults
+   to on). The service reconnects on its own within seconds of PHD2
+   appearing.
+
+Leave phd2-guider on its built-in defaults — do **not** create
+`/etc/rusty-photon/phd2-guider.json`. A config file lets sentinel derive
+a health-probe URL, and its supervision counts any non-2xx answer as a
+failed probe (see
+[sentinel.md §Service Health Supervision](services/sentinel.md#service-health-supervision)):
+the `503` that means "PHD2 is not running right now" — the normal
+daytime state of a rig — would restart-loop the guider service to no
+effect. Without the file the service stays discovered but unprobed
+(health `unknown`), which is the intended posture until PHD2 runs
+around the clock.
 
 ## Removing
 
