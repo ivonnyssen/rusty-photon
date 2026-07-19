@@ -13,9 +13,15 @@ use super::super::progress::{ProgressEmitter, ProgressSink};
 use super::super::{resolve_device, tool_error, tool_success};
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(extend("oneOf" = [{"required": ["camera_id"]}, {"required": ["train_id"]}]))]
 pub struct CaptureParams {
-    /// Camera device ID
-    pub camera_id: String,
+    /// Camera device ID; mutually exclusive with `train_id`.
+    #[serde(default)]
+    pub camera_id: Option<String>,
+    /// Optical train whose terminal camera captures; mutually
+    /// exclusive with `camera_id`.
+    #[serde(default)]
+    pub train_id: Option<String>,
     /// Exposure time as a humantime string (e.g. `"500ms"`, `"30s"`, `"1m30s"`).
     #[serde(with = "humantime_serde")]
     #[schemars(with = "String")]
@@ -52,10 +58,15 @@ impl McpHandler {
         params: CaptureParams,
         progress: Option<&dyn ProgressEmitter>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        match self
-            .do_capture(&params.camera_id, params.duration, progress)
-            .await
-        {
+        let camera_id = match self.resolve_camera_addressing(
+            "capture",
+            params.camera_id.as_deref(),
+            params.train_id.as_deref(),
+        ) {
+            Ok(id) => id,
+            Err(e) => return Ok(*e),
+        };
+        match self.do_capture(&camera_id, params.duration, progress).await {
             Ok((image_path, document_id)) => Ok(tool_success!({
                 "image_path": image_path,
                 "document_id": document_id,
@@ -123,5 +134,40 @@ impl McpHandler {
             "exposure_min": humantime::format_duration(exposure_min).to_string(),
             "exposure_max": humantime::format_duration(exposure_max).to_string(),
         }))
+    }
+}
+
+impl McpHandler {
+    /// Resolve the `camera_id` / `train_id` addressing shared by
+    /// `capture` and `center_on_target`: exactly one must be present,
+    /// and `train_id` resolves the train's terminal camera. Returns
+    /// the resolved roster id, or the ready-to-return error
+    /// `CallToolResult` (boxed — `clippy::result_large_err`).
+    pub(crate) fn resolve_camera_addressing(
+        &self,
+        tool: &str,
+        camera_id: Option<&str>,
+        train_id: Option<&str>,
+    ) -> Result<String, Box<CallToolResult>> {
+        match (camera_id, train_id) {
+            (Some(_), Some(_)) => Err(Box::new(tool_error!(
+                "{}: train_id is mutually exclusive with camera_id",
+                tool
+            ))),
+            (None, None) => Err(Box::new(tool_error!(
+                "{}: pass exactly one of camera_id or train_id",
+                tool
+            ))),
+            (Some(id), None) => Ok(id.to_string()),
+            (None, Some(train_id)) => {
+                let Some(train) = self.trains.train(train_id) else {
+                    return Err(Box::new(tool_error!("train not found: {}", train_id)));
+                };
+                match train.camera_id() {
+                    Some(id) => Ok(id.to_string()),
+                    None => Err(Box::new(tool_error!("train '{}' has no camera", train_id))),
+                }
+            }
+        }
     }
 }

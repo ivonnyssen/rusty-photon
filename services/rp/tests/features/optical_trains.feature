@@ -14,6 +14,12 @@ Feature: Optical trains configuration
   cameras[].focal_length_mm, focusers[]/filter_wheels[].camera_id) are
   unknown fields and fail at parse.
 
+  Tools address trains as an alternative spelling of their device ids:
+  capture and center_on_target take camera_id or train_id (exactly one;
+  the train's terminal camera), set_filter takes filter_wheel_id or
+  train_id (the train's sole filter wheel — none or several is an
+  error naming the train). Device-id addressing stays first-class.
+
   Scenario: Configured optical trains round-trip through GET /api/config
     Given a temp rp config with the reference optical trains
     And rp is started with that config file
@@ -232,3 +238,44 @@ Feature: Optical trains configuration
       | /equipment/optical_trains/1/auto_focus   | {"half_width": 500}                                                                       | step_size                      |
       | /equipment/mount/guiding/focus_watch/window        | 2   | focus_watch.window        |
       | /equipment/mount/guiding/focus_watch/degrade_ratio | 1.0 | focus_watch.degrade_ratio |
+
+  Scenario: Capture addresses the train's terminal camera
+    Given a running Alpaca simulator
+    And rp is running with a camera on the simulator in an imaging train with focal length 1000.0
+    And an MCP client connected to rp
+    When the MCP client calls "capture" with train "main" for 1000 ms
+    And I fetch the document for the captured document_id
+    Then the document response status should be 200
+    And the document optics focal length should be 1000.0
+
+  Scenario: Capture rejects train addressing combined with a camera id
+    Given a running Alpaca simulator
+    And rp is running with a camera on the simulator in an imaging train with focal length 1000.0
+    And an MCP client connected to rp
+    When the MCP client calls "capture" with both camera "main-cam" and train "main" for 1000 ms
+    Then the tool call should return an error
+    And the error message should contain "mutually exclusive"
+
+  Scenario: Capture through an unknown train is rejected
+    Given a running Alpaca simulator
+    And rp is running with a camera on the simulator in an imaging train with focal length 1000.0
+    And an MCP client connected to rp
+    When the MCP client calls "capture" with train "nonexistent" for 1000 ms
+    Then the tool call should return an error
+    And the error message should contain "train not found: nonexistent"
+
+  Scenario: set_filter addresses the train's sole filter wheel
+    Given a running Alpaca simulator
+    And rp is running with a camera and filter wheel on the simulator in an imaging train
+    And an MCP client connected to rp
+    When the MCP client calls "set_filter" with train "main" and filter "Red"
+    And the MCP client calls "get_filter" with filter wheel "main-fw"
+    Then the current filter should be "Red"
+
+  Scenario: set_filter through a train without a filter wheel is rejected
+    Given a running Alpaca simulator
+    And rp is running with a camera on the simulator in an imaging train with focal length 1000.0
+    And an MCP client connected to rp
+    When the MCP client calls "set_filter" with train "main" and filter "Red"
+    Then the tool call should return an error
+    And the error message should contain "train 'main' has no filter wheel"

@@ -2229,59 +2229,13 @@ async fn test_golden_sky_flat_resumes_the_current_filter_without_recapturing() {
 }
 
 fn deep_sky_params(doc: &Document, overrides: Value) -> Value {
-    let mut supplied = json!({ "camera_id": "cam" });
+    let mut supplied = json!({ "train_id": "main" });
     if let (Some(base), Some(extra)) = (supplied.as_object_mut(), overrides.as_object()) {
         for (k, v) in extra {
             base.insert(k.clone(), v.clone());
         }
     }
     bind_parameters(&doc.parameters, Some(&supplied)).unwrap()
-}
-
-#[tokio::test]
-async fn test_golden_deep_sky_rejects_enabled_focus_without_a_focuser_id_before_moving_anything() {
-    // `focus` defaults to true, so a minimal invocation that forgets
-    // `focuser_id` would otherwise run every acquisition through a
-    // doomed auto_focus (caught by the try, silently degrading the
-    // night). The fail-fast guard raises before unpark — no tool call
-    // is made at all.
-    let doc = make_doc(crate::document::corpus::golden_deep_sky());
-    let params = deep_sky_params(&doc, json!({}));
-    let tools = MockTools::new(|_, tool, _| {
-        panic!("unexpected tool call `{tool}` after a failed focuser-id guard")
-    });
-    let dir = tempfile::tempdir().unwrap();
-    let (outcome, _) = run_in(&dir, &doc, &params, &tools, &MockClock::new()).await;
-
-    let error = failure(outcome);
-    assert!(
-        error.message.contains("focuser_id is empty"),
-        "{}",
-        error.message
-    );
-    assert!(tools.call_names().is_empty());
-}
-
-#[tokio::test]
-async fn test_golden_deep_sky_rejects_a_filter_without_a_filter_wheel_before_moving_anything() {
-    // A `filter` with no `filter_wheel_id` would otherwise silently
-    // skip the filter change and image the whole night through
-    // whatever the wheel happens to hold.
-    let doc = make_doc(crate::document::corpus::golden_deep_sky());
-    let params = deep_sky_params(&doc, json!({ "focus": false, "filter": "Luminance" }));
-    let tools = MockTools::new(|_, tool, _| {
-        panic!("unexpected tool call `{tool}` after a failed filter-wheel guard")
-    });
-    let dir = tempfile::tempdir().unwrap();
-    let (outcome, _) = run_in(&dir, &doc, &params, &tools, &MockClock::new()).await;
-
-    let error = failure(outcome);
-    assert!(
-        error.message.contains("filter_wheel_id is empty"),
-        "{}",
-        error.message
-    );
-    assert!(tools.call_names().is_empty());
 }
 
 /// `get_next_target` result carrying an exposure plan, as rp returns
@@ -2313,7 +2267,6 @@ async fn test_golden_deep_sky_captures_at_the_planner_duration_and_filter() {
         json!({
             "focus": false,
             "centering": false,
-            "filter_wheel_id": "fw",
             "max_frames": 1,
             "park_on_finish": false
         }),
@@ -2333,7 +2286,10 @@ async fn test_golden_deep_sky_captures_at_the_planner_duration_and_filter() {
         .iter()
         .find(|(name, _)| name == "set_filter")
         .expect("set_filter must be called for a plan that names a filter");
-    assert_eq!(set_filter.1["filter_wheel_id"], "fw");
+    assert_eq!(
+        set_filter.1["train_id"], "main",
+        "the filter change must be train-addressed"
+    );
     assert_eq!(set_filter.1["filter_name"], "Red");
     let capture = calls
         .iter()
@@ -2396,7 +2352,6 @@ async fn test_golden_deep_sky_respects_an_unfiltered_plan_over_the_filter_parame
             "focus": false,
             "centering": false,
             "filter": "Red",
-            "filter_wheel_id": "fw",
             "max_frames": 1,
             "park_on_finish": false
         }),
@@ -2424,10 +2379,11 @@ async fn test_golden_deep_sky_respects_an_unfiltered_plan_over_the_filter_parame
 }
 
 #[tokio::test]
-async fn test_golden_deep_sky_fails_when_the_plan_names_a_filter_but_no_wheel_is_configured() {
-    // The t=0 guard can only see the `filter` parameter; a filter
-    // arriving in the planner's exposure plan mid-session must fail
-    // just as loudly instead of silently imaging unfiltered.
+async fn test_golden_deep_sky_fails_before_the_slew_when_the_train_has_no_filter_wheel() {
+    // A filter arriving in the planner's exposure plan for a wheelless
+    // train must fail the session loudly instead of silently imaging
+    // unfiltered: rp's train-addressed set_filter errors, the call is
+    // not try-wrapped, and the filter change precedes acquisition.
     let doc = make_doc(crate::document::corpus::golden_deep_sky());
     let params = deep_sky_params(
         &doc,
@@ -2441,22 +2397,23 @@ async fn test_golden_deep_sky_fails_when_the_plan_names_a_filter_but_no_wheel_is
     let tools = MockTools::new(|_, tool, _| match tool {
         "unpark" | "set_tracking" => Ok(json!({})),
         "get_next_target" => Ok(planned_recommendation(json!("Red"), json!(120))),
-        other => panic!("unexpected tool call `{other}` after the plan-filter guard"),
+        "set_filter" => Err(ToolCallError::Failed(
+            "train 'main' has no filter wheel".to_owned(),
+        )),
+        other => panic!("unexpected tool call `{other}` after the failed filter change"),
     });
     let dir = tempfile::tempdir().unwrap();
     let (outcome, _) = run_in(&dir, &doc, &params, &tools, &MockClock::new()).await;
 
     let error = failure(outcome);
     assert!(
-        error
-            .message
-            .contains("the exposure plan names a filter but filter_wheel_id is empty"),
+        error.message.contains("train 'main' has no filter wheel"),
         "{}",
         error.message
     );
     assert_eq!(
         tools.call_names(),
-        vec!["unpark", "set_tracking", "get_next_target"],
+        vec!["unpark", "set_tracking", "get_next_target", "set_filter"],
         "the failure must land before the slew — a target the rig \
          cannot filter for must not move the mount"
     );
@@ -2512,7 +2469,6 @@ async fn test_golden_deep_sky_follows_plan_rotation_and_records_each_frame() {
         json!({
             "focus": false,
             "centering": false,
-            "filter_wheel_id": "fw",
             "max_frames": 0,
             "park_on_finish": false
         }),
@@ -2583,4 +2539,371 @@ async fn test_golden_deep_sky_follows_plan_rotation_and_records_each_frame() {
         ],
         "each frame must be recorded with the filter it was taken through"
     );
+}
+
+/// `run_in` with a pre-fed event intake, for the golden document's
+/// trigger-wiring tests (the parameterless `run_doc_with_events`
+/// cannot carry the required `train_id`).
+async fn run_params_with_events(
+    doc: &Document,
+    params: &Value,
+    tools: &MockTools,
+    events: EventIntake,
+) -> (RunOutcome, Value) {
+    let dir = tempfile::tempdir().unwrap();
+    let mut blackboard = Blackboard::load(dir.path().join("session.json"))
+        .await
+        .unwrap();
+    let outcome = run(
+        doc,
+        params,
+        &mut blackboard,
+        tools,
+        &MockClock::new(),
+        events,
+    )
+    .await;
+    let session = blackboard.value().clone();
+    (outcome, session)
+}
+
+#[tokio::test]
+async fn test_golden_deep_sky_guided_session_runs_the_guide_lifecycle() {
+    // guide: true — guiding starts after acquisition (post-slew) and
+    // before the first frame; dither_every: 2 dithers exactly once,
+    // after the second recorded frame; shutdown stops guiding BEFORE
+    // the park.
+    let doc = make_doc(crate::document::corpus::golden_deep_sky());
+    let params = deep_sky_params(
+        &doc,
+        json!({
+            "focus": false,
+            "centering": false,
+            "guide": true,
+            "dither_every": 2,
+            "max_frames": 3,
+            "park_on_finish": true
+        }),
+    );
+    let tools = MockTools::new(|_, tool, _| match tool {
+        "unpark" | "set_tracking" | "slew" | "record_exposure" | "start_guiding"
+        | "stop_guiding" | "dither" | "park" => Ok(json!({})),
+        "get_next_target" => Ok(planned_recommendation(Value::Null, Value::Null)),
+        "capture" => Ok(json!({ "image_path": "/tmp/light.fits", "document_id": "doc-1" })),
+        other => panic!("unexpected tool call `{other}`"),
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let (outcome, _) = run_in(&dir, &doc, &params, &tools, &MockClock::new()).await;
+
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert_eq!(
+        tools.call_names(),
+        vec![
+            "unpark",
+            "set_tracking",
+            // Pass 1: acquisition ends with the guide loop starting.
+            "get_next_target",
+            "slew",
+            "start_guiding",
+            "capture",
+            "record_exposure",
+            // Pass 2: the dither lands after the second recorded frame.
+            "get_next_target",
+            "capture",
+            "record_exposure",
+            "dither",
+            // Pass 3: frame budget reached; only one frame since the
+            // dither, so no second dither.
+            "get_next_target",
+            "capture",
+            "record_exposure",
+            // Shutdown: guiding stops before the mount parks.
+            "stop_guiding",
+            "park",
+        ],
+        "the guided cadence must be start-after-acquisition, \
+         dither-every-2, stop-before-park"
+    );
+}
+
+#[tokio::test]
+async fn test_golden_deep_sky_start_guiding_failure_retries_then_fails_the_session() {
+    // A guided session that cannot guide must fail loudly after the
+    // 3-attempt retry instead of silently capturing trailed frames
+    // all night.
+    let doc = make_doc(crate::document::corpus::golden_deep_sky());
+    let params = deep_sky_params(
+        &doc,
+        json!({
+            "focus": false,
+            "centering": false,
+            "guide": true,
+            "max_frames": 1,
+            "park_on_finish": false
+        }),
+    );
+    let tools = MockTools::new(|_, tool, _| match tool {
+        "unpark" | "set_tracking" | "slew" => Ok(json!({})),
+        "get_next_target" => Ok(planned_recommendation(Value::Null, Value::Null)),
+        "start_guiding" => Err(ToolCallError::Failed("PHD2 unreachable".to_owned())),
+        other => panic!("unexpected tool call `{other}` after guiding failed to start"),
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let (outcome, _) = run_in(&dir, &doc, &params, &tools, &MockClock::new()).await;
+
+    let error = failure(outcome);
+    assert_eq!(
+        error.message,
+        "tool `start_guiding` failed after 3 attempts: PHD2 unreachable"
+    );
+    assert_eq!(
+        tools
+            .call_names()
+            .iter()
+            .filter(|name| *name == "start_guiding")
+            .count(),
+        3,
+        "start_guiding must be retried exactly 3 times before failing"
+    );
+}
+
+#[tokio::test]
+async fn test_golden_deep_sky_degraded_event_runs_a_guide_only_auto_focus() {
+    // guide_focus_degraded names the guiding train; the trigger runs
+    // the guide-only metric sweep on exactly that train — the document
+    // needs no guide-train parameter of its own.
+    let doc = make_doc(crate::document::corpus::golden_deep_sky());
+    let params = deep_sky_params(
+        &doc,
+        json!({
+            "focus": false,
+            "centering": false,
+            "guide": true,
+            "max_frames": 1,
+            "park_on_finish": false
+        }),
+    );
+    let tools = MockTools::new(|_, tool, _| match tool {
+        "unpark" | "set_tracking" | "slew" | "record_exposure" | "start_guiding"
+        | "stop_guiding" => Ok(json!({})),
+        "get_next_target" => Ok(planned_recommendation(Value::Null, Value::Null)),
+        "capture" => Ok(json!({ "image_path": "/tmp/light.fits", "document_id": "doc-1" })),
+        "auto_focus" => Ok(json!({ "best_hfd": 2.1 })),
+        other => panic!("unexpected tool call `{other}`"),
+    });
+    let events = buffered_events(&[(
+        "guide_focus_degraded",
+        json!({ "train_id": "guide", "baseline_hfd": 2.0, "current_hfd": 3.0, "window": 10 }),
+    )]);
+    let (outcome, _) = run_params_with_events(&doc, &params, &tools, events).await;
+
+    assert_eq!(outcome, RunOutcome::Completed);
+    let calls = tools.calls();
+    let auto_focus = calls
+        .iter()
+        .find(|(name, _)| name == "auto_focus")
+        .expect("guide_focus_degraded must fire the guide-only auto_focus");
+    assert_eq!(
+        auto_focus.1,
+        json!({ "train_id": "guide" }),
+        "the sweep must address the event's guiding train, nothing else"
+    );
+}
+
+#[tokio::test]
+async fn test_golden_deep_sky_escalation_event_runs_the_full_refocus_train() {
+    let doc = make_doc(crate::document::corpus::golden_deep_sky());
+    let params = deep_sky_params(
+        &doc,
+        json!({
+            "focus": false,
+            "centering": false,
+            "guide": true,
+            "max_frames": 1,
+            "park_on_finish": false
+        }),
+    );
+    let tools = MockTools::new(|_, tool, _| match tool {
+        "unpark" | "set_tracking" | "slew" | "record_exposure" | "start_guiding"
+        | "stop_guiding" => Ok(json!({})),
+        "get_next_target" => Ok(planned_recommendation(Value::Null, Value::Null)),
+        "capture" => Ok(json!({ "image_path": "/tmp/light.fits", "document_id": "doc-1" })),
+        "refocus_train" => Ok(json!({ "steps": [] })),
+        other => panic!("unexpected tool call `{other}`"),
+    });
+    let events = buffered_events(&[(
+        "guide_focus_escalation",
+        json!({ "train_id": "guide", "baseline_hfd": 2.0, "current_hfd": 3.0 }),
+    )]);
+    let (outcome, _) = run_params_with_events(&doc, &params, &tools, events).await;
+
+    assert_eq!(outcome, RunOutcome::Completed);
+    let calls = tools.calls();
+    let refocus = calls
+        .iter()
+        .find(|(name, _)| name == "refocus_train")
+        .expect("guide_focus_escalation must fire refocus_train");
+    assert_eq!(
+        refocus.1,
+        json!({ "train_id": "guide", "reason": "guide_focus_escalation" })
+    );
+}
+
+#[tokio::test]
+async fn test_golden_deep_sky_shutdown_stop_failure_keeps_the_flag_and_still_parks() {
+    // A failed stop_guiding is logged, not fatal — but it must NOT
+    // clear session.guiding: the blackboard would otherwise claim a
+    // stopped loop the guider still runs, and later stop attempts
+    // would be skipped. The park still happens.
+    let doc = make_doc(crate::document::corpus::golden_deep_sky());
+    let params = deep_sky_params(
+        &doc,
+        json!({
+            "focus": false,
+            "centering": false,
+            "guide": true,
+            "max_frames": 1,
+            "park_on_finish": true
+        }),
+    );
+    let tools = MockTools::new(|_, tool, _| match tool {
+        "unpark" | "set_tracking" | "slew" | "record_exposure" | "start_guiding" | "park" => {
+            Ok(json!({}))
+        }
+        "get_next_target" => Ok(planned_recommendation(Value::Null, Value::Null)),
+        "capture" => Ok(json!({ "image_path": "/tmp/light.fits", "document_id": "doc-1" })),
+        "stop_guiding" => Err(ToolCallError::Failed("PHD2 went away".to_owned())),
+        other => panic!("unexpected tool call `{other}`"),
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let (outcome, session) = run_in(&dir, &doc, &params, &tools, &MockClock::new()).await;
+
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert_eq!(
+        session["guiding"],
+        json!(true),
+        "a failed stop must not pretend the loop stopped"
+    );
+    assert_eq!(
+        tools.call_names().last().map(String::as_str),
+        Some("park"),
+        "the park still happens after the logged stop failure"
+    );
+}
+
+#[tokio::test]
+async fn test_golden_deep_sky_recovery_clears_the_flip_restart_flag() {
+    // A crash between the flip trigger's stop-guiding and its restart
+    // leaves session.flip_restart_guiding persisted as true; the
+    // recovery branch must clear it, or a later flip on the resumed
+    // run would restart guiding the invocation never asked for.
+    let doc = make_doc(crate::document::corpus::golden_deep_sky());
+    let mut params = deep_sky_params(
+        &doc,
+        json!({
+            "focus": false,
+            "centering": false,
+            "max_frames": 1,
+            "park_on_finish": false
+        }),
+    );
+    // The engine injects `_recovery` on a recovery invocation
+    // (routes.rs); the exec harness emulates that injection.
+    params["_recovery"] = json!({ "reason": "safety_interruption" });
+    let tools = MockTools::new(|_, tool, _| match tool {
+        "unpark" | "set_tracking" | "slew" | "record_exposure" => Ok(json!({})),
+        "get_next_target" => Ok(planned_recommendation(Value::Null, Value::Null)),
+        "capture" => Ok(json!({ "image_path": "/tmp/light.fits", "document_id": "doc-1" })),
+        other => panic!("unexpected tool call `{other}`"),
+    });
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let mut blackboard = Blackboard::load(dir.path().join("session.json"))
+            .await
+            .unwrap();
+        blackboard
+            .set_path(&["flip_restart_guiding".to_owned()], json!(true))
+            .unwrap();
+        blackboard.persist().await.unwrap();
+    }
+    let (outcome, session) = run_in(&dir, &doc, &params, &tools, &MockClock::new()).await;
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert_eq!(
+        session["flip_restart_guiding"],
+        json!(false),
+        "recovery must clear the crashed flip's restart flag"
+    );
+}
+
+#[tokio::test]
+async fn test_golden_deep_sky_watch_triggers_stay_silent_for_a_null_train_id() {
+    // The watch legally emits train_id: null when rp has no guiding
+    // train configured; the triggers must stay silent rather than
+    // spam a doomed null-addressed sweep into the catch-log once per
+    // event.
+    let doc = make_doc(crate::document::corpus::golden_deep_sky());
+    let params = deep_sky_params(
+        &doc,
+        json!({
+            "focus": false,
+            "centering": false,
+            "guide": true,
+            "max_frames": 1,
+            "park_on_finish": false
+        }),
+    );
+    let tools = MockTools::new(|_, tool, _| match tool {
+        "unpark" | "set_tracking" | "slew" | "record_exposure" | "start_guiding"
+        | "stop_guiding" => Ok(json!({})),
+        "get_next_target" => Ok(planned_recommendation(Value::Null, Value::Null)),
+        "capture" => Ok(json!({ "image_path": "/tmp/light.fits", "document_id": "doc-1" })),
+        other => panic!("unexpected tool call `{other}` — a null train_id must not fire a sweep"),
+    });
+    let events = buffered_events(&[
+        (
+            "guide_focus_degraded",
+            json!({ "train_id": null, "baseline_hfd": 2.0, "current_hfd": 3.0, "window": 10 }),
+        ),
+        (
+            "guide_focus_escalation",
+            json!({ "train_id": null, "baseline_hfd": 2.0, "current_hfd": 3.0 }),
+        ),
+    ]);
+    let (outcome, _) = run_params_with_events(&doc, &params, &tools, events).await;
+    assert_eq!(outcome, RunOutcome::Completed);
+}
+
+#[tokio::test]
+async fn test_golden_deep_sky_watch_triggers_stay_silent_without_guide() {
+    // guide defaults to false: the watch events must not fire the
+    // triggers — an unguided document did not start the loop the
+    // events describe, so reacting to them is out of its scope.
+    let doc = make_doc(crate::document::corpus::golden_deep_sky());
+    let params = deep_sky_params(
+        &doc,
+        json!({
+            "focus": false,
+            "centering": false,
+            "max_frames": 1,
+            "park_on_finish": false
+        }),
+    );
+    let tools = MockTools::new(|_, tool, _| match tool {
+        "unpark" | "set_tracking" | "slew" | "record_exposure" => Ok(json!({})),
+        "get_next_target" => Ok(planned_recommendation(Value::Null, Value::Null)),
+        "capture" => Ok(json!({ "image_path": "/tmp/light.fits", "document_id": "doc-1" })),
+        other => panic!("unexpected tool call `{other}` — the watch triggers must stay silent"),
+    });
+    let events = buffered_events(&[
+        (
+            "guide_focus_degraded",
+            json!({ "train_id": "guide", "baseline_hfd": 2.0, "current_hfd": 3.0, "window": 10 }),
+        ),
+        (
+            "guide_focus_escalation",
+            json!({ "train_id": "guide", "baseline_hfd": 2.0, "current_hfd": 3.0 }),
+        ),
+    ]);
+    let (outcome, _) = run_params_with_events(&doc, &params, &tools, events).await;
+    assert_eq!(outcome, RunOutcome::Completed);
 }

@@ -22,6 +22,7 @@ use crate::events::EventEnvelope;
 use crate::imaging;
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(extend("oneOf" = [{"required": ["camera_id", "focuser_id"]}, {"required": ["train_id"]}]))]
 pub struct AutoFocusToolParams {
     /// Camera that captures each sweep frame. Pass together with
     /// `focuser_id`; mutually exclusive with `train_id`.
@@ -68,6 +69,7 @@ pub struct AutoFocusToolParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(extend("required" = ["train_id"]))]
 pub struct RefocusTrainParams {
     /// The train whose refocus trigger to expand.
     #[serde(default)]

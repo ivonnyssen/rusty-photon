@@ -35,6 +35,7 @@ use crate::events::EventEnvelope;
 const ROTATOR_MOVE_DEADLINE: Duration = Duration::from_secs(120);
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(extend("oneOf" = [{"required": ["rotator_id"]}, {"required": ["train_id"]}]))]
 pub struct MoveRotatorParams {
     /// Roster rotator id. Exactly one of `rotator_id` / `train_id`.
     #[serde(default)]
@@ -49,6 +50,7 @@ pub struct MoveRotatorParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(extend("oneOf" = [{"required": ["rotator_id"]}, {"required": ["train_id"]}]))]
 pub struct RotatorPositionParams {
     /// Roster rotator id. Exactly one of `rotator_id` / `train_id`.
     #[serde(default)]

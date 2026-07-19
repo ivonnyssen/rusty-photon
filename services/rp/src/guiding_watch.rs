@@ -162,12 +162,16 @@ pub fn spawn(
                         }
                     };
                     for event in core.observe(guiding, &valid, Instant::now()) {
+                        // Both payloads name the guiding train (null
+                        // without one) so an orchestrator trigger can
+                        // address the responding sweep rig-agnostically.
                         match event {
                             WatchEvent::Degraded { baseline_hfd, current_hfd } => {
                                 debug!(baseline_hfd, current_hfd, "guide focus degraded");
                                 event_bus.emit(
                                     "guide_focus_degraded",
                                     serde_json::json!({
+                                        "train_id": guiding_train_id,
                                         "baseline_hfd": baseline_hfd,
                                         "current_hfd": current_hfd,
                                         "window": config.window.value(),
@@ -179,6 +183,7 @@ pub fn spawn(
                                 event_bus.emit(
                                     "guide_focus_escalation",
                                     serde_json::json!({
+                                        "train_id": guiding_train_id,
                                         "baseline_hfd": baseline_hfd,
                                         "current_hfd": current_hfd,
                                     }),

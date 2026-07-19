@@ -140,6 +140,31 @@ async fn rp_with_focus_watch(
     escalation_deadline: String,
 ) {
     ensure_omnisim(world).await;
+    set_focus_watch(world, window, &poll_interval, &escalation_deadline);
+    start_rp(world).await;
+}
+
+/// The watch with a guiding train configured, so the emitted events
+/// carry the train's id for orchestrator wiring.
+#[given(
+    expr = "rp is running with guiding train {string} and a guide focus watch of window {int}, poll interval {string}, and escalation deadline {string}"
+)]
+async fn rp_with_train_and_focus_watch(
+    world: &mut RpWorld,
+    train_id: String,
+    window: i64,
+    poll_interval: String,
+    escalation_deadline: String,
+) {
+    ensure_omnisim(world).await;
+    add_focuser(world, None, None);
+    add_offline_camera(world, "guide-cam");
+    push_guiding_focuser_train(world, train_id, true);
+    set_focus_watch(world, window, &poll_interval, &escalation_deadline);
+    start_rp(world).await;
+}
+
+fn set_focus_watch(world: &mut RpWorld, window: i64, poll_interval: &str, escalation: &str) {
     let guider = world
         .guider
         .as_mut()
@@ -148,10 +173,9 @@ async fn rp_with_focus_watch(
         "window": window,
         "degrade_ratio": 1.25,
         "cooldown": "10m",
-        "escalation_deadline": escalation_deadline,
+        "escalation_deadline": escalation,
         "poll_interval": poll_interval,
     }));
-    start_rp(world).await;
 }
 
 // --- When steps ------------------------------------------------------

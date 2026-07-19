@@ -50,8 +50,8 @@ is not involved beyond its existing config-shape checks.
 | T1 | Config schema + validation + derived coupling model in rp (`optical_trains`, `equipment.mount.guiding`, back-ref removal, `focal_length_mm` migration) | Merged | [#586](https://github.com/ivonnyssen/rusty-photon/pull/586) |
 | T2 | Train-aware MCP tools: `auto_focus` by train, `refocus_train` sequence expansion, first rotator verbs | Merged | [#591](https://github.com/ivonnyssen/rusty-photon/pull/591) |
 | T3 | Mount motion gate (dither/slew/flip vs. in-flight exposures) | Merged | [#594](https://github.com/ivonnyssen/rusty-photon/pull/594) |
-| T4 | Guiding integration: rotate×guide ladder, guide-AF trigger + escalation via PHD2 metrics | In progress | feature/optical-trains-t4 |
-| T5 | DSL train addressing (`deep_sky` takes one train id, not three device ids) | Not started | |
+| T4 | Guiding integration: rotate×guide ladder, guide-AF trigger + escalation via PHD2 metrics | Merged | [#601](https://github.com/ivonnyssen/rusty-photon/pull/601) |
+| T5 | DSL train addressing (`deep_sky` takes one train id, not three device ids) + watch-event trigger wiring | In progress | feature/optical-trains-t5 |
 | T6 | ui-htmx `/equipment` grouped by train; membership editing | Not started | |
 
 Order: T1 first (everything reads the derived model), then T2/T3 in either
@@ -344,6 +344,65 @@ Settled in the T4 design pass (contracts in rp.md § Guide-train sweep,
 - `/equipment` groups roster rows under train headers with an unassigned
   pool; train membership (ordered list) is editable there and round-trips
   through `PUT /api/config`, surfacing rp's validation errors.
+
+Settled in the T5 design pass (contracts in rp.md § Optical Trains /
+tool table and session-runner.md § `deep_sky.json`):
+
+- **Addressing lives at the tool level, not in the document.** `capture`
+  and `center_on_target` take `camera_id` *or* `train_id` (the train's
+  terminal camera — guaranteed by the last-entry-is-a-camera invariant);
+  `set_filter` takes `filter_wheel_id` *or* `train_id` under the
+  sole-filter-wheel rule (none or several in the train is an error
+  naming it — `move_rotator`'s sole-rotator rule applied to wheels).
+  "Device-id parameters remain valid" means the **tools** keep device
+  addressing first-class; a document that resolved trains itself would
+  re-own membership knowledge rp already owns.
+- **`deep_sky.json` goes train-only** — a pre-1.0 hard cutover of the
+  document's parameter contract: one required `train_id`; `camera_id`,
+  `focuser_id`, `filter_wheel_id`, and the sweep-geometry parameters
+  (`focus_exposure`, `focus_step_size`, `focus_half_width`) retire in
+  favor of the train's `auto_focus` block. `focus_min_area` /
+  `focus_max_area` stay: they are measurement policy for the
+  HFR-degradation trigger's `measure_basic`, which requires them by
+  contract. Supporting both addressing modes inside one document would
+  double every tool call site behind `if` nodes ($expr cannot omit an
+  argument key) — rejected as unreadable. `calibrator_flats.json` and
+  `sky_flat.json` stay device-addressed (calibration procedures;
+  `get_camera_info` has no train addressing, and converting them buys
+  nothing until someone asks).
+- **The watch events carry `train_id`** (the guiding train) so a
+  document can wire the responses without a guide-train parameter:
+  `guide_focus_degraded` → guide-only metric `auto_focus` on
+  `event.train_id`; `guide_focus_escalation` → full `refocus_train` on
+  `event.train_id`. Both trigger bodies are try/catch-logged — a failed
+  recovery sweep degrades the night, ending it would be worse — and
+  neither carries a `while` gate: the events only exist during active
+  guiding, the metric sweep re-checks that at the tool, and a
+  blackboard gate would race the acquisition commit and silently drop
+  a once-per-episode firing. The `when` gate additionally requires
+  `event.train_id != null` (the watch legally emits null without a
+  guiding train).
+- **Addressing alternatives are published in the tool schemas** as
+  presence-only `oneOf` branches, and session-runner's layer-2 catalog
+  validation enforces them against the combined literal + `$expr`
+  argument-name set (excluding them from the literal-value check,
+  which cannot see `$expr` names). Making the addressing fields
+  `Option` had silently dropped them from the schemas' `required`
+  lists, so a document naming no alternative validated clean and
+  failed only at run time — this restores the fail-fast, and extends
+  it to the T2 tools (`auto_focus`, the rotator verbs, `refocus_train`)
+  that had the same gap.
+- **Guiding adoption rides T5** (the old #464 remaining slice): the
+  watch triggers are meaningless in an unguided document, so
+  `deep_sky.json` gains `guide` (default `false` — guiding needs a
+  configured guider + guiding train, so it is opt-in) and
+  `dither_every` (default `0`). Handshake: stop guiding before any
+  slew (target change, meridian flip), start after centering + focus
+  with `retry {3, 30s}` then fail **loudly** — a guided session that
+  cannot guide must not spend the night capturing trailed frames.
+  Dither failures and stop failures are logged, not fatal.
+  `session.guiding` tracks the loop in the blackboard; recovery clears
+  it and a stale flag costs one idempotent `stop_guiding`.
 
 ### Migration
 

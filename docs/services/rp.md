@@ -386,8 +386,8 @@ emits only `_complete` / `_failed`, with no `_started`.) Point events
 | `guide_failed` | error | Guiding start or settle failed |
 | `guide_stopped` | reason (`requested` \| `safety`) | Guiding stopped (point event) |
 | `guide_rotator_unmodeled` | rotator_id, train_id | `start_guiding` settled with a rotator-coupled guide camera but PHD2 reports no connected rotator (point event — see [Guider Service](#guider-service)) |
-| `guide_focus_degraded` | baseline_hfd, current_hfd, window | The [Guide Focus Watch](#guide-focus-watch)'s trailing HFD median exceeded `baseline × degrade_ratio` (point event; held by `cooldown`) |
-| `guide_focus_escalation` | baseline_hfd, current_hfd | A degradation episode is still degraded `escalation_deadline` after `guide_focus_degraded` — the full `refocus_train` sequence is indicated (point event; once per episode) |
+| `guide_focus_degraded` | train_id, baseline_hfd, current_hfd, window | The [Guide Focus Watch](#guide-focus-watch)'s trailing HFD median exceeded `baseline × degrade_ratio` (point event; held by `cooldown`). `train_id` names the guiding train (null when the watch runs without one), so a workflow trigger can address the guide-only sweep without knowing the rig |
+| `guide_focus_escalation` | train_id, baseline_hfd, current_hfd | A degradation episode is still degraded `escalation_deadline` after `guide_focus_degraded` — the full `refocus_train` sequence is indicated (point event; once per episode). `train_id` names the guiding train (null when the watch runs without one, same as `guide_focus_degraded`) |
 | `dither_started` | pixels, ra_only, settle_pixels, settle_time, settle_timeout | Dither command sent; deadline as on `guide_started` |
 | `dither_settled` | rms_ra_px, rms_dec_px, total_rms_px, sample_count | Post-dither settle complete |
 | `dither_failed` | error | Dither or its settle failed |
@@ -773,7 +773,7 @@ the exact parameter types and return structure.
 
 | Action | Parameters | Returns | Description |
 |--------|-----------|---------|-------------|
-| `capture` | camera_id, duration, binning | image_path, document_id | Take an exposure, download `image_array`, save FITS file, create exposure document. Carries an **advisory predicted deadline** on `exposure_started`: `predicted = duration + camera.readout_time_estimate` (default 15 s when unset), `max = predicted + 30 s` readout headroom. rp does **not** enforce this (the camera driver owns the exposure); it rides the envelope as `predicted_duration_ms`/`max_duration_ms` for the Sentinel watchdog. rp's own readout backstop (a separate, more generous `duration + 120 s` ceiling) is unchanged. Through a camera terminating an imaging train, holds the [mount motion gate](#mount-motion-gate) shared for the whole pipeline (a pending mount motion delays the start) |
+| `capture` | camera_id *or* train_id (exactly one), duration | image_path, document_id | Take an exposure, download `image_array`, save FITS file, create exposure document. `train_id` resolves the train's terminal camera; everything downstream — the `optics` block, gate membership, events — follows the resolved camera. Carries an **advisory predicted deadline** on `exposure_started`: `predicted = duration + camera.readout_time_estimate` (default 15 s when unset), `max = predicted + 30 s` readout headroom. rp does **not** enforce this (the camera driver owns the exposure); it rides the envelope as `predicted_duration_ms`/`max_duration_ms` for the Sentinel watchdog. rp's own readout backstop (a separate, more generous `duration + 120 s` ceiling) is unchanged. Through a camera terminating an imaging train, holds the [mount motion gate](#mount-motion-gate) shared for the whole pipeline (a pending mount motion delays the start) |
 | `get_camera_info` | camera_id | max_adu, exposure_min, exposure_max, sensor_x, sensor_y, bin_x, bin_y | Read camera capabilities and current settings |
 | `move_focuser` | focuser_id, position | actual_position | Move focuser to absolute position (blocks polling `is_moving` until idle). Bounded by a **predicted deadline**: `predicted = \|target − current\| / focuser.steps_per_sec` (current position read before the move); `max = max(predicted × 2, MIN_FOCUSER_DEADLINE = 5 s)`. If the pre-move read fails it falls back to a 120 s ceiling; `predicted`/`max` ride the `move_focuser_started` envelope as `predicted_duration_ms`/`max_duration_ms` |
 | `get_focuser_position` | focuser_id | position | Read current focuser position |
@@ -789,7 +789,7 @@ the exact parameter types and return structure.
 | `unpark` | — | — | Clear the mount's `AtPark` flag. Returns immediately. Does NOT auto-enable `Tracking`; call `set_tracking` before slewing |
 | `get_park_state` | — | at_park, can_park, can_unpark | Read park state and capabilities; fails loud on `AtPark` read error |
 | `abort_slew` | — | — | Abort an in-progress mount slew or park. Per ASCOM, only valid while `Slewing == true`; the natural Alpaca error propagates otherwise |
-| `set_filter` | filter_wheel_id, filter_name | — | Change filter wheel position |
+| `set_filter` | filter_wheel_id *or* train_id (exactly one), filter_name | filter_wheel_id, filter_name, position | Change filter wheel position. `train_id` requires the train to contain exactly one filter wheel — none is an error naming the train, several is ambiguous and also an error (the sole-rotator rule of `move_rotator`, applied to wheels); the result and `filter_switch` event carry the resolved `filter_wheel_id` |
 | `get_filter` | filter_wheel_id | filter_name, position | Read current filter |
 | `close_cover` | calibrator_id | — | Close the dust cover (blocks until closed) |
 | `open_cover` | calibrator_id | — | Open the dust cover (blocks until open) |
@@ -865,7 +865,7 @@ boundary — but expose the same MCP tool surface as any other tool.
 |--------|-----------|---------|-------------|
 | `auto_focus` | camera_id + focuser_id *or* train_id (mutually exclusive); duration, step_size, half_width, min_area, max_area, threshold_sigma (optional), min_fit_points (optional) — with train_id, per-call sweep parameters fall back field by field to the train's `auto_focus` config block | best_position, best_hfr (capture sweep) / best_hfd (metric sweep), final_position, samples_used, curve_points, temperature_c | Parabolic-fit V-curve auto-focus. Imaging addressing drives `move_focuser` + `capture` + `measure_basic` internally; addressing the **guiding train** runs the PHD2-metric sweep instead (median HFD of fresh guide frames per position; requires active guiding; never captures through the guide camera). See [`auto_focus` Contract](#auto_focus-contract). Implemented. |
 | `refocus_train` | train_id, reason (optional) | train_id, reason, guiding_paused, steps | Expand one refocus trigger into the train model's dependency-ordered AF sequence — shared focusers upstream-first (each run in the train where it is terminal), then the train's own terminal focuser — pausing guide corrections around the sequence when a step moves a guiding-train focuser. Sweep parameters come from each run train's `auto_focus` config block. See [`refocus_train` Contract](#refocus_train-contract). |
-| `center_on_target` | camera_id, ra, dec, duration, tolerance_arcsec, max_attempts | final_error_arcsec, attempts, final_ra, final_dec, iterations | Iterative `capture` + `plate_solve` + `sync_mount` + `slew` loop until residual ≤ `tolerance_arcsec`. Carries an **advisory outer-loop deadline** on `centering_started`: `per_iter = duration + centering.solve_time_estimate + centering.slew_overhead_estimate`, `predicted = per_iter`, `max = max_attempts × per_iter`. The watchdog tracks only this outer loop; each inner `slew`/`capture` carries its own deadline, and each takes the [mount motion gate](#mount-motion-gate) in its own mode (slews exclusive, imaging-train captures shared). See [`center_on_target` Contract](#center_on_target-contract). Implemented. |
+| `center_on_target` | camera_id *or* train_id (exactly one), ra, dec, duration, tolerance_arcsec, max_attempts | final_error_arcsec, attempts, final_ra, final_dec, iterations | Iterative `capture` + `plate_solve` + `sync_mount` + `slew` loop until residual ≤ `tolerance_arcsec`. `train_id` resolves the train's terminal camera. Carries an **advisory outer-loop deadline** on `centering_started`: `per_iter = duration + centering.solve_time_estimate + centering.slew_overhead_estimate`, `predicted = per_iter`, `max = max_attempts × per_iter`. The watchdog tracks only this outer loop; each inner `slew`/`capture` carries its own deadline, and each takes the [mount motion gate](#mount-motion-gate) in its own mode (slews exclusive, imaging-train captures shared). See [`center_on_target` Contract](#center_on_target-contract). Implemented. |
 
 **Planner — Ephemeris primitives**
 
@@ -2003,6 +2003,22 @@ Consumers of the derived model:
   terminal focuser and falling back to the train's `auto_focus`
   config block for sweep parameters — see the
   [`auto_focus` Contract](#auto_focus-contract).
+- `capture` and `center_on_target` accept `train_id` as an
+  alternative to `camera_id` (the train's terminal camera), and
+  `set_filter` as an alternative to `filter_wheel_id` (the train's
+  sole filter wheel — none or several is an error naming the train).
+  Device-id addressing stays first-class on every train-addressable
+  tool; trains are an alternative spelling, not a replacement. This
+  is what lets a workflow document take a single `train_id`
+  parameter — the shipped `deep_sky.json` does
+  (session-runner.md § `deep_sky.json`). Every train-addressable
+  tool's input schema publishes its alternatives as a top-level
+  `oneOf` of **presence-only** branches (each carrying nothing but
+  `required`, e.g. `[{"required": ["camera_id"]}, {"required":
+  ["train_id"]}]`; `refocus_train` simply marks `train_id` required)
+  so schema-driven validators — session-runner's layer-2 catalog
+  validation — can fail a call that names no alternative, or
+  several, before anything moves.
 - `refocus_train` expands one trigger into the dependency-ordered AF
   sequence, with a guiding pause/resume handshake around steps that
   move a guiding-train focuser — see the
@@ -2061,7 +2077,14 @@ Queueing semantics (Decision 5 of the
   its own: every holder is already deadline-bounded (captures by
   `duration` plus the readout backstop, slews and dithers by their
   own predictive deadlines and settle timeouts), so the longest
-  possible wait is the sum of the holders' own ceilings.
+  possible wait is the sum of the holders' own ceilings. An
+  **aborted** exposure releases much sooner than the backstop: the
+  capture poll treats a camera back at `Idle` with no image (two
+  consecutive reads, plus a final `ImageReady` re-check) as an
+  aborted exposure and fails the capture promptly — otherwise the
+  safety enforcer's `AbortExposure` would leave the shared permit
+  held for the whole readout grace, blocking the recovery slew that
+  follows a safety interruption.
 - When an exclusive request cannot start immediately, rp emits the
   point event `mount_motion_pending {operation}` and then blocks.
   The operation's own `*_started` envelope is emitted only **after**
@@ -2167,9 +2190,12 @@ When `equipment.mount.guiding.focus_watch` is present, rp runs a
 background watch over the guider service's per-frame star metrics
 and turns a degrading HFD trend into **events, not actions**: the
 orchestrator owns sequencing (§ Orchestration), so it decides when a
-refocus fits between exposures — a workflow trigger on these events
-invokes `refocus_train` (DSL wiring is plan phase T5). rp never
-moves a focuser on its own initiative.
+refocus fits between exposures. Both events carry the guiding
+train's `train_id`, and the shipped `deep_sky.json` wires the
+responses as triggers (session-runner.md § `deep_sky.json`): a
+guide-only `auto_focus` on `guide_focus_degraded`, the full
+`refocus_train` on `guide_focus_escalation`. rp never moves a
+focuser on its own initiative.
 
 Mechanics — the watch polls `GET /guiding/metrics` every
 `poll_interval` (default `"5s"`) while the guider reports an active
@@ -2185,14 +2211,14 @@ guide loop, and is idle otherwise:
   degrading against the new baseline fires immediately.
 - **Degraded**: the median HFD of the trailing `window` frames
   exceeds `baseline × degrade_ratio` (default `1.25`). Emit
-  `guide_focus_degraded {baseline_hfd, current_hfd, window}` once,
+  `guide_focus_degraded {train_id, baseline_hfd, current_hfd, window}` once,
   then hold for `cooldown` (default `"10m"`) before the watch may
   fire again.
 - **Escalation**: if the same degradation episode is still degraded
   `escalation_deadline` (default `"10m"`) after
   `guide_focus_degraded` fired — the guide-only AF the orchestrator
   ran did not recover the trend, or none ran — emit
-  `guide_focus_escalation {baseline_hfd, current_hfd}` once per
+  `guide_focus_escalation {train_id, baseline_hfd, current_hfd}` once per
   episode. The full `refocus_train` sequence is the indicated
   response: it covers the shared-focuser drift the guide-only sweep
   cannot fix.

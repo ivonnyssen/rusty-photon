@@ -82,14 +82,17 @@ Feature: Guide-train focus via PHD2 metrics
     Then the tool call should return an error
     And the error message should contain "requires active guiding"
 
-  Scenario: The guide focus watch turns a degrading HFD trend into events
-    Given a stub guider with the HFD script "2.0,3.0"
+  Scenario: The guide focus watch turns a degrading HFD trend into events naming the guiding train
+    Given a running Alpaca simulator
+    And a stub guider with the HFD script "2.0,3.0"
     And a test webhook receiver subscribed to the events "guide_focus_degraded, guide_focus_escalation"
-    And rp is running with a guide focus watch of window 3, poll interval "250ms", and escalation deadline "1s"
+    And rp is running with guiding train "guide" and a guide focus watch of window 3, poll interval "250ms", and escalation deadline "1s"
     Then the test webhook receiver should receive a "guide_focus_degraded" event
+    And the "guide_focus_degraded" event payload field "train_id" should be "guide"
     And the "guide_focus_degraded" event payload should contain a "baseline_hfd"
     And the "guide_focus_degraded" event payload should contain a "current_hfd"
     And the test webhook receiver should receive a "guide_focus_escalation" event
+    And the "guide_focus_escalation" event payload field "train_id" should be "guide"
 
   Scenario: A stable HFD trend never fires the watch
     Given a stub guider with the HFD script "2.0"

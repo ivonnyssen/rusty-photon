@@ -14,7 +14,9 @@ use serde_json::Value;
 use bdd_infra::rp_harness::OpticalTrainConfig;
 
 use crate::steps::config_rest_steps::{send_put_config, write_scenario_config};
-use crate::steps::tool_steps::{add_camera, ensure_omnisim, start_rp};
+use crate::steps::tool_steps::{
+    add_camera, add_filter_wheel, ensure_mcp_client, ensure_omnisim, start_rp,
+};
 use crate::world::RpWorld;
 
 /// The reference roster + trains from rp.md § Optical Trains: two
@@ -80,6 +82,81 @@ async fn rp_with_camera_in_train(world: &mut RpWorld, focal_length_mm: f64) {
         auto_focus: None,
     });
     start_rp(world).await;
+}
+
+#[given("rp is running with a camera and filter wheel on the simulator in an imaging train")]
+async fn rp_with_camera_and_wheel_in_train(world: &mut RpWorld) {
+    ensure_omnisim(world).await;
+    add_camera(world);
+    add_filter_wheel(world);
+    world.optical_trains.push(OpticalTrainConfig {
+        id: "main".to_string(),
+        purpose: Some("imaging".to_string()),
+        focal_length_mm: None,
+        devices: vec!["main-fw".to_string(), "main-cam".to_string()],
+        auto_focus: None,
+    });
+    start_rp(world).await;
+}
+
+#[when(expr = "the MCP client calls \"capture\" with train {string} for {int} ms")]
+async fn mcp_call_capture_train(world: &mut RpWorld, train_id: String, duration_ms: i32) {
+    call_capture(
+        world,
+        serde_json::json!({
+            "train_id": train_id,
+            "duration": format!("{duration_ms}ms"),
+        }),
+    )
+    .await;
+}
+
+#[when(
+    expr = "the MCP client calls \"capture\" with both camera {string} and train {string} for {int} ms"
+)]
+async fn mcp_call_capture_camera_and_train(
+    world: &mut RpWorld,
+    camera_id: String,
+    train_id: String,
+    duration_ms: i32,
+) {
+    call_capture(
+        world,
+        serde_json::json!({
+            "camera_id": camera_id,
+            "train_id": train_id,
+            "duration": format!("{duration_ms}ms"),
+        }),
+    )
+    .await;
+}
+
+async fn call_capture(world: &mut RpWorld, args: Value) {
+    ensure_mcp_client(world).await;
+    let result = world.mcp().call_tool("capture", args).await;
+    if let Ok(ref v) = result {
+        world.last_document_id = v
+            .get("document_id")
+            .and_then(Value::as_str)
+            .map(String::from);
+    }
+    world.last_tool_result = Some(result);
+}
+
+#[when(expr = "the MCP client calls \"set_filter\" with train {string} and filter {string}")]
+async fn mcp_call_set_filter_train(world: &mut RpWorld, train_id: String, filter_name: String) {
+    ensure_mcp_client(world).await;
+    let result = world
+        .mcp()
+        .call_tool(
+            "set_filter",
+            serde_json::json!({
+                "train_id": train_id,
+                "filter_name": filter_name,
+            }),
+        )
+        .await;
+    world.last_tool_result = Some(result);
 }
 
 #[when(expr = "I PUT \\/api\\/config with the fetched config after setting {string} to:")]

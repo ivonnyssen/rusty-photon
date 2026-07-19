@@ -368,3 +368,133 @@ fn test_golden_calibrator_flats_passes_against_a_matching_catalog() {
     ];
     assert_eq!(findings(&document, &catalog), vec![]);
 }
+
+/// A train-addressable schema in rp's published shape: no top-level
+/// `required` for addressing; a presence-only `oneOf` declares the
+/// mutually exclusive alternatives.
+fn train_addressable_capture_spec() -> ToolSpec {
+    spec(
+        "capture",
+        json!({
+            "type": "object",
+            "properties": {
+                "camera_id": { "type": "string" },
+                "train_id": { "type": "string" },
+                "duration": { "type": "string" }
+            },
+            "required": ["duration"],
+            "oneOf": [
+                { "required": ["camera_id"] },
+                { "required": ["train_id"] }
+            ],
+            "additionalProperties": false
+        }),
+    )
+}
+
+#[test]
+fn test_presence_one_of_accepts_either_alternative_as_literal_or_expr() {
+    for args in [
+        json!({ "camera_id": "cam", "duration": "2s" }),
+        json!({ "train_id": "main", "duration": "2s" }),
+        json!({ "train_id": { "$expr": "params.train_id" }, "duration": "2s" }),
+    ] {
+        let document = doc_with_root(json!({ "tool": "capture", "args": args }));
+        assert_eq!(
+            findings(&document, &[train_addressable_capture_spec()]),
+            vec![],
+            "args {args}"
+        );
+    }
+}
+
+#[test]
+fn test_presence_one_of_fails_a_call_with_no_addressing() {
+    let document = doc_with_root(json!({
+        "tool": "capture",
+        "args": { "duration": "2s" }
+    }));
+    assert_eq!(
+        findings(&document, &[train_addressable_capture_spec()]),
+        vec![(
+            "/root".to_owned(),
+            "tool `capture` requires exactly one of: camera_id or train_id".to_owned()
+        )]
+    );
+}
+
+#[test]
+fn test_presence_one_of_fails_a_call_with_both_alternatives() {
+    let document = doc_with_root(json!({
+        "tool": "capture",
+        "args": { "camera_id": "cam", "train_id": { "$expr": "params.train_id" }, "duration": "2s" }
+    }));
+    assert_eq!(
+        findings(&document, &[train_addressable_capture_spec()]),
+        vec![(
+            "/root".to_owned(),
+            "tool `capture` accepts only one of: camera_id or train_id".to_owned()
+        )]
+    );
+}
+
+#[test]
+fn test_presence_one_of_with_a_multi_name_branch_requires_the_full_pair() {
+    // auto_focus publishes `camera_id + focuser_id` or `train_id`; a
+    // call carrying only half the explicit pair satisfies neither.
+    let auto_focus = spec(
+        "auto_focus",
+        json!({
+            "type": "object",
+            "properties": {
+                "camera_id": { "type": "string" },
+                "focuser_id": { "type": "string" },
+                "train_id": { "type": "string" }
+            },
+            "oneOf": [
+                { "required": ["camera_id", "focuser_id"] },
+                { "required": ["train_id"] }
+            ],
+            "additionalProperties": false
+        }),
+    );
+    let document = doc_with_root(json!({
+        "tool": "auto_focus",
+        "args": { "camera_id": "cam" }
+    }));
+    assert_eq!(
+        findings(&document, &[auto_focus]),
+        vec![(
+            "/root".to_owned(),
+            "tool `auto_focus` requires exactly one of: camera_id + focuser_id or train_id"
+                .to_owned()
+        )]
+    );
+}
+
+#[test]
+fn test_a_value_constraining_one_of_is_left_to_the_literal_check() {
+    // A `oneOf` whose branches constrain more than presence is NOT the
+    // addressing contract: check 2b ignores it and check 4 validates
+    // literal values against it unchanged.
+    let picky = spec(
+        "picky",
+        json!({
+            "type": "object",
+            "properties": { "mode": { "type": "string" } },
+            "oneOf": [
+                { "properties": { "mode": { "const": "fast" } }, "required": ["mode"] },
+                { "properties": { "mode": { "const": "slow" } }, "required": ["mode"] }
+            ]
+        }),
+    );
+    let ok = doc_with_root(json!({ "tool": "picky", "args": { "mode": "fast" } }));
+    assert_eq!(findings(&ok, std::slice::from_ref(&picky)), vec![]);
+    let bad = doc_with_root(json!({ "tool": "picky", "args": { "mode": "wrong" } }));
+    let issues = findings(&bad, &[picky]);
+    assert_eq!(issues.len(), 1, "{issues:?}");
+    assert!(
+        issues[0].1.contains("parameter schema"),
+        "the value combinator must reach the literal check: {issues:?}"
+    );
+}
