@@ -17,6 +17,46 @@ pub enum ImagePattern {
     TestPattern,
 }
 
+/// Per-pixel noise source (xorshift32). Simulated frames need noise that
+/// looks plausible, not statistical rigor, and a full `rand` uniform-range
+/// sample per pixel dominates frame-generation cost in unoptimized builds
+/// — a multi-megapixel frame is millions of samples.
+struct PixelNoise {
+    state: u32,
+}
+
+impl PixelNoise {
+    fn new(seed: u32) -> Self {
+        // xorshift is stuck at zero; force a nonzero start.
+        Self { state: seed | 1 }
+    }
+
+    fn next_u32(&mut self) -> u32 {
+        let mut x = self.state;
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        self.state = x;
+        x
+    }
+
+    /// Roughly uniform value in `[-range, +range]`. The modulo bias is
+    /// negligible at the spans used here (a few thousand out of 2^32).
+    fn next_signed(&mut self, range: i32) -> i32 {
+        if range <= 0 {
+            return 0;
+        }
+        let span = range as u32 * 2 + 1;
+        (self.next_u32() % span) as i32 - range
+    }
+}
+
+/// Row-distinct seed so rayon rows (and serial frames reusing a seed)
+/// don't repeat the same noise sequence.
+fn row_seed(frame_seed: u32, row: usize) -> u32 {
+    frame_seed ^ (row as u32).wrapping_mul(0x9E37_79B9)
+}
+
 /// Generates test images for simulated camera capture
 #[derive(Debug, Clone)]
 pub struct ImageGenerator {
@@ -61,20 +101,22 @@ impl ImageGenerator {
         let pixel_count = (width * height) as usize;
         let total_size = pixel_count * channels as usize;
         let mut data = vec![0u8; total_size];
+        // One `rand` sample per frame keeps frames distinct; the per-pixel
+        // noise itself comes from the cheap `PixelNoise` stream.
         let mut rng = rand::rng();
+        let frame_seed: u32 = rng.random();
 
         match self.pattern {
             ImagePattern::Gradient => {
-                self.generate_gradient_8bit(&mut data, width, height, channels, &mut rng)
+                self.generate_gradient_8bit(&mut data, width, height, channels, frame_seed)
             }
-            ImagePattern::StarField => {
-                self.generate_starfield_8bit(&mut data, width, height, channels, &mut rng)
-            }
+            ImagePattern::StarField => self
+                .generate_starfield_8bit(&mut data, width, height, channels, frame_seed, &mut rng),
             ImagePattern::Flat => {
-                self.generate_flat_8bit(&mut data, width, height, channels, &mut rng)
+                self.generate_flat_8bit(&mut data, width, height, channels, frame_seed)
             }
             ImagePattern::TestPattern => {
-                self.generate_test_pattern_8bit(&mut data, width, height, channels, &mut rng)
+                self.generate_test_pattern_8bit(&mut data, width, height, channels, frame_seed)
             }
         }
 
@@ -86,45 +128,44 @@ impl ImageGenerator {
         let pixel_count = (width * height) as usize;
         let total_size = pixel_count * channels as usize * 2; // 2 bytes per sample
         let mut data = vec![0u8; total_size];
+        // One `rand` sample per frame keeps frames distinct; the per-pixel
+        // noise itself comes from the cheap `PixelNoise` stream.
         let mut rng = rand::rng();
+        let frame_seed: u32 = rng.random();
 
         match self.pattern {
             ImagePattern::Gradient => {
-                self.generate_gradient_16bit(&mut data, width, height, channels, &mut rng)
+                self.generate_gradient_16bit(&mut data, width, channels, frame_seed)
             }
-            ImagePattern::StarField => {
-                self.generate_starfield_16bit(&mut data, width, height, channels, &mut rng)
-            }
+            ImagePattern::StarField => self
+                .generate_starfield_16bit(&mut data, width, height, channels, frame_seed, &mut rng),
             ImagePattern::Flat => {
-                self.generate_flat_16bit(&mut data, width, height, channels, &mut rng)
+                self.generate_flat_16bit(&mut data, width, height, channels, frame_seed)
             }
             ImagePattern::TestPattern => {
-                self.generate_test_pattern_16bit(&mut data, width, height, channels, &mut rng)
+                self.generate_test_pattern_16bit(&mut data, width, height, channels, frame_seed)
             }
         }
 
         data
     }
 
-    fn generate_gradient_8bit<R: Rng>(
+    fn generate_gradient_8bit(
         &self,
         data: &mut [u8],
         width: u32,
         height: u32,
         channels: u32,
-        rng: &mut R,
+        frame_seed: u32,
     ) {
         let base = (self.base_level >> 8) as u8;
         let noise_range = (255.0 * self.noise_level) as i16;
+        let mut noise_source = PixelNoise::new(frame_seed);
 
         for y in 0..height {
             for x in 0..width {
                 let gradient = ((x as f64 / width as f64) * 200.0) as u8;
-                let noise = if noise_range > 0 {
-                    rng.random_range(-noise_range..=noise_range)
-                } else {
-                    0
-                };
+                let noise = noise_source.next_signed(noise_range as i32) as i16;
                 let value = (base as i16 + gradient as i16 + noise).clamp(0, 255) as u8;
 
                 let idx = ((y * width + x) * channels) as usize;
@@ -135,32 +176,20 @@ impl ImageGenerator {
         }
     }
 
-    fn generate_gradient_16bit<R: Rng>(
-        &self,
-        data: &mut [u8],
-        width: u32,
-        _height: u32,
-        channels: u32,
-        _rng: &mut R,
-    ) {
+    fn generate_gradient_16bit(&self, data: &mut [u8], width: u32, channels: u32, frame_seed: u32) {
         let noise_range = (65535.0 * self.noise_level) as i32;
         let base_level = self.base_level;
         let row_size = (width * channels) as usize * 2;
 
-        // Process rows in parallel
+        // Process rows in parallel; each row gets its own noise stream.
         data.par_chunks_mut(row_size)
             .enumerate()
-            .for_each(|(_y, row)| {
-                // Each thread gets its own RNG
-                let mut thread_rng = rand::rng();
+            .for_each(|(y, row)| {
+                let mut noise_source = PixelNoise::new(row_seed(frame_seed, y));
 
                 for x in 0..width {
                     let gradient = ((x as f64 / width as f64) * 50000.0) as u16;
-                    let noise = if noise_range > 0 {
-                        thread_rng.random_range(-noise_range..=noise_range)
-                    } else {
-                        0
-                    };
+                    let noise = noise_source.next_signed(noise_range);
                     let value =
                         (base_level as i32 + gradient as i32 + noise).clamp(0, 65535) as u16;
 
@@ -174,24 +203,23 @@ impl ImageGenerator {
             });
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn generate_starfield_8bit<R: Rng>(
         &self,
         data: &mut [u8],
         width: u32,
         height: u32,
         channels: u32,
+        frame_seed: u32,
         rng: &mut R,
     ) {
         // Fill with background noise
         let base = (self.base_level >> 8) as u8;
         let noise_range = (255.0 * self.noise_level * 0.5) as i16; // Less noise for starfield
+        let mut noise_source = PixelNoise::new(frame_seed);
 
         for pixel in data.iter_mut() {
-            let noise = if noise_range > 0 {
-                rng.random_range(-noise_range..=noise_range)
-            } else {
-                0
-            };
+            let noise = noise_source.next_signed(noise_range as i32) as i16;
             *pixel = (base as i16 + noise).clamp(0, 255) as u8;
         }
 
@@ -207,24 +235,23 @@ impl ImageGenerator {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn generate_starfield_16bit<R: Rng>(
         &self,
         data: &mut [u8],
         width: u32,
         height: u32,
         channels: u32,
+        frame_seed: u32,
         rng: &mut R,
     ) {
         // Fill with background noise
         let noise_range = (65535.0 * self.noise_level * 0.3) as i32;
+        let mut noise_source = PixelNoise::new(frame_seed);
 
         for y in 0..height {
             for x in 0..width {
-                let noise = if noise_range > 0 {
-                    rng.random_range(-noise_range..=noise_range)
-                } else {
-                    0
-                };
+                let noise = noise_source.next_signed(noise_range);
                 let value = (self.base_level as i32 + noise).clamp(0, 65535) as u16;
 
                 let idx = ((y * width + x) * channels) as usize * 2;
@@ -327,24 +354,21 @@ impl ImageGenerator {
         }
     }
 
-    fn generate_flat_8bit<R: Rng>(
+    fn generate_flat_8bit(
         &self,
         data: &mut [u8],
         width: u32,
         height: u32,
         channels: u32,
-        rng: &mut R,
+        frame_seed: u32,
     ) {
         let base = (self.base_level >> 8) as u8;
         let noise_range = (255.0 * self.noise_level) as i16;
+        let mut noise_source = PixelNoise::new(frame_seed);
 
         for y in 0..height {
             for x in 0..width {
-                let noise = if noise_range > 0 {
-                    rng.random_range(-noise_range..=noise_range)
-                } else {
-                    0
-                };
+                let noise = noise_source.next_signed(noise_range as i32) as i16;
                 let value = (base as i16 + noise).clamp(0, 255) as u8;
 
                 let idx = ((y * width + x) * channels) as usize;
@@ -355,23 +379,20 @@ impl ImageGenerator {
         }
     }
 
-    fn generate_flat_16bit<R: Rng>(
+    fn generate_flat_16bit(
         &self,
         data: &mut [u8],
         width: u32,
         height: u32,
         channels: u32,
-        rng: &mut R,
+        frame_seed: u32,
     ) {
         let noise_range = (65535.0 * self.noise_level) as i32;
+        let mut noise_source = PixelNoise::new(frame_seed);
 
         for y in 0..height {
             for x in 0..width {
-                let noise = if noise_range > 0 {
-                    rng.random_range(-noise_range..=noise_range)
-                } else {
-                    0
-                };
+                let noise = noise_source.next_signed(noise_range);
                 let value = (self.base_level as i32 + noise).clamp(0, 65535) as u16;
 
                 let idx = ((y * width + x) * channels) as usize * 2;
@@ -384,15 +405,16 @@ impl ImageGenerator {
         }
     }
 
-    fn generate_test_pattern_8bit<R: Rng>(
+    fn generate_test_pattern_8bit(
         &self,
         data: &mut [u8],
         width: u32,
         height: u32,
         channels: u32,
-        rng: &mut R,
+        frame_seed: u32,
     ) {
         let noise_range = (255.0 * self.noise_level * 0.5) as i16;
+        let mut noise_source = PixelNoise::new(frame_seed);
 
         for y in 0..height {
             for x in 0..width {
@@ -412,11 +434,7 @@ impl ImageGenerator {
                 let ring = ((dist / 50.0) as u32) % 2;
                 let ring_mod = if ring == 0 { 20i16 } else { -20i16 };
 
-                let noise = if noise_range > 0 {
-                    rng.random_range(-noise_range..=noise_range)
-                } else {
-                    0
-                };
+                let noise = noise_source.next_signed(noise_range as i32) as i16;
                 let value = (base as i16 + ring_mod + noise).clamp(0, 255) as u8;
 
                 let idx = ((y * width + x) * channels) as usize;
@@ -427,15 +445,16 @@ impl ImageGenerator {
         }
     }
 
-    fn generate_test_pattern_16bit<R: Rng>(
+    fn generate_test_pattern_16bit(
         &self,
         data: &mut [u8],
         width: u32,
         height: u32,
         channels: u32,
-        rng: &mut R,
+        frame_seed: u32,
     ) {
         let noise_range = (65535.0 * self.noise_level * 0.5) as i32;
+        let mut noise_source = PixelNoise::new(frame_seed);
 
         for y in 0..height {
             for x in 0..width {
@@ -455,11 +474,7 @@ impl ImageGenerator {
                 let ring = ((dist / 50.0) as u32) % 2;
                 let ring_mod: i32 = if ring == 0 { 5000 } else { -5000 };
 
-                let noise = if noise_range > 0 {
-                    rng.random_range(-noise_range..=noise_range)
-                } else {
-                    0
-                };
+                let noise = noise_source.next_signed(noise_range);
                 let value = (base as i32 + ring_mod + noise).clamp(0, 65535) as u16;
 
                 let idx = ((y * width + x) * channels) as usize * 2;

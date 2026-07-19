@@ -169,13 +169,12 @@ impl SimulatedCameraState {
 
     /// Starts an exposure
     pub fn start_exposure(&mut self) {
-        self.exposure_start = Some(Instant::now());
         // Get exposure time from parameters
         if let Some(&exposure_us) = self.parameters.get(&Control::Exposure) {
             self.exposure_duration_us = exposure_us as u64;
         }
 
-        // Pre-generate the image immediately when exposure starts
+        // Pre-generate the image when the exposure starts
         let (width, height) = self.get_current_image_dimensions();
         let bits_per_pixel = self.bit_depth;
         let channels = self.get_channels();
@@ -195,6 +194,12 @@ impl SimulatedCameraState {
             bits_per_pixel,
             channels,
         });
+
+        // Capture the timestamp last: the exposure clock must not include
+        // the frame-generation work above, which can take visible wall time
+        // in unoptimized builds on loaded machines and would otherwise eat
+        // into (or instantly complete) the simulated exposure.
+        self.exposure_start = Some(Instant::now());
     }
 
     /// Stops the current exposure but keeps the image data

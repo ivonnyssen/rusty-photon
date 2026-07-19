@@ -81,7 +81,10 @@ Feature: Asynchronous slewing
     Then the slew target on the wire should correspond to RA 12.0 hours and Dec 45.0 degrees
 
   Scenario: Slewing returns true while a slew is in progress
-    Given a running star-adventurer service
+    # The long post-slew settle keeps Slewing true after the mount reaches
+    # the target, so the assertion observes a window that outlives the
+    # scenario instead of racing the slew's natural completion.
+    Given a star-adventurer service configured with a 600 second post-slew settle
     When I connect the device
     And I slew asynchronously to RA 6.0 hours and Dec 30.0 degrees
     Then Slewing should be true

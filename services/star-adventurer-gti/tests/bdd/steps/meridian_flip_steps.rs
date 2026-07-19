@@ -11,10 +11,27 @@
 use crate::world::StarAdventurerWorld;
 use ascom_alpaca::api::telescope::PierSide;
 use cucumber::{given, then, when};
+use std::time::Duration;
 
 #[given("a star-adventurer service configured with flip_policy enabled")]
 async fn configured_with_flip_policy_enabled(world: &mut StarAdventurerWorld) {
     world.config_mut().mount.flip_policy.enabled = true;
+    world.start_service().await;
+}
+
+#[given(
+    expr = "a star-adventurer service configured with flip_policy enabled and a {int} second post-slew settle"
+)]
+async fn configured_with_flip_policy_and_post_slew_settle(
+    world: &mut StarAdventurerWorld,
+    secs: u64,
+) {
+    // The long settle pins `Slewing == true` open after the flip slew's
+    // motion completes, so a scenario asserting in-flight visibility can't
+    // race the completion watcher on a loaded runner. The settle never
+    // actually elapses — the scenario tears the service down first.
+    world.config_mut().mount.flip_policy.enabled = true;
+    world.config_mut().mount.settle_after_slew = Duration::from_secs(secs);
     world.start_service().await;
 }
 

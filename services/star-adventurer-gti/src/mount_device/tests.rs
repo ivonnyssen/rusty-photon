@@ -772,12 +772,16 @@ async fn sync_to_coordinates_validates_inputs() {
 }
 
 fn fast_settle_device() -> MountDevice {
-    let mut cfg = Config::default();
     // Tight polling + zero settle so the watcher is fast in tests.
+    device_with_settle(Duration::from_millis(0))
+}
+
+fn device_with_settle(settle_after_slew: Duration) -> MountDevice {
+    let mut cfg = Config::default();
     if let crate::config::TransportConfig::Usb(usb) = &mut cfg.transport {
         usb.polling_interval = Duration::from_millis(20);
     }
-    cfg.mount.settle_after_slew = Duration::from_millis(0);
+    cfg.mount.settle_after_slew = settle_after_slew;
     // The slew-lifecycle tests pass hardcoded RA/Dec targets
     // (typically `(6.0 h, 30°)`) whose mech-HA — and hence apparent
     // altitude — depends on the wallclock LST and would
@@ -803,6 +807,18 @@ fn fast_settle_device() -> MountDevice {
 
 async fn fast_settle_connected() -> MountDevice {
     let d = fast_settle_device();
+    d.set_connected(true).await.unwrap();
+    d
+}
+
+/// Like [`fast_settle_connected`], but with a post-slew settle long enough
+/// that an in-flight slew's `Slewing == true` window provably outlives the
+/// assertions observing it: the completion watcher parks in its settle
+/// sleep instead of clearing `slew_in_progress` as soon as the mock
+/// reaches its goto target. The settle never actually elapses — the test
+/// runtime is torn down first.
+async fn slow_settle_connected() -> MountDevice {
+    let d = device_with_settle(Duration::from_secs(600));
     d.set_connected(true).await.unwrap();
     d
 }
@@ -1435,17 +1451,25 @@ async fn unpark_does_not_auto_enable_tracking() {
 
 #[tokio::test]
 async fn abort_slew_clears_slew_in_progress() {
-    let d = fast_settle_connected().await;
+    // Settle-pinned device: only the abort below can clear Slewing, so
+    // the first assert can't race the completion watcher under load.
+    let d = slow_settle_connected().await;
     d.slew_to_coordinates_async(6.0, 30.0).await.unwrap();
-    // slew_in_progress is set immediately after the spawn.
+    // slew_in_progress is latched synchronously before the call returns.
     assert!(d.slewing().await.unwrap());
     d.abort_slew().await.unwrap();
-    // Even before the polling task refreshes the snapshot,
-    // slew_in_progress is already cleared so Slewing transitions to
-    // false.
-    // Wait one polling tick so any in-flight watcher iteration completes.
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    assert!(!d.slewing().await.unwrap());
+    // abort_slew clears slew_in_progress immediately, but Slewing's
+    // fallback reads the polling snapshot, which can report the axes as
+    // still running in goto mode until the poll task refreshes it.
+    // Deadline-poll instead of sleeping a fixed tick; the loop exits the
+    // moment Slewing reads false, so healthy runs never feel the ceiling.
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while d.slewing().await.unwrap() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("Slewing did not clear within 30s of AbortSlew");
 }
 
 #[tokio::test]

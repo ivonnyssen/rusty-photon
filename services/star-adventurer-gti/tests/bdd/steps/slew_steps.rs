@@ -5,6 +5,16 @@ use cucumber::gherkin::Step;
 use cucumber::{given, then, when};
 use std::time::Duration;
 
+#[given(expr = "a star-adventurer service configured with a {int} second post-slew settle")]
+async fn configured_with_post_slew_settle(world: &mut StarAdventurerWorld, secs: u64) {
+    // A long settle pins `Slewing == true` open after the mock reaches its
+    // goto target, so scenarios asserting in-flight visibility can't race
+    // the completion watcher on a loaded runner. The settle never actually
+    // elapses — the scenario tears the service down first.
+    world.config_mut().mount.settle_after_slew = Duration::from_secs(secs);
+    world.start_service().await;
+}
+
 #[given("the device is parked")]
 async fn device_is_parked(world: &mut StarAdventurerWorld) {
     // Connect, park, wait for the watcher to set AtPark = true.
