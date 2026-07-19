@@ -142,10 +142,21 @@ async fn background_call_succeeds(world: &mut RpWorld, tool: String) {
         .iter()
         .position(|(name, _)| *name == tool)
         .unwrap_or_else(|| panic!("no background '{tool}' call was started in this scenario"));
-    let (_, handle) = world.background_calls.remove(index);
-    let result = tokio::time::timeout(Duration::from_secs(60), handle)
-        .await
-        .unwrap_or_else(|_| panic!("background '{tool}' call did not finish within 60s"))
-        .unwrap_or_else(|e| panic!("background '{tool}' task panicked: {e}"));
+    let (_, mut handle) = world.background_calls.remove(index);
+    // Poll the handle by reference so a timeout leaves it in hand for
+    // an explicit abort — timing out on the owned handle would drop
+    // (detach) it, and the task's MCP streaming connection would then
+    // outlive the scenario and block rp's graceful shutdown. The
+    // handle is already out of `world.background_calls`, so the
+    // after-hook cannot abort it for us.
+    let result = match tokio::time::timeout(Duration::from_secs(60), &mut handle).await {
+        Ok(join_result) => {
+            join_result.unwrap_or_else(|e| panic!("background '{tool}' task panicked: {e}"))
+        }
+        Err(_) => {
+            handle.abort();
+            panic!("background '{tool}' call did not finish within 60s");
+        }
+    };
     result.unwrap_or_else(|e| panic!("background '{tool}' call failed: {e}"));
 }
