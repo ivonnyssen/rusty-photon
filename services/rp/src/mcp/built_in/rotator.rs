@@ -116,34 +116,13 @@ impl McpHandler {
             }
         }
 
-        // Pause corrections (output-only) before any motion; a pause
-        // failure aborts the tool with the rotator untouched. The
-        // pre-move sky angle feeds the calibration decision below.
-        let mut pre_move_angle = None;
-        if let Some(client) = &ladder_client {
-            if let Err(e) = client.pause_guiding(false).await {
-                return Ok(tool_error!(
-                    "move_rotator: failed to pause guiding before rotating: {}",
-                    e
-                ));
-            }
-            match rot.position().await {
-                Ok(a) => pre_move_angle = Some(a),
-                Err(e) => {
-                    let resume_note = match client.resume_guiding().await {
-                        Ok(()) => String::new(),
-                        Err(re) => format!("; also failed to resume guiding: {re}"),
-                    };
-                    return Ok(tool_error!(
-                        "move_rotator: failed to read the pre-move sky angle: {}{}",
-                        e,
-                        resume_note
-                    ));
-                }
-            }
-        }
+        // The operation triple starts here: the ladder's pause and
+        // pre-move read are part of the move (they issue RPCs on its
+        // behalf), so their failures must surface as
+        // `move_rotator_failed` to event subscribers, not as bare
+        // tool errors. Rotator moves carry no predictive deadline, so
+        // emitting `*_started` ahead of the pause costs nothing.
         let guiding_paused = ladder_client.is_some();
-
         let operation_id = uuid::Uuid::new_v4().to_string();
         let started_at = chrono::Utc::now();
         self.event_bus.emit_operation(EventEnvelope::started(
@@ -156,6 +135,42 @@ impl McpHandler {
                 "guiding_paused": guiding_paused,
             }),
         ));
+
+        // Pause corrections (output-only) before any motion; a pause
+        // failure aborts the tool with the rotator untouched. The
+        // pre-move sky angle feeds the calibration decision below.
+        let mut pre_move_angle = None;
+        if let Some(client) = &ladder_client {
+            if let Err(e) = client.pause_guiding(false).await {
+                let msg = format!("move_rotator: failed to pause guiding before rotating: {e}");
+                self.event_bus.emit_operation(EventEnvelope::failed(
+                    "move_rotator",
+                    &operation_id,
+                    started_at,
+                    &msg,
+                ));
+                return Ok(tool_error!("{}", msg));
+            }
+            match rot.position().await {
+                Ok(a) => pre_move_angle = Some(a),
+                Err(e) => {
+                    let resume_note = match client.resume_guiding().await {
+                        Ok(()) => String::new(),
+                        Err(re) => format!("; also failed to resume guiding: {re}"),
+                    };
+                    let msg = format!(
+                        "move_rotator: failed to read the pre-move sky angle: {e}{resume_note}"
+                    );
+                    self.event_bus.emit_operation(EventEnvelope::failed(
+                        "move_rotator",
+                        &operation_id,
+                        started_at,
+                        &msg,
+                    ));
+                    return Ok(tool_error!("{}", msg));
+                }
+            }
+        }
 
         let move_result: Result<(f64, f64), String> = async {
             debug!(rotator_id, angle, "moving rotator");

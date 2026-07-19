@@ -365,7 +365,7 @@ emits only `_complete` / `_failed`, with no `_started`.) Point events
 | `move_focuser_started` | focuser_id, position | Focuser begins move to the target position |
 | `move_focuser_complete` | focuser_id, position | Focuser idle at the read-back position |
 | `move_focuser_failed` | error | Focuser move failed or timed out |
-| `move_rotator_started` | rotator_id, angle, guiding_paused | Rotator begins move to the target sky angle; `guiding_paused` says whether the rotate-while-guiding ladder paused corrections first |
+| `move_rotator_started` | rotator_id, angle, guiding_paused | Rotator move begins (before the ladder's pause, which is part of the operation); `guiding_paused` says whether the rotate-while-guiding ladder engaged for this move |
 | `move_rotator_complete` | rotator_id, angle, mechanical_angle, moved_trains, guiding_ladder | Rotator idle at the read-back angle; `moved_trains` lists the trains containing it, `guiding_ladder` the ladder outcome (`null` when it did not engage) |
 | `move_rotator_failed` | error | Rotator move failed or timed out (guiding re-selected/resumed best-effort when the ladder was engaged) |
 | `plate_solve_started` | document_id, image_path, use_mount_hints | Plate solve begins |
@@ -974,7 +974,10 @@ runs the **rotate-while-guiding ladder** around the move:
 
 1. **Pause guide corrections** (output-only — looping continues, so
    the re-selection below has fresh frames). A pause failure aborts
-   the tool before any motion.
+   the tool before any motion. The pause and the pre-move read are
+   part of the operation: `move_rotator_started` is emitted before
+   them, and their failures emit `move_rotator_failed` like any
+   other leg.
 2. Read the pre-move sky angle, then run the move as usual.
 3. **Calibration decision**: query the guider service for PHD2's
    equipment. When PHD2 reports a **connected rotator**, stop there —

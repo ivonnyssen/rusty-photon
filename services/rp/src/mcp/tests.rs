@@ -4965,10 +4965,19 @@ async fn ladder_pause_failure_aborts_before_any_motion() {
         mock.expect_pause_guiding()
             .returning(|_| Err(rp_guider::GuiderError::Internal("boom".to_string())));
     });
+    let mut rx = handler.event_bus.subscribe();
     let result = handler
         .move_rotator(Parameters(move_rot_params(10.0)))
         .await;
     assert_tool_error(result, "failed to pause guiding before rotating");
+
+    // The pause is part of the operation: the triple must surface
+    // even though the rotator never moved.
+    let started = rx.try_recv().unwrap();
+    assert_eq!(started.event, "move_rotator_started");
+    assert_eq!(started.payload["guiding_paused"], true);
+    let failed = rx.try_recv().unwrap();
+    assert_eq!(failed.event, "move_rotator_failed");
 }
 
 #[tokio::test]
