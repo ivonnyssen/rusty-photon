@@ -357,3 +357,7 @@ Write-Host "== uninstall: OK (services + exes gone; configs and logs survive)"
 
 Write-Host ""
 Write-Host "verify-msi: OK ($($allServices.Count) services)" -ForegroundColor Green
+# The runner shell appends `exit $LASTEXITCODE`; the last native command
+# above is the uninstall-phase schtasks query, whose EXPECTED failure
+# (the task is gone) must not become the step's exit code.
+exit 0
