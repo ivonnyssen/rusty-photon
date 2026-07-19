@@ -612,6 +612,20 @@ Configuration sections:
   sending them to PHD2. For example, `"500ms"` is sent as `1` second,
   and `"1.2s"` is sent as `2` seconds.
 
+### Config-path resolution and first-start creation
+
+Config comes from `--config <path>` if given (a missing explicit file is a
+hard error). Without it, `serve` resolves the platform default
+(`~/.config/rusty-photon/phd2-guider.json` on Linux,
+`%PROGRAMDATA%\rusty-photon\phd2-guider.json` on Windows) and — when neither
+`--host` nor `--port` is passed, i.e. the packaged path where systemd invokes
+the bare binary — bootstraps it via `rusty_photon_config::resolve_and_init`,
+**materializing the default config there on first start**. `serve` with
+explicit `--host`/`--port` flags and no existing default file runs on
+in-memory defaults with the flags applied, writing nothing; the CLI
+subcommands (`status`, `monitor`, …) never touch the default path at all —
+they always use in-memory defaults plus the flags.
+
 ## PHD2 Process Management
 
 ### Starting PHD2

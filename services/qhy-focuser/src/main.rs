@@ -104,23 +104,17 @@ fn main() -> ServiceResult {
     };
 
     // Resolve the config path (explicit --config, else the platform
-    // config dir) and ensure the focuser has a persisted, spec-compliant
-    // `UniqueID`. `materialize_identity` mints a UUIDv4 on first run, writes the
-    // default scaffold if the file is absent, and never overwrites an existing
-    // id. It operates on the on-disk file only, so a transient `--port`/
-    // `--server-port` override is never baked in.
-    let config_path = rusty_photon_config::resolve_config_path("qhy-focuser", args.config.clone())?;
-    debug!("Resolved configuration path: {:?}", config_path);
-
-    let outcome = rusty_photon_config::materialize_identity(
-        &config_path,
+    // config dir), materialize the default config on first start, and mint the
+    // focuser's persisted, spec-compliant `UniqueID`. Minting is idempotent,
+    // never overwrites an existing id, and operates on the on-disk file only,
+    // so a transient `--port`/`--server-port` override is never baked in.
+    let config_path = rusty_photon_config::resolve_and_init(
+        "qhy-focuser",
+        args.config,
         &serde_json::to_value(Config::default())?,
         &["/focuser/unique_id"],
     )?;
-    debug!(
-        "Identity materialization: wrote={}, filled={:?}",
-        outcome.wrote, outcome.filled
-    );
+    debug!("Resolved configuration path: {:?}", config_path);
 
     info!("Starting QHY Q-Focuser driver");
     #[cfg(feature = "mock")]

@@ -86,17 +86,22 @@ fn main() -> ServiceResult {
         args.service,
     );
 
-    // A config path is always resolvable (explicit --config or the XDG default),
-    // so config editing is never disabled for lack of one.
-    let config_path = rusty_photon_config::resolve_config_path("zwo-focuser", args.config)?;
+    // Bootstrap the config file: a path is always resolvable (explicit
+    // --config or the XDG default), and the default config materializes at the
+    // default path on first start. The empty identity-pointer list is
+    // deliberate: the ASCOM UniqueID is derived from the EAF SDK serial at
+    // enumeration, not minted into config (see the design doc "Device
+    // identity").
+    let config_path = rusty_photon_config::resolve_and_init(
+        "zwo-focuser",
+        args.config,
+        &serde_json::to_value(zwo_focuser::Config::default())?,
+        &[],
+    )?;
     let overrides = CliOverrides { port: args.port };
     #[cfg(feature = "simulation")]
     let simulation_empty = args.simulation_empty;
     debug!(config = ?config_path, "starting zwo-focuser");
-
-    // No materialize_identity: ASCOM UniqueIDs are derived from the EAF SDK
-    // serial at enumeration, not minted into config (see the design doc
-    // "Device identity").
 
     // `config.apply` triggers an in-process reload: each loop iteration re-reads
     // the effective config, re-enumerates, and rebuilds the server.

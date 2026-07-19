@@ -106,23 +106,17 @@ fn main() -> ServiceResult {
 
     // Resolve the config path (explicit --config, else the platform
     // config dir) and ensure both devices have a persisted, spec-compliant
-    // `UniqueID`. `materialize_identity` mints a UUIDv4 on first run, writes the
-    // default scaffold if the file is absent, and never overwrites an existing
-    // id. It operates on the on-disk file only, so a transient `--port`/
-    // `--server-port` override is never baked in.
-    let config_path =
-        rusty_photon_config::resolve_config_path("pa-falcon-rotator", args.config.clone())?;
-    debug!("Resolved configuration path: {:?}", config_path);
-
-    let outcome = rusty_photon_config::materialize_identity(
-        &config_path,
+    // `UniqueID`s — materializing the default config on first start. Minting is
+    // idempotent, never overwrites an existing id, and operates on the on-disk
+    // file only, so a transient `--port`/`--server-port` override is never
+    // baked in.
+    let config_path = rusty_photon_config::resolve_and_init(
+        "pa-falcon-rotator",
+        args.config,
         &serde_json::to_value(Config::default())?,
         &["/rotator/unique_id", "/switch/unique_id"],
     )?;
-    debug!(
-        "Identity materialization: wrote={}, filled={:?}",
-        outcome.wrote, outcome.filled
-    );
+    debug!("Resolved configuration path: {:?}", config_path);
 
     info!("Starting pa-falcon-rotator driver");
     #[cfg(feature = "mock")]

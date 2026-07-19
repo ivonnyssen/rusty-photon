@@ -158,7 +158,9 @@ graph TD;
 - **`main.rs`** — plain `fn main`, parses clap args, inits `tracing`, runs under
   `ServiceRunner::new("qhy-camera").with_reload().run_with_reload(...)` per
   [`service-lifecycle.md`](../skills/service-lifecycle.md). No hand-rolled signal
-  handling, no `materialize_identity` (identities are hardware-derived).
+  handling; config bootstrap via `rusty_photon_config::resolve_and_init` with an
+  **empty identity-pointer list** (identities are hardware-derived), which still
+  materializes the default config file on first start.
 - **`lib.rs`** — `ServerBuilder` that, on `build()`, opens the SDK and
   **enumerates every connected camera** (and any CFW discovered on it),
   registering each as an ASCOM device (index 0, 1, 2, …) with its serial-derived
@@ -318,7 +320,7 @@ supplies `ConfigurableDriver for QhyCameraDriver`:
   secret; `server.tls` stores file *paths*, not key material).
 - **Locked (identity) fields:** none — UniqueIDs are hardware-derived and not
   stored in config, so there is no identity field to lock (a deliberate
-  divergence from the `materialize_identity` convention; see *Device identity*).
+  divergence from the minted-identity convention; see *Device identity*).
 - **Hard read-only fields:** `/server/port` (a port change would make the BFF
   lose the devices → restart-required, not a live apply).
 - **Editable fields:** the `devices` map (per-serial `name` / `description` /
@@ -342,15 +344,16 @@ and the FilterWheel's UniqueID from the CFW's SDK id — the same scheme upstrea
 `qhyccd-alpaca` uses.
 
 This is a **deliberate divergence** from the rusty-photon
-`materialize_identity` / minted-UUID convention used by the other six drivers,
+minted-UUID identity convention used by the other six drivers,
 chosen because a camera exposes a genuinely stable, globally-unique hardware
 serial. The serial is a *better* ASCOM identity than a per-install minted UUID:
 it is tied to the physical camera, so it survives an OS reinstall and moving the
 camera between machines, and swapping the camera correctly yields a new id.
 
-Consequences: there is **no `unique_id` field in config**, **no
-`materialize_identity` call** in `main.rs`, and **no locked identity field** in
-the config-actions tiers. Because the service enumerates *all* cameras, there is
+Consequences: there is **no `unique_id` field in config**, an **empty
+identity-pointer list** passed to `resolve_and_init` in `main.rs` (no minting;
+the bootstrap still materializes the default config file on first start), and
+**no locked identity field** in the config-actions tiers. Because the service enumerates *all* cameras, there is
 no selector — every discovered camera and CFW is exposed, each carrying its own
 serial-derived UniqueID, so two identical-model cameras are naturally
 distinguished by their serials.
@@ -506,9 +509,16 @@ fn main() -> ServiceResult {
     let args = Args::parse();
     rusty_photon_service_lifecycle::init_tracing(args.log_level);
 
-    let config_path = rusty_photon_config::resolve_config_path("qhy-camera", args.config);
-    // No materialize_identity: ASCOM UniqueIDs are derived from the camera/CFW
-    // SDK serials at enumeration (see "Device identity"), not minted into config.
+    // The default config materializes at the default path on first start. The
+    // empty identity-pointer list is deliberate: ASCOM UniqueIDs are derived
+    // from the camera/CFW SDK serials at enumeration (see "Device identity"),
+    // not minted into config.
+    let config_path = rusty_photon_config::resolve_and_init(
+        "qhy-camera",
+        args.config,
+        &serde_json::to_value(Config::default())?,
+        &[],
+    )?;
 
     ServiceRunner::new("qhy-camera")
         .with_reload()

@@ -231,22 +231,50 @@ pub fn init_file_if_absent(path: &Path, default: &Value) -> Result<bool, ConfigE
     }
 }
 
-/// The canonical startup bootstrap: resolve the config path and, when it is
-/// the platform default (no explicit `--config`), persist `default` there on
-/// first start so a packaged install materializes an editable file.
+/// The canonical startup bootstrap — the one call every service binary makes
+/// before its first config read. In order:
 ///
-/// An explicit path is returned untouched even if no file exists there —
-/// loading a missing explicit file must remain the caller's hard error, so a
-/// typo'd `--config` never silently runs a service on defaults.
+/// 1. Resolve the config path: the explicit `--config` value if given, else
+///    the platform default.
+/// 2. When the path is the platform default, persist `default` there on first
+///    start, so a packaged install materializes an editable file — and so
+///    same-host consumers that derive facts from the file (sentinel's health
+///    probes, doctor) can read it. An explicit path is left untouched even if
+///    no file exists there: loading a missing explicit file must remain the
+///    caller's hard error, so a typo'd `--config` never silently runs a
+///    service on defaults.
+/// 3. Mint device identity: every `identity_pointers` entry that is absent or
+///    empty receives a fresh UUIDv4 ([`materialize_identity`]), persisted to
+///    the resolved path — explicit **or** default, because a minted ASCOM
+///    `UniqueID` is only an identity if the service re-reads the same value on
+///    every future start. This is the one case where a missing explicit file
+///    is created.
+///
+/// Services whose device identities come from elsewhere (camera SDK serials)
+/// or that expose no devices pass `&[]` — declining minting is a visible
+/// choice here, and never silently drops the first-start materialization.
 pub fn resolve_and_init(
     service: &str,
     explicit: Option<PathBuf>,
     default: &Value,
+    identity_pointers: &[&str],
 ) -> Result<PathBuf, ConfigError> {
     let is_explicit = explicit.is_some();
     let path = resolve_config_path(service, explicit)?;
     if !is_explicit && init_file_if_absent(&path, default)? {
         tracing::info!("Created default config at {}", path.display());
+    }
+    if !identity_pointers.is_empty() {
+        let outcome = materialize_identity(&path, default, identity_pointers)?;
+        if outcome.wrote {
+            tracing::debug!(
+                "Minted device UniqueID(s) {:?} into {}",
+                outcome.filled,
+                path.display()
+            );
+        } else {
+            tracing::debug!("Device UniqueID(s) already present; not minting");
+        }
     }
     Ok(path)
 }
@@ -542,7 +570,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let missing = dir.path().join("typo.json");
 
-        let p = resolve_and_init("dsd-fp2", Some(missing.clone()), &json!({})).unwrap();
+        let p = resolve_and_init("dsd-fp2", Some(missing.clone()), &json!({}), &[]).unwrap();
 
         assert_eq!(p, missing);
         assert!(
@@ -550,6 +578,61 @@ mod tests {
             "explicit path must never be self-created"
         );
     }
+
+    #[test]
+    fn resolve_and_init_mints_identity_at_explicit_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.json");
+        let default = json!({ "device": { "unique_id": "" } });
+
+        let p = resolve_and_init(
+            "dsd-fp2",
+            Some(path.clone()),
+            &default,
+            &["/device/unique_id"],
+        )
+        .unwrap();
+
+        assert_eq!(p, path);
+        // Minting is the one case where a missing explicit file is created:
+        // the id must be on disk where every future start re-reads it.
+        let on_disk: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let id = on_disk
+            .pointer("/device/unique_id")
+            .and_then(Value::as_str)
+            .unwrap();
+        Uuid::parse_str(id).unwrap();
+    }
+
+    #[test]
+    fn resolve_and_init_keeps_existing_identity_and_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.json");
+        std::fs::write(&path, r#"{"device":{"unique_id":"keep-me"},"port":9}"#).unwrap();
+
+        resolve_and_init(
+            "dsd-fp2",
+            Some(path.clone()),
+            &json!({ "device": { "unique_id": "" }, "port": 1 }),
+            &["/device/unique_id"],
+        )
+        .unwrap();
+
+        let on_disk: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            on_disk,
+            json!({ "device": { "unique_id": "keep-me" }, "port": 9 })
+        );
+    }
+
+    /// Serializes the tests that mutate `XDG_CONFIG_HOME` — env vars are
+    /// process-global, and plain `cargo test` runs tests as threads.
+    /// Poison-tolerant: these tests panic on failure, which would otherwise
+    /// cascade into spurious later-test failures.
+    #[cfg(target_os = "linux")]
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// Restores an env var's prior state on drop (including on panic).
     #[cfg(target_os = "linux")]
@@ -580,15 +663,35 @@ mod tests {
     fn resolve_and_init_creates_default_at_xdg_path() {
         // XDG_CONFIG_HOME is honored on Linux only; other platforms would hit
         // the real per-user dir, so this test is Linux-scoped.
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let dir = tempfile::tempdir().unwrap();
         let _env = EnvGuard::set("XDG_CONFIG_HOME", dir.path());
         let default = json!({ "server": { "port": 11111 } });
 
-        let p = resolve_and_init("xdg-init-test", None, &default).unwrap();
+        let p = resolve_and_init("xdg-init-test", None, &default, &[]).unwrap();
 
         assert!(p.starts_with(dir.path()), "{p:?}");
         let on_disk: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
         assert_eq!(on_disk, default);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn resolve_and_init_materializes_and_mints_at_xdg_path() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let _env = EnvGuard::set("XDG_CONFIG_HOME", dir.path());
+        let default = json!({ "server": { "port": 1 }, "device": { "unique_id": "" } });
+
+        let p = resolve_and_init("xdg-mint-test", None, &default, &["/device/unique_id"]).unwrap();
+
+        let on_disk: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(on_disk.pointer("/server/port"), Some(&json!(1)));
+        let id = on_disk
+            .pointer("/device/unique_id")
+            .and_then(Value::as_str)
+            .unwrap();
+        Uuid::parse_str(id).unwrap();
     }
 
     #[test]

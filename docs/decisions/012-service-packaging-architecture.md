@@ -93,8 +93,11 @@ not:
   hardened, auto-restarting daemon whose config appears on first start and
   is editable via ui-htmx or at `/etc/rusty-photon/<svc>.json` (symlink).
 - Upgrades never prompt about config and never touch it.
-- The six write-back services and the nine hand-edit-only services follow
-  ONE pattern; nothing special-cases.
+- Every service that can run on defaults self-creates its config on first
+  start (the shared `resolve_and_init` bootstrap — identity-minting services
+  pass their UniqueID pointers, the rest an empty list); only the
+  config-gated services and `session-runner`, which have no usable defaults,
+  are operator-provided. One pattern; nothing special-cases.
 - Operators looking for config in `/etc` find it (via the symlink), but
   backup tooling must know config lives under `/var/lib/rusty-photon`
   (documented in `docs/packaging.md`).
@@ -113,7 +116,7 @@ not:
   [`docs/plans/service-packaging.md`](../plans/service-packaging.md)
 - Native SDK payload policy: [ADR-013](013-native-sdk-payload-policy.md)
 - Config machinery this leans on: `crates/rusty-photon-config`
-  (`resolve_config_path`, `materialize_identity`, atomic `save()`),
+  (`resolve_and_init`, `materialize_identity`, atomic `save()`),
   [`docs/services/config-actions.md`](../services/config-actions.md)
 - Service lifecycle (signals, stderr logging, SIGHUP reload):
   [ADR-011](011-error-reporting-layers.md),

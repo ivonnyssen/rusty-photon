@@ -207,7 +207,9 @@ graph TD;
 - **`main.rs`** — plain `fn main`, parses clap args, inits `tracing`, runs under
   `ServiceRunner::new("zwo-camera").with_reload().run_with_reload(...)` per
   [`service-lifecycle.md`](../skills/service-lifecycle.md). No hand-rolled signal
-  handling, no `materialize_identity` (identities are hardware-derived).
+  handling; config bootstrap via `rusty_photon_config::resolve_and_init` with an
+  **empty identity-pointer list** (identities are hardware-derived), which still
+  materializes the default config file on first start.
 - **`lib.rs`** — `ServerBuilder` that, on `build()`, opens the SDK and
   **enumerates every connected ASI camera**,
   registering each as an ASCOM device (index 0, 1, 2, …) with its serial-derived
@@ -405,7 +407,7 @@ supplies `ConfigurableDriver for ZwoCameraDriver`:
   secret; `server.tls` stores file *paths*, not key material).
 - **Locked (identity) fields:** none — UniqueIDs are hardware-derived and not
   stored in config, so there is no identity field to lock (a deliberate
-  divergence from the `materialize_identity` convention; see *Device identity*).
+  divergence from the minted-identity convention; see *Device identity*).
 - **Hard read-only fields:** `/server/port` (self-lockout — a BFF could not
   follow the rebind).
 - **Editable fields:** the `devices` map (per-serial `name` / `description`).
@@ -437,9 +439,11 @@ briefly to read its serial, then closes it. The fallback chain is:
 3. Otherwise the device is **refused** and logged at `warn!` (no stable identity).
 
 Consequences (same as
-`qhy-camera`): **no `unique_id` field in config**, **no `materialize_identity`
-call** in `main.rs`, and **no locked identity field** in the config-actions
-tiers. Two identical-model cameras are naturally distinguished by serial.
+`qhy-camera`): **no `unique_id` field in config**, an **empty identity-pointer
+list** passed to `resolve_and_init` in `main.rs` (no minting; the bootstrap
+still materializes the default config file on first start), and **no locked
+identity field** in the config-actions tiers. Two identical-model cameras are
+naturally distinguished by serial.
 
 ---
 
@@ -624,9 +628,16 @@ fn main() -> ServiceResult {
     let args = Args::parse();
     rusty_photon_service_lifecycle::init_tracing(args.log_level);
 
-    let config_path = rusty_photon_config::resolve_config_path("zwo-camera", args.config);
-    // No materialize_identity: ASCOM UniqueIDs are derived from the camera
-    // SDK serials at enumeration (see "Device identity"), not minted into config.
+    // The default config materializes at the default path on first start. The
+    // empty identity-pointer list is deliberate: ASCOM UniqueIDs are derived
+    // from the camera SDK serials at enumeration (see "Device identity"), not
+    // minted into config.
+    let config_path = rusty_photon_config::resolve_and_init(
+        "zwo-camera",
+        args.config,
+        &serde_json::to_value(Config::default())?,
+        &[],
+    )?;
 
     ServiceRunner::new("zwo-camera")
         .with_reload()

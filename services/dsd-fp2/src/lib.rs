@@ -18,8 +18,8 @@ pub mod transport;
 
 pub use codec::Fp2Codec;
 pub use config::{
-    load_config, load_effective_config, resolve_config_path, AlpacaServerConfig, CliOverrides,
-    Config, CoverCalibratorConfig, SerialConfig,
+    load_config, load_effective_config, AlpacaServerConfig, CliOverrides, Config,
+    CoverCalibratorConfig, SerialConfig,
 };
 pub use device::DsdFp2Device;
 pub use error::{DsdFp2Error, Result};

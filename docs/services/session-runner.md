@@ -926,6 +926,12 @@ platform config directory, e.g.
 file's `server.port`; `--port 0` binds an ephemeral port, printed at startup),
 `--bind-address` (overrides the file's `server.bind_address`), `--log-level`.
 
+The config file is **operator-provided, never self-created**: `workflows_dir`
+and `state_dir` are required with no usable defaults, so — unlike the services
+that bootstrap via `rusty_photon_config::resolve_and_init` — session-runner
+deliberately writes no default scaffold on first start, and refuses to start
+until the file exists.
+
 ## Example Documents
 
 Shipped first-party documents live in `services/session-runner/workflows/`.

@@ -2,7 +2,7 @@
 
 pub use rusty_photon_server_config::AlpacaServerConfig;
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 /// Top-level service configuration.
@@ -179,19 +179,6 @@ impl CliOverrides {
             config.server.port = port;
         }
     }
-}
-
-/// Resolve the config-file path: the explicit `--config` path if given, else the
-/// platform default via [`rusty_photon_config::resolve_config_path`] —
-/// e.g. `~/.config/rusty-photon/dsd-fp2.json` on Linux (XDG),
-/// `~/Library/Application Support/rusty-photon/dsd-fp2.json` on macOS,
-/// `%PROGRAMDATA%\rusty-photon\dsd-fp2.json` on Windows (machine-wide, because a
-/// Windows service account's per-user profile is hidden). A path is *always*
-/// resolvable, so config editing is never disabled for lack of one.
-pub fn resolve_config_path(
-    explicit: Option<PathBuf>,
-) -> std::result::Result<PathBuf, Box<dyn std::error::Error + Send + Sync>> {
-    rusty_photon_config::resolve_config_path("dsd-fp2", explicit).map_err(Into::into)
 }
 
 /// Load the effective config: the file at `path` if it exists, else

@@ -5,8 +5,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use clap::Parser;
-use dsd_fp2::{load_effective_config, resolve_config_path, CliOverrides, ServerBuilder};
-use rusty_photon_service_lifecycle::{report_from_boxed, ServiceResult, ServiceRunner};
+use dsd_fp2::{load_effective_config, CliOverrides, ServerBuilder};
+use rusty_photon_service_lifecycle::{ServiceResult, ServiceRunner};
 use tracing::{debug, info, Level};
 
 #[cfg(feature = "mock")]
@@ -25,8 +25,8 @@ struct Args {
     command: Option<Command>,
 
     /// Path to configuration file. Defaults to the platform config
-    /// directory (e.g. `~/.config/rusty-photon/dsd-fp2.json` on Linux) — read if
-    /// present, created by config.apply.
+    /// directory (e.g. `~/.config/rusty-photon/dsd-fp2.json` on Linux) — the
+    /// default path is created on first start if absent.
     #[arg(short, long)]
     config: Option<PathBuf>,
 
@@ -94,9 +94,16 @@ fn main() -> ServiceResult {
         args.config, args.port, args.server_port, args.log_level
     );
 
-    // A config path is always resolvable (explicit --config or the XDG default),
-    // so config editing is never disabled for lack of one.
-    let config_path = resolve_config_path(args.config).map_err(report_from_boxed)?;
+    // Bootstrap the config file: materialize the default on first start and mint
+    // the device's stable ASCOM `UniqueID` into `cover_calibrator.unique_id`,
+    // before the reload loop reads the config — so the id is on disk by the time
+    // the server reads it.
+    let config_path = rusty_photon_config::resolve_and_init(
+        "dsd-fp2",
+        args.config,
+        &serde_json::to_value(dsd_fp2::Config::default())?,
+        &["/cover_calibrator/unique_id"],
+    )?;
     let overrides = CliOverrides {
         serial_port: args.port,
         server_port: args.server_port,
@@ -106,26 +113,6 @@ fn main() -> ServiceResult {
     #[cfg(feature = "mock")]
     info!("Running in MOCK MODE - no real hardware");
     info!("Configuration path: {}", config_path.display());
-
-    // Mint the device's stable ASCOM `UniqueID` once, before the reload loop reads
-    // the config. `materialize_identity` is idempotent: it writes a fresh UUIDv4 to
-    // the file only when `cover_calibrator.unique_id` is absent/empty, and never
-    // overwrites an existing id. Doing this before `load_effective_config` runs
-    // guarantees the minted id is on disk by the time the server reads it.
-    let outcome = rusty_photon_config::materialize_identity(
-        &config_path,
-        &serde_json::to_value(dsd_fp2::Config::default())?,
-        &["/cover_calibrator/unique_id"],
-    )?;
-    if outcome.wrote {
-        debug!(
-            "Minted device UniqueID(s) {:?} into {}",
-            outcome.filled,
-            config_path.display()
-        );
-    } else {
-        debug!("Device UniqueID already present; not minting");
-    }
 
     // `config.apply` triggers an in-process reload rather than a process bounce:
     // each loop iteration re-reads the effective config and rebuilds the server.

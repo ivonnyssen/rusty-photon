@@ -139,9 +139,9 @@ The focuser's ASCOM `UniqueID` is **minted on first run** rather than shipped
 as a hardcoded literal. On startup the service resolves the config path (the
 `--config` path if given, otherwise the platform default — e.g.
 `~/.config/rusty-photon/qhy-focuser.json` on Linux,
-`%PROGRAMDATA%\rusty-photon\qhy-focuser.json` on Windows) and calls
-`rusty_photon_config::materialize_identity` with the JSON pointer
-`/focuser/unique_id`. That helper:
+`%PROGRAMDATA%\rusty-photon\qhy-focuser.json` on Windows) via
+`rusty_photon_config::resolve_and_init` — the shared bootstrap, called with
+the identity pointer `/focuser/unique_id`. That bootstrap:
 
 - mints a spec-compliant UUIDv4 for the `unique_id` if it is absent, empty, or
   not a string, and **never overwrites** an id that already holds a non-empty

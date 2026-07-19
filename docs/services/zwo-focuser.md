@@ -98,7 +98,9 @@ graph TD;
 - **`main.rs`** — plain `fn main`, parses clap args, inits `tracing`, runs under
   `ServiceRunner::new("zwo-focuser").with_reload().run_with_reload(...)` per
   [`service-lifecycle.md`](../skills/service-lifecycle.md). No hand-rolled signal
-  handling; no `materialize_identity` (identity is hardware-derived).
+  handling; config bootstrap via `rusty_photon_config::resolve_and_init` with an
+  **empty identity-pointer list** (identity is hardware-derived), which still
+  materializes the default config file on first start.
 - **`lib.rs`** — `ServerBuilder` that, on `build()`, opens the SDK and
   **enumerates every connected EAF** via `zwo_rs::Sdk::focusers()`, registering
   each as an ASCOM `Focuser` device (index 0, 1, 2, …) with a serial-derived
@@ -278,9 +280,10 @@ cameras — but with a **simpler fallback chain**, since the EAF SDK exposes no
    enumeration slot and stable across reconnects for the common single-focuser
    case.
 
-Consequences (same as `zwo-camera`): **no `unique_id` field in config**, **no
-`materialize_identity` call**, and **no locked identity field** in the
-config-actions tiers.
+Consequences (same as `zwo-camera`): **no `unique_id` field in config**, an
+**empty identity-pointer list** passed to `resolve_and_init` (no minting; the
+bootstrap still materializes the default config file on first start), and **no
+locked identity field** in the config-actions tiers.
 
 ## MVP scope
 

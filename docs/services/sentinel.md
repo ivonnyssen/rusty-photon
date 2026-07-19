@@ -192,10 +192,14 @@ The probe path follows the service's **probe class**:
   non-Alpaca service must be added to it (a unit test asserts every listed
   name exists under `services/*/pkg`).
 
-A missing or unreadable `<svc>.json` (the service has never started, so it has
-not self-created its default config) means no probe URL can be derived: the
+A missing or unreadable `<svc>.json` means no probe URL can be derived: the
 service's health reports `unknown`, nothing is restarted because of it, and
-the read is retried on every discovery cycle.
+the read is retried on every discovery cycle. Every supervisable service
+self-creates its default config on first start (the shared
+`rusty_photon_config::resolve_and_init` bootstrap), so a persistent `unknown`
+on a `running` service points at the file being unreadable — or at
+`session-runner`, whose config is deliberately operator-provided (it has no
+usable defaults) and therefore only exists once the operator has written it.
 
 #### The test seam (`SENTINEL_SERVICE_MANAGER_DIR`)
 
