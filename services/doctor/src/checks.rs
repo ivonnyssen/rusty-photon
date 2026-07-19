@@ -949,15 +949,21 @@ fn is_loopback_host(host: &str) -> bool {
 
 /// The one local, participating catalog service (parsed server block) a
 /// client's `host:port` names, or `None` when the host is not this
-/// machine, no service claims the port, or the service's own block does
-/// not parse (`config.server-shape` owns that diagnosis).
+/// machine, no service claims the port, the service's own block does not
+/// parse (`config.server-shape` owns that diagnosis), or more than one
+/// participating service claims the port — an ambiguous join `ports.collision`
+/// already reports as its own `fail`, so this self-limits rather than
+/// guessing which of the colliding services the client actually meant.
 fn resolve_join_target<'a>(ctx: &'a Context, host: &str, port: u16) -> Option<&'a ServiceScan> {
     if !is_loopback_host(host) {
         return None;
     }
-    ctx.scans
+    let mut matches = ctx
+        .scans
         .iter()
-        .find(|s| ctx.participates(s) && s.server().is_some() && s.effective_port() == port)
+        .filter(|s| ctx.participates(s) && s.server().is_some() && s.effective_port() == port);
+    let target = matches.next()?;
+    matches.next().is_none().then_some(target)
 }
 
 /// Whether `target`'s configured certificate is the ACME wildcard pair —
@@ -995,8 +1001,11 @@ fn parse_target_url(url: &str) -> Option<(String, String, u16)> {
 /// `/`-prefixed path onto without trimming, turning a healthy URL into a
 /// double-slashed one that 404s.
 fn rewrite_scheme(url: &str, new_scheme: &str) -> Option<String> {
-    let parsed = reqwest::Url::parse(url).ok()?;
-    let rest = url.strip_prefix(parsed.scheme())?.strip_prefix("://")?;
+    reqwest::Url::parse(url).ok()?;
+    // Split on the literal separator rather than stripping `Url::scheme()`
+    // (which the `url` crate lowercases) off the raw string — that would
+    // silently fail to strip an input like `HTTP://host:port`.
+    let (_, rest) = url.split_once("://")?;
     Some(format!("{new_scheme}://{rest}"))
 }
 
@@ -1597,6 +1606,12 @@ mod tests {
             "http://host:11114/dash?x=1"
         );
         assert!(rewrite_scheme("not a url", "https").is_none());
+        // `Url::scheme()` lowercases; stripping it off the raw string
+        // would silently fail to match an uppercase input scheme.
+        assert_eq!(
+            rewrite_scheme("HTTP://127.0.0.1:11115", "https").unwrap(),
+            "https://127.0.0.1:11115"
+        );
     }
 
     #[test]
@@ -1835,6 +1850,32 @@ mod tests {
             "ui-htmx.json",
             serde_json::json!({ "server": { "port": 11120 },
                 "rp": { "base_url": "http://10.0.0.5:11115" } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        assert!(ui_htmx_target_joins(&ctx).is_empty());
+    }
+
+    #[test]
+    fn test_an_ambiguous_port_collision_is_never_joined() {
+        let dir = tempfile::tempdir().unwrap();
+        // rp and sentinel both claim port 11115 — ports.collision reports
+        // that on its own; the join must not guess which one ui-htmx meant.
+        write_json(
+            dir.path(),
+            "rp.json",
+            serde_json::json!({ "server": { "port": 11115,
+                "tls": { "cert": "/pki/rp.pem", "key": "/pki/rp-key.pem" } } }),
+        );
+        write_json(
+            dir.path(),
+            "sentinel.json",
+            serde_json::json!({ "server": { "port": 11115 } }),
+        );
+        write_json(
+            dir.path(),
+            "ui-htmx.json",
+            serde_json::json!({ "server": { "port": 11120 },
+                "rp": { "base_url": "http://127.0.0.1:11115" } }),
         );
         let ctx = config_only_ctx(dir.path());
         assert!(ui_htmx_target_joins(&ctx).is_empty());
