@@ -239,10 +239,11 @@ pub fn init_file_if_absent(path: &Path, default: &Value) -> Result<bool, ConfigE
 /// 2. When the path is the platform default, persist `default` there on first
 ///    start, so a packaged install materializes an editable file — and so
 ///    same-host consumers that derive facts from the file (sentinel's health
-///    probes, doctor) can read it. An explicit path is left untouched even if
-///    no file exists there: loading a missing explicit file must remain the
-///    caller's hard error, so a typo'd `--config` never silently runs a
-///    service on defaults.
+///    probes, doctor) can read it. An explicit path is never self-created by
+///    this step: what a missing explicit file then means is the caller's
+///    policy — strict-config services treat it as a hard load error (a typo'd
+///    `--config` must not silently run on defaults), while the `config.apply`
+///    drivers deliberately fall back to in-memory defaults.
 /// 3. Mint device identity: every `identity_pointers` entry that is absent or
 ///    empty receives a fresh UUIDv4 ([`materialize_identity`]), persisted to
 ///    the resolved path — explicit **or** default, because a minted ASCOM
