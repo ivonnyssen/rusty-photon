@@ -10,10 +10,11 @@ async fn dec_encoder_reports_angle(world: &mut StarAdventurerWorld, deg: f64) {
     // Convert Dec angle (degrees, unfolded — values outside ±90° are
     // allowed so scenarios can place the encoder "past the pole" to
     // exercise the post-flip branch) → encoder ticks against the
-    // GTi-default CPR (`0x375F00 = 3,628,800`). Each scenario in this
-    // feature pins CPR to that default.
-    const GTI_CPR: u32 = 0x0037_5F00;
-    let ticks = (deg * (GTI_CPR as f64) / 360.0).round() as i32;
+    // GTi's **Dec-axis** CPR (`0x2C4C00 = 2,903,040` — different from
+    // the RA axis). Each scenario in this feature pins the per-axis
+    // CPR pair to the mock defaults.
+    const GTI_CPR_DEC: u32 = 0x002C_4C00;
+    let ticks = (deg * (GTI_CPR_DEC as f64) / 360.0).round() as i32;
     world.queue_seed("dec_ticks", ticks.into()).await;
 }
 

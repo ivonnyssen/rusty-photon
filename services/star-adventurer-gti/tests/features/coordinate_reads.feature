@@ -14,7 +14,7 @@ Feature: Coordinate reads
     Then the operation should fail with not-connected
 
   Scenario: RightAscension at the meridian for sidereal-rest pose
-    Given a mount with CPR 3628800 on both axes
+    Given a mount with CPR 3628800 on the RA axis and 2903040 on the Dec axis
     And the RA-axis encoder reads 0 ticks
     And site longitude is 0 degrees
     And UTC is "2026-01-01T00:00:00Z"
@@ -23,7 +23,7 @@ Feature: Coordinate reads
     Then RightAscension should equal SiderealTime within 0.001 hours
 
   Scenario: Declination at the celestial equator for encoder zero
-    Given a mount with CPR 3628800 on both axes
+    Given a mount with CPR 3628800 on the RA axis and 2903040 on the Dec axis
     And the Dec-axis encoder reads 0 ticks
     And a running star-adventurer service
     When I connect the device

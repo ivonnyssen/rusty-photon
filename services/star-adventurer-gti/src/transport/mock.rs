@@ -176,7 +176,10 @@ pub struct MockMountState {
     /// `0x375F00` (3,628,800); tests can override.
     pub cpr_ra: u32,
     /// Counts per revolution on the Dec axis. Defaults to the GTi value
-    /// `0x375F00` (3,628,800); tests can override.
+    /// `0x2C4C00` (2,903,040 — hardware-measured `:a2` reply `=004C2C`;
+    /// deliberately **different** from the RA CPR so any code path that
+    /// uses the wrong axis' CPR in a conversion fails tests loudly
+    /// instead of passing on identical values); tests can override.
     pub cpr_dec: u32,
     /// Timer-interrupt frequency. Defaults to the GTi value `0xF42400`
     /// (≈ 16 MHz).
@@ -210,7 +213,7 @@ impl Default for MockMountState {
             ra: AxisSimState::default(),
             dec: AxisSimState::default(),
             cpr_ra: 0x0037_5F00,
-            cpr_dec: 0x0037_5F00,
+            cpr_dec: 0x002C_4C00,
             tmr_freq: 0x00F4_2400,
             // High-speed ratio is mount-specific and the design doc lists
             // example values (16/32/64) without naming a default. Pick a
@@ -674,7 +677,9 @@ mod tests {
     fn mock_mount_state_default_seeds_documented_gti_values() {
         let s = MockMountState::default();
         assert_eq!(s.cpr_ra, 0x0037_5F00);
-        assert_eq!(s.cpr_dec, 0x0037_5F00);
+        // The dec axis has its own, hardware-measured CPR — deliberately
+        // different from RA so cross-axis CPR mix-ups fail tests.
+        assert_eq!(s.cpr_dec, 0x002C_4C00);
         assert_eq!(s.tmr_freq, 0x00F4_2400);
         assert_eq!(s.motor_board_version, 0x000C_3003);
         assert_eq!(s.high_speed_ratio_ra, 32);
@@ -703,8 +708,12 @@ mod tests {
         let factory = MockTransportFactory;
         let mut t = open(&factory).await;
         let reply = round_trip(&mut t, b":a1\r").await;
-        // GTi default CPR 0x375F00 → encode_u24 → "005F37"
+        // GTi RA CPR 0x375F00 → encode_u24 → "005F37"
         assert_eq!(reply, b"=005F37\r");
+        // Dec CPR 0x2C4C00 → "004C2C" — matches the hardware-captured
+        // `:a2` reply in the probe table (the axes differ on the GTi).
+        let reply = round_trip(&mut t, b":a2\r").await;
+        assert_eq!(reply, b"=004C2C\r");
     }
 
     #[tokio::test]

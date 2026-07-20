@@ -201,9 +201,10 @@ async fn wire_slew_target(world: &mut StarAdventurerWorld, _ra: f64, dec: f64) {
     };
 
     // Convert wire ticks back to degrees and compare against the
-    // requested Dec.
-    const GTI_CPR: u32 = 0x0037_5F00;
-    let dec_actual = (signed_ticks as f64) * 360.0 / (GTI_CPR as f64);
+    // requested Dec, using the **Dec-axis** CPR (different from RA on
+    // the GTi).
+    const GTI_CPR_DEC: u32 = 0x002C_4C00;
+    let dec_actual = (signed_ticks as f64) * 360.0 / (GTI_CPR_DEC as f64);
     let tol = 0.5; // 0.5° matches the BDD scenario's ±round-trip slop
     assert!(
         (dec_actual - dec).abs() < tol,

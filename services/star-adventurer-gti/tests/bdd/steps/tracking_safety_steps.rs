@@ -6,11 +6,12 @@ use crate::world::StarAdventurerWorld;
 use cucumber::{given, then};
 use star_adventurer_gti::{ActiveZone, CwExclusionZone, TrackingGuardMarginHours};
 
-/// GTi counts-per-revolution on both axes (`0x375F00`) — the value the
-/// mock seeds and the driver caches at handshake. Used to convert a
+/// GTi RA-axis counts-per-revolution (`0x375F00`) — the value the mock
+/// seeds and the driver caches at handshake. Used to convert a
 /// human-readable mech_HA into the encoder tick value the
 /// `/debug/v1/mock-state` seed endpoint expects:
-/// `ticks = mech_HA × CPR / 24`.
+/// `ticks = mech_HA × CPR / 24`. mech-HA lives on the RA axis; the Dec
+/// axis has its own, smaller CPR (`0x2C4C00`) not used here.
 const GTI_CPR: f64 = 3_628_800.0;
 
 #[given(

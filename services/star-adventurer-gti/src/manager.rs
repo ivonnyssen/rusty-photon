@@ -712,7 +712,7 @@ mod tests {
         assert!(m.is_available());
         let params = m.parameters().await.expect("handshake populates cache");
         assert_eq!(params.cpr_ra, 0x0037_5F00);
-        assert_eq!(params.cpr_dec, 0x0037_5F00);
+        assert_eq!(params.cpr_dec, 0x002C_4C00);
         assert_eq!(params.tmr_freq, 0x00F4_2400);
         assert_eq!(params.motor_board_version, 0x000C_3003);
         session.close().await.unwrap();

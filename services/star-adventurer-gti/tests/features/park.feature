@@ -37,9 +37,10 @@ Feature: Park, unpark, and SetPark
   Scenario: Park targets the preferred AP park when the frame is anchored
     # unpark_from_ap_position = ap_park_3 seeds the encoder on the fresh
     # power-up, anchoring the frame. Latitude 0, preferred_ap_park =
-    # ap_park_3 → mech_HA = -6h (ra = -6/24 * cpr = -907200) and
-    # dec_enc = +90° (dec = 90/360 * cpr = +907200) at the GTi CPR of
-    # 3,628,800. The seed already placed the encoder at those exact
+    # ap_park_3 → mech_HA = -6h (ra = -6/24 * cpr_ra = -907200 at the
+    # RA CPR of 3,628,800) and dec_enc = +90° (dec = 90/360 * cpr_dec =
+    # +725760 at the Dec CPR of 2,903,040 — the GTi's axes have
+    # different CPRs). The seed already placed the encoder at those exact
     # values, so this park is a zero-distance goto: an install whose
     # declared power-up pose equals its preferred park is motion-free
     # by construction on a park issued right after connect.
@@ -47,7 +48,7 @@ Feature: Park, unpark, and SetPark
     When I connect the device
     And I park the mount
     Then the mount should have received a :S1 command targeting encoder -907200
-    And the mount should have received a :S2 command targeting encoder 907200
+    And the mount should have received a :S2 command targeting encoder 725760
 
   Scenario: Park without an anchored frame stops in place without slewing
     # ap_park_0 = "current position": the driver has no ground truth for
@@ -63,13 +64,14 @@ Feature: Park, unpark, and SetPark
   Scenario: A sync anchors the frame so Park slews to the preferred AP park
     # After SyncToCoordinates the encoder-to-pose mapping is measured
     # ground truth, so the park target re-arms from preferred_ap_park
-    # (default ap_park_3: -907200 / +907200 at latitude 0, CPR 3,628,800).
+    # (default ap_park_3 at latitude 0: RA -907200 at CPR 3,628,800,
+    # Dec +725760 at CPR 2,903,040).
     Given a star-adventurer service configured with unpark_from_ap_position "ap_park_0"
     When I connect the device
     And I sync to RA 6.0 hours and Dec 30.0 degrees
     And I park the mount
     Then the mount should have received a :S1 command targeting encoder -907200
-    And the mount should have received a :S2 command targeting encoder 907200
+    And the mount should have received a :S2 command targeting encoder 725760
 
   Scenario: Park targets the configured park_ra_ticks when present
     Given a star-adventurer service configured with park_ra_ticks 5000 and park_dec_ticks -7000

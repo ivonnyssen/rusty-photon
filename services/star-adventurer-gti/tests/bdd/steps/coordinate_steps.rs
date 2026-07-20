@@ -4,16 +4,23 @@ use crate::world::StarAdventurerWorld;
 use cucumber::{given, then, when};
 use std::time::Duration;
 
-#[given(expr = "a mount with CPR {int} on both axes")]
-async fn mount_with_cpr(_world: &mut StarAdventurerWorld, cpr: u32) {
-    // Mock seeds the GTi-default CPR (`0x375F00 = 3,628,800`); the
-    // only scenarios that use this step pin that default. Assert the
-    // value matches so a feature-file typo / divergence fails fast
-    // instead of silently passing.
-    const GTI_CPR: u32 = 0x0037_5F00;
+#[given(expr = "a mount with CPR {int} on the RA axis and {int} on the Dec axis")]
+async fn mount_with_cpr(_world: &mut StarAdventurerWorld, cpr_ra: u32, cpr_dec: u32) {
+    // Mock seeds the GTi's per-axis CPRs (RA `0x375F00 = 3,628,800`,
+    // Dec `0x2C4C00 = 2,903,040` — the axes differ on real hardware);
+    // scenarios using this step pin those defaults. Assert the values
+    // match so a feature-file typo / divergence fails fast instead of
+    // silently passing.
+    const GTI_CPR_RA: u32 = 0x0037_5F00;
+    const GTI_CPR_DEC: u32 = 0x002C_4C00;
     assert_eq!(
-        cpr, GTI_CPR,
-        "mock only seeds CPR {GTI_CPR}; feature file asked for {cpr}. \
+        cpr_ra, GTI_CPR_RA,
+        "mock seeds RA CPR {GTI_CPR_RA}; feature file asked for {cpr_ra}. \
+         Custom CPRs need a /debug/v1/mock-state extension."
+    );
+    assert_eq!(
+        cpr_dec, GTI_CPR_DEC,
+        "mock seeds Dec CPR {GTI_CPR_DEC}; feature file asked for {cpr_dec}. \
          Custom CPRs need a /debug/v1/mock-state extension."
     );
 }

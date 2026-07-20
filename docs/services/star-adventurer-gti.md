@@ -173,7 +173,7 @@ Mount-side parameters are queried at connect time rather than hard-coded:
 
 | Parameter | Command | Typical GTi value | Used for |
 |---|---|---|---|
-| Counts per revolution (per axis) | `:a1` / `:a2` | `0x375F00` = 3,628,800 | encoder-tick ↔ angle conversion |
+| Counts per revolution (per axis) | `:a1` / `:a2` | RA `0x375F00` = 3,628,800; Dec `0x2C4C00` = 2,903,040 (the axes differ — hardware-measured) | encoder-tick ↔ angle conversion |
 | Timer-interrupt frequency | `:b1` | `0xF42400` ≈ 16 MHz | step-period (T1 preset) calculation |
 | High-speed ratio | `:g1` / `:g2` | mount-specific (e.g. 16, 32, 64) | high-speed-slew step-period scaling |
 | Motor board version | `:e1` | `0x03300C` (mount type 0x03, fw v0x30.0x0C) | mount-family detection (EQ vs AZ), **and identity gate** (see [§Initialisation sequence](#initialisation-sequence)) |

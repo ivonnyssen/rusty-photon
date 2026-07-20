@@ -34,12 +34,12 @@ Feature: Connection lifecycle
       | :j2     |
 
   Scenario: Connect populates the parameter cache from handshake replies
-    Given a mount that reports CPR 3628800 on both axes
+    Given a mount that reports CPR 3628800 on the RA axis and 2903040 on the Dec axis
     And a mount that reports timer frequency 16000000
     And a running star-adventurer service
     When I connect the device
     Then the parameter cache should report CPR 3628800 on the RA axis
-    And the parameter cache should report CPR 3628800 on the Dec axis
+    And the parameter cache should report CPR 2903040 on the Dec axis
     And the parameter cache should report timer frequency 16000000
 
   Scenario: Disconnect after connect releases the transport
