@@ -715,11 +715,12 @@ pub enum ApPark {
     /// firmware encoder as-is on connect. The operator asserts they
     /// will plate-solve and `SyncToCoordinates` before any blind-
     /// pointing slew; until that sync the coordinate frame is
-    /// unanchored and `Park()` stops in place instead of slewing. For
-    /// unknown / variable physical setups (the ship default is
-    /// [`ApPark::ApPark3`]). Not a valid `preferred_ap_park` (it is
-    /// not a slew target). The `codebase_*` accessors return [`None`]
-    /// for this variant.
+    /// unanchored and `Park()` stops in place instead of slewing.
+    /// The ship default is [`ApPark::ApPark3`]; operators with an
+    /// unknown or variable physical setup override
+    /// `unpark_from_ap_position` to this variant. Not a valid
+    /// `preferred_ap_park` (it is not a slew target). The
+    /// `codebase_*` accessors return [`None`] for this variant.
     ApPark0,
     /// AP Park 1. "RA horizontal" (Dec axis east-west horizontal,
     /// saddle on the *west* end, counterweight on the east end). OTA

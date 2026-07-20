@@ -677,13 +677,28 @@ impl Telescope for MountDevice {
             };
             // Same wire sequence as `slew_to_coordinates_async`:
             // `:K`-and-wait, `:G` with direction chosen from
-            // `sign(target - current)`, `:S target`, `:J`.
-            let snap = self.manager.snapshot().await;
+            // `sign(target - current)`, `:S target`, `:J`. Both axes
+            // are stopped BEFORE the positions that pick the goto
+            // direction are read: a direction computed from a pre-stop
+            // reading could point the long way around if an axis was
+            // still moving (tracking, in-flight slew) when Park was
+            // called.
+            self.stop_and_wait(Axis::Ra).await?;
+            self.stop_and_wait(Axis::Dec).await?;
+            // Fresh wire read after the stops — the cached background
+            // snapshot lags the wire by up to one `polling_interval`.
+            let snap = {
+                let guard = self.session.read().await;
+                let session = guard.as_ref().ok_or(ASCOMError::NOT_CONNECTED)?;
+                self.manager
+                    .poll_axes_now(session)
+                    .await
+                    .map_err(ASCOMError::from)?
+            };
             for (axis, current_ticks, target_ticks) in [
                 (Axis::Ra, snap.ra.position_ticks, target_ra_ticks),
                 (Axis::Dec, snap.dec.position_ticks, target_dec_ticks),
             ] {
-                self.stop_and_wait(axis).await?;
                 let Some(target_ticks) = target_ticks else {
                     debug!(
                         ?axis,
