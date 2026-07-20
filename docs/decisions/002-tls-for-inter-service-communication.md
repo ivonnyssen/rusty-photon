@@ -6,6 +6,18 @@ Accepted
 
 ## Updates
 
+**2026-07-19** — `serve_tls_with_acceptor`
+(`crates/rusty-photon-tls/src/server.rs`) now sniffs the first byte of
+every accepted connection before handing it to the TLS acceptor
+([#610](https://github.com/ivonnyssen/rusty-photon/issues/610)): a TLS
+handshake record (`0x16`) proceeds exactly as before; anything else is
+treated as a plaintext HTTP request and answered with a `308 Permanent
+Redirect` to `https://` on the same host and port, bounded by a
+5-second timeout and an 8 KiB header cap so a misdirected `http://`
+bookmark — or a probe — cannot become a resource sink on the TLS port.
+Bytes that don't parse as an HTTP request head within the bound are
+dropped with no response. See §Plaintext HTTP Redirect below.
+
 **2026-07-19** — Cloudflare zone resolution walks parent labels and
 **requires the domain to sit below the zone apex**
 ([#613](https://github.com/ivonnyssen/rusty-photon/issues/613)):
@@ -233,6 +245,42 @@ scheme in the URL.
 The Alpaca discovery server (UDP multicast, port 32227) is unaffected.
 It advertises the service port; clients then connect over HTTPS if
 configured. Discovery itself does not carry sensitive data.
+
+### Plaintext HTTP Redirect (as built — issue #610)
+
+Every TLS-enabled service listens on a single port, so a browser
+following an old `http://` bookmark, or a client with a stale scheme in
+its config, previously got a raw TLS handshake-failure alert dumped as
+text — undiagnosable mojibake rather than a clear error.
+
+`serve_tls_with_acceptor` peeks the first byte of each accepted
+connection without consuming it: `0x16` (a TLS handshake record, RFC
+8446 §5.1) hands the connection to the `TlsAcceptor` exactly as before.
+Any other first byte is treated as a possibly-plaintext HTTP request:
+
+1. The request head (request line + headers, up to the blank line) is
+   read with an 8 KiB size cap and a 5-second total timeout — both
+   apply to the initial byte peek too, so a connection that sends
+   nothing, or trickles bytes forever, cannot hold a task open
+   indefinitely.
+2. If the buffered bytes parse as `METHOD target HTTP/x.y`, the server
+   replies with a minimal `308 Permanent Redirect` to
+   `https://<host>:<port><target>` — `<host>` is the client's `Host`
+   header (port stripped) or, failing that, the connection's own local
+   IP; `<port>` is always the TLS listener's own port, never a port the
+   client happened to claim, so the redirect always lands back on the
+   same TLS port — then the connection closes.
+3. Anything that doesn't resolve to a parseable request within the
+   bound (garbage bytes, a connection that never sends a full request
+   line) is dropped without a response — only bytes that look like
+   HTTP earn a reply on the TLS port.
+
+Every TLS-enabled service gets this behavior for free through the
+shared accept loop; no per-service wiring is needed. curl and other API
+clients hitting `http://` get a clean `308` instead of a
+connection-level failure, which also makes a scheme misconfiguration
+diagnosable — complementing the doctor join checks
+(`docs/services/doctor.md`).
 
 ## Consequences
 
