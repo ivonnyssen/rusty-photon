@@ -3,10 +3,12 @@ Feature: Park, unpark, and SetPark
   park-target encoder pair ONLY when the coordinate frame is anchored;
   with an unanchored frame Park stops both axes in place. AtPark is set
   when both axes report stopped either way. The frame is anchored by a
-  named `mount.unpark_from_ap_position` (ship default `ap_park_3`,
-  Sky-Watcher's stock power-up pose), by a successful sync this
-  connection, or by the UnparkFromApPosition recovery action;
-  `ap_park_0` ("current position") is unanchored until a sync. The park
+  named `mount.unpark_from_ap_position` (the operator's declared
+  power-up pose, typically `ap_park_3` — Sky-Watcher's stock home), by
+  a successful sync this connection, or by the UnparkFromApPosition
+  recovery action; the ship default `ap_park_0` ("current position",
+  the only honest value when the operator declared nothing) is
+  unanchored until a sync. The park
   target is resolved on connect, per axis, from the raw
   `mount.park_ra_ticks` / `mount.park_dec_ticks` override when set
   (honored regardless of anchoring — raw ticks are the operator's own
@@ -38,8 +40,9 @@ Feature: Park, unpark, and SetPark
     # ap_park_3 → mech_HA = -6h (ra = -6/24 * cpr = -907200) and
     # dec_enc = +90° (dec = 90/360 * cpr = +907200) at the GTi CPR of
     # 3,628,800. The seed already placed the encoder at those exact
-    # values, so this park is a zero-distance goto: the shipped defaults
-    # make a park issued right after connect motion-free by construction.
+    # values, so this park is a zero-distance goto: an install whose
+    # declared power-up pose equals its preferred park is motion-free
+    # by construction on a park issued right after connect.
     Given a star-adventurer service configured with unpark_from_ap_position "ap_park_3"
     When I connect the device
     And I park the mount

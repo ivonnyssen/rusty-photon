@@ -39,13 +39,13 @@ use super::tracking_guard::{auto_flip_tick, guard_loop_tick, tracking_guard_tick
 use super::watchers::{watcher_poll_with_retry, watcher_should_abort};
 use super::*;
 
-/// [`Config::default`] with the frame-neutral `ap_park_0` unpark
-/// pose. The ship default (`ap_park_3`) seeds the firmware encoder on
-/// every fresh-power-up connect, which would shift the coordinate
-/// frame under every test that hardcodes tick / coordinate
-/// expectations against the mock's power-up encoder of `(0, 0)`.
-/// Tests about the seed and anchored-frame parking set a named pose
-/// explicitly.
+/// [`Config::default`] with `unpark_from_ap_position` pinned to the
+/// frame-neutral `ap_park_0` — explicitly, so the hardcoded tick /
+/// coordinate expectations (anchored to the mock's power-up encoder of
+/// `(0, 0)`) never depend on the ship default: a named pose would seed
+/// the firmware encoder on every fresh-power-up connect and shift the
+/// frame. Tests about the seed and anchored-frame parking set a named
+/// pose explicitly.
 fn base_config() -> Config {
     let mut cfg = Config::default();
     cfg.mount.unpark_from_ap_position = ApPark::ApPark0;

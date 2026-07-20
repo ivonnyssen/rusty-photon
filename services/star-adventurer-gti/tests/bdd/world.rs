@@ -331,11 +331,12 @@ fn default_test_config() -> Config {
             // steps address targets by hour angle and configure the
             // floor explicitly.
             min_altitude_degrees: MinAltitudeDegrees::try_new(-90.0).expect("-90 is a valid floor"),
-            // Frame-neutral test baseline: the ship default (ap_park_3)
-            // seeds the firmware encoder on every fresh-power-up connect,
-            // which would shift the coordinate frame of every scenario
-            // that hardcodes RA/Dec/tick expectations. Scenarios about
-            // seeding and anchored-frame parking opt in with the
+            // Frame-neutral test baseline, pinned explicitly so the
+            // scenarios' hardcoded RA/Dec/tick expectations never
+            // depend on the ship default (a named pose would seed the
+            // firmware encoder on every fresh-power-up connect and
+            // shift the frame). Scenarios about seeding and
+            // anchored-frame parking opt in with the
             // `configured with unpark_from_ap_position` Given.
             unpark_from_ap_position: ApPark::ApPark0,
             ..MountConfig::default()

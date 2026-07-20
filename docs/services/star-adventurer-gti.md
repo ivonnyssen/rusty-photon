@@ -542,8 +542,7 @@ The frame is **anchored** when any of:
 - `unpark_from_ap_position` is a named park (`ap_park_1..ap_park_5`) —
   the operator asserts the power-up pose; the fresh-power-up seed (or
   the non-fresh skip, which means the frame carried over from earlier
-  operations this power cycle) grounds the mapping. This is the ship
-  default (`ap_park_3`).
+  operations this power cycle) grounds the mapping.
 - `SyncToCoordinates` / `SyncToTarget` succeeded during this
   connection (plate-solve ground truth).
 - The `UnparkFromApPosition(ap_park_N)` recovery Action ran with a
@@ -579,12 +578,20 @@ a previously unanchored frame), in this order of preference:
    target is re-armed from `preferred_ap_park` and subsequent parks
    slew normally.
 
-With the shipped defaults (`unpark_from_ap_position = ap_park_3`,
-`preferred_ap_park = ap_park_3`) a fresh power-up at the stock
-Sky-Watcher pose seeds the encoder to the park-3 values and arms the
-park target at those same values — so a `Park()` issued immediately
-after connect (e.g. rp's safety enforcer parking on an unsafe startup
-transition) is a zero-distance goto: **no motion, by construction**.
+The ship default `unpark_from_ap_position` is `ap_park_0`: the field
+is the operator's assertion about the physical world, and "current
+position" is the only value that is true when nothing was asserted —
+a named-pose default would seed a confidently *wrong* frame whenever
+the mount powered up elsewhere, and a park would then slew to a
+fabricated position. An unconfigured install therefore parks in place
+and can never move wrongly. Operators with a repeatable setup declare
+their power-up pose (typically `ap_park_3`, Sky-Watcher's stock home):
+the fresh power-up seed then writes the encoder to that pose's values,
+and with `preferred_ap_park` at the same pose (its default) the park
+target is armed at those same values — so a `Park()` issued
+immediately after connect (e.g. rp's safety enforcer parking on an
+unsafe startup transition) is a zero-distance goto: **no motion, by
+construction**.
 
 **Roof-interlock note:** installations where a roll-off roof may only
 close over a parked scope MUST use an anchored configuration (a named
@@ -1310,7 +1317,7 @@ loudly at load instead of being silently ignored.
       "auto_flip_during_tracking": false,
       "auto_flip_at_meridian_offset_hours": 0.0
     },
-    "unpark_from_ap_position": "ap_park_3",
+    "unpark_from_ap_position": "ap_park_0",
     "preferred_ap_park": "ap_park_3"
   }
 }
@@ -1417,21 +1424,24 @@ Notes:
   past the meridian). Must be finite and within `±flip_range_hours` —
   validated at load as a cross-field rule on the `flip_policy` block.
 - `unpark_from_ap_position` is **required** (no default in the schema
-  sense, but the ship default is `"ap_park_3"` — Sky-Watcher's stock
-  power-up pose). Carries the operator's declared physical position
-  assumption — one of `"ap_park_0"` through `"ap_park_5"`. A named
-  park (`ap_park_1..ap_park_5`) tells the driver to seed the firmware
+  sense, but the ship default is `"ap_park_0"` — the field is the
+  operator's declared physical position assumption, and "current
+  position" is the only honest value when nothing was declared).
+  One of `"ap_park_0"` through `"ap_park_5"`. A named park
+  (`ap_park_1..ap_park_5`) tells the driver to seed the firmware
   encoder via `:E1` / `:E2` on every fresh-power-up connect to the
   codebase's convention for that pose — the operator's contract is to
   physically place the OTA at that park before powering on. This
   anchors the coordinate frame, which is what allows `Park()` to slew
-  (see [§Park lifecycle](#park-lifecycle)). `ap_park_0` ("current
-  position") means no encoder seeding: the driver trusts whatever the
-  firmware reports and the operator plate-solves and
-  `SyncToCoordinates` to ground-truth; until that sync the frame is
-  unanchored and `Park()` stops in place instead of slewing.
-  Runtime-modifiable via the `SetUnparkFromApPosition` custom Action
-  (persisted to the same config file). See
+  (see [§Park lifecycle](#park-lifecycle)); operators with a
+  repeatable setup should declare their pose (typically `ap_park_3`,
+  Sky-Watcher's stock home). `ap_park_0` ("current position") means no
+  encoder seeding: the driver trusts whatever the firmware reports and
+  the operator plate-solves and `SyncToCoordinates` to ground-truth;
+  until that sync the frame is unanchored and `Park()` stops in place
+  instead of slewing. Runtime-modifiable via the
+  `SetUnparkFromApPosition` custom Action (persisted to the same
+  config file). See
   [§Unpark from AP position](#unpark-from-ap-position).
 - `preferred_ap_park` (optional) — the AP park `Park()` slews to.
   Defaults to `"ap_park_3"` (the visible-celestial-pole pose, the
@@ -1513,25 +1523,27 @@ operator-supplied position assumption to anchor the encoder math.
 Every install declares that assumption explicitly via the required
 `mount.unpark_from_ap_position` config field. The field carries one
 of the named AP-park strings (`ap_park_0` through `ap_park_5`) and
-has no default in the schema sense — but the **ship default** is
-`ap_park_3`, Sky-Watcher's stock power-up pose (OTA at the pole,
-counterweight down): the operator's contract is simply "power the
-mount up at its stock home". A named pose anchors the coordinate
-frame from the first connect, which keeps `Park()` a zero-distance
-no-op right after power-up (see
-[§Park lifecycle](#park-lifecycle)). Operators with unknown or
-variable physical setups override to `ap_park_0` ("I don't know
-where the OTA is; I will plate-solve and sync") — accepting that
-`Park()` stops in place until a sync anchors the frame.
+has no default in the schema sense — the **ship default** is
+`ap_park_0` ("I don't know where the OTA is; I will plate-solve and
+sync"), because the field is the operator's assertion about the
+physical world and no other value is true before the operator has
+asserted anything. With `ap_park_0` the frame is unanchored and
+`Park()` stops in place until a sync (see
+[§Park lifecycle](#park-lifecycle)) — an unconfigured install can
+never slew to a fabricated position. Operators with a repeatable
+setup declare their power-up pose (typically `ap_park_3`,
+Sky-Watcher's stock home — OTA at the pole, counterweight down):
+a named pose anchors the coordinate frame from the first connect,
+which keeps `Park()` a zero-distance no-op right after power-up.
 
 #### The named poses
 
 | `unpark_from_ap_position` | Semantics | AP description | Mech. pier | N hem (mech_HA, dec_enc) | S hem (mech_HA, dec_enc) |
 |---|---|---|---|---|---|
-| `ap_park_0` | **Current position.** No seeding — trust the firmware encoder as-is. Operator's responsibility is to plate-solve and `SyncToCoordinates` before any blind-pointing slew; until that sync the frame is unanchored and `Park()` stops in place. For unknown / variable physical setups. | — | — | — | — |
+| `ap_park_0` (default) | **Current position.** No seeding — trust the firmware encoder as-is. Operator's responsibility is to plate-solve and `SyncToCoordinates` before any blind-pointing slew; until that sync the frame is unanchored and `Park()` stops in place. The honest default for an undeclared / unknown / variable physical setup. | — | — | — | — |
 | `ap_park_1` | Fresh-power-up seed to this pose. | OTA on west, level, facing polar-side horizon. Celestial Dec = `±(90 − \|lat\|)`. | West | `(0 h, +(90 + \|lat\|)°)` (saddle west, dec past pole) | `(0 h, −(90 + \|lat\|)°)` (saddle west, dec past pole) |
 | `ap_park_2` | Fresh-power-up seed to this pose. | OTA level facing east horizon, counterweight straight down. Hemisphere-independent celestial coords `(HA=−6, Dec=0)`. | — (CW down) | `(−6 h, 0°)` | `(−6 h, 0°)` |
-| `ap_park_3` (default) | Fresh-power-up seed to this pose. | OTA along polar axis at the visible celestial pole. Sky-Watcher's stock power-up pose. | — (CW along polar) | `(−6 h, +90°)` | `(−6 h, −90°)` |
+| `ap_park_3` | Fresh-power-up seed to this pose. | OTA along polar axis at the visible celestial pole. Sky-Watcher's stock power-up pose — the typical choice for a repeatable setup. | — (CW along polar) | `(−6 h, +90°)` | `(−6 h, −90°)` |
 | `ap_park_4` | Fresh-power-up seed to this pose. | OTA on east, level, facing anti-polar horizon. Celestial Dec = `∓(90 − \|lat\|)` (sign anti-hemisphere). | East | `(−12 h, −(90 + \|lat\|)°)` (saddle east, dec past pole) | `(−12 h, +(90 + \|lat\|)°)` (saddle east, dec past pole) |
 | `ap_park_5` | Fresh-power-up seed to this pose. | OTA on east, level, facing polar-side horizon. Celestial Dec = `±(90 − \|lat\|)` (sign matches hemisphere). APCC-only in AP's own software. | East | `(−12 h, +(90 − \|lat\|)°)` (saddle east, dec normal) | `(−12 h, −(90 − \|lat\|)°)` (saddle east, dec normal) |
 
