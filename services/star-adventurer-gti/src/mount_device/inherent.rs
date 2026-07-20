@@ -478,9 +478,11 @@ impl MountDevice {
             if s.park_dec_ticks.is_none() {
                 s.park_dec_ticks = Some(dec);
             }
+            let ra_target = s.park_ra_ticks;
+            let dec_target = s.park_dec_ticks;
             debug!(
-                ra_target = s.park_ra_ticks,
-                dec_target = s.park_dec_ticks,
+                ra_target,
+                dec_target,
                 preferred_ap_park = ?preferred,
                 "frame anchored; park target re-armed"
             );
