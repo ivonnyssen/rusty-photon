@@ -2365,6 +2365,77 @@ async fn sync_anchors_the_frame_and_arms_the_park_target() {
 }
 
 #[tokio::test]
+async fn sync_after_anchored_connect_leaves_armed_park_targets_unchanged() {
+    // With a named unpark pose the connect already armed both targets;
+    // the sync's re-arm hook must leave them untouched (the both-armed
+    // early return).
+    let mut cfg = base_config();
+    cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
+    cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
+    cfg.mount.unpark_from_ap_position = crate::config::ApPark::ApPark3;
+    let manager = MountManager::new(cfg.clone(), Arc::new(MockTransportFactory));
+    let d = MountDevice::new(cfg.mount, manager);
+    d.set_connected(true).await.unwrap();
+    d.sync_to_coordinates(6.0, 30.0).await.unwrap();
+    let s = d.state.read().await;
+    assert!(s.frame_anchored);
+    assert_eq!(s.park_ra_ticks, Some(-907_200));
+    assert_eq!(s.park_dec_ticks, Some(907_200));
+}
+
+#[tokio::test]
+async fn rearm_before_any_connect_anchors_but_arms_nothing() {
+    // Defensive path: no connect has resolved `preferred_ap_park`
+    // (`None`), so the re-arm hook flips the anchor flag and returns
+    // without arming a target.
+    let d = device();
+    d.anchor_frame_and_rearm_park_target().await;
+    let s = d.state.read().await;
+    assert!(s.frame_anchored);
+    assert_eq!(s.park_ra_ticks, None);
+    assert_eq!(s.park_dec_ticks, None);
+}
+
+#[tokio::test]
+async fn rearm_while_disconnected_keeps_targets_unarmed() {
+    // With a resolved preferred park but no transport parameters
+    // (never connected), the pose→ticks conversion is unavailable: the
+    // hook must leave the targets unarmed rather than guess.
+    let d = device();
+    d.state.write().await.preferred_ap_park = Some(crate::config::ApPark::ApPark3);
+    d.anchor_frame_and_rearm_park_target().await;
+    let s = d.state.read().await;
+    assert!(s.frame_anchored);
+    assert_eq!(s.park_ra_ticks, None);
+    assert_eq!(s.park_dec_ticks, None);
+}
+
+#[tokio::test]
+async fn set_preferred_ap_park_rearms_using_a_sync_derived_anchor() {
+    // A sync-derived anchor must survive the SetPreferredApPark live
+    // re-resolve: the reload recomputes anchoring as config-named-pose
+    // OR the existing in-memory anchor, and the on-disk `ap_park_0`
+    // here exercises the OR's in-memory side.
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("config.json");
+    seed_default_config(&path);
+    let d = device_with_path(path.clone());
+    d.set_connected(true).await.unwrap();
+    d.sync_to_coordinates(6.0, 30.0).await.unwrap();
+    let ret = d
+        .action("SetPreferredApPark".to_string(), "ap_park_2".to_string())
+        .await
+        .unwrap();
+    assert_eq!(ret, "ap_park_2");
+    // Re-resolve kept the sync anchor and re-armed to the new pose:
+    // ap_park_2 at latitude 0 → ra = -907,200, dec_enc = 0.
+    let s = d.state.read().await;
+    assert!(s.frame_anchored);
+    assert_eq!(s.park_ra_ticks, Some(-907_200));
+    assert_eq!(s.park_dec_ticks, Some(0));
+}
+
+#[tokio::test]
 async fn unpark_seed_fires_when_firmware_reports_near_zero_encoder() {
     // Sky-Watcher firmware does not always read exactly (0, 0) after a
     // power-cycle: the validation GTi reports dec = -1 on fresh
