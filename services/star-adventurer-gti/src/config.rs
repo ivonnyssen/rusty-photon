@@ -230,16 +230,22 @@ pub struct MountConfig {
     pub flip_policy: FlipPolicy,
 
     /// Physical pose the operator powers the mount up in. **Required**
-    /// in spirit — the ship default is [`ApPark::ApPark0`] ("current
-    /// position, I will plate-solve"), the safest assumption for an
-    /// unknown or variable physical setup.
+    /// in spirit — the ship default is [`ApPark::ApPark3`], Sky-Watcher's
+    /// stock power-up pose (OTA along the polar axis, counterweight
+    /// down): the operator's contract is simply "power up at the stock
+    /// home".
     ///
     /// For `ap_park_1..ap_park_5` the driver seeds the firmware encoder
     /// on the fresh-power-up connect (no motion, just `:E1` / `:E2`) so
     /// the codebase's celestial-coordinate math matches the operator's
-    /// physical pose. For `ap_park_0` the driver does **no** seeding and
-    /// trusts the firmware encoder as-is — the operator has asserted
-    /// they will ground-truth the position via plate-solve + sync.
+    /// physical pose — this **anchors the coordinate frame**, which is
+    /// what permits `Park()` to slew to an absolute pose target. For
+    /// `ap_park_0` the driver does **no** seeding and trusts the
+    /// firmware encoder as-is — the operator has asserted they will
+    /// ground-truth the position via plate-solve + sync; until that
+    /// sync the frame is unanchored and `Park()` stops in place instead
+    /// of slewing (see the design doc's
+    /// [§Park lifecycle](../../../docs/services/star-adventurer-gti.md#park-lifecycle)).
     ///
     /// The runtime `SetUnparkFromApPosition` Action persists a new value
     /// here (applied on the next fresh-power-up). See [`ApPark`] for the
@@ -708,10 +714,12 @@ pub enum ApPark {
     /// "Current position." No encoder seeding — the driver trusts the
     /// firmware encoder as-is on connect. The operator asserts they
     /// will plate-solve and `SyncToCoordinates` before any blind-
-    /// pointing slew. Safe ship default for unknown / variable physical
-    /// setups. Not a valid `preferred_ap_park` (it is not a slew
-    /// target). The `codebase_*` accessors return [`None`] for this
-    /// variant.
+    /// pointing slew; until that sync the coordinate frame is
+    /// unanchored and `Park()` stops in place instead of slewing. For
+    /// unknown / variable physical setups (the ship default is
+    /// [`ApPark::ApPark3`]). Not a valid `preferred_ap_park` (it is
+    /// not a slew target). The `codebase_*` accessors return [`None`]
+    /// for this variant.
     ApPark0,
     /// AP Park 1. "RA horizontal" (Dec axis east-west horizontal,
     /// saddle on the *west* end, counterweight on the east end). OTA
@@ -720,8 +728,9 @@ pub enum ApPark {
     ///
     /// AP table: `Dec = (90 − Latitude)` for north,
     /// `(−90 − Latitude)` for south. Codebase reading:
-    /// `mech_HA = 0`, `dec_encoder = ±(90 − |latitude|)` (sign matches
-    /// the hemisphere).
+    /// `mech_HA = 0`, `dec_encoder = ±(90 + |latitude|)` (sign matches
+    /// the hemisphere; magnitude > 90 = past-pole encoding — see
+    /// [`ApPark::codebase_dec_encoder_degrees`]).
     ApPark1,
     /// AP Park 2. "RA axis vertical, Dec = 0". OTA level facing the
     /// east horizon, counterweight shaft pointing down. The "RA
@@ -730,14 +739,16 @@ pub enum ApPark {
     /// (target on the east-rising celestial equator), `dec_encoder
     /// = 0`. Hemisphere-independent.
     ApPark2,
-    /// AP Park 3 (also Sky-Watcher's power-on home). OTA along the
-    /// polar axis pointing at the visible celestial pole — Polaris
-    /// for north observers, SCP for south observers. Counterweight
-    /// shaft along the anti-pole half of the polar axis.
+    /// AP Park 3 (also Sky-Watcher's power-on home, and the ship
+    /// default `unpark_from_ap_position`). OTA along the polar axis
+    /// pointing at the visible celestial pole — Polaris for north
+    /// observers, SCP for south observers. Counterweight shaft along
+    /// the anti-pole half of the polar axis.
     ///
     /// AP table: `Dec = 90` (visible pole). Codebase reading:
-    /// `mech_HA = 0`, `dec_encoder = +90°` for north / `−90°` for
-    /// south.
+    /// `mech_HA = −6 h` (dec axis south-up, same RA position as
+    /// Park 2 — see [`ApPark::codebase_mech_ha_hours`]),
+    /// `dec_encoder = +90°` for north / `−90°` for south.
     ApPark3,
     /// AP Park 4. East-side / post-meridian-flip equivalent of Park 1:
     /// saddle on the *east* end of the Dec axis, counterweight shaft
@@ -1008,9 +1019,14 @@ fn default_true() -> bool {
     true
 }
 fn default_unpark_from_ap_position() -> ApPark {
-    // Ship default: "current position" — the safest assumption for an
-    // unknown / variable physical setup. No encoder seed on connect.
-    ApPark::ApPark0
+    // Ship default: Sky-Watcher's stock power-up pose. The operator's
+    // contract is "power up at the stock home"; the fresh-power-up seed
+    // then anchors the coordinate frame, and because the default
+    // `preferred_ap_park` is the same pose, a `Park()` issued right
+    // after connect is a zero-distance goto — no motion. Operators with
+    // unknown / variable setups override to `ApPark0` and accept
+    // park-in-place until a plate-solve sync anchors the frame.
+    ApPark::ApPark3
 }
 fn default_preferred_ap_park() -> ApPark {
     // Sky-Watcher's stock power-up pose (OTA along the polar axis at
@@ -1272,12 +1288,15 @@ mod tests {
     }
 
     #[test]
-    fn unpark_from_ap_position_default_is_ap_park_0() {
-        // The ship default is `ap_park_0` ("current position") — the
-        // safest assumption: no encoder seed on connect. Operators with
-        // a permanent setup opt into a named park to get the auto-seed.
+    fn unpark_from_ap_position_default_is_ap_park_3() {
+        // The ship default is `ap_park_3` — Sky-Watcher's stock
+        // power-up pose. Powering up at the stock home anchors the
+        // coordinate frame on connect, and with `preferred_ap_park`
+        // defaulting to the same pose an immediate `Park()` is a
+        // zero-distance goto. Operators with unknown / variable
+        // setups override to `ap_park_0` (park-in-place until a sync).
         let cfg = MountConfig::default();
-        assert_eq!(cfg.unpark_from_ap_position, ApPark::ApPark0);
+        assert_eq!(cfg.unpark_from_ap_position, ApPark::ApPark3);
     }
 
     #[test]
@@ -1583,8 +1602,8 @@ mod tests {
     #[test]
     fn mount_config_deserialises_missing_unpark_fields_as_ship_defaults() {
         // Pre-rename config files (and any file omitting the new keys)
-        // load cleanly: `unpark_from_ap_position` defaults to the safe
-        // `ap_park_0`, `preferred_ap_park` to `ap_park_3`.
+        // load cleanly: both AP-park fields default to `ap_park_3`
+        // (stock power-up pose — anchored frame, zero-distance park).
         let json = r#"{
             "name": "T",
             "unique_id": "t-001",
@@ -1593,7 +1612,7 @@ mod tests {
             "site_longitude_deg": 0.0
         }"#;
         let m: MountConfig = serde_json::from_str(json).expect("deserialise");
-        assert_eq!(m.unpark_from_ap_position, ApPark::ApPark0);
+        assert_eq!(m.unpark_from_ap_position, ApPark::ApPark3);
         assert_eq!(m.preferred_ap_park, ApPark::ApPark3);
     }
 

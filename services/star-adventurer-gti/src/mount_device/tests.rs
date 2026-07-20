@@ -39,8 +39,21 @@ use super::tracking_guard::{auto_flip_tick, guard_loop_tick, tracking_guard_tick
 use super::watchers::{watcher_poll_with_retry, watcher_should_abort};
 use super::*;
 
-fn device() -> MountDevice {
+/// [`Config::default`] with the frame-neutral `ap_park_0` unpark
+/// pose. The ship default (`ap_park_3`) seeds the firmware encoder on
+/// every fresh-power-up connect, which would shift the coordinate
+/// frame under every test that hardcodes tick / coordinate
+/// expectations against the mock's power-up encoder of `(0, 0)`.
+/// Tests about the seed and anchored-frame parking set a named pose
+/// explicitly.
+fn base_config() -> Config {
     let mut cfg = Config::default();
+    cfg.mount.unpark_from_ap_position = ApPark::ApPark0;
+    cfg
+}
+
+fn device() -> MountDevice {
+    let mut cfg = base_config();
     // Same rationale as `fast_settle_device`: open the
     // mechanical-envelope check for tests that don't exercise it.
     // Disable the CW-exclusion zone check for this test.
@@ -108,7 +121,7 @@ async fn axis_rates_is_empty_for_every_axis() {
 
 #[tokio::test]
 async fn site_coordinates_pass_through_from_config() {
-    let cfg = Config::default();
+    let cfg = base_config();
     let manager = MountManager::new(cfg.clone(), Arc::new(MockTransportFactory));
     let mut mount_cfg = cfg.mount.clone();
     mount_cfg.site_latitude_deg = 47.6062;
@@ -150,7 +163,7 @@ async fn set_connected_drives_transport_connect_and_disconnect() {
 async fn guard_device(margin_hours: f64) -> (MountDevice, Arc<tokio::sync::Mutex<MockMountState>>) {
     let factory = CapturingMockFactory::new();
     let mock = Arc::clone(&factory.state);
-    let mut cfg = Config::default();
+    let mut cfg = base_config();
     cfg.mount.cw_exclusion_zone = CwExclusionZone::Active(ActiveZone::new(0.95, 11.05));
     cfg.mount.tracking_guard_margin_hours = TrackingGuardMarginHours::new(margin_hours);
     let manager = MountManager::new(cfg.clone(), Arc::new(factory));
@@ -266,7 +279,7 @@ async fn tracking_guard_tick_is_noop_when_parameters_not_cached() {
             cw_exclusion_zone: CwExclusionZone::Active(ActiveZone::new(0.95, 11.05)),
             ..Default::default()
         },
-        ..Config::default()
+        ..base_config()
     };
     let manager = MountManager::new(cfg.clone(), Arc::new(MockTransportFactory));
     let d = MountDevice::new(cfg.mount, manager);
@@ -302,7 +315,7 @@ async fn tracking_guard_tick_is_noop_when_session_closed_mid_tick() {
             cw_exclusion_zone: CwExclusionZone::Active(ActiveZone::new(0.95, 11.05)),
             ..Default::default()
         },
-        ..Config::default()
+        ..base_config()
     };
     let manager = MountManager::new(cfg.clone(), Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
@@ -375,7 +388,7 @@ async fn auto_flip_device(
 ) -> (MountDevice, Arc<tokio::sync::Mutex<MockMountState>>) {
     let factory = CapturingMockFactory::new();
     let mock = Arc::clone(&factory.state);
-    let mut cfg = Config::default();
+    let mut cfg = base_config();
     cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
     cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
     cfg.mount.flip_policy = FlipPolicy {
@@ -554,7 +567,7 @@ async fn guard_loop_tick_prefers_the_guard_inside_the_band() {
     // offset crossed.
     let factory = CapturingMockFactory::new();
     let mock = Arc::clone(&factory.state);
-    let mut cfg = Config::default();
+    let mut cfg = base_config();
     cfg.mount.cw_exclusion_zone = CwExclusionZone::Active(ActiveZone::new(0.95, 11.05));
     cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
     cfg.mount.flip_policy = FlipPolicy {
@@ -635,7 +648,7 @@ async fn set_tracking_true_issues_g_i_j_on_ra_axis() {
     use crate::transport::mock::CapturingMockFactory;
     let factory = CapturingMockFactory::new();
     let mock = std::sync::Arc::clone(&factory.state);
-    let cfg = Config::default();
+    let cfg = base_config();
     let manager = MountManager::new(cfg.clone(), Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
@@ -777,7 +790,7 @@ fn fast_settle_device() -> MountDevice {
 }
 
 fn device_with_settle(settle_after_slew: Duration) -> MountDevice {
-    let mut cfg = Config::default();
+    let mut cfg = base_config();
     if let crate::config::TransportConfig::Usb(usb) = &mut cfg.transport {
         usb.polling_interval = Duration::from_millis(20);
     }
@@ -828,7 +841,7 @@ async fn slow_settle_connected() -> MountDevice {
 /// inside it without first needing to push past the GTi default
 /// `(0.95, 11.05)`.
 async fn fast_settle_connected_narrow_envelope() -> MountDevice {
-    let mut cfg = Config::default();
+    let mut cfg = base_config();
     if let crate::config::TransportConfig::Usb(usb) = &mut cfg.transport {
         usb.polling_interval = Duration::from_millis(20);
     }
@@ -853,7 +866,7 @@ async fn fast_settle_connected_narrow_envelope() -> MountDevice {
 /// explicit altitude floor and the CW exclusion zone disabled, so the
 /// altitude gate is exercised in isolation.
 async fn fast_settle_connected_with_altitude_floor(floor_degrees: f64) -> MountDevice {
-    let mut cfg = Config::default();
+    let mut cfg = base_config();
     if let crate::config::TransportConfig::Usb(usb) = &mut cfg.transport {
         usb.polling_interval = Duration::from_millis(20);
     }
@@ -1123,7 +1136,7 @@ async fn slew_async_issues_indi_sequence_per_axis() {
     use crate::transport::mock::CapturingMockFactory;
     let factory = CapturingMockFactory::new();
     let mock = std::sync::Arc::clone(&factory.state);
-    let mut cfg = Config::default();
+    let mut cfg = base_config();
     if let crate::config::TransportConfig::Usb(usb) = &mut cfg.transport {
         usb.polling_interval = Duration::from_millis(20);
     }
@@ -1205,7 +1218,7 @@ async fn slew_watcher_pickup_loop_reissues_when_residual_exceeds_tolerance() {
     use crate::transport::mock::CapturingMockFactory;
     let factory = CapturingMockFactory::new();
     let mock = std::sync::Arc::clone(&factory.state);
-    let mut cfg = Config::default();
+    let mut cfg = base_config();
     if let crate::config::TransportConfig::Usb(usb) = &mut cfg.transport {
         usb.polling_interval = Duration::from_millis(20);
     }
@@ -1275,7 +1288,7 @@ async fn slew_watcher_aborts_via_instant_stop_when_axis_reports_blocked() {
     use crate::transport::mock::CapturingMockFactory;
     let factory = CapturingMockFactory::new();
     let mock = std::sync::Arc::clone(&factory.state);
-    let mut cfg = Config::default();
+    let mut cfg = base_config();
     if let crate::config::TransportConfig::Usb(usb) = &mut cfg.transport {
         usb.polling_interval = Duration::from_millis(20);
     }
@@ -1338,7 +1351,7 @@ async fn park_watcher_aborts_via_instant_stop_when_axis_reports_blocked() {
     use crate::transport::mock::CapturingMockFactory;
     let factory = CapturingMockFactory::new();
     let mock = std::sync::Arc::clone(&factory.state);
-    let mut cfg = Config::default();
+    let mut cfg = base_config();
     if let crate::config::TransportConfig::Usb(usb) = &mut cfg.transport {
         usb.polling_interval = Duration::from_millis(20);
     }
@@ -1496,7 +1509,7 @@ async fn abort_slew_does_not_auto_restore_tracking() {
 async fn capturing_connected_device() -> (MountDevice, Arc<tokio::sync::Mutex<MockMountState>>) {
     let factory = CapturingMockFactory::new();
     let mock = Arc::clone(&factory.state);
-    let mut cfg = Config::default();
+    let mut cfg = base_config();
     // Open the envelope so the slew reaches the wire; settle instantly so
     // a successful slew's watcher doesn't linger between scenarios.
     cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
@@ -1763,7 +1776,7 @@ async fn stop_axis_and_wait_returns_transport_error_when_axis_never_stops() {
     // wires a deliberately-broken transport that always reports
     // `running = true` so the helper hits its timeout after the
     // supplied duration.
-    let manager = MountManager::new(Config::default(), Arc::new(StuckAxisFactory));
+    let manager = MountManager::new(base_config(), Arc::new(StuckAxisFactory));
     let session = manager.transport().acquire().await.unwrap();
     let err = stop_axis_and_wait(&manager, &session, Axis::Ra, Duration::from_millis(300))
         .await
@@ -1785,7 +1798,7 @@ async fn watcher_should_abort_returns_true_when_slew_in_progress_cleared() {
     // the transport open even after the user disconnects).
     use rusty_photon_shared_transport::Session;
     let slew_in_progress = AtomicBool::new(false);
-    let manager = MountManager::new(Config::default(), Arc::new(MockTransportFactory));
+    let manager = MountManager::new(base_config(), Arc::new(MockTransportFactory));
     let device_session = manager.transport().acquire().await.unwrap();
     let session_slot: Arc<RwLock<Option<Session<crate::codec::SkywatcherCodec>>>> =
         Arc::new(RwLock::new(Some(device_session)));
@@ -1823,7 +1836,7 @@ async fn pickup_reslew_axis_swallows_transport_errors() {
     // the StuckAxis transport, the inner `stop_axis_and_wait`
     // hits its timeout branch; the helper must log and return
     // without panicking.
-    let manager = MountManager::new(Config::default(), Arc::new(StuckAxisFactory));
+    let manager = MountManager::new(base_config(), Arc::new(StuckAxisFactory));
     let session = manager.transport().acquire().await.unwrap();
     pickup_reslew_axis(&manager, &session, Axis::Ra, 1_000_000).await;
     pickup_reslew_axis(&manager, &session, Axis::Dec, -1_000_000).await;
@@ -1833,7 +1846,7 @@ async fn pickup_reslew_axis_swallows_transport_errors() {
 // ---- SetPark / Park persistence ----
 
 fn device_with_path(path: PathBuf) -> MountDevice {
-    let mut cfg = Config::default();
+    let mut cfg = base_config();
     // Disable the CW-exclusion zone check for this test.
     cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
     cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
@@ -1851,7 +1864,7 @@ fn device_with_path_and_mock(
 ) -> (MountDevice, Arc<tokio::sync::Mutex<MockMountState>>) {
     let factory = CapturingMockFactory::new();
     let mock = Arc::clone(&factory.state);
-    let mut cfg = Config::default();
+    let mut cfg = base_config();
     // Disable the CW-exclusion zone check for these tests.
     cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
     cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
@@ -1863,7 +1876,7 @@ fn device_with_path_and_mock(
 /// Helper: write a default `Config` to `path` as pretty JSON. Used as
 /// the seed file for SetPark round-trip tests.
 fn seed_default_config(path: &Path) {
-    let cfg = Config::default();
+    let cfg = base_config();
     let json = serde_json::to_string_pretty(&cfg).unwrap();
     std::fs::write(path, json).unwrap();
 }
@@ -1872,7 +1885,7 @@ fn seed_default_config(path: &Path) {
 fn write_park_to_config_round_trips_through_typed_config() {
     let dir = tempfile::TempDir::new().unwrap();
     let path = dir.path().join("config.json");
-    let mut cfg = Config::default();
+    let mut cfg = base_config();
     cfg.server.port = 12345;
     std::fs::write(&path, serde_json::to_string_pretty(&cfg).unwrap()).unwrap();
 
@@ -1889,7 +1902,7 @@ fn write_park_to_config_round_trips_through_typed_config() {
 fn write_park_to_config_overwrites_existing_park_keys() {
     let dir = tempfile::TempDir::new().unwrap();
     let path = dir.path().join("config.json");
-    let mut cfg = Config::default();
+    let mut cfg = base_config();
     cfg.mount.park_ra_ticks = Some(100);
     cfg.mount.park_dec_ticks = Some(200);
     std::fs::write(&path, serde_json::to_string_pretty(&cfg).unwrap()).unwrap();
@@ -1996,32 +2009,39 @@ fn read_connect_fields_fails_on_malformed_json() {
 }
 
 #[tokio::test]
-async fn park_returns_invariant_violation_when_in_memory_target_is_missing() {
-    // The `park_*_ticks` invariant is: populated by
-    // `load_park_target_after_connect` before `*requested_connection`
-    // flips true, so any code path that's reached
-    // `ensure_connected()` Ok should see Some on both axes. This
-    // test deliberately violates the invariant by clearing the
-    // values after connect, then calls `park()`. The graceful
-    // failure path (return ASCOMError, do not panic) is the
-    // contract we want to pin — see the comment block on
-    // `MountDevice::park` for the panic-vs-error rationale.
-    let d = connected_device().await;
-    d.state.write().await.park_ra_ticks = None;
-    let err = d.park().await.unwrap_err();
-    assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+async fn park_with_unanchored_frame_stops_in_place_without_goto() {
+    // With an unanchored frame (`ap_park_0`, no sync, no raw override)
+    // both park-target slots are `None` and `Park()` must not slew: a
+    // goto requires a `:S<axis>` target write, and none may reach the
+    // wire. Both axes are stopped where they stand and the watcher
+    // still sets AtPark.
+    let (d, mock) = capturing_connected_device().await;
+    {
+        let s = d.state.read().await;
+        assert_eq!(s.park_ra_ticks, None, "precondition: RA unarmed");
+        assert_eq!(s.park_dec_ticks, None, "precondition: Dec unarmed");
+    }
+    d.park().await.unwrap();
+    let log: Vec<String> = mock
+        .lock()
+        .await
+        .command_log
+        .iter()
+        .map(|c| String::from_utf8_lossy(c).into_owned())
+        .collect();
     assert!(
-        err.message.contains("park_ra_ticks"),
-        "message should name the missing axis: {}",
-        err.message
+        !log.iter().any(|c| c.starts_with(":S")),
+        "expected no :S goto targets on the wire, log: {log:?}"
     );
-
-    // Symmetric for the Dec axis.
-    let d = connected_device().await;
-    d.state.write().await.park_dec_ticks = None;
-    let err = d.park().await.unwrap_err();
-    assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
-    assert!(err.message.contains("park_dec_ticks"), "{}", err.message);
+    // The park still completes: the watcher observes both (already
+    // stopped) axes and sets AtPark.
+    for _ in 0..250 {
+        if d.at_park().await.unwrap() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(d.at_park().await.unwrap(), "AtPark should be set");
 }
 
 #[tokio::test]
@@ -2210,7 +2230,7 @@ async fn set_park_refuses_when_wire_snapshot_reports_axis_running() {
     use crate::transport::mock::CapturingMockFactory;
     let factory = CapturingMockFactory::new();
     let mock = std::sync::Arc::clone(&factory.state);
-    let mut cfg = Config::default();
+    let mut cfg = base_config();
     if let crate::config::TransportConfig::Usb(usb) = &mut cfg.transport {
         usb.polling_interval = Duration::from_millis(20);
     }
@@ -2288,16 +2308,58 @@ async fn set_park_persists_current_wire_position_and_updates_in_memory_target() 
 }
 
 #[tokio::test]
-async fn park_target_defaults_to_preferred_ap_park_when_no_raw_override() {
-    // No raw `park_*_ticks` override and the ship-default
-    // `unpark_from_ap_position = ap_park_0` (no seed) → the park
-    // target resolves to the `preferred_ap_park` default (`ap_park_3`).
-    // `device()` runs at latitude 0, so ap_park_3 → mech_HA = -6h
-    // (ra = -6/24 * cpr = -907,200) and dec_enc = +90° (northern arm
-    // via `>= 0`; dec = 90/360 * cpr = +907,200).
+async fn park_target_stays_unarmed_when_frame_is_unanchored() {
+    // No raw `park_*_ticks` override and `unpark_from_ap_position =
+    // ap_park_0` (no seed, no sync yet) → the frame is unanchored and
+    // NO park target is armed. An absolute `preferred_ap_park` target
+    // computed against an unanchored frame is a fabricated position —
+    // `Park()` stops in place instead (workspace tenet 3: no actuation
+    // on connect).
     let d = device();
     d.set_connected(true).await.unwrap();
     let s = d.state.read().await;
+    assert_eq!(s.park_ra_ticks, None);
+    assert_eq!(s.park_dec_ticks, None);
+    assert!(!s.frame_anchored);
+}
+
+#[tokio::test]
+async fn park_target_arms_preferred_ap_park_when_unpark_pose_anchors_the_frame() {
+    // A named `unpark_from_ap_position` is the operator's power-up
+    // pose assertion: the frame is anchored from connect and the park
+    // target resolves to the `preferred_ap_park` default (`ap_park_3`).
+    // Latitude 0 → mech_HA = -6h (ra = -6/24 * cpr = -907,200) and
+    // dec_enc = +90° (northern arm via `>= 0`; dec = 90/360 * cpr =
+    // +907,200) — identical to the connect-time seed values, so a park
+    // right after connect is a zero-distance goto.
+    let mut cfg = base_config();
+    cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
+    cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
+    cfg.mount.unpark_from_ap_position = crate::config::ApPark::ApPark3;
+    let manager = MountManager::new(cfg.clone(), Arc::new(MockTransportFactory));
+    let d = MountDevice::new(cfg.mount, manager);
+    d.set_connected(true).await.unwrap();
+    let s = d.state.read().await;
+    assert!(s.frame_anchored);
+    assert_eq!(s.park_ra_ticks, Some(-907_200));
+    assert_eq!(s.park_dec_ticks, Some(907_200));
+}
+
+#[tokio::test]
+async fn sync_anchors_the_frame_and_arms_the_park_target() {
+    // SyncToCoordinates is measured ground truth for the encoder→pose
+    // mapping: it must anchor a previously unanchored frame and fill
+    // the park-target slots the unanchored connect left empty, so
+    // subsequent parks slew to the preferred AP park normally.
+    let d = connected_device().await;
+    {
+        let s = d.state.read().await;
+        assert_eq!(s.park_ra_ticks, None, "precondition: unarmed");
+        assert!(!s.frame_anchored, "precondition: unanchored");
+    }
+    d.sync_to_coordinates(6.0, 30.0).await.unwrap();
+    let s = d.state.read().await;
+    assert!(s.frame_anchored);
     assert_eq!(s.park_ra_ticks, Some(-907_200));
     assert_eq!(s.park_dec_ticks, Some(907_200));
 }
@@ -2319,7 +2381,7 @@ async fn unpark_seed_fires_when_firmware_reports_near_zero_encoder() {
         let mut state = factory.state.lock().await;
         state.dec.position_ticks = -1;
     }
-    let mut cfg = Config::default();
+    let mut cfg = base_config();
     // Disable the CW-exclusion zone check for this test.
     cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
     cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
@@ -2350,7 +2412,7 @@ async fn unpark_seed_skips_when_firmware_encoder_beyond_tolerance() {
         let mut state = factory.state.lock().await;
         state.ra.position_ticks = 50_000;
     }
-    let mut cfg = Config::default();
+    let mut cfg = base_config();
     // Disable the CW-exclusion zone check for this test.
     cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
     cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
@@ -2379,7 +2441,7 @@ async fn unpark_seed_skips_just_above_fresh_power_up_tolerance() {
         let mut state = factory.state.lock().await;
         state.ra.position_ticks = 50;
     }
-    let mut cfg = Config::default();
+    let mut cfg = base_config();
     cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
     cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
     cfg.mount.unpark_from_ap_position = crate::config::ApPark::ApPark3;
@@ -2399,7 +2461,7 @@ async fn park_target_uses_preferred_ap_park_distinct_from_unpark_seed() {
     // a seed of ap_park_3 and a *different* preferred park of ap_park_2:
     // the snapshot must reflect the ap_park_3 seed, while the park
     // target resolves to the ap_park_2 encoder pair.
-    let mut cfg = Config::default();
+    let mut cfg = base_config();
     // Disable the CW-exclusion zone check for this test.
     cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
     cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
@@ -2458,12 +2520,9 @@ async fn reset_mount_encoders_errors_when_axis_never_stops() {
     // If stop-and-wait fails (the axis never reports idle), the reset
     // bails before writing any encoder seed — motion is still in flight
     // and re-seeding then would race the firmware.
-    let manager = Arc::new(MountManager::new(
-        Config::default(),
-        Arc::new(StuckAxisFactory),
-    ));
+    let manager = Arc::new(MountManager::new(base_config(), Arc::new(StuckAxisFactory)));
     let session = manager.transport().acquire().await.unwrap();
-    let d = MountDevice::new(Config::default().mount, Arc::clone(&manager));
+    let d = MountDevice::new(base_config().mount, Arc::clone(&manager));
     let err = d
         .reset_mount_encoders(&session, 1_000, -1_000)
         .await
@@ -2571,6 +2630,13 @@ async fn set_preferred_ap_park_persists_and_updates_live_target() {
     let dir = tempfile::TempDir::new().unwrap();
     let path = dir.path().join("config.json");
     seed_default_config(&path);
+    // Anchor the frame via a named on-disk unpark pose — the live
+    // re-resolve only arms an AP-pose target on an anchored frame
+    // (unanchored frames keep no target and park in place).
+    let mut on_disk: Config =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    on_disk.mount.unpark_from_ap_position = crate::config::ApPark::ApPark3;
+    std::fs::write(&path, serde_json::to_string_pretty(&on_disk).unwrap()).unwrap();
     let d = device_with_path(path.clone());
     d.set_connected(true).await.unwrap();
     let ret = d
@@ -2619,7 +2685,7 @@ async fn unpark_from_ap_position_named_park_resets_encoder_and_clears_at_park() 
         state.ra.position_ticks = 200_000;
         state.dec.position_ticks = -50_000;
     }
-    let mut cfg = Config::default();
+    let mut cfg = base_config();
     cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
     cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
     cfg.mount.site_latitude_deg = 32.7157;
@@ -2722,7 +2788,7 @@ async fn ap_park_target_ticks_is_none_when_disconnected() {
 async fn park_target_prefers_config_values_over_handshake_capture() {
     // Config carries park values → driver should use them, not the
     // (zeroed) handshake fallback.
-    let mut cfg = Config::default();
+    let mut cfg = base_config();
     // Disable the CW-exclusion zone check for this test.
     cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
     cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
@@ -2781,16 +2847,19 @@ async fn reconnect_after_set_park_picks_up_persisted_values() {
 
 #[tokio::test]
 async fn reconnect_with_partial_config_uses_preferred_ap_park_for_missing_axis() {
-    // Per-axis fallback: if the config pins only park_ra_ticks, RA
-    // comes from the file and Dec falls through to the
-    // `preferred_ap_park` encoder pair (the default `ap_park_3`), not
-    // the raw handshake reading.
+    // Per-axis fallback on an anchored frame: if the config pins only
+    // park_ra_ticks, RA comes from the file and Dec falls through to
+    // the `preferred_ap_park` encoder pair (the default `ap_park_3`),
+    // not the raw handshake reading. The named unpark pose anchors the
+    // frame — with `ap_park_0` the missing axis would stay unarmed
+    // (park-in-place) instead.
     let dir = tempfile::TempDir::new().unwrap();
     let path = dir.path().join("config.json");
     // Hand-craft a JSON config that sets only park_ra_ticks
     // (park_dec_ticks absent, which `read_connect_fields`
     // must read as `None`).
-    let mut cfg = Config::default();
+    let mut cfg = base_config();
+    cfg.mount.unpark_from_ap_position = crate::config::ApPark::ApPark3;
     cfg.mount.park_ra_ticks = Some(1234);
     // park_dec_ticks deliberately left as None.
     std::fs::write(&path, serde_json::to_string_pretty(&cfg).unwrap()).unwrap();
@@ -2801,6 +2870,24 @@ async fn reconnect_with_partial_config_uses_preferred_ap_park_for_missing_axis()
     // device_with_path runs at latitude 0; ap_park_3 dec_enc = +90°
     // → dec = 90/360 * cpr = 907,200.
     assert_eq!(s.park_dec_ticks, Some(907_200));
+}
+
+#[tokio::test]
+async fn partial_raw_override_is_honored_even_when_frame_is_unanchored() {
+    // Raw ticks are the operator's own frame assertion: a pinned axis
+    // keeps its target even with `ap_park_0` (unanchored), while the
+    // unpinned axis stays unarmed and parks in place.
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("config.json");
+    let mut cfg = base_config();
+    cfg.mount.park_ra_ticks = Some(1234);
+    std::fs::write(&path, serde_json::to_string_pretty(&cfg).unwrap()).unwrap();
+    let d = device_with_path(path);
+    d.set_connected(true).await.unwrap();
+    let s = d.state.read().await;
+    assert_eq!(s.park_ra_ticks, Some(1234));
+    assert_eq!(s.park_dec_ticks, None);
+    assert!(!s.frame_anchored);
 }
 
 #[test]
@@ -3067,7 +3154,7 @@ async fn pulse_guide_zero_duration_is_no_op() {
     use crate::transport::mock::CapturingMockFactory;
     let factory = CapturingMockFactory::new();
     let mock = std::sync::Arc::clone(&factory.state);
-    let cfg = Config::default();
+    let cfg = base_config();
     let manager = MountManager::new(cfg.clone(), Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
@@ -3100,7 +3187,7 @@ async fn pulse_guide_north_issues_tracking_cw_on_dec_axis() {
     use crate::transport::mock::CapturingMockFactory;
     let factory = CapturingMockFactory::new();
     let mock = std::sync::Arc::clone(&factory.state);
-    let cfg = Config::default();
+    let cfg = base_config();
     let manager = MountManager::new(cfg.clone(), Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
@@ -3146,7 +3233,7 @@ async fn pulse_guide_south_issues_tracking_ccw_on_dec_axis() {
     use crate::transport::mock::CapturingMockFactory;
     let factory = CapturingMockFactory::new();
     let mock = std::sync::Arc::clone(&factory.state);
-    let cfg = Config::default();
+    let cfg = base_config();
     let manager = MountManager::new(cfg.clone(), Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
@@ -3174,7 +3261,7 @@ async fn pulse_guide_east_uses_rate_factor_one_minus_fraction() {
     use skywatcher_motor_protocol::codec::decode_u24;
     let factory = CapturingMockFactory::new();
     let mock = std::sync::Arc::clone(&factory.state);
-    let cfg = Config::default();
+    let cfg = base_config();
     let manager = MountManager::new(cfg.clone(), Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
@@ -3250,7 +3337,7 @@ async fn pulse_guide_rolls_back_flag_on_wire_failure() {
     // subsequent caller isn't blocked by the half-applied pulse
     // and `IsPulseGuiding` reports `false` consistent with the
     // lack of actual motion.
-    let mut cfg = Config::default();
+    let mut cfg = base_config();
     // Disable the CW-exclusion zone check for this test.
     cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
     cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
@@ -3335,7 +3422,7 @@ async fn pulse_guide_ra_with_tracking_off_does_not_restore_tracking() {
     use crate::transport::mock::CapturingMockFactory;
     let factory = CapturingMockFactory::new();
     let mock = std::sync::Arc::clone(&factory.state);
-    let cfg = Config::default();
+    let cfg = base_config();
     let manager = MountManager::new(cfg.clone(), Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
@@ -3858,7 +3945,7 @@ fn canonical_path_crosses_pole_south_detects_k_minus_3_replica_at_negative_wire_
 // ---------- Phase 6: SetSideOfPier + CanSetPierSide ----------
 
 async fn flip_enabled_device() -> MountDevice {
-    let mut cfg = Config::default();
+    let mut cfg = base_config();
     if let crate::config::TransportConfig::Usb(usb) = &mut cfg.transport {
         usb.polling_interval = Duration::from_millis(20);
     }
@@ -4117,7 +4204,7 @@ async fn flaky_manager() -> (
         stop_calls_dec: AtomicU32::new(0),
     });
     let factory = Arc::new(FlakyTransportFactory { ctrl: ctrl.clone() });
-    let manager = MountManager::new(Config::default(), factory);
+    let manager = MountManager::new(base_config(), factory);
     // Acquire with fail_remaining = 0 so the handshake completes,
     // then return the controller so the test can flip the failure
     // budget on without interfering with init.
@@ -4207,6 +4294,8 @@ async fn reset_for_disconnect_clears_session_state_but_keeps_mechanical() {
         slew_settle_time: Some(Duration::from_secs(7)),
         park_ra_ticks: Some(1_000),
         park_dec_ticks: Some(-1_000),
+        frame_anchored: true,
+        preferred_ap_park: Some(ApPark::ApPark3),
         target_pier_side: Some(PierSide::East),
         guide_rate_ra_fraction: 0.25,
         guide_rate_dec_fraction: 0.75,
@@ -4222,6 +4311,11 @@ async fn reset_for_disconnect_clears_session_state_but_keeps_mechanical() {
     assert_eq!(s.target_dec_degrees, None);
     assert_eq!(s.park_ra_ticks, None);
     assert_eq!(s.park_dec_ticks, None);
+    // The frame anchor and connect-resolved preferred park are
+    // re-derived on the next connect — a sync-derived anchor must not
+    // survive disconnect.
+    assert!(!s.frame_anchored);
+    assert_eq!(s.preferred_ap_park, None);
     assert!(!s.pulse_guiding_ra);
     assert!(!s.pulse_guiding_dec);
     // Guide rates re-initialise to the default (half-sidereal).
@@ -4249,7 +4343,7 @@ async fn slew_watcher_re_enables_tracking_after_completion() {
     use crate::transport::mock::CapturingMockFactory;
     let factory = CapturingMockFactory::new();
     let mock = std::sync::Arc::clone(&factory.state);
-    let mut cfg = Config::default();
+    let mut cfg = base_config();
     if let crate::config::TransportConfig::Usb(usb) = &mut cfg.transport {
         usb.polling_interval = Duration::from_millis(20);
     }

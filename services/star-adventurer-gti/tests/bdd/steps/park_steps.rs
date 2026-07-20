@@ -168,6 +168,22 @@ async fn no_second_s1(world: &mut StarAdventurerWorld) {
     assert!(s1_count <= 1, ":S1 issued {s1_count} times; log {log:?}");
 }
 
+#[then("the mount should not have received any goto command")]
+async fn no_goto_commands(world: &mut StarAdventurerWorld) {
+    // A goto cannot happen without a `:S<axis>` target write, so the
+    // absence of `:S1` / `:S2` proves no slew was commanded on either
+    // axis (`:G` alone also precedes tracking, `:K` is a stop).
+    let log = world.command_log().await;
+    let gotos: Vec<_> = log
+        .iter()
+        .filter(|c| c.starts_with(":S1") || c.starts_with(":S2"))
+        .collect();
+    assert!(
+        gotos.is_empty(),
+        "expected no goto target commands, saw {gotos:?}; log {log:?}"
+    );
+}
+
 #[then(expr = "the persisted config should have park_ra_ticks {int} and park_dec_ticks {int}")]
 async fn persisted_config_has_park_values(
     world: &mut StarAdventurerWorld,

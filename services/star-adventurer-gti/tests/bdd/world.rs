@@ -21,8 +21,8 @@ use bdd_infra::ServiceHandle;
 use cucumber::World;
 use serde_json::Value;
 use star_adventurer_gti::{
-    AlpacaServerConfig, Config, CwExclusionZone, MinAltitudeDegrees, MountConfig, TransportConfig,
-    UsbConfig,
+    AlpacaServerConfig, ApPark, Config, CwExclusionZone, MinAltitudeDegrees, MountConfig,
+    TransportConfig, UsbConfig,
 };
 use tempfile::TempDir;
 use tokio::time::sleep;
@@ -331,6 +331,13 @@ fn default_test_config() -> Config {
             // steps address targets by hour angle and configure the
             // floor explicitly.
             min_altitude_degrees: MinAltitudeDegrees::try_new(-90.0).expect("-90 is a valid floor"),
+            // Frame-neutral test baseline: the ship default (ap_park_3)
+            // seeds the firmware encoder on every fresh-power-up connect,
+            // which would shift the coordinate frame of every scenario
+            // that hardcodes RA/Dec/tick expectations. Scenarios about
+            // seeding and anchored-frame parking opt in with the
+            // `configured with unpark_from_ap_position` Given.
+            unpark_from_ap_position: ApPark::ApPark0,
             ..MountConfig::default()
         },
     }

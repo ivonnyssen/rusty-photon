@@ -4,6 +4,39 @@ Top-level reference for the rusty-photon workspace. This document indexes
 project-wide documentation and captures workspace-level concerns that don't
 belong in any single service design doc.
 
+## Project Tenets
+
+The tenets rank above feature work. When a design decision trades one of
+these away, the decision is wrong.
+
+1. **Make the best use of night time.** Clear, dark hours are the scarce
+   resource; everything else (build time, code size, convenience) is
+   negotiable against it.
+2. **Robustness.** Unattended operation at 2 a.m. is the design point:
+   fail-fast validation, invalid states made unrepresentable (typed
+   newtypes), bad configs rejected at load — never mid-session.
+3. **No actuation on connect.** Connecting a driver, starting or
+   restarting a service, reconnecting after a transport glitch, and
+   every passive/supervisory transition MUST NOT physically actuate
+   hardware — no motion, park/unpark slews, homing, cover or lamp
+   changes, cooler setpoints, power or dew-heater toggles, filter-wheel
+   moves, or guide pulses. Actuation requires an operator or workflow
+   decision. **Stop-class commands are always permitted** (halting
+   in-flight motion, aborting an exposure — stopping is inherently
+   safe), and automatic cleanup *inside* an operator-started session
+   (abort/stop/park on a safety transition, warm-up on session end) is
+   a workflow decision, not a violation. Corollaries: connect/reconnect
+   handshake hooks stay read-only (they re-run on every serial glitch);
+   `config.apply` must never push output states to hardware; a driver
+   that cannot know where its axes are must never guess with the motors
+   (see the anchored-frame rule in
+   [star-adventurer-gti.md](services/star-adventurer-gti.md#park-lifecycle));
+   vendor-SDK init side effects outside our control (e.g. QHY filter
+   wheels auto-home at firmware level on `InitQHYCCD`) are documented
+   in the owning service's design doc rather than silently accepted.
+   Adopted 2026-07-20 after a connect-time park slewed a physically
+   parked mount 90°/90° to a fabricated pose.
+
 ## Services
 
 | Service | ASCOM Type | Port | Design Doc |

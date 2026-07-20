@@ -191,6 +191,11 @@ impl MountDevice {
             let session = guard.as_ref().ok_or(ASCOMError::NOT_CONNECTED)?;
             self.reset_mount_encoders(session, ra_ticks, dec_ticks)
                 .await?;
+            // The operator just asserted the physical pose: that is
+            // ground truth for the encoder→pose mapping. Anchor the
+            // frame and arm any park-target axis an unanchored connect
+            // left empty.
+            self.anchor_frame_and_rearm_park_target().await;
             tracing::info!(
                 unpark_from_ap_position = ?park,
                 seeded_ra_ticks = ra_ticks,

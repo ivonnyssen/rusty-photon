@@ -3,10 +3,12 @@ Feature: Unpark from AP position
   power-up, so the driver must be told which physical pose the OTA is in.
   `mount.unpark_from_ap_position` carries that assumption, named after the
   Astro-Physics park positions ap_park_0..ap_park_5. The ship default
-  ap_park_0 ("current position") means "no seed — I will plate-solve and
-  sync"; ap_park_1..ap_park_5 seed the firmware encoder on the fresh
-  power-up connect so the driver's celestial math matches the physical
-  pose.
+  ap_park_3 (Sky-Watcher's stock power-up pose) seeds the firmware
+  encoder on the fresh power-up connect so the driver's celestial math
+  matches the physical pose and the coordinate frame is anchored from
+  the first connect; ap_park_0 ("current position") means "no seed — I
+  will plate-solve and sync", leaving the frame unanchored until that
+  sync (Park stops in place until then — see park.feature).
 
   Three driver-specific ASCOM Actions expose runtime control:
   SetUnparkFromApPosition persists a new value (applied on the next

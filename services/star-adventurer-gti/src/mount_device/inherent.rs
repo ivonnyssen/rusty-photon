@@ -343,23 +343,24 @@ impl MountDevice {
     ///    was supplied via `--config` (or `self.config.park_*_ticks` for
     ///    `Config::default()` runs). The raw-encoder override: an
     ///    operator who pinned a specific tick pair via `SetPark` or a
-    ///    hand-edit. Per-axis — one axis can be pinned while the other
-    ///    falls through. Reading fresh from disk means a `SetPark`
-    ///    followed by disconnect/reconnect picks up the new target.
+    ///    hand-edit — honored **regardless of anchoring** (raw ticks are
+    ///    the operator's own frame assertion). Per-axis — one axis can
+    ///    be pinned while the other falls through. Reading fresh from
+    ///    disk means a `SetPark` followed by disconnect/reconnect picks
+    ///    up the new target.
     /// 2. The `preferred_ap_park` encoder pair (the design's `Park()`
     ///    target), resolved from the configured AP park, the site
-    ///    latitude, and the handshake counts-per-revolution. This is the
-    ///    default for any install that hasn't pinned raw ticks;
-    ///    `preferred_ap_park` ships as `ap_park_3`.
-    /// 3. The current firmware encoder reading from the snapshot, as a
-    ///    defensive fallback only when `preferred_ap_park` has no
-    ///    encoder mapping (`ap_park_0`, which deserialize rejects) or
-    ///    transport parameters are somehow unavailable.
-    ///
-    /// `seed_after_connect` runs first in `set_connected`, so on a fresh
-    /// power-up the snapshot already reflects the seeded encoder; the
-    /// defensive snapshot fallback therefore still lands on the pose the
-    /// operator powered up at if it is ever reached.
+    ///    latitude, and the handshake counts-per-revolution — **only
+    ///    when the coordinate frame is anchored** (named
+    ///    `unpark_from_ap_position`, or a sync already anchored it this
+    ///    connection). `preferred_ap_park` ships as `ap_park_3`.
+    /// 3. **No target.** With an unanchored frame (`ap_park_0`, no sync
+    ///    yet) and no raw override the axis keeps `None`: `Park()`
+    ///    stops it in place instead of slewing. Slewing to an absolute
+    ///    pose from an unanchored frame would command real motion to a
+    ///    fabricated position — the workspace tenet *no actuation on
+    ///    connect* forbids it. The sync that anchors the frame re-arms
+    ///    the target via [`Self::anchor_frame_and_rearm_park_target`].
     ///
     /// Extracted from `set_connected` so a failure here (file missing,
     /// malformed JSON, lost transport mid-load) can be rolled back by the
@@ -409,25 +410,33 @@ impl MountDevice {
         &self,
         cfg: &ConnectConfig,
     ) -> ASCOMResult<()> {
-        // Fallback for any axis without a raw override: the
-        // `preferred_ap_park` encoder pair, else (defensively) the live
-        // snapshot. `seed_after_connect` ran first, so on a fresh
-        // power-up the snapshot already reflects the seeded encoder.
-        let snap = self.manager.snapshot().await;
-        let (fallback_ra, fallback_dec) = self
-            .ap_park_target_ticks(cfg.preferred_ap_park)
-            .await
-            .unwrap_or((snap.ra.position_ticks, snap.dec.position_ticks));
-        let ra_target = cfg.park_ra_ticks.unwrap_or(fallback_ra);
-        let dec_target = cfg.park_dec_ticks.unwrap_or(fallback_dec);
+        // A named unpark pose anchors the frame from config; a sync
+        // this connection may already have anchored it (the OR keeps a
+        // sync-derived anchor alive across a `SetPreferredApPark`
+        // re-resolve — at connect time the flag is freshly reset).
+        let anchored = cfg.unpark_from_ap_position != ApPark::ApPark0
+            || self.state.read().await.frame_anchored;
+        // Fallback for an axis without a raw override: the
+        // `preferred_ap_park` encoder pair when the frame is anchored,
+        // else no target at all (park-in-place).
+        let pose_pair = if anchored {
+            self.ap_park_target_ticks(cfg.preferred_ap_park).await
+        } else {
+            None
+        };
+        let ra_target = cfg.park_ra_ticks.or(pose_pair.map(|(ra, _)| ra));
+        let dec_target = cfg.park_dec_ticks.or(pose_pair.map(|(_, dec)| dec));
         {
             let mut s = self.state.write().await;
-            s.park_ra_ticks = Some(ra_target);
-            s.park_dec_ticks = Some(dec_target);
+            s.park_ra_ticks = ra_target;
+            s.park_dec_ticks = dec_target;
+            s.frame_anchored = anchored;
+            s.preferred_ap_park = Some(cfg.preferred_ap_park);
         }
         debug!(
             ra_target,
             dec_target,
+            anchored,
             from_config_ra = cfg.park_ra_ticks.is_some(),
             from_config_dec = cfg.park_dec_ticks.is_some(),
             preferred_ap_park = ?cfg.preferred_ap_park,
@@ -435,6 +444,47 @@ impl MountDevice {
             "park target loaded"
         );
         Ok(())
+    }
+
+    /// Mark the coordinate frame anchored (measured or operator-asserted
+    /// ground truth arrived) and arm any still-empty park-target axis
+    /// from the connect-resolved `preferred_ap_park`.
+    ///
+    /// Called after a successful `SyncToCoordinates` / `SyncToTarget`
+    /// and after a named-park `UnparkFromApPosition`. Axes with a raw
+    /// `park_*_ticks` override (or an already-armed pose target) are
+    /// left untouched — only the `None` slots left by an unanchored
+    /// connect are filled. Best-effort: if the transport parameters are
+    /// unavailable the targets stay empty and `Park()` keeps its
+    /// park-in-place behaviour.
+    pub(super) async fn anchor_frame_and_rearm_park_target(&self) {
+        let preferred = {
+            let mut s = self.state.write().await;
+            s.frame_anchored = true;
+            if s.park_ra_ticks.is_some() && s.park_dec_ticks.is_some() {
+                return;
+            }
+            s.preferred_ap_park
+        };
+        let Some(preferred) = preferred else {
+            // No connect ran yet (unit-test-only path) — nothing to arm.
+            return;
+        };
+        if let Some((ra, dec)) = self.ap_park_target_ticks(preferred).await {
+            let mut s = self.state.write().await;
+            if s.park_ra_ticks.is_none() {
+                s.park_ra_ticks = Some(ra);
+            }
+            if s.park_dec_ticks.is_none() {
+                s.park_dec_ticks = Some(dec);
+            }
+            debug!(
+                ra_target = s.park_ra_ticks,
+                dec_target = s.park_dec_ticks,
+                preferred_ap_park = ?preferred,
+                "frame anchored; park target re-armed"
+            );
+        }
     }
 
     /// Safe-stop-then-seed the firmware encoder counter to the given
