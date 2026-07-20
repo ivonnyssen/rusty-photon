@@ -196,7 +196,7 @@ impl MountDevice {
             // frame and arm any park-target axis an unanchored connect
             // left empty.
             self.anchor_frame_and_rearm_park_target().await;
-            tracing::info!(
+            tracing::debug!(
                 unpark_from_ap_position = ?park,
                 seeded_ra_ticks = ra_ticks,
                 seeded_dec_ticks = dec_ticks,
