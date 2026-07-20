@@ -73,6 +73,30 @@ fn config_has_no_value(world: &mut DoctorWorld, name: String, pointer: String) {
     );
 }
 
+/// For a path `--fix` derives at runtime (anchored at the scenario's
+/// scratch pki dir) rather than a value the feature file can spell out
+/// verbatim — compared as `Path`s, so a Windows backslash/forward-slash
+/// difference is not a false failure (mirrors `sentinel_client_ca_path` in
+/// `provisioning_steps.rs`).
+#[then(expr = "the config file {string} has {string} pointing at the pki file {string}")]
+fn config_pointer_points_at_pki_file(
+    world: &mut DoctorWorld,
+    name: String,
+    pointer: String,
+    pki_name: String,
+) {
+    let value = world.config_value(&name);
+    let actual = value
+        .pointer(&pointer)
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("{name} has no string at {pointer}: {value}"));
+    assert_eq!(
+        std::path::Path::new(actual),
+        world.pki_dir().join(&pki_name),
+        "{name} at {pointer}"
+    );
+}
+
 #[then(expr = "the config file {string} is unchanged from what was staged")]
 fn config_unchanged(world: &mut DoctorWorld, name: String) {
     let staged = world
