@@ -15,7 +15,7 @@ Feature: Side of pier
 
   Scenario Outline: Northern-hemisphere SideOfPier per Dec encoder angle
     Given a star-adventurer service configured with site latitude 45.0 degrees
-    And a mount with CPR 3628800 on both axes
+    And a mount with CPR 3628800 on the RA axis and 2903040 on the Dec axis
     And the Dec-axis encoder reports angle <dec_deg> degrees
     And a running star-adventurer service
     When I connect the device
@@ -35,7 +35,7 @@ Feature: Side of pier
 
   Scenario Outline: Southern-hemisphere SideOfPier inverts the convention
     Given a star-adventurer service configured with site latitude -33.0 degrees
-    And a mount with CPR 3628800 on both axes
+    And a mount with CPR 3628800 on the RA axis and 2903040 on the Dec axis
     And the Dec-axis encoder reports angle <dec_deg> degrees
     And a running star-adventurer service
     When I connect the device

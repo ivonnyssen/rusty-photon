@@ -10,16 +10,21 @@ async fn running_service(world: &mut StarAdventurerWorld) {
     world.start_service().await;
 }
 
-#[given(expr = "a mount that reports CPR {int} on both axes")]
-async fn mount_reports_cpr(_world: &mut StarAdventurerWorld, cpr: u32) {
-    // Assert the feature-file value matches the GTi-default the mock
-    // already seeds; a divergent CPR would need a `/debug/v1/mock-state`
-    // extension and the scenario should fail fast instead of silently
-    // passing.
-    const GTI_CPR: u32 = 0x0037_5F00;
+#[given(expr = "a mount that reports CPR {int} on the RA axis and {int} on the Dec axis")]
+async fn mount_reports_cpr(_world: &mut StarAdventurerWorld, cpr_ra: u32, cpr_dec: u32) {
+    // Assert the feature-file values match the GTi per-axis defaults
+    // the mock already seeds (the axes differ on real hardware); a
+    // divergent CPR would need a `/debug/v1/mock-state` extension and
+    // the scenario should fail fast instead of silently passing.
+    const GTI_CPR_RA: u32 = 0x0037_5F00;
+    const GTI_CPR_DEC: u32 = 0x002C_4C00;
     assert_eq!(
-        cpr, GTI_CPR,
-        "mock only seeds CPR {GTI_CPR}; feature file asked for {cpr}"
+        cpr_ra, GTI_CPR_RA,
+        "mock seeds RA CPR {GTI_CPR_RA}; feature file asked for {cpr_ra}"
+    );
+    assert_eq!(
+        cpr_dec, GTI_CPR_DEC,
+        "mock seeds Dec CPR {GTI_CPR_DEC}; feature file asked for {cpr_dec}"
     );
 }
 

@@ -2328,10 +2328,11 @@ async fn park_target_arms_preferred_ap_park_when_unpark_pose_anchors_the_frame()
     // A named `unpark_from_ap_position` is the operator's power-up
     // pose assertion: the frame is anchored from connect and the park
     // target resolves to the `preferred_ap_park` default (`ap_park_3`).
-    // Latitude 0 → mech_HA = -6h (ra = -6/24 * cpr = -907,200) and
-    // dec_enc = +90° (northern arm via `>= 0`; dec = 90/360 * cpr =
-    // +907,200) — identical to the connect-time seed values, so a park
-    // right after connect is a zero-distance goto.
+    // Latitude 0 → mech_HA = -6h (ra = -6/24 * cpr_ra = -907,200) and
+    // dec_enc = +90° (northern arm via `>= 0`; dec = 90/360 * cpr_dec =
+    // +725,760 — the dec axis has its own, smaller CPR) — identical to
+    // the connect-time seed values, so a park right after connect is a
+    // zero-distance goto.
     let mut cfg = base_config();
     cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
     cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
@@ -2342,7 +2343,7 @@ async fn park_target_arms_preferred_ap_park_when_unpark_pose_anchors_the_frame()
     let s = d.state.read().await;
     assert!(s.frame_anchored);
     assert_eq!(s.park_ra_ticks, Some(-907_200));
-    assert_eq!(s.park_dec_ticks, Some(907_200));
+    assert_eq!(s.park_dec_ticks, Some(725_760));
 }
 
 #[tokio::test]
@@ -2361,7 +2362,7 @@ async fn sync_anchors_the_frame_and_arms_the_park_target() {
     let s = d.state.read().await;
     assert!(s.frame_anchored);
     assert_eq!(s.park_ra_ticks, Some(-907_200));
-    assert_eq!(s.park_dec_ticks, Some(907_200));
+    assert_eq!(s.park_dec_ticks, Some(725_760));
 }
 
 #[tokio::test]
@@ -2380,7 +2381,7 @@ async fn sync_after_anchored_connect_leaves_armed_park_targets_unchanged() {
     let s = d.state.read().await;
     assert!(s.frame_anchored);
     assert_eq!(s.park_ra_ticks, Some(-907_200));
-    assert_eq!(s.park_dec_ticks, Some(907_200));
+    assert_eq!(s.park_dec_ticks, Some(725_760));
 }
 
 #[tokio::test]
@@ -2461,13 +2462,14 @@ async fn unpark_seed_fires_when_firmware_reports_near_zero_encoder() {
     let manager = MountManager::new(cfg.clone(), Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
-    // ApPark3 N hemisphere with mock cpr = 0x375F00 = 3,628,800:
-    // expected seed → ra_ticks = -907,200, dec_ticks = +907,200. The
+    // ApPark3 N hemisphere with the mock's per-axis CPRs (ra
+    // 0x375F00 = 3,628,800, dec 0x2C4C00 = 2,903,040): expected seed
+    // → ra_ticks = -907,200, dec_ticks = +725,760. The
     // snapshot reflects the `:E` writes; if the seed had been skipped
     // it would still read the pre-seed (0, -1).
     let snap = d.manager.snapshot().await;
     assert_eq!(snap.ra.position_ticks, -907_200);
-    assert_eq!(snap.dec.position_ticks, 907_200);
+    assert_eq!(snap.dec.position_ticks, 725_760);
 }
 
 #[tokio::test]
@@ -2543,10 +2545,10 @@ async fn park_target_uses_preferred_ap_park_distinct_from_unpark_seed() {
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
     // ap_park_3 seed: mech_HA = -6h, dec_enc = +90° → snapshot
-    // (-907,200, +907,200).
+    // (-907,200, +725,760).
     let snap = d.manager.snapshot().await;
     assert_eq!(snap.ra.position_ticks, -907_200);
-    assert_eq!(snap.dec.position_ticks, 907_200);
+    assert_eq!(snap.dec.position_ticks, 725_760);
     // ap_park_2 park target: mech_HA = -6h (ra = -907,200), dec_enc = 0°
     // (dec = 0) — distinct from the seed on the dec axis.
     let s = d.state.read().await;
@@ -2769,10 +2771,10 @@ async fn unpark_from_ap_position_named_park_resets_encoder_and_clears_at_park() 
         .await
         .unwrap();
     assert_eq!(ret, "ap_park_3");
-    // ap_park_3 at lat 32.7157: ra = -907,200, dec = +907,200.
+    // ap_park_3 at lat 32.7157: ra = -907,200, dec = +725,760.
     let snap = d.manager.snapshot().await;
     assert_eq!(snap.ra.position_ticks, -907_200);
-    assert_eq!(snap.dec.position_ticks, 907_200);
+    assert_eq!(snap.dec.position_ticks, 725_760);
     assert!(!d.at_park().await.unwrap());
 }
 
@@ -2939,8 +2941,8 @@ async fn reconnect_with_partial_config_uses_preferred_ap_park_for_missing_axis()
     let s = d.state.read().await;
     assert_eq!(s.park_ra_ticks, Some(1234));
     // device_with_path runs at latitude 0; ap_park_3 dec_enc = +90°
-    // → dec = 90/360 * cpr = 907,200.
-    assert_eq!(s.park_dec_ticks, Some(907_200));
+    // → dec = 90/360 * cpr_dec = 725,760.
+    assert_eq!(s.park_dec_ticks, Some(725_760));
 }
 
 #[tokio::test]

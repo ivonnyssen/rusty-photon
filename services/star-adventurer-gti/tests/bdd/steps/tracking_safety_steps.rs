@@ -10,7 +10,8 @@ use star_adventurer_gti::{ActiveZone, CwExclusionZone, TrackingGuardMarginHours}
 /// mock seeds and the driver caches at handshake. Used to convert a
 /// human-readable mech_HA into the encoder tick value the
 /// `/debug/v1/mock-state` seed endpoint expects:
-/// `ticks = mech_HA × CPR / 24`.
+/// `ticks = mech_HA × CPR / 24`. RA-axis CPR — mech-HA lives on the
+/// RA axis (the Dec axis has its own, smaller CPR).
 const GTI_CPR: f64 = 3_628_800.0;
 
 #[given(

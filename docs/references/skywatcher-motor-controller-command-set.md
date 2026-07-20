@@ -110,15 +110,20 @@ for the mock transport:
 | Command | Wire reply | Decoded |
 |---|---|---|
 | `:e1\r` (motor-board version) | `=03300C\r` | mount-type byte `0x03`, fw `0x30`/`0x0C` |
-| `:a1\r` (CPR axis 1) | `=005F37\r` | `0x375F00` = 3,628,800 counts/revolution |
+| `:a1\r` (CPR axis 1, RA) | `=005F37\r` | `0x375F00` = 3,628,800 counts/revolution |
+| `:a2\r` (CPR axis 2, Dec) | `=004C2C\r` | `0x2C4C00` = 2,903,040 counts/revolution |
 | `:b1\r` (TMR_Freq) | `=0024F4\r` | `0xF42400` ≈ 16 MHz |
 | `:j1\r` (position axis 1) | `=000080\r` | `0x800000` (with bias) → 0 ticks (home) |
 | `:f1\r` (status axis 1) | `=100\r` | tracking-mode preset, motor stopped, not initialised |
 | `:F1\r` (initialize axis 1) | `=\r` | empty-payload ack |
 
-CPR is per-axis; the driver also queries `:a2` for the Dec axis. CPR
-varies between mount models, so do not bake `3,628,800` into anything
-beyond test fixtures.
+CPR is per-axis, and on the GTi the axes genuinely differ: the Dec
+CPR is 0.8× the RA CPR (both values above captured from the real
+mount over USB, 2026-07-20). CPR also varies between mount models,
+so do not bake either value into anything beyond test fixtures —
+the mock transport seeds this measured pair precisely so that a
+conversion using the wrong axis' CPR fails tests instead of passing
+on coincidentally identical values.
 
 ### Initialization sequence we use on connect
 
