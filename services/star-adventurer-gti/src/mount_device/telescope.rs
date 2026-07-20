@@ -532,6 +532,11 @@ impl Telescope for MountDevice {
             s.target_ra_hours = Some(ra);
             s.target_dec_degrees = Some(dec);
         }
+        // The sync is measured ground truth for the encoder→pose
+        // mapping: anchor the frame and arm any park-target axis an
+        // unanchored connect left empty, so `Park()` can slew to the
+        // preferred AP park from here on.
+        self.anchor_frame_and_rearm_park_target().await;
         Ok(())
     }
 
@@ -660,38 +665,47 @@ impl Telescope for MountDevice {
                     .map_err(ASCOMError::from)?;
                 self.state.write().await.tracking_requested = false;
             }
-            // Slew both axes to the loaded park target.
-            // `set_connected(true)` populated these from config /
-            // handshake; if either is `None` here it's an internal
-            // invariant violation. Surface as a structured ASCOMError
-            // rather than a panic — panicking inside a tokio task
-            // aborts it and leaves the Alpaca client with a
-            // connection-reset.
+            // Per-axis park target: `Some` from a raw config override
+            // or (anchored frame) the `preferred_ap_park` pose; `None`
+            // when the frame is unanchored with no override — that
+            // axis parks IN PLACE. A goto from an unanchored frame
+            // would slew to a fabricated position (workspace tenet:
+            // no actuation on connect).
             let (target_ra_ticks, target_dec_ticks) = {
                 let s = self.state.read().await;
-                let ra = s.park_ra_ticks.ok_or_else(|| {
-                    ASCOMError::new(
-                        ASCOMErrorCode::INVALID_OPERATION,
-                        "park_ra_ticks not loaded — internal invariant violation",
-                    )
-                })?;
-                let dec = s.park_dec_ticks.ok_or_else(|| {
-                    ASCOMError::new(
-                        ASCOMErrorCode::INVALID_OPERATION,
-                        "park_dec_ticks not loaded — internal invariant violation",
-                    )
-                })?;
-                (ra, dec)
+                (s.park_ra_ticks, s.park_dec_ticks)
             };
             // Same wire sequence as `slew_to_coordinates_async`:
             // `:K`-and-wait, `:G` with direction chosen from
-            // `sign(target - current)`, `:S target`, `:J`.
-            let snap = self.manager.snapshot().await;
+            // `sign(target - current)`, `:S target`, `:J`. Both axes
+            // are stopped BEFORE the positions that pick the goto
+            // direction are read: a direction computed from a pre-stop
+            // reading could point the long way around if an axis was
+            // still moving (tracking, in-flight slew) when Park was
+            // called.
+            self.stop_and_wait(Axis::Ra).await?;
+            self.stop_and_wait(Axis::Dec).await?;
+            // Fresh wire read after the stops — the cached background
+            // snapshot lags the wire by up to one `polling_interval`.
+            let snap = {
+                let guard = self.session.read().await;
+                let session = guard.as_ref().ok_or(ASCOMError::NOT_CONNECTED)?;
+                self.manager
+                    .poll_axes_now(session)
+                    .await
+                    .map_err(ASCOMError::from)?
+            };
             for (axis, current_ticks, target_ticks) in [
                 (Axis::Ra, snap.ra.position_ticks, target_ra_ticks),
                 (Axis::Dec, snap.dec.position_ticks, target_dec_ticks),
             ] {
-                self.stop_and_wait(axis).await?;
+                let Some(target_ticks) = target_ticks else {
+                    debug!(
+                        ?axis,
+                        "no park target (unanchored frame) — axis parks in place"
+                    );
+                    continue;
+                };
                 let mode = MotionMode {
                     kind: ModeKind::Goto,
                     speed: Speed::Fast,

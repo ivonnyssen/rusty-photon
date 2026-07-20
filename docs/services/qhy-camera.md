@@ -383,6 +383,14 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   for subsequent operations; an in-flight exposure on it is aborted.
 - **C4.** Connect is per-device and independent: connecting/disconnecting one
   camera does not affect the others enumerated on the same service.
+- **C5.** No code path in this service pushes cooler state, wheel position, or
+  any other actuation on startup, connect, or `config.apply` (workspace tenet
+  [*no actuation on connect*](../workspace.md#project-tenets)); cooler and CFW
+  commands are issued only by explicit ASCOM setters. **Known vendor-SDK side
+  effect outside our control:** `OpenQHYCCD`/`InitQHYCCD` run on connect (C1),
+  and QHY filter wheels auto-home at the firmware level on init — a physical
+  wheel rotation the SDK performs on its own. Operators with a CFW should
+  expect the wheel to home when a client first connects the camera.
 
 ### Geometry, binning, ROI
 

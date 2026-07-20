@@ -479,6 +479,17 @@ EAF; those belong to the other zwo services.)
   for subsequent operations; an in-flight exposure on it is aborted.
 - **C4.** Connect is per-device and independent: connecting/disconnecting one
   camera does not affect the others enumerated on the same service.
+- **C5.** No code path in this service pushes cooler state or any other
+  actuation on startup, connect, or `config.apply` (workspace tenet
+  [*no actuation on connect*](../workspace.md#project-tenets)); cooler commands
+  are issued only by explicit ASCOM setters, and no cooler setpoint is restored
+  on connect. **Known caveat:** the C0 serial read runs
+  `ASIOpenCamera`+`ASIInitCamera` on every camera at *service start* (and again
+  on every `config.apply` reload) — `ASIInitCamera` resets controls to SDK
+  defaults (cooler off) and no actuation has been observed, but its internal
+  behaviour is vendor-controlled, so startup does touch the hardware through
+  the opaque SDK. Deferring the serial read to first connect would remove the
+  startup contact (tracked as a follow-up issue).
 
 ### Geometry, binning, ROI
 

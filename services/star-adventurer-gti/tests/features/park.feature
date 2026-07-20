@@ -1,13 +1,25 @@
 Feature: Park, unpark, and SetPark
-  Park stops tracking, slews both axes to the in-memory park-target
-  encoder pair, and sets AtPark when both axes report stopped. The park
-  target is loaded on connect, per axis, from the raw
-  `mount.park_ra_ticks` / `mount.park_dec_ticks` override when set,
-  otherwise from the `mount.preferred_ap_park` AP park (ship default
-  `ap_park_3`, Sky-Watcher's stock power-up pose). Tracking remains
-  disabled after Park (per ASCOM). Unpark clears AtPark but does not
-  auto-enable tracking. SetPark captures the current encoder pair and
-  writes it back into the running config file via atomic rename.
+  Park stops tracking, then slews both axes to the in-memory
+  park-target encoder pair ONLY when the coordinate frame is anchored;
+  with an unanchored frame Park stops both axes in place. AtPark is set
+  when both axes report stopped either way. The frame is anchored by a
+  named `mount.unpark_from_ap_position` (the operator's declared
+  power-up pose, typically `ap_park_3` — Sky-Watcher's stock home), by
+  a successful sync this connection, or by the UnparkFromApPosition
+  recovery action; the ship default `ap_park_0` ("current position",
+  the only honest value when the operator declared nothing) is
+  unanchored until a sync. The park
+  target is resolved on connect, per axis, from the raw
+  `mount.park_ra_ticks` / `mount.park_dec_ticks` override when set
+  (honored regardless of anchoring — raw ticks are the operator's own
+  frame assertion), otherwise from the `mount.preferred_ap_park` AP
+  park (default `ap_park_3`) when anchored, otherwise no target (park
+  in place). Slewing to an absolute pose from an unanchored frame would
+  command real motion to a fabricated position — the workspace tenet
+  "no actuation on connect" forbids it. Tracking remains disabled after
+  Park (per ASCOM). Unpark clears AtPark but does not auto-enable
+  tracking. SetPark captures the current encoder pair and writes it
+  back into the running config file via atomic rename.
 
   Scenario: AtPark is false on first connect
     Given a running star-adventurer service
@@ -15,19 +27,46 @@ Feature: Park, unpark, and SetPark
     Then AtPark should be false
 
   Scenario: Park stops tracking before slewing home
-    Given a running star-adventurer service
+    Given a star-adventurer service configured with unpark_from_ap_position "ap_park_3"
     When I connect the device
     And I enable tracking
     And I park the mount
     Then the mount should have received command :K1 before any :S1
     And Tracking should be false
 
-  Scenario: Park targets the preferred AP park when the config has no raw park values
-    # Default config: latitude 0, preferred_ap_park = ap_park_3. ap_park_3
-    # → mech_HA = -6h (ra = -6/24 * cpr = -907200) and dec_enc = +90°
-    # (dec = 90/360 * cpr = +907200) at the GTi CPR of 3,628,800.
-    Given a running star-adventurer service
+  Scenario: Park targets the preferred AP park when the frame is anchored
+    # unpark_from_ap_position = ap_park_3 seeds the encoder on the fresh
+    # power-up, anchoring the frame. Latitude 0, preferred_ap_park =
+    # ap_park_3 → mech_HA = -6h (ra = -6/24 * cpr = -907200) and
+    # dec_enc = +90° (dec = 90/360 * cpr = +907200) at the GTi CPR of
+    # 3,628,800. The seed already placed the encoder at those exact
+    # values, so this park is a zero-distance goto: an install whose
+    # declared power-up pose equals its preferred park is motion-free
+    # by construction on a park issued right after connect.
+    Given a star-adventurer service configured with unpark_from_ap_position "ap_park_3"
     When I connect the device
+    And I park the mount
+    Then the mount should have received a :S1 command targeting encoder -907200
+    And the mount should have received a :S2 command targeting encoder 907200
+
+  Scenario: Park without an anchored frame stops in place without slewing
+    # ap_park_0 = "current position": the driver has no ground truth for
+    # the encoder-to-pose mapping, so Park must not slew to a fabricated
+    # absolute target. Both axes are stopped where they stand and AtPark
+    # is set.
+    Given a star-adventurer service configured with unpark_from_ap_position "ap_park_0"
+    When I connect the device
+    And I park the mount
+    Then the mount should not have received any goto command
+    And AtPark should eventually be true within 5 seconds
+
+  Scenario: A sync anchors the frame so Park slews to the preferred AP park
+    # After SyncToCoordinates the encoder-to-pose mapping is measured
+    # ground truth, so the park target re-arms from preferred_ap_park
+    # (default ap_park_3: -907200 / +907200 at latitude 0, CPR 3,628,800).
+    Given a star-adventurer service configured with unpark_from_ap_position "ap_park_0"
+    When I connect the device
+    And I sync to RA 6.0 hours and Dec 30.0 degrees
     And I park the mount
     Then the mount should have received a :S1 command targeting encoder -907200
     And the mount should have received a :S2 command targeting encoder 907200
@@ -40,7 +79,7 @@ Feature: Park, unpark, and SetPark
     And the mount should have received a :S2 command targeting encoder -7000
 
   Scenario: Park is idempotent
-    Given a running star-adventurer service
+    Given a star-adventurer service configured with unpark_from_ap_position "ap_park_3"
     When I connect the device
     And I park the mount
     And the mount reports both axes stopped at encoder 0
@@ -48,7 +87,7 @@ Feature: Park, unpark, and SetPark
     Then the mount should not have received a second :S1 command
 
   Scenario: AtPark becomes true once both axes settle at the park target
-    Given a running star-adventurer service
+    Given a star-adventurer service configured with unpark_from_ap_position "ap_park_3"
     When I connect the device
     And I park the mount
     And the mount reports both axes stopped at encoder 0

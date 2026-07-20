@@ -409,7 +409,7 @@ Every property/method on `ITelescopeV3`, what the driver returns, and why.
 | `SyncToCoordinates(ra, dec)` | issue `:E<axis><pos>` for each axis (set encoder position), update the cached snapshot so an immediate `RightAscension` / `Declination` read reflects the sync without waiting for the next background poll, and **update `TargetRightAscension` / `TargetDeclination`** to the synced coordinates (per ASCOM ITelescopeV3 — a successful Sync writes Target) |
 | `SyncToTarget()` | uses last-set target |
 | `AbortSlew()` | refuse with `INVALID_WHILE_PARKED` when parked; otherwise issue `:L1` `:L2` (instant stop), clear `Slewing`, do NOT auto-restore tracking |
-| `Park()` | stop tracking, slew both axes to the in-memory park-target encoder pair (loaded from config or captured at handshake — see [§Park lifecycle](#park-lifecycle)), when both report stopped set `AtPark=true`. **Tracking remains off after park** (per ASCOM) |
+| `Park()` | stop tracking, then — **only when the coordinate frame is anchored** (see [§Park lifecycle](#park-lifecycle)) — slew both axes to the in-memory park-target encoder pair; with an unanchored frame (`ap_park_0`, no sync yet, no raw tick override) Park stops both axes **in place** and issues no goto. When both axes report stopped set `AtPark=true`. **Tracking remains off after park** (per ASCOM) |
 | `Unpark()` | clear `AtPark`. Does NOT auto-enable tracking |
 | `SetPark()` | capture current encoder pair, write back into the running config file (only the `mount.park_ra_ticks` / `mount.park_dec_ticks` keys are touched — see [§Park persistence](#park-persistence)), update the in-memory park target. Refuses if not connected or while slewing. (The binary always resolves a config path, so the historical "no `--config`" refusal no longer fires in practice — see [§Park persistence](#park-persistence).) |
 | `SetSideOfPier(side)` | request a meridian flip to the named side. No-op success when `side == current_side`; otherwise issues a through-wrap flip slew to the current target. Returns `NOT_IMPLEMENTED` when `flip_policy.enabled = false`; `INVALID_VALUE` when `side` is `Unknown`; the usual `NOT_CONNECTED` / `INVALID_WHILE_PARKED` / `INVALID_OPERATION` (while slewing) refusals otherwise. See [§Meridian flip](#meridian-flip) |
@@ -510,9 +510,13 @@ Park()
    ├─ Tracking = false (issue :K on RA axis)
    │
    ├─ for each axis:
-   │     :G<axis><goto-mode>      ccw chosen from sign(target − current)
-   │     :S<axis><park_target>    target = in-memory park-target ticks
-   │     :J<axis>
+   │     :K<axis> + poll :f until stopped    (stop-and-wait)
+   │     then, ONLY if this axis has a park target (anchored frame
+   │     or raw tick override — see below):
+   │       :G<axis><goto-mode>      ccw chosen from sign(target − current)
+   │       :S<axis><park_target>    target = in-memory park-target ticks
+   │       :J<axis>
+   │     else: the axis parks IN PLACE — stopped is parked
    │
    ├─ background poll :f1 / :f2 until both stopped
    │     (no auto-abort on timeout — caller must AbortSlew if stuck;
@@ -521,46 +525,86 @@ Park()
    └─ Tracking remains false
 ```
 
-The **park-target encoder pair** is loaded per axis on every connect,
-in this order of preference:
+#### The anchored-frame rule
 
-1. **Config-file value** (per axis). The driver always resolves a
-   config-file path at startup (see
+Whether `Park()` may slew at all is governed by whether the driver's
+coordinate frame is **anchored** — whether the encoder→pose mapping
+has an operator-asserted or measured ground truth. Slewing to an
+absolute AP-pose target from an *unanchored* frame commands real
+physical motion to a fabricated position (this moved a real mount
+90°/90° out of its physical park on 2026-07-19, when a client parked
+it seconds after connect). Per the workspace tenet
+[*no actuation on connect*](../workspace.md#project-tenets), a mount
+that doesn't know where it is must never guess with the motors.
+
+The frame is **anchored** when any of:
+
+- `unpark_from_ap_position` is a named park (`ap_park_1..ap_park_5`) —
+  the operator asserts the power-up pose; the fresh-power-up seed (or
+  the non-fresh skip, which means the frame carried over from earlier
+  operations this power cycle) grounds the mapping.
+- `SyncToCoordinates` / `SyncToTarget` succeeded during this
+  connection (plate-solve ground truth).
+- The `UnparkFromApPosition(ap_park_N)` recovery Action ran with a
+  named park (operator asserts the current physical pose).
+
+Anchoring is re-derived on every connect — a sync-derived anchor does
+**not** survive disconnect (conservative: a new session cannot know
+what an earlier one measured).
+
+#### Park-target resolution
+
+The **park-target encoder pair** is resolved per axis on every connect
+(and re-resolved by `SetPreferredApPark` and by the sync that anchors
+a previously unanchored frame), in this order of preference:
+
+1. **Raw config-file override** (per axis). The driver always resolves
+   a config-file path at startup (see
    [§Device identity (UniqueID)](#device-identity-uniqueid)); that file
    is re-read on every connect and `mount.park_ra_ticks` /
-   `mount.park_dec_ticks` are used when present. Per-axis: if only
-   `park_ra_ticks` is set, RA comes from the file and Dec falls through
-   to step 3.
-2. **In-memory config value** (per axis). Only reachable at the library
-   layer when `MountDevice` was constructed without a config path
-   (`MountDevice::new`, exercised by unit tests): the `MountConfig`
-   defaults are used and `SetPark` is unreachable, so these values do
-   not change in-process. The binary never takes this branch because it
-   always supplies a resolved path.
-3. **Live-snapshot fallback** (per axis). The current encoder
-   reading from the [`MountManager`] snapshot. Two cases:
-   - **Fresh power-up with `unpark_from_ap_position` set to a named
-     park (`ap_park_1..ap_park_5`).** The driver runs
-     [`seed_after_connect`](#unpark-from-ap-position) before loading
-     the park target, so the snapshot already reflects the named
-     pose's logical encoder values (e.g. `ap_park_3` → `mech_HA =
-     -6h`, `mech_dec = +90°`). `Park` therefore defaults to "return
-     to the pose the operator powered up at".
-   - **Mid-session reconnect** *or* **fresh power-up with
-     `unpark_from_ap_position = "ap_park_0"`.** The seed skips on a
-     non-fresh firmware encoder (and is unconditionally a no-op when
-     `ap_park_0` is configured), so the snapshot equals the
-     handshake-captured `:j1` / `:j2` reading. This is the "park
-     where the OTA already is" semantic operators expect from a
-     reconnect.
-4. **Last resort** — encoder `0`. Only reachable if the snapshot
-   somehow produced no position read, which today is unreachable.
+   `mount.park_dec_ticks` are used when present — **regardless of
+   anchoring** (raw ticks are the operator's own frame assertion;
+   `SetPark` writes them from a live encoder read). Per-axis: if only
+   `park_ra_ticks` is set, RA comes from the file and Dec falls
+   through to step 2. (At the library layer, a `MountDevice` built
+   without a config path — `MountDevice::new`, unit tests only — reads
+   the same fields from the in-memory `MountConfig` instead.)
+2. **`preferred_ap_park` pose ticks — anchored frames only.** The
+   named AP pose (ship default `ap_park_3`) converted to encoder ticks
+   for the configured latitude and the handshake counts-per-revolution.
+3. **No target — park in place.** With an unanchored frame and no raw
+   override the axis has no park target: `Park()` stops the axis where
+   it stands and sets `AtPark`. Once a sync anchors the frame the
+   target is re-armed from `preferred_ap_park` and subsequent parks
+   slew normally.
+
+The ship default `unpark_from_ap_position` is `ap_park_0`: the field
+is the operator's assertion about the physical world, and "current
+position" is the only value that is true when nothing was asserted —
+a named-pose default would seed a confidently *wrong* frame whenever
+the mount powered up elsewhere, and a park would then slew to a
+fabricated position. An unconfigured install therefore parks in place
+and can never move wrongly. Operators with a repeatable setup declare
+their power-up pose (typically `ap_park_3`, Sky-Watcher's stock home):
+the fresh power-up seed then writes the encoder to that pose's values,
+and with `preferred_ap_park` at the same pose (its default) the park
+target is armed at those same values — so a `Park()` issued
+immediately after connect (e.g. rp's safety enforcer parking on an
+unsafe startup transition) is a zero-distance goto: **no motion, by
+construction**.
+
+**Roof-interlock note:** installations where a roll-off roof may only
+close over a parked scope MUST use an anchored configuration (a named
+`unpark_from_ap_position`, or raw `park_*_ticks`). Park-in-place is
+honest about an unknown frame, but it cannot guarantee a roof-safe
+pose.
 
 Re-reading the config file on every connect means a successful
 `SetPark` (or a manual operator edit between connects) takes effect on
 the next reconnect without restarting the driver. After load the
-in-memory target is fixed for the session unless `SetPark` is called
-again (see [§Park persistence](#park-persistence)).
+in-memory target is fixed for the session unless `SetPark`,
+`SetPreferredApPark`, or an anchoring sync updates it (see
+[§Park persistence](#park-persistence)).
 
 ### Park persistence
 
@@ -1353,11 +1397,10 @@ Notes:
   `SetPark` is called. Operators may set them by hand to pin a known
   mechanical pose. See [§Park persistence](#park-persistence) for the
   rules around when the driver writes to this file. When absent, the
-  park target falls back to the live snapshot reading. With
-  `unpark_from_ap_position` set to a named park (`ap_park_1..ap_park_5`)
-  and a fresh power-up, that's the named pose's logical encoder values
-  (`Park` defaults to "return to the pose you powered up at"); otherwise
-  it's the handshake-captured reading. See
+  park target falls back to the `preferred_ap_park` pose ticks **when
+  the coordinate frame is anchored** (named `unpark_from_ap_position`,
+  or a sync this connection); with an unanchored frame and no raw
+  override there is no park target and `Park()` stops in place. See
   [§Park lifecycle](#park-lifecycle).
 - `flip_policy.enabled` defaults `false`. Set to `true` only after
   the first real-hardware meridian flip has been verified on the
@@ -1381,19 +1424,25 @@ Notes:
   past the meridian). Must be finite and within `±flip_range_hours` —
   validated at load as a cross-field rule on the `flip_policy` block.
 - `unpark_from_ap_position` is **required** (no default in the schema
-  sense, but the ship default is `"ap_park_0"`). Carries the
-  operator's declared physical position assumption — one of
-  `"ap_park_0"` through `"ap_park_5"`. `ap_park_0` ("current
-  position") is the safe-by-default value: no encoder seeding on
-  connect; the driver trusts whatever the firmware reports and the
-  operator plate-solves and `SyncToCoordinates` to ground-truth.
-  Setting it to a named park (`ap_park_1..ap_park_5`) tells the driver
-  to seed the firmware encoder via `:E1` / `:E2` on every
-  fresh-power-up connect to the codebase's convention for that
-  pose — the operator's contract is to physically place the OTA at
-  that park before powering on. Runtime-modifiable via the
+  sense, but the ship default is `"ap_park_0"` — the field is the
+  operator's declared physical position assumption, and "current
+  position" is the only honest value when nothing was declared).
+  One of `"ap_park_0"` through `"ap_park_5"`. A named park
+  (`ap_park_1..ap_park_5`) tells the driver to seed the firmware
+  encoder via `:E1` / `:E2` on every fresh-power-up connect to the
+  codebase's convention for that pose — the operator's contract is to
+  physically place the OTA at that park before powering on. This
+  anchors the coordinate frame, which is what allows `Park()` to slew
+  (see [§Park lifecycle](#park-lifecycle)); operators with a
+  repeatable setup should declare their pose (typically `ap_park_3`,
+  Sky-Watcher's stock home). `ap_park_0` ("current position") means no
+  encoder seeding: the driver trusts whatever the firmware reports and
+  the operator plate-solves and `SyncToCoordinates` to ground-truth;
+  until that sync the frame is unanchored and `Park()` stops in place
+  instead of slewing. Runtime-modifiable via the
   `SetUnparkFromApPosition` custom Action (persisted to the same
-  config file). See [§Unpark from AP position](#unpark-from-ap-position).
+  config file). See
+  [§Unpark from AP position](#unpark-from-ap-position).
 - `preferred_ap_park` (optional) — the AP park `Park()` slews to.
   Defaults to `"ap_park_3"` (the visible-celestial-pole pose, the
   Sky-Watcher stock power-up pose). Runtime-modifiable via the
@@ -1474,21 +1523,27 @@ operator-supplied position assumption to anchor the encoder math.
 Every install declares that assumption explicitly via the required
 `mount.unpark_from_ap_position` config field. The field carries one
 of the named AP-park strings (`ap_park_0` through `ap_park_5`) and
-has no default in the schema sense — but the **ship default** is
-`ap_park_0`, which encodes the safest possible assumption ("I don't
-know where the OTA is; I will plate-solve and sync"). Operators who
-run a permanent observatory at a specific physical park override the
-default to the matching `ap_park_N` and the driver seeds the firmware
-encoder accordingly on fresh-power-up connect.
+has no default in the schema sense — the **ship default** is
+`ap_park_0` ("I don't know where the OTA is; I will plate-solve and
+sync"), because the field is the operator's assertion about the
+physical world and no other value is true before the operator has
+asserted anything. With `ap_park_0` the frame is unanchored and
+`Park()` stops in place until a sync (see
+[§Park lifecycle](#park-lifecycle)) — an unconfigured install can
+never slew to a fabricated position. Operators with a repeatable
+setup declare their power-up pose (typically `ap_park_3`,
+Sky-Watcher's stock home — OTA at the pole, counterweight down):
+a named pose anchors the coordinate frame from the first connect,
+which keeps `Park()` a zero-distance no-op right after power-up.
 
 #### The named poses
 
 | `unpark_from_ap_position` | Semantics | AP description | Mech. pier | N hem (mech_HA, dec_enc) | S hem (mech_HA, dec_enc) |
 |---|---|---|---|---|---|
-| `ap_park_0` (default) | **Current position.** No seeding — trust the firmware encoder as-is. Operator's responsibility is to plate-solve and `SyncToCoordinates` before any blind-pointing slew. Safe default for unknown / variable physical setups. | — | — | — | — |
+| `ap_park_0` (default) | **Current position.** No seeding — trust the firmware encoder as-is. Operator's responsibility is to plate-solve and `SyncToCoordinates` before any blind-pointing slew; until that sync the frame is unanchored and `Park()` stops in place. The honest default for an undeclared / unknown / variable physical setup. | — | — | — | — |
 | `ap_park_1` | Fresh-power-up seed to this pose. | OTA on west, level, facing polar-side horizon. Celestial Dec = `±(90 − \|lat\|)`. | West | `(0 h, +(90 + \|lat\|)°)` (saddle west, dec past pole) | `(0 h, −(90 + \|lat\|)°)` (saddle west, dec past pole) |
 | `ap_park_2` | Fresh-power-up seed to this pose. | OTA level facing east horizon, counterweight straight down. Hemisphere-independent celestial coords `(HA=−6, Dec=0)`. | — (CW down) | `(−6 h, 0°)` | `(−6 h, 0°)` |
-| `ap_park_3` | Fresh-power-up seed to this pose. | OTA along polar axis at the visible celestial pole. Sky-Watcher's stock power-up pose. | — (CW along polar) | `(−6 h, +90°)` | `(−6 h, −90°)` |
+| `ap_park_3` | Fresh-power-up seed to this pose. | OTA along polar axis at the visible celestial pole. Sky-Watcher's stock power-up pose — the typical choice for a repeatable setup. | — (CW along polar) | `(−6 h, +90°)` | `(−6 h, −90°)` |
 | `ap_park_4` | Fresh-power-up seed to this pose. | OTA on east, level, facing anti-polar horizon. Celestial Dec = `∓(90 − \|lat\|)` (sign anti-hemisphere). | East | `(−12 h, −(90 + \|lat\|)°)` (saddle east, dec past pole) | `(−12 h, +(90 + \|lat\|)°)` (saddle east, dec past pole) |
 | `ap_park_5` | Fresh-power-up seed to this pose. | OTA on east, level, facing polar-side horizon. Celestial Dec = `±(90 − \|lat\|)` (sign matches hemisphere). APCC-only in AP's own software. | East | `(−12 h, +(90 − \|lat\|)°)` (saddle east, dec normal) | `(−12 h, −(90 − \|lat\|)°)` (saddle east, dec normal) |
 
@@ -1576,7 +1631,7 @@ preferred-park target. All three are advertised via `SupportedActions`.
 |---|---|---|
 | `SetUnparkFromApPosition` | `park` (`ap_park_0..ap_park_5`) | Validates the park name, writes the value into the running config file (atomic-rename pattern, mirrors `SetPark` persistence — see [§Park persistence](#park-persistence)), updates the in-memory config. The new value takes effect on the *next* fresh-power-up auto-seed; the current session's encoder is not touched. Refuses (`INVALID_OPERATION`) when no config path is available — at the library layer that means `MountDevice::new`; the binary always resolves one, so this refusal no longer fires in practice. |
 | `SetPreferredApPark` | `park` (`ap_park_1..ap_park_5`) | Sets the AP-park target that `Park()` will slew to. Persisted to config alongside the same file-write pattern. `ap_park_0` is not a valid value here — "current position" is not a slew target. The legacy `park_ra_ticks` / `park_dec_ticks` config keys remain as raw-encoder overrides for ops who pinned a specific tick pair; when both forms are set, the explicit tick pair wins. |
-| `UnparkFromApPosition` | `park` (`ap_park_0..ap_park_5`) | Recovery operation. For `ap_park_0`, semantically equivalent to standard `Unpark()` — clears `AtPark`, no encoder change. For any named park (`ap_park_1..ap_park_5`), runs the [`ResetMountEncoders` sequence](#resetmountencoders-sequence) to safely write the park's encoder values *regardless of the current encoder state*, then clears `AtPark`. Operator is asserting "the OTA is physically at this park"; the driver makes firmware state match. |
+| `UnparkFromApPosition` | `park` (`ap_park_0..ap_park_5`) | Recovery operation. For `ap_park_0`, semantically equivalent to standard `Unpark()` — clears `AtPark`, no encoder change. For any named park (`ap_park_1..ap_park_5`), runs the [`ResetMountEncoders` sequence](#resetmountencoders-sequence) to safely write the park's encoder values *regardless of the current encoder state*, then clears `AtPark`. Operator is asserting "the OTA is physically at this park"; the driver makes firmware state match — this also **anchors the coordinate frame** and re-arms the park target (see [§Park lifecycle](#park-lifecycle)). |
 
 Standard ASCOM `Unpark()` is unchanged — it always just clears the
 `AtPark` flag with no encoder write. The two operations
@@ -1968,8 +2023,10 @@ Connected = true   → acquire a session (refcount bump; the transport is
   1. seed_after_connect — if unpark_from_ap_position ∈ ap_park_1..ap_park_5
        AND the firmware encoder is within FRESH_POWER_UP_TICK_TOLERANCE of
        (0, 0):  :E1, :E2  (seed encoder to the AP pose's codebase convention)
-  2. load_park_target_after_connect — resolve the in-memory park ticks from
-       config / preferred_ap_park
+  2. load_park_target_after_connect — resolve the in-memory park ticks:
+       raw config override per axis, else preferred_ap_park pose ticks when
+       the frame is anchored (named unpark_from_ap_position), else no target
+       (Park stops in place) — see §Park lifecycle
 
 Connected = false  → release the session. On the last client disconnect the
                      on_last_disconnect hook runs :L1, :L2, :K1 (safety

@@ -41,7 +41,7 @@ use tokio::sync::RwLock;
 use rusty_photon_driver::ConfigActionCtx;
 
 use crate::codec::SkywatcherCodec;
-use crate::config::MountConfig;
+use crate::config::{ApPark, MountConfig};
 use crate::config_actions::StarAdvDriver;
 use crate::manager::MountManager;
 
@@ -78,14 +78,31 @@ struct DriverState {
     target_ra_hours: Option<f64>,
     target_dec_degrees: Option<f64>,
     slew_settle_time: Option<Duration>,
-    /// In-memory park-target encoder pair. Populated on the 0→1 connect
-    /// transition from `MountConfig::park_*_ticks` if `Some`, otherwise
-    /// from the handshake-captured positions. `None` here means "not
-    /// loaded yet" — `Park` reads via `ok_or_else` after
-    /// `ensure_connected()` so an unset value surfaces as an
-    /// `ASCOMError(INVALID_OPERATION)` rather than a panic.
+    /// In-memory park-target encoder pair. Resolved per axis on the
+    /// 0→1 connect transition: `MountConfig::park_*_ticks` if `Some`
+    /// (honored regardless of anchoring), otherwise the
+    /// `preferred_ap_park` pose ticks when the frame is anchored.
+    /// `None` means the axis has **no park target** — `Park()` stops
+    /// that axis in place instead of slewing (unanchored frame, no raw
+    /// override). Re-armed by the sync that anchors the frame and by
+    /// `SetPreferredApPark`. See the design doc's §Park lifecycle.
     park_ra_ticks: Option<i32>,
     park_dec_ticks: Option<i32>,
+    /// Whether the encoder→pose mapping has operator-asserted or
+    /// measured ground truth. `true` from connect when
+    /// `unpark_from_ap_position` is a named park (`ap_park_1..5`);
+    /// flips `true` on a successful `SyncToCoordinates` /
+    /// `SyncToTarget` or a named-park `UnparkFromApPosition`. While
+    /// `false`, `Park()` must not slew to an absolute AP-pose target —
+    /// that would command real motion to a fabricated position
+    /// (workspace tenet: no actuation on connect). Reset on disconnect
+    /// and re-derived on the next connect.
+    frame_anchored: bool,
+    /// `preferred_ap_park` as resolved at connect (config-file read).
+    /// Kept so the sync that anchors a previously unanchored frame can
+    /// re-arm the park target without re-reading the file. `None`
+    /// before the first connect.
+    preferred_ap_park: Option<ApPark>,
     /// Pier side the most recent slew was *issued for*. Read by the
     /// slew-completion watcher's pickup loop so it picks
     /// `target_encoder_normal` vs `target_encoder_flipped` for the
@@ -119,6 +136,8 @@ impl Default for DriverState {
             slew_settle_time: None,
             park_ra_ticks: None,
             park_dec_ticks: None,
+            frame_anchored: false,
+            preferred_ap_park: None,
             target_pier_side: None,
             guide_rate_ra_fraction: DEFAULT_GUIDE_RATE_FRACTION,
             guide_rate_dec_fraction: DEFAULT_GUIDE_RATE_FRACTION,
@@ -153,6 +172,10 @@ impl DriverState {
     ///     connect from config / handshake. Clearing here means a
     ///     mid-session edit to `MountConfig::park_*_ticks` would take
     ///     effect on reconnect.
+    ///   - `frame_anchored` / `preferred_ap_park` — re-derived on the
+    ///     next connect. A sync-derived anchor deliberately does not
+    ///     survive disconnect: a new session cannot know what an
+    ///     earlier one measured (see the design doc's §Park lifecycle).
     ///   - `pulse_guiding_*` — the pulse-guide watchers are bound to
     ///     the now-closed transport; cancellation is implicit.
     ///   - `guide_rate_*_fraction` — re-initialise to the default,
@@ -163,6 +186,8 @@ impl DriverState {
         self.tracking_requested = false;
         self.park_ra_ticks = None;
         self.park_dec_ticks = None;
+        self.frame_anchored = false;
+        self.preferred_ap_park = None;
         self.pulse_guiding_ra = false;
         self.pulse_guiding_dec = false;
         self.guide_rate_ra_fraction = DEFAULT_GUIDE_RATE_FRACTION;
