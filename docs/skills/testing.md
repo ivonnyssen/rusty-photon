@@ -411,6 +411,20 @@ binary discovery, spawning, port parsing, and graceful shutdown logic.
   pipe deadlocks. On `Drop`, sends a best-effort SIGTERM.
 - `parse_bound_port()` — standalone function also usable by ConformU tests.
 
+**Labeled stderr forwarding.** Every spawned child's stderr (where every
+service's `tracing` output goes) is captured and re-printed line-by-line,
+prefixed with a `<package>#<seq>` label unique to that spawn — e.g.
+`[sentinel#12] ...`. Cucumber runs up to 64 scenarios concurrently by default,
+and most feature files aren't tagged `@serial`, so many same-named service
+instances (several scenarios each discovering a stub as, say,
+"plate-solver") can be alive at once, each its own child process. Without a
+label, their stderr lines merge into one shared, unattributed stream and a
+reader (or an agent) cannot tell which lines belong to which instance — this
+made a real CI flake (issue #578) misread as one continuously-unhealthy
+service when it was most likely several concurrent instances' logs
+interleaved. When debugging BDD/CI output, `grep` for one instance's label to
+isolate its full lifecycle from the merged stream.
+
 **Optional `rp-harness` feature** — adds the higher-level helpers needed when a
 test spawns `rp` alongside OmniSim and/or an orchestrator plugin:
 
