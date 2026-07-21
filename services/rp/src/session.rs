@@ -291,7 +291,12 @@ impl SessionManager {
         // restore (`recover_startup` skips it entirely to honor the
         // no-actuation-on-connect tenet), and a no-op re-adoption for an
         // ordinary live interruption, whose cooler was never touched
-        // (rp.md § Camera Cooling → Recovery).
+        // (rp.md § Camera Cooling → Recovery). Not a tenet violation:
+        // this session was already operator-started before the outage
+        // or safety event, so re-adopting on its unsafe -> safe
+        // transition is automatic cleanup inside an operator-started
+        // session, the same carve-out class as park-on-safety-transition
+        // (workspace.md § Project Tenets, "No actuation on connect").
         if let Some(cooling) = &self.cooling {
             cooling.recover();
         }
@@ -806,6 +811,32 @@ mod tests {
         false
     }
 
+    /// Polls `sim`'s `set_setpoint_calls` up to 5s for the background
+    /// `cooling.recover()` task's actuation to land.
+    async fn wait_for_setpoint_calls(sim: &Sim, expected: u32) -> bool {
+        for _ in 0..100 {
+            if sim.lock().unwrap().set_setpoint_calls >= expected {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        false
+    }
+
+    /// Asserts `sim` sees no cooler actuation for `window` — fails as soon
+    /// as one is observed rather than only after the window elapses.
+    async fn assert_no_setpoint_calls_within(sim: &Sim, window: Duration) {
+        let deadline = tokio::time::Instant::now() + window;
+        while tokio::time::Instant::now() < deadline {
+            assert_eq!(
+                sim.lock().unwrap().set_setpoint_calls,
+                0,
+                "cooler was actuated during the no-actuation window"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
     #[tokio::test]
     async fn start_invokes_orchestrator_with_null_recovery() {
         let stub = spawn_invoke_stub(vec![StatusCode::OK]).await;
@@ -1235,9 +1266,8 @@ mod tests {
         assert!(second.recover_startup(true).await);
         assert!(wait_for_hits(&stub, 2).await);
 
-        tokio::time::sleep(Duration::from_millis(300)).await;
         assert!(
-            sim.lock().unwrap().set_setpoint_calls > 0,
+            wait_for_setpoint_calls(&sim, 1).await,
             "a safe restart must recover (command) the cooler"
         );
     }
@@ -1264,17 +1294,11 @@ mod tests {
         assert!(second.recover_startup(false).await);
         assert_eq!(second.status().await, "interrupted");
 
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        assert_eq!(
-            sim.lock().unwrap().set_setpoint_calls,
-            0,
-            "an unsafe restart must never command the cooler"
-        );
+        assert_no_setpoint_calls_within(&sim, Duration::from_millis(300)).await;
 
         assert!(second.resume().await, "the safe transition resumes it");
-        tokio::time::sleep(Duration::from_millis(300)).await;
         assert!(
-            sim.lock().unwrap().set_setpoint_calls > 0,
+            wait_for_setpoint_calls(&sim, 1).await,
             "the deferred cooler recovery must run once conditions are safe"
         );
     }

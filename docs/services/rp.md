@@ -3740,6 +3740,12 @@ all (no-actuation-on-connect tenet,
 re-adoption (or a fresh cooldown pass) is deferred
 to the safe transition, which runs it unconditionally whether the
 interruption originated at this restart or from a live safety event.
+Running it there, rather than never, is the tenet's own carve-out: the
+restored session was already operator-started before the outage or the
+safety event, and re-adopting the cooler on its unsafe → safe
+transition is automatic cleanup inside that session, the same class of
+workflow decision as the park-on-safety-transition example the tenet
+names explicitly — not a connect-time or passive/supervisory actuation.
 
 There is deliberately no "conditions have changed" (daytime /
 all-goals-met) check in `rp` — deciding whether the night is over is
