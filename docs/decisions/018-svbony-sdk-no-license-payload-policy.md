@@ -66,19 +66,25 @@ mechanical delivery differs in one respect worth flagging (see
    [ADR-013 §3](013-native-sdk-payload-policy.md), installed under
    `/usr/lib/udev/rules.d/` — `pkg/90-rusty-photon-svbony.rules` (VID
    `f266`), landed in Phase C alongside the bare service skeleton.
-4. **Packaging simplification, to be confirmed at Phase G.** SVBony's SDK
-   blob is installed with a **proper versioned SONAME**
-   (`libSVBCameraSDK.so.1`), unlike ZWO's SONAME-less blobs — ADR-013's
-   ZWO bucket needs a RUNPATH trick
-   (`-Wl,-rpath,/usr/lib/rusty-photon`) specifically *because* ZWO's blobs
-   carry no SONAME and standard `ldconfig`/dynamic-linker resolution can't
-   find them. A versioned SONAME may mean SVBony's blob resolves via
-   ordinary `ldconfig` mechanics once installed to a standard library path,
-   with no RUNPATH injection needed. **This is flagged, not asserted as
-   settled** — `docs/plans/svbony-camera.md` records it as "to be
-   confirmed at Phase G packaging time" and this ADR inherits that
-   uncertainty; verify against the actual installed blob before relying on
-   it.
+4. **Packaging simplification, corrected by Phase F CI provisioning work
+   (still to be finally confirmed at Phase G for the runtime helper).**
+   indi-3rdparty's `libsvbony/CMakeLists.txt` sets a CMake **install**
+   property (`SOVERSION 1`), which earlier drafts of this ADR and
+   `docs/plans/svbony-camera.md` read as "the blob carries a proper
+   versioned SONAME" — Phase F's `install-svbony-sdk` CI action
+   byte-verified the actual vendored `.bin` (`readelf -d`) and found **no
+   embedded DT_SONAME at all**, same as ZWO's blobs. What Phase F confirmed
+   empirically instead: glibc's `ldconfig` falls back to the on-disk
+   *filename* as its cache key when a shared object has no SONAME, so
+   installing under `libSVBCameraSDK.so.1` (+ an unversioned `.so` symlink)
+   and running `ldconfig` still resolves `-lSVBCameraSDK` via ordinary
+   `ldconfig` mechanics with no RUNPATH injection needed — for CI's
+   build-time purposes. Whether the eventual `rusty-photon-svbony-sdk-install`
+   *runtime* helper can rely on the same (rather than needing ZWO's RUNPATH
+   trick, e.g. if it can't assume a full `ldconfig` re-scan happens before
+   the driver process starts) is still **Phase G's call to make** — see
+   `docs/services/svbony-camera.md`'s Packaging section and
+   `install-svbony-sdk/action.yml`'s header comment for the full trace.
 5. **If SVBony ever grants written redistribution permission** (worth an
    email — they are responsive to indi-3rdparty issues), this collapses to
    ADR-013's ZWO bucket with no layout change beyond adding the blob as a
@@ -96,10 +102,13 @@ mechanical delivery differs in one respect worth flagging (see
   a deliberate one-line PR, mirroring QHY's `check-pkg-assets.sh` parity
   check pattern (to be wired up in Phase G).
 - Until Phase G, `svbony-camera`'s Bazel build additionally bakes
-  `SVBONY_SKIP_NATIVE_LINK=1` unconditionally (no `install-svbony-sdk` CI
-  action exists yet) — a temporary simplification distinct from this ADR's
-  packaging decision, recorded in `docs/plans/svbony-camera.md`'s Status
-  section and `crates/svbony-rs/libsvbony-sys/BUILD.bazel`.
+  `SVBONY_SKIP_NATIVE_LINK=1` unconditionally — Phase F added a plain-Cargo
+  `.github/actions/install-svbony-sdk` CI provisioning action (wired into
+  `conformu.yml`/`native.yml`), but it is a GitHub-Actions composite Bazel's
+  hermetic build graph does not consume, so this Bazel-side simplification
+  (distinct from this ADR's packaging decision) is unchanged, recorded in
+  `docs/plans/svbony-camera.md`'s Status section and
+  `crates/svbony-rs/libsvbony-sys/BUILD.bazel`.
 - ADR-013's two-bucket framework is now a three-bucket framework:
   redistribute (MIT-clear, e.g. ZWO), download-proprietary-unresolved (e.g.
   QHY), and download-no-license-at-all (SVBony, this ADR) — legally the

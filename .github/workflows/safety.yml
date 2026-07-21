@@ -34,11 +34,13 @@ jobs:
         sanitizer: [address, leak]
     env:
       CARGO_BUILD_TARGET: x86_64-unknown-linux-gnu
-      # Build the zwo + qhy crates' pure-Rust `simulation` path with no native SDK
-      # link, so they can be sanitized without provisioning either SDK (see the
-      # cargo build step + crates/{zwo-rs/libzwo-sys,qhyccd-rs/libqhyccd-sys}/build.rs).
+      # Build the zwo + qhy + svbony crates' pure-Rust `simulation` path with
+      # no native SDK link, so they can be sanitized without provisioning any
+      # SDK (see the cargo build step +
+      # crates/{zwo-rs/libzwo-sys,qhyccd-rs/libqhyccd-sys,svbony-rs/libsvbony-sys}/build.rs).
       ZWO_SKIP_NATIVE_LINK: "1"
       QHYCCD_SKIP_NATIVE_LINK: "1"
+      SVBONY_SKIP_NATIVE_LINK: "1"
     steps:
       - uses: actions/checkout@v7
       - name: Install ASCOM OmniSim
@@ -59,12 +61,14 @@ jobs:
           sed -i '/^\s*\[profile.dev\]/,/^\s*\[/ {/^\s*opt-level/d}' Cargo.toml
           sed -i '/^\s*\[profile.dev\]/a opt-level = 1' Cargo.toml
       - name: cargo build
-        # Both native-SDK camera stacks (zwo-rs/libzwo-sys, qhyccd-rs/libqhyccd-sys)
-        # build their pure-Rust `simulation` path with the real FFI `cfg`'d out and
-        # the *_SKIP_NATIVE_LINK envs (above) omitting the link directives, so the
-        # whole workspace builds with no SDK to provision and every crate — including
-        # qhy-camera and zwo-camera — is sanitized. (The real unsafe FFI is
-        # inherently un-sanitizable, but it is not compiled here, so nothing is lost.)
+        # All three native-SDK camera stacks (zwo-rs/libzwo-sys,
+        # qhyccd-rs/libqhyccd-sys, svbony-rs/libsvbony-sys) build their
+        # pure-Rust `simulation` path with the real FFI `cfg`'d out and the
+        # *_SKIP_NATIVE_LINK envs (above) omitting the link directives, so the
+        # whole workspace builds with no SDK to provision and every crate —
+        # including qhy-camera, zwo-camera, and svbony-camera — is sanitized.
+        # (The real unsafe FFI is inherently un-sanitizable, but it is not
+        # compiled here, so nothing is lost.)
         run: cargo build --workspace --all-features --all-targets
         env:
           RUSTFLAGS: "-Z sanitizer=${{ matrix.sanitizer }}"

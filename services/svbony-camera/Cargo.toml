@@ -19,8 +19,6 @@ simulation = ["svbony-rs/simulation"]
 # Cross-driver alias for `simulation` (the workspace-wide test-backend name).
 mock = ["simulation"]
 # `conformu` enables `mock`, matching the sibling camera services' shape.
-# ConformU wiring itself is Phase F (docs/plans/svbony-camera.md) — no
-# `tests/conformu_integration.rs` exists yet in this phase.
 conformu = ["mock"]
 
 [lints]
@@ -62,9 +60,8 @@ parking_lot = { workspace = true }
 [target.'cfg(windows)'.dependencies]
 rusty-photon-service-lifecycle = { workspace = true, features = ["scm"] }
 
-# NOTE: no [package.metadata.conformu] section yet — ConformU wiring is
-# Phase F of docs/plans/svbony-camera.md (`tests/conformu_integration.rs`
-# does not exist in this phase).
+[package.metadata.conformu]
+command = "cargo test -p svbony-camera --features conformu --test conformu_integration -- --nocapture"
 
 # Packaging metadata (ADR-012 / ADR-013 / the new ADR-018 no-license-SDK
 # bucket). SVBony's SDK ships no license grant, so — like qhy-camera —

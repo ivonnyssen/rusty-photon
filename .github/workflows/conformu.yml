@@ -41,9 +41,9 @@ env:
   # The qhy-camera ConformU run builds with `--features conformu`
   # (-> mock -> simulation), which `cfg`s out the real FFI and references no SDK
   # symbols, so QHYCCD_SKIP_NATIVE_LINK omits the SDK link directives: no QHYCCD
-  # SDK or libusb is provisioned here. (zwo-camera still links the real ZWO SDK,
-  # provisioned below.) The real QHYCCD native link is covered by the `native`
-  # workflow + the Pi nightly.
+  # SDK or libusb is provisioned here. (zwo-camera and svbony-camera still link
+  # their real SDKs, provisioned below.) The real QHYCCD native link is covered
+  # by the `native` workflow + the Pi nightly.
   QHYCCD_SKIP_NATIVE_LINK: "1"
 
 jobs:
@@ -65,7 +65,12 @@ jobs:
           # zwo-camera and zwo-focuser are full ConformU citizens. The conformu
           # jobs provision the native ZWO SDK via ./.github/actions/install-zwo-sdk
           # (the "provision, don't exclude" principle — ADR-008), so they build
-          # and run here like every other service. No `select(.name != ...)` filter.
+          # and run here like every other service. svbony-camera is the same
+          # shape (real SDK link required even under `simulation`, provisioned
+          # via ./.github/actions/install-svbony-sdk below) EXCEPT on Windows,
+          # which indi-3rdparty's libsvbony packaging declares unsupported — see
+          # the conformu-windows job below for that one targeted exclusion.
+          # No `select(.name != ...)` filter here.
           SERVICES=$(cargo metadata --format-version 1 --no-deps 2>/dev/null | \
             jq -c '[.packages[] | select(.metadata.conformu.command) | {name: .name, command: .metadata.conformu.command}]')
 
@@ -126,6 +131,28 @@ jobs:
       - name: Install ZWO SDK
         uses: ./.github/actions/install-zwo-sdk
 
+      # svbony-camera's build.rs links the real SVBony SDK unconditionally,
+      # exactly like ZWO above (not QHYCCD's cfg'd-out-under-simulation
+      # posture — see the env comment at the top of this file), so this job
+      # provisions it too. indi-3rdparty ships no `mac_arm64` blob (see
+      # install-svbony-sdk's header comment for the byte-level verification)
+      # and `macos-latest` is Apple Silicon today, so the "provision, don't
+      # exclude" principle (ADR-008) cannot apply to that one leg the way it
+      # does for ZWO: fall back to SVBONY_SKIP_NATIVE_LINK=1 there instead
+      # (the same posture QHYCCD takes in this job everywhere), so
+      # svbony-camera's ConformU coverage on macOS is protocol-conformance-
+      # only until a verified Apple Silicon SVBony blob exists (see
+      # docs/plans/svbony-camera.md "Packaging"). Linux always gets the real
+      # link; a future x86_64 macOS leg (e.g. macos-13) would too.
+      - name: Install SVBony SDK (real link)
+        if: runner.os == 'Linux' || runner.arch == 'X64'
+        uses: ./.github/actions/install-svbony-sdk
+
+      - name: Skip SVBony native link (macOS arm64 — no confirmed blob)
+        if: runner.os == 'macOS' && runner.arch != 'X64'
+        shell: bash
+        run: echo "SVBONY_SKIP_NATIVE_LINK=1" >> "$GITHUB_ENV"
+
       - name: Pre-build workspace
         run: cargo build --locked --workspace --all-features --all-targets
 
@@ -175,7 +202,17 @@ jobs:
   conformu-windows:
     name: windows / ${{ matrix.service.name }}
     needs: plan
-    if: needs.plan.outputs.has_services == 'true'
+    # svbony-camera is excluded here (not in the matrix `exclude:` list,
+    # since `service` is a runtime `fromJson` from the `plan` job, not a
+    # static matrix `include`/`exclude` can target): indi-3rdparty's
+    # libsvbony packaging hard-fails CMake with "MS Windows not supported.",
+    # and libsvbony-sys/build.rs panics unconditionally on
+    # CARGO_CFG_TARGET_OS=windows *before* even checking
+    # SVBONY_SKIP_NATIVE_LINK — so there is no link-free escape hatch to
+    # build on Windows at all, unlike every other conformu-tagged service.
+    # Mirrors the (inverse of the) existing zwo-camera/zwo-focuser
+    # name-based conditional on the "Install ZWO SDK" step below.
+    if: needs.plan.outputs.has_services == 'true' && matrix.service.name != 'svbony-camera'
     runs-on: windows-latest
     strategy:
       fail-fast: false

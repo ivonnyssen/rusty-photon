@@ -18,14 +18,24 @@ exports_files(
 #
 # DEVIATION from libqhyccd-sys/libzwo-sys's BUILD.bazel: those bake in a real
 # link against the system-installed SDK (this workspace's Bazel CI/dev hosts
-# have QHYCCD/ZWO pre-provisioned). No `install-svbony-sdk` CI provisioning
-# action exists yet (Phase C of docs/plans/svbony-camera.md) and no service
-# consumes this crate yet, so `build_script_env` below bakes
+# have QHYCCD/ZWO pre-provisioned).
+#
+# Phase F (docs/plans/svbony-camera.md) added `.github/actions/install-svbony-sdk`
+# and wired it into `conformu.yml` + `native.yml` — but that is a plain-Cargo,
+# GitHub-Actions-only provisioning mechanism (a composite action that shells
+# out to `apt`/`brew`/`curl`+`ldconfig`), not something Bazel's hermetic build
+# graph consumes; Bazel would need its own repository rule (e.g. an
+# `http_file` fetch + a non-`cargo_build_script` link step) to provision the
+# same SDK, which nothing in this workspace's `WORKSPACE`/`MODULE.bazel` does
+# today, unlike QHYCCD/ZWO which land on Bazel CI/dev hosts pre-provisioned by
+# other means. So `build_script_env` below still bakes
 # `SVBONY_SKIP_NATIVE_LINK=1` into the build script unconditionally — the
 # default Bazel build (and `svbony-rs_unit_test`, which needs a real final
-# link) must work with zero SVBony SDK provisioning until Phase C lands.
-# Revisit (drop the env, or split a second non-skipping build_script variant)
-# once real hardware and CI provisioning exist.
+# link) works with zero SVBony SDK provisioning, exactly as before Phase F.
+# Revisit (drop the env, or split a second non-skipping build_script variant,
+# plus a Bazel-side SDK-fetch rule) at Phase G alongside real hardware
+# validation — see docs/services/svbony-camera.md "Native dependency & build
+# gating" for the parallel `:svbony-camera` binary decision.
 cargo_build_script(
     name = "build_script",
     srcs = ["build.rs"],

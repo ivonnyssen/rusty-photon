@@ -1,10 +1,11 @@
-# Publish-readiness checks for the four dual-homed FFI crates (qhyccd-rs +
-# libqhyccd-sys, zwo-rs + libzwo-sys). These crates publish to crates.io on their
-# own cadence (ADR-009 / ADR-010), so before a release they must satisfy the
-# guarantees a crates.io consumer relies on — guarantees the in-workspace `check`
-# / `test` jobs cannot verify (the workspace pins one unified MSRV of 1.94.1 and a
-# single newest-version Cargo.lock). This workflow restores the coverage the
-# standalone repos had and that vendoring dropped:
+# Publish-readiness checks for the dual-homed FFI crates (qhyccd-rs +
+# libqhyccd-sys, zwo-rs + libzwo-sys, svbony-rs + libsvbony-sys). These crates
+# publish to crates.io on their own cadence (ADR-009 / ADR-010), so before a
+# release they must satisfy the guarantees a crates.io consumer relies on —
+# guarantees the in-workspace `check` / `test` jobs cannot verify (the
+# workspace pins one unified MSRV of 1.94.1 and a single newest-version
+# Cargo.lock). This workflow restores the coverage the standalone repos had
+# and that vendoring dropped:
 #   - MSRV + minimal-versions : each crate builds on its declared (lower) MSRV
 #       with a direct-minimal-versions lockfile — run OUT of the workspace by
 #       scripts/verify-publishable-crate.sh. See docs/plans/archive/publish-readiness-checks.md.
@@ -19,7 +20,8 @@
 # upstream release, not the PR under review, so gating every PR on it would
 # red-bar unrelated work. The notify-on-failure job opens a tracking issue so a
 # red nightly does not sit unnoticed. Discovery is dynamic: only crates carrying
-# `[package.metadata.publish-readiness]` are checked — exactly the four FFI crates.
+# `[package.metadata.publish-readiness]` are checked — exactly the dual-homed
+# FFI crates above.
 permissions:
   contents: read
 
@@ -44,13 +46,18 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # The four FFI crates are checked/doc'd/semver'd as check-only builds that never
+  # These FFI crates are checked/doc'd/semver'd as check-only builds that never
   # link the native SDK; the build scripts honour these to emit no link directives,
-  # so no QHYCCD/ZWO SDK is provisioned here (libzwo-sys still needs libclang for
-  # bindgen — installed per-job below). Setting both is harmless for the crate that
-  # ignores its sibling's var.
+  # so no QHYCCD/ZWO/SVBony SDK is provisioned here (libzwo-sys still needs libclang
+  # for bindgen — installed per-job below; libsvbony-sys needs none, hand-written
+  # FFI). Setting all three is harmless for a crate that ignores its siblings' vars.
+  # NOTE: `msrv-minimal-versions`/`find` (below) don't need this block at all —
+  # they run scripts/verify-publishable-crate.sh, which reads each crate's own
+  # `skip-link-env` metadata field and exports it dynamically. This top-level
+  # block only matters for `semver-checks`/`docs`, which invoke cargo directly.
   QHYCCD_SKIP_NATIVE_LINK: "1"
   ZWO_SKIP_NATIVE_LINK: "1"
+  SVBONY_SKIP_NATIVE_LINK: "1"
 
 jobs:
   plan:
@@ -209,7 +216,8 @@ jobs:
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const body = [
               `The nightly publish-readiness workflow failed for at least one of the`,
-              `dual-homed FFI crates (qhyccd-rs / libqhyccd-sys / zwo-rs / libzwo-sys).`,
+              `dual-homed FFI crates (qhyccd-rs / libqhyccd-sys / zwo-rs / libzwo-sys /`,
+              `svbony-rs / libsvbony-sys).`,
               ``,
               `Likely causes: an upstream dependency release broke the`,
               `direct-minimal-versions build or raised a transitive MSRV above a`,

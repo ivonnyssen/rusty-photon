@@ -2,6 +2,108 @@
 
 ## Status
 
+**Phase F landed (2026-07-21): ConformU + CI gates.**
+`services/svbony-camera/tests/conformu_integration.rs` now exists,
+mirroring `zwo-camera`'s shape exactly: launches the production binary
+built with `--features conformu` (pulls in `mock` → `simulation`, so the
+SDK yields one `SV605CC-Simulated` camera) and runs ASCOM ConformU against
+it via `bdd_infra::run_conformu`, self-skipping (`ConformuRun::Skipped`)
+when `CONFORMU_PATH` is unset so the test passes with no ConformU
+installed locally — verified both ways in this sandbox (with
+`SVBONY_SKIP_NATIVE_LINK=1`: builds, runs, self-skips; without it: fails to
+link, as expected with no SDK installed here). `Cargo.toml` gained the
+matching `[package.metadata.conformu]` section, which drives
+`conformu.yml`'s dynamic per-service discovery (`cargo metadata` + a
+`select(.metadata.conformu.command)` filter — no hardcoded service list to
+edit). A parallel Bazel `conformu_integration` `rust_test` target also
+landed in `services/svbony-camera/BUILD.bazel` (`tags = ["conformu"]`,
+excluded from the default `bazel test //...` gate exactly like
+`zwo-camera`'s; verified locally: `bazel build` + `bazel test
+--config=conformu //services/svbony-camera:conformu_integration` both
+pass) — it always links the sim SDK variant (Bazel's
+`SVBONY_SKIP_NATIVE_LINK=1` bake-in is unconditional, see below), so it
+proves ASCOM protocol conformance only, never the real SVBony link; that
+proof is Cargo-only.
+
+A new composite action,
+[`.github/actions/install-svbony-sdk`](../../.github/actions/install-svbony-sdk/action.yml),
+provisions the real SVBony camera SDK from a **pinned indi-3rdparty commit**
+(`cd50a3b95032d850cca28d8162513276bc1349ba`, resolved as `master`'s HEAD via
+the GitHub API on 2026-07-21) — mirroring `install-zwo-sdk`'s shape
+(cache-keyed on arch + ref, sudo + sudo-free Pi-runner variants) but
+simpler in two ways verified directly against `libsvbony-sys`'s actual
+link-lib list and the vendored blob's own ELF metadata rather than assumed:
+no libclang/bindgen step (`libsvbony-sys` is hand-written FFI, no bindgen —
+unlike `install-zwo-sdk`), and no libudev dependency (`readelf -d` on the
+downloaded `libSVBCameraSDK_amd64.bin` shows NEEDED entries for only
+`libstdc++`/`libm`/`libgcc_s`/`libc` — despite dozens of undefined
+`libusb_*` symbols, there is **no NEEDED entry for libusb at all**; those
+symbols resolve at runtime via the *consuming binary's own* `-lusb-1.0`
+link, which `libsvbony-sys/build.rs` already emits unconditionally — so the
+action's only real prerequisite is providing libusb-1.0 itself). No Windows
+branch at all (not merely unsupported like other services' Windows gaps):
+`libsvbony-sys/build.rs` panics on `CARGO_CFG_TARGET_OS=windows`
+*unconditionally*, before even checking `SVBONY_SKIP_NATIVE_LINK`, mirroring
+indi-3rdparty's own CMake `FATAL_ERROR "MS Windows not supported."` — so
+there is no link-free escape hatch to provision around, and the action
+must never be invoked on a Windows runner.
+
+**A genuine correction, found via byte-level verification, not assumed:**
+this plan's "Verified SDK facts" table (below) and
+`docs/services/svbony-camera.md`'s Packaging section both previously
+inferred from indi-3rdparty's CMakeLists.txt (`set_target_properties(...
+SOVERSION 1)`) that the vendored blob carries a proper SONAME, unlike ZWO's
+SONAME-less blobs — implying standard `ldconfig` linking would just work
+with no RUNPATH trick. Downloading and `readelf -d`-inspecting the actual
+`libSVBCameraSDK_amd64.bin` shows **no embedded DT_SONAME at all**: the
+`SOVERSION` CMake property only affects how `indi-3rdparty`'s own
+`install_imported` macro names the file *at install time*, not anything
+baked into the blob itself. Empirically confirmed instead (via `ldconfig -C
+<scratch-cache> <dir>`, since this sandbox has no root to touch the system
+cache): glibc's `ldconfig` falls back to the on-disk **filename** as its
+cache key when a shared object has no SONAME, so installing the blob as
+`libSVBCameraSDK.so.1` (+ an unversioned `.so` symlink) and running
+`ldconfig` still lets `-lSVBCameraSDK` resolve at both link and run time
+through the standard ldconfig-scanned prefix — the conclusion ("no RUNPATH
+trick needed") turns out to be right, just not for the reason originally
+inferred. See `install-svbony-sdk/action.yml`'s header comment for the full
+trace; `docs/services/svbony-camera.md`'s Packaging section has been
+corrected to match, with the runtime-packaging RUNPATH question (Phase G's
+`rusty-photon-svbony-sdk-install` helper, a different context than CI) left
+open as before.
+
+**A second finding, unrelated to SVBony specifically:** `test.yml`,
+`safety.yml`, `publish-readiness.yml`, and `ui-browser-nightly.yml` each
+build/check `--workspace --all-features` (or an equivalent) without ever
+setting `SVBONY_SKIP_NATIVE_LINK`, unlike their existing
+`ZWO_SKIP_NATIVE_LINK`/`QHYCCD_SKIP_NATIVE_LINK` lines — a pre-existing gap
+dating back to whichever earlier phase added `svbony-camera`'s
+`simulation`/`conformu` features (Phase C/D), since `libsvbony-sys/build.rs`
+links the real SDK unconditionally regardless of feature, exactly like
+ZWO. Confirmed locally: `cargo build -p svbony-camera --all-features`
+fails to link with no SDK installed in this sandbox, exactly as those four
+nightly workflows would. `svbony-rs`'s `[package.metadata.publish-readiness]`
+block (already present since Phase A/B, correctly declaring
+`skip-link-env = "SVBONY_SKIP_NATIVE_LINK"`) meant `publish-readiness.yml`'s
+script-driven `msrv-minimal-versions`/`find` jobs were already safe (the
+script reads that field dynamically), but its `semver-checks`/`docs` jobs
+invoke cargo directly against the workflow's static top-level `env:` block
+— which was missing the var. All four workflows were fixed alongside this
+phase's work (one line each, matching the existing ZWO/QHYCCD pattern) so
+they do not silently break on the next scheduled run.
+
+**Bazel deliberately unchanged.** `libsvbony-sys/BUILD.bazel`'s
+`SVBONY_SKIP_NATIVE_LINK=1` bake-in and `:svbony-camera`'s `manual` tag stay
+exactly as Phase C/D left them: the new `install-svbony-sdk` action is a
+GitHub-Actions composite (shell steps against `apt`/`brew`/`curl`+
+`ldconfig`), not something Bazel's hermetic build graph consumes — wiring
+it would need a genuine Bazel-side SDK-fetch repository rule, which is a
+materially different (and out-of-scope-for-this-phase) piece of work,
+deferred to Phase G alongside real hardware validation. `bazel build //...
+&& bazel test //...` stays green with zero SVBony SDK provisioned (verified
+locally: 211/211 build targets, 87/87 test targets pass, including the two
+new `conformu_integration`-related targets).
+
 **Phase E landed (2026-07-21): full `Camera` implementation.**
 `services/svbony-camera`'s `SvbonyCamera` now implements the complete
 `ascom_alpaca::api::Camera` surface over an expanded `backend::CameraHandle`
@@ -326,14 +428,28 @@ Bazel files all port). The exposure-model difference concentrates in Phase B
   cooling, `backend.rs` mock seam, `spawn_blocking` bridge with generation
   counter, config actions, serial identity. 65 unit tests + 60/60 BDD
   scenarios green.
-- **Phase F — gates:** ConformU on the sim backend, wired into `conformu.yml`
-  (per-service matrix + `install-svbony-sdk`); nightly `native.yml` real-link
-  build; full local quality gate.
+- **Phase F — gates:** ✅ *landed (2026-07-21, see this document's Status
+  section for the full detail).* ConformU on the sim backend
+  (`tests/conformu_integration.rs` + `[package.metadata.conformu]` + a
+  Bazel `conformu_integration` target), wired into `conformu.yml` (Linux +
+  macOS x86_64 real-link via the new `install-svbony-sdk` action; macOS
+  arm64 falls back to `SVBONY_SKIP_NATIVE_LINK=1`, no confirmed blob;
+  excluded from the Windows per-service matrix, no Windows SDK at all);
+  nightly `native.yml` real-link build + Linux `svbony-rs` FFI smoke test;
+  full local quality gate (`bazel build //... && bazel test //...`,
+  `cargo fmt`, `cargo clippy --all-targets --all-features -- -D warnings`,
+  all green). Bazel's `manual` tag / `SVBONY_SKIP_NATIVE_LINK=1` bake-in
+  deliberately left unchanged (Bazel doesn't consume the new GitHub-Actions
+  provisioning action). Two findings along the way: no embedded SONAME in
+  the vendored blob (corrected from this plan's earlier CMakeLists-based
+  inference) and a pre-existing `SVBONY_SKIP_NATIVE_LINK` gap in four
+  nightly Cargo safety-net workflows, both documented above and fixed.
 - **Phase G — packaging + real hardware:** the downloader-helper package per
-  the ADR; then SV605CC validation — dark-frame banding check (revision
-  confirmation), gain/offset sweep, cooler ramp/overshoot behaviour, long-
-  exposure + abort timing, stale-frame flush verification, USB throughput on
-  the Pi 5. Findings feed back into the design doc (Rule 2).
+  the ADR; a Bazel-side SDK-fetch repository rule (dropping the `manual` tag
+  + Bazel's skip-link bake-in); then SV605CC validation — dark-frame banding
+  check (revision confirmation), gain/offset sweep, cooler ramp/overshoot
+  behaviour, long-exposure + abort timing, stale-frame flush verification,
+  USB throughput on the Pi 5. Findings feed back into the design doc (Rule 2).
 
 ## Future work
 

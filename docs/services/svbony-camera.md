@@ -1,6 +1,27 @@
 # Svbony-Camera Service Design
 
-> **Status:** **Phase E landed (2026-07-21): full `Camera` implementation.**
+> **Status:** **Phase F landed (2026-07-21): ConformU + CI gates.**
+> `tests/conformu_integration.rs` now exists (mirrors `zwo-camera`'s: starts
+> the production binary built with `--features conformu`, which pulls in the
+> `simulation` backend so the SDK yields one `SV605CC-Simulated` camera, and
+> runs ASCOM ConformU against it — self-skipping when `CONFORMU_PATH` is
+> unset), with the matching `[package.metadata.conformu]` in `Cargo.toml` and
+> a Bazel `conformu_integration` target (`tags = ["conformu"]`, excluded from
+> the default `bazel test //...` gate; run with `bazel test --config=conformu
+> //services/svbony-camera:conformu_integration`). A new
+> [`.github/actions/install-svbony-sdk`](../../.github/actions/install-svbony-sdk/action.yml)
+> composite action (mirroring `install-zwo-sdk`) provisions the real SVBony
+> SDK from a pinned indi-3rdparty commit, wired into `conformu.yml` (Linux +
+> macOS x86_64; excluded from the Windows per-service matrix — indi-3rdparty
+> declares Windows unsupported) and `native.yml` (the nightly real-link
+> build + a Linux `svbony-rs` FFI smoke test). See "Native dependency & build
+> gating" below for what did and did not change under Bazel, and "Delivery
+> phasing" for the full rundown incl. two bonus findings (no embedded SONAME
+> in the vendored blob despite the CMakeLists' `SOVERSION` property; a
+> pre-existing `SVBONY_SKIP_NATIVE_LINK` gap in four nightly Cargo
+> safety-net workflows, fixed alongside this phase).
+>
+> **Phase E landed (2026-07-21): full `Camera` implementation.**
 > `services/svbony-camera` builds, binds the Alpaca listener on port
 > **11125**, and serves `/management/*` correctly with zero or one
 > registered device; `--config`/`--port`/`--log-level` and the `doctor`
@@ -85,34 +106,54 @@ decision record.
   ramp. The native SDK is still required at link time — *unless*
   `SVBONY_SKIP_NATIVE_LINK=1` is set (see below).
 
-### This phase's link-gating shortcut
+### This phase's link-gating shortcut (Bazel — unchanged by Phase F)
 
-Unlike `zwo-camera`/`qhy-camera`, **no `install-svbony-sdk` CI provisioning
-action exists yet** (Phase G packaging work). `crates/svbony-rs/libsvbony-sys/BUILD.bazel`
-therefore bakes `SVBONY_SKIP_NATIVE_LINK=1` into its `cargo_build_script`
-*unconditionally* — the *library* targets (no final link) build with
-**zero SVBony SDK provisioning** today. The **real** (non-`simulation`)
-`//services/svbony-camera:svbony-camera` binary cannot link under this
+Phase F (docs/plans/svbony-camera.md) added
+[`.github/actions/install-svbony-sdk`](../../.github/actions/install-svbony-sdk/action.yml)
+and wired it into the plain-Cargo `conformu.yml` + `native.yml` workflows —
+but that action is a GitHub-Actions composite (shell steps against `apt`/
+`brew`/`curl`+`ldconfig`), not something Bazel's hermetic build graph
+consumes. Bazel would need its own repository rule (e.g. an `http_file`
+fetch plus a non-skipping `cargo_build_script` variant) to provision the
+same SDK, and nothing in this workspace's Bazel setup does that yet —
+`crates/svbony-rs/libsvbony-sys/BUILD.bazel` therefore still bakes
+`SVBONY_SKIP_NATIVE_LINK=1` into its `cargo_build_script` *unconditionally*,
+exactly as before this phase. The *library* targets (no final link) build
+with **zero SVBony SDK provisioning**. The **real** (non-`simulation`)
+`//services/svbony-camera:svbony-camera` binary still cannot link under this
 setup — verified locally: `bazel build //services/svbony-camera:svbony-camera`
 fails with undefined `SVBOpenCamera`/`SVBCloseCamera`/etc. symbols — so it
-is tagged `tags = ["manual"]` in `BUILD.bazel`, unlike `zwo-camera`'s and
-`qhy-camera`'s real binaries, which link cleanly because CI provisions their
-SDKs first. Only the library and the `svbony-rs_sim`-backed binary/BDD/
-unit-test targets are first-class (non-`manual`) `//...` targets in this
-phase. Cargo builds outside Bazel follow the same env-var gate (unset the
-variable, with the SDK installed and `ldconfig`'d, to exercise the real
-link locally). This is a deliberate, temporary simplification recorded in
+stays tagged `tags = ["manual"]` in `BUILD.bazel`, unlike `zwo-camera`'s and
+`qhy-camera`'s real binaries, which link cleanly under Bazel because their
+BUILD.bazel files provision the real SDK unconditionally (this workspace's
+Bazel CI/dev hosts have QHYCCD/ZWO pre-provisioned by other means). Only the
+library and the `svbony-rs_sim`-backed binary/BDD/unit-test/`conformu_integration`
+targets are first-class (non-`manual`) `//...` targets. A Bazel-side
+`conformu_integration` target *does* exist as of Phase F (`tags =
+["conformu"]`, excluded from the default gate like `zwo-camera`'s — run with
+`bazel test --config=conformu //services/svbony-camera:conformu_integration`),
+but because it links the SIM SDK variant like every other Bazel target here,
+it only proves ASCOM protocol conformance, not the real link — that real-link
+proof is Cargo-only (`conformu.yml`'s `install-svbony-sdk` step).
+
+Cargo builds outside Bazel follow the same env-var gate (unset the variable,
+with the SDK installed and `ldconfig`'d, to exercise the real link locally)
+— this is exactly what `native.yml`'s `install-svbony-sdk` step does per-run.
+This split (Cargo-CI real-link-provisioned, Bazel still skip-link-only) is a
+deliberate, temporary simplification recorded in
 [`docs/plans/svbony-camera.md`](../plans/svbony-camera.md)'s Status section
-— revisit (drop `manual`, wire `install-svbony-sdk`) once CI provisioning +
-real hardware validation (Phase G) land.
+— revisit (drop `manual`, add a Bazel-side SDK-fetch rule) at Phase G
+alongside real hardware validation.
 
 ### Gating plan (steady state, once Phase G lands)
 
-Mirrors `zwo-camera`'s table exactly, once an `install-svbony-sdk` action
-exists: local dev needs the SDK installed to link; CI provisions it before
-building/testing; the simulation-only legs build SDK-free via
-`SVBONY_SKIP_NATIVE_LINK=1`; Bazel provisions the SDK for its `//...`
-targets the same way `install-zwo-sdk`/`qhyccd-sdk-install` do today.
+Mirrors `zwo-camera`'s table exactly, once a Bazel-side SDK-fetch rule
+exists (the Cargo-CI half already landed in Phase F via
+`install-svbony-sdk`): local dev needs the SDK installed to link; CI
+provisions it before building/testing; the simulation-only legs build
+SDK-free via `SVBONY_SKIP_NATIVE_LINK=1`; Bazel provisions the SDK for its
+`//...` targets the same way `install-zwo-sdk`/`qhyccd-sdk-install` do
+today.
 
 ### udev / USB
 
@@ -685,8 +726,17 @@ Layered per [`testing.md`](../skills/testing.md).
   design doc calls this out explicitly, since the `svbony-rs` simulation
   cannot force an SDK error — and live in the unit-test layer above
   instead.
-- **ConformU** — Phase F work (`docs/plans/svbony-camera.md`); no
-  `tests/conformu_integration.rs` exists yet.
+- **ConformU** — `tests/conformu_integration.rs` (Phase F), mirroring
+  `zwo-camera`'s: starts the `--features conformu` binary (real SDK link
+  required, per "Native dependency & build gating" above — `conformu`
+  enables `mock`/`simulation`, which removes the *camera*, not the SDK
+  *link*) and runs ASCOM ConformU against its one simulated `SV605CC`
+  camera, self-skipping when `CONFORMU_PATH` is unset (so the test passes
+  locally with no ConformU installed). `[package.metadata.conformu]` in
+  `Cargo.toml` drives `conformu.yml`'s dynamic per-service discovery. A
+  parallel Bazel `conformu_integration` target exists too (`tags =
+  ["conformu"]`) but always links the sim SDK variant (protocol conformance
+  only, not the real link — see "Native dependency & build gating").
 
 ---
 
@@ -730,16 +780,47 @@ phases A–G:
   (µs), the stale-frame-flush question, whether `ElectronsPerADU` has a
   non-obvious SDK path, and whether `CanStopExposure` should flip to
   `true` — see the relevant contract sections above for each.
-- **Phase F — gates:** ConformU on the sim backend; nightly real-link
-  build; full local quality gate.
+- **Phase F — gates:** ✅ *landed (2026-07-21).* `tests/conformu_integration.rs`
+  + `[package.metadata.conformu]` (ConformU on the sim backend, mirroring
+  `zwo-camera`), a Bazel `conformu_integration` target (`tags =
+  ["conformu"]`), the new
+  [`install-svbony-sdk`](../../.github/actions/install-svbony-sdk/action.yml)
+  composite action (pinned to indi-3rdparty commit `cd50a3b95032d850cca28d8162513276bc1349ba`,
+  resolved as `master`'s HEAD on 2026-07-21), wired into `conformu.yml`
+  (Linux + macOS x86_64 real-link; macOS arm64 — `macos-latest` today — falls
+  back to `SVBONY_SKIP_NATIVE_LINK=1`, no confirmed arm64 blob; excluded
+  entirely from the Windows per-service matrix, no Windows SDK support at
+  all) and `native.yml` (nightly real-link build + a Linux `svbony-rs` FFI
+  smoke test, matching zwo-rs's). The Bazel `manual` tag on
+  `:svbony-camera` and `libsvbony-sys/BUILD.bazel`'s unconditional
+  `SVBONY_SKIP_NATIVE_LINK=1` were deliberately **left unchanged** — see
+  "Native dependency & build gating" above for why (the new action is a
+  Cargo/GitHub-Actions mechanism Bazel's hermetic build graph does not
+  consume; Bazel would need its own SDK-fetch repository rule, not built in
+  this phase). Two findings recorded along the way: (1) byte-inspection
+  (`readelf -d`) of the vendored `.bin` blob shows it carries **no embedded
+  DT_SONAME**, despite indi-3rdparty's CMakeLists.txt setting a `SOVERSION 1`
+  CMake *install* property — empirically (`ldconfig -C <scratch-cache>`),
+  glibc's ldconfig falls back to the on-disk filename as the cache key when
+  no SONAME is present, so installing under `libSVBCameraSDK.so.1` (+ a
+  `.so` symlink) and running `ldconfig` still resolves `-lSVBCameraSDK` at
+  both link and run time with no RUNPATH trick needed — just not for the
+  reason the CMake property implied (see `install-svbony-sdk/action.yml`'s
+  header comment for the full trace). (2) A pre-existing gap predating this
+  phase — `test.yml`, `safety.yml`, `publish-readiness.yml`, and
+  `ui-browser-nightly.yml` build/check `--workspace --all-features` without
+  ever setting `SVBONY_SKIP_NATIVE_LINK` (unlike their existing
+  `ZWO_SKIP_NATIVE_LINK`/`QHYCCD_SKIP_NATIVE_LINK` lines) — was found and
+  fixed alongside this phase's work, since it would otherwise break those
+  four nightly Cargo safety-net workflows for `svbony-camera`/`svbony-rs`.
 - **Phase G — packaging + real hardware:** the `rusty-photon-svbony-sdk-install`
   downloader helper per [ADR-018](../decisions/018-svbony-sdk-no-license-payload-policy.md);
-  `install-svbony-sdk` CI provisioning action (dropping this phase's
-  `SVBONY_SKIP_NATIVE_LINK=1` Bazel shortcut); SV605CC validation —
-  dark-frame banding check (revision confirmation), gain/offset sweep,
-  cooler ramp/overshoot behaviour, long-exposure + abort timing,
-  stale-frame flush verification, the `SVB_EXPOSURE` unit assumption, and
-  whether `CanStopExposure` should flip to `true`.
+  a Bazel-side SDK-fetch repository rule (dropping the `manual` tag +
+  `libsvbony-sys/BUILD.bazel`'s unconditional `SVBONY_SKIP_NATIVE_LINK=1`);
+  SV605CC validation — dark-frame banding check (revision confirmation),
+  gain/offset sweep, cooler ramp/overshoot behaviour, long-exposure + abort
+  timing, stale-frame flush verification, the `SVB_EXPOSURE` unit
+  assumption, and whether `CanStopExposure` should flip to `true`.
 
 ---
 
@@ -773,10 +854,23 @@ blobs with no copyright notice whatsoever. Per ADR-018 this service never
 bundles the SDK library; a root-only download-on-target helper
 (`rusty-photon-svbony-sdk-install`, analogous to
 `rusty-photon-qhy-firmware-install`) is **Phase G** work — not shipped by
-this phase. `libSVBCameraSDK.so.1` carries a proper versioned SONAME
-(unlike ZWO's SONAME-less blobs), so standard dynamic linking may not need
-ZWO's RUNPATH trick — **to be confirmed at Phase G packaging time**, not
-asserted as settled here.
+this phase. **Correction from Phase F** (this section previously assumed
+the CMakeLists' `SOVERSION 1` *install* property meant the vendored blob
+itself carries a proper SONAME): byte-inspection (`readelf -d`) of the
+vendored `.bin` shows **no embedded DT_SONAME at all** — like ZWO's blobs,
+not unlike them. What Phase F's CI provisioning
+([`install-svbony-sdk`](../../.github/actions/install-svbony-sdk/action.yml))
+verified empirically is that glibc's `ldconfig` falls back to the on-disk
+*filename* as its cache key when a shared object has no SONAME, so
+installing under `libSVBCameraSDK.so.1` (+ an unversioned `.so` symlink)
+and running `ldconfig` still lets a plain `-lSVBCameraSDK` resolve at both
+link and run time via the standard ldconfig-scanned prefix — no RUNPATH
+trick needed for CI's *build-time* purposes, but for the opposite reason
+the SOVERSION property implied. Whether the eventual
+`rusty-photon-svbony-sdk-install` *runtime* packaging helper needs ZWO's
+RUNPATH dance (rather than relying on a system `ldconfig` run, which a
+non-root or already-loaded-process context may not get) is still
+**Phase G's call to make**, not asserted as settled here.
 
 ## References
 
