@@ -14,6 +14,7 @@ pub mod dns;
 pub mod expiry;
 pub mod renew;
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use rand::distr::{Alphanumeric, SampleString};
@@ -359,8 +360,10 @@ pub async fn run_acme(config_dir: &Path, args: AcmeArgs) -> Result<(), String> {
     // recovery input, and the timer runs unprivileged.
     align_pki_ownership(config_dir)?;
 
-    let resolved =
-        acme_config::resolve_credentials(&config.dns_credentials).map_err(|e| e.to_string())?;
+    // `tls issue --acme` is interactive, run from a real shell — no
+    // renew.env fallback; `$VAR` must already be in the environment.
+    let resolved = acme_config::resolve_credentials(&config.dns_credentials, &HashMap::new())
+        .map_err(|e| e.to_string())?;
     let dns_provider = dns::build_dns_provider(&config.dns_provider, &resolved, &config.domain)
         .await
         .map_err(|e| e.to_string())?;

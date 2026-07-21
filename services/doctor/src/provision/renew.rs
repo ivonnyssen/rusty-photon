@@ -254,9 +254,9 @@ async fn renew_acme(
         return Ok(());
     }
 
-    acme_config::load_renew_env(config_dir)
+    let renew_env = acme_config::parse_renew_env(config_dir)
         .map_err(|e| format!("could not load renew.env: {e}"))?;
-    let resolved = acme_config::resolve_credentials(&config.dns_credentials)
+    let resolved = acme_config::resolve_credentials(&config.dns_credentials, &renew_env)
         .map_err(|e| format!("could not resolve DNS credentials: {e}"))?;
     let dns_provider = dns::build_dns_provider(&config.dns_provider, &resolved, &config.domain)
         .await

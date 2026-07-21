@@ -102,18 +102,28 @@ pub fn save_acme_config(config: &AcmeConfig, path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Expand credential values that start with `$` by reading from environment variables.
+/// Expand credential values that start with `$` by reading from the
+/// process environment, falling back to `renew_env` (parsed from
+/// `<config-root>/renew.env` by [`parse_renew_env`]) for a name the
+/// process environment doesn't have — the process environment always
+/// wins, so an operator can override a `renew.env` value transiently.
 ///
 /// Literal values (not starting with `$`) are passed through unchanged.
-pub fn resolve_credentials(creds: &HashMap<String, String>) -> Result<HashMap<String, String>> {
+pub fn resolve_credentials(
+    creds: &HashMap<String, String>,
+    renew_env: &HashMap<String, String>,
+) -> Result<HashMap<String, String>> {
     let mut resolved = HashMap::new();
     for (key, value) in creds {
         let resolved_value = if let Some(var_name) = value.strip_prefix('$') {
-            std::env::var(var_name).map_err(|_| {
-                TlsError::Config(format!(
-                    "environment variable '{var_name}' not set (referenced by dns_credentials.{key})"
-                ))
-            })?
+            std::env::var(var_name)
+                .ok()
+                .or_else(|| renew_env.get(var_name).cloned())
+                .ok_or_else(|| {
+                    TlsError::Config(format!(
+                        "environment variable '{var_name}' not set (referenced by dns_credentials.{key})"
+                    ))
+                })?
         } else {
             value.clone()
         };
@@ -122,9 +132,10 @@ pub fn resolve_credentials(creds: &HashMap<String, String>) -> Result<HashMap<St
     Ok(resolved)
 }
 
-/// Load `<config-root>/renew.env` into the process environment — `KEY=VALUE`
-/// per line, blank lines and `#`-prefixed comments ignored, a var already
-/// set in the environment left untouched.
+/// Parse `<config-root>/renew.env` — `KEY=VALUE` per line, blank lines and
+/// whole-line `#` comments ignored — into a map for [`resolve_credentials`]
+/// to consult. Returns an empty map, not an error, when the file is
+/// absent.
 ///
 /// This is the unattended path for `$VAR`-indirected `dns_credentials`
 /// (ADR-002, docs/services/doctor.md §Renewal): `doctor tls renew` runs off
@@ -137,13 +148,19 @@ pub fn resolve_credentials(creds: &HashMap<String, String>) -> Result<HashMap<St
 /// `EnvironmentVariables` plist key, a Windows machine-level env var). A
 /// missing file is not an error — self-signed installs and literal
 /// (non-`$`) credentials never need it.
-pub fn load_renew_env(config_dir: &Path) -> Result<()> {
+///
+/// Returning a map instead of calling `std::env::set_var` keeps this out of
+/// the process-global environment: `doctor tls renew` drives its work on a
+/// multi-thread Tokio runtime, and mutating the environment while worker
+/// threads exist is a data race with any concurrent read.
+pub fn parse_renew_env(config_dir: &Path) -> Result<HashMap<String, String>> {
     let path = config_dir.join("renew.env");
     let content = match std::fs::read_to_string(&path) {
         Ok(content) => content,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
         Err(e) => return Err(TlsError::Config(format!("{}: {e}", path.display()))),
     };
+    let mut vars = HashMap::new();
     for (lineno, raw_line) in content.lines().enumerate() {
         let line = raw_line.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -164,12 +181,10 @@ pub fn load_renew_env(config_dir: &Path) -> Result<()> {
                 lineno + 1
             )));
         }
-        if std::env::var_os(key).is_none() {
-            std::env::set_var(key, value.trim());
-        }
+        vars.insert(key.to_string(), value.trim().to_string());
     }
-    debug!(path = %path.display(), "loaded renew.env");
-    Ok(())
+    debug!(path = %path.display(), count = vars.len(), "parsed renew.env");
+    Ok(vars)
 }
 
 /// Return the ACME directory URL for Let's Encrypt staging or production.
@@ -268,17 +283,16 @@ mod tests {
 
     #[test]
     fn resolve_credentials_expands_env_var() {
-        std::env::set_var("TEST_ACME_TOKEN_XYZ", "secret123");
+        let _guard = EnvVarGuard::set("TEST_ACME_TOKEN_XYZ", "secret123");
         let creds = HashMap::from([("api_token".to_string(), "$TEST_ACME_TOKEN_XYZ".to_string())]);
-        let resolved = resolve_credentials(&creds).unwrap();
+        let resolved = resolve_credentials(&creds, &HashMap::new()).unwrap();
         assert_eq!(resolved.get("api_token").unwrap(), "secret123");
-        std::env::remove_var("TEST_ACME_TOKEN_XYZ");
     }
 
     #[test]
     fn resolve_credentials_passes_through_literal() {
         let creds = HashMap::from([("api_token".to_string(), "literal-value".to_string())]);
-        let resolved = resolve_credentials(&creds).unwrap();
+        let resolved = resolve_credentials(&creds, &HashMap::new()).unwrap();
         assert_eq!(resolved.get("api_token").unwrap(), "literal-value");
     }
 
@@ -288,12 +302,39 @@ mod tests {
             "api_token".to_string(),
             "$NONEXISTENT_VAR_FOR_ACME_TEST".to_string(),
         )]);
-        let err = resolve_credentials(&creds).unwrap_err();
+        let err = resolve_credentials(&creds, &HashMap::new()).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("NONEXISTENT_VAR_FOR_ACME_TEST"),
             "error should mention the missing var: {msg}"
         );
+    }
+
+    #[test]
+    fn resolve_credentials_falls_back_to_renew_env_when_process_env_is_unset() {
+        let _guard = EnvVarGuard::unset("RENEW_ENV_TEST_TOKEN");
+        let creds = HashMap::from([("api_token".to_string(), "$RENEW_ENV_TEST_TOKEN".to_string())]);
+        let renew_env =
+            HashMap::from([("RENEW_ENV_TEST_TOKEN".to_string(), "from-file".to_string())]);
+
+        let resolved = resolve_credentials(&creds, &renew_env).unwrap();
+
+        assert_eq!(resolved.get("api_token").unwrap(), "from-file");
+    }
+
+    #[test]
+    fn resolve_credentials_prefers_process_env_over_renew_env() {
+        let _guard = EnvVarGuard::set("RENEW_ENV_TEST_PRESET", "from-environment");
+        let creds = HashMap::from([(
+            "api_token".to_string(),
+            "$RENEW_ENV_TEST_PRESET".to_string(),
+        )]);
+        let renew_env =
+            HashMap::from([("RENEW_ENV_TEST_PRESET".to_string(), "from-file".to_string())]);
+
+        let resolved = resolve_credentials(&creds, &renew_env).unwrap();
+
+        assert_eq!(resolved.get("api_token").unwrap(), "from-environment");
     }
 
     /// Restores its key's prior value (or absence) in the process
@@ -327,50 +368,32 @@ mod tests {
     }
 
     #[test]
-    fn load_renew_env_missing_file_is_a_no_op() {
+    fn parse_renew_env_missing_file_is_a_no_op() {
         let dir = tempfile::tempdir().unwrap();
-        load_renew_env(dir.path()).unwrap();
+        assert!(parse_renew_env(dir.path()).unwrap().is_empty());
     }
 
     #[test]
-    fn load_renew_env_sets_vars_from_file() {
+    fn parse_renew_env_parses_key_value_lines_ignoring_comments_and_blanks() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("renew.env"),
             "# a comment\n\nRENEW_ENV_TEST_TOKEN=from-file\n",
         )
         .unwrap();
-        let _guard = EnvVarGuard::unset("RENEW_ENV_TEST_TOKEN");
 
-        load_renew_env(dir.path()).unwrap();
+        let vars = parse_renew_env(dir.path()).unwrap();
 
-        assert_eq!(std::env::var("RENEW_ENV_TEST_TOKEN").unwrap(), "from-file");
+        assert_eq!(vars.get("RENEW_ENV_TEST_TOKEN").unwrap(), "from-file");
+        assert_eq!(vars.len(), 1);
     }
 
     #[test]
-    fn load_renew_env_does_not_override_an_already_set_var() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("renew.env"),
-            "RENEW_ENV_TEST_PRESET=from-file\n",
-        )
-        .unwrap();
-        let _guard = EnvVarGuard::set("RENEW_ENV_TEST_PRESET", "from-environment");
-
-        load_renew_env(dir.path()).unwrap();
-
-        assert_eq!(
-            std::env::var("RENEW_ENV_TEST_PRESET").unwrap(),
-            "from-environment"
-        );
-    }
-
-    #[test]
-    fn load_renew_env_rejects_a_line_without_equals() {
+    fn parse_renew_env_rejects_a_line_without_equals() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("renew.env"), "not-a-valid-line\n").unwrap();
 
-        let err = load_renew_env(dir.path()).unwrap_err();
+        let err = parse_renew_env(dir.path()).unwrap_err();
         assert!(
             err.to_string().contains("KEY=VALUE"),
             "error should explain the expected shape: {err}"

@@ -6,8 +6,8 @@ Accepted
 
 ## Updates
 
-**2026-07-20** — `doctor tls renew` now loads `<config-root>/renew.env`
-(`KEY=VALUE` per line) into the process environment before resolving
+**2026-07-20** — `doctor tls renew` now parses `<config-root>/renew.env`
+(`KEY=VALUE` per line) and consults it as a fallback when resolving
 `dns_credentials`
 ([#615](https://github.com/ivonnyssen/rusty-photon/issues/615)): the
 shipped systemd unit set only `RUST_LOG`/`HOME`, so a `$VAR`-indirected
@@ -15,10 +15,14 @@ credential (this ADR's env-var form) had nothing to resolve from on a
 timer-driven 3am run — the only working shape on a packaged host was the
 literal token in `acme.json`. Rather than three platform-specific fixes
 (systemd `EnvironmentFile=`, a launchd `EnvironmentVariables` plist key,
-a Windows machine-level env var), the loading lives in the renewal leg
+a Windows machine-level env var), the parsing lives in the renewal leg
 itself, so the same file convention works identically on all three
 platforms. Missing file is not an error; a key already set in the
-environment is left untouched. See docs/services/doctor.md §Renewal.
+process environment always wins over the file — `renew.env` is consulted
+as a map, not injected with `std::env::set_var`, since the renewal leg
+runs on a multi-thread Tokio runtime where mutating the process
+environment races any concurrent read. See docs/services/doctor.md
+§Renewal.
 
 **2026-07-19** — `serve_tls_with_acceptor`
 (`crates/rusty-photon-tls/src/server.rs`) now sniffs the first byte of

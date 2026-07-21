@@ -735,10 +735,14 @@ environment, so `$CLOUDFLARE_API_TOKEN` (or any other `$VAR`-indirected
 something puts it there first. Rather than three platform-specific
 mechanisms (systemd `EnvironmentFile=`, a launchd `EnvironmentVariables`
 plist key, a Windows machine-level env var), the renewal leg itself
-loads `<config-root>/renew.env` — `KEY=VALUE` per line, blank lines and
+parses `<config-root>/renew.env` — `KEY=VALUE` per line, blank lines and
 whole-line `#` comments ignored (no inline comments: a trailing `#
-note` becomes part of the value) — into the process environment before
-resolving credentials, filling in only keys not already set. The file
+note` becomes part of the value) — and consults it as a fallback when
+resolving credentials, only for a `$VAR` name the process environment
+doesn't already have (the process environment always wins). `renew.env`
+is parsed into a map rather than injected with `std::env::set_var`,
+since the renewal leg runs on a multi-thread Tokio runtime where
+mutating the process environment races any concurrent read. The file
 is optional
 (a self-signed-only install, or one with literal, non-`$` credentials,
 never needs it) and sits beside `acme.json`, so it gets the same
