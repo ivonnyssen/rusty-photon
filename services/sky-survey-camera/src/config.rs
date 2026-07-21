@@ -485,5 +485,9 @@ mod doctor_toml_parity {
         let meta = parse(include_str!("../pkg/doctor.toml")).unwrap();
         assert_eq!(meta.port, DEFAULT_PORT);
         assert_eq!(meta.class, ServerClass::Alpaca);
+        assert!(
+            meta.config_gated,
+            "sky-survey-camera has no sensible default config"
+        );
     }
 }

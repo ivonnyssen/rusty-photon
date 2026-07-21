@@ -10,6 +10,11 @@
 //! ```toml
 //! class = "alpaca"  # "alpaca" | "core"
 //! port = 11113
+//! # Optional: the unit hard-requires an operator-written config and never
+//! # self-creates one (docs/packaging.md's "config-gated" services, e.g.
+//! # ConditionPathExists= on Linux, start type Manual on Windows). Defaults
+//! # to false — most services self-create their defaults on first start.
+//! config_gated = false
 //! # Optional hardware identity (docs/services/doctor.md §Hardware):
 //! serial_pointer = "/serial/port"
 //! serial_default_unix = "/dev/ttyUSB0"
@@ -61,6 +66,10 @@ pub struct UsbMeta {
 pub struct DoctorToml {
     pub class: ServerClass,
     pub port: u16,
+    /// The unit hard-requires a hand-written config and never self-creates
+    /// one (docs/packaging.md's "config-gated" services). Defaults to
+    /// `false`.
+    pub config_gated: bool,
     pub serial: Option<SerialMeta>,
     pub usb: Option<UsbMeta>,
 }
@@ -70,6 +79,7 @@ pub struct DoctorToml {
 pub fn parse(content: &str) -> Result<DoctorToml, String> {
     let mut class = None;
     let mut port = None;
+    let mut config_gated = None;
     let mut strings: [(&str, Option<String>); 8] = [
         ("serial_pointer", None),
         ("serial_default_unix", None),
@@ -112,6 +122,21 @@ pub fn parse(content: &str) -> Result<DoctorToml, String> {
                     return Err(format!("line {}: duplicate key `port`", idx + 1));
                 }
             }
+            ("config_gated", v) => {
+                let parsed = match v {
+                    "true" => true,
+                    "false" => false,
+                    other => {
+                        return Err(format!(
+                            "line {}: config_gated must be true or false, got {other}",
+                            idx + 1
+                        ))
+                    }
+                };
+                if config_gated.replace(parsed).is_some() {
+                    return Err(format!("line {}: duplicate key `config_gated`", idx + 1));
+                }
+            }
             (key, v) => {
                 let slot = strings
                     .iter_mut()
@@ -141,6 +166,7 @@ pub fn parse(content: &str) -> Result<DoctorToml, String> {
     Ok(DoctorToml {
         class: class.ok_or("missing key `class`")?,
         port: port.ok_or("missing key `port`")?,
+        config_gated: config_gated.unwrap_or(false),
         serial,
         usb,
     })
@@ -288,6 +314,7 @@ mod tests {
         .unwrap();
         assert_eq!(meta.class, ServerClass::Alpaca);
         assert_eq!(meta.port, 11113);
+        assert!(!meta.config_gated);
         assert_eq!(meta.serial, None);
         assert_eq!(meta.usb, None);
     }
@@ -296,6 +323,18 @@ mod tests {
     fn parses_core_class() {
         let meta = parse("class = \"core\"\nport = 11114\n").unwrap();
         assert_eq!(meta.class, ServerClass::Core);
+    }
+
+    #[test]
+    fn parses_config_gated() {
+        let meta = parse("class = \"core\"\nport = 11170\nconfig_gated = true\n").unwrap();
+        assert!(meta.config_gated);
+    }
+
+    #[test]
+    fn rejects_malformed_config_gated() {
+        let err = parse("class = \"core\"\nport = 1\nconfig_gated = yes\n").unwrap_err();
+        assert!(err.contains("config_gated must be true or false"), "{err}");
     }
 
     #[test]

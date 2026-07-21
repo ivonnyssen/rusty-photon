@@ -301,5 +301,9 @@ mod doctor_toml_parity {
         let meta = parse(include_str!("../pkg/doctor.toml")).unwrap();
         assert_eq!(meta.port, default_server().port);
         assert_eq!(meta.class, ServerClass::Core);
+        assert!(
+            meta.config_gated,
+            "calibrator-flats has no sensible default config"
+        );
     }
 }
