@@ -14,6 +14,7 @@ pub mod dns;
 pub mod expiry;
 pub mod renew;
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use rand::distr::{Alphanumeric, SampleString};
@@ -63,8 +64,8 @@ pub fn absolute_pki_dir(config_dir: &Path) -> PathBuf {
     std::path::absolute(pki_dir(config_dir)).unwrap_or_else(|_| pki_dir(config_dir))
 }
 
-/// Align the pki tree (and `acme.json` beside the configs) with the config
-/// root's owner.
+/// Align the pki tree (and `acme.json`/`renew.env` beside the configs) with
+/// the config root's owner.
 ///
 /// Provisioning as root on a packaged host (`sudo rusty-photon-doctor
 /// --fix`) creates key material root-owned; the services — and the renewal
@@ -76,7 +77,11 @@ pub fn absolute_pki_dir(config_dir: &Path) -> PathBuf {
 /// owner already matches and this is a no-op. Symlinks are skipped (doctor
 /// never creates one there; following it would chown the target). A failed
 /// chown is an error: a silently root-owned key breaks TLS at the next
-/// service start.
+/// service start. `renew.env` is operator-authored (docs/services/doctor.md
+/// §Renewal) and not always present, so it is included best-effort: it is
+/// unconditionally added to `paths`, but a missing file simply fails the
+/// `symlink_metadata` lookup in the loop below and is skipped there like
+/// any other absent entry.
 #[cfg(unix)]
 pub fn align_pki_ownership(config_dir: &Path) -> Result<(), String> {
     use std::os::unix::fs::MetadataExt;
@@ -84,15 +89,17 @@ pub fn align_pki_ownership(config_dir: &Path) -> Result<(), String> {
         return Ok(());
     };
     let (uid, gid) = (root_meta.uid(), root_meta.gid());
-    let mut paths = vec![config_dir.join("acme.json")];
+    let mut paths = vec![config_dir.join("acme.json"), config_dir.join("renew.env")];
     let pki = pki_dir(config_dir);
     if let Ok(entries) = std::fs::read_dir(&pki) {
         paths.push(pki);
         paths.extend(entries.flatten().map(|e| e.path()));
     }
     for path in paths {
-        let Ok(meta) = std::fs::symlink_metadata(&path) else {
-            continue;
+        let meta = match std::fs::symlink_metadata(&path) {
+            Ok(meta) => meta,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(format!("could not stat {}: {e}", path.display())),
         };
         if meta.file_type().is_symlink() || (meta.uid() == uid && meta.gid() == gid) {
             continue;
@@ -353,8 +360,10 @@ pub async fn run_acme(config_dir: &Path, args: AcmeArgs) -> Result<(), String> {
     // recovery input, and the timer runs unprivileged.
     align_pki_ownership(config_dir)?;
 
-    let resolved =
-        acme_config::resolve_credentials(&config.dns_credentials).map_err(|e| e.to_string())?;
+    // `tls issue --acme` is interactive, run from a real shell — no
+    // renew.env fallback; `$VAR` must already be in the environment.
+    let resolved = acme_config::resolve_credentials(&config.dns_credentials, &HashMap::new())
+        .map_err(|e| e.to_string())?;
     let dns_provider = dns::build_dns_provider(&config.dns_provider, &resolved, &config.domain)
         .await
         .map_err(|e| e.to_string())?;
@@ -481,6 +490,26 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         align_pki_ownership(dir.path()).unwrap();
         align_pki_ownership(&dir.path().join("never-created")).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_align_pki_ownership_surfaces_a_stat_error_as_err() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path().join("config");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(config_dir.join("acme.json"), "{}").unwrap();
+        // Strip search permission from config_dir so lstat on acme.json
+        // fails with EACCES rather than NotFound — the loop must
+        // distinguish "gone" (tolerated) from "broken" (an error).
+        std::fs::set_permissions(&config_dir, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let result = align_pki_ownership(&config_dir);
+        std::fs::set_permissions(&config_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        // Ok means running privileged (e.g. root): DAC checks bypassed, so it's a no-op.
+        if let Err(e) = result {
+            assert!(e.contains("could not stat"), "unexpected error: {e}");
+        }
     }
 
     #[test]

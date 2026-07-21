@@ -254,7 +254,9 @@ async fn renew_acme(
         return Ok(());
     }
 
-    let resolved = acme_config::resolve_credentials(&config.dns_credentials)
+    let renew_env = acme_config::parse_renew_env(config_dir)
+        .map_err(|e| format!("could not load renew.env: {e}"))?;
+    let resolved = acme_config::resolve_credentials(&config.dns_credentials, &renew_env)
         .map_err(|e| format!("could not resolve DNS credentials: {e}"))?;
     let dns_provider = dns::build_dns_provider(&config.dns_provider, &resolved, &config.domain)
         .await
@@ -373,6 +375,31 @@ fn shell_command(hook: &str) -> std::process::Command {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;
+
+    /// Restores its key's prior value (or absence) in the process
+    /// environment on drop, including during an unwinding panic (e.g. a
+    /// failed `assert!`) — a plain `remove_var` at the end of a test body
+    /// never runs in that case and leaks the mutation into later tests
+    /// sharing the process.
+    struct EnvVarGuard {
+        key: &'static str,
+        prev: Option<std::ffi::OsString>,
+    }
+    impl EnvVarGuard {
+        fn unset(key: &'static str) -> Self {
+            let prev = std::env::var_os(key);
+            std::env::remove_var(key);
+            Self { key, prev }
+        }
+    }
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match &self.prev {
+                Some(v) => std::env::set_var(self.key, v),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
 
     /// Sign a service pair from the staged CA with an arbitrary window.
     fn stage_pair(pki: &Path, service: &str, not_after: time::OffsetDateTime, sans: &[&str]) {
@@ -556,6 +583,40 @@ mod tests {
         assert!(
             err.message.contains("unsupported DNS provider"),
             "an unparseable wildcard certificate must pass the due gate: {}",
+            err.message
+        );
+    }
+
+    #[tokio::test]
+    async fn test_acme_leg_resolves_dns_credentials_from_renew_env() {
+        // No RENEW_TEST_CF_TOKEN in the process environment: without
+        // renew.env, resolve_credentials would fail first and the error
+        // would name the missing var, not the DNS provider. Reaching the
+        // "unsupported DNS provider" error proves renew.env was loaded and
+        // the `$VAR` indirection resolved from it.
+        let _guard = EnvVarGuard::unset("RENEW_TEST_CF_TOKEN");
+        let (dir, _pki) = stage_tree();
+        std::fs::write(
+            dir.path().join("renew.env"),
+            "RENEW_TEST_CF_TOKEN=resolved-from-file\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("acme.json"),
+            serde_json::json!({
+                "email": "ops@example.com",
+                "domain": "observatory.test",
+                "dns_provider": "no-such-provider",
+                "dns_credentials": { "api_token": "$RENEW_TEST_CF_TOKEN" },
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let err = renew(dir.path(), false).await.unwrap_err();
+        assert!(
+            err.message.contains("unsupported DNS provider"),
+            "renew.env should have resolved the $VAR credential: {}",
             err.message
         );
     }
