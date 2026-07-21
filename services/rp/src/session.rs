@@ -113,10 +113,11 @@ pub struct SessionManager {
     state_path: Option<PathBuf>,
     /// Camera-cooling controller (rp.md § Camera Cooling): session
     /// start runs its cooldown pass, every transition to idle its
-    /// warm-up ramp, and startup recovery its re-adopt path. Safety
-    /// interrupt/resume deliberately does not touch it — the cooler
-    /// holds its rung through an interruption. `None` in tests that
-    /// only exercise the state machine.
+    /// warm-up ramp, and — only under safe conditions — startup
+    /// recovery and safety resume its re-adopt path (no-actuation-on-
+    /// connect tenet: an unsafe startup leaves the cooler untouched
+    /// and defers to the resume path). `None` in tests that only
+    /// exercise the state machine.
     cooling: Option<Arc<crate::cooling::CoolingController>>,
 }
 
@@ -284,6 +285,16 @@ impl SessionManager {
         };
         self.persist(&state).await;
         drop(state);
+
+        // Re-adopt (or re-select) cooler rungs now that conditions are
+        // safe: this is the deferred half of an unsafe-at-startup
+        // restore (`recover_startup` skips it entirely to honor the
+        // no-actuation-on-connect tenet), and a no-op re-adoption for an
+        // ordinary live interruption, whose cooler was never touched
+        // (rp.md § Camera Cooling → Recovery).
+        if let Some(cooling) = &self.cooling {
+            cooling.recover();
+        }
 
         debug!(session_id = %session_id, workflow_id = %workflow_id,
                "conditions safe again; re-invoking the orchestrator with recovery context");
@@ -533,19 +544,24 @@ impl SessionManager {
         }
         drop(state);
 
-        // Re-adopt (or re-select) cooler rungs for the restored session —
-        // interrupted sessions included, since the cooler holds through
-        // an interruption (rp.md § Camera Cooling → Recovery).
-        if let Some(cooling) = &self.cooling {
-            cooling.recover();
-        }
-
         if !conditions_safe {
+            // No cooler actuation on an unsafe startup (no-actuation-on-
+            // connect tenet, docs/workspace.md § Project Tenets): a
+            // restored-as-interrupted session leaves the cooler
+            // untouched here — `resume()` re-adopts (or re-selects) it
+            // on the ordinary unsafe → safe transition instead.
             info!(session_id = %persisted.session_id, workflow_id = %persisted.workflow_id,
                   persisted_status = ?persisted.status,
                   "restored the persisted session as interrupted — conditions are unsafe; \
                    the orchestrator will be re-invoked on the safe transition");
             return true;
+        }
+
+        // Re-adopt (or re-select) cooler rungs for the restored session —
+        // interrupted sessions included, since the cooler holds through
+        // an interruption (rp.md § Camera Cooling → Recovery).
+        if let Some(cooling) = &self.cooling {
+            cooling.recover();
         }
 
         info!(session_id = %persisted.session_id, workflow_id = %persisted.workflow_id,
@@ -691,6 +707,8 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::cooling::test_support::{controller_for, stub_router, CoolerSim, Sim};
+    use crate::equipment::test_support::spawn_stub;
 
     /// In-process orchestrator stub: records every `/invoke` body and
     /// answers with the scripted status sequence (last entry repeats).
@@ -981,6 +999,25 @@ mod tests {
         (manager, progress)
     }
 
+    fn manager_with_cooling(
+        invoke_url: &str,
+        path: std::path::PathBuf,
+        cooling: Arc<crate::cooling::CoolingController>,
+    ) -> Arc<SessionManager> {
+        let event_bus = Arc::new(EventBus::from_config(&[]));
+        let plugins = vec![json!({
+            "name": "test-orchestrator",
+            "type": "orchestrator",
+            "invoke_url": invoke_url,
+            "config": {"workflow": "w"},
+        })];
+        Arc::new(
+            SessionManager::new(event_bus, &plugins)
+                .with_state_path(path)
+                .with_cooling(cooling),
+        )
+    }
+
     fn read_state(path: &std::path::Path) -> Value {
         let bytes = std::fs::read(path).expect("no session state file");
         serde_json::from_slice(&bytes).expect("session state file is not JSON")
@@ -1177,6 +1214,68 @@ mod tests {
         assert_eq!(
             stub.bodies.read().await[1]["recovery"],
             json!({"reason": "safety_interruption"})
+        );
+    }
+
+    #[tokio::test]
+    async fn recover_startup_recovers_the_cooler_when_conditions_are_safe() {
+        let stub = spawn_invoke_stub(vec![StatusCode::OK]).await;
+        let dir = tempfile::tempdir().unwrap();
+        let path = state_path(&dir);
+        let (first, _) = manager_with_state(&stub.url, path.clone());
+        first.start().await.unwrap();
+        assert!(wait_for_hits(&stub, 1).await);
+        drop(first);
+
+        let sim: Sim = Arc::new(std::sync::Mutex::new(CoolerSim::new()));
+        let cam_stub = spawn_stub(stub_router(sim.clone())).await;
+        let (cooling, _rx) = controller_for(&cam_stub.url(), &[-10]).await;
+
+        let second = manager_with_cooling(&stub.url, path.clone(), cooling);
+        assert!(second.recover_startup(true).await);
+        assert!(wait_for_hits(&stub, 2).await);
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            sim.lock().unwrap().set_setpoint_calls > 0,
+            "a safe restart must recover (command) the cooler"
+        );
+    }
+
+    /// The no-actuation-on-connect tenet (docs/workspace.md § Project
+    /// Tenets), applied to camera cooling: issue #636.
+    #[tokio::test]
+    async fn recover_startup_under_unsafe_conditions_defers_cooling_to_the_resume_path() {
+        let stub = spawn_invoke_stub(vec![StatusCode::OK]).await;
+        let dir = tempfile::tempdir().unwrap();
+        let path = state_path(&dir);
+        let (first, _) = manager_with_state(&stub.url, path.clone());
+        first.start().await.unwrap();
+        assert!(wait_for_hits(&stub, 1).await);
+        drop(first);
+
+        // The cooler is off — the driver-truth read in `run_recover`
+        // would otherwise fall through to an actuating cooldown pass.
+        let sim: Sim = Arc::new(std::sync::Mutex::new(CoolerSim::new()));
+        let cam_stub = spawn_stub(stub_router(sim.clone())).await;
+        let (cooling, _rx) = controller_for(&cam_stub.url(), &[-10]).await;
+
+        let second = manager_with_cooling(&stub.url, path.clone(), cooling);
+        assert!(second.recover_startup(false).await);
+        assert_eq!(second.status().await, "interrupted");
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(
+            sim.lock().unwrap().set_setpoint_calls,
+            0,
+            "an unsafe restart must never command the cooler"
+        );
+
+        assert!(second.resume().await, "the safe transition resumes it");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            sim.lock().unwrap().set_setpoint_calls > 0,
+            "the deferred cooler recovery must run once conditions are safe"
         );
     }
 

@@ -496,12 +496,15 @@ impl CoolingController {
     }
 }
 
+/// Shared cooler-camera stub fixtures (`CoolerSim` + `CoolingController`
+/// builders) used by this module's own tests and, for the startup-vs-resume
+/// recovery ordering (rp.md § Camera Cooling → Recovery), by
+/// `session::tests` too — same pattern as
+/// [`crate::equipment::test_support`].
 #[cfg(test)]
-#[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
-mod tests {
+pub(crate) mod test_support {
     use super::*;
-    use crate::equipment::test_support::spawn_stub;
 
     use std::collections::HashMap;
     use std::time::Duration;
@@ -520,27 +523,27 @@ mod tests {
     /// fire the Alpaca connect timeout before real socket I/O
     /// completes). The trajectory shape itself is the simulator's job
     /// (BDD, camera_cooling.feature).
-    struct CoolerSim {
-        can_set: bool,
-        can_get_power: bool,
+    pub(crate) struct CoolerSim {
+        pub(crate) can_set: bool,
+        pub(crate) can_get_power: bool,
         /// When false the stub answers every `CCDTemperature` read with
         /// an ASCOM error — the backstop-with-no-reading regression.
-        temp_readable: bool,
+        pub(crate) temp_readable: bool,
         /// `Some` makes `HeatSinkTemperature` readable (warm-up ramps to
         /// it); `None` answers NOT_IMPLEMENTED (fallback to config).
-        heatsink_c: Option<f64>,
+        pub(crate) heatsink_c: Option<f64>,
         /// Fail `SetCCDTemperature` writes once this many have
         /// succeeded (the mid-pass command-failure branch).
-        fail_setpoint_after: Option<u32>,
+        pub(crate) fail_setpoint_after: Option<u32>,
         ambient_c: f64,
         floor_c: f64,
-        setpoint_c: f64,
-        cooler_on: bool,
-        set_setpoint_calls: u32,
+        pub(crate) setpoint_c: f64,
+        pub(crate) cooler_on: bool,
+        pub(crate) set_setpoint_calls: u32,
     }
 
     impl CoolerSim {
-        fn new() -> Self {
+        pub(crate) fn new() -> Self {
             Self {
                 can_set: true,
                 can_get_power: true,
@@ -574,13 +577,13 @@ mod tests {
         }
     }
 
-    type Sim = Arc<Mutex<CoolerSim>>;
+    pub(crate) type Sim = Arc<Mutex<CoolerSim>>;
 
     fn ok_value(value: serde_json::Value) -> Json<serde_json::Value> {
         Json(json!({ "Value": value, "ErrorNumber": 0, "ErrorMessage": "" }))
     }
 
-    fn stub_router(sim: Sim) -> Router {
+    pub(crate) fn stub_router(sim: Sim) -> Router {
         Router::new()
             .route(
                 "/management/v1/configureddevices",
@@ -691,7 +694,7 @@ mod tests {
 
     /// Fast timing profile — every wait collapses under
     /// `start_paused` virtual time.
-    fn fast_config() -> CoolingConfig {
+    pub(crate) fn fast_config() -> CoolingConfig {
         CoolingConfig {
             poll_interval: Duration::from_millis(50),
             plateau_window: Duration::from_millis(200),
@@ -705,7 +708,7 @@ mod tests {
         }
     }
 
-    async fn controller_for(
+    pub(crate) async fn controller_for(
         url: &str,
         ladder: &[i32],
     ) -> (
@@ -715,7 +718,7 @@ mod tests {
         controller_with_config(url, ladder, fast_config()).await
     }
 
-    async fn controller_with_config(
+    pub(crate) async fn controller_with_config(
         url: &str,
         ladder: &[i32],
         config: CoolingConfig,
@@ -742,7 +745,7 @@ mod tests {
         (ctrl, rx)
     }
 
-    fn drain(
+    pub(crate) fn drain(
         rx: &mut tokio::sync::broadcast::Receiver<crate::events::EventEnvelope>,
     ) -> Vec<crate::events::EventEnvelope> {
         let mut events = Vec::new();
@@ -751,6 +754,19 @@ mod tests {
         }
         events
     }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+mod tests {
+    use super::test_support::*;
+    use super::*;
+    use crate::equipment::test_support::spawn_stub;
+
+    use std::time::Duration;
+
+    use serde_json::json;
 
     #[tokio::test]
     async fn stabilizes_at_the_lowest_reachable_rung() {
