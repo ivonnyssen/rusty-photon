@@ -4223,9 +4223,9 @@ dependencies = [
 
 [[package]]
 name = "rmpfit"
-version = "1.0.1"
+version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc48311329995f7563dfcde6cecdd273c768635dd4b5fa7d92f4775600dfd8e2"
+checksum = "e3e8006f8d69fcd1b9cbbf7b74999549dfe44b504b8c4f80727ae40a2b856528"
 
 [[package]]
 name = "rp"
