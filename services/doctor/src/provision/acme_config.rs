@@ -296,6 +296,29 @@ mod tests {
         );
     }
 
+    /// Removes its key from the process environment on drop, including
+    /// during an unwinding panic (e.g. a failed `assert_eq!`) — plain
+    /// `remove_var` calls at the end of a test body never run in that case
+    /// and leak the var into later tests sharing the process.
+    struct EnvVarGuard {
+        key: &'static str,
+    }
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            std::env::set_var(key, value);
+            Self { key }
+        }
+        fn unset(key: &'static str) -> Self {
+            std::env::remove_var(key);
+            Self { key }
+        }
+    }
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            std::env::remove_var(self.key);
+        }
+    }
+
     #[test]
     fn load_renew_env_missing_file_is_a_no_op() {
         let dir = tempfile::tempdir().unwrap();
@@ -310,12 +333,11 @@ mod tests {
             "# a comment\n\nRENEW_ENV_TEST_TOKEN=from-file\n",
         )
         .unwrap();
-        std::env::remove_var("RENEW_ENV_TEST_TOKEN");
+        let _guard = EnvVarGuard::unset("RENEW_ENV_TEST_TOKEN");
 
         load_renew_env(dir.path()).unwrap();
 
         assert_eq!(std::env::var("RENEW_ENV_TEST_TOKEN").unwrap(), "from-file");
-        std::env::remove_var("RENEW_ENV_TEST_TOKEN");
     }
 
     #[test]
@@ -326,7 +348,7 @@ mod tests {
             "RENEW_ENV_TEST_PRESET=from-file\n",
         )
         .unwrap();
-        std::env::set_var("RENEW_ENV_TEST_PRESET", "from-environment");
+        let _guard = EnvVarGuard::set("RENEW_ENV_TEST_PRESET", "from-environment");
 
         load_renew_env(dir.path()).unwrap();
 
@@ -334,7 +356,6 @@ mod tests {
             std::env::var("RENEW_ENV_TEST_PRESET").unwrap(),
             "from-environment"
         );
-        std::env::remove_var("RENEW_ENV_TEST_PRESET");
     }
 
     #[test]

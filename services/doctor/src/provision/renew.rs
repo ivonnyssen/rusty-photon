@@ -380,6 +380,25 @@ fn shell_command(hook: &str) -> std::process::Command {
 mod tests {
     use super::*;
 
+    /// Removes its key from the process environment on drop, including
+    /// during an unwinding panic (e.g. a failed `assert!`) — a plain
+    /// `remove_var` at the end of a test body never runs in that case and
+    /// leaks the var into later tests sharing the process.
+    struct EnvVarGuard {
+        key: &'static str,
+    }
+    impl EnvVarGuard {
+        fn unset(key: &'static str) -> Self {
+            std::env::remove_var(key);
+            Self { key }
+        }
+    }
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            std::env::remove_var(self.key);
+        }
+    }
+
     /// Sign a service pair from the staged CA with an arbitrary window.
     fn stage_pair(pki: &Path, service: &str, not_after: time::OffsetDateTime, sans: &[&str]) {
         let ca_cert = std::fs::read_to_string(pki.join("ca.pem")).unwrap();
@@ -573,7 +592,7 @@ mod tests {
         // would name the missing var, not the DNS provider. Reaching the
         // "unsupported DNS provider" error proves renew.env was loaded and
         // the `$VAR` indirection resolved from it.
-        std::env::remove_var("RENEW_TEST_CF_TOKEN");
+        let _guard = EnvVarGuard::unset("RENEW_TEST_CF_TOKEN");
         let (dir, _pki) = stage_tree();
         std::fs::write(
             dir.path().join("renew.env"),
@@ -598,7 +617,6 @@ mod tests {
             "renew.env should have resolved the $VAR credential: {}",
             err.message
         );
-        std::env::remove_var("RENEW_TEST_CF_TOKEN");
     }
 
     #[tokio::test]
