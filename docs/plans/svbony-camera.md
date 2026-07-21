@@ -2,22 +2,46 @@
 
 ## Status
 
+**Phase C/D landed (2026-07-21): bare `services/svbony-camera` skeleton +
+design doc + ADR-018 + `@wip` BDD scaffolding.** The service builds, binds
+the Alpaca listener on port **11125**, and serves `/management/*` correctly
+with zero (production) or one (simulation) registered device;
+`--config`/`--port`/`--log-level` and `doctor` all work.
+`SvbonyCamera` implements `ascom_alpaca::api::Device` for real
+(name/description/driver info/version/connected/UniqueID, config actions)
+and every `ascom_alpaca::api::Camera` method as an honest `NOT_IMPLEMENTED`
+stub, pending Phase E. `svbony-rs`'s identity-minting win over ZWO (the
+serial arrives pre-open at enumeration) is wired directly — no
+open-then-close dance. Per Rule 10, `svbony-rs` is a **direct path
+dependency** in `services/svbony-camera/Cargo.toml`, not promoted to the
+root `[workspace.dependencies]` (still only one consumer). Packaging stubs
+landed (`pkg/90-rusty-photon-svbony.rules` — group-scoped, vendor ID
+`f266`; `pkg/doctor.toml`; `pkg/rusty-photon-svbony-camera.service`); the
+SDK-download helper itself (`rusty-photon-svbony-sdk-install`) is explicitly
+deferred to Phase G, per the new [ADR-018](../decisions/018-svbony-sdk-no-license-payload-policy.md),
+which extends ADR-013's two-bucket framework with a third
+no-license-at-all bucket. Nine BDD feature files exist
+(`tests/features/*.feature`); four are genuinely green today
+(`enumeration_connection` minus one `@wip` scenario, `config_actions`,
+`auth`, `doctor` — their underlying functionality is real, not stubbed, so
+they were left untagged rather than force-tagged `@wip`); five are `@wip`
+pending Phase E's soft-trigger video-capture state machine (`exposure`,
+`binning_and_roi`, `cooling`, `gain_offset_readout`, `sensor_properties`).
+`crates/svbony-rs/libsvbony-sys/BUILD.bazel`'s `SVBONY_SKIP_NATIVE_LINK=1`
+Bazel shortcut (Phase A/B) is unchanged — still zero SDK provisioning
+required to build `//...` today; revisit at Phase G. Hardware is on order:
+an SV605CC (IMX533 OSC, two-stage TEC), current ("B") revision. This plan
+is the SVBony analogue of [`zwo-driver.md`](zwo-driver.md) and follows the
+same design→BDD→implementation flow
+([`development-workflow.md`](../skills/development-workflow.md)); the
+service design doc is [`docs/services/svbony-camera.md`](../services/svbony-camera.md).
+
 **Phase A/B landed (2026-07-21): `libsvbony-sys` + `svbony-rs` vendored at
 `crates/svbony-rs/`.** Hand-written FFI (no bindgen, no vendored header — see
 "Verified SDK ground truth" below) plus the safe wrapper (`Sdk`, `Camera`,
 typed error mapping) and a `simulation` feature modelling the soft-trigger
-video-capture flow and a poll-based cooling ramp. Not yet wired to any
-workspace dependents — `services/svbony-camera` (Phase C+) does not exist
-yet. One deviation from the zwo-rs/qhyccd-rs Bazel precedent: since no
-`install-svbony-sdk` CI provisioning action exists yet and no service
-consumes this crate, `crates/svbony-rs/libsvbony-sys/BUILD.bazel` bakes
-`SVBONY_SKIP_NATIVE_LINK=1` into its `cargo_build_script` so the default
-Bazel build needs zero SDK provisioning; revisit once Phase C lands. Hardware
-is on order: an SV605CC (IMX533 OSC, two-stage TEC), current ("B") revision.
-This plan is the SVBony analogue of [`zwo-driver.md`](zwo-driver.md) and
-follows the same design→BDD→implementation flow
-([`development-workflow.md`](../skills/development-workflow.md)); the service
-design doc (`docs/services/svbony-camera.md`) is Phase D work, not this file.
+video-capture flow and a poll-based cooling ramp. Hardware is on order: an
+SV605CC (IMX533 OSC, two-stage TEC), current ("B") revision.
 
 ## Motivation
 
@@ -204,15 +228,21 @@ Bazel files all port). The exposure-model difference concentrates in Phase B
   `zwo-rs`'s EAF focuser position ramp — advance-on-poll, not wall-clock
   time). 25 unit tests, `cargo`+`bazel` quality gate green. Not yet consumed
   by any service (that's Phase C).
-- **Phase C — bare service:** `svbony-camera` serving a sim Camera on
-  `:11125`; prove build/link both variants, Bazel two-variant build,
-  `install-svbony-sdk` action, repin-twice.
-- **Phase D — design doc + ADR + BDD:** `docs/services/svbony-camera.md`
-  (behavioural contracts incl. the exposure state machine and tenet-3
-  connect-path statement), the ADR-013-extension ADR, workspace.md rows, and
-  the BDD feature files (`@wip`) mapped from the design doc — mirroring
-  `zwo-camera`'s six camera features plus an exposure-mode feature for the
-  soft-trigger specifics.
+- **Phase C — bare service:** ✅ *landed (2026-07-21).* `svbony-camera`
+  serving zero (production) or one (simulation) Camera on `:11125`; build
+  proven for both the real and `svbony-rs_sim` Bazel variants. *Deviation:*
+  no `install-svbony-sdk` action exists yet (unchanged from Phase A/B's
+  `SVBONY_SKIP_NATIVE_LINK=1` Bazel shortcut) and no repin was needed (no
+  new crates.io deps — `svbony-rs` is a first-party path dependency).
+- **Phase D — design doc + ADR + BDD:** ✅ *landed (2026-07-21).*
+  `docs/services/svbony-camera.md` (behavioural contracts incl. the
+  exposure state machine and tenet-3 connect-path statement),
+  [ADR-018](../decisions/018-svbony-sdk-no-license-payload-policy.md) (the
+  ADR-013-extension), `docs/workspace.md` rows, and nine BDD feature files
+  mapped from the design doc — mirroring `zwo-camera`'s six camera features
+  plus `exposure.feature` for the soft-trigger specifics; four files are
+  genuinely green (not `@wip`) since their underlying functionality
+  (`Device`, config actions, TLS/auth, doctor) is real as of Phase C.
 - **Phase E — full Camera:** `Device + Camera` over `svbony-rs` — exposure
   state machine, ROI/bin, gain/offset (`SVB_BLACK_LEVEL`), cooling,
   `backend.rs` mock seam, `spawn_blocking` bridge with generation counter,
