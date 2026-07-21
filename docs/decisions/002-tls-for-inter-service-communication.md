@@ -6,6 +6,24 @@ Accepted
 
 ## Updates
 
+**2026-07-21** — Self-signed service certs now carry an Authority Key
+Identifier extension pointing at the issuing CA's Subject Key
+Identifier, and their own SKI
+([#621](https://github.com/ivonnyssen/rusty-photon/issues/621)):
+`cert::generate_service_cert` (`services/doctor/src/provision/cert.rs`)
+sets `use_authority_key_identifier_extension` and switches
+`is_ca` from `IsCa::NoCa` to `IsCa::ExplicitNoCa`, which is what makes
+`rcgen` write the leaf's own SKI. RFC 5280 §4.2.1.1 makes AKI a MUST for
+CA-issued (non-self-signed) certs, and §4.2.1.2 makes SKI a SHOULD for
+leaves; without either, strict verifiers (Python 3.13's default
+`VERIFY_X509_STRICT`) reject the cert even though OpenSSL's non-strict
+path (curl, current reqwest backends) accepts it. The CA's own cert
+already carried an SKI (rcgen writes it for any `IsCa::Ca`), so no
+change was needed there. `crates/rusty-photon-tls/src/test_cert.rs`
+(test-fixture certs) got the same two-field change, so tests exercise
+the same shape as production. Existing installs converge at the next
+renewal.
+
 **2026-07-20** — `doctor tls renew` now parses `<config-root>/renew.env`
 (`KEY=VALUE` per line) and consults it as a fallback when resolving
 `dns_credentials`

@@ -599,6 +599,11 @@ wherever they point.)
   acme.json           # ACME account/config state (0600), alongside the configs
 ```
 
+Every issued certificate carries a Subject Key Identifier, and every
+service cert also carries an Authority Key Identifier pointing at the
+CA's SKI — RFC 5280 §4.2.1.1/§4.2.1.2 compliance that strict verifiers
+(e.g. Python 3.13's default `VERIFY_X509_STRICT`) require (issue #621).
+
 Key files and `credential` are `0600` and owned by the service user on
 packaged hosts (doctor runs privileged there and chowns what it writes).
 The CA is **never regenerated** while `ca.pem` exists — replacing it
