@@ -9,12 +9,11 @@ Feature: Camera enumeration and connection lifecycle
   serial). Connecting a device (C1) opens it via the SDK; a `Connected`
   device that receives another `set_connected(true)` is a no-op (C1b). An
   open failure leaves the device not connected (C2). Disconnecting (C3)
-  closes the device. Phase C/D scope: only the connection lifecycle itself
-  is real here -- `SvbonyCamera`'s exposure/ROI/gain/cooling/sensor `Camera`
-  methods are `NOT_IMPLEMENTED` stubs until Phase E
-  (docs/plans/svbony-camera.md), so disconnect-cancels-an-in-flight-exposure
-  (C3b) is `@wip`. With zero cameras discovered the service still starts,
-  registering no Camera devices and logging a warning (C0b). Against the
+  closes the device, cancelling any in-flight exposure (C3b, implemented in
+  Phase E over the generation-counter guard -- see
+  docs/plans/svbony-camera.md). With zero cameras discovered the service
+  still starts, registering no Camera devices and logging a warning (C0b).
+  Against the
   svbony-rs simulation backend exactly one camera is present
   (SV605CC-Simulated, 3008x3008, colour/OSC, 14-bit, cooled, trigger-capable,
   no ST4 port).
