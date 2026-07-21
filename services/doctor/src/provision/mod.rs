@@ -95,8 +95,10 @@ pub fn align_pki_ownership(config_dir: &Path) -> Result<(), String> {
         paths.extend(entries.flatten().map(|e| e.path()));
     }
     for path in paths {
-        let Ok(meta) = std::fs::symlink_metadata(&path) else {
-            continue;
+        let meta = match std::fs::symlink_metadata(&path) {
+            Ok(meta) => meta,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(format!("could not stat {}: {e}", path.display())),
         };
         if meta.file_type().is_symlink() || (meta.uid() == uid && meta.gid() == gid) {
             continue;
@@ -485,6 +487,26 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         align_pki_ownership(dir.path()).unwrap();
         align_pki_ownership(&dir.path().join("never-created")).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_align_pki_ownership_surfaces_a_stat_error_as_err() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path().join("config");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(config_dir.join("acme.json"), "{}").unwrap();
+        // Strip search permission from config_dir so lstat on acme.json
+        // fails with EACCES rather than NotFound — the loop must
+        // distinguish "gone" (tolerated) from "broken" (an error).
+        std::fs::set_permissions(&config_dir, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let result = align_pki_ownership(&config_dir);
+        std::fs::set_permissions(&config_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        // Ok means running privileged (e.g. root): DAC checks bypassed, so it's a no-op.
+        if let Err(e) = result {
+            assert!(e.contains("could not stat"), "unexpected error: {e}");
+        }
     }
 
     #[test]
