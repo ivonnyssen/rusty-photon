@@ -89,6 +89,15 @@
 > covered by mock-backend unit tests instead, per the design's own call
 > (the simulation cannot force an SDK error). See "Delivery phasing" for
 > what Phase E resolved vs. left open for Phase G hardware validation.
+>
+> **Correction (PR #658 review, 2026-07-21): "Windows unsupported" was
+> wrong.** Phase F's "excluded from the Windows per-service matrix —
+> indi-3rdparty declares Windows unsupported" (below) conflated
+> indi-3rdparty's own Linux/macOS-only packaging with SVBony's SDK itself.
+> SVBony does publish a Windows SDK directly, and `libsvbony-sys/build.rs`
+> now has real, byte-verified Windows link directives — see "Native
+> dependency & build gating → Windows" below for what's actually true (real
+> code support; CI automation still blocked by a CAPTCHA-gated download).
 
 ## Overview
 
@@ -201,6 +210,41 @@ provisions it before building/testing; the simulation-only legs build
 SDK-free via `SVBONY_SKIP_NATIVE_LINK=1`; Bazel provisions the SDK for its
 `//...` targets the same way `install-zwo-sdk`/`qhyccd-sdk-install` do
 today.
+
+### Windows (PR #658 review, 2026-07-21)
+
+`libsvbony-sys/build.rs` now has real Windows link directives — this is a
+narrower claim than "Windows is provisioned by CI," so read carefully:
+
+- **What's verified.** SVBony publishes a Windows `SVBCameraSDK` build
+  directly (svbony.com/downloads/software-driver,
+  `windows-SVBCameraSDK-v1.13.4.zip` — the same SDK version already pinned
+  for Linux), separately from indi-3rdparty (whose `libsvbony` packaging is
+  Linux/macOS-only — that packaging repo's own Windows refusal was
+  previously, incorrectly, read as "SVBony has no Windows SDK"). Byte-
+  verified against the real package: the header's exported function set is
+  identical to what `lib.rs` already binds; the `.lib`/`.dll` (x86 + x64)
+  export tables show plain, undecorated `cdecl` names (no `__stdcall`/`@N`
+  decoration); no `libusb` dependency anywhere (the DLL's internal
+  `CWinUsbCamera` symbol shows it uses Windows' in-box WinUSB driver
+  instead); no license/EULA text anywhere in the package, extending
+  [ADR-018](../decisions/018-svbony-sdk-no-license-payload-policy.md)'s "no
+  license grant at all" finding to Windows too. `cargo check -p svbony-rs
+  --target x86_64-pc-windows-msvc` (with `SVBONY_SDK_LIB_DIR` pointed at a
+  manually-provisioned copy) passes.
+- **What's still missing: CI automation.** Unlike the Linux/macOS blobs
+  (indi-3rdparty's plain GitHub-raw mirror) or ZWO's Windows SDK
+  (`install-zwo-sdk`'s plain CDN URL), SVBony's Windows download is gated
+  behind `data-fileRestricted="true"` + a `recaptcha-v3.js`/
+  `unified-captcha.js` consent flow — not a fetchable URL, so
+  `install-svbony-sdk` has **no Windows step**, and `bazel/windows-latest`
+  (a required check) still only exercises `SVBONY_SKIP_NATIVE_LINK=1` (the
+  library targets build; the real binary link is untested on Windows in
+  CI, same posture as before — see "Gating plan" above, mirrored for
+  Windows specifically). A human must manually download the SDK once and
+  set `SVBONY_SDK_LIB_DIR` to build the real Windows link — there is no
+  path to automating that download without solving a CAPTCHA, which is out
+  of scope on principle, not just effort.
 
 ### udev / USB
 

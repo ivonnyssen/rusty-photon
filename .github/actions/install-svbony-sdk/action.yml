@@ -18,12 +18,19 @@ description: >-
   the usual libc/libstdc++/libgcc_s/libm — matching libsvbony-sys/build.rs's
   actual link-lib list, not the udev+libusb pair ZWO's EFW/EAF blobs need.
 
-  No Windows branch: indi-3rdparty's own libsvbony/CMakeLists.txt hard-fails
-  with `message(FATAL_ERROR "MS Windows not supported.")`, and
-  libsvbony-sys/build.rs panics unconditionally (before even checking
-  SVBONY_SKIP_NATIVE_LINK) when CARGO_CFG_TARGET_OS=windows — so there is no
-  link-free escape hatch to provision around on that OS. Callers must not
-  invoke this action on `windows-latest`.
+  No Windows branch — not because Windows is unsupported (it isn't:
+  libsvbony-sys/build.rs has real, byte-verified Windows link directives as
+  of the PR #658 review, and SVBony does publish a Windows SDK directly,
+  svbony.com/downloads/software-driver — indi-3rdparty's own Linux/macOS-
+  only libsvbony/CMakeLists.txt refusal is not evidence otherwise), but
+  because that download is gated behind a CAPTCHA/consent flow
+  (`data-fileRestricted="true"`, `recaptcha-v3.js`/`unified-captcha.js`),
+  unlike indi-3rdparty's plain GitHub-raw mirror or install-zwo-sdk's plain
+  Windows CDN URL — there is no automatable fetch to script here. Callers
+  must not invoke this action on `windows-latest`; build with
+  SVBONY_SKIP_NATIVE_LINK=1 there instead (bazel/windows-latest and
+  native.yml both do). See docs/plans/svbony-camera.md's Future Work for
+  the tracked gap.
 
   macOS: x86_64 (`mac64`) only. indi-3rdparty's libsvbony packaging ships no
   `mac_arm64` blob (SVBony's own direct SDK download has not been

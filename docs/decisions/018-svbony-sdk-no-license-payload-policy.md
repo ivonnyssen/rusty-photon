@@ -103,6 +103,29 @@ mechanical delivery differs in one respect worth flagging (see
    email — they are responsive to indi-3rdparty issues), this collapses to
    ADR-013's ZWO bucket with no layout change beyond adding the blob as a
    package asset.
+6. **Windows extends the same bucket, byte-verified (PR #658 review,
+   2026-07-21).** SVBony's own Windows `SVBCameraSDK` distribution
+   (svbony.com/downloads/software-driver, `windows-SVBCameraSDK-v1.13.4.zip`
+   — same SDK version already pinned for Linux) carries **no license/EULA
+   text anywhere in the package** either (checked: `ReadMe.txt` is a pure
+   changelog, no `LICENSE`/`COPYING` file, the header has no copyright
+   notice) — the identical "entirely silent" posture this ADR already
+   applies to the Linux/macOS blob, so point 1 (never redistribute) extends
+   to it unchanged. Unlike the Linux/macOS blobs, though, **this download
+   cannot be automated in CI at all**: the download button is
+   `data-fileRestricted="true"` behind a `recaptcha-v3.js`/
+   `unified-captcha.js` gate, not a plain fetchable URL like
+   indi-3rdparty's GitHub-raw mirror or `install-zwo-sdk`'s Windows CDN
+   input. `libsvbony-sys/build.rs` now has real Windows link directives
+   (`crates/svbony-rs/libsvbony-sys/build.rs`, verified: the header's
+   function set, and the `.lib`/`.dll` export tables for x86 + x64, are
+   byte-identical in name and calling convention to what this crate already
+   binds — plain `cdecl`, no `libusb` dependency, WinUSB-backed
+   internally), so a human who manually downloads the SDK once and sets
+   `SVBONY_SDK_LIB_DIR` can build the real Windows link today — but
+   `install-svbony-sdk` gained no Windows step, and `bazel/windows-latest`
+   still only exercises `SVBONY_SKIP_NATIVE_LINK=1` (see
+   `docs/plans/svbony-camera.md`'s Status section for the tracked gap).
 
 ## Consequences
 

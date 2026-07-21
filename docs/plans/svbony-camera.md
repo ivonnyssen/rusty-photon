@@ -546,6 +546,15 @@ Bazel files all port). The exposure-model difference concentrates in Phase B
   Phase G; whichever lands first defines the pattern.
 - **Vendor redistribution grant** — an emailed one-liner from SVBony would
   collapse the packaging to the ZWO bucket.
+- **Windows CI automation** (PR #658 review) — `libsvbony-sys/build.rs` has
+  real, byte-verified Windows link directives now, but `install-svbony-sdk`
+  has no Windows step: the SDK download is CAPTCHA-gated
+  (svbony.com/downloads/software-driver), unlike indi-3rdparty's Linux/
+  macOS mirror or ZWO's plain Windows CDN URL. `bazel/windows-latest` and
+  `native.yml` still only exercise `SVBONY_SKIP_NATIVE_LINK=1` on Windows.
+  No automatable path exists without solving a CAPTCHA (out of scope on
+  principle); a real-link Windows CI leg would need a human-provisioned
+  self-hosted runner or a vendor-provided non-gated download instead.
 
 ## References
 
