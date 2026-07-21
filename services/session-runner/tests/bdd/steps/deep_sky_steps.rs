@@ -357,21 +357,18 @@ async fn rp_with_camera_mount_focuser_and_workflow(
 #[when(expr = "the deep-sky session has captured at least {int} frames")]
 async fn deep_sky_captured_frames(world: &mut SessionRunnerWorld, frames: u64) {
     let deadline = std::time::Instant::now() + OBSERVATION_BUDGET;
-    while std::time::Instant::now() < deadline {
-        if world
-            .blackboard_counter("total_frames")
-            .await
-            .is_some_and(|f| f >= frames)
-        {
+    loop {
+        let last = world.blackboard_counter("total_frames").await;
+        if last.is_some_and(|f| f >= frames) {
             return;
         }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the blackboard never recorded {frames} total_frames within \
+             {OBSERVATION_BUDGET:?} (last: {last:?})"
+        );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    panic!(
-        "the blackboard never recorded {frames} total_frames within {OBSERVATION_BUDGET:?} \
-         (last: {:?})",
-        world.blackboard_counter("total_frames").await
-    );
 }
 
 // ---------------------------------------------------------------------------

@@ -220,15 +220,17 @@ async fn mount_eventually_tracking_g1(world: &mut StarAdventurerWorld, secs: u64
     // The wire form is `:G1<DB1><DB2>\r` — see
     // `skywatcher_motor_protocol::MotionMode` for the full encoding.
     let deadline = std::time::Instant::now() + Duration::from_secs(secs);
-    while std::time::Instant::now() < deadline {
+    loop {
         let log = world.command_log().await;
         if log.iter().any(|c| is_tracking_g1(c)) {
             return;
         }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no tracking-mode :G1 within {secs}s; log {log:?}"
+        );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    let log = world.command_log().await;
-    panic!("no tracking-mode :G1 within {secs}s; log {log:?}");
 }
 
 #[then("the mount should not receive a tracking-mode :G1")]
