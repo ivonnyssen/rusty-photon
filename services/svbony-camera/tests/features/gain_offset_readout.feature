@@ -1,5 +1,4 @@
 @serial
-@wip
 Feature: Gain, offset, and readout modes
   Gain maps to SVB_GAIN and Offset maps to SVB_BLACK_LEVEL (SVBony's ASCOM
   Offset-equivalent control, read via SVBGetControlCaps / SVBGet-

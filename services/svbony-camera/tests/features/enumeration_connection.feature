@@ -43,7 +43,6 @@ Feature: Camera enumeration and connection lifecycle
     And I disconnect camera device 0
     Then camera device 0 reports Connected as false
 
-  @wip
   Scenario: Disconnecting cancels an in-flight exposure
     Given camera device 0 is connected
     And an exposure is in flight on camera device 0

@@ -1,5 +1,4 @@
 @serial
-@wip
 Feature: Cooling
   Cooling is gated on SVB_CAMERA_PROPERTY_EX.bSupportControlTemp:
   CanSetCCDTemperature and CanGetCoolerPower are true only when the camera

@@ -1,5 +1,4 @@
 @serial
-@wip
 Feature: Sensor geometry, type, and signal
   Once connected, a camera reports its sensor geometry from the cached
   SVB_CAMERA_PROPERTY (G1): CameraXSize / CameraYSize in pixels and

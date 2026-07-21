@@ -3,10 +3,10 @@
 //! Each scenario spawns the svbony-camera binary (built with the
 //! `simulation` backend so the SDK yields one `SV605CC-Simulated` camera)
 //! and drives it through the typed `ascom-alpaca` Camera client over real
-//! HTTP — mirroring the `zwo-camera` / `qhy-camera` pattern. Every
-//! Camera-trait scenario in this phase is tagged `@wip` (see
-//! `tests/features/*.feature`): `SvbonyCamera`'s `Camera` methods are all
-//! `NOT_IMPLEMENTED` stubs until Phase E lands (`docs/plans/svbony-camera.md`).
+//! HTTP — mirroring the `zwo-camera` / `qhy-camera` pattern. As of Phase E
+//! (`docs/plans/svbony-camera.md`) `SvbonyCamera`'s `Camera` methods are
+//! fully implemented and every scenario in `tests/features/*.feature` is
+//! green.
 
 use std::net::SocketAddr;
 use std::sync::Arc;

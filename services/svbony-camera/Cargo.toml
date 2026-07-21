@@ -53,6 +53,7 @@ clap = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
 derive_more = { workspace = true }
+ndarray = { workspace = true }
 parking_lot = { workspace = true }
 
 # Enable the Windows Service Control Manager dispatch only on Windows;

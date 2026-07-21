@@ -1,5 +1,4 @@
 @serial
-@wip
 Feature: Exposure lifecycle (soft-trigger video capture)
   SVBony has no snap-exposure API: every exposure rides video capture. Per
   docs/services/svbony-camera.md "Behavioral contracts -> Exposure", on

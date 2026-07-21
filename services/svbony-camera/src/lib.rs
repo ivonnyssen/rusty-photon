@@ -1,15 +1,16 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 //! # svbony-camera — ASCOM Alpaca driver for SVBony cameras
 //!
-//! **Phase C/D scope (this crate today).** The service binary builds, binds
+//! **Phase E scope (this crate today).** The service binary builds, binds
 //! the Alpaca listener on port 11125, and serves `/management/*` correctly
 //! with zero or one registered device; `doctor` genuinely diagnoses config +
-//! SDK reachability. [`camera::SvbonyCamera`] implements `Device` for real
-//! (name/description/driver info/version/connected/UniqueID, config
-//! actions) but every `ascom_alpaca::api::Camera` method is an honest
-//! `NOT_IMPLEMENTED` stub — Phase E
-//! (`docs/plans/svbony-camera.md`) replaces them one behavioural area at a
-//! time. See `docs/services/svbony-camera.md` for the full design.
+//! SDK reachability. [`camera::SvbonyCamera`] implements both `Device` and
+//! `ascom_alpaca::api::Camera` for real — connection lifecycle, config
+//! actions, sensor geometry/type, gain/offset/readout, binning/ROI,
+//! cooling, and the soft-trigger video-capture exposure state machine
+//! (incl. abort and pulse-guide) — with `ElectronsPerADU` the one
+//! permanent `NOT_IMPLEMENTED` stub (no native SDK field). See
+//! `docs/services/svbony-camera.md` for the full design.
 //!
 //! ## Native dependency
 //!
@@ -22,11 +23,11 @@
 //!
 //! With the `simulation` feature, `build()` enumerates `svbony-rs`'s one
 //! fabricated `SV605CC-Simulated` camera and registers it, so BDD scenarios
-//! have a real device to address as "camera device 0" (even though most of
-//! its behaviour is still `NOT_IMPLEMENTED`). **Without** `simulation` (the
-//! production real-SDK build), `build()` intentionally registers **zero**
-//! devices — real-hardware enumeration + registration is deferred to Phase E
-//! so this phase does not front-run device-trait work; see
+//! have a real device to address as "camera device 0". **Without**
+//! `simulation` (the production real-SDK build), `build()` intentionally
+//! registers **zero** devices — real-hardware enumeration + registration is
+//! gated on the real SDK link being provisionable in CI (Phase G, unrelated
+//! to `Camera` trait completeness, which landed in Phase E); see
 //! [`enumerate_cameras`]'s doc comment.
 
 pub mod backend;
@@ -286,15 +287,16 @@ impl BoundServer {
 /// ([`svbony_rs::Sdk::cameras`]) — no open-then-close dance is needed to mint
 /// identity.
 ///
-/// **Phase C/D boundary.** With the `simulation` feature this returns the
-/// `svbony-rs` simulation's one fabricated camera, so BDD scenarios have
-/// "camera device 0" to address against the stub `SvbonyCamera` device.
+/// **Device registration boundary (still in effect after Phase E).** With
+/// the `simulation` feature this returns the `svbony-rs` simulation's one
+/// fabricated camera, so BDD scenarios have "camera device 0" to address.
 /// Without `simulation` (the production real-SDK build) this intentionally
-/// returns zero cameras: `SvbonyCamera`'s `Camera` trait surface is still
-/// `NOT_IMPLEMENTED` stubs, and wiring real enumeration to production device
-/// registration is Phase E work (`docs/plans/svbony-camera.md`). This is a
-/// deliberate phase boundary, not a technical constraint — real-SDK
-/// enumeration itself is trivial for SVBony (no open required).
+/// returns zero cameras regardless of `SvbonyCamera`'s `Camera` trait
+/// surface now being real (Phase E, `docs/plans/svbony-camera.md`) — wiring
+/// real enumeration to production device registration is gated on real-SDK
+/// link availability, which is Phase G work. This is a deliberate phase
+/// boundary, not a technical constraint — real-SDK enumeration itself is
+/// trivial for SVBony (no open required).
 async fn enumerate_cameras() -> Result<Vec<EnumeratedCamera>, SvbonyCameraError> {
     let cameras = tokio::task::spawn_blocking(enumerate_cameras_blocking).await??;
     debug!(count = cameras.len(), "enumerated SVBony cameras");

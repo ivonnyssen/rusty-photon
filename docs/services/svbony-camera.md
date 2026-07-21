@@ -1,26 +1,28 @@
 # Svbony-Camera Service Design
 
-> **Status:** **Phase C/D landed (2026-07-21): bare service skeleton +
-> design doc + ADR + `@wip` BDD scaffolding.** `services/svbony-camera`
-> builds, binds the Alpaca listener on port **11125**, and serves
-> `/management/*` correctly with zero or one registered device;
-> `--config`/`--port`/`--log-level` and the `doctor` subcommand all work.
+> **Status:** **Phase E landed (2026-07-21): full `Camera` implementation.**
+> `services/svbony-camera` builds, binds the Alpaca listener on port
+> **11125**, and serves `/management/*` correctly with zero or one
+> registered device; `--config`/`--port`/`--log-level` and the `doctor`
+> subcommand all work.
 > [`SvbonyCamera`](../../services/svbony-camera/src/camera.rs) implements
-> `ascom_alpaca::api::Device` for real — `Name`/`Description`/
-> `DriverInfo`/`DriverVersion`/`Connected`/`UniqueID`, plus the
-> `config.get`/`apply`/`schema` action dispatch — and connect/disconnect
-> drive the real `svbony-rs` backend seam. Every
-> `ascom_alpaca::api::Camera` method is present, compiles, and returns an
-> honest `NOT_IMPLEMENTED`: this is the design surface Phase E replaces one
-> behavioural area at a time. With the `simulation` feature the server
-> registers `svbony-rs`'s one fabricated `SV605CC-Simulated` camera as
-> "camera device 0" so BDD scenarios have a real device to address; the
-> production (real-SDK) build registers **zero** devices by default in this
-> phase — see "Configuration → Device registration boundary". Four feature
-> files (`enumeration_connection`, `config_actions`, `auth`, `doctor`) are
-> genuinely green today; the five behavioural feature files
-> (`exposure`, `binning_and_roi`, `cooling`, `gain_offset_readout`,
-> `sensor_properties`) are tagged `@wip` pending Phase E.
+> both `ascom_alpaca::api::Device` and `ascom_alpaca::api::Camera` for real:
+> connection lifecycle, config actions, sensor geometry/type, gain/offset/
+> readout, binning/ROI, cooling, and the soft-trigger video-capture exposure
+> state machine (incl. abort and pulse-guide) are all backed by
+> [`backend::CameraHandle`](../../services/svbony-camera/src/backend.rs)
+> over `svbony-rs`. The one permanent stub is `ElectronsPerADU`
+> (`NOT_IMPLEMENTED`, ST2 — no native SDK field). With the `simulation`
+> feature the server registers `svbony-rs`'s one fabricated
+> `SV605CC-Simulated` camera as "camera device 0" so BDD scenarios have a
+> real device to address; the production (real-SDK) build registers **zero**
+> devices by default in this phase — see "Configuration → Device
+> registration boundary". All nine BDD feature files are genuinely green
+> (60 scenarios, 242 steps); E9 (mid-exposure SDK failure / exceeded
+> `SVBGetVideoData` deadline) and the generation-counter abort-race are
+> covered by mock-backend unit tests instead, per the design's own call
+> (the simulation cannot force an SDK error). See "Delivery phasing" for
+> what Phase E resolved vs. left open for Phase G hardware validation.
 
 ## Overview
 
@@ -149,16 +151,23 @@ graph TD;
   enumeration never opens a camera just to mint identity, unlike
   `zwo-camera`. Returns a `BoundServer`.
 - **`camera.rs`** — `SvbonyCamera` (one instance per discovered camera)
-  implementing `Device` + `Camera` against the `backend::CameraHandle` seam.
-  As of Phase C/D, `Device` is real and every `Camera` method is an honest
-  `NOT_IMPLEMENTED` stub (see the Status banner).
+  implementing both `Device` and `Camera` against the `backend::CameraHandle`
+  seam — the full exposure state machine, ROI/binning, gain/offset,
+  cooling, sensor geometry/type, and pulse-guide, per the Behavioral
+  contracts below (Phase E, landed).
 - **`backend.rs`** — the SDK seam (mirrors `zwo-camera`'s `backend.rs`):
   a `CameraHandle` trait plus a production `SvbonyCameraHandle` wrapping
   `svbony_rs::Sdk`/`Camera` behind a `parking_lot::Mutex` (the RAII `Camera`
   handle is `Send + !Sync`), and an in-crate `MockCameraHandle` for unit
-  tests. Phase C/D wires only the connection-lifecycle surface
-  (open/close/is_open/info/unique_id); the exposure/ROI/gain/cooling seam
-  methods land in Phase E.
+  tests. Covers the full blocking SDK surface `Camera` needs: property/
+  property-ex fetch, control get/set, camera-mode select + video-capture
+  start/stop, the soft-trigger `capture` composite (ROI + output format +
+  exposure control + trigger + the `exposure*2+500ms` `SVBGetVideoData`
+  deadline), and pulse-guide. `is_open` is backed by its own atomic,
+  independent of the mutex `capture` holds, so connection-state reads stay
+  responsive during an in-flight exposure — the mutex is released between
+  `capture`'s ROI/control setup and its trigger + `SVBGetVideoData` call,
+  mirroring `zwo-camera`'s release-during-integration pattern.
 - **`config.rs`** — typed `Config` with parse-don't-validate newtypes.
 - **`config_actions.rs`** — `ConfigurableDriver` impl (real as of Phase
   C/D) + the `dispatch` the device delegates to.
@@ -169,33 +178,51 @@ graph TD;
 **Concurrency.** The SVBony SDK's thread-safety is undocumented — treated
 as unsafe for concurrent calls on one handle, the same posture
 `qhyccd-rs`/`zwo-rs` take. Every SDK call funnels through `spawn_blocking`
-with a single logical owner per device (Phase E: a generation-counter guard
-so an aborted/disconnected exposure can't publish a late frame, mirroring
-`zwo-camera`'s `run_exposure`/`result_lock` pattern).
+with a single logical owner per device, with a generation-counter guard so
+an aborted/disconnected exposure can't publish a late frame, mirroring
+`zwo-camera`'s `run_exposure`/`result_lock` pattern. Unlike `zwo-camera`,
+`AbortExposure` never signals the SDK (there is no data-preserving or
+interruptible stop — see the Exposure contract below): it only bumps the
+generation counter, so a capture already running against
+`SVBGetVideoData` runs to completion (up to its `exposure*2+500ms`
+deadline) before its (discarded) result is checked. A consequence worth
+flagging explicitly: property/control reads that need the open `Camera`
+handle (gain, offset, temperature, …) block behind the same mutex
+`capture` holds for its `SVBGetVideoData` call, so they can stall for up to
+that deadline while an exposure is in flight — this is a hardware-forced
+consequence of SVBony having no separate "start" and "poll status" pair the
+way ASI does, not an oversight. `is_open`/`Connected` do **not** share this
+fate — they are backed by an independent atomic specifically so basic
+connection-state polling stays responsive during an in-flight exposure.
 
 ---
 
 ## MVP scope
 
-**In scope (v0, target for Phase E)**
+**In scope (v0, landed Phase E)**
 
 - ASCOM Camera `ICameraV3` for every enumerated SVBony camera, 8/16-bit RAW
   and mono/OSC (Bayer) sensors, derived at runtime from
   `SVB_CAMERA_PROPERTY` — never hardcoded to the SV605CC's own pattern.
 - Startup enumeration registers all discovered cameras; per-device
-  connect/disconnect (Phase C/D: real); on connect, select
-  `SVB_MODE_TRIG_SOFT` when `IsTriggerCam` and start video capture once
-  (Phase E).
+  connect/disconnect (real since Phase C/D); on connect, select
+  `SVB_MODE_TRIG_SOFT` when `IsTriggerCam` and start video capture once.
 - Sensor geometry from cached `SVB_CAMERA_PROPERTY` (`MaxWidth`/`MaxHeight`,
   `SVBGetSensorPixelSize`); `PixelSizeX == PixelSizeY` (a single SDK
-  pixel-size call).
+  pixel-size call). `CameraXSize`/`CameraYSize` report the **raw** sensor
+  extent — Phase E's resolution of the "R4-style aligned-down reporting"
+  open question above: unlike `zwo-camera`, this driver does **not** reduce
+  the reported size so every binned full frame satisfies the width%8/
+  height%2 rule, chosen to keep `CameraXSize`/`CameraYSize` exact simulated
+  values (3008×3008) rather than a derived, harder-to-eyeball number; a
+  binned full-frame `StartExposure` may therefore be rejected at some bins
+  (e.g. 3008/3 is not an integer at all). Revisit once ConformU coverage
+  exists (Phase F) if this proves too strict in practice.
 - **Binning** — symmetric only (`CanAsymmetricBin = false`); `MaxBinX/Y`
   from `SupportedBins`.
 - **ROI** — `SVBSetROIFormat` constraints: `width % 8 == 0`,
   `height % 2 == 0`, byte-for-byte the same rule `zwo-camera` enforces for
-  ASI. Whether `CameraXSize`/`CameraYSize` need `zwo-camera`'s R4-style
-  "report aligned down so every binned full frame is a valid ROI" treatment
-  is a Phase E decision (not yet asserted here).
+  ASI.
 - **Exposure** — the soft-trigger video-capture state machine (see
   "Behavioral contracts → Exposure" below); `CanStopExposure = false`,
   `CanAbortExposure = true` (to confirm/revise after real-hardware
@@ -203,7 +230,11 @@ so an aborted/disconnected exposure can't publish a late frame, mirroring
 - **Gain / Offset** — `SVB_GAIN` / `SVB_BLACK_LEVEL` (SVBony's ASCOM
   *Offset*-equivalent control); current value + `Min`/`Max` from
   `SVBGetControlCaps`; `NOT_IMPLEMENTED` if the control is absent.
-- **Readout modes** — driver-named list (exact names a Phase E decision).
+- **Readout modes** — driver-named list: `["SoftTrigger", "FreeRunning"]`,
+  a cosmetic label mirroring the two acquisition modes the exposure state
+  machine already uses internally (`SVB_MODE_TRIG_SOFT` vs
+  `SVB_MODE_NORMAL`); switching it only updates cached driver state (RM1),
+  it does not itself change `SVB_CAMERA_MODE`.
 - **Cooling** — `CoolerOn`, `SetCCDTemperature`, `CoolerPower`,
   `CanSetCCDTemperature`, `CanGetCoolerPower` gated on
   `SVB_CAMERA_PROPERTY_EX.bSupportControlTemp`. Cooler set-point / current
@@ -211,29 +242,32 @@ so an aborted/disconnected exposure can't publish a late frame, mirroring
   actuation on connect) explicitly covers the cooler**: connect, reconnect,
   and `config.apply` must never touch `SVB_COOLER_ENABLE` or
   `SVB_TARGET_TEMPERATURE` — the TEC engages only on an explicit operator
-  `CoolerOn` command.
+  `CoolerOn` command. Verified by a unit test (`k5_connecting_never_enables_the_cooler`)
+  and by construction: `open_handshake` (the connect path) contains no call
+  to `set_control_value(CoolerEnable, …)`/`set_control_value(TargetTemperature, …)`
+  anywhere in the file.
 - **Sensor type** — `Monochrome` vs `RGGB` from `IsColorCam` / `BayerPattern`.
 - **`MaxADU`** = `(2^MaxBitDepth) - 1` from `SVB_CAMERA_PROPERTY.MaxBitDepth`.
-- **`ElectronsPerADU`** — **`NOT_IMPLEMENTED` placeholder**: unlike ZWO's
-  `ASI_CAMERA_INFO.ElecPerADU`, `SVB_CAMERA_PROPERTY` carries no native
-  electrons-per-ADU field. Confirm at Phase G hardware validation whether
-  the SDK exposes this some other way (a control, a separate query) before
-  ruling it out permanently.
-- **Bad-pixel correction** — the SDK's on-camera hot-pixel correction
-  (`SVB_BAD_PIXEL_CORRECTION_ENABLE`) defaults **off** for calibrated
-  astrophotography, set explicitly at connect (a read-modify-write of an
-  image-pipeline flag, not actuation — distinct from the cooler/tenet-3
-  carve-out above). Deferred to Phase E; verify the control exists on the
-  605CC.
-- `config.get`/`config.apply`/`config.schema` actions (Phase C/D: real);
-  hardware-derived `UniqueID`; in-process reload.
+- **`ElectronsPerADU`** — **`NOT_IMPLEMENTED` placeholder**, permanently in
+  this phase: unlike ZWO's `ASI_CAMERA_INFO.ElecPerADU`, `SVB_CAMERA_PROPERTY`
+  carries no native electrons-per-ADU field. Confirm at Phase G hardware
+  validation whether the SDK exposes this some other way (a control, a
+  separate query) before ruling it out permanently.
+- **Pulse guiding** — `CanPulseGuide` from `bSupportPulseGuide`;
+  `PulseGuide` kept a **literal blocking** `SVBPulseGuide` call in v0 (not
+  `zwo-camera`'s asynchronous fire-and-forget-with-deadline wrapper) — see
+  "Pulse guiding" below for the reasoning; unexercised by the simulation
+  (the SV605CC has no ST4 port) beyond mock-backend unit tests.
+- `config.get`/`config.apply`/`config.schema` actions (real since Phase
+  C/D); hardware-derived `UniqueID`; in-process reload.
 
 **Deferred (see *Future Work*)**
 
-- ST4 pulse guiding — capability-driven (`SVBCanPulseGuide`), but the
-  SV605CC has no ST4 port, so the simulation always reports it absent;
-  wiring `SVBPulseGuide` is Phase E, exercised on a future ST4-capable
-  model.
+- **Bad-pixel correction** (`SVB_BAD_PIXEL_CORRECTION_ENABLE`) — still not
+  implemented. This phase's implementation order (see
+  [`docs/plans/svbony-camera.md`](../plans/svbony-camera.md)) did not
+  include it; it is not exercised by any BDD scenario or the ASCOM `Camera`
+  surface, so it remains future work, not a Phase E gap.
 - Per-serial connect-time tuning (gain/offset/target-temperature defaults).
 - SV605MC / other SVBony cooled cameras — same driver, capability-driven.
 - SVBony filter wheel (SV226) — a separate service on its own SDK, per the
@@ -320,21 +354,21 @@ logged at `warn!`. Consequences (same as `zwo-camera`/`qhy-camera`): **no
 `resolve_and_init` in `main.rs`, and **no locked identity field** in the
 config-actions tiers.
 
-### Device registration boundary (Phase C/D only)
+### Device registration boundary (still in effect)
 
 `enumerate_cameras()` behaves differently depending on the `simulation`
 feature, a **deliberate, temporary phase boundary** (not a technical
 constraint — real-SDK enumeration is trivial for SVBony, no open
-required):
+required) that Phase E's `Camera` work did not change:
 
 - **With `simulation`:** enumerates `svbony-rs`'s one fabricated
   `SV605CC-Simulated` camera and registers it, so BDD scenarios have
   "camera device 0" to address.
 - **Without `simulation`** (the production real-SDK build): returns **zero**
-  cameras unconditionally. `SvbonyCamera`'s `Camera` trait surface is still
-  `NOT_IMPLEMENTED` stubs, and wiring real enumeration to production device
-  registration is Phase E work — this avoids front-running that with a
-  registered-but-inert real device.
+  cameras unconditionally, regardless of `SvbonyCamera`'s `Camera` trait
+  surface now being real — wiring real enumeration to production device
+  registration is still gated on real-SDK link availability (see "Native
+  dependency & build gating"), which is Phase G work.
 
 `ServerBuilder::with_empty(bool)` additionally forces zero cameras
 regardless of the feature (mirrors `zwo-camera`'s `--simulation-empty`
@@ -346,13 +380,15 @@ scenario.
 ## Behavioral contracts
 
 Named, testable behaviours. ASCOM error names per
-[`docs/references/ascom-alpaca.md`](../references/ascom-alpaca.md). Phase
-C/D implements only the connection-lifecycle (C-prefixed) and config-action
-contracts for real; every other contract below is the **target** Phase E
-implements — the `@wip`-tagged BDD scenarios encode them today as design
-artifacts, not yet-passing tests.
+[`docs/references/ascom-alpaca.md`](../references/ascom-alpaca.md). Every
+contract below is real as of Phase E; the BDD feature files under
+`tests/features/` (60 scenarios, 242 steps) and the unit tests in
+`src/camera.rs`/`src/backend.rs` exercise them — see "Testing" below for
+which layer covers which contract (E9's two branches and the
+generation-counter abort race are unit-test-only, per the design's own
+call that the simulation cannot force an SDK error).
 
-### Enumeration & connection lifecycle (Phase C/D: real)
+### Enumeration & connection lifecycle
 
 - **C0.** At startup `build()` enumerates connected SVBony cameras and
   registers each as an ASCOM device with its serial-derived UniqueID — no
@@ -366,21 +402,25 @@ artifacts, not yet-passing tests.
 - **C2.** `set_connected(true)` with the camera unreachable / SDK open
   failure returns the mapped driver error and `Connected` stays `false`.
 - **C3.** `set_connected(false)` closes the device.
-- **C5 (Phase E).** No code path in this service pushes cooler state or
-  any other actuation on startup, connect, or `config.apply` (workspace
-  tenet [*no actuation on connect*](../workspace.md#project-tenets));
+- **C5 (tenet 3, verified).** No code path in this service pushes cooler
+  state or any other actuation on startup, connect, or `config.apply`
+  (workspace tenet [*no actuation on connect*](../workspace.md#project-tenets));
   `SVB_COOLER_ENABLE`/`SVB_TARGET_TEMPERATURE` are touched only by an
-  explicit ASCOM `CoolerOn`/`SetCCDTemperature` call.
+  explicit ASCOM `CoolerOn`/`SetCCDTemperature` call — `camera.rs`'s
+  `open_handshake` (the sole connect-path function) contains no call to
+  either control, and a unit test
+  (`k5_connecting_never_enables_the_cooler`) pins the observable behaviour.
 
-### Exposure (Phase E target — the soft-trigger video-capture state machine)
+### Exposure (the soft-trigger video-capture state machine)
 
-This is this plan's one genuinely new design problem: SVBony's SDK has no
+This was this plan's one genuinely new design problem: SVBony's SDK has no
 snap-exposure API. Every exposure rides video capture
 (`SVBStartVideoCapture` / `SVBSendSoftTrigger` / `SVBGetVideoData`). The
 design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
-*References*), to be verified step-by-step against real hardware.
+*References*); real-hardware verification of each step is still Phase G
+work.
 
-**State machine (MVP design):**
+**State machine (as implemented):**
 
 1. **Mode selection, at connect.** When the camera reports `IsTriggerCam`
    (`SVB_CAMERA_PROPERTY.IsTriggerCam`), the driver calls
@@ -416,17 +456,32 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
    verify against real hardware whether `svbony-rs`'s
    `SVBGetVideoData`/soft-trigger pairing already avoids this or needs an
    explicit flush.
-5. **`StopExposure`/`AbortExposure` both map to stopping video capture** —
-   there is no data-preserving stop at the SDK level (`SVBStopVideoCapture`
-   discards whatever is in flight). Consequently:
+5. **There is no data-preserving stop at the SDK level**
+   (`SVBStopVideoCapture` discards whatever is in flight). Consequently:
    - `CanStopExposure = false`; `StopExposure` returns `NOT_IMPLEMENTED`
      unconditionally rather than pretending to gracefully preserve data it
      cannot preserve.
-   - `CanAbortExposure = true`; `AbortExposure` stops capture and discards
-     the frame.
-   - **To be confirmed/revised after real-hardware validation** (Phase G)
-     — if the SDK turns out to support a genuine data-preserving stop, this
-     flips to match `zwo-camera`'s `CanStopExposure = true`.
+   - `CanAbortExposure = true`; `AbortExposure` discards the frame — but
+     **implementation-wise it never calls `SVBStopVideoCapture`, or any
+     other SDK entry point.** It only bumps the exposure generation
+     counter, so the in-flight `capture` (already running against
+     `SVBGetVideoData` under the backend's SDK lock) is left to run to
+     completion; its result is silently discarded once the generation
+     mismatch is observed. This is a deliberate divergence from calling
+     `SVBStopVideoCapture` concurrently from a second thread while another
+     thread's `SVBGetVideoData` is blocked on the same handle — exactly the
+     kind of undocumented-thread-safety risk the Concurrency section above
+     warns about generally, and calling it would additionally leave video
+     capture stopped when the design's "started once at connect, never
+     restarted" invariant (step 2) assumes it stays armed. **To be
+     confirmed/revised after real-hardware validation** (Phase G): if the
+     SDK turns out to tolerate a concurrent `SVBStopVideoCapture` call
+     safely (some vendor video APIs are explicitly designed to unblock a
+     pending read this way), wiring that in would make `AbortExposure`
+     responsive mid-exposure instead of only at the next natural
+     `SVBGetVideoData` return; if the SDK instead turns out to support a
+     genuine data-preserving stop, `CanStopExposure` flips to `true` to
+     match `zwo-camera`.
 6. **Non-trigger cameras** (`IsTriggerCam = false`): fall back to
    `SVB_MODE_NORMAL` (free-running video capture) with a per-exposure
    capture restart (no soft trigger available) — the SV605CC is
@@ -441,7 +496,7 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
    seam (mirrors `zwo-camera`'s E9), not BDD (the simulation cannot force
    an SDK error).
 
-### ROI / binning (Phase E target)
+### ROI / binning
 
 - **B1.** `set_bin_x`/`set_bin_y` validate against `SupportedBins`;
   unsupported → `INVALID_VALUE`.
@@ -454,7 +509,7 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
   `height % 2 != 0` — → `INVALID_VALUE`; identical to `zwo-camera`'s ASI
   rule.
 
-### Gain / offset / readout (Phase E target)
+### Gain / offset / readout
 
 - **GO1.** `Gain`/`Offset` (`SVB_GAIN`/`SVB_BLACK_LEVEL`) return the
   current SDK value, or `NOT_IMPLEMENTED` if the control is absent.
@@ -464,14 +519,20 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
 - **RM1.** `ReadoutModes` is the driver's named list; `set_readout_mode`
   validates the index; invalid → `INVALID_VALUE`.
 
-### Cooling (Phase E target)
+### Cooling
 
 - **K1.** `CanSetCCDTemperature`/`CanGetCoolerPower` are `true` iff
   `SVB_CAMERA_PROPERTY_EX.bSupportControlTemp`; otherwise the related
   getters return `NOT_IMPLEMENTED`.
 - **K2.** `CCDTemperature` reads `SVB_CURRENT_TEMPERATURE` (÷10 for °C),
-  reported independently of whether cooling is on, mirroring
-  `zwo-camera`'s decoupled-temperature decision.
+  reported independently of whether cooling is on. **Deviation from
+  `zwo-camera`'s decoupled-temperature decision:** ASI caches a *separate*
+  `temperature_available` flag from `zwo-rs`'s `CameraInfo` (some
+  uncooled ASI models still expose a bare temperature sensor), but
+  `SVB_CAMERA_PROPERTY_EX` exposes only the single `bSupportControlTemp`
+  flag covering both the cooler *and* the readable sensor temperature — so
+  `CCDTemperature` is gated on the same flag as `CanSetCCDTemperature`
+  here, not a second independently-cached one.
 - **K3.** `set_set_ccd_temperature` validates `[-273.15, 80]` and encodes
   to `SVB_TARGET_TEMPERATURE` (×10, tenths of °C); `SetCCDTemperature`
   reads it back (÷10).
@@ -484,7 +545,7 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
   Review this explicitly at the Phase E connect-path PR, per the workspace
   tenet list's explicit callout of cooler setpoints as actuation.
 
-### Sensor type & signal (Phase E target)
+### Sensor type & signal
 
 - **ST1.** `SensorType` is `RGGB` (colour) when `IsColorCam`, else
   `Monochrome`; `BayerOffsetX/Y` follow `BayerPattern` — read at runtime,
@@ -497,7 +558,7 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
 - **ST3.** `MaxADU` = `(2^MaxBitDepth) - 1` from
   `SVB_CAMERA_PROPERTY.MaxBitDepth` (16383 for the SV605CC's 14-bit ADC).
 
-### Pulse guiding (Phase E target, capability-driven)
+### Pulse guiding (capability-driven)
 
 - **PG1.** `CanPulseGuide` is `true` iff
   `SVB_CAMERA_PROPERTY_EX.bSupportPulseGuide` — capability-driven, not
@@ -505,39 +566,47 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
   has no ST4 port, so the simulation always reports `false`.
 - **PG2.** `PulseGuide` on a camera without ST4 returns `NOT_IMPLEMENTED`;
   on a camera with ST4, `SVBPulseGuide` blocks at the SDK level for the
-  pulse duration (unlike `zwo-camera`'s asynchronous ST4 — confirm at
-  Phase E whether the same async-wrapper treatment `zwo-camera` gave
-  `PulseGuide` (returns immediately, `IsPulseGuiding` tracks a deadline) is
-  warranted here too, to avoid exceeding ConformU's 1s response target).
+  pulse duration. **Decision (Phase E): kept a literal blocking call**,
+  unlike `zwo-camera`'s asynchronous ST4 wrapper (`PulseGuide` returns
+  immediately, `IsPulseGuiding` tracks a deadline). Rationale: no
+  ST4-capable SVBony model exists to validate against yet (the SV605CC has
+  no ST4 port, so this whole branch is exercised only by mock-backend unit
+  tests, never BDD), and a literal call is simpler and faithful to the SDK
+  until there is a concrete pulse-duration profile to design the
+  async wrapper against. **Caveat carried forward, not resolved:** if a
+  future ST4-capable model's guide pulses are long enough to risk
+  ConformU's ~1s response budget, revisit with the same
+  fire-and-forget-with-deadline pattern `zwo-camera` uses — tracked in
+  `camera.rs::pulse_guide`'s doc comment.
 
 ---
 
-## ASCOM Camera surface — v0 behaviour (Phase E target)
+## ASCOM Camera surface — v0 behaviour
 
-| Property / Method | v0 target behaviour (backed by `svbony-rs`) | Phase C/D today |
+| Property / Method | v0 behaviour (backed by `svbony-rs`) | Status |
 |---|---|---|
-| `CameraXSize` / `CameraYSize` | Cached `SVB_CAMERA_PROPERTY` `MaxWidth`/`MaxHeight` | `NOT_IMPLEMENTED` |
-| `PixelSizeX` / `PixelSizeY` | `SVBGetSensorPixelSize` (X == Y) | `NOT_IMPLEMENTED` |
-| `BinX` / `BinY` / `MaxBinX` / `MaxBinY` | Symmetric; max from `SupportedBins` | `NOT_IMPLEMENTED` |
-| `CanAsymmetricBin` | `false` | `NOT_IMPLEMENTED` |
-| `NumX` / `NumY` / `StartX` / `StartY` | Setters relaxed; validated at `StartExposure` (incl. %8 / %2) | `NOT_IMPLEMENTED` |
-| `MaxADU` | `(2^MaxBitDepth) - 1` | `NOT_IMPLEMENTED` |
-| `ElectronsPerADU` | `NOT_IMPLEMENTED` placeholder (no native field) | `NOT_IMPLEMENTED` |
-| `ExposureMin` / `Max` / `Resolution` | From `SVBGetControlCaps(SVB_EXPOSURE)` (µs, assumed) | `NOT_IMPLEMENTED` |
-| `Gain` / `GainMin` / `GainMax` | `SVB_GAIN` control | `NOT_IMPLEMENTED` |
-| `Offset` / `OffsetMin` / `OffsetMax` | `SVB_BLACK_LEVEL` control | `NOT_IMPLEMENTED` |
-| `ReadoutMode` / `ReadoutModes` | Driver-named list | `NOT_IMPLEMENTED` |
-| `SensorType` / `BayerOffsetX/Y` | Mono vs RGGB from `IsColorCam` / `BayerPattern` | `NOT_IMPLEMENTED` |
-| `CoolerOn` / `CCDTemperature` / `SetCCDTemperature` / `CoolerPower` | Gated on `bSupportControlTemp` | `NOT_IMPLEMENTED` |
-| `CanSetCCDTemperature` / `CanGetCoolerPower` | `true` iff `bSupportControlTemp` | `NOT_IMPLEMENTED` |
-| `HasShutter` | `false` (no mechanical shutter in video mode) | `NOT_IMPLEMENTED` |
-| `CameraState` | `Idle` / `Exposing` / `Error` | `NOT_IMPLEMENTED` |
-| `PercentCompleted` | From remaining-exposure µs, clamped ≤ 100 | `NOT_IMPLEMENTED` |
-| `CanAbortExposure` / `CanStopExposure` | `true` / **`false`** (no data-preserving stop) | `NOT_IMPLEMENTED` |
-| `CanPulseGuide` | `true` iff ST4 port present (SV605CC: `false`) | `NOT_IMPLEMENTED` |
-| `PulseGuide` / `IsPulseGuiding` | `SVBPulseGuide`, gated on ST4 capability | `NOT_IMPLEMENTED` |
-| `StartExposure` (`Light=false`) | Accepted; captured normally (no shutter) | `NOT_IMPLEMENTED` |
-| `StartExposure` / `AbortExposure` / `StopExposure` / `ImageReady` / `ImageArray` | Per the soft-trigger video-capture state machine above | `NOT_IMPLEMENTED` |
+| `CameraXSize` / `CameraYSize` | Cached `SVB_CAMERA_PROPERTY` `MaxWidth`/`MaxHeight` (raw, not aligned down) | **Real** |
+| `PixelSizeX` / `PixelSizeY` | `SVBGetSensorPixelSize` (X == Y) | **Real** |
+| `BinX` / `BinY` / `MaxBinX` / `MaxBinY` | Symmetric; max from `SupportedBins` | **Real** |
+| `CanAsymmetricBin` | `false` | **Real** |
+| `NumX` / `NumY` / `StartX` / `StartY` | Setters relaxed; validated at `StartExposure` (incl. %8 / %2) | **Real** |
+| `MaxADU` | `(2^MaxBitDepth) - 1` | **Real** |
+| `ElectronsPerADU` | `NOT_IMPLEMENTED` placeholder (no native field) | **Permanent stub (ST2)** |
+| `ExposureMin` / `Max` / `Resolution` | From `SVBGetControlCaps(SVB_EXPOSURE)` (µs, assumed) | **Real** |
+| `Gain` / `GainMin` / `GainMax` | `SVB_GAIN` control | **Real** |
+| `Offset` / `OffsetMin` / `OffsetMax` | `SVB_BLACK_LEVEL` control | **Real** |
+| `ReadoutMode` / `ReadoutModes` | Driver-named list (`SoftTrigger`/`FreeRunning`) | **Real** |
+| `SensorType` / `BayerOffsetX/Y` | Mono vs RGGB from `IsColorCam` / `BayerPattern` | **Real** |
+| `CoolerOn` / `CCDTemperature` / `SetCCDTemperature` / `CoolerPower` | Gated on `bSupportControlTemp` | **Real** |
+| `CanSetCCDTemperature` / `CanGetCoolerPower` | `true` iff `bSupportControlTemp` | **Real** |
+| `HasShutter` | `false` (no mechanical shutter in video mode) | **Real** |
+| `CameraState` | `Idle` / `Exposing` / `Error` | **Real** |
+| `PercentCompleted` | From remaining-exposure µs, clamped ≤ 100 | **Real** |
+| `CanAbortExposure` / `CanStopExposure` | `true` / **`false`** (no data-preserving stop) | **Real** |
+| `CanPulseGuide` | `true` iff ST4 port present (SV605CC: `false`) | **Real** |
+| `PulseGuide` / `IsPulseGuiding` | `SVBPulseGuide`, gated on ST4 capability; kept a literal blocking call (PG2) | **Real** |
+| `StartExposure` (`Light=false`) | Accepted; captured normally (no shutter) | **Real** |
+| `StartExposure` / `AbortExposure` / `StopExposure` / `ImageReady` / `ImageArray` | Per the soft-trigger video-capture state machine above | **Real** |
 | `Name` / `Description` / `DriverInfo` / `DriverVersion` / `Connected` / `UniqueID` | — | **Real** |
 
 ---
@@ -591,17 +660,31 @@ everything else is `debug!` (CLAUDE.md Rule 9).
 
 Layered per [`testing.md`](../skills/testing.md).
 
-- **Unit** (`src/*.rs` `#[cfg(test)]`) — config parse/newtype validation,
-  identity minting (`mint_identity`'s hardware-serial and
-  `noserial-{index}`-fallback branches), the connection-lifecycle `Device`
-  behaviour (connect/disconnect/reconnect/open-failure) against the
-  in-crate `backend.rs` mock seam, and config-actions editability tiers.
-- **BDD** (`bdd-infra::ServiceHandle`, nine feature files) — four are
-  genuinely green today (`enumeration_connection` minus its one `@wip`
-  scenario, `config_actions`, `auth`, `doctor`); five are `@wip` pending
-  Phase E (`exposure`, `binning_and_roi`, `cooling`,
+- **Unit** (`src/*.rs` `#[cfg(test)]`, 65 tests) — config parse/newtype
+  validation, identity minting (`mint_identity`'s hardware-serial and
+  `noserial-{index}`-fallback branches), config-actions editability tiers,
+  the `exposure_timeout_ms` protocol-encoding pure function
+  (`backend.rs::pure_fn_tests`), and the full `Camera`/`Device` behaviour
+  (connection lifecycle incl. connect-time property caching, sensor
+  geometry/type, gain/offset, binning/ROI validation, cooling incl. K5's
+  no-actuation-on-connect assertion, the exposure state machine incl. E9's
+  two branches — mid-exposure SDK failure and an exceeded
+  `SVBGetVideoData` deadline — and the generation-counter abort/disconnect
+  race, PG1/PG2) against the in-crate `backend.rs` `MockCameraHandle`
+  seam, which the `svbony-rs` simulation cannot exercise (it cannot force
+  an SDK error, and never runs a non-trigger camera). The production
+  `SvbonyCameraHandle` itself is also unit-tested against the real
+  `svbony-rs` simulation backend (`backend::handle_tests`).
+- **BDD** (`bdd-infra::ServiceHandle`, nine feature files, 60 scenarios /
+  242 steps) — all genuinely green, including `enumeration_connection`'s
+  disconnect-cancels-an-in-flight-exposure scenario (C3b) and every
+  behavioural feature (`exposure`, `binning_and_roi`, `cooling`,
   `gain_offset_readout`, `sensor_properties`) — see each file's header
-  comment for the specific contracts it encodes.
+  comment for the specific contracts it encodes. E9 and the
+  generation-counter abort race are deliberately **not** BDD-covered — the
+  design doc calls this out explicitly, since the `svbony-rs` simulation
+  cannot force an SDK error — and live in the unit-test layer above
+  instead.
 - **ConformU** — Phase F work (`docs/plans/svbony-camera.md`); no
   `tests/conformu_integration.rs` exists yet.
 
@@ -624,12 +707,29 @@ phases A–G:
   `doctor.toml`) exist; the SDK-download helper itself is Phase G.
 - **Phase D — design doc + ADR + BDD:** ✅ *landed (this document, the new
   ADR-018, the `docs/workspace.md` rows, and the nine feature files).*
-- **Phase E — full Camera:** `Device` (already real) + `Camera` over
-  `svbony-rs` — the soft-trigger exposure state machine, ROI/bin,
-  gain/offset (`SVB_BLACK_LEVEL`), cooling, `backend.rs` seam expansion,
-  `spawn_blocking` bridge with a generation counter, config actions
-  (already real), serial identity (already real). Removes `@wip` from the
-  five behavioural feature files as each area lands.
+- **Phase E — full Camera:** ✅ *landed (2026-07-21).* `Device` (already
+  real) + `Camera` over `svbony-rs` — the soft-trigger exposure state
+  machine (incl. connect-time mode-select + video-capture start, E1-E9),
+  ROI/bin (B1-B3, R1-R3), gain/offset (`SVB_BLACK_LEVEL`, GO1-GO3, RM1),
+  cooling (K1-K5, tenet 3 verified), sensor geometry/type (ST1-ST3),
+  pulse-guide (PG1-PG2, kept a literal blocking call), `backend.rs` seam
+  expansion (every blocking SDK operation `Camera` needs), `spawn_blocking`
+  bridge with a generation counter (mirroring `zwo-camera`'s
+  `run_exposure`/`result_lock`, minus an SDK-level interrupt — see the
+  Concurrency section), config actions (already real), serial identity
+  (already real). Removed `@wip` from all five behavioural feature files
+  plus C3b; 60/60 BDD scenarios and 65 unit tests green. **Fixed during
+  this phase:** an early revision of `backend.rs::capture` held the SDK
+  mutex across the (simulation-only) artificial exposure-duration wait,
+  which blocked `is_open`/property reads for the whole exposure and
+  surfaced as a genuine BDD failure (`E2`'s "second exposure while one is
+  in flight" scenario) — fixed by giving `is_open` its own atomic and
+  releasing the SDK mutex between `capture`'s setup and its
+  trigger/`SVBGetVideoData` call. **Deliberately left open for Phase G**
+  (documented in-place, not resolved): the `SVB_EXPOSURE` unit assumption
+  (µs), the stale-frame-flush question, whether `ElectronsPerADU` has a
+  non-obvious SDK path, and whether `CanStopExposure` should flip to
+  `true` — see the relevant contract sections above for each.
 - **Phase F — gates:** ConformU on the sim backend; nightly real-link
   build; full local quality gate.
 - **Phase G — packaging + real hardware:** the `rusty-photon-svbony-sdk-install`

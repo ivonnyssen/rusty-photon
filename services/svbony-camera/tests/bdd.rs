@@ -3,11 +3,10 @@
 //! Camera client. The binary must be pre-built with `--features simulation`
 //! (or `--all-features`).
 //!
-//! Every Camera-trait scenario is currently tagged `@wip` (see
-//! docs/skills/testing.md §2.7): `SvbonyCamera`'s `Camera` methods are
-//! `NOT_IMPLEMENTED` stubs until Phase E lands
-//! (docs/plans/svbony-camera.md). The default filter below skips them so
-//! this suite stays green.
+//! All scenarios are green as of Phase E (docs/plans/svbony-camera.md); the
+//! `@wip` filter below is kept as the standard sanctioned mechanism
+//! (docs/skills/testing.md §2.7) for any future feature landing ahead of
+//! its implementation, not because anything is currently tagged.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 

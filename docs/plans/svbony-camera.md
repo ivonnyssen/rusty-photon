@@ -2,6 +2,77 @@
 
 ## Status
 
+**Phase E landed (2026-07-21): full `Camera` implementation.**
+`services/svbony-camera`'s `SvbonyCamera` now implements the complete
+`ascom_alpaca::api::Camera` surface over an expanded `backend::CameraHandle`
+seam, following the design doc's soft-trigger video-capture state machine
+(mode-select + video-capture start once at connect; each `StartExposure` =
+set `SVB_EXPOSURE` → `SVBSendSoftTrigger` → `SVBGetVideoData` polled to a
+`exposure*2+500ms` deadline). All nine BDD feature files are green — 60/60
+scenarios, 242/242 steps, including `enumeration_connection`'s C3b
+(disconnect cancels an in-flight exposure) — and 65 unit tests cover what
+BDD structurally cannot: E9 (mid-exposure SDK failure and an exceeded
+`SVBGetVideoData` deadline, as two distinct `MockCameraHandle` injection
+points) and the generation-counter abort/disconnect race. `cargo fmt` and
+`cargo clippy --all-targets --all-features -- -D warnings` are clean.
+
+Design decisions made in this phase, each recorded in
+[`docs/services/svbony-camera.md`](../services/svbony-camera.md) at its
+relevant contract rather than only here:
+
+- **`AbortExposure` never touches the SDK.** Unlike `zwo-camera`'s
+  `ASIStopExposure`, this driver's abort path only bumps the exposure
+  generation counter — it does not call `SVBStopVideoCapture` concurrently
+  with an in-flight `SVBGetVideoData` on the same handle, since the two
+  SDK entry points running on different threads against one camera handle
+  is exactly the undocumented-thread-safety risk this plan already flags
+  generally. Left open for Phase G: whether the SDK tolerates that
+  concurrent call safely (some vendor video APIs are designed to unblock a
+  pending read exactly this way), which would make `AbortExposure`
+  responsive mid-exposure instead of only at the next natural
+  `SVBGetVideoData` return.
+- **`CameraXSize`/`CameraYSize` report the raw sensor extent**, not
+  `zwo-camera`'s R4-style "aligned down so every binned full frame is a
+  valid ROI" — the design doc left this an open question; Phase E resolved
+  it in favor of exact, eyeball-able values (3008×3008 for the simulated
+  SV605CC) over ConformU-driven alignment, since ConformU wiring is still
+  Phase F. Revisit if Phase F's binned-full-frame coverage proves this too
+  strict.
+- **`CCDTemperature` shares `CanSetCCDTemperature`'s gate** (both keyed on
+  `SVB_CAMERA_PROPERTY_EX.bSupportControlTemp`) rather than `zwo-camera`'s
+  separately-cached temperature-availability flag — `SVB_CAMERA_PROPERTY_EX`
+  has only the one capability flag, unlike `zwo-rs`'s `CameraInfo`, so
+  there is no second flag to decouple from.
+- **`PulseGuide` stays a literal blocking `SVBPulseGuide` call**, not
+  `zwo-camera`'s asynchronous fire-and-forget-with-deadline wrapper — no
+  ST4-capable SVBony model exists yet to validate a pulse-duration profile
+  against (the SV605CC has no ST4 port; this whole path is mock-backend
+  unit-test-only). Revisit if a future ST4-capable model's pulses risk
+  ConformU's ~1s response budget.
+- **A concurrency bug was found and fixed mid-phase**: `backend.rs::capture`
+  originally held the SDK mutex across the (simulation-only) artificial
+  exposure-duration wait added so BDD's in-flight scenarios are observable
+  (`svbony-rs`'s simulated `get_video_data` never literally blocks). That
+  starved every other SDK-backed read — including `is_open`, which
+  `ensure_connected` calls at the top of every `Camera` method — for the
+  whole exposure, and surfaced as a genuine BDD failure in the "second
+  exposure while one is in flight is rejected" scenario (the second
+  `StartExposure` request blocked for the full 30s exposure instead of
+  being rejected instantly). Fixed by (1) backing `is_open` with its own
+  atomic, independent of the mutex `capture` holds, and (2) releasing that
+  mutex between `capture`'s ROI/control setup and its trigger +
+  `SVBGetVideoData` call — mirroring `zwo-camera`'s own release-during-
+  integration pattern, which exists for exactly this reason.
+
+Bad-pixel correction (`SVB_BAD_PIXEL_CORRECTION_ENABLE`) remains
+unimplemented — it was not part of this phase's six-area implementation
+order and is not exercised by any BDD scenario or the `Camera` surface;
+still future work, not a Phase E gap. The design doc's other pre-existing
+"to be confirmed against real hardware" caveats (the `SVB_EXPOSURE`
+microseconds unit assumption, the stale-frame-flush question, whether
+`ElectronsPerADU` has a non-obvious SDK path) were deliberately left as
+documented caveats rather than resolved, per this phase's own instructions.
+
 **Phase C/D landed (2026-07-21): bare `services/svbony-camera` skeleton +
 design doc + ADR-018 + `@wip` BDD scaffolding.** The service builds, binds
 the Alpaca listener on port **11125**, and serves `/management/*` correctly
@@ -249,10 +320,12 @@ Bazel files all port). The exposure-model difference concentrates in Phase B
   plus `exposure.feature` for the soft-trigger specifics; four files are
   genuinely green (not `@wip`) since their underlying functionality
   (`Device`, config actions, TLS/auth, doctor) is real as of Phase C.
-- **Phase E — full Camera:** `Device + Camera` over `svbony-rs` — exposure
-  state machine, ROI/bin, gain/offset (`SVB_BLACK_LEVEL`), cooling,
-  `backend.rs` mock seam, `spawn_blocking` bridge with generation counter,
-  config actions, serial identity. Unit + BDD green.
+- **Phase E — full Camera:** ✅ *landed (2026-07-21, see this document's
+  Status section for the full detail).* `Device + Camera` over `svbony-rs`
+  — exposure state machine, ROI/bin, gain/offset (`SVB_BLACK_LEVEL`),
+  cooling, `backend.rs` mock seam, `spawn_blocking` bridge with generation
+  counter, config actions, serial identity. 65 unit tests + 60/60 BDD
+  scenarios green.
 - **Phase F — gates:** ConformU on the sim backend, wired into `conformu.yml`
   (per-service matrix + `install-svbony-sdk`); nightly `native.yml` real-link
   build; full local quality gate.
