@@ -88,13 +88,21 @@ decision record.
 Unlike `zwo-camera`/`qhy-camera`, **no `install-svbony-sdk` CI provisioning
 action exists yet** (Phase G packaging work). `crates/svbony-rs/libsvbony-sys/BUILD.bazel`
 therefore bakes `SVBONY_SKIP_NATIVE_LINK=1` into its `cargo_build_script`
-*unconditionally* — the default Bazel build (and this service's Bazel
-targets) need **zero SVBony SDK provisioning** today. Cargo builds outside
-Bazel follow the same env-var gate (unset the variable, with the SDK
-installed and `ldconfig`'d, to exercise the real link locally). This is a
-deliberate, temporary simplification recorded in
+*unconditionally* — the *library* targets (no final link) build with
+**zero SVBony SDK provisioning** today. The **real** (non-`simulation`)
+`//services/svbony-camera:svbony-camera` binary cannot link under this
+setup — verified locally: `bazel build //services/svbony-camera:svbony-camera`
+fails with undefined `SVBOpenCamera`/`SVBCloseCamera`/etc. symbols — so it
+is tagged `tags = ["manual"]` in `BUILD.bazel`, unlike `zwo-camera`'s and
+`qhy-camera`'s real binaries, which link cleanly because CI provisions their
+SDKs first. Only the library and the `svbony-rs_sim`-backed binary/BDD/
+unit-test targets are first-class (non-`manual`) `//...` targets in this
+phase. Cargo builds outside Bazel follow the same env-var gate (unset the
+variable, with the SDK installed and `ldconfig`'d, to exercise the real
+link locally). This is a deliberate, temporary simplification recorded in
 [`docs/plans/svbony-camera.md`](../plans/svbony-camera.md)'s Status section
-— revisit once CI provisioning + real hardware validation (Phase G) land.
+— revisit (drop `manual`, wire `install-svbony-sdk`) once CI provisioning +
+real hardware validation (Phase G) land.
 
 ### Gating plan (steady state, once Phase G lands)
 

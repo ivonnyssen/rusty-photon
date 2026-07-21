@@ -229,11 +229,17 @@ Bazel files all port). The exposure-model difference concentrates in Phase B
   time). 25 unit tests, `cargo`+`bazel` quality gate green. Not yet consumed
   by any service (that's Phase C).
 - **Phase C — bare service:** ✅ *landed (2026-07-21).* `svbony-camera`
-  serving zero (production) or one (simulation) Camera on `:11125`; build
-  proven for both the real and `svbony-rs_sim` Bazel variants. *Deviation:*
-  no `install-svbony-sdk` action exists yet (unchanged from Phase A/B's
-  `SVBONY_SKIP_NATIVE_LINK=1` Bazel shortcut) and no repin was needed (no
-  new crates.io deps — `svbony-rs` is a first-party path dependency).
+  serving zero (production) or one (simulation) Camera on `:11125`.
+  *Deviations:* (1) no `install-svbony-sdk` action exists yet (unchanged
+  from Phase A/B's `SVBONY_SKIP_NATIVE_LINK=1` Bazel shortcut), so the
+  **real** (non-`simulation`) `:svbony-camera` Bazel binary cannot link
+  (verified: undefined `SVBOpenCamera`/`SVBCloseCamera`/etc. symbols) and is
+  tagged `manual` so `bazel build //...`/`bazel test //...` skip it by
+  default — only the library (no final link) and the `svbony-rs_sim`-backed
+  binary/BDD/unit-test targets are first-class `//...` targets in this
+  phase, unlike `zwo-camera`/`qhy-camera` whose real binaries link because
+  CI provisions their SDKs. (2) No repin was needed (no new crates.io deps —
+  `svbony-rs` is a first-party path dependency).
 - **Phase D — design doc + ADR + BDD:** ✅ *landed (2026-07-21).*
   `docs/services/svbony-camera.md` (behavioural contracts incl. the
   exposure state machine and tenet-3 connect-path statement),
