@@ -143,8 +143,15 @@ impl PlateSolverClient {
             rusty_photon_tls::client::client_builder(ca_cert_path)?.timeout(http_timeout);
         if let Some(a) = auth {
             let encoded = BASE64.encode(format!("{}:{}", a.username, a.password));
+            // `set_sensitive` keeps the credential out of `Client`'s `Debug`
+            // impl, which prints `default_headers` unconditionally — without
+            // it, an incidental `{:?}`/`debug!()` of this client leaks the
+            // password (base64 is trivially reversible).
+            let mut header_value: reqwest::header::HeaderValue =
+                format!("Basic {encoded}").parse()?;
+            header_value.set_sensitive(true);
             let mut headers = reqwest::header::HeaderMap::new();
-            headers.insert("authorization", format!("Basic {encoded}").parse()?);
+            headers.insert("authorization", header_value);
             builder = builder.default_headers(headers);
         }
         let client = builder.build()?;
@@ -632,5 +639,35 @@ mod tests {
         let expected = format!("Basic {}", BASE64.encode("observatory:secret"));
         assert_eq!(header, Some(expected));
         shutdown_tx.send(()).ok();
+    }
+
+    // ----- credential redaction in Debug output --------------------------
+    //
+    // `PlateSolverClient` derives `Debug`, and reqwest's `Client` Debug impl
+    // prints `default_headers` unconditionally — without `set_sensitive`,
+    // an incidental `{:?}`/`debug!()` of this client would leak the
+    // password (the header's base64 encoding is trivially reversible).
+    #[test]
+    fn debug_format_never_leaks_the_auth_header() {
+        let auth = ClientAuthConfig {
+            username: "observatory".to_string(),
+            password: "s3cret-pw".to_string(),
+        };
+        let client = PlateSolverClient::new(
+            "http://localhost:11131".to_string(),
+            Duration::from_secs(5),
+            Some(&auth),
+            None,
+        )
+        .unwrap();
+        let rendered = format!("{client:?}");
+        assert!(
+            !rendered.contains(&BASE64.encode("observatory:s3cret-pw")),
+            "credential leaked into Debug output: {rendered}"
+        );
+        assert!(
+            !rendered.contains("s3cret-pw"),
+            "plaintext password leaked into Debug output: {rendered}"
+        );
     }
 }
