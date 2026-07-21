@@ -174,6 +174,12 @@ fn provision_material(
     let mut applied = Vec::new();
     if provision::acme_active(config_dir) {
         debug!("acme.json present: the wildcard pair serves TLS; no self-signed material issued");
+        // Every provisioning pass must still end aligned (§Ownership under
+        // sudo) even though nothing is issued: a wildcard pair or acme.json
+        // left root-owned by an earlier sudo action would otherwise stay
+        // unreadable by the service user — `ensure_credential` aligns only
+        // when it mints.
+        provision::align_pki_ownership(config_dir)?;
     } else {
         applied = provision::ensure_material(config_dir, &services, &[], false)?;
     }
