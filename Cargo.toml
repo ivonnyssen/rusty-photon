@@ -202,7 +202,7 @@ rust-embed = { version = "8", features = ["debug-embed"] }
 fluent-langneg = "0.13"
 sys-locale = "0.3"
 unic-langid = { version = "0.9", features = ["macros"] }
-syn = { version = "2", features = ["full"] }
+syn = { version = "3", features = ["full"] }
 quote = "1"
 proc-macro2 = "1"
 
