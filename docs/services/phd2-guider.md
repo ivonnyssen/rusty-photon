@@ -668,7 +668,11 @@ The following events are broadcast when connection state changes:
 
 ### Reconnection Behavior
 
-1. When the TCP connection is lost, `ConnectionLost` event is broadcast
+1. When the TCP connection is lost, `ConnectionLost` event is broadcast, and
+   the cached PHD2 version and app state are cleared — `get_phd2_version()`
+   and `get_cached_app_state()` return `None` until the new session's
+   `Version`/`AppState` events arrive, so callers can't mistake stale data
+   from the ended session for the reconnected one
 2. If auto-reconnect is enabled, reconnection attempts begin immediately
 3. Each attempt broadcasts a `Reconnecting` event
 4. Between attempts, waits for the configured interval
@@ -916,9 +920,20 @@ Response: `{ "state": "selected" }`.
 #### `GET /health`
 
 `200 {"status": "ok"}` while the TCP connection to PHD2 is
-established; `503` otherwise. Cheap (no RPC round-trip — it reads the
-client's connection state), so external tooling may probe at high
-frequency. Auto-reconnect keeps working regardless of probes.
+established;
+`503 {"status": "unavailable", "message": "..."}` otherwise, where
+`message` is a human-readable explanation of the missing dependency
+(no connection to PHD2 at the configured host/port). Cheap (no RPC
+round-trip — it reads the client's connection state), so external
+tooling may probe at high frequency. Auto-reconnect keeps working
+regardless of probes.
+
+The `503` deliberately means **alive but degraded** — PHD2 being off
+is the normal daytime state, not a fault. Sentinel's
+[health supervision](sentinel.md#service-health-supervision) counts it
+as proof of life (no restart, no notification) and shows the service
+amber on the dashboard with `message` displayed verbatim, so the
+operator sees *why* without sentinel interpreting it (issue #595).
 
 ### RMS statistics
 

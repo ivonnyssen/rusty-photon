@@ -317,10 +317,17 @@ pub(crate) fn spawn_reader_task(
             }
         }
 
-        // Connection lost - update state and notify
+        // Connection lost - update state and notify. Clear the cached
+        // version/app-state along with `connected`: they describe the
+        // session that just ended, and leaving them set would let a
+        // caller polling get_phd2_version()/get_cached_app_state() during
+        // the reconnect window mistake stale data for the new session
+        // (the same race #603 fixed, one layer down).
         {
             let mut state_guard = shared.state.write().await;
             state_guard.connected = false;
+            state_guard.phd2_version = None;
+            state_guard.app_state = None;
         }
 
         // Broadcast connection lost event
@@ -460,10 +467,18 @@ mod mock_tests {
     #[async_trait]
     impl LineReader for MockLineReaderWithResponses {
         async fn read_line(&mut self) -> crate::Result<Option<String>> {
-            let mut responses = self.responses.lock().unwrap();
-            match responses.pop_front() {
+            let popped = self.responses.lock().unwrap().pop_front();
+            match popped {
                 Some(response) => Ok(response),
-                None => Ok(None),
+                // Scripted lines exhausted, but the mock connection stays
+                // open — a real TCP socket blocks rather than reporting EOF
+                // just because the remote hasn't sent anything new. Tests
+                // that want to simulate the remote closing the connection
+                // queue an explicit `None` entry instead.
+                None => {
+                    std::future::pending::<()>().await;
+                    unreachable!("pending future never resolves")
+                }
             }
         }
     }

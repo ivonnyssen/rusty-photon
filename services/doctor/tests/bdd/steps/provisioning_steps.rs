@@ -50,6 +50,25 @@ fn config_with_client_password(world: &mut DoctorWorld, name: String, password: 
     world.write_config(&name, &serde_json::to_string_pretty(&content).unwrap());
 }
 
+#[given(expr = "an acme.json for the domain {string}")]
+fn acme_config_staged(world: &mut DoctorWorld, domain: String) {
+    world.stage_acme_config(&domain);
+}
+
+#[given(expr = "an ACME wildcard certificate pair expiring in {int} days")]
+fn acme_pair_staged(world: &mut DoctorWorld, days: i64) {
+    let acme = std::fs::read_to_string(world.config_dir().join("acme.json"))
+        .expect("stage acme.json first — the pair's domain comes from it");
+    let domain = serde_json::from_str::<Value>(&acme)
+        .ok()
+        .and_then(|v| v["domain"].as_str().map(String::from))
+        .expect("acme.json carries a domain");
+    world.stage_acme_pair(
+        &domain,
+        time::OffsetDateTime::now_utc() + time::Duration::days(days),
+    );
+}
+
 #[given("doctor has already run with --fix")]
 fn doctor_ran_with_fix(world: &mut DoctorWorld) {
     world.run_doctor_args(true, true);

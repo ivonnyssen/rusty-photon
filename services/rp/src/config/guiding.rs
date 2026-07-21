@@ -56,6 +56,10 @@ pub struct GuidingConfig {
     /// the watch is disabled.
     #[serde(default)]
     pub focus_watch: Option<FocusWatchConfig>,
+    /// Optional HTTP Basic Auth credentials for connecting to an
+    /// auth-enabled guider service.
+    #[serde(default)]
+    pub auth: Option<rp_auth::config::ClientAuthConfig>,
 }
 
 /// The `focus_watch` sub-block: thresholds turning a degrading HFD
@@ -325,6 +329,7 @@ mod tests {
         assert!(g.settle_timeout.is_none());
         assert!(g.dither_pixels.is_none());
         assert_eq!(g.recalibrate_above_deg.value(), 5.0);
+        assert!(g.auth.is_none());
     }
 
     #[test]
@@ -345,7 +350,8 @@ mod tests {
                             "settle_time": "8s",
                             "settle_timeout": "40s",
                             "dither_pixels": 5.0,
-                            "recalibrate_above_deg": 10.0
+                            "recalibrate_above_deg": 10.0,
+                            "auth": {"username": "observatory", "password": "secret"}
                         }
                     }
                 },
@@ -363,6 +369,9 @@ mod tests {
         assert_eq!(g.settle_timeout, Some(Duration::from_secs(40)));
         assert_eq!(g.dither_pixels, Some(5.0));
         assert_eq!(g.recalibrate_above_deg.value(), 10.0);
+        let auth = g.auth.as_ref().unwrap();
+        assert_eq!(auth.username, "observatory");
+        assert_eq!(auth.password, "secret");
 
         let defaults = g.defaults();
         assert_eq!(defaults.settle_pixels, Some(0.8));

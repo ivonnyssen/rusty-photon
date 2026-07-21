@@ -280,16 +280,19 @@ pub struct RpSessionView {
     pub data_directory: Option<String>,
 }
 
-/// rp: the URL-only client target block shared by `plate_solver` and
-/// (nested inside `equipment.mount.guiding`) the guider — neither carries
-/// a per-target auth field yet (docs/services/doctor.md §Client-target
-/// joins notes this as a known gap: `--fix` cannot wire what the schema
-/// has no field for). CA trust is a separate, top-level `RpView::ca_cert`
-/// shared by every rp client (issue #609 / PR #612), not per-target.
+/// rp: the client target block for `plate_solver` — a URL plus an
+/// optional per-target credential (issue #620). CA trust is a separate,
+/// top-level `RpView::ca_cert` shared by every rp client (issue #609 /
+/// PR #612), not per-target. The guider's equivalent block (nested
+/// inside `equipment.mount.guiding`) is read via `RpView::mount_guiding_url`
+/// / `RpView::mount_guiding_auth` instead, since `equipment` stays an
+/// opaque `Value`.
 #[derive(Debug, Deserialize, Default)]
 pub struct RpUrlTargetView {
     #[serde(default)]
     pub url: Option<String>,
+    #[serde(default)]
+    pub auth: Option<ClientAuthView>,
 }
 
 /// rp: the blocks doctor reads. `equipment` stays a `Value` — device usage
@@ -337,6 +340,19 @@ impl RpView {
             .get("url")?
             .as_str()
             .map(str::to_string)
+    }
+
+    /// The guider service's credential at `equipment.mount.guiding.auth`
+    /// (issue #620) — `None` when absent or when the block does not parse
+    /// as a `ClientAuthView`.
+    pub fn mount_guiding_auth(&self) -> Option<ClientAuthView> {
+        let auth = self
+            .equipment
+            .as_ref()?
+            .get("mount")?
+            .get("guiding")?
+            .get("auth")?;
+        serde_json::from_value(auth.clone()).ok()
     }
 }
 
@@ -469,6 +485,36 @@ mod tests {
         let view: RpView =
             serde_json::from_str(r#"{ "equipment": { "mount": { "alpaca_url": "x" } } }"#).unwrap();
         assert!(view.mount_guiding_url().is_none());
+    }
+
+    #[test]
+    fn test_rp_view_reads_plate_solver_and_mount_guiding_auth() {
+        let view: RpView = serde_json::from_str(
+            r#"{ "equipment": { "mount": { "alpaca_url": "http://localhost:11117",
+                                            "guiding": { "url": "http://localhost:11130",
+                                                         "auth": { "username": "observatory", "password": "gpw" } } } },
+                 "plate_solver": { "url": "http://localhost:11131",
+                                    "auth": { "username": "observatory", "password": "ppw" } } }"#,
+        )
+        .unwrap();
+        let guiding_auth = view.mount_guiding_auth().unwrap();
+        assert_eq!(guiding_auth.username.as_deref(), Some("observatory"));
+        assert_eq!(guiding_auth.password.as_deref(), Some("gpw"));
+        let ps_auth = view.plate_solver.unwrap().auth.unwrap();
+        assert_eq!(ps_auth.username.as_deref(), Some("observatory"));
+        assert_eq!(ps_auth.password.as_deref(), Some("ppw"));
+    }
+
+    #[test]
+    fn test_rp_view_mount_guiding_auth_absent_without_a_credential() {
+        let view: RpView = serde_json::from_str(r#"{ "equipment": {} }"#).unwrap();
+        assert!(view.mount_guiding_auth().is_none());
+        let view: RpView = serde_json::from_str(
+            r#"{ "equipment": { "mount": { "alpaca_url": "http://localhost:11117",
+                                            "guiding": { "url": "http://localhost:11130" } } } }"#,
+        )
+        .unwrap();
+        assert!(view.mount_guiding_auth().is_none());
     }
 
     #[test]

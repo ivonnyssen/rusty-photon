@@ -76,6 +76,42 @@ fn is_phd2_available() -> bool {
     get_default_phd2_path().is_some()
 }
 
+/// Deadline for event waits. Every wait in this file is for a guaranteed
+/// event (the mock server always sends it, or a state machine always
+/// settles), so the deadline only decides when to declare failure. It is
+/// sized for contended CI runners; polls return the moment the condition
+/// holds, so healthy runs never feel it.
+#[cfg(not(miri))]
+const EVENT_DEADLINE: Duration = Duration::from_secs(30);
+
+/// Poll `probe` every 10 ms until it holds, panicking at [`EVENT_DEADLINE`].
+#[cfg(not(miri))]
+async fn wait_until<F, Fut>(what: &str, mut probe: F)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    tokio::time::timeout(EVENT_DEADLINE, async {
+        while !probe().await {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("{what} not observed within {EVENT_DEADLINE:?}"));
+}
+
+/// Wait until the client's reader task has processed the version event the
+/// mock server sends on connect — the observable proof the connection is
+/// fully up (`is_connected` flips earlier, on the socket alone). Eliminates
+/// the real-time race a fixed post-connect sleep is prone to (#603).
+#[cfg(not(miri))]
+async fn wait_connected(client: &Phd2Client) {
+    wait_until("version event", || async move {
+        client.get_phd2_version().await.is_some()
+    })
+    .await;
+}
+
 /// Helper to create a default test configuration
 fn create_test_config() -> Phd2Config {
     Phd2Config {
@@ -710,8 +746,7 @@ async fn test_mock_phd2_connection() {
     let result = client.connect().await;
     assert!(result.is_ok(), "Should connect to mock PHD2: {:?}", result);
 
-    // Wait for version event
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    wait_connected(&client).await;
 
     // Verify we got the version
     let version = client.get_phd2_version().await;
@@ -748,9 +783,7 @@ async fn test_mock_phd2_get_app_state() {
 
     let client = Phd2Client::new(config);
     client.connect().await.unwrap();
-
-    // Wait for connection to stabilize
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    wait_connected(&client).await;
 
     let state = client.get_app_state().await;
     assert!(state.is_ok(), "Should get app state: {:?}", state);
@@ -778,7 +811,7 @@ async fn test_mock_phd2_get_profiles() {
 
     let client = Phd2Client::new(config);
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    wait_connected(&client).await;
 
     let profiles = client.get_profiles().await;
     assert!(profiles.is_ok(), "Should get profiles: {:?}", profiles);
@@ -810,7 +843,7 @@ async fn test_mock_phd2_get_equipment() {
 
     let client = Phd2Client::new(config);
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    wait_connected(&client).await;
 
     let equipment = client.get_current_equipment().await;
     assert!(equipment.is_ok(), "Should get equipment: {:?}", equipment);
@@ -842,7 +875,7 @@ async fn test_mock_phd2_exposure_methods() {
 
     let client = Phd2Client::new(config);
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    wait_connected(&client).await;
 
     // Get exposure
     let exposure = client.get_exposure().await;
@@ -881,7 +914,7 @@ async fn test_mock_phd2_calibration_methods() {
 
     let client = Phd2Client::new(config);
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    wait_connected(&client).await;
 
     // Get calibration status
     let calibrated = client.is_calibrated().await;
@@ -930,7 +963,7 @@ async fn test_mock_phd2_guiding_control() {
 
     let client = Phd2Client::new(config);
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    wait_connected(&client).await;
 
     // Start looping
     let loop_result = client.start_loop().await;
@@ -988,7 +1021,7 @@ async fn test_mock_phd2_star_operations() {
 
     let client = Phd2Client::new(config);
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    wait_connected(&client).await;
 
     // Auto-select star
     let find_result = client.find_star(None).await;
@@ -1029,7 +1062,7 @@ async fn test_mock_phd2_cooling() {
 
     let client = Phd2Client::new(config);
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    wait_connected(&client).await;
 
     // Get CCD temperature
     let temp = client.get_ccd_temperature().await;
@@ -1063,7 +1096,7 @@ async fn test_mock_phd2_star_image() {
 
     let client = Phd2Client::new(config);
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    wait_connected(&client).await;
 
     // Get star image
     let image = client.get_star_image(32).await;
@@ -1143,7 +1176,7 @@ async fn test_mock_phd2_reconnect_on_disconnect() {
 
     let client = Phd2Client::new(config);
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    wait_connected(&client).await;
 
     assert!(client.is_connected().await, "Should be connected initially");
 
@@ -1238,15 +1271,8 @@ async fn test_process_manager_start_stop_mock() {
     let client = Phd2Client::new(config);
     client.connect().await.unwrap();
 
-    // Wait for version event with retry (macOS CI can be slow)
-    let mut version = None;
-    for _ in 0..10 {
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        version = client.get_phd2_version().await;
-        if version.is_some() {
-            break;
-        }
-    }
+    wait_connected(&client).await;
+    let version = client.get_phd2_version().await;
     assert!(version.is_some(), "Should have version");
     assert!(version.unwrap().contains("mock"), "Should be mock version");
 
@@ -1415,7 +1441,7 @@ async fn test_process_manager_shutdown_via_rpc() {
     // Connect a client
     let client = Phd2Client::new(config);
     client.connect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    wait_connected(&client).await;
 
     // Try to shutdown via client directly (tests the shutdown_phd2 RPC call)
     let shutdown_result = client.shutdown_phd2().await;
@@ -1657,16 +1683,7 @@ async fn test_graceful_shutdown_fails_fallback_to_kill() {
     let client = Phd2Client::new(config);
     client.connect().await.unwrap();
 
-    // Wait for version event
-    let mut version = None;
-    for _ in 0..10 {
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        version = client.get_phd2_version().await;
-        if version.is_some() {
-            break;
-        }
-    }
-    assert!(version.is_some(), "Should have version");
+    wait_connected(&client).await;
 
     // Try graceful shutdown - this should "succeed" (return Ok) but
     // the process won't actually exit because it's in shutdown_fails mode

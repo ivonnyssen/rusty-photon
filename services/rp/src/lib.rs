@@ -179,6 +179,7 @@ impl ServerBuilder {
                 let client = rp_plate_solver::PlateSolverClient::new(
                     ps_cfg.url.clone(),
                     ps_cfg.timeout,
+                    ps_cfg.auth.as_ref(),
                     config.ca_cert_path(),
                 )
                 .map_err(|e| {
@@ -219,6 +220,7 @@ impl ServerBuilder {
                 let client = rp_guider::GuiderServiceClient::new(
                     g_cfg.url.clone(),
                     g_cfg.timeout,
+                    g_cfg.auth.as_ref(),
                     config.ca_cert_path(),
                 )
                 .map_err(|e| {

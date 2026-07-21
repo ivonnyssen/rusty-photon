@@ -42,9 +42,10 @@ impl ConfigurableDriver for RpConfigDriver {
     /// - `server.auth.password_hash` — the Argon2id hash guarding rp's own
     ///   HTTP surface;
     /// - the plaintext per-device `auth.password` rp sends as HTTP Basic
-    ///   Auth to auth-enabled Alpaca drivers. The equipment arrays use the
-    ///   `*` wildcard (every element); `mount` is singular, so its pointer
-    ///   is exact.
+    ///   Auth to auth-enabled Alpaca drivers, the plate-solver service, and
+    ///   the guider service. The equipment arrays use the `*` wildcard
+    ///   (every element); `mount`, `mount.guiding`, and the top-level
+    ///   `plate_solver` are singular, so their pointers are exact.
     ///
     /// `server.tls.cert` / `server.tls.key` are file *paths*, not key
     /// material, so they are deliberately not redacted.
@@ -56,7 +57,13 @@ impl ConfigurableDriver for RpConfigDriver {
             "/equipment/filter_wheels/*/auth/password",
             "/equipment/cover_calibrators/*/auth/password",
             "/equipment/safety_monitors/*/auth/password",
+            "/equipment/switches/*/auth/password",
+            "/equipment/rotators/*/auth/password",
+            "/equipment/observing_conditions/*/auth/password",
+            "/equipment/domes/*/auth/password",
             "/equipment/mount/auth/password",
+            "/equipment/mount/guiding/auth/password",
+            "/plate_solver/auth/password",
         ]
     }
 
@@ -132,7 +139,9 @@ mod tests {
     #[test]
     fn config_get_redacts_every_secret_shape() {
         // One of each secret location: server auth hash, a wildcard array
-        // element (camera), and the singular mount.
+        // element (camera, switch, rotator, observing_conditions, dome),
+        // the singular mount and mount.guiding, and the top-level
+        // plate_solver block.
         let config = config_from(serde_json::json!({
             "session": { "data_directory": "/tmp/rp-test" },
             "equipment": {
@@ -146,8 +155,44 @@ mod tests {
                 ],
                 "mount": {
                     "alpaca_url": "http://localhost:11122",
-                    "auth": { "username": "obs", "password": "mount-secret" }
-                }
+                    "auth": { "username": "obs", "password": "mount-secret" },
+                    "guiding": {
+                        "url": "http://localhost:11130",
+                        "auth": { "username": "obs", "password": "guiding-secret" }
+                    }
+                },
+                "switches": [
+                    {
+                        "id": "ppba",
+                        "alpaca_url": "http://localhost:11112",
+                        "auth": { "username": "obs", "password": "switch-secret" }
+                    }
+                ],
+                "rotators": [
+                    {
+                        "id": "falcon",
+                        "alpaca_url": "http://localhost:11118",
+                        "auth": { "username": "obs", "password": "rotator-secret" }
+                    }
+                ],
+                "observing_conditions": [
+                    {
+                        "id": "ppba-weather",
+                        "alpaca_url": "http://localhost:11112",
+                        "auth": { "username": "obs", "password": "oc-secret" }
+                    }
+                ],
+                "domes": [
+                    {
+                        "id": "roof",
+                        "alpaca_url": "http://localhost:11119",
+                        "auth": { "username": "obs", "password": "dome-secret" }
+                    }
+                ]
+            },
+            "plate_solver": {
+                "url": "http://localhost:11131",
+                "auth": { "username": "obs", "password": "plate-solver-secret" }
             },
             "server": {
                 "port": 0,
@@ -160,6 +205,12 @@ mod tests {
             "/server/auth/password_hash",
             "/equipment/cameras/0/auth/password",
             "/equipment/mount/auth/password",
+            "/equipment/mount/guiding/auth/password",
+            "/equipment/switches/0/auth/password",
+            "/equipment/rotators/0/auth/password",
+            "/equipment/observing_conditions/0/auth/password",
+            "/equipment/domes/0/auth/password",
+            "/plate_solver/auth/password",
         ] {
             assert_eq!(
                 resp.config.pointer(pointer).and_then(Value::as_str),

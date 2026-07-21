@@ -9,6 +9,12 @@ Feature: GET /health — readiness probe
   The probe is intentionally cheap: two filesystem stats, no subprocess
   spawn. Frequent polling does not cost wrapper performance.
 
+  A 503 names the failed check in the "status" field and carries a
+  human-readable "message" with the offending path. Sentinel counts a
+  503 as alive-but-degraded — a missing binary or database is not
+  curable by a service restart — and displays the message verbatim on
+  its dashboard (see sentinel's service_health.feature).
+
   Scenario: Health returns 200 with status ok after a clean start
     Given the wrapper is running with mock_astap as its solver
     When I GET /health
@@ -20,9 +26,13 @@ Feature: GET /health — readiness probe
     When I delete the configured astap_binary_path
     And I GET /health
     Then the response status is 503
+    And the response field "status" is "binary_unavailable"
+    And the response field "message" contains "ASTAP binary"
 
   Scenario: Health returns 503 when the configured db directory is removed
     Given the wrapper is running with a temp astap_db_directory
     When I delete the configured astap_db_directory
     And I GET /health
     Then the response status is 503
+    And the response field "status" is "db_unavailable"
+    And the response field "message" contains "star database"

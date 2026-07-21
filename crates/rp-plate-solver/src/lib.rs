@@ -16,6 +16,9 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine;
+use rp_auth::config::ClientAuthConfig;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -124,17 +127,34 @@ impl PlateSolverClient {
     /// backstop for Tenet 1; per-request `SolveRequest::timeout`
     /// bounds the *solver* side independently.
     ///
+    /// `auth` sends HTTP Basic Auth credentials on every request, for
+    /// an auth-enabled plate-solver service (issue #620).
+    ///
     /// `ca_cert_path` is the observatory CA (rp.md §Configuration):
     /// without it, an `https://` `base_url` signed by that CA fails
     /// certificate verification (issue #609).
     pub fn new(
         base_url: String,
         http_timeout: Duration,
+        auth: Option<&ClientAuthConfig>,
         ca_cert_path: Option<&std::path::Path>,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let client = rusty_photon_tls::client::client_builder(ca_cert_path)?
-            .timeout(http_timeout)
-            .build()?;
+        let mut builder =
+            rusty_photon_tls::client::client_builder(ca_cert_path)?.timeout(http_timeout);
+        if let Some(a) = auth {
+            let encoded = BASE64.encode(format!("{}:{}", a.username, a.password));
+            // `set_sensitive` keeps the credential out of `Client`'s `Debug`
+            // impl, which prints `default_headers` unconditionally — without
+            // it, an incidental `{:?}`/`debug!()` of this client leaks the
+            // password (base64 is trivially reversible).
+            let mut header_value: reqwest::header::HeaderValue =
+                format!("Basic {encoded}").parse()?;
+            header_value.set_sensitive(true);
+            let mut headers = reqwest::header::HeaderMap::new();
+            headers.insert("authorization", header_value);
+            builder = builder.default_headers(headers);
+        }
+        let client = builder.build()?;
         Ok(Self {
             client,
             base_url: trim_trailing_slash(base_url),
@@ -294,7 +314,7 @@ mod tests {
     async fn solve_happy_path_returns_outcome() {
         let stub = spawn_stub(StubBehavior::Success(ok_outcome())).await;
         let client =
-            PlateSolverClient::new(stub.url.clone(), Duration::from_secs(5), None).unwrap();
+            PlateSolverClient::new(stub.url.clone(), Duration::from_secs(5), None, None).unwrap();
 
         let outcome = client
             .solve(SolveRequest {
@@ -315,7 +335,7 @@ mod tests {
     async fn solve_forwards_request_fields_verbatim() {
         let stub = spawn_stub(StubBehavior::Success(ok_outcome())).await;
         let client =
-            PlateSolverClient::new(stub.url.clone(), Duration::from_secs(5), None).unwrap();
+            PlateSolverClient::new(stub.url.clone(), Duration::from_secs(5), None, None).unwrap();
 
         client
             .solve(SolveRequest {
@@ -342,7 +362,7 @@ mod tests {
     async fn solve_omits_unset_optional_fields() {
         let stub = spawn_stub(StubBehavior::Success(ok_outcome())).await;
         let client =
-            PlateSolverClient::new(stub.url.clone(), Duration::from_secs(5), None).unwrap();
+            PlateSolverClient::new(stub.url.clone(), Duration::from_secs(5), None, None).unwrap();
 
         client
             .solve(SolveRequest {
@@ -383,7 +403,7 @@ mod tests {
         })
         .await;
         let client =
-            PlateSolverClient::new(stub.url.clone(), Duration::from_secs(5), None).unwrap();
+            PlateSolverClient::new(stub.url.clone(), Duration::from_secs(5), None, None).unwrap();
         let err = client
             .solve(SolveRequest {
                 fits_path: "/tmp/x.fits".to_string(),
@@ -408,7 +428,7 @@ mod tests {
         })
         .await;
         let client =
-            PlateSolverClient::new(stub.url.clone(), Duration::from_secs(5), None).unwrap();
+            PlateSolverClient::new(stub.url.clone(), Duration::from_secs(5), None, None).unwrap();
         let err = client
             .solve(SolveRequest {
                 fits_path: "/tmp/missing.fits".to_string(),
@@ -427,7 +447,7 @@ mod tests {
         })
         .await;
         let client =
-            PlateSolverClient::new(stub.url.clone(), Duration::from_secs(5), None).unwrap();
+            PlateSolverClient::new(stub.url.clone(), Duration::from_secs(5), None, None).unwrap();
         let err = client
             .solve(SolveRequest {
                 fits_path: "/tmp/x.fits".to_string(),
@@ -446,7 +466,7 @@ mod tests {
         })
         .await;
         let client =
-            PlateSolverClient::new(stub.url.clone(), Duration::from_secs(5), None).unwrap();
+            PlateSolverClient::new(stub.url.clone(), Duration::from_secs(5), None, None).unwrap();
         let err = client
             .solve(SolveRequest {
                 fits_path: "/tmp/x.fits".to_string(),
@@ -465,7 +485,7 @@ mod tests {
         })
         .await;
         let client =
-            PlateSolverClient::new(stub.url.clone(), Duration::from_secs(5), None).unwrap();
+            PlateSolverClient::new(stub.url.clone(), Duration::from_secs(5), None, None).unwrap();
         let err = client
             .solve(SolveRequest {
                 fits_path: "/tmp/x.fits".to_string(),
@@ -486,7 +506,7 @@ mod tests {
     async fn solve_returns_internal_when_success_body_malformed() {
         let stub = spawn_stub(StubBehavior::SuccessMalformed).await;
         let client =
-            PlateSolverClient::new(stub.url.clone(), Duration::from_secs(5), None).unwrap();
+            PlateSolverClient::new(stub.url.clone(), Duration::from_secs(5), None, None).unwrap();
         let err = client
             .solve(SolveRequest {
                 fits_path: "/tmp/x.fits".to_string(),
@@ -501,7 +521,7 @@ mod tests {
     async fn solve_returns_internal_when_error_body_not_envelope() {
         let stub = spawn_stub(StubBehavior::ErrorMalformed).await;
         let client =
-            PlateSolverClient::new(stub.url.clone(), Duration::from_secs(5), None).unwrap();
+            PlateSolverClient::new(stub.url.clone(), Duration::from_secs(5), None, None).unwrap();
         let err = client
             .solve(SolveRequest {
                 fits_path: "/tmp/x.fits".to_string(),
@@ -526,6 +546,7 @@ mod tests {
             "http://127.0.0.1:1".to_string(),
             Duration::from_secs(2),
             None,
+            None,
         )
         .unwrap();
         let err = client
@@ -544,6 +565,7 @@ mod tests {
             "http://localhost:11131/".to_string(),
             Duration::from_secs(5),
             None,
+            None,
         )
         .unwrap();
         assert_eq!(client.base_url(), "http://localhost:11131");
@@ -556,8 +578,96 @@ mod tests {
         let result = PlateSolverClient::new(
             "http://localhost:11131".to_string(),
             Duration::from_secs(5),
+            None,
             Some(std::path::Path::new("/nonexistent/ca.pem")),
         );
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn new_with_auth_sends_basic_auth_header() {
+        use axum::http::HeaderMap;
+
+        let captured: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(None));
+        let captured_for_handler = captured.clone();
+        let app = Router::new().route(
+            "/api/v1/solve",
+            post(move |headers: HeaderMap, Json(_): Json<Value>| {
+                let captured = captured_for_handler.clone();
+                async move {
+                    let auth_header = headers
+                        .get("authorization")
+                        .and_then(|v| v.to_str().ok())
+                        .map(str::to_string);
+                    *captured.write().await = auth_header;
+                    Json(ok_outcome()).into_response()
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+                .unwrap();
+        });
+
+        let auth = ClientAuthConfig {
+            username: "observatory".to_string(),
+            password: "secret".to_string(),
+        };
+        let client = PlateSolverClient::new(
+            format!("http://127.0.0.1:{port}"),
+            Duration::from_secs(5),
+            Some(&auth),
+            None,
+        )
+        .unwrap();
+        client
+            .solve(SolveRequest {
+                fits_path: "/tmp/x.fits".to_string(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let header = captured.read().await.clone();
+        let expected = format!("Basic {}", BASE64.encode("observatory:secret"));
+        assert_eq!(header, Some(expected));
+        shutdown_tx.send(()).ok();
+    }
+
+    // ----- credential redaction in Debug output --------------------------
+    //
+    // `PlateSolverClient` derives `Debug`, and reqwest's `Client` Debug impl
+    // prints `default_headers` unconditionally — without `set_sensitive`,
+    // an incidental `{:?}`/`debug!()` of this client would leak the
+    // password (the header's base64 encoding is trivially reversible).
+    #[test]
+    fn debug_format_never_leaks_the_auth_header() {
+        let auth = ClientAuthConfig {
+            username: "observatory".to_string(),
+            password: "s3cret-pw".to_string(),
+        };
+        let client = PlateSolverClient::new(
+            "http://localhost:11131".to_string(),
+            Duration::from_secs(5),
+            Some(&auth),
+            None,
+        )
+        .unwrap();
+        let rendered = format!("{client:?}");
+        assert!(
+            !rendered.contains(&BASE64.encode("observatory:s3cret-pw")),
+            "credential leaked into Debug output: {rendered}"
+        );
+        assert!(
+            !rendered.contains("s3cret-pw"),
+            "plaintext password leaked into Debug output: {rendered}"
+        );
     }
 }

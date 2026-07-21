@@ -151,8 +151,14 @@ pub(super) fn build_alpaca_client(
         .read_timeout(ALPACA_READ_TIMEOUT);
     if let Some(a) = auth {
         let encoded = BASE64.encode(format!("{}:{}", a.username, a.password));
+        // `set_sensitive` keeps the credential out of `Client`'s `Debug`
+        // impl, which prints `default_headers` unconditionally — without
+        // it, an incidental `{:?}`/`debug!()` of this client leaks the
+        // password (base64 is trivially reversible).
+        let mut header_value: reqwest::header::HeaderValue = format!("Basic {encoded}").parse()?;
+        header_value.set_sensitive(true);
         let mut headers = reqwest::header::HeaderMap::new();
-        headers.insert("authorization", format!("Basic {encoded}").parse()?);
+        headers.insert("authorization", header_value);
         builder = builder.default_headers(headers);
     }
     Ok(Client::new_with_client(url, builder.build()?)?)

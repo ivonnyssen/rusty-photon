@@ -67,6 +67,14 @@ is **derived from the packaging tree, not typed into doctor**
 class = "alpaca"  # "alpaca" | "core" — which shared server shape its config uses
 port = 11113      # default port when the config file or server block is absent
 
+# Optional: the unit has no sensible default config and never self-creates
+# one — docs/packaging.md's "config-gated" services (ConditionPathExists= on
+# Linux, start type Manual on Windows). Defaults to false. Feeds
+# `units.config-gated`, `inventory.unit-without-config`'s remedy text, and
+# scopes `tls.absent`/`auth.absent` away from a config-gated service's
+# expected `FileAbsent` state (§TLS and auth).
+config_gated = false
+
 # Optional hardware identity (§Hardware checks) — present only on services
 # that talk to a device.
 serial_pointer = "/serial/port"       # config JSON pointer holding the device path
@@ -94,13 +102,19 @@ Three guards keep the catalog honest:
    embeds (`AlpacaServerConfig` vs `ServerConfig`). Services declaring serial
    metadata extend the same test: the pointer resolves in their own default
    config shape and the declared defaults equal their `DEFAULT_SERIAL_PORT`
-   constants. A drifted copy fails that service's tests, not doctor's.
+   constants. The three config-gated services (below) assert `config_gated`
+   is `true` in the same test. A drifted copy fails that service's tests,
+   not doctor's.
 2. **Doctor embeds the files at build time** and a doctor unit test asserts
    the embedded set parses, ports are unique, and the table matches the files.
    Doctor also embeds the three shipped udev rules
    (`services/*/pkg/90-*.rules`) and asserts each rule-shipping service's
    declared `usb_vendor` equals the `ATTRS{idVendor}` its own rule matches —
    one source of truth for the USB checks, drift-guarded against the rule.
+   A third doctor unit test pins `config_gated` against the known set
+   (`calibrator-flats`, `plate-solver`, `sky-survey-camera`) — unlike
+   `usb_vendor`, this one is not measured from hardware, so a plain
+   assertion is enough.
 3. **A CI completeness check** asserts every `services/*/pkg` directory
    contains a `doctor.toml`, so a newly packaged service cannot silently stay
    out of the catalog.
@@ -249,7 +263,7 @@ report groups naturally.
 
 | Check | Status | Trigger |
 |---|---|---|
-| `inventory.unit-without-config` | warn | A `rusty-photon-*` unit is installed but `<svc>.json` does not exist. The service has never started (it self-creates config on first run) — or its state directory is wrong. |
+| `inventory.unit-without-config` | warn | A `rusty-photon-*` unit is installed but `<svc>.json` does not exist. For a self-defaulting service that has never started (it self-creates config on first run) — or its state directory is wrong; for a `config_gated` service (§The derived catalog) it hard-requires a hand-written file and cannot start without one. The remedy names the actual `ConditionPathExists=` gate on Linux, else falls back to the catalog's `config_gated` flag (the only portable signal — Windows/macOS carry no equivalent fact) so the suggestion never wrongly claims a gated service self-creates. |
 | `inventory.config-without-unit` | warn | `<svc>.json` exists for a catalog service whose unit is not installed. Leftover from a removed package, or a hand-copied file. |
 | `inventory.unknown-config` | warn | A `*.json` in the config dir matches no catalog service and no known non-service file (`acme.json`; the `pki/` tree is ignored). Catches typo'd filenames that a service will silently never read. |
 | `inventory.unit-and-config` | ok | Unit installed and config present — the healthy pairing, reported so an empty report is never mistaken for a clean one. |
@@ -280,7 +294,7 @@ the typed shape — validates its own file and doctor aggregates.
 
 | Check | Status | Trigger |
 |---|---|---|
-| `units.config-gated` | fail | A unit is enabled but its `ConditionPathExists=` file is missing: installed, enabled, and silently inert. Today that is sky-survey-camera, plate-solver, calibrator-flats, and phd2-guider, all of which hard-require a config file. |
+| `units.config-gated` | fail | A unit is enabled but its `ConditionPathExists=` file is missing: installed, enabled, and silently inert. Today that is sky-survey-camera, plate-solver, and calibrator-flats — the catalog's `config_gated` services (§The derived catalog) — all of which hard-require a config file. Linux-only: the check reads the systemd fact directly; Windows/macOS installs of the same three services are covered instead by `inventory.unit-without-config`'s `config_gated`-aware remedy. |
 | `sentinel.privilege-path` | fail | Sentinel's unit is installed and no rule under `/etc/polkit-1/rules.d/` or `/usr/share/polkit-1/rules.d/` (where the sentinel packages ship theirs) grants the `rusty-photon` user `org.freedesktop.systemd1.manage-units` for `rusty-photon-*` units — the packaged unit runs unprivileged with `NoNewPrivileges=yes`, so every restart sentinel attempts will be denied at the privilege boundary. Points at the scoped rule from [#523](https://github.com/ivonnyssen/rusty-photon/issues/523). Detection is a heuristic (scan for the action id, unit prefix, and user literal in the rules files) and the detail says so. |
 
 ### Name joins
@@ -311,8 +325,8 @@ so there is no ui-htmx-side name join left to check.)
 |---|---|---|
 | `tls.paths` | fail / warn | A `server.tls` block is present but the cert or key is not an existing **file** after resolving the path the way the service itself will (`TlsConfig::resolved_*_path`, which expands `~`; empty paths and directories are absent) — fail. A **relative** path (D6b) warns instead: the service resolves it against its own working directory, which doctor cannot know, so presence is not judged either way — the suggestion is absolute paths, which is all doctor ever writes. Readability by the unit's user is not checked in D2 — doctor runs privileged on packaged hosts, so an ownership heuristic needs the passwd machinery D4's hardware checks bring. |
 | `tls.auth-without-tls` | warn | `server.auth` is set while `server.tls` is absent: HTTP Basic credentials in cleartext on the wire. Legal, but worth a nag — ADR-003's scheme is Basic **over TLS**. Fixed by the provisioning pass turning TLS on. |
-| `tls.absent` (D6a) | warn | An installed service has no `server.tls` block: it serves plain HTTP. Legal (absent still means off — ADR-016 decision 10(d)), and fixable: the provisioning pass issues a cert and writes the block. |
-| `auth.absent` (D6a) | warn | An installed service has no `server.auth` block: it answers unauthenticated. Same legality and fix as `tls.absent`. |
+| `tls.absent` (D6a) | warn | An installed service's config file exists but has no `server.tls` block: it serves plain HTTP. Legal (absent still means off — ADR-016 decision 10(d)), and fixable: the provisioning pass issues a cert and writes the block — on an ACME install (`acme.json` present) the block points at the existing wildcard pair instead, and while that pair is missing the check stays suggestion-only pointing at `doctor tls renew` (§What `--fix` adds). **No config file at all** (`FileAbsent`) grades the same way for any non-`config_gated` service (#598): doctor cannot tell whether the service has simply never started or a working config was deleted, but either way the next (re)start serves plain HTTP — unlike the block-absent case above, this is **unfixable**, since there is no file for `--fix` to write into; the suggestion is to create the file yourself (an empty `{}` is enough — `--fix` provisions `server.tls`/`server.auth` into it from there), or start the service once so it self-creates one, then re-run `--fix`. A `config_gated` service's `FileAbsent` state is expected (it cannot start without an operator-written file in the first place) and stays silent here — `inventory.unit-without-config` / `units.config-gated` own that story. |
+| `auth.absent` (D6a) | warn | An installed service's config file exists but has no `server.auth` block: it answers unauthenticated. Same legality and fix as `tls.absent`, including the `FileAbsent` extension above. |
 | `auth.mismatch` (D6a) | warn | A client auth block's plaintext password does not verify (Argon2id) against the target service's `server.auth` hash — the client will get 401s. Suggestion-only: hand-set credentials are operator intent, so doctor reports the pair and suggests `doctor auth rotate` to re-align everything to the observatory credential. |
 | `tls.expiry` (D6b) | fail / warn | A configured `server.tls` certificate is **expired or unparseable** (fail — rustls loads an expired cert cleanly and only *clients* reject the handshake, so without this check the failure surfaces as every client erroring at night) or **inside its renewal window** (warn — 30 days for self-signed material, `renewal_days_before_expiry` for the ACME cert). Graded only when `tls.paths` is clean — an expiry verdict beside a failing pair would read as contradictory. Suggestion-only: the fix is `doctor tls renew` (or `tls issue --force` for a cert the renew legs don't own); `--fix` does not renew, because renewal belongs on the platform timer. |
 
@@ -341,7 +355,7 @@ explicit port, or one that doesn't parse, resolves to nothing.
 | Check | Status | Trigger |
 |---|---|---|
 | `joins.client-transport` | fail | Either: the client's scheme doesn't match the target's `server.tls` state (`http` against a TLS-on target, or `https` against a plain-HTTP one) — the connection fails outright; or the scheme matches, the target's certificate is doctor's self-signed CA (not the publicly-trusted ACME wildcard — judged the way `tls.expiry` distinguishes them, by the resolved cert file's name), and the client has no `ca_cert_path` pointed at it — the TLS handshake fails validation. Both grade `fail`, mirroring `tls.paths`: a definite break, not a hardware-style installed/enabled split. |
-| `joins.client-auth` | warn | The target has `server.auth` set and the client's credential is absent or does not verify (Argon2id) against it — every request 401s. Mirrors `auth.mismatch`'s severity and its asymmetry: an **absent** credential is fix-eligible (the correct value is derivable), a **present but wrong** one is suggestion-only (hand-set credentials are operator intent, so doctor points at `doctor auth rotate`). sentinel's own `service_auth`/`operation_watchdog.rp_url` pair is `auth.mismatch`'s territory already, not this check's — only targets with their own credential field (ui-htmx's `rp`/`sentinel` blocks, each Alpaca monitor's `auth`) are judged here. |
+| `joins.client-auth` | warn | The target has `server.auth` set and the client's credential is absent or does not verify (Argon2id) against it — every request 401s. Mirrors `auth.mismatch`'s severity and its asymmetry: an **absent** credential is fix-eligible (the correct value is derivable), a **present but wrong** one is suggestion-only (hand-set credentials are operator intent, so doctor points at `doctor auth rotate`). sentinel's own `service_auth`/`operation_watchdog.rp_url` pair is `auth.mismatch`'s territory already, not this check's — only targets with their own credential field (ui-htmx's `rp`/`sentinel` blocks, each Alpaca monitor's `auth`, and — since issue #620 — rp's `plate_solver.auth` / `equipment.mount.guiding.auth`) are judged here. |
 
 **What `--fix` can and cannot rewrite.** ui-htmx's `rp`/`sentinel` blocks
 carry `base_url` + `auth` + `ca_cert_path`, so both checks are fully
@@ -366,11 +380,13 @@ field (issue #609 / PR #612, `CA_ONLY_WIRING_SERVICES` in
 `provision/mod.rs`), not a per-target one, so `joins.client-transport`
 is fully fix-eligible for both: the scheme is rewritten in place and
 `/ca_cert` is written from the resolved pki tree, same as every other
-CA-trust fix. **Neither target carries a credential field at all yet**
-(they carry a bare `url`, no `auth`), so `joins.client-auth` still runs
-suggestion-only for them — closing that half needs a config-schema
-change to rp's HTTP clients, not a doctor check — tracked as follow-up
-work, not in this issue's scope (see §MVP scope). A CA-trust gap is
+CA-trust fix. Both targets also carry a per-target `plate_solver.auth` /
+`equipment.mount.guiding.auth` field now (issue #620 closed the
+config-schema gap this section used to describe), so `joins.client-auth`
+is fully fix-eligible for them too: an absent credential is written from
+`pki/credential` at `/plate_solver/auth` or
+`/equipment/mount/guiding/auth`, the same "absent gets it, present is
+operator intent" contract as every other client target. A CA-trust gap is
 always reported once a target's certificate is self-signed and the
 client's CA field is absent, regardless of whether doctor's own
 `pki/ca.pem` exists locally yet — only the *fix* is gated on that file's
@@ -621,20 +637,45 @@ machinery). A forgotten credential is recovered by reading
 ### What `--fix` adds
 
 After the config fixes, `--fix` runs the provisioning pass over every
-installed service:
+installed service. The pass is **ACME-aware**: when
+`<config-root>/acme.json` exists the install has flipped to
+publicly-trusted certificates (the write side of the `tls issue --acme`
+contract — the same gate renewal's ACME leg keys on), and provisioning
+must not hand out self-signed material. A client's single reqwest trust
+configuration cannot verify self-signed and publicly-trusted targets at
+once (`tls_certs_only` disables platform roots), so wiring one new
+service self-signed would cut it off from every already-flipped client,
+and a freshly written `ca_cert` client block would break that client
+against the rest of the fleet (issue
+[#616](https://github.com/ivonnyssen/rusty-photon/issues/616)):
 
-1. **Certs** — create the CA if absent; issue a cert for each installed
-   service whose `<svc>.pem`/`<svc>-key.pem` pair is missing. Existing
-   material is never touched.
+1. **Certs** — without `acme.json`: create the CA if absent; issue a cert
+   for each installed service whose `<svc>.pem`/`<svc>-key.pem` pair is
+   missing. Existing material is never touched. With `acme.json`: nothing
+   is issued — every service serves the shared wildcard pair, which is
+   `tls issue --acme`'s (and renewal's) to mint, never `--fix`'s.
 2. **Credential** — reuse `pki/credential` if present, else mint and write
    it. A service installed after the first `--fix` run is wired with the
-   *same* credential on the next run.
+   *same* credential on the next run. Auth is orthogonal to the trust
+   model, so this step is identical on both kinds of install.
 3. **Config writes** — where a service's `server.tls` is absent, write the
-   block pointing at the issued pair; where `server.auth` is absent, write
+   block pointing at the issued pair — on an ACME install, at the shared
+   `pki/acme-cert.pem`/`acme-key.pem` wildcard pair instead, and only
+   while both halves exist: `--fix` never wires paths that are not there,
+   and a missing wildcard pair is renewal's recovery territory, so
+   `tls.absent` stays suggestion-only pointing at `doctor tls renew`
+   until the pair lands. Where `server.auth` is absent, write
    `observatory` + the hash. Client blocks that are absent get the
-   plaintext + CA path. **Present blocks are never overwritten** — a
-   hand-set credential or hand-placed cert path is operator intent;
-   incoherence surfaces as `auth.mismatch`/`tls.paths`, suggestion-only.
+   plaintext + CA path — except on an ACME install, where they get the
+   plaintext and **no** `ca_cert`: the targets are publicly trusted and a
+   `ca_cert` would disable the platform roots the client needs. **Present
+   blocks are never overwritten** — a hand-set credential or hand-placed
+   cert path is operator intent; incoherence surfaces as
+   `auth.mismatch`/`tls.paths`, suggestion-only.
+   **A missing config file has nothing to write into** — `tls.absent` /
+   `auth.absent`'s `FileAbsent` case (§TLS and auth, #598) plans no fix,
+   so `--fix` silently does nothing for that service; the diagnosis is the
+   whole of what doctor can offer until the file exists.
 
 The same "absent means off" contract from decision 10(d) is what makes this
 safe: packages start services before any doctor run, and BDD/ConformU
@@ -727,6 +768,35 @@ legs, both scoped to the resolved config root:
    DNS-01 authorization is dead), and rewrites the wildcard pair via
    write-then-rename so a service reloading mid-renewal never reads a
    torn file.
+
+**`renew.env`: sourcing `$VAR` credentials on an unattended run.** A
+platform scheduler starts `doctor tls renew` with no inherited shell
+environment, so `$CLOUDFLARE_API_TOKEN` (or any other `$VAR`-indirected
+`dns_credentials` value) has nowhere to resolve from at 3am unless
+something puts it there first. Rather than three platform-specific
+mechanisms (systemd `EnvironmentFile=`, a launchd `EnvironmentVariables`
+plist key, a Windows machine-level env var), the renewal leg itself
+parses `<config-root>/renew.env` — `KEY=VALUE` per line, blank lines and
+whole-line `#` comments ignored (no inline comments: a trailing `#
+note` becomes part of the value) — and consults it as a fallback when
+resolving credentials, only for a `$VAR` name the process environment
+doesn't already have (the process environment always wins). `renew.env`
+is parsed into a map rather than injected with `std::env::set_var`,
+since the renewal leg runs on a multi-thread Tokio runtime where
+mutating the process environment races any concurrent read. The file
+is optional
+(a self-signed-only install, or one with literal, non-`$` credentials,
+never needs it) and sits beside `acme.json`, so it gets the same
+ownership alignment (`align_pki_ownership`) after a root-run renewal.
+Create it 0600 and owned by the service user (`rusty-photon` on Linux,
+the brew-services user on macOS):
+
+```
+CLOUDFLARE_API_TOKEN=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+This is the same mechanism on all three platforms — no unit, plist, or
+Scheduled Task edits needed to make `$VAR` indirection work.
 
 After a successful ACME renewal, `post_renewal_hooks` from `acme.json`
 run in order (`sh -c` / `cmd /C`) — the multi-machine distribution hook
@@ -910,10 +980,12 @@ behavior; every knob in it was a CLI flag first.)
   mismatch in both directions, the ACME-vs-self-signed CA-trust split
   (including rp's shared top-level `ca_cert`, wired the same way once
   #609/PR #612 gave rp that field), absent-vs-wrong credential handling,
-  rp's plate-solver/guider `joins.client-auth` suggestion-only path (no
-  fix planned — no credential field exists yet), a non-loopback host
-  resolving to nothing, and that the scheme-rewrite helper never
-  introduces the trailing slash a URL-parser round trip would.
+  rp's plate-solver/guider `joins.client-auth` fix-eligible path (writing
+  the observatory credential to `plate_solver.auth` /
+  `equipment.mount.guiding.auth` once issue #620 gave rp those fields), a
+  non-loopback host resolving to nothing, and that the scheme-rewrite
+  helper never introduces the trailing slash a URL-parser round trip
+  would.
 - **BDD** (`services/doctor/tests`, built with the `mock` feature) — seed a
   scratch config dir and a platform-facts file with known-broken states (port
   collision, dangling watchdog service, retired D3s keys, unparseable JSON,
@@ -950,7 +1022,14 @@ behavior; every knob in it was a CLI flag first.)
   and reuses the credential for a newly-appearing service; hand-set blocks
   survive untouched; `auth.mismatch` fires on an incoherent pair;
   `doctor tls issue --force` re-issues service certs but never the CA;
-  `doctor auth rotate` re-aligns a mismatched pair. rp's
+  `doctor auth rotate` re-aligns a mismatched pair. ACME-aware
+  provisioning ([#616](https://github.com/ivonnyssen/rusty-photon/issues/616)):
+  with a staged `acme.json` and wildcard pair, `--fix` wires a new
+  service's `server.tls` to the pair (no CA, no per-service pair is
+  created) and writes client blocks carrying the credential but no
+  `ca_cert`; with `acme.json` but no wildcard pair, `tls.absent` stays
+  suggestion-only pointing at `doctor tls renew` and no self-signed
+  material appears. rp's
   `tls_setup.feature`/`acme_setup.feature` and `bdd-infra`'s one-shot
   command tests move here with the commands. On-host: a packaged install
   goes TLS-on/auth-on with one `--fix` and every service answers
@@ -1006,15 +1085,17 @@ the renewal scheduling ship in sentinel's deb/rpm/MSI Core/brew formula,
 the install-flow docs in the per-platform packaging guides, and the
 pki-ownership alignment under sudo (the #572 remainder).
 
-**Client-target joins ([#607](https://github.com/ivonnyssen/rusty-photon/issues/607)):**
+**Client-target joins ([#607](https://github.com/ivonnyssen/rusty-photon/issues/607),
+[#620](https://github.com/ivonnyssen/rusty-photon/issues/620)):**
 `joins.client-transport` and `joins.client-auth` (§Diagnosis).
 `joins.client-transport` is fully fix-eligible for ui-htmx's
 `rp`/`sentinel` targets, sentinel's per-monitor `scheme`, sentinel's
 `operation_watchdog.rp_url` scheme, and rp's plate-solver/guider clients
 (rp's shared top-level `ca_cert`, closed by #609/PR #612). `joins.client-auth`
-is fully fix-eligible for ui-htmx's targets and sentinel's per-monitor
-`auth`; it stays suggestion-only for rp's plate-solver/guider clients
-(neither carries a credential field yet), and does not run at all for
+is fully fix-eligible for ui-htmx's targets, sentinel's per-monitor
+`auth`, and (since #620 added `plate_solver.auth` /
+`equipment.mount.guiding.auth` to rp's config schema) rp's
+plate-solver/guider clients; it does not run at all for
 `operation_watchdog.rp_url` (its credential is the shared `service_auth`
 pair — `auth.mismatch` already owns it).
 
@@ -1022,13 +1103,6 @@ pair — `auth.mismatch` already owns it).
 - `usb_*` identity declarations for qhy-focuser and star-adventurer-gti —
   measured whenever that hardware is next on a USB port; two lines of
   `doctor.toml` each.
-- An `auth` field on rp's `plate_solver`/`guiding` client configs
-  (`services/rp/src/config/plate_solver.rs`,
-  `services/rp/src/config/guiding.rs`) — CA trust closed by #609/PR #612
-  (rp's shared top-level `ca_cert`), but neither client carries a
-  credential field, so `joins.client-auth` can diagnose but not fix a
-  401 against either target. Out of #607's scope: it is an rp
-  HTTP-client change, not a doctor check.
 - `joins.client-transport` does not evaluate CA trust for sentinel's
   downstream targets (`operation_watchdog.rp_url`, per-monitor
   `host`/`port`) at all — both pass `ca_cert: None` into `transport_check`

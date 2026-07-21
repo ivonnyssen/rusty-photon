@@ -109,33 +109,64 @@ fn inventory(ctx: &Context) -> Vec<Check> {
         let installed = ctx.installed(scan.entry);
         match (installed, scan.config_present()) {
             (true, false) => {
-                // A unit gated on ConditionPathExists= hard-requires a
+                // A config-gated service (docs/packaging.md) hard-requires a
                 // hand-written config — "start it once" would do nothing.
-                let gate = ctx
+                // `condition_path` is the Linux/systemd fact naming the exact
+                // gate file; Windows (start type Manual) and macOS carry no
+                // equivalent fact, so `scan.entry.config_gated` is the
+                // portable signal every platform can fall back to.
+                let systemd_gate = ctx
                     .facts
                     .unit(&scan.entry.unit_name())
                     .and_then(|u| u.condition_path.as_ref());
-                let suggestion = match gate {
-                    Some(gate) => format!(
-                        "this service needs a hand-written config — the unit is \
-                         gated on {} — so create that file, then start the unit",
-                        gate.display()
+                let (detail, suggestion) = match systemd_gate {
+                    Some(gate) => (
+                        format!(
+                            "unit {} is installed but {} does not exist — this \
+                             service requires a hand-written config (the unit is \
+                             gated on {}) and cannot start without one",
+                            scan.entry.unit_name(),
+                            scan.config_path.display(),
+                            gate.display()
+                        ),
+                        format!(
+                            "this service needs a hand-written config — the unit is \
+                             gated on {} — so create that file, then start the unit",
+                            gate.display()
+                        ),
                     ),
-                    None => format!(
-                        "start it once so it self-creates its defaults: e.g. `{}`",
-                        start_command(ctx.facts.platform, &manager_name(ctx, scan.entry))
+                    None if scan.entry.config_gated => (
+                        format!(
+                            "unit {} is installed but {} does not exist — this \
+                             service has no sensible default config and cannot \
+                             start without one",
+                            scan.entry.unit_name(),
+                            scan.config_path.display()
+                        ),
+                        format!(
+                            "this service has no sensible default — create {} by hand, \
+                             then start the unit",
+                            scan.config_path.display()
+                        ),
+                    ),
+                    None => (
+                        format!(
+                            "unit {} is installed but {} does not exist — the service \
+                             has never started, or writes its config somewhere \
+                             unexpected",
+                            scan.entry.unit_name(),
+                            scan.config_path.display()
+                        ),
+                        format!(
+                            "start it once so it self-creates its defaults: e.g. `{}`",
+                            start_command(ctx.facts.platform, &manager_name(ctx, scan.entry))
+                        ),
                     ),
                 };
                 checks.push(Check::warn(
                     "inventory.unit-without-config",
                     svc(scan),
-                    format!(
-                        "unit {} is installed but {} does not exist — the service \
-                         has never started, or writes its config somewhere \
-                         unexpected",
-                        scan.entry.unit_name(),
-                        scan.config_path.display()
-                    ),
+                    detail,
                     Some(suggestion),
                 ));
             }
@@ -698,9 +729,16 @@ fn tls_and_auth(ctx: &Context) -> Vec<Check> {
 /// the observatory credential, so it appears only once `pki/credential`
 /// exists (under `--fix` the material pass runs first).
 fn tls_auth_absent(ctx: &Context, scan: &ServiceScan) -> Vec<Check> {
+    if matches!(scan.server, ServerBlock::FileAbsent) {
+        // No config file at all — never started, or one that existed was
+        // removed. Doctor cannot tell which, and either way there is no
+        // file for provisioning to write into (unlike the cases below);
+        // see `tls_auth_file_absent`.
+        return tls_auth_file_absent(scan);
+    }
     if scan.value().is_none() {
-        // No parseable file: the read-level checks own the diagnosis, and
-        // provisioning has nothing to write into.
+        // Unreadable or invalid JSON: the read-level checks own the
+        // diagnosis, and provisioning has nothing to write into.
         return Vec::new();
     }
     let (tls_absent, auth_absent, server_key_present) = match &scan.server {
@@ -710,37 +748,56 @@ fn tls_auth_absent(ctx: &Context, scan: &ServiceScan) -> Vec<Check> {
         ServerBlock::BlockAbsent => (true, true, false),
         // An unparseable block is config.server-shape's diagnosis; writing
         // into it would be guesswork.
-        ServerBlock::Invalid(_) | ServerBlock::FileAbsent => return Vec::new(),
+        ServerBlock::Invalid(_) => return Vec::new(),
+        // Handled above; kept here so the match stays exhaustive if the
+        // early return above is ever removed.
+        ServerBlock::FileAbsent => return Vec::new(),
     };
     let name = scan.entry.name;
     let mut checks = Vec::new();
     if tls_absent {
-        let tls_value = crate::provision::tls_block_value(&ctx.config_dir, name);
-        let fixes = if server_key_present {
-            vec![crate::report::FixOp::SetObject {
+        // On an ACME install the fix points at the shared wildcard pair —
+        // never at freshly issued self-signed material, which the flipped
+        // fleet's clients could not verify (issue #616). While the pair is
+        // missing, conjuring it is renewal's job, so no fix is planned.
+        let acme = crate::provision::acme_active(&ctx.config_dir);
+        let tls_value = if acme {
+            crate::provision::acme_tls_block_value(&ctx.config_dir)
+        } else {
+            Some(crate::provision::tls_block_value(&ctx.config_dir, name))
+        };
+        let fixes = match tls_value {
+            Some(tls_value) if server_key_present => vec![crate::report::FixOp::SetObject {
                 service: name.to_string(),
                 pointer: "/server/tls".to_string(),
                 value: tls_value,
-            }]
-        } else {
+            }],
             // No server key at all: the block is created whole, keeping the
             // port the service would have defaulted to.
-            vec![crate::report::FixOp::SetObject {
+            Some(tls_value) => vec![crate::report::FixOp::SetObject {
                 service: name.to_string(),
                 pointer: "/server".to_string(),
                 value: serde_json::json!({ "port": scan.entry.default_port, "tls": tls_value }),
-            }]
+            }],
+            None => Vec::new(),
+        };
+        let suggestion = if fixes.is_empty() {
+            "this is an ACME install (acme.json present) but the wildcard pair is \
+             missing — run `doctor tls renew` to obtain it, then `doctor --fix` to \
+             wire the config"
+        } else if acme {
+            "run `doctor --fix` to point server.tls at the ACME wildcard pair \
+             (services pick it up at next restart)"
+        } else {
+            "run `doctor --fix` to issue a certificate and turn TLS on \
+             (services pick it up at next restart)"
         };
         checks.push(
             Check::warn(
                 "tls.absent",
                 svc(scan),
                 format!("{name} has no server.tls block — it serves plain HTTP"),
-                Some(
-                    "run `doctor --fix` to issue a certificate and turn TLS on \
-                     (services pick it up at next restart)"
-                        .to_string(),
-                ),
+                Some(suggestion.to_string()),
             )
             .with_fixes(fixes),
         );
@@ -769,6 +826,58 @@ fn tls_auth_absent(ctx: &Context, scan: &ServiceScan) -> Vec<Check> {
         );
     }
     checks
+}
+
+/// `tls.absent`/`auth.absent` for a self-defaulting installed service with
+/// no config file on disk. Doctor cannot tell whether the service has
+/// simply never started, or a config that once existed was deleted — either
+/// way, the next (re)start serves plain, unauthenticated HTTP, and that is
+/// worth surfacing loudly rather than leaving to the generic
+/// `inventory.unit-without-config` "never started" reading, which does not
+/// say so.
+///
+/// Config-gated services (`scan.entry.config_gated`) stay out: they hard-
+/// require an operator-written file and cannot start without one, so they
+/// never reach plain HTTP this way — `inventory.unit-without-config` /
+/// `units.config-gated` already own that story.
+///
+/// Unfixable, unlike the sibling checks above: `--fix` has no file to write
+/// a `server.tls`/`server.auth` block into, so no `FixOp` is planned — the
+/// suggestion is to hand-write the config, or start the service once so it
+/// self-creates one, then re-run `doctor --fix`.
+fn tls_auth_file_absent(scan: &ServiceScan) -> Vec<Check> {
+    if scan.entry.config_gated {
+        return Vec::new();
+    }
+    let name = scan.entry.name;
+    let path = scan.config_path.display();
+    let remedy = format!(
+        "no {path} to provision — create it yourself (an empty `{{}}` is enough) \
+         or start the service once so it self-creates defaults, then run \
+         `doctor --fix` to provision server.tls/server.auth into it"
+    );
+    vec![
+        Check::warn(
+            "tls.absent",
+            svc(scan),
+            format!(
+                "{name} has no config file at {path} — it will serve plain HTTP \
+                 the next time it starts, whether it has never started or its \
+                 config was removed"
+            ),
+            Some(remedy.clone()),
+        ),
+        Check::warn(
+            "auth.absent",
+            svc(scan),
+            format!(
+                "{name} has no config file at {path} — it will answer \
+                 unauthenticated the next time it starts, whether it has never \
+                 started or its config was removed"
+            ),
+            Some(remedy),
+        ),
+    ]
 }
 
 /// The `server.auth` block value for one service: the observatory username
@@ -1135,8 +1244,10 @@ fn plan_client_auth_value(ctx: &Context) -> Option<serde_json::Value> {
 /// matching `auth.mismatch`'s severity — a wrong or missing credential
 /// 401s every request, but (as with that check) a *present* mismatched
 /// credential may be intentional, so only the absent case is fix-eligible.
-/// `auth_pointer` is `None` for rp's plate-solver/guider clients, which
-/// carry no credential field at all.
+/// `auth_pointer` is `None` only for targets with no credential field to
+/// wire a fix into at all; every current caller (ui-htmx's targets, rp's
+/// plate-solver/guider clients since issue #620, sentinel's per-monitor
+/// `auth`) passes `Some`.
 fn credential_check(
     ctx: &Context,
     client_service: &str,
@@ -1285,8 +1396,11 @@ fn ui_htmx_one_target(ctx: &Context, name: &str, target: Option<&ClientTargetVie
 /// §Client-target joins`. CA trust is `rp`'s single top-level `ca_cert`
 /// field (issue #609 / PR #612), shared by both targets, so the transport
 /// check is fully fix-eligible once that field or its provisioning
-/// material exists. Neither target carries a per-target credential field
-/// yet, so `joins.client-auth` still runs suggestion-only.
+/// material exists. Both targets also carry a per-target `auth` field
+/// (issue #620: `plate_solver.auth`, `equipment.mount.guiding.auth`), so
+/// `joins.client-auth` is fully fix-eligible for them too, the same
+/// "absent gets it, present is operator intent" contract as every other
+/// D6a client fix.
 fn rp_client_joins(ctx: &Context) -> Vec<Check> {
     let mut checks = Vec::new();
     let Some(rp) = ctx.scan("rp").and_then(|s| scan::view::<RpView>(s)?.ok()) else {
@@ -1299,20 +1413,33 @@ fn rp_client_joins(ctx: &Context) -> Vec<Check> {
             "equipment.mount.guiding.url",
             &url,
             ca_cert_present,
+            "/equipment/mount/guiding/auth",
+            rp.mount_guiding_auth().as_ref(),
         ));
     }
-    if let Some(url) = rp.plate_solver.and_then(|p| p.url) {
-        checks.extend(rp_one_target(
-            ctx,
-            "plate_solver.url",
-            &url,
-            ca_cert_present,
-        ));
+    if let Some(ps) = rp.plate_solver.as_ref() {
+        if let Some(url) = ps.url.as_deref() {
+            checks.extend(rp_one_target(
+                ctx,
+                "plate_solver.url",
+                url,
+                ca_cert_present,
+                "/plate_solver/auth",
+                ps.auth.as_ref(),
+            ));
+        }
     }
     checks
 }
 
-fn rp_one_target(ctx: &Context, field: &str, url: &str, ca_cert_present: bool) -> Vec<Check> {
+fn rp_one_target(
+    ctx: &Context,
+    field: &str,
+    url: &str,
+    ca_cert_present: bool,
+    auth_pointer: &str,
+    current_auth: Option<&ClientAuthView>,
+) -> Vec<Check> {
     let mut checks = Vec::new();
     let Some((scheme, host, port)) = parse_target_url(url) else {
         return checks;
@@ -1341,7 +1468,14 @@ fn rp_one_target(ctx: &Context, field: &str, url: &str, ca_cert_present: bool) -
         scheme_fix,
         Some(("/ca_cert".to_string(), ca_cert_present)),
     ));
-    checks.extend(credential_check(ctx, "rp", field, resolved, None, None));
+    checks.extend(credential_check(
+        ctx,
+        "rp",
+        field,
+        resolved,
+        Some(auth_pointer.to_string()),
+        current_auth,
+    ));
     checks
 }
 
@@ -1525,6 +1659,61 @@ mod tests {
     }
 
     #[test]
+    fn test_tls_absent_fix_points_at_the_wildcard_pair_on_an_acme_install() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("ppba-driver.json"),
+            r#"{ "server": { "port": 11112 } }"#,
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("acme.json"), "{}").unwrap();
+        let pki = dir.path().join("pki");
+        std::fs::create_dir_all(&pki).unwrap();
+        std::fs::write(pki.join("acme-cert.pem"), "cert").unwrap();
+        std::fs::write(pki.join("acme-key.pem"), "key").unwrap();
+        let ctx = config_only_ctx(dir.path());
+        let scan = ctx.scan("ppba-driver").unwrap();
+        let checks = tls_auth_absent(&ctx, scan);
+        let tls = checks.iter().find(|c| c.name == "tls.absent").unwrap();
+        match &tls.fixes[..] {
+            [crate::report::FixOp::SetObject { pointer, value, .. }] => {
+                assert_eq!(pointer, "/server/tls");
+                let cert = value["cert"].as_str().unwrap();
+                let key = value["key"].as_str().unwrap();
+                assert!(cert.ends_with("acme-cert.pem"), "{cert}");
+                assert!(key.ends_with("acme-key.pem"), "{key}");
+                assert!(
+                    !cert.contains("ppba-driver"),
+                    "no per-service self-signed pair on an ACME install: {cert}"
+                );
+            }
+            other => unreachable!("expected one SetObject fix, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_tls_absent_plans_no_fix_while_the_acme_pair_is_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("ppba-driver.json"),
+            r#"{ "server": { "port": 11112 } }"#,
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("acme.json"), "{}").unwrap();
+        let ctx = config_only_ctx(dir.path());
+        let scan = ctx.scan("ppba-driver").unwrap();
+        let checks = tls_auth_absent(&ctx, scan);
+        let tls = checks.iter().find(|c| c.name == "tls.absent").unwrap();
+        assert!(
+            tls.fixes.is_empty(),
+            "a missing wildcard pair is renewal's to recover: {:?}",
+            tls.fixes
+        );
+        let suggestion = tls.suggestion.as_deref().unwrap();
+        assert!(suggestion.contains("doctor tls renew"), "{suggestion}");
+    }
+
+    #[test]
     fn test_tls_expiry_fails_on_an_unreadable_certificate() {
         let dir = tempfile::tempdir().unwrap();
         let ctx = config_only_ctx(dir.path());
@@ -1581,6 +1770,115 @@ mod tests {
         assert_eq!(
             start_command(Platform::Macos, "rusty-photon-rp-nightly"),
             "brew services start rusty-photon-rp-nightly"
+        );
+    }
+
+    // ---- tls.absent / auth.absent on a missing config file ----
+
+    #[test]
+    fn test_tls_auth_file_absent_warns_a_self_defaulting_service_unfixably() {
+        let dir = tempfile::tempdir().unwrap();
+        let entry = catalog::entry("zwo-camera").unwrap();
+        let scan = scan::scan_service(dir.path(), entry);
+        assert!(matches!(scan.server, ServerBlock::FileAbsent));
+
+        let checks = tls_auth_file_absent(&scan);
+        assert_eq!(checks.len(), 2);
+
+        let tls = checks
+            .iter()
+            .find(|c| c.name == "tls.absent")
+            .expect("tls.absent");
+        assert_eq!(tls.status, Status::Warn);
+        assert!(
+            tls.fixes.is_empty(),
+            "no config file exists to provision into"
+        );
+        assert!(
+            tls.detail.contains("never started"),
+            "should name both possible causes: {}",
+            tls.detail
+        );
+
+        let auth = checks
+            .iter()
+            .find(|c| c.name == "auth.absent")
+            .expect("auth.absent");
+        assert_eq!(auth.status, Status::Warn);
+        assert!(auth.fixes.is_empty());
+    }
+
+    #[test]
+    fn test_tls_auth_file_absent_stays_silent_for_a_config_gated_service() {
+        let dir = tempfile::tempdir().unwrap();
+        let entry = catalog::entry("plate-solver").unwrap();
+        assert!(entry.config_gated);
+        let scan = scan::scan_service(dir.path(), entry);
+        assert!(tls_auth_file_absent(&scan).is_empty());
+    }
+
+    fn packaged_ctx(dir: &Path, platform: &str, unit: &str) -> Context {
+        let facts: PlatformFacts = serde_json::from_value(serde_json::json!({
+            "platform": platform,
+            "units": [ { "name": unit } ],
+        }))
+        .unwrap();
+        Context::gather(dir.to_path_buf(), facts)
+    }
+
+    #[test]
+    fn test_tls_and_auth_warns_an_installed_self_defaulting_service_with_no_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = packaged_ctx(dir.path(), "linux", "rusty-photon-zwo-camera");
+        let checks = tls_and_auth(&ctx);
+        assert!(checks
+            .iter()
+            .any(|c| c.name == "tls.absent" && c.service.as_deref() == Some("zwo-camera")));
+        assert!(checks
+            .iter()
+            .any(|c| c.name == "auth.absent" && c.service.as_deref() == Some("zwo-camera")));
+    }
+
+    #[test]
+    fn test_tls_and_auth_stays_silent_for_an_installed_config_gated_service_with_no_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = packaged_ctx(dir.path(), "linux", "rusty-photon-plate-solver");
+        let checks = tls_and_auth(&ctx);
+        assert!(!checks
+            .iter()
+            .any(|c| (c.name == "tls.absent" || c.name == "auth.absent")
+                && c.service.as_deref() == Some("plate-solver")));
+    }
+
+    /// `condition_path` is a Linux/systemd-only fact — Windows carries no
+    /// equivalent, so the remedy must fall back to the portable
+    /// `config_gated` catalog flag instead of wrongly claiming the service
+    /// self-creates its defaults.
+    #[test]
+    fn test_inventory_names_a_hand_written_config_for_a_gated_service_on_windows() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = packaged_ctx(dir.path(), "windows", "rusty-photon-plate-solver");
+        let checks = inventory(&ctx);
+        let check = checks
+            .iter()
+            .find(|c| {
+                c.name == "inventory.unit-without-config"
+                    && c.service.as_deref() == Some("plate-solver")
+            })
+            .expect("inventory.unit-without-config");
+        let suggestion = check.suggestion.as_deref().unwrap_or_default();
+        assert!(suggestion.contains("no sensible default"), "{suggestion}");
+        assert!(
+            !suggestion.contains("self-creates"),
+            "a config-gated service never self-creates: {suggestion}"
+        );
+        // The detail text must not blame "never started" on a service that
+        // structurally can't start without an operator-written config first.
+        assert!(!check.detail.contains("never started"), "{}", check.detail);
+        assert!(
+            check.detail.contains("cannot start without one"),
+            "{}",
+            check.detail
         );
     }
 
@@ -2172,8 +2470,12 @@ mod tests {
     }
 
     #[test]
-    fn test_rp_guider_auth_gap_is_suggestion_only() {
+    fn test_rp_guider_auth_absent_is_flagged_and_fixed() {
+        // issue #620: `equipment.mount.guiding.auth` is now a real
+        // config field, so an absent credential is fully fix-eligible —
+        // same contract as ui-htmx's client targets.
         let dir = tempfile::tempdir().unwrap();
+        stage_pki(dir.path(), "s3cret-pw");
         let hash = rp_auth::credentials::hash_password("s3cret-pw").unwrap();
         write_json(
             dir.path(),
@@ -2193,14 +2495,171 @@ mod tests {
         let auth = checks
             .iter()
             .find(|c| c.name == "joins.client-auth")
-            .expect("a missing credential field must still be reported");
+            .expect("a missing credential must be reported");
         assert_eq!(auth.status, Status::Warn);
-        assert!(auth.fixes.is_empty());
         assert!(
             auth.detail.contains("equipment.mount.guiding.url"),
             "{}",
             auth.detail
         );
+        match &auth.fixes[..] {
+            [crate::report::FixOp::SetObject {
+                service,
+                pointer,
+                value,
+            }] => {
+                assert_eq!(service, "rp");
+                assert_eq!(pointer, "/equipment/mount/guiding/auth");
+                assert_eq!(value["username"], "observatory");
+                assert_eq!(value["password"], "s3cret-pw");
+            }
+            other => unreachable!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_rp_guider_auth_mismatch_is_suggestion_only() {
+        let dir = tempfile::tempdir().unwrap();
+        stage_pki(dir.path(), "s3cret-pw");
+        let hash = rp_auth::credentials::hash_password("correct-pw").unwrap();
+        write_json(
+            dir.path(),
+            "phd2-guider.json",
+            serde_json::json!({ "server": { "port": 11130,
+                "auth": { "username": "observatory", "password_hash": hash } } }),
+        );
+        write_json(
+            dir.path(),
+            "rp.json",
+            serde_json::json!({ "server": { "port": 11115 },
+                "equipment": { "mount": { "alpaca_url": "http://localhost:11117",
+                                           "guiding": { "url": "http://localhost:11130",
+                                                        "auth": { "username": "observatory", "password": "wrong-pw" } } } } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        let checks = rp_client_joins(&ctx);
+        let auth = checks
+            .iter()
+            .find(|c| c.name == "joins.client-auth")
+            .expect("a wrong credential must be reported");
+        assert_eq!(auth.status, Status::Warn);
+        assert!(
+            auth.fixes.is_empty(),
+            "a present credential is operator intent, never clobbered"
+        );
+    }
+
+    #[test]
+    fn test_rp_guider_matching_credential_and_scheme_is_silent() {
+        let dir = tempfile::tempdir().unwrap();
+        let hash = rp_auth::credentials::hash_password("s3cret-pw").unwrap();
+        write_json(
+            dir.path(),
+            "phd2-guider.json",
+            serde_json::json!({ "server": { "port": 11130,
+                "auth": { "username": "observatory", "password_hash": hash } } }),
+        );
+        write_json(
+            dir.path(),
+            "rp.json",
+            serde_json::json!({ "server": { "port": 11115 }, "ca_cert": "/pki/ca.pem",
+                "equipment": { "mount": { "alpaca_url": "http://localhost:11117",
+                                           "guiding": { "url": "http://localhost:11130",
+                                                        "auth": { "username": "observatory", "password": "s3cret-pw" } } } } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        assert!(rp_client_joins(&ctx).is_empty());
+    }
+
+    #[test]
+    fn test_rp_plate_solver_auth_absent_is_flagged_and_fixed() {
+        let dir = tempfile::tempdir().unwrap();
+        stage_pki(dir.path(), "s3cret-pw");
+        let hash = rp_auth::credentials::hash_password("s3cret-pw").unwrap();
+        write_json(
+            dir.path(),
+            "plate-solver.json",
+            serde_json::json!({ "server": { "port": 11131,
+                "auth": { "username": "observatory", "password_hash": hash } } }),
+        );
+        write_json(
+            dir.path(),
+            "rp.json",
+            serde_json::json!({ "server": { "port": 11115 },
+                "plate_solver": { "url": "http://localhost:11131" } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        let checks = rp_client_joins(&ctx);
+        let auth = checks
+            .iter()
+            .find(|c| c.name == "joins.client-auth")
+            .expect("a missing credential must be reported");
+        assert_eq!(auth.status, Status::Warn);
+        match &auth.fixes[..] {
+            [crate::report::FixOp::SetObject {
+                service,
+                pointer,
+                value,
+            }] => {
+                assert_eq!(service, "rp");
+                assert_eq!(pointer, "/plate_solver/auth");
+                assert_eq!(value["username"], "observatory");
+                assert_eq!(value["password"], "s3cret-pw");
+            }
+            other => unreachable!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_rp_plate_solver_auth_mismatch_is_suggestion_only() {
+        let dir = tempfile::tempdir().unwrap();
+        stage_pki(dir.path(), "s3cret-pw");
+        let hash = rp_auth::credentials::hash_password("correct-pw").unwrap();
+        write_json(
+            dir.path(),
+            "plate-solver.json",
+            serde_json::json!({ "server": { "port": 11131,
+                "auth": { "username": "observatory", "password_hash": hash } } }),
+        );
+        write_json(
+            dir.path(),
+            "rp.json",
+            serde_json::json!({ "server": { "port": 11115 },
+                "plate_solver": { "url": "http://localhost:11131",
+                                   "auth": { "username": "observatory", "password": "wrong-pw" } } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        let checks = rp_client_joins(&ctx);
+        let auth = checks
+            .iter()
+            .find(|c| c.name == "joins.client-auth")
+            .expect("a wrong credential must be reported");
+        assert_eq!(auth.status, Status::Warn);
+        assert!(
+            auth.fixes.is_empty(),
+            "a present credential is operator intent, never clobbered"
+        );
+    }
+
+    #[test]
+    fn test_rp_plate_solver_matching_credential_and_scheme_is_silent() {
+        let dir = tempfile::tempdir().unwrap();
+        let hash = rp_auth::credentials::hash_password("s3cret-pw").unwrap();
+        write_json(
+            dir.path(),
+            "plate-solver.json",
+            serde_json::json!({ "server": { "port": 11131,
+                "auth": { "username": "observatory", "password_hash": hash } } }),
+        );
+        write_json(
+            dir.path(),
+            "rp.json",
+            serde_json::json!({ "server": { "port": 11115 }, "ca_cert": "/pki/ca.pem",
+                "plate_solver": { "url": "http://localhost:11131",
+                                   "auth": { "username": "observatory", "password": "s3cret-pw" } } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        assert!(rp_client_joins(&ctx).is_empty());
     }
 
     #[test]
