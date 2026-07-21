@@ -106,6 +106,8 @@ runs:
       if: runner.os == 'macOS' || (runner.os == 'Linux' && inputs.sudo == 'true')
       id: asset
       shell: bash
+      env:
+        REF: ${{ inputs.ref }}
       run: |
         case "${{ runner.os }}-${{ runner.arch }}" in
           Linux-X64)    ARCH=amd64 ;;
@@ -128,7 +130,7 @@ runs:
           # for the *set* of files this action fetches/caches (header + lib)
           # — bump it if that set changes, so a stale cache entry can be
           # invalidated without needing an unrelated `ref` bump.
-          echo "cache-key=svbony-sdk-blobs-v1-$ARCH-${{ inputs.ref }}"
+          echo "cache-key=svbony-sdk-blobs-v1-$ARCH-$REF"
         } >> "$GITHUB_OUTPUT"
 
     - name: Cache SVBony SDK blobs (Linux/macOS)

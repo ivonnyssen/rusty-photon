@@ -115,6 +115,15 @@ struct DeviceState {
 
     exposure_in_flight: AtomicBool,
     image_ready: AtomicBool,
+    /// Set by `cancel_exposure` (abort or disconnect) and cleared by the next
+    /// `start_exposure`/reconnect. `exposure_in_flight` itself deliberately
+    /// stays `true` until the still-running, un-interruptible capture task
+    /// drains (see `cancel_exposure`'s doc comment) — but `CameraState`/
+    /// `PercentCompleted` must not keep reporting `Exposing`/a climbing
+    /// percentage for that whole window just because the SDK can't be
+    /// interrupted; this flag lets them report the operator's requested
+    /// state (aborted → idle, not still exposing) promptly instead.
+    aborted: AtomicBool,
     /// Bumped on each start / abort / disconnect so a late-completing capture
     /// task can tell it has been superseded and discard its result.
     exposure_generation: AtomicU64,
@@ -146,6 +155,7 @@ impl DeviceState {
             target_temperature: Mutex::new(None),
             exposure_in_flight: AtomicBool::new(false),
             image_ready: AtomicBool::new(false),
+            aborted: AtomicBool::new(false),
             exposure_generation: AtomicU64::new(0),
             last_exposure_start_time: Mutex::new(None),
             last_exposure_duration: Mutex::new(None),
@@ -164,6 +174,7 @@ impl DeviceState {
         self.exposure_generation.fetch_add(1, Ordering::AcqRel);
         self.exposure_in_flight.store(false, Ordering::Release);
         self.image_ready.store(false, Ordering::Release);
+        self.aborted.store(false, Ordering::Release);
         *self.last_image.lock() = None;
         *self.last_error.lock() = None;
         *self.last_exposure_start_time.lock() = None;
@@ -253,9 +264,11 @@ impl SvbonyCamera {
     }
 
     /// Read and cache the camera's properties/controls after `open()`, then
-    /// run the exposure state machine's connect-time steps (mode selection +
-    /// video-capture start — `docs/services/svbony-camera.md` "Behavioral
-    /// contracts → Exposure" steps 1-2). Tenet 3 (K5): this method never
+    /// run the exposure state machine's connect-time step for trigger
+    /// cameras (mode selection + video-capture start — never for a
+    /// non-trigger camera, see this method's body — per
+    /// `docs/services/svbony-camera.md` "Behavioral contracts → Exposure"
+    /// step 1). Tenet 3 (K5): this method never
     /// touches `SVB_COOLER_ENABLE`/`SVB_TARGET_TEMPERATURE` — cooling is
     /// engaged only by an explicit operator `CoolerOn`/`SetCCDTemperature`
     /// call, never here.
@@ -312,20 +325,31 @@ impl SvbonyCamera {
             supports_pulse_guide: property_ex.supports_pulse_guide,
         });
 
-        // State-machine steps 1-2: mode selection (trigger cameras only) +
-        // video-capture start, once, here — never repeated per-exposure. A
-        // read of camera-mode capability + a mode-select call is not
-        // actuation of the imaging chain (no cooler, no motion, no shutter),
-        // so it does not implicate tenet 3 (see the design doc's exposure
-        // contract point 1).
+        // State-machine step 1, trigger cameras only (tenet 3): select
+        // `SVB_MODE_TRIG_SOFT` and arm video capture once, here, never
+        // repeated per-exposure. A trigger-gated capture produces no frames
+        // — and therefore does not physically actuate the imaging chain —
+        // until an operator's `StartExposure` sends the soft trigger, so
+        // this is a read of camera-mode capability plus an armed-but-idle
+        // mode-select, not actuation (see the design doc's exposure contract
+        // point 1). A **non**-trigger camera has no such gate: its only mode
+        // is free-running `SVB_MODE_NORMAL`, so starting video capture here
+        // would begin the sensor continuously integrating and streaming
+        // frames as a side effect of connecting — genuine actuation with no
+        // operator action, which tenet 3 bans outright. So for non-trigger
+        // cameras, video capture is left unarmed at connect; `capture`'s
+        // non-trigger fallback (state-machine step 5) already
+        // stops-then-starts it fresh on every operator-initiated
+        // `StartExposure`, which is where a non-trigger camera's capture
+        // must first arm.
         if property.is_trigger_cam {
             self.handle
                 .set_camera_mode(svbony_rs::CameraMode::TrigSoft)
                 .map_err(|_| ASCOMError::NOT_CONNECTED)?;
+            self.handle
+                .start_video_capture()
+                .map_err(|_| ASCOMError::NOT_CONNECTED)?;
         }
-        self.handle
-            .start_video_capture()
-            .map_err(|_| ASCOMError::NOT_CONNECTED)?;
 
         Ok(())
     }
@@ -339,11 +363,13 @@ impl SvbonyCamera {
     }
 
     /// Cancel any in-flight exposure (abort): bump the generation so the
-    /// capture task discards its result, clear `image_ready`/`last_error`.
-    /// Deliberately does NOT clear `exposure_in_flight` — the capture task
-    /// clears that once its blocking SDK chain drains, so a new exposure
-    /// cannot race the still-running one (the design's "one owner per
-    /// device"). Unlike `zwo-camera`, this never signals the SDK — see
+    /// capture task discards its result, clear `image_ready`/`last_error`,
+    /// and set `aborted` so `CameraState`/`PercentCompleted` promptly report
+    /// idle instead of a still-running exposure (see `DeviceState::aborted`'s
+    /// doc comment). Deliberately does NOT clear `exposure_in_flight` — the
+    /// capture task clears that once its blocking SDK chain drains, so a new
+    /// exposure cannot race the still-running one (the design's "one owner
+    /// per device"). Unlike `zwo-camera`, this never signals the SDK — see
     /// `backend.rs`'s module docs for why `capture` has no interrupt path.
     fn cancel_exposure(&self) {
         if !self.state.exposure_in_flight.load(Ordering::Acquire) {
@@ -356,6 +382,7 @@ impl SvbonyCamera {
             .exposure_generation
             .fetch_add(1, Ordering::AcqRel);
         self.state.image_ready.store(false, Ordering::Release);
+        self.state.aborted.store(true, Ordering::Release);
         *self.state.last_error.lock() = None;
     }
 
@@ -1071,6 +1098,14 @@ impl Camera for SvbonyCamera {
         if self.state.last_error.lock().is_some() {
             return Ok(CameraState::Error);
         }
+        // An abort was requested: report idle promptly even though the
+        // still-running, un-interruptible capture task hasn't drained yet
+        // (see `DeviceState::aborted`'s doc comment) — `exposure_in_flight`
+        // alone would keep reporting `Exposing` for the rest of the
+        // deadline.
+        if self.state.aborted.load(Ordering::Acquire) {
+            return Ok(CameraState::Idle);
+        }
         if self.state.exposure_in_flight.load(Ordering::Acquire) {
             return Ok(CameraState::Exposing);
         }
@@ -1083,6 +1118,12 @@ impl Camera for SvbonyCamera {
     }
 
     async fn percent_completed(&self) -> ASCOMResult<u8> {
+        // Mirror `camera_state`: an abort means no image is ready, so 0 (not
+        // the idle-ready branch's 100) is the honest answer while the
+        // still-running capture task drains in the background.
+        if self.state.aborted.load(Ordering::Acquire) {
+            return Ok(0);
+        }
         if !self.state.exposure_in_flight.load(Ordering::Acquire) {
             // Idle: 100 once ready, 0 in the Error state.
             return Ok(if self.state.last_error.lock().is_some() {
@@ -1181,6 +1222,7 @@ impl Camera for SvbonyCamera {
             + 1;
 
         self.state.image_ready.store(false, Ordering::Release);
+        self.state.aborted.store(false, Ordering::Release);
         *self.state.last_error.lock() = None;
         *self.state.last_exposure_start_time.lock() = Some(SystemTime::now());
         *self.state.last_exposure_duration.lock() = Some(duration);
@@ -1511,6 +1553,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn connecting_a_trigger_camera_arms_video_capture_exactly_once() {
+        // Trigger-gated capture produces no frames until an operator's soft
+        // trigger, so arming it once at connect is not actuation (tenet 3).
+        let handle = Arc::new(MockCameraHandle::default());
+        let cam = SvbonyCamera::new(handle.clone(), None);
+        cam.connect().unwrap();
+        assert_eq!(handle.start_video_capture_call_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn connecting_a_non_trigger_camera_never_starts_video_capture() {
+        // Tenet 3: a non-trigger camera's only mode is free-running, so
+        // starting video capture at connect would begin the sensor
+        // continuously integrating/streaming with no operator action.
+        // Capture must stay unarmed until the operator's first StartExposure.
+        let handle = Arc::new(MockCameraHandle::default().without_trigger_cam());
+        let cam = SvbonyCamera::new(handle.clone(), None);
+        cam.connect().unwrap();
+        assert_eq!(handle.start_video_capture_call_count(), 0);
+        assert_eq!(handle.stop_video_capture_call_count(), 0);
+    }
+
+    #[tokio::test]
     async fn set_ccd_temperature_rejects_out_of_range() {
         let cam = connected_device(MockCameraHandle::default());
         assert_eq!(
@@ -1638,6 +1703,12 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(20)).await;
         cam.abort_exposure().await.unwrap();
         assert!(!cam.image_ready().await.unwrap());
+        // CameraState/PercentCompleted must reflect the abort immediately,
+        // not only once the still-running, un-interruptible capture task
+        // happens to drain (the whole injected 300ms capture_delay is still
+        // in flight here).
+        assert_eq!(cam.camera_state().await.unwrap(), CameraState::Idle);
+        assert_eq!(cam.percent_completed().await.unwrap(), 0);
         // The late-completing capture task must not resurrect ImageReady or
         // an Error state once it eventually drains (the generation-counter
         // guard, E7).
@@ -1688,7 +1759,7 @@ mod tests {
         assert!(!cam.image_ready().await.unwrap());
     }
 
-    /// State-machine step 6: a non-trigger-capable camera still completes an
+    /// State-machine step 5: a non-trigger-capable camera still completes an
     /// exposure (via the backend's free-running restart fallback), and
     /// `camera.rs` correctly threads `sensor.is_trigger_cam = false` through
     /// to the capture request.

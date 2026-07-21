@@ -268,20 +268,37 @@ as unsafe for concurrent calls on one handle, the same posture
 `qhyccd-rs`/`zwo-rs` take. Every SDK call funnels through `spawn_blocking`
 with a single logical owner per device, with a generation-counter guard so
 an aborted/disconnected exposure can't publish a late frame, mirroring
-`zwo-camera`'s `run_exposure`/`result_lock` pattern. Unlike `zwo-camera`,
-`AbortExposure` never signals the SDK (there is no data-preserving or
-interruptible stop — see the Exposure contract below): it only bumps the
-generation counter, so a capture already running against
-`SVBGetVideoData` runs to completion (up to its `exposure*2+500ms`
-deadline) before its (discarded) result is checked. A consequence worth
-flagging explicitly: property/control reads that need the open `Camera`
-handle (gain, offset, temperature, …) block behind the same mutex
-`capture` holds for its `SVBGetVideoData` call, so they can stall for up to
-that deadline while an exposure is in flight — this is a hardware-forced
-consequence of SVBony having no separate "start" and "poll status" pair the
-way ASI does, not an oversight. `is_open`/`Connected` do **not** share this
-fate — they are backed by an independent atomic specifically so basic
-connection-state polling stays responsive during an in-flight exposure.
+`zwo-camera`'s `run_exposure`/`result_lock` pattern. `svbony-rs`'s `Sdk`
+additionally serializes on a process-wide lock around every call into the
+SDK's *global* (non-per-handle) entry points (`SVBGetNumOfConnectedCameras`/
+`SVBGetCameraInfo`/`SVBGetSDKVersion`/`SVBOpenCamera`) — `Sdk` is a cheap,
+freely-instantiated value (one per discovered camera), so without this lock
+two `Sdk` instances opening different cameras concurrently would race
+against the SDK's process-global camera/handle table with no synchronization
+at all; see `svbony-rs::SDK_CALL_LOCK`'s doc comment.
+
+Unlike `zwo-camera`, `AbortExposure` never signals the SDK (there is no
+data-preserving or interruptible stop — see the Exposure contract below): it
+only bumps the generation counter, so a capture already running against
+`SVBGetVideoData` runs to completion (up to its `exposure*2+500ms` deadline)
+before its (discarded) result is checked. `CameraState`/`PercentCompleted`
+do not wait for that drain, though: an `aborted` flag (cleared on the next
+`StartExposure`/reconnect) makes them report idle/`0` immediately once
+`AbortExposure`/`Disconnect` is called, rather than continuing to report
+`Exposing`/a climbing percentage for the rest of that deadline.
+
+A consequence worth flagging explicitly: property/control reads that need
+the open `Camera` handle (gain, offset, temperature, …) can still block
+behind the same mutex `capture` holds for its `SVBGetVideoData` wait — this
+is a hardware-forced consequence of SVBony having no separate "start" and
+"poll status" pair the way ASI does, not an oversight — but `capture` bounds
+that stall to at most one poll slice (`backend::VIDEO_DATA_POLL_MS`, 250ms):
+it polls `SVBGetVideoData` in short slices instead of one blocking call for
+the whole deadline, releasing the mutex between polls (a `SvbError::Timeout`
+from a short slice just means "no frame yet," not a real failure). `is_open`/
+`Connected` do not share even that bounded stall — they are backed by an
+independent atomic specifically so basic connection-state polling stays
+responsive during an in-flight exposure.
 
 ---
 
@@ -511,23 +528,29 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
 
 **State machine (as implemented):**
 
-1. **Mode selection, at connect.** When the camera reports `IsTriggerCam`
+1. **Mode selection + video-capture start, at connect — trigger cameras
+   only.** When the camera reports `IsTriggerCam`
    (`SVB_CAMERA_PROPERTY.IsTriggerCam`), the driver calls
-   `SVBSetCameraMode(SVB_MODE_TRIG_SOFT)` once, during the connect
-   handshake — not per-exposure. *Why at connect, not at first exposure:*
-   mode selection is a one-time camera-state change, not per-frame; doing
-   it once at connect keeps `StartExposure` on the hot path free of a
-   first-call special case, and matches `indi_svbony_ccd`'s behaviour. This
-   is a **read of camera mode capability + a mode-select call**, not
-   actuation of the imaging chain (no cooler, no motion, no shutter) — it
-   does not implicate tenet 3's actuation ban, which the workspace tenet
-   list scopes to physical actuation (motion, cooler setpoints, cover/lamp,
-   power toggles, filter moves, guide pulses).
-2. **Video capture starts once**, also at connect, via
-   `SVBStartVideoCapture` — not restarted per exposure (trigger mode
-   frames are gated by the soft trigger, so free-running capture is safe
-   to leave armed).
-3. **Each ASCOM `StartExposure`:**
+   `SVBSetCameraMode(SVB_MODE_TRIG_SOFT)` once and then `SVBStartVideoCapture`
+   once, during the connect handshake — not per-exposure. *Why at connect,
+   not at first exposure:* mode selection is a one-time camera-state change,
+   not per-frame; doing it once at connect keeps `StartExposure` on the hot
+   path free of a first-call special case, and matches `indi_svbony_ccd`'s
+   behaviour. This is tenet-3-safe **only** because trigger-gated video
+   capture produces no frames until an operator's soft trigger — a read of
+   camera-mode capability plus an armed-but-idle mode-select, not actuation
+   of the imaging chain (no cooler, no motion, no shutter).
+   **Non-trigger cameras are different and do NOT get this at connect:**
+   their only mode is free-running `SVB_MODE_NORMAL`, so starting video
+   capture at connect would begin the sensor continuously integrating and
+   streaming frames as a side effect of connecting — genuine actuation with
+   no operator action, which tenet 3 bans outright. For a non-trigger
+   camera, video capture is left unarmed at connect; it is armed for the
+   first time by state-machine step 5's per-exposure stop-then-start, which
+   only ever runs from an operator-initiated `StartExposure`. (Fixed
+   post-Phase-E, per PR #658 review: an earlier revision started video
+   capture unconditionally at connect regardless of `IsTriggerCam`.)
+2. **Each ASCOM `StartExposure`:**
    a. Sets `SVB_EXPOSURE` to the requested duration. **Unit assumption:**
       the ground truth does not state the control's unit explicitly;
       `svbony-rs`'s `ControlType::Exposure` doc comment models it as
@@ -540,13 +563,13 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
       recommendation (captured in `docs/plans/svbony-camera.md`'s
       "Verified SDK facts"). Exceeding the deadline is a failure (see E9
       below).
-4. **Stale-frame flush.** A buffered frame from before a ROI/exposure
+3. **Stale-frame flush.** A buffered frame from before a ROI/exposure
    change must be drained before the first post-change frame is trusted —
    the `indi_svbony_ccd` reference documents this workaround; Phase E must
    verify against real hardware whether `svbony-rs`'s
    `SVBGetVideoData`/soft-trigger pairing already avoids this or needs an
    explicit flush.
-5. **There is no data-preserving stop at the SDK level**
+4. **There is no data-preserving stop at the SDK level**
    (`SVBStopVideoCapture` discards whatever is in flight). Consequently:
    - `CanStopExposure = false`; `StopExposure` returns `NOT_IMPLEMENTED`
      unconditionally rather than pretending to gracefully preserve data it
@@ -562,26 +585,29 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
      thread's `SVBGetVideoData` is blocked on the same handle — exactly the
      kind of undocumented-thread-safety risk the Concurrency section above
      warns about generally, and calling it would additionally leave video
-     capture stopped when the design's "started once at connect, never
-     restarted" invariant (step 2) assumes it stays armed. **To be
-     confirmed/revised after real-hardware validation** (still pending,
-     see below): if the SDK turns out to tolerate a concurrent
-     `SVBStopVideoCapture` call
+     capture stopped for a trigger camera, whose step 1 invariant ("started
+     once at connect, never restarted") assumes it stays armed — a
+     non-trigger camera's step 5 restart already stops/starts it per
+     exposure regardless. **To be confirmed/revised after real-hardware
+     validation** (still pending, see below): if the SDK turns out to
+     tolerate a concurrent `SVBStopVideoCapture` call
      safely (some vendor video APIs are explicitly designed to unblock a
      pending read this way), wiring that in would make `AbortExposure`
      responsive mid-exposure instead of only at the next natural
      `SVBGetVideoData` return; if the SDK instead turns out to support a
      genuine data-preserving stop, `CanStopExposure` flips to `true` to
-     match `zwo-camera`.
-6. **Non-trigger cameras** (`IsTriggerCam = false`): fall back to
+     match `zwo-camera`. `CameraState`/`PercentCompleted` do not wait for
+     this drain either way — see the Concurrency section above.
+5. **Non-trigger cameras** (`IsTriggerCam = false`): fall back to
    `SVB_MODE_NORMAL` (free-running video capture) with a per-exposure
-   capture restart (no soft trigger available) — the SV605CC is
-   trigger-capable, so this path is untested by the simulation and is a
-   Phase E design note, not yet BDD-covered.
-7. **Dark frames.** No mechanical shutter exists in video mode (same
+   capture restart (no soft trigger available) — armed for the first time
+   here, not at connect (step 1) — the SV605CC is trigger-capable, so this
+   path is untested by the simulation and is a Phase E design note, not yet
+   BDD-covered.
+6. **Dark frames.** No mechanical shutter exists in video mode (same
    posture as `zwo-camera`'s shutterless ASI sensors): `Light = false` is
    accepted and captures identically; `HasShutter = false`.
-8. **Mid-exposure SDK error or an exceeded `SVBGetVideoData` deadline**
+7. **Mid-exposure SDK error or an exceeded `SVBGetVideoData` deadline**
    transitions `CameraState = Error`, sets `last_error`, leaves
    `ImageReady = false` — covered by unit tests against the mock backend
    seam (mirrors `zwo-camera`'s E9), not BDD (the simulation cannot force
@@ -1023,6 +1049,24 @@ sha256 verification, idempotent install, `--force`/`--root` flags) — only
 the *build-time* RUNPATH-linked-binary side of the story remains to be
 exercised, which needs a build host with the real SDK provisioned
 (`install-svbony-sdk` already proves that step works in CI).
+
+**Known gap: `apt purge` does not remove the helper-installed SDK blob.**
+`pkg/postrm` is `packaging/postrm.common` byte-for-byte — `scripts/
+check-pkg-assets.sh` enforces this identically across every packaged
+service, with no per-service exception (unlike `pkg/postinst`, which does
+allow one) — so it only ever cleans up `/var/lib/rusty-photon/$SVC`, never
+`/usr/lib/rusty-photon/libSVBCameraSDK.so`. Since `rusty-photon-svbony-sdk-
+install` downloads that file post-install rather than shipping it in the
+`.deb`, dpkg never tracks it and purge leaves it (and the now-possibly-empty
+directory) behind — contradicting this section's "so the package can
+cleanly own and remove the file" rationale. This is not unique to
+svbony-camera: `qhy-camera`'s analogous `rusty-photon-qhy-firmware-install`
+helper has the identical gap for its firmware/fxload/udev-rule files. Fixing
+it properly means teaching the *shared* `postrm.common` template about each
+download-on-target service's extra paths (keyed on `$SVC`, mirroring how
+`check-pkg-assets.sh` already special-cases `postinst` per service) — a
+fleet-wide packaging change, out of scope for this service's own delivery
+phasing; tracked here as follow-up rather than silently left undocumented.
 
 ## References
 

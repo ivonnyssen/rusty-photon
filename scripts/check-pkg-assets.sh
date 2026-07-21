@@ -344,7 +344,17 @@ fi
 # The Windows package set is the Linux one (services/*/pkg) plus
 # session-runner, which ships on Windows from day one while its Linux .deb
 # remains an open follow-up (docs/plans/windows-packaging.md).
-WIN_SERVICES="$(for d in services/*/pkg; do [ -d "$d" ] && basename "$(dirname "$d")"; done | tr '\n' ' ')session-runner"
+# svbony-camera is excluded: it has no Windows SVBony SDK at all
+# (docs/services/svbony-camera.md's Phase F notes — excluded entirely from
+# the Windows per-service matrix), unlike every other packaged service, so
+# there is no Windows package for `win_port_of()`/`installer/fragments/` to
+# describe.
+WIN_SERVICES="$(for d in services/*/pkg; do
+    [ -d "$d" ] || continue
+    svc=$(basename "$(dirname "$d")")
+    [ "$svc" = svbony-camera ] && continue
+    echo "$svc"
+done | tr '\n' ' ')session-runner"
 
 # Documented family ports (mirrors verify-packages.sh port_of + session-runner).
 win_port_of() {

@@ -61,11 +61,59 @@ pub use error::{svb_check, Error, Result, SvbError};
 #[cfg(feature = "simulation")]
 pub const SIM_CAMERA_COUNT: usize = 1;
 
+/// Serializes every call this crate makes into the SVBony SDK's *global*
+/// (non-per-handle) entry points — `SVBGetNumOfConnectedCameras`,
+/// `SVBGetCameraInfo` (via the internal `read_camera_info`), `SVBGetSDKVersion`,
+/// and `SVBOpenCamera`. The SDK's thread-safety is undocumented (the same
+/// posture that makes [`Camera`] `Send + !Sync`), and unlike a `Camera`
+/// handle's per-instance state, these entry points touch the SDK's
+/// process-global camera/handle table — so serializing them needs a
+/// process-wide lock, not a per-[`Sdk`]-instance one: [`Sdk`] is a cheap,
+/// freely-instantiated ZST (callers mint one per discovered camera, see
+/// `svbony-camera`'s `lib.rs`), so two independent `Sdk` values calling
+/// `SVBOpenCamera` concurrently would otherwise race with no synchronization
+/// at all.
+static SDK_CALL_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Run `f` with the process-wide [`SDK_CALL_LOCK`] held, recovering from a
+/// poisoned lock the same way a panicking SDK call would leave things: the
+/// SDK call itself doesn't roll back on an unwind, so a poisoned lock is not
+/// a reason to refuse further (single-threaded-serialized) SDK access.
+fn with_sdk_lock<T>(f: impl FnOnce() -> T) -> T {
+    let _guard = SDK_CALL_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    f()
+}
+
+/// The unlocked `SVBGetNumOfConnectedCameras` query — callers MUST already
+/// hold [`SDK_CALL_LOCK`] (via [`with_sdk_lock`]) before calling this; it
+/// exists so [`camera::Sdk::cameras`] can query the count without
+/// re-entering the (non-reentrant) lock that [`Sdk::camera_count`] takes.
+pub(crate) fn camera_count_raw() -> usize {
+    #[cfg(feature = "simulation")]
+    let count = SIM_CAMERA_COUNT;
+    #[cfg(not(feature = "simulation"))]
+    let count = {
+        // SAFETY: `SVBGetNumOfConnectedCameras` takes no arguments and
+        // returns the connected-camera count directly (no error code); it
+        // probes USB and is always safe to call. A negative return (not
+        // documented as possible, but not ruled out either) is clamped to
+        // zero. Caller holds `SDK_CALL_LOCK` (see its doc comment) since this
+        // touches the SDK's global camera table.
+        let n = unsafe { sys::SVBGetNumOfConnectedCameras() };
+        usize::try_from(n).unwrap_or(0)
+    };
+    count
+}
+
 /// Entry point to the SVBony SDK.
 ///
 /// Enumerates connected cameras. With the `simulation` feature, a fixed
 /// simulated environment is reported and the native SDK is never called
-/// (though it is still linked — see the crate docs).
+/// (though it is still linked — see the crate docs). Every method serializes
+/// against the process-wide [`SDK_CALL_LOCK`] — see its doc comment for why
+/// a per-`Sdk`-instance lock would not be enough.
 #[derive(Debug, Default)]
 pub struct Sdk {
     _private: (),
@@ -87,18 +135,7 @@ impl Sdk {
     /// # Errors
     /// Infallible today; returns [`Result`] for forward compatibility.
     pub fn camera_count(&self) -> Result<usize> {
-        #[cfg(feature = "simulation")]
-        let count = SIM_CAMERA_COUNT;
-        #[cfg(not(feature = "simulation"))]
-        let count = {
-            // SAFETY: `SVBGetNumOfConnectedCameras` takes no arguments and
-            // returns the connected-camera count directly (no error code);
-            // it probes USB and is always safe to call. A negative return
-            // (not documented as possible, but not ruled out either) is
-            // clamped to zero.
-            let n = unsafe { sys::SVBGetNumOfConnectedCameras() };
-            usize::try_from(n).unwrap_or(0)
-        };
+        let count = with_sdk_lock(camera_count_raw);
         tracing::debug!(count, "queried connected SVBony camera count");
         Ok(count)
     }
@@ -109,16 +146,20 @@ impl Sdk {
     /// # Errors
     /// Infallible today; returns [`Result`] for forward compatibility.
     pub fn sdk_version(&self) -> Result<String> {
-        #[cfg(feature = "simulation")]
-        let version = "simulation".to_owned();
-        #[cfg(not(feature = "simulation"))]
-        let version = {
-            // SAFETY: `SVBGetSDKVersion` returns a pointer to a static,
-            // NUL-terminated C string owned by the SDK; we only read it.
-            let ptr = unsafe { sys::SVBGetSDKVersion() };
-            version_string(ptr)
-        };
-        Ok(version)
+        with_sdk_lock(|| {
+            #[cfg(feature = "simulation")]
+            let version = "simulation".to_owned();
+            #[cfg(not(feature = "simulation"))]
+            let version = {
+                // SAFETY: `SVBGetSDKVersion` returns a pointer to a static,
+                // NUL-terminated C string owned by the SDK; we only read it.
+                // Serialized by `SDK_CALL_LOCK` for consistency with the
+                // SDK's other global entry points.
+                let ptr = unsafe { sys::SVBGetSDKVersion() };
+                version_string(ptr)
+            };
+            Ok(version)
+        })
     }
 }
 

@@ -463,22 +463,27 @@ impl Sdk {
     /// # Errors
     /// Returns [`Error::Svb`] if the SDK fails to read a camera's info.
     pub fn cameras(&self) -> Result<Vec<CameraInfo>> {
-        #[cfg(feature = "simulation")]
-        let infos = (0..crate::SIM_CAMERA_COUNT)
-            .map(|_| sim_camera_info())
-            .collect();
-        #[cfg(not(feature = "simulation"))]
-        let infos = {
-            let n = self.camera_count()?;
-            (0..n)
-                .map(|index| {
-                    let idx =
-                        i32::try_from(index).map_err(|_| Error::Svb(SvbError::InvalidIndex))?;
-                    read_camera_info(idx)
-                })
-                .collect::<Result<Vec<_>>>()?
-        };
-        Ok(infos)
+        crate::with_sdk_lock(|| {
+            #[cfg(feature = "simulation")]
+            let infos = (0..crate::SIM_CAMERA_COUNT)
+                .map(|_| sim_camera_info())
+                .collect();
+            #[cfg(not(feature = "simulation"))]
+            let infos = {
+                // `crate::camera_count_raw`, not `self.camera_count()`: the
+                // latter takes `SDK_CALL_LOCK` itself, and it is not
+                // reentrant.
+                let n = crate::camera_count_raw();
+                (0..n)
+                    .map(|index| {
+                        let idx =
+                            i32::try_from(index).map_err(|_| Error::Svb(SvbError::InvalidIndex))?;
+                        read_camera_info(idx)
+                    })
+                    .collect::<Result<Vec<_>>>()?
+            };
+            Ok(infos)
+        })
     }
 
     /// Open the camera at enumeration `index`.
@@ -491,59 +496,67 @@ impl Sdk {
     /// Returns [`Error::Svb`] if the index is out of range or the SDK fails
     /// to open the camera or read its properties.
     pub fn open_camera(&self, index: usize) -> Result<Camera> {
-        #[cfg(feature = "simulation")]
-        let camera = {
-            if index >= crate::SIM_CAMERA_COUNT {
-                return Err(Error::Svb(SvbError::InvalidIndex));
-            }
-            let info = sim_camera_info();
-            let property = sim_camera_property();
-            let property_ex = sim_camera_property_ex();
-            let state = std::sync::Mutex::new(SimState::new(&property));
-            Camera {
-                info,
-                property,
-                property_ex,
-                state,
-                _not_sync: std::marker::PhantomData,
-            }
-        };
-        #[cfg(not(feature = "simulation"))]
-        let camera = {
-            let idx = i32::try_from(index).map_err(|_| Error::Svb(SvbError::InvalidIndex))?;
-            let info = read_camera_info(idx)?;
-            // SAFETY: `info.id` is a valid CameraID from enumeration; open it.
-            svb_check(unsafe { sys::SVBOpenCamera(info.id) })?;
-            let property = match read_camera_property(info.id) {
-                Ok(p) => p,
-                Err(e) => {
-                    // SAFETY: closing what was just successfully opened, on
-                    // the property-read failure path, so the handle is not
-                    // leaked.
-                    unsafe {
-                        let _ = sys::SVBCloseCamera(info.id);
-                    }
-                    return Err(e);
+        // `SVBOpenCamera` mutates the SDK's global camera/handle table, so
+        // this — like `cameras()` — serializes on the process-wide
+        // `SDK_CALL_LOCK` (see its doc comment): two `Sdk` instances (one per
+        // discovered camera, minted freely by callers) opening different
+        // cameras concurrently would otherwise race with no synchronization
+        // at all.
+        crate::with_sdk_lock(|| {
+            #[cfg(feature = "simulation")]
+            let camera = {
+                if index >= crate::SIM_CAMERA_COUNT {
+                    return Err(Error::Svb(SvbError::InvalidIndex));
+                }
+                let info = sim_camera_info();
+                let property = sim_camera_property();
+                let property_ex = sim_camera_property_ex();
+                let state = std::sync::Mutex::new(SimState::new(&property));
+                Camera {
+                    info,
+                    property,
+                    property_ex,
+                    state,
+                    _not_sync: std::marker::PhantomData,
                 }
             };
-            let property_ex = match read_camera_property_ex(info.id) {
-                Ok(p) => p,
-                Err(e) => {
-                    // SAFETY: as above.
-                    unsafe {
-                        let _ = sys::SVBCloseCamera(info.id);
+            #[cfg(not(feature = "simulation"))]
+            let camera = {
+                let idx = i32::try_from(index).map_err(|_| Error::Svb(SvbError::InvalidIndex))?;
+                let info = read_camera_info(idx)?;
+                // SAFETY: `info.id` is a valid CameraID from enumeration; open it.
+                svb_check(unsafe { sys::SVBOpenCamera(info.id) })?;
+                let property = match read_camera_property(info.id) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        // SAFETY: closing what was just successfully opened, on
+                        // the property-read failure path, so the handle is not
+                        // leaked.
+                        unsafe {
+                            let _ = sys::SVBCloseCamera(info.id);
+                        }
+                        return Err(e);
                     }
-                    return Err(e);
+                };
+                let property_ex = match read_camera_property_ex(info.id) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        // SAFETY: as above.
+                        unsafe {
+                            let _ = sys::SVBCloseCamera(info.id);
+                        }
+                        return Err(e);
+                    }
+                };
+                Camera {
+                    info,
+                    property,
+                    property_ex,
+                    _not_sync: std::marker::PhantomData,
                 }
             };
-            Camera {
-                info,
-                property,
-                property_ex,
-                _not_sync: std::marker::PhantomData,
-            }
-        };
-        Ok(camera)
+            Ok(camera)
+        })
     }
 }
 

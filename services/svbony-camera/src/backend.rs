@@ -16,12 +16,12 @@
 //! operation the `Camera` trait needs: property/property-ex fetch (cached on
 //! the open `svbony_rs::Camera`, so these are cheap once open), control
 //! get/set (gain, exposure, black level, cooler enable/target/current-temp/
-//! power), camera-mode select + video-capture start (called once at connect
-//! by `camera.rs`'s open handshake — see
+//! power), camera-mode select + video-capture start (called once at connect,
+//! trigger cameras only — by `camera.rs`'s open handshake — see
 //! `docs/services/svbony-camera.md` "Behavioral contracts → Exposure"
-//! steps 1-2), the soft-trigger [`CameraHandle::capture`] composite (ROI +
+//! step 1), the soft-trigger [`CameraHandle::capture`] composite (ROI +
 //! output format + exposure control + trigger + the `exposure*2+500ms`
-//! `SVBGetVideoData` deadline, state-machine step 3), and pulse-guide.
+//! `SVBGetVideoData` deadline, state-machine step 2), and pulse-guide.
 //!
 //! **Why `capture` has no interrupt path.** Unlike `zwo-camera`'s
 //! `ASIStopExposure` (a genuine mid-integration abort), SVBony has no
@@ -37,19 +37,30 @@
 //! exposure generation counter so a late-completing capture's result is
 //! silently discarded — the same "single owner, generation-counter guard"
 //! discipline `zwo-camera`'s `run_exposure`/`result_lock` uses, just without
-//! an SDK-level short-circuit. The production handle's SDK mutex is
-//! released between `capture`'s ROI/control setup and its trigger +
-//! `SVBGetVideoData` call, mirroring `zwo-camera`'s release-during-
-//! integration pattern, so the simulation-only artificial wait (see
+//! an SDK-level short-circuit.
+//!
+//! **Staying responsive during an in-flight exposure.** The production
+//! handle's SDK mutex is released between `capture`'s ROI/control setup and
+//! its trigger + `SVBGetVideoData` call, mirroring `zwo-camera`'s release-
+//! during-integration pattern, so the simulation-only artificial wait (see
 //! [`CaptureRequest::duration`]) never starves concurrent property/control
-//! reads; `is_open` goes further and is backed by its own atomic
+//! reads. For the `SVBGetVideoData` wait itself — the one genuinely
+//! long-blocking real-hardware call, up to `exposure_us*2+500ms` — `capture`
+//! polls it in short slices (see `VIDEO_DATA_POLL_MS`) instead of one single
+//! blocking call for the whole deadline, **releasing the mutex between
+//! polls**: a `SvbError::Timeout` from a short slice just means "no frame
+//! yet," not a real failure, so the poll loop retries until either a frame
+//! arrives or the overall deadline elapses. This bounds how long any other
+//! `Camera` trait method (`Disconnect`, `Gain`, `CoolerOn`, `CCDTemperature`,
+//! …) can be blocked waiting for the mutex to one poll slice, not the whole
+//! exposure — `is_open` goes further still and is backed by its own atomic
 //! (`SvbonyCameraHandle`'s `open` field) so connection-state reads never
 //! contend the capture lock at all — every `Camera` trait method calls
 //! `ensure_connected` first and must stay responsive during an in-flight
 //! exposure.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 use svbony_rs::{
@@ -97,7 +108,7 @@ pub struct CaptureRequest {
     pub exposure_us: i64,
     /// Whether this camera is trigger-capable (`IsTriggerCam`): selects the
     /// soft-trigger path vs the non-trigger free-running restart fallback
-    /// (state-machine step 6).
+    /// (state-machine step 5).
     pub is_trigger_cam: bool,
     /// Wall-clock integration time the capture honours **under the
     /// `simulation` feature only** — `svbony-rs`'s simulated
@@ -119,6 +130,13 @@ pub fn exposure_timeout_ms(exposure_us: i64) -> i32 {
     let ms = us.saturating_mul(2) / 1_000 + 500;
     i32::try_from(ms).unwrap_or(i32::MAX)
 }
+
+/// How long each `SVBGetVideoData` poll slice waits before `capture` checks
+/// back in and, if no frame arrived, releases the SDK mutex and retries —
+/// see the module docs ("Staying responsive during an in-flight exposure")
+/// for why polling in slices instead of one blocking call for the whole
+/// deadline matters.
+const VIDEO_DATA_POLL_MS: i32 = 250;
 
 /// The blocking camera operations the ASCOM `Camera` device drives. Every
 /// method is synchronous (the SDK is blocking C FFI); callers offload SDK
@@ -152,14 +170,17 @@ pub trait CameraHandle: std::fmt::Debug + Send + Sync {
     fn set_control_value(&self, control: ControlType, value: i64) -> BackendResult<()>;
 
     /// Select the camera acquisition mode (`SVBSetCameraMode`) — called once
-    /// at connect, never per-exposure (state-machine step 1).
+    /// at connect for a trigger-capable camera, never per-exposure
+    /// (state-machine step 1).
     fn set_camera_mode(&self, mode: CameraMode) -> BackendResult<()>;
     /// Start video capture (`SVBStartVideoCapture`) — called once at connect
-    /// (state-machine step 2), and again per-exposure only on the
-    /// non-trigger-camera fallback path (step 6).
+    /// for a trigger-capable camera (state-machine step 1; tenet 3 forbids
+    /// this at connect for a non-trigger camera, since its only mode is
+    /// free-running), and per-exposure only on the non-trigger-camera
+    /// fallback path (step 5).
     fn start_video_capture(&self) -> BackendResult<()>;
     /// Stop video capture (`SVBStopVideoCapture`) — used only by the
-    /// non-trigger-camera per-exposure restart (step 6); never called
+    /// non-trigger-camera per-exposure restart (step 5); never called
     /// concurrently with an in-flight [`capture`](Self::capture) on another
     /// thread (see the module docs).
     fn stop_video_capture(&self) -> BackendResult<()>;
@@ -336,16 +357,19 @@ impl CameraHandle for SvbonyCameraHandle {
         #[cfg(not(feature = "simulation"))]
         let _ = request.duration;
 
-        let guard = self.camera.lock();
-        let camera = guard.as_ref().ok_or_else(BackendError::closed)?;
-        if request.is_trigger_cam {
-            camera.send_soft_trigger()?;
-        } else {
-            // Non-trigger cameras have no soft trigger: restart free-running
-            // capture per exposure (state-machine step 6). Untested by the
-            // simulation, which always reports `IsTriggerCam = true`.
-            camera.stop_video_capture()?;
-            camera.start_video_capture()?;
+        {
+            let guard = self.camera.lock();
+            let camera = guard.as_ref().ok_or_else(BackendError::closed)?;
+            if request.is_trigger_cam {
+                camera.send_soft_trigger()?;
+            } else {
+                // Non-trigger cameras have no soft trigger: restart
+                // free-running capture per exposure (state-machine step 5).
+                // Untested by the simulation, which always reports
+                // `IsTriggerCam = true`.
+                camera.stop_video_capture()?;
+                camera.start_video_capture()?;
+            }
         }
 
         let mut buf = vec![
@@ -354,8 +378,36 @@ impl CameraHandle for SvbonyCameraHandle {
                 * request.height as usize
                 * ImageType::Raw16.bytes_per_pixel()
         ];
-        camera.get_video_data(&mut buf, exposure_timeout_ms(request.exposure_us))?;
-        Ok(buf)
+
+        // Poll `SVBGetVideoData` in short slices instead of one blocking call
+        // for the whole `exposure_us*2+500ms` deadline, releasing the SDK
+        // mutex between polls — see the module docs. A `SvbError::Timeout`
+        // from a short slice just means "no frame yet"; retry until either a
+        // frame arrives or the overall deadline elapses (at which point the
+        // final `Timeout` is the real, reported error).
+        let deadline = Instant::now()
+            + Duration::from_millis(
+                u64::try_from(exposure_timeout_ms(request.exposure_us)).unwrap_or(0),
+            );
+        loop {
+            let remaining_ms = i32::try_from(
+                deadline
+                    .saturating_duration_since(Instant::now())
+                    .as_millis(),
+            )
+            .unwrap_or(i32::MAX);
+            let poll_ms = VIDEO_DATA_POLL_MS.min(remaining_ms).max(1);
+            let result = {
+                let guard = self.camera.lock();
+                let camera = guard.as_ref().ok_or_else(BackendError::closed)?;
+                camera.get_video_data(&mut buf, poll_ms)
+            };
+            match result {
+                Ok(()) => return Ok(buf),
+                Err(svbony_rs::Error::Svb(svbony_rs::SvbError::Timeout)) if remaining_ms > 0 => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
     }
 
     fn can_pulse_guide(&self) -> BackendResult<bool> {
@@ -440,7 +492,7 @@ mod handle_tests {
 #[cfg(test)]
 pub(crate) mod mock {
     use super::*;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
     fn default_info() -> CameraInfo {
         CameraInfo {
@@ -542,8 +594,15 @@ pub(crate) mod mock {
         pub exceed_deadline: AtomicBool,
         /// The most recent [`CaptureRequest`] passed to `capture`, so a test
         /// can assert what `camera.rs` computed (e.g. `is_trigger_cam` on
-        /// the non-trigger-camera fallback path, state-machine step 6).
+        /// the non-trigger-camera fallback path, state-machine step 5).
         last_capture_request: Mutex<Option<CaptureRequest>>,
+        /// How many times `start_video_capture` has been called — lets a
+        /// test pin tenet 3 (connect must not arm free-running capture for a
+        /// non-trigger camera; a trigger camera arms exactly once, at
+        /// connect).
+        start_video_capture_calls: AtomicU32,
+        /// How many times `stop_video_capture` has been called.
+        stop_video_capture_calls: AtomicU32,
     }
 
     impl Default for MockCameraHandle {
@@ -565,6 +624,8 @@ pub(crate) mod mock {
                 fail_capture: AtomicBool::new(false),
                 exceed_deadline: AtomicBool::new(false),
                 last_capture_request: Mutex::new(None),
+                start_video_capture_calls: AtomicU32::new(0),
+                stop_video_capture_calls: AtomicU32::new(0),
             }
         }
     }
@@ -599,7 +660,7 @@ pub(crate) mod mock {
             self
         }
 
-        /// Present a non-trigger-capable model (state-machine step 6's
+        /// Present a non-trigger-capable model (state-machine step 5's
         /// fallback path).
         pub fn without_trigger_cam(self) -> Self {
             self.property.lock().is_trigger_cam = false;
@@ -613,6 +674,16 @@ pub(crate) mod mock {
         /// The most recent request `capture` received, if any.
         pub fn last_capture_request(&self) -> Option<CaptureRequest> {
             *self.last_capture_request.lock()
+        }
+
+        /// How many times `start_video_capture` has been called so far.
+        pub fn start_video_capture_call_count(&self) -> u32 {
+            self.start_video_capture_calls.load(Ordering::SeqCst)
+        }
+
+        /// How many times `stop_video_capture` has been called so far.
+        pub fn stop_video_capture_call_count(&self) -> u32 {
+            self.stop_video_capture_calls.load(Ordering::SeqCst)
         }
     }
 
@@ -696,10 +767,13 @@ pub(crate) mod mock {
         }
 
         fn start_video_capture(&self) -> BackendResult<()> {
+            self.start_video_capture_calls
+                .fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
 
         fn stop_video_capture(&self) -> BackendResult<()> {
+            self.stop_video_capture_calls.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
 
