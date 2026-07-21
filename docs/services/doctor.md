@@ -736,8 +736,10 @@ something puts it there first. Rather than three platform-specific
 mechanisms (systemd `EnvironmentFile=`, a launchd `EnvironmentVariables`
 plist key, a Windows machine-level env var), the renewal leg itself
 loads `<config-root>/renew.env` — `KEY=VALUE` per line, blank lines and
-`#` comments ignored — into the process environment before resolving
-credentials, filling in only keys not already set. The file is optional
+whole-line `#` comments ignored (no inline comments: a trailing `#
+note` becomes part of the value) — into the process environment before
+resolving credentials, filling in only keys not already set. The file
+is optional
 (a self-signed-only install, or one with literal, non-`$` credentials,
 never needs it) and sits beside `acme.json`, so it gets the same
 ownership alignment (`align_pki_ownership`) after a root-run renewal.
