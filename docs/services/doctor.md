@@ -355,7 +355,7 @@ explicit port, or one that doesn't parse, resolves to nothing.
 | Check | Status | Trigger |
 |---|---|---|
 | `joins.client-transport` | fail | Either: the client's scheme doesn't match the target's `server.tls` state (`http` against a TLS-on target, or `https` against a plain-HTTP one) — the connection fails outright; or the scheme matches, the target's certificate is doctor's self-signed CA (not the publicly-trusted ACME wildcard — judged the way `tls.expiry` distinguishes them, by the resolved cert file's name), and the client has no `ca_cert_path` pointed at it — the TLS handshake fails validation. Both grade `fail`, mirroring `tls.paths`: a definite break, not a hardware-style installed/enabled split. |
-| `joins.client-auth` | warn | The target has `server.auth` set and the client's credential is absent or does not verify (Argon2id) against it — every request 401s. Mirrors `auth.mismatch`'s severity and its asymmetry: an **absent** credential is fix-eligible (the correct value is derivable), a **present but wrong** one is suggestion-only (hand-set credentials are operator intent, so doctor points at `doctor auth rotate`). sentinel's own `service_auth`/`operation_watchdog.rp_url` pair is `auth.mismatch`'s territory already, not this check's — only targets with their own credential field (ui-htmx's `rp`/`sentinel` blocks, each Alpaca monitor's `auth`) are judged here. |
+| `joins.client-auth` | warn | The target has `server.auth` set and the client's credential is absent or does not verify (Argon2id) against it — every request 401s. Mirrors `auth.mismatch`'s severity and its asymmetry: an **absent** credential is fix-eligible (the correct value is derivable), a **present but wrong** one is suggestion-only (hand-set credentials are operator intent, so doctor points at `doctor auth rotate`). sentinel's own `service_auth`/`operation_watchdog.rp_url` pair is `auth.mismatch`'s territory already, not this check's — only targets with their own credential field (ui-htmx's `rp`/`sentinel` blocks, each Alpaca monitor's `auth`, and — since issue #620 — rp's `plate_solver.auth` / `equipment.mount.guiding.auth`) are judged here. |
 
 **What `--fix` can and cannot rewrite.** ui-htmx's `rp`/`sentinel` blocks
 carry `base_url` + `auth` + `ca_cert_path`, so both checks are fully
@@ -380,11 +380,13 @@ field (issue #609 / PR #612, `CA_ONLY_WIRING_SERVICES` in
 `provision/mod.rs`), not a per-target one, so `joins.client-transport`
 is fully fix-eligible for both: the scheme is rewritten in place and
 `/ca_cert` is written from the resolved pki tree, same as every other
-CA-trust fix. **Neither target carries a credential field at all yet**
-(they carry a bare `url`, no `auth`), so `joins.client-auth` still runs
-suggestion-only for them — closing that half needs a config-schema
-change to rp's HTTP clients, not a doctor check — tracked as follow-up
-work, not in this issue's scope (see §MVP scope). A CA-trust gap is
+CA-trust fix. Both targets also carry a per-target `plate_solver.auth` /
+`equipment.mount.guiding.auth` field now (issue #620 closed the
+config-schema gap this section used to describe), so `joins.client-auth`
+is fully fix-eligible for them too: an absent credential is written from
+`pki/credential` at `/plate_solver/auth` or
+`/equipment/mount/guiding/auth`, the same "absent gets it, present is
+operator intent" contract as every other client target. A CA-trust gap is
 always reported once a target's certificate is self-signed and the
 client's CA field is absent, regardless of whether doctor's own
 `pki/ca.pem` exists locally yet — only the *fix* is gated on that file's
@@ -978,10 +980,12 @@ behavior; every knob in it was a CLI flag first.)
   mismatch in both directions, the ACME-vs-self-signed CA-trust split
   (including rp's shared top-level `ca_cert`, wired the same way once
   #609/PR #612 gave rp that field), absent-vs-wrong credential handling,
-  rp's plate-solver/guider `joins.client-auth` suggestion-only path (no
-  fix planned — no credential field exists yet), a non-loopback host
-  resolving to nothing, and that the scheme-rewrite helper never
-  introduces the trailing slash a URL-parser round trip would.
+  rp's plate-solver/guider `joins.client-auth` fix-eligible path (writing
+  the observatory credential to `plate_solver.auth` /
+  `equipment.mount.guiding.auth` once issue #620 gave rp those fields), a
+  non-loopback host resolving to nothing, and that the scheme-rewrite
+  helper never introduces the trailing slash a URL-parser round trip
+  would.
 - **BDD** (`services/doctor/tests`, built with the `mock` feature) — seed a
   scratch config dir and a platform-facts file with known-broken states (port
   collision, dangling watchdog service, retired D3s keys, unparseable JSON,
@@ -1081,15 +1085,17 @@ the renewal scheduling ship in sentinel's deb/rpm/MSI Core/brew formula,
 the install-flow docs in the per-platform packaging guides, and the
 pki-ownership alignment under sudo (the #572 remainder).
 
-**Client-target joins ([#607](https://github.com/ivonnyssen/rusty-photon/issues/607)):**
+**Client-target joins ([#607](https://github.com/ivonnyssen/rusty-photon/issues/607),
+[#620](https://github.com/ivonnyssen/rusty-photon/issues/620)):**
 `joins.client-transport` and `joins.client-auth` (§Diagnosis).
 `joins.client-transport` is fully fix-eligible for ui-htmx's
 `rp`/`sentinel` targets, sentinel's per-monitor `scheme`, sentinel's
 `operation_watchdog.rp_url` scheme, and rp's plate-solver/guider clients
 (rp's shared top-level `ca_cert`, closed by #609/PR #612). `joins.client-auth`
-is fully fix-eligible for ui-htmx's targets and sentinel's per-monitor
-`auth`; it stays suggestion-only for rp's plate-solver/guider clients
-(neither carries a credential field yet), and does not run at all for
+is fully fix-eligible for ui-htmx's targets, sentinel's per-monitor
+`auth`, and (since #620 added `plate_solver.auth` /
+`equipment.mount.guiding.auth` to rp's config schema) rp's
+plate-solver/guider clients; it does not run at all for
 `operation_watchdog.rp_url` (its credential is the shared `service_auth`
 pair — `auth.mismatch` already owns it).
 
@@ -1097,13 +1103,6 @@ pair — `auth.mismatch` already owns it).
 - `usb_*` identity declarations for qhy-focuser and star-adventurer-gti —
   measured whenever that hardware is next on a USB port; two lines of
   `doctor.toml` each.
-- An `auth` field on rp's `plate_solver`/`guiding` client configs
-  (`services/rp/src/config/plate_solver.rs`,
-  `services/rp/src/config/guiding.rs`) — CA trust closed by #609/PR #612
-  (rp's shared top-level `ca_cert`), but neither client carries a
-  credential field, so `joins.client-auth` can diagnose but not fix a
-  401 against either target. Out of #607's scope: it is an rp
-  HTTP-client change, not a doctor check.
 - `joins.client-transport` does not evaluate CA trust for sentinel's
   downstream targets (`operation_watchdog.rp_url`, per-monitor
   `host`/`port`) at all — both pass `ca_cert: None` into `transport_check`

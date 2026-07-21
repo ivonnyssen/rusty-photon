@@ -1244,8 +1244,10 @@ fn plan_client_auth_value(ctx: &Context) -> Option<serde_json::Value> {
 /// matching `auth.mismatch`'s severity — a wrong or missing credential
 /// 401s every request, but (as with that check) a *present* mismatched
 /// credential may be intentional, so only the absent case is fix-eligible.
-/// `auth_pointer` is `None` for rp's plate-solver/guider clients, which
-/// carry no credential field at all.
+/// `auth_pointer` is `None` only for targets with no credential field to
+/// wire a fix into at all; every current caller (ui-htmx's targets, rp's
+/// plate-solver/guider clients since issue #620, sentinel's per-monitor
+/// `auth`) passes `Some`.
 fn credential_check(
     ctx: &Context,
     client_service: &str,
@@ -1394,8 +1396,11 @@ fn ui_htmx_one_target(ctx: &Context, name: &str, target: Option<&ClientTargetVie
 /// §Client-target joins`. CA trust is `rp`'s single top-level `ca_cert`
 /// field (issue #609 / PR #612), shared by both targets, so the transport
 /// check is fully fix-eligible once that field or its provisioning
-/// material exists. Neither target carries a per-target credential field
-/// yet, so `joins.client-auth` still runs suggestion-only.
+/// material exists. Both targets also carry a per-target `auth` field
+/// (issue #620: `plate_solver.auth`, `equipment.mount.guiding.auth`), so
+/// `joins.client-auth` is fully fix-eligible for them too, the same
+/// "absent gets it, present is operator intent" contract as every other
+/// D6a client fix.
 fn rp_client_joins(ctx: &Context) -> Vec<Check> {
     let mut checks = Vec::new();
     let Some(rp) = ctx.scan("rp").and_then(|s| scan::view::<RpView>(s)?.ok()) else {
@@ -1408,20 +1413,33 @@ fn rp_client_joins(ctx: &Context) -> Vec<Check> {
             "equipment.mount.guiding.url",
             &url,
             ca_cert_present,
+            "/equipment/mount/guiding/auth",
+            rp.mount_guiding_auth().as_ref(),
         ));
     }
-    if let Some(url) = rp.plate_solver.and_then(|p| p.url) {
-        checks.extend(rp_one_target(
-            ctx,
-            "plate_solver.url",
-            &url,
-            ca_cert_present,
-        ));
+    if let Some(ps) = rp.plate_solver.as_ref() {
+        if let Some(url) = ps.url.as_deref() {
+            checks.extend(rp_one_target(
+                ctx,
+                "plate_solver.url",
+                url,
+                ca_cert_present,
+                "/plate_solver/auth",
+                ps.auth.as_ref(),
+            ));
+        }
     }
     checks
 }
 
-fn rp_one_target(ctx: &Context, field: &str, url: &str, ca_cert_present: bool) -> Vec<Check> {
+fn rp_one_target(
+    ctx: &Context,
+    field: &str,
+    url: &str,
+    ca_cert_present: bool,
+    auth_pointer: &str,
+    current_auth: Option<&ClientAuthView>,
+) -> Vec<Check> {
     let mut checks = Vec::new();
     let Some((scheme, host, port)) = parse_target_url(url) else {
         return checks;
@@ -1450,7 +1468,14 @@ fn rp_one_target(ctx: &Context, field: &str, url: &str, ca_cert_present: bool) -
         scheme_fix,
         Some(("/ca_cert".to_string(), ca_cert_present)),
     ));
-    checks.extend(credential_check(ctx, "rp", field, resolved, None, None));
+    checks.extend(credential_check(
+        ctx,
+        "rp",
+        field,
+        resolved,
+        Some(auth_pointer.to_string()),
+        current_auth,
+    ));
     checks
 }
 
@@ -2445,8 +2470,12 @@ mod tests {
     }
 
     #[test]
-    fn test_rp_guider_auth_gap_is_suggestion_only() {
+    fn test_rp_guider_auth_absent_is_flagged_and_fixed() {
+        // issue #620: `equipment.mount.guiding.auth` is now a real
+        // config field, so an absent credential is fully fix-eligible —
+        // same contract as ui-htmx's client targets.
         let dir = tempfile::tempdir().unwrap();
+        stage_pki(dir.path(), "s3cret-pw");
         let hash = rp_auth::credentials::hash_password("s3cret-pw").unwrap();
         write_json(
             dir.path(),
@@ -2466,14 +2495,171 @@ mod tests {
         let auth = checks
             .iter()
             .find(|c| c.name == "joins.client-auth")
-            .expect("a missing credential field must still be reported");
+            .expect("a missing credential must be reported");
         assert_eq!(auth.status, Status::Warn);
-        assert!(auth.fixes.is_empty());
         assert!(
             auth.detail.contains("equipment.mount.guiding.url"),
             "{}",
             auth.detail
         );
+        match &auth.fixes[..] {
+            [crate::report::FixOp::SetObject {
+                service,
+                pointer,
+                value,
+            }] => {
+                assert_eq!(service, "rp");
+                assert_eq!(pointer, "/equipment/mount/guiding/auth");
+                assert_eq!(value["username"], "observatory");
+                assert_eq!(value["password"], "s3cret-pw");
+            }
+            other => unreachable!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_rp_guider_auth_mismatch_is_suggestion_only() {
+        let dir = tempfile::tempdir().unwrap();
+        stage_pki(dir.path(), "s3cret-pw");
+        let hash = rp_auth::credentials::hash_password("correct-pw").unwrap();
+        write_json(
+            dir.path(),
+            "phd2-guider.json",
+            serde_json::json!({ "server": { "port": 11130,
+                "auth": { "username": "observatory", "password_hash": hash } } }),
+        );
+        write_json(
+            dir.path(),
+            "rp.json",
+            serde_json::json!({ "server": { "port": 11115 },
+                "equipment": { "mount": { "alpaca_url": "http://localhost:11117",
+                                           "guiding": { "url": "http://localhost:11130",
+                                                        "auth": { "username": "observatory", "password": "wrong-pw" } } } } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        let checks = rp_client_joins(&ctx);
+        let auth = checks
+            .iter()
+            .find(|c| c.name == "joins.client-auth")
+            .expect("a wrong credential must be reported");
+        assert_eq!(auth.status, Status::Warn);
+        assert!(
+            auth.fixes.is_empty(),
+            "a present credential is operator intent, never clobbered"
+        );
+    }
+
+    #[test]
+    fn test_rp_guider_matching_credential_and_scheme_is_silent() {
+        let dir = tempfile::tempdir().unwrap();
+        let hash = rp_auth::credentials::hash_password("s3cret-pw").unwrap();
+        write_json(
+            dir.path(),
+            "phd2-guider.json",
+            serde_json::json!({ "server": { "port": 11130,
+                "auth": { "username": "observatory", "password_hash": hash } } }),
+        );
+        write_json(
+            dir.path(),
+            "rp.json",
+            serde_json::json!({ "server": { "port": 11115 }, "ca_cert": "/pki/ca.pem",
+                "equipment": { "mount": { "alpaca_url": "http://localhost:11117",
+                                           "guiding": { "url": "http://localhost:11130",
+                                                        "auth": { "username": "observatory", "password": "s3cret-pw" } } } } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        assert!(rp_client_joins(&ctx).is_empty());
+    }
+
+    #[test]
+    fn test_rp_plate_solver_auth_absent_is_flagged_and_fixed() {
+        let dir = tempfile::tempdir().unwrap();
+        stage_pki(dir.path(), "s3cret-pw");
+        let hash = rp_auth::credentials::hash_password("s3cret-pw").unwrap();
+        write_json(
+            dir.path(),
+            "plate-solver.json",
+            serde_json::json!({ "server": { "port": 11131,
+                "auth": { "username": "observatory", "password_hash": hash } } }),
+        );
+        write_json(
+            dir.path(),
+            "rp.json",
+            serde_json::json!({ "server": { "port": 11115 },
+                "plate_solver": { "url": "http://localhost:11131" } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        let checks = rp_client_joins(&ctx);
+        let auth = checks
+            .iter()
+            .find(|c| c.name == "joins.client-auth")
+            .expect("a missing credential must be reported");
+        assert_eq!(auth.status, Status::Warn);
+        match &auth.fixes[..] {
+            [crate::report::FixOp::SetObject {
+                service,
+                pointer,
+                value,
+            }] => {
+                assert_eq!(service, "rp");
+                assert_eq!(pointer, "/plate_solver/auth");
+                assert_eq!(value["username"], "observatory");
+                assert_eq!(value["password"], "s3cret-pw");
+            }
+            other => unreachable!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_rp_plate_solver_auth_mismatch_is_suggestion_only() {
+        let dir = tempfile::tempdir().unwrap();
+        stage_pki(dir.path(), "s3cret-pw");
+        let hash = rp_auth::credentials::hash_password("correct-pw").unwrap();
+        write_json(
+            dir.path(),
+            "plate-solver.json",
+            serde_json::json!({ "server": { "port": 11131,
+                "auth": { "username": "observatory", "password_hash": hash } } }),
+        );
+        write_json(
+            dir.path(),
+            "rp.json",
+            serde_json::json!({ "server": { "port": 11115 },
+                "plate_solver": { "url": "http://localhost:11131",
+                                   "auth": { "username": "observatory", "password": "wrong-pw" } } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        let checks = rp_client_joins(&ctx);
+        let auth = checks
+            .iter()
+            .find(|c| c.name == "joins.client-auth")
+            .expect("a wrong credential must be reported");
+        assert_eq!(auth.status, Status::Warn);
+        assert!(
+            auth.fixes.is_empty(),
+            "a present credential is operator intent, never clobbered"
+        );
+    }
+
+    #[test]
+    fn test_rp_plate_solver_matching_credential_and_scheme_is_silent() {
+        let dir = tempfile::tempdir().unwrap();
+        let hash = rp_auth::credentials::hash_password("s3cret-pw").unwrap();
+        write_json(
+            dir.path(),
+            "plate-solver.json",
+            serde_json::json!({ "server": { "port": 11131,
+                "auth": { "username": "observatory", "password_hash": hash } } }),
+        );
+        write_json(
+            dir.path(),
+            "rp.json",
+            serde_json::json!({ "server": { "port": 11115 }, "ca_cert": "/pki/ca.pem",
+                "plate_solver": { "url": "http://localhost:11131",
+                                   "auth": { "username": "observatory", "password": "s3cret-pw" } } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        assert!(rp_client_joins(&ctx).is_empty());
     }
 
     #[test]

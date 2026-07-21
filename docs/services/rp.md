@@ -2157,7 +2157,12 @@ construction — the guider corrects and dithers by moving the mount,
 which moves every train on it — so the block lives inside
 `equipment.mount` and cannot be configured without one. Like every
 outbound client `rp` builds, it trusts the top-level `ca_cert` (see
-[Configuration](#configuration)) for an `https://` `url`.
+[Configuration](#configuration)) for an `https://` `url`, and an
+optional `auth` (`{username, password}`) sends HTTP Basic Auth
+credentials to an auth-enabled guider service (issue #620); `doctor
+--fix` wires it from the observatory credential once the guider
+service's own `server.auth` is on (`joins.client-auth`,
+`docs/services/doctor.md` §Client-target joins).
 
 PHD2 uses JSON-RPC over TCP, which is the one exception to the Alpaca-only
 rule — there is no Alpaca guider device type. The guider service encapsulates
@@ -2255,7 +2260,12 @@ doc — HTTP contract, supervision contract, configuration, mock test
 double — lives at [`docs/services/plate-solver.md`](plate-solver.md).
 `rp`'s `crates/rp-plate-solver` client trusts the top-level `ca_cert`
 (see [Configuration](#configuration)) for an `https://` `plate_solver.url`,
-the same as every other outbound client `rp` builds.
+the same as every other outbound client `rp` builds. An optional
+`plate_solver.auth` (`{username, password}`) sends HTTP Basic Auth
+credentials to an auth-enabled plate-solver service (issue #620);
+`doctor --fix` wires it from the observatory credential once the
+plate-solver service's own `server.auth` is on (`joins.client-auth`,
+`docs/services/doctor.md` §Client-target joins).
 Implementation sequencing is in
 [`docs/plans/archive/plate-solver.md`](../plans/archive/plate-solver.md).
 
@@ -4197,7 +4207,11 @@ return a structured "site not configured" error.
         "recalibrate_above_deg": 5.0,
         "focus_watch": { "window": 10, "degrade_ratio": 1.25,
                          "cooldown": "10m",
-                         "escalation_deadline": "10m" }
+                         "escalation_deadline": "10m" },
+        "auth": {
+          "username": "observatory",
+          "password": "secret"
+        }
       }
     },
     "focusers": [
@@ -4268,7 +4282,11 @@ return a structured "site not configured" error.
   "plate_solver": {
     "url": "http://localhost:11131",
     "timeout": "60s",
-    "default_search_radius_deg": 3.0
+    "default_search_radius_deg": 3.0,
+    "auth": {
+      "username": "observatory",
+      "password": "secret"
+    }
   },
   "imaging": {
     "cache_max_mib": 1024,

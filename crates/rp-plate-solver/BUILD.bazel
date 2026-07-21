@@ -6,10 +6,12 @@ exports_files(
     visibility = ["//visibility:public"],
 )
 
-# CA trust for an `https://` plate-solver `url` (issue #609) routes
-# through the serving crate directly, so it needs the explicit
-# intra-workspace deps list every Bazel target here shares.
+# CA trust for an `https://` plate-solver `url` (issue #609) and Basic
+# Auth credentials (issue #620) route through the serving crates
+# directly, so they need the explicit intra-workspace deps list every
+# Bazel target here shares.
 _INTRA_WORKSPACE_DEPS = [
+    "//crates/rp-auth:rp-auth",
     "//crates/rusty-photon-tls:rusty-photon-tls",
 ]
 
