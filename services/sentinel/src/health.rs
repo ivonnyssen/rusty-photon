@@ -581,12 +581,20 @@ fn project_epoch_ms(now_ms: u64, remaining: Duration) -> u64 {
 /// Display cap for the degraded pass-through message.
 const DEGRADED_MESSAGE_MAX_CHARS: usize = 200;
 
+/// Bodies larger than this are not even parsed: a well-behaved health
+/// endpoint's body is tens of bytes, and the supervision loop must not
+/// spend CPU/memory JSON-parsing a misbehaving service's megabytes.
+const DEGRADED_BODY_MAX_BYTES: usize = 4096;
+
 /// The optional `message` string of a degraded (503) health body — the one
 /// place a probe response body is ever read. The string is opaque display
 /// text for the dashboard: truncated, passed through verbatim, never
-/// interpreted, and no supervision decision depends on it. A missing,
-/// non-JSON, or non-string `message` yields `None`.
+/// interpreted, and no supervision decision depends on it. An oversized,
+/// missing, non-JSON, or non-string `message` yields `None`.
 fn degraded_message(body: &str) -> Option<String> {
+    if body.len() > DEGRADED_BODY_MAX_BYTES {
+        return None;
+    }
     let value: serde_json::Value = serde_json::from_str(body).ok()?;
     let message = value.get("message")?.as_str()?;
     Some(message.chars().take(DEGRADED_MESSAGE_MAX_CHARS).collect())
@@ -975,6 +983,12 @@ mod tests {
             degraded_message(&long).map(|m| m.chars().count()),
             Some(DEGRADED_MESSAGE_MAX_CHARS),
             "message is truncated for display"
+        );
+        let oversized = format!(r#"{{"message":"{}"}}"#, "x".repeat(DEGRADED_BODY_MAX_BYTES));
+        assert_eq!(
+            degraded_message(&oversized),
+            None,
+            "an oversized body is not even parsed"
         );
     }
 

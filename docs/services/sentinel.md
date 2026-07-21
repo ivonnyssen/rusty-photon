@@ -606,7 +606,8 @@ one strictly display-only exception: on a `503` — and only then —
 sentinel makes a best-effort attempt to read an optional top-level
 `message` string from a JSON body and passes it through **verbatim and
 opaque** to the dashboard next to the amber badge, truncated to 200
-characters and HTML-escaped at render. The message lets a service say
+characters and HTML-escaped at render (bodies over 4 KiB are not parsed
+at all — the supervision loop does bounded work per probe). The message lets a service say
 *why* it is degraded (`"no connection to PHD2 on localhost:4400"`) in the
 operator's face without sentinel understanding or acting on a word of it.
 A missing, non-JSON, or message-less body simply shows no message.
