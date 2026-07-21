@@ -606,6 +606,12 @@ impl SentinelWorld {
         self.health_stub = Some(FlippableHealthStub::start(status).await);
     }
 
+    /// Start the flippable health stub answering the given HTTP status with
+    /// a fixed raw body (served for every status the stub is flipped to).
+    pub async fn start_health_stub_with_body(&mut self, status: u16, body: String) {
+        self.health_stub = Some(FlippableHealthStub::start_with_body(status, Some(body)).await);
+    }
+
     /// GET /api/services and parse as JSON array.
     pub async fn get_services(&self) -> Vec<serde_json::Value> {
         let client = reqwest::Client::new();
@@ -650,7 +656,15 @@ pub struct FlippableHealthStub {
 
 impl FlippableHealthStub {
     pub async fn start(initial_status: u16) -> Self {
-        use axum::http::StatusCode;
+        Self::start_with_body(initial_status, None).await
+    }
+
+    /// `body`: a fixed raw JSON body to serve instead of the default
+    /// `{"status":"stub"}` — how the degraded-message scenarios put a
+    /// `message` field on the wire.
+    pub async fn start_with_body(initial_status: u16, body: Option<String>) -> Self {
+        use axum::http::{header, StatusCode};
+        use axum::response::IntoResponse;
         use axum::routing::get;
         use axum::{Json, Router};
         use std::sync::atomic::Ordering;
@@ -661,10 +675,17 @@ impl FlippableHealthStub {
             "/health",
             get(move || {
                 let answer = std::sync::Arc::clone(&answer);
+                let body = body.clone();
                 async move {
                     let code = StatusCode::from_u16(answer.load(Ordering::SeqCst))
                         .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-                    (code, Json(serde_json::json!({ "status": "stub" })))
+                    match body {
+                        Some(raw) => (code, [(header::CONTENT_TYPE, "application/json")], raw)
+                            .into_response(),
+                        None => {
+                            (code, Json(serde_json::json!({ "status": "stub" }))).into_response()
+                        }
+                    }
                 }
             }),
         );

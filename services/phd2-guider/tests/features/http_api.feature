@@ -207,3 +207,4 @@ Feature: Guider HTTP service contract
     When the client probes the service health
     Then the response status should be 503
     And the response field "status" should be "unavailable"
+    And the response field "message" should contain "no connection to PHD2"

@@ -590,9 +590,26 @@ auth when `service_auth` is configured. Alive means a `200`, **or a
 `401`/`403`** — a service that challenges the probe has proven it is up
 (the target may hold a hand-set credential, and aliveness must not depend
 on the pair matching; `doctor` diagnoses a mismatched pair as
-`auth.mismatch`). Any other status, a timeout, or a connection error counts
-as a failed probe. The response body is never parsed (health bodies are not
-uniform across services).
+`auth.mismatch`) — **or a `503`**, which is alive but **degraded**: a
+service that deliberately answers `503` has a live HTTP loop and is
+reporting that an external dependency is unavailable (phd2-guider without
+a running PHD2, plate-solver without its ASTAP binary or star database) —
+a condition a service restart cannot cure, so supervision must not try
+(issue #595). A degraded answer resets the outage exactly like a healthy
+one: no failure counting, no restart, no notification; the dashboard shows
+the service amber instead of green. Any other status, a timeout, or a
+connection error counts as a failed probe.
+
+The response body is never *interpreted* (health bodies are not uniform
+across services, and no supervision decision may ever depend on one), with
+one strictly display-only exception: on a `503` — and only then —
+sentinel makes a best-effort attempt to read an optional top-level
+`message` string from a JSON body and passes it through **verbatim and
+opaque** to the dashboard next to the amber badge, truncated to 200
+characters and HTML-escaped at render. The message lets a service say
+*why* it is degraded (`"no connection to PHD2 on localhost:4400"`) in the
+operator's face without sentinel understanding or acting on a word of it.
+A missing, non-JSON, or message-less body simply shows no message.
 
 ### Behavior
 
@@ -613,6 +630,12 @@ uniform across services).
 - **Recovery.** One successful probe ends the outage: the failure counter,
   the backoff, and the restart schedule all reset. Recovery is visible on the
   dashboard but is deliberately **not** notified.
+- **Degraded.** A `503` answer counts as recovery for the state machine
+  (all counters reset) but publishes health `degraded` — with the opaque
+  pass-through `message` when the body carries one — instead of `up`.
+  Degraded is a normal operating state (a parked rig's guider spends every
+  daylight hour there), so it is never notified; the amber dashboard row is
+  the signal.
 - **Underivable probe.** A `running` service whose `<svc>.json` cannot be
   read has no probe URL: its health reports `unknown`, no probe-driven
   restart fires, and the derivation is retried every discovery cycle.
@@ -655,6 +678,7 @@ one restart of a given service runs at any time:
 | Manual restart (REST/UI) during an outage | The autonomous attempt finds the gate held and skips silently; if the manual restart cures the service, the next successful probe resets the outage. |
 | Restart command fails (non-zero, spawn failure, over budget) | Counts as an attempt: notification carries the failure detail, backoff advances, probing continues. |
 | Service flaps (recovers, fails again) | Each recovery fully resets the state machine; a new outage starts at 3 fresh failures and the initial 60 s backoff. |
+| Service answers `503` mid-outage | Same reset as a recovery — the HTTP loop answering proves whatever the restarts were for is over; the service is now waiting on a dependency no restart can supply. |
 | Shutdown during an in-flight autonomous restart | The supervisor returns immediately (restart await is raced against the cancellation token); the gate slot is released and the shell child runs to completion detached. |
 | Operator stops a service mid-outage (`running` → `stopped`) | Its supervisor is stood down on the next discovery refresh (≤ 60 s); no further probes or restarts. The threshold-and-90-s detection window means an operator stop is seen before any probe-driven restart can fire. |
 | Package removed mid-outage | The service leaves the discovered set; its supervisor and dashboard entry are reaped. |
@@ -735,6 +759,7 @@ name — an empty array when nothing is discovered:
   "unit": "rusty-photon-plate-solver",
   "run_state": "running",
   "health": "up",
+  "health_message": null,
   "last_probe_epoch_ms": 1760000000000,
   "consecutive_failures": 0,
   "restarts_in_outage": 0,
@@ -748,7 +773,13 @@ name — an empty array when nothing is discovered:
 - `run_state` is the discovery classification: `"running"`, `"failed"`,
   `"inert"`, `"stopped"`, or `"disabled"`.
 - `health` is `"unknown"` (never probed, no derivable probe URL, or not in a
-  probed run state), `"up"`, or `"down"`.
+  probed run state), `"up"`, `"degraded"` (the probe answered `503`:
+  alive, but an external dependency is unavailable — see
+  [Service Health Supervision](#service-health-supervision)), or `"down"`.
+- `health_message` is the opaque `message` string from a degraded probe's
+  `503` JSON body (truncated to 200 characters), or `null` — always `null`
+  when `health` is not `"degraded"`. Sentinel passes it through for display
+  and never interprets it.
 - `last_probe_epoch_ms` is `0` until the first probe completes.
 - `restarts_in_outage` counts autonomous restarts in the current outage
   (resets on recovery); `total_restarts` counts them since sentinel started.

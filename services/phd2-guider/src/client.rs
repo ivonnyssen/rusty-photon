@@ -176,6 +176,11 @@ impl Phd2Client {
     }
 
     /// Check if connected to PHD2
+    /// The `host:port` this client dials — for operator-facing messages.
+    pub fn phd2_addr(&self) -> String {
+        format!("{}:{}", self.config.host, self.config.port)
+    }
+
     pub async fn is_connected(&self) -> bool {
         self.shared.is_connected().await
     }

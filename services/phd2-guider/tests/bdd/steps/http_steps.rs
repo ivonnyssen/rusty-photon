@@ -212,6 +212,16 @@ async fn response_field_string(world: &mut GuiderWorld, field: String, expected:
     );
 }
 
+#[then(expr = "the response field {string} should contain {string}")]
+async fn response_field_contains(world: &mut GuiderWorld, field: String, needle: String) {
+    let body = &world.last_response().body;
+    let value = body[&field].as_str().unwrap_or_default();
+    assert!(
+        value.contains(&needle),
+        "field {field} value {value:?} does not contain {needle:?} in {body}"
+    );
+}
+
 #[then(expr = "the response field {string} should be {float}")]
 async fn response_field_number(world: &mut GuiderWorld, field: String, expected: f64) {
     let body = &world.last_response().body;

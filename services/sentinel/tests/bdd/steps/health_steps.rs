@@ -16,6 +16,11 @@ async fn health_stub_answering(world: &mut SentinelWorld, status: u16) {
     world.start_health_stub(status).await;
 }
 
+#[given(expr = "a stub service whose health endpoint answers {int} with body {string}")]
+async fn health_stub_answering_with_body(world: &mut SentinelWorld, status: u16, body: String) {
+    world.start_health_stub_with_body(status, body).await;
+}
+
 #[given(expr = "the stub service is discovered as {string} in state {string}")]
 fn stub_discovered_as(world: &mut SentinelWorld, service: String, state: String) {
     world.discover_health_stub_as(&service, &state);
@@ -114,6 +119,15 @@ fn stub_becomes_healthy(world: &mut SentinelWorld) {
         .as_ref()
         .expect("health stub not started")
         .set_status(200);
+}
+
+#[when(expr = "the stub service starts answering {int}")]
+fn stub_starts_answering(world: &mut SentinelWorld, status: u16) {
+    world
+        .health_stub
+        .as_ref()
+        .expect("health stub not started")
+        .set_status(status);
 }
 
 #[then(expr = "the dashboard reports zero restarts in the current outage for {string}")]
@@ -218,6 +232,29 @@ fn services_response_lists_health(world: &mut SentinelWorld, name: String, healt
         service["health"].as_str(),
         Some(health.as_str()),
         "unexpected health: {service}"
+    );
+}
+
+#[then(expr = "the services response lists {string} with health message {string}")]
+fn services_response_lists_health_message(
+    world: &mut SentinelWorld,
+    name: String,
+    message: String,
+) {
+    let service = captured_service(world, &name);
+    assert_eq!(
+        service["health_message"].as_str(),
+        Some(message.as_str()),
+        "unexpected health message: {service}"
+    );
+}
+
+#[then(expr = "the services response lists {string} with no health message")]
+fn services_response_lists_no_health_message(world: &mut SentinelWorld, name: String) {
+    let service = captured_service(world, &name);
+    assert!(
+        service["health_message"].is_null(),
+        "expected no health message: {service}"
     );
 }
 

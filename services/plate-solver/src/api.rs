@@ -164,10 +164,17 @@ async fn solve(
 #[derive(Debug, Serialize)]
 struct HealthBody {
     status: &'static str,
+    /// Names the missing dependency on a 503 — the opaque explanation
+    /// sentinel displays for a degraded service without interpreting it
+    /// (docs/services/sentinel.md §Service Health Supervision).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
 }
 
 /// Cheap readiness probe: stats both runtime dependencies. Returns 200
-/// with `{"status": "ok"}` when both pass; 503 otherwise.
+/// with `{"status": "ok"}` when both pass; 503 otherwise — a degraded
+/// answer, since a missing binary or database is not curable by a
+/// service restart.
 async fn health(State(state): State<AppState>) -> impl IntoResponse {
     // SECURITY: `state.astap_binary_path` and `state.astap_db_directory`
     // come from operator-supplied config, validated at startup. Health
@@ -179,6 +186,10 @@ async fn health(State(state): State<AppState>) -> impl IntoResponse {
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
             Json(HealthBody {
                 status: "binary_unavailable",
+                message: Some(format!(
+                    "ASTAP binary missing or not executable: {}",
+                    state.astap_binary_path.display()
+                )),
             }),
         )
             .into_response();
@@ -188,13 +199,20 @@ async fn health(State(state): State<AppState>) -> impl IntoResponse {
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
             Json(HealthBody {
                 status: "db_unavailable",
+                message: Some(format!(
+                    "ASTAP star database directory missing: {}",
+                    state.astap_db_directory.display()
+                )),
             }),
         )
             .into_response();
     }
     (
         axum::http::StatusCode::OK,
-        Json(HealthBody { status: "ok" }),
+        Json(HealthBody {
+            status: "ok",
+            message: None,
+        }),
     )
         .into_response()
 }

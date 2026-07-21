@@ -12,7 +12,11 @@
 //! A supervisor probes `GET {derived health URL}` every poll interval, with
 //! HTTP Basic credentials when the doctor-written `service_auth` credential
 //! is configured. Alive means 200 — or 401/403, an auth challenge being
-//! proof of life (the target may hold a hand-set credential). Any other
+//! proof of life (the target may hold a hand-set credential) — or 503,
+//! alive but degraded: the service deliberately reports an external
+//! dependency unavailable, which no restart can cure, so a 503 resets the
+//! outage like a healthy probe and publishes `Degraded` with the body's
+//! optional opaque `message` for display (issue #595). Any other
 //! status, a timeout, or a connection error is a failed probe; a `failed`
 //! unit counts as a failed probe without HTTP. After the failure threshold
 //! the supervisor restarts the service through the shared [`RestartManager`]
@@ -46,10 +50,14 @@ use crate::watchdog::EventMonitor;
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// What one supervision tick observed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum TickObservation {
     /// The probe answered alive (200/401/403).
     Up,
+    /// The probe answered 503: alive, but an external dependency is
+    /// unavailable. Carries the body's optional `message` — opaque display
+    /// text, never interpreted (see [`degraded_message`]).
+    Degraded(Option<String>),
     /// The probe failed, or the unit is in the `failed` run state.
     Down,
     /// Nothing to conclude: no derivable probe URL, or the service is no
@@ -88,21 +96,27 @@ impl ServiceHealthSupervisor {
     /// One probe: alive iff `GET {url}` answers 200 — or 401/403, an auth
     /// challenge being proof of life (the shared client carries
     /// `service_auth` when configured, but the target may hold a hand-set
-    /// credential). The body is never parsed.
-    async fn probe(&self, url: &str) -> bool {
+    /// credential) — or 503, alive but degraded. The body is never
+    /// interpreted; a 503's is handed to [`degraded_message`] for the
+    /// display-only pass-through.
+    async fn probe(&self, url: &str) -> TickObservation {
         match tokio::time::timeout(PROBE_TIMEOUT, self.ctx.http.get(url)).await {
-            Ok(Ok(resp)) if matches!(resp.status, 200 | 401 | 403) => true,
+            Ok(Ok(resp)) if matches!(resp.status, 200 | 401 | 403) => TickObservation::Up,
+            Ok(Ok(resp)) if resp.status == 503 => {
+                debug!("health probe {url} -> 503 (degraded)");
+                TickObservation::Degraded(degraded_message(&resp.body))
+            }
             Ok(Ok(resp)) => {
                 debug!("health probe {url} -> {} (down)", resp.status);
-                false
+                TickObservation::Down
             }
             Ok(Err(e)) => {
                 debug!("health probe {url} failed: {e}");
-                false
+                TickObservation::Down
             }
             Err(_) => {
                 debug!("health probe {url} timed out after {PROBE_TIMEOUT:?}");
-                false
+                TickObservation::Down
             }
         }
     }
@@ -112,13 +126,7 @@ impl ServiceHealthSupervisor {
         match snapshot.state {
             RunState::Failed => TickObservation::Down,
             RunState::Running => match &snapshot.probe {
-                Some(spec) => {
-                    if self.probe(&spec.health_url).await {
-                        TickObservation::Up
-                    } else {
-                        TickObservation::Down
-                    }
-                }
+                Some(spec) => self.probe(&spec.health_url).await,
                 None => TickObservation::Unknown,
             },
             _ => TickObservation::Unknown,
@@ -136,6 +144,7 @@ impl ServiceHealthSupervisor {
         &self,
         snapshot: &DiscoveredService,
         health: ServiceHealth,
+        health_message: Option<String>,
         consecutive_failures: u32,
         restarts_in_outage: u32,
         total_restarts: u64,
@@ -156,6 +165,7 @@ impl ServiceHealthSupervisor {
                 unit: snapshot.unit.clone(),
                 run_state: snapshot.state,
                 health,
+                health_message,
                 last_probe_epoch_ms,
                 consecutive_failures,
                 restarts_in_outage,
@@ -283,6 +293,35 @@ impl ServiceHealthSupervisor {
                     self.publish(
                         &snapshot,
                         ServiceHealth::Up,
+                        None,
+                        0,
+                        0,
+                        total_restarts,
+                        None,
+                        probed_at_ms,
+                    )
+                    .await;
+                }
+                TickObservation::Degraded(message) => {
+                    // Alive but waiting on an external dependency no restart
+                    // can supply: reset the outage like a recovery, publish
+                    // amber, never restart or notify (degraded is a normal
+                    // operating state — a parked rig's guider all day).
+                    if restarts_in_outage > 0 || consecutive_failures > 0 {
+                        debug!(
+                            "service '{}' answers again but reports itself degraded \
+                             ({} autonomous restart(s) this outage)",
+                            self.name, restarts_in_outage
+                        );
+                    }
+                    consecutive_failures = 0;
+                    restarts_in_outage = 0;
+                    backoff = initial_backoff;
+                    next_restart_at = None;
+                    self.publish(
+                        &snapshot,
+                        ServiceHealth::Degraded,
+                        message,
                         0,
                         0,
                         total_restarts,
@@ -301,6 +340,7 @@ impl ServiceHealthSupervisor {
                     self.publish(
                         &snapshot,
                         ServiceHealth::Unknown,
+                        None,
                         0,
                         0,
                         total_restarts,
@@ -320,6 +360,7 @@ impl ServiceHealthSupervisor {
                     self.publish(
                         &snapshot,
                         ServiceHealth::Down,
+                        None,
                         consecutive_failures,
                         restarts_in_outage,
                         total_restarts,
@@ -354,6 +395,7 @@ impl ServiceHealthSupervisor {
                                 self.publish(
                                     &snapshot,
                                     ServiceHealth::Down,
+                                    None,
                                     consecutive_failures,
                                     restarts_in_outage,
                                     total_restarts,
@@ -536,6 +578,20 @@ fn project_epoch_ms(now_ms: u64, remaining: Duration) -> u64 {
     now_ms.saturating_add(u64::try_from(remaining.as_millis()).unwrap_or(u64::MAX))
 }
 
+/// Display cap for the degraded pass-through message.
+const DEGRADED_MESSAGE_MAX_CHARS: usize = 200;
+
+/// The optional `message` string of a degraded (503) health body — the one
+/// place a probe response body is ever read. The string is opaque display
+/// text for the dashboard: truncated, passed through verbatim, never
+/// interpreted, and no supervision decision depends on it. A missing,
+/// non-JSON, or non-string `message` yields `None`.
+fn degraded_message(body: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(body).ok()?;
+    let message = value.get("message")?.as_str()?;
+    Some(message.chars().take(DEGRADED_MESSAGE_MAX_CHARS).collect())
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
@@ -554,6 +610,7 @@ mod tests {
     enum ProbeAnswer {
         Ok200,
         Status(u16),
+        StatusWithBody(u16, &'static str),
         TransportError,
         /// Never resolves — exercises the probe timeout.
         Hang,
@@ -595,6 +652,10 @@ mod tests {
                 ProbeAnswer::Status(status) => Ok(HttpResponse {
                     status,
                     body: String::new(),
+                }),
+                ProbeAnswer::StatusWithBody(status, body) => Ok(HttpResponse {
+                    status,
+                    body: body.to_string(),
                 }),
                 ProbeAnswer::TransportError => {
                     Err(crate::SentinelError::Http("connection refused".to_string()))
@@ -825,9 +886,102 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn non_200_probe_publishes_down() {
+    async fn degraded_503_counts_as_alive_and_never_restarts() {
         let f = Fixture::spawn(
             ProbeAnswer::Status(503),
+            discovered(RunState::Running, true),
+            false,
+        );
+        run_until(Duration::from_millis(350)).await;
+        let status = f.service_status().await;
+        assert_eq!(status.health, ServiceHealth::Degraded);
+        assert_eq!(status.consecutive_failures, 0);
+        assert_eq!(status.health_message, None, "empty body carries no message");
+        assert_eq!(
+            f.manager.call_count(),
+            0,
+            "503 must never trigger a restart"
+        );
+        assert!(f.notifier.sent().is_empty(), "degraded must never notify");
+        f.stop().await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn degraded_message_passes_through_verbatim() {
+        let f = Fixture::spawn(
+            ProbeAnswer::StatusWithBody(
+                503,
+                r#"{"status":"unavailable","message":"no connection to PHD2 on localhost:4400"}"#,
+            ),
+            discovered(RunState::Running, true),
+            false,
+        );
+        run_until(Duration::from_millis(50)).await;
+        let status = f.service_status().await;
+        assert_eq!(status.health, ServiceHealth::Degraded);
+        assert_eq!(
+            status.health_message.as_deref(),
+            Some("no connection to PHD2 on localhost:4400")
+        );
+        f.stop().await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn degraded_resets_an_outage_like_a_recovery() {
+        let f = Fixture::spawn(
+            ProbeAnswer::Status(500),
+            discovered(RunState::Running, true),
+            false,
+        );
+        // One restart (t=0.2s), then the service starts answering 503.
+        run_until(Duration::from_millis(250)).await;
+        assert_eq!(f.manager.call_count(), 1);
+        f.http.set(ProbeAnswer::Status(503));
+        run_until(Duration::from_millis(100)).await; // degraded probe at t=300ms
+        let status = f.service_status().await;
+        assert_eq!(status.health, ServiceHealth::Degraded);
+        assert_eq!(status.restarts_in_outage, 0, "outage counter resets");
+        assert_eq!(status.total_restarts, 1, "lifetime counter does not");
+        assert_eq!(status.next_restart_epoch_ms, None);
+        run_until(Duration::from_millis(600)).await;
+        assert_eq!(
+            f.manager.call_count(),
+            1,
+            "a degraded service must not keep restarting"
+        );
+        f.stop().await;
+    }
+
+    #[test]
+    fn degraded_message_extraction_is_strictly_bounded() {
+        assert_eq!(
+            degraded_message(r#"{"status":"unavailable","message":"PHD2 is off"}"#).as_deref(),
+            Some("PHD2 is off")
+        );
+        assert_eq!(degraded_message(""), None, "empty body");
+        assert_eq!(degraded_message("not json"), None, "non-JSON body");
+        assert_eq!(
+            degraded_message(r#"{"status":"unavailable"}"#),
+            None,
+            "no message field"
+        );
+        assert_eq!(
+            degraded_message(r#"{"message":42}"#),
+            None,
+            "non-string message"
+        );
+        let long = format!(r#"{{"message":"{}"}}"#, "x".repeat(500));
+        assert_eq!(
+            degraded_message(&long).map(|m| m.chars().count()),
+            Some(DEGRADED_MESSAGE_MAX_CHARS),
+            "message is truncated for display"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn non_200_probe_publishes_down() {
+        let f = Fixture::spawn(
+            ProbeAnswer::Status(500),
             discovered(RunState::Running, true),
             false,
         );
@@ -901,7 +1055,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn below_threshold_never_restarts() {
         let f = Fixture::spawn(
-            ProbeAnswer::Status(503),
+            ProbeAnswer::Status(500),
             discovered(RunState::Running, true),
             false,
         );
@@ -916,7 +1070,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn threshold_triggers_restart_and_notifies() {
         let f = Fixture::spawn(
-            ProbeAnswer::Status(503),
+            ProbeAnswer::Status(500),
             discovered(RunState::Running, true),
             false,
         );
@@ -957,7 +1111,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn restart_attempts_double_backoff_and_cap() {
         let f = Fixture::spawn(
-            ProbeAnswer::Status(503),
+            ProbeAnswer::Status(500),
             discovered(RunState::Running, true),
             false,
         );
@@ -988,7 +1142,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn second_restart_escalates_priority() {
         let f = Fixture::spawn(
-            ProbeAnswer::Status(503),
+            ProbeAnswer::Status(500),
             discovered(RunState::Running, true),
             false,
         );
@@ -1015,7 +1169,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn failed_restart_command_still_counts_and_notifies() {
         let f = Fixture::spawn(
-            ProbeAnswer::Status(503),
+            ProbeAnswer::Status(500),
             discovered(RunState::Running, true),
             true,
         );
@@ -1036,7 +1190,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn recovery_resets_counters_and_backoff_without_notifying() {
         let f = Fixture::spawn(
-            ProbeAnswer::Status(503),
+            ProbeAnswer::Status(500),
             discovered(RunState::Running, true),
             false,
         );
@@ -1057,7 +1211,7 @@ mod tests {
 
         // A fresh outage starts from scratch: threshold anew, initial backoff,
         // and its first restart is priority 0 again.
-        f.http.set(ProbeAnswer::Status(503));
+        f.http.set(ProbeAnswer::Status(500));
         run_until(Duration::from_millis(350)).await; // fails at 0.4/0.5/0.6s → restart
         assert_eq!(f.manager.call_count(), 2);
         let sent = f.notifier.sent();
@@ -1074,7 +1228,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn already_in_flight_is_silent() {
         let f = Fixture::spawn(
-            ProbeAnswer::Status(503),
+            ProbeAnswer::Status(500),
             discovered(RunState::Running, true),
             false,
         );
@@ -1096,7 +1250,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_stop_mid_outage_stands_down() {
         let f = Fixture::spawn(
-            ProbeAnswer::Status(503),
+            ProbeAnswer::Status(500),
             discovered(RunState::Running, true),
             false,
         );

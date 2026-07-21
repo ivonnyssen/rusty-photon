@@ -255,6 +255,12 @@ impl GuiderOps {
         self.client.is_connected().await
     }
 
+    /// The `host:port` of the PHD2 this service dials — for the health
+    /// endpoint's degraded message.
+    pub fn phd2_addr(&self) -> String {
+        self.client.phd2_addr()
+    }
+
     /// Start guiding and block until PHD2 reports the star settled.
     pub async fn start_guiding(
         &self,

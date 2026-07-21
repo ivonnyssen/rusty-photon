@@ -31,6 +31,10 @@ pub enum ServiceHealth {
     Unknown,
     /// Last probe answered alive (200, or an auth challenge — 401/403).
     Up,
+    /// Last probe answered 503: the service is alive but reports an
+    /// external dependency unavailable — a state a restart cannot cure,
+    /// so it counts as alive for supervision (issue #595).
+    Degraded,
     /// Last probe failed (other status, timeout, or connection error), or
     /// the unit is in the `failed` run state.
     Down,
@@ -41,6 +45,7 @@ impl std::fmt::Display for ServiceHealth {
         match self {
             ServiceHealth::Unknown => write!(f, "Unknown"),
             ServiceHealth::Up => write!(f, "Up"),
+            ServiceHealth::Degraded => write!(f, "Degraded"),
             ServiceHealth::Down => write!(f, "Down"),
         }
     }
@@ -58,6 +63,11 @@ pub struct ServiceHealthStatus {
     /// The discovery classification.
     pub run_state: RunState,
     pub health: ServiceHealth,
+    /// The opaque `message` string from a degraded probe's 503 JSON body
+    /// (truncated to 200 chars), passed through for display only — sentinel
+    /// never interprets it. Always `None` unless `health` is `Degraded`.
+    #[serde(default)]
+    pub health_message: Option<String>,
     /// 0 until the first probe completes.
     pub last_probe_epoch_ms: u64,
     pub consecutive_failures: u32,
@@ -91,6 +101,7 @@ impl ServiceHealthStatus {
             unit,
             run_state,
             health: ServiceHealth::Unknown,
+            health_message: None,
             last_probe_epoch_ms: 0,
             consecutive_failures: 0,
             restarts_in_outage: 0,
@@ -174,6 +185,7 @@ impl SharedState {
                     slot.probe_port = svc.probe.as_ref().map(|p| p.port);
                     if !svc.state.supervised() {
                         slot.health = ServiceHealth::Unknown;
+                        slot.health_message = None;
                         slot.consecutive_failures = 0;
                         slot.restarts_in_outage = 0;
                         slot.next_restart_epoch_ms = None;
