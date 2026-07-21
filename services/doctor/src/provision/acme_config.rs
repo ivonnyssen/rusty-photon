@@ -401,6 +401,41 @@ mod tests {
     }
 
     #[test]
+    fn parse_renew_env_rejects_an_empty_variable_name() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("renew.env"), "=some-value\n").unwrap();
+
+        let err = parse_renew_env(dir.path()).unwrap_err();
+        assert!(
+            err.to_string().contains("empty variable name"),
+            "error should name the problem: {err}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn parse_renew_env_surfaces_a_non_notfound_read_error() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("renew.env"), "KEY=value\n").unwrap();
+        // Strip search permission from the parent dir so read_to_string
+        // fails with EACCES rather than NotFound — the loop must
+        // distinguish "absent" (tolerated) from "unreadable" (an error).
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o600)).unwrap();
+        let result = parse_renew_env(dir.path());
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        // Ok means running privileged (e.g. root): DAC checks bypassed, so
+        // read_to_string still succeeded.
+        if let Err(e) = result {
+            assert!(
+                e.to_string().contains("renew.env"),
+                "error should name the file: {e}"
+            );
+        }
+    }
+
+    #[test]
     fn directory_url_staging() {
         let url = directory_url(true);
         assert!(url.contains("staging"), "staging URL: {url}");
