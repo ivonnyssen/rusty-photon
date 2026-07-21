@@ -142,7 +142,7 @@ pub fn load_renew_env(config_dir: &Path) -> Result<()> {
     let content = match std::fs::read_to_string(&path) {
         Ok(content) => content,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(e) => return Err(e.into()),
+        Err(e) => return Err(TlsError::Config(format!("{}: {e}", path.display()))),
     };
     for (lineno, raw_line) in content.lines().enumerate() {
         let line = raw_line.trim();
