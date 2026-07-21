@@ -237,6 +237,45 @@ async fn test_stop_does_not_break_child_stdout_pipe() {
     );
 }
 
+/// Regression guard for the analogous stderr-forwarder shutdown race (issue
+/// #578's labeled-stderr-forwarding change gave stderr the same piped-drain
+/// shutdown hazard stdout already had — see
+/// `test_stop_does_not_break_child_stdout_pipe`). Same probe binary, same
+/// invariant, `--epipe-probe-stderr` instead of `--epipe-probe`.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_stop_does_not_break_child_stderr_pipe() {
+    init_test_binary_env();
+    let config = empty_config();
+    let marker = tempfile::NamedTempFile::new().unwrap();
+    let marker_path = marker.path().to_path_buf();
+
+    let mut handle = ServiceHandle::start_with_args(
+        "test-service",
+        &[
+            "--config",
+            config.path().to_str().unwrap(),
+            "--epipe-probe-stderr",
+            marker_path.to_str().unwrap(),
+        ],
+    )
+    .await;
+
+    // Let the probe reach steady state (the harness forwarding its stderr).
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    handle.stop().await;
+
+    // Allow any late probe write to land before we read the marker.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    assert!(
+        !probe_observed_broken_pipe(&marker_path),
+        "child saw a broken stderr pipe during stop() — the forwarder was aborted \
+         before the child exited"
+    );
+}
+
 // Note: the `Drop` path shares the same "don't abort the drain before the child
 // exits" invariant, and `Drop`'s no-abort logic is what enforces it there. We
 // deliberately do not add a `Drop` analogue of the probe test: on `Drop` the
@@ -244,7 +283,7 @@ async fn test_stop_does_not_break_child_stdout_pipe() {
 // probe's shutdown burst is cut off before it can deterministically observe the
 // broken pipe under the *old* ordering — such a test passes under both orderings
 // and would be a vacuous guard. `test_drop_cleans_up_process` covers `Drop`'s
-// process teardown; the `stop()` probe above guards the broken-pipe invariant.
+// process teardown; the `stop()` probes above guard the broken-pipe invariant.
 
 /// Graceful shutdown must complete well under the 5-second SIGKILL fallback
 /// timeout. If the shutdown signal is not delivered (e.g. a no-op

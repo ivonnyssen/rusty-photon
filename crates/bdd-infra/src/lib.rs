@@ -180,6 +180,7 @@ pub use conformu::{run_conformu, ConformuRun};
 pub mod tls_auth;
 
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -190,6 +191,27 @@ use tracing::debug;
 /// `ppba-driver` → `PPBA_DRIVER_BINARY`, `rp` → `RP_BINARY`, and so on.
 fn binary_env_var(package_name: &str) -> String {
     format!("{}_BINARY", package_name.to_uppercase().replace('-', "_"))
+}
+
+/// Monotonic counter handing out a unique `<package>#<seq>` label to every
+/// spawned [`ServiceHandle`] in this test process.
+///
+/// Cucumber runs up to 64 scenarios concurrently by default, and most BDD
+/// suites don't tag their features `@serial`, so many same-named service
+/// instances (e.g. several scenarios each discovering a stub as
+/// "plate-solver") can be alive at once, each a separate child process. Every
+/// child's `tracing` output goes to stderr, which — absent this label —
+/// merges into one shared, unattributed stream with no way to tell which
+/// lines belong to which instance (see issue #578, where this ambiguity made
+/// a CI flake look like a single continuously-unhealthy service when it was
+/// most likely several concurrent instances' logs interleaved).
+static SPAWN_SEQ: AtomicU64 = AtomicU64::new(0);
+
+fn next_spawn_label(package_name: &str) -> String {
+    format!(
+        "{package_name}#{}",
+        SPAWN_SEQ.fetch_add(1, Ordering::Relaxed)
+    )
 }
 
 /// Per-child `LLVM_PROFILE_FILE` for coverage collection under `bazel coverage`.
@@ -241,8 +263,9 @@ fn child_coverage_profile_path(
 
 /// Handle to a running service process.
 ///
-/// Manages the full lifecycle: binary discovery, spawning with stdout capture,
-/// port parsing, graceful shutdown signaling, and stdout draining.
+/// Manages the full lifecycle: binary discovery, spawning with stdout
+/// capture, port parsing, graceful shutdown signaling, stdout draining, and
+/// labeled stderr forwarding.
 ///
 /// On [`Drop`], sends a best-effort graceful-shutdown signal (SIGTERM on Unix,
 /// `CTRL_BREAK_EVENT` on Windows) before the child handle is dropped. Callers
@@ -257,6 +280,7 @@ pub struct ServiceHandle {
     /// The base URL of the running service (e.g., `http://127.0.0.1:12345`).
     pub base_url: String,
     stdout_drain: Option<tokio::task::JoinHandle<()>>,
+    stderr_forward: Option<tokio::task::JoinHandle<()>>,
     /// Service name (for log/error messages).
     name: String,
 }
@@ -299,8 +323,15 @@ impl ServiceHandle {
     /// than via `std::env::set_var`, which would race across scenarios.
     pub async fn start_with_env(package_name: &str, args: &[&str], envs: &[(&str, &str)]) -> Self {
         let binary = require_binary(package_name);
+        let label = next_spawn_label(package_name);
 
         let mut child = spawn_process(&binary, package_name, args, envs);
+
+        let stderr = child
+            .stderr
+            .take()
+            .unwrap_or_else(|| panic!("failed to capture {} stderr", package_name));
+        let stderr_forward = spawn_stderr_forwarder(stderr, label);
 
         let stdout = child
             .stdout
@@ -315,6 +346,7 @@ impl ServiceHandle {
             port,
             base_url: format!("http://127.0.0.1:{}", port),
             stdout_drain: Some(stdout_drain),
+            stderr_forward: Some(stderr_forward),
             name: package_name.to_string(),
         }
     }
@@ -332,8 +364,15 @@ impl ServiceHandle {
     /// (see [`start_with_args`](Self::start_with_args)).
     pub async fn try_start_with_args(package_name: &str, args: &[&str]) -> Result<Self, String> {
         let binary = require_binary(package_name);
+        let label = next_spawn_label(package_name);
 
         let mut child = spawn_process(&binary, package_name, args, &[]);
+
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| format!("failed to capture {} stderr", package_name))?;
+        let stderr_forward = spawn_stderr_forwarder(stderr, label);
 
         let stdout = child
             .stdout
@@ -346,6 +385,7 @@ impl ServiceHandle {
                 port,
                 base_url: format!("http://127.0.0.1:{}", port),
                 stdout_drain: Some(stdout_drain),
+                stderr_forward: Some(stderr_forward),
                 name: package_name.to_string(),
             }),
             Ok(None) => {
@@ -389,29 +429,24 @@ impl ServiceHandle {
             }
         }
 
-        // Stop draining stdout only *after* the child has exited. With the
-        // child's stdout write end now closed, the drain task observes EOF and
-        // finishes on its own, so we join it rather than aborting it.
+        // Stop draining stdout/stderr only *after* the child has exited. With
+        // both pipes' write ends now closed, the tasks observe EOF and finish
+        // on their own, so we join them rather than aborting them.
         //
-        // Aborting the drain *before* the child exits (the previous behaviour)
-        // closed the read end of the stdout pipe while the child was still
-        // running its SIGTERM shutdown path. Every shutdown-path log line the
-        // child then wrote to stdout hit a broken pipe (EPIPE); because the
+        // Aborting a drain *before* the child exits (the previous behaviour,
+        // for stdout) closed the read end of that pipe while the child was
+        // still running its SIGTERM shutdown path. Every shutdown-path log
+        // line the child then wrote hit a broken pipe (EPIPE); because the
         // services build their subscriber with `tracing_subscriber::fmt()`
         // (whose builder defaults `log_internal_errors = true`),
         // tracing-subscriber echoed each failure as
         // "[tracing-subscriber] Unable to write an event ... Broken pipe
-        // (os error 32)" to the inherited stderr, polluting the BDD/CI logs.
-        //
-        // The 1s cap + abort is a belt-and-braces guard against the join
-        // hanging; with the child already reaped it cannot itself break a pipe.
-        if let Some(mut handle) = self.stdout_drain.take() {
-            if tokio::time::timeout(Duration::from_secs(1), &mut handle)
-                .await
-                .is_err()
-            {
-                handle.abort();
-            }
+        // (os error 32)" to stderr, polluting the BDD/CI logs.
+        if let Some(handle) = self.stdout_drain.take() {
+            join_or_abort(handle).await;
+        }
+        if let Some(handle) = self.stderr_forward.take() {
+            join_or_abort(handle).await;
         }
     }
 
@@ -436,15 +471,16 @@ impl ServiceHandle {
 impl Drop for ServiceHandle {
     fn drop(&mut self) {
         // Request graceful shutdown, but deliberately do NOT abort the stdout
-        // drain task. Aborting closes the read end of the child's stdout pipe
-        // while the child is still alive, so the child's shutdown-path log
-        // writes hit a broken pipe and tracing-subscriber prints
-        // "[tracing-subscriber] Unable to write an event ... Broken pipe" to
-        // the inherited stderr, polluting test logs (see [`ServiceHandle::stop`]
-        // for the full chain). Dropping the `stdout_drain` JoinHandle along with
-        // the rest of the struct *detaches* the task rather than cancelling it,
-        // so the read end stays open until the child exits; `kill_on_drop` on
-        // the child handle guarantees that — and thus the drain's EOF — arrives.
+        // drain / stderr forwarder tasks. Aborting closes the read end of the
+        // child's pipe while the child is still alive, so the child's
+        // shutdown-path log writes hit a broken pipe and tracing-subscriber
+        // prints "[tracing-subscriber] Unable to write an event ... Broken
+        // pipe" to stderr, polluting test logs (see [`ServiceHandle::stop`]
+        // for the full chain). Dropping the `stdout_drain`/`stderr_forward`
+        // JoinHandles along with the rest of the struct *detaches* those tasks
+        // rather than cancelling them, so their read ends stay open until the
+        // child exits; `kill_on_drop` on the child handle guarantees that —
+        // and thus their EOF — arrives.
         if let Some(ref mut child) = self.child {
             if let Some(pid) = child.id() {
                 send_sigterm(pid);
@@ -592,7 +628,10 @@ fn spawn_process(
 ) -> tokio::process::Child {
     debug!(binary = %binary, ?args, "starting {} from pre-built binary", package_name);
     let mut cmd = tokio::process::Command::new(binary);
-    cmd.args(args).stdout(Stdio::piped()).kill_on_drop(true);
+    cmd.args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
     for (key, value) in envs {
         cmd.env(key, value);
     }
@@ -610,6 +649,55 @@ fn spawn_process(
             package_name, binary, e
         )
     })
+}
+
+/// Forward a spawned child's stderr to this process's own stderr line by
+/// line, each line prefixed with `label` (a `<package>#<seq>` tag from
+/// [`next_spawn_label`]).
+///
+/// Without this, a child's `tracing` output — which every service writes to
+/// stderr — would go straight to this process's inherited stderr with zero
+/// attribution. Under cucumber's default concurrency, many same-named
+/// service instances (spawned by different concurrently-running scenarios)
+/// can be alive at once, so their lines interleave indistinguishably in
+/// captured BDD/CI output (issue #578). The label lets a reader (or a `grep`)
+/// isolate one instance's lines from the merged stream.
+///
+/// Lines are passed through verbatim — this only adds a prefix, it never
+/// reformats or interprets the child's own (already fully-formatted, often
+/// ANSI-colored) log line — so a plain `eprint!` is used rather than routing
+/// through this crate's own `tracing` macros, which would wrap it a second
+/// time.
+fn spawn_stderr_forwarder(
+    stderr: tokio::process::ChildStderr,
+    label: String,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut reader = BufReader::new(stderr);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match reader.read_line(&mut line).await {
+                Ok(0) | Err(_) => break,
+                Ok(_) => eprint!("[{label}] {line}"),
+            }
+        }
+    })
+}
+
+/// Join a background task, giving it 1s to finish before aborting it.
+///
+/// Called only after the child it was draining/forwarding for has already
+/// exited, so the task's pipe has hit EOF and it should return almost
+/// immediately; the abort is a belt-and-braces guard against the join
+/// hanging, not the expected path.
+async fn join_or_abort(mut handle: tokio::task::JoinHandle<()>) {
+    if tokio::time::timeout(Duration::from_secs(1), &mut handle)
+        .await
+        .is_err()
+    {
+        handle.abort();
+    }
 }
 
 /// Parse the bound port from a service's stdout.
@@ -784,6 +872,43 @@ mod tests {
 
         let result = parse_bound_port(stdout).await;
         assert!(result.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // next_spawn_label / spawn_stderr_forwarder tests (issue #578: label
+    // every spawned child so concurrently-running same-named instances'
+    // stderr can be told apart in merged BDD/CI output)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_next_spawn_label_is_unique_per_call_with_package_prefix() {
+        let a = next_spawn_label("widget");
+        let b = next_spawn_label("widget");
+        assert_ne!(
+            a, b,
+            "two spawns of the same package must get distinct labels"
+        );
+        assert!(a.starts_with("widget#"), "{a}");
+        assert!(b.starts_with("widget#"), "{b}");
+    }
+
+    #[tokio::test]
+    async fn test_spawn_stderr_forwarder_terminates_on_eof() {
+        let mut child = tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg("echo one >&2; echo two >&2")
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stderr = child.stderr.take().unwrap();
+        let handle = spawn_stderr_forwarder(stderr, "test#0".to_string());
+
+        // The child's stderr write end closes once it exits; the forwarder
+        // must observe EOF and return rather than block forever.
+        tokio::time::timeout(std::time::Duration::from_secs(5), handle)
+            .await
+            .expect("forwarder did not terminate after the child's stderr closed")
+            .unwrap();
     }
 
     // -----------------------------------------------------------------------
