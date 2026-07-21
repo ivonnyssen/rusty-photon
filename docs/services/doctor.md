@@ -341,7 +341,7 @@ explicit port, or one that doesn't parse, resolves to nothing.
 | Check | Status | Trigger |
 |---|---|---|
 | `joins.client-transport` | fail | Either: the client's scheme doesn't match the target's `server.tls` state (`http` against a TLS-on target, or `https` against a plain-HTTP one) — the connection fails outright; or the scheme matches, the target's certificate is doctor's self-signed CA (not the publicly-trusted ACME wildcard — judged the way `tls.expiry` distinguishes them, by the resolved cert file's name), and the client has no `ca_cert_path` pointed at it — the TLS handshake fails validation. Both grade `fail`, mirroring `tls.paths`: a definite break, not a hardware-style installed/enabled split. |
-| `joins.client-auth` | warn | The target has `server.auth` set and the client's credential is absent or does not verify (Argon2id) against it — every request 401s. Mirrors `auth.mismatch`'s severity and its asymmetry: an **absent** credential is fix-eligible (the correct value is derivable), a **present but wrong** one is suggestion-only (hand-set credentials are operator intent, so doctor points at `doctor auth rotate`). sentinel's own `service_auth`/`operation_watchdog.rp_url` pair is `auth.mismatch`'s territory already, not this check's — only targets with their own credential field (ui-htmx's `rp`/`sentinel` blocks, each Alpaca monitor's `auth`) are judged here. |
+| `joins.client-auth` | warn | The target has `server.auth` set and the client's credential is absent or does not verify (Argon2id) against it — every request 401s. Mirrors `auth.mismatch`'s severity and its asymmetry: an **absent** credential is fix-eligible (the correct value is derivable), a **present but wrong** one is suggestion-only (hand-set credentials are operator intent, so doctor points at `doctor auth rotate`). sentinel's own `service_auth`/`operation_watchdog.rp_url` pair is `auth.mismatch`'s territory already, not this check's — only targets with their own credential field (ui-htmx's `rp`/`sentinel` blocks, each Alpaca monitor's `auth`, and — since issue #620 — rp's `plate_solver.auth` / `equipment.mount.guiding.auth`) are judged here. |
 
 **What `--fix` can and cannot rewrite.** ui-htmx's `rp`/`sentinel` blocks
 carry `base_url` + `auth` + `ca_cert_path`, so both checks are fully
@@ -941,10 +941,12 @@ behavior; every knob in it was a CLI flag first.)
   mismatch in both directions, the ACME-vs-self-signed CA-trust split
   (including rp's shared top-level `ca_cert`, wired the same way once
   #609/PR #612 gave rp that field), absent-vs-wrong credential handling,
-  rp's plate-solver/guider `joins.client-auth` suggestion-only path (no
-  fix planned — no credential field exists yet), a non-loopback host
-  resolving to nothing, and that the scheme-rewrite helper never
-  introduces the trailing slash a URL-parser round trip would.
+  rp's plate-solver/guider `joins.client-auth` fix-eligible path (writing
+  the observatory credential to `plate_solver.auth` /
+  `equipment.mount.guiding.auth` once issue #620 gave rp those fields), a
+  non-loopback host resolving to nothing, and that the scheme-rewrite
+  helper never introduces the trailing slash a URL-parser round trip
+  would.
 - **BDD** (`services/doctor/tests`, built with the `mock` feature) — seed a
   scratch config dir and a platform-facts file with known-broken states (port
   collision, dangling watchdog service, retired D3s keys, unparseable JSON,

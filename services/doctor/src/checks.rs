@@ -1135,8 +1135,10 @@ fn plan_client_auth_value(ctx: &Context) -> Option<serde_json::Value> {
 /// matching `auth.mismatch`'s severity — a wrong or missing credential
 /// 401s every request, but (as with that check) a *present* mismatched
 /// credential may be intentional, so only the absent case is fix-eligible.
-/// `auth_pointer` is `None` for rp's plate-solver/guider clients, which
-/// carry no credential field at all.
+/// `auth_pointer` is `None` only for targets with no credential field to
+/// wire a fix into at all; every current caller (ui-htmx's targets, rp's
+/// plate-solver/guider clients since issue #620, sentinel's per-monitor
+/// `auth`) passes `Some`.
 fn credential_check(
     ctx: &Context,
     client_service: &str,
@@ -2240,6 +2242,60 @@ mod tests {
             }
             other => unreachable!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn test_rp_guider_auth_mismatch_is_suggestion_only() {
+        let dir = tempfile::tempdir().unwrap();
+        stage_pki(dir.path(), "s3cret-pw");
+        let hash = rp_auth::credentials::hash_password("correct-pw").unwrap();
+        write_json(
+            dir.path(),
+            "phd2-guider.json",
+            serde_json::json!({ "server": { "port": 11130,
+                "auth": { "username": "observatory", "password_hash": hash } } }),
+        );
+        write_json(
+            dir.path(),
+            "rp.json",
+            serde_json::json!({ "server": { "port": 11115 },
+                "equipment": { "mount": { "alpaca_url": "http://localhost:11117",
+                                           "guiding": { "url": "http://localhost:11130",
+                                                        "auth": { "username": "observatory", "password": "wrong-pw" } } } } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        let checks = rp_client_joins(&ctx);
+        let auth = checks
+            .iter()
+            .find(|c| c.name == "joins.client-auth")
+            .expect("a wrong credential must be reported");
+        assert_eq!(auth.status, Status::Warn);
+        assert!(
+            auth.fixes.is_empty(),
+            "a present credential is operator intent, never clobbered"
+        );
+    }
+
+    #[test]
+    fn test_rp_guider_matching_credential_and_scheme_is_silent() {
+        let dir = tempfile::tempdir().unwrap();
+        let hash = rp_auth::credentials::hash_password("s3cret-pw").unwrap();
+        write_json(
+            dir.path(),
+            "phd2-guider.json",
+            serde_json::json!({ "server": { "port": 11130,
+                "auth": { "username": "observatory", "password_hash": hash } } }),
+        );
+        write_json(
+            dir.path(),
+            "rp.json",
+            serde_json::json!({ "server": { "port": 11115 }, "ca_cert": "/pki/ca.pem",
+                "equipment": { "mount": { "alpaca_url": "http://localhost:11117",
+                                           "guiding": { "url": "http://localhost:11130",
+                                                        "auth": { "username": "observatory", "password": "s3cret-pw" } } } } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        assert!(rp_client_joins(&ctx).is_empty());
     }
 
     #[test]
