@@ -214,8 +214,9 @@ impl DoctorWorld {
         self.snapshot_pki();
     }
 
-    /// Stage `acme.json` shaped like the one `tls issue --acme` persists,
-    /// so the provisioning pass sees an ACME install.
+    /// Stage a representative (not field-complete) `acme.json` so the
+    /// provisioning pass sees an ACME install — doctor keys only on the
+    /// file's presence and never parses it.
     pub fn stage_acme_config(&mut self, domain: &str) {
         let content = serde_json::json!({
             "email": format!("ops@{domain}"),
@@ -233,9 +234,10 @@ impl DoctorWorld {
         .expect("acme.json");
     }
 
-    /// Stage the ACME wildcard pair (`acme-cert.pem`/`acme-key.pem`) the
-    /// way a completed `tls issue --acme` order leaves it, and snapshot
-    /// the tree.
+    /// Stage a stand-in ACME wildcard pair (`acme-cert.pem`/`acme-key.pem`)
+    /// and snapshot the tree. The cert is rcgen self-signed — doctor only
+    /// needs a parsable pair under the filenames a completed
+    /// `tls issue --acme` order leaves, not a real ACME chain.
     pub fn stage_acme_pair(&mut self, domain: &str, not_after: time::OffsetDateTime) {
         let pki = self.pki_dir();
         std::fs::create_dir_all(&pki).expect("pki dir");
