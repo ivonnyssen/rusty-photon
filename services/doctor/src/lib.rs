@@ -155,7 +155,12 @@ pub fn diagnose_and_fix(config_dir: PathBuf, facts: PlatformFacts) -> Result<Rep
 /// The material half of the provisioning pass: CA-if-absent, a certificate
 /// pair per installed service, and the observatory credential. Nothing is
 /// created on a host with no installed services — an empty config
-/// directory must stay empty.
+/// directory must stay empty. On an ACME install (`acme.json` present) no
+/// self-signed material is created either: every service serves the
+/// shared wildcard pair, which is `tls issue --acme`'s (and renewal's) to
+/// mint, and self-signed certs would be unverifiable by the flipped
+/// fleet's clients (issue #616). The credential is trust-model-agnostic
+/// and is ensured either way.
 fn provision_material(
     config_dir: &Path,
     facts: &PlatformFacts,
@@ -166,7 +171,18 @@ fn provision_material(
         debug!("no installed services; skipping the provisioning material pass");
         return Ok(Vec::new());
     }
-    let mut applied = provision::ensure_material(config_dir, &services, &[], false)?;
+    let mut applied = Vec::new();
+    if provision::acme_active(config_dir) {
+        debug!("acme.json present: the wildcard pair serves TLS; no self-signed material issued");
+        // Every provisioning pass must still end aligned (§Ownership under
+        // sudo) even though nothing is issued: a wildcard pair or acme.json
+        // left root-owned by an earlier sudo action would otherwise stay
+        // unreadable by the service user — `ensure_credential` aligns only
+        // when it mints.
+        provision::align_pki_ownership(config_dir)?;
+    } else {
+        applied = provision::ensure_material(config_dir, &services, &[], false)?;
+    }
     let (_password, credential_applied) = provision::ensure_credential(config_dir)?;
     applied.extend(credential_applied);
     Ok(applied)

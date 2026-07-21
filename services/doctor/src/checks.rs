@@ -756,32 +756,48 @@ fn tls_auth_absent(ctx: &Context, scan: &ServiceScan) -> Vec<Check> {
     let name = scan.entry.name;
     let mut checks = Vec::new();
     if tls_absent {
-        let tls_value = crate::provision::tls_block_value(&ctx.config_dir, name);
-        let fixes = if server_key_present {
-            vec![crate::report::FixOp::SetObject {
+        // On an ACME install the fix points at the shared wildcard pair —
+        // never at freshly issued self-signed material, which the flipped
+        // fleet's clients could not verify (issue #616). While the pair is
+        // missing, conjuring it is renewal's job, so no fix is planned.
+        let acme = crate::provision::acme_active(&ctx.config_dir);
+        let tls_value = if acme {
+            crate::provision::acme_tls_block_value(&ctx.config_dir)
+        } else {
+            Some(crate::provision::tls_block_value(&ctx.config_dir, name))
+        };
+        let fixes = match tls_value {
+            Some(tls_value) if server_key_present => vec![crate::report::FixOp::SetObject {
                 service: name.to_string(),
                 pointer: "/server/tls".to_string(),
                 value: tls_value,
-            }]
-        } else {
+            }],
             // No server key at all: the block is created whole, keeping the
             // port the service would have defaulted to.
-            vec![crate::report::FixOp::SetObject {
+            Some(tls_value) => vec![crate::report::FixOp::SetObject {
                 service: name.to_string(),
                 pointer: "/server".to_string(),
                 value: serde_json::json!({ "port": scan.entry.default_port, "tls": tls_value }),
-            }]
+            }],
+            None => Vec::new(),
+        };
+        let suggestion = if fixes.is_empty() {
+            "this is an ACME install (acme.json present) but the wildcard pair is \
+             missing — run `doctor tls renew` to obtain it, then `doctor --fix` to \
+             wire the config"
+        } else if acme {
+            "run `doctor --fix` to point server.tls at the ACME wildcard pair \
+             (services pick it up at next restart)"
+        } else {
+            "run `doctor --fix` to issue a certificate and turn TLS on \
+             (services pick it up at next restart)"
         };
         checks.push(
             Check::warn(
                 "tls.absent",
                 svc(scan),
                 format!("{name} has no server.tls block — it serves plain HTTP"),
-                Some(
-                    "run `doctor --fix` to issue a certificate and turn TLS on \
-                     (services pick it up at next restart)"
-                        .to_string(),
-                ),
+                Some(suggestion.to_string()),
             )
             .with_fixes(fixes),
         );
@@ -1615,6 +1631,61 @@ mod tests {
         let facts: PlatformFacts =
             serde_json::from_value(serde_json::json!({ "platform": "linux" })).unwrap();
         Context::gather(config_dir.to_path_buf(), facts)
+    }
+
+    #[test]
+    fn test_tls_absent_fix_points_at_the_wildcard_pair_on_an_acme_install() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("ppba-driver.json"),
+            r#"{ "server": { "port": 11112 } }"#,
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("acme.json"), "{}").unwrap();
+        let pki = dir.path().join("pki");
+        std::fs::create_dir_all(&pki).unwrap();
+        std::fs::write(pki.join("acme-cert.pem"), "cert").unwrap();
+        std::fs::write(pki.join("acme-key.pem"), "key").unwrap();
+        let ctx = config_only_ctx(dir.path());
+        let scan = ctx.scan("ppba-driver").unwrap();
+        let checks = tls_auth_absent(&ctx, scan);
+        let tls = checks.iter().find(|c| c.name == "tls.absent").unwrap();
+        match &tls.fixes[..] {
+            [crate::report::FixOp::SetObject { pointer, value, .. }] => {
+                assert_eq!(pointer, "/server/tls");
+                let cert = value["cert"].as_str().unwrap();
+                let key = value["key"].as_str().unwrap();
+                assert!(cert.ends_with("acme-cert.pem"), "{cert}");
+                assert!(key.ends_with("acme-key.pem"), "{key}");
+                assert!(
+                    !cert.contains("ppba-driver"),
+                    "no per-service self-signed pair on an ACME install: {cert}"
+                );
+            }
+            other => unreachable!("expected one SetObject fix, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_tls_absent_plans_no_fix_while_the_acme_pair_is_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("ppba-driver.json"),
+            r#"{ "server": { "port": 11112 } }"#,
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("acme.json"), "{}").unwrap();
+        let ctx = config_only_ctx(dir.path());
+        let scan = ctx.scan("ppba-driver").unwrap();
+        let checks = tls_auth_absent(&ctx, scan);
+        let tls = checks.iter().find(|c| c.name == "tls.absent").unwrap();
+        assert!(
+            tls.fixes.is_empty(),
+            "a missing wildcard pair is renewal's to recover: {:?}",
+            tls.fixes
+        );
+        let suggestion = tls.suggestion.as_deref().unwrap();
+        assert!(suggestion.contains("doctor tls renew"), "{suggestion}");
     }
 
     #[test]

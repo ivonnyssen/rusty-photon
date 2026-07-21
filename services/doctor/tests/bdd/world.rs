@@ -214,6 +214,48 @@ impl DoctorWorld {
         self.snapshot_pki();
     }
 
+    /// Stage a representative (not field-complete) `acme.json` so the
+    /// provisioning pass sees an ACME install — doctor keys only on the
+    /// file's presence and never parses it.
+    pub fn stage_acme_config(&mut self, domain: &str) {
+        let content = serde_json::json!({
+            "email": format!("ops@{domain}"),
+            "domain": domain,
+            "dns_provider": "cloudflare",
+            "dns_credentials": { "api_token": "test-token" },
+            "staging": false,
+            "renewal_days_before_expiry": 30,
+            "post_renewal_hooks": [],
+        });
+        std::fs::write(
+            self.config_dir().join("acme.json"),
+            serde_json::to_string_pretty(&content).expect("acme.json serializes"),
+        )
+        .expect("acme.json");
+    }
+
+    /// Stage a stand-in ACME wildcard pair (`acme-cert.pem`/`acme-key.pem`)
+    /// and snapshot the tree. The cert is rcgen self-signed — doctor only
+    /// needs a parsable pair under the filenames a completed
+    /// `tls issue --acme` order leaves, not a real ACME chain.
+    pub fn stage_acme_pair(&mut self, domain: &str, not_after: time::OffsetDateTime) {
+        let pki = self.pki_dir();
+        std::fs::create_dir_all(&pki).expect("pki dir");
+        let mut params =
+            rcgen::CertificateParams::new(vec![format!("*.{domain}"), domain.to_string()])
+                .expect("SANs");
+        params
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, format!("*.{domain}"));
+        params.not_before = not_after - time::Duration::days(90);
+        params.not_after = not_after;
+        let key = rcgen::KeyPair::generate().expect("wildcard key");
+        let cert = params.self_signed(&key).expect("wildcard cert");
+        std::fs::write(pki.join("acme-cert.pem"), cert.pem()).expect("acme-cert.pem");
+        std::fs::write(pki.join("acme-key.pem"), key.serialize_pem()).expect("acme-key.pem");
+        self.snapshot_pki();
+    }
+
     /// Snapshot every pki file's bytes for unchanged/changed assertions.
     pub fn snapshot_pki(&mut self) {
         self.pki_staged.clear();
