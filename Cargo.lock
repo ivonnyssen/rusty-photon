@@ -2546,6 +2546,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "libsvbony-sys"
+version = "0.1.0"
+
+[[package]]
 name = "libzwo-sys"
 version = "0.1.0"
 dependencies = [

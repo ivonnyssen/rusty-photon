@@ -1,0 +1,48 @@
+load("@rules_rust//cargo:defs.bzl", "cargo_build_script")
+load("@rules_rust//rust:defs.bzl", "rust_library")
+
+exports_files(
+    ["Cargo.toml"],
+    visibility = ["//visibility:public"],
+)
+
+# Hand-written SVBony SDK FFI bindings (no bindgen — `lib.rs` is a
+# hand-written `extern "C"` block, mirroring `libqhyccd-sys`'s shape:
+# SVBony's SDK header carries no license text anywhere, so it is not
+# vendored/bindgen'd here, only hand-transcribed — see lib.rs's crate docs).
+#
+# `build.rs` emits the per-OS native link directives (dylib=SVBCameraSDK +
+# dylib=usb-1.0 on Linux/macOS; no Windows branch — indi-3rdparty declares
+# Windows unsupported). `links = "SVBCameraSDK"` lets Bazel coordinate the
+# native link the same way the Cargo `links` key does.
+#
+# DEVIATION from libqhyccd-sys/libzwo-sys's BUILD.bazel: those bake in a real
+# link against the system-installed SDK (this workspace's Bazel CI/dev hosts
+# have QHYCCD/ZWO pre-provisioned). No `install-svbony-sdk` CI provisioning
+# action exists yet (Phase C of docs/plans/svbony-camera.md) and no service
+# consumes this crate yet, so `build_script_env` below bakes
+# `SVBONY_SKIP_NATIVE_LINK=1` into the build script unconditionally — the
+# default Bazel build (and `svbony-rs_unit_test`, which needs a real final
+# link) must work with zero SVBony SDK provisioning until Phase C lands.
+# Revisit (drop the env, or split a second non-skipping build_script variant)
+# once real hardware and CI provisioning exist.
+cargo_build_script(
+    name = "build_script",
+    srcs = ["build.rs"],
+    build_script_env = {
+        "SVBONY_SKIP_NATIVE_LINK": "1",
+    },
+    edition = "2021",
+    links = "SVBCameraSDK",
+    visibility = ["//visibility:private"],
+)
+
+rust_library(
+    name = "libsvbony-sys",
+    srcs = ["lib.rs"],
+    crate_name = "libsvbony_sys",
+    crate_root = "lib.rs",
+    edition = "2021",
+    visibility = ["//visibility:public"],
+    deps = [":build_script"],
+)

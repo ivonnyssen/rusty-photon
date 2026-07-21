@@ -1,0 +1,21 @@
+[package]
+name = "libsvbony-sys"
+version = "0.1.0"
+edition = "2021"
+authors = ["Igor von Nyssen <igor@vonnyssen.com>"]
+links = "SVBCameraSDK"
+repository = "https://github.com/ivonnyssen/rusty-photon"
+license = "MIT OR Apache-2.0"
+description = "Rust bindings for the SVBony camera SDK"
+# Explicit, lower-than-workspace MSRV (dual-homed to crates.io, mirroring
+# libqhyccd-sys): a dependency-free, hand-written FFI shim, so its floor is
+# just what the bindings compile on. Verified out-of-tree by the nightly
+# publish-readiness check (docs/plans/archive/publish-readiness-checks.md),
+# not in-workspace. See ../Cargo.toml.
+rust-version = "1.68.0"
+
+[lib]
+name = "libsvbony_sys"
+path = "lib.rs"
+
+[dependencies]
