@@ -836,9 +836,9 @@ fn tls_auth_file_absent(scan: &ServiceScan) -> Vec<Check> {
     let name = scan.entry.name;
     let path = scan.config_path.display();
     let remedy = format!(
-        "no {path} to provision — create it yourself with server.tls/server.auth \
-         set, or start the service once so it self-creates defaults, then run \
-         `doctor --fix`"
+        "no {path} to provision — create it yourself (an empty `{{}}` is enough) \
+         or start the service once so it self-creates defaults, then run \
+         `doctor --fix` to provision server.tls/server.auth into it"
     );
     vec![
         Check::warn(
