@@ -119,32 +119,54 @@ fn inventory(ctx: &Context) -> Vec<Check> {
                     .facts
                     .unit(&scan.entry.unit_name())
                     .and_then(|u| u.condition_path.as_ref());
-                let suggestion = match systemd_gate {
-                    Some(gate) => format!(
-                        "this service needs a hand-written config — the unit is \
-                         gated on {} — so create that file, then start the unit",
-                        gate.display()
+                let (detail, suggestion) = match systemd_gate {
+                    Some(gate) => (
+                        format!(
+                            "unit {} is installed but {} does not exist — this \
+                             service requires a hand-written config (the unit is \
+                             gated on {}) and cannot start without one",
+                            scan.entry.unit_name(),
+                            scan.config_path.display(),
+                            gate.display()
+                        ),
+                        format!(
+                            "this service needs a hand-written config — the unit is \
+                             gated on {} — so create that file, then start the unit",
+                            gate.display()
+                        ),
                     ),
-                    None if scan.entry.config_gated => format!(
-                        "this service has no sensible default — create {} by hand, \
-                         then start the unit",
-                        scan.config_path.display()
+                    None if scan.entry.config_gated => (
+                        format!(
+                            "unit {} is installed but {} does not exist — this \
+                             service has no sensible default config and cannot \
+                             start without one",
+                            scan.entry.unit_name(),
+                            scan.config_path.display()
+                        ),
+                        format!(
+                            "this service has no sensible default — create {} by hand, \
+                             then start the unit",
+                            scan.config_path.display()
+                        ),
                     ),
-                    None => format!(
-                        "start it once so it self-creates its defaults: e.g. `{}`",
-                        start_command(ctx.facts.platform, &manager_name(ctx, scan.entry))
+                    None => (
+                        format!(
+                            "unit {} is installed but {} does not exist — the service \
+                             has never started, or writes its config somewhere \
+                             unexpected",
+                            scan.entry.unit_name(),
+                            scan.config_path.display()
+                        ),
+                        format!(
+                            "start it once so it self-creates its defaults: e.g. `{}`",
+                            start_command(ctx.facts.platform, &manager_name(ctx, scan.entry))
+                        ),
                     ),
                 };
                 checks.push(Check::warn(
                     "inventory.unit-without-config",
                     svc(scan),
-                    format!(
-                        "unit {} is installed but {} does not exist — the service \
-                         has never started, or writes its config somewhere \
-                         unexpected",
-                        scan.entry.unit_name(),
-                        scan.config_path.display()
-                    ),
+                    detail,
                     Some(suggestion),
                 ));
             }
@@ -1753,6 +1775,14 @@ mod tests {
         assert!(
             !suggestion.contains("self-creates"),
             "a config-gated service never self-creates: {suggestion}"
+        );
+        // The detail text must not blame "never started" on a service that
+        // structurally can't start without an operator-written config first.
+        assert!(!check.detail.contains("never started"), "{}", check.detail);
+        assert!(
+            check.detail.contains("cannot start without one"),
+            "{}",
+            check.detail
         );
     }
 
