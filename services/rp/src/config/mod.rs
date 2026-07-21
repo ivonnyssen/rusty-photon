@@ -482,7 +482,8 @@ mod tests {
                         "settle_time": "10s",
                         "settle_timeout": "1m",
                         "dither_pixels": 5.0,
-                        "recalibrate_above_deg": 5.0
+                        "recalibrate_above_deg": 5.0,
+                        "auth": { "username": "observatory", "password": "secret" }
                     },
                     "auth": { "username": "observatory", "password": "secret" }
                 },
@@ -533,7 +534,8 @@ mod tests {
                 "warmup_step_interval": "2m",
                 "warm_target_c": 10.0
             },
-            "plate_solver": { "url": "http://localhost:11131", "timeout": "1m", "default_search_radius_deg": 3.0 },
+            "plate_solver": { "url": "http://localhost:11131", "timeout": "1m", "default_search_radius_deg": 3.0,
+                               "auth": { "username": "observatory", "password": "secret" } },
             "server": {
                 "port": 11115,
                 "bind_address": "127.0.0.1",

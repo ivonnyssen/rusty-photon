@@ -366,11 +366,13 @@ field (issue #609 / PR #612, `CA_ONLY_WIRING_SERVICES` in
 `provision/mod.rs`), not a per-target one, so `joins.client-transport`
 is fully fix-eligible for both: the scheme is rewritten in place and
 `/ca_cert` is written from the resolved pki tree, same as every other
-CA-trust fix. **Neither target carries a credential field at all yet**
-(they carry a bare `url`, no `auth`), so `joins.client-auth` still runs
-suggestion-only for them — closing that half needs a config-schema
-change to rp's HTTP clients, not a doctor check — tracked as follow-up
-work, not in this issue's scope (see §MVP scope). A CA-trust gap is
+CA-trust fix. Both targets also carry a per-target `plate_solver.auth` /
+`equipment.mount.guiding.auth` field now (issue #620 closed the
+config-schema gap this section used to describe), so `joins.client-auth`
+is fully fix-eligible for them too: an absent credential is written from
+`pki/credential` at `/plate_solver/auth` or
+`/equipment/mount/guiding/auth`, the same "absent gets it, present is
+operator intent" contract as every other client target. A CA-trust gap is
 always reported once a target's certificate is self-signed and the
 client's CA field is absent, regardless of whether doctor's own
 `pki/ca.pem` exists locally yet — only the *fix* is gated on that file's
@@ -1035,15 +1037,17 @@ the renewal scheduling ship in sentinel's deb/rpm/MSI Core/brew formula,
 the install-flow docs in the per-platform packaging guides, and the
 pki-ownership alignment under sudo (the #572 remainder).
 
-**Client-target joins ([#607](https://github.com/ivonnyssen/rusty-photon/issues/607)):**
+**Client-target joins ([#607](https://github.com/ivonnyssen/rusty-photon/issues/607),
+[#620](https://github.com/ivonnyssen/rusty-photon/issues/620)):**
 `joins.client-transport` and `joins.client-auth` (§Diagnosis).
 `joins.client-transport` is fully fix-eligible for ui-htmx's
 `rp`/`sentinel` targets, sentinel's per-monitor `scheme`, sentinel's
 `operation_watchdog.rp_url` scheme, and rp's plate-solver/guider clients
 (rp's shared top-level `ca_cert`, closed by #609/PR #612). `joins.client-auth`
-is fully fix-eligible for ui-htmx's targets and sentinel's per-monitor
-`auth`; it stays suggestion-only for rp's plate-solver/guider clients
-(neither carries a credential field yet), and does not run at all for
+is fully fix-eligible for ui-htmx's targets, sentinel's per-monitor
+`auth`, and (since #620 added `plate_solver.auth` /
+`equipment.mount.guiding.auth` to rp's config schema) rp's
+plate-solver/guider clients; it does not run at all for
 `operation_watchdog.rp_url` (its credential is the shared `service_auth`
 pair — `auth.mismatch` already owns it).
 
@@ -1051,13 +1055,6 @@ pair — `auth.mismatch` already owns it).
 - `usb_*` identity declarations for qhy-focuser and star-adventurer-gti —
   measured whenever that hardware is next on a USB port; two lines of
   `doctor.toml` each.
-- An `auth` field on rp's `plate_solver`/`guiding` client configs
-  (`services/rp/src/config/plate_solver.rs`,
-  `services/rp/src/config/guiding.rs`) — CA trust closed by #609/PR #612
-  (rp's shared top-level `ca_cert`), but neither client carries a
-  credential field, so `joins.client-auth` can diagnose but not fix a
-  401 against either target. Out of #607's scope: it is an rp
-  HTTP-client change, not a doctor check.
 - `joins.client-transport` does not evaluate CA trust for sentinel's
   downstream targets (`operation_watchdog.rp_url`, per-monitor
   `host`/`port`) at all — both pass `ca_cert: None` into `transport_check`

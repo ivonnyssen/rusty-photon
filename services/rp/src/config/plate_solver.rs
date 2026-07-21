@@ -22,6 +22,10 @@ pub struct PlateSolverConfig {
     pub timeout: Duration,
     #[serde(default)]
     pub default_search_radius_deg: Option<f64>,
+    /// Optional HTTP Basic Auth credentials for connecting to an
+    /// auth-enabled plate-solver service.
+    #[serde(default)]
+    pub auth: Option<rp_auth::config::ClientAuthConfig>,
 }
 
 fn default_plate_solver_timeout() -> Duration {
@@ -70,6 +74,7 @@ mod tests {
         assert_eq!(ps.url, "http://127.0.0.1:11131");
         assert_eq!(ps.timeout, Duration::from_secs(60));
         assert!(ps.default_search_radius_deg.is_none());
+        assert!(ps.auth.is_none());
     }
 
     #[test]
@@ -84,7 +89,8 @@ mod tests {
                 "plate_solver": {
                     "url": "http://127.0.0.1:11131",
                     "timeout": "30s",
-                    "default_search_radius_deg": 4.0
+                    "default_search_radius_deg": 4.0,
+                    "auth": {"username": "observatory", "password": "secret"}
                 },
                 "server": { "port": 0 }
             }"#,
@@ -96,6 +102,9 @@ mod tests {
         assert_eq!(ps.url, "http://127.0.0.1:11131");
         assert_eq!(ps.timeout, Duration::from_secs(30));
         assert_eq!(ps.default_search_radius_deg, Some(4.0));
+        let auth = ps.auth.as_ref().unwrap();
+        assert_eq!(auth.username, "observatory");
+        assert_eq!(auth.password, "secret");
     }
 
     #[test]

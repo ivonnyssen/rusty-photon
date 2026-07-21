@@ -4332,9 +4332,11 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "axum",
+ "base64",
  "humantime-serde",
  "mockall",
  "reqwest 0.13.4",
+ "rp-auth",
  "rusty-photon-tls",
  "serde",
  "serde_json",
@@ -4364,9 +4366,11 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "axum",
+ "base64",
  "humantime-serde",
  "mockall",
  "reqwest 0.13.4",
+ "rp-auth",
  "rusty-photon-tls",
  "serde",
  "serde_json",
