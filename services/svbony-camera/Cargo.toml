@@ -65,25 +65,32 @@ command = "cargo test -p svbony-camera --features conformu --test conformu_integ
 
 # Packaging metadata (ADR-012 / ADR-013 / the new ADR-018 no-license-SDK
 # bucket). SVBony's SDK ships no license grant, so — like qhy-camera —
-# nothing bundles the SDK library itself: only the binary, udev rule, and
-# systemd unit ship in the package. A root-only download-on-target helper
-# (`rusty-photon-svbony-sdk-install`, analogous to
-# `rusty-photon-qhy-firmware-install`) will install `libSVBCameraSDK.so`;
-# writing that helper (and adding its asset entries below) is explicitly
-# Phase G packaging work per docs/plans/svbony-camera.md — NOT this phase.
+# nothing bundles the SDK library itself: only the binary, udev rule,
+# systemd unit, and the download-on-target helper ship in the package. The
+# root-only helper (`rusty-photon-svbony-sdk-install`, analogous to
+# `rusty-photon-qhy-firmware-install`) installs `libSVBCameraSDK.so` to
+# `/usr/lib/rusty-photon/` at operator request (Phase G).
 [package.metadata.deb]
 name = "rusty-photon-svbony-camera"
 maintainer = "Igor von Nyssen <igor@vonnyssen.com>"
-extended-description = "ASCOM Alpaca Camera driver for SVBony cameras. SVBony's SDK ships no license grant, so it is not bundled: run rusty-photon-svbony-sdk-install once as root after installation (TODO Phase G — the helper itself is not shipped yet)."
+extended-description = "ASCOM Alpaca Camera driver for SVBony cameras. SVBony's SDK ships no license grant, so it is not bundled: run rusty-photon-svbony-sdk-install once as root after installation."
 section = "science"
 priority = "optional"
-# $auto = dpkg-shlibdeps (needs a Debian build host); adduser is used by
-# postinst. TODO Phase G: once the SDK-install helper exists, add its asset
-# entry below (mirroring qhy-camera's rusty-photon-qhy-firmware-install).
-depends = "$auto, adduser"
+# Explicit list, NOT "$auto": like zwo-camera's bundled blob, the
+# operator-installed libSVBCameraSDK.so carries no SONAME, so
+# dpkg-shlibdeps cannot map the binary's bare libSVBCameraSDK.so NEEDED
+# entry to any package and would fail — even though this package never
+# ships the blob itself, the binary built against it still carries that
+# NEEDED entry. Direct runtime needs: glibc, libgcc, C++ runtime (what
+# libSVBCameraSDK.so itself links, per readelf -d) + libusb-1.0 (the
+# *binary's own* -lusb-1.0 link — the SDK blob has no NEEDED entry for it
+# at all, see docs/plans/svbony-camera.md Phase F); adduser is used by
+# postinst.
+depends = "libc6, libgcc-s1, libstdc++6, libusb-1.0-0, adduser"
 assets = [
     ["target/release/svbony-camera", "usr/bin/rusty-photon-svbony-camera", "755"],
     ["pkg/90-rusty-photon-svbony.rules", "usr/lib/udev/rules.d/90-rusty-photon-svbony.rules", "644"],
+    ["pkg/rusty-photon-svbony-sdk-install", "usr/sbin/rusty-photon-svbony-sdk-install", "755"],
 ]
 maintainer-scripts = "pkg/"
 
@@ -98,12 +105,18 @@ restart-after-upgrade = true
 name = "rusty-photon-svbony-camera"
 summary = "ASCOM Alpaca Camera driver for SVBony cameras"
 license = "MIT OR Apache-2.0"
-# TODO Phase G: add the SDK-install helper asset entry once it exists.
 assets = [
     { source = "target/release/svbony-camera", dest = "/usr/bin/rusty-photon-svbony-camera", mode = "755" },
     { source = "pkg/rusty-photon-svbony-camera.service", dest = "/usr/lib/systemd/system/rusty-photon-svbony-camera.service", mode = "644" },
     { source = "pkg/90-rusty-photon-svbony.rules", dest = "/usr/lib/udev/rules.d/90-rusty-photon-svbony.rules", mode = "644" },
+    { source = "pkg/rusty-photon-svbony-sdk-install", dest = "/usr/sbin/rusty-photon-svbony-sdk-install", mode = "755" },
 ]
+# rpm's dependency generator would emit a requires on the SONAME-less
+# operator-installed blob (libSVBCameraSDK.so) that no package provides,
+# making the rpm uninstallable — same reasoning as zwo-camera's
+# auto-req = "disabled". Disable it and declare the runtime needs
+# explicitly in the requires table below.
+auto-req = "disabled"
 post_install_script = """
 getent passwd rusty-photon > /dev/null || useradd -r -d /var/lib/rusty-photon -s /sbin/nologin rusty-photon
 install -d -m 0750 -o rusty-photon -g rusty-photon /var/lib/rusty-photon /var/lib/rusty-photon/.config /var/lib/rusty-photon/.config/rusty-photon
@@ -115,7 +128,7 @@ fi
 udevadm control --reload-rules || true
 udevadm trigger || true
 echo "rusty-photon-svbony-camera: the SVBony SDK is not bundled."
-echo "Run '/usr/sbin/rusty-photon-svbony-sdk-install' once as root before first use (Phase G)."
+echo "Run '/usr/sbin/rusty-photon-svbony-sdk-install' once as root before first use."
 """
 # rpm scriptlet arg $1 = package instances remaining after the operation.
 # On upgrade the old %preun runs AFTER the new %post, so an unguarded
@@ -139,6 +152,12 @@ if [ "$1" -ge 1 ]; then
 fi
 """
 require-sh = true
+
+[package.metadata.generate-rpm.requires]
+glibc = "*"
+libgcc = "*"
+"libstdc++" = "*"
+libusb1 = "*"
 
 [dev-dependencies]
 svbony-rs = { path = "../../crates/svbony-rs", features = ["simulation"] }
