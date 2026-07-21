@@ -168,7 +168,7 @@ pub fn load_renew_env(config_dir: &Path) -> Result<()> {
             std::env::set_var(key, value.trim());
         }
     }
-    debug!(path = %path.display(), "loaded renew.env overrides");
+    debug!(path = %path.display(), "loaded renew.env");
     Ok(())
 }
 

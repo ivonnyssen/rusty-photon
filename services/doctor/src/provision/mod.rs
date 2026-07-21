@@ -77,8 +77,10 @@ pub fn absolute_pki_dir(config_dir: &Path) -> PathBuf {
 /// never creates one there; following it would chown the target). A failed
 /// chown is an error: a silently root-owned key breaks TLS at the next
 /// service start. `renew.env` is operator-authored (docs/services/doctor.md
-/// §Renewal) and not always present, so it is included best-effort — a
-/// missing file is not chowned, it just never joins `paths`.
+/// §Renewal) and not always present, so it is included best-effort: it is
+/// unconditionally added to `paths`, but a missing file simply fails the
+/// `symlink_metadata` lookup in the loop below and is skipped there like
+/// any other absent entry.
 #[cfg(unix)]
 pub fn align_pki_ownership(config_dir: &Path) -> Result<(), String> {
     use std::os::unix::fs::MetadataExt;
