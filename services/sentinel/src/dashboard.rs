@@ -114,8 +114,18 @@ async fn index_handler(State(dashboard): State<DashboardState>) -> impl IntoResp
         .map(|s| {
             let (color, bg) = match s.health {
                 crate::state::ServiceHealth::Up => ("#155724", "#d4edda"),
+                crate::state::ServiceHealth::Degraded => ("#856404", "#fff3cd"),
                 crate::state::ServiceHealth::Down => ("#721c24", "#f8d7da"),
                 crate::state::ServiceHealth::Unknown => ("#383d41", "#e2e3e5"),
+            };
+            // The degraded service's own words, passed through opaquely
+            // (escaped, never interpreted) under the amber badge.
+            let health_message = match &s.health_message {
+                Some(m) => format!(
+                    r#"<br><small style="color: #856404;">{}</small>"#,
+                    html_escape(m)
+                ),
+                None => String::new(),
             };
             let last_probe = if s.last_probe_epoch_ms == 0 {
                 "Never".to_string()
@@ -140,7 +150,7 @@ async fn index_handler(State(dashboard): State<DashboardState>) -> impl IntoResp
                     <td style="padding: 0.5rem;">{}</td>
                     <td style="padding: 0.5rem;">{}</td>
                     <td style="padding: 0.5rem;">
-                        <span style="display: inline-block; padding: 0.25em 0.6em; border-radius: 0.25rem; font-size: 0.85em; font-weight: 600; color: {}; background-color: {};">{}</span>
+                        <span style="display: inline-block; padding: 0.25em 0.6em; border-radius: 0.25rem; font-size: 0.85em; font-weight: 600; color: {}; background-color: {};">{}</span>{}
                     </td>
                     <td style="padding: 0.5rem;">{}</td>
                     <td style="padding: 0.5rem;">{}</td>
@@ -153,6 +163,7 @@ async fn index_handler(State(dashboard): State<DashboardState>) -> impl IntoResp
                 color,
                 bg,
                 s.health,
+                health_message,
                 s.consecutive_failures,
                 s.restarts_in_outage,
                 s.total_restarts,
@@ -225,17 +236,19 @@ async fn index_handler(State(dashboard): State<DashboardState>) -> impl IntoResp
                     tbody.innerHTML = data.map(s => {{
                         const colors = {{
                             'up': ['#155724', '#d4edda'],
+                            'degraded': ['#856404', '#fff3cd'],
                             'down': ['#721c24', '#f8d7da'],
                         }};
                         const [color, bg] = colors[s.health] || ['#383d41', '#e2e3e5'];
                         const label = s.health.charAt(0).toUpperCase() + s.health.slice(1);
+                        const message = s.health_message ? `<br><small style="color: #856404;">${{esc(s.health_message)}}</small>` : '';
                         const lastProbe = s.last_probe_epoch_ms === 0 ? 'Never' : new Date(s.last_probe_epoch_ms).toLocaleTimeString();
                         const nextRestart = s.next_restart_epoch_ms === null ? '—' : new Date(s.next_restart_epoch_ms).toLocaleTimeString();
                         return `<tr style="border-bottom: 1px solid #dee2e6;">
                             <td style="padding: 0.5rem;">${{esc(s.name)}}</td>
                             <td style="padding: 0.5rem;">${{esc(s.run_state)}}</td>
                             <td style="padding: 0.5rem;">
-                                <span style="display: inline-block; padding: 0.25em 0.6em; border-radius: 0.25rem; font-size: 0.85em; font-weight: 600; color: ${{color}}; background-color: ${{bg}};">${{label}}</span>
+                                <span style="display: inline-block; padding: 0.25em 0.6em; border-radius: 0.25rem; font-size: 0.85em; font-weight: 600; color: ${{color}}; background-color: ${{bg}};">${{label}}</span>${{message}}
                             </td>
                             <td style="padding: 0.5rem;">${{s.consecutive_failures}}</td>
                             <td style="padding: 0.5rem;">${{s.restarts_in_outage}}</td>
@@ -361,8 +374,12 @@ async fn services_handler(State(dashboard): State<DashboardState>) -> impl IntoR
                 "unit": s.unit,
                 // "running" | "failed" | "inert" | "stopped" | "disabled".
                 "run_state": s.run_state,
-                // "unknown" | "up" | "down" (the enum's lowercase serde form).
+                // "unknown" | "up" | "degraded" | "down" (the enum's
+                // lowercase serde form).
                 "health": s.health,
+                // Opaque display text from a degraded probe's 503 body;
+                // null unless health is "degraded".
+                "health_message": s.health_message,
                 "last_probe_epoch_ms": s.last_probe_epoch_ms,
                 "consecutive_failures": s.consecutive_failures,
                 "restarts_in_outage": s.restarts_in_outage,
@@ -691,6 +708,7 @@ mod tests {
                 unit: "rusty-photon-plate-solver".to_string(),
                 run_state: RunState::Running,
                 health: crate::state::ServiceHealth::Up,
+                health_message: None,
                 last_probe_epoch_ms: 1000,
                 consecutive_failures: 0,
                 restarts_in_outage: 0,
@@ -721,6 +739,7 @@ mod tests {
         assert_eq!(json[0]["unit"], "rusty-photon-plate-solver");
         assert_eq!(json[0]["run_state"], "running");
         assert_eq!(json[0]["health"], "up");
+        assert_eq!(json[0]["health_message"], serde_json::Value::Null);
         assert_eq!(json[0]["last_probe_epoch_ms"], 1000);
         assert_eq!(json[0]["consecutive_failures"], 0);
         assert_eq!(json[0]["restarts_in_outage"], 0);
