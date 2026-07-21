@@ -59,11 +59,41 @@ symbols resolve at runtime via the *consuming binary's own* `-lusb-1.0`
 link, which `libsvbony-sys/build.rs` already emits unconditionally — so the
 action's only real prerequisite is providing libusb-1.0 itself). No Windows
 branch at all (not merely unsupported like other services' Windows gaps):
-`libsvbony-sys/build.rs` panics on `CARGO_CFG_TARGET_OS=windows`
-*unconditionally*, before even checking `SVBONY_SKIP_NATIVE_LINK`, mirroring
-indi-3rdparty's own CMake `FATAL_ERROR "MS Windows not supported."` — so
-there is no link-free escape hatch to provision around, and the action
-must never be invoked on a Windows runner.
+`libsvbony-sys/build.rs` panics on `CARGO_CFG_TARGET_OS=windows` for a
+*real, SDK-linking* build, mirroring indi-3rdparty's own CMake
+`FATAL_ERROR "MS Windows not supported."` — so `install-svbony-sdk` must
+never be invoked on a Windows runner (there is no real SDK to provision
+there). **Fixed post-Phase-F (PR #658 review):** this panic originally
+fired *before* checking `SVBONY_SKIP_NATIVE_LINK`, so it also broke
+`bazel / windows-latest` — Bazel bakes that env var into every platform's
+`libsvbony-sys` `cargo_build_script` unconditionally (see "Native
+dependency & build gating" below), so the library target's Windows build
+panicked regardless of ever touching the real SDK. The skip-link check now
+runs first, so a simulation-only Windows build (Bazel's only kind) succeeds
+and only a genuine real-link attempt still panics.
+
+**Correction to "no alternative Windows SDK distribution" (same review):**
+that claim was wrong — checked directly against
+[svbony.com/downloads/software-driver](https://www.svbony.com/downloads/software-driver),
+which lists a `windows-SVBCameraSDK-v1.13.4` download (the same SDK
+version this crate already pins for Linux), and independently corroborated
+by a third-party Rust wrapper
+([`ssmichael1/svbony`](https://github.com/ssmichael1/svbony)) listing
+Windows x86_64/x86 as supported, sourced from that same page. What's
+actually true is narrower: *indi-3rdparty* (a Linux/macOS-focused INDI
+packaging repo) never carried a Windows build — not that SVBony's own SDK
+lacks one. Integrating it hit a hard blocker, though: the download button
+is `data-fileRestricted="true"` and the page loads `recaptcha-v3.js` /
+`unified-captcha.js`, i.e. it's gated behind a CAPTCHA/consent flow, not a
+plain fetchable URL like indi-3rdparty's GitHub-raw mirror or ZWO's
+Windows CDN (`install-zwo-sdk`'s `windows_camera_sdk_url` input). That
+also means the Windows package's license terms are unverified — ADR-018's
+"no license grant at all" finding was specifically about the Linux/macOS
+indi-3rdparty blob. Real Windows integration needs a human to click
+through the gate once, hand the resulting file to CI/build tooling for
+byte-inspection (DLL/import-lib names, arch, any bundled libusb
+dependency, license/EULA text) and a real sha256 pin — tracked as
+follow-up, not attempted blind.
 
 **A genuine correction, found via byte-level verification, not assumed:**
 this plan's "Verified SDK facts" table (below) and

@@ -12,11 +12,18 @@
 //!   `svbony_skip_link` cfg it sets), for builds that exercise only the
 //!   pure-Rust `simulation` path and provision no SDK.
 //!
-//! No Windows branch: indi-3rdparty's own `libsvbony` `CMakeLists.txt`
-//! declares `message(FATAL_ERROR "MS Windows not supported.")`, and no
-//! alternative Windows SDK distribution has been independently verified for
-//! this crate (see `docs/plans/svbony-camera.md`). A Windows target build
-//! fails loudly here rather than silently producing an unlinkable crate.
+//! No Windows link directives yet: indi-3rdparty's own `libsvbony`
+//! `CMakeLists.txt` declares `message(FATAL_ERROR "MS Windows not
+//! supported.")`, but that is a statement about *indi-3rdparty's Linux/
+//! macOS-focused packaging*, not about SVBony's own SDK — SVBony does
+//! publish a Windows `SVBCameraSDK` build directly
+//! (svbony.com/downloads/software-driver), just not through the
+//! Linux/macOS mirror this crate currently sources from, and it has not yet
+//! been integrated/verified here (see `docs/plans/svbony-camera.md`). A
+//! **real, SDK-linking** Windows target build fails loudly here rather than
+//! silently producing an unlinkable crate — but `SVBONY_SKIP_NATIVE_LINK`
+//! is checked first, so a simulation-only Windows build (Bazel's default
+//! for every platform, and CI's sim-only legs) still succeeds.
 
 use std::env;
 
@@ -36,20 +43,6 @@ fn main() {
 
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
 
-    // indi-3rdparty's libsvbony CMakeLists.txt hard-fails on Windows
-    // ("MS Windows not supported."), and SVBony's own direct SDK download has
-    // not been checked for an alternative Windows distribution. Fail loudly
-    // and early rather than emitting link directives for a platform nobody
-    // has verified.
-    if target_os == "windows" {
-        panic!(
-            "libsvbony-sys does not support Windows: indi-3rdparty's libsvbony \
-             packaging declares Windows unsupported (\"MS Windows not supported\"), \
-             and no alternative Windows SDK distribution has been verified for this \
-             crate. See docs/plans/svbony-camera.md (\"Packaging\")."
-        );
-    }
-
     // Simulation-only escape hatch (mirrors QHYCCD_SKIP_NATIVE_LINK /
     // ZWO_SKIP_NATIVE_LINK): when set, emit NO link directives, so a
     // `--features simulation` build of svbony-rs — whose real FFI is
@@ -60,7 +53,11 @@ fn main() {
     // the default local Bazel build too (crates/svbony-rs/libsvbony-sys/BUILD.bazel
     // bakes this env var into its `cargo_build_script`, unlike
     // libqhyccd-sys/libzwo-sys's Bazel targets, which link the real,
-    // pre-provisioned system SDK).
+    // pre-provisioned system SDK). Checked *before* the Windows-unsupported
+    // panic below: a skip-link build never touches the SDK at all (that is
+    // the whole point), so it must succeed on every `CARGO_CFG_TARGET_OS`
+    // including Windows — `libsvbony-sys/BUILD.bazel` bakes this env var into
+    // every Bazel target unconditionally, on all three `bazel.yml` platforms.
     if env::var_os("SVBONY_SKIP_NATIVE_LINK").is_some() {
         println!("cargo:rustc-cfg=svbony_skip_link");
         println!(
@@ -68,6 +65,26 @@ fn main() {
              directives; this is a simulation-only build that links no native SDK"
         );
         return;
+    }
+
+    // This crate's Windows link directives aren't wired up yet: indi-3rdparty's
+    // libsvbony CMakeLists.txt hard-fails on Windows ("MS Windows not
+    // supported"), and while SVBony does publish a Windows SDK directly
+    // (svbony.com/downloads/software-driver), it has not yet been integrated
+    // here. Fail loudly and early rather than emitting link directives for a
+    // platform this crate cannot yet actually link — but only for a *real*,
+    // SDK-linking build; the skip-link escape hatch above already handled the
+    // simulation-only case.
+    if target_os == "windows" {
+        panic!(
+            "libsvbony-sys does not yet link on Windows: indi-3rdparty's libsvbony \
+             packaging (the Linux/macOS source this crate currently pulls from) \
+             declares Windows unsupported (\"MS Windows not supported\"), and this \
+             crate has not yet integrated SVBony's own Windows SDK distribution \
+             (svbony.com/downloads/software-driver). Build with \
+             SVBONY_SKIP_NATIVE_LINK=1 for a simulation-only Windows build, or see \
+             docs/plans/svbony-camera.md (\"Packaging\") for status."
+        );
     }
 
     if let Some(dir) = env::var("SVBONY_SDK_LIB_DIR")
