@@ -335,6 +335,10 @@ mod tests {
             ext.parsed_extension(),
             ParsedExtension::SubjectKeyIdentifier(_)
         ));
+        assert!(
+            !ext.critical,
+            "RFC 5280 §4.2.1.2 requires SKI to be non-critical"
+        );
     }
 
     #[test]
@@ -382,6 +386,10 @@ mod tests {
             ski_ext.parsed_extension(),
             ParsedExtension::SubjectKeyIdentifier(_)
         ));
+        assert!(
+            !ski_ext.critical,
+            "RFC 5280 §4.2.1.2 requires SKI to be non-critical"
+        );
 
         let aki_ext = cert
             .get_extension_unique(&OID_X509_EXT_AUTHORITY_KEY_IDENTIFIER)
@@ -389,6 +397,10 @@ mod tests {
             .expect(
                 "service cert must carry an Authority Key Identifier pointing at the issuing CA",
             );
+        assert!(
+            !aki_ext.critical,
+            "RFC 5280 §4.2.1.1 requires AKI to be non-critical"
+        );
         let ParsedExtension::AuthorityKeyIdentifier(aki) = aki_ext.parsed_extension() else {
             panic!("expected an AuthorityKeyIdentifier extension");
         };

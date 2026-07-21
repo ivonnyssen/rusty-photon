@@ -410,6 +410,8 @@ mod tests {
         let mut params =
             rcgen::CertificateParams::new(sans.iter().map(|s| s.to_string()).collect::<Vec<_>>())
                 .unwrap();
+        params.is_ca = rcgen::IsCa::ExplicitNoCa;
+        params.use_authority_key_identifier_extension = true;
         params.not_before = not_after - time::Duration::days(365);
         params.not_after = not_after;
         let key = rcgen::KeyPair::generate().unwrap();

@@ -22,7 +22,13 @@ already carried an SKI (rcgen writes it for any `IsCa::Ca`), so no
 change was needed there. `crates/rusty-photon-tls/src/test_cert.rs`
 (test-fixture certs) got the same two-field change, so tests exercise
 the same shape as production. Existing installs converge at the next
-renewal.
+renewal — but renewal only re-issues inside its 30-day window ahead of
+a 10-year expiry, so a pair issued the day before this fix stays
+non-compliant for close to a decade on an otherwise-untouched host. An
+operator who needs the new extensions sooner runs `doctor tls issue
+--force`, which re-issues every service pair from the existing CA
+immediately (see §Provisioning below; the CA itself is untouched and
+never needs replacing for this).
 
 **2026-07-20** — `doctor tls renew` now parses `<config-root>/renew.env`
 (`KEY=VALUE` per line) and consults it as a fallback when resolving
