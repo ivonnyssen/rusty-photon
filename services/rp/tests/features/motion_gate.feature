@@ -1,3 +1,4 @@
+@serial
 Feature: Mount motion gate
   Mount motion and in-flight imaging exposures are serialized by an
   rp-internal readers-writer gate on the singular mount: slew and
