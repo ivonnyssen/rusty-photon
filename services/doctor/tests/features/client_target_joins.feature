@@ -79,7 +79,7 @@ Feature: Client-target joins (#607)
     And the config file "rp.json" has "/ca_cert" pointing at the pki file "ca.pem"
     And the config file "rp.json" has the string "observatory" at "/plate_solver/auth/username"
 
-  Scenario: --fix wires rp's guider client credential once the target is provisioned
+  Scenario: --fix rewrites rp's guider scheme, CA trust, and credential once the target is provisioned
     Given a config file "phd2-guider.json" containing:
       """
       { "server": { "port": 11130, "auth": { "username": "observatory", "password_hash": "$argon2id$v=19$m=19456,t=2,p=1$YWJjZGVmZ2g$aGFuZHNldA" } } }
@@ -91,7 +91,9 @@ Feature: Client-target joins (#607)
                                    "guiding": { "url": "http://localhost:11130" } } } }
       """
     When I run doctor with --fix and --json
-    Then the config file "rp.json" has the string "observatory" at "/equipment/mount/guiding/auth/username"
+    Then the config file "rp.json" has the string "https://localhost:11130" at "/equipment/mount/guiding/url"
+    And the config file "rp.json" has "/ca_cert" pointing at the pki file "ca.pem"
+    And the config file "rp.json" has the string "observatory" at "/equipment/mount/guiding/auth/username"
 
   Scenario: A non-loopback client target is never joined
     Given a config file "rp.json" containing:
