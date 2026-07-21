@@ -57,7 +57,11 @@ pub fn generate_service_cert(
     params
         .distinguished_name
         .push(DnType::CommonName, service_name);
-    params.is_ca = IsCa::NoCa;
+    // Match production shape (doctor's `cert::generate_service_cert`): AKI
+    // + SKI, so tests exercise the same strict-verifier-compatible certs
+    // that are actually issued (issue #621).
+    params.is_ca = IsCa::ExplicitNoCa;
+    params.use_authority_key_identifier_extension = true;
     params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
     params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
     params

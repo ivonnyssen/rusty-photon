@@ -181,7 +181,8 @@ impl DoctorWorld {
         params
             .distinguished_name
             .push(rcgen::DnType::CommonName, service);
-        params.is_ca = rcgen::IsCa::NoCa;
+        params.is_ca = rcgen::IsCa::ExplicitNoCa;
+        params.use_authority_key_identifier_extension = true;
         params.key_usages = vec![rcgen::KeyUsagePurpose::DigitalSignature];
         params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
         params.not_before = not_after - time::Duration::days(365);

@@ -89,7 +89,15 @@ pub fn generate_service_cert(
     params
         .distinguished_name
         .push(DnType::OrganizationName, "Rusty Photon");
-    params.is_ca = IsCa::NoCa;
+    // RFC 5280 §4.2.1.1 makes Authority Key Identifier a MUST on CA-issued
+    // (non-self-signed) certs, and §4.2.1.2 makes Subject Key Identifier a
+    // SHOULD for leaves. `ExplicitNoCa` (vs `NoCa`) is what makes rcgen
+    // write the leaf's own SKI; `use_authority_key_identifier_extension`
+    // makes it write the AKI, derived from the CA's actual SKI via the
+    // `issuer` loaded above. Without both, strict verifiers (e.g. Python
+    // 3.13's default `VERIFY_X509_STRICT`) reject the cert (issue #621).
+    params.is_ca = IsCa::ExplicitNoCa;
+    params.use_authority_key_identifier_extension = true;
     params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
     params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
     params.not_before = time::OffsetDateTime::now_utc();
@@ -303,6 +311,107 @@ mod tests {
         assert!(
             ips.contains(&vec![192, 0, 2, 7]),
             "the address must be an IP SAN: {ips:?}"
+        );
+    }
+
+    #[test]
+    fn generate_ca_includes_subject_key_identifier() {
+        use x509_parser::extensions::ParsedExtension;
+        use x509_parser::oid_registry::OID_X509_EXT_SUBJECT_KEY_IDENTIFIER;
+        use x509_parser::prelude::{FromDer, X509Certificate};
+
+        let dir = tempfile::tempdir().unwrap();
+        generate_ca(dir.path()).unwrap();
+
+        let pem = fs::read_to_string(dir.path().join("ca.pem")).unwrap();
+        let (_, parsed) = x509_parser::pem::parse_x509_pem(pem.as_bytes()).unwrap();
+        let (_, cert) = X509Certificate::from_der(&parsed.contents).unwrap();
+
+        let ext = cert
+            .get_extension_unique(&OID_X509_EXT_SUBJECT_KEY_IDENTIFIER)
+            .unwrap()
+            .expect("CA cert must carry a Subject Key Identifier (RFC 5280 §4.2.1.2)");
+        assert!(matches!(
+            ext.parsed_extension(),
+            ParsedExtension::SubjectKeyIdentifier(_)
+        ));
+        assert!(
+            !ext.critical,
+            "RFC 5280 §4.2.1.2 requires SKI to be non-critical"
+        );
+    }
+
+    #[test]
+    fn generate_service_cert_includes_authority_and_subject_key_identifiers() {
+        use x509_parser::extensions::ParsedExtension;
+        use x509_parser::oid_registry::{
+            OID_X509_EXT_AUTHORITY_KEY_IDENTIFIER, OID_X509_EXT_SUBJECT_KEY_IDENTIFIER,
+        };
+        use x509_parser::prelude::{FromDer, X509Certificate};
+
+        let ca_dir = tempfile::tempdir().unwrap();
+        generate_ca(ca_dir.path()).unwrap();
+        let ca_cert_pem = fs::read_to_string(ca_dir.path().join("ca.pem")).unwrap();
+        let ca_key_pem = fs::read_to_string(ca_dir.path().join("ca-key.pem")).unwrap();
+
+        let (_, ca_parsed) = x509_parser::pem::parse_x509_pem(ca_cert_pem.as_bytes()).unwrap();
+        let (_, ca_cert) = X509Certificate::from_der(&ca_parsed.contents).unwrap();
+        let ca_ski_ext = ca_cert
+            .get_extension_unique(&OID_X509_EXT_SUBJECT_KEY_IDENTIFIER)
+            .unwrap()
+            .expect("CA cert must carry a Subject Key Identifier");
+        let ParsedExtension::SubjectKeyIdentifier(ca_ski) = ca_ski_ext.parsed_extension() else {
+            panic!("expected a SubjectKeyIdentifier extension");
+        };
+
+        let certs_dir = tempfile::tempdir().unwrap();
+        generate_service_cert(
+            &ca_cert_pem,
+            &ca_key_pem,
+            "test-service",
+            &[],
+            certs_dir.path(),
+        )
+        .unwrap();
+
+        let pem = fs::read_to_string(certs_dir.path().join("test-service.pem")).unwrap();
+        let (_, parsed) = x509_parser::pem::parse_x509_pem(pem.as_bytes()).unwrap();
+        let (_, cert) = X509Certificate::from_der(&parsed.contents).unwrap();
+
+        let ski_ext = cert
+            .get_extension_unique(&OID_X509_EXT_SUBJECT_KEY_IDENTIFIER)
+            .unwrap()
+            .expect("service cert must carry its own Subject Key Identifier");
+        assert!(matches!(
+            ski_ext.parsed_extension(),
+            ParsedExtension::SubjectKeyIdentifier(_)
+        ));
+        assert!(
+            !ski_ext.critical,
+            "RFC 5280 §4.2.1.2 requires SKI to be non-critical"
+        );
+
+        let aki_ext = cert
+            .get_extension_unique(&OID_X509_EXT_AUTHORITY_KEY_IDENTIFIER)
+            .unwrap()
+            .expect(
+                "service cert must carry an Authority Key Identifier pointing at the issuing CA",
+            );
+        assert!(
+            !aki_ext.critical,
+            "RFC 5280 §4.2.1.1 requires AKI to be non-critical"
+        );
+        let ParsedExtension::AuthorityKeyIdentifier(aki) = aki_ext.parsed_extension() else {
+            panic!("expected an AuthorityKeyIdentifier extension");
+        };
+        let aki_key_id = aki
+            .key_identifier
+            .as_ref()
+            .expect("AKI must carry a keyIdentifier")
+            .0;
+        assert_eq!(
+            aki_key_id, ca_ski.0,
+            "the service cert's AKI must match the issuing CA's SKI"
         );
     }
 
