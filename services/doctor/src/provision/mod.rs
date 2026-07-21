@@ -57,6 +57,34 @@ pub fn tls_block_value(config_dir: &Path, service: &str) -> serde_json::Value {
     })
 }
 
+/// True when the install has flipped to ACME: `<config-root>/acme.json`
+/// exists — the write side of the `tls issue --acme` contract, the same
+/// gate renewal's ACME leg keys on. An ACME install's provisioning pass
+/// must hand out no self-signed material (issue #616): a client's single
+/// reqwest trust configuration cannot verify self-signed and
+/// publicly-trusted targets at once, so one self-signed newcomer would be
+/// unreachable by every already-flipped client.
+pub fn acme_active(config_dir: &Path) -> bool {
+    config_dir.join("acme.json").is_file()
+}
+
+/// The `server.tls` block value pointing a service at the shared ACME
+/// wildcard pair — what `tls.absent`'s fix writes on an ACME install.
+/// `None` until both halves exist: `--fix` never wires paths that are not
+/// there, and conjuring the pair is `tls issue --acme`'s (and renewal's)
+/// job, never `--fix`'s.
+pub fn acme_tls_block_value(config_dir: &Path) -> Option<serde_json::Value> {
+    let pki = absolute_pki_dir(config_dir);
+    let cert = acme_config::acme_cert_path(&pki);
+    let key = acme_config::acme_key_path(&pki);
+    (cert.is_file() && key.is_file()).then(|| {
+        json!({
+            "cert": cert.to_string_lossy(),
+            "key": key.to_string_lossy(),
+        })
+    })
+}
+
 /// The pki dir as an absolute path, so config-written paths stay valid
 /// whatever directory a service later starts from.
 pub fn absolute_pki_dir(config_dir: &Path) -> PathBuf {
@@ -229,9 +257,12 @@ const CA_ONLY_WIRING_SERVICES: &[&str] = &["rp"];
 /// The client-block wiring `--fix` distributes into each client service's
 /// config once the material exists: the plaintext credential into an
 /// absent `service_auth` (skipped for [`CA_ONLY_WIRING_SERVICES`]), the CA
-/// path into an absent `ca_cert`. Present (non-null) blocks are operator
-/// intent and get no op. Empty when the service has no usable config or
-/// the material is not there to point at.
+/// path into an absent `ca_cert`. On an ACME install ([`acme_active`]) the
+/// `ca_cert` half is skipped entirely: the targets are publicly trusted,
+/// and a written `ca_cert` would disable the platform roots the client
+/// needs. Present (non-null) blocks are operator intent and get no op.
+/// Empty when the service has no usable config or the material is not
+/// there to point at.
 pub fn plan_client_wiring(config_dir: &Path) -> Vec<(String, FixOp)> {
     CLIENT_WIRING_SERVICES
         .iter()
@@ -274,7 +305,7 @@ fn plan_service_client_wiring(
             ));
         }
     }
-    if value.get("ca_cert").is_none_or(serde_json::Value::is_null) {
+    if !acme_active(config_dir) && value.get("ca_cert").is_none_or(serde_json::Value::is_null) {
         let ca = rusty_photon_tls::config::ca_cert_path(&absolute_pki_dir(config_dir));
         if ca.is_file() {
             ops.push((
@@ -688,6 +719,61 @@ mod tests {
         )
         .unwrap();
         assert!(plan_client_wiring(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn test_acme_active_keys_on_the_acme_json_file() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!acme_active(dir.path()));
+        std::fs::write(dir.path().join("acme.json"), "{}").unwrap();
+        assert!(acme_active(dir.path()));
+    }
+
+    #[test]
+    fn test_acme_tls_block_value_requires_both_halves() {
+        let dir = tempfile::tempdir().unwrap();
+        let pki = pki_dir(dir.path());
+        std::fs::create_dir_all(&pki).unwrap();
+        assert_eq!(acme_tls_block_value(dir.path()), None);
+        std::fs::write(pki.join("acme-cert.pem"), "cert").unwrap();
+        assert_eq!(
+            acme_tls_block_value(dir.path()),
+            None,
+            "a cert without its key must not be wired"
+        );
+        std::fs::write(pki.join("acme-key.pem"), "key").unwrap();
+        let value = acme_tls_block_value(dir.path()).unwrap();
+        let cert = value["cert"].as_str().unwrap();
+        let key = value["key"].as_str().unwrap();
+        assert!(cert.ends_with("acme-cert.pem"), "{cert}");
+        assert!(key.ends_with("acme-key.pem"), "{key}");
+        assert!(std::path::Path::new(cert).is_absolute());
+    }
+
+    #[test]
+    fn test_plan_client_wiring_skips_ca_cert_on_an_acme_install() {
+        // Even with a self-signed CA left on disk from before the flip,
+        // acme.json wins: the client verifies publicly-trusted targets
+        // through platform roots, and a written ca_cert would disable them
+        // (issue #616). The credential half is trust-model-agnostic and
+        // still wired.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("sentinel.json"),
+            r#"{ "server": { "port": 11114 } }"#,
+        )
+        .unwrap();
+        ensure_material(dir.path(), &[], &[], false).unwrap();
+        ensure_credential(dir.path()).unwrap();
+        std::fs::write(dir.path().join("acme.json"), "{}").unwrap();
+
+        let ops = plan_client_wiring(dir.path());
+        assert_eq!(ops.len(), 1, "{ops:?}");
+        assert!(matches!(
+            &ops[0].1,
+            FixOp::SetObject { service, pointer, .. }
+                if service == "sentinel" && pointer == "/service_auth"
+        ));
     }
 
     #[test]

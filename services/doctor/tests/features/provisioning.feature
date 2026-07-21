@@ -7,7 +7,11 @@ Feature: TLS and credential provisioning under --fix
   server.auth and the plaintext into client auth blocks, and points
   server.tls at the issued material. Absent tls/auth still means plain
   HTTP until --fix runs; present blocks are operator intent and are never
-  overwritten.
+  overwritten. On an install that has flipped to ACME (acme.json present)
+  the pass hands out no self-signed material at all: absent server.tls
+  blocks point at the shared wildcard pair while it exists, client blocks
+  get the credential but no ca_cert (the targets are publicly trusted),
+  and a missing wildcard pair is doctor tls renew's to recover.
 
   Scenario: --fix creates the CA, a service certificate pair, and the credential
     Given a config file "ppba-driver.json" containing:
@@ -99,6 +103,50 @@ Feature: TLS and credential provisioning under --fix
     Then the pki file "credential" is unchanged
     And the auth hash at "/server/auth/password_hash" in "dsd-fp2.json" verifies against the credential file
     And the pki file "dsd-fp2.pem" exists
+
+  Scenario: On an ACME install --fix wires a new service to the wildcard pair
+    Given an acme.json for the domain "rig.example.com"
+    And an ACME wildcard certificate pair expiring in 300 days
+    And a config file "ppba-driver.json" containing:
+      """
+      { "server": { "port": 11112 } }
+      """
+    When I run doctor with --fix and --json
+    Then the config file "ppba-driver.json" has "/server/tls/cert" pointing at the pki file "acme-cert.pem"
+    And the config file "ppba-driver.json" has "/server/tls/key" pointing at the pki file "acme-key.pem"
+    And the auth hash at "/server/auth/password_hash" in "ppba-driver.json" verifies against the credential file
+    And the pki file "ca.pem" does not exist
+    And the pki file "ppba-driver.pem" does not exist
+
+  Scenario: On an ACME install --fix writes client blocks on platform trust, without a CA path
+    Given an acme.json for the domain "rig.example.com"
+    And an ACME wildcard certificate pair expiring in 300 days
+    And a config file "sentinel.json" containing:
+      """
+      { "server": { "port": 11114 } }
+      """
+    And a config file "ppba-driver.json" containing:
+      """
+      { "server": { "port": 11112 } }
+      """
+    When I run doctor with --fix and --json
+    Then the sentinel client auth block carries username "observatory"
+    And the sentinel client auth password verifies against the auth hash in "ppba-driver.json"
+    And the config file "sentinel.json" has no value at "/ca_cert"
+
+  Scenario: An ACME install missing its wildcard pair is renewal's to recover, never self-signed
+    Given an acme.json for the domain "rig.example.com"
+    And a config file "ppba-driver.json" containing:
+      """
+      { "server": { "port": 11112 } }
+      """
+    When I run doctor with --fix and --json
+    Then the report contains a "warn" check named "tls.absent" for service "ppba-driver"
+    And that check's suggestion mentions "doctor tls renew"
+    And the config file "ppba-driver.json" has no value at "/server/tls"
+    And the auth hash at "/server/auth/password_hash" in "ppba-driver.json" verifies against the credential file
+    And the pki file "ca.pem" does not exist
+    And the pki file "ppba-driver.pem" does not exist
 
   Scenario: A default run creates no pki tree
     Given a config file "ppba-driver.json" containing:
