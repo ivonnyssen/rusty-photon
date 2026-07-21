@@ -1,6 +1,51 @@
 # Svbony-Camera Service Design
 
-> **Status:** **Phase F landed (2026-07-21): ConformU + CI gates.**
+> **Status:** **Phase G landed (2026-07-21, this is the final planned
+> phase): packaging + real-hardware validation marked pending.**
+> `svbony-camera` is now **v0-complete pending real-hardware validation**
+> against a physical SV605CC (on order, not yet arrived in this
+> environment) — see "Real-hardware validation" below for the specific open
+> items. Packaging landed: a new
+> [`rusty-photon-svbony-sdk-install`](../../services/svbony-camera/pkg/rusty-photon-svbony-sdk-install)
+> root-only helper (mirroring
+> [`rusty-photon-qhy-firmware-install`](../../services/qhy-camera/pkg/rusty-photon-qhy-firmware-install))
+> downloads the pinned SDK blob from the same indi-3rdparty commit
+> `install-svbony-sdk` (CI) uses, verifies a real (curled + sha256-summed,
+> not fabricated) pinned sha256 per architecture (amd64/armv8), and installs
+> `libSVBCameraSDK.so` to `/usr/lib/rusty-photon/` — **this phase's one open
+> technical decision, now resolved: RUNPATH, matching `zwo-camera`'s
+> mechanism.** See "Packaging" below for the reasoning (in short: the SDK
+> blob has no embedded SONAME either way, per Phase F's byte-inspection, but
+> `/usr/lib/rusty-photon/` is a private package-owned directory outside
+> `ldconfig`'s default scan path, so the packaged binary needs
+> `-Wl,-rpath,/usr/lib/rusty-photon` baked in at build time — the exact
+> mechanism `scripts/build-packages.sh` already applies for `zwo-camera`'s
+> bundled, also-SONAME-less blob). `pkg/postinst`/`pkg/postrm` now exist
+> (new this phase, following `qhy-camera`'s download-on-target shape, not
+> `zwo-camera`'s bundled shape), and the `Cargo.toml` `[package.metadata.deb]`/
+> `[package.metadata.generate-rpm]` sections' `TODO Phase G` markers are
+> filled in (asset entries for the new helper, explicit `depends`/`requires`
+> instead of `$auto`/rpm auto-detection — the operator-installed SONAME-less
+> blob has exactly zwo-camera's dpkg-shlibdeps/rpm-auto-req problem even
+> though this package never bundles it). **Deliberately NOT done this
+> phase** (out of the explicit scope handed down for this phase, tracked as
+> follow-up): a Bazel-side SDK-fetch repository rule (the `manual` tag on
+> `:svbony-camera` and `libsvbony-sys/BUILD.bazel`'s unconditional
+> `SVBONY_SKIP_NATIVE_LINK=1` stay exactly as Phase F left them — packaging
+> here is purely a Cargo/`cargo-deb`/`cargo-generate-rpm` concern, verified
+> by reading `zwo-camera`'s/`qhy-camera`'s `BUILD.bazel` files: neither has
+> any packaging-related Bazel wiring beyond the plain `rust_library`/
+> `rust_binary`/`rust_test` targets already present), and
+> `scripts/build-packages.sh` staging/RUNPATH-injection support for
+> `svbony-camera` specifically (today that script would still fail to
+> produce a real `rusty-photon-svbony-camera` package — it has no
+> `needs_svbony` SDK-staging leg the way it does for QHY/ZWO — since it
+> already discovers `svbony-camera` via its `pkg/` directory but has no
+> SVBony-specific staging block; adding one is mechanical follow-up in the
+> same bucket as the Bazel SDK-fetch rule, not attempted here since it
+> cannot be tested without the real SDK either).
+>
+> **Phase F landed (2026-07-21): ConformU + CI gates.**
 > `tests/conformu_integration.rs` now exists (mirrors `zwo-camera`'s: starts
 > the production binary built with `--features conformu`, which pulls in the
 > `simulation` backend so the SDK yields one `SV605CC-Simulated` camera, and
@@ -142,10 +187,12 @@ with the SDK installed and `ldconfig`'d, to exercise the real link locally)
 This split (Cargo-CI real-link-provisioned, Bazel still skip-link-only) is a
 deliberate, temporary simplification recorded in
 [`docs/plans/svbony-camera.md`](../plans/svbony-camera.md)'s Status section
-— revisit (drop `manual`, add a Bazel-side SDK-fetch rule) at Phase G
-alongside real hardware validation.
+— revisit (drop `manual`, add a Bazel-side SDK-fetch rule) as follow-up work,
+alongside real-hardware validation (see "Real-hardware validation" below);
+Phase G's packaging work landed without either (see the Status banner above
+for why).
 
-### Gating plan (steady state, once Phase G lands)
+### Gating plan (steady state, once the Bazel-side SDK-fetch rule lands)
 
 Mirrors `zwo-camera`'s table exactly, once a Bazel-side SDK-fetch rule
 exists (the Cargo-CI half already landed in Phase F via
@@ -291,7 +338,7 @@ connection-state polling stays responsive during an in-flight exposure.
 - **`MaxADU`** = `(2^MaxBitDepth) - 1` from `SVB_CAMERA_PROPERTY.MaxBitDepth`.
 - **`ElectronsPerADU`** — **`NOT_IMPLEMENTED` placeholder**, permanently in
   this phase: unlike ZWO's `ASI_CAMERA_INFO.ElecPerADU`, `SVB_CAMERA_PROPERTY`
-  carries no native electrons-per-ADU field. Confirm at Phase G hardware
+  carries no native electrons-per-ADU field. Confirm via real-hardware
   validation whether the SDK exposes this some other way (a control, a
   separate query) before ruling it out permanently.
 - **Pulse guiding** — `CanPulseGuide` from `bSupportPulseGuide`;
@@ -409,7 +456,8 @@ required) that Phase E's `Camera` work did not change:
   cameras unconditionally, regardless of `SvbonyCamera`'s `Camera` trait
   surface now being real — wiring real enumeration to production device
   registration is still gated on real-SDK link availability (see "Native
-  dependency & build gating"), which is Phase G work.
+  dependency & build gating"), which remains deferred follow-up work (the
+  Bazel-side SDK-fetch rule; see the Status banner above).
 
 `ServerBuilder::with_empty(bool)` additionally forces zero cameras
 regardless of the feature (mirrors `zwo-camera`'s `--simulation-empty`
@@ -458,8 +506,8 @@ This was this plan's one genuinely new design problem: SVBony's SDK has no
 snap-exposure API. Every exposure rides video capture
 (`SVBStartVideoCapture` / `SVBSendSoftTrigger` / `SVBGetVideoData`). The
 design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
-*References*); real-hardware verification of each step is still Phase G
-work.
+*References*); real-hardware verification of each step is still pending
+(see "Real-hardware validation" below).
 
 **State machine (as implemented):**
 
@@ -484,7 +532,8 @@ work.
       the ground truth does not state the control's unit explicitly;
       `svbony-rs`'s `ControlType::Exposure` doc comment models it as
       **microseconds (µs)**, matching ZWO's `ASI_EXPOSURE` convention —
-      this needs confirmation against real hardware (Phase G).
+      this needs confirmation against real hardware (pending; see
+      "Real-hardware validation" below).
    b. Calls `SVBSendSoftTrigger` to request one frame.
    c. Polls/awaits `SVBGetVideoData` with a timeout of
       **`exposure_us * 2 + 500ms`** — the SDK's own documented
@@ -515,8 +564,9 @@ work.
      warns about generally, and calling it would additionally leave video
      capture stopped when the design's "started once at connect, never
      restarted" invariant (step 2) assumes it stays armed. **To be
-     confirmed/revised after real-hardware validation** (Phase G): if the
-     SDK turns out to tolerate a concurrent `SVBStopVideoCapture` call
+     confirmed/revised after real-hardware validation** (still pending,
+     see below): if the SDK turns out to tolerate a concurrent
+     `SVBStopVideoCapture` call
      safely (some vendor video APIs are explicitly designed to unblock a
      pending read this way), wiring that in would make `AbortExposure`
      responsive mid-exposure instead of only at the next natural
@@ -594,8 +644,8 @@ work.
   model must report correctly).
 - **ST2.** `ElectronsPerADU` is a **`NOT_IMPLEMENTED` placeholder** —
   `SVB_CAMERA_PROPERTY` has no native electrons-per-ADU field (unlike
-  ZWO's `ElecPerADU`). Confirm at Phase G whether the SDK exposes this
-  another way before treating this as permanent.
+  ZWO's `ElecPerADU`). Confirm via real-hardware validation whether the SDK
+  exposes this another way before treating this as permanent.
 - **ST3.** `MaxADU` = `(2^MaxBitDepth) - 1` from
   `SVB_CAMERA_PROPERTY.MaxBitDepth` (16383 for the SV605CC's 14-bit ADC).
 
@@ -813,14 +863,33 @@ phases A–G:
   `ZWO_SKIP_NATIVE_LINK`/`QHYCCD_SKIP_NATIVE_LINK` lines) — was found and
   fixed alongside this phase's work, since it would otherwise break those
   four nightly Cargo safety-net workflows for `svbony-camera`/`svbony-rs`.
-- **Phase G — packaging + real hardware:** the `rusty-photon-svbony-sdk-install`
-  downloader helper per [ADR-018](../decisions/018-svbony-sdk-no-license-payload-policy.md);
-  a Bazel-side SDK-fetch repository rule (dropping the `manual` tag +
-  `libsvbony-sys/BUILD.bazel`'s unconditional `SVBONY_SKIP_NATIVE_LINK=1`);
-  SV605CC validation — dark-frame banding check (revision confirmation),
-  gain/offset sweep, cooler ramp/overshoot behaviour, long-exposure + abort
-  timing, stale-frame flush verification, the `SVB_EXPOSURE` unit
-  assumption, and whether `CanStopExposure` should flip to `true`.
+- **Phase G — packaging + real hardware validation marked pending:** ✅
+  *landed (2026-07-21, this is the final planned phase).* The
+  `rusty-photon-svbony-sdk-install` downloader helper per
+  [ADR-018](../decisions/018-svbony-sdk-no-license-payload-policy.md) — real
+  (curled + `sha256sum`-computed) pinned sha256 hashes for both amd64 and
+  armv8, verified end-to-end in a `--root` sandbox install (download,
+  sha256 verify, idempotent skip, `--force` reinstall); `pkg/postinst`/
+  `pkg/postrm` (new this phase, QHY's download-on-target shape); the
+  `Cargo.toml` `TODO Phase G` markers filled in (asset entries, explicit
+  `depends`/`requires` instead of `$auto`/rpm auto-detection); the RUNPATH
+  decision made and documented (see "Packaging" below) — matching
+  `zwo-camera`'s mechanism. Real-hardware validation itself is **not
+  performed** (no physical SV605CC in this environment; hardware is on
+  order) — see "Real-hardware validation" below for the explicit,
+  itemized punch list hardware access must resolve. **Deliberately NOT
+  done this phase** (out of the scope handed down for it, tracked as
+  follow-up, not attempted since neither can be tested without the real
+  SDK/hardware either way): a Bazel-side SDK-fetch repository rule
+  (dropping the `manual` tag + `libsvbony-sys/BUILD.bazel`'s unconditional
+  `SVBONY_SKIP_NATIVE_LINK=1`, both left exactly as Phase F set them —
+  verified by reading `zwo-camera`'s/`qhy-camera`'s `BUILD.bazel`: neither
+  has packaging-specific Bazel wiring beyond their plain
+  `rust_library`/`rust_binary`/`rust_test` targets, so none is needed here
+  either), and `scripts/build-packages.sh` SDK-staging/RUNPATH-injection
+  support for `svbony-camera` (no `needs_svbony` leg exists yet, so that
+  script cannot yet produce a real-SDK-linked `rusty-photon-svbony-camera`
+  package).
 
 ---
 
@@ -833,7 +902,59 @@ phases A–G:
   in scope (ADR-014 shape).
 - `rp` `CameraConfig` consumer — shared tail item with `zwo-camera`.
 - Vendor redistribution grant — an emailed one-liner from SVBony would
-  collapse the Phase G packaging to `zwo-camera`'s in-package bucket.
+  collapse the packaging to `zwo-camera`'s in-package bucket.
+- A Bazel-side SDK-fetch repository rule (drop the `manual` tag +
+  `libsvbony-sys/BUILD.bazel`'s unconditional `SVBONY_SKIP_NATIVE_LINK=1`)
+  and `scripts/build-packages.sh` SDK-staging/RUNPATH support for
+  `svbony-camera` — see "Delivery phasing" Phase G for why neither landed
+  this phase.
+
+## Real-hardware validation
+
+**Not yet performed** — no physical SV605CC is available in this
+environment; hardware is on order but has not arrived. `svbony-camera` is
+therefore **v0-complete pending real-hardware validation**: every
+behavioral contract above is implemented and covered by the mock-backend
+unit tests / BDD suite / ConformU (simulation-backed), but none of it has
+run against the physical SDK + camera. Mirroring
+[`zwo-focuser.md`](zwo-focuser.md)'s real-hardware validation precedent,
+this section will be replaced with actual results once hardware arrives.
+The specific open items already flagged elsewhere in this document that
+hardware validation must resolve:
+
+- **The `SVB_EXPOSURE` microseconds-unit assumption** (see "Exposure"
+  contract, step 3a) — `svbony-rs`'s `ControlType::Exposure` doc comment
+  models the control as µs by analogy with ZWO's `ASI_EXPOSURE`; the SDK
+  ground truth does not state the unit explicitly.
+- **Whether stale-frame-flush is needed** (see "Exposure" contract, step
+  4) — a buffered frame from before a ROI/exposure change may need an
+  explicit drain, per `indi_svbony_ccd`'s documented workaround; unverified
+  against real hardware.
+- **Whether `CanStopExposure` should flip to `true`** (see "Exposure"
+  contract, step 5) — contingent on whether the SDK tolerates a concurrent
+  `SVBStopVideoCapture` call safely, or exposes a genuine data-preserving
+  stop; currently `false` on the conservative assumption that it does not.
+- **`ElectronsPerADU`'s permanent-vs-confirmable status** (ST2) — currently
+  a permanent `NOT_IMPLEMENTED` stub because `SVB_CAMERA_PROPERTY` has no
+  native electrons-per-ADU field; unconfirmed whether the SDK exposes this
+  some other way (a control, a separate query).
+- **macOS Apple-Silicon SDK availability** — indi-3rdparty's `libsvbony`
+  packaging ships no `mac_arm64` blob as of SDK 1.13.4 (confirmed absent;
+  see `install-svbony-sdk`'s explicit failure on `macos-latest`/ARM64
+  runners); SVBony's own direct SDK download has not been independently
+  byte-verified for one.
+- **Whether the RUNPATH approach resolves the library at runtime on a real
+  install** (new, from Phase G) — `rusty-photon-svbony-sdk-install` itself
+  is verified end-to-end (download, sha256 verify, install), but the
+  packaged binary's `-Wl,-rpath,/usr/lib/rusty-photon` linking is not yet
+  wired into `scripts/build-packages.sh` (see "Packaging" below), so the
+  full "package-installed binary finds the operator-installed SDK at
+  runtime" path has not been exercised end-to-end on a real target.
+- The broader hardware-validation checklist `docs/plans/svbony-camera.md`
+  calls out: dark-frame banding (revision confirmation — the SV605CC has a
+  known early-revision banding issue SVBony fixed in a later revision),
+  gain/offset sweep against advertised e-/ADU curves, cooler ramp/overshoot
+  behaviour, and long-exposure + abort timing.
 
 ## Packaging
 
@@ -851,14 +972,19 @@ usbfs memory bump.
 Unlike `zwo-camera`, SVBony's SDK carries **no license grant at all** — not
 even QHY's ambiguous "proprietary, unresolved" status, but a header and
 blobs with no copyright notice whatsoever. Per ADR-018 this service never
-bundles the SDK library; a root-only download-on-target helper
-(`rusty-photon-svbony-sdk-install`, analogous to
-`rusty-photon-qhy-firmware-install`) is **Phase G** work — not shipped by
-this phase. **Correction from Phase F** (this section previously assumed
-the CMakeLists' `SOVERSION 1` *install* property meant the vendored blob
-itself carries a proper SONAME): byte-inspection (`readelf -d`) of the
-vendored `.bin` shows **no embedded DT_SONAME at all** — like ZWO's blobs,
-not unlike them. What Phase F's CI provisioning
+bundles the SDK library; a root-only download-on-target helper,
+[`rusty-photon-svbony-sdk-install`](../../services/svbony-camera/pkg/rusty-photon-svbony-sdk-install)
+(analogous to `rusty-photon-qhy-firmware-install`, **landed this phase**),
+downloads `libSVBCameraSDK_<arch>.bin` from the same indi-3rdparty commit
+`install-svbony-sdk` (CI) pins, verifies a **real, independently
+curled-and-`sha256sum`-computed** pinned sha256 per architecture (amd64,
+armv8 — the two architectures rusty-photon targets; not fabricated
+placeholders), and installs it as `/usr/lib/rusty-photon/libSVBCameraSDK.so`.
+**Correction from Phase F** (this section previously assumed the
+CMakeLists' `SOVERSION 1` *install* property meant the vendored blob itself
+carries a proper SONAME): byte-inspection (`readelf -d`) of the vendored
+`.bin` shows **no embedded DT_SONAME at all** — like ZWO's blobs, not
+unlike them. What Phase F's CI provisioning
 ([`install-svbony-sdk`](../../.github/actions/install-svbony-sdk/action.yml))
 verified empirically is that glibc's `ldconfig` falls back to the on-disk
 *filename* as its cache key when a shared object has no SONAME, so
@@ -866,11 +992,37 @@ installing under `libSVBCameraSDK.so.1` (+ an unversioned `.so` symlink)
 and running `ldconfig` still lets a plain `-lSVBCameraSDK` resolve at both
 link and run time via the standard ldconfig-scanned prefix — no RUNPATH
 trick needed for CI's *build-time* purposes, but for the opposite reason
-the SOVERSION property implied. Whether the eventual
-`rusty-photon-svbony-sdk-install` *runtime* packaging helper needs ZWO's
-RUNPATH dance (rather than relying on a system `ldconfig` run, which a
-non-root or already-loaded-process context may not get) is still
-**Phase G's call to make**, not asserted as settled here.
+the SOVERSION property implied.
+
+**Phase G's RUNPATH decision, made and implemented.** CI's ldconfig-based
+trick does not carry over to the packaged runtime install: per ADR-013,
+vendor blobs a rusty-photon package installs itself live in the private,
+package-owned `/usr/lib/rusty-photon/` directory (the same directory
+`zwo-camera`'s bundled `libASICamera2.so` uses) specifically so the package
+can cleanly own and remove the file without conflicting with the system
+package manager or other packages — and that directory is deliberately
+**not** on `ldconfig`'s default scan path (unlike CI's `/usr/local/lib`
+provisioning target), regardless of the SONAME finding. So
+`rusty-photon-svbony-sdk-install` installs the bare `libSVBCameraSDK.so`
+name (no `.so.1` + symlink pair — no SOVERSION dance is needed either way,
+since there is no SONAME to honor) and the packaged
+`rusty-photon-svbony-camera` binary must be linked with
+`-Wl,-rpath,/usr/lib/rusty-photon` for the dynamic linker to find it there
+at runtime with no `ldconfig` run required — **exactly** ZWO's mechanism
+(`scripts/build-packages.sh`'s `RUSTFLAGS="-C
+link-arg=-Wl,-rpath,/usr/lib/rusty-photon"`), applied to QHY's
+download-on-target delivery model. **Not yet wired into
+`scripts/build-packages.sh` itself** (that script has no `needs_svbony`
+SDK-staging leg the way it does for QHY/ZWO, so it cannot yet actually
+produce a real, real-SDK-linked `rusty-photon-svbony-camera` package) —
+this is deliberately deferred alongside the Bazel-side SDK-fetch rule (see
+the Status banner above); both require the real SDK to test against, which
+this phase's environment does not have either way. The `libSVBCameraSDK.so`
+this helper installs is verified end-to-end in this phase (download, real
+sha256 verification, idempotent install, `--force`/`--root` flags) — only
+the *build-time* RUNPATH-linked-binary side of the story remains to be
+exercised, which needs a build host with the real SDK provisioned
+(`install-svbony-sdk` already proves that step works in CI).
 
 ## References
 

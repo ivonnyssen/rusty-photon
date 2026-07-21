@@ -2,6 +2,23 @@
 
 ## Status
 
+**Phase G landed (2026-07-21): packaging + real-hardware validation marked
+pending — this was the final planned phase.** `svbony-camera` is now
+**v0-complete pending real-hardware validation** against a physical
+SV605CC (on order, not yet arrived in this environment). See "Delivery
+phasing" below for the full Phase G rundown (the downloader helper, real
+pinned sha256 hashes, `postinst`/`postrm`, `Cargo.toml` asset wiring, and
+the RUNPATH decision this plan left open since Phase F — resolved this
+phase: RUNPATH, matching `zwo-camera`'s mechanism, because
+`/usr/lib/rusty-photon/` is outside `ldconfig`'s default scan path
+regardless of the blob's SONAME status) and
+[`docs/services/svbony-camera.md`](../services/svbony-camera.md)'s
+"Real-hardware validation" section for the itemized list of open questions
+hardware access must resolve. A Bazel-side SDK-fetch repository rule and
+`scripts/build-packages.sh` SDK-staging/RUNPATH support for `svbony-camera`
+remain deliberately deferred (see "Future work") — out of this phase's
+scope, and neither is testable without the real SDK/hardware anyway.
+
 **Phase F landed (2026-07-21): ConformU + CI gates.**
 `services/svbony-camera/tests/conformu_integration.rs` now exists,
 mirroring `zwo-camera`'s shape exactly: launches the production binary
@@ -444,12 +461,46 @@ Bazel files all port). The exposure-model difference concentrates in Phase B
   the vendored blob (corrected from this plan's earlier CMakeLists-based
   inference) and a pre-existing `SVBONY_SKIP_NATIVE_LINK` gap in four
   nightly Cargo safety-net workflows, both documented above and fixed.
-- **Phase G — packaging + real hardware:** the downloader-helper package per
-  the ADR; a Bazel-side SDK-fetch repository rule (dropping the `manual` tag
-  + Bazel's skip-link bake-in); then SV605CC validation — dark-frame banding
+- **Phase G — packaging + real-hardware validation marked pending:** ✅
+  *landed (2026-07-21), this is the final planned phase.* The downloader
+  helper, [`rusty-photon-svbony-sdk-install`](../../services/svbony-camera/pkg/rusty-photon-svbony-sdk-install),
+  per the ADR — real (curled + `sha256sum`-computed, not fabricated) pinned
+  sha256 hashes for both amd64 and armv8, verified end-to-end in a `--root`
+  sandbox install (download, sha256 verify, idempotent skip, `--force`
+  reinstall). `pkg/postinst`/`pkg/postrm` written (QHY's download-on-target
+  shape). `Cargo.toml`'s `TODO Phase G` markers filled in (asset entries,
+  explicit `depends`/`requires` in place of `$auto`/rpm auto-detection — the
+  operator-installed SONAME-less blob has exactly `zwo-camera`'s
+  dpkg-shlibdeps/rpm-auto-req problem even though this package never
+  bundles it). **The RUNPATH question this plan left open across Phases
+  F/G is now resolved and implemented**: `/usr/lib/rusty-photon/` (ADR-013's
+  private, package-owned directory) is not on `ldconfig`'s default scan
+  path regardless of the SONAME finding, so the packaged binary needs
+  `-Wl,-rpath,/usr/lib/rusty-photon` — exactly `zwo-camera`'s mechanism,
+  applied to QHY's download-on-target delivery model (see
+  `docs/services/svbony-camera.md`'s Packaging section for the full
+  reasoning). SV605CC real-hardware validation itself — dark-frame banding
   check (revision confirmation), gain/offset sweep, cooler ramp/overshoot
   behaviour, long-exposure + abort timing, stale-frame flush verification,
-  USB throughput on the Pi 5. Findings feed back into the design doc (Rule 2).
+  USB throughput on the Pi 5, and now also whether the RUNPATH approach
+  actually resolves the library at runtime on a real install — is **not
+  performed**: no physical SV605CC is available in this environment;
+  hardware is on order but has not arrived. `svbony-camera` is therefore
+  **v0-complete pending real-hardware validation** (see
+  `docs/services/svbony-camera.md`'s "Real-hardware validation" section for
+  the itemized punch list). **Deliberately deferred, not attempted this
+  phase** (out of this phase's explicit scope, and neither is testable
+  without the real SDK/hardware anyway): a Bazel-side SDK-fetch repository
+  rule (dropping the `manual` tag + `libsvbony-sys/BUILD.bazel`'s
+  unconditional `SVBONY_SKIP_NATIVE_LINK=1` bake-in — verified by reading
+  `zwo-camera`'s/`qhy-camera`'s `BUILD.bazel`: packaging there is a plain
+  Cargo/`cargo-deb`/`cargo-generate-rpm` concern with zero packaging-specific
+  Bazel wiring, so none is needed here either), and
+  `scripts/build-packages.sh` SDK-staging/RUNPATH-injection support for
+  `svbony-camera` (that script has no `needs_svbony` leg the way it does for
+  QHY/ZWO, so it cannot yet produce a real-SDK-linked
+  `rusty-photon-svbony-camera` package). Findings feed back into the design
+  doc (Rule 2).
 
 ## Future work
 
@@ -457,6 +508,10 @@ Bazel files all port). The exposure-model difference concentrates in Phase B
   needs only hardware validation.
 - **SVBony filter wheel (SV226)** — separate service on its own SDK if ever
   in scope (ADR-014 shape).
+- **A Bazel-side SDK-fetch repository rule** (drop the `manual` tag +
+  `libsvbony-sys/BUILD.bazel`'s unconditional `SVBONY_SKIP_NATIVE_LINK=1`)
+  and **`scripts/build-packages.sh` SDK-staging/RUNPATH support** for
+  `svbony-camera` — see Phase G above for why neither landed in this phase.
 - **`rp` `CameraConfig` consumer** — shared tail item with `zwo-camera`
   Phase G; whichever lands first defines the pattern.
 - **Vendor redistribution grant** — an emailed one-liner from SVBony would

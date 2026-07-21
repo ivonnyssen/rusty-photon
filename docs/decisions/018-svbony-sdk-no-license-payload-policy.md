@@ -2,8 +2,9 @@
 
 ## Status
 
-Accepted (2026-07-21); implementation is Phase G of
-[`docs/plans/svbony-camera.md`](../plans/svbony-camera.md). Extends
+Accepted (2026-07-21); implemented in Phase G of
+[`docs/plans/svbony-camera.md`](../plans/svbony-camera.md) (landed
+2026-07-21). Extends
 [ADR-013](013-native-sdk-payload-policy.md)'s two-bucket framework
 (redistribute-MIT-ZWO / download-proprietary-QHY) with a third bucket for
 SDKs that carry **no license grant at all**.
@@ -53,21 +54,22 @@ mechanical delivery differs in one respect worth flagging (see
    "all rights reserved" as binding.
 2. **Deliver via a root-only download-on-target helper**, analogous to
    `rusty-photon-qhy-firmware-install`
-   (`services/qhy-camera/pkg/rusty-photon-qhy-firmware-install`): a future
-   `rusty-photon-svbony-sdk-install` (Phase G — **not written by this
-   ADR's landing phase**; a later phase's job per
-   `docs/plans/svbony-camera.md`) will download the SVBony SDK archive
-   **pinned to a specific version**, verify a **pinned sha256**, and
-   install `libSVBCameraSDK.so` to `/usr/lib/rusty-photon/` — the same
-   model as QHY's firmware-install helper: package postinst prints a
-   pointer but never downloads (offline installs must not fail).
+   (`services/qhy-camera/pkg/rusty-photon-qhy-firmware-install`):
+   [`rusty-photon-svbony-sdk-install`](../../services/svbony-camera/pkg/rusty-photon-svbony-sdk-install)
+   (Phase G, landed 2026-07-21) downloads the SVBony SDK blob from the
+   pinned indi-3rdparty commit `.github/actions/install-svbony-sdk` (CI)
+   also uses, verifies a **pinned sha256** (computed directly against the
+   real blobs, per architecture — amd64 and armv8), and installs
+   `libSVBCameraSDK.so` to `/usr/lib/rusty-photon/` — the same model as
+   QHY's firmware-install helper: package postinst prints a pointer but
+   never downloads (offline installs must not fail).
 3. **udev rules are authored by us**, group-scoped
    (`GROUP="rusty-photon", MODE="0660"`, never `MODE="0666"`) per
    [ADR-013 §3](013-native-sdk-payload-policy.md), installed under
    `/usr/lib/udev/rules.d/` — `pkg/90-rusty-photon-svbony.rules` (VID
    `f266`), landed in Phase C alongside the bare service skeleton.
-4. **Packaging simplification, corrected by Phase F CI provisioning work
-   (still to be finally confirmed at Phase G for the runtime helper).**
+4. **Packaging simplification, corrected by Phase F CI provisioning work;
+   Phase G's runtime call: RUNPATH, not `ldconfig`.**
    indi-3rdparty's `libsvbony/CMakeLists.txt` sets a CMake **install**
    property (`SOVERSION 1`), which earlier drafts of this ADR and
    `docs/plans/svbony-camera.md` read as "the blob carries a proper
@@ -79,12 +81,24 @@ mechanical delivery differs in one respect worth flagging (see
    installing under `libSVBCameraSDK.so.1` (+ an unversioned `.so` symlink)
    and running `ldconfig` still resolves `-lSVBCameraSDK` via ordinary
    `ldconfig` mechanics with no RUNPATH injection needed — for CI's
-   build-time purposes. Whether the eventual `rusty-photon-svbony-sdk-install`
-   *runtime* helper can rely on the same (rather than needing ZWO's RUNPATH
-   trick, e.g. if it can't assume a full `ldconfig` re-scan happens before
-   the driver process starts) is still **Phase G's call to make** — see
-   `docs/services/svbony-camera.md`'s Packaging section and
-   `install-svbony-sdk/action.yml`'s header comment for the full trace.
+   build-time purposes, which installs into a standard, `ldconfig`-scanned
+   prefix (`/usr/local/lib`). **That does not carry over to the packaged
+   runtime install**: `rusty-photon-svbony-sdk-install` installs into
+   `/usr/lib/rusty-photon/`, this ADR's private, package-owned directory
+   (point 2 above), which is deliberately **not** on `ldconfig`'s default
+   scan path regardless of the SONAME finding. So Phase G's call is
+   RUNPATH, matching ZWO's mechanism exactly: the packaged
+   `rusty-photon-svbony-camera` binary is linked with
+   `-Wl,-rpath,/usr/lib/rusty-photon` (mirroring
+   `scripts/build-packages.sh`'s existing ZWO handling), and the helper
+   installs the bare `libSVBCameraSDK.so` linker name with no SOVERSION/
+   symlink pair — see `docs/services/svbony-camera.md`'s Packaging section
+   and `install-svbony-sdk/action.yml`'s header comment for the full trace.
+   **Not yet wired into `scripts/build-packages.sh` itself** (no
+   `needs_svbony` SDK-staging leg exists there yet — deferred alongside the
+   Bazel-side SDK-fetch rule, see `docs/plans/svbony-camera.md`'s Status
+   section), so the RUNPATH-linked binary side is documented and decided
+   but not yet exercised end-to-end against a real build.
 5. **If SVBony ever grants written redistribution permission** (worth an
    email — they are responsive to indi-3rdparty issues), this collapses to
    ADR-013's ZWO bucket with no layout change beyond adding the blob as a
@@ -95,19 +109,23 @@ mechanical delivery differs in one respect worth flagging (see
 - No unlicensed bytes in our published artifacts, matching the QHY
   precedent's risk posture.
 - SVBony operators run one extra documented command
-  (`rusty-photon-svbony-sdk-install`, once it exists) before first camera
-  use, exactly like QHY operators today; ZWO operators still need nothing
-  extra.
-- The SDK version is pinned in the future helper script; a version bump is
-  a deliberate one-line PR, mirroring QHY's `check-pkg-assets.sh` parity
-  check pattern (to be wired up in Phase G).
-- Until Phase G, `svbony-camera`'s Bazel build additionally bakes
-  `SVBONY_SKIP_NATIVE_LINK=1` unconditionally — Phase F added a plain-Cargo
+  (`rusty-photon-svbony-sdk-install`) before first camera use, exactly like
+  QHY operators today; ZWO operators still need nothing extra.
+- The SDK ref is pinned in the helper script
+  (`services/svbony-camera/pkg/rusty-photon-svbony-sdk-install`) and
+  cross-checked by `scripts/check-pkg-assets.sh` against
+  `.github/actions/install-svbony-sdk`'s default ref, mirroring QHY's
+  version/sha256 pin parity-check pattern — a version bump is a deliberate,
+  checked PR.
+- `svbony-camera`'s Bazel build still bakes `SVBONY_SKIP_NATIVE_LINK=1`
+  unconditionally — Phase F added a plain-Cargo
   `.github/actions/install-svbony-sdk` CI provisioning action (wired into
   `conformu.yml`/`native.yml`), but it is a GitHub-Actions composite Bazel's
-  hermetic build graph does not consume, so this Bazel-side simplification
-  (distinct from this ADR's packaging decision) is unchanged, recorded in
-  `docs/plans/svbony-camera.md`'s Status section and
+  hermetic build graph does not consume, and Phase G deliberately did not
+  add a Bazel-side SDK-fetch repository rule (out of scope; not testable
+  without the real SDK) — this Bazel-side simplification (distinct from
+  this ADR's packaging decision) remains deferred follow-up work, recorded
+  in `docs/plans/svbony-camera.md`'s Status section and
   `crates/svbony-rs/libsvbony-sys/BUILD.bazel`.
 - ADR-013's two-bucket framework is now a three-bucket framework:
   redistribute (MIT-clear, e.g. ZWO), download-proprietary-unresolved (e.g.
