@@ -296,26 +296,33 @@ mod tests {
         );
     }
 
-    /// Removes its key from the process environment on drop, including
-    /// during an unwinding panic (e.g. a failed `assert_eq!`) — plain
-    /// `remove_var` calls at the end of a test body never run in that case
-    /// and leak the var into later tests sharing the process.
+    /// Restores its key's prior value (or absence) in the process
+    /// environment on drop, including during an unwinding panic (e.g. a
+    /// failed `assert_eq!`) — plain `remove_var` calls at the end of a
+    /// test body never run in that case and leak the mutation into later
+    /// tests sharing the process.
     struct EnvVarGuard {
         key: &'static str,
+        prev: Option<std::ffi::OsString>,
     }
     impl EnvVarGuard {
         fn set(key: &'static str, value: &str) -> Self {
+            let prev = std::env::var_os(key);
             std::env::set_var(key, value);
-            Self { key }
+            Self { key, prev }
         }
         fn unset(key: &'static str) -> Self {
+            let prev = std::env::var_os(key);
             std::env::remove_var(key);
-            Self { key }
+            Self { key, prev }
         }
     }
     impl Drop for EnvVarGuard {
         fn drop(&mut self) {
-            std::env::remove_var(self.key);
+            match &self.prev {
+                Some(v) => std::env::set_var(self.key, v),
+                None => std::env::remove_var(self.key),
+            }
         }
     }
 
