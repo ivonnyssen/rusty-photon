@@ -50,6 +50,7 @@ members = [
   # svbony-rs, mirroring the zwo-rs/libzwo-sys and qhyccd-rs/libqhyccd-sys
   # layout. NOT yet added to [workspace.dependencies] (Rule 10): no consumer
   # exists yet — that's services/svbony-camera, a later phase.
+  "crates/svbony-rs",
   "crates/svbony-rs/libsvbony-sys",
   # End-to-end harness (tests only): real rp + real sentinel exercising the
   # operation watchdog + corrective ladder. See docs/services/sentinel.md.

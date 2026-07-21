@@ -134,6 +134,7 @@ listed here.
 | [rp-guider](../crates/rp-guider/) | `crates/rp-guider` | HTTP client for the guider rp-managed service (`phd2-guider serve`), used by `rp`'s guiding MCP tools and the safety enforcer's stop-guiding-on-unsafe step. |
 | [qhyccd-rs](../crates/qhyccd-rs/) | `crates/qhyccd-rs` (+ nested `libqhyccd-sys`) | Vendored first-party safe bindings for the proprietary QHYCCD SDK; `libqhyccd-sys` holds the raw FFI. Used by `qhy-camera`. See [ADR-009](decisions/009-vendor-qhyccd-rs.md). |
 | [zwo-rs](../crates/zwo-rs/) | `crates/zwo-rs` (+ nested `libzwo-sys`) | Vendored first-party safe bindings for the ZWO ASI camera + EFW filter-wheel + EAF focuser SDK (MIT); `libzwo-sys` holds the raw FFI. Used by `zwo-camera` and `zwo-focuser`. See [ADR-008](decisions/008-zwo-camera-native-sdk-ffi.md) + [ADR-010](decisions/010-vendor-zwo-rs.md). |
+| [svbony-rs](../crates/svbony-rs/) | `crates/svbony-rs` (+ nested `libsvbony-sys`) | Vendored first-party safe bindings for the SVBony camera SDK. Unlike `libzwo-sys`, `libsvbony-sys` is **hand-written, not `bindgen`-generated** — SVBony's SDK header carries no license text, so it is not vendored (mirrors `libqhyccd-sys`'s posture toward QHY's similarly unlicensed header). Video-only exposure model (no snap API); `simulation` feature models the soft-trigger video-capture flow + a poll-based cooling ramp. Phase A/B landed 2026-07-21; not yet consumed by a service — see [svbony-camera.md](plans/svbony-camera.md). |
 
 ## Inter-Service Communication: MCP via `rmcp`
 

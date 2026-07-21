@@ -2,10 +2,20 @@
 
 ## Status
 
-**Proposed (2026-07-21). Not started.** Hardware is on order: an SV605CC
-(IMX533 OSC, two-stage TEC), current ("B") revision. This plan is the SVBony
-analogue of [`zwo-driver.md`](zwo-driver.md) and follows the same
-design→BDD→implementation flow
+**Phase A/B landed (2026-07-21): `libsvbony-sys` + `svbony-rs` vendored at
+`crates/svbony-rs/`.** Hand-written FFI (no bindgen, no vendored header — see
+"Verified SDK ground truth" below) plus the safe wrapper (`Sdk`, `Camera`,
+typed error mapping) and a `simulation` feature modelling the soft-trigger
+video-capture flow and a poll-based cooling ramp. Not yet wired to any
+workspace dependents — `services/svbony-camera` (Phase C+) does not exist
+yet. One deviation from the zwo-rs/qhyccd-rs Bazel precedent: since no
+`install-svbony-sdk` CI provisioning action exists yet and no service
+consumes this crate, `crates/svbony-rs/libsvbony-sys/BUILD.bazel` bakes
+`SVBONY_SKIP_NATIVE_LINK=1` into its `cargo_build_script` so the default
+Bazel build needs zero SDK provisioning; revisit once Phase C lands. Hardware
+is on order: an SV605CC (IMX533 OSC, two-stage TEC), current ("B") revision.
+This plan is the SVBony analogue of [`zwo-driver.md`](zwo-driver.md) and
+follows the same design→BDD→implementation flow
 ([`development-workflow.md`](../skills/development-workflow.md)); the service
 design doc (`docs/services/svbony-camera.md`) is Phase D work, not this file.
 
@@ -179,12 +189,21 @@ a structural template (API shapes, error mapping, sim backend, build gating,
 Bazel files all port). The exposure-model difference concentrates in Phase B
 (sim must model soft-trigger) and Phase E (state machine).
 
-- **Phase A — `libsvbony-sys`:** bindgen over `SVBCameraSDK.h`, `build.rs`
-  dynamic link (`SVBCameraSDK` + `usb-1.0`) with `SVBONY_SKIP_NATIVE_LINK`
-  gate, green on Linux x86_64 + aarch64; byte-verify the official SDK zip
-  (static libs? mac_arm64? Windows import libs?) and record findings here.
-- **Phase B — `svbony-rs`:** safe handles/enums/error mapping ported from
-  `zwo-rs`; `simulation` backend incl. soft-trigger flow and cooling ramp.
+- **Phase A — `libsvbony-sys`:** ✅ *landed (2026-07-21).* Hand-written
+  `extern "C"` bindings (**not** `bindgen` — corrects this bullet's earlier
+  text: the no-license-grant finding above rules out vendoring the header the
+  way `bindgen` needs, so `libsvbony-sys` mirrors `libqhyccd-sys`'s
+  hand-transcribed-signatures approach instead), `build.rs` dynamic link
+  (`SVBCameraSDK` + `usb-1.0`) with `SVBONY_SKIP_NATIVE_LINK` gate, no
+  Windows branch (indi-3rdparty declares it unsupported). Byte-verifying the
+  official SDK zip (static libs? mac_arm64? Windows import libs?) is
+  deferred to Phase G (real hardware/packaging) — not done in this phase.
+- **Phase B — `svbony-rs`:** ✅ *landed (2026-07-21).* Safe handles/enums/error
+  mapping ported from `zwo-rs`'s shapes; `simulation` backend incl. the
+  soft-trigger video-capture flow and a poll-based cooling ramp (mirrors
+  `zwo-rs`'s EAF focuser position ramp — advance-on-poll, not wall-clock
+  time). 25 unit tests, `cargo`+`bazel` quality gate green. Not yet consumed
+  by any service (that's Phase C).
 - **Phase C — bare service:** `svbony-camera` serving a sim Camera on
   `:11125`; prove build/link both variants, Bazel two-variant build,
   `install-svbony-sdk` action, repin-twice.

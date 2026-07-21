@@ -1,0 +1,59 @@
+[package]
+name = "svbony-rs"
+version = "0.1.0"
+edition = "2021"
+# Explicit, lower-than-workspace MSRV: dual-homed to crates.io (mirroring
+# qhyccd-rs/zwo-rs), so the published floor must reflect what downstream
+# consumers can build on, NOT the workspace's unified 1.94.1. 1.85.0 (not
+# libsvbony-sys's 1.68.0 floor): the `simulation` feature pulls rand 0.10,
+# whose own MSRV is 1.85. Verified out-of-tree by the nightly
+# publish-readiness check (docs/plans/archive/publish-readiness-checks.md).
+rust-version = "1.85.0"
+authors = ["Igor von Nyssen <igor@vonnyssen.com>"]
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+# Canonical development home is the rusty-photon monorepo, vendored
+# first-party from day one (no external-repo detour, unlike zwo-rs's
+# original history — see docs/plans/svbony-camera.md "The Rust crate gap").
+# Still dual-homed: published to crates.io from crates/svbony-rs.
+repository = "https://github.com/ivonnyssen/rusty-photon"
+documentation = "https://docs.rs/svbony-rs"
+homepage = "https://github.com/ivonnyssen/rusty-photon"
+description = "Safe Rust bindings for the SVBony camera SDK"
+keywords = ["svbony", "astronomy", "camera"]
+categories = ["api-bindings", "hardware-support"]
+
+# Marks this crate (+ its nested FFI sub-crate) for the nightly
+# publish-readiness check (docs/plans/archive/publish-readiness-checks.md).
+# See the qhyccd-rs/zwo-rs marker for field semantics. needs-libclang = false:
+# libsvbony-sys is hand-written FFI, no bindgen.
+[package.metadata.publish-readiness]
+sys-crate = "libsvbony-sys"
+skip-link-env = "SVBONY_SKIP_NATIVE_LINK"
+needs-libclang = false
+
+[features]
+default = []
+# Hardware-free, in-Rust simulated environment for development and tests,
+# mirroring qhyccd-rs/zwo-rs. NOTE: this removes the *camera*, not the SDK
+# *link* — the native SDK link directives are still emitted by
+# libsvbony-sys's build.rs unless SVBONY_SKIP_NATIVE_LINK is also set.
+simulation = ["rand"]
+
+[dependencies]
+libsvbony-sys = { version = "0.1.0", path = "libsvbony-sys" }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+# Simulation-only (behind the `simulation` feature); version pinned once at
+# the workspace level (Rule 10). Unlike zwo-rs's Cargo.toml, `rayon` is NOT
+# pulled in here: zwo-rs declares it under `simulation` but its actual
+# fill_noise() no longer uses rayon (see crates/zwo-rs/src/lib.rs's doc
+# comment — a rayon parallel fill was tried and dropped for a seeded
+# xorshift64, which is what this crate's simulation module uses directly), so
+# carrying the rayon dependency here would just be dead weight.
+rand = { workspace = true, optional = true }
+
+# NOTE: no [dev-dependencies] section. zwo-rs declares `mockall` there but
+# never actually uses it in src/ (its tests exercise the `simulation` feature
+# directly, same as this crate's tests) — not carried over here to avoid
+# another unused dependency.
