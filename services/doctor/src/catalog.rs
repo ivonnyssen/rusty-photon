@@ -22,6 +22,14 @@ pub struct CatalogEntry {
     pub class: ServerClass,
     /// The port the service defaults to when its config omits one.
     pub default_port: u16,
+    /// The service hard-requires a hand-written config and never
+    /// self-creates one (docs/packaging.md's "config-gated" services:
+    /// `calibrator-flats`, `plate-solver`, `sky-survey-camera`). A
+    /// `FileAbsent` scan is expected and unremarkable for these — the unit
+    /// cannot start without an operator writing the file first, so it never
+    /// serves plain HTTP the way a self-defaulting service would
+    /// (docs/services/doctor.md §TLS and auth).
+    pub config_gated: bool,
     /// Where the config keeps its serial device path, for the six serial
     /// drivers (docs/services/doctor.md §Hardware).
     pub serial: Option<SerialMeta>,
@@ -111,6 +119,7 @@ static CATALOG: LazyLock<Vec<CatalogEntry>> = LazyLock::new(|| {
                 name,
                 class: meta.class,
                 default_port: meta.port,
+                config_gated: meta.config_gated,
                 serial: meta.serial,
                 usb: meta.usb,
             }
@@ -191,6 +200,25 @@ mod tests {
         assert_eq!(entry("qhy-focuser").unwrap().class, ServerClass::Alpaca);
         assert_eq!(entry("rp").unwrap().class, ServerClass::Core);
         assert_eq!(entry("qhy-focuser").unwrap().default_port, 11113);
+    }
+
+    /// The three services with no sensible default config (docs/packaging.md
+    /// §Installing) declare `config_gated`; nothing else does. Drift here
+    /// means `tls.absent`/`auth.absent` either wrongly nags a hard-gated
+    /// service or wrongly stays silent about a self-defaulting one whose
+    /// config was deleted.
+    #[test]
+    fn test_config_gated_matches_the_known_set() {
+        const GATED: &[&str] = &["calibrator-flats", "plate-solver", "sky-survey-camera"];
+        for entry in catalog() {
+            assert_eq!(
+                entry.config_gated,
+                GATED.contains(&entry.name),
+                "{}: config_gated should be {}",
+                entry.name,
+                GATED.contains(&entry.name)
+            );
+        }
     }
 
     #[test]

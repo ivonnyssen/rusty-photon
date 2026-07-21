@@ -109,33 +109,64 @@ fn inventory(ctx: &Context) -> Vec<Check> {
         let installed = ctx.installed(scan.entry);
         match (installed, scan.config_present()) {
             (true, false) => {
-                // A unit gated on ConditionPathExists= hard-requires a
+                // A config-gated service (docs/packaging.md) hard-requires a
                 // hand-written config — "start it once" would do nothing.
-                let gate = ctx
+                // `condition_path` is the Linux/systemd fact naming the exact
+                // gate file; Windows (start type Manual) and macOS carry no
+                // equivalent fact, so `scan.entry.config_gated` is the
+                // portable signal every platform can fall back to.
+                let systemd_gate = ctx
                     .facts
                     .unit(&scan.entry.unit_name())
                     .and_then(|u| u.condition_path.as_ref());
-                let suggestion = match gate {
-                    Some(gate) => format!(
-                        "this service needs a hand-written config — the unit is \
-                         gated on {} — so create that file, then start the unit",
-                        gate.display()
+                let (detail, suggestion) = match systemd_gate {
+                    Some(gate) => (
+                        format!(
+                            "unit {} is installed but {} does not exist — this \
+                             service requires a hand-written config (the unit is \
+                             gated on {}) and cannot start without one",
+                            scan.entry.unit_name(),
+                            scan.config_path.display(),
+                            gate.display()
+                        ),
+                        format!(
+                            "this service needs a hand-written config — the unit is \
+                             gated on {} — so create that file, then start the unit",
+                            gate.display()
+                        ),
                     ),
-                    None => format!(
-                        "start it once so it self-creates its defaults: e.g. `{}`",
-                        start_command(ctx.facts.platform, &manager_name(ctx, scan.entry))
+                    None if scan.entry.config_gated => (
+                        format!(
+                            "unit {} is installed but {} does not exist — this \
+                             service has no sensible default config and cannot \
+                             start without one",
+                            scan.entry.unit_name(),
+                            scan.config_path.display()
+                        ),
+                        format!(
+                            "this service has no sensible default — create {} by hand, \
+                             then start the unit",
+                            scan.config_path.display()
+                        ),
+                    ),
+                    None => (
+                        format!(
+                            "unit {} is installed but {} does not exist — the service \
+                             has never started, or writes its config somewhere \
+                             unexpected",
+                            scan.entry.unit_name(),
+                            scan.config_path.display()
+                        ),
+                        format!(
+                            "start it once so it self-creates its defaults: e.g. `{}`",
+                            start_command(ctx.facts.platform, &manager_name(ctx, scan.entry))
+                        ),
                     ),
                 };
                 checks.push(Check::warn(
                     "inventory.unit-without-config",
                     svc(scan),
-                    format!(
-                        "unit {} is installed but {} does not exist — the service \
-                         has never started, or writes its config somewhere \
-                         unexpected",
-                        scan.entry.unit_name(),
-                        scan.config_path.display()
-                    ),
+                    detail,
                     Some(suggestion),
                 ));
             }
@@ -698,9 +729,16 @@ fn tls_and_auth(ctx: &Context) -> Vec<Check> {
 /// the observatory credential, so it appears only once `pki/credential`
 /// exists (under `--fix` the material pass runs first).
 fn tls_auth_absent(ctx: &Context, scan: &ServiceScan) -> Vec<Check> {
+    if matches!(scan.server, ServerBlock::FileAbsent) {
+        // No config file at all — never started, or one that existed was
+        // removed. Doctor cannot tell which, and either way there is no
+        // file for provisioning to write into (unlike the cases below);
+        // see `tls_auth_file_absent`.
+        return tls_auth_file_absent(scan);
+    }
     if scan.value().is_none() {
-        // No parseable file: the read-level checks own the diagnosis, and
-        // provisioning has nothing to write into.
+        // Unreadable or invalid JSON: the read-level checks own the
+        // diagnosis, and provisioning has nothing to write into.
         return Vec::new();
     }
     let (tls_absent, auth_absent, server_key_present) = match &scan.server {
@@ -710,7 +748,10 @@ fn tls_auth_absent(ctx: &Context, scan: &ServiceScan) -> Vec<Check> {
         ServerBlock::BlockAbsent => (true, true, false),
         // An unparseable block is config.server-shape's diagnosis; writing
         // into it would be guesswork.
-        ServerBlock::Invalid(_) | ServerBlock::FileAbsent => return Vec::new(),
+        ServerBlock::Invalid(_) => return Vec::new(),
+        // Handled above; kept here so the match stays exhaustive if the
+        // early return above is ever removed.
+        ServerBlock::FileAbsent => return Vec::new(),
     };
     let name = scan.entry.name;
     let mut checks = Vec::new();
@@ -785,6 +826,58 @@ fn tls_auth_absent(ctx: &Context, scan: &ServiceScan) -> Vec<Check> {
         );
     }
     checks
+}
+
+/// `tls.absent`/`auth.absent` for a self-defaulting installed service with
+/// no config file on disk. Doctor cannot tell whether the service has
+/// simply never started, or a config that once existed was deleted — either
+/// way, the next (re)start serves plain, unauthenticated HTTP, and that is
+/// worth surfacing loudly rather than leaving to the generic
+/// `inventory.unit-without-config` "never started" reading, which does not
+/// say so.
+///
+/// Config-gated services (`scan.entry.config_gated`) stay out: they hard-
+/// require an operator-written file and cannot start without one, so they
+/// never reach plain HTTP this way — `inventory.unit-without-config` /
+/// `units.config-gated` already own that story.
+///
+/// Unfixable, unlike the sibling checks above: `--fix` has no file to write
+/// a `server.tls`/`server.auth` block into, so no `FixOp` is planned — the
+/// suggestion is to hand-write the config, or start the service once so it
+/// self-creates one, then re-run `doctor --fix`.
+fn tls_auth_file_absent(scan: &ServiceScan) -> Vec<Check> {
+    if scan.entry.config_gated {
+        return Vec::new();
+    }
+    let name = scan.entry.name;
+    let path = scan.config_path.display();
+    let remedy = format!(
+        "no {path} to provision — create it yourself (an empty `{{}}` is enough) \
+         or start the service once so it self-creates defaults, then run \
+         `doctor --fix` to provision server.tls/server.auth into it"
+    );
+    vec![
+        Check::warn(
+            "tls.absent",
+            svc(scan),
+            format!(
+                "{name} has no config file at {path} — it will serve plain HTTP \
+                 the next time it starts, whether it has never started or its \
+                 config was removed"
+            ),
+            Some(remedy.clone()),
+        ),
+        Check::warn(
+            "auth.absent",
+            svc(scan),
+            format!(
+                "{name} has no config file at {path} — it will answer \
+                 unauthenticated the next time it starts, whether it has never \
+                 started or its config was removed"
+            ),
+            Some(remedy),
+        ),
+    ]
 }
 
 /// The `server.auth` block value for one service: the observatory username
@@ -1652,6 +1745,115 @@ mod tests {
         assert_eq!(
             start_command(Platform::Macos, "rusty-photon-rp-nightly"),
             "brew services start rusty-photon-rp-nightly"
+        );
+    }
+
+    // ---- tls.absent / auth.absent on a missing config file ----
+
+    #[test]
+    fn test_tls_auth_file_absent_warns_a_self_defaulting_service_unfixably() {
+        let dir = tempfile::tempdir().unwrap();
+        let entry = catalog::entry("zwo-camera").unwrap();
+        let scan = scan::scan_service(dir.path(), entry);
+        assert!(matches!(scan.server, ServerBlock::FileAbsent));
+
+        let checks = tls_auth_file_absent(&scan);
+        assert_eq!(checks.len(), 2);
+
+        let tls = checks
+            .iter()
+            .find(|c| c.name == "tls.absent")
+            .expect("tls.absent");
+        assert_eq!(tls.status, Status::Warn);
+        assert!(
+            tls.fixes.is_empty(),
+            "no config file exists to provision into"
+        );
+        assert!(
+            tls.detail.contains("never started"),
+            "should name both possible causes: {}",
+            tls.detail
+        );
+
+        let auth = checks
+            .iter()
+            .find(|c| c.name == "auth.absent")
+            .expect("auth.absent");
+        assert_eq!(auth.status, Status::Warn);
+        assert!(auth.fixes.is_empty());
+    }
+
+    #[test]
+    fn test_tls_auth_file_absent_stays_silent_for_a_config_gated_service() {
+        let dir = tempfile::tempdir().unwrap();
+        let entry = catalog::entry("plate-solver").unwrap();
+        assert!(entry.config_gated);
+        let scan = scan::scan_service(dir.path(), entry);
+        assert!(tls_auth_file_absent(&scan).is_empty());
+    }
+
+    fn packaged_ctx(dir: &Path, platform: &str, unit: &str) -> Context {
+        let facts: PlatformFacts = serde_json::from_value(serde_json::json!({
+            "platform": platform,
+            "units": [ { "name": unit } ],
+        }))
+        .unwrap();
+        Context::gather(dir.to_path_buf(), facts)
+    }
+
+    #[test]
+    fn test_tls_and_auth_warns_an_installed_self_defaulting_service_with_no_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = packaged_ctx(dir.path(), "linux", "rusty-photon-zwo-camera");
+        let checks = tls_and_auth(&ctx);
+        assert!(checks
+            .iter()
+            .any(|c| c.name == "tls.absent" && c.service.as_deref() == Some("zwo-camera")));
+        assert!(checks
+            .iter()
+            .any(|c| c.name == "auth.absent" && c.service.as_deref() == Some("zwo-camera")));
+    }
+
+    #[test]
+    fn test_tls_and_auth_stays_silent_for_an_installed_config_gated_service_with_no_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = packaged_ctx(dir.path(), "linux", "rusty-photon-plate-solver");
+        let checks = tls_and_auth(&ctx);
+        assert!(!checks
+            .iter()
+            .any(|c| (c.name == "tls.absent" || c.name == "auth.absent")
+                && c.service.as_deref() == Some("plate-solver")));
+    }
+
+    /// `condition_path` is a Linux/systemd-only fact — Windows carries no
+    /// equivalent, so the remedy must fall back to the portable
+    /// `config_gated` catalog flag instead of wrongly claiming the service
+    /// self-creates its defaults.
+    #[test]
+    fn test_inventory_names_a_hand_written_config_for_a_gated_service_on_windows() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = packaged_ctx(dir.path(), "windows", "rusty-photon-plate-solver");
+        let checks = inventory(&ctx);
+        let check = checks
+            .iter()
+            .find(|c| {
+                c.name == "inventory.unit-without-config"
+                    && c.service.as_deref() == Some("plate-solver")
+            })
+            .expect("inventory.unit-without-config");
+        let suggestion = check.suggestion.as_deref().unwrap_or_default();
+        assert!(suggestion.contains("no sensible default"), "{suggestion}");
+        assert!(
+            !suggestion.contains("self-creates"),
+            "a config-gated service never self-creates: {suggestion}"
+        );
+        // The detail text must not blame "never started" on a service that
+        // structurally can't start without an operator-written config first.
+        assert!(!check.detail.contains("never started"), "{}", check.detail);
+        assert!(
+            check.detail.contains("cannot start without one"),
+            "{}",
+            check.detail
         );
     }
 

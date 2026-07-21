@@ -2,3 +2,6 @@
 # This service's own unit tests assert these values match its config defaults.
 class = "core"
 port = 11170
+# No sensible default config (docs/packaging.md); the unit never self-creates
+# one and cannot start without an operator writing it first.
+config_gated = true
