@@ -290,13 +290,24 @@ async fn reselect_star(
     Ok(Json(StateResponse { state: "selected" }))
 }
 
+/// The 503 means alive-but-degraded (PHD2 off is the normal daytime
+/// state); `message` is the opaque explanation sentinel displays on its
+/// dashboard without interpreting (docs/services/sentinel.md §Service
+/// Health Supervision).
 async fn health(State(ops): State<Arc<GuiderOps>>) -> impl IntoResponse {
     if ops.is_connected().await {
         (StatusCode::OK, Json(serde_json::json!({ "status": "ok" })))
     } else {
         (
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({ "status": "unavailable" })),
+            Json(serde_json::json!({
+                "status": "unavailable",
+                "message": format!(
+                    "no connection to PHD2 at {}; reconnecting automatically — \
+                     start PHD2 with its event server enabled (Tools → Enable Server)",
+                    ops.phd2_addr()
+                ),
+            })),
         )
     }
 }

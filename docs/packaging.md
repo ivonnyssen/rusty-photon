@@ -432,7 +432,10 @@ unit stays inert until `plate-solver.json` exists.
 
    `200` with `{"status":"ok"}` means binary and database both check
    out; `503` carries `{"status":"binary_unavailable"}` or
-   `{"status":"db_unavailable"}`, naming the check that failed.
+   `{"status":"db_unavailable"}`, naming the check that failed, plus
+   a `message` with the offending path. Sentinel shows a `503` as
+   *degraded* (amber, message displayed) rather than restart-looping
+   a service whose problem a restart cannot cure.
 
 ## phd2-guider: PHD2
 
@@ -517,28 +520,21 @@ remote viewing in one.
    ```
 
    `200` with `{"status":"ok"}` means phd2-guider holds a live
-   connection to PHD2. `503` with `{"status":"unavailable"}` means it
-   does not — PHD2 is not running, or its event server is disabled
-   (PHD2's Tools → Enable Server, a per-profile setting that defaults
-   to on). The service reconnects on its own within seconds of PHD2
-   appearing.
+   connection to PHD2. `503` with `{"status":"unavailable"}` (plus a
+   human-readable `message`) means it does not — PHD2 is not running,
+   or its event server is disabled (PHD2's Tools → Enable Server, a
+   per-profile setting that defaults to on). The service reconnects on
+   its own within seconds of PHD2 appearing.
 
 Like every other daemon (see [Configuration](#configuration)),
 phd2-guider self-creates its config on first start, which also gives
 sentinel a health-probe URL to derive — the guider is supervised from
-then on. Know what that means while PHD2 is off: supervision counts
-anything but `200` or an auth challenge (`401`/`403`) as a failed probe
-(see
-[sentinel.md §Service Health Supervision](services/sentinel.md#service-health-supervision)),
-and the guider's `503` means "PHD2 is not running right now" — a state
-a service restart cannot cure, so on a parked rig supervision
-restart-loops the guider to no effect (issue #595 tracks teaching
-sentinel the difference). Until that lands, when PHD2 will be off for
-long stretches either leave its VNC session running (it is idle-cheap)
-or stop the guider explicitly —
-`sudo systemctl stop rusty-photon-phd2-guider` — sentinel leaves
-operator-stopped services alone, and the next `systemctl start` resumes
-supervision.
+then on. While PHD2 is off — the normal daytime state of a rig — the
+guider's `503` counts as **alive but degraded** under
+[sentinel's health supervision](services/sentinel.md#service-health-supervision):
+no restarts, no notifications, an amber dashboard row showing the
+guider's own `message` (issue #595). Supervision still restarts the
+guider the moment it stops answering HTTP at all.
 
 ## Removing
 

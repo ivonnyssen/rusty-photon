@@ -32,17 +32,18 @@ const OBSERVATION_BUDGET: Duration = Duration::from_secs(30);
 #[when(expr = "the blackboard records at least {int} frames")]
 async fn blackboard_records_frames(world: &mut SessionRunnerWorld, frames: u64) {
     let deadline = std::time::Instant::now() + OBSERVATION_BUDGET;
-    while std::time::Instant::now() < deadline {
-        if world.blackboard_frames().await.is_some_and(|f| f >= frames) {
+    loop {
+        let last = world.blackboard_frames().await;
+        if last.is_some_and(|f| f >= frames) {
             return;
         }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the blackboard never recorded {frames} frames within {OBSERVATION_BUDGET:?} \
+             (last: {last:?})"
+        );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    panic!(
-        "the blackboard never recorded {frames} frames within {OBSERVATION_BUDGET:?} \
-         (last: {:?})",
-        world.blackboard_frames().await
-    );
 }
 
 #[given("a safety monitor guards the session")]

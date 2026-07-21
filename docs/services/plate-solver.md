@@ -140,11 +140,14 @@ Returns `200 OK` with `{"status": "ok"}` when **all** of:
 - The configured `astap_db_directory` still exists and is still a
   directory at probe time.
 
-Returns `503 Service Unavailable` if any of those checks fail. Both
-runtime checks must pass: a binary present without its database
-cannot solve, and a database without an executable binary cannot
-either. The probe set matches the startup-validation set so
-"healthy at probe time" means "still capable of solving."
+Returns `503 Service Unavailable` if any of those checks fail — the
+body names the failed check (`{"status": "binary_unavailable"}` or
+`{"status": "db_unavailable"}`) and carries a human-readable
+`message` with the offending path. Both runtime checks must pass: a
+binary present without its database cannot solve, and a database
+without an executable binary cannot either. The probe set matches
+the startup-validation set so "healthy at probe time" means "still
+capable of solving."
 
 The probe is intentionally cheap: two filesystem stats, no
 subprocess spawn. Sentinel (or any operational tooling) may probe
@@ -154,8 +157,12 @@ Sentinel consumes this endpoint through its
 [service health supervision](sentinel.md#service-health-supervision):
 every discovered running service is probed automatically (the URL is
 derived from this service's own config), and the derived restart
-command runs after consecutive failures. Anything else that speaks
-HTTP (Prometheus blackbox exporter, Nagios) can probe it too.
+command runs after consecutive failures. A `503` does **not** count
+as a failure: a missing binary or database is a condition a service
+restart cannot cure, so sentinel reports the service *degraded*
+(amber, with the `message` displayed verbatim) instead of
+restart-looping it (issue #595). Anything else that speaks HTTP
+(Prometheus blackbox exporter, Nagios) can probe it too.
 
 ### Subprocess Supervision
 

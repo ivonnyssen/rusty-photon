@@ -2350,12 +2350,21 @@ sample; they never abort the pass.
 ### Recovery across an rp restart
 
 The camera driver, not `rp`, is the source of truth for cooler state.
-When startup recovery restores an active (or interrupted) session, `rp`
-reads the camera's cooler state back: if the cooler is on and the
-current setpoint equals a configured rung, that rung is re-adopted
-as-is — no re-selection, no duplicate `cooler_stabilized`. Anything
-else (cooler off, off-grid setpoint, read failure) runs the normal
-cooldown pass.
+When startup recovery restores an active (or interrupted) session
+**under safe conditions**, `rp` reads the camera's cooler state back:
+if the cooler is on and the current setpoint equals a configured rung,
+that rung is re-adopted as-is — no re-selection, no duplicate
+`cooler_stabilized`. Anything else (cooler off, off-grid setpoint, read
+failure) runs the normal cooldown pass.
+
+When the restart itself lands under **unsafe** conditions, none of the
+above runs at startup — no read, no re-adopt, no cooldown pass — so an
+unsafe restart never actuates the cooler (no-actuation-on-connect
+tenet, [`workspace.md`](../workspace.md#project-tenets) § Project
+Tenets). Recovery is deferred to the unsafe → safe transition (§
+Recovery Behavior), which re-adopts or re-cools unconditionally at that
+point, whether the interruption originated at this restart or from a
+live safety event mid-session.
 
 ### Warm-up at session end
 
@@ -3724,6 +3733,20 @@ restores active-and-reinvoked under a safe sky, and a file that says
 `active` restores interrupted under an unsafe one — the poll, not the
 file, decides.
 
+Cooler recovery (§ Camera Cooling → Recovery) follows the same gate:
+an unsafe startup restores the session without touching the cooler at
+all (no-actuation-on-connect tenet,
+[`workspace.md`](../workspace.md#project-tenets) § Project Tenets) —
+re-adoption (or a fresh cooldown pass) is deferred
+to the safe transition, which runs it unconditionally whether the
+interruption originated at this restart or from a live safety event.
+Running it there, rather than never, is the tenet's own carve-out: the
+restored session was already operator-started before the outage or the
+safety event, and re-adopting the cooler on its unsafe → safe
+transition is automatic cleanup inside that session, the same class of
+workflow decision as the park-on-safety-transition example the tenet
+names explicitly — not a connect-time or passive/supervisory actuation.
+
 There is deliberately no "conditions have changed" (daytime /
 all-goals-met) check in `rp` — deciding whether the night is over is
 planner work, not registry work. A session recovered after dawn simply
@@ -3797,8 +3820,10 @@ move under an exposing camera or an active guide loop.
 On the overall unsafe → safe transition:
 
 1. Lift the `/mcp` gate.
-2. If a session is interrupted, mark it `active` again and re-invoke
-   the orchestrator with recovery context
+2. If a session is interrupted, mark it `active` again, re-adopt (or
+   re-select) cooler rungs (§ Camera Cooling → Recovery — a no-op
+   re-adoption when the cooler was never touched by the interruption),
+   and re-invoke the orchestrator with recovery context
    (`{"reason": "safety_interruption"}`) and the same
    `workflow_id`/`session_id`/`config` — retry/failure semantics as in
    § Orchestrator Invocation Protocol.

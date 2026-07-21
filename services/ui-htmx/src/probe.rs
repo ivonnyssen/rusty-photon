@@ -99,10 +99,10 @@ pub async fn probe_device(
     };
     match status {
         200..=299 if supports_config_actions(&body) => return Tier::Managed,
-        200..=299 => {}
         401 | 403 => return Tier::AuthRequired,
-        // Any other status (404 on a device number that doesn't exist, 500, …):
-        // not managed; fall through to the setup-page check.
+        // Any other status (404 on a device number that doesn't exist, 500, …,
+        // or a 2xx without config actions): not managed; fall through to the
+        // setup-page check.
         _ => {}
     }
     match http.get(&setup_url).await {
