@@ -67,6 +67,9 @@ enum TlsCommand {
     /// self-signed pair inside its 30-day window from the existing CA
     /// (never the CA itself), and re-order the ACME wildcard pair when
     /// acme.json exists and the pair is missing or due. A no-op otherwise.
+    /// `<config-root>/renew.env` (KEY=VALUE per line), if present, is
+    /// loaded first so `$VAR`-indirected dns_credentials can resolve on
+    /// an unattended run.
     Renew {
         /// Ignore the renewal windows and renew everything both legs own.
         #[arg(long)]

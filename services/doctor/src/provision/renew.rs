@@ -254,6 +254,12 @@ async fn renew_acme(
         return Ok(());
     }
 
+    acme_config::load_renew_env(config_dir).map_err(|e| {
+        format!(
+            "could not load {}: {e}",
+            config_dir.join("renew.env").display()
+        )
+    })?;
     let resolved = acme_config::resolve_credentials(&config.dns_credentials)
         .map_err(|e| format!("could not resolve DNS credentials: {e}"))?;
     let dns_provider = dns::build_dns_provider(&config.dns_provider, &resolved, &config.domain)
@@ -558,6 +564,41 @@ mod tests {
             "an unparseable wildcard certificate must pass the due gate: {}",
             err.message
         );
+    }
+
+    #[tokio::test]
+    async fn test_acme_leg_resolves_dns_credentials_from_renew_env() {
+        // No RENEW_TEST_CF_TOKEN in the process environment: without
+        // renew.env, resolve_credentials would fail first and the error
+        // would name the missing var, not the DNS provider. Reaching the
+        // "unsupported DNS provider" error proves renew.env was loaded and
+        // the `$VAR` indirection resolved from it.
+        std::env::remove_var("RENEW_TEST_CF_TOKEN");
+        let (dir, _pki) = stage_tree();
+        std::fs::write(
+            dir.path().join("renew.env"),
+            "RENEW_TEST_CF_TOKEN=resolved-from-file\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("acme.json"),
+            serde_json::json!({
+                "email": "ops@example.com",
+                "domain": "observatory.test",
+                "dns_provider": "no-such-provider",
+                "dns_credentials": { "api_token": "$RENEW_TEST_CF_TOKEN" },
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let err = renew(dir.path(), false).await.unwrap_err();
+        assert!(
+            err.message.contains("unsupported DNS provider"),
+            "renew.env should have resolved the $VAR credential: {}",
+            err.message
+        );
+        std::env::remove_var("RENEW_TEST_CF_TOKEN");
     }
 
     #[tokio::test]

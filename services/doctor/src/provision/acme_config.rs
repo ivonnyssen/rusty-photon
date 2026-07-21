@@ -122,6 +122,56 @@ pub fn resolve_credentials(creds: &HashMap<String, String>) -> Result<HashMap<St
     Ok(resolved)
 }
 
+/// Load `<config-root>/renew.env` into the process environment — `KEY=VALUE`
+/// per line, blank lines and `#`-prefixed comments ignored, a var already
+/// set in the environment left untouched.
+///
+/// This is the unattended path for `$VAR`-indirected `dns_credentials`
+/// (ADR-002, docs/services/doctor.md §Renewal): `doctor tls renew` runs off
+/// a platform scheduler (systemd timer, launchd interval, a Windows
+/// scheduled task) whose process has no inherited shell environment, so
+/// without this file `$CLOUDFLARE_API_TOKEN` (or any other indirected
+/// credential) cannot resolve at 3am. One file read here, beside
+/// `acme.json`, works identically on all three platforms instead of three
+/// platform-specific env mechanisms (systemd `EnvironmentFile=`, a launchd
+/// `EnvironmentVariables` plist key, a Windows machine-level env var). A
+/// missing file is not an error — self-signed installs and literal
+/// (non-`$`) credentials never need it.
+pub fn load_renew_env(config_dir: &Path) -> Result<()> {
+    let path = config_dir.join("renew.env");
+    let content = match std::fs::read_to_string(&path) {
+        Ok(content) => content,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e.into()),
+    };
+    for (lineno, raw_line) in content.lines().enumerate() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (key, value) = line.split_once('=').ok_or_else(|| {
+            TlsError::Config(format!(
+                "{}:{}: expected KEY=VALUE, found '{raw_line}'",
+                path.display(),
+                lineno + 1
+            ))
+        })?;
+        let key = key.trim();
+        if key.is_empty() {
+            return Err(TlsError::Config(format!(
+                "{}:{}: empty variable name",
+                path.display(),
+                lineno + 1
+            )));
+        }
+        if std::env::var_os(key).is_none() {
+            std::env::set_var(key, value.trim());
+        }
+    }
+    debug!(path = %path.display(), "loaded renew.env overrides");
+    Ok(())
+}
+
 /// Return the ACME directory URL for Let's Encrypt staging or production.
 pub fn directory_url(staging: bool) -> &'static str {
     if staging {
@@ -243,6 +293,59 @@ mod tests {
         assert!(
             msg.contains("NONEXISTENT_VAR_FOR_ACME_TEST"),
             "error should mention the missing var: {msg}"
+        );
+    }
+
+    #[test]
+    fn load_renew_env_missing_file_is_a_no_op() {
+        let dir = tempfile::tempdir().unwrap();
+        load_renew_env(dir.path()).unwrap();
+    }
+
+    #[test]
+    fn load_renew_env_sets_vars_from_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("renew.env"),
+            "# a comment\n\nRENEW_ENV_TEST_TOKEN=from-file\n",
+        )
+        .unwrap();
+        std::env::remove_var("RENEW_ENV_TEST_TOKEN");
+
+        load_renew_env(dir.path()).unwrap();
+
+        assert_eq!(std::env::var("RENEW_ENV_TEST_TOKEN").unwrap(), "from-file");
+        std::env::remove_var("RENEW_ENV_TEST_TOKEN");
+    }
+
+    #[test]
+    fn load_renew_env_does_not_override_an_already_set_var() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("renew.env"),
+            "RENEW_ENV_TEST_PRESET=from-file\n",
+        )
+        .unwrap();
+        std::env::set_var("RENEW_ENV_TEST_PRESET", "from-environment");
+
+        load_renew_env(dir.path()).unwrap();
+
+        assert_eq!(
+            std::env::var("RENEW_ENV_TEST_PRESET").unwrap(),
+            "from-environment"
+        );
+        std::env::remove_var("RENEW_ENV_TEST_PRESET");
+    }
+
+    #[test]
+    fn load_renew_env_rejects_a_line_without_equals() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("renew.env"), "not-a-valid-line\n").unwrap();
+
+        let err = load_renew_env(dir.path()).unwrap_err();
+        assert!(
+            err.to_string().contains("KEY=VALUE"),
+            "error should explain the expected shape: {err}"
         );
     }
 

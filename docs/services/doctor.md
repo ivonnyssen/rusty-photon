@@ -728,6 +728,29 @@ legs, both scoped to the resolved config root:
    write-then-rename so a service reloading mid-renewal never reads a
    torn file.
 
+**`renew.env`: sourcing `$VAR` credentials on an unattended run.** A
+platform scheduler starts `doctor tls renew` with no inherited shell
+environment, so `$CLOUDFLARE_API_TOKEN` (or any other `$VAR`-indirected
+`dns_credentials` value) has nowhere to resolve from at 3am unless
+something puts it there first. Rather than three platform-specific
+mechanisms (systemd `EnvironmentFile=`, a launchd `EnvironmentVariables`
+plist key, a Windows machine-level env var), the renewal leg itself
+loads `<config-root>/renew.env` — `KEY=VALUE` per line, blank lines and
+`#` comments ignored — into the process environment before resolving
+credentials, filling in only keys not already set. The file is optional
+(a self-signed-only install, or one with literal, non-`$` credentials,
+never needs it) and sits beside `acme.json`, so it gets the same
+ownership alignment (`align_pki_ownership`) after a root-run renewal.
+Create it 0600 and owned by the service user (`rusty-photon` on Linux,
+the brew-services user on macOS):
+
+```
+CLOUDFLARE_API_TOKEN=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+This is the same mechanism on all three platforms — no unit, plist, or
+Scheduled Task edits needed to make `$VAR` indirection work.
+
 After a successful ACME renewal, `post_renewal_hooks` from `acme.json`
 run in order (`sh -c` / `cmd /C`) — the multi-machine distribution hook
 from ADR-002. Every hook runs even if an earlier one fails; any failure

@@ -63,8 +63,8 @@ pub fn absolute_pki_dir(config_dir: &Path) -> PathBuf {
     std::path::absolute(pki_dir(config_dir)).unwrap_or_else(|_| pki_dir(config_dir))
 }
 
-/// Align the pki tree (and `acme.json` beside the configs) with the config
-/// root's owner.
+/// Align the pki tree (and `acme.json`/`renew.env` beside the configs) with
+/// the config root's owner.
 ///
 /// Provisioning as root on a packaged host (`sudo rusty-photon-doctor
 /// --fix`) creates key material root-owned; the services — and the renewal
@@ -76,7 +76,9 @@ pub fn absolute_pki_dir(config_dir: &Path) -> PathBuf {
 /// owner already matches and this is a no-op. Symlinks are skipped (doctor
 /// never creates one there; following it would chown the target). A failed
 /// chown is an error: a silently root-owned key breaks TLS at the next
-/// service start.
+/// service start. `renew.env` is operator-authored (docs/services/doctor.md
+/// §Renewal) and not always present, so it is included best-effort — a
+/// missing file is not chowned, it just never joins `paths`.
 #[cfg(unix)]
 pub fn align_pki_ownership(config_dir: &Path) -> Result<(), String> {
     use std::os::unix::fs::MetadataExt;
@@ -84,7 +86,7 @@ pub fn align_pki_ownership(config_dir: &Path) -> Result<(), String> {
         return Ok(());
     };
     let (uid, gid) = (root_meta.uid(), root_meta.gid());
-    let mut paths = vec![config_dir.join("acme.json")];
+    let mut paths = vec![config_dir.join("acme.json"), config_dir.join("renew.env")];
     let pki = pki_dir(config_dir);
     if let Ok(entries) = std::fs::read_dir(&pki) {
         paths.push(pki);
