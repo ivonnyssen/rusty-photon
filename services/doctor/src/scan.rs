@@ -354,6 +354,67 @@ impl RpView {
             .get("auth")?;
         serde_json::from_value(auth.clone()).ok()
     }
+
+    /// Every generic equipment client target — each `equipment.<kind>[].alpaca_url`
+    /// entry plus the singular `equipment.mount.alpaca_url` (issue #663) —
+    /// alongside its own `auth` field. Kind-agnostic by construction (any
+    /// object under `equipment` carrying an `alpaca_url`, whether nested in
+    /// an array or standalone like `mount`), so a future equipment kind
+    /// picks up scheme/auth join checking without new doctor code, mirroring
+    /// `alpaca_urls()`'s existing walk. The guider's URL
+    /// (`equipment.mount.guiding.url`) lives under a `url` key, not
+    /// `alpaca_url`, so it never collides with this walk.
+    pub fn equipment_targets(&self) -> Vec<RpEquipmentTarget> {
+        let mut targets = Vec::new();
+        let Some(Value::Object(kinds)) = &self.equipment else {
+            return targets;
+        };
+        for (kind, value) in kinds {
+            match value {
+                Value::Array(entries) => {
+                    for (idx, entry) in entries.iter().enumerate() {
+                        if let Some(url) = entry.get("alpaca_url").and_then(Value::as_str) {
+                            targets.push(RpEquipmentTarget {
+                                field: format!("equipment.{kind}.{idx}.alpaca_url"),
+                                url: url.to_string(),
+                                auth_pointer: format!("/equipment/{kind}/{idx}/auth"),
+                                auth: entry
+                                    .get("auth")
+                                    .and_then(|a| serde_json::from_value(a.clone()).ok()),
+                            });
+                        }
+                    }
+                }
+                Value::Object(_) => {
+                    if let Some(url) = value.get("alpaca_url").and_then(Value::as_str) {
+                        targets.push(RpEquipmentTarget {
+                            field: format!("equipment.{kind}.alpaca_url"),
+                            url: url.to_string(),
+                            auth_pointer: format!("/equipment/{kind}/auth"),
+                            auth: value
+                                .get("auth")
+                                .and_then(|a| serde_json::from_value(a.clone()).ok()),
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
+        targets
+    }
+}
+
+/// One client target inside rp's generic equipment roster —
+/// [`RpView::equipment_targets`]. `field` is a dotted path matching the
+/// JSON pointer with `/` replaced by `.` (the same convention rp's own
+/// `field_errors` uses, e.g. `equipment.cameras.0.alpaca_url`), used both
+/// for display and to derive the scheme-fix pointer.
+#[derive(Debug, Clone)]
+pub struct RpEquipmentTarget {
+    pub field: String,
+    pub url: String,
+    pub auth_pointer: String,
+    pub auth: Option<ClientAuthView>,
 }
 
 /// Parse a lenient view out of a scanned config, distinguishing "view not
@@ -515,6 +576,64 @@ mod tests {
         )
         .unwrap();
         assert!(view.mount_guiding_auth().is_none());
+    }
+
+    #[test]
+    fn test_rp_view_equipment_targets_covers_arrays_and_the_singular_mount() {
+        let view: RpView = serde_json::from_str(
+            r#"{ "equipment": {
+                   "mount": { "alpaca_url": "http://localhost:11117",
+                              "guiding": { "url": "http://localhost:11130" },
+                              "auth": { "username": "observatory", "password": "mpw" } },
+                   "cameras": [ { "alpaca_url": "http://localhost:11122",
+                                  "auth": { "username": "observatory", "password": "cpw" } },
+                                { "alpaca_url": "http://localhost:11121" } ],
+                   "optical_trains": [ { "cameras": ["main"] } ] } }"#,
+        )
+        .unwrap();
+        let targets = view.equipment_targets();
+        assert_eq!(targets.len(), 3, "{targets:?}");
+
+        let mount = targets
+            .iter()
+            .find(|t| t.field == "equipment.mount.alpaca_url")
+            .expect("the singular mount target");
+        assert_eq!(mount.url, "http://localhost:11117");
+        assert_eq!(mount.auth_pointer, "/equipment/mount/auth");
+        assert_eq!(
+            mount.auth.as_ref().unwrap().password.as_deref(),
+            Some("mpw")
+        );
+
+        let camera0 = targets
+            .iter()
+            .find(|t| t.field == "equipment.cameras.0.alpaca_url")
+            .expect("the first camera target");
+        assert_eq!(camera0.url, "http://localhost:11122");
+        assert_eq!(camera0.auth_pointer, "/equipment/cameras/0/auth");
+        assert_eq!(
+            camera0.auth.as_ref().unwrap().password.as_deref(),
+            Some("cpw")
+        );
+
+        let camera1 = targets
+            .iter()
+            .find(|t| t.field == "equipment.cameras.1.alpaca_url")
+            .expect("the second camera target");
+        assert_eq!(camera1.url, "http://localhost:11121");
+        assert!(camera1.auth.is_none());
+
+        // optical_trains carries no alpaca_url — never a target.
+        assert!(!targets.iter().any(|t| t.field.contains("optical_trains")));
+    }
+
+    #[test]
+    fn test_rp_view_equipment_targets_empty_without_equipment() {
+        let view: RpView = serde_json::from_str(r#"{ "equipment": {} }"#).unwrap();
+        assert!(view.equipment_targets().is_empty());
+
+        let view: RpView = serde_json::from_str(r#"{}"#).unwrap();
+        assert!(view.equipment_targets().is_empty());
     }
 
     #[test]

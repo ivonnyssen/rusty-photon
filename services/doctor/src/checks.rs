@@ -1392,13 +1392,15 @@ fn ui_htmx_one_target(ctx: &Context, name: &str, target: Option<&ClientTargetVie
     checks
 }
 
-/// rp's plate-solver/guider clients: `docs/services/doctor.md
-/// §Client-target joins`. CA trust is `rp`'s single top-level `ca_cert`
-/// field (issue #609 / PR #612), shared by both targets, so the transport
-/// check is fully fix-eligible once that field or its provisioning
-/// material exists. Both targets also carry a per-target `auth` field
-/// (issue #620: `plate_solver.auth`, `equipment.mount.guiding.auth`), so
-/// `joins.client-auth` is fully fix-eligible for them too, the same
+/// rp's plate-solver/guider clients plus the generic equipment roster:
+/// `docs/services/doctor.md §Client-target joins`. CA trust is `rp`'s
+/// single top-level `ca_cert` field (issue #609 / PR #612), shared by
+/// every target, so the transport check is fully fix-eligible once that
+/// field or its provisioning material exists. Every target also carries
+/// its own `auth` field (issue #620: `plate_solver.auth`,
+/// `equipment.mount.guiding.auth`; issue #663: every
+/// `equipment.<kind>[].auth` / `equipment.mount.auth`), so
+/// `joins.client-auth` is fully fix-eligible for all of them, the same
 /// "absent gets it, present is operator intent" contract as every other
 /// D6a client fix.
 fn rp_client_joins(ctx: &Context) -> Vec<Check> {
@@ -1428,6 +1430,16 @@ fn rp_client_joins(ctx: &Context) -> Vec<Check> {
                 ps.auth.as_ref(),
             ));
         }
+    }
+    for target in rp.equipment_targets() {
+        checks.extend(rp_one_target(
+            ctx,
+            &target.field,
+            &target.url,
+            ca_cert_present,
+            &target.auth_pointer,
+            target.auth.as_ref(),
+        ));
     }
     checks
 }
@@ -2657,6 +2669,151 @@ mod tests {
             serde_json::json!({ "server": { "port": 11115 }, "ca_cert": "/pki/ca.pem",
                 "plate_solver": { "url": "http://localhost:11131",
                                    "auth": { "username": "observatory", "password": "s3cret-pw" } } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        assert!(rp_client_joins(&ctx).is_empty());
+    }
+
+    #[test]
+    fn test_rp_equipment_mount_scheme_and_auth_are_flagged_and_fixed() {
+        // issue #663: the mount's own alpaca_url (equipment.mount.alpaca_url,
+        // a singular object — distinct from equipment.mount.guiding.url)
+        // gets the same scheme/auth join treatment as plate_solver/guiding.
+        // The target's cert is named as the ACME wildcard pair so only the
+        // scheme mismatch is in play here (no CA-trust gap), mirroring
+        // test_rp_plate_solver_scheme_mismatch_is_flagged_and_fixed.
+        let dir = tempfile::tempdir().unwrap();
+        stage_pki(dir.path(), "s3cret-pw");
+        let hash = rp_auth::credentials::hash_password("s3cret-pw").unwrap();
+        write_json(
+            dir.path(),
+            "star-adventurer-gti.json",
+            serde_json::json!({ "server": { "port": 11117,
+                "tls": { "cert": "/pki/acme-cert.pem", "key": "/pki/acme-key.pem" },
+                "auth": { "username": "observatory", "password_hash": hash } } }),
+        );
+        write_json(
+            dir.path(),
+            "rp.json",
+            serde_json::json!({ "server": { "port": 11115 },
+                "equipment": { "mount": { "alpaca_url": "http://localhost:11117" } } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        let checks = rp_client_joins(&ctx);
+
+        let transport = checks
+            .iter()
+            .find(|c| c.name == "joins.client-transport")
+            .expect("a scheme mismatch on the mount's own connection must be reported");
+        assert_eq!(transport.status, Status::Fail);
+        match &transport.fixes[..] {
+            [crate::report::FixOp::SetString {
+                service,
+                pointer,
+                value,
+            }] => {
+                assert_eq!(service, "rp");
+                assert_eq!(pointer, "/equipment/mount/alpaca_url");
+                assert_eq!(value, "https://localhost:11117");
+            }
+            other => unreachable!("{other:?}"),
+        }
+
+        let auth = checks
+            .iter()
+            .find(|c| c.name == "joins.client-auth")
+            .expect("a missing credential on the mount's own connection must be reported");
+        assert_eq!(auth.status, Status::Warn);
+        match &auth.fixes[..] {
+            [crate::report::FixOp::SetObject {
+                service, pointer, ..
+            }] => {
+                assert_eq!(service, "rp");
+                assert_eq!(pointer, "/equipment/mount/auth");
+            }
+            other => unreachable!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_rp_equipment_camera_array_entries_are_flagged_and_fixed() {
+        // issue #663: every equipment.<kind>[].alpaca_url entry (cameras
+        // here) is joined the same way, indexed by its position. The
+        // target's cert is named as the ACME wildcard pair so only the
+        // scheme mismatch is in play here (no CA-trust gap).
+        let dir = tempfile::tempdir().unwrap();
+        stage_pki(dir.path(), "s3cret-pw");
+        let hash = rp_auth::credentials::hash_password("s3cret-pw").unwrap();
+        write_json(
+            dir.path(),
+            "zwo-camera.json",
+            serde_json::json!({ "server": { "port": 11122,
+                "tls": { "cert": "/pki/acme-cert.pem", "key": "/pki/acme-key.pem" },
+                "auth": { "username": "observatory", "password_hash": hash } } }),
+        );
+        write_json(
+            dir.path(),
+            "rp.json",
+            serde_json::json!({ "server": { "port": 11115 },
+                "equipment": { "cameras": [
+                    { "id": "main", "alpaca_url": "http://localhost:11122" }
+                ] } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        let checks = rp_client_joins(&ctx);
+
+        let transport = checks
+            .iter()
+            .find(|c| c.name == "joins.client-transport")
+            .expect("a scheme mismatch on a camera entry must be reported");
+        assert_eq!(transport.status, Status::Fail);
+        match &transport.fixes[..] {
+            [crate::report::FixOp::SetString {
+                service,
+                pointer,
+                value,
+            }] => {
+                assert_eq!(service, "rp");
+                assert_eq!(pointer, "/equipment/cameras/0/alpaca_url");
+                assert_eq!(value, "https://localhost:11122");
+            }
+            other => unreachable!("{other:?}"),
+        }
+
+        let auth = checks
+            .iter()
+            .find(|c| c.name == "joins.client-auth")
+            .expect("a missing credential on a camera entry must be reported");
+        assert_eq!(auth.status, Status::Warn);
+        match &auth.fixes[..] {
+            [crate::report::FixOp::SetObject {
+                service, pointer, ..
+            }] => {
+                assert_eq!(service, "rp");
+                assert_eq!(pointer, "/equipment/cameras/0/auth");
+            }
+            other => unreachable!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_rp_equipment_target_matching_credential_and_scheme_is_silent() {
+        let dir = tempfile::tempdir().unwrap();
+        let hash = rp_auth::credentials::hash_password("s3cret-pw").unwrap();
+        write_json(
+            dir.path(),
+            "zwo-camera.json",
+            serde_json::json!({ "server": { "port": 11122,
+                "auth": { "username": "observatory", "password_hash": hash } } }),
+        );
+        write_json(
+            dir.path(),
+            "rp.json",
+            serde_json::json!({ "server": { "port": 11115 }, "ca_cert": "/pki/ca.pem",
+                "equipment": { "cameras": [
+                    { "id": "main", "alpaca_url": "http://localhost:11122",
+                      "auth": { "username": "observatory", "password": "s3cret-pw" } }
+                ] } }),
         );
         let ctx = config_only_ctx(dir.path());
         assert!(rp_client_joins(&ctx).is_empty());

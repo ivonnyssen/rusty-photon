@@ -335,8 +335,10 @@ so there is no ui-htmx-side name join left to check.)
 Every other D2/D6a check above judges a service against its **own**
 config. This family is the join the rest missed: a service's config
 points a URL at *another* catalog service — ui-htmx's `rp`/`sentinel`
-targets, rp's `plate_solver.url` and `equipment.mount.guiding.url`,
-sentinel's `operation_watchdog.rp_url` and each Alpaca `monitors[]` entry —
+targets, rp's `plate_solver.url`, `equipment.mount.guiding.url`, and
+every `equipment.<kind>[].alpaca_url` entry including the singular
+`equipment.mount.alpaca_url` (issue #663), sentinel's
+`operation_watchdog.rp_url` and each Alpaca `monitors[]` entry —
 and nothing checked whether that URL's scheme and credential still match
 the *target's* `server.tls`/`server.auth` after the provisioning pass
 upgrades the target's server side. That gap is exactly how #607 happened:
@@ -355,7 +357,7 @@ explicit port, or one that doesn't parse, resolves to nothing.
 | Check | Status | Trigger |
 |---|---|---|
 | `joins.client-transport` | fail | Either: the client's scheme doesn't match the target's `server.tls` state (`http` against a TLS-on target, or `https` against a plain-HTTP one) — the connection fails outright; or the scheme matches, the target's certificate is doctor's self-signed CA (not the publicly-trusted ACME wildcard — judged the way `tls.expiry` distinguishes them, by the resolved cert file's name), and the client has no `ca_cert_path` pointed at it — the TLS handshake fails validation. Both grade `fail`, mirroring `tls.paths`: a definite break, not a hardware-style installed/enabled split. |
-| `joins.client-auth` | warn | The target has `server.auth` set and the client's credential is absent or does not verify (Argon2id) against it — every request 401s. Mirrors `auth.mismatch`'s severity and its asymmetry: an **absent** credential is fix-eligible (the correct value is derivable), a **present but wrong** one is suggestion-only (hand-set credentials are operator intent, so doctor points at `doctor auth rotate`). sentinel's own `service_auth`/`operation_watchdog.rp_url` pair is `auth.mismatch`'s territory already, not this check's — only targets with their own credential field (ui-htmx's `rp`/`sentinel` blocks, each Alpaca monitor's `auth`, and — since issue #620 — rp's `plate_solver.auth` / `equipment.mount.guiding.auth`) are judged here. |
+| `joins.client-auth` | warn | The target has `server.auth` set and the client's credential is absent or does not verify (Argon2id) against it — every request 401s. Mirrors `auth.mismatch`'s severity and its asymmetry: an **absent** credential is fix-eligible (the correct value is derivable), a **present but wrong** one is suggestion-only (hand-set credentials are operator intent, so doctor points at `doctor auth rotate`). sentinel's own `service_auth`/`operation_watchdog.rp_url` pair is `auth.mismatch`'s territory already, not this check's — only targets with their own credential field (ui-htmx's `rp`/`sentinel` blocks, each Alpaca monitor's `auth`, rp's `plate_solver.auth` / `equipment.mount.guiding.auth` since issue #620, and — since issue #663 — every `equipment.<kind>[].auth` / `equipment.mount.auth`) are judged here. |
 
 **What `--fix` can and cannot rewrite.** ui-htmx's `rp`/`sentinel` blocks
 carry `base_url` + `auth` + `ca_cert_path`, so both checks are fully
@@ -374,19 +376,27 @@ single top-level `ca_cert`, already wired unconditionally by
 credential are equally fix-eligible; `operation_watchdog.rp_url`'s scheme
 is fix-eligible too, but carries no separate `joins.client-auth` check —
 its credential is the shared `service_auth` pair, `auth.mismatch`'s
-territory already. rp's `plate_solver.url` and
-`equipment.mount.guiding.url` share rp's single top-level `ca_cert`
-field (issue #609 / PR #612, `CA_ONLY_WIRING_SERVICES` in
+territory already. rp's `plate_solver.url`, `equipment.mount.guiding.url`,
+and every `equipment.<kind>[].alpaca_url` entry — including the singular
+`equipment.mount.alpaca_url` (issue #663) — share rp's single top-level
+`ca_cert` field (issue #609 / PR #612, `CA_ONLY_WIRING_SERVICES` in
 `provision/mod.rs`), not a per-target one, so `joins.client-transport`
-is fully fix-eligible for both: the scheme is rewritten in place and
+is fully fix-eligible for all of them: the scheme is rewritten in place and
 `/ca_cert` is written from the resolved pki tree, same as every other
-CA-trust fix. Both targets also carry a per-target `plate_solver.auth` /
-`equipment.mount.guiding.auth` field now (issue #620 closed the
-config-schema gap this section used to describe), so `joins.client-auth`
-is fully fix-eligible for them too: an absent credential is written from
-`pki/credential` at `/plate_solver/auth` or
-`/equipment/mount/guiding/auth`, the same "absent gets it, present is
-operator intent" contract as every other client target. A CA-trust gap is
+CA-trust fix. Every target also carries a per-target `auth` field —
+`plate_solver.auth` / `equipment.mount.guiding.auth` since issue #620,
+and every `equipment.<kind>[].auth` / `equipment.mount.auth` since issue
+#663, closing the config-schema gap this section used to describe for
+the generic equipment roster — so `joins.client-auth` is fully
+fix-eligible for all of them too: an absent credential is written from
+`pki/credential` at the target's own `auth` pointer (e.g.
+`/plate_solver/auth`, `/equipment/mount/guiding/auth`,
+`/equipment/cameras/0/auth`), the same "absent gets it, present is
+operator intent" contract as every other client target. `RpView::equipment_targets`
+(`services/doctor/src/scan.rs`) walks the roster generically — any object
+under `equipment` carrying an `alpaca_url`, whether nested in an array
+(`cameras`, `focusers`, …) or standalone like `mount` — so a future
+equipment kind is covered without new doctor code. A CA-trust gap is
 always reported once a target's certificate is self-signed and the
 client's CA field is absent, regardless of whether doctor's own
 `pki/ca.pem` exists locally yet — only the *fix* is gated on that file's
