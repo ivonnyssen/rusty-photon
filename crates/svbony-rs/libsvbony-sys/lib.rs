@@ -38,6 +38,38 @@
 
 use std::os::raw::{c_char, c_int, c_long, c_uchar, c_uint};
 
+/// Keeps `libusb-1.0` in the consumer binary's `DT_NEEDED`.
+///
+/// The vendored `libSVBCameraSDK.so`/`.dylib` blob references `libusb_*`
+/// symbols **without** declaring libusb in its own `DT_NEEDED` (byte-
+/// verified via `readelf -d`, see `install-svbony-sdk`'s header comment),
+/// so the *consumer binary* must carry the libusb dependency for the loader
+/// to resolve them at the first camera-SDK call. The plain `-lusb-1.0`
+/// directive from `build.rs` is not sufficient on its own: the linker's
+/// `--as-needed` default (GNU ld and rust-lld alike) drops a library no
+/// regular object references, and `svbony-rs`'s own code never calls a
+/// `libusb_*` symbol directly — only the SDK blob does, internally. This
+/// `#[used]` function-pointer static is that regular-object reference,
+/// mirroring `libzwo-sys`'s `zwo_keep_udev`. (A `-Wl,--no-as-needed` /
+/// `-Wl,--as-needed` bracket around the link-lib line, tried first, does
+/// NOT work here: `cargo:rustc-link-arg` only takes effect for the build
+/// script's *own* package's bin/cdylib/test/example targets, not
+/// transitively for downstream binaries like `svbony-camera` — verified
+/// empirically, see issue #681.) The `svbony_keep_libusb` cfg is emitted by
+/// `build.rs` exactly when the libusb link directive is (macOS/Linux, not
+/// `SVBONY_SKIP_NATIVE_LINK`).
+#[cfg(svbony_keep_libusb)]
+mod libusb_keepalive {
+    extern "C" {
+        fn libusb_init(ctx: *mut std::os::raw::c_void) -> std::os::raw::c_int;
+    }
+    #[used]
+    #[no_mangle]
+    static SVBONY_SYS_KEEP_LIBUSB: unsafe extern "C" fn(
+        *mut std::os::raw::c_void,
+    ) -> std::os::raw::c_int = libusb_init;
+}
+
 // ---- SVB_BAYER_PATTERN ------------------------------------------------------
 
 pub type SvbBayerPattern = i32;
