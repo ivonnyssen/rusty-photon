@@ -433,12 +433,15 @@ derives the UniqueID from the camera's hardware serial** — the same scheme as
 A **ZWO-specific wrinkle:** `ASIGetSerialNumber` (the stable 8-byte → 16-hex id,
 available only since ASI SDK driver V1.14.0227) requires the camera to be
 **opened first** — unlike QHY's pre-open read. So enumeration opens each camera
-briefly to read its serial, then closes it. The fallback chain is:
+briefly via `zwo_rs::Sdk::read_serial` (`ASIOpenCamera` + `ASIGetSerialNumber` —
+never `ASIInitCamera`, see C5) to read its serial, then closes it. The fallback
+chain is:
 
 1. `ASIGetSerialNumber` (open briefly → read → close) — the canonical identity.
 2. `ASIGetID` (a writable, USB3-only flash id) — a weak fallback for older
    cameras that report no serial.
-3. Otherwise the device is **refused** and logged at `warn!` (no stable identity).
+3. Otherwise (`mint_identity`) a stable position-based identity,
+   `noserial-{index}` — see the `lib.rs` component description above.
 
 Consequences (same as
 `qhy-camera`): **no `unique_id` field in config**, an **empty identity-pointer
