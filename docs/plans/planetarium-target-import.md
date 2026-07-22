@@ -122,7 +122,19 @@ Explicitly rejected / out of scope (see Decisions 6–8):
    otherwise a coordinate-derived slug (e.g. `j0042p4116` — the exact slug
    scheme is settled in P1, which owns slug allocation). The naming
    tolerance affects **display only** and never drives target identity
-   (Decision 3). `rp-catalog` currently has only name→coords lookup
+   (Decision 3). Because multiple framings of one object are first-class,
+   the generated `display_name` disambiguates by **offset from the
+   catalog centroid**, not raw coordinates: `"NGC 7000 +21′E −8′N"` reads
+   as *how this framing differs*, which is what the operator composed
+   (the cone-search already computes the separation vector). The plain
+   name is kept when this is the only target for that object and the
+   offset is within the dedup tolerance — a dead-center import stays
+   `"NGC 7000"`, not `"NGC 7000 +0.3′E"`. Unresolved targets get a
+   coordinate display name matching their slug shape (`"J2059+4432"`) —
+   with no reference object, raw coordinates are the right display.
+   All of this is an initial value only: `display_name` stays freely
+   operator-editable (`"NGC 7000 panel NW"`), and the exact received
+   coordinates live in the target row and provenance notes regardless. `rp-catalog` currently has only name→coords lookup
    (`Catalog::resolve`); the coordinate-indexed nearest-neighbor query is
    explicit P3 scope, documented with the service design doc. This is a
    linear scan over the embedded ~13k-row catalog (microseconds at this
@@ -236,6 +248,8 @@ Explicitly rejected / out of scope (see Decisions 6–8):
   stub rp MCP server; scenarios for goto→add, sync-ignored,
   dedup-upsert of pending-unedited targets, active/edited targets never
   mutated, mosaic-spaced GoTos staying distinct, unresolved-name slugs,
+  offset display names (plain when unique/centered, `+21′E −8′N` when
+  offset or multiple, `J2059+4432` when unresolved),
   rp-outage spooling and replay-after-restart, epoch handling.
 
 ## P4 note: inbox specifics settled by review
