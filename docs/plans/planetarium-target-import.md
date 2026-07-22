@@ -20,28 +20,38 @@ images it whenever conditions are right; the planetarium and the scheduler
 stay fully decoupled.
 
 Position angles are handled in layers: per-target angle (set in the ui-htmx
-target editor, for rigs with a rotator) → global default angle in rp config
-(a rotator-less rig's fixed camera mounting angle, matched manually in the
-planetarium's FOV indicator) → 0° = north-up.
+target editor, for rigs with a rotator) → the target's optical train's
+configured default angle (a rotator-less rig's fixed camera mounting angle,
+matched manually in the planetarium's FOV indicator) → 0° = north-up.
+
+Offset-center and mosaic framing via SkySafari depends on an unverified
+assumption — that its UI can GoTo an arbitrary point, not only cataloged
+objects. That is a **go/no-go gate in milestone P3a** (Decision 8), not a
+footnote: if SkySafari can only GoTo cataloged objects, its channel imports
+nominal centers only, and composed framing arrives via the P4 editor or the
+P5/P6 frontends.
 
 ## Implementation Status
 
 | Phase | Description | Status | Branch / PR |
 |-------|-------------|--------|-------------|
 | P0 | This plan | In progress | feature/planetarium-target-import |
-| P1 | Build the `rp-targets` crate + rp target CRUD MCP tools (per [rp-targets.md](../crates/rp-targets.md) MVP) | Not started | |
-| P2 | Position-angle plumbing: `position_angle_degrees` on `Target`, rp config default, `get_next_target` returns effective angle, `deep_sky` workflow rotator step | Not started | |
-| P3 | `planetarium-bridge` service: Alpaca Telescope impersonation → `add_target` (milestone P3a: logging skeleton, verified against SkySafari) | Not started | |
-| P4 | ui-htmx target inbox: review pending targets, goal templates, PA override, activate/discard | Not started | |
+| P1 | Build the `rp-targets` crate + rp integration (per [rp-targets.md](../crates/rp-targets.md) MVP). Will be sub-phased in its own design-doc update; two migration requirements are fixed here: **altitude-gating parity** and a **minimal operator surface** (Decisions 9, 10) | Not started | |
+| P2 | Position-angle plumbing: `position_angle_degrees` on `Target`, per-train config default, `get_next_target` returns effective angle, `deep_sky` workflow rotator step | Not started | |
+| P3 | `planetarium-bridge` service: Alpaca Telescope impersonation → target creation via rp (gated by milestone P3a, a sanctioned verification spike) | Not started | |
+| P4 | ui-htmx target inbox: review pending targets, goal editing, PA override, activate/discard | Not started | |
 | P5 | Stellarium enrichment frontend (telescope-protocol doorbell + RemoteControl name/Oculars-angle query) | Deferred | |
 | P6 | Cartes du Ciel frontend (TCP 3292 client: named selections, `GETFRAMES` mosaic import with per-panel PA) | Deferred | |
 
-Order: P1 → P2 → P3 → P4; P2 can proceed in parallel with P3 (the bridge
-writes targets with `position_angle_degrees: None` until P2 lands). P5/P6
-are deferred until the P3/P4 loop is proven in the field. Each phase follows
+Order: P1 first (everything else reads the target store). P2 and P3 then
+proceed independently of each other (the bridge writes targets with
+`position_angle_degrees: None` until P2 lands); P4 needs P1 and gets richer
+as P2/P3 land. P5/P6 are deferred until the P3/P4 loop is proven in the
+field. Each phase follows
 [development-workflow.md](../skills/development-workflow.md): design-doc
 update first (rp.md for P1/P2, new docs/services/planetarium-bridge.md for
-P3, ui-htmx.md for P4), BDD second, code third.
+P3, ui-htmx.md for P4), BDD second, code third — with P3a as an explicit,
+sanctioned exception (Decision 8).
 
 Explicitly rejected / out of scope (see Decisions 6–8):
 
@@ -54,7 +64,7 @@ Explicitly rejected / out of scope (see Decisions 6–8):
 - Any LiveSky (SkySafari cloud) integration: no public API, and the service
   cannot export observing lists at all.
 
-## Decisions (fixed — settled interactively 2026-07-22)
+## Decisions (fixed — settled interactively 2026-07-22, revised same day after adversarial review)
 
 1. **The universal ingress is a virtual ASCOM Alpaca Telescope, not LX200.**
    SkySafari 7+ speaks Alpaca natively (v7 floor is accepted; v8 shipped
@@ -65,42 +75,79 @@ Explicitly rejected / out of scope (see Decisions 6–8):
    text protocol (stateful `:Sr`/`:Sd`/`:MS#`, ~4 Hz polling with
    connection churn, undocumented JNow semantics). Alpaca also lets the
    device *declare* its epoch (`EquatorialSystem` = J2000) instead of
-   guessing, and standard Alpaca UDP discovery (port 32227) replaces the
-   reverse-engineered SkyFi discovery hack.
-2. **GoTo is the add-target gesture.** Selection events are browsing noise;
-   a GoTo is deliberate, in-app, and carries the exact coordinates the
-   planetarium is targeting — including offset centers and mosaic anchors
-   that exist nowhere in any catalog. The bridge accepts the slew, reports
-   a brief simulated convergence so the client shows completion, and never
-   touches hardware (tenet 3 is satisfied trivially: the device is
+   guessing. Alpaca UDP discovery (port 32227) is available but follows the
+   fleet convention: **opt-in, single responder per host** (see the
+   `ports.discovery-collision` doctor check) — the documented default setup
+   is manual IP:port entry in the planetarium.
+2. **GoTo — and only GoTo — is the add-target gesture.**
+   `SlewToCoordinatesAsync`/`SlewToCoordinates` record a target; the device
+   reports a brief simulated convergence so the client shows completion.
+   **`SyncToCoordinates` is accepted, logged, and ignored**: in every
+   planetarium, Sync/Align means "the scope IS pointing here" — a
+   pointing-model correction, not target intent — and treating it as
+   add-target would mint garbage targets from routine alignment taps. The
+   device never touches hardware (tenet 3 is satisfied trivially: it is
    virtual; real rotator motion happens only inside operator-started
    sessions, in the P2 workflow step).
-3. **Captured targets land paused (`active: false`) with a default goal
-   template.** Planetariums say *where*, never filters/exposures. The
-   operator reviews in the P4 inbox. Repeated GoTos within a small
-   coordinate tolerance upsert the same pending target instead of
-   duplicating it.
-4. **Naming by reverse cone-search.** No name crosses the Alpaca wire. The
-   bridge resolves the nearest `rp-catalog` object within a tolerance
-   (configurable, default ~10 arcmin) for `display_name`/`catalog_ref`;
-   otherwise a coordinate-derived slug (e.g. `j0042p4116`). The catalog hit
-   never replaces the received coordinates — framing is authoritative.
-5. **Position angle is a three-layer fallback.** New field
-   `position_angle_degrees: Option<f64>` on the `rp-targets` `Target`
-   (degrees east of north, sky frame). Effective angle =
-   target value → rp config `framing.default_position_angle_degrees` →
-   0.0 (north-up). The config default serves rotator-less rigs whose camera
-   is mounted at a fixed non-zero angle: set it once, dial the same angle
-   into the planetarium's FOV indicator, and frames match. With no rotator
-   in the train the angle is planning metadata only; with one,
-   `get_next_target` returns the effective angle and the `deep_sky`
-   workflow moves the rotator (existing `move_rotator` verb, sky frame)
-   after slew/centering. SkySafari cannot export its FOV-indicator angle
-   through any channel (verified: Alpaca device types are telescope + camera
-   only, in both v7 and v8), so per-target angles are entered in the inbox.
-6. **The bridge is an MCP client of rp** (the `calibrator-flats` pattern),
-   calling the P1 `add_target` tool. It is not an orchestrator plugin and
-   is never on the imaging path.
+3. **Captured targets land paused (`active: false`) with default goals, and
+   the bridge never mutates operator-owned state.** Planetariums say
+   *where*, never filters/exposures; the operator reviews in the P4 inbox.
+   Dedup rules, fixed after review:
+   - Bridge dedup is **coordinate-proximity only** (configurable, default
+     30 arcsec — comfortably below any mosaic panel spacing). The
+     `catalog_ref`-match branch of rp-targets' upsert rule is **never** used
+     for bridge imports: two GoTos 15 arcmin apart that both resolve to the
+     same catalog name are two targets (mosaic panels), not one.
+   - A repeated GoTo within tolerance upserts **only** a target that is
+     bridge-originated, still pending, and unedited since import. Targets
+     that are active or operator-edited are never modified and never
+     re-paused; a nearby GoTo then creates a new pending target with a
+     suffixed slug. This must be part of the P1 create-tool contract, not
+     bridge-side courtesy.
+   - The bridge stamps provenance (source app/client address, receipt time)
+     into the target's `notes`. Single-operator use is the MVP assumption;
+     provenance makes multi-client confusion diagnosable, not prevented.
+4. **Naming by reverse cone-search — a new `rp-catalog` capability.**
+   No name crosses the Alpaca wire. The bridge resolves the nearest catalog
+   object within a tolerance (configurable, default ~10 arcmin; nearest by
+   angular separation wins on ties) for `display_name`/`catalog_ref`;
+   otherwise a coordinate-derived slug (e.g. `j0042p4116` — the exact slug
+   scheme is settled in P1, which owns slug allocation). The naming
+   tolerance affects **display only** and never drives target identity
+   (Decision 3). `rp-catalog` currently has only name→coords lookup
+   (`Catalog::resolve`); the coordinate-indexed nearest-neighbor query is
+   explicit P3 scope, documented with the service design doc.
+5. **Position angle is a three-layer fallback, homed per optical train.**
+   New field `position_angle_degrees: Option<f64>` on the `rp-targets`
+   `Target` (degrees east of north, sky frame). Effective angle =
+   target value → the imaging train's
+   `equipment.optical_trains[].default_position_angle_degrees` → 0.0
+   (north-up). The default is **per-train, not global**: a camera's fixed
+   mounting angle is a physical fact of one train (see
+   [optical-trains.md](optical-trains.md)), and a rig with two rotator-less
+   trains can carry two different angles. Rotator-less use: set the train
+   default once, dial the same angle into the planetarium's FOV indicator,
+   frames match. Resolution happens at read time by design: for a
+   rotator-less train the config documents physical reality, so re-mounting
+   the camera *should* reinterpret inherit-default targets; per-target
+   explicit angles freeze framing and are never reinterpreted. With a
+   rotator in the train, `get_next_target` returns the effective angle and
+   the `deep_sky` workflow moves the rotator (existing `move_rotator` verb,
+   sky frame) after slew/centering. SkySafari cannot export its
+   FOV-indicator angle through any channel (verified: Alpaca device types
+   are telescope + camera only, in both v7 and v8), so per-target angles
+   are entered in the inbox.
+6. **The bridge is a standalone first-party MCP client of rp, built per
+   [ADR-017](../decisions/017-standard-mcp-client-construction.md).** It
+   uses the `rp-mcp-client` crate with the D6 observatory credential and
+   TLS trust — there is no unauthenticated MCP carve-out on rp, and doctor
+   wires the bridge's `service_auth`/`ca_cert` like any other client (the
+   crate's connect-unauthenticated-with-loud-warning degrade is a
+   misconfiguration signal, not a supported mode). Note this is a **new
+   component shape**: not an orchestrator plugin (rp never invokes the
+   bridge, it contributes no tools, it is not supervised by rp) — the
+   plugin machinery is simply not involved. It is never on the imaging
+   path.
 7. **Stellarium and CdC are richer and come later.** Their servers
    (RemoteControl HTTP :8090, CdC TCP :3292) deliver what Alpaca cannot —
    object names, Oculars/mosaic rotation angles, per-panel mosaic frames —
@@ -108,14 +155,35 @@ Explicitly rejected / out of scope (see Decisions 6–8):
    goto on :10001 remains only as the intent doorbell, with enrichment
    queried back from the sender's own IP). Both apps can also use the P3
    Alpaca device unenriched in the meantime.
-8. **Empirical verification gates the build-out (milestone P3a).**
-   SkySafari's Alpaca client behavior is undocumented. P3a is a logging
-   skeleton Telescope device: confirm discovery, connection lifecycle,
-   whether `EquatorialSystem` J2000 is honored (else precess client-side),
-   which slew verb it uses (`SlewToCoordinatesAsync` expected), and whether
-   arbitrary-point GoTo (not just cataloged objects) is possible from the
-   SkySafari UI. Findings go into docs/services/planetarium-bridge.md
-   before the full device is implemented.
+8. **Milestone P3a is a sanctioned verification spike (ADR-005 precedent)
+   that gates the build-out.** SkySafari's Alpaca client behavior is
+   undocumented, so P3a — throwaway logging-skeleton code, exempt from the
+   design-first/BDD-first order exactly as the plate-solver spike was —
+   answers, against a real SkySafari install: discovery and connection
+   lifecycle; whether `EquatorialSystem` J2000 is honored (noting the
+   answer may be *per-install configuration*, not a per-version constant —
+   the bridge therefore also gets an `assume_epoch` config override);
+   which slew/sync verbs are sent; the position-report cadence needed to
+   look connected; and the **go/no-go question** of arbitrary-point GoTo
+   (see Goal). Findings land in docs/services/planetarium-bridge.md before
+   Phase 1 design of the real device begins.
+9. **P1 must not regress shipped altitude gating.** Today's planner
+   eliminates targets below `min_altitude_degrees` (rp.md, Dynamic Planner
+   v1); rp-targets.md defers *general* constraint enforcement to
+   post-MVP. Fixed requirement: the P1 migration keeps altitude
+   elimination working against the new store from day one — only the
+   not-yet-shipped constraints (moon separation/illumination, meridian
+   window) remain deferred. Without this, an imported target could be
+   imaged below the horizon profile today's system already respects.
+10. **P1 ships a minimal operator surface so P3-imported targets are never
+    stranded.** The rp.md *(planned)* target REST endpoints
+    (`GET/POST/PUT /api/targets`) are implemented against the new store in
+    P1, giving list/edit/activate before the P4 inbox exists. Default
+    acquisition goals are **rp-owned policy** (a `targets.default_goals`
+    config in rp, applied by the create tool when the caller supplies
+    none — not bridge config), and goal filter names are validated against
+    the configured filter roster at create/edit time so a template
+    referencing a filter the rig lacks fails at add, not mid-session.
 
 ## P3 sketch: `planetarium-bridge`
 
@@ -123,21 +191,45 @@ Explicitly rejected / out of scope (see Decisions 6–8):
   the driver band), standard scaffolding per
   [service-lifecycle.md](../skills/service-lifecycle.md):
   `ServiceRunner`, `resolve_and_init` config bootstrap (Alpaca `UniqueID`),
-  `pkg/doctor.toml`, workspace/Bazel registration.
-- Serves one Alpaca `Telescope` device via `ascom-alpaca` (server feature):
-  `EquatorialSystem` = J2000; sidereal time/alt-az derived from rp's site
-  config; `SlewToCoordinatesAsync` records the target and simulates a short
-  convergence; `SyncToCoordinates` treated identically (some clients sync
-  rather than slew); park/tracking are polite no-op state. ConformU-clean
-  (`bazel test --config=conformu`) like every other driver.
-- On GoTo: optional precession to ICRS → reverse cone-search `rp-catalog` →
-  upsert-or-create paused target via rp MCP `add_target`, goals from the
-  bridge's `default_goal_template` config. rp unreachable ⇒ queue and retry
-  with backoff; never drop a received target silently.
+  `pkg/doctor.toml` (`class = "alpaca"`), workspace/Bazel registration —
+  plus updates to the hand-typed port tables (workspace.md, packaging
+  docs, doctor.md).
+- Serves one Alpaca `Telescope` device via `ascom-alpaca` (server feature).
+  The crate provides no state machine — every mutating member defaults to
+  `NOT_IMPLEMENTED` — so the device implements the full ASCOM contract the
+  way `star-adventurer-gti`'s telescope does: `AtPark` gating on every
+  motion verb, `Target*` property propagation on slew/sync, a coherent
+  `Slewing`/`Tracking` state machine with simulated convergence, sidereal
+  time/alt-az derived from rp's site config. `EquatorialSystem` = J2000.
+  Device name/description state loudly that this is a **virtual
+  target-entry device, not a mount**; a doctor check fails provisioning
+  when rp's `equipment.mount` points at the bridge's port (the
+  fake-mount-as-real-mount misconfiguration would defeat every motion
+  safeguard rp believes it has). ConformU-clean via the existing
+  mock-backend pattern (`bazel test --config=conformu`).
+- On GoTo: optional precession to ICRS (per P3a findings / `assume_epoch`)
+  → reverse cone-search (Decision 4) → create-or-update per Decision 3 via
+  the P1 target-create MCP tool (working name `add_target`; final name is
+  P1's to settle), goals defaulted by rp per Decision 10. rp unreachable ⇒
+  targets spool to a **bounded on-disk queue** in the service data
+  directory, replayed with backoff on reconnect and across bridge
+  restarts; when the bounded spool overflows, oldest entries are dropped
+  *with an error log and a sentinel-visible counter* — "never drop
+  silently" means observable, not infallible.
 - BDD: drive the device with the `ascom-alpaca` *client* feature (same
   crate, same pattern the other drivers use for their harnesses) plus a
-  stub rp MCP server; scenarios for goto→add, sync→add, dedup-upsert,
-  unresolved-name slugs, rp-outage queueing, epoch handling.
+  stub rp MCP server; scenarios for goto→add, sync-ignored,
+  dedup-upsert of pending-unedited targets, active/edited targets never
+  mutated, mosaic-spaced GoTos staying distinct, unresolved-name slugs,
+  rp-outage spooling and replay-after-restart, epoch handling.
+
+## P4 note: inbox specifics settled by review
+
+The PA field must distinguish "inherit train default" (blank) from
+"explicit 0° north-up" — `Option<f64>` carries the distinction; the form
+must not collapse empty-string and `"0"`. The inbox flags goals whose
+filter names fail roster validation (Decision 10) and shows provenance
+(Decision 3).
 
 ## Channel reference (research summary, 2026-07-22)
 
@@ -157,14 +249,16 @@ Stellarium_telescope_protocol.txt), CdC server commands
 `cu_planetarium_cdc.pas` (github.com/pchev/ccdciel), INDI `skysafari.cpp` and
 AlpacaScope (github.com/synfinatic/alpacascope) for the rejected LX200 path,
 SkySafari 8 Pro product/App Store pages (skysafariastronomy.com,
-store.simulationcurriculum.com) for Alpaca device-type coverage.
+store.simulationcurriculum.com) for Alpaca device-type coverage, ASCOM
+ITelescopeV3 docs (ascom-standards.org/newdocs/telescope.html) for
+sync-vs-slew and AtPark semantics.
 
 ## Open questions (carried into P3a)
 
 - Does SkySafari honor a device-declared J2000 `EquatorialSystem`, or send
-  JNow regardless?
+  JNow — and is the answer a version constant or per-install configuration?
 - Can the SkySafari UI GoTo an arbitrary tapped point / entered coordinates,
-  or only cataloged objects? (Determines how much framing-nudge UI the P4
-  inbox needs for SkySafari-originated targets.)
+  or only cataloged objects? **Go/no-go for SkySafari-composed framing**
+  (see Goal); determines how much framing-nudge UI the P4 inbox needs.
 - Minimum position-report cadence/shape SkySafari needs to consider a slew
   complete and stay connected.
