@@ -209,7 +209,9 @@ Phase F (docs/plans/svbony-camera.md) added
 [`.github/actions/install-svbony-sdk`](../../.github/actions/install-svbony-sdk/action.yml)
 and wired it into the plain-Cargo `conformu.yml` + `native.yml` workflows
 (`scheduled.yml`'s full-workspace legs joined them in #680, mirroring the
-pre-existing `install-zwo-sdk` step there) — but that action is a
+pre-existing `install-zwo-sdk` step there; `pi-nightly.yml`'s sudo-free
+full-workspace leg joined them in #669, in the action's `sudo: "false"` mode
+mirroring `install-zwo-sdk`'s sudo-free step there) — but that action is a
 GitHub-Actions composite (shell steps against `apt`/
 `brew`/`curl`+`ldconfig`), not something Bazel's hermetic build graph
 consumes. Bazel would need its own repository rule (e.g. an `http_file`
