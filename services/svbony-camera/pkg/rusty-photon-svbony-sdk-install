@@ -1,0 +1,132 @@
+#!/bin/sh
+# rusty-photon-svbony-sdk-install — fetch the pinned SVBony camera SDK
+# library and install it where svbony-camera's binary can find it at
+# runtime. Per ADR-018, SVBony's SDK carries no license text at all (not
+# even QHY's proprietary-but-nameable grant), so it is never bundled in
+# the package; this helper downloads it from the same public source and
+# pinned ref `.github/actions/install-svbony-sdk` (CI) uses, verifies a
+# pinned sha256, and installs:
+#
+#   /usr/lib/rusty-photon/libSVBCameraSDK.so   the SDK's shared library
+#
+# **RUNPATH, not ldconfig.** `libSVBCameraSDK.so` itself carries no
+# embedded DT_SONAME (byte-verified via `readelf -d`, see
+# docs/plans/svbony-camera.md Phase F/G and install-svbony-sdk's header
+# comment) — CI's provisioning step works around that by installing it
+# under an ldconfig-scanned system prefix (`/usr/local/lib`) with a
+# SOVERSIONed filename, which is fine for a build host but wrong for a
+# packaged runtime install: per ADR-013, vendor blobs installed by this
+# project's own packages live in the private, package-owned
+# `/usr/lib/rusty-photon/` directory (see zwo-camera's precedent) so the
+# package can cleanly own and remove the file without touching a
+# system-wide path shared with other packages — and that directory is
+# deliberately NOT on ldconfig's default scan path. So this helper relies
+# on the same mechanism zwo-camera's bundled (also SONAME-less) blob
+# uses: `scripts/build-packages.sh` links the packaged
+# `rusty-photon-svbony-camera` binary with
+# `-Wl,-rpath,/usr/lib/rusty-photon`, so the dynamic linker finds the
+# bare `libSVBCameraSDK.so` name this helper installs here without any
+# `ldconfig` step. No SOVERSION dance, no `.so.1` + symlink pair — just
+# the bare linker name, exactly matching libASICamera2.so's install
+# convention.
+#
+# Usage: rusty-photon-svbony-sdk-install [--force] [--root DIR]
+#   --force      reinstall even if already installed
+#   --root DIR   install under DIR instead of / (container testing;
+#                skips the root requirement). `--root /` is normalized
+#                to a plain root install.
+
+set -eu
+
+# Must match the `ref` default in
+# .github/actions/install-svbony-sdk/action.yml (the blob CI links
+# against at build time and the blob this helper installs on the target
+# must come from the same indi-3rdparty commit — same posture as the QHY
+# SDK version/sha256 pin's cross-check, see scripts/check-pkg-assets.sh).
+REF="cd50a3b95032d850cca28d8162513276bc1349ba"
+BASE="https://github.com/indilib/indi-3rdparty/raw/$REF/libsvbony"
+# Computed directly against the pinned ref's blobs (curl + sha256sum),
+# the same way rusty-photon-qhy-firmware-install pins its own real
+# hashes — not fabricated placeholders.
+SHA256_AMD64="371bcf7f515b4d273c461a41fd494e079637d74ee5f7a26238b022979d4613e4"
+SHA256_ARMV8="d8c6c1848d4cc95de6594449f43ee339693dfe52a8341bc857a3fe183d16e0e3"
+
+usage() {
+    echo "usage: rusty-photon-svbony-sdk-install [--force] [--root DIR]"
+}
+
+FORCE=0
+ROOT=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --force) FORCE=1 ;;
+        --root)
+            shift
+            [ $# -gt 0 ] || { echo "--root needs a directory" >&2; exit 2; }
+            ROOT="$1"
+            ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
+    esac
+    shift
+done
+
+# `--root /` is a real-root install: keep the root check.
+[ "$ROOT" = "/" ] && ROOT=""
+
+if [ -z "$ROOT" ] && [ "$(id -u)" != 0 ]; then
+    echo "rusty-photon-svbony-sdk-install: must run as root (or use --root)" >&2
+    exit 1
+fi
+
+# Only the two architectures rusty-photon actually targets (Linux x86_64
+# dev/CI hosts, aarch64 Pi 5) — indi-3rdparty also publishes x86/armv6/
+# armv7 blobs upstream, but nothing in this workspace builds for them.
+case "$(uname -m)" in
+    x86_64) ARCH=amd64 SHA256="$SHA256_AMD64" ;;
+    aarch64) ARCH=armv8 SHA256="$SHA256_ARMV8" ;;
+    *)
+        echo "unsupported architecture $(uname -m) (rusty-photon targets x86_64 and aarch64 for SVBony)" >&2
+        exit 1
+        ;;
+esac
+
+DEST_DIR="$ROOT/usr/lib/rusty-photon"
+DEST="$DEST_DIR/libSVBCameraSDK.so"
+
+if [ "$FORCE" != 1 ] && [ -f "$DEST" ]; then
+    echo "libSVBCameraSDK.so already installed at $DEST; use --force to reinstall"
+    exit 0
+fi
+
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT INT TERM
+
+FILE="libSVBCameraSDK_${ARCH}.bin"
+echo "Downloading SVBony camera SDK ($FILE, indi-3rdparty $REF)..."
+if command -v curl > /dev/null 2>&1; then
+    curl -fsSL --retry 3 --retry-delay 2 -o "$TMP/$FILE" "$BASE/$FILE"
+elif command -v wget > /dev/null 2>&1; then
+    wget -q -O "$TMP/$FILE" "$BASE/$FILE"
+else
+    echo "rusty-photon-svbony-sdk-install: needs curl or wget" >&2
+    exit 1
+fi
+
+if ! echo "$SHA256  $TMP/$FILE" | sha256sum -c --status -; then
+    echo "rusty-photon-svbony-sdk-install: sha256 mismatch for $FILE" >&2
+    echo "  expected: $SHA256" >&2
+    echo "  actual:   $(sha256sum "$TMP/$FILE" | cut -d' ' -f1)" >&2
+    exit 1
+fi
+echo "sha256 verified."
+
+install -d -m 0755 "$DEST_DIR"
+# Bare linker name, mode 644 (loaded via mmap, not executed) — mirrors
+# zwo-camera's libASICamera2.so packaging convention exactly (see the
+# header comment above for why no SOVERSION/symlink pair is needed here).
+install -m 0644 "$TMP/$FILE" "$DEST"
+
+echo "SVBony camera SDK installed to $DEST."
+echo "rusty-photon-svbony-camera resolves it at runtime via its RUNPATH"
+echo "(/usr/lib/rusty-photon); restart the service if it is already running."

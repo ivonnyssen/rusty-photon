@@ -36,6 +36,7 @@ members = [
   "services/session-runner",
   "services/sky-survey-camera",
   "services/star-adventurer-gti",
+  "services/svbony-camera",
   "services/ui-htmx",
   "services/zwo-camera",
   "services/zwo-focuser",
@@ -44,6 +45,16 @@ members = [
   # preserve its upstream `path = "libzwo-sys"` dep verbatim.
   "crates/zwo-rs",
   "crates/zwo-rs/libzwo-sys",
+  # First-party, dual-homed SVBony FFI crates (docs/plans/svbony-camera.md
+  # Phase A/B) — vendored first-party from day one, no external-repo detour
+  # (unlike zwo-rs's original history). libsvbony-sys is nested under
+  # svbony-rs, mirroring the zwo-rs/libzwo-sys and qhyccd-rs/libqhyccd-sys
+  # layout. Still NOT added to [workspace.dependencies] (Rule 10): Phase C
+  # added its first consumer (services/svbony-camera), but Rule 10's
+  # promotion threshold is a SECOND consumer — svbony-camera wires it as a
+  # direct `path` dependency in its own Cargo.toml instead.
+  "crates/svbony-rs",
+  "crates/svbony-rs/libsvbony-sys",
   # End-to-end harness (tests only): real rp + real sentinel exercising the
   # operation watchdog + corrective ladder. See docs/services/sentinel.md.
   "tests/operation-watchdog-e2e",

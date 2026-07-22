@@ -1,0 +1,253 @@
+load("@cr//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+
+exports_files(
+    [
+        "Cargo.toml",
+        "pkg/doctor.toml",
+        "pkg/90-rusty-photon-svbony.rules",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+# svbony-camera links the native SVBony camera SDK transitively via
+# svbony-rs → libsvbony-sys (see docs/services/svbony-camera.md "Native
+# dependency & build gating" and the new ADR-018). libsvbony-sys's own
+# BUILD.bazel bakes SVBONY_SKIP_NATIVE_LINK=1 into its cargo_build_script
+# UNCONDITIONALLY — so the *library* targets (no final link) build with ZERO
+# SVBony SDK provisioning, but the REAL (non-simulation) `:svbony-camera`
+# binary CANNOT link (undefined `SVBOpenCamera`/`SVBCloseCamera`/… symbols —
+# verified locally: `bazel build //services/svbony-camera:svbony-camera`
+# fails with exactly these undefined symbols) until a real SDK is both
+# provisioned AND the skip is lifted. `:svbony-camera` is therefore tagged
+# `manual` below so `bazel build //...`/`bazel test //...` skip it by
+# default — unlike zwo-camera/qhy-camera, whose production binaries link
+# fine because CI provisions their SDKs first.
+#
+# Phase F (docs/plans/svbony-camera.md) added `.github/actions/install-svbony-sdk`
+# and wired it into `conformu.yml` + `native.yml`, but deliberately did NOT
+# flip this tag: that action is a plain-Cargo, GitHub-Actions-only
+# provisioning mechanism (composite-action shell steps against `cargo build`),
+# not something this workspace's Bazel setup consumes — Bazel's `bazel build
+# //...`/`bazel test //...` gate has no equivalent SDK-fetch repository rule
+# and must keep working with zero SVBony SDK provisioning. Revisit (drop
+# `manual`, add a Bazel-side SDK-fetch rule, stop baking the skip in
+# libsvbony-sys/BUILD.bazel) at Phase G alongside real hardware validation;
+# see docs/plans/svbony-camera.md's Status section.
+#
+# The BDD + ConformU suites RUN under Bazel (no `requires-cargo`): `bdd` via
+# the `bazel.yml` BDD step spawning the sim binary like every other service,
+# and `conformu_integration` (Phase F) via `bazel test --config=conformu`,
+# mirroring zwo-camera/qhy-camera's Bazel-side ConformU targets. One
+# DEVIATION from those two: because libsvbony-sys/BUILD.bazel bakes
+# SVBONY_SKIP_NATIVE_LINK=1 unconditionally (see that file's header comment),
+# this target — like every other svbony-camera Bazel target — links the SIM
+# SDK variant with NO real SVBony SDK, so `bazel test --config=conformu
+# //services/svbony-camera:conformu_integration` only proves ASCOM protocol
+# conformance against the simulation, never the real link (that real-link
+# proof is Cargo-only, via `conformu.yml`'s `install-svbony-sdk` step — see
+# `tests/conformu_integration.rs`). zwo-camera's/qhy-camera's Bazel ConformU
+# targets DO exercise their real SDKs, because those crates' BUILD.bazel
+# files provision the real SDK unconditionally instead of skipping it.
+#
+# NOTE on features: Bazel `crate_features` is LITERAL — it does NOT expand
+# Cargo's `mock = ["simulation"]`. svbony-camera gates its sim backend on
+# `feature = "simulation"`, so every sim target must list `simulation`
+# explicitly (listing `mock` too keeps parity with `cargo --features mock`).
+
+_INTRA_WORKSPACE_DEPS = [
+    "//crates/rp-auth:rp-auth",
+    "//crates/rusty-photon-tls:rusty-photon-tls",
+    "//crates/rusty-photon-config:rusty-photon-config",
+    "//crates/rusty-photon-doctor-checks:rusty-photon-doctor-checks",
+    "//crates/rusty-photon-driver:rusty-photon-driver",
+    "//crates/rusty-photon-server-config:rusty-photon-server-config",
+    "//crates/rusty-photon-service-lifecycle:rusty-photon-service-lifecycle",
+]
+
+rust_library(
+    name = "svbony-camera_lib",
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = ["src/main.rs"],
+    ),
+    aliases = aliases(),
+    crate_name = "svbony_camera",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//visibility:public"],
+    # svbony-rs is first-party (crates/svbony-rs), so it is NOT an `@cr` crate
+    # and must be named explicitly. The production lib links the REAL SDK
+    # variant.
+    deps = _INTRA_WORKSPACE_DEPS + ["//crates/svbony-rs"] + all_crate_deps(normal = True),
+)
+
+# `manual`: cannot link without the real SVBony SDK provisioned (see the
+# file-header comment) — no `install-svbony-sdk` action exists yet. Build
+# explicitly with `bazel build //services/svbony-camera:svbony-camera` once
+# the SDK is on the link path and the skip is lifted (Phase G).
+rust_binary(
+    name = "svbony-camera",
+    srcs = ["src/main.rs"],
+    aliases = aliases(),
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    # Pin CARGO_PKG_NAME to the Cargo package name (rules_rust defaults it to
+    # the Bazel target name), matching the other services.
+    rustc_env = {"CARGO_PKG_NAME": "svbony-camera"},
+    tags = ["manual"],
+    visibility = ["//visibility:public"],
+    deps = [":svbony-camera_lib"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+)
+
+# Unit tests run against the simulation lib (mock → simulation) so the
+# `#[cfg(all(test, feature = "simulation"))]` end-to-end build/bind tests
+# compile and run, matching the Cargo `--all-features` coverage job. The test
+# inherits the sim lib's `crate_features` and deps — crucially
+# `//crates/svbony-rs:svbony-rs_sim`, the simulated FFI variant the sim code
+# paths require — rather than the real variant the production lib links.
+rust_test(
+    name = "svbony-camera_unit_test",
+    size = "small",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    compile_data = ["pkg/doctor.toml"],
+    crate = ":svbony-camera_lib_sim",
+    # Set explicitly for TWO reasons: (1) rust_test does NOT inherit
+    # `crate_features` from the `crate` it wraps; (2) Bazel `crate_features`
+    # is literal — it does NOT expand Cargo's `mock = ["simulation"]`, so
+    # `simulation` must be listed alongside `mock` for the
+    # `#[cfg(feature = "simulation")]` tests to compile.
+    crate_features = [
+        "mock",
+        "simulation",
+        "conformu",
+    ],
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+# The `simulation`-backed (mock alias) library + binary the BDD suite spawns.
+rust_library(
+    name = "svbony-camera_lib_sim",
+    # `testonly` because it links the `testonly` `:svbony-rs_sim` variant;
+    # Bazel propagates the constraint, which is exactly right — the sim lib
+    # is only ever built by the unit-test / BDD / ConformU targets.
+    testonly = True,
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = ["src/main.rs"],
+    ),
+    aliases = aliases(),
+    crate_features = [
+        "mock",
+        "simulation",
+    ],
+    crate_name = "svbony_camera",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    # The simulation lib links the SIM SDK variant; the binary, BDD, and
+    # ConformU targets that build on it inherit it transitively.
+    deps = _INTRA_WORKSPACE_DEPS + ["//crates/svbony-rs:svbony-rs_sim"] + all_crate_deps(normal = True),
+)
+
+rust_binary(
+    name = "svbony-camera_sim",
+    # Spawned only as test `data` by the BDD / ConformU suites; `testonly`
+    # follows from linking the sim lib.
+    testonly = True,
+    srcs = ["src/main.rs"],
+    aliases = aliases(),
+    crate_features = [
+        "mock",
+        "simulation",
+    ],
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    rustc_env = {"CARGO_PKG_NAME": "svbony-camera"},
+    deps = [":svbony-camera_lib_sim"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+)
+
+# `tags = ["conformu"]` is excluded from the default `bazel test //...` gate
+# (.bazelrc's base `test --test_tag_filters=-requires-cargo,-conformu`); run
+# with `bazel test --config=conformu //services/svbony-camera:conformu_integration`.
+# Links the SIM SDK variant (see the file-header comment) — this proves ASCOM
+# protocol conformance only, not the real SVBony SDK link.
+rust_test(
+    name = "conformu_integration",
+    size = "large",
+    srcs = ["tests/conformu_integration.rs"],
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate_features = [
+        "mock",
+        "simulation",
+        "conformu",
+    ],
+    data = [":svbony-camera_sim"],
+    edition = "2021",
+    env = {
+        "SVBONY_CAMERA_BINARY": "$(rootpath :svbony-camera_sim)",
+        "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :svbony-camera_sim)",
+    },
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    rustc_env = {"CARGO_PKG_NAME": "svbony-camera"},
+    tags = ["conformu"],
+    deps = [
+        ":svbony-camera_lib_sim",
+        "//crates/bdd-infra:bdd-infra_conformu",
+    ] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+rust_test(
+    name = "bdd",
+    size = "small",
+    srcs = ["tests/bdd.rs"] + glob(["tests/bdd/**/*.rs"]),
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate_root = "tests/bdd.rs",
+    data = [
+        "Cargo.toml",
+        ":svbony-camera_sim",
+    ] + glob(["tests/features/**"]),
+    edition = "2021",
+    env = {
+        "BDD_PACKAGE_DIR": "services/svbony-camera",
+        "SVBONY_CAMERA_BINARY": "$(rootpath :svbony-camera_sim)",
+        "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :svbony-camera_sim)",
+    },
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    # bdd-infra derives {PKG_UPPER_SNAKE}_BINARY from CARGO_PKG_NAME; it must
+    # be the service name, not the crate name ("bdd").
+    rustc_env = {"CARGO_PKG_NAME": "svbony-camera"},
+    tags = ["bdd"],
+    use_libtest_harness = False,
+    deps = [
+        ":svbony-camera_lib_sim",
+        "//crates/bdd-infra:bdd-infra_tls_auth",
+    ] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)

@@ -25,12 +25,13 @@ name: ui-htmx browser nightly
 env:
   # Same escape hatch as test.yml (see there for the full rationale): building
   # the WHOLE workspace (below) would otherwise force native link directives
-  # for the QHY/ZWO camera crates, which this job never provisions the SDKs
-  # for. Set at workflow level (not just the build step) because build.rs
+  # for the QHY/ZWO/SVBony camera crates, which this job never provisions the
+  # SDKs for. Set at workflow level (not just the build step) because build.rs
   # reruns on env-var change — if the later `cargo test` step didn't see the
   # same vars, cargo would detect the "change" and redo the native-link probe.
   ZWO_SKIP_NATIVE_LINK: "1"
   QHYCCD_SKIP_NATIVE_LINK: "1"
+  SVBONY_SKIP_NATIVE_LINK: "1"
 jobs:
   browser-bdd:
     # Schedule/dispatch only — never on push/PR (that is the whole point: keep

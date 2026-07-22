@@ -229,6 +229,7 @@ rusty-photon/
     skywatcher-motor-protocol/       Sky-Watcher motor-controller wire protocol codec (USB + UDP)
     qhyccd-rs/                       Vendored QHYCCD SDK bindings + nested libqhyccd-sys FFI (ADR-009)
     zwo-rs/                          Vendored ZWO ASI/EFW/EAF SDK bindings + nested libzwo-sys FFI (ADR-008/010/014)
+    svbony-rs/                       Vendored SVBony camera SDK bindings (hand-written FFI, no bindgen) + nested libsvbony-sys; no consuming service yet
   services/
     rp/                    Main application: equipment gateway, event bus, safety enforcer
     filemonitor/           ASCOM SafetyMonitor (file-based)

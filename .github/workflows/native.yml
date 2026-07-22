@@ -1,7 +1,8 @@
-# Verifies the REAL (non-`simulation`) native-SDK build of BOTH native-camera
-# services against their actual proprietary/native SDKs, on every supported OS.
-# One workflow covers both because they exercise the same risk (real link + FFI)
-# the rest of CI does not — but for opposite reasons:
+# Verifies the REAL (non-`simulation`) native-SDK build of the three
+# native-camera services against their actual proprietary/native SDKs, on
+# every supported OS. One workflow covers all three because they exercise
+# the same risk (real link + FFI) the rest of CI does not — but for
+# different reasons:
 #
 # - **qhy-camera / qhyccd-rs / libqhyccd-sys** link `static=qhyccd`
 #   UNCONDITIONALLY (no cfg/env gate). The rest of qhy CI builds with
@@ -13,14 +14,23 @@
 #   `InitQHYCCDResource` path. No `cargo test` smoke: qhyccd-rs swaps a mockall
 #   mock for the FFI under `#[cfg(test)]`, so `cargo test` would exercise the mock.
 #
-# - **zwo-camera / zwo-focuser / zwo-rs / libzwo-sys** take the opposite
-#   approach: the rest of CI (test/conformu/safety) builds the `simulation`
-#   path with ZWO_SKIP_NATIVE_LINK=1 and never links the SDK at all. So this is
-#   the ONLY job that links + loads the real ZWO SDK, and it adds a Linux
-#   runtime smoke.
+# - **zwo-camera / zwo-focuser / zwo-rs / libzwo-sys** and **svbony-camera /
+#   svbony-rs / libsvbony-sys** take the opposite approach: the rest of CI
+#   (test/conformu/safety) builds the `simulation` path with
+#   ZWO_SKIP_NATIVE_LINK=1 / SVBONY_SKIP_NATIVE_LINK=1 and never links the SDK
+#   at all. So this is the ONLY job that links + loads the real ZWO/SVBony
+#   SDKs, and it adds a Linux runtime smoke for each. svbony-camera additionally
+#   has NO Windows leg at all (indi-3rdparty's libsvbony packaging hard-fails
+#   CMake on Windows, and libsvbony-sys/build.rs panics unconditionally on
+#   CARGO_CFG_TARGET_OS=windows before even checking the skip-link env — see
+#   install-svbony-sdk/action.yml's header comment) and its macOS coverage is
+#   x86_64-only (indi-3rdparty ships no `mac_arm64` blob; `macos-latest` is
+#   Apple Silicon today) — both steps below are conditioned accordingly.
 #
 # (Bazel's real qhyccd-rs/zwo-rs variants build-enforce the lib halves; the Pi
-# nightly covers linux-arm64.)
+# nightly covers linux-arm64 for qhy/zwo. svbony-camera's Bazel real binary
+# stays `tags = ["manual"]` — see services/svbony-camera/BUILD.bazel — so this
+# workflow is, for now, the only place its real SDK link is exercised at all.)
 #
 # Cadence: nightly cron + workflow_dispatch, plus a paths-filtered push to main so a
 # real-link regression in either service's native code, this workflow, or an
@@ -42,6 +52,9 @@ on:
       - "services/zwo-camera/**"
       - "services/zwo-focuser/**"
       - ".github/actions/install-zwo-sdk/**"
+      - "crates/svbony-rs/**"
+      - "services/svbony-camera/**"
+      - ".github/actions/install-svbony-sdk/**"
       - ".github/workflows/native.yml"
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
@@ -89,6 +102,18 @@ jobs:
       - name: Install ZWO SDK
         uses: ./.github/actions/install-zwo-sdk
 
+      # --- SVBony camera SDK (svbony-camera) ---------------------------------
+      # No Windows leg at all (see the file-header comment) and macOS is
+      # x86_64-only (indi-3rdparty ships no `mac_arm64` blob) — `macos-latest`
+      # is Apple Silicon today, so this step (and the build step below) is a
+      # no-op there until a verified Apple Silicon blob exists (see
+      # docs/plans/svbony-camera.md "Packaging"). No libclang: libsvbony-sys's
+      # FFI is hand-written, not bindgen'd (SVBony's header carries no license
+      # to vendor under).
+      - name: Install SVBony SDK
+        if: runner.os != 'Windows' && (runner.os == 'Linux' || runner.arch == 'X64')
+        uses: ./.github/actions/install-svbony-sdk
+
       - name: cargo generate-lockfile
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
@@ -110,6 +135,16 @@ jobs:
           cargo build --locked -p zwo-focuser
           cargo build --locked -p zwo-rs -p libzwo-sys --all-targets
 
+      # svbony: same shape as zwo — no simulation, no SVBONY_SKIP_NATIVE_LINK,
+      # service without --all-targets, binding crates with it. Skipped on
+      # Windows (no SDK at all) and on non-x86_64 macOS (no blob) — see the
+      # Install SVBony SDK step above.
+      - name: cargo build (svbony, real, no simulation)
+        if: runner.os != 'Windows' && (runner.os == 'Linux' || runner.arch == 'X64')
+        run: |
+          cargo build --locked -p svbony-camera
+          cargo build --locked -p svbony-rs -p libsvbony-sys --all-targets
+
       # Linux runtime smoke (zwo only): zwo-rs's non-`simulation` tests call the
       # real SDK (init, version strings, a 0-camera enumeration with no hardware),
       # confirming it *loads* and basic FFI works — not just that it links. Linux
@@ -119,6 +154,17 @@ jobs:
       - name: cargo test (real zwo-rs FFI smoke)
         if: runner.os == 'Linux'
         run: cargo test --locked -p zwo-rs --all-targets
+        env:
+          LD_LIBRARY_PATH: /usr/local/lib
+
+      # Linux runtime smoke (svbony only): svbony-rs's non-`simulation` tests
+      # (`sdk_new_succeeds`, `camera_enumeration_returns_a_count`,
+      # `sdk_version_is_non_empty` in lib.rs, plus camera.rs's own
+      # `cameras_enumerates`) call the real SDK the same way zwo-rs's smoke
+      # test above does — confirming it *loads*, not just that it links.
+      - name: cargo test (real svbony-rs FFI smoke)
+        if: runner.os == 'Linux'
+        run: cargo test --locked -p svbony-rs --all-targets
         env:
           LD_LIBRARY_PATH: /usr/local/lib
 
@@ -143,8 +189,8 @@ jobs:
             const body = [
               `The nightly \`native\` workflow failed on at least one OS.`,
               ``,
-              `This is the only CI job that compiles + links the qhy AND zwo crates'`,
-              `REAL (non-\`simulation\`) paths against their installed SDKs. A failure`,
+              `This is the only CI job that compiles + links the qhy, zwo, AND svbony`,
+              `crates' REAL (non-\`simulation\`) paths against their installed SDKs. A failure`,
               `means a native-SDK link directive, a bindgen binding, or some`,
               `\`#[cfg(not(feature = "simulation"))]\` FFI code no longer compiles,`,
               `links, or loads against the SDK — the rest of CI builds the simulation`,

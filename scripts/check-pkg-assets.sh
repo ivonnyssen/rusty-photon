@@ -49,7 +49,7 @@ for pkgdir in services/*/pkg; do
             || err "$svc: ExecStart must be exactly /usr/bin/$name (config is XDG-resolved; no --config flag)"
         # Reload-capable services (ServiceRunner::with_reload) expose SIGHUP.
         case "$svc" in
-            filemonitor|ppba-driver|qhy-focuser|sky-survey-camera|pa-falcon-rotator|pa-scops-oag|dsd-fp2|star-adventurer-gti|qhy-camera|zwo-camera|zwo-focuser)
+            filemonitor|ppba-driver|qhy-focuser|sky-survey-camera|pa-falcon-rotator|pa-scops-oag|dsd-fp2|star-adventurer-gti|qhy-camera|zwo-camera|zwo-focuser|svbony-camera)
                 grep -q '^ExecReload=/bin/kill -HUP \$MAINPID$' "$unit" \
                     || err "$svc: reload-capable service must have ExecReload=/bin/kill -HUP \$MAINPID"
                 ;;
@@ -89,7 +89,7 @@ for pkgdir in services/*/pkg; do
         # Camera-class packages grant device access via the service
         # account's own group: the udev rule assigns GROUP="rusty-photon"
         # and the unit needs no SupplementaryGroups at all.
-        qhy-camera|zwo-camera|zwo-focuser)
+        qhy-camera|zwo-camera|zwo-focuser|svbony-camera)
             for rule in "$pkgdir"/90-*.rules; do
                 [ -f "$rule" ] || continue
                 grep -q 'GROUP="rusty-photon"' "$rule" \
@@ -120,6 +120,38 @@ for pkgdir in services/*/pkg; do
             cmp -s "$expected" "$pkgdir/postinst" \
                 || err "$svc: pkg/postinst must be postinst.common + udev stanza before #DEBHELPER#"
             rm -f "$expected"
+            ;;
+        # svbony-camera cannot reuse the shared postinst.udev-stanza
+        # byte-for-byte: that stanza derives the SDK helper's name from
+        # $DPKG_MAINTSCRIPT_PACKAGE (stripping "-camera" and appending
+        # "-firmware-install"), but per ADR-018 SVBony's helper is named
+        # rusty-photon-svbony-sdk-install, not
+        # rusty-photon-svbony-firmware-install — so its postinst spells the
+        # pointer out directly instead. Assert the load-bearing pieces
+        # (still postinst.common's user/dir/symlink preamble, an
+        # unconditional udev reload, and a pointer at the exact helper
+        # path) rather than requiring byte identity to a template it
+        # deliberately does not use.
+        svbony-camera)
+            # postinst.common's own last line is #DEBHELPER#, which this
+            # package's postinst must NOT have yet at that offset (more
+            # content is inserted before it) — compare everything except
+            # that trailing line instead.
+            preamble_lines=$(($(wc -l < "packaging/postinst.common") - 1))
+            common_body=$(mktemp); actual_body=$(mktemp)
+            head -n "$preamble_lines" "packaging/postinst.common" > "$common_body"
+            head -n "$preamble_lines" "$pkgdir/postinst" > "$actual_body"
+            cmp -s "$common_body" "$actual_body" \
+                || err "$svc: pkg/postinst's user/dir/symlink preamble must match packaging/postinst.common"
+            rm -f "$common_body" "$actual_body"
+            grep -q '^udevadm control --reload-rules || true$' "$pkgdir/postinst" \
+                || err "$svc: pkg/postinst must reload udev rules"
+            grep -q '^udevadm trigger || true$' "$pkgdir/postinst" \
+                || err "$svc: pkg/postinst must trigger udev"
+            grep -q "rusty-photon-svbony-sdk-install' once as root" "$pkgdir/postinst" \
+                || err "$svc: pkg/postinst must point the operator at rusty-photon-svbony-sdk-install"
+            grep -q '^#DEBHELPER#$' "$pkgdir/postinst" \
+                || err "$svc: pkg/postinst must end with #DEBHELPER#"
             ;;
         *)
             cmp -s "packaging/postinst.common" "$pkgdir/postinst" \
@@ -194,6 +226,18 @@ for pkgdir in services/*/pkg; do
             [ -f "$pkgdir/90-rusty-photon-zwo-focuser.rules" ] \
                 || err "$svc: missing pkg/90-rusty-photon-zwo-focuser.rules"
             ;;
+        svbony-camera)
+            [ -f "$pkgdir/90-rusty-photon-svbony.rules" ] \
+                || err "$svc: missing pkg/90-rusty-photon-svbony.rules"
+            [ -f "$pkgdir/rusty-photon-svbony-sdk-install" ] \
+                || err "$svc: missing pkg/rusty-photon-svbony-sdk-install"
+            toml_section "$toml" "package.metadata.deb" \
+                | grep -q '"pkg/rusty-photon-svbony-sdk-install", "usr/sbin/rusty-photon-svbony-sdk-install", "755"' \
+                || err "$svc: deb assets must ship rusty-photon-svbony-sdk-install"
+            toml_section "$toml" "package.metadata.generate-rpm" \
+                | grep -q 'dest = "/usr/sbin/rusty-photon-svbony-sdk-install"' \
+                || err "$svc: rpm assets must ship rusty-photon-svbony-sdk-install"
+            ;;
     esac
 
     toml_section "$toml" "package.metadata.deb" | grep -q "^name = \"$name\"" \
@@ -246,6 +290,22 @@ if [ -f "$bp" ] && [ -f "$act" ]; then
     fi
 fi
 
+# The SVBony blob ref is pinned in two places (unlike QHY/ZWO, there is no
+# build-packages.sh staging step for SVBony yet — see
+# docs/plans/svbony-camera.md Phase G — so this cross-check is between the
+# runtime install helper and the CI provisioning action only): the CI-linked
+# blobs (install-svbony-sdk) and the blob the operator-run helper downloads
+# post-install must come from the same indi-3rdparty commit.
+svbony_helper=services/svbony-camera/pkg/rusty-photon-svbony-sdk-install
+svbony_act=.github/actions/install-svbony-sdk/action.yml
+if [ -f "$svbony_helper" ] && [ -f "$svbony_act" ]; then
+    s1=$(sed -n 's/^REF="\(.*\)"$/\1/p' "$svbony_helper" | head -1)
+    s2=$(awk '$1 == "ref:" { in_ref = 1 } in_ref && $1 == "default:" { print $2; exit }' "$svbony_act")
+    if [ -z "$s1" ] || [ "$s1" != "$s2" ]; then
+        err "SVBony SDK ref pin mismatch: rusty-photon-svbony-sdk-install='$s1' vs install-svbony-sdk default='$s2'"
+    fi
+fi
+
 # plugdev is Debian's group (base-passwd ships it); nothing we ship may
 # create it on rpm-family hosts, and no rpm-side unit or rule may depend
 # on it.
@@ -284,7 +344,17 @@ fi
 # The Windows package set is the Linux one (services/*/pkg) plus
 # session-runner, which ships on Windows from day one while its Linux .deb
 # remains an open follow-up (docs/plans/windows-packaging.md).
-WIN_SERVICES="$(for d in services/*/pkg; do [ -d "$d" ] && basename "$(dirname "$d")"; done | tr '\n' ' ')session-runner"
+# svbony-camera is excluded: it has no Windows SVBony SDK at all
+# (docs/services/svbony-camera.md's Phase F notes — excluded entirely from
+# the Windows per-service matrix), unlike every other packaged service, so
+# there is no Windows package for `win_port_of()`/`installer/fragments/` to
+# describe.
+WIN_SERVICES="$(for d in services/*/pkg; do
+    [ -d "$d" ] || continue
+    svc=$(basename "$(dirname "$d")")
+    [ "$svc" = svbony-camera ] && continue
+    echo "$svc"
+done | tr '\n' ' ')session-runner"
 
 # Documented family ports (mirrors verify-packages.sh port_of + session-runner).
 win_port_of() {

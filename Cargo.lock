@@ -2546,6 +2546,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "libsvbony-sys"
+version = "0.1.0"
+
+[[package]]
 name = "libzwo-sys"
 version = "0.1.0"
 dependencies = [
@@ -5376,6 +5380,49 @@ name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
+
+[[package]]
+name = "svbony-camera"
+version = "0.1.0"
+dependencies = [
+ "ascom-alpaca",
+ "async-trait",
+ "axum",
+ "bdd-infra",
+ "clap",
+ "cucumber",
+ "derive_more",
+ "ndarray",
+ "parking_lot",
+ "reqwest 0.13.4",
+ "rp-auth",
+ "rusty-photon-config",
+ "rusty-photon-doctor-checks",
+ "rusty-photon-driver",
+ "rusty-photon-server-config",
+ "rusty-photon-service-lifecycle",
+ "rusty-photon-tls",
+ "schemars 1.2.1",
+ "serde",
+ "serde_json",
+ "svbony-rs",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "tokio-test",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "svbony-rs"
+version = "0.1.0"
+dependencies = [
+ "libsvbony-sys",
+ "rand 0.10.2",
+ "thiserror 2.0.19",
+ "tracing",
+]
 
 [[package]]
 name = "symlink"
