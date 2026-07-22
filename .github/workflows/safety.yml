@@ -25,8 +25,11 @@ jobs:
     # Explicit timeout — see test.yml's plan job. The sanitizer `cargo test`
     # step runs the same BDD scenarios that intermittently hang; without a
     # cap GitHub's 360 min default let `ubuntu / nightly / address` burn a
-    # full 6 h. 40 min sits ~2x above the ~19 min healthy sanitizer run.
-    timeout-minutes: 40
+    # full 6 h. The suite's healthy runtime has crept up (address was
+    # already timing out at 40 min by 2026-07-20, leak within ~1-2 min of
+    # the cap by 2026-07-22), so 40 min started clipping healthy runs;
+    # 80 min restores headroom without reopening the 6 h risk.
+    timeout-minutes: 80
     name: ubuntu / nightly / ${{ matrix.sanitizer }}
     strategy:
       fail-fast: false
