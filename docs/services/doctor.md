@@ -102,7 +102,7 @@ Three guards keep the catalog honest:
    embeds (`AlpacaServerConfig` vs `ServerConfig`). Services declaring serial
    metadata extend the same test: the pointer resolves in their own default
    config shape and the declared defaults equal their `DEFAULT_SERIAL_PORT`
-   constants. The three config-gated services (below) assert `config_gated`
+   constants. The four config-gated services (below) assert `config_gated`
    is `true` in the same test. A drifted copy fails that service's tests,
    not doctor's.
 2. **Doctor embeds the files at build time** and a doctor unit test asserts
@@ -112,9 +112,9 @@ Three guards keep the catalog honest:
    declared `usb_vendor` equals the `ATTRS{idVendor}` its own rule matches —
    one source of truth for the USB checks, drift-guarded against the rule.
    A third doctor unit test pins `config_gated` against the known set
-   (`calibrator-flats`, `plate-solver`, `sky-survey-camera`) — unlike
-   `usb_vendor`, this one is not measured from hardware, so a plain
-   assertion is enough.
+   (`calibrator-flats`, `plate-solver`, `session-runner`,
+   `sky-survey-camera`) — unlike `usb_vendor`, this one is not measured
+   from hardware, so a plain assertion is enough.
 3. **A CI completeness check** asserts every `services/*/pkg` directory
    contains a `doctor.toml`, so a newly packaged service cannot silently stay
    out of the catalog.
@@ -127,8 +127,7 @@ identities get declared the day the hardware is measured on a USB port —
 so the USB-presence check simply does not run for them; their device-node
 checks work regardless.
 
-The catalog today (17 packaged services; `session-runner` has no `pkg/` and
-joins the catalog when it is packaged):
+The catalog today (18 packaged services):
 
 | Service | Class | Default port |
 |---|---|---|
@@ -149,6 +148,7 @@ joins the catalog when it is packaged):
 | phd2-guider | core | 11130 |
 | plate-solver | core | 11131 |
 | calibrator-flats | core | 11170 |
+| session-runner | core | 11171 |
 
 Doctor itself never appears in the catalog: it is a one-shot binary with no
 unit and no port. It also has no `pkg/` directory — the packaging rides
@@ -294,7 +294,7 @@ the typed shape — validates its own file and doctor aggregates.
 
 | Check | Status | Trigger |
 |---|---|---|
-| `units.config-gated` | fail | A unit is enabled but its `ConditionPathExists=` file is missing: installed, enabled, and silently inert. Today that is sky-survey-camera, plate-solver, and calibrator-flats — the catalog's `config_gated` services (§The derived catalog) — all of which hard-require a config file. Linux-only: the check reads the systemd fact directly; Windows/macOS installs of the same three services are covered instead by `inventory.unit-without-config`'s `config_gated`-aware remedy. |
+| `units.config-gated` | fail | A unit is enabled but its `ConditionPathExists=` file is missing: installed, enabled, and silently inert. Today that is sky-survey-camera, plate-solver, calibrator-flats, and session-runner — the catalog's `config_gated` services (§The derived catalog) — all of which hard-require a config file. Linux-only: the check reads the systemd fact directly; Windows/macOS installs of the same four services are covered instead by `inventory.unit-without-config`'s `config_gated`-aware remedy. |
 | `sentinel.privilege-path` | fail | Sentinel's unit is installed and no rule under `/etc/polkit-1/rules.d/` or `/usr/share/polkit-1/rules.d/` (where the sentinel packages ship theirs) grants the `rusty-photon` user `org.freedesktop.systemd1.manage-units` for `rusty-photon-*` units — the packaged unit runs unprivileged with `NoNewPrivileges=yes`, so every restart sentinel attempts will be denied at the privilege boundary. Points at the scoped rule from [#523](https://github.com/ivonnyssen/rusty-photon/issues/523). Detection is a heuristic (scan for the action id, unit prefix, and user literal in the rules files) and the detail says so. |
 
 ### Name joins

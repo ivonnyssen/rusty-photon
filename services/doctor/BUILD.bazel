@@ -31,6 +31,7 @@ _CATALOG_METADATA = [
     "//services/qhy-focuser:pkg/doctor.toml",
     "//services/rp:pkg/doctor.toml",
     "//services/sentinel:pkg/doctor.toml",
+    "//services/session-runner:pkg/doctor.toml",
     "//services/sky-survey-camera:pkg/doctor.toml",
     "//services/star-adventurer-gti:pkg/doctor.toml",
     "//services/svbony-camera:pkg/doctor.toml",

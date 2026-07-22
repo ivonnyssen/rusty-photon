@@ -2,7 +2,10 @@ load("@cr//:defs.bzl", "aliases", "all_crate_deps")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 
 exports_files(
-    ["Cargo.toml"],
+    [
+        "Cargo.toml",
+        "pkg/doctor.toml",
+    ],
     visibility = ["//visibility:public"],
 )
 
@@ -49,8 +52,11 @@ rust_test(
     # The schema-agreement suite embeds the published schema via
     # include_str!("../../schema/workflow-v1.schema.json"), and the
     # validation corpus embeds the shipped calibrator_flats.json the
-    # same way.
-    compile_data = ["schema/workflow-v1.schema.json"] + glob(["workflows/*.json"]),
+    # same way. doctor_toml_parity embeds pkg/doctor.toml the same way.
+    compile_data = [
+        "schema/workflow-v1.schema.json",
+        "pkg/doctor.toml",
+    ] + glob(["workflows/*.json"]),
     crate = ":session-runner_lib",
     # The golden-document suite walks workflows/ at run time (via
     # TEST_SRCDIR under Bazel) so an unwired future document cannot slip

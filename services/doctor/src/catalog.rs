@@ -92,6 +92,10 @@ static RAW: &[(&str, &str)] = &[
     ("rp", include_str!("../../rp/pkg/doctor.toml")),
     ("sentinel", include_str!("../../sentinel/pkg/doctor.toml")),
     (
+        "session-runner",
+        include_str!("../../session-runner/pkg/doctor.toml"),
+    ),
+    (
         "sky-survey-camera",
         include_str!("../../sky-survey-camera/pkg/doctor.toml"),
     ),
@@ -218,7 +222,12 @@ mod tests {
     /// config was deleted.
     #[test]
     fn test_config_gated_matches_the_known_set() {
-        const GATED: &[&str] = &["calibrator-flats", "plate-solver", "sky-survey-camera"];
+        const GATED: &[&str] = &[
+            "calibrator-flats",
+            "plate-solver",
+            "session-runner",
+            "sky-survey-camera",
+        ];
         for entry in catalog() {
             assert_eq!(
                 entry.config_gated,
