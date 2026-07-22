@@ -86,9 +86,10 @@ the `rp-fits`, `filemonitor`, and `sky-survey-camera` packages fail to
 compile (this is the "use `-p <package>`" caveat that the user-level
 `MEMORY.md` references). `libssl-dev` is required by transitive C-FFI
 crates in the workspace. The **libusb-1.0 runtime** (`libusb-1.0-0`) is the
-shared symlink target for both the QHYCCD and ZWO sudo-free link paths (next
-two subsections); the `-dev` package is deliberately **not** installed — the
-unversioned `libusb-1.0.so` linker name is provided per-run instead.
+shared symlink target for the QHYCCD, ZWO, **and SVBony** sudo-free link
+paths (next three subsections); the `-dev` package is deliberately **not**
+installed — the unversioned `libusb-1.0.so` linker name is provided per-run
+instead.
 
 #### QHYCCD SDK (for `qhy-camera`)
 
@@ -155,11 +156,41 @@ no longer pre-provisions it — `pi-nightly.yml` runs the local
 The two prerequisites the sudo-free step cannot install itself are stable host
 packages installed once by §1 of `setup-pi-runner.sh`: **clang + libclang-dev**
 (bindgen) and the **libusb-1.0 runtime** (`libusb-1.0-0`; it is the
-`libusb-1.0.so` symlink target for both the ZWO and QHYCCD link paths, and the
-blob's own runtime dependency).
+`libusb-1.0.so` symlink target for the ZWO, QHYCCD, and SVBony link paths, and
+the blob's own runtime dependency).
 `libudev.so.1` ships with systemd. If the step ever errors with `… not found`,
 install the named package once and re-run — see Troubleshooting. This keeps the
 runner sudo-less *and* self-healing for ZWO exactly as for QHYCCD; the
+GitHub-hosted x86 jobs keep using the action in its default sudo/system mode.
+
+#### SVBony camera SDK (for `svbony-camera`)
+
+`svbony-camera` links the SVBony camera SDK unconditionally via
+`svbony-rs → libsvbony-sys`, whose `build.rs` emits `-lSVBCameraSDK
+-lusb-1.0` on Linux **even under `--features simulation`** (the link is
+env-gated by `SVBONY_SKIP_NATIVE_LINK`, not feature-gated — see
+docs/services/svbony-camera.md "Native dependency & build gating"). The full
+workspace build therefore needs the SDK at link time, exactly like ZWO. The
+runner does not pre-provision it either — `pi-nightly.yml` runs the local
+`./.github/actions/install-svbony-sdk` action in its **sudo-free** mode
+(`sudo: "false"`), which:
+
+- downloads the INDI-vendored SVBony blob (`libSVBCameraSDK`) for `armv8`
+  into `$RUNNER_TEMP/svbony-sdk/lib`, pinned by the action's `ref` (bump it
+  to adopt a newer SDK — no manual re-provision);
+- satisfies the unversioned `-lusb-1.0` link name **without any -dev
+  package** by symlinking it to the system *runtime* lib
+  (`libusb-1.0.so.0`) inside that same dir, exactly as the ZWO/QHYCCD steps
+  do — `build.rs` puts `SVBONY_SDK_LIB_DIR`'s `-L` ahead of `/usr/local/lib`;
+- exports `SVBONY_SDK_LIB_DIR` (link search) and `LD_LIBRARY_PATH` (the blob
+  installs no SONAME on the sudo-free path — no `ldconfig` is run — so the
+  nextest/BDD/doctest binaries need it on the loader path directly).
+
+The only prerequisite the sudo-free step cannot install itself is the same
+**libusb-1.0 runtime** (`libusb-1.0-0`) the QHYCCD/ZWO steps already share,
+installed once by §1 of `setup-pi-runner.sh`. No clang/libclang is needed —
+`libsvbony-sys`'s FFI is hand-written, not bindgen'd. This keeps the runner
+sudo-less *and* self-healing for SVBony exactly as for ZWO/QHYCCD; the
 GitHub-hosted x86 jobs keep using the action in its default sudo/system mode.
 
 ### 2. Dedicated unprivileged user
@@ -444,6 +475,32 @@ provided per-run by the **Install ZWO SDK (sudo-free)** step
 - `ZWO_SKIP_NATIVE_LINK` is **not** set on this job (the Pi must exercise the real
   ARM64 link; the skip flag is only for the sim-only x86 legs in
   `test.yml`/`safety.yml`/`publish-readiness.yml`).
+
+### `cargo build` fails with `cannot find -lSVBCameraSDK` / `-lusb-1.0` (compiling `libsvbony-sys`)
+
+`libsvbony-sys` could not find the SVBony SDK (or the libusb-1.0 link name)
+on the search path while linking `svbony-camera`. On the Pi nightly these
+are provided per-run by the **Install SVBony SDK (sudo-free)** step
+(`./.github/actions/install-svbony-sdk`, `sudo: "false"`). Check, in order:
+
+- That step ran and printed `exported SVBONY_SDK_LIB_DIR + LD_LIBRARY_PATH=…`
+  before `cargo build`. If a blob download failed, confirm the action's
+  pinned `ref` still resolves under
+  `https://github.com/indilib/indi-3rdparty/raw/<ref>/libsvbony/`.
+- The step did **not** abort with `… not found`. That message means the host
+  is missing the runtime prerequisite the sudo-free path symlinks against —
+  install it once with sudo and re-run: `sudo apt-get install -y
+  libusb-1.0-0` (provides `libusb-1.0.so.0`; it is in §1 of
+  `setup-pi-runner.sh`, so re-running it is the catch-all fix).
+- `SVBONY_SKIP_NATIVE_LINK` is **not** set on this job (the Pi must exercise
+  the real ARM64 link; the skip flag is only for the sim-only x86 legs and
+  Bazel — see docs/services/svbony-camera.md "Native dependency & build
+  gating").
+- If this step is simply **missing** from the job (the original cause of
+  [issue #669](https://github.com/ivonnyssen/rusty-photon/issues/669)): the
+  full-workspace build links `svbony-camera` unconditionally, so this step
+  must run before `cargo build --workspace`, in the same place the ZWO SDK
+  step does.
 
 ### nextest runs but BDD hangs / OmniSim crashes
 

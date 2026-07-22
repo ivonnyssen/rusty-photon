@@ -124,18 +124,44 @@ sudo apt-get install -y \
 # clang/libclang-dev (bindgen) and the libusb-1.0 runtime (the symlink target,
 # and the blob's own runtime dependency); libudev.so.1 ships with systemd.
 #
-# Only the udev rule for real ZWO USB devices stays here (device *access* for
-# on-Pi hardware testing — orthogonal to CI linking, and it genuinely needs root).
+# No real-device udev rule here: this runner is CI-only (it never has a
+# physical camera attached — see "No real-device udev rules" below), so
+# there is nothing on this host for a device-access rule to grant
+# permissions to.
 
-log "Installing ZWO udev rule (/etc/udev/rules.d/99-asi.rules)..."
-sudo tee /etc/udev/rules.d/99-asi.rules >/dev/null <<'EOF'
-# ZWO ASI cameras + EFW filter wheels (VID 0x03c3). MODE=0666 so the runner user
-# can claim the device; raise the USB buffer for USB3 throughput.
-SUBSYSTEMS=="usb", ATTR{idVendor}=="03c3", MODE="0666"
-ACTION=="add", SUBSYSTEMS=="usb", ATTR{idVendor}=="03c3", RUN+="/bin/sh -c 'echo 200 > /sys/module/usbcore/parameters/usbfs_memory_mb'"
-EOF
-sudo udevadm control --reload-rules
-sudo udevadm trigger || true
+# === 1c. SVBony camera SDK — provisioned sudo-free per-run by the workflow ===
+#
+# svbony-camera links the SVBony camera SDK unconditionally via
+# svbony-rs -> libsvbony-sys (required even for `--features simulation`,
+# mirroring ZWO — see docs/services/svbony-camera.md "Native dependency &
+# build gating"), so the aarch64 Pi nightly needs it at link time to
+# build/test the workspace. Like QHYCCD/ZWO, this is never installed here:
+# `pi-nightly.yml` provisions it per-run with the local
+# `./.github/actions/install-svbony-sdk` action in its sudo-free mode
+# (`sudo: "false"`) — it stages the INDI-vendored blob under $RUNNER_TEMP,
+# symlinks the system libusb-1.0 *runtime* lib to satisfy the unversioned
+# `-lusb-1.0` link name (no -dev package), and exports SVBONY_SDK_LIB_DIR
+# (which libsvbony-sys' build.rs puts ahead of /usr/local/lib) +
+# LD_LIBRARY_PATH. As with the QHYCCD/ZWO moves, provisioning in the
+# workflow makes the runner self-healing: an SVBony SDK bump only needs the
+# action's `ref` updated, not a manual re-run of this script. The only
+# prerequisite the per-run step cannot install without sudo is the same
+# libusb-1.0 runtime package installed once in §1 above (the symlink
+# target); unlike ZWO, no clang/libclang-dev is needed — libsvbony-sys' FFI
+# is hand-written, not bindgen'd.
+
+# === No real-device udev rules ===
+#
+# This runner exists solely to catch arch-specific CI regressions
+# (docs/skills/raspberry-pi-runner.md "Why a Self-Hosted Runner") — it is
+# never used as an actual telescope-control host, so no real QHY/ZWO/SVBony
+# camera is ever physically attached to it. Device-access udev rules
+# (MODE=0666 / group ownership on a camera's USB VID) exist only in each
+# service's *production packaging* — see services/{qhy-camera,zwo-camera,
+# svbony-camera}/pkg/90-rusty-photon-*.rules — which is installed on real
+# observatory hosts, not this CI runner. A prior revision of this script did
+# install a ZWO-specific rule here; it was removed as dead weight once it
+# was confirmed no hardware would ever be plugged into this host to use it.
 
 # === 2. Dedicated unprivileged user ===
 

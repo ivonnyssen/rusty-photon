@@ -155,6 +155,20 @@ jobs:
         with:
           sudo: "false"
 
+      # svbony-camera + the vendored svbony-rs/libsvbony-sys link the native
+      # SVBony SDK unconditionally (no SVBONY_SKIP_NATIVE_LINK set below); the
+      # full-workspace build below needs it on the link path (provision, don't
+      # exclude) — same shape as the ZWO step above. Sudo-free mode mirrors
+      # the ZWO/QHYCCD steps: the blob is staged under $RUNNER_TEMP, -lusb-1.0
+      # is resolved by symlinking the system libusb-1.0 runtime (installed
+      # once by scripts/setup-pi-runner.sh) into that same dir, and
+      # SVBONY_SDK_LIB_DIR + LD_LIBRARY_PATH are exported instead of touching
+      # /usr/local.
+      - name: Install SVBony SDK (sudo-free)
+        uses: ./.github/actions/install-svbony-sdk
+        with:
+          sudo: "false"
+
       # Pre-build all targets so nextest and BDD tests find cached binaries
       # without recompilation. Mirrors scheduled.yml's nightly job.
       - name: cargo build --workspace
