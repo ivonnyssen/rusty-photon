@@ -127,6 +127,34 @@ sudo apt-get install -y \
 # Only the udev rule for real ZWO USB devices stays here (device *access* for
 # on-Pi hardware testing — orthogonal to CI linking, and it genuinely needs root).
 
+# === 1c. SVBony camera SDK — provisioned sudo-free per-run by the workflow ===
+#
+# svbony-camera links the SVBony camera SDK unconditionally via
+# svbony-rs -> libsvbony-sys (required even for `--features simulation`,
+# mirroring ZWO — see docs/services/svbony-camera.md "Native dependency &
+# build gating"), so the aarch64 Pi nightly needs it at link time to
+# build/test the workspace. Like QHYCCD/ZWO, this is never installed here:
+# `pi-nightly.yml` provisions it per-run with the local
+# `./.github/actions/install-svbony-sdk` action in its sudo-free mode
+# (`sudo: "false"`) — it stages the INDI-vendored blob under $RUNNER_TEMP,
+# symlinks the system libusb-1.0 *runtime* lib to satisfy the unversioned
+# `-lusb-1.0` link name (no -dev package), and exports SVBONY_SDK_LIB_DIR
+# (which libsvbony-sys' build.rs puts ahead of /usr/local/lib) +
+# LD_LIBRARY_PATH. As with the QHYCCD/ZWO moves, provisioning in the
+# workflow makes the runner self-healing: an SVBony SDK bump only needs the
+# action's `ref` updated, not a manual re-run of this script. The only
+# prerequisite the per-run step cannot install without sudo is the same
+# libusb-1.0 runtime package installed once in §1 above (the symlink
+# target); unlike ZWO, no clang/libclang-dev is needed — libsvbony-sys' FFI
+# is hand-written, not bindgen'd.
+#
+# No udev rule here yet: no physical SVBony camera is available in this
+# environment to test against (hardware is on order — see
+# docs/services/svbony-camera.md "Real-hardware validation"). Add a
+# `99-svbony.rules` block here (mirroring the ZWO one below, VID `f266` per
+# services/svbony-camera/pkg/90-rusty-photon-svbony.rules) once real
+# on-Pi hardware testing is set up.
+
 log "Installing ZWO udev rule (/etc/udev/rules.d/99-asi.rules)..."
 sudo tee /etc/udev/rules.d/99-asi.rules >/dev/null <<'EOF'
 # ZWO ASI cameras + EFW filter wheels (VID 0x03c3). MODE=0666 so the runner user
