@@ -270,10 +270,20 @@ impl BoundServer {
 /// Enumerate connected ASI cameras on the blocking thread pool, minting each
 /// device's serial-derived `UniqueID`.
 ///
-/// `ASIGetSerialNumber` requires an *open* camera, so each is opened briefly to
-/// read its serial and then closed (the per-device connect handshake happens
-/// later on `set_connected(true)`). The ASI SDK is blocking C FFI, so every SDK
-/// call funnels through [`tokio::task::spawn_blocking`] (design doc "Concurrency").
+/// `ASIGetSerialNumber` requires an *open* camera, so each is opened briefly via
+/// [`zwo_rs::Sdk::open_uninitialised`] to read its serial and then closed — that
+/// call deliberately never runs `ASIInitCamera` (which resets controls, e.g. the
+/// cooler, to SDK defaults), so this passive path touches no camera state (the
+/// per-device connect handshake, which does initialise, happens later on
+/// `set_connected(true)`; see contract C5). The ASI SDK is blocking C FFI, so
+/// every SDK call funnels through [`tokio::task::spawn_blocking`] (design doc
+/// "Concurrency").
+///
+/// A camera that cannot even be *opened* (`open_uninitialised` itself fails —
+/// e.g. removed, or claimed by another process) fails this whole enumeration
+/// via `?`, same as before this method stopped also initialising: only a
+/// post-open [`serial`](zwo_rs::UninitialisedCamera::serial) failure (no serial,
+/// no flash id) is caught below and downgraded to the position-based fallback.
 async fn enumerate_cameras() -> Result<Vec<EnumeratedCamera>, ZwoCameraError> {
     let cameras =
         tokio::task::spawn_blocking(|| -> Result<Vec<EnumeratedCamera>, zwo_rs::Error> {
@@ -284,7 +294,7 @@ async fn enumerate_cameras() -> Result<Vec<EnumeratedCamera>, ZwoCameraError> {
                 // Open briefly to read the stable serial, then close (the camera
                 // drops at the end of the block → `ASICloseCamera`).
                 let serial_result = {
-                    let camera = sdk.open_camera(index)?;
+                    let camera = sdk.open_uninitialised(index)?;
                     camera.serial()
                 };
                 if let Err(ref e) = serial_result {
