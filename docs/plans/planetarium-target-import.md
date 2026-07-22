@@ -107,6 +107,14 @@ Explicitly rejected / out of scope (see Decisions 6–8):
    - The bridge stamps provenance (source app/client address, receipt time)
      into the target's `notes`. Single-operator use is the MVP assumption;
      provenance makes multi-client confusion diagnosable, not prevented.
+   - The protection cuts both ways: rp-targets.md's slug-allocation rule 3
+     treats *same `catalog_ref`* as "same object → in-place edit", so a
+     later **manual catalog add** of "NGC 7000" would clobber a framed
+     bridge import carrying that `catalog_ref` with the catalog centroid.
+     P1's reconciliation of the same-object rule must therefore also gate
+     the catalog_ref branch on coordinate proximity (differing beyond
+     tolerance ⇒ suffix-allocate a new slug, never in-place edit),
+     protecting framed targets from *all* writers, not just the bridge.
 4. **Naming by reverse cone-search — a new `rp-catalog` capability.**
    No name crosses the Alpaca wire. The bridge resolves the nearest catalog
    object within a tolerance (configurable, default ~10 arcmin; nearest by
@@ -116,7 +124,10 @@ Explicitly rejected / out of scope (see Decisions 6–8):
    tolerance affects **display only** and never drives target identity
    (Decision 3). `rp-catalog` currently has only name→coords lookup
    (`Catalog::resolve`); the coordinate-indexed nearest-neighbor query is
-   explicit P3 scope, documented with the service design doc.
+   explicit P3 scope, documented with the service design doc. This is a
+   linear scan over the embedded ~13k-row catalog (microseconds at this
+   size) — deliberately *not* the DB-seeded indexed cone-search browse
+   that rp-targets.md defers; the two must not be conflated.
 5. **Position angle is a three-layer fallback, homed per optical train.**
    New field `position_angle_degrees: Option<f64>` on the `rp-targets`
    `Target` (degrees east of north, sky frame). Effective angle =
@@ -175,6 +186,10 @@ Explicitly rejected / out of scope (see Decisions 6–8):
    not-yet-shipped constraints (moon separation/illumination, meridian
    window) remain deferred. Without this, an imported target could be
    imaged below the horizon profile today's system already respects.
+   This deliberately amends rp-targets.md's deferred list (altitude
+   gating is *not* new ephemeris work — the shipped v1 planner already
+   evaluates it via `rp-ephemeris`); P1's Rule-2 update to rp-targets.md
+   records the amendment rather than silently overriding the doc.
 10. **P1 ships a minimal operator surface so P3-imported targets are never
     stranded.** The rp.md *(planned)* target REST endpoints
     (`GET/POST/PUT /api/targets`) are implemented against the new store in
