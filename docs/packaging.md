@@ -364,10 +364,24 @@ MIT-licensed SDK blob at `/usr/lib/rusty-photon/` (`libASICamera2.so` /
 `libEAFFocuser.so`; license in the package docdir), so the two co-install
 cleanly (ADR-014). ZWO devices keep firmware in onboard flash.
 
-Both camera packages install a udev rule assigning their USB VID's device
-nodes to the `rusty-photon` service group (the account's own primary
-group — no supplementary groups needed, and no reliance on Debian's
-`plugdev`, which rpm-family hosts lack).
+**svbony-camera** — SVBony's SDK carries no license grant at all (ADR-018),
+so unlike ZWO it is never bundled. After installing the package, run once,
+as root, with internet access:
+
+```sh
+sudo rusty-photon-svbony-sdk-install
+```
+
+It downloads the pinned SDK library from the same indi-3rdparty commit CI
+links against, verifies a pinned sha256, and installs `libSVBCameraSDK.so`
+to `/usr/lib/rusty-photon/` (the package's binary is linked with the
+matching RUNPATH, mirroring `zwo-camera`'s mechanism). Offline installs
+work; the camera just stays unusable until the helper has run.
+
+Every camera package installs a udev rule assigning their USB VID's
+device nodes to the `rusty-photon` service group (the account's own
+primary group — no supplementary groups needed, and no reliance on
+Debian's `plugdev`, which rpm-family hosts lack).
 
 ## plate-solver: ASTAP
 

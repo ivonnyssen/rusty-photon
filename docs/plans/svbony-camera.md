@@ -2,6 +2,20 @@
 
 ## Status
 
+**Follow-up landed (issue #679, 2026-07-22).** `scripts/build-packages.sh`
+gained the `needs_svbony` SDK-staging leg Phase G deliberately deferred (see
+below): `nightly-packages` was failing its `linux / arm64`, `linux / amd64`,
+and `macos / arm64 tarballs` legs with `unable to find library
+-lSVBCameraSDK` because the script discovered `svbony-camera` via its
+`pkg/` directory (like every other packaged service) but staged no SDK for
+it. Fixed on Linux by staging the pinned indi-3rdparty blob for the link
+only (never bundled — ADR-018); on macOS, `scripts/build-tarballs.sh` and
+`scripts/generate-brew-formulas.sh` now explicitly exclude `svbony-camera`
+instead (no confirmed `mac_arm64` blob exists, and shipping a
+`SVBONY_SKIP_NATIVE_LINK=1` binary as the "real" tarball would be
+misleading). See `docs/services/svbony-camera.md`'s Packaging section and
+"Future work" below for the remaining Bazel-side/`mac_arm64` gaps.
+
 **Phase G landed (2026-07-21): packaging + real-hardware validation marked
 pending — this was the final planned phase.** `svbony-camera` is now
 **v0-complete pending real-hardware validation** against a physical
@@ -540,8 +554,13 @@ Bazel files all port). The exposure-model difference concentrates in Phase B
   in scope (ADR-014 shape).
 - **A Bazel-side SDK-fetch repository rule** (drop the `manual` tag +
   `libsvbony-sys/BUILD.bazel`'s unconditional `SVBONY_SKIP_NATIVE_LINK=1`)
-  and **`scripts/build-packages.sh` SDK-staging/RUNPATH support** for
-  `svbony-camera` — see Phase G above for why neither landed in this phase.
+  — see Phase G above for why it didn't land that phase. (The
+  `scripts/build-packages.sh` SDK-staging/RUNPATH half of that same bullet
+  landed separately as issue #679, 2026-07-22 — see the Status section.)
+- **A confirmed `mac_arm64` SVBony SDK blob** — until one exists,
+  `scripts/build-tarballs.sh`/`scripts/generate-brew-formulas.sh` exclude
+  `svbony-camera` outright rather than ship a simulation-only binary as the
+  "real" macOS tarball (issue #679).
 - **`rp` `CameraConfig` consumer** — shared tail item with `zwo-camera`
   Phase G; whichever lands first defines the pattern.
 - **Vendor redistribution grant** — an emailed one-liner from SVBony would

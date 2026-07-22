@@ -113,6 +113,27 @@ else
     SERVICES="$ALL_SERVICES"
 fi
 
+# svbony-camera has no confirmed mac_arm64 SVBony SDK blob — indi-3rdparty's
+# libsvbony packaging ships mac64/Intel only (see
+# .github/actions/install-svbony-sdk/action.yml's header comment), and this
+# script is arm64-only (the check above), so there is no real SDK this leg
+# could ever link against. Mirrors check-pkg-assets.sh's WIN_SERVICES
+# exclusion (same "no SDK for this platform at all" reasoning, a different
+# platform) rather than falling back to SVBONY_SKIP_NATIVE_LINK=1: that
+# escape hatch produces a simulation-only binary (see libsvbony-sys/build.rs
+# + docs/services/svbony-camera.md "Native dependency & build gating"), and
+# shipping that as the "real" nightly/release tarball would silently give
+# users a driver that can never see a physical camera.
+case " $SERVICES " in
+    *" svbony-camera "*)
+        if [ -n "$ONLY_SERVICES" ]; then
+            die "svbony-camera has no confirmed mac_arm64 SVBony SDK blob — cannot build a real-SDK-linked tarball on macOS today (see docs/services/svbony-camera.md Packaging)"
+        fi
+        echo "Skipping svbony-camera: no confirmed mac_arm64 SVBony SDK blob (indi-3rdparty ships mac64/Intel only)"
+        SERVICES=$(echo " $SERVICES " | sed 's/ svbony-camera / /')
+        ;;
+esac
+
 needs_qhy=0
 needs_zwo_camera=0
 needs_zwo_focuser=0

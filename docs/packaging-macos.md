@@ -34,7 +34,9 @@ brew services start rusty-photon-ui-htmx
 
 The services and their ports are the same family as on Linux (see the
 table in [docs/packaging.md](packaging.md#what-gets-installed);
-`session-runner` is likewise not yet packaged). The launchd mapping:
+`session-runner` is likewise not yet packaged, and `svbony-camera` has no
+macOS formula at all today — see "Camera specifics" below). The launchd
+mapping:
 
 | Linux concept | macOS equivalent |
 |---|---|
@@ -233,6 +235,18 @@ flashed since its last power-cycle (e.g. first plugged into a Linux host,
 or previously used by another macOS app) works normally. Wiring the
 in-process upload is a tracked follow-up.
 
+**svbony-camera — not available on macOS today.** indi-3rdparty's
+`libsvbony` packaging ships no `mac_arm64` blob (Intel/`mac64` only), and
+Apple Silicon is the only Mac target this project builds for, so there is
+no real SVBony SDK `build-tarballs.sh` could ever link against here.
+Rather than publish a `SVBONY_SKIP_NATIVE_LINK=1` simulation-only binary as
+the "real" tarball, `build-tarballs.sh`/`generate-brew-formulas.sh` exclude
+`svbony-camera` outright — no `rusty-photon-svbony-camera` formula exists
+in the tap. Revisit once a verified Apple Silicon blob exists (or SVBony
+grants a redistribution license). See
+[docs/services/svbony-camera.md](services/svbony-camera.md#packaging) for
+the full reasoning.
+
 ## plate-solver: ASTAP
 
 Same as Linux: ASTAP is an external runtime dependency — install the
@@ -272,7 +286,9 @@ scripts/verify-brew.sh --services filemonitor,zwo-camera --keep
 the link; per zwo service its one MIT dylib, which becomes that tarball's
 payload) and release-builds with the `@loader_path` rpaths — the zwo
 services each in their own cargo invocation, so feature unification cannot
-re-union their per-device SDK links. `verify-brew.sh` renders the formulas
+re-union their per-device SDK links. `svbony-camera` is skipped entirely
+(no confirmed `mac_arm64` SVBony SDK blob — see "Camera specifics" above).
+`verify-brew.sh` renders the formulas
 with `file://` URLs into a scratch tap and, per service: install →
 `brew test` → `brew services start` → HTTP probe → config self-created →
 stop → uninstall clean — with the same class exceptions as

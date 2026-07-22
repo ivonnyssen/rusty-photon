@@ -1,5 +1,28 @@
 # Svbony-Camera Service Design
 
+> **Follow-up landed (issue #679, 2026-07-22): `scripts/build-packages.sh`
+> now has the `needs_svbony` SDK-staging leg this Status section's Phase G
+> entry (below) originally deferred.** `nightly-packages` was failing on
+> the `linux / arm64`, `linux / amd64`, and `macos / arm64 tarballs` legs
+> with `unable to find library -lSVBCameraSDK`: the script discovered
+> `svbony-camera` via its `pkg/` directory (like every other packaged
+> service) but staged no SDK for it to link against. Fixed by staging the
+> pinned indi-3rdparty blob into `SVBONY_SDK_LIB_DIR` for the link only —
+> unlike QHY/ZWO, nothing is copied into `services/svbony-camera/pkg/lib/`
+> or bundled in the package (ADR-018: no license grant at all), so the
+> RUNPATH `build-packages.sh` already bakes in for `zwo-camera` is what
+> lets the operator-installed copy (`rusty-photon-svbony-sdk-install`)
+> resolve at runtime, exactly as this document's Packaging section always
+> said it would once wired up. `scripts/build-tarballs.sh` (macOS) and
+> `scripts/generate-brew-formulas.sh` now both explicitly exclude
+> `svbony-camera`: indi-3rdparty ships no confirmed `mac_arm64` blob, and
+> that script is arm64-only, so there is no real SDK to link there —
+> shipping a `SVBONY_SKIP_NATIVE_LINK=1` (simulation-only) binary as the
+> "real" nightly tarball would silently hand users a driver that can never
+> see a physical camera. The Bazel-side SDK-fetch rule (`:svbony-camera`'s
+> `manual` tag) remains separately deferred, unchanged by this fix — see
+> "This phase's link-gating shortcut" below.
+>
 > **Status:** **Phase G landed (2026-07-21, this is the final planned
 > phase): packaging + real-hardware validation marked pending.**
 > `svbony-camera` is now **v0-complete pending real-hardware validation**
@@ -43,7 +66,9 @@
 > already discovers `svbony-camera` via its `pkg/` directory but has no
 > SVBony-specific staging block; adding one is mechanical follow-up in the
 > same bucket as the Bazel SDK-fetch rule, not attempted here since it
-> cannot be tested without the real SDK either).
+> cannot be tested without the real SDK either). **The `build-packages.sh`
+> half of this landed separately as issue #679** (see the banner at the top
+> of this document) — the Bazel-side SDK-fetch rule remains deferred.
 >
 > **Phase F landed (2026-07-21): ConformU + CI gates.**
 > `tests/conformu_integration.rs` now exists (mirrors `zwo-camera`'s: starts
@@ -959,7 +984,9 @@ phases A–G:
   either), and `scripts/build-packages.sh` SDK-staging/RUNPATH-injection
   support for `svbony-camera` (no `needs_svbony` leg exists yet, so that
   script cannot yet produce a real-SDK-linked `rusty-photon-svbony-camera`
-  package).
+  package). **The `build-packages.sh` piece landed as issue #679
+  (2026-07-22)**, unblocking `nightly-packages`' Linux legs; the Bazel-side
+  SDK-fetch rule is still deferred.
 
 ---
 
@@ -975,9 +1002,14 @@ phases A–G:
   collapse the packaging to `zwo-camera`'s in-package bucket.
 - A Bazel-side SDK-fetch repository rule (drop the `manual` tag +
   `libsvbony-sys/BUILD.bazel`'s unconditional `SVBONY_SKIP_NATIVE_LINK=1`)
-  and `scripts/build-packages.sh` SDK-staging/RUNPATH support for
-  `svbony-camera` — see "Delivery phasing" Phase G for why neither landed
-  this phase.
+  — see "Delivery phasing" Phase G for why it didn't land that phase.
+  (`scripts/build-packages.sh` SDK-staging/RUNPATH support landed
+  separately as issue #679.)
+- A confirmed `mac_arm64` SVBony SDK blob — `scripts/build-tarballs.sh` and
+  `scripts/generate-brew-formulas.sh` currently exclude `svbony-camera`
+  outright (no macOS tarball/formula) rather than ship a
+  `SVBONY_SKIP_NATIVE_LINK=1` simulation-only binary as the "real" release
+  artifact; see "Packaging" below.
 
 ## Real-hardware validation
 
@@ -1081,18 +1113,38 @@ since there is no SONAME to honor) and the packaged
 at runtime with no `ldconfig` run required — **exactly** ZWO's mechanism
 (`scripts/build-packages.sh`'s `RUSTFLAGS="-C
 link-arg=-Wl,-rpath,/usr/lib/rusty-photon"`), applied to QHY's
-download-on-target delivery model. **Not yet wired into
-`scripts/build-packages.sh` itself** (that script has no `needs_svbony`
-SDK-staging leg the way it does for QHY/ZWO, so it cannot yet actually
-produce a real, real-SDK-linked `rusty-photon-svbony-camera` package) —
-this is deliberately deferred alongside the Bazel-side SDK-fetch rule (see
-the Status banner above); both require the real SDK to test against, which
-this phase's environment does not have either way. The `libSVBCameraSDK.so`
-this helper installs is verified end-to-end in this phase (download, real
-sha256 verification, idempotent install, `--force`/`--root` flags) — only
-the *build-time* RUNPATH-linked-binary side of the story remains to be
-exercised, which needs a build host with the real SDK provisioned
-(`install-svbony-sdk` already proves that step works in CI).
+download-on-target delivery model. **Wired into `scripts/build-packages.sh`
+as of issue #679 (2026-07-22)**: a `needs_svbony` SDK-staging leg (mirroring
+QHY/ZWO's) stages the pinned indi-3rdparty blob under a cache dir and
+exports `SVBONY_SDK_LIB_DIR` for the link — but, unlike QHY/ZWO, nothing is
+copied into `services/svbony-camera/pkg/lib/`: per ADR-018 this package
+never bundles the blob, so the staged copy exists purely to satisfy the
+build-time link, and the RUNPATH baked into `RUSTFLAGS` (already applied
+uniformly to every service this script builds, `zwo-camera` included) is
+what lets the *operator-installed* copy resolve at runtime. Verified
+end-to-end locally: staging the real blob + `cargo build --release -p
+svbony-camera` produces a binary whose `readelf -d` shows `NEEDED
+libSVBCameraSDK.so` and `RUNPATH /usr/lib/rusty-photon`, exactly as
+designed. The Bazel-side SDK-fetch rule remains separately deferred (see
+the Status banner above) — that piece still cannot be tested without a
+Bazel-side blob-fetch repository rule, a materially different mechanism
+from this Cargo-only script.
+
+**macOS: excluded, not simulation-shipped.** `scripts/build-tarballs.sh`
+targets only `aarch64-apple-darwin` (Apple Silicon), and indi-3rdparty
+ships no confirmed `mac_arm64` `libSVBCameraSDK` blob (see
+`install-svbony-sdk/action.yml`'s header comment), so there is no real SDK
+this leg could ever link against. Rather than fall back to
+`SVBONY_SKIP_NATIVE_LINK=1` (a simulation-only binary — see "Native
+dependency & build gating" above) and ship that as the "real" tarball,
+`build-tarballs.sh` drops `svbony-camera` from its service list entirely,
+with `scripts/generate-brew-formulas.sh` mirroring the same exclusion so no
+Homebrew formula ever points at a tarball that doesn't exist (both are
+cross-checked by `scripts/check-pkg-assets.sh`). Net effect: no
+`rusty-photon-svbony-camera` formula ships on macOS today — same posture as
+the Windows exclusion, different platform, same "no SDK for this platform
+at all" reason. Revisit once a verified Apple Silicon blob exists (or
+SVBony grants a redistribution license, collapsing this to the ZWO bucket).
 
 **Known gap: `apt purge` does not remove the helper-installed SDK blob.**
 `pkg/postrm` is `packaging/postrm.common` byte-for-byte — `scripts/
