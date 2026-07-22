@@ -16,6 +16,21 @@
 # repinned state — instead this job validates the refreshed lock in-place with
 # `bazel build --nobuild //... --lockfile_mode=error` (resolves the full target
 # graph without compiling) before pushing.
+#
+# `bazel mod tidy` alone is not sufficient to produce a complete lock: it only
+# fixes up module extensions it can find via explicit `use_repo()` calls in
+# MODULE.bazel. Extensions pulled in transitively — e.g. rules_python's `uv`
+# extension, self-registered as a host-platform toolchain by buildifier_prebuilt's
+# dependency on rules_python, with no `use_repo()` of its own anywhere in this
+# repo — are outside that scan. On x86_64 GitHub runners this reproducibly left
+# `MODULE.bazel.lock` missing the `uv` extension entry after `bazel mod tidy`,
+# even though the pre-existing (non-repinned) lock built and tested fine, so the
+# `--lockfile_mode=error` validation below failed on every dependabot PR
+# (confirmed not to be network flakiness: identical failure on rerun, only
+# the mod-tidy-produced lock was affected). The extra `--lockfile_mode=update`
+# build after `mod tidy` forces a real full target-graph analysis — the same
+# analysis `--lockfile_mode=error` performs — but in a mode that fills in any
+# gap `mod tidy` left instead of erroring on it.
 permissions:
   contents: write
 on:
@@ -57,11 +72,16 @@ jobs:
       # CARGO_BAZEL_REPIN=1 forces crate_universe to re-resolve against the
       # current Cargo.lock; the second un-forced run resets the lock's recorded
       # CARGO_BAZEL_REPIN fingerprint back to null so the committed lock stays
-      # stable on later plain `bazel` runs.
+      # stable on later plain `bazel` runs. The trailing --lockfile_mode=update
+      # build fills in any module extension `mod tidy` didn't add on its own
+      # (see the header comment above — the rules_python `uv` extension gap).
       - name: Repin crate index
         run: |
           CARGO_BAZEL_REPIN=1 bazel mod tidy
           bazel mod tidy
+          bazel build --nobuild --config=ci --config=remote-cache \
+            --remote_upload_local_results=false \
+            --lockfile_mode=update //...
 
       - name: Skip if already in sync
         id: changed
