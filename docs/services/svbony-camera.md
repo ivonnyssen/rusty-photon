@@ -159,6 +159,24 @@ decision record.
   including the soft-trigger video-capture flow and a poll-based cooling
   ramp. The native SDK is still required at link time — *unless*
   `SVBONY_SKIP_NATIVE_LINK=1` is set (see below).
+- **`libusb-1.0` needs a keep-alive reference, not just a link-lib
+  directive (issue #681).** The vendored `libSVBCameraSDK.so`/`.dylib` blob
+  references `libusb_*` symbols internally without declaring libusb in its
+  own `DT_NEEDED` (byte-verified via `readelf -d`), and `svbony-rs`'s own
+  code never calls a `libusb_*` symbol directly — so a plain
+  `cargo:rustc-link-lib=dylib=usb-1.0` gets dropped by the linker's default
+  `--as-needed` behavior, producing a runtime `symbol lookup error:
+  undefined symbol: libusb_init` on first camera-SDK call.
+  `libsvbony-sys/lib.rs`'s `svbony_keep_libusb`-gated `libusb_keepalive`
+  module (mirroring `libzwo-sys`'s `zwo_keep_udev`) fixes this with a
+  `#[used]` function-pointer static that gives the linker a real
+  regular-object reference to `libusb_init`, forcing `libusb-1.0` into
+  `DT_NEEDED`. A `-Wl,--no-as-needed`/`-Wl,--as-needed` bracket around the
+  link-lib line was tried first and does **not** work: Cargo only applies a
+  build script's `cargo:rustc-link-arg` to the *build script's own
+  package's* bin/cdylib/test/example targets, not transitively to
+  downstream binaries like `svbony-camera` — verified empirically (the flag
+  never appeared on the final linker command line).
 
 ### This phase's link-gating shortcut (Bazel — unchanged by Phase F)
 

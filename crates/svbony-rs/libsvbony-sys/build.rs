@@ -2,8 +2,11 @@
 //!
 //! `lib.rs` is a hand-written `extern "C"` block (no bindgen — SVBony's SDK
 //! header carries no license text anywhere, see the crate docs), so this
-//! script's only job is emitting the native link directives for the
-//! system-installed `libSVBCameraSDK` (+ `libusb-1.0`).
+//! script's main job is emitting the native link directives for the
+//! system-installed `libSVBCameraSDK` (+ `libusb-1.0`). On macOS/Linux it
+//! also emits the `svbony_keep_libusb` cfg, which turns on a `#[used]`
+//! keep-alive reference in `lib.rs` — see that cfg's doc comment there for
+//! why `-lusb-1.0` alone is not enough (issue #681).
 //!
 //! Two env overrides, mirroring `libqhyccd-sys`/`libzwo-sys`:
 //! - `SVBONY_SDK_LIB_DIR=/path/to/lib` — add an explicit SDK search path.
@@ -39,9 +42,11 @@ fn main() {
         println!("cargo:rerun-if-env-changed={var}");
     }
 
-    // Declare the cfg the skip branch may set, so `#[cfg_attr(not(svbony_skip_link),
-    // ...)]` in lib.rs does not trip the `unexpected_cfgs` lint.
+    // Declare the cfgs the branches below may set, so `#[cfg_attr(not(svbony_skip_link),
+    // ...)]` / `#[cfg(svbony_keep_libusb)]` in lib.rs do not trip the
+    // `unexpected_cfgs` lint.
     println!("cargo:rustc-check-cfg=cfg(svbony_skip_link)");
+    println!("cargo:rustc-check-cfg=cfg(svbony_keep_libusb)");
 
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
 
@@ -100,6 +105,7 @@ fn main() {
             }
             println!("cargo:rustc-link-lib=dylib=SVBCameraSDK");
             println!("cargo:rustc-link-lib=dylib=usb-1.0");
+            println!("cargo:rustc-cfg=svbony_keep_libusb");
         }
         "windows" => {
             // SVBony's own Windows SDK (svbony.com/downloads/software-driver,
@@ -124,6 +130,7 @@ fn main() {
             println!("cargo:rustc-link-search=native=/usr/local/lib");
             println!("cargo:rustc-link-lib=dylib=SVBCameraSDK");
             println!("cargo:rustc-link-lib=dylib=usb-1.0");
+            println!("cargo:rustc-cfg=svbony_keep_libusb");
         }
     }
 }
