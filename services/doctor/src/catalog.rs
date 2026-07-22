@@ -99,6 +99,10 @@ static RAW: &[(&str, &str)] = &[
         "star-adventurer-gti",
         include_str!("../../star-adventurer-gti/pkg/doctor.toml"),
     ),
+    (
+        "svbony-camera",
+        include_str!("../../svbony-camera/pkg/doctor.toml"),
+    ),
     ("ui-htmx", include_str!("../../ui-htmx/pkg/doctor.toml")),
     (
         "zwo-camera",
@@ -143,6 +147,11 @@ pub static UDEV_RULES: &[UdevRule] = &[
         service: "qhy-camera",
         file_name: "90-rusty-photon-qhy.rules",
         content: include_str!("../../qhy-camera/pkg/90-rusty-photon-qhy.rules"),
+    },
+    UdevRule {
+        service: "svbony-camera",
+        file_name: "90-rusty-photon-svbony.rules",
+        content: include_str!("../../svbony-camera/pkg/90-rusty-photon-svbony.rules"),
     },
     UdevRule {
         service: "zwo-camera",
