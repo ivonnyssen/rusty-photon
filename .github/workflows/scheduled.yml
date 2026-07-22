@@ -260,8 +260,17 @@ jobs:
     # drift surface without depending on someone reading scheduled-workflow
     # logs. Skipped on push, pull_request, and workflow_dispatch so manual
     # debugging runs don't churn an issue.
+    #
+    # cancelled() alongside failure(): a job killed by timeout-minutes reports
+    # conclusion "cancelled", not "failure" — failure() alone silently misses
+    # it. Safe to OR in here: this workflow only triggers on push/schedule/
+    # workflow_dispatch (github.head_ref is always empty for those), so the
+    # concurrency group above always falls back to the per-run github.run_id
+    # and can never cancel one of this workflow's own runs via supersession —
+    # every "cancelled" conclusion this can see is a genuine timeout (or a
+    # human explicitly cancelling, which is worth surfacing too).
     needs: [nightly, discover-miri, miri, update, beta]
-    if: failure() && github.event_name == 'schedule'
+    if: (failure() || cancelled()) && github.event_name == 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
