@@ -1,8 +1,10 @@
 Feature: Client-target joins (#607)
   A service's config can point a URL at another catalog service —
-  ui-htmx's rp/sentinel targets, rp's plate-solver/guider clients,
-  sentinel's Alpaca monitors, and sentinel's operation-watchdog rp_url.
-  These checks join that URL against the *named* service's own
+  ui-htmx's rp/sentinel targets, rp's plate-solver/guider clients, every
+  rp equipment.<kind>[].alpaca_url entry including the singular
+  equipment.mount.alpaca_url (#663), sentinel's Alpaca monitors, and
+  sentinel's operation-watchdog rp_url. These checks join that URL
+  against the *named* service's own
   server.tls/server.auth: a scheme mismatch, or a self-signed target the
   client has no ca_cert_path for, breaks every request
   (joins.client-transport, fail); a target that requires auth while the
@@ -94,6 +96,38 @@ Feature: Client-target joins (#607)
     Then the config file "rp.json" has the string "https://localhost:11130" at "/equipment/mount/guiding/url"
     And the config file "rp.json" has "/ca_cert" pointing at the pki file "ca.pem"
     And the config file "rp.json" has the string "observatory" at "/equipment/mount/guiding/auth/username"
+
+  Scenario: --fix rewrites the mount's own scheme, CA trust, and credential once its target is provisioned
+    Given a config file "star-adventurer-gti.json" containing:
+      """
+      { "server": { "port": 11117,
+                    "auth": { "username": "observatory", "password_hash": "$argon2id$v=19$m=19456,t=2,p=1$YWJjZGVmZ2g$aGFuZHNldA" } } }
+      """
+    And a config file "rp.json" containing:
+      """
+      { "server": { "port": 11115 },
+        "equipment": { "mount": { "alpaca_url": "http://localhost:11117" } } }
+      """
+    When I run doctor with --fix and --json
+    Then the config file "rp.json" has the string "https://localhost:11117" at "/equipment/mount/alpaca_url"
+    And the config file "rp.json" has "/ca_cert" pointing at the pki file "ca.pem"
+    And the config file "rp.json" has the string "observatory" at "/equipment/mount/auth/username"
+
+  Scenario: --fix rewrites a camera's own scheme, CA trust, and credential once its target is provisioned
+    Given a config file "zwo-camera.json" containing:
+      """
+      { "server": { "port": 11122,
+                    "auth": { "username": "observatory", "password_hash": "$argon2id$v=19$m=19456,t=2,p=1$YWJjZGVmZ2g$aGFuZHNldA" } } }
+      """
+    And a config file "rp.json" containing:
+      """
+      { "server": { "port": 11115 },
+        "equipment": { "cameras": [ { "id": "main", "alpaca_url": "http://localhost:11122" } ] } }
+      """
+    When I run doctor with --fix and --json
+    Then the config file "rp.json" has the string "https://localhost:11122" at "/equipment/cameras/0/alpaca_url"
+    And the config file "rp.json" has "/ca_cert" pointing at the pki file "ca.pem"
+    And the config file "rp.json" has the string "observatory" at "/equipment/cameras/0/auth/username"
 
   Scenario: A non-loopback client target is never joined
     Given a config file "rp.json" containing:

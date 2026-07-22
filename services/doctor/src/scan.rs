@@ -354,6 +354,81 @@ impl RpView {
             .get("auth")?;
         serde_json::from_value(auth.clone()).ok()
     }
+
+    /// Every generic equipment client target — each `equipment.<kind>[].alpaca_url`
+    /// entry plus the singular `equipment.mount.alpaca_url` (issue #663) —
+    /// alongside its own `auth` field. Kind-agnostic by construction (any
+    /// object under `equipment` carrying an `alpaca_url`, whether nested in
+    /// an array or standalone like `mount`), so a future equipment kind
+    /// picks up scheme/auth join checking without new doctor code, mirroring
+    /// `alpaca_urls()`'s existing walk. The guider's URL
+    /// (`equipment.mount.guiding.url`) lives under a `url` key, not
+    /// `alpaca_url`, so it never collides with this walk.
+    pub fn equipment_targets(&self) -> Vec<RpEquipmentTarget> {
+        let mut targets = Vec::new();
+        let Some(Value::Object(kinds)) = &self.equipment else {
+            return targets;
+        };
+        for (kind, value) in kinds {
+            // `kind` is a JSON object key from the opaque `equipment` value
+            // (never validated against `EquipmentConfig`'s known field
+            // names before this point), so it must be RFC-6901-escaped
+            // before it becomes a pointer segment — same reason ui-htmx's
+            // free-form `drivers` map keys go through `escape_token`
+            // (fix.rs) rather than straight into a pointer string.
+            let escaped_kind = crate::fix::escape_token(kind);
+            match value {
+                Value::Array(entries) => {
+                    for (idx, entry) in entries.iter().enumerate() {
+                        if let Some(url) = entry.get("alpaca_url").and_then(Value::as_str) {
+                            targets.push(RpEquipmentTarget {
+                                field: format!("equipment.{kind}.{idx}.alpaca_url"),
+                                url: url.to_string(),
+                                url_pointer: format!("/equipment/{escaped_kind}/{idx}/alpaca_url"),
+                                auth_pointer: format!("/equipment/{escaped_kind}/{idx}/auth"),
+                                auth: entry
+                                    .get("auth")
+                                    .and_then(|a| serde_json::from_value(a.clone()).ok()),
+                            });
+                        }
+                    }
+                }
+                Value::Object(_) => {
+                    if let Some(url) = value.get("alpaca_url").and_then(Value::as_str) {
+                        targets.push(RpEquipmentTarget {
+                            field: format!("equipment.{kind}.alpaca_url"),
+                            url: url.to_string(),
+                            url_pointer: format!("/equipment/{escaped_kind}/alpaca_url"),
+                            auth_pointer: format!("/equipment/{escaped_kind}/auth"),
+                            auth: value
+                                .get("auth")
+                                .and_then(|a| serde_json::from_value(a.clone()).ok()),
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
+        targets
+    }
+}
+
+/// One client target inside rp's generic equipment roster —
+/// [`RpView::equipment_targets`]. `field` is a dotted path (the same
+/// convention rp's own `field_errors` uses, e.g.
+/// `equipment.cameras.0.alpaca_url`) for **display only** — unlike
+/// `rp_client_joins`'s other two call sites, this is not run back through
+/// `field.replace('.', "/")` to derive a pointer, because `kind` is a
+/// config-controlled JSON key that may itself need RFC-6901 escaping.
+/// `url_pointer`/`auth_pointer` are pre-built, already-escaped JSON
+/// pointers.
+#[derive(Debug, Clone)]
+pub struct RpEquipmentTarget {
+    pub field: String,
+    pub url: String,
+    pub url_pointer: String,
+    pub auth_pointer: String,
+    pub auth: Option<ClientAuthView>,
 }
 
 /// Parse a lenient view out of a scanned config, distinguishing "view not
@@ -515,6 +590,102 @@ mod tests {
         )
         .unwrap();
         assert!(view.mount_guiding_auth().is_none());
+    }
+
+    #[test]
+    fn test_rp_view_equipment_targets_covers_arrays_and_the_singular_mount() {
+        let view: RpView = serde_json::from_str(
+            r#"{ "equipment": {
+                   "mount": { "alpaca_url": "http://localhost:11117",
+                              "guiding": { "url": "http://localhost:11130" },
+                              "auth": { "username": "observatory", "password": "mpw" } },
+                   "cameras": [ { "alpaca_url": "http://localhost:11122",
+                                  "auth": { "username": "observatory", "password": "cpw" } },
+                                { "alpaca_url": "http://localhost:11121" } ],
+                   "optical_trains": [ { "cameras": ["main"] } ] } }"#,
+        )
+        .unwrap();
+        let targets = view.equipment_targets();
+        assert_eq!(targets.len(), 3, "{targets:?}");
+
+        let mount = targets
+            .iter()
+            .find(|t| t.field == "equipment.mount.alpaca_url")
+            .expect("the singular mount target");
+        assert_eq!(mount.url, "http://localhost:11117");
+        assert_eq!(mount.url_pointer, "/equipment/mount/alpaca_url");
+        assert_eq!(mount.auth_pointer, "/equipment/mount/auth");
+        assert_eq!(
+            mount.auth.as_ref().unwrap().password.as_deref(),
+            Some("mpw")
+        );
+
+        let camera0 = targets
+            .iter()
+            .find(|t| t.field == "equipment.cameras.0.alpaca_url")
+            .expect("the first camera target");
+        assert_eq!(camera0.url, "http://localhost:11122");
+        assert_eq!(camera0.url_pointer, "/equipment/cameras/0/alpaca_url");
+        assert_eq!(camera0.auth_pointer, "/equipment/cameras/0/auth");
+        assert_eq!(
+            camera0.auth.as_ref().unwrap().password.as_deref(),
+            Some("cpw")
+        );
+
+        let camera1 = targets
+            .iter()
+            .find(|t| t.field == "equipment.cameras.1.alpaca_url")
+            .expect("the second camera target");
+        assert_eq!(camera1.url, "http://localhost:11121");
+        assert!(camera1.auth.is_none());
+
+        // optical_trains carries no alpaca_url — never a target.
+        assert!(!targets.iter().any(|t| t.field.contains("optical_trains")));
+    }
+
+    #[test]
+    fn test_rp_view_equipment_targets_empty_without_equipment() {
+        let view: RpView = serde_json::from_str(r#"{ "equipment": {} }"#).unwrap();
+        assert!(view.equipment_targets().is_empty());
+
+        let view: RpView = serde_json::from_str(r#"{}"#).unwrap();
+        assert!(view.equipment_targets().is_empty());
+    }
+
+    #[test]
+    fn test_rp_view_equipment_targets_escapes_a_slash_in_the_kind_key() {
+        // `equipment` is opaque (never checked against EquipmentConfig's
+        // known field names before this runs), so a stray '/' or '~' in a
+        // kind key must not mis-segment the fix pointer — RFC 6901, same
+        // reason ui-htmx's free-form `drivers` map keys go through
+        // `fix::escape_token`.
+        let view: RpView = serde_json::from_str(
+            r#"{ "equipment": { "weird/kind": [ { "alpaca_url": "http://localhost:11122" } ],
+                                 "weird~kind": { "alpaca_url": "http://localhost:11117" } } }"#,
+        )
+        .unwrap();
+        let targets = view.equipment_targets();
+        assert_eq!(targets.len(), 2, "{targets:?}");
+
+        let array_entry = targets
+            .iter()
+            .find(|t| t.url == "http://localhost:11122")
+            .expect("the array-kind target");
+        assert_eq!(
+            array_entry.url_pointer,
+            "/equipment/weird~1kind/0/alpaca_url"
+        );
+        assert_eq!(array_entry.auth_pointer, "/equipment/weird~1kind/0/auth");
+
+        let singular_entry = targets
+            .iter()
+            .find(|t| t.url == "http://localhost:11117")
+            .expect("the singular-kind target");
+        assert_eq!(
+            singular_entry.url_pointer,
+            "/equipment/weird~0kind/alpaca_url"
+        );
+        assert_eq!(singular_entry.auth_pointer, "/equipment/weird~0kind/auth");
     }
 
     #[test]
