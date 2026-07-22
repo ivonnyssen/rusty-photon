@@ -20,9 +20,11 @@ jobs:
     runs-on: ubuntu-latest
     # Explicit timeout — see test.yml's plan job. The `cargo test --test bdd`
     # step intermittently hangs; without a cap GitHub's 360 min default let
-    # the `scheduled / ubuntu / beta*` jobs burn a full 6 h. 30 min is ~2x
-    # the ~12-15 min healthy run.
-    timeout-minutes: 30
+    # the `scheduled / ubuntu / beta*` jobs burn a full 6 h. The suite's
+    # healthy runtime has crept up (~28 min by 2026-07-19, routinely over
+    # 30 min by 2026-07-22 even without a hang), so 30 min started clipping
+    # healthy runs; 60 min restores headroom without reopening the 6 h risk.
+    timeout-minutes: 60
     name: scheduled / ubuntu / nightly
     steps:
       - uses: actions/checkout@v7
@@ -135,7 +137,7 @@ jobs:
     # Cargo semver rules (i.e cargo does not update to a new major version unless explicitly told
     # to).
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     name: scheduled / ubuntu / beta / updated
     # There's no point running this if no Cargo.lock was checked in in the first place, since we'd
     # just redo what happened in the regular test job. Unfortunately, hashFiles only works in if on
@@ -200,7 +202,7 @@ jobs:
   beta:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     name: scheduled / ubuntu / beta
     steps:
       - uses: actions/checkout@v7
@@ -258,8 +260,17 @@ jobs:
     # drift surface without depending on someone reading scheduled-workflow
     # logs. Skipped on push, pull_request, and workflow_dispatch so manual
     # debugging runs don't churn an issue.
+    #
+    # cancelled() alongside failure(): a job killed by timeout-minutes reports
+    # conclusion "cancelled", not "failure" — failure() alone silently misses
+    # it. Safe to OR in here: this workflow only triggers on push/schedule/
+    # workflow_dispatch (github.head_ref is always empty for those), so the
+    # concurrency group above always falls back to the per-run github.run_id
+    # and can never cancel one of this workflow's own runs via supersession —
+    # every "cancelled" conclusion this can see is a genuine timeout (or a
+    # human explicitly cancelling, which is worth surfacing too).
     needs: [nightly, discover-miri, miri, update, beta]
-    if: failure() && github.event_name == 'schedule'
+    if: (failure() || cancelled()) && github.event_name == 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

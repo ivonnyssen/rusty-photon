@@ -25,8 +25,11 @@ jobs:
     # Explicit timeout — see test.yml's plan job. The sanitizer `cargo test`
     # step runs the same BDD scenarios that intermittently hang; without a
     # cap GitHub's 360 min default let `ubuntu / nightly / address` burn a
-    # full 6 h. 40 min sits ~2x above the ~19 min healthy sanitizer run.
-    timeout-minutes: 40
+    # full 6 h. The suite's healthy runtime has crept up (address was
+    # already timing out at 40 min by 2026-07-20, leak within ~1-2 min of
+    # the cap by 2026-07-22), so 40 min started clipping healthy runs;
+    # 80 min restores headroom without reopening the 6 h risk.
+    timeout-minutes: 80
     name: ubuntu / nightly / ${{ matrix.sanitizer }}
     strategy:
       fail-fast: false
@@ -93,8 +96,17 @@ jobs:
     # ASan/LSan findings surface without depending on someone reading
     # scheduled-workflow logs. Skipped on push, pull_request, and
     # workflow_dispatch so manual debugging runs don't churn an issue.
+    #
+    # cancelled() alongside failure(): a job killed by timeout-minutes reports
+    # conclusion "cancelled", not "failure" — failure() alone silently misses
+    # it. Safe to OR in here: this workflow only triggers on push/schedule/
+    # workflow_dispatch (github.head_ref is always empty for those), so the
+    # concurrency group above always falls back to the per-run github.run_id
+    # and can never cancel one of this workflow's own runs via supersession —
+    # every "cancelled" conclusion this can see is a genuine timeout (or a
+    # human explicitly cancelling, which is worth surfacing too).
     needs: sanitizers
-    if: failure() && github.event_name == 'schedule'
+    if: (failure() || cancelled()) && github.event_name == 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
