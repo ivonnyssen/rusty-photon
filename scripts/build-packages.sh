@@ -15,13 +15,20 @@
 #      (ZWO_SDK_LIB_DIR); each service's own blob is also copied into its
 #      gitignored services/<svc>/pkg/lib/ as that package's payload
 #      (ADR-013) — no blob is shared between packages, so the zwo debs
-#      co-install without file conflicts,
-#   3. release-build the selected services with the RUNPATH the zwo-*
-#      packages need (-Wl,-rpath,/usr/lib/rusty-photon; uniform across
-#      binaries, harmless where unused), then strip. The two zwo services
-#      each build in their OWN cargo invocation: cargo unifies features
-#      per invocation, so batching them would re-union the per-device
-#      libzwo-sys links and both binaries would need every blob again,
+#      co-install without file conflicts. svbony-camera is staged the same
+#      way for the *link* (SVBONY_SDK_LIB_DIR) but, per ADR-018 (no license
+#      grant at all), its blob is never copied into pkg/lib/ or bundled in
+#      the package — the operator downloads it onto the target machine
+#      post-install via rusty-photon-svbony-sdk-install instead (see
+#      services/svbony-camera/pkg/postinst); the RUNPATH set in step 3
+#      below is what lets that operator-installed copy resolve at runtime,
+#   3. release-build the selected services with the RUNPATH the zwo-* and
+#      svbony-camera packages need (-Wl,-rpath,/usr/lib/rusty-photon;
+#      uniform across binaries, harmless where unused), then strip. The two
+#      zwo services each build in their OWN cargo invocation: cargo unifies
+#      features per invocation, so batching them would re-union the
+#      per-device libzwo-sys links and both binaries would need every blob
+#      again,
 #   4. per service: cargo deb --no-build --no-strip (a rebuild would lose
 #      the staged env/RUSTFLAGS); with --rpm also cargo generate-rpm,
 #   5. collect artifacts into dist/<version>/ + SHA256SUMS.txt.
@@ -59,6 +66,16 @@ QHY_URL_BASE="https://www.qhyccd.com/file/repository/publish/SDK/$(echo "$QHY_SD
 # against must come from the same indi-3rdparty commit. The immutable commit
 # SHA in the download URL is the integrity statement, same as in the action.
 ZWO_SDK_REF="b0802f28055b67aa6a99580d260c3bb4c27eba4b"
+
+# Must match the `ref` default in .github/actions/install-svbony-sdk/action.yml
+# AND the `REF` in services/svbony-camera/pkg/rusty-photon-svbony-sdk-install
+# (checker-enforced): the blob this script links against at build time, the
+# blob CI links against, and the blob the on-target installer downloads must
+# all come from the same indi-3rdparty commit. Same integrity posture as
+# ZWO_SDK_REF above — no separate sha256 pin needed here, since this staging
+# step (unlike rusty-photon-svbony-sdk-install's real, curled-and-verified
+# pin) never ships the blob to an operator machine.
+SVBONY_SDK_REF="cd50a3b95032d850cca28d8162513276bc1349ba"
 
 usage() {
     sed -n '/^# Usage:/,/^$/{s/^# \{0,1\}//p}' "$0"
@@ -125,22 +142,29 @@ fi
 needs_qhy=0
 needs_zwo_camera=0
 needs_zwo_focuser=0
+needs_svbony=0
 case " $SERVICES " in *" qhy-camera "*) needs_qhy=1 ;; esac
 # libzwo-sys links per device feature (ADR-014): zwo-camera needs only
 # libASICamera2, zwo-focuser only libEAFFocuser.
 case " $SERVICES " in *" zwo-camera "*) needs_zwo_camera=1 ;; esac
 case " $SERVICES " in *" zwo-focuser "*) needs_zwo_focuser=1 ;; esac
+case " $SERVICES " in *" svbony-camera "*) needs_svbony=1 ;; esac
 
 case "$(uname -m)" in
     x86_64)
         QHY_FILE="sdk_linux64_${QHY_SDK_VERSION}.tar.gz"
         QHY_SHA256="$QHY_SHA256_X86_64"
         ZWO_ARCH=x64
+        # indi-3rdparty's libsvbony blobs use their own arch naming,
+        # distinct from libasi's (amd64, not x64) — see
+        # install-svbony-sdk/action.yml's "Determine SVBony SDK arch" step.
+        SVBONY_ARCH=amd64
         ;;
     aarch64)
         QHY_FILE="sdk_linux_arm64_${QHY_SDK_VERSION}.tar.gz"
         QHY_SHA256="$QHY_SHA256_AARCH64"
         ZWO_ARCH=armv8
+        SVBONY_ARCH=armv8
         ;;
     *) die "unsupported architecture $(uname -m) (need x86_64 or aarch64)" ;;
 esac
@@ -247,11 +271,40 @@ if [ "$needs_zwo_camera" = 1 ] || [ "$needs_zwo_focuser" = 1 ]; then
     fi
 fi
 
+if [ "$needs_svbony" = 1 ]; then
+    SVBONY_CACHE="$CACHE/svbony-$SVBONY_SDK_REF-$(uname -m)"
+    mkdir -p "$SVBONY_CACHE"
+    # Staged under the plain linker name so libsvbony-sys's
+    # `-lSVBCameraSDK` resolves it via SVBONY_SDK_LIB_DIR below — mirrors
+    # install-svbony-sdk's sudo-free provisioning step exactly (same
+    # source, same per-arch blob, same "just the linker name, no SOVERSION
+    # dance" reasoning: the vendored .bin carries no embedded SONAME).
+    if [ ! -f "$SVBONY_CACHE/libSVBCameraSDK.so" ]; then
+        [ "$SKIP_STAGING" = 0 ] || die "--skip-sdk-staging set but $SVBONY_CACHE/libSVBCameraSDK.so is missing"
+        fetch "https://github.com/indilib/indi-3rdparty/raw/$SVBONY_SDK_REF/libsvbony/libSVBCameraSDK_${SVBONY_ARCH}.bin" \
+            "$SVBONY_CACHE/libSVBCameraSDK.so"
+    fi
+    # libsvbony-sys/build.rs adds this to its link search path ahead of its
+    # /usr/local/lib default (mirrors ZWO_SDK_LIB_DIR). Unlike ZWO, no
+    # services/svbony-camera/pkg/lib/ payload copy follows: per ADR-018,
+    # SVBony's SDK carries no license grant at all, so this package never
+    # bundles it — rusty-photon-svbony-sdk-install downloads it onto the
+    # target machine instead (services/svbony-camera/pkg/postinst points
+    # the operator at it). This staged copy exists only to satisfy the
+    # build-time link; the RUNPATH baked into RUSTFLAGS below is what lets
+    # the operator-installed copy resolve at runtime.
+    SVBONY_SDK_LIB_DIR="$SVBONY_CACHE"
+    export SVBONY_SDK_LIB_DIR
+    echo "SVBony SDK (indi-3rdparty $SVBONY_SDK_REF) staged: SVBONY_SDK_LIB_DIR=$SVBONY_SDK_LIB_DIR"
+fi
+
 # ---- build ----------------------------------------------------------------
-# The RUNPATH lets the SONAME-less bundled ZWO blobs resolve from
-# /usr/lib/rusty-photon at runtime. Deliberately set here, not in a build.rs
-# (which would ripple into Bazel/repin). Overrides any ambient RUSTFLAGS so
-# the produced binaries do not depend on the invoking shell's environment.
+# The RUNPATH lets the SONAME-less bundled ZWO blobs, and the SONAME-less
+# operator-installed SVBony blob (rusty-photon-svbony-sdk-install), resolve
+# from /usr/lib/rusty-photon at runtime. Deliberately set here, not in a
+# build.rs (which would ripple into Bazel/repin). Overrides any ambient
+# RUSTFLAGS so the produced binaries do not depend on the invoking shell's
+# environment.
 RUSTFLAGS="-C link-arg=-Wl,-rpath,/usr/lib/rusty-photon"
 export RUSTFLAGS
 

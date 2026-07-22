@@ -94,11 +94,19 @@ mechanical delivery differs in one respect worth flagging (see
    installs the bare `libSVBCameraSDK.so` linker name with no SOVERSION/
    symlink pair — see `docs/services/svbony-camera.md`'s Packaging section
    and `install-svbony-sdk/action.yml`'s header comment for the full trace.
-   **Not yet wired into `scripts/build-packages.sh` itself** (no
-   `needs_svbony` SDK-staging leg exists there yet — deferred alongside the
-   Bazel-side SDK-fetch rule, see `docs/plans/svbony-camera.md`'s Status
-   section), so the RUNPATH-linked binary side is documented and decided
-   but not yet exercised end-to-end against a real build.
+   **Update (issue #679, 2026-07-22): wired into `scripts/build-packages.sh`.**
+   A `needs_svbony` SDK-staging leg now stages the pinned blob for the link
+   only (mirroring QHY/ZWO's staging, but — per this ADR — never copying it
+   into `pkg/lib/` or bundling it in the package); the RUNPATH-linked binary
+   side is now exercised end-to-end (verified: `readelf -d` on the built
+   binary shows `NEEDED libSVBCameraSDK.so` + `RUNPATH
+   /usr/lib/rusty-photon`). This fixed `nightly-packages`' Linux legs, which
+   were failing with `unable to find library -lSVBCameraSDK` (the script
+   discovered `svbony-camera` via its `pkg/` directory but staged no SDK for
+   it). The Bazel-side SDK-fetch rule remains separately deferred — see
+   `docs/plans/svbony-camera.md`'s Status section. On macOS,
+   `scripts/build-tarballs.sh`/`scripts/generate-brew-formulas.sh` exclude
+   `svbony-camera` outright instead (no confirmed `mac_arm64` blob).
 5. **If SVBony ever grants written redistribution permission** (worth an
    email — they are responsive to indi-3rdparty issues), this collapses to
    ADR-013's ZWO bucket with no layout change beyond adding the blob as a
@@ -135,10 +143,11 @@ mechanical delivery differs in one respect worth flagging (see
   (`rusty-photon-svbony-sdk-install`) before first camera use, exactly like
   QHY operators today; ZWO operators still need nothing extra.
 - The SDK ref is pinned in the helper script
-  (`services/svbony-camera/pkg/rusty-photon-svbony-sdk-install`) and
-  cross-checked by `scripts/check-pkg-assets.sh` against
-  `.github/actions/install-svbony-sdk`'s default ref, mirroring QHY's
-  version/sha256 pin parity-check pattern — a version bump is a deliberate,
+  (`services/svbony-camera/pkg/rusty-photon-svbony-sdk-install`) AND in
+  `scripts/build-packages.sh` (issue #679), both cross-checked by
+  `scripts/check-pkg-assets.sh` against `.github/actions/install-svbony-sdk`'s
+  default ref, mirroring QHY's version/sha256 pin parity-check pattern — a
+  version bump is a deliberate,
   checked PR.
 - `svbony-camera`'s Bazel build still bakes `SVBONY_SKIP_NATIVE_LINK=1`
   unconditionally — Phase F added a plain-Cargo

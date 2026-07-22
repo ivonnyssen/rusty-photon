@@ -290,12 +290,11 @@ if [ -f "$bp" ] && [ -f "$act" ]; then
     fi
 fi
 
-# The SVBony blob ref is pinned in two places (unlike QHY/ZWO, there is no
-# build-packages.sh staging step for SVBony yet — see
-# docs/plans/svbony-camera.md Phase G — so this cross-check is between the
-# runtime install helper and the CI provisioning action only): the CI-linked
-# blobs (install-svbony-sdk) and the blob the operator-run helper downloads
-# post-install must come from the same indi-3rdparty commit.
+# The SVBony blob ref is pinned in three places: the blob build-packages.sh
+# links against at build time, the blob CI links against (install-svbony-sdk),
+# and the blob the operator-run helper downloads post-install
+# (rusty-photon-svbony-sdk-install) — all three must come from the same
+# indi-3rdparty commit.
 svbony_helper=services/svbony-camera/pkg/rusty-photon-svbony-sdk-install
 svbony_act=.github/actions/install-svbony-sdk/action.yml
 if [ -f "$svbony_helper" ] && [ -f "$svbony_act" ]; then
@@ -303,6 +302,13 @@ if [ -f "$svbony_helper" ] && [ -f "$svbony_act" ]; then
     s2=$(awk '$1 == "ref:" { in_ref = 1 } in_ref && $1 == "default:" { print $2; exit }' "$svbony_act")
     if [ -z "$s1" ] || [ "$s1" != "$s2" ]; then
         err "SVBony SDK ref pin mismatch: rusty-photon-svbony-sdk-install='$s1' vs install-svbony-sdk default='$s2'"
+    fi
+fi
+if [ -f "$bp" ] && [ -f "$svbony_act" ]; then
+    s3=$(sed -n 's/^SVBONY_SDK_REF="\(.*\)"$/\1/p' "$bp" | head -1)
+    s4=$(awk '$1 == "ref:" { in_ref = 1 } in_ref && $1 == "default:" { print $2; exit }' "$svbony_act")
+    if [ -z "$s3" ] || [ "$s3" != "$s4" ]; then
+        err "SVBony SDK ref pin mismatch: build-packages.sh='$s3' vs install-svbony-sdk default='$s4'"
     fi
 fi
 
@@ -338,6 +344,19 @@ if [ -f "$bt" ] && [ -f "$act" ]; then
     if [ -z "$z1" ] || [ "$z1" != "$z2" ]; then
         err "ZWO SDK ref pin mismatch: build-tarballs.sh='$z1' vs install-zwo-sdk default='$z2'"
     fi
+fi
+
+# svbony-camera has no confirmed mac_arm64 SVBony SDK blob (see
+# build-tarballs.sh's own exclusion comment), so it must never appear in a
+# macOS tarball or Homebrew formula: both build-tarballs.sh and
+# generate-brew-formulas.sh must carry the matching exclusion guard, so a
+# formula never gets rendered pointing at a tarball that was never built.
+gbf=scripts/generate-brew-formulas.sh
+if [ -f "$bt" ] && ! grep -qF '*" svbony-camera "*)' "$bt"; then
+    err "$bt: svbony-camera exclusion guard missing (no confirmed mac_arm64 SVBony SDK blob)"
+fi
+if [ -f "$gbf" ] && ! grep -qF '*" svbony-camera "*)' "$gbf"; then
+    err "$gbf: svbony-camera exclusion guard missing — must match build-tarballs.sh's, or formula generation will fail on the missing tarball"
 fi
 
 # ---- Windows suite MSI (installer/, ADR-015) --------------------------------

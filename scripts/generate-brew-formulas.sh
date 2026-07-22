@@ -105,6 +105,21 @@ else
     SERVICES="$ALL_SERVICES"
 fi
 
+# build-tarballs.sh never produces a svbony-camera tarball on macOS (no
+# confirmed mac_arm64 SVBony SDK blob — see its own matching exclusion and
+# docs/services/svbony-camera.md Packaging), so this default (no
+# --services) set must drop it too: rendering a formula pointing at a
+# tarball that was never built would fail later, at the missing-file check
+# below, with a far less actionable message.
+case " $SERVICES " in
+    *" svbony-camera "*)
+        if [ -n "$ONLY_SERVICES" ]; then
+            die "svbony-camera has no macOS tarball (no confirmed mac_arm64 SVBony SDK blob — see docs/services/svbony-camera.md Packaging)"
+        fi
+        SERVICES=$(echo " $SERVICES " | sed 's/ svbony-camera / /')
+        ;;
+esac
+
 # rusty-photon-dsd-fp2 -> RustyPhotonDsdFp2 (Homebrew's filename -> class
 # convention: capitalize each dash-separated token).
 class_of() {
