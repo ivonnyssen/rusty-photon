@@ -35,6 +35,12 @@ jobs:
       # exclude).
       - name: Install ZWO SDK
         uses: ./.github/actions/install-zwo-sdk
+      # svbony-camera + the vendored svbony-rs/libsvbony-sys link the native
+      # SVBony SDK unconditionally (no SVBONY_SKIP_NATIVE_LINK set below); the
+      # full-workspace build below needs it on the link path (provision, don't
+      # exclude) — same shape as the ZWO step above.
+      - name: Install SVBony SDK
+        uses: ./.github/actions/install-svbony-sdk
       - name: Install nightly
         uses: dtolnay/rust-toolchain@nightly
       - name: Install cargo-nextest
@@ -145,6 +151,12 @@ jobs:
       # exclude).
       - name: Install ZWO SDK
         uses: ./.github/actions/install-zwo-sdk
+      # svbony-camera + the vendored svbony-rs/libsvbony-sys link the native
+      # SVBony SDK unconditionally (no SVBONY_SKIP_NATIVE_LINK set below); the
+      # full-workspace build below needs it on the link path (provision, don't
+      # exclude) — same shape as the ZWO step above.
+      - name: Install SVBony SDK
+        uses: ./.github/actions/install-svbony-sdk
       - name: Install beta
         if: hashFiles('Cargo.lock') != ''
         uses: dtolnay/rust-toolchain@beta
@@ -201,6 +213,12 @@ jobs:
       # exclude).
       - name: Install ZWO SDK
         uses: ./.github/actions/install-zwo-sdk
+      # svbony-camera + the vendored svbony-rs/libsvbony-sys link the native
+      # SVBony SDK unconditionally (no SVBONY_SKIP_NATIVE_LINK set below); the
+      # full-workspace build below needs it on the link path (provision, don't
+      # exclude) — same shape as the ZWO step above.
+      - name: Install SVBony SDK
+        uses: ./.github/actions/install-svbony-sdk
       - name: Install beta
         uses: dtolnay/rust-toolchain@beta
       - name: Install cargo-nextest
