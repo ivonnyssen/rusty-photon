@@ -214,8 +214,10 @@ graph TD;
   **enumerates every connected ASI camera**,
   registering each as an ASCOM device (index 0, 1, 2, …) with its serial-derived
   UniqueID. Because `ASIGetSerialNumber` requires an *open* camera (see *Device
-  identity*), enumeration opens each camera briefly to mint its identity, then
-  closes it; the eager per-device connect handshake happens on
+  identity*), enumeration reads each camera's serial via `zwo_rs::Sdk::read_serial`
+  (`ASIOpenCamera` + `ASIGetSerialNumber`/`ASIGetID` + `ASICloseCamera` — no
+  `ASIInitCamera`, so this passive path touches no camera state); the eager
+  per-device connect handshake, which does call `ASIInitCamera`, happens on
   `set_connected(true)`. **Identity fallback (`mint_identity`):** older ASI models
   (e.g. the ASI1600) expose *neither* a hardware serial (`ASIGetSerialNumber`) nor
   a programmed flash ID (`ASIGetID`) — that read returns a general SDK error.
@@ -467,7 +469,8 @@ EAF; those belong to the other zwo services.)
 
 - **C0.** At startup `build()` enumerates all connected ASI cameras
   and registers each as an ASCOM device with its
-  serial-derived UniqueID (opening each camera briefly to read the serial). Zero
+  serial-derived UniqueID (opening each camera briefly via `Sdk::read_serial` to
+  read the serial, without initialising it — see C5). Zero
   discovered cameras is **not** a hard failure — the service starts with no Camera
   devices, logged at `warn!`; a later reload re-enumerates.
 - **C1.** `set_connected(true)` on a device opens *that* camera, `ASIInitCamera`,
@@ -483,13 +486,15 @@ EAF; those belong to the other zwo services.)
   actuation on startup, connect, or `config.apply` (workspace tenet
   [*no actuation on connect*](../workspace.md#project-tenets)); cooler commands
   are issued only by explicit ASCOM setters, and no cooler setpoint is restored
-  on connect. **Known caveat:** the C0 serial read runs
-  `ASIOpenCamera`+`ASIInitCamera` on every camera at *service start* (and again
-  on every `config.apply` reload) — `ASIInitCamera` resets controls to SDK
-  defaults (cooler off) and no actuation has been observed, but its internal
-  behaviour is vendor-controlled, so startup does touch the hardware through
-  the opaque SDK. Deferring the serial read to first connect would remove the
-  startup contact (tracked as a follow-up issue).
+  on connect. The C0 serial read runs only `ASIOpenCamera` +
+  `ASIGetSerialNumber`/`ASIGetID` + `ASICloseCamera` (`zwo_rs::Sdk::read_serial`)
+  on every camera at *service start* and on every `config.apply` reload —
+  `ASIOpenCamera` is documented by the vendor SDK as not affecting a capturing
+  camera. It deliberately never calls `ASIInitCamera` (which resets controls,
+  e.g. the cooler, to SDK defaults); that call is reserved for the per-device
+  `set_connected(true)` handshake (C1), so startup and reload touch no camera
+  state. (Resolved issue #637; previously this path ran `ASIInitCamera` on
+  every enumerated camera at startup.)
 
 ### Geometry, binning, ROI
 

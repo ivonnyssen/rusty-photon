@@ -347,6 +347,46 @@ impl Sdk {
         Ok(infos)
     }
 
+    /// Read camera `index`'s stable serial without initialising it.
+    ///
+    /// Unlike [`Camera::serial`] (which requires an already-open, initialised
+    /// [`Camera`] from [`Sdk::open_camera`]), this calls only `ASIOpenCamera` +
+    /// `ASIGetSerialNumber`/`ASIGetID` + `ASICloseCamera` — it never calls
+    /// `ASIInitCamera`, which resets controls (e.g. the cooler) to SDK
+    /// defaults. `ASIOpenCamera` alone is documented as not affecting a
+    /// capturing camera, so this is safe to call from a passive path (startup
+    /// enumeration, config reload) per workspace tenet *no actuation on
+    /// connect*.
+    ///
+    /// # Errors
+    /// Returns [`Error::Asi`] if the index is out of range, the camera cannot
+    /// be opened, or it exposes neither a serial nor a flash id.
+    pub fn read_serial(&self, index: usize) -> Result<String> {
+        #[cfg(feature = "simulation")]
+        {
+            if index >= crate::SIM_CAMERA_COUNT {
+                return Err(Error::Asi(AsiError::InvalidIndex));
+            }
+            Ok(SIM_SERIAL.to_owned())
+        }
+        #[cfg(not(feature = "simulation"))]
+        {
+            let idx = i32::try_from(index).map_err(|_| Error::Asi(AsiError::InvalidIndex))?;
+            let info = read_camera_property(idx)?;
+            // SAFETY: `info.id` is a valid CameraID from enumeration; open it
+            // to read its serial. Deliberately no `ASIInitCamera` call — see
+            // this method's docs.
+            asi_check(unsafe { sys::ASIOpenCamera(info.id) } as i32)?;
+            let result = read_serial_raw(info.id);
+            // SAFETY: closes the camera opened above; `ASICloseCamera` is
+            // idempotent, so this runs regardless of the read's outcome.
+            unsafe {
+                let _ = sys::ASICloseCamera(info.id);
+            }
+            result
+        }
+    }
+
     /// Open and initialise the camera at enumeration `index`.
     ///
     /// On the real path this calls `ASIOpenCamera` + `ASIInitCamera`; the
@@ -417,18 +457,7 @@ impl Camera {
         #[cfg(feature = "simulation")]
         let serial = SIM_SERIAL.to_owned();
         #[cfg(not(feature = "simulation"))]
-        let serial = {
-            // SAFETY: `ASI_SN` is a POD `[u8; 8]`; the SDK fills it on success.
-            let mut sn: sys::ASI_SN = unsafe { std::mem::zeroed() };
-            if asi_check(unsafe { sys::ASIGetSerialNumber(self.info.id, &mut sn) } as i32).is_ok() {
-                hex8(&sn.id)
-            } else {
-                // SAFETY: as above; `ASIGetID` fills the 8-byte flash id.
-                let mut fid: sys::ASI_ID = unsafe { std::mem::zeroed() };
-                asi_check(unsafe { sys::ASIGetID(self.info.id, &mut fid) } as i32)?;
-                hex8(&fid.id)
-            }
-        };
+        let serial = read_serial_raw(self.info.id)?;
         Ok(serial)
     }
 
@@ -747,6 +776,27 @@ fn read_camera_property(index: i32) -> Result<CameraInfo> {
     let mut raw: sys::ASI_CAMERA_INFO = unsafe { std::mem::zeroed() };
     asi_check(unsafe { sys::ASIGetCameraProperty(&mut raw, index) } as i32)?;
     Ok(camera_info_from_raw(&raw))
+}
+
+/// Read an already-open camera's serial as a 16-character hex string.
+///
+/// Tries `ASIGetSerialNumber` (the 8-byte hardware serial) first, falling
+/// back to the writable flash id (`ASIGetID`, USB3 only) when the model
+/// reports no hardware serial. Shared by [`Camera::serial`] (an
+/// open-and-initialised camera) and [`Sdk::read_serial`] (open but
+/// uninitialised) — both only need the camera *open*.
+#[cfg(not(feature = "simulation"))]
+fn read_serial_raw(id: i32) -> Result<String> {
+    // SAFETY: `ASI_SN` is a POD `[u8; 8]`; the SDK fills it on success.
+    let mut sn: sys::ASI_SN = unsafe { std::mem::zeroed() };
+    if asi_check(unsafe { sys::ASIGetSerialNumber(id, &mut sn) } as i32).is_ok() {
+        Ok(hex8(&sn.id))
+    } else {
+        // SAFETY: as above; `ASIGetID` fills the 8-byte flash id.
+        let mut fid: sys::ASI_ID = unsafe { std::mem::zeroed() };
+        asi_check(unsafe { sys::ASIGetID(id, &mut fid) } as i32)?;
+        Ok(hex8(&fid.id))
+    }
 }
 
 #[cfg(not(feature = "simulation"))]
@@ -1089,6 +1139,24 @@ mod tests {
             .find(|c| c.control_type == ControlType::Exposure)
             .unwrap();
         assert_eq!(exposure.min, 32);
+    }
+
+    #[cfg(feature = "simulation")]
+    #[test]
+    fn read_serial_matches_the_open_camera_serial_without_a_camera_handle() {
+        let sdk = Sdk::new().unwrap();
+        let serial = sdk.read_serial(0).unwrap();
+        assert_eq!(serial, sdk.open_camera(0).unwrap().serial().unwrap());
+    }
+
+    #[cfg(feature = "simulation")]
+    #[test]
+    fn read_serial_out_of_range_is_rejected() {
+        let sdk = Sdk::new().unwrap();
+        assert_eq!(
+            sdk.read_serial(99).unwrap_err(),
+            Error::Asi(AsiError::InvalidIndex)
+        );
     }
 
     #[cfg(feature = "simulation")]

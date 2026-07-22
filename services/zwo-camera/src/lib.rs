@@ -270,10 +270,14 @@ impl BoundServer {
 /// Enumerate connected ASI cameras on the blocking thread pool, minting each
 /// device's serial-derived `UniqueID`.
 ///
-/// `ASIGetSerialNumber` requires an *open* camera, so each is opened briefly to
-/// read its serial and then closed (the per-device connect handshake happens
-/// later on `set_connected(true)`). The ASI SDK is blocking C FFI, so every SDK
-/// call funnels through [`tokio::task::spawn_blocking`] (design doc "Concurrency").
+/// `ASIGetSerialNumber` requires an *open* camera, so each is opened briefly via
+/// [`zwo_rs::Sdk::read_serial`] to read its serial and then closed — that call
+/// deliberately never runs `ASIInitCamera` (which resets controls, e.g. the
+/// cooler, to SDK defaults), so this passive path touches no camera state (the
+/// per-device connect handshake, which does initialise, happens later on
+/// `set_connected(true)`; see contract C5). The ASI SDK is blocking C FFI, so
+/// every SDK call funnels through [`tokio::task::spawn_blocking`] (design doc
+/// "Concurrency").
 async fn enumerate_cameras() -> Result<Vec<EnumeratedCamera>, ZwoCameraError> {
     let cameras =
         tokio::task::spawn_blocking(|| -> Result<Vec<EnumeratedCamera>, zwo_rs::Error> {
@@ -281,12 +285,7 @@ async fn enumerate_cameras() -> Result<Vec<EnumeratedCamera>, ZwoCameraError> {
             let infos = sdk.cameras()?;
             let mut out = Vec::with_capacity(infos.len());
             for (index, info) in infos.into_iter().enumerate() {
-                // Open briefly to read the stable serial, then close (the camera
-                // drops at the end of the block → `ASICloseCamera`).
-                let serial_result = {
-                    let camera = sdk.open_camera(index)?;
-                    camera.serial()
-                };
+                let serial_result = sdk.read_serial(index);
                 if let Err(ref e) = serial_result {
                     warn!(
                         camera = %info.name, error = %e,
