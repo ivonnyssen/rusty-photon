@@ -1162,7 +1162,7 @@ behind trait adapters → MCP wrapper) and Phase 6c-2's plan layout
 (decisions-resolved-first, then a work-breakdown ordered Step 1
 design doc → Step 2 BDD with `@wip` → Step 3 implementation →
 Step 4 activation). Per the
-[development-workflow](../skills/development-workflow.md) procedure,
+[development-workflow](../../skills/development-workflow.md) procedure,
 no implementation landed before BDD scenarios existed on disk.
 
 ###### Decisions resolved during Phase 6c-3 planning
@@ -1304,7 +1304,7 @@ during this planning pass.
 
 - [x] `services/rp/tests/features/center_on_target.feature`
   (~14 scenarios, `@wip` tag at top per
-  [testing.md §2.7](../skills/testing.md#27-use-wip-tag-for-scenarios-without-implementation-yet)):
+  [testing.md §2.7](../../skills/testing.md#27-use-wip-tag-for-scenarios-without-implementation-yet)):
   1. Catalog includes `center_on_target` (1)
   2. Single-iteration happy path — first solve already inside
      tolerance, sync fires, no slew, returns `attempts=1`,

@@ -397,6 +397,6 @@ portable.
 - [`docs/plans/archive/bazel-migration.md`](archive/bazel-migration.md) — interaction
   with the in-flight Bazel work.
 - [Embassy book](https://embassy.dev/book/) — async embedded Rust framework.
-- [esp-rs book](https://esp-rs.github.io/book/) — Espressif Rust toolchain.
+- [esp-rs book](https://docs.esp-rs.org/book/) — Espressif Rust toolchain.
 - [picoserve docs](https://docs.rs/picoserve/) — no_std HTTP server.
 - [esp-mbedtls](https://github.com/esp-rs/esp-mbedtls) — TLS for ESP32.
