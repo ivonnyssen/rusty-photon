@@ -33,6 +33,7 @@ _CATALOG_METADATA = [
     "//services/sentinel:pkg/doctor.toml",
     "//services/sky-survey-camera:pkg/doctor.toml",
     "//services/star-adventurer-gti:pkg/doctor.toml",
+    "//services/svbony-camera:pkg/doctor.toml",
     "//services/ui-htmx:pkg/doctor.toml",
     "//services/zwo-camera:pkg/doctor.toml",
     "//services/zwo-focuser:pkg/doctor.toml",
@@ -43,6 +44,7 @@ _CATALOG_METADATA = [
 # matches services/*/pkg/*.rules under Cargo).
 _UDEV_RULES = [
     "//services/qhy-camera:pkg/90-rusty-photon-qhy.rules",
+    "//services/svbony-camera:pkg/90-rusty-photon-svbony.rules",
     "//services/zwo-camera:pkg/90-rusty-photon-zwo.rules",
     "//services/zwo-focuser:pkg/90-rusty-photon-zwo-focuser.rules",
 ]
