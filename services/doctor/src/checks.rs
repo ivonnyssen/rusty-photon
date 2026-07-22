@@ -1414,6 +1414,7 @@ fn rp_client_joins(ctx: &Context) -> Vec<Check> {
             ctx,
             "equipment.mount.guiding.url",
             &url,
+            "/equipment/mount/guiding/url",
             ca_cert_present,
             "/equipment/mount/guiding/auth",
             rp.mount_guiding_auth().as_ref(),
@@ -1425,6 +1426,7 @@ fn rp_client_joins(ctx: &Context) -> Vec<Check> {
                 ctx,
                 "plate_solver.url",
                 url,
+                "/plate_solver/url",
                 ca_cert_present,
                 "/plate_solver/auth",
                 ps.auth.as_ref(),
@@ -1436,6 +1438,7 @@ fn rp_client_joins(ctx: &Context) -> Vec<Check> {
             ctx,
             &target.field,
             &target.url,
+            &target.url_pointer,
             ca_cert_present,
             &target.auth_pointer,
             target.auth.as_ref(),
@@ -1444,10 +1447,18 @@ fn rp_client_joins(ctx: &Context) -> Vec<Check> {
     checks
 }
 
+/// `url_pointer` is the already-escaped JSON pointer to `url`'s field —
+/// callers own escaping (static literals for the two hand-typed targets;
+/// [`RpEquipmentTarget::url_pointer`] for the generic roster, since a
+/// `kind` key there is config-controlled and may need RFC-6901 escaping).
+/// It is **not** derived from `field`: `field` is a dotted string for
+/// display only, and `.` → `/` naive substitution would mis-segment a
+/// pointer whenever a raw `/` or `~` appears inside a path component.
 fn rp_one_target(
     ctx: &Context,
     field: &str,
     url: &str,
+    url_pointer: &str,
     ca_cert_present: bool,
     auth_pointer: &str,
     current_auth: Option<&ClientAuthView>,
@@ -1467,7 +1478,7 @@ fn rp_one_target(
         .flatten()
         .map(|value| crate::report::FixOp::SetString {
             service: "rp".to_string(),
-            pointer: format!("/{}", field.replace('.', "/")),
+            pointer: url_pointer.to_string(),
             value,
         });
 
@@ -2817,6 +2828,38 @@ mod tests {
         );
         let ctx = config_only_ctx(dir.path());
         assert!(rp_client_joins(&ctx).is_empty());
+    }
+
+    #[test]
+    fn test_rp_equipment_kind_with_a_slash_gets_an_escaped_fix_pointer() {
+        // Regression for the JSON-pointer-escaping gap found in adversarial
+        // review of issue #663: `equipment` is opaque, so a stray '/' in a
+        // kind key must not mis-segment the fix pointer (RFC 6901).
+        let dir = tempfile::tempdir().unwrap();
+        write_json(
+            dir.path(),
+            "zwo-camera.json",
+            serde_json::json!({ "server": { "port": 11122,
+                "tls": { "cert": "/pki/acme-cert.pem", "key": "/pki/acme-key.pem" } } }),
+        );
+        write_json(
+            dir.path(),
+            "rp.json",
+            serde_json::json!({ "server": { "port": 11115 },
+                "equipment": { "weird/kind": [ { "alpaca_url": "http://localhost:11122" } ] } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        let checks = rp_client_joins(&ctx);
+        let transport = checks
+            .iter()
+            .find(|c| c.name == "joins.client-transport")
+            .expect("a scheme mismatch on the odd-keyed entry must be reported");
+        match &transport.fixes[..] {
+            [crate::report::FixOp::SetString { pointer, .. }] => {
+                assert_eq!(pointer, "/equipment/weird~1kind/0/alpaca_url");
+            }
+            other => unreachable!("{other:?}"),
+        }
     }
 
     #[test]

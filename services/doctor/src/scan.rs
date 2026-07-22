@@ -370,6 +370,13 @@ impl RpView {
             return targets;
         };
         for (kind, value) in kinds {
+            // `kind` is a JSON object key from the opaque `equipment` value
+            // (never validated against `EquipmentConfig`'s known field
+            // names before this point), so it must be RFC-6901-escaped
+            // before it becomes a pointer segment — same reason ui-htmx's
+            // free-form `drivers` map keys go through `escape_token`
+            // (fix.rs) rather than straight into a pointer string.
+            let escaped_kind = crate::fix::escape_token(kind);
             match value {
                 Value::Array(entries) => {
                     for (idx, entry) in entries.iter().enumerate() {
@@ -377,7 +384,8 @@ impl RpView {
                             targets.push(RpEquipmentTarget {
                                 field: format!("equipment.{kind}.{idx}.alpaca_url"),
                                 url: url.to_string(),
-                                auth_pointer: format!("/equipment/{kind}/{idx}/auth"),
+                                url_pointer: format!("/equipment/{escaped_kind}/{idx}/alpaca_url"),
+                                auth_pointer: format!("/equipment/{escaped_kind}/{idx}/auth"),
                                 auth: entry
                                     .get("auth")
                                     .and_then(|a| serde_json::from_value(a.clone()).ok()),
@@ -390,7 +398,8 @@ impl RpView {
                         targets.push(RpEquipmentTarget {
                             field: format!("equipment.{kind}.alpaca_url"),
                             url: url.to_string(),
-                            auth_pointer: format!("/equipment/{kind}/auth"),
+                            url_pointer: format!("/equipment/{escaped_kind}/alpaca_url"),
+                            auth_pointer: format!("/equipment/{escaped_kind}/auth"),
                             auth: value
                                 .get("auth")
                                 .and_then(|a| serde_json::from_value(a.clone()).ok()),
@@ -405,14 +414,19 @@ impl RpView {
 }
 
 /// One client target inside rp's generic equipment roster —
-/// [`RpView::equipment_targets`]. `field` is a dotted path matching the
-/// JSON pointer with `/` replaced by `.` (the same convention rp's own
-/// `field_errors` uses, e.g. `equipment.cameras.0.alpaca_url`), used both
-/// for display and to derive the scheme-fix pointer.
+/// [`RpView::equipment_targets`]. `field` is a dotted path (the same
+/// convention rp's own `field_errors` uses, e.g.
+/// `equipment.cameras.0.alpaca_url`) for **display only** — unlike
+/// `rp_client_joins`'s other two call sites, this is not run back through
+/// `field.replace('.', "/")` to derive a pointer, because `kind` is a
+/// config-controlled JSON key that may itself need RFC-6901 escaping.
+/// `url_pointer`/`auth_pointer` are pre-built, already-escaped JSON
+/// pointers.
 #[derive(Debug, Clone)]
 pub struct RpEquipmentTarget {
     pub field: String,
     pub url: String,
+    pub url_pointer: String,
     pub auth_pointer: String,
     pub auth: Option<ClientAuthView>,
 }
@@ -599,6 +613,7 @@ mod tests {
             .find(|t| t.field == "equipment.mount.alpaca_url")
             .expect("the singular mount target");
         assert_eq!(mount.url, "http://localhost:11117");
+        assert_eq!(mount.url_pointer, "/equipment/mount/alpaca_url");
         assert_eq!(mount.auth_pointer, "/equipment/mount/auth");
         assert_eq!(
             mount.auth.as_ref().unwrap().password.as_deref(),
@@ -610,6 +625,7 @@ mod tests {
             .find(|t| t.field == "equipment.cameras.0.alpaca_url")
             .expect("the first camera target");
         assert_eq!(camera0.url, "http://localhost:11122");
+        assert_eq!(camera0.url_pointer, "/equipment/cameras/0/alpaca_url");
         assert_eq!(camera0.auth_pointer, "/equipment/cameras/0/auth");
         assert_eq!(
             camera0.auth.as_ref().unwrap().password.as_deref(),
@@ -634,6 +650,42 @@ mod tests {
 
         let view: RpView = serde_json::from_str(r#"{}"#).unwrap();
         assert!(view.equipment_targets().is_empty());
+    }
+
+    #[test]
+    fn test_rp_view_equipment_targets_escapes_a_slash_in_the_kind_key() {
+        // `equipment` is opaque (never checked against EquipmentConfig's
+        // known field names before this runs), so a stray '/' or '~' in a
+        // kind key must not mis-segment the fix pointer — RFC 6901, same
+        // reason ui-htmx's free-form `drivers` map keys go through
+        // `fix::escape_token`.
+        let view: RpView = serde_json::from_str(
+            r#"{ "equipment": { "weird/kind": [ { "alpaca_url": "http://localhost:11122" } ],
+                                 "weird~kind": { "alpaca_url": "http://localhost:11117" } } }"#,
+        )
+        .unwrap();
+        let targets = view.equipment_targets();
+        assert_eq!(targets.len(), 2, "{targets:?}");
+
+        let array_entry = targets
+            .iter()
+            .find(|t| t.url == "http://localhost:11122")
+            .expect("the array-kind target");
+        assert_eq!(
+            array_entry.url_pointer,
+            "/equipment/weird~1kind/0/alpaca_url"
+        );
+        assert_eq!(array_entry.auth_pointer, "/equipment/weird~1kind/0/auth");
+
+        let singular_entry = targets
+            .iter()
+            .find(|t| t.url == "http://localhost:11117")
+            .expect("the singular-kind target");
+        assert_eq!(
+            singular_entry.url_pointer,
+            "/equipment/weird~0kind/alpaca_url"
+        );
+        assert_eq!(singular_entry.auth_pointer, "/equipment/weird~0kind/auth");
     }
 
     #[test]
