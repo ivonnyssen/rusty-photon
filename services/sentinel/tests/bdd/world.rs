@@ -271,14 +271,17 @@ impl SentinelWorld {
         std::fs::create_dir_all(&dir).expect("failed to create service manager dir");
         std::fs::write(dir.join("units.txt"), "").expect("failed to seed units.txt");
         // Tight timings so threshold/backoff scenarios resolve in seconds:
-        // discovery every 250ms, probe every 200ms, threshold 2, backoff
-        // 1s..2s, restart budget 1s.
+        // discovery every 250ms, probe every 200ms, threshold 4, backoff
+        // 1s..2s, restart budget 1s. Threshold is 4 (not the minimum 2) so
+        // the negative "records no restarts" assertions survive a loaded CI
+        // runner: a single slow/timed-out probe is normal jitter, and even
+        // two in a row must not read as a dead service — see issue #677.
         std::fs::write(
             dir.join("policy.json"),
             serde_json::json!({
                 "discovery_interval": "250ms",
                 "poll_interval": "200ms",
-                "failure_threshold": 2,
+                "failure_threshold": 4,
                 "restart_backoff": "1s",
                 "restart_backoff_max": "2s",
                 "restart_budget": "1s"
@@ -362,14 +365,19 @@ impl SentinelWorld {
 
     /// Write a supervised service's own `<service>.json` next to sentinel's
     /// config file, so discovery can derive its probe URL from the shared
-    /// `server` block.
+    /// `server` block. `bind_address` is pinned to the loopback literal the
+    /// stub actually listens on (matching every other service's BDD world)
+    /// so sentinel's probe never pays for a `localhost` hostname resolution
+    /// — a source of intermittent latency on loaded Windows CI runners that
+    /// contributed to issue #677.
     pub fn write_service_config(&mut self, service: &str, port: u16) {
         let dir = self
             .temp_dir
             .get_or_insert_with(|| TempDir::new().expect("failed to create temp dir"));
         std::fs::write(
             dir.path().join(format!("{service}.json")),
-            serde_json::json!({ "server": { "port": port } }).to_string(),
+            serde_json::json!({ "server": { "port": port, "bind_address": "127.0.0.1" } })
+                .to_string(),
         )
         .expect("failed to write sibling service config");
     }
