@@ -214,14 +214,18 @@ graph TD;
   **enumerates every connected ASI camera**,
   registering each as an ASCOM device (index 0, 1, 2, …) with its serial-derived
   UniqueID. Because `ASIGetSerialNumber` requires an *open* camera (see *Device
-  identity*), enumeration reads each camera's serial via `zwo_rs::Sdk::read_serial`
+  identity*), enumeration reads each camera's serial via
+  `zwo_rs::Sdk::open_uninitialised` + `UninitialisedCamera::serial`
   (`ASIOpenCamera` + `ASIGetSerialNumber`/`ASIGetID` + `ASICloseCamera` — no
   `ASIInitCamera`, so this passive path touches no camera state); the eager
   per-device connect handshake, which does call `ASIInitCamera`, happens on
-  `set_connected(true)`. **Identity fallback (`mint_identity`):** older ASI models
-  (e.g. the ASI1600) expose *neither* a hardware serial (`ASIGetSerialNumber`) nor
-  a programmed flash ID (`ASIGetID`) — that read returns a general SDK error.
-  Rather than fail the whole service, the camera falls back to a stable
+  `set_connected(true)`. A camera that cannot even be *opened* still fails
+  enumeration outright (unchanged from before this call stopped also
+  initialising) — only a post-open **identity fallback (`mint_identity`)**
+  is graceful: older ASI models (e.g. the ASI1600) expose *neither* a hardware
+  serial (`ASIGetSerialNumber`) nor a programmed flash ID (`ASIGetID`) — that
+  read returns a general SDK error. Rather than fail the whole service, the
+  camera falls back to a stable
   position-based identity (`noserial-{index}`, UniqueID
   `ZWO:{name}:noserial-{index}`), so a serial-less camera is still usable; it is
   unique per enumeration slot and stable across reconnects for the common
@@ -433,8 +437,8 @@ derives the UniqueID from the camera's hardware serial** — the same scheme as
 A **ZWO-specific wrinkle:** `ASIGetSerialNumber` (the stable 8-byte → 16-hex id,
 available only since ASI SDK driver V1.14.0227) requires the camera to be
 **opened first** — unlike QHY's pre-open read. So enumeration opens each camera
-briefly via `zwo_rs::Sdk::read_serial` (`ASIOpenCamera` + `ASIGetSerialNumber` —
-never `ASIInitCamera`, see C5) to read its serial, then closes it. The fallback
+briefly via `zwo_rs::Sdk::open_uninitialised` (`ASIOpenCamera` + `ASIGetSerialNumber`
+— never `ASIInitCamera`, see C5) to read its serial, then closes it. The fallback
 chain is:
 
 1. `ASIGetSerialNumber` (open briefly → read → close) — the canonical identity.
@@ -472,10 +476,15 @@ EAF; those belong to the other zwo services.)
 
 - **C0.** At startup `build()` enumerates all connected ASI cameras
   and registers each as an ASCOM device with its
-  serial-derived UniqueID (opening each camera briefly via `Sdk::read_serial` to
-  read the serial, without initialising it — see C5). Zero
-  discovered cameras is **not** a hard failure — the service starts with no Camera
-  devices, logged at `warn!`; a later reload re-enumerates.
+  serial-derived UniqueID (opening each camera briefly via
+  `Sdk::open_uninitialised` to read the serial, without initialising it — see
+  C5). Zero discovered cameras is **not** a hard failure — the service starts
+  with no Camera devices, logged at `warn!`; a later reload re-enumerates. A
+  camera that cannot even be *opened* for its serial read (e.g. removed
+  between `Sdk::cameras()` and the open, or claimed by another process) **is**
+  a hard failure for the whole enumeration (and so for `build()`/reload) —
+  only a *post-open* read failure (no serial, no flash id) is caught and
+  downgraded to the `noserial-{index}` fallback (see *Device identity*).
 - **C1.** `set_connected(true)` on a device opens *that* camera, `ASIInitCamera`,
   selects RAW16, snap mode, and caches `ASI_CAMERA_INFO`, supported binning modes,
   and exposure/gain/offset control caps. On success `Connected = true`.
@@ -490,7 +499,8 @@ EAF; those belong to the other zwo services.)
   [*no actuation on connect*](../workspace.md#project-tenets)); cooler commands
   are issued only by explicit ASCOM setters, and no cooler setpoint is restored
   on connect. The C0 serial read runs only `ASIOpenCamera` +
-  `ASIGetSerialNumber`/`ASIGetID` + `ASICloseCamera` (`zwo_rs::Sdk::read_serial`)
+  `ASIGetSerialNumber`/`ASIGetID` + `ASICloseCamera`
+  (`zwo_rs::Sdk::open_uninitialised` + `UninitialisedCamera::serial`)
   on every camera at *service start* and on every `config.apply` reload —
   `ASIOpenCamera` is documented by the vendor SDK as not affecting a capturing
   camera. It deliberately never calls `ASIInitCamera` (which resets controls,
