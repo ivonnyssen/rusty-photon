@@ -88,7 +88,8 @@ Key sources: NINA Advanced Sequencer
 (<https://nighttime-imaging.eu/docs/master/site/sequencer/advanced/advanced/>),
 Target Scheduler (<https://tcpalmer.github.io/nina-scheduler/>), Voyager
 DragScript (<https://wiki.starkeeper.it/index.php/DragScript>), ACP plan
-format (<http://solo.dc3.com/ar/RefDocs/HelpFiles/ACP81Help/planfmt.html>),
+format (<http://web.archive.org/web/20260210084339/http://solo.dc3.com/ar/RefDocs/HelpFiles/ACP81Help/planfmt.html>,
+dead as of 2026-07 — linked via Wayback Machine),
 Ekos Scheduler
 (<https://kstars-docs.kde.org/en/user_manual/ekos-scheduler.html>), RTS2
 dispatch scheduling (<https://arxiv.org/pdf/1005.1014>).

@@ -162,9 +162,9 @@ depend on) shaped the final decision.
 
 | Spike | Branch / PR | Conclusion |
 |---|---|---|
-| **Read-side: `fitsrs`** | `chore/fits-spike` ([`docs/plans/fits-spike.md`](../plans/fits-spike.md), [`docs/plans/fits-spike-report.md`](../plans/fits-spike-report.md)) | Green. fitsrs covers all reads our consumers need: `Cursor<&[u8]>` API, BITPIX 8/16/32/-32/-64, multi-HDU, header keyword inspection, 7.7 ms parse for 300×300 BITPIX=16. Does NOT auto-apply BSCALE/BZERO/BLANK — caller must read header keys and apply scaling, which is fine because the wrapper crate becomes the one place that does so. **fitsrs has no writer (README marks `[ ] FITS writer/serializer` as unimplemented).** |
-| **Write-side: stock `fitsio` + vcpkg CFITSIO on Windows MSVC** | [`feature/fits-cfitsio-vcpkg-spike`](../plans/fits-cfitsio-vcpkg-spike.md) ([report](../plans/fits-cfitsio-vcpkg-spike-report.md), PR #113) | Green technically. `vcpkg install --triplet x64-windows-static-md cfitsio` (no `[pthreads]` feature) + `choco install pkgconfiglite` + appropriate `PKG_CONFIG_*` env vars makes stock `fitsio = "0.21"` from crates.io build, link, and run on Windows MSVC with **no source patches anywhere**. Bypasses the [`simonrw/rust-fitsio#230`](https://github.com/simonrw/rust-fitsio/issues/230) blocker that originally forced the first supersession. **But the runtime is non-reentrant CFITSIO** — tests must run with `--test-threads=1`, and any production code path with concurrent FITS I/O must serialise via a process-wide Mutex. |
-| **Pure-Rust read+write: `fitsio-pure`** | [`feature/fitsio-pure-spike`](../plans/fitsio-pure-spike.md) ([report](../plans/fitsio-pure-spike-report.md), PR #115) | Green across all three platforms. Pure-Rust dual-purpose crate published 2026-02-15. All 8 spike tests pass on `ubuntu-latest` (31 s), `macos-latest` (37 s), `windows-latest` (108 s) — no system deps anywhere. `read_image_physical` auto-applies BSCALE/BZERO. QHY600-scale 122 MB round-trip in 3.4-7.4 s wall-clock. Code quality is reasonable (zero `unsafe`, modern hand-rolled error type with source-chaining, 37 production unwraps, extensive defensive arithmetic). **But maintenance is concentrated in one author**: `meawoppl` is the only committer, the project is 3 months old, last commit was 2026-02-19 (71 days quiet at decision time), 1 GitHub star, 0 external contributors. |
+| **Read-side: `fitsrs`** | `chore/fits-spike` (spike doc/report not committed to `docs/plans/`) | Green. fitsrs covers all reads our consumers need: `Cursor<&[u8]>` API, BITPIX 8/16/32/-32/-64, multi-HDU, header keyword inspection, 7.7 ms parse for 300×300 BITPIX=16. Does NOT auto-apply BSCALE/BZERO/BLANK — caller must read header keys and apply scaling, which is fine because the wrapper crate becomes the one place that does so. **fitsrs has no writer (README marks `[ ] FITS writer/serializer` as unimplemented).** |
+| **Write-side: stock `fitsio` + vcpkg CFITSIO on Windows MSVC** | `feature/fits-cfitsio-vcpkg-spike` ([PR #113](https://github.com/ivonnyssen/rusty-photon/pull/113); spike doc/report not committed to `docs/plans/`) | Green technically. `vcpkg install --triplet x64-windows-static-md cfitsio` (no `[pthreads]` feature) + `choco install pkgconfiglite` + appropriate `PKG_CONFIG_*` env vars makes stock `fitsio = "0.21"` from crates.io build, link, and run on Windows MSVC with **no source patches anywhere**. Bypasses the [`simonrw/rust-fitsio#230`](https://github.com/simonrw/rust-fitsio/issues/230) blocker that originally forced the first supersession. **But the runtime is non-reentrant CFITSIO** — tests must run with `--test-threads=1`, and any production code path with concurrent FITS I/O must serialise via a process-wide Mutex. |
+| **Pure-Rust read+write: `fitsio-pure`** | `feature/fitsio-pure-spike` ([PR #115](https://github.com/ivonnyssen/rusty-photon/pull/115); spike doc/report not committed to `docs/plans/`) | Green across all three platforms. Pure-Rust dual-purpose crate published 2026-02-15. All 8 spike tests pass on `ubuntu-latest` (31 s), `macos-latest` (37 s), `windows-latest` (108 s) — no system deps anywhere. `read_image_physical` auto-applies BSCALE/BZERO. QHY600-scale 122 MB round-trip in 3.4-7.4 s wall-clock. Code quality is reasonable (zero `unsafe`, modern hand-rolled error type with source-chaining, 37 production unwraps, extensive defensive arithmetic). **But maintenance is concentrated in one author**: `meawoppl` is the only committer, the project is 3 months old, last commit was 2026-02-19 (71 days quiet at decision time), 1 GitHub star, 0 external contributors. |
 
 The cfitsio-vcpkg spike succeeded but the resulting architecture
 fails the QHY600 throughput requirement. Option 1 from the spike
@@ -389,12 +389,10 @@ Neither spike crate ships in `main` to keep the workspace lean.
 
 ### Spike artifacts (Amendment A)
 
-- [`docs/plans/fits-spike.md`](../plans/fits-spike.md) /
-  [`fits-spike-report.md`](../plans/fits-spike-report.md) — fitsrs reads
-- [`docs/plans/fits-cfitsio-vcpkg-spike.md`](../plans/fits-cfitsio-vcpkg-spike.md) /
-  [`fits-cfitsio-vcpkg-spike-report.md`](../plans/fits-cfitsio-vcpkg-spike-report.md) — stock fitsio + vcpkg CFITSIO
-- [`docs/plans/fitsio-pure-spike.md`](../plans/fitsio-pure-spike.md) /
-  [`fitsio-pure-spike-report.md`](../plans/fitsio-pure-spike-report.md) — pure-Rust reader+writer
+Spike docs/reports were not committed to `docs/plans/`; see the branches and
+PRs in the investigation table above (`chore/fits-spike`,
+[PR #113](https://github.com/ivonnyssen/rusty-photon/pull/113),
+[PR #115](https://github.com/ivonnyssen/rusty-photon/pull/115)).
 
 ### External
 
@@ -411,9 +409,3 @@ Neither spike crate ships in `main` to keep the workspace lean.
   workload reasons.
 - [Issue #107: Pick a workspace FITS library](https://github.com/ivonnyssen/rusty-photon/issues/107)
 - [`docs/plans/archive/fits-library-consolidation.md`](../plans/archive/fits-library-consolidation.md)
-- [`docs/plans/fits-spike.md`](../plans/fits-spike.md) /
-  [`fits-spike-report.md`](../plans/fits-spike-report.md) — fitsrs read-side spike
-- [`docs/plans/fits-cfitsio-vcpkg-spike.md`](../plans/fits-cfitsio-vcpkg-spike.md) /
-  [`fits-cfitsio-vcpkg-spike-report.md`](../plans/fits-cfitsio-vcpkg-spike-report.md) — stock fitsio + vcpkg insurance-policy spike
-- [N.I.N.A. on Bitbucket (canonical)](https://bitbucket.org/Isbeorn/nina) —
-  precedent for hand-rolled writer + optional CFITSIO architecture

@@ -2,7 +2,7 @@
 
 ## Status
 
-**Superseded by [ADR-001 Amendment A](../decisions/001-fits-file-support.md).**
+**Superseded by [ADR-001 Amendment A](../../decisions/001-fits-file-support.md).**
 The workspace now consolidates FITS I/O in `crates/rp-fits` (reads via
 `fitsrs`, writes via a hand-rolled pure-Rust BITPIX 8/16/32 writer).
 Both `fitrs` and the hand-rolled sky-survey-camera parser have been
