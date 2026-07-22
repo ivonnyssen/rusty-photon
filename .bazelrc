@@ -320,6 +320,31 @@ build:windows --spawn_strategy=local
 # auto-detected core count. Cut concurrency hard on Windows to test.
 build:windows --jobs=8
 
+# issue #676: the `test:ci --local_test_jobs=HOST_CPUS*1.25` cores+1
+# overcommit above was tuned against ubuntu timing data only (see that
+# comment's "observed: ... critical path on ubuntu"), then applied
+# uniformly to every OS. On windows-latest's 4 vCPUs that's 5 concurrent
+# test actions, and a large fraction of this workspace's `bdd`-tagged
+# suites are the 3-process OmniSim + rp + session-runner topology (18+ of
+# them, incl. rp:bdd and session-runner:bdd's own 8 shards each) — so
+# through most of the ~9-minute Windows BDD step, several of those heavy
+# trios run concurrently. Windows process creation/scheduling is
+# materially costlier than POSIX fork/exec, so the same ratio that's
+# fine on Linux/macOS starves Windows harder: confirmed directly in a
+# failing run's own Bazel status line (`(4 actions running)` /
+# `(8 actions, 5-6 running)` at the moment of failure) and in the
+# session-runner/rp tracing timestamps themselves (a slew that finished
+# in ~14s on macOS was still <10% done at the same elapsed time on
+# Windows; a separate scenario's MCP session between session-runner and
+# rp went silently dead ~8.6s into a run, well before any explicit kill
+# step). `test:windows` (like `build:windows --jobs=8` just above)
+# applies after `test:ci` via --enable_platform_specific_config, so it
+# overrides the cores+1 value on Windows only, leaving the Linux/macOS
+# tuning from #624 untouched. Dropping to plain HOST_CPUS removes
+# exactly the "one suite's worth of overcommit" #624 added; tighten
+# further (e.g. HOST_CPUS*0.75) if flakes persist at this level.
+test:windows --local_test_jobs=HOST_CPUS
+
 # Forward OMNISIM_PATH (the install-omnisim action's pinned OmniSim binary path,
 # consumed by bdd_infra::rp_harness::OmniSimHandle::start) into test sandboxes.
 # Deliberately on build:ci — applied to EVERY ci invocation (build, fast test,
