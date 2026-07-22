@@ -1467,6 +1467,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn bytes_per_pixel_matches_every_image_type() {
+        // Pins the current mapping (`bytes_per_pixel`'s doc comment flags
+        // RAW10/12/14, Y10/12/14, and RGB32 as assumptions pending hardware
+        // confirmation) so an accidental edit is caught here rather than
+        // only once real hardware disagrees.
+        let cases = [
+            (ImageType::Raw8, 1),
+            (ImageType::Raw10, 2),
+            (ImageType::Raw12, 2),
+            (ImageType::Raw14, 2),
+            (ImageType::Raw16, 2),
+            (ImageType::Y8, 1),
+            (ImageType::Y10, 2),
+            (ImageType::Y12, 2),
+            (ImageType::Y14, 2),
+            (ImageType::Y16, 2),
+            (ImageType::Rgb24, 3),
+            (ImageType::Rgb32, 4),
+        ];
+        for (image_type, want) in cases {
+            assert_eq!(image_type.bytes_per_pixel(), want, "{image_type:?}");
+        }
+    }
+
+    #[test]
     fn camera_is_send() {
         // The SVBony SDK's thread-safety is undocumented, so `Camera` is
         // `Send` (movable between threads) but deliberately not `Sync`. Lock
@@ -1610,6 +1635,30 @@ mod tests {
                 .unwrap_err(),
             Error::Svb(SvbError::InvalidControlType)
         );
+    }
+
+    #[cfg(feature = "simulation")]
+    #[test]
+    fn reading_an_unsupported_control_type_is_rejected() {
+        let sdk = Sdk::new().unwrap();
+        let cam = sdk.open_camera(0).unwrap();
+        // `Gamma` is a real `ControlType` the header defines, but the
+        // simulation's read side (unlike its write side, already covered by
+        // `set_read_only_control_is_rejected`'s sibling case) does not model
+        // it, so it should hit the same catch-all rejection.
+        assert_eq!(
+            cam.control_value(ControlType::Gamma).unwrap_err(),
+            Error::Svb(SvbError::InvalidControlType)
+        );
+    }
+
+    #[cfg(feature = "simulation")]
+    #[test]
+    fn target_temperature_celsius_reads_back_the_set_point() {
+        let sdk = Sdk::new().unwrap();
+        let cam = sdk.open_camera(0).unwrap();
+        cam.set_target_temperature_celsius(-15.5).unwrap();
+        assert!((cam.target_temperature_celsius().unwrap() - (-15.5)).abs() < f64::EPSILON);
     }
 
     #[cfg(feature = "simulation")]

@@ -191,8 +191,6 @@ pub trait CameraHandle: std::fmt::Debug + Send + Sync {
     /// `exposure*2+500ms` deadline. Returns the raw Raw16 frame bytes.
     fn capture(&self, request: CaptureRequest) -> BackendResult<Vec<u8>>;
 
-    /// Whether this camera supports ST4 pulse guiding (`SVBCanPulseGuide`).
-    fn can_pulse_guide(&self) -> BackendResult<bool>;
     /// Issue an ST4 guide pulse (`SVBPulseGuide`) — blocks at the SDK level
     /// for `duration_ms` (see `camera.rs::pulse_guide`'s doc comment for why
     /// this seam keeps that a literal blocking call in v0).
@@ -410,12 +408,6 @@ impl CameraHandle for SvbonyCameraHandle {
         }
     }
 
-    fn can_pulse_guide(&self) -> BackendResult<bool> {
-        let guard = self.camera.lock();
-        let camera = guard.as_ref().ok_or_else(BackendError::closed)?;
-        Ok(camera.can_pulse_guide()?)
-    }
-
     fn pulse_guide(&self, direction: GuideDirection, duration_ms: i32) -> BackendResult<()> {
         let guard = self.camera.lock();
         let camera = guard.as_ref().ok_or_else(BackendError::closed)?;
@@ -480,6 +472,22 @@ mod handle_tests {
         };
         let frame = handle.capture(request).unwrap();
         assert_eq!(frame.len(), 64 * 64 * 2);
+        handle.close().unwrap();
+    }
+
+    #[test]
+    fn production_handle_stop_video_capture_and_pulse_guide_round_trip() {
+        let handle = sim_handle();
+        handle.open().unwrap();
+        handle.set_camera_mode(CameraMode::Normal).unwrap();
+        handle.start_video_capture().unwrap();
+        handle.stop_video_capture().unwrap();
+
+        // `svbony-rs`'s simulated `SVBPulseGuide` is a no-op that never
+        // fails regardless of `supports_pulse_guide` — the ST4-availability
+        // gate lives in `camera.rs`'s ASCOM layer (`sensor.supports_pulse_guide`,
+        // PG1), not in this seam. This exercises the delegation itself.
+        handle.pulse_guide(GuideDirection::North, 5).unwrap();
         handle.close().unwrap();
     }
 }
@@ -798,10 +806,6 @@ pub(crate) mod mock {
                 0u8;
                 request.width as usize * request.height as usize * 2
             ])
-        }
-
-        fn can_pulse_guide(&self) -> BackendResult<bool> {
-            Ok(self.property_ex.lock().supports_pulse_guide)
         }
 
         fn pulse_guide(&self, _direction: GuideDirection, _duration_ms: i32) -> BackendResult<()> {

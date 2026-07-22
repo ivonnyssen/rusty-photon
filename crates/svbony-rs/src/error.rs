@@ -159,4 +159,46 @@ mod tests {
             Error::Svb(SvbError::Unknown(999))
         );
     }
+
+    /// Every code 1-19 in the hand-transcribed header maps to its own
+    /// distinct, non-`Unknown` variant — a full sweep so a future header
+    /// edit that drops or reorders an arm (and silently falls through to
+    /// `Unknown`) fails here instead of only being caught by chance in
+    /// whichever single code an existing test happened to exercise.
+    #[test]
+    fn from_code_maps_every_known_code_to_a_distinct_variant() {
+        let known = [
+            (1, SvbError::InvalidIndex),
+            (2, SvbError::InvalidId),
+            (3, SvbError::InvalidControlType),
+            (4, SvbError::CameraClosed),
+            (5, SvbError::CameraRemoved),
+            (6, SvbError::InvalidPath),
+            (7, SvbError::InvalidFileFormat),
+            (8, SvbError::InvalidSize),
+            (9, SvbError::InvalidImgType),
+            (10, SvbError::OutOfBoundary),
+            (11, SvbError::Timeout),
+            (12, SvbError::InvalidSequence),
+            (13, SvbError::BufferTooSmall),
+            (14, SvbError::VideoModeActive),
+            (15, SvbError::ExposureInProgress),
+            (16, SvbError::GeneralError),
+            (17, SvbError::InvalidMode),
+            (18, SvbError::InvalidDirection),
+            (19, SvbError::UnknownSensorType),
+        ];
+        for (code, want) in known {
+            let got = SvbError::from_code(code);
+            assert_eq!(got, want, "code {code}");
+            assert_ne!(got, SvbError::Unknown(code), "code {code} fell through");
+        }
+    }
+
+    #[test]
+    fn from_code_maps_codes_outside_the_known_range_to_unknown() {
+        for code in [0, 20, -1, i32::MAX, i32::MIN] {
+            assert_eq!(SvbError::from_code(code), SvbError::Unknown(code));
+        }
+    }
 }

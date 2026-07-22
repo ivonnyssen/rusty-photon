@@ -1352,6 +1352,26 @@ mod tests {
     }
 
     #[test]
+    fn guide_direction_maps_every_ascom_direction() {
+        assert_eq!(
+            guide_direction(GuideDirection::North),
+            svbony_rs::GuideDirection::North
+        );
+        assert_eq!(
+            guide_direction(GuideDirection::South),
+            svbony_rs::GuideDirection::South
+        );
+        assert_eq!(
+            guide_direction(GuideDirection::East),
+            svbony_rs::GuideDirection::East
+        );
+        assert_eq!(
+            guide_direction(GuideDirection::West),
+            svbony_rs::GuideDirection::West
+        );
+    }
+
+    #[test]
     fn bayer_offset_mapping() {
         assert_eq!(bayer_offsets(BayerPattern::Rg), (0, 0));
         assert_eq!(bayer_offsets(BayerPattern::Bg), (1, 1));
@@ -1493,6 +1513,73 @@ mod tests {
         assert_eq!(cam.gain().await.unwrap(), 50);
     }
 
+    // --- offset (the ASCOM Offset == SVBony BlackLevel control, GO1) ------------------
+
+    #[tokio::test]
+    async fn offset_is_not_implemented_when_the_control_is_absent() {
+        let cam =
+            connected_device(MockCameraHandle::default().without_control(ControlType::BlackLevel));
+        assert_eq!(
+            cam.offset().await.unwrap_err().code,
+            ASCOMError::NOT_IMPLEMENTED.code
+        );
+        assert_eq!(
+            cam.offset_min().await.unwrap_err().code,
+            ASCOMError::NOT_IMPLEMENTED.code
+        );
+        assert_eq!(
+            cam.offset_max().await.unwrap_err().code,
+            ASCOMError::NOT_IMPLEMENTED.code
+        );
+        assert_eq!(
+            cam.set_offset(0).await.unwrap_err().code,
+            ASCOMError::NOT_IMPLEMENTED.code
+        );
+    }
+
+    #[tokio::test]
+    async fn set_offset_rejects_an_out_of_range_value() {
+        let cam = connected_device(MockCameraHandle::default());
+        let max = cam.offset_max().await.unwrap();
+        assert_eq!(
+            cam.set_offset(max + 1).await.unwrap_err().code,
+            ASCOMError::INVALID_VALUE.code
+        );
+    }
+
+    #[tokio::test]
+    async fn set_offset_round_trips_a_valid_value() {
+        let cam = connected_device(MockCameraHandle::default());
+        assert_ne!(
+            cam.offset().await.unwrap(),
+            42,
+            "picked a non-default value"
+        );
+        cam.set_offset(42).await.unwrap();
+        assert_eq!(cam.offset().await.unwrap(), 42);
+    }
+
+    // --- readout mode -------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn readout_mode_defaults_to_zero_and_lists_the_known_modes() {
+        let cam = connected_device(MockCameraHandle::default());
+        assert_eq!(cam.readout_mode().await.unwrap(), 0);
+        assert!(!cam.readout_modes().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn set_readout_mode_rejects_out_of_range_and_round_trips_valid() {
+        let cam = connected_device(MockCameraHandle::default());
+        let modes = cam.readout_modes().await.unwrap();
+        assert_eq!(
+            cam.set_readout_mode(modes.len()).await.unwrap_err().code,
+            ASCOMError::INVALID_VALUE.code
+        );
+        cam.set_readout_mode(modes.len() - 1).await.unwrap();
+        assert_eq!(cam.readout_mode().await.unwrap(), modes.len() - 1);
+    }
+
     // --- binning / ROI (B1-B3, R1-R3) --------------------------------------------------
 
     #[tokio::test]
@@ -1601,6 +1688,27 @@ mod tests {
         let cam = connected_device(MockCameraHandle::default());
         cam.set_cooler_on(true).await.unwrap();
         assert!(cam.cooler_on().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn ccd_temperature_and_cooler_power_read_the_live_sensor() {
+        let cam = connected_device(MockCameraHandle::default());
+        assert!(cam.can_get_cooler_power().await.unwrap());
+        // The mock's default CurrentTemperature/CoolerPower controls (K4).
+        assert!((cam.ccd_temperature().await.unwrap() - 20.0).abs() < 1e-9);
+        assert!((cam.cooler_power().await.unwrap() - 0.0).abs() < 1e-9);
+        cam.set_cooler_on(true).await.unwrap();
+        assert!((cam.cooler_power().await.unwrap() - 60.0).abs() < 1e-9);
+    }
+
+    #[tokio::test]
+    async fn cooler_power_is_not_implemented_without_temp_control() {
+        let cam = connected_device(MockCameraHandle::default().without_temp_control());
+        assert!(!cam.can_get_cooler_power().await.unwrap());
+        assert_eq!(
+            cam.cooler_power().await.unwrap_err().code,
+            ASCOMError::NOT_IMPLEMENTED.code
+        );
     }
 
     // --- exposure state machine (E1-E9) --------------------------------------------------
@@ -1715,6 +1823,14 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(400)).await;
         assert!(!cam.image_ready().await.unwrap());
         assert_eq!(cam.camera_state().await.unwrap(), CameraState::Idle);
+    }
+
+    #[tokio::test]
+    async fn aborting_with_no_exposure_in_flight_is_a_no_op() {
+        let cam = connected_device(MockCameraHandle::default());
+        cam.abort_exposure().await.unwrap();
+        assert_eq!(cam.camera_state().await.unwrap(), CameraState::Idle);
+        assert!(!cam.image_ready().await.unwrap());
     }
 
     #[tokio::test]
