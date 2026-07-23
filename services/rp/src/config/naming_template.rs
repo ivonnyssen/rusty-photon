@@ -1,26 +1,26 @@
-//! `session.file_naming_pattern` (rp-targets.md § File-naming
-//! template): config-load validation, plus [`CompiledTemplate`]'s
-//! render/parse-back engine. Parses a pattern into literal/token
-//! segments, rejects unknown tokens, missing quota/uniqueness tokens,
-//! and adjacent tokens with no unambiguous literal separator between
-//! them ([`validate_pattern`], called at config load); compiles a
+//! `session.file_naming_pattern` and `session.directory_pattern`
+//! (rp-targets.md § File-naming template): config-load validation,
+//! plus [`CompiledTemplate`]'s render/parse-back engine. Parses a
+//! pattern into literal/token segments, rejects unknown tokens and
+//! adjacent tokens with no unambiguous literal separator between them
+//! ([`validate_pattern`]/[`validate_directory_pattern`], called at
+//! config load — the former additionally requires the quota/
+//! uniqueness tokens `file_naming_pattern` needs); compiles a
 //! validated pattern into a reusable regex-backed engine that renders
-//! [`TemplateFields`] into a filename base and parses one back
-//! ([`CompiledTemplate`]).
+//! [`TemplateFields`] into a filename/directory base and parses one
+//! back ([`CompiledTemplate`]).
 //!
-//! Landed: both halves of this module. **Not yet landed: any caller.**
-//! `capture` still writes `<doc_uuid_8>.fits` regardless of the
-//! configured pattern (Decision 11's `target` parameter — the thing
-//! that would supply `render`'s `target`/`night_date`/`frame_type`
-//! fields — hasn't landed), and the on-disk frame scan behind target
-//! progress (rp-targets.md § Progress derivation) doesn't call
-//! `parse` yet either.
+//! [`NamingTemplates`] bundles both compiled patterns; `capture`
+//! (`mcp::internals::do_capture`, Decision 11) is the landed caller —
+//! see rp.md § Capture Tool Details.
 
 use std::collections::HashMap;
 use std::time::Duration;
 
 use chrono::NaiveDate;
 use regex::Regex;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
 use rp_targets::{Binning, TargetSlug};
 
@@ -190,6 +190,18 @@ pub fn validate_pattern(pattern: &str) -> Result<(), String> {
     validate_segments(&segments)
 }
 
+/// Validates a `session.directory_pattern` value: every token must be
+/// known and unambiguous, same as [`validate_pattern`], but — unlike
+/// `file_naming_pattern` — there is no quota/uniqueness-token
+/// requirement (the documented default,
+/// `"{target}/{night_date}/{frame_type}"`, has neither; a directory
+/// only needs to be an unambiguous path component, not identify a
+/// single frame).
+pub fn validate_directory_pattern(pattern: &str) -> Result<(), String> {
+    let segments = parse_segments(pattern)?;
+    check_unambiguous(&segments)
+}
+
 /// The body of [`validate_pattern`], operating on already-parsed
 /// segments so [`CompiledTemplate::compile`] can validate and compile
 /// in one parse of the pattern string rather than two.
@@ -216,13 +228,20 @@ fn validate_segments(segments: &[Segment<'_>]) -> Result<(), String> {
         );
     }
 
+    check_unambiguous(segments)
+}
+
+/// The adjacent-token-ambiguity check shared by [`validate_segments`]
+/// (`file_naming_pattern`) and [`validate_directory_pattern`]
+/// (`directory_pattern`) — the only rule the latter needs.
+fn check_unambiguous(segments: &[Segment<'_>]) -> Result<(), String> {
     // Two tokens directly adjacent (no literal at all between them) are
     // always ambiguous.
     for window in segments.windows(2) {
         if let [Segment::Token(left), Segment::Token(right)] = window {
             let (left, right) = (left.name, right.name);
             return Err(format!(
-                "file_naming_pattern places {{{left}}} directly next to {{{right}}} with no literal separator between them"
+                "naming pattern places {{{left}}} directly next to {{{right}}} with no literal separator between them"
             ));
         }
     }
@@ -237,7 +256,7 @@ fn validate_segments(segments: &[Segment<'_>]) -> Result<(), String> {
             {
                 let (left, right) = (left.name, right.name);
                 return Err(format!(
-                    "file_naming_pattern's separator {sep:?} between {{{left}}} and {{{right}}} does not unambiguously split them"
+                    "naming pattern's separator {sep:?} between {{{left}}} and {{{right}}} does not unambiguously split them"
                 ));
             }
         }
@@ -250,7 +269,9 @@ fn validate_segments(segments: &[Segment<'_>]) -> Result<(), String> {
 /// `Light` frames bucket against `AcquisitionGoal` quotas (Dark/Flat/
 /// Bias live under their own dirs) — see rp-targets.md § File-naming
 /// template.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, derive_more::Display)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, derive_more::Display,
+)]
 pub enum FrameType {
     #[display("Light")]
     Light,
@@ -274,6 +295,23 @@ impl FrameType {
             "Bias" => Some(FrameType::Bias),
             _ => None,
         }
+    }
+}
+
+/// The `{target}` value `capture` uses for a calibration frame
+/// (`Dark`/`Flat`/`Bias`) when the caller supplied no explicit
+/// `target` — a reserved slug equal to the lowercased frame type, so
+/// every calibration frame of one type shares a directory bucket
+/// (rp.md § Capture Tool Details, rp-targets.md § File-naming
+/// template). `None` for `Light`, which always requires an explicit
+/// `target` — callers should never reach this for `Light`.
+#[must_use]
+pub fn reserved_calibration_slug(frame_type: FrameType) -> Option<&'static str> {
+    match frame_type {
+        FrameType::Light => None,
+        FrameType::Dark => Some("dark"),
+        FrameType::Flat => Some("flat"),
+        FrameType::Bias => Some("bias"),
     }
 }
 
@@ -410,7 +448,26 @@ impl CompiledTemplate {
     pub fn compile(pattern: &str) -> Result<Self, String> {
         let segments = parse_segments(pattern)?;
         validate_segments(&segments)?;
+        Self::build(segments)
+    }
 
+    /// As [`Self::compile`], but validates against
+    /// [`validate_directory_pattern`]'s lighter contract (no quota/
+    /// uniqueness-token requirement) — for `session.directory_pattern`.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::compile`].
+    pub fn compile_directory(pattern: &str) -> Result<Self, String> {
+        let segments = parse_segments(pattern)?;
+        check_unambiguous(&segments)?;
+        Self::build(segments)
+    }
+
+    /// Shared regex/validator-building body of [`Self::compile`] and
+    /// [`Self::compile_directory`], which differ only in which
+    /// validation runs first.
+    fn build(segments: Vec<Segment<'_>>) -> Result<Self, String> {
         let mut parts = Vec::with_capacity(segments.len());
         let mut regex_pattern = String::from("^");
         let mut validators = HashMap::new();
@@ -512,6 +569,52 @@ impl CompiledTemplate {
             }
         }
         Some(fields)
+    }
+}
+
+/// `session.directory_pattern` and `session.file_naming_pattern`
+/// (rp.md § Persistence), each compiled once at startup — `directory`
+/// renders/parses the per-frame subdirectory, `file` the filename base
+/// within it. `capture` renders `directory` then `file` to build the
+/// final on-disk path (rp.md § Capture Tool Details).
+#[derive(Debug)]
+pub struct NamingTemplates {
+    pub directory: CompiledTemplate,
+    pub file: CompiledTemplate,
+}
+
+impl NamingTemplates {
+    /// `session.directory_pattern`'s default when unset but
+    /// `file_naming_pattern` is configured (rp-targets.md §
+    /// File-naming template).
+    pub const DEFAULT_DIRECTORY_PATTERN: &'static str = "{target}/{night_date}/{frame_type}";
+
+    /// Compiles both patterns from `SessionConfig`. `directory_pattern`
+    /// falls back to [`Self::DEFAULT_DIRECTORY_PATTERN`] when unset —
+    /// only `file_naming_pattern` needs to be configured to opt in.
+    /// `Ok(None)` when `file_naming_pattern` is unset (today's flat
+    /// `<doc_uuid_8>.fits` capture behavior).
+    ///
+    /// # Errors
+    ///
+    /// Same as [`CompiledTemplate::compile`]/[`CompiledTemplate::compile_directory`]
+    /// — should never trigger here in practice, since `load_config`
+    /// already validates both patterns via [`validate_pattern`]/
+    /// [`validate_directory_pattern`] before this runs.
+    pub fn from_session_config(
+        config: &super::session::SessionConfig,
+    ) -> Result<Option<Self>, String> {
+        let Some(file_pattern) = config.file_naming_pattern.as_deref() else {
+            return Ok(None);
+        };
+        let directory_pattern = config
+            .directory_pattern
+            .as_deref()
+            .unwrap_or(Self::DEFAULT_DIRECTORY_PATTERN);
+        Ok(Some(Self {
+            directory: CompiledTemplate::compile_directory(directory_pattern)?,
+            file: CompiledTemplate::compile(file_pattern)?,
+        }))
     }
 }
 
@@ -683,5 +786,125 @@ mod tests {
         ] {
             assert_eq!(FrameType::parse(&ft.to_string()), Some(ft));
         }
+    }
+
+    #[test]
+    fn frame_type_deserializes_from_its_display_string() {
+        for (json, expected) in [
+            ("\"Light\"", FrameType::Light),
+            ("\"Dark\"", FrameType::Dark),
+            ("\"Flat\"", FrameType::Flat),
+            ("\"Bias\"", FrameType::Bias),
+        ] {
+            let parsed: FrameType = serde_json::from_str(json).unwrap();
+            assert_eq!(parsed, expected);
+        }
+    }
+
+    #[test]
+    fn reserved_calibration_slug_covers_every_calibration_type() {
+        assert_eq!(reserved_calibration_slug(FrameType::Dark), Some("dark"));
+        assert_eq!(reserved_calibration_slug(FrameType::Flat), Some("flat"));
+        assert_eq!(reserved_calibration_slug(FrameType::Bias), Some("bias"));
+        assert_eq!(reserved_calibration_slug(FrameType::Light), None);
+    }
+
+    // --- directory_pattern validation / compilation ------------------
+
+    #[test]
+    fn default_directory_pattern_is_valid() {
+        validate_directory_pattern(NamingTemplates::DEFAULT_DIRECTORY_PATTERN).unwrap();
+    }
+
+    #[test]
+    fn directory_pattern_has_no_quota_or_uniqueness_requirement() {
+        // Unlike file_naming_pattern, a directory_pattern with none of
+        // target/filter/binning/exposure/uuid8/frame_number is valid —
+        // it only needs to be an unambiguous path component.
+        validate_directory_pattern("nightly").unwrap();
+    }
+
+    #[test]
+    fn directory_pattern_rejects_unknown_tokens() {
+        let err = validate_directory_pattern("{target}/{night_date}/{bogus_token}").unwrap_err();
+        assert!(err.contains("bogus_token"), "{err}");
+    }
+
+    #[test]
+    fn directory_pattern_rejects_ambiguous_adjacent_tokens() {
+        let err = validate_directory_pattern("{target}{night_date}").unwrap_err();
+        assert!(
+            err.contains("target") && err.contains("night_date"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn compile_directory_accepts_the_default_and_renders_it() {
+        let template =
+            CompiledTemplate::compile_directory(NamingTemplates::DEFAULT_DIRECTORY_PATTERN)
+                .unwrap();
+        let fields = TemplateFields {
+            target: Some(TargetSlug::new("m33").unwrap()),
+            night_date: Some(NaiveDate::from_ymd_opt(2026, 6, 2).unwrap()),
+            frame_type: Some(FrameType::Light),
+            ..Default::default()
+        };
+        assert_eq!(template.render(&fields).unwrap(), "m33/2026-06-02/Light");
+        assert_eq!(template.parse("m33/2026-06-02/Light").unwrap(), fields);
+    }
+
+    // --- NamingTemplates ----------------------------------------------
+
+    fn session_config(
+        file_naming_pattern: Option<&str>,
+        directory_pattern: Option<&str>,
+    ) -> super::super::session::SessionConfig {
+        super::super::session::SessionConfig {
+            data_directory: "/tmp/rp-test".to_string(),
+            session_state_file: String::new(),
+            file_naming_pattern: file_naming_pattern.map(str::to_string),
+            directory_pattern: directory_pattern.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn naming_templates_is_none_when_file_naming_pattern_is_unset() {
+        let config = session_config(None, None);
+        assert!(NamingTemplates::from_session_config(&config)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn naming_templates_defaults_directory_pattern_when_unset() {
+        let config = session_config(Some(DEFAULT_PATTERN), None);
+        let templates = NamingTemplates::from_session_config(&config)
+            .unwrap()
+            .unwrap();
+        let fields = TemplateFields {
+            target: Some(TargetSlug::new("m33").unwrap()),
+            night_date: Some(NaiveDate::from_ymd_opt(2026, 6, 2).unwrap()),
+            frame_type: Some(FrameType::Light),
+            ..Default::default()
+        };
+        assert_eq!(
+            templates.directory.render(&fields).unwrap(),
+            "m33/2026-06-02/Light"
+        );
+    }
+
+    #[test]
+    fn naming_templates_honors_an_explicit_directory_pattern() {
+        let config = session_config(Some(DEFAULT_PATTERN), Some("{target}/{frame_type}"));
+        let templates = NamingTemplates::from_session_config(&config)
+            .unwrap()
+            .unwrap();
+        let fields = TemplateFields {
+            target: Some(TargetSlug::new("dark").unwrap()),
+            frame_type: Some(FrameType::Dark),
+            ..Default::default()
+        };
+        assert_eq!(templates.directory.render(&fields).unwrap(), "dark/Dark");
     }
 }

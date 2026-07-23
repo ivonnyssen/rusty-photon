@@ -12,10 +12,22 @@ Feature: Round-trippable file-naming template config-load validation (P1)
   token (`{uuid8}` or `{frame_number}`); it must compile to an
   unambiguous anchored regex — two variable-width tokens can't sit
   adjacent with no literal separator excluded from both charsets; and
-  unknown tokens are rejected. *(This feature covers config-load
-  validation only — actual filename rendering/parse-back, behind the
-  target store's progress derivation, has not landed yet; `capture`
-  still writes `<doc_uuid_8>.fits` regardless of this pattern.)*
+  unknown tokens are rejected. `session.directory_pattern` shares the
+  same unambiguous-regex check but not the quota/uniqueness-token
+  requirement (its default, `"{target}/{night_date}/{frame_type}"`, has
+  neither). *(This feature covers config-load validation only —
+  `capture`'s actual use of these patterns is covered by
+  `capture_target_linkage.feature`.)*
+
+  Scenario: A directory_pattern with an unknown token is rejected at config load
+    Given an rp config with directory_pattern "{target}/{night_date}/{bogus_token}"
+    When rp attempts to start
+    Then rp should fail to start
+
+  Scenario: The documented default directory_pattern starts successfully
+    Given an rp config with directory_pattern "{target}/{night_date}/{frame_type}"
+    When rp attempts to start
+    Then rp should start successfully
 
   Scenario: A pattern missing a required quota token is rejected at config load
     Given an rp config with file_naming_pattern "{target}_{frame_number}_{uuid8}"

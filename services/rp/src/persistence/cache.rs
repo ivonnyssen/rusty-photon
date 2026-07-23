@@ -643,6 +643,8 @@ mod tests {
     /// bytes and don't depend on serde formatting choices.
     fn dummy_document(id: &str) -> ExposureDocument {
         ExposureDocument {
+            target: None,
+            frame_type: None,
             id: id.to_string(),
             captured_at: "2026-04-30T00:00:00Z".to_string(),
             file_path: format!("/tmp/{}.fits", id),

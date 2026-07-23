@@ -17,7 +17,9 @@ use tokio::time::Instant;
 use tracing::debug;
 use uuid::Uuid;
 
+use crate::config::naming_template;
 use crate::equipment::alpaca::retry_idempotent_read;
+use crate::equipment::trains::TrainDeviceKind;
 use crate::events::EventEnvelope;
 use crate::imaging::{self, BackgroundStats, DetectionParams, Star};
 use crate::persistence::{self, CachedImage, CachedPixels, ExposureDocument};
@@ -213,6 +215,60 @@ pub(crate) struct ResolvedMeasureStarsParams {
     pub(crate) min_area: usize,
     pub(crate) max_area: usize,
     pub(crate) stamp_half_size: usize,
+}
+
+/// Counts existing `.fits` frames in `dir` whose filename (parsed via
+/// `file_template`) shares this frame's `(filter, binning, exposure)`
+/// sub-spec, and returns count + 1 — the `{frame_number}` value for a
+/// new frame in that sub-spec. Nothing is stored (rp-targets.md §
+/// Progress derivation): a plain `read_dir` scan per capture, scoped
+/// to `dir` (the frame's own rendered directory, e.g. one target's one
+/// observing night) rather than the whole data directory. `Ok(1)`
+/// when `dir` doesn't exist yet — this sub-spec's first frame here.
+/// Filters out `.json` sidecars explicitly: they share a filename stem
+/// with their FITS file, so counting both would double-count.
+async fn next_frame_number(
+    file_template: &naming_template::CompiledTemplate,
+    dir: &std::path::Path,
+    filter: &str,
+    binning: rp_targets::Binning,
+    exposure: Duration,
+) -> std::result::Result<u32, String> {
+    let mut entries = match tokio::fs::read_dir(dir).await {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(1),
+        Err(e) => {
+            return Err(format!(
+                "capture: failed to scan '{}': {}",
+                dir.display(),
+                e
+            ))
+        }
+    };
+    let mut count: u32 = 0;
+    while let Some(entry) = entries
+        .next_entry()
+        .await
+        .map_err(|e| format!("capture: failed to scan '{}': {}", dir.display(), e))?
+    {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("fits") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let Some(parsed) = file_template.parse(stem) else {
+            continue;
+        };
+        if parsed.filter.as_deref() == Some(filter)
+            && parsed.binning == Some(binning)
+            && parsed.exposure == Some(exposure)
+        {
+            count += 1;
+        }
+    }
+    Ok(count + 1)
 }
 
 // ---------------------------------------------------------------------------
@@ -561,6 +617,8 @@ impl McpHandler {
         &self,
         camera_id: &str,
         duration: Duration,
+        target: Option<&str>,
+        frame_type: Option<naming_template::FrameType>,
         progress: Option<&dyn ProgressEmitter>,
     ) -> std::result::Result<(String, String), String> {
         let cam_entry = self
@@ -616,7 +674,7 @@ impl McpHandler {
         // until a token resolver lands; for now capture writes
         // `<uuid8>.fits` regardless of any configured template.
         let uuid8 = &document_id[..8];
-        let image_path = format!("{}/{}.fits", self.session_config.data_directory, uuid8);
+        let mut image_path = format!("{}/{}.fits", self.session_config.data_directory, uuid8);
 
         let operation_id = Uuid::new_v4().to_string();
         let started_at = chrono::Utc::now();
@@ -750,6 +808,89 @@ impl McpHandler {
                 }
             }
 
+            // Cooling metadata (rp.md § Camera Cooling): the rung the
+            // controller currently holds for this camera, and a
+            // best-effort post-readout temperature read. Both are
+            // auxiliary — a failed read only drops the field, never
+            // the capture. Read here (rather than after the FITS
+            // write, as before Decision 11) because Decision 11's
+            // render step below may need `sensor_temperature_c` to
+            // finalize `image_path` before the FITS write happens.
+            // `captured_at` is likewise anchored here — once, reused
+            // both for `{night_date}` below and the document's
+            // `captured_at` field — rather than read twice a few
+            // hundred milliseconds apart.
+            let captured_at = chrono::Utc::now();
+            let cooler_setpoint_c = self
+                .cooling
+                .as_ref()
+                .and_then(|cooling| cooling.rung_for(camera_id));
+            let sensor_temperature_c = cam.ccd_temperature().await.ok();
+
+            // Decision 11 (rp.md § Capture Tool Details): `frame_type`
+            // is the feature's on/off switch. `None` keeps `image_path`
+            // as the flat `<doc_uuid_8>.fits` computed above and leaves
+            // the document's `target`/`frame_type` fields unset.
+            let mut exposure_target: Option<persistence::ExposureTarget> = None;
+            let mut resolved_frame_type: Option<naming_template::FrameType> = None;
+            if let Some(frame_type) = frame_type {
+                let templates = self.naming_templates.as_ref().ok_or_else(|| {
+                    "capture: frame_type requires session.file_naming_pattern to be configured"
+                        .to_string()
+                })?;
+
+                let (target_field, target_slug) =
+                    self.resolve_capture_target(target, frame_type).await?;
+                let (filter_name, filter_position) =
+                    self.resolve_capture_filter(camera_id, frame_type).await?;
+                let bin = cam
+                    .bin()
+                    .await
+                    .map_err(|e| format!("capture: failed to read binning: {}", e))?;
+                let binning = rp_targets::Binning {
+                    x: bin[0] as u8,
+                    y: bin[1] as u8,
+                };
+                let night_date = self.site.as_ref().map(|site| site.night_date(captured_at));
+
+                let mut fields = naming_template::TemplateFields {
+                    target: Some(target_slug),
+                    filter: Some(filter_name.clone()),
+                    binning: Some(binning),
+                    exposure: Some(duration),
+                    filter_position: Some(filter_position),
+                    sensor_temp_c: sensor_temperature_c.map(|t| t.round() as i32),
+                    night_date,
+                    frame_type: Some(frame_type),
+                    ..Default::default()
+                };
+
+                let dir_relative = templates.directory.render(&fields).map_err(|e| {
+                    format!("capture: failed to render session.directory_pattern: {}", e)
+                })?;
+                let scan_dir =
+                    std::path::Path::new(&self.session_config.data_directory).join(&dir_relative);
+                let frame_number =
+                    next_frame_number(&templates.file, &scan_dir, &filter_name, binning, duration)
+                        .await?;
+                fields.frame_number = Some(frame_number);
+                fields.uuid8 = Some(uuid8.to_string());
+
+                let file_base = templates.file.render(&fields).map_err(|e| {
+                    format!(
+                        "capture: failed to render session.file_naming_pattern: {}",
+                        e
+                    )
+                })?;
+
+                image_path = scan_dir
+                    .join(format!("{}.fits", file_base))
+                    .to_string_lossy()
+                    .into_owned();
+                exposure_target = Some(target_field);
+                resolved_frame_type = Some(frame_type);
+            }
+
             let image_array = cam
                 .image_array()
                 .await
@@ -867,20 +1008,9 @@ impl McpHandler {
                 }
             };
 
-            // Cooling metadata (rp.md § Camera Cooling): the rung the
-            // controller currently holds for this camera, and a
-            // best-effort post-readout temperature read. Both are
-            // auxiliary — a failed read only drops the field, never
-            // the capture.
-            let cooler_setpoint_c = self
-                .cooling
-                .as_ref()
-                .and_then(|cooling| cooling.rung_for(camera_id));
-            let sensor_temperature_c = cam.ccd_temperature().await.ok();
-
             let doc = ExposureDocument {
                 id: document_id.clone(),
-                captured_at: chrono::Utc::now().to_rfc3339(),
+                captured_at: captured_at.to_rfc3339(),
                 file_path: image_path.clone(),
                 width,
                 height,
@@ -890,6 +1020,8 @@ impl McpHandler {
                 cooler_setpoint_c,
                 sensor_temperature_c,
                 optics,
+                target: exposure_target,
+                frame_type: resolved_frame_type,
                 sections: serde_json::Map::new(),
             };
             self.persist_capture_artifact(doc, cached_pixels, captured_max_adu)
@@ -917,6 +1049,121 @@ impl McpHandler {
             )),
         }
         capture_result.map(|()| (image_path, document_id))
+    }
+
+    /// Resolves `do_capture`'s `target`/`frame_type` into the exposure
+    /// document's `target` field plus the `TargetSlug` `render` needs
+    /// (rp.md § Capture Tool Details, Decision 11). An explicit
+    /// `target` always resolves against the store regardless of
+    /// `frame_type` (an unknown slug or an absent store both error).
+    /// Absent `target`: `Light` errors (a Light frame always needs a
+    /// real target), `Dark`/`Flat`/`Bias` fall back to
+    /// [`naming_template::reserved_calibration_slug`].
+    async fn resolve_capture_target(
+        &self,
+        target: Option<&str>,
+        frame_type: naming_template::FrameType,
+    ) -> std::result::Result<(persistence::ExposureTarget, rp_targets::TargetSlug), String> {
+        if let Some(target) = target {
+            let slug = rp_targets::TargetSlug::new(target)
+                .map_err(|e| format!("capture: invalid target slug '{}': {}", target, e))?;
+            let store = self
+                .target_store
+                .as_ref()
+                .ok_or_else(|| "capture: target store not configured".to_string())?;
+            let found = store
+                .get_target(&slug)
+                .await
+                .map_err(|e| format!("capture: failed to look up target '{}': {}", target, e))?
+                .ok_or_else(|| format!("capture: unknown target '{}'", target))?;
+            return Ok((persistence::ExposureTarget::from(&found), slug));
+        }
+
+        match naming_template::reserved_calibration_slug(frame_type) {
+            Some(reserved) => {
+                // Infallible in practice — `reserved_calibration_slug`'s
+                // three values are static lowercase-ASCII literals,
+                // always valid `TargetSlug`s — but propagate rather than
+                // `expect()` per this crate's no-panics-outside-tests rule.
+                let slug = rp_targets::TargetSlug::new(reserved).map_err(|e| {
+                    format!("internal: reserved calibration slug '{reserved}' is invalid: {e}")
+                })?;
+                let field = persistence::ExposureTarget {
+                    slug: reserved.to_string(),
+                    display_name: None,
+                    ra_hours: None,
+                    dec_degrees: None,
+                };
+                Ok((field, slug))
+            }
+            None => Err("capture: frame_type Light requires target".to_string()),
+        }
+    }
+
+    /// Resolves `do_capture`'s `{filter}`/`{filter_position}` naming-
+    /// template values: a live read from the resolved camera's train
+    /// filter wheel for `Light`/`Flat` when one is present, else the
+    /// fixed `"NA"`/`0` — always `"NA"`/`0` for `Dark`/`Bias`
+    /// regardless of whether a wheel is present, since dark current
+    /// isn't filter-dependent (rp.md § Capture Tool Details).
+    async fn resolve_capture_filter(
+        &self,
+        camera_id: &str,
+        frame_type: naming_template::FrameType,
+    ) -> std::result::Result<(String, u32), String> {
+        let reads_live = matches!(
+            frame_type,
+            naming_template::FrameType::Light | naming_template::FrameType::Flat
+        );
+        if !reads_live {
+            return Ok(("NA".to_string(), 0));
+        }
+        match self.live_filter(camera_id).await? {
+            Some((name, position)) => Ok((name, position)),
+            None => Ok(("NA".to_string(), 0)),
+        }
+    }
+
+    /// Reads the live filter name + position from `camera_id`'s train,
+    /// if it has a filter wheel. `Ok(None)` (not an error) when the
+    /// camera isn't in a train, or the train has no filter wheel — the
+    /// common case for mono/OSC rigs. Mirrors `get_filter`'s read
+    /// logic (`built_in/filter_wheel.rs`).
+    async fn live_filter(
+        &self,
+        camera_id: &str,
+    ) -> std::result::Result<Option<(String, u32)>, String> {
+        let Some(train) = self.trains.train_for_camera(camera_id) else {
+            return Ok(None);
+        };
+        let Some(fw_id) = train
+            .devices
+            .iter()
+            .find(|d| d.kind == TrainDeviceKind::FilterWheel)
+            .map(|d| d.id.clone())
+        else {
+            return Ok(None);
+        };
+        let Some(fw_entry) = self.equipment.find_filter_wheel(&fw_id) else {
+            return Ok(None);
+        };
+        let Some(fw) = fw_entry.device.as_ref().cloned() else {
+            return Ok(None);
+        };
+        let position = fw
+            .position()
+            .await
+            .map_err(|e| format!("failed to read filter wheel '{}' position: {}", fw_id, e))?;
+        let Some(position) = position else {
+            return Err(format!("filter wheel '{}' is moving", fw_id));
+        };
+        let filter_name = fw_entry
+            .config
+            .filters
+            .get(position)
+            .cloned()
+            .unwrap_or_else(|| format!("Filter {}", position));
+        Ok(Some((filter_name, position as u32)))
     }
 
     /// Size the predictive `move_focuser` deadline from the focuser's

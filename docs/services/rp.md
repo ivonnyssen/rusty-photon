@@ -141,10 +141,12 @@ The document accumulates data as it flows through the system.
 {
   "id": "550e8400-e29b-41d4-a716-446655440000",
   "target": {
-    "name": "M31",
-    "ra": 10.6847,
-    "dec": 41.2689
+    "slug": "m31",
+    "display_name": "M31",
+    "ra_hours": 0.7123,
+    "dec_degrees": 41.2689
   },
+  "frame_type": "Light",
   "camera_id": "main-camera-1",
   "filter": "Luminance",
   "exposure_time_secs": 300,
@@ -170,14 +172,16 @@ The document accumulates data as it flows through the system.
 }
 ```
 
-**`target` is currently aspirational, not populated.** The block
-above documents the intended shape, but today's `capture` accepts no
-target context, so no code path writes `target` (or `filter`,
-`session_id`, `sequence_number`, `planned_at`) onto the document — see
-[Capture Tool Details](#capture-tool-details) for the *(planned, P1)*
-fix: an optional `target` (slug) parameter on `capture`, resolved
-against the target store to denormalize `slug`/`display_name`/
-`ra_hours`/`dec_degrees` onto this field.
+**`target` and `frame_type` are landed (Decision 11); `filter`,
+`session_id`, `sequence_number`, and `planned_at` remain aspirational —
+no code path writes them onto the document yet.** `target` and
+`frame_type` are populated only when `capture`'s `frame_type` parameter
+was supplied — see [Capture Tool Details](#capture-tool-details) for
+the full resolution rules (target-store lookup for `Light`, the
+reserved `"dark"`/`"flat"`/`"bias"` slugs for calibration frames
+without an explicit `target`). Both fields are omitted (absent, not
+`null`) when `frame_type` was omitted — today's flat `<doc_uuid_8>.fits`
+capture path.
 
 `max_adu` carries the camera's `MaxADU` capability at the time of
 capture. Read once per connection (`connect_camera` stashes it on
@@ -305,41 +309,44 @@ document's full UUID v4 (`<doc_uuid_8>`):
   550e8400.json    <-- exposure document
 ```
 
-The optional `session.file_naming_pattern` config is planned to become,
-together with a future `session.directory_pattern`, a
-**round-trippable** filename template (P1 of
+The optional `session.file_naming_pattern` config, together with
+`session.directory_pattern`, is a **round-trippable** filename
+template (P1 of
 [planetarium-target-import.md](../plans/planetarium-target-import.md)):
-`rp` will both render filenames from capture context and parse them
-back to recover `(target, filter, binning, exposure)` for goal-progress
-derivation (see [Target Store](#target-store)). The `{target}` token's
-value would be the slug from `capture`'s planned optional `target`
-parameter (see [Capture Tool Details](#capture-tool-details)) — `rp`
-has no session-side "current target" of its own; the orchestrator
-would supply it from workflow state it already tracks
-(`session-runner`'s blackboard sets `session.target_name` right after
-every `slew`, the same value it already re-supplies to
-`record_exposure` today). The full contract — per-token typed shapes,
-the compiled-anchored-regex requirement, and the
-`{duration}`→`{exposure}` / `{sequence}`→`{frame_number}` token
+`rp` both renders filenames from capture context and parses them back
+to recover `(target, filter, binning, exposure)` for goal-progress
+derivation (see [Target Store](#target-store)). The full contract —
+per-token typed shapes, the compiled-anchored-regex requirement, and
+the `{duration}`→`{exposure}` / `{sequence}`→`{frame_number}` token
 redefinition (backward-compatible: the parser accepts the old names as
 deprecated aliases) — lives in
 [`rp-targets.md` § File-naming template](../crates/rp-targets.md#file-naming-template-render-and-parse).
-**Landed today**: the pattern is parsed and validated against that
-full token contract at config-load time — an unknown token, a missing
-quota/uniqueness token, or an ambiguous adjacent-token pair fails
-startup, not a session — and `rp::config::naming_template` now also
-compiles a validated pattern into a reusable render/parse engine
-(`CompiledTemplate`, backed by the `regex` crate: each token's shape
-becomes a named capture group in one combined anchored regex, so
-`parse` is never a naive `split('_')`). **Not yet landed: any
-caller.** `capture` still writes `<doc_uuid_8>.fits` regardless of the
-configured pattern — Decision 11's `target` parameter, the thing that
-would supply `render`'s `target`/`night_date`/`frame_type` field
-values, hasn't landed — and the on-disk frame scan behind target
-progress doesn't call `parse` yet either. When rendering lands, the
-rendered base is prefixed before the UUID-8 suffix (e.g.
-`m31/2026-07-22/Light/m31_L_1x1_0001_300sec_fpos_2_-10C_550e8400.fits`)
-so existing files stay reachable.
+Both patterns are parsed and validated at config-load time — an
+unknown token or an ambiguous adjacent-token pair fails startup, not a
+session; `file_naming_pattern` additionally requires the quota tokens
+(`{target}`/`{filter}`/`{binning}`/`{exposure}`) and a uniqueness token
+(`{uuid8}` or `{frame_number}`), a stricter contract than
+`directory_pattern` (whose documented default,
+`"{target}/{night_date}/{frame_type}"`, has neither). Each compiles
+into a reusable render/parse engine (`CompiledTemplate`, backed by the
+`regex` crate: each token's shape becomes a named capture group in one
+combined anchored regex, so `parse` is never a naive `split('_')`).
+
+**Landed (Decision 11).** `capture`'s `target`/`frame_type` parameters
+(§ Capture Tool Details) feed `render`, and rendering replaces the flat
+`<doc_uuid_8>.fits` whenever `frame_type` is supplied: the rendered
+directory base is prefixed before the filename base, which is in turn
+prefixed before the UUID-8 suffix, e.g.
+`m31/2026-07-22/Light/m31_L_1x1_0001_300sec_fpos_2_-10C_550e8400.fits`
+— so existing UUID-8-suffixed files stay reachable via the disk-fallback
+resolver regardless of the surrounding path. `directory_pattern`
+defaults to `"{target}/{night_date}/{frame_type}"` when unset but
+`file_naming_pattern` is configured — only the file pattern needs
+explicit configuration to opt in. **Not yet landed:** the on-disk frame
+scan behind full target *progress* derivation (`get_target`,
+`list_targets`, `get_session_progress`) doesn't call `parse` yet —
+`capture` calls `parse` today only to compute each new frame's
+`{frame_number}`, a narrower reuse of the same primitive.
 
 The full UUID is the canonical document identifier — used by the API,
 the FITS header, and the sidecar's `id` field. The 8-char suffix
@@ -809,7 +816,7 @@ the exact parameter types and return structure.
 
 | Action | Parameters | Returns | Description |
 |--------|-----------|---------|-------------|
-| `capture` | camera_id *or* train_id (exactly one), duration, target (optional slug — *(planned, P1)*, see [Capture Tool Details](#capture-tool-details)) | image_path, document_id | Take an exposure, download `image_array`, save FITS file, create exposure document. `train_id` resolves the train's terminal camera; everything downstream — the `optics` block, gate membership, events — follows the resolved camera. Carries an **advisory predicted deadline** on `exposure_started`: `predicted = duration + camera.readout_time_estimate` (default 15 s when unset), `max = predicted + 30 s` readout headroom. rp does **not** enforce this (the camera driver owns the exposure); it rides the envelope as `predicted_duration_ms`/`max_duration_ms` for the Sentinel watchdog. rp's own readout backstop (a separate, more generous `duration + 120 s` ceiling) is unchanged. Through a camera terminating an imaging train, holds the [mount motion gate](#mount-motion-gate) shared for the whole pipeline (a pending mount motion delays the start) |
+| `capture` | camera_id *or* train_id (exactly one), duration, target (optional slug), frame_type (optional: `Light`/`Dark`/`Flat`/`Bias`) — see [Capture Tool Details](#capture-tool-details) | image_path, document_id | Take an exposure, download `image_array`, save FITS file, create exposure document. `train_id` resolves the train's terminal camera; everything downstream — the `optics` block, gate membership, events — follows the resolved camera. Carries an **advisory predicted deadline** on `exposure_started`: `predicted = duration + camera.readout_time_estimate` (default 15 s when unset), `max = predicted + 30 s` readout headroom. rp does **not** enforce this (the camera driver owns the exposure); it rides the envelope as `predicted_duration_ms`/`max_duration_ms` for the Sentinel watchdog. rp's own readout backstop (a separate, more generous `duration + 120 s` ceiling) is unchanged. Through a camera terminating an imaging train, holds the [mount motion gate](#mount-motion-gate) shared for the whole pipeline (a pending mount motion delays the start) |
 | `get_camera_info` | camera_id | max_adu, exposure_min, exposure_max, sensor_x, sensor_y, bin_x, bin_y | Read camera capabilities and current settings |
 | `move_focuser` | focuser_id, position | actual_position | Move focuser to absolute position (blocks polling `is_moving` until idle). Bounded by a **predicted deadline**: `predicted = \|target − current\| / focuser.steps_per_sec` (current position read before the move); `max = max(predicted × 2, MIN_FOCUSER_DEADLINE = 5 s)`. If the pre-move read fails it falls back to a 120 s ceiling; `predicted`/`max` ride the `move_focuser_started` envelope as `predicted_duration_ms`/`max_duration_ms` |
 | `get_focuser_position` | focuser_id | position | Read current focuser position |
@@ -973,32 +980,87 @@ written atomically (stage to a sibling temp file, fsync, rename, fsync
 parent directory). See
 [Persistence](#persistence) for the full rule set.
 
-**Target linkage** *(planned — P1, not yet implemented)*. `capture`
-gains an optional `target` parameter (a `TargetSlug`) so the exposure
-document and the directory/file-naming template (§ Persistence, §
-Target Store) know which target a frame belongs to. `rp` itself has
-no session-side notion of "the current target" — that state lives
-entirely in the orchestrator's workflow (`session-runner`'s
-blackboard: `session.target_name`/`session.target_ra`/
-`session.target_dec` in `deep_sky.json`), which already sets it right
-after every `slew` and re-supplies it explicitly to whichever tool
-call needs it next (today, that's only `record_exposure`, called
-immediately after `capture` in the same workflow step). Adding
-`target` to `capture`'s own schema is the same idiom applied one tool
-call earlier — no new subsystem, no rp-side session-target tracking —
-the workflow already holds the value at the moment `capture` runs; it
-was simply never passed. When supplied, `capture` resolves the slug
-against the target store and denormalizes `slug`/`display_name`/
-`ra_hours`/`dec_degrees` onto the document's `target` field (§
-Exposure Document), and the slug feeds `{target}` in the rendered
-path. Omitted `target` (e.g. calibration frames, or an orchestrator not yet
-updated) is out of this doc's scope to resolve here: the naming
-template's `{target}` token is one of the mandatory quota-key tokens
-(rp-targets.md § File-naming template), so what a targetless capture
-renders — a flat `<doc_uuid_8>.fits` fallback preserving today's
-behavior, a reserved placeholder slug, or a hard requirement that
-non-calibration captures always supply `target` — is a Phase 3
-implementation decision, not yet settled here.
+**Target linkage (Decision 11 — landed).** `capture` gains two optional
+parameters: `target` (a slug string) and `frame_type`
+(`Light`/`Dark`/`Flat`/`Bias`). `rp` itself has no session-side notion
+of "the current target" — that state lives entirely in the
+orchestrator's workflow (`session-runner`'s blackboard:
+`session.target_name`/`session.target_ra`/`session.target_dec` in
+`deep_sky.json`), which already sets it right after every `slew` and
+re-supplies it explicitly to whichever tool call needs it next (today,
+that's only `record_exposure`, called immediately after `capture` in
+the same workflow step). Adding `target` to `capture`'s own schema is
+the same idiom applied one tool call earlier — no new subsystem, no
+rp-side session-target tracking — the workflow already holds the value
+at the moment `capture` runs; it was simply never passed.
+
+`frame_type` is the feature's on/off switch: omitted (the default),
+`capture` behaves exactly as before — a flat `<doc_uuid_8>.fits`, no
+`target`/`frame_type` on the exposure document, `target` ignored if
+somehow supplied anyway. This is what every caller that hasn't been
+updated for Decision 11 keeps doing unchanged, including `auto_focus`'s
+and `center_on_target`'s internal captures (see below) and any
+orchestrator predating this feature. Supplying `frame_type` requires
+`session.file_naming_pattern` to be configured (§ Persistence) —
+`capture` errors otherwise, naming the missing config.
+
+When `frame_type: Light`, `target` is **required** — a Light frame with
+no target has no sensible directory bucket, and only Light frames
+bucket against `AcquisitionGoal` quotas (rp-targets.md § File-naming
+template). The slug is resolved against the target store (an unknown
+slug or an absent store both error); `capture` denormalizes
+`slug`/`display_name`/`ra_hours`/`dec_degrees` onto the document's
+`target` field (§ Exposure Document).
+
+When `frame_type` is `Dark`/`Flat`/`Bias` (calibration frames —
+`calibrator-flats`' own flat-capture loop and any future dark/bias
+capture flow, neither of which images a sky object), `target` is
+optional: if supplied it resolves against the store exactly like a
+Light frame (reserved for a future per-target flat-capture flow, see
+below); if omitted, `capture` uses a **reserved slug equal to the
+lowercased frame type** (`"dark"`/`"flat"`/`"bias"`) — a single shared
+bucket per calibration type, `target` on the document carrying just
+that slug (`display_name`/`ra_hours`/`dec_degrees` stay `None`, since
+it names no real target-store row).
+
+*Filter resolution.* `{filter}`/`{filter_position}` need a live read
+from the resolved camera's train filter wheel, but a train may have no
+filter wheel at all (mono/OSC rigs), and dark current isn't
+filter-dependent regardless of what happens to be selected. Rule: for
+`Light` and `Flat`, `capture` reads the train's current filter
+name/position live when a filter wheel is present, else renders the
+fixed literal `"NA"` / position `0`. For `Dark`/`Bias`, `capture`
+always renders `"NA"`/`0`, even when a wheel is present — recording an
+incidental filter position on a dark/bias would be noise, not signal.
+
+*Directory/file rendering.* Once `target`/`frame_type` are resolved,
+`capture` renders `session.directory_pattern` then
+`session.file_naming_pattern` (§ Persistence) to produce the final
+on-disk path, replacing the flat `<doc_uuid_8>.fits`. `{night_date}`
+uses the noon-rollover rule against the capture-completion instant
+(rp-targets.md § Progress derivation); `{frame_number}` is derived by
+scanning the target frame's directory for existing files sharing the
+same `(filter, binning, exposure)` sub-spec via
+`CompiledTemplate::parse` and using `count + 1` — nothing is stored,
+consistent with the "derive progress from disk" design (rp-targets.md
+§ Progress derivation). A render failure (a missing field, a filter
+name outside its token shape, a failed sensor-temperature read when
+the pattern references `{sensor_temp}`) fails the whole `capture`
+call — after the exposure has already completed, since
+`{sensor_temp}` is measured at capture completion. This trades a
+wasted exposure on a misconfiguration for never silently mis-filing a
+frame; the operator fixes the configuration and retries.
+
+**Deferred, not yet decided:** organizing `auto_focus`'s and
+`center_on_target`'s internal diagnostic captures the same way. Unlike
+calibration frames, these can run multiple times against the same
+target in one night (repeated focus/centering attempts), so they'd
+need a directory shape that doesn't exist yet (something like
+`_diagnostics/<train>/auto_focus/...`) and a naming-template token at
+finer-than-`{night_date}` granularity — there is no `{time}` token in
+[`rp-targets.md` § File-naming template](../crates/rp-targets.md#file-naming-template-render-and-parse)
+today. Both tools keep calling `capture` with `frame_type` omitted
+(today's flat-file behavior) until this is designed.
 
 **Sidecar failure contract.** If the sidecar write fails after a
 successful FITS write, `capture` still returns success with

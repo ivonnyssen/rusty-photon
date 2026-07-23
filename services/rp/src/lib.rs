@@ -235,6 +235,21 @@ impl ServerBuilder {
                 crate::error::RpError::Config(msg)
             })?;
 
+        // `capture`'s target-linkage naming templates (rp.md § Capture
+        // Tool Details, Decision 11). `load_config` already validated
+        // both patterns via the same `naming_template::validate_*`
+        // calls this compiles with, so a failure here is a code bug —
+        // surface it loud regardless, same posture as `trains` above.
+        let naming_templates =
+            crate::config::naming_template::NamingTemplates::from_session_config(&config.session)
+                .map_err(|e| {
+                    crate::error::RpError::Config(format!(
+                        "session naming templates: {e} (load_config should have already \
+                         rejected this)"
+                    ))
+                })?
+                .map(Arc::new);
+
         // Build the guider HTTP client when the operator configured
         // one (`equipment.mount.guiding`) — same aborts-loud posture
         // as the plate solver. The client Arc is shared between the
@@ -306,7 +321,8 @@ impl ServerBuilder {
         .with_trains(trains)
         .with_centering_config(config.centering.clone())
         .with_cooling(cooling)
-        .with_target_store(Some(target_store), target_store_config);
+        .with_target_store(Some(target_store), target_store_config)
+        .with_naming_templates(naming_templates);
 
         // Cancellation token for in-flight SSE streams
         // (`/api/events/subscribe`). Cloned into AppState so the handler can

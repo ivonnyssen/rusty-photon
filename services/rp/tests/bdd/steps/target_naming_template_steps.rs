@@ -4,11 +4,10 @@
 //!
 //! Scoped to the config-load contract only ("the pattern is parsed and
 //! checked at startup; a bad pattern fails the load, not a session" —
-//! rp-targets.md). The render/parse-under-`capture` integration needs
-//! a target→capture linkage `capture`'s MCP signature doesn't carry
-//! today (it takes only `camera_id`/`train_id` + `duration`, no
-//! target) — that mechanism isn't decided yet, so no scenario here
-//! presupposes it.
+//! rp-targets.md), covering both `file_naming_pattern` and
+//! `directory_pattern`. `capture`'s actual render/parse use of these
+//! patterns (Decision 11) is covered by
+//! `capture_target_linkage.feature` instead.
 
 use cucumber::{given, then, when};
 
@@ -43,6 +42,27 @@ fn write_naming_pattern_config(world: &mut RpWorld, pattern: &str) {
 #[given(expr = "an rp config with file_naming_pattern {string}")]
 fn given_naming_pattern_config(world: &mut RpWorld, pattern: String) {
     write_naming_pattern_config(world, &pattern);
+}
+
+#[given(expr = "an rp config with directory_pattern {string}")]
+fn given_directory_pattern_config(world: &mut RpWorld, pattern: String) {
+    let dir = tempfile::tempdir().expect("create temp dir for rp config");
+    let config = serde_json::json!({
+        "session": {
+            "data_directory": dir.path().join("data").to_string_lossy(),
+            "directory_pattern": pattern
+        },
+        "equipment": {},
+        "server": { "port": 0, "bind_address": "127.0.0.1" }
+    });
+    let path = dir.path().join("rp.json");
+    std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&config).expect("serialize rp config"),
+    )
+    .expect("write rp config file");
+    world.config_rest_path = Some(path);
+    world.config_rest_dir = Some(dir);
 }
 
 // ---------------------------------------------------------------------------

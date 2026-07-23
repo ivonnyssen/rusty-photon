@@ -76,8 +76,47 @@ pub struct ExposureDocument {
     /// §"Core Fields".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub optics: Option<Optics>,
+    /// The sky target this frame belongs to (Decision 11), resolved by
+    /// `capture` when its `frame_type` parameter is supplied — a
+    /// target-store lookup for `Light` frames, or a reserved slug for
+    /// `Dark`/`Flat`/`Bias` absent an explicit `target`. Omitted
+    /// (absent, not `null`) when `frame_type` was omitted — today's
+    /// flat `<doc_uuid_8>.fits` capture path. See `docs/services/rp.md`
+    /// §"Capture Tool Details".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<ExposureTarget>,
+    /// This capture's `frame_type` parameter, verbatim. Omitted under
+    /// the same condition as `target`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame_type: Option<crate::config::naming_template::FrameType>,
     #[serde(default)]
     pub sections: Map<String, Value>,
+}
+
+/// The exposure document's `target` field (Decision 11). `display_name`/
+/// `ra_hours`/`dec_degrees` are populated only when `slug` resolved
+/// against a real target-store row — `None` for a `Dark`/`Flat`/`Bias`
+/// capture's reserved slug, which names no store entry.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ExposureTarget {
+    pub slug: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ra_hours: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dec_degrees: Option<f64>,
+}
+
+impl From<&rp_targets::Target> for ExposureTarget {
+    fn from(t: &rp_targets::Target) -> Self {
+        Self {
+            slug: t.slug.as_str().to_string(),
+            display_name: Some(t.display_name.clone()),
+            ra_hours: Some(t.ra_hours),
+            dec_degrees: Some(t.dec_degrees),
+        }
+    }
 }
 
 /// Optical-train geometry persisted on the exposure document at capture
@@ -264,6 +303,8 @@ mod tests {
             cooler_setpoint_c: None,
             sensor_temperature_c: None,
             optics: None,
+            target: None,
+            frame_type: None,
             sections: Map::new(),
         }
     }
@@ -417,6 +458,67 @@ mod tests {
             "max_adu should be omitted when None, got: {}",
             body
         );
+    }
+
+    #[test]
+    fn serialization_skips_none_target_and_frame_type() {
+        let doc = doc_with_path("doc-1", "/tmp/x.fits");
+        let body = serde_json::to_string(&doc).unwrap();
+        let parsed: Value = serde_json::from_str(&body).unwrap();
+        let obj = parsed.as_object().expect("top-level should be an object");
+        assert!(
+            !obj.contains_key("target"),
+            "target key should be omitted when None, got: {}",
+            body
+        );
+        assert!(
+            !obj.contains_key("frame_type"),
+            "frame_type key should be omitted when None, got: {}",
+            body
+        );
+    }
+
+    #[test]
+    fn exposure_target_from_store_target_denormalizes_every_field() {
+        let target = rp_targets::Target {
+            slug: rp_targets::TargetSlug::new("m33").unwrap(),
+            display_name: "M33".to_string(),
+            ra_hours: 1.4642,
+            dec_degrees: 30.6602,
+            catalog_ref: None,
+            object_type: None,
+            magnitude: None,
+            size_arcmin: None,
+            priority: 0,
+            active: true,
+            goals: Vec::new(),
+            scheduling: None,
+            grading: None,
+            notes: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+        let exposure_target = ExposureTarget::from(&target);
+        assert_eq!(exposure_target.slug, "m33");
+        assert_eq!(exposure_target.display_name.as_deref(), Some("M33"));
+        assert_eq!(exposure_target.ra_hours, Some(1.4642));
+        assert_eq!(exposure_target.dec_degrees, Some(30.6602));
+    }
+
+    #[test]
+    fn exposure_target_round_trips_through_json_on_the_document() {
+        let mut doc = doc_with_path("doc-1", "/tmp/x.fits");
+        doc.target = Some(ExposureTarget {
+            slug: "dark".to_string(),
+            display_name: None,
+            ra_hours: None,
+            dec_degrees: None,
+        });
+        doc.frame_type = Some(crate::config::naming_template::FrameType::Dark);
+        let body = serde_json::to_string(&doc).unwrap();
+        let parsed: ExposureDocument = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed.target, doc.target);
+        assert_eq!(parsed.frame_type, doc.frame_type);
     }
 
     #[test]

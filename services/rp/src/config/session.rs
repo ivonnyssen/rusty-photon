@@ -23,13 +23,26 @@ pub struct SessionConfig {
     /// parsed and validated at config-load time against the token
     /// contract in [`crate::config::naming_template`] (missing quota/
     /// uniqueness tokens, unknown tokens, and ambiguous adjacent tokens
-    /// all fail startup) — but rendering is not wired up yet: `capture`
-    /// still ignores the value and writes `<doc_uuid_8>.fits` regardless.
-    /// See `docs/services/rp.md` (Persistence), `docs/crates/rp-targets.md`
-    /// (File-naming template), and Phase 7 of
-    /// `docs/plans/archive/image-evaluation-tools.md`.
+    /// all fail startup). `capture` renders it (together with
+    /// `directory_pattern`) whenever its `frame_type` parameter is
+    /// supplied (Decision 11) — otherwise `capture` still writes
+    /// `<doc_uuid_8>.fits` regardless of this value. See
+    /// `docs/services/rp.md` (Persistence, Capture Tool Details),
+    /// `docs/crates/rp-targets.md` (File-naming template), and Phase 7
+    /// of `docs/plans/archive/image-evaluation-tools.md`.
     #[serde(default)]
     pub file_naming_pattern: Option<String>,
+    /// Optional template for the per-frame subdirectory `capture`
+    /// nests its rendered filename under (rp-targets.md § File-naming
+    /// template). `None` falls back to the documented default,
+    /// `"{target}/{night_date}/{frame_type}"`, whenever
+    /// `file_naming_pattern` is set — only the file pattern needs
+    /// explicit configuration to opt in. Parsed and validated at
+    /// config-load time the same way `file_naming_pattern` is, but
+    /// without its quota/uniqueness-token requirement (see
+    /// [`crate::config::naming_template::validate_directory_pattern`]).
+    #[serde(default)]
+    pub directory_pattern: Option<String>,
 }
 
 impl SessionConfig {
@@ -133,6 +146,67 @@ mod tests {
         let error = load_config(&path).unwrap_err().to_string();
         assert!(
             error.contains("file_naming_pattern") && error.contains("bogus_token"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn directory_pattern_defaults_to_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(&path, MINIMAL_CONFIG_JSON).unwrap();
+
+        let config = load_config(&path).unwrap();
+        assert!(
+            config.session.directory_pattern.is_none(),
+            "omitted directory_pattern must deserialize to None"
+        );
+    }
+
+    #[test]
+    fn directory_pattern_round_trips_when_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "session": {
+                    "data_directory": "/tmp/rp-test",
+                    "directory_pattern": "{target}/{night_date}/{frame_type}"
+                },
+                "equipment": {},
+                "server": { "port": 0 }
+            }"#,
+        )
+        .unwrap();
+
+        let config = load_config(&path).unwrap();
+        assert_eq!(
+            config.session.directory_pattern.as_deref(),
+            Some("{target}/{night_date}/{frame_type}")
+        );
+    }
+
+    #[test]
+    fn invalid_directory_pattern_fails_to_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "session": {
+                    "data_directory": "/tmp/rp-test",
+                    "directory_pattern": "{target}_{bogus_token}"
+                },
+                "equipment": {},
+                "server": { "port": 0 }
+            }"#,
+        )
+        .unwrap();
+
+        let error = load_config(&path).unwrap_err().to_string();
+        assert!(
+            error.contains("directory_pattern") && error.contains("bogus_token"),
             "unexpected error: {error}"
         );
     }

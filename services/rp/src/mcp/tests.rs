@@ -1107,6 +1107,8 @@ async fn test_capture_start_exposure_fails() {
     let result = handler
         .capture_inner(
             CaptureParams {
+                target: None,
+                frame_type: None,
                 camera_id: Some("cam".into()),
                 train_id: None,
                 duration: Duration::from_millis(100),
@@ -1127,6 +1129,8 @@ async fn test_capture_image_ready_error() {
     let result = handler
         .capture_inner(
             CaptureParams {
+                target: None,
+                frame_type: None,
                 camera_id: Some("cam".into()),
                 train_id: None,
                 duration: Duration::from_millis(100),
@@ -1147,6 +1151,8 @@ async fn test_capture_image_array_fails() {
     let result = handler
         .capture_inner(
             CaptureParams {
+                target: None,
+                frame_type: None,
                 camera_id: Some("cam".into()),
                 train_id: None,
                 duration: Duration::from_millis(100),
@@ -1177,6 +1183,8 @@ async fn test_capture_failed_exposure_surfaces_error_not_hang() {
         Duration::from_secs(5),
         handler.capture_inner(
             CaptureParams {
+                target: None,
+                frame_type: None,
                 camera_id: Some("cam".into()),
                 train_id: None,
                 duration: Duration::from_millis(100),
@@ -1206,6 +1214,8 @@ async fn test_capture_times_out_when_camera_never_ready() {
     let result = handler
         .capture_inner(
             CaptureParams {
+                target: None,
+                frame_type: None,
                 camera_id: Some("cam".into()),
                 train_id: None,
                 duration: Duration::from_millis(100),
@@ -1233,6 +1243,8 @@ async fn test_capture_surfaces_an_aborted_exposure_instead_of_waiting_out_the_ba
     let result = handler
         .capture_inner(
             CaptureParams {
+                target: None,
+                frame_type: None,
                 camera_id: Some("cam".into()),
                 train_id: None,
                 duration: Duration::from_millis(100),
@@ -1263,6 +1275,8 @@ async fn test_capture_surfaces_a_read_error_on_the_aborted_idle_recheck() {
     let result = handler
         .capture_inner(
             CaptureParams {
+                target: None,
+                frame_type: None,
                 camera_id: Some("cam".into()),
                 train_id: None,
                 duration: Duration::from_millis(100),
@@ -1503,6 +1517,8 @@ async fn test_capture_write_fits_fails() {
     let result = handler
         .capture_inner(
             CaptureParams {
+                target: None,
+                frame_type: None,
                 camera_id: Some("cam".into()),
                 train_id: None,
                 duration: Duration::from_millis(100),
@@ -1552,6 +1568,8 @@ async fn test_capture_caches_i32_when_max_adu_above_u16_max() {
     let result = handler
         .capture_inner(
             CaptureParams {
+                target: None,
+                frame_type: None,
                 camera_id: Some("cam".into()),
                 train_id: None,
                 duration: Duration::from_millis(100),
@@ -1606,6 +1624,8 @@ async fn test_capture_filename_uses_uuid8_suffix() {
     let result = handler
         .capture_inner(
             CaptureParams {
+                target: None,
+                frame_type: None,
                 camera_id: Some("cam".into()),
                 train_id: None,
                 duration: Duration::from_millis(100),
@@ -1672,6 +1692,8 @@ async fn capture_addressed_by_train_resolves_the_terminal_camera() {
     let result = handler
         .capture_inner(
             CaptureParams {
+                target: None,
+                frame_type: None,
                 camera_id: None,
                 train_id: Some("main".into()),
                 duration: Duration::from_millis(100),
@@ -1692,6 +1714,8 @@ async fn capture_rejects_both_camera_and_train_addressing() {
     let result = handler
         .capture_inner(
             CaptureParams {
+                target: None,
+                frame_type: None,
                 camera_id: Some("cam".into()),
                 train_id: Some("main".into()),
                 duration: Duration::from_millis(100),
@@ -1711,6 +1735,8 @@ async fn capture_with_neither_address_names_both_alternatives() {
     let result = handler
         .capture_inner(
             CaptureParams {
+                target: None,
+                frame_type: None,
                 camera_id: None,
                 train_id: None,
                 duration: Duration::from_millis(100),
@@ -1727,6 +1753,8 @@ async fn capture_through_an_unknown_train_is_rejected() {
     let result = handler
         .capture_inner(
             CaptureParams {
+                target: None,
+                frame_type: None,
                 camera_id: None,
                 train_id: Some("nope".into()),
                 duration: Duration::from_millis(100),
@@ -1941,6 +1969,8 @@ async fn capture_and_read_sidecar(
     let result = handler
         .capture_inner(
             CaptureParams {
+                target: None,
+                frame_type: None,
                 camera_id: Some("cam".into()),
                 train_id: None,
                 duration: Duration::from_millis(100),
@@ -2111,6 +2141,8 @@ async fn test_persist_capture_artifact_skips_cache_on_sidecar_failure() {
     );
 
     let doc = ExposureDocument {
+        target: None,
+        frame_type: None,
         id: "doc-fail-1".to_string(),
         captured_at: "2026-04-30T00:00:00Z".to_string(),
         file_path: blocker.join("x.fits").to_string_lossy().into_owned(),
@@ -2409,6 +2441,8 @@ async fn test_compute_image_stats_persists_section_via_document_id() {
         .into_owned();
 
     let doc = ExposureDocument {
+        target: None,
+        frame_type: None,
         id: document_id.clone(),
         captured_at: "2026-05-08T00:00:00Z".to_string(),
         file_path: file_path.clone(),
@@ -6301,7 +6335,7 @@ async fn do_capture_emits_progress_during_readout_wait() {
     };
     let emitter = super::progress::test_support::CountingProgressEmitter::default();
     let (_image_path, _document_id) = handler
-        .do_capture("cam", Duration::from_millis(50), Some(&emitter))
+        .do_capture("cam", Duration::from_millis(50), None, None, Some(&emitter))
         .await
         .expect("capture completes when image_ready flips true");
     assert!(
@@ -6366,7 +6400,7 @@ async fn do_capture_emits_exposing_phase_before_readout() {
     };
     let emitter = super::progress::test_support::CountingProgressEmitter::default();
     handler
-        .do_capture("cam", Duration::from_secs(60), Some(&emitter))
+        .do_capture("cam", Duration::from_secs(60), None, None, Some(&emitter))
         .await
         .expect("capture completes when image_ready flips true");
     assert!(
@@ -6998,7 +7032,7 @@ async fn capture_migrated_emits_exposure_triple_with_shared_operation_id() {
     let mut rx = handler.event_bus.subscribe();
 
     let (image_path, document_id) = handler
-        .do_capture("cam", Duration::from_millis(100), None)
+        .do_capture("cam", Duration::from_millis(100), None, None, None)
         .await
         .unwrap();
 
@@ -7032,7 +7066,7 @@ async fn capture_failure_emits_exposure_failed() {
     let mut rx = handler.event_bus.subscribe();
 
     let err = handler
-        .do_capture("cam", Duration::from_millis(100), None)
+        .do_capture("cam", Duration::from_millis(100), None, None, None)
         .await
         .unwrap_err();
     assert!(err.contains("failed to start exposure"));
@@ -7318,6 +7352,8 @@ async fn capture_through_an_imaging_train_camera_waits_for_motion() {
             handler
                 .capture_inner(
                     CaptureParams {
+                        target: None,
+                        frame_type: None,
                         camera_id: Some("cam".into()),
                         train_id: None,
                         duration: Duration::from_millis(100),
@@ -7351,6 +7387,8 @@ async fn capture_through_an_untrained_camera_ignores_the_gate() {
         Duration::from_secs(30),
         handler.capture_inner(
             CaptureParams {
+                target: None,
+                frame_type: None,
                 camera_id: Some("cam".into()),
                 train_id: None,
                 duration: Duration::from_millis(100),

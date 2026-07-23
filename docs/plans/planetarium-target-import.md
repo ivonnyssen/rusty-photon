@@ -36,7 +36,7 @@ P5/P6 frontends.
 | Phase | Description | Status | Branch / PR |
 |-------|-------------|--------|-------------|
 | P0 | This plan | In progress | feature/planetarium-target-import |
-| P1 | Build the `rp-targets` crate + rp integration (per [rp-targets.md](../crates/rp-targets.md) MVP). Three requirements are fixed here: **altitude-gating parity**, a **minimal operator surface**, and **capture-time target linkage** (Decisions 9, 10, 11) | Crate scaffold, BDD scaffold (Phase 2), and design doc landed. Phase 3 implementation landed *incrementally, additive*: the store wired into rp, its 6 CRUD/goals MCP tools + `/api/targets` REST mirror (Decision 10 — done), `session.file_naming_pattern`'s config-load token validation (`target_naming_template.feature`, all 4 scenarios passing), `get_next_target`'s altitude-gating parity against the store (Decision 9 — done: `add_target`/`update_target` now accept `scheduling`, `targets.default_scheduling.min_altitude_degrees` config, `target_store_planner.feature`'s 2 scenarios passing, `@wip` removed), and the naming-template's render/parse engine (`rp::config::naming_template::CompiledTemplate`, regex-backed, unit-tested including a `parse(render(x)) == x` round trip — no caller yet). Progress-shape derivation is still stubbed 0 (`good`/`total`). **Not yet landed**: the rest of the Dynamic Planner cutover (`record_exposure`/`get_session_progress`/`get_target_status` still read only the legacy `targets[]` array — blocked on the on-disk frame scan below), `session.directory_pattern` itself, the on-disk frame scan behind progress (needs `CompiledTemplate::parse` wired in plus the grading plugin's sidecar shape), and (Decision 11) `capture`'s new `target` parameter, which is what would let `capture` actually call `CompiledTemplate::render` | feature/rp-targets-p1 |
+| P1 | Build the `rp-targets` crate + rp integration (per [rp-targets.md](../crates/rp-targets.md) MVP). Three requirements are fixed here: **altitude-gating parity**, a **minimal operator surface**, and **capture-time target linkage** (Decisions 9, 10, 11) | Crate scaffold, BDD scaffold (Phase 2), and design doc landed. Phase 3 implementation landed *incrementally, additive*: the store wired into rp, its 6 CRUD/goals MCP tools + `/api/targets` REST mirror (Decision 10 — done), `session.file_naming_pattern`'s config-load token validation (`target_naming_template.feature`, all 4 scenarios passing), `get_next_target`'s altitude-gating parity against the store (Decision 9 — done: `add_target`/`update_target` now accept `scheduling`, `targets.default_scheduling.min_altitude_degrees` config, `target_store_planner.feature`'s 2 scenarios passing, `@wip` removed), the naming-template's render/parse engine (`rp::config::naming_template::CompiledTemplate`, regex-backed, unit-tested including a `parse(render(x)) == x` round trip), and (Decision 11 — done) `capture`'s `target`/`frame_type` parameters: `frame_type: Light` resolves `target` against the store and denormalizes onto the exposure document; `Dark`/`Flat`/`Bias` use a reserved `"dark"`/`"flat"`/`"bias"` slug absent an explicit `target`; `capture` renders `directory_pattern` (now a real config field, landed alongside `file_naming_pattern`) then `file_naming_pattern`, deriving `{frame_number}` via an on-disk scan of the target directory (`CompiledTemplate::parse`, scoped to `capture`'s own use, not yet reused by the progress tools below) and `{night_date}` via `rp_ephemeris::Site::night_date`'s noon-rollover rule. `auto_focus`/`center_on_target`'s internal captures are explicitly deferred (see Decision 11's amendment) and keep `frame_type` omitted. **Not yet landed**: the rest of the Dynamic Planner cutover (`record_exposure`/`get_session_progress`/`get_target_status` still read only the legacy `targets[]` array — blocked on full progress-shape derivation), and that full on-disk frame scan behind progress (`good`/`total` per goal — needs the grading plugin's sidecar shape in addition to the frame-counting primitive `capture` already uses) | feature/rp-targets-p1 |
 | P2 | Position-angle plumbing: `position_angle_degrees` on `Target`, per-train config default, `get_next_target` returns effective angle, `deep_sky` workflow rotator step. Decision 11's blackboard-threading pattern (target identity into `capture`) is this phase's own idiom, applied to P1 a phase early | Not started | |
 | P3 | `planetarium-bridge` service: Alpaca Telescope impersonation → target creation via rp (gated by milestone P3a, a sanctioned verification spike) | Not started | |
 | P4 | ui-htmx target inbox: review pending targets, goal editing, PA override, activate/discard | Not started | |
@@ -234,11 +234,35 @@ Explicitly rejected / out of scope (see Decisions 6–8):
     `slug`/`display_name`/`ra_hours`/`dec_degrees` onto the exposure
     document's `target` field — a field the document schema has
     documented since before this plan but that no code path populates
-    today. Left open, explicitly: what a targetless capture
-    (calibration frames, an orchestrator not yet updated) should
-    render, since `{target}` is one of the naming template's mandatory
-    quota-key tokens — that is a P1 Phase 3 implementation call, not
-    settled here.
+    today.
+
+    **Settled 2026-07-23 (interactively, during P1 Phase 3
+    implementation), superseding the "left open" note above:** `capture`
+    gains a `frame_type` (`Light`/`Dark`/`Flat`/`Bias`) parameter
+    alongside `target` — omitted, `capture` keeps today's flat
+    `<doc_uuid_8>.fits` behavior unchanged (the fallback for calibration
+    frames and any orchestrator not yet updated). `frame_type: Light`
+    requires `target`. `Dark`/`Flat`/`Bias` use a **reserved slug equal
+    to the lowercased frame type** (`"dark"`/`"flat"`/`"bias"`) when no
+    explicit `target` is supplied — a shared bucket per calibration
+    type, with an explicit `target` still accepted for a future
+    per-target flat-capture flow (needed if a rig's rotator can't
+    reliably repeat position, so flats must be retaken per target
+    rather than shared across a night). `{filter}`/`{filter_position}`
+    render the resolved train's live filter wheel reading for
+    `Light`/`Flat`, and the fixed literal `"NA"`/`0` for `Dark`/`Bias`
+    (always) or any frame type on a train with no filter wheel. Full
+    rules: rp.md § Capture Tool Details; rp-targets.md § File-naming
+    template.
+
+    **Deferred, explicitly not decided here:** organizing `auto_focus`'s
+    and `center_on_target`'s internal diagnostic captures through this
+    same mechanism. Unlike calibration frames these can run multiple
+    times against one target in a night, which needs a directory shape
+    that doesn't exist yet (e.g. `_diagnostics/<train>/auto_focus/...`)
+    and a naming-template token finer than `{night_date}` — no `{time}`
+    token exists today. Both tools keep calling `capture` with
+    `frame_type` omitted until this is designed as its own follow-up.
 
 ## P3 sketch: `planetarium-bridge`
 

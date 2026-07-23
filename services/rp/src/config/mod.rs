@@ -199,6 +199,14 @@ pub fn validate_config(config: &Config) -> Vec<FieldError> {
             });
         }
     }
+    if let Some(pattern) = config.session.directory_pattern.as_deref() {
+        if let Err(msg) = naming_template::validate_directory_pattern(pattern) {
+            errors.push(FieldError {
+                path: "session.directory_pattern".to_string(),
+                msg,
+            });
+        }
+    }
     for (index, cam) in config.equipment.cameras.iter().enumerate() {
         errors.extend(cam.field_errors(index));
     }

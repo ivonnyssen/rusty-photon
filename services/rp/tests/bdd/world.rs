@@ -193,6 +193,26 @@ pub struct RpWorld {
     /// the ordinary OmniSim/mount bootstrap (`tool_steps::start_rp`)
     /// instead of a bespoke launcher. `None` ⇒ no override.
     pub target_store_config: Option<Value>,
+    /// `session.file_naming_pattern` override (capture target-linkage
+    /// scenarios — `capture_target_linkage.feature`), merged over
+    /// [`RpConfigBuilder::build`]'s output the same way
+    /// `target_store_config` is. `RpConfigBuilder::build` already bakes
+    /// in the documented default pattern unconditionally, so `None`
+    /// here means "use that baked-in default", not "omit the field" —
+    /// see `clear_file_naming_pattern` for scenarios that need the
+    /// field genuinely absent.
+    pub file_naming_pattern: Option<String>,
+    /// `session.directory_pattern` override, same merge rule as
+    /// `file_naming_pattern`. `None` ⇒ field omitted (rp falls back to
+    /// the documented default, `"{target}/{night_date}/{frame_type}"`,
+    /// whenever `file_naming_pattern` is set).
+    pub directory_pattern: Option<String>,
+    /// When `true`, forces `session.file_naming_pattern` to `null` in
+    /// the emitted config, overriding `RpConfigBuilder::build`'s
+    /// unconditional default — for the scenario exercising `capture`'s
+    /// "frame_type requires session.file_naming_pattern to be
+    /// configured" error path (`capture_target_linkage.feature`).
+    pub clear_file_naming_pattern: bool,
     /// Error from the most recent `ServiceHandle::try_start` call
     /// (Target Store naming-template config-load validation scenarios —
     /// `target_naming_template.feature`, *(planned, P1)*). `None` after
@@ -422,6 +442,15 @@ impl RpWorld {
         // own BDD suite until Phase 3 settles the real shape.
         if let Some(targets) = &self.target_store_config {
             config["targets"] = targets.clone();
+        }
+        if let Some(pattern) = &self.file_naming_pattern {
+            config["session"]["file_naming_pattern"] = Value::String(pattern.clone());
+        }
+        if self.clear_file_naming_pattern {
+            config["session"]["file_naming_pattern"] = Value::Null;
+        }
+        if let Some(pattern) = &self.directory_pattern {
+            config["session"]["directory_pattern"] = Value::String(pattern.clone());
         }
         config
     }

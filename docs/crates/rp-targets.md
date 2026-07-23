@@ -360,19 +360,43 @@ an in-place overwrite, never a duplicate row.
 
 ### File-naming template (render + parse)
 
-**Landed: config-load validation of the token contract below, plus the
+**Landed: config-load validation of the token contract below, the
 render/parse engine itself** (`rp::config::naming_template::CompiledTemplate`
 — `compile`/`render`/`parse`, regex-backed, unit-tested including a
 `parse(render(x)) == x` round trip against the documented example
-below). **Not yet landed: any caller, and `session.directory_pattern`
-itself** (the field doesn't exist yet). `capture` still writes
-`<doc_uuid_8>.fits` regardless of the configured pattern — Decision
-11's `target` parameter (the thing that would supply a render call's
-`target`/`night_date`/`frame_type` values) hasn't landed — and the
-on-disk frame scan below doesn't call `parse` yet either.
+below), **`session.directory_pattern`, and `capture`'s
+`target`/`frame_type` parameters (Decision 11) — the caller that drives
+both patterns.** `capture` renders the full path (replacing
+`<doc_uuid_8>.fits`) whenever `frame_type` is supplied, and calls
+`parse` to derive each new frame's `{frame_number}` by scanning its
+target directory. **Not yet landed:** the on-disk frame scan behind
+full target *progress* derivation (`get_target`/`list_targets`/
+`get_session_progress`) — see rp.md § Persistence.
 
-`rp` will turn `session.file_naming_pattern` (rp.md § Persistence) from
-a render-only field into a **round-trippable** template, plus a future
+**Calibration frames (`Dark`/`Flat`/`Bias`) and the `{target}` token.**
+These frames don't image a sky object, so `capture` uses a **reserved
+slug equal to the lowercased frame type** (`"dark"`/`"flat"`/`"bias"`)
+for `{target}` when no explicit `target` is supplied — a single shared
+bucket per calibration type. An explicit `target` is still accepted
+(resolved against the store like a `Light` frame) for a future
+per-target flat-capture flow: today's flats assume one set works for
+every target in a night (adequate rotator repeatability), but a rig
+whose rotator can't reliably return to the same position would need
+flats taken right after each target finishes, tied to that target's
+own slug. See rp.md § Capture Tool Details for the full resolution
+rules, including the `"NA"`/`0` fallback `{filter}`/`{filter_position}`
+render when no filter wheel is present (or, for `Dark`/`Bias`, always).
+
+**Deferred, not yet decided:** organizing `auto_focus`'s and
+`center_on_target`'s internal diagnostic captures through this same
+mechanism. They can run multiple times against one target in a night,
+which `{night_date}`-granularity directories can't disambiguate — a
+`{time}` token doesn't exist in the shape table below. Both tools keep
+calling `capture` with `frame_type` omitted (today's flat-file
+behavior) until this is designed; see rp.md § Capture Tool Details.
+
+`rp` turns `session.file_naming_pattern` (rp.md § Persistence) from
+a render-only field into a **round-trippable** template, plus
 `session.directory_pattern`. This **supersedes** the originally-reserved
 token set (a breaking redefinition, not an extension): `{duration}`→
 `{exposure}` and `{sequence}`→`{frame_number}`, and the `:04`-style
@@ -387,9 +411,9 @@ directory_pattern    = "{target}/{night_date}/{frame_type}"
 file_naming_pattern  = "{target}_{filter}_{binning}_{frame_number}_{exposure}_fpos_{filter_position}_{sensor_temp}_{uuid8}"
 ```
 
-Target rendering example, once `capture` calls the engine (note the
-lowercase `{target}` slug — the renderer emits the slug verbatim and
-the parser's `[a-z0-9-]+` shape requires it):
+Target rendering example (note the lowercase `{target}` slug — the
+renderer emits the slug verbatim and the parser's `[a-z0-9-]+` shape
+requires it):
 `m33/2026-06-02/Light/m33_Ha_1x1_0002_120sec_fpos_680_-20C_a1b2c3d4.fits`
 
 Each token has a **typed shape** so the template compiles to an anchored
@@ -420,11 +444,14 @@ frames bucket against `AcquisitionGoal` quotas (Dark/Flat/Bias live under
 their own dirs).
 
 **Config-load validation (parse-don't-validate) — landed**
-(`rp::config::naming_template`). The pattern is parsed and checked at
-startup; a bad pattern fails the load, not a session. Rejection rules:
-the pattern must contain every token needed to derive the quota key
-(`{target}`, `{filter}`, `{binning}`, `{exposure}`) and a per-frame
-uniqueness token (`{uuid8}` or `{frame_number}`). It must compile to an
+(`rp::config::naming_template`). Both patterns are parsed and checked
+at startup; a bad pattern fails the load, not a session.
+`file_naming_pattern`'s rejection rules: the pattern must contain every
+token needed to derive the quota key (`{target}`, `{filter}`,
+`{binning}`, `{exposure}`) and a per-frame uniqueness token (`{uuid8}`
+or `{frame_number}`). `directory_pattern` skips this quota/uniqueness
+requirement (its documented default, `"{target}/{night_date}/{frame_type}"`,
+has neither) but is checked against everything below. Both must compile to an
 unambiguous anchored regex: two tokens directly adjacent with no literal
 between them are always rejected, and between any two tokens separated
 by a literal, every character of that literal must be excluded from
