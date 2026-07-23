@@ -140,16 +140,17 @@ port_of() {
         phd2-guider) echo 11130 ;;
         plate-solver) echo 11131 ;;
         calibrator-flats) echo 11170 ;;
+        session-runner) echo 11171 ;;
         *) echo "" ;;
     esac
 }
 
 probe_path() {
     # Alpaca services answer the management API; the plain-HTTP services
-    # (sentinel dashboard, rp orchestrator, ui-htmx BFF, phd2-guider)
-    # expose /health.
+    # (sentinel dashboard, rp orchestrator, ui-htmx BFF, phd2-guider,
+    # session-runner) expose /health.
     case "$1" in
-        sentinel|rp|ui-htmx|phd2-guider) echo /health ;;
+        sentinel|rp|ui-htmx|phd2-guider|session-runner) echo /health ;;
         *) echo /management/apiversions ;;
     esac
 }
@@ -157,7 +158,7 @@ probe_path() {
 is_gated() {
     # No defaultable config → unit gated on ConditionPathExists (see plan).
     case "$1" in
-        sky-survey-camera|plate-solver|calibrator-flats) return 0 ;;
+        sky-survey-camera|plate-solver|calibrator-flats|session-runner) return 0 ;;
         *) return 1 ;;
     esac
 }
