@@ -3,6 +3,7 @@
 pub mod auth_steps;
 pub mod auto_focus_steps;
 pub mod camera_info_steps;
+pub mod capture_target_linkage_steps;
 pub mod catalog_steps;
 pub mod center_on_target_steps;
 pub mod compute_snr_steps;
@@ -36,5 +37,10 @@ pub mod session_steps;
 pub mod sky_survey_camera_steps;
 pub mod sse_steps;
 pub mod startup_recovery_steps;
+pub mod target_naming_template_steps;
+pub mod target_store_crud_steps;
+pub mod target_store_goals_steps;
+pub mod target_store_planner_steps;
+pub mod target_store_progress_steps;
 pub mod tls_steps;
 pub mod tool_steps;

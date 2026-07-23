@@ -1,0 +1,71 @@
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+//! `redb`-backed store for `rp`'s imaging **plan**: the operator's target
+//! list, per-sub-spec acquisition quotas, and per-target overrides for
+//! grading thresholds and scheduling constraints.
+//!
+//! Pure storage behind one mockable trait ([`TargetStore`]) — no
+//! filesystem scanning, no ephemeris, no policy. The *actuals* (how many
+//! frames exist, which are good) are derived by `rp` from the filesystem
+//! and per-frame sidecars; they are deliberately not in this crate. See
+//! `docs/crates/rp-targets.md` for the full design, including the
+//! `rp`-side integration this crate is consumed by.
+#![deny(unsafe_code)]
+
+mod error;
+mod migrate;
+mod model;
+mod redb_store;
+
+#[cfg(any(test, feature = "mock"))]
+mod memory;
+
+pub use error::TargetStoreError;
+#[cfg(any(test, feature = "mock"))]
+pub use memory::InMemoryTargetStore;
+pub use migrate::CURRENT_SCHEMA_VERSION;
+pub use model::{
+    validate_goals, AcquisitionGoal, Binning, GradingThresholds, SchedulingConstraints, Target,
+    TargetSlug, TargetSlugError,
+};
+pub use redb_store::RedbTargetStore;
+
+use async_trait::async_trait;
+
+/// The seam between the plan store and its consumer, `rp`. See
+/// `docs/crates/rp-targets.md` "The `TargetStore` trait" for the full
+/// contract, including upsert precedence and goal-set validation.
+#[cfg_attr(any(test, feature = "mock"), mockall::automock)]
+#[async_trait]
+pub trait TargetStore: Send + Sync {
+    /// Writes `target`, creating it or overwriting an existing row with the
+    /// same slug in place — never a duplicate row. Preserves the existing
+    /// row's `created_at` on overwrite. Validates `target.goals` per
+    /// [`validate_goals`] before writing.
+    async fn upsert_target(&self, target: Target) -> Result<(), TargetStoreError>;
+
+    /// Returns the target for `slug`, including its goals, or `None` if
+    /// absent.
+    async fn get_target(&self, slug: &TargetSlug) -> Result<Option<Target>, TargetStoreError>;
+
+    /// Returns every target, including goals, sorted by slug. The row
+    /// count is expected to stay in the tens; callers filter/order further
+    /// in Rust.
+    async fn list_targets(&self) -> Result<Vec<Target>, TargetStoreError>;
+
+    /// Removes the target for `slug`. Returns `false` if it was already
+    /// absent. On-disk frames under the slug are left untouched.
+    async fn delete_target(&self, slug: &TargetSlug) -> Result<bool, TargetStoreError>;
+
+    /// Replaces `slug`'s goal set atomically, leaving the rest of the row
+    /// untouched.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TargetStoreError::NotFound`] if `slug` has no stored
+    /// target, or [`TargetStoreError::InvalidGoals`] per [`validate_goals`].
+    async fn set_goals(
+        &self,
+        slug: &TargetSlug,
+        goals: Vec<AcquisitionGoal>,
+    ) -> Result<(), TargetStoreError>;
+}

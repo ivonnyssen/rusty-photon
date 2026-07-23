@@ -93,6 +93,22 @@ pub struct McpHandler {
     /// document. `None` in tests that only exercise the tools — frames
     /// then record no `cooler_setpoint_c`.
     pub cooling: Option<Arc<crate::cooling::CoolingController>>,
+    /// The target store (rp.md § Target Store). `None` in tests that
+    /// only exercise other tool categories and configs where opening
+    /// it failed to matter — the target CRUD tools then report "target
+    /// store not configured". Wired by `with_target_store` from
+    /// lib.rs, which always opens one (`targets.db_path`, default
+    /// `<data_directory>/targets.redb`).
+    pub target_store: Option<Arc<dyn rp_targets::TargetStore>>,
+    /// `targets.default_goals` from config — applied by `add_target`
+    /// when the caller supplies no `goals[]` (Decision 10).
+    pub target_store_defaults: crate::config::TargetStoreConfig,
+    /// `session.file_naming_pattern`/`directory_pattern`, compiled once
+    /// at startup (Decision 11). `None` when `file_naming_pattern` is
+    /// unset — `do_capture` then keeps writing a flat `<doc_uuid_8>.fits`
+    /// regardless of `capture`'s `target`/`frame_type` parameters. Wired
+    /// by `with_naming_templates` from lib.rs.
+    pub naming_templates: Option<Arc<crate::config::naming_template::NamingTemplates>>,
     /// Merged tool catalog. Built by summing per-category routers
     /// in [`McpHandler::new`]; consumed by the
     /// `#[tool_handler(router = self.tool_router)]` ServerHandler
@@ -129,6 +145,9 @@ impl McpHandler {
             motion_gate,
             centering: crate::config::CenteringConfig::default(),
             cooling: None,
+            target_store: None,
+            target_store_defaults: crate::config::TargetStoreConfig::default(),
+            naming_templates: None,
             // Pattern (c) merge: each `built_in/<category>.rs`
             // declares a `#[tool_router(router = tool_router_<name>,
             // vis = "pub")]` block whose generated associated function
@@ -147,7 +166,8 @@ impl McpHandler {
                 + Self::tool_router_plate_solve()
                 + Self::tool_router_guider()
                 + Self::tool_router_center_on_target()
-                + Self::tool_router_planner(),
+                + Self::tool_router_planner()
+                + Self::tool_router_targets(),
         }
     }
 
@@ -239,6 +259,30 @@ impl McpHandler {
     /// Cooling). Tests leave `None`.
     pub fn with_cooling(mut self, cooling: Arc<crate::cooling::CoolingController>) -> Self {
         self.cooling = Some(cooling);
+        self
+    }
+
+    /// Wire the target store (rp.md § Target Store) plus its config
+    /// defaults. The lib.rs build path always calls this with `Some`
+    /// (it opens the store unconditionally); tests that don't need
+    /// target tools leave the `None` default.
+    pub fn with_target_store(
+        mut self,
+        store: Option<Arc<dyn rp_targets::TargetStore>>,
+        defaults: crate::config::TargetStoreConfig,
+    ) -> Self {
+        self.target_store = store;
+        self.target_store_defaults = defaults;
+        self
+    }
+
+    /// Wire the compiled `session.file_naming_pattern`/`directory_pattern`
+    /// (Decision 11). `None` when `file_naming_pattern` is unset.
+    pub fn with_naming_templates(
+        mut self,
+        naming_templates: Option<Arc<crate::config::naming_template::NamingTemplates>>,
+    ) -> Self {
+        self.naming_templates = naming_templates;
         self
     }
 }

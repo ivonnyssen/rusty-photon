@@ -178,6 +178,46 @@ pub struct RpWorld {
     pub last_tool_list: Option<Vec<String>>,
     /// Current filter from get_filter
     pub current_filter: Option<String>,
+    /// Slug of the most recently added/fetched target (Target Store
+    /// scenarios — target_store_*.feature, *(planned, P1)*), so a
+    /// later step can act on "the target I just added" without the
+    /// feature file repeating the slug.
+    pub last_target_slug: Option<String>,
+    /// Raw JSON array from the most recent `list_targets` call
+    /// (Target Store scenarios).
+    pub last_target_list: Option<Vec<Value>>,
+    /// Raw `targets` config block override (Target Store scenarios —
+    /// `db_path`/`default_scheduling`/`default_grading`/`default_goals`,
+    /// see rp.md § Target Store → Configuration), merged over whatever
+    /// [`RpConfigBuilder::build`] emits so these scenarios can still use
+    /// the ordinary OmniSim/mount bootstrap (`tool_steps::start_rp`)
+    /// instead of a bespoke launcher. `None` ⇒ no override.
+    pub target_store_config: Option<Value>,
+    /// `session.file_naming_pattern` override (capture target-linkage
+    /// scenarios — `capture_target_linkage.feature`), merged over
+    /// [`RpConfigBuilder::build`]'s output the same way
+    /// `target_store_config` is. `RpConfigBuilder::build` already bakes
+    /// in the documented default pattern unconditionally, so `None`
+    /// here means "use that baked-in default", not "omit the field" —
+    /// see `clear_file_naming_pattern` for scenarios that need the
+    /// field genuinely absent.
+    pub file_naming_pattern: Option<String>,
+    /// `session.directory_pattern` override, same merge rule as
+    /// `file_naming_pattern`. `None` ⇒ field omitted (rp falls back to
+    /// the documented default, `"{target}/{night_date}/{frame_type}"`,
+    /// whenever `file_naming_pattern` is set).
+    pub directory_pattern: Option<String>,
+    /// When `true`, forces `session.file_naming_pattern` to `null` in
+    /// the emitted config, overriding `RpConfigBuilder::build`'s
+    /// unconditional default — for the scenario exercising `capture`'s
+    /// "frame_type requires session.file_naming_pattern to be
+    /// configured" error path (`capture_target_linkage.feature`).
+    pub clear_file_naming_pattern: bool,
+    /// Error from the most recent `ServiceHandle::try_start` call
+    /// (Target Store naming-template config-load validation scenarios —
+    /// `target_naming_template.feature`, *(planned, P1)*). `None` after
+    /// a successful start.
+    pub rp_start_error: Option<String>,
 
     // --- REST API state ---
     /// Last REST API response status code
@@ -391,7 +431,28 @@ impl RpWorld {
         if let Some((mib, images)) = self.pinned_imaging_overrides {
             builder.with_imaging(mib, images);
         }
-        builder.build()
+        let mut config = builder.build();
+        // Target Store scenarios (*(planned, P1)*): RpConfigBuilder only
+        // knows the legacy `targets[]` array (PlannerTargetConfig); the
+        // new store's `targets` object (db_path/default_scheduling/
+        // default_grading/default_goals, rp.md § Target Store) has no
+        // typed builder support yet since P1 hasn't landed. Overwriting
+        // the key here — rather than extending the shared builder ahead
+        // of the real implementation — keeps this override local to rp's
+        // own BDD suite until Phase 3 settles the real shape.
+        if let Some(targets) = &self.target_store_config {
+            config["targets"] = targets.clone();
+        }
+        if let Some(pattern) = &self.file_naming_pattern {
+            config["session"]["file_naming_pattern"] = Value::String(pattern.clone());
+        }
+        if self.clear_file_naming_pattern {
+            config["session"]["file_naming_pattern"] = Value::Null;
+        }
+        if let Some(pattern) = &self.directory_pattern {
+            config["session"]["directory_pattern"] = Value::String(pattern.clone());
+        }
+        config
     }
 
     /// Wait for rp to become healthy (retry GET /health).

@@ -10,6 +10,7 @@ members = [
   "crates/rp-guider",
   "crates/rp-mcp-client",
   "crates/rp-plate-solver",
+  "crates/rp-targets",
   "crates/rusty-photon-tls",
   "crates/rusty-photon-config",
   "crates/rusty-photon-doctor-checks",
@@ -98,6 +99,7 @@ serde_json = "1.0.150"
 humantime = "2.3.0"
 humantime-serde = "1.1.1"
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
+chrono-tz = "0.10"
 clap = { version = "4.6.0", features = ["derive"] }
 libc = "0.2"
 regex = "1.12.4"
@@ -161,6 +163,7 @@ rp-ephemeris = { path = "crates/rp-ephemeris" }
 rp-fits = { path = "crates/rp-fits" }
 rp-guider = { path = "crates/rp-guider" }
 rp-plate-solver = { path = "crates/rp-plate-solver" }
+rp-targets = { path = "crates/rp-targets" }
 rusty-photon-tls = { path = "crates/rusty-photon-tls" }
 skywatcher-motor-protocol = { path = "crates/skywatcher-motor-protocol" }
 erfars = "0.2"

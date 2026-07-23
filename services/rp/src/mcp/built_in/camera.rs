@@ -26,6 +26,21 @@ pub struct CaptureParams {
     #[serde(with = "humantime_serde")]
     #[schemars(with = "String")]
     pub duration: Duration,
+    /// Sky-target slug this capture belongs to (Decision 11). Required
+    /// when `frame_type` is `Light`; optional for `Dark`/`Flat`/`Bias`
+    /// (falls back to a reserved slug when omitted); ignored when
+    /// `frame_type` is omitted. See docs/services/rp.md § Capture Tool
+    /// Details.
+    #[serde(default)]
+    pub target: Option<String>,
+    /// This capture's intent. Omitted (the default) keeps today's flat
+    /// `<doc_uuid_8>.fits` behavior — `target` is then ignored and
+    /// nothing is denormalized onto the exposure document. Supplying
+    /// it requires `session.file_naming_pattern` to be configured and
+    /// activates directory/file rendering per docs/services/rp.md §
+    /// Capture Tool Details.
+    #[serde(default)]
+    pub frame_type: Option<crate::config::naming_template::FrameType>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -35,7 +50,13 @@ pub struct CameraIdParams {
 
 #[tool_router(router = tool_router_camera, vis = "pub")]
 impl McpHandler {
-    #[tool(description = "Capture an image, download image_array, save FITS file")]
+    #[tool(
+        description = "Capture an image, download image_array, save FITS file. Optional \
+                        target (slug) + frame_type (Light/Dark/Flat/Bias) link the frame to \
+                        the target store and render session.directory_pattern/ \
+                        file_naming_pattern into the final path (Decision 11) — omit both to \
+                        keep the flat <doc_uuid_8>.fits behavior"
+    )]
     pub(crate) async fn capture(
         &self,
         Parameters(params): Parameters<CaptureParams>,
@@ -66,7 +87,16 @@ impl McpHandler {
             Ok(id) => id,
             Err(e) => return Ok(*e),
         };
-        match self.do_capture(&camera_id, params.duration, progress).await {
+        match self
+            .do_capture(
+                &camera_id,
+                params.duration,
+                params.target.as_deref(),
+                params.frame_type,
+                progress,
+            )
+            .await
+        {
             Ok((image_path, document_id)) => Ok(tool_success!({
                 "image_path": image_path,
                 "document_id": document_id,

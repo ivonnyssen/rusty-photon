@@ -338,9 +338,11 @@ matching Rule-2 update. The authoritative home for these contracts is
 
 `rp` derives and resolves the slug before calling `upsert_target`:
 
-1. Base = `TargetSlug::new(catalog_ref.unwrap_or(display_name))` (a
-   catalog add bases on `"NGC 7000"` → `ngc7000`; a custom add bases on
-   the operator's name).
+1. Base = `TargetSlug::new(catalog_ref.unwrap_or(kebab(display_name)))`
+   (a catalog add bases on `"NGC 7000"` → `ngc7000`, `TargetSlug::new`'s
+   own whitespace-*stripping* normalization; a custom add bases on the
+   operator's name, kebab-cased first — `"Comet Test"` → `comet-test` —
+   since an operator-typed name reads better hyphenated than stripped).
 2. Probe `get_target(base)`. **Absent** → use `base`.
 3. **Present and the same object** (same `catalog_ref`, or coordinates
    within a small tolerance) → treat as an in-place edit: reuse the slug
@@ -358,26 +360,55 @@ an in-place overwrite, never a duplicate row.
 
 ### File-naming template (render + parse)
 
-`rp` turns the reserved `session.file_naming_pattern` (rp.md:285-287,
-example at rp.md:2990) from a render-only field into a **round-trippable**
-template, plus a new `session.directory_pattern`. This **supersedes** the
-originally-reserved token set (a breaking redefinition, not an
-extension): `{duration}`→`{exposure}` and `{sequence}`→`{frame_number}`,
-and the `:04`-style width specifier in the rp.md:2990 example is dropped
-in favour of fixed-width rendering per token (below). The Rule-2 rp.md
-update must edit rp.md:285-287 and rp.md:2990 to match; for backward
-compatibility the parser accepts `{duration}` and `{sequence}` as
-deprecated aliases of `{exposure}` and `{frame_number}`. Tokens use the
-`{token}` brace syntax. The default reproduces the agreed scheme:
+**Landed: config-load validation of the token contract below, the
+render/parse engine itself** (`rp::config::naming_template::CompiledTemplate`
+— `compile`/`render`/`parse`, regex-backed, unit-tested including a
+`parse(render(x)) == x` round trip against the documented example
+below), **`session.directory_pattern`, and `capture`'s
+`target`/`frame_type` parameters (Decision 11) — the caller that drives
+both patterns.** `capture` renders the full path (replacing
+`<doc_uuid_8>.fits`) whenever `frame_type` is supplied, and calls
+`parse` to derive each new frame's `{frame_number}` by scanning its
+target directory. **Not yet landed:** the on-disk frame scan behind
+full target *progress* derivation (`get_target`/`list_targets`/
+`get_session_progress`) — see rp.md § Persistence.
+
+**Calibration frames (`Dark`/`Flat`/`Bias`) and the `{target}` token.**
+These frames don't image a sky object, so `capture` uses a **reserved
+slug equal to the lowercased frame type** (`"dark"`/`"flat"`/`"bias"`)
+for `{target}` when no explicit `target` is supplied — a single shared
+bucket per calibration type. An explicit `target` is still accepted
+(resolved against the store like a `Light` frame) for a future
+per-target flat-capture flow: today's flats assume one set works for
+every target in a night (adequate rotator repeatability), but a rig
+whose rotator can't reliably return to the same position would need
+flats taken right after each target finishes, tied to that target's
+own slug. See rp.md § Capture Tool Details for the full resolution
+rules, including the `"NA"`/`0` fallback `{filter}`/`{filter_position}`
+render when no filter wheel is present (or, for `Dark`/`Bias`, always).
+
+**Deferred, not yet decided:** organizing `auto_focus`'s and
+`center_on_target`'s internal diagnostic captures through this same
+mechanism. They can run multiple times against one target in a night,
+which `{night_date}`-granularity directories can't disambiguate — a
+`{time}` token doesn't exist in the shape table below. Both tools keep
+calling `capture` with `frame_type` omitted (today's flat-file
+behavior) until this is designed; see rp.md § Capture Tool Details.
+
+`rp` turns `session.file_naming_pattern` (rp.md § Persistence) from
+a render-only field into a **round-trippable** template, plus
+`session.directory_pattern`. Tokens use the `{token}` brace syntax;
+an unrecognized token is rejected at config load (§ Config-load
+validation below). The default reproduces the agreed scheme:
 
 ```
 directory_pattern    = "{target}/{night_date}/{frame_type}"
 file_naming_pattern  = "{target}_{filter}_{binning}_{frame_number}_{exposure}_fpos_{filter_position}_{sensor_temp}_{uuid8}"
 ```
 
-Rendering example (note the lowercase `{target}` slug — the renderer
-emits the slug verbatim and the parser's `[a-z0-9-]+` shape requires it;
-the impl carries a `parse(render(x)) == x` round-trip assertion):
+Target rendering example (note the lowercase `{target}` slug — the
+renderer emits the slug verbatim and the parser's `[a-z0-9-]+` shape
+requires it):
 `m33/2026-06-02/Light/m33_Ha_1x1_0002_120sec_fpos_680_-20C_a1b2c3d4.fits`
 
 Each token has a **typed shape** so the template compiles to an anchored
@@ -407,17 +438,25 @@ uses `120s`/`500ms`), and `{frame_number}` renders zero-padded to width
 frames bucket against `AcquisitionGoal` quotas (Dark/Flat/Bias live under
 their own dirs).
 
-**Config-load validation (parse-don't-validate).** The pattern is parsed
-and checked at startup; a bad pattern fails the load, not a session.
-Rejection rules: the pattern must contain every token needed to derive
-the quota key (`{target}`, `{filter}`, `{binning}`, `{exposure}`) and a
-per-frame uniqueness token (`{uuid8}` or `{frame_number}`). It must
-compile to an unambiguous anchored regex: between any two variable-width
-tokens there must be a literal separator whose characters are excluded
-from both the left token's trailing charset and the right token's leading
+**Config-load validation (parse-don't-validate) — landed**
+(`rp::config::naming_template`). Both patterns are parsed and checked
+at startup; a bad pattern fails the load, not a session.
+`file_naming_pattern`'s rejection rules: the pattern must contain every
+token needed to derive the quota key (`{target}`, `{filter}`,
+`{binning}`, `{exposure}`) and a per-frame uniqueness token (`{uuid8}`
+or `{frame_number}`). `directory_pattern` skips this quota/uniqueness
+requirement (its documented default, `"{target}/{night_date}/{frame_type}"`,
+has neither) but is checked against everything below. Both must compile to an
+unambiguous anchored regex: two tokens directly adjacent with no literal
+between them are always rejected, and between any two tokens separated
+by a literal, every character of that literal must be excluded from
+both the left token's trailing charset and the right token's leading
 charset — `_` qualifies because it appears in no token charset, which is
 exactly why the default pattern is unambiguous and never falls back to
-`split('_')`. A pattern placing two such tokens adjacent (e.g.
+`split('_')`. (The implementation applies this edge-charset check to
+every adjacent token pair, not only nominally "variable-width" ones —
+a conservative superset of the strict rule that never mis-accepts an
+ambiguous pattern.) A pattern placing two such tokens adjacent (e.g.
 `{frame_number}{exposure}`, or `{target}` immediately before
 `{night_date}`, whose hyphens/digits the `[a-z0-9-]+` slug would swallow)
 is rejected. Unknown tokens are rejected with the offending token named.
@@ -543,8 +582,17 @@ and `get_session_progress` / `get_target_status.progress`.
 selection (the constraint fields are stored in MVP, gated incrementally —
 note that least-progress *ordering* per rp.md's planner bullet 3 needs
 only the in-MVP progress derivation and is therefore in scope, whereas
-moon/meridian/altitude *gating* needs ephemeris and is deferred);
-seasonal/date scheduling windows; seeding the catalog into the DB for
+moon/meridian *gating* needs ephemeris and is deferred). **Amended by
+[Decision 9](../plans/planetarium-target-import.md#decisions-fixed--settled-interactively-2026-07-22-revised-same-day-after-adversarial-review):
+altitude *gating* is explicitly NOT deferred** — it is a fixed P1
+migration requirement (parity with the shipped v1 planner, which
+already evaluates it via `rp-ephemeris`; see
+[rp.md § Target Store](../services/rp.md#target-store)) — **landed**:
+`get_next_target` reads a store-backed target's
+`scheduling.min_altitude_degrees`, falling back to
+`targets.default_scheduling.min_altitude_degrees`. So only
+moon-separation, moon-illumination, and meridian-window gating remain
+deferred here; seasonal/date scheduling windows; seeding the catalog into the DB for
 indexed type/magnitude/cone-search browse; alternative naming grammars
 beyond the validated `{token}` brace form (the configurable `{token}`
 template itself ships in MVP); the PixInsight good-set hand-off; the

@@ -1099,7 +1099,7 @@ impl imaging::tools::auto_focus::CaptureOps for AutoFocusAdapter<'_> {
     async fn capture(&self, duration: Duration) -> std::result::Result<String, String> {
         let (_image_path, document_id) = self
             .handler
-            .do_capture(&self.camera_id, duration, self.emitter())
+            .do_capture(&self.camera_id, duration, None, None, self.emitter())
             .await?;
         Ok(document_id)
     }

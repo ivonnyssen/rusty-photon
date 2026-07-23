@@ -725,7 +725,7 @@ impl RpConfigBuilder {
             "session": {
                 "data_directory": data_directory,
                 "session_state_file": session_state_file,
-                "file_naming_pattern": "{target}_{filter}_{duration}s_{sequence:04}"
+                "file_naming_pattern": "{target}_{filter}_{binning}_{frame_number}_{exposure}_fpos_{filter_position}_{sensor_temp}_{uuid8}"
             },
             "equipment": {
                 "cameras": cameras,

@@ -21,24 +21,24 @@ Feature: rp configuration page
     Given a running rp orchestrator with an empty roster
     And a BFF pointed at rp
     When I open the config page for "rp"
-    Then the page shows an input named "session.file_naming_pattern" with value "{target}_{filter}_{duration}s_{sequence:04}"
+    Then the page shows an input named "session.file_naming_pattern" with value "{target}_{filter}_{binning}_{frame_number}_{exposure}_fpos_{filter_position}_{sensor_temp}_{uuid8}"
     And the input named "server.port" is disabled
 
   Scenario: With an rp target the configuration surface is rp's settings page
     Given a running rp orchestrator with an empty roster
     And a BFF pointed at rp
     When I open the configuration index
-    Then the page shows an input named "session.file_naming_pattern" with value "{target}_{filter}_{duration}s_{sequence:04}"
+    Then the page shows an input named "session.file_naming_pattern" with value "{target}_{filter}_{binning}_{frame_number}_{exposure}_fpos_{filter_position}_{sensor_temp}_{uuid8}"
     And the input named "server.port" is disabled
 
   Scenario: Applying a change persists to rp's config file and renders the restart callout
     Given a running rp orchestrator with an empty roster
     And a BFF pointed at rp
     When I open the config page for "rp"
-    And I submit the rp form with "session.file_naming_pattern" set to "{target}_{sequence:05}"
+    And I submit the rp form with "session.file_naming_pattern" set to "{target}_{filter}_{binning}_{exposure}_{frame_number}"
     Then the page reports the changes take effect when rp is restarted
     And the restart callout lists "session.file_naming_pattern"
-    And rp's config file on disk contains the string "{sequence:05}"
+    And rp's config file on disk contains the string "{target}_{filter}_{binning}_{exposure}_{frame_number}"
 
   Scenario: A value rp cannot parse is rejected and rp's config file is untouched
     Given a running rp orchestrator with an empty roster
