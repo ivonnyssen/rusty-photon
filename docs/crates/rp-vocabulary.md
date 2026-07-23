@@ -12,7 +12,7 @@ design detail behind that decision; the Rule-2 updates it triggers in
 
 A tiny, dependency-light leaf crate holding the **shared, validated
 vocabulary** of `rp`'s imaging plan: the small domain value types —
-`IcrsCoord`, `Binning`, `FrameType`, `Exposure` — that `rp`, the crates
+`IcrsCoord`, `Binning`, `FrameType` — that `rp`, the crates
 it is built from (`rp-targets`, `rp-ephemeris`), and every surface that
 talks to `rp` about plans must agree on. Each type is
 *parse-don't-validate*: a value that exists is valid by construction, and
@@ -43,16 +43,19 @@ more than once and — worse — skipped in places:
   `Display` in `rp-targets`, the `"AxB"` parse (`parse_binning`) in
   `rp::planner::goal_wire`, and a config→planner import reaching *up* into
   the planner from `rp::config::naming_template` to borrow it.
-- Exposure `Duration` had two independent string encodings — humantime
-  `"300s"` (`goal_wire`) written to the store as humantime-canonical
-  `"5m"` by `AcquisitionGoal`'s `humantime_serde`, versus the
-  filename-token `"300sec"` — with no single type owning either.
+- Exposure `Duration` had two divergent string encodings — a hand-rolled
+  `"300s"` formatter (`goal_wire::format_exposure`) versus the store's
+  humantime-canonical `"5m"` (`AcquisitionGoal`'s `humantime_serde`) — the
+  same value serialized two ways.
 
 The fix is not "call the validator from more places" (that only defers
 the next omission); it is to **make the invalid state unrepresentable**,
-so a validator can no longer be forgotten. That requires the validated
-value to be a *type*, and the type needs a home every layer can depend
-on.
+so a validator can no longer be forgotten. For the two values with a real
+invariant or structure — coordinates and binning — that means a *type*
+with a home every layer can depend on. (Exposure is the exception: it has
+no invariant a `Duration` doesn't already carry, so it stays a `Duration`
+standardized on one `humantime` encoding — see
+[Not a type: exposure](#not-a-type-exposure-duration).)
 
 **2. The plan API is becoming a published, multi-surface contract.**
 `rp` is ~20 % of the eventual system. Grading, mosaic, and other tools —
@@ -74,15 +77,11 @@ In scope — validated domain value types and nothing else:
 - **`IcrsCoord`** — a J2000/ICRS pointing, `try_new`-validated to
   `ra_hours ∈ [0,24)`, `dec_degrees ∈ [-90,90]`.
 - **`Binning`** — the `(x, y)` frame-binning pair; `Display` as `"2x2"`,
-  `FromStr` parsing `"AxB"`. The `(filter, binning, exposure)` quota-key
-  dimension.
+  `FromStr` parsing `"AxB"`. The `(filter, binning, exposure_duration)`
+  quota-key dimension.
 - **`FrameType`** — `Light | Dark | Flat | Bias`, the capture intent;
   `Display`/`FromStr`, plus `calibration_slug()` (the reserved
   `dark`/`flat`/`bias` bucket slug).
-- **`Exposure`** — a per-frame duration newtype that **owns both** of its
-  serializations: the humantime value/wire form (`"300s"`) and the
-  whole-second filename token (`"300sec"`), so the two can never disagree
-  by accident again.
 
 Each type derives `Serialize`/`Deserialize` (validating on the way in),
 and — behind the [`schema` feature](#feature-flags) — `JsonSchema` with
@@ -93,7 +92,10 @@ Out of scope — owned elsewhere, listed so the boundary is explicit:
 
 - **The target store** ([`rp-targets`](rp-targets.md)) — redb, CRUD,
   migration. It *depends on* this crate for `Binning`/`FrameType`/
-  `IcrsCoord`/`Exposure`; it is not folded in here.
+  `IcrsCoord`; it is not folded in here.
+- **Exposure** — a plain `Duration`, not a value type here (its only wire
+  form is `humantime`, and its filename codec lives with the naming
+  engine). See [Not a type: exposure](#not-a-type-exposure-duration).
 - **Ephemeris math** ([`rp-ephemeris`](rp-ephemeris.md)) — `alt_az`,
   sidereal time, twilight. It depends on this crate for the `IcrsCoord`
   *value* and keeps the transforms *on* it.
@@ -121,7 +123,7 @@ never to each other.
 
 ```
                     rp-vocabulary  (leaf: serde, thiserror, [schema] schemars)
-                    IcrsCoord::try_new   Binning: FromStr   FrameType   Exposure
+                    IcrsCoord::try_new   Binning: FromStr   FrameType
                         ▲          ▲            ▲
         ┌───────────────┘          │            └───────────────┐
    rp-ephemeris              rp-targets                     rp-catalog
@@ -219,32 +221,31 @@ trade-off: `FrameType` lives here with a **feature-gated** `JsonSchema`,
 `rp-targets` depends on this crate *without* the `schema` feature (so it
 stays schemars-free), and `rp` turns the feature on.
 
-### `Exposure` — one type, both serializations
+### Not a type: exposure (`Duration`)
 
-```rust
-pub struct Exposure(std::time::Duration);
+Exposure is deliberately **not** a value type here — it stays a
+`std::time::Duration`. Unlike coordinates (a real range invariant) or
+binning (a structured pair), a duration has no invariant `Duration`
+doesn't already carry; the only candidate rule, "non-zero," is a *goal*
+constraint already enforced by `rp_targets::validate_goals`, not a
+property of the value. A newtype would wrap a single std type for no gain
+and tax every arithmetic site with an `.as_duration()`.
 
-impl Exposure {
-    pub fn try_new(d: Duration) -> Result<Self, ExposureError>; // rejects zero
-    pub fn as_duration(&self) -> Duration;
+The drift it caused is fixed by **one encoding, not a type**: standardize
+on `humantime` everywhere (`#[serde(with = "humantime_serde")]` on the
+field), deleting the hand-rolled `goal_wire::format_exposure`. The
+filename-token form (`humantime` with spaces stripped, so the path
+component stays space-free and regex-clean) lives with the naming engine
+in `rp` — its only consumer. So exposure touches this crate **nowhere**.
 
-    /// The whole-second filename token, e.g. "300sec". `Err` if the
-    /// duration is not a whole number of seconds (filenames have no
-    /// sub-second representation).
-    pub fn to_filename_token(&self) -> Result<String, ExposureError>;
-    pub fn from_filename_token(s: &str) -> Result<Self, ExposureError>;
-}
-// Serialize/Deserialize emit/accept the value form "300s" (seconds-exact,
-// byte-stable round-trip) — NOT humantime-canonical "5m".
-```
-
-`Exposure` makes the *two* encodings explicit and co-located: the value
-form used in config and store (`"300s"`), and the whole-second filename
-token (`"300sec"`). Because the store is new in this PR there is no
-deployed data to migrate, so we simply pick the seconds-exact value form
-as canonical and the store/wire disagreement (`"5m"` vs `"300s"`) never
-ships. `AcquisitionGoal.exposure` changes from a `humantime_serde`
-`Duration` to `Exposure`.
+The value is named **`exposure_duration`** everywhere: the token
+`{exposure_duration}`, the `AcquisitionGoal.exposure_duration` field, the
+`(filter, binning, exposure_duration)` quota key. Bare "exposure" is
+ambiguous (in astrophotography "an exposure" is a *sub-frame* — a count),
+and "exposure_time" is ambiguous the other way (the *time of
+acquisition*); "exposure_duration" is the one reading that can't be
+misread. (The rename across the naming engine, `AcquisitionGoal`, and the
+docs is part of the consumer migration.)
 
 ## Relationship to the `rp-targets.md` "bare decimals" decision
 
@@ -325,7 +326,7 @@ contract.
 - **This crate provides**: the validated constructors (the single
   validator, returning typed `thiserror` errors) and — behind the
   `schema` feature — the `JsonSchema` derives with constraints encoded
-  (`ra_hours` min/max, `Binning`/`FrameType`/`Exposure` shapes), so the
+  (`ra_hours` min/max, `Binning`/`FrameType` shapes), so the
   published schema cannot drift from the validator.
 - **`rp` provides**: the `schema`/`validate` endpoints for targets, goals,
   and naming patterns, and the mapping from a constructor `Err` to a
@@ -354,8 +355,8 @@ pattern-editor surface would want — a `NamingPattern` newtype wrapping the
 token grammar and `validate_pattern` — leaving `CompiledTemplate` (render)
 in `rp`. That is **not** in this PR; the boundary is staked so it can move
 cleanly when a real second consumer (a pattern editor) exists. Until then,
-`Binning`/`FrameType`/`Exposure` moving here already lets the engine drop
-its config→planner import.
+`Binning`/`FrameType` moving here already lets the engine drop its
+config→planner import.
 
 ## Not this crate: driver quantities (false cognates)
 
@@ -412,9 +413,8 @@ letting `rp` project the vocabulary onto the wire.
 | Crate | Purpose |
 |---|---|
 | `serde` / `serde_json` | value (de)serialization, validating on input |
-| `thiserror` | the constructor error enums (`CoordError`, `ExposureError`, …) |
-| `derive_more` | `Display`/`FromStr` derives (`Binning`, `FrameType`) |
-| `humantime` / `humantime-serde` | `Exposure` value form |
+| `thiserror` | the constructor error enums (`CoordError`, `BinningParseError`, `FrameTypeParseError`) |
+| `derive_more` | `Display` derives (`Binning`, `FrameType`) |
 | `schemars` *(optional, `schema`)* | `JsonSchema` for the wire projection |
 
 No new crates.io dependency is introduced — every one is already in the
@@ -429,8 +429,7 @@ crates/rp-vocabulary/src/
 ├── lib.rs        # crate root + re-exports; #![deny(unsafe_code)]
 ├── coord.rs      # IcrsCoord, CoordError, IcrsCoordWire
 ├── binning.rs    # Binning + FromStr
-├── frame_type.rs # FrameType + calibration_slug
-└── exposure.rs   # Exposure + value/filename codecs, ExposureError
+└── frame_type.rs # FrameType + calibration_slug
 ```
 
 Crate-root attributes match the sibling crates
@@ -450,8 +449,6 @@ relocation cannot silently regress the render/parse contract:
   and non-`u8`.
 - `FrameType` — `Display`/`FromStr` round-trip every variant (the moved
   `frame_type_round_trips_every_variant` test); `calibration_slug`.
-- `Exposure` — value round-trip (`"300s"` in/out, byte-stable); filename
-  token round-trip; whole-second rejection for the filename form.
 
 Tests use `.unwrap()`/`.unwrap_err()` per
 [testing.md](../skills/testing.md), scoped by the usual `#[allow(...)]` on
@@ -459,8 +456,8 @@ the test module.
 
 ## In this PR vs deferred
 
-**In this PR:** the crate and its four types with validation +
-feature-gated schema; `Binning`/`FrameType`/`Exposure` moved off
+**In this PR:** the crate and its three types with validation +
+feature-gated schema; `Binning`/`FrameType` moved off
 `rp-targets`/`rp`; `IcrsCoord` moved off `rp-ephemeris` (which now depends
 here); `rp-catalog`'s `ResolvedTarget` adopting `IcrsCoord`; the
 newtype-field migration of `Target` and `PlannerTarget`; the
@@ -497,7 +494,7 @@ vocabulary they speak).
   BUILD files and lockfile churn for no consumer they uniquely serve. One
   leaf, with the naming slice's boundary staked for later.
 - **Consolidate into existing leaves vs a new crate at all.** A pure
-  "no new crate" consolidation (put `Binning`/`Exposure` in `rp-targets`,
+  "no new crate" consolidation (put `Binning` in `rp-targets`,
   `IcrsCoord` in `rp-ephemeris`) fixes today's drift but cannot give
   `Target` *and* `PlannerTarget` a shared validated coordinate field
   without an inverted `rp-targets → rp-ephemeris` (ERFA) edge — and it

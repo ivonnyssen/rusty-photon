@@ -276,8 +276,8 @@ Explicitly rejected / out of scope (see Decisions 6–8):
     two crates; and exposure had two disagreeing string encodings. The fix
     is structural, not "call the validator more": a new zero-dependency
     leaf crate `rp-vocabulary` owns the shared plan value types
-    (`IcrsCoord`, `Binning`, `FrameType`, `Exposure`) as
-    parse-don't-validate newtypes, and `Target` + `PlannerTarget` change
+    (`IcrsCoord`, `Binning`, `FrameType`) as parse-don't-validate
+    newtypes, and `Target` + `PlannerTarget` change
     their coordinate fields to a validated `IcrsCoord` — so the compiler
     forces every construction (today's and future) through the one
     validator, closing the store-write gap *by construction*.
@@ -292,10 +292,13 @@ Explicitly rejected / out of scope (see Decisions 6–8):
     re-implementing the rules. Free to do now — the store and tools are new
     in this PR with no shipped caller, so it is a pure internal refactor
     before the wire ossifies into a contract. **Not this crate:** the
-    file-naming template *engine* stays in `rp`; ASCOM camera **binning**
-    and mount **pointing** types are false cognates (driver contract, not
-    plan vocabulary), and a shared `rusty-photon-units` driver foundation
-    is left to ADR-006's own trigger (a third pointing device).
+    file-naming template *engine* stays in `rp`; exposure is a plain
+    `Duration` (named `exposure_duration`, standardized on one humantime
+    encoding — bare "exposure" is ambiguous), not a value type; ASCOM
+    camera **binning** and mount **pointing** types are false cognates
+    (driver contract, not plan vocabulary); and a shared
+    `rusty-photon-units` driver foundation is left to ADR-006's own trigger
+    (a third pointing device).
 
 ## P3 sketch: `planetarium-bridge`
 

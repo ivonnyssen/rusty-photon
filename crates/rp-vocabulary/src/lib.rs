@@ -1,7 +1,11 @@
 //! `rp-vocabulary`: the shared, validated vocabulary of `rp`'s imaging
 //! plan — the small domain value types ([`IcrsCoord`], [`Binning`],
-//! [`FrameType`], [`Exposure`]) that `rp` and every surface that talks to
-//! it about plans agree on.
+//! [`FrameType`]) that `rp` and every surface that talks to it about plans
+//! agree on.
+//!
+//! Exposure is deliberately *not* here: it is a plain [`std::time::Duration`]
+//! (serialized with `humantime`, no custom format), and its filename-token
+//! codec lives with the naming engine in `rp`. See ADR-019 / the crate doc.
 //!
 //! Each type is *parse-don't-validate*: a value that exists is valid by
 //! construction, and that one constructor is the single validator every
@@ -16,10 +20,8 @@
 
 mod binning;
 mod coord;
-mod exposure;
 mod frame_type;
 
 pub use binning::{Binning, BinningParseError};
 pub use coord::{CoordError, IcrsCoord};
-pub use exposure::{Exposure, ExposureError};
 pub use frame_type::{FrameType, FrameTypeParseError};

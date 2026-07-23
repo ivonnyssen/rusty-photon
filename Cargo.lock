@@ -4461,7 +4461,6 @@ name = "rp-vocabulary"
 version = "0.1.0"
 dependencies = [
  "derive_more",
- "humantime",
  "schemars 1.2.1",
  "serde",
  "serde_json",

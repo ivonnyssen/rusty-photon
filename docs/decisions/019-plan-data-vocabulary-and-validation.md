@@ -31,9 +31,9 @@ Two problems, both visible in the P1 target-store code.
   `rp::planner::goal_wire`, and a config→planner import reaching *up* into
   the planner from `rp::config::naming_template` to borrow it.
 - Exposure `Duration` had two disagreeing string encodings — the store
-  wrote humantime-canonical `"5m"` (via `humantime_serde`) while
-  `goal_wire::format_exposure` produced `"300s"` — with no single type
-  owning either.
+  wrote humantime-canonical `"5m"` (via `humantime_serde`) while the
+  hand-rolled `goal_wire::format_exposure` produced `"300s"` — the same
+  value serialized two ways.
 
 The common cause: validated plan values were bare primitives (`f64`,
 `Duration`) with the rule written *beside* the data, so it could be — and
@@ -87,7 +87,7 @@ fresh chance to forget — exactly how the store-write gap arose.
 
 ### Option 2 — Consolidate into existing leaves, no new crate
 
-Put `Binning`/`Exposure` in `rp-targets`, `IcrsCoord` validation in
+Put `Binning` in `rp-targets`, `IcrsCoord` validation in
 `rp-ephemeris`. **Rejected**: it cannot give `Target` (in `rp-targets`)
 *and* `PlannerTarget` (in `rp`) a shared validated coordinate *field*
 without an inverted `rp-targets → rp-ephemeris` edge that drags `erfars`
@@ -121,14 +121,22 @@ Precedent: `rp-mcp-client` — a shared "talk to `rp`" crate linked by the
 ## Decision
 
 Adopt **Option 3**. Create `crates/rp-vocabulary`, a leaf with no
-first-party dependency, holding four validated value types: `IcrsCoord`
-(`try_new`, `[0,24)`/`[-90,90]`), `Binning` (`Display`/`FromStr`),
-`FrameType` (`Display`/`FromStr` + `calibration_slug`), and `Exposure` (one
-type owning both its `"300s"` value form and its `"300sec"` filename
-token). Each is parse-don't-validate with a `#[serde(try_from = …)]`
-boundary and a **feature-gated** `JsonSchema` (the `schema` feature) so the
-store leaf stays schemars-free while `rp` projects the vocabulary onto the
-wire.
+first-party dependency, holding three validated value types: `IcrsCoord`
+(`try_new`, `[0,24)`/`[-90,90]`), `Binning` (`Display`/`FromStr`), and
+`FrameType` (`Display`/`FromStr` + `calibration_slug`). Each is
+parse-don't-validate with a `#[serde(try_from = …)]`/`FromStr` boundary and
+a **feature-gated** `JsonSchema` (the `schema` feature) so the store leaf
+stays schemars-free while `rp` projects the vocabulary onto the wire.
+
+Exposure is deliberately **not** one of these types — it stays a
+`Duration` with no invariant a `Duration` doesn't already carry (the
+"non-zero" rule is a *goal* constraint, already in
+`rp_targets::validate_goals`). Its drift is fixed by standardizing on one
+`humantime` encoding (deleting `goal_wire::format_exposure`), and its
+filename-token codec lives with the naming engine in `rp`. The value is
+named **`exposure_duration`** everywhere — unambiguous where bare
+"exposure" (a sub-frame count) and "exposure_time" (time of acquisition)
+are not.
 
 Consequential decisions settled here:
 
@@ -164,13 +172,14 @@ value types follow.
 One PR (`feature/rp-targets-p1`), landed at green checkpoints. Every move
 is mechanical, few-caller, and unit-test-pinned:
 
-1. `crates/rp-vocabulary` with the four types + their round-trip tests
+1. `crates/rp-vocabulary` with the three types + their round-trip tests
    (moved from `rp-targets`/`rp`, not rewritten — losing them is the only
    real regression path).
 2. `rp-ephemeris` re-homes `IcrsCoord` here and depends on the crate;
    `rp-catalog`'s `ResolvedTarget` adopts it.
 3. `rp-targets` depends on the crate (no `schema` feature) for `Binning`/
-   `FrameType`/`Exposure`; `Target.coord` becomes `IcrsCoord`.
+   `FrameType`; `Target.coord` becomes `IcrsCoord`; `AcquisitionGoal`
+   standardizes on `humantime` for its `exposure_duration`.
 4. `rp` depends on the crate with `features = ["schema"]`; `PlannerTarget.
    coord` becomes `IcrsCoord`; `goal_wire::parse_binning` and the
    config→planner import are deleted; the store-write validation gap closes
