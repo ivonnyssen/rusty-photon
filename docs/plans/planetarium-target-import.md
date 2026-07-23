@@ -36,8 +36,8 @@ P5/P6 frontends.
 | Phase | Description | Status | Branch / PR |
 |-------|-------------|--------|-------------|
 | P0 | This plan | In progress | feature/planetarium-target-import |
-| P1 | Build the `rp-targets` crate + rp integration (per [rp-targets.md](../crates/rp-targets.md) MVP). Two migration requirements are fixed here: **altitude-gating parity** and a **minimal operator surface** (Decisions 9, 10) | Crate scaffold landed (`rp-targets`, feature/rp-targets-p1); rp-side design-doc sub-phase landed in [rp.md § Target Store](../services/rp.md#target-store) — CRUD MCP/REST tools, slug allocation, naming template, progress derivation, config shape. BDD (Phase 2) and implementation (Phase 3) not started | feature/rp-targets-p1 |
-| P2 | Position-angle plumbing: `position_angle_degrees` on `Target`, per-train config default, `get_next_target` returns effective angle, `deep_sky` workflow rotator step | Not started | |
+| P1 | Build the `rp-targets` crate + rp integration (per [rp-targets.md](../crates/rp-targets.md) MVP). Three requirements are fixed here: **altitude-gating parity**, a **minimal operator surface**, and **capture-time target linkage** (Decisions 9, 10, 11) | Crate scaffold landed (`rp-targets`, feature/rp-targets-p1); rp-side design-doc sub-phase landed in [rp.md § Target Store](../services/rp.md#target-store) — CRUD MCP/REST tools, slug allocation, naming template, progress derivation, config shape, and (Decision 11) `capture`'s new `target` parameter + Capture Tool Details. BDD (Phase 2) and implementation (Phase 3) not started | feature/rp-targets-p1 |
+| P2 | Position-angle plumbing: `position_angle_degrees` on `Target`, per-train config default, `get_next_target` returns effective angle, `deep_sky` workflow rotator step. Decision 11's blackboard-threading pattern (target identity into `capture`) is this phase's own idiom, applied to P1 a phase early | Not started | |
 | P3 | `planetarium-bridge` service: Alpaca Telescope impersonation → target creation via rp (gated by milestone P3a, a sanctioned verification spike) | Not started | |
 | P4 | ui-htmx target inbox: review pending targets, goal editing, PA override, activate/discard | Not started | |
 | P5 | Stellarium enrichment frontend (telescope-protocol doorbell + RemoteControl name/Oculars-angle query) | Deferred | |
@@ -211,6 +211,34 @@ Explicitly rejected / out of scope (see Decisions 6–8):
     none — not bridge config), and goal filter names are validated against
     the configured filter roster at create/edit time so a template
     referencing a filter the rig lacks fails at add, not mid-session.
+
+11. **`capture` threads target identity from orchestrator state — `rp`
+    has no session-side "current target."** File naming's `{target}`
+    token (rp-targets.md's naming template; rp.md § Target Store) needs
+    a target slug at capture time, but `slew`/`capture`/`auto_focus`
+    are not target-aware today: they take raw coordinates or operate
+    on a train/camera, never a target reference, and `rp` tracks no
+    per-session "current target" of its own. Fixed for P1: `capture`
+    gains an optional `target` (slug) parameter, sourced from
+    orchestrator workflow state the caller already holds —
+    `session-runner`'s blackboard already writes
+    `session.target_name`/`target_ra`/`target_dec` right after every
+    `slew` (`deep_sky.json`) and already re-supplies `target_name`
+    explicitly to `record_exposure` one workflow step after `capture`
+    runs. This is not a new subsystem; it is Decision 5's own
+    threading idiom (`get_next_target`'s effective position angle,
+    carried through the blackboard into a later `move_rotator` call)
+    applied one tool call earlier, to the same blackboard state the
+    workflow already tracks. When supplied, `capture` resolves the
+    slug against the target store and denormalizes
+    `slug`/`display_name`/`ra_hours`/`dec_degrees` onto the exposure
+    document's `target` field — a field the document schema has
+    documented since before this plan but that no code path populates
+    today. Left open, explicitly: what a targetless capture
+    (calibration frames, an orchestrator not yet updated) should
+    render, since `{target}` is one of the naming template's mandatory
+    quota-key tokens — that is a P1 Phase 3 implementation call, not
+    settled here.
 
 ## P3 sketch: `planetarium-bridge`
 
