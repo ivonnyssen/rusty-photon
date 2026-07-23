@@ -1,7 +1,6 @@
 //! BDD step definitions for the round-trippable file-naming template's
 //! config-load validation (`target_naming_template.feature`, rp.md §
-//! Persistence + rp-targets.md § File-naming template — *(planned,
-//! P1)*, not yet implemented; scenarios are tagged `@wip`).
+//! Persistence + rp-targets.md § File-naming template).
 //!
 //! Scoped to the config-load contract only ("the pattern is parsed and
 //! checked at startup; a bad pattern fails the load, not a session" —

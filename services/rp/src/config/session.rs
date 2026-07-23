@@ -19,11 +19,14 @@ pub struct SessionConfig {
     /// Optional template for capture filenames. `None` is the default and
     /// produces filenames of the form `<doc_uuid_8>.fits` plus a matching
     /// `.json` sidecar — fully self-identifying via the UUID-8 suffix that
-    /// drives the disk-fallback resolution path. When set, the template is
-    /// reserved for a future token resolver (planner/capture context feeding
-    /// `{target}` / `{filter}` / etc.); until that lands `capture` ignores
-    /// the value and writes `<doc_uuid_8>.fits` regardless. See
-    /// `docs/services/rp.md` (Persistence) and Phase 7 of
+    /// drives the disk-fallback resolution path. When set, the pattern is
+    /// parsed and validated at config-load time against the token
+    /// contract in [`crate::config::naming_template`] (missing quota/
+    /// uniqueness tokens, unknown tokens, and ambiguous adjacent tokens
+    /// all fail startup) — but rendering is not wired up yet: `capture`
+    /// still ignores the value and writes `<doc_uuid_8>.fits` regardless.
+    /// See `docs/services/rp.md` (Persistence), `docs/crates/rp-targets.md`
+    /// (File-naming template), and Phase 7 of
     /// `docs/plans/archive/image-evaluation-tools.md`.
     #[serde(default)]
     pub file_naming_pattern: Option<String>,
@@ -95,7 +98,7 @@ mod tests {
             r#"{
                 "session": {
                     "data_directory": "/tmp/rp-test",
-                    "file_naming_pattern": "{target}_{filter}"
+                    "file_naming_pattern": "{target}_{filter}_{binning}_{exposure}_{uuid8}"
                 },
                 "equipment": {},
                 "server": { "port": 0 }
@@ -106,7 +109,31 @@ mod tests {
         let config = load_config(&path).unwrap();
         assert_eq!(
             config.session.file_naming_pattern.as_deref(),
-            Some("{target}_{filter}")
+            Some("{target}_{filter}_{binning}_{exposure}_{uuid8}")
+        );
+    }
+
+    #[test]
+    fn invalid_file_naming_pattern_fails_to_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "session": {
+                    "data_directory": "/tmp/rp-test",
+                    "file_naming_pattern": "{target}_{bogus_token}"
+                },
+                "equipment": {},
+                "server": { "port": 0 }
+            }"#,
+        )
+        .unwrap();
+
+        let error = load_config(&path).unwrap_err().to_string();
+        assert!(
+            error.contains("file_naming_pattern") && error.contains("bogus_token"),
+            "unexpected error: {error}"
         );
     }
 }

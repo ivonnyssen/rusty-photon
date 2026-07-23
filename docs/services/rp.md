@@ -305,28 +305,32 @@ document's full UUID v4 (`<doc_uuid_8>`):
   550e8400.json    <-- exposure document
 ```
 
-The optional `session.file_naming_pattern` config, together with the
-new `session.directory_pattern`, is a **round-trippable** filename
-template *(planned — P1 of
-[planetarium-target-import.md](../plans/planetarium-target-import.md))*:
-`rp` both renders filenames from capture context and parses them back
-to recover `(target, filter, binning, exposure)` for goal-progress
+The optional `session.file_naming_pattern` config is planned to become,
+together with a future `session.directory_pattern`, a
+**round-trippable** filename template (P1 of
+[planetarium-target-import.md](../plans/planetarium-target-import.md)):
+`rp` will both render filenames from capture context and parse them
+back to recover `(target, filter, binning, exposure)` for goal-progress
 derivation (see [Target Store](#target-store)). The `{target}` token's
-value is the slug from `capture`'s new optional `target` parameter
-(see [Capture Tool Details](#capture-tool-details)) — `rp` has no
-session-side "current target" of its own; the orchestrator supplies
-it from workflow state it already tracks (`session-runner`'s
-blackboard sets `session.target_name` right after every `slew`, the
-same value it already re-supplies to `record_exposure` today). The
-full contract —
-per-token typed shapes, the compiled-anchored-regex requirement, and
-the `{duration}`→`{exposure}` / `{sequence}`→`{frame_number}` token
+value would be the slug from `capture`'s planned optional `target`
+parameter (see [Capture Tool Details](#capture-tool-details)) — `rp`
+has no session-side "current target" of its own; the orchestrator
+would supply it from workflow state it already tracks
+(`session-runner`'s blackboard sets `session.target_name` right after
+every `slew`, the same value it already re-supplies to
+`record_exposure` today). The full contract — per-token typed shapes,
+the compiled-anchored-regex requirement, and the
+`{duration}`→`{exposure}` / `{sequence}`→`{frame_number}` token
 redefinition (backward-compatible: the parser accepts the old names as
 deprecated aliases) — lives in
 [`rp-targets.md` § File-naming template](../crates/rp-targets.md#file-naming-template-render-and-parse).
-Today, ahead of P1, the field is parsed but not rendered — capture
-writes `<doc_uuid_8>.fits` regardless of the configured value; when P1
-lands, the rendered base is prefixed before the UUID-8 suffix (e.g.
+**Landed today**: the pattern is parsed and validated against that
+full token contract at config-load time — an unknown token, a missing
+quota/uniqueness token, or an ambiguous adjacent-token pair fails
+startup, not a session. **Not yet landed**: rendering — capture still
+writes `<doc_uuid_8>.fits` regardless of the configured, now-validated
+value; when rendering lands, the rendered base is prefixed before the
+UUID-8 suffix (e.g.
 `m31/2026-07-22/Light/m31_L_1x1_0001_300sec_fpos_2_-10C_550e8400.fits`)
 so existing files stay reachable.
 
@@ -3782,9 +3786,10 @@ target's `None` override fields fall back to (§ Progress derivation, §
 Decision Logic bullet 1) once the Dynamic Planner cutover lands
 (`target_store_planner.feature`, still `@wip`).
 
-This block, along with `session.directory_pattern` /
-`session.file_naming_pattern` (§ Persistence — the round-trippable
-naming-template work is also still `@wip`), will replace the
+This block, along with a future `session.directory_pattern` /
+`session.file_naming_pattern` (§ Persistence — config-load validation
+of the naming-template token contract has landed; rendering and the
+frame scan it feeds have not), will replace the
 `targets[]` config array (§ Target Definition) once that cutover
 lands — a breaking, pre-1.0 hard cutover like the retired shapes noted
 in § Configuration. Until then `rp` tells the two `targets` shapes
@@ -4440,7 +4445,7 @@ section's Configuration block for the replacement shape.
   "session": {
     "data_directory": "/data/lights",
     "session_state_file": "/data/session_state.json",
-    "file_naming_pattern": "{target}_{filter}_{duration}s_{sequence:04}"
+    "file_naming_pattern": "{target}_{filter}_{binning}_{frame_number}_{exposure}_fpos_{filter_position}_{sensor_temp}_{uuid8}"
   },
   "site": {
     "latitude_degrees": 47.6062,

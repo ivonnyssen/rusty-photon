@@ -21,6 +21,7 @@ pub mod focuser;
 pub mod guiding;
 pub mod imaging;
 pub mod mount;
+pub mod naming_template;
 pub mod observing_conditions;
 pub mod optical_train;
 pub mod plate_solver;
@@ -189,6 +190,14 @@ pub fn validate_config(config: &Config) -> Vec<FieldError> {
     let mut errors = Vec::new();
     if let Some(site) = config.site.as_ref() {
         errors.extend(site.field_errors());
+    }
+    if let Some(pattern) = config.session.file_naming_pattern.as_deref() {
+        if let Err(msg) = naming_template::validate_pattern(pattern) {
+            errors.push(FieldError {
+                path: "session.file_naming_pattern".to_string(),
+                msg,
+            });
+        }
     }
     for (index, cam) in config.equipment.cameras.iter().enumerate() {
         errors.extend(cam.field_errors(index));

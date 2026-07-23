@@ -360,14 +360,18 @@ an in-place overwrite, never a duplicate row.
 
 ### File-naming template (render + parse)
 
-`rp` turns the reserved `session.file_naming_pattern` (rp.md:285-287,
-example at rp.md:2990) from a render-only field into a **round-trippable**
-template, plus a new `session.directory_pattern`. This **supersedes** the
-originally-reserved token set (a breaking redefinition, not an
-extension): `{duration}`→`{exposure}` and `{sequence}`→`{frame_number}`,
-and the `:04`-style width specifier in the rp.md:2990 example is dropped
-in favour of fixed-width rendering per token (below). The Rule-2 rp.md
-update must edit rp.md:285-287 and rp.md:2990 to match; for backward
+**Landed: config-load validation of the token contract below. Not yet
+landed: rendering, parsing real filenames, and `session.directory_pattern`
+itself (the field doesn't exist yet).** `capture` still writes
+`<doc_uuid_8>.fits` regardless of the configured, now-validated pattern.
+
+`rp` will turn `session.file_naming_pattern` (rp.md § Persistence) from
+a render-only field into a **round-trippable** template, plus a future
+`session.directory_pattern`. This **supersedes** the originally-reserved
+token set (a breaking redefinition, not an extension): `{duration}`→
+`{exposure}` and `{sequence}`→`{frame_number}`, and the `:04`-style
+width specifier from the field's original doc example is dropped in
+favour of fixed-width rendering per token (below); for backward
 compatibility the parser accepts `{duration}` and `{sequence}` as
 deprecated aliases of `{exposure}` and `{frame_number}`. Tokens use the
 `{token}` brace syntax. The default reproduces the agreed scheme:
@@ -377,9 +381,10 @@ directory_pattern    = "{target}/{night_date}/{frame_type}"
 file_naming_pattern  = "{target}_{filter}_{binning}_{frame_number}_{exposure}_fpos_{filter_position}_{sensor_temp}_{uuid8}"
 ```
 
-Rendering example (note the lowercase `{target}` slug — the renderer
-emits the slug verbatim and the parser's `[a-z0-9-]+` shape requires it;
-the impl carries a `parse(render(x)) == x` round-trip assertion):
+Target rendering example, once rendering lands (note the lowercase
+`{target}` slug — the renderer will emit the slug verbatim and the
+parser's `[a-z0-9-]+` shape requires it; the impl must carry a
+`parse(render(x)) == x` round-trip assertion):
 `m33/2026-06-02/Light/m33_Ha_1x1_0002_120sec_fpos_680_-20C_a1b2c3d4.fits`
 
 Each token has a **typed shape** so the template compiles to an anchored
@@ -409,17 +414,22 @@ uses `120s`/`500ms`), and `{frame_number}` renders zero-padded to width
 frames bucket against `AcquisitionGoal` quotas (Dark/Flat/Bias live under
 their own dirs).
 
-**Config-load validation (parse-don't-validate).** The pattern is parsed
-and checked at startup; a bad pattern fails the load, not a session.
-Rejection rules: the pattern must contain every token needed to derive
-the quota key (`{target}`, `{filter}`, `{binning}`, `{exposure}`) and a
-per-frame uniqueness token (`{uuid8}` or `{frame_number}`). It must
-compile to an unambiguous anchored regex: between any two variable-width
-tokens there must be a literal separator whose characters are excluded
-from both the left token's trailing charset and the right token's leading
+**Config-load validation (parse-don't-validate) — landed**
+(`rp::config::naming_template`). The pattern is parsed and checked at
+startup; a bad pattern fails the load, not a session. Rejection rules:
+the pattern must contain every token needed to derive the quota key
+(`{target}`, `{filter}`, `{binning}`, `{exposure}`) and a per-frame
+uniqueness token (`{uuid8}` or `{frame_number}`). It must compile to an
+unambiguous anchored regex: two tokens directly adjacent with no literal
+between them are always rejected, and between any two tokens separated
+by a literal, every character of that literal must be excluded from
+both the left token's trailing charset and the right token's leading
 charset — `_` qualifies because it appears in no token charset, which is
 exactly why the default pattern is unambiguous and never falls back to
-`split('_')`. A pattern placing two such tokens adjacent (e.g.
+`split('_')`. (The implementation applies this edge-charset check to
+every adjacent token pair, not only nominally "variable-width" ones —
+a conservative superset of the strict rule that never mis-accepts an
+ambiguous pattern.) A pattern placing two such tokens adjacent (e.g.
 `{frame_number}{exposure}`, or `{target}` immediately before
 `{night_date}`, whose hyphens/digits the `[a-z0-9-]+` slug would swallow)
 is rejected. Unknown tokens are rejected with the offending token named.

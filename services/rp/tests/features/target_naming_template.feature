@@ -1,8 +1,7 @@
-@wip
-Feature: Round-trippable file-naming template config-load validation (P1 planned)
-  P1 turns `session.file_naming_pattern` from render-only into a
-  round-trippable template rp both renders and parses back (plus a new
-  `session.directory_pattern`), superseding the `{duration}`/
+Feature: Round-trippable file-naming template config-load validation (P1)
+  P1 turns `session.file_naming_pattern`'s token set into the
+  round-trippable contract rp will both render and parse back (plus a
+  future `session.directory_pattern`), superseding the `{duration}`/
   `{sequence}` tokens with `{exposure}`/`{frame_number}` — the parser
   keeps accepting the old names as deprecated aliases for backward
   compatibility (rp.md § Persistence, rp-targets.md § File-naming
@@ -13,8 +12,10 @@ Feature: Round-trippable file-naming template config-load validation (P1 planned
   token (`{uuid8}` or `{frame_number}`); it must compile to an
   unambiguous anchored regex — two variable-width tokens can't sit
   adjacent with no literal separator excluded from both charsets; and
-  unknown tokens are rejected. *(Planned, P1 — not yet implemented;
-  scenarios are tagged @wip.)*
+  unknown tokens are rejected. *(This feature covers config-load
+  validation only — actual filename rendering/parse-back, behind the
+  target store's progress derivation, has not landed yet; `capture`
+  still writes `<doc_uuid_8>.fits` regardless of this pattern.)*
 
   Scenario: A pattern missing a required quota token is rejected at config load
     Given an rp config with file_naming_pattern "{target}_{frame_number}_{uuid8}"
