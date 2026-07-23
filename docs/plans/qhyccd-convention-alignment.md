@@ -141,13 +141,26 @@ single-owner shape.
   **one** open handle. This both removes the double-open path and makes the
   shared-handle abstraction earn its keep.
 
-**Go/no-go gate — verify before touching the sharing:** confirm what
-`OpenQHYCCD(id)` does when called **twice for the same id** (returns the same
-handle / a second handle / fails). The current re-open-by-id path depends on the
-answer, and the "share one `Arc`" fix is only strictly necessary if a double open
-is unsafe. Check the QHYCCD SDK manual
-(`docs/references/qhyccd-sdk-manual.md`) and, if inconclusive, a hardware/sim
-probe. **Do not land the sharing change until this is settled.**
+**Go/no-go gate — RESOLVED 2026-07-23 from the SDK manual: share one handle
+(the fix is required, not optional).** The QHYCCD SDK's documented model is
+**one `OpenQHYCCD(id)` per physical camera, with the filter wheel driven through
+that same single handle.** The manual's own canonical CFW workflow, Example 5
+(`docs/references/qhyccd-sdk-manual.md:6760`), opens the camera exactly once
+(`camhandle = OpenQHYCCD(id)`) and then drives the wheel on that handle
+(`IsQHYCCDCFWPlugged(camhandle)`, `SetQHYCCDParam(camhandle, CONTROL_CFWPORT, …)`);
+§45 Filter Wheel Control (`:4569`) confirms the CFW is not an openable device but
+a control (`CONTROL_CFWPORT`) *"available after the camera is initialized with
+`InitQHYCCD`."* A **second `OpenQHYCCD` on an already-open id is nowhere
+documented** — every workflow, imaging and CFW alike, runs through one handle.
+The manual doesn't promise a double open fails, but its silence is exactly why
+the design must not *depend* on it (cf. the sibling `InitQHYCCDResource`,
+explicitly *"do not call multiple times… may cause the program to crash"*,
+`:205`). Therefore the current re-open-by-id path (a second `OpenQHYCCD` on the
+same id) is unsound-by-design, and Phase 1 **must** move to one shared handle.
+(Incidental confirmations from the same read: the crate's CFW ASCII ±48 offset is
+correct — `CONTROL_CFWPORT` uses ASCII 48/49/50 for slots 0/1/2, `:4575`; and the
+crate's use of `GetQHYCCDParam` over `GetQHYCCDCFWStatus` matches the manual's own
+recommendation.)
 
 **Exit:** `Camera`/shared-handle closes on last-drop; filter wheel shares the
 camera's handle (or the double-open is proven safe and explicitly documented);
@@ -223,7 +236,7 @@ green with no coverage regression.
 
 | Risk | Likelihood | Mitigation |
 |---|---|---|
-| Handle-`Drop` + filter-wheel sharing rework closes a handle still in use by the other object | Medium | Phase 1 gate: settle `OpenQHYCCD`-twice semantics first; move to one shared `Arc` so there is a single close point; cover with a sim test that opens camera+wheel and drops in both orders |
+| Handle-`Drop` + filter-wheel sharing rework closes a handle still in use by the other object | Medium | `OpenQHYCCD`-twice semantics settled (single-handle model — see Phase 1 gate); move to one shared `Arc` so there is a single close point; cover with a sim test that opens camera+wheel and drops in both orders |
 | Removing `mocks.rs` drops unit-test coverage that only the FFI mock reached | Medium | Phase 4: audit which tests use `#[automock]` and re-express them against the inline sim backend **before** deleting; watch the coverage job |
 | `Control` subset omits a variant a service actually uses (incl. CFW controls) | Low | Grep all `Control::` uses across services before subsetting; keep `Other(i32)` as the escape hatch |
 | ConformU regression from lifecycle/accessor changes | Low | Run `--config=conformu` at each phase exit (qhy-camera's conformu suite is the acceptance gate) |
@@ -238,9 +251,11 @@ behaviour.
 
 ## Open questions
 
-1. **`OpenQHYCCD(id)` twice — same handle, second handle, or failure?** Gates
-   Phase 1 (see the go/no-go gate). Resolve from the SDK manual or a probe before
-   the sharing rework.
+1. **`OpenQHYCCD(id)` twice — same handle, second handle, or failure?**
+   **RESOLVED 2026-07-23 (SDK manual):** undocumented/unsupported — the SDK's
+   model is one handle per camera with the CFW driven through it (Example 5,
+   §45). Phase 1 must share one handle rather than re-open by id. See the Phase 1
+   go/no-go gate for the full citation.
 2. **Does any service depend on `Camera: Clone` / equality-by-id semantics** that
    the Phase 1 handle rework would change? Audit `services/qhy-camera` +
    `services/qhy-focuser` usage first.
