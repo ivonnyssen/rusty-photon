@@ -3629,10 +3629,12 @@ the bridge.
 
 Progress is computed on demand, never stored (full rules in
 [`rp-targets.md` § Progress derivation](../crates/rp-targets.md#progress-derivation-the-actuals)):
-`rp` lists a target's slug directory
-(`<data_directory>/<slug>/<night_date>/Light/`), parses each filename
-through the configured `file_naming_pattern` (§ Persistence) to bucket
-frames by `(filter, binning, exposure)`, then classifies each frame
+a target's plan spans however many nights it takes to reach its
+goals, so `rp` walks **every** `<night_date>` subdirectory under a
+target's slug directory (`<data_directory>/<slug>/*/Light/`,
+accumulating across the whole project, not one night), parses each
+filename through the configured `file_naming_pattern` (§ Persistence)
+to bucket frames by `(filter, binning, exposure)`, then classifies each frame
 good/rejected against its sidecar's grading section and the target's
 effective `GradingThresholds` (its own overrides, field-wise over
 `targets.default_grading`). `get_target`/`list_targets` report, per

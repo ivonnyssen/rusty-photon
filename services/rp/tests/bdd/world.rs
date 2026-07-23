@@ -178,6 +178,26 @@ pub struct RpWorld {
     pub last_tool_list: Option<Vec<String>>,
     /// Current filter from get_filter
     pub current_filter: Option<String>,
+    /// Slug of the most recently added/fetched target (Target Store
+    /// scenarios — target_store_*.feature, *(planned, P1)*), so a
+    /// later step can act on "the target I just added" without the
+    /// feature file repeating the slug.
+    pub last_target_slug: Option<String>,
+    /// Raw JSON array from the most recent `list_targets` call
+    /// (Target Store scenarios).
+    pub last_target_list: Option<Vec<Value>>,
+    /// Raw `targets` config block override (Target Store scenarios —
+    /// `db_path`/`default_scheduling`/`default_grading`/`default_goals`,
+    /// see rp.md § Target Store → Configuration), merged over whatever
+    /// [`RpConfigBuilder::build`] emits so these scenarios can still use
+    /// the ordinary OmniSim/mount bootstrap (`tool_steps::start_rp`)
+    /// instead of a bespoke launcher. `None` ⇒ no override.
+    pub target_store_config: Option<Value>,
+    /// Error from the most recent `ServiceHandle::try_start` call
+    /// (Target Store naming-template config-load validation scenarios —
+    /// `target_naming_template.feature`, *(planned, P1)*). `None` after
+    /// a successful start.
+    pub rp_start_error: Option<String>,
 
     // --- REST API state ---
     /// Last REST API response status code
@@ -391,7 +411,19 @@ impl RpWorld {
         if let Some((mib, images)) = self.pinned_imaging_overrides {
             builder.with_imaging(mib, images);
         }
-        builder.build()
+        let mut config = builder.build();
+        // Target Store scenarios (*(planned, P1)*): RpConfigBuilder only
+        // knows the legacy `targets[]` array (PlannerTargetConfig); the
+        // new store's `targets` object (db_path/default_scheduling/
+        // default_grading/default_goals, rp.md § Target Store) has no
+        // typed builder support yet since P1 hasn't landed. Overwriting
+        // the key here — rather than extending the shared builder ahead
+        // of the real implementation — keeps this override local to rp's
+        // own BDD suite until Phase 3 settles the real shape.
+        if let Some(targets) = &self.target_store_config {
+            config["targets"] = targets.clone();
+        }
+        config
     }
 
     /// Wait for rp to become healthy (retry GET /health).
