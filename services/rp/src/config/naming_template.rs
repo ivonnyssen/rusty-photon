@@ -648,6 +648,30 @@ mod tests {
     }
 
     #[test]
+    fn separator_matching_left_trailing_charset_is_rejected() {
+        // sensor_temp's own rendered value already ends in "C" (e.g.
+        // "-20C"), so a literal "C" separator can't unambiguously mark
+        // where it ends and the next token begins.
+        let err = validate_directory_pattern("{sensor_temp}C{target}").unwrap_err();
+        assert!(
+            err.contains("sensor_temp") && err.contains("target") && err.contains("\"C\""),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn separator_matching_right_leading_charset_is_rejected() {
+        // frame_type's shape starts with one of L/D/F/B, so a literal
+        // "D" separator can't unambiguously mark where target ends and
+        // frame_type begins.
+        let err = validate_directory_pattern("{target}D{frame_type}").unwrap_err();
+        assert!(
+            err.contains("target") && err.contains("frame_type") && err.contains("\"D\""),
+            "{err}"
+        );
+    }
+
+    #[test]
     fn unknown_token_is_rejected() {
         let err =
             validate_pattern("{target}_{filter}_{binning}_{frame_number}_{exposure}_{bogus_token}")
