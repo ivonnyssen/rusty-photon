@@ -27,107 +27,81 @@ use rp_targets::{Binning, TargetSlug};
 use crate::planner::goal_wire::parse_binning;
 
 /// One naming-template token: its canonical name, the leading/
-/// trailing character classes a rendered value can start/end with
-/// (the adjacent-token ambiguity check), and its regex shape
-/// (rp-targets.md § File-naming template's shape table) — the named
-/// capture group [`CompiledTemplate::compile`] builds and the
-/// exact-match validator [`CompiledTemplate::render`] checks a
+/// trailing character classes a rendered value can start/end with —
+/// each a `regex` character-class fragment, e.g. `"[a-z0-9-]"` or a
+/// single literal like `"C"` (the adjacent-token ambiguity check
+/// compiles and matches these the same way it does `shape`) — and its
+/// regex shape (rp-targets.md § File-naming template's shape table),
+/// whose named capture group [`CompiledTemplate::compile`] builds and
+/// whose exact-match validator [`CompiledTemplate::render`] checks a
 /// formatted value against before ever emitting it.
 #[derive(Debug)]
 struct TokenSpec {
     name: &'static str,
-    leading: fn(char) -> bool,
-    trailing: fn(char) -> bool,
+    leading: &'static str,
+    trailing: &'static str,
     shape: &'static str,
-}
-
-fn is_digit(c: char) -> bool {
-    c.is_ascii_digit()
-}
-fn is_slug_char(c: char) -> bool {
-    c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'
-}
-fn is_alnum(c: char) -> bool {
-    c.is_ascii_alphanumeric()
-}
-fn is_hex(c: char) -> bool {
-    c.is_ascii_digit() || ('a'..='f').contains(&c)
-}
-fn is_sensor_temp_leading(c: char) -> bool {
-    c == '-' || c.is_ascii_digit()
-}
-fn is_literal_c(c: char) -> bool {
-    c == 'C'
-}
-fn is_literal_lowercase_c(c: char) -> bool {
-    c == 'c'
-}
-fn is_frame_type_leading(c: char) -> bool {
-    matches!(c, 'L' | 'D' | 'F' | 'B')
-}
-fn is_frame_type_trailing(c: char) -> bool {
-    matches!(c, 't' | 'k' | 's')
 }
 
 const TOKENS: &[TokenSpec] = &[
     TokenSpec {
         name: "target",
-        leading: is_slug_char,
-        trailing: is_slug_char,
+        leading: "[a-z0-9-]",
+        trailing: "[a-z0-9-]",
         shape: "[a-z0-9-]+",
     },
     TokenSpec {
         name: "filter",
-        leading: is_alnum,
-        trailing: is_alnum,
+        leading: "[A-Za-z0-9]",
+        trailing: "[A-Za-z0-9]",
         shape: "[A-Za-z0-9]+",
     },
     TokenSpec {
         name: "binning",
-        leading: is_digit,
-        trailing: is_digit,
+        leading: "[0-9]",
+        trailing: "[0-9]",
         shape: r"\d+x\d+",
     },
     TokenSpec {
         name: "frame_number",
-        leading: is_digit,
-        trailing: is_digit,
+        leading: "[0-9]",
+        trailing: "[0-9]",
         shape: r"\d+",
     },
     TokenSpec {
         name: "exposure",
-        leading: is_digit,
-        trailing: is_literal_lowercase_c,
+        leading: "[0-9]",
+        trailing: "c",
         shape: r"\d+sec",
     },
     TokenSpec {
         name: "filter_position",
-        leading: is_digit,
-        trailing: is_digit,
+        leading: "[0-9]",
+        trailing: "[0-9]",
         shape: r"\d+",
     },
     TokenSpec {
         name: "sensor_temp",
-        leading: is_sensor_temp_leading,
-        trailing: is_literal_c,
+        leading: "[-0-9]",
+        trailing: "C",
         shape: r"-?\d+C",
     },
     TokenSpec {
         name: "night_date",
-        leading: is_digit,
-        trailing: is_digit,
+        leading: "[0-9]",
+        trailing: "[0-9]",
         shape: r"\d{4}-\d{2}-\d{2}",
     },
     TokenSpec {
         name: "frame_type",
-        leading: is_frame_type_leading,
-        trailing: is_frame_type_trailing,
+        leading: "[LDFB]",
+        trailing: "[tks]",
         shape: "Light|Dark|Flat|Bias",
     },
     TokenSpec {
         name: "uuid8",
-        leading: is_hex,
-        trailing: is_hex,
+        leading: "[0-9a-f]",
+        trailing: "[0-9a-f]",
         shape: "[0-9a-f]{8}",
     },
 ];
@@ -153,28 +127,46 @@ enum Segment<'a> {
 
 /// Splits `pattern` into literal and `{token}` segments, resolving
 /// deprecated aliases to their canonical name. Returns the offending
-/// raw token name on the first unknown `{token}`.
+/// raw token name on the first unknown `{token}`, or the offending
+/// text on the first unterminated `{`.
 fn parse_segments(pattern: &str) -> Result<Vec<Segment<'_>>, String> {
+    let token_re = Regex::new(r"\{(\w+)\}")
+        .map_err(|e| format!("internal: naming-template token regex is invalid: {e}"))?;
+
     let mut segments = Vec::new();
-    let mut rest = pattern;
-    while let Some(open) = rest.find('{') {
-        if open > 0 {
-            segments.push(Segment::Literal(&rest[..open]));
+    let mut last_end = 0;
+    for caps in token_re.captures_iter(pattern) {
+        // Both groups always match once `captures_iter` yields `caps` at
+        // all: group 0 is the whole match, group 1 is `token_re`'s only
+        // capture group. Skip (rather than panic) if that ever changes.
+        let (Some(whole), Some(raw_name)) = (caps.get(0), caps.get(1)) else {
+            continue;
+        };
+        let raw_name = raw_name.as_str();
+        if whole.start() > last_end {
+            segments.push(Segment::Literal(&pattern[last_end..whole.start()]));
         }
-        let after_open = &rest[open + 1..];
-        let close = after_open
-            .find('}')
-            .ok_or_else(|| format!("unterminated token starting at {:?}", &rest[open..]))?;
-        let raw_name = &after_open[..close];
         let canonical = resolve_alias(raw_name);
         let spec = token_spec(canonical)
             .ok_or_else(|| format!("unknown naming-template token {{{raw_name}}}"))?;
         segments.push(Segment::Token(spec));
-        rest = &after_open[close + 1..];
+        last_end = whole.end();
     }
-    if !rest.is_empty() {
-        segments.push(Segment::Literal(rest));
+    if last_end < pattern.len() {
+        segments.push(Segment::Literal(&pattern[last_end..]));
     }
+
+    // A `{` with no matching `}` (or containing a non-word character)
+    // never matches `token_re`, so it survives into a literal segment
+    // instead of being consumed above.
+    for segment in &segments {
+        if let Segment::Literal(text) = segment {
+            if let Some(pos) = text.find('{') {
+                return Err(format!("unterminated token starting at {:?}", &text[pos..]));
+            }
+        }
+    }
+
     Ok(segments)
 }
 
@@ -250,10 +242,11 @@ fn check_unambiguous(segments: &[Segment<'_>]) -> Result<(), String> {
     // trailing charset and the right token's leading charset.
     for window in segments.windows(3) {
         if let [Segment::Token(left), Segment::Literal(sep), Segment::Token(right)] = window {
-            if sep
-                .chars()
-                .any(|c| (left.trailing)(c) || (right.leading)(c))
-            {
+            let trailing_re = edge_class_regex(left.trailing)?;
+            let leading_re = edge_class_regex(right.leading)?;
+            if sep.chars().any(|c| {
+                trailing_re.is_match(&c.to_string()) || leading_re.is_match(&c.to_string())
+            }) {
                 let (left, right) = (left.name, right.name);
                 return Err(format!(
                     "naming pattern's separator {sep:?} between {{{left}}} and {{{right}}} does not unambiguously split them"
@@ -263,6 +256,13 @@ fn check_unambiguous(segments: &[Segment<'_>]) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+/// Compiles a [`TokenSpec::leading`]/[`TokenSpec::trailing`] character
+/// class into an exact-match single-character regex.
+fn edge_class_regex(class: &str) -> Result<Regex, String> {
+    Regex::new(&format!("^(?:{class})$"))
+        .map_err(|e| format!("internal: token edge-class {class:?} is invalid: {e}"))
 }
 
 /// A capture's intent — the `{frame_type}` token's value. Only
@@ -660,6 +660,12 @@ mod tests {
             validate_pattern("{target}_{filter}_{binning}_{frame_number}_{exposure}_{bogus_token}")
                 .unwrap_err();
         assert!(err.contains("bogus_token"));
+    }
+
+    #[test]
+    fn unterminated_token_is_rejected() {
+        let err = validate_pattern("{target}_{filter").unwrap_err();
+        assert!(err.contains("unterminated"), "{err}");
     }
 
     #[test]

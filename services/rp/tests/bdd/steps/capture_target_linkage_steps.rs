@@ -197,7 +197,12 @@ fn captured_path_is_flat_uuid8(world: &mut RpWorld) {
 
 #[then(expr = "the captured image_path should contain {string}")]
 fn captured_path_contains(world: &mut RpWorld, needle: String) {
-    let path = captured_image_path(world);
+    // `directory_pattern`'s literal `/` separators stay literal, but the
+    // outer join against `data_directory` uses the OS separator — on
+    // Windows that mixes `\` and `/` in one path. Windows treats both
+    // interchangeably for real I/O, so normalize here for the
+    // assertion; this is a test-only concern, not production behavior.
+    let path = captured_image_path(world).replace('\\', "/");
     assert!(
         path.contains(&needle),
         "expected image_path {:?} to contain {:?}",
