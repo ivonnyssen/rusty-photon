@@ -397,15 +397,9 @@ behavior) until this is designed; see rp.md § Capture Tool Details.
 
 `rp` turns `session.file_naming_pattern` (rp.md § Persistence) from
 a render-only field into a **round-trippable** template, plus
-`session.directory_pattern`. This **supersedes** the originally-reserved
-token set (a breaking redefinition, not an extension): `{duration}`→
-`{exposure}` and `{sequence}`→`{frame_number}`, and the `:04`-style
-width specifier from the field's original doc example is dropped in
-favour of fixed-width rendering per token (below). `rp` has never
-shipped `file_naming_pattern` to a real deployment, so there's no
-on-disk config to stay compatible with — `{duration}`/`{sequence}` are
-simply unknown tokens now, not deprecated aliases. Tokens use the
-`{token}` brace syntax. The default reproduces the agreed scheme:
+`session.directory_pattern`. Tokens use the `{token}` brace syntax;
+an unrecognized token is rejected at config load (§ Config-load
+validation below). The default reproduces the agreed scheme:
 
 ```
 directory_pattern    = "{target}/{night_date}/{frame_type}"

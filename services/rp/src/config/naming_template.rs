@@ -621,10 +621,7 @@ mod tests {
     }
 
     #[test]
-    fn unrecognized_legacy_alias_tokens_are_rejected() {
-        // rp has never shipped file_naming_pattern to a real deployment,
-        // so {duration}/{sequence} are just unknown tokens now, not
-        // deprecated aliases of {exposure}/{frame_number}.
+    fn duration_and_sequence_are_rejected_as_unknown_tokens() {
         let err = validate_pattern(
             "{target}_{filter}_{binning}_{sequence}_{duration}_fpos_{filter_position}_{sensor_temp}_{uuid8}",
         )

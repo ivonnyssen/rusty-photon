@@ -6,10 +6,8 @@ use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post, put};
+use axum::routing::{get, post};
 use axum::{Json, Router};
-use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::CallToolResult;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::StreamableHttpServerConfig;
 use rmcp::transport::streamable_http_server::StreamableHttpService;
@@ -103,21 +101,6 @@ pub fn build_router(state: AppState) -> Router {
         // layers (applied in lib.rs) cover them like every other route.
         .route("/api/config", get(get_config).put(put_config))
         .route("/api/config/schema", get(get_config_schema))
-        // Target-store REST (rp.md § REST Endpoints → Targets, Decision
-        // 10's minimal operator surface): mirrors the target MCP tools
-        // body-for-body. Plan data, not actuation — outside the /mcp
-        // safety gate like /api/config.
-        .route(
-            "/api/targets",
-            get(list_targets_rest).post(create_target_rest),
-        )
-        .route(
-            "/api/targets/{slug}",
-            get(get_target_rest)
-                .put(update_target_rest)
-                .delete(delete_target_rest),
-        )
-        .route("/api/targets/{slug}/goals", put(set_goals_rest))
         .merge(gated_mcp)
         .route("/api/session/start", post(session_start))
         .route("/api/session/stop", post(session_stop))
@@ -372,137 +355,6 @@ async fn workflow_complete(
     debug!(workflow_id = %workflow_id, "received workflow completion");
     state.session.workflow_complete(&workflow_id).await;
     StatusCode::OK
-}
-
-/// Converts a tool's `CallToolResult` into a REST response: the JSON the
-/// tool embedded in its text content, `200` on success and `400` on a
-/// tool-reported error (an `rmcp::ErrorData` — a transport-level failure
-/// rather than a tool error — is `500`).
-fn call_result_to_response(
-    result: Result<CallToolResult, rmcp::ErrorData>,
-) -> (StatusCode, Json<Value>) {
-    match result {
-        Ok(call_result) => {
-            let text = call_result
-                .content
-                .first()
-                .and_then(|c| c.as_text())
-                .map(|t| t.text.clone())
-                .unwrap_or_default();
-            let value: Value = serde_json::from_str(&text).unwrap_or(Value::String(text));
-            if call_result.is_error.unwrap_or(false) {
-                let body = if value.is_object() {
-                    value
-                } else {
-                    serde_json::json!({ "error": value })
-                };
-                (StatusCode::BAD_REQUEST, Json(body))
-            } else {
-                (StatusCode::OK, Json(value))
-            }
-        }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": e.to_string()})),
-        ),
-    }
-}
-
-#[derive(serde::Deserialize)]
-struct ListTargetsQuery {
-    active_only: Option<bool>,
-}
-
-async fn list_targets_rest(
-    State(state): State<AppState>,
-    Query(q): Query<ListTargetsQuery>,
-) -> (StatusCode, Json<Value>) {
-    let result = state
-        .mcp
-        .list_targets(Parameters(
-            crate::mcp::built_in::targets::ListTargetsParams {
-                active_only: q.active_only,
-            },
-        ))
-        .await;
-    call_result_to_response(result)
-}
-
-async fn create_target_rest(
-    State(state): State<AppState>,
-    Json(params): Json<crate::mcp::built_in::targets::AddTargetParams>,
-) -> (StatusCode, Json<Value>) {
-    let result = state.mcp.add_target(Parameters(params)).await;
-    call_result_to_response(result)
-}
-
-async fn get_target_rest(
-    State(state): State<AppState>,
-    Path(slug): Path<String>,
-) -> (StatusCode, Json<Value>) {
-    let result = state
-        .mcp
-        .get_target(Parameters(crate::mcp::built_in::targets::GetTargetParams {
-            slug,
-        }))
-        .await;
-    call_result_to_response(result)
-}
-
-async fn update_target_rest(
-    State(state): State<AppState>,
-    Path(slug): Path<String>,
-    Json(mut body): Json<Value>,
-) -> (StatusCode, Json<Value>) {
-    if let Value::Object(ref mut map) = body {
-        map.insert("slug".to_string(), Value::String(slug));
-    }
-    let params: crate::mcp::built_in::targets::UpdateTargetParams =
-        match serde_json::from_value(body) {
-            Ok(p) => p,
-            Err(e) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({"error": e.to_string()})),
-                )
-            }
-        };
-    let result = state.mcp.update_target(Parameters(params)).await;
-    call_result_to_response(result)
-}
-
-async fn delete_target_rest(
-    State(state): State<AppState>,
-    Path(slug): Path<String>,
-) -> (StatusCode, Json<Value>) {
-    let result = state
-        .mcp
-        .delete_target(Parameters(
-            crate::mcp::built_in::targets::DeleteTargetParams { slug },
-        ))
-        .await;
-    call_result_to_response(result)
-}
-
-async fn set_goals_rest(
-    State(state): State<AppState>,
-    Path(slug): Path<String>,
-    Json(mut body): Json<Value>,
-) -> (StatusCode, Json<Value>) {
-    if let Value::Object(ref mut map) = body {
-        map.insert("slug".to_string(), Value::String(slug));
-    }
-    let params: crate::mcp::built_in::targets::SetGoalsParams = match serde_json::from_value(body) {
-        Ok(p) => p,
-        Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": e.to_string()})),
-            )
-        }
-    };
-    let result = state.mcp.set_goals(Parameters(params)).await;
-    call_result_to_response(result)
 }
 
 async fn get_document(

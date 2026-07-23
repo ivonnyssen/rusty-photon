@@ -316,11 +316,8 @@ template (P1 of
 `rp` both renders filenames from capture context and parses them back
 to recover `(target, filter, binning, exposure)` for goal-progress
 derivation (see [Target Store](#target-store)). The full contract —
-per-token typed shapes, the compiled-anchored-regex requirement, and
-the `{duration}`→`{exposure}` / `{sequence}`→`{frame_number}` token
-redefinition (a breaking redefinition, not an extension — `rp` has
-never shipped this field to a real deployment, so the old names are
-just unknown tokens now) — lives in
+per-token typed shapes and the compiled-anchored-regex requirement —
+lives in
 [`rp-targets.md` § File-naming template](../crates/rp-targets.md#file-naming-template-render-and-parse).
 Both patterns are parsed and validated at config-load time — an
 unknown token or an ambiguous adjacent-token pair fails startup, not a
@@ -3727,12 +3724,15 @@ things that already shipped on the config-array planner:
   crate doc's deferred list rather than silently overriding it,
   because altitude gating is not new ephemeris work (the shipped
   planner already evaluates it via `rp-ephemeris`).
-- **A minimal operator surface (Decision 10) — landed.** The
-  `GET`/`POST`/`PUT`/`DELETE /api/targets` endpoints (§ REST Endpoints
-  → Targets) are implemented against the new store, so a target
-  that arrives with no UI (e.g. a future planetarium-bridge import, P3)
-  is never stranded — list, edit, and activate work before the P4
-  inbox exists.
+- **A minimal operator surface (Decision 10) — landed.** The 6
+  CRUD/goals MCP tools (`add_target` / `get_target` / `list_targets` /
+  `update_target` / `set_goals` / `delete_target`) give list/edit/
+  activate against the store, so a target that arrives with no UI (e.g.
+  a future planetarium-bridge import, P3) is never stranded — this
+  works before the P4 inbox exists. Reachable only through MCP, gated
+  the same as every other tool (rp.md § Safety); a browser-facing
+  target UI, if one is built, would need to be an MCP client like the
+  orchestrator, not a REST caller.
 
 ### Slug allocation (add-time)
 
@@ -4325,26 +4325,6 @@ implemented** — the router serves only the unmarked ones.
   HTTP 413 (a valid config is a few KiB). The config endpoints are covered by the
   server-wide auth/TLS and are **not** behind the `/mcp` safety gate —
   configuration must stay editable while the system is unsafe.
-
-#### Targets
-
-See [Target Store](#target-store) for the full contract. All six
-endpoints are implemented, mirroring the `add_target` / `get_target` /
-`list_targets` / `update_target` / `set_goals` / `delete_target` MCP
-tools body-for-body so a UI and an MCP client see the same shapes.
-Outside the `/mcp` safety gate, like `/api/config` — plan data, not
-actuation.
-
-- `GET /api/targets` — list all targets with derived progress; optional
-  `?active_only=true`
-- `GET /api/targets/{slug}` — fetch one target with derived progress
-- `POST /api/targets` — create/upsert a target (slug allocation +
-  dedup rules as `add_target`)
-- `PUT /api/targets/{slug}` — edit a target in place (as `update_target`)
-- `PUT /api/targets/{slug}/goals` — replace a target's goal set (as
-  `set_goals`)
-- `DELETE /api/targets/{slug}` — remove a target's plan row (as
-  `delete_target`)
 
 #### Session
 - `POST /api/session/start` — start a new session (or resume existing)

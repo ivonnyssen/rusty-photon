@@ -42,6 +42,5 @@ pub mod target_store_crud_steps;
 pub mod target_store_goals_steps;
 pub mod target_store_planner_steps;
 pub mod target_store_progress_steps;
-pub mod target_store_rest_steps;
 pub mod tls_steps;
 pub mod tool_steps;

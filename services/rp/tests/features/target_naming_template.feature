@@ -1,13 +1,9 @@
 Feature: Round-trippable file-naming template config-load validation (P1)
-  P1 turns `session.file_naming_pattern`'s token set into the
-  round-trippable contract rp will both render and parse back (plus a
-  future `session.directory_pattern`), superseding the `{duration}`/
-  `{sequence}` tokens with `{exposure}`/`{frame_number}` — a breaking
-  redefinition, not an extension: rp has never shipped this field to a
-  real deployment, so the old names are just unknown tokens now (rp.md
-  § Persistence, rp-targets.md § File-naming template). The pattern is
-  parsed and checked at startup: a bad
-  pattern fails the load, not a session. Rejection rules: the pattern
+  `session.file_naming_pattern` and `session.directory_pattern` are a
+  round-trippable contract rp both renders and parses back (rp.md §
+  Persistence, rp-targets.md § File-naming template). Both are parsed
+  and checked at startup: a bad pattern fails the load, not a session.
+  Rejection rules: the pattern
   must carry every token needed to derive the quota key (`{target}`,
   `{filter}`, `{binning}`, `{exposure}`) plus a per-frame uniqueness
   token (`{uuid8}` or `{frame_number}`); it must compile to an

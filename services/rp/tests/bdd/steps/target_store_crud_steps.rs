@@ -8,8 +8,7 @@
 //! config on port 0 (the `config_rest.feature` pattern), skipping the
 //! simulator entirely. `write_target_store_config` and
 //! `start_target_store_rp` are `pub(crate)` and reused by the sibling
-//! `target_store_goals_steps.rs`, `target_store_progress_steps.rs`, and
-//! `target_store_rest_steps.rs`.
+//! `target_store_goals_steps.rs` and `target_store_progress_steps.rs`.
 
 use cucumber::{given, then, when};
 use serde_json::Value;
