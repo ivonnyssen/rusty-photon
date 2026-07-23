@@ -18,7 +18,9 @@ use crate::error::TargetStoreError;
 /// token in every frame's on-disk path, so it must never change once
 /// frames exist under it — renames go through `Target::display_name`
 /// instead.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, derive_more::Display,
+)]
 #[serde(transparent)]
 pub struct TargetSlug(String);
 
@@ -61,12 +63,6 @@ impl TargetSlug {
     }
 }
 
-impl std::fmt::Display for TargetSlug {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
 /// Errors constructing a [`TargetSlug`]. Caller-side (rp) validation before
 /// [`crate::TargetStore::upsert_target`] is ever called.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -84,18 +80,13 @@ pub enum TargetSlugError {
 }
 
 /// Frame binning, rendered as `"{x}x{y}"` (e.g. `"1x1"`, `"2x2"`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, derive_more::Display)]
+#[display("{x}x{y}")]
 pub struct Binning {
     /// Horizontal binning factor.
     pub x: u8,
     /// Vertical binning factor.
     pub y: u8,
-}
-
-impl std::fmt::Display for Binning {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}x{}", self.x, self.y)
-    }
 }
 
 /// Desired frame count for one acquisition sub-spec. The
