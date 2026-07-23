@@ -578,7 +578,7 @@ impl McpHandler {
                     targets
                         .iter()
                         .filter(|t| t.active)
-                        .map(crate::planner::decision::from_store_target),
+                        .map(crate::planner::decision::PlannerTarget::from),
                 ),
                 Err(e) => {
                     tracing::debug!(

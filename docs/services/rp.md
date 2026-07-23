@@ -327,10 +327,17 @@ deprecated aliases) — lives in
 **Landed today**: the pattern is parsed and validated against that
 full token contract at config-load time — an unknown token, a missing
 quota/uniqueness token, or an ambiguous adjacent-token pair fails
-startup, not a session. **Not yet landed**: rendering — capture still
-writes `<doc_uuid_8>.fits` regardless of the configured, now-validated
-value; when rendering lands, the rendered base is prefixed before the
-UUID-8 suffix (e.g.
+startup, not a session — and `rp::config::naming_template` now also
+compiles a validated pattern into a reusable render/parse engine
+(`CompiledTemplate`, backed by the `regex` crate: each token's shape
+becomes a named capture group in one combined anchored regex, so
+`parse` is never a naive `split('_')`). **Not yet landed: any
+caller.** `capture` still writes `<doc_uuid_8>.fits` regardless of the
+configured pattern — Decision 11's `target` parameter, the thing that
+would supply `render`'s `target`/`night_date`/`frame_type` field
+values, hasn't landed — and the on-disk frame scan behind target
+progress doesn't call `parse` yet either. When rendering lands, the
+rendered base is prefixed before the UUID-8 suffix (e.g.
 `m31/2026-07-22/Light/m31_L_1x1_0001_300sec_fpos_2_-10C_550e8400.fits`)
 so existing files stay reachable.
 

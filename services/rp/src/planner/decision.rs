@@ -310,21 +310,23 @@ pub fn signed_hour_angle(lst_hours: f64, target_ra_hours: f64) -> f64 {
 /// rejects zero), so each maps to a `count: Some(_)` entry — a
 /// store-backed target's plan is never "recommends forever" the way an
 /// uncounted legacy `exposures[]` entry can be.
-pub fn from_store_target(t: &rp_targets::Target) -> PlannerTarget {
-    PlannerTarget {
-        name: t.slug.as_str().to_string(),
-        ra_hours: t.ra_hours,
-        dec_degrees: t.dec_degrees,
-        min_altitude_degrees: t.scheduling.and_then(|s| s.min_altitude_degrees),
-        exposures: t
-            .goals
-            .iter()
-            .map(|g| ExposureSpec {
-                filter: (!g.filter.is_empty()).then(|| g.filter.clone()),
-                duration_secs: g.exposure.as_secs_f64(),
-                count: Some(g.desired_count),
-            })
-            .collect(),
+impl From<&rp_targets::Target> for PlannerTarget {
+    fn from(t: &rp_targets::Target) -> Self {
+        Self {
+            name: t.slug.as_str().to_string(),
+            ra_hours: t.ra_hours,
+            dec_degrees: t.dec_degrees,
+            min_altitude_degrees: t.scheduling.and_then(|s| s.min_altitude_degrees),
+            exposures: t
+                .goals
+                .iter()
+                .map(|g| ExposureSpec {
+                    filter: (!g.filter.is_empty()).then(|| g.filter.clone()),
+                    duration_secs: g.exposure.as_secs_f64(),
+                    count: Some(g.desired_count),
+                })
+                .collect(),
+        }
     }
 }
 
@@ -1169,7 +1171,7 @@ mod tests {
     #[test]
     fn from_store_target_uses_slug_as_identity() {
         let t = store_target("ngc7000", None, Vec::new());
-        let planner_target = from_store_target(&t);
+        let planner_target = PlannerTarget::from(&t);
         assert_eq!(planner_target.name, "ngc7000");
         assert_eq!(planner_target.ra_hours, 1.0);
         assert_eq!(planner_target.dec_degrees, 2.0);
@@ -1186,7 +1188,7 @@ mod tests {
             }),
             Vec::new(),
         );
-        assert_eq!(from_store_target(&t).min_altitude_degrees, Some(35.0));
+        assert_eq!(PlannerTarget::from(&t).min_altitude_degrees, Some(35.0));
     }
 
     #[test]
@@ -1198,7 +1200,7 @@ mod tests {
             desired_count: 20,
         };
         let t = store_target("ngc7000", None, vec![goal]);
-        let planner_target = from_store_target(&t);
+        let planner_target = PlannerTarget::from(&t);
         assert_eq!(
             planner_target.exposures,
             vec![ExposureSpec {

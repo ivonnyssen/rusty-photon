@@ -360,10 +360,16 @@ an in-place overwrite, never a duplicate row.
 
 ### File-naming template (render + parse)
 
-**Landed: config-load validation of the token contract below. Not yet
-landed: rendering, parsing real filenames, and `session.directory_pattern`
-itself (the field doesn't exist yet).** `capture` still writes
-`<doc_uuid_8>.fits` regardless of the configured, now-validated pattern.
+**Landed: config-load validation of the token contract below, plus the
+render/parse engine itself** (`rp::config::naming_template::CompiledTemplate`
+— `compile`/`render`/`parse`, regex-backed, unit-tested including a
+`parse(render(x)) == x` round trip against the documented example
+below). **Not yet landed: any caller, and `session.directory_pattern`
+itself** (the field doesn't exist yet). `capture` still writes
+`<doc_uuid_8>.fits` regardless of the configured pattern — Decision
+11's `target` parameter (the thing that would supply a render call's
+`target`/`night_date`/`frame_type` values) hasn't landed — and the
+on-disk frame scan below doesn't call `parse` yet either.
 
 `rp` will turn `session.file_naming_pattern` (rp.md § Persistence) from
 a render-only field into a **round-trippable** template, plus a future
@@ -381,10 +387,9 @@ directory_pattern    = "{target}/{night_date}/{frame_type}"
 file_naming_pattern  = "{target}_{filter}_{binning}_{frame_number}_{exposure}_fpos_{filter_position}_{sensor_temp}_{uuid8}"
 ```
 
-Target rendering example, once rendering lands (note the lowercase
-`{target}` slug — the renderer will emit the slug verbatim and the
-parser's `[a-z0-9-]+` shape requires it; the impl must carry a
-`parse(render(x)) == x` round-trip assertion):
+Target rendering example, once `capture` calls the engine (note the
+lowercase `{target}` slug — the renderer emits the slug verbatim and
+the parser's `[a-z0-9-]+` shape requires it):
 `m33/2026-06-02/Light/m33_Ha_1x1_0002_120sec_fpos_680_-20C_a1b2c3d4.fits`
 
 Each token has a **typed shape** so the template compiles to an anchored

@@ -4277,6 +4277,7 @@ dependencies = [
  "mockall",
  "ndarray",
  "ndarray-ndimage",
+ "regex",
  "reqwest 0.13.4",
  "rmcp",
  "rmpfit",

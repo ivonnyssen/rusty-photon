@@ -41,7 +41,15 @@ pub fn parse_goal(g: &GoalWire) -> Result<AcquisitionGoal, String> {
     })
 }
 
-fn parse_binning(s: &str) -> Result<Binning, String> {
+/// Parses `"AxB"` binning (e.g. `"1x1"`, `"2x2"`) into a [`Binning`].
+/// Shared with [`crate::config::naming_template`], whose `parse()`
+/// recovers a `{binning}` token's value from the same wire shape.
+///
+/// # Errors
+///
+/// Returns a human-readable message when `s` isn't `"AxB"` with two
+/// valid `u8` factors.
+pub(crate) fn parse_binning(s: &str) -> Result<Binning, String> {
     let (x, y) = s
         .split_once('x')
         .ok_or_else(|| format!("invalid binning {s:?}: expected \"AxB\", e.g. \"1x1\""))?;
