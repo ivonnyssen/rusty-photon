@@ -1,6 +1,5 @@
 //! BDD step definitions for planner altitude-gating parity against the
-//! target store (`target_store_planner.feature`, Decision 9 —
-//! *(planned, P1)*, not yet implemented; scenarios are tagged `@wip`).
+//! target store (`target_store_planner.feature`, Decision 9, P1).
 //!
 //! Unlike the other target_store_*.feature suites these scenarios boot
 //! rp the ordinary OmniSim/mount way (`tool_steps::start_rp`), matching

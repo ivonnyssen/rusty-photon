@@ -560,7 +560,10 @@ moon/meridian *gating* needs ephemeris and is deferred). **Amended by
 altitude *gating* is explicitly NOT deferred** — it is a fixed P1
 migration requirement (parity with the shipped v1 planner, which
 already evaluates it via `rp-ephemeris`; see
-[rp.md § Target Store](../services/rp.md#target-store)), so only
+[rp.md § Target Store](../services/rp.md#target-store)) — **landed**:
+`get_next_target` reads a store-backed target's
+`scheduling.min_altitude_degrees`, falling back to
+`targets.default_scheduling.min_altitude_degrees`. So only
 moon-separation, moon-illumination, and meridian-window gating remain
 deferred here; seasonal/date scheduling windows; seeding the catalog into the DB for
 indexed type/magnitude/cone-search browse; alternative naming grammars

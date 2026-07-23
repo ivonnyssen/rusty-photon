@@ -54,12 +54,45 @@ pub struct AddTargetParams {
     /// Defaults to `targets.default_goals` from config when omitted.
     #[serde(default)]
     pub goals: Option<Vec<GoalWire>>,
+    /// Per-target scheduling overrides (Decision 9 — altitude-gating
+    /// parity, `docs/plans/planetarium-target-import.md`). Omitted
+    /// fields fall back to `targets.default_scheduling` from config.
+    #[serde(default)]
+    pub scheduling: Option<SchedulingWire>,
     #[serde(default)]
     pub notes: Option<String>,
 }
 
 fn default_active() -> bool {
     true
+}
+
+/// The wire shape of `add_target`/`update_target`'s `scheduling`
+/// parameter — field-for-field [`rp_targets::SchedulingConstraints`],
+/// restated here (rather than deriving `JsonSchema` on the crate type
+/// directly) because `rp-targets` carries no `schemars` dependency, the
+/// same reasoning [`GoalWire`] follows for goals.
+#[derive(Debug, Clone, Copy, Default, Deserialize, JsonSchema)]
+pub struct SchedulingWire {
+    #[serde(default)]
+    pub min_altitude_degrees: Option<f64>,
+    #[serde(default)]
+    pub min_moon_separation_degrees: Option<f64>,
+    #[serde(default)]
+    pub max_moon_illumination_fraction: Option<f64>,
+    #[serde(default)]
+    pub meridian_window_hours: Option<f64>,
+}
+
+impl From<SchedulingWire> for rp_targets::SchedulingConstraints {
+    fn from(w: SchedulingWire) -> Self {
+        Self {
+            min_altitude_degrees: w.min_altitude_degrees,
+            min_moon_separation_degrees: w.min_moon_separation_degrees,
+            max_moon_illumination_fraction: w.max_moon_illumination_fraction,
+            meridian_window_hours: w.meridian_window_hours,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -86,6 +119,11 @@ pub struct UpdateTargetParams {
     pub active: Option<bool>,
     #[serde(default)]
     pub priority: Option<i32>,
+    /// Replaces the target's scheduling overrides wholesale when
+    /// present (not a field-wise merge — omit the whole parameter to
+    /// leave the existing overrides untouched).
+    #[serde(default)]
+    pub scheduling: Option<SchedulingWire>,
     #[serde(default)]
     pub notes: Option<String>,
 }
@@ -114,7 +152,10 @@ impl McpHandler {
                        different object -> a suffixed slug is allocated. \
                        goals[] defaults to targets.default_goals from \
                        config when omitted; every goal's filter must be \
-                       in the connected rig's configured filter roster.")]
+                       in the connected rig's configured filter roster. \
+                       scheduling overrides fall back field-wise to \
+                       targets.default_scheduling from config when \
+                       omitted (Decision 9 — altitude-gating parity).")]
     pub(crate) async fn add_target(
         &self,
         Parameters(params): Parameters<AddTargetParams>,
@@ -243,7 +284,7 @@ impl McpHandler {
             priority: 0,
             active: params.active,
             goals,
-            scheduling: None,
+            scheduling: params.scheduling.map(Into::into),
             grading: None,
             notes: params.notes,
             created_at: now.clone(),
@@ -314,7 +355,9 @@ impl McpHandler {
 
     #[tool(description = "Edit a target's fields in place. Does not touch \
                        the slug or on-disk frames. Setting active: true is \
-                       how a pending target is accepted into rotation.")]
+                       how a pending target is accepted into rotation. \
+                       scheduling, when supplied, replaces the whole \
+                       overrides object (not a field-wise merge).")]
     pub(crate) async fn update_target(
         &self,
         Parameters(params): Parameters<UpdateTargetParams>,
@@ -345,6 +388,9 @@ impl McpHandler {
         }
         if let Some(v) = params.priority {
             target.priority = v;
+        }
+        if let Some(v) = params.scheduling {
+            target.scheduling = Some(v.into());
         }
         if params.notes.is_some() {
             target.notes = params.notes;
@@ -487,6 +533,7 @@ fn target_to_json(t: &Target) -> Value {
         "priority": t.priority,
         "active": t.active,
         "goals": t.goals.iter().map(crate::planner::goal_wire::goal_to_json).collect::<Vec<_>>(),
+        "scheduling": t.scheduling.map(|s| serde_json::to_value(s).unwrap_or(Value::Null)),
         "notes": t.notes,
         "created_at": t.created_at,
         "updated_at": t.updated_at,

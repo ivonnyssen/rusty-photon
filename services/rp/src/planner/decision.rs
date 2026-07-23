@@ -301,6 +301,33 @@ pub fn signed_hour_angle(lst_hours: f64, target_ra_hours: f64) -> f64 {
     ha
 }
 
+/// Project a store-backed [`rp_targets::Target`] onto a [`PlannerTarget`]
+/// candidate for `next_target` (Decision 9 — altitude-gating parity,
+/// `docs/plans/planetarium-target-import.md`). `name` carries the
+/// target's `slug` (its stable identity — `display_name` is freely
+/// operator-editable and unsuited as a lookup key). Every goal's
+/// `desired_count` is a required, finite `u32` (`validate_goals`
+/// rejects zero), so each maps to a `count: Some(_)` entry — a
+/// store-backed target's plan is never "recommends forever" the way an
+/// uncounted legacy `exposures[]` entry can be.
+pub fn from_store_target(t: &rp_targets::Target) -> PlannerTarget {
+    PlannerTarget {
+        name: t.slug.as_str().to_string(),
+        ra_hours: t.ra_hours,
+        dec_degrees: t.dec_degrees,
+        min_altitude_degrees: t.scheduling.and_then(|s| s.min_altitude_degrees),
+        exposures: t
+            .goals
+            .iter()
+            .map(|g| ExposureSpec {
+                filter: (!g.filter.is_empty()).then(|| g.filter.clone()),
+                duration_secs: g.exposure.as_secs_f64(),
+                count: Some(g.desired_count),
+            })
+            .collect(),
+    }
+}
+
 /// Parse the top-level `targets` JSON (rp's `Config.targets: Value`)
 /// into typed entries, skipping (with a `debug!` log) rows that
 /// don't have the required `name` / `ra_hours` / `dec_degrees`
@@ -1112,6 +1139,74 @@ mod tests {
         assert!((signed_hour_angle(0.0, 23.5) - 0.5).abs() < 1e-9);
         assert!((signed_hour_angle(23.5, 0.0) - (-0.5)).abs() < 1e-9);
         assert!((signed_hour_angle(12.0, 0.0) - 12.0).abs() < 1e-9);
+    }
+
+    fn store_target(
+        slug: &str,
+        scheduling: Option<rp_targets::SchedulingConstraints>,
+        goals: Vec<rp_targets::AcquisitionGoal>,
+    ) -> rp_targets::Target {
+        rp_targets::Target {
+            slug: rp_targets::TargetSlug::new(slug).unwrap(),
+            display_name: slug.to_string(),
+            ra_hours: 1.0,
+            dec_degrees: 2.0,
+            catalog_ref: None,
+            object_type: None,
+            magnitude: None,
+            size_arcmin: None,
+            priority: 0,
+            active: true,
+            goals,
+            scheduling,
+            grading: None,
+            notes: None,
+            created_at: "2026-01-01T00:00:00.000Z".to_string(),
+            updated_at: "2026-01-01T00:00:00.000Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn from_store_target_uses_slug_as_identity() {
+        let t = store_target("ngc7000", None, Vec::new());
+        let planner_target = from_store_target(&t);
+        assert_eq!(planner_target.name, "ngc7000");
+        assert_eq!(planner_target.ra_hours, 1.0);
+        assert_eq!(planner_target.dec_degrees, 2.0);
+        assert_eq!(planner_target.min_altitude_degrees, None);
+    }
+
+    #[test]
+    fn from_store_target_reads_the_scheduling_override() {
+        let t = store_target(
+            "ngc7000",
+            Some(rp_targets::SchedulingConstraints {
+                min_altitude_degrees: Some(35.0),
+                ..Default::default()
+            }),
+            Vec::new(),
+        );
+        assert_eq!(from_store_target(&t).min_altitude_degrees, Some(35.0));
+    }
+
+    #[test]
+    fn from_store_target_converts_goals_to_finite_exposure_specs() {
+        let goal = rp_targets::AcquisitionGoal {
+            filter: "L".to_string(),
+            binning: rp_targets::Binning { x: 1, y: 1 },
+            exposure: std::time::Duration::from_secs(300),
+            desired_count: 20,
+        };
+        let t = store_target("ngc7000", None, vec![goal]);
+        let planner_target = from_store_target(&t);
+        assert_eq!(
+            planner_target.exposures,
+            vec![ExposureSpec {
+                filter: Some("L".to_string()),
+                duration_secs: 300.0,
+                count: Some(20),
+            }]
+        );
     }
 
     #[test]

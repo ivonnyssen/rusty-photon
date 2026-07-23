@@ -1,8 +1,8 @@
 //! Parses `Config.targets` (`docs/services/rp.md` § Target Store →
 //! Configuration) when it holds the P1 target-store settings object —
-//! `db_path` and `default_goals` today; `default_scheduling` /
-//! `default_grading` land with the Dynamic Planner cutover (Decision 9,
-//! `docs/plans/planetarium-target-import.md`).
+//! `db_path`, `default_goals`, and `default_scheduling` today (Decision
+//! 9's altitude-gating parity, `docs/plans/planetarium-target-import.md`);
+//! `default_grading` lands with the on-disk frame scan.
 //!
 //! `Config.targets` stays untyped `Value` (see [`crate::config::Config`])
 //! because the same top-level key still carries the legacy `targets[]`
@@ -29,6 +29,11 @@ pub struct TargetStoreConfig {
     /// Applied by `add_target` when the caller supplies no `goals[]`
     /// (Decision 10 — rp-owned policy, not bridge/UI config).
     pub default_goals: Vec<rp_targets::AcquisitionGoal>,
+    /// Fallback scheduling constraints for a target whose own
+    /// `scheduling` is `None`. `get_next_target`'s altitude-gating
+    /// parity (Decision 9) reads `min_altitude_degrees` from here when
+    /// a store-backed target carries no per-target override.
+    pub default_scheduling: rp_targets::SchedulingConstraints,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -36,6 +41,7 @@ pub struct TargetStoreConfig {
 struct RawTargetStoreConfig {
     db_path: Option<String>,
     default_goals: Vec<GoalWire>,
+    default_scheduling: rp_targets::SchedulingConstraints,
 }
 
 /// Parses `config.targets` into [`TargetStoreConfig`]. A JSON object is
@@ -61,6 +67,7 @@ pub fn parse_target_store_config(v: &Value) -> Result<TargetStoreConfig, String>
     Ok(TargetStoreConfig {
         db_path: raw.db_path,
         default_goals,
+        default_scheduling: raw.default_scheduling,
     })
 }
 
@@ -94,6 +101,15 @@ mod tests {
         assert_eq!(config.db_path.as_deref(), Some("/data/lights/targets.redb"));
         assert_eq!(config.default_goals.len(), 1);
         assert_eq!(config.default_goals[0].filter, "L");
+    }
+
+    #[test]
+    fn object_shape_parses_default_scheduling() {
+        let v = serde_json::json!({
+            "default_scheduling": { "min_altitude_degrees": 25.0 }
+        });
+        let config = parse_target_store_config(&v).unwrap();
+        assert_eq!(config.default_scheduling.min_altitude_degrees, Some(25.0));
     }
 
     #[test]

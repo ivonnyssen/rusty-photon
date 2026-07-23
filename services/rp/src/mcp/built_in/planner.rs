@@ -523,21 +523,29 @@ impl McpHandler {
         }
     }
 
-    #[tool(
-        description = "Recommend the next target from `targets[]` config based on \
-                       altitude / approaching transit / integration progress / \
-                       sun-elevation gating. filter and duration_secs are the \
-                       recommended target's first incomplete exposures[] entry \
-                       per the record_exposure counters (null when it has no \
-                       plan). Returns target=null and a structured reason \
+    #[tool(description = "Recommend the next target from the legacy `targets[]` \
+                       config array and the active rows of the target store \
+                       (rp.md § Target Store), combined, based on altitude / \
+                       approaching transit / integration progress / \
+                       sun-elevation gating. A store-backed target's altitude \
+                       floor is target.scheduling.min_altitude_degrees, \
+                       falling back to targets.default_scheduling.\
+                       min_altitude_degrees from config (Decision 9 — \
+                       altitude-gating parity, docs/plans/\
+                       planetarium-target-import.md). filter and \
+                       duration_secs are the recommended target's first \
+                       incomplete exposures[] entry per the record_exposure \
+                       counters (null when it has no plan) — a store-backed \
+                       target's goals always carry a finite desired_count, so \
+                       none of its entries can recommend forever. Returns \
+                       target=null and a structured reason \
                        (no_targets_configured / all_below_min_altitude / \
                        wait_for_twilight / end_of_session) when no candidate is \
                        viable: wait_for_twilight = the Sun is brighter than \
                        astronomical dusk and not rising (evening — wait and \
                        re-ask); end_of_session = brighter and rising (dawn) or \
                        every target's integration goal is met — the session is \
-                       over. Requires `site`."
-    )]
+                       over. Requires `site`.")]
     pub(crate) async fn get_next_target(
         &self,
         Parameters(params): Parameters<GetNextTargetParams>,
@@ -556,14 +564,46 @@ impl McpHandler {
             Err(e) => return Ok(tool_error!("{}", e)),
         };
         let eph = rp_ephemeris::ErfarsEphemeris::new();
+        // Candidates are the legacy `targets[]` array plus every active
+        // store row (Decision 9). `Config.targets` is one JSON value —
+        // an array (legacy) or the store's settings object — so in
+        // practice at most one side is ever non-empty; live-added store
+        // targets still surface even under a legacy-array deployment,
+        // since `with_target_store` always opens the store regardless
+        // of that shape (rp.md § Target Store).
+        let mut candidates = self.targets.clone();
+        if let Some(store) = self.target_store.as_ref() {
+            match store.list_targets().await {
+                Ok(targets) => candidates.extend(
+                    targets
+                        .iter()
+                        .filter(|t| t.active)
+                        .map(crate::planner::decision::from_store_target),
+                ),
+                Err(e) => {
+                    tracing::debug!(
+                        error = %e,
+                        "target store list_targets failed; get_next_target continues with the legacy targets[] array only"
+                    );
+                }
+            }
+        }
+        // A store-backed target's own default floor, falling back to
+        // the planner-wide default (`planner.min_altitude_degrees`) —
+        // the same role that default plays for the legacy array.
+        let default_min_altitude_degrees = self
+            .target_store_defaults
+            .default_scheduling
+            .min_altitude_degrees
+            .unwrap_or(self.default_min_altitude_degrees);
         let rec = {
             let progress = self.progress.lock().unwrap_or_else(|e| e.into_inner());
             crate::planner::decision::next_target(
                 &eph,
                 site,
                 time,
-                &self.targets,
-                self.default_min_altitude_degrees,
+                &candidates,
+                default_min_altitude_degrees,
                 &progress,
             )
         };
