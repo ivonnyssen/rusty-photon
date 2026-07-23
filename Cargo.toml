@@ -10,6 +10,7 @@ members = [
   "crates/rp-guider",
   "crates/rp-mcp-client",
   "crates/rp-plate-solver",
+  "crates/rp-targets",
   "crates/rusty-photon-tls",
   "crates/rusty-photon-config",
   "crates/rusty-photon-doctor-checks",
@@ -161,6 +162,7 @@ rp-ephemeris = { path = "crates/rp-ephemeris" }
 rp-fits = { path = "crates/rp-fits" }
 rp-guider = { path = "crates/rp-guider" }
 rp-plate-solver = { path = "crates/rp-plate-solver" }
+rp-targets = { path = "crates/rp-targets" }
 rusty-photon-tls = { path = "crates/rusty-photon-tls" }
 skywatcher-motor-protocol = { path = "crates/skywatcher-motor-protocol" }
 erfars = "0.2"
