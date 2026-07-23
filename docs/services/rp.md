@@ -170,6 +170,15 @@ The document accumulates data as it flows through the system.
 }
 ```
 
+**`target` is currently aspirational, not populated.** The block
+above documents the intended shape, but today's `capture` accepts no
+target context, so no code path writes `target` (or `filter`,
+`session_id`, `sequence_number`, `planned_at`) onto the document — see
+[Capture Tool Details](#capture-tool-details) for the *(planned, P1)*
+fix: an optional `target` (slug) parameter on `capture`, resolved
+against the target store to denormalize `slug`/`display_name`/
+`ra_hours`/`dec_degrees` onto this field.
+
 `max_adu` carries the camera's `MaxADU` capability at the time of
 capture. Read once per connection (`connect_camera` stashes it on
 `CameraEntry` along with `pixel_size_*` and `camera_*_size` — they are
@@ -302,7 +311,14 @@ template *(planned — P1 of
 [planetarium-target-import.md](../plans/planetarium-target-import.md))*:
 `rp` both renders filenames from capture context and parses them back
 to recover `(target, filter, binning, exposure)` for goal-progress
-derivation (see [Target Store](#target-store)). The full contract —
+derivation (see [Target Store](#target-store)). The `{target}` token's
+value is the slug from `capture`'s new optional `target` parameter
+(see [Capture Tool Details](#capture-tool-details)) — `rp` has no
+session-side "current target" of its own; the orchestrator supplies
+it from workflow state it already tracks (`session-runner`'s
+blackboard sets `session.target_name` right after every `slew`, the
+same value it already re-supplies to `record_exposure` today). The
+full contract —
 per-token typed shapes, the compiled-anchored-regex requirement, and
 the `{duration}`→`{exposure}` / `{sequence}`→`{frame_number}` token
 redefinition (backward-compatible: the parser accepts the old names as
@@ -782,7 +798,7 @@ the exact parameter types and return structure.
 
 | Action | Parameters | Returns | Description |
 |--------|-----------|---------|-------------|
-| `capture` | camera_id *or* train_id (exactly one), duration | image_path, document_id | Take an exposure, download `image_array`, save FITS file, create exposure document. `train_id` resolves the train's terminal camera; everything downstream — the `optics` block, gate membership, events — follows the resolved camera. Carries an **advisory predicted deadline** on `exposure_started`: `predicted = duration + camera.readout_time_estimate` (default 15 s when unset), `max = predicted + 30 s` readout headroom. rp does **not** enforce this (the camera driver owns the exposure); it rides the envelope as `predicted_duration_ms`/`max_duration_ms` for the Sentinel watchdog. rp's own readout backstop (a separate, more generous `duration + 120 s` ceiling) is unchanged. Through a camera terminating an imaging train, holds the [mount motion gate](#mount-motion-gate) shared for the whole pipeline (a pending mount motion delays the start) |
+| `capture` | camera_id *or* train_id (exactly one), duration, target (optional slug — *(planned, P1)*, see [Capture Tool Details](#capture-tool-details)) | image_path, document_id | Take an exposure, download `image_array`, save FITS file, create exposure document. `train_id` resolves the train's terminal camera; everything downstream — the `optics` block, gate membership, events — follows the resolved camera. Carries an **advisory predicted deadline** on `exposure_started`: `predicted = duration + camera.readout_time_estimate` (default 15 s when unset), `max = predicted + 30 s` readout headroom. rp does **not** enforce this (the camera driver owns the exposure); it rides the envelope as `predicted_duration_ms`/`max_duration_ms` for the Sentinel watchdog. rp's own readout backstop (a separate, more generous `duration + 120 s` ceiling) is unchanged. Through a camera terminating an imaging train, holds the [mount motion gate](#mount-motion-gate) shared for the whole pipeline (a pending mount motion delays the start) |
 | `get_camera_info` | camera_id | max_adu, exposure_min, exposure_max, sensor_x, sensor_y, bin_x, bin_y | Read camera capabilities and current settings |
 | `move_focuser` | focuser_id, position | actual_position | Move focuser to absolute position (blocks polling `is_moving` until idle). Bounded by a **predicted deadline**: `predicted = \|target − current\| / focuser.steps_per_sec` (current position read before the move); `max = max(predicted × 2, MIN_FOCUSER_DEADLINE = 5 s)`. If the pre-move read fails it falls back to a 120 s ceiling; `predicted`/`max` ride the `move_focuser_started` envelope as `predicted_duration_ms`/`max_duration_ms` |
 | `get_focuser_position` | focuser_id | position | Read current focuser position |
@@ -945,6 +961,33 @@ that base (`<doc_uuid_8>.fits` and `<doc_uuid_8>.json`). Both are
 written atomically (stage to a sibling temp file, fsync, rename, fsync
 parent directory). See
 [Persistence](#persistence) for the full rule set.
+
+**Target linkage** *(planned — P1, not yet implemented)*. `capture`
+gains an optional `target` parameter (a `TargetSlug`) so the exposure
+document and the directory/file-naming template (§ Persistence, §
+Target Store) know which target a frame belongs to. `rp` itself has
+no session-side notion of "the current target" — that state lives
+entirely in the orchestrator's workflow (`session-runner`'s
+blackboard: `session.target_name`/`session.target_ra`/
+`session.target_dec` in `deep_sky.json`), which already sets it right
+after every `slew` and re-supplies it explicitly to whichever tool
+call needs it next (today, that's only `record_exposure`, called
+immediately after `capture` in the same workflow step). Adding
+`target` to `capture`'s own schema is the same idiom applied one tool
+call earlier — no new subsystem, no rp-side session-target tracking —
+the workflow already holds the value at the moment `capture` runs; it
+was simply never passed. When supplied, `capture` resolves the slug
+against the target store and denormalizes `slug`/`display_name`/
+`ra_hours`/`dec_degrees` onto the document's `target` field (§
+Exposure Document), and the slug feeds `{target}` in the rendered
+path. Omitted `target` (e.g. calibration frames, or an orchestrator not yet
+updated) is out of this doc's scope to resolve here: the naming
+template's `{target}` token is one of the mandatory quota-key tokens
+(rp-targets.md § File-naming template), so what a targetless capture
+renders — a flat `<doc_uuid_8>.fits` fallback preserving today's
+behavior, a reserved placeholder slug, or a hard requirement that
+non-calibration captures always supply `target` — is a Phase 3
+implementation decision, not yet settled here.
 
 **Sidecar failure contract.** If the sidecar write fails after a
 successful FITS write, `capture` still returns success with
@@ -3613,6 +3656,19 @@ protects a precisely-framed target (e.g. one that arrived via the P3
 bridge) from being silently clobbered by a later catalog-centroid add
 of the same object — the protection applies to every writer, not only
 the bridge.
+
+### Capture-time target linkage
+
+`rp` has no session-side "current target" — see [Capture Tool
+Details](#capture-tool-details) for the full mechanism: `capture`'s
+new optional `target` (slug) parameter, sourced from orchestrator
+workflow state the same way `session-runner` already threads
+`get_next_target`'s effective position angle through its blackboard
+into a later `move_rotator` call (P2's precedent, [Decision
+5](../plans/planetarium-target-import.md#decisions-fixed--settled-interactively-2026-07-22-revised-same-day-after-adversarial-review)).
+This is what supplies the naming template's `{target}` token (§
+Persistence) and the exposure document's `target` field (§ Exposure
+Document).
 
 ### Target MCP tools
 
