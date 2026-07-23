@@ -48,6 +48,7 @@ doubles as the PHD2 CLI via subcommands.)
 | phd2-guider | 11130 | guider service wrapping PHD2 (PHD2 installed separately, below) |
 | plate-solver | 11131 | config-gated; needs ASTAP (below) |
 | calibrator-flats | 11170 | config-gated |
+| session-runner | 11171 | config-gated |
 
 Alpaca UDP discovery is deliberately not served: with this many Alpaca
 servers on one host they would collide on the discovery port. Point
@@ -255,7 +256,7 @@ curl http://localhost:<port>/management/apiversions   # Alpaca services
 ```
 
 **Config-gated services** (`sky-survey-camera`, `plate-solver`,
-`calibrator-flats`) have no sensible default config, so their units carry
+`calibrator-flats`, `session-runner`) have no sensible default config, so their units carry
 `ConditionPathExists=` on the config file: on a fresh install the unit
 stays inactive (not failed) until you write
 `/etc/rusty-photon/<svc>.json`, then `systemctl start rusty-photon-<svc>`.
