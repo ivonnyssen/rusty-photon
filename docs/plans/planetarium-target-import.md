@@ -36,7 +36,7 @@ P5/P6 frontends.
 | Phase | Description | Status | Branch / PR |
 |-------|-------------|--------|-------------|
 | P0 | This plan | In progress | feature/planetarium-target-import |
-| P1 | Build the `rp-targets` crate + rp integration (per [rp-targets.md](../crates/rp-targets.md) MVP). Three requirements are fixed here: **altitude-gating parity**, a **minimal operator surface**, and **capture-time target linkage** (Decisions 9, 10, 11) | Crate scaffold, BDD scaffold (Phase 2), and design doc landed. Phase 3 implementation landed *incrementally, additive*: the store wired into rp, its 6 CRUD/goals MCP tools (Decision 10 — done), `session.file_naming_pattern`'s config-load token validation (`target_naming_template.feature`, all 4 scenarios passing), `get_next_target`'s altitude-gating parity against the store (Decision 9 — done: `add_target`/`update_target` now accept `scheduling`, `targets.default_scheduling.min_altitude_degrees` config, `target_store_planner.feature`'s 2 scenarios passing, `@wip` removed), the naming-template's render/parse engine (`rp::config::naming_template::CompiledTemplate`, regex-backed, unit-tested including a `parse(render(x)) == x` round trip), and (Decision 11 — done) `capture`'s `target`/`frame_type` parameters: `frame_type: Light` resolves `target` against the store and denormalizes onto the exposure document; `Dark`/`Flat`/`Bias` use a reserved `"dark"`/`"flat"`/`"bias"` slug absent an explicit `target`; `capture` renders `directory_pattern` (now a real config field, landed alongside `file_naming_pattern`) then `file_naming_pattern`, deriving `{frame_number}` via an on-disk scan of the target directory (`CompiledTemplate::parse`, scoped to `capture`'s own use, not yet reused by the progress tools below) and `{night_date}` via `rp_ephemeris::Site::night_date`'s noon-rollover rule. `auto_focus`/`center_on_target`'s internal captures are explicitly deferred (see Decision 11's amendment) and keep `frame_type` omitted. **Not yet landed**: the rest of the Dynamic Planner cutover (`record_exposure`/`get_session_progress`/`get_target_status` still read only the legacy `targets[]` array — blocked on full progress-shape derivation), and that full on-disk frame scan behind progress (`good`/`total` per goal — needs the grading plugin's sidecar shape in addition to the frame-counting primitive `capture` already uses) | feature/rp-targets-p1 |
+| P1 | Build the `rp-targets` crate + rp integration (per [rp-targets.md](../crates/rp-targets.md) MVP). Three requirements are fixed here: **altitude-gating parity**, a **minimal operator surface**, and **capture-time target linkage** (Decisions 9, 10, 11), plus a **shared plan-data vocabulary crate** `rp-vocabulary` with validation-by-construction (Decision 12, settled 2026-07-23 — decided, not yet landed) | Crate scaffold, BDD scaffold (Phase 2), and design doc landed. Phase 3 implementation landed *incrementally, additive*: the store wired into rp, its 6 CRUD/goals MCP tools (Decision 10 — done), `session.file_naming_pattern`'s config-load token validation (`target_naming_template.feature`, all 4 scenarios passing), `get_next_target`'s altitude-gating parity against the store (Decision 9 — done: `add_target`/`update_target` now accept `scheduling`, `targets.default_scheduling.min_altitude_degrees` config, `target_store_planner.feature`'s 2 scenarios passing, `@wip` removed), the naming-template's render/parse engine (`rp::config::naming_template::CompiledTemplate`, regex-backed, unit-tested including a `parse(render(x)) == x` round trip), and (Decision 11 — done) `capture`'s `target`/`frame_type` parameters: `frame_type: Light` resolves `target` against the store and denormalizes onto the exposure document; `Dark`/`Flat`/`Bias` use a reserved `"dark"`/`"flat"`/`"bias"` slug absent an explicit `target`; `capture` renders `directory_pattern` (now a real config field, landed alongside `file_naming_pattern`) then `file_naming_pattern`, deriving `{frame_number}` via an on-disk scan of the target directory (`CompiledTemplate::parse`, scoped to `capture`'s own use, not yet reused by the progress tools below) and `{night_date}` via `rp_ephemeris::Site::night_date`'s noon-rollover rule. `auto_focus`/`center_on_target`'s internal captures are explicitly deferred (see Decision 11's amendment) and keep `frame_type` omitted. **Not yet landed**: the rest of the Dynamic Planner cutover (`record_exposure`/`get_session_progress`/`get_target_status` still read only the legacy `targets[]` array — blocked on full progress-shape derivation), and that full on-disk frame scan behind progress (`good`/`total` per goal — needs the grading plugin's sidecar shape in addition to the frame-counting primitive `capture` already uses) | feature/rp-targets-p1 |
 | P2 | Position-angle plumbing: `position_angle_degrees` on `Target`, per-train config default, `get_next_target` returns effective angle, `deep_sky` workflow rotator step. Decision 11's blackboard-threading pattern (target identity into `capture`) is this phase's own idiom, applied to P1 a phase early | Not started | |
 | P3 | `planetarium-bridge` service: Alpaca Telescope impersonation → target creation via rp (gated by milestone P3a, a sanctioned verification spike) | Not started | |
 | P4 | ui-htmx target inbox: review pending targets, goal editing, PA override, activate/discard | Not started | |
@@ -264,6 +264,38 @@ Explicitly rejected / out of scope (see Decisions 6–8):
     and a naming-template token finer than `{night_date}` — no `{time}`
     token exists today. Both tools keep calling `capture` with
     `frame_type` omitted until this is designed as its own follow-up.
+
+12. **P1 also carves out `rp-vocabulary` and makes plan-data validation
+    unrepresentable-when-invalid ([ADR-019](../decisions/019-plan-data-vocabulary-and-validation.md),
+    [`rp-vocabulary.md`](../crates/rp-vocabulary.md)); settled 2026-07-23,
+    interactively.** Reviewing the P1 store surfaced validation *drift*:
+    ICRS coordinate bounds were duplicated in two places and **missing on
+    the store-write path** (`add_target`/`update_target` accepted raw
+    `f64`, so a store target could hold coordinates the legacy `targets[]`
+    path rejects); `Binning`'s round-trip was split across three modules in
+    two crates; and exposure had two disagreeing string encodings. The fix
+    is structural, not "call the validator more": a new zero-dependency
+    leaf crate `rp-vocabulary` owns the shared plan value types
+    (`IcrsCoord`, `Binning`, `FrameType`, `Exposure`) as
+    parse-don't-validate newtypes, and `Target` + `PlannerTarget` change
+    their coordinate fields to a validated `IcrsCoord` — so the compiler
+    forces every construction (today's and future) through the one
+    validator, closing the store-write gap *by construction*.
+    `rp_catalog::ResolvedTarget` adopts `IcrsCoord` too, giving **one**
+    coordinate type catalog → store → planner → ephemeris. The crate also
+    seeds a plan-data **schema + validate** protocol (a plan-side analogue
+    of the `config.get`/`config.schema`/`config.apply` machinery in
+    `rusty-photon-config`): it supplies the validating constructors and a
+    feature-gated `JsonSchema`, `rp` owns the endpoints and the
+    dotted-`FieldError` mapping, so every current and future surface (UIs,
+    grading/mosaic tools, the P3 bridge) validates identically instead of
+    re-implementing the rules. Free to do now — the store and tools are new
+    in this PR with no shipped caller, so it is a pure internal refactor
+    before the wire ossifies into a contract. **Not this crate:** the
+    file-naming template *engine* stays in `rp`; ASCOM camera **binning**
+    and mount **pointing** types are false cognates (driver contract, not
+    plan vocabulary), and a shared `rusty-photon-units` driver foundation
+    is left to ADR-006's own trigger (a third pointing device).
 
 ## P3 sketch: `planetarium-bridge`
 
