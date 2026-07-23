@@ -318,8 +318,9 @@ to recover `(target, filter, binning, exposure)` for goal-progress
 derivation (see [Target Store](#target-store)). The full contract —
 per-token typed shapes, the compiled-anchored-regex requirement, and
 the `{duration}`→`{exposure}` / `{sequence}`→`{frame_number}` token
-redefinition (backward-compatible: the parser accepts the old names as
-deprecated aliases) — lives in
+redefinition (a breaking redefinition, not an extension — `rp` has
+never shipped this field to a real deployment, so the old names are
+just unknown tokens now) — lives in
 [`rp-targets.md` § File-naming template](../crates/rp-targets.md#file-naming-template-render-and-parse).
 Both patterns are parsed and validated at config-load time — an
 unknown token or an ambiguous adjacent-token pair fails startup, not a

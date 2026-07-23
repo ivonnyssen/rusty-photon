@@ -401,9 +401,10 @@ a render-only field into a **round-trippable** template, plus
 token set (a breaking redefinition, not an extension): `{duration}`→
 `{exposure}` and `{sequence}`→`{frame_number}`, and the `:04`-style
 width specifier from the field's original doc example is dropped in
-favour of fixed-width rendering per token (below); for backward
-compatibility the parser accepts `{duration}` and `{sequence}` as
-deprecated aliases of `{exposure}` and `{frame_number}`. Tokens use the
+favour of fixed-width rendering per token (below). `rp` has never
+shipped `file_naming_pattern` to a real deployment, so there's no
+on-disk config to stay compatible with — `{duration}`/`{sequence}` are
+simply unknown tokens now, not deprecated aliases. Tokens use the
 `{token}` brace syntax. The default reproduces the agreed scheme:
 
 ```

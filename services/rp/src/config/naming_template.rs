@@ -106,16 +106,6 @@ const TOKENS: &[TokenSpec] = &[
     },
 ];
 
-/// Deprecated aliases accepted for backward compatibility
-/// (rp-targets.md: `{duration}`→`{exposure}`, `{sequence}`→`{frame_number}`).
-fn resolve_alias(raw: &str) -> &str {
-    match raw {
-        "duration" => "exposure",
-        "sequence" => "frame_number",
-        other => other,
-    }
-}
-
 fn token_spec(canonical: &str) -> Option<&'static TokenSpec> {
     TOKENS.iter().find(|t| t.name == canonical)
 }
@@ -125,10 +115,9 @@ enum Segment<'a> {
     Token(&'static TokenSpec),
 }
 
-/// Splits `pattern` into literal and `{token}` segments, resolving
-/// deprecated aliases to their canonical name. Returns the offending
-/// raw token name on the first unknown `{token}`, or the offending
-/// text on the first unterminated `{`.
+/// Splits `pattern` into literal and `{token}` segments. Returns the
+/// offending raw token name on the first unknown `{token}`, or the
+/// offending text on the first unterminated `{`.
 fn parse_segments(pattern: &str) -> Result<Vec<Segment<'_>>, String> {
     let token_re = Regex::new(r"\{(\w+)\}")
         .map_err(|e| format!("internal: naming-template token regex is invalid: {e}"))?;
@@ -146,8 +135,7 @@ fn parse_segments(pattern: &str) -> Result<Vec<Segment<'_>>, String> {
         if whole.start() > last_end {
             segments.push(Segment::Literal(&pattern[last_end..whole.start()]));
         }
-        let canonical = resolve_alias(raw_name);
-        let spec = token_spec(canonical)
+        let spec = token_spec(raw_name)
             .ok_or_else(|| format!("unknown naming-template token {{{raw_name}}}"))?;
         segments.push(Segment::Token(spec));
         last_end = whole.end();
@@ -626,8 +614,6 @@ mod tests {
 
     const DEFAULT_PATTERN: &str =
         "{target}_{filter}_{binning}_{frame_number}_{exposure}_fpos_{filter_position}_{sensor_temp}_{uuid8}";
-    const DEPRECATED_ALIAS_PATTERN: &str =
-        "{target}_{filter}_{binning}_{sequence}_{duration}_fpos_{filter_position}_{sensor_temp}_{uuid8}";
 
     #[test]
     fn default_pattern_is_valid() {
@@ -635,8 +621,15 @@ mod tests {
     }
 
     #[test]
-    fn deprecated_alias_pattern_is_valid() {
-        validate_pattern(DEPRECATED_ALIAS_PATTERN).unwrap();
+    fn unrecognized_legacy_alias_tokens_are_rejected() {
+        // rp has never shipped file_naming_pattern to a real deployment,
+        // so {duration}/{sequence} are just unknown tokens now, not
+        // deprecated aliases of {exposure}/{frame_number}.
+        let err = validate_pattern(
+            "{target}_{filter}_{binning}_{sequence}_{duration}_fpos_{filter_position}_{sensor_temp}_{uuid8}",
+        )
+        .unwrap_err();
+        assert!(err.contains("sequence"), "{err}");
     }
 
     #[test]
@@ -710,20 +703,6 @@ mod tests {
         let rendered = template.render(&fields).unwrap();
         let parsed = template.parse(&rendered).unwrap();
         assert_eq!(parsed, fields, "parse(render(x)) must equal x");
-    }
-
-    #[test]
-    fn render_via_the_deprecated_alias_pattern_matches_the_canonical_one() {
-        // {duration}/{sequence} are the same tokens as {exposure}/
-        // {frame_number} under the hood (resolve_alias); rendering
-        // through either pattern spelling must produce identical output.
-        let canonical = CompiledTemplate::compile(DEFAULT_PATTERN).unwrap();
-        let deprecated = CompiledTemplate::compile(DEPRECATED_ALIAS_PATTERN).unwrap();
-        let fields = documented_example_fields();
-        assert_eq!(
-            canonical.render(&fields).unwrap(),
-            deprecated.render(&fields).unwrap()
-        );
     }
 
     #[test]

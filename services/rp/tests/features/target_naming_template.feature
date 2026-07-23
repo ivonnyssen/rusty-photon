@@ -2,10 +2,11 @@ Feature: Round-trippable file-naming template config-load validation (P1)
   P1 turns `session.file_naming_pattern`'s token set into the
   round-trippable contract rp will both render and parse back (plus a
   future `session.directory_pattern`), superseding the `{duration}`/
-  `{sequence}` tokens with `{exposure}`/`{frame_number}` — the parser
-  keeps accepting the old names as deprecated aliases for backward
-  compatibility (rp.md § Persistence, rp-targets.md § File-naming
-  template). The pattern is parsed and checked at startup: a bad
+  `{sequence}` tokens with `{exposure}`/`{frame_number}` — a breaking
+  redefinition, not an extension: rp has never shipped this field to a
+  real deployment, so the old names are just unknown tokens now (rp.md
+  § Persistence, rp-targets.md § File-naming template). The pattern is
+  parsed and checked at startup: a bad
   pattern fails the load, not a session. Rejection rules: the pattern
   must carry every token needed to derive the quota key (`{target}`,
   `{filter}`, `{binning}`, `{exposure}`) plus a per-frame uniqueness
@@ -47,12 +48,12 @@ Feature: Round-trippable file-naming template config-load validation (P1)
     When rp attempts to start
     Then rp should fail to start
 
-  Scenario Outline: The default pattern and its deprecated-token-alias equivalent both start successfully
-    Given an rp config with file_naming_pattern "<pattern>"
+  Scenario: The default file_naming_pattern starts successfully
+    Given an rp config with file_naming_pattern "{target}_{filter}_{binning}_{frame_number}_{exposure}_fpos_{filter_position}_{sensor_temp}_{uuid8}"
     When rp attempts to start
     Then rp should start successfully
 
-    Examples:
-      | pattern                                                                                            |
-      | {target}_{filter}_{binning}_{frame_number}_{exposure}_fpos_{filter_position}_{sensor_temp}_{uuid8} |
-      | {target}_{filter}_{binning}_{sequence}_{duration}_fpos_{filter_position}_{sensor_temp}_{uuid8}     |
+  Scenario: The old {duration}/{sequence} token names are rejected as unknown tokens
+    Given an rp config with file_naming_pattern "{target}_{filter}_{binning}_{sequence}_{duration}_fpos_{filter_position}_{sensor_temp}_{uuid8}"
+    When rp attempts to start
+    Then rp should fail to start
