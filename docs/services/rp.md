@@ -296,13 +296,22 @@ document's full UUID v4 (`<doc_uuid_8>`):
   550e8400.json    <-- exposure document
 ```
 
-The optional `session.file_naming_pattern` config is reserved for a
-future operator-controlled template (`{target}`, `{filter}`,
-`{duration}`, `{sequence}`, etc.). Until a token resolver lands that
-can supply that context to `capture`, the field is parsed but not
-rendered — capture writes `<doc_uuid_8>.fits` regardless of the
-configured value. When a resolver lands, the rendered base will be
-prefixed before the UUID-8 suffix (e.g. `M31_L_300s_001_550e8400.fits`)
+The optional `session.file_naming_pattern` config, together with the
+new `session.directory_pattern`, is a **round-trippable** filename
+template *(planned — P1 of
+[planetarium-target-import.md](../plans/planetarium-target-import.md))*:
+`rp` both renders filenames from capture context and parses them back
+to recover `(target, filter, binning, exposure)` for goal-progress
+derivation (see [Target Store](#target-store)). The full contract —
+per-token typed shapes, the compiled-anchored-regex requirement, and
+the `{duration}`→`{exposure}` / `{sequence}`→`{frame_number}` token
+redefinition (backward-compatible: the parser accepts the old names as
+deprecated aliases) — lives in
+[`rp-targets.md` § File-naming template](../crates/rp-targets.md#file-naming-template-render-and-parse).
+Today, ahead of P1, the field is parsed but not rendered — capture
+writes `<doc_uuid_8>.fits` regardless of the configured value; when P1
+lands, the rendered base is prefixed before the UUID-8 suffix (e.g.
+`m31/2026-07-22/Light/m31_L_1x1_0001_300sec_fpos_2_-10C_550e8400.fits`)
 so existing files stay reachable.
 
 The full UUID is the canonical document identifier — used by the API,
@@ -893,10 +902,17 @@ hours, `dec` is degrees. See
 | Action | Parameters | Returns | Description |
 |--------|-----------|---------|-------------|
 | `get_next_target` | time (optional) | target, reason, filter, duration_secs | Evaluate candidates and recommend next target. `filter`/`duration_secs` come from the recommended target's first **incomplete** `exposures[]` entry (the `record_exposure` counters rotate the plan); null when the target defines none — see §"Dynamic Planner" |
-| `get_target_status` | target_name *or* (ra + dec); time (optional) | target_name, altitude_degrees, azimuth_degrees, hour_angle_hours, time_to_set_seconds, progress | Sky position + progress for a catalog target or raw ICRS coords. `progress` is the per-filter `{completed, goal}` map when `target_name` (as given or catalog-resolved) matches a `targets[]` entry, null otherwise (including the ra/dec form) |
+| `get_target_status` | target_name *or* (ra + dec); time (optional) | target_name, altitude_degrees, azimuth_degrees, hour_angle_hours, time_to_set_seconds, progress | Sky position + progress for a catalog target or raw ICRS coords. `progress` is the per-filter `{completed, goal}` map when `target_name` (as given or catalog-resolved) matches a `targets[]` entry, null otherwise (including the ra/dec form). *(P1 planned: reshapes to per-goal `{filter, binning, exposure, good, total, desired}` — see [Target Store § Progress derivation](#progress-derivation))* |
 | `get_meridian_status` | time (optional) | time_to_flip_seconds, side_of_pier, mount_ra_hours, mount_dec_degrees | Time-to-flip + side-of-pier from the mount's current pointing |
-| `record_exposure` | target, filter (optional) | target, filter, completed, goal | Increment the per-target/per-filter counter and return it. `target` must name a `targets[]` entry; omit `filter` (or pass null / `""`) for an unfiltered frame. `goal` is the summed `count` for that filter in the target's plan — null when the filter is not in the plan or any matching entry is uncounted |
-| `get_session_progress` | — | progress | Full progress overview: target name → filter → `{completed, goal}` for every configured target (the unfiltered slot appears under the empty-string key) |
+| `record_exposure` | target, filter (optional) | target, filter, completed, goal | Increment the per-target/per-filter counter and return it. `target` must name a `targets[]` entry; omit `filter` (or pass null / `""`) for an unfiltered frame. `goal` is the summed `count` for that filter in the target's plan — null when the filter is not in the plan or any matching entry is uncounted. *(P1 planned: becomes a no-op — see [Target Store § Progress derivation](#progress-derivation))* |
+| `get_session_progress` | — | progress | Full progress overview: target name → filter → `{completed, goal}` for every configured target (the unfiltered slot appears under the empty-string key). *(P1 planned: reshapes to per-goal `{filter, binning, exposure, good, total, desired}` — see [Target Store § Progress derivation](#progress-derivation))* |
+
+**Targets** *(planned — P1)*
+
+`add_target`, `get_target`, `list_targets`, `update_target`,
+`delete_target`, `set_goals` — CRUD over the plan-data store that
+supersedes the `targets[]` config array. See [Target Store](#target-store)
+for the full contract.
 
 **Session**
 
@@ -3532,6 +3548,141 @@ target-switch cadence (minutes/hours), not per-frame. A plugin that
 makes 20 MCP calls to compute "best target for the next 90 minutes"
 is imperceptible.
 
+## Target Store
+
+*(Planned — P1 of
+[planetarium-target-import.md](../plans/planetarium-target-import.md);
+not yet implemented — the `rp-targets` crate scaffold has landed, this
+rp-side integration has not.)* The plan data model, `TargetStore`
+trait, and `RedbTargetStore` implementation live in the `rp-targets`
+crate ([design doc](../crates/rp-targets.md)); this section is the
+authoritative rp-side integration contract that crate doc's
+"rp Integration" section summarizes.
+
+Today, `targets[]` is a static array in `rp`'s config file (see
+[Target Definition](#target-definition)): adding or editing a target
+requires `PUT /api/config` plus a restart, and progress lives in a
+`record_exposure` counter persisted alongside session state (§ Session
+Persistence). P1 replaces both: targets become rows in a redb-backed
+`rp-targets` database that `rp` opens once at startup (`targets.db_path`,
+default `<session.data_directory>/targets.redb`), editable live via MCP
+tools and REST without a restart, and progress is derived on demand
+from the frames already on disk rather than counted.
+
+**Fixed migration requirements.** The migration must not regress two
+things that already ship:
+
+- **Altitude-gating parity (Decision 9).** Today's planner eliminates
+  targets below `min_altitude_degrees` (§ Decision Logic, bullet 1).
+  P1 keeps that check working against the new store from day one —
+  `get_next_target` reads `target.scheduling.min_altitude_degrees`,
+  falling back to `targets.default_scheduling.min_altitude_degrees`
+  from config, exactly as it falls back to the planner-wide default
+  today. The other `SchedulingConstraints` fields (moon separation,
+  moon illumination, meridian window) are stored from P1 but their
+  *enforcement* stays deferred, per `rp-targets.md`'s MVP scope — this
+  amends that crate doc's deferred list rather than silently
+  overriding it, because altitude gating is not new ephemeris work
+  (the shipped planner already evaluates it via `rp-ephemeris`).
+- **A minimal operator surface (Decision 10).** The
+  `GET`/`POST`/`PUT`/`DELETE /api/targets` endpoints (§ REST Endpoints
+  → Targets) are implemented against the new store in P1, so a target
+  that arrives with no UI (e.g. a future planetarium-bridge import, P3)
+  is never stranded — list, edit, and activate work before the P4
+  inbox exists.
+
+### Slug allocation (add-time)
+
+`add_target` derives and resolves the target's `TargetSlug` before
+calling `TargetStore::upsert_target` (full algorithm and rationale in
+[`rp-targets.md` § Slug allocation](../crates/rp-targets.md#slug-allocation-add-time)):
+
+1. Base = `TargetSlug::new(catalog_ref.unwrap_or(display_name))`.
+2. Absent in the store → use the base.
+3. Present and the same object (matching `catalog_ref`, or coordinates
+   within a small tolerance) → in-place edit: reuse the slug and
+   upsert.
+4. Present and a different object → allocate the lowest unused
+   `"{base}-{n}"` (`n` from 2).
+
+The same-`catalog_ref` branch is additionally gated on coordinate
+proximity: a manual catalog add of an object whose framed coordinates
+differ beyond tolerance from an existing same-`catalog_ref` row
+allocates a new suffixed slug instead of overwriting it in place. This
+protects a precisely-framed target (e.g. one that arrived via the P3
+bridge) from being silently clobbered by a later catalog-centroid add
+of the same object — the protection applies to every writer, not only
+the bridge.
+
+### Target MCP tools
+
+| Tool | Parameters | Returns | Description |
+|------|-----------|---------|-------------|
+| `add_target` | `catalog_ref` (name, resolved via `resolve_target`) *or* `display_name` + `ra_hours` + `dec_degrees` — exactly one form; `active` (optional, default `true`), `goals[]` (optional — defaults to `targets.default_goals` from config when omitted), `scheduling` (optional overrides), `grading` (optional overrides), `position_angle_degrees` (optional), `notes` (optional), `source` (optional provenance tag) | slug, target, created | Create or upsert a target per the slug-allocation and dedup rules above. `created` is `false` when the call resolved to an in-place edit of an existing row. Goal filter names are validated against the connected rig's filter roster (Decision 10) — an unknown name fails the call at add time, naming the offending goal, rather than failing at capture time mid-session |
+| `get_target` | slug | target, progress | Fetch one target with derived progress (below) |
+| `list_targets` | active_only (optional) | targets: [{target, progress}] | List all targets, optionally filtered to `active == true` — the shape both `get_next_target`'s candidate set and the P4 inbox read |
+| `update_target` | slug, any subset of `Target`'s editable fields | target | Edit fields in place. Does not touch the slug or on-disk frames. Setting `active: true` is how an operator (or the P4 inbox) accepts a pending target into the rotation |
+| `delete_target` | slug | deleted | Remove the target's plan row (`false` for an absent slug). Frames already captured under the slug are left untouched on disk — re-adding the same slug later silently re-adopts them for progress purposes; deleting a target with captured frames should generally prefer `update_target { active: false }` instead, to retire it without orphaning |
+| `set_goals` | slug, goals[] | target | Replace the goal set atomically; same filter-roster validation as `add_target` |
+
+### Progress derivation
+
+Progress is computed on demand, never stored (full rules in
+[`rp-targets.md` § Progress derivation](../crates/rp-targets.md#progress-derivation-the-actuals)):
+`rp` lists a target's slug directory
+(`<data_directory>/<slug>/<night_date>/Light/`), parses each filename
+through the configured `file_naming_pattern` (§ Persistence) to bucket
+frames by `(filter, binning, exposure)`, then classifies each frame
+good/rejected against its sidecar's grading section and the target's
+effective `GradingThresholds` (its own overrides, field-wise over
+`targets.default_grading`). `get_target`/`list_targets` report, per
+target, a list of `{filter, binning, exposure, good, total, desired}` —
+one entry per `AcquisitionGoal` — superseding the filter-only
+`{completed, goal}` shape that `get_target_status.progress` and
+`get_session_progress` return today (§ Target Definition), which
+cannot distinguish two goals that share a filter (e.g. `Ha` at two
+different exposure lengths).
+
+`record_exposure` (today: increments a session-persisted counter, §
+Session Persistence) collapses to a no-op / progress-cache-invalidation
+hook once P1 lands — `capture` already wrote the frame that the
+derivation above finds on its next read.
+
+### Configuration
+
+```jsonc
+"targets": {
+  "db_path": "/data/lights/targets.redb",      // default: <data_directory>/targets.redb
+  "default_scheduling": {
+    "min_altitude_degrees": 20.0,
+    "min_moon_separation_degrees": 30.0,
+    "max_moon_illumination_fraction": 1.0,     // 1.0 ⇒ no moon-brightness limit
+    "meridian_window_hours": null              // null ⇒ no meridian window
+  },
+  "default_grading": {
+    "max_hfr_pixels": null,                    // setup-dependent; opt-in
+    "min_star_count": 20,
+    "max_eccentricity": 0.6,
+    "min_snr": null
+  },
+  "default_goals": []
+}
+```
+
+`default_scheduling` and `default_grading` are the values a target's
+`None` override fields fall back to (§ Progress derivation, § Decision
+Logic bullet 1). `default_goals` is rp-owned policy (Decision 10):
+`add_target` applies it when the caller supplies no `goals[]`, so a
+target created with no explicit plan (e.g. a bare bridge import) still
+gets a sane default rather than silently having none.
+
+This block, along with `session.directory_pattern` /
+`session.file_naming_pattern` (§ Persistence), replaces the `targets[]`
+config array (§ Target Definition) — a breaking, pre-1.0 hard cutover
+like the retired shapes noted in § Configuration. An existing config
+with a `targets[]` array needs a one-time hand migration (re-adding
+each target via `add_target`) once P1 ships.
+
 ## Dynamic Planner
 
 The planner is a pure function exposed as MCP tools. Given current state,
@@ -3545,10 +3696,19 @@ decide what to do next — `rp` does not make workflow decisions.
 | `get_next_target` | — | target, filter, duration, reason | Evaluate all candidates and recommend the best target/filter |
 | `get_target_status` | target_name | altitude, hour_angle, time_to_set, progress | Sky position and progress for a specific target |
 | `get_meridian_status` | — | time_to_flip, side_of_pier | Time until meridian flip is needed |
-| `record_exposure` | target, filter | target, filter, completed, goal | Increment exposure counter, return updated progress |
-| `get_session_progress` | — | progress | Full per-target, per-filter progress overview |
+| `record_exposure` | target, filter | target, filter, completed, goal | Increment exposure counter, return updated progress *(P1 planned: becomes a no-op — see [Target Store § Progress derivation](#progress-derivation))* |
+| `get_session_progress` | — | progress | Full per-target, per-filter progress overview *(P1 planned: reshapes to per-goal `{filter, binning, exposure, good, total, desired}` — see [Target Store § Progress derivation](#progress-derivation))* |
 
 ### Decision Logic (inside `get_next_target`)
+
+> **P1 note.** The altitude and progress inputs below currently read
+> the config `targets[]` array and the `record_exposure` counter.
+> [Target Store](#target-store) *(planned)* replaces both: altitude
+> gating keeps the same elimination behavior (Decision 9 parity)
+> reading `target.scheduling.min_altitude_degrees` (falling back to
+> `targets.default_scheduling.min_altitude_degrees`); progress becomes
+> derived from on-disk frames instead of a counter. The bullets and the
+> v1 status below describe today's config-backed behavior.
 
 The convenience tool delegates each numbered check to the named
 primitive (or to the persisted progress map for non-ephemeris
@@ -3631,6 +3791,11 @@ after each exposure, after each target switch, or when conditions change.
 
 ### Target Definition
 
+**Superseded by P1.** [Target Store](#target-store) *(planned)*
+replaces this static config array with a redb-backed store, editable
+live via MCP/REST without a restart. Until P1 lands, the shape below
+remains authoritative and this is what `rp` actually reads.
+
 ```json
 {
   "name": "M31",
@@ -3702,7 +3867,12 @@ or empty:
   slot, `last_filter_key` feeds the plan-rotation tie-breaking) —
   exactly what `get_next_target` uses to rotate plans, balance targets,
   and reach `end_of_session`. Goals are not persisted; they derive from
-  the `targets[]` config on every read.
+  the `targets[]` config on every read. **P1 note:** [Target
+  Store](#target-store) *(planned)* moves `completed` counts to
+  on-demand filesystem derivation, so this field is expected to shrink
+  to just `last_filter_key` (still session-runtime state, not
+  derivable from disk) — the exact persisted shape is finalized when
+  P1 implementation starts.
 - Device addresses, camera assignments, and mount state are **not**
   persisted: equipment comes from the config file, and pointing is
   re-derived by the orchestrator on resume (a recovery invocation
@@ -3945,10 +4115,23 @@ implemented** — the router serves only the unmarked ones.
   configuration must stay editable while the system is unsafe.
 
 #### Targets
-- `GET /api/targets` — list all targets with progress *(planned)*
-- `POST /api/targets` — add a target *(planned)*
-- `PUT /api/targets/{id}` — update a target *(planned)*
-- `DELETE /api/targets/{id}` — remove a target *(planned)*
+
+See [Target Store](#target-store) for the full contract; all six
+endpoints are *(planned — P1)*, mirroring the `add_target` /
+`get_target` / `list_targets` / `update_target` / `set_goals` /
+`delete_target` MCP tools body-for-body so a UI and an MCP client see
+the same shapes.
+
+- `GET /api/targets` — list all targets with derived progress; optional
+  `?active_only=true`
+- `GET /api/targets/{slug}` — fetch one target with derived progress
+- `POST /api/targets` — create/upsert a target (slug allocation +
+  dedup rules as `add_target`)
+- `PUT /api/targets/{slug}` — edit a target in place (as `update_target`)
+- `PUT /api/targets/{slug}/goals` — replace a target's goal set (as
+  `set_goals`)
+- `DELETE /api/targets/{slug}` — remove a target's plan row (as
+  `delete_target`)
 
 #### Session
 - `POST /api/session/start` — start a new session (or resume existing)
@@ -4129,6 +4312,12 @@ it is validated against the ASCOM mount on connect — see
 [Site Validation Against the ASCOM Mount](#site-validation-against-the-ascom-mount).
 A config without `site` loads cleanly and `rp` runs, but those tools
 return a structured "site not configured" error.
+
+The example below still shows the `targets[]` array, which is what
+`rp` reads today. **P1 note:** [Target Store](#target-store)
+*(planned)* replaces it with a `targets` object (`db_path`,
+`default_scheduling`, `default_grading`, `default_goals`) — see that
+section's Configuration block for the replacement shape.
 
 ```json
 {
@@ -4392,7 +4581,10 @@ services/rp/src/
   error.rs              AppError enum (thiserror)
 
   # Core domain
-  target.rs             Target definitions, progress tracking
+  target.rs             rp-targets store wiring: opens RedbTargetStore
+                        at startup (targets.db_path), slug allocation,
+                        dedup/upsert policy (§ Target Store)
+                        *(planned, P1)*
   session.rs            Session state, persistence, recovery
   cooling.rs            Camera-cooling controller: setpoint-ladder
                         selection at session start, hold, warm-up ramp
@@ -4540,6 +4732,10 @@ services/rp/src/
                           primitive tools + 3 convenience tools
                           (get_target_status, get_next_target,
                           get_meridian_status).
+      targets.rs        Target CRUD tools (add_target, get_target,
+                          list_targets, update_target, delete_target,
+                          set_goals) over crates/rp-targets'
+                          TargetStore (§ Target Store) *(planned, P1)*.
     # Planned follow-up: distribute the centralized tests.rs into
     # per-category `#[cfg(test)] mod tests` blocks inside each
     # built_in/<category>.rs (matching the imaging/ test-colocation
@@ -4603,7 +4799,11 @@ services/rp/src/
   api/
     mod.rs              Axum router setup
     equipment.rs        Equipment endpoints
-    targets.rs          Target CRUD endpoints
+    targets.rs          Target CRUD endpoints, mirroring the
+                        add_target/get_target/list_targets/
+                        update_target/delete_target/set_goals MCP
+                        tools body-for-body (§ Target Store)
+                        *(planned, P1)*
     session.rs          Session control endpoints
     documents.rs        Document endpoints (including plugin section updates)
     stream.rs           WebSocket / SSE event stream

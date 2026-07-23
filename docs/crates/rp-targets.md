@@ -543,8 +543,14 @@ and `get_session_progress` / `get_target_status.progress`.
 selection (the constraint fields are stored in MVP, gated incrementally —
 note that least-progress *ordering* per rp.md's planner bullet 3 needs
 only the in-MVP progress derivation and is therefore in scope, whereas
-moon/meridian/altitude *gating* needs ephemeris and is deferred);
-seasonal/date scheduling windows; seeding the catalog into the DB for
+moon/meridian *gating* needs ephemeris and is deferred). **Amended by
+[Decision 9](../plans/planetarium-target-import.md#decisions-fixed--settled-interactively-2026-07-22-revised-same-day-after-adversarial-review):
+altitude *gating* is explicitly NOT deferred** — it is a fixed P1
+migration requirement (parity with the shipped v1 planner, which
+already evaluates it via `rp-ephemeris`; see
+[rp.md § Target Store](../services/rp.md#target-store)), so only
+moon-separation, moon-illumination, and meridian-window gating remain
+deferred here; seasonal/date scheduling windows; seeding the catalog into the DB for
 indexed type/magnitude/cone-search browse; alternative naming grammars
 beyond the validated `{token}` brace form (the configurable `{token}`
 template itself ships in MVP); the PixInsight good-set hand-off; the

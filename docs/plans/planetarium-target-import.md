@@ -36,7 +36,7 @@ P5/P6 frontends.
 | Phase | Description | Status | Branch / PR |
 |-------|-------------|--------|-------------|
 | P0 | This plan | In progress | feature/planetarium-target-import |
-| P1 | Build the `rp-targets` crate + rp integration (per [rp-targets.md](../crates/rp-targets.md) MVP). Will be sub-phased in its own design-doc update; two migration requirements are fixed here: **altitude-gating parity** and a **minimal operator surface** (Decisions 9, 10) | Not started | |
+| P1 | Build the `rp-targets` crate + rp integration (per [rp-targets.md](../crates/rp-targets.md) MVP). Two migration requirements are fixed here: **altitude-gating parity** and a **minimal operator surface** (Decisions 9, 10) | Crate scaffold landed (`rp-targets`, feature/rp-targets-p1); rp-side design-doc sub-phase landed in [rp.md § Target Store](../services/rp.md#target-store) — CRUD MCP/REST tools, slug allocation, naming template, progress derivation, config shape. BDD (Phase 2) and implementation (Phase 3) not started | feature/rp-targets-p1 |
 | P2 | Position-angle plumbing: `position_angle_degrees` on `Target`, per-train config default, `get_next_target` returns effective angle, `deep_sky` workflow rotator step | Not started | |
 | P3 | `planetarium-bridge` service: Alpaca Telescope impersonation → target creation via rp (gated by milestone P3a, a sanctioned verification spike) | Not started | |
 | P4 | ui-htmx target inbox: review pending targets, goal editing, PA override, activate/discard | Not started | |
