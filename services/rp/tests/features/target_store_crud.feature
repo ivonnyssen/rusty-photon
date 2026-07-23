@@ -1,10 +1,11 @@
-@wip
-Feature: Target store CRUD (P1 planned)
+Feature: Target store CRUD (P1)
   P1 of the planetarium-target-import plan (docs/plans/planetarium-target-import.md)
   replaces the config `targets[]` array with a redb-backed store
   (rp-targets crate) exposed over `add_target`, `get_target`,
   `list_targets`, `update_target`, and `delete_target` MCP tools (rp.md
-  § Target Store). Not yet implemented — scenarios are tagged @wip.
+  § Target Store). Coexists with the legacy `targets[]` planner tools
+  (planner.feature) pending the Dynamic Planner cutover
+  (target_store_planner.feature, still @wip).
 
   `add_target` derives a slug from `catalog_ref` (a catalog lookup) or
   `display_name` (a custom add), then resolves it against the store:

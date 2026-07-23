@@ -31,6 +31,7 @@ pub mod server;
 pub mod session;
 pub mod site;
 pub mod switch;
+pub mod target_store;
 
 pub use camera::CameraConfig;
 pub use centering::CenteringConfig;
@@ -53,6 +54,7 @@ pub use server::ServerConfig;
 pub use session::SessionConfig;
 pub use site::SiteConfig;
 pub use switch::SwitchConfig;
+pub use target_store::TargetStoreConfig;
 
 use std::path::Path;
 

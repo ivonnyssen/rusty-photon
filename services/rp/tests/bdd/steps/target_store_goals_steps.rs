@@ -108,6 +108,9 @@ async fn call_add_target_with_goals(
             }),
         )
         .await;
+    if let Ok(ref v) = result {
+        world.last_target_slug = v.get("slug").and_then(|s| s.as_str()).map(String::from);
+    }
     world.last_tool_result = Some(result);
 }
 

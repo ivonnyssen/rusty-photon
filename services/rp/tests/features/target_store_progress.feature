@@ -1,5 +1,4 @@
-@wip
-Feature: Target progress derivation (P1 planned)
+Feature: Target progress derivation (P1)
   Progress is computed on demand from goals plus on-disk frames, never
   stored (rp.md § Target Store → Progress derivation): `get_target` and
   `get_session_progress` report, per target, a list of `{filter,
@@ -7,8 +6,7 @@ Feature: Target progress derivation (P1 planned)
   `AcquisitionGoal` — superseding the filter-only `{completed, goal}`
   shape the config-array planner uses today (see planner.feature),
   which cannot distinguish two goals that share a filter (e.g. Ha at
-  two different exposure lengths). *(Planned, P1 — not yet
-  implemented; scenarios are tagged @wip.)*
+  two different exposure lengths).
 
   These scenarios are scoped to targets with no captured frames yet
   (`good`/`total` both 0): actual on-disk good-vs-rejected frame
@@ -31,6 +29,12 @@ Feature: Target progress derivation (P1 planned)
       | Luminance | 1x1     | 300s     | 0    | 0     | 40      |
       | Red       | 1x1     | 300s     | 0    | 0     | 20      |
 
+  @wip
+  # get_session_progress is still the legacy targets[]-array planner
+  # tool (planner.rs) — it doesn't read the target store yet. That
+  # migration is part of the Dynamic Planner cutover
+  # (target_store_planner.feature, still @wip), not this additive
+  # CRUD/goals/rest increment.
   Scenario: get_session_progress reports every target's per-goal progress
     Given rp is running with a target store and filter roster "Luminance, Red"
     And an MCP client connected to rp

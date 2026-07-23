@@ -5,6 +5,7 @@
 //! shapes, plain REST instead of `tools/call` (Decision 10's minimal
 //! operator surface).
 
+use cucumber::gherkin::Step;
 use cucumber::{given, then, when};
 use serde_json::Value;
 
@@ -90,6 +91,45 @@ async fn put_target_display_name(world: &mut RpWorld, slug: String, display_name
     record_response(world, response).await;
 }
 
+/// Parses a `| filter | binning | exposure | desired_count |` table into
+/// the wire shape `PUT /api/targets/{slug}/goals` accepts — same shape
+/// `target_store_goals_steps::goals_from_table` parses for the MCP tools.
+fn goals_from_table(step: &Step) -> Vec<Value> {
+    let table = step
+        .table
+        .as_ref()
+        .expect("step requires a `| filter | binning | exposure | desired_count |` table");
+    let mut rows = table.rows.iter();
+    let header = rows.next().expect("goals table must have a header");
+    assert_eq!(
+        header.as_slice(),
+        ["filter", "binning", "exposure", "desired_count"],
+        "goals table header"
+    );
+    rows.map(|row| {
+        serde_json::json!({
+            "filter": row[0],
+            "binning": row[1],
+            "exposure": row[2],
+            "desired_count": row[3].parse::<u32>().expect("desired_count must parse as u32"),
+        })
+    })
+    .collect()
+}
+
+#[when(expr = "I PUT goals for the target at slug {string}:")]
+async fn put_target_goals(world: &mut RpWorld, slug: String, step: &Step) {
+    let goals = goals_from_table(step);
+    let client = reqwest::Client::new();
+    let response = client
+        .put(format!("{}/api/targets/{}/goals", world.rp_url(), slug))
+        .json(&serde_json::json!({ "goals": goals }))
+        .send()
+        .await
+        .expect("PUT /api/targets/{slug}/goals request failed");
+    record_response(world, response).await;
+}
+
 #[when(expr = "I DELETE the target at slug {string}")]
 async fn delete_target_at_slug(world: &mut RpWorld, slug: String) {
     let client = reqwest::Client::new();
@@ -167,6 +207,21 @@ fn targets_api_list_exactly(world: &mut RpWorld, expected_slug: String) {
         vec![expected_slug.as_str()],
         "targets API list slugs"
     );
+}
+
+#[then(expr = "the targets API response should carry exactly these goals:")]
+fn targets_api_response_goals(world: &mut RpWorld, step: &Step) {
+    let expected = goals_from_table(step);
+    let body = world
+        .last_api_body
+        .as_ref()
+        .expect("no targets API response body");
+    let target = body.get("target").unwrap_or(body);
+    let actual = target
+        .get("goals")
+        .and_then(|v| v.as_array())
+        .unwrap_or_else(|| panic!("targets API response missing `goals` array: {body}"));
+    assert_eq!(actual, &expected, "targets API response goals");
 }
 
 #[then("GET /api/targets should list no targets")]

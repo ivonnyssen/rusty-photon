@@ -14,6 +14,7 @@ _INTRA_WORKSPACE_DEPS = [
     "//crates/rp-catalog:rp-catalog",
     "//crates/rp-ephemeris:rp-ephemeris",
     "//crates/rp-fits:rp-fits",
+    "//crates/rp-targets:rp-targets",
     "//crates/rusty-photon-tls:rusty-photon-tls",
     "//crates/rusty-photon-config:rusty-photon-config",
     "//crates/rusty-photon-doctor-checks:rusty-photon-doctor-checks",

@@ -151,6 +151,36 @@ impl ServerBuilder {
         };
 
         let targets = crate::planner::decision::parse_targets_from_value(&config.targets);
+
+        // Target store (rp.md § Target Store, additive coexistence with
+        // the legacy targets[] array above pending the Dynamic Planner
+        // cutover): opened unconditionally, at
+        // `targets.db_path` or `<data_directory>/targets.redb`.
+        let target_store_config =
+            crate::config::target_store::parse_target_store_config(&config.targets)
+                .map_err(|e| crate::error::RpError::Config(format!("targets: {e}")))?;
+        let target_store_db_path = target_store_config.db_path.clone().unwrap_or_else(|| {
+            std::path::Path::new(&config.session.data_directory)
+                .join("targets.redb")
+                .to_string_lossy()
+                .into_owned()
+        });
+        if let Some(parent) = std::path::Path::new(&target_store_db_path).parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                crate::error::RpError::Config(format!(
+                    "targets.db_path {target_store_db_path:?}: failed to create parent directory: {e}"
+                ))
+            })?;
+        }
+        let target_store: Arc<dyn rp_targets::TargetStore> = Arc::new(
+            rp_targets::RedbTargetStore::open(&target_store_db_path)
+                .await
+                .map_err(|e| {
+                    crate::error::RpError::Config(format!(
+                        "targets.db_path {target_store_db_path:?}: failed to open target store: {e}"
+                    ))
+                })?,
+        );
         // `planner.min_altitude_degrees` is the planner-wide default
         // floor for `get_next_target` (per-target overrides apply).
         // Range-validate at startup so a config typo (e.g. `200`) fails
@@ -275,7 +305,8 @@ impl ServerBuilder {
         .with_guider(guider_client.clone(), guider_defaults)
         .with_trains(trains)
         .with_centering_config(config.centering.clone())
-        .with_cooling(cooling);
+        .with_cooling(cooling)
+        .with_target_store(Some(target_store), target_store_config);
 
         // Cancellation token for in-flight SSE streams
         // (`/api/events/subscribe`). Cloned into AppState so the handler can

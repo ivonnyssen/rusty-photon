@@ -4286,6 +4286,7 @@ dependencies = [
  "rp-fits",
  "rp-guider",
  "rp-plate-solver",
+ "rp-targets",
  "rpassword",
  "rusty-photon-config",
  "rusty-photon-doctor-checks",

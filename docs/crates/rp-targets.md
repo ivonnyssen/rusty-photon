@@ -338,9 +338,11 @@ matching Rule-2 update. The authoritative home for these contracts is
 
 `rp` derives and resolves the slug before calling `upsert_target`:
 
-1. Base = `TargetSlug::new(catalog_ref.unwrap_or(display_name))` (a
-   catalog add bases on `"NGC 7000"` → `ngc7000`; a custom add bases on
-   the operator's name).
+1. Base = `TargetSlug::new(catalog_ref.unwrap_or(kebab(display_name)))`
+   (a catalog add bases on `"NGC 7000"` → `ngc7000`, `TargetSlug::new`'s
+   own whitespace-*stripping* normalization; a custom add bases on the
+   operator's name, kebab-cased first — `"Comet Test"` → `comet-test` —
+   since an operator-typed name reads better hyphenated than stripped).
 2. Probe `get_target(base)`. **Absent** → use `base`.
 3. **Present and the same object** (same `catalog_ref`, or coordinates
    within a small tolerance) → treat as an in-place edit: reuse the slug
