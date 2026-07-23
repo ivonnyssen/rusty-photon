@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::Control;
+use crate::ControlType;
 
 #[derive(Error, Debug)]
 /// Errors that can occur when interacting with the QHYCCD SDK
@@ -40,8 +40,8 @@ pub enum QHYError {
     SetRoiError { error_code: u32 },
     #[error("Error getting camera parameter for control {:?}", control)]
     GetParameterError {
-        /// here the control field has the `Control` enum variant we tried to get the value for
-        control: Control,
+        /// here the control field has the `ControlType` enum variant we tried to get the value for
+        control: ControlType,
     },
     #[error("Error setting camera parameter, error code {:?}", error_code)]
     SetParameterError { error_code: u32 },
@@ -62,7 +62,7 @@ pub enum QHYError {
     #[error("Error getting camera effective area, error code {:?}", error_code)]
     GetEffectiveAreaError { error_code: u32 },
     #[error("Error getting determining support for camera feature {:?}", control)]
-    IsControlAvailableError { control: Control },
+    IsControlAvailableError { control: ControlType },
     #[error("Error starting single frame exposure, error code {:?}", error_code)]
     StartSingleFrameExposureError { error_code: u32 },
     #[error("Error getting camera number of read modes")]
@@ -89,8 +89,8 @@ pub enum QHYError {
     CameraNotOpenError,
     #[error("Error getting camera min, max, step for control {:?}", control)]
     GetMinMaxStepError {
-        /// here the control field has the `Control` enum variant we tried to get the value for
-        control: Control,
+        /// here the control field has the `ControlType` enum variant we tried to get the value for
+        control: ControlType,
     },
     #[error("Error getting filter wheel position")]
     GetCfwPositionError,

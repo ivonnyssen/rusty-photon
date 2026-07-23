@@ -30,7 +30,7 @@ use ascom_alpaca::api::{Camera, Device};
 use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
 use ndarray::Array2;
 use parking_lot::Mutex;
-use qhyccd_rs::{BayerMode, CCDChipArea, Control, ImageData};
+use qhyccd_rs::{BayerMode, CCDChipArea, ControlType, ImageData};
 use rusty_photon_driver::ConfigActionCtx;
 use tracing::{debug, warn};
 
@@ -60,7 +60,7 @@ struct DeviceState {
     target_temperature: Mutex<Option<f64>>,
     /// Tracked independently of the SDK's `CurPWM` readback: neither real
     /// hardware nor the simulation backend updates `CurPWM` synchronously
-    /// when `Control::Cooler` (auto-regulation) is (re-)asserted, and a
+    /// when `ControlType::Cooler` (auto-regulation) is (re-)asserted, and a
     /// settled regulation loop can legitimately read back 0% PWM while still
     /// engaged.
     cooler_engaged: AtomicBool,
@@ -218,7 +218,7 @@ impl QhyCameraDevice {
     fn open_handshake(&self) -> ASCOMResult<()> {
         let h = &self.handle;
         let nc = |_e: BackendError| ASCOMError::NOT_CONNECTED;
-        if h.is_control_available(Control::CamSingleFrameMode)
+        if h.is_control_available(ControlType::CamSingleFrameMode)
             .is_none()
         {
             warn!("camera does not advertise single-frame mode");
@@ -244,17 +244,15 @@ impl QhyCameraDevice {
         *self.state.intended_roi.lock() = Some(area);
         *self.state.valid_bins.lock() = self.valid_binning_modes();
 
-        let exposure = h
-            .get_parameter_min_max_step(Control::Exposure)
-            .map_err(nc)?;
+        let exposure = h.exposure_range_us().map_err(nc)?;
         *self.state.exposure_range_us.lock() = Some(exposure);
 
-        if h.is_control_available(Control::Gain).is_some() {
-            let (min, max, _) = h.get_parameter_min_max_step(Control::Gain).map_err(nc)?;
+        if h.is_control_available(ControlType::Gain).is_some() {
+            let (min, max, _) = h.gain_range().map_err(nc)?;
             *self.state.gain_min_max.lock() = Some((min, max));
         }
-        if h.is_control_available(Control::Offset).is_some() {
-            let (min, max, _) = h.get_parameter_min_max_step(Control::Offset).map_err(nc)?;
+        if h.is_control_available(ControlType::Offset).is_some() {
+            let (min, max, _) = h.offset_range().map_err(nc)?;
             *self.state.offset_min_max.lock() = Some((min, max));
         }
 
@@ -341,12 +339,12 @@ impl QhyCameraDevice {
     fn valid_binning_modes(&self) -> Vec<u8> {
         let mut bins = Vec::new();
         for (control, bin) in [
-            (Control::CamBin1x1mode, 1u8),
-            (Control::CamBin2x2mode, 2),
-            (Control::CamBin3x3mode, 3),
-            (Control::CamBin4x4mode, 4),
-            (Control::CamBin6x6mode, 6),
-            (Control::CamBin8x8mode, 8),
+            (ControlType::CamBin1x1mode, 1u8),
+            (ControlType::CamBin2x2mode, 2),
+            (ControlType::CamBin3x3mode, 3),
+            (ControlType::CamBin4x4mode, 4),
+            (ControlType::CamBin6x6mode, 6),
+            (ControlType::CamBin8x8mode, 8),
         ] {
             if self.handle.is_control_available(control).is_some() {
                 bins.push(bin);
@@ -804,11 +802,15 @@ impl Camera for QhyCameraDevice {
 
     async fn gain(&self) -> ASCOMResult<i32> {
         self.ensure_connected()?;
-        if self.handle.is_control_available(Control::Gain).is_none() {
+        if self
+            .handle
+            .is_control_available(ControlType::Gain)
+            .is_none()
+        {
             return Err(ASCOMError::NOT_IMPLEMENTED);
         }
         self.handle
-            .get_parameter(Control::Gain)
+            .gain()
             .map(|g| g as i32)
             .map_err(|_| ASCOMError::INVALID_OPERATION)
     }
@@ -829,7 +831,11 @@ impl Camera for QhyCameraDevice {
 
     async fn set_gain(&self, gain: i32) -> ASCOMResult<()> {
         self.ensure_connected()?;
-        if self.handle.is_control_available(Control::Gain).is_none() {
+        if self
+            .handle
+            .is_control_available(ControlType::Gain)
+            .is_none()
+        {
             return Err(ASCOMError::NOT_IMPLEMENTED);
         }
         let (min, max) = (*self.state.gain_min_max.lock()).ok_or_else(|| {
@@ -842,17 +848,21 @@ impl Camera for QhyCameraDevice {
             )));
         }
         self.handle
-            .set_parameter(Control::Gain, f64::from(gain))
+            .set_gain(f64::from(gain))
             .map_err(|_| ASCOMError::INVALID_OPERATION)
     }
 
     async fn offset(&self) -> ASCOMResult<i32> {
         self.ensure_connected()?;
-        if self.handle.is_control_available(Control::Offset).is_none() {
+        if self
+            .handle
+            .is_control_available(ControlType::Offset)
+            .is_none()
+        {
             return Err(ASCOMError::NOT_IMPLEMENTED);
         }
         self.handle
-            .get_parameter(Control::Offset)
+            .offset()
             .map(|o| o as i32)
             .map_err(|_| ASCOMError::INVALID_OPERATION)
     }
@@ -873,7 +883,11 @@ impl Camera for QhyCameraDevice {
 
     async fn set_offset(&self, offset: i32) -> ASCOMResult<()> {
         self.ensure_connected()?;
-        if self.handle.is_control_available(Control::Offset).is_none() {
+        if self
+            .handle
+            .is_control_available(ControlType::Offset)
+            .is_none()
+        {
             return Err(ASCOMError::NOT_IMPLEMENTED);
         }
         let (min, max) = (*self.state.offset_min_max.lock()).ok_or_else(|| {
@@ -886,7 +900,7 @@ impl Camera for QhyCameraDevice {
             )));
         }
         self.handle
-            .set_parameter(Control::Offset, f64::from(offset))
+            .set_offset(f64::from(offset))
             .map_err(|_| ASCOMError::INVALID_OPERATION)
     }
 
@@ -949,12 +963,12 @@ impl Camera for QhyCameraDevice {
         self.ensure_connected()?;
         if self
             .handle
-            .is_control_available(Control::CamIsColor)
+            .is_control_available(ControlType::CamIsColor)
             .is_none()
         {
             return Ok(SensorType::Monochrome);
         }
-        match self.handle.is_control_available(Control::CamColor) {
+        match self.handle.is_control_available(ControlType::CamColor) {
             Some(_) => Ok(SensorType::RGGB),
             None => Err(ASCOMError::INVALID_VALUE),
         }
@@ -964,14 +978,14 @@ impl Camera for QhyCameraDevice {
         self.ensure_connected()?;
         if self
             .handle
-            .is_control_available(Control::CamIsColor)
+            .is_control_available(ControlType::CamIsColor)
             .is_none()
         {
             return Err(ASCOMError::NOT_IMPLEMENTED);
         }
         let raw = self
             .handle
-            .is_control_available(Control::CamColor)
+            .is_control_available(ControlType::CamColor)
             .ok_or(ASCOMError::INVALID_VALUE)?;
         let mode = BayerMode::try_from(raw).map_err(|_| ASCOMError::INVALID_VALUE)?;
         Ok(bayer_offsets(mode).0)
@@ -981,14 +995,14 @@ impl Camera for QhyCameraDevice {
         self.ensure_connected()?;
         if self
             .handle
-            .is_control_available(Control::CamIsColor)
+            .is_control_available(ControlType::CamIsColor)
             .is_none()
         {
             return Err(ASCOMError::NOT_IMPLEMENTED);
         }
         let raw = self
             .handle
-            .is_control_available(Control::CamColor)
+            .is_control_available(ControlType::CamColor)
             .ok_or(ASCOMError::INVALID_VALUE)?;
         let mode = BayerMode::try_from(raw).map_err(|_| ASCOMError::INVALID_VALUE)?;
         Ok(bayer_offsets(mode).1)
@@ -997,7 +1011,10 @@ impl Camera for QhyCameraDevice {
     // --- cooling ----------------------------------------------------------------
 
     async fn can_set_ccd_temperature(&self) -> ASCOMResult<bool> {
-        Ok(self.handle.is_control_available(Control::Cooler).is_some())
+        Ok(self
+            .handle
+            .is_control_available(ControlType::Cooler)
+            .is_some())
     }
 
     async fn can_get_cooler_power(&self) -> ASCOMResult<bool> {
@@ -1006,30 +1023,42 @@ impl Camera for QhyCameraDevice {
 
     async fn ccd_temperature(&self) -> ASCOMResult<f64> {
         self.ensure_connected()?;
-        if self.handle.is_control_available(Control::Cooler).is_none() {
+        if self
+            .handle
+            .is_control_available(ControlType::Cooler)
+            .is_none()
+        {
             return Err(ASCOMError::NOT_IMPLEMENTED);
         }
         self.handle
-            .get_parameter(Control::CurTemp)
+            .current_temperature_celsius()
             .map_err(|_| ASCOMError::INVALID_VALUE)
     }
 
     async fn set_ccd_temperature(&self) -> ASCOMResult<f64> {
         self.ensure_connected()?;
-        if self.handle.is_control_available(Control::Cooler).is_none() {
+        if self
+            .handle
+            .is_control_available(ControlType::Cooler)
+            .is_none()
+        {
             return Err(ASCOMError::NOT_IMPLEMENTED);
         }
         if let Some(target) = *self.state.target_temperature.lock() {
             return Ok(target);
         }
         self.handle
-            .get_parameter(Control::CurTemp)
+            .current_temperature_celsius()
             .map_err(|_| ASCOMError::INVALID_VALUE)
     }
 
     async fn set_set_ccd_temperature(&self, set_ccd_temperature: f64) -> ASCOMResult<()> {
         self.ensure_connected()?;
-        if self.handle.is_control_available(Control::Cooler).is_none() {
+        if self
+            .handle
+            .is_control_available(ControlType::Cooler)
+            .is_none()
+        {
             return Err(ASCOMError::NOT_IMPLEMENTED);
         }
         if !(-273.15..=80.0).contains(&set_ccd_temperature) {
@@ -1038,7 +1067,7 @@ impl Camera for QhyCameraDevice {
             )));
         }
         self.handle
-            .set_parameter(Control::Cooler, set_ccd_temperature)
+            .set_target_temperature_celsius(set_ccd_temperature)
             .map_err(|_| ASCOMError::invalid_operation("failed to set target temperature"))?;
         *self.state.target_temperature.lock() = Some(set_ccd_temperature);
         Ok(())
@@ -1046,7 +1075,11 @@ impl Camera for QhyCameraDevice {
 
     async fn cooler_on(&self) -> ASCOMResult<bool> {
         self.ensure_connected()?;
-        if self.handle.is_control_available(Control::Cooler).is_none() {
+        if self
+            .handle
+            .is_control_available(ControlType::Cooler)
+            .is_none()
+        {
             return Err(ASCOMError::NOT_IMPLEMENTED);
         }
         Ok(self.state.cooler_engaged.load(Ordering::Acquire))
@@ -1054,29 +1087,34 @@ impl Camera for QhyCameraDevice {
 
     async fn set_cooler_on(&self, cooler_on: bool) -> ASCOMResult<()> {
         self.ensure_connected()?;
-        if self.handle.is_control_available(Control::Cooler).is_none() {
+        if self
+            .handle
+            .is_control_available(ControlType::Cooler)
+            .is_none()
+        {
             return Err(ASCOMError::NOT_IMPLEMENTED);
         }
         if cooler_on {
-            // Engage the SDK's auto-regulation by writing Control::Cooler to
-            // the stored target (Control::ManualPWM instead pins a fixed duty
-            // cycle and does not regulate), falling back to the current CCD
-            // temperature if SetCCDTemperature was never called.
+            // Engage the SDK's auto-regulation via `set_target_temperature_celsius`
+            // (`ControlType::Cooler`) at the stored target — `set_manual_cooler_pwm`
+            // (`ControlType::ManualPWM`) instead pins a fixed duty cycle and does
+            // not regulate — falling back to the current CCD temperature if
+            // SetCCDTemperature was never called.
             let cached_target = *self.state.target_temperature.lock();
             let target = match cached_target {
                 Some(target) => target,
                 None => self
                     .handle
-                    .get_parameter(Control::CurTemp)
+                    .current_temperature_celsius()
                     .map_err(|_| ASCOMError::INVALID_VALUE)?,
             };
             self.handle
-                .set_parameter(Control::Cooler, target)
+                .set_target_temperature_celsius(target)
                 .map_err(|_| ASCOMError::invalid_operation("failed to set cooler state"))?;
             *self.state.target_temperature.lock() = Some(target);
         } else {
             self.handle
-                .set_parameter(Control::ManualPWM, 0.0)
+                .set_manual_cooler_pwm(0.0)
                 .map_err(|_| ASCOMError::invalid_operation("failed to set cooler state"))?;
         }
         self.state
@@ -1087,12 +1125,16 @@ impl Camera for QhyCameraDevice {
 
     async fn cooler_power(&self) -> ASCOMResult<f64> {
         self.ensure_connected()?;
-        if self.handle.is_control_available(Control::Cooler).is_none() {
+        if self
+            .handle
+            .is_control_available(ControlType::Cooler)
+            .is_none()
+        {
             return Err(ASCOMError::NOT_IMPLEMENTED);
         }
         let pwm = self
             .handle
-            .get_parameter(Control::CurPWM)
+            .cooler_power_raw()
             .map_err(|_| ASCOMError::INVALID_VALUE)?;
         Ok(pwm / 255.0 * 100.0)
     }
@@ -1102,7 +1144,7 @@ impl Camera for QhyCameraDevice {
     async fn has_shutter(&self) -> ASCOMResult<bool> {
         Ok(self
             .handle
-            .is_control_available(Control::CamMechanicalShutter)
+            .is_control_available(ControlType::CamMechanicalShutter)
             .is_some())
     }
 
@@ -1250,7 +1292,7 @@ impl Camera for QhyCameraDevice {
                 .store(false, Ordering::Release);
             return Err(ASCOMError::invalid_value(format!("failed to set ROI: {e}")));
         }
-        if let Err(e) = self.handle.set_parameter(Control::Exposure, exposure_us) {
+        if let Err(e) = self.handle.set_exposure_us(exposure_us) {
             self.state
                 .exposure_in_flight
                 .store(false, Ordering::Release);
@@ -1438,8 +1480,8 @@ mod tests {
         // the sensor reports a real depth (14) or the QHY5III715C's bogus 0, MaxADU
         // is 65535 — and is never the 2^0 - 1 = 0 that ConformU flagged.
         for actual_bits in [0.0, 12.0, 14.0] {
-            let handle =
-                MockCameraHandle::default().with_param(Control::OutputDataActualBits, actual_bits);
+            let handle = MockCameraHandle::default()
+                .with_param(ControlType::OutputDataActualBits, actual_bits);
             let device = connected_device(handle);
             assert_eq!(
                 device.max_adu().await.unwrap(),
@@ -1498,7 +1540,8 @@ mod tests {
 
     #[tokio::test]
     async fn gain_not_implemented_without_control() {
-        let device = connected_device(MockCameraHandle::default().without_control(Control::Gain));
+        let device =
+            connected_device(MockCameraHandle::default().without_control(ControlType::Gain));
         let err = device.gain().await.unwrap_err();
         assert_eq!(err.code, ASCOMErrorCode::NOT_IMPLEMENTED);
     }
@@ -1507,8 +1550,8 @@ mod tests {
     async fn color_sensor_reports_rggb_and_bayer_offsets() {
         // A colour model the mono simulation backend cannot exercise via BDD.
         let handle = MockCameraHandle::default()
-            .with_control(Control::CamIsColor, 1)
-            .with_control(Control::CamColor, BayerMode::RGGB as u32);
+            .with_control(ControlType::CamIsColor, 1)
+            .with_control(ControlType::CamColor, BayerMode::RGGB as u32);
         let device = connected_device(handle);
         assert_eq!(device.sensor_type().await.unwrap(), SensorType::RGGB);
         assert_eq!(device.bayer_offset_x().await.unwrap(), 0);
@@ -1518,7 +1561,7 @@ mod tests {
     #[tokio::test]
     async fn shutter_model_reports_has_shutter() {
         let device = connected_device(
-            MockCameraHandle::default().with_control(Control::CamMechanicalShutter, 1),
+            MockCameraHandle::default().with_control(ControlType::CamMechanicalShutter, 1),
         );
         assert!(device.has_shutter().await.unwrap());
     }
@@ -1544,11 +1587,11 @@ mod tests {
 
         device.set_cooler_on(true).await.unwrap();
 
-        assert_eq!(mock.param(Control::Cooler), Some(-10.0));
-        // The mock mirrors a Control::ManualPWM write into CurPWM; it must
+        assert_eq!(mock.param(ControlType::Cooler), Some(-10.0));
+        // The mock mirrors a ControlType::ManualPWM write into CurPWM; it must
         // stay at its untouched default, proving set_cooler_on(true) never
-        // wrote Control::ManualPWM.
-        assert_eq!(mock.param(Control::CurPWM), Some(0.0));
+        // wrote ControlType::ManualPWM.
+        assert_eq!(mock.param(ControlType::CurPWM), Some(0.0));
     }
 
     #[tokio::test]
@@ -1560,7 +1603,7 @@ mod tests {
         device.set_cooler_on(true).await.unwrap();
 
         // MockCameraHandle::default() seeds CurTemp at 20.0.
-        assert_eq!(mock.param(Control::Cooler), Some(20.0));
+        assert_eq!(mock.param(ControlType::Cooler), Some(20.0));
         assert_eq!(device.set_ccd_temperature().await.unwrap(), 20.0);
     }
 
@@ -1568,9 +1611,9 @@ mod tests {
     async fn cooler_off_clears_manual_pwm_and_engaged_state() {
         // Seed CurPWM nonzero, as if the cooler had been actively regulating,
         // so a subsequent drop to 0.0 is observable evidence of the
-        // Control::ManualPWM = 0.0 write (the mock mirrors ManualPWM into
+        // ControlType::ManualPWM = 0.0 write (the mock mirrors ManualPWM into
         // CurPWM; see MockCameraHandle::param).
-        let mock = Arc::new(MockCameraHandle::default().with_param(Control::CurPWM, 50.0));
+        let mock = Arc::new(MockCameraHandle::default().with_param(ControlType::CurPWM, 50.0));
         let device = QhyCameraDevice::new(mock.clone(), None);
         device.set_connected(true).await.unwrap();
         device.set_cooler_on(true).await.unwrap();
@@ -1579,7 +1622,7 @@ mod tests {
         device.set_cooler_on(false).await.unwrap();
 
         assert!(!device.cooler_on().await.unwrap());
-        assert_eq!(mock.param(Control::CurPWM), Some(0.0));
+        assert_eq!(mock.param(ControlType::CurPWM), Some(0.0));
     }
 
     #[tokio::test]
@@ -1626,7 +1669,8 @@ mod tests {
 
     #[tokio::test]
     async fn offset_not_implemented_without_control() {
-        let device = connected_device(MockCameraHandle::default().without_control(Control::Offset));
+        let device =
+            connected_device(MockCameraHandle::default().without_control(ControlType::Offset));
         assert_eq!(
             device.offset().await.unwrap_err().code,
             ASCOMErrorCode::NOT_IMPLEMENTED
@@ -1711,7 +1755,8 @@ mod tests {
 
     #[tokio::test]
     async fn cooling_is_not_implemented_without_cooler_control() {
-        let device = connected_device(MockCameraHandle::default().without_control(Control::Cooler));
+        let device =
+            connected_device(MockCameraHandle::default().without_control(ControlType::Cooler));
         assert!(!device.can_set_ccd_temperature().await.unwrap());
         assert!(!device.can_get_cooler_power().await.unwrap());
         for code in [
@@ -1808,7 +1853,7 @@ mod tests {
     async fn handshake_rejects_camera_without_single_frame_mode() {
         // open() succeeds, but a camera that doesn't advertise single-frame mode
         // can't be driven — connect must fail and leave it disconnected.
-        let handle = MockCameraHandle::default().without_control(Control::CamSingleFrameMode);
+        let handle = MockCameraHandle::default().without_control(ControlType::CamSingleFrameMode);
         let device = QhyCameraDevice::new(Arc::new(handle), None);
         assert_eq!(
             device.set_connected(true).await.unwrap_err().code,

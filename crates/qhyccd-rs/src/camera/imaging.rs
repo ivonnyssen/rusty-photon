@@ -209,14 +209,14 @@ impl Camera {
     /// # Example
     ///
     /// ```no_run
-    /// use qhyccd_rs::{Sdk,Camera,StreamMode,Control, ImageData};
+    /// use qhyccd_rs::{Sdk,Camera,StreamMode,ControlType, ImageData};
     ///
     /// let sdk = Sdk::new().expect("SDK::new failed");
     /// let camera = sdk.cameras().last().expect("no camera found");
     /// camera.open().expect("open failed");
     /// camera.set_stream_mode(StreamMode::SingleFrameMode).expect("set_stream_mode failed");
     /// camera.init().expect("init failed");
-    /// camera.set_parameter(Control::Exposure, 10000.0).expect("set_param failed"); // this is in micro seconds
+    /// camera.set_parameter(ControlType::Exposure, 10000.0).expect("set_param failed"); // this is in micro seconds
     /// camera.start_single_frame_exposure().expect("start_camera_single_frame_exposure failed");
     /// let buffer_size = camera.get_image_size().expect("get_camera_image_size failed");
     /// let image = camera.get_single_frame(buffer_size).expect("get_camera_single_frame failed");
@@ -303,13 +303,13 @@ impl Camera {
     /// Make sure to set the exposure time before calling this function
     /// # Example
     /// ```no_run
-    /// use qhyccd_rs::{Sdk,Camera,StreamMode,Control};
+    /// use qhyccd_rs::{Sdk,Camera,StreamMode,ControlType};
     /// let sdk = Sdk::new().expect("SDK::new failed");
     /// let camera = sdk.cameras().last().expect("no camera found");
     /// camera.open().expect("open failed");
     /// camera.set_stream_mode(StreamMode::SingleFrameMode).expect("set_stream_mode failed");
     /// camera.init().expect("init failed");
-    /// camera.set_parameter(Control::Exposure, 10000.0).expect("set_param failed"); // this is in micro seconds
+    /// camera.set_parameter(ControlType::Exposure, 10000.0).expect("set_param failed"); // this is in micro seconds
     /// camera.start_single_frame_exposure().expect("start_single_frame_exposure failed");
     /// ```
     pub fn start_single_frame_exposure(&self) -> Result<()> {
@@ -341,13 +341,13 @@ impl Camera {
     /// it needs to be called from a different thread than the one that called `start_single_frame_exposure`
     /// # Example
     /// ```no_run
-    /// use qhyccd_rs::{Sdk,Camera,StreamMode,Control};
+    /// use qhyccd_rs::{Sdk,Camera,StreamMode,ControlType};
     /// let sdk = Sdk::new().expect("SDK::new failed");
     /// let camera = sdk.cameras().last().expect("no camera found");
     /// camera.open().expect("open failed");
     /// camera.set_stream_mode(StreamMode::SingleFrameMode).expect("set_stream_mode failed");
     /// camera.init().expect("init failed");
-    /// camera.set_parameter(Control::Exposure, 10000.0).expect("set_param failed"); // this is in micro seconds
+    /// camera.set_parameter(ControlType::Exposure, 10000.0).expect("set_param failed"); // this is in micro seconds
     /// camera.start_single_frame_exposure().expect("start_single_frame_exposure failed");
     /// let remaining = camera.get_remaining_exposure_us().expect("get_remaining_exposure_us failed");
     /// println!("Remaining exposure time: {}", remaining);
@@ -381,13 +381,13 @@ impl Camera {
     /// the image data stays in the camera and must be retrieved with `get_single_frame`
     /// # Example
     /// ```no_run
-    /// use qhyccd_rs::{Sdk,Camera,StreamMode,Control};
+    /// use qhyccd_rs::{Sdk,Camera,StreamMode,ControlType};
     /// let sdk = Sdk::new().expect("SDK::new failed");
     /// let camera = sdk.cameras().last().expect("no camera found");
     /// camera.open().expect("open failed");
     /// camera.set_stream_mode(StreamMode::SingleFrameMode).expect("set_stream_mode failed");
     /// camera.init().expect("init failed");
-    /// camera.set_parameter(Control::Exposure, 10000.0).expect("set_param failed"); // this is in micro seconds
+    /// camera.set_parameter(ControlType::Exposure, 10000.0).expect("set_param failed"); // this is in micro seconds
     /// camera.start_single_frame_exposure().expect("start_single_frame_exposure failed");
     /// camera.stop_exposure().expect("stop_exposure failed");
     /// ```
@@ -419,13 +419,13 @@ impl Camera {
     /// Stops the current exposure and discards the image data in the camera
     /// # Example
     /// ```no_run
-    /// use qhyccd_rs::{Sdk,Camera,StreamMode,Control};
+    /// use qhyccd_rs::{Sdk,Camera,StreamMode,ControlType};
     /// let sdk = Sdk::new().expect("SDK::new failed");
     /// let camera = sdk.cameras().last().expect("no camera found");
     /// camera.open().expect("open failed");
     /// camera.set_stream_mode(StreamMode::SingleFrameMode).expect("set_stream_mode failed");
     /// camera.init().expect("init failed");
-    /// camera.set_parameter(Control::Exposure, 10000.0).expect("set_param failed"); // this is in micro seconds
+    /// camera.set_parameter(ControlType::Exposure, 10000.0).expect("set_param failed"); // this is in micro seconds
     /// camera.start_single_frame_exposure().expect("start_single_frame_exposure failed");
     /// camera.abort_exposure_and_readout().expect("abort_exposure_and_readout failed");
     /// ```

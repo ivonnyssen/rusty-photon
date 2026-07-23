@@ -4,7 +4,7 @@
 #![allow(non_snake_case)]
 use std::{thread, time::Duration};
 
-use qhyccd_rs::{Control, Sdk, StreamMode};
+use qhyccd_rs::{ControlType, Sdk, StreamMode};
 use tracing::trace;
 use tracing_subscriber::FmtSubscriber;
 
@@ -32,13 +32,13 @@ fn main() {
     trace!(fw_version = ?fw_version);
 
     if camera
-        .is_control_available(Control::CamLiveVideoMode)
+        .is_control_available(ControlType::CamLiveVideoMode)
         .is_none()
     {
-        panic!("Control::CamLiveVideoMode is not supported");
+        panic!("ControlType::CamLiveVideoMode is not supported");
     }
 
-    trace!("Control::CamLiveVideoMode is supported");
+    trace!("ControlType::CamLiveVideoMode is supported");
     camera
         .set_readout_mode(0)
         .expect("set_camera_read_mode failed");
@@ -69,19 +69,19 @@ fn main() {
         .expect("set_camera_roi failed");
     trace!(roi = ?effective_area);
     camera
-        .set_parameter(Control::TransferBit, 8.0)
+        .set_parameter(ControlType::TransferBit, 8.0)
         .expect("set_camera_parameter failed");
     trace!(control_transferbit = 8.0);
     camera
-        .set_parameter(Control::Exposure, 2000.0)
+        .set_parameter(ControlType::Exposure, 2000.0)
         .expect("set_camera_parameter failed");
     trace!(control_exposure = 2000.0);
     camera
-        .set_parameter(Control::UsbTraffic, 255.0)
+        .set_parameter(ControlType::UsbTraffic, 255.0)
         .expect("set_camera_parameter failed");
     trace!(control_usb_traffic = 255.0);
     camera
-        .set_parameter(Control::DDR, 1.0)
+        .set_parameter(ControlType::DDR, 1.0)
         .expect("set_camera_parameter failed");
     trace!(control_ddr = 1.0);
     camera.begin_live().expect("begin_camera_live failed");

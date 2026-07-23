@@ -2,7 +2,7 @@
 
 use super::config::SimulatedCameraConfig;
 use super::state::SimulatedCameraState;
-use crate::{BayerMode, Control};
+use crate::{BayerMode, ControlType};
 
 #[test]
 fn test_new_state() {
@@ -48,7 +48,7 @@ fn test_stop_exposure() {
     let mut state = SimulatedCameraState::new(config);
 
     // Set exposure time via parameter (start_exposure reads from this)
-    state.parameters.insert(Control::Exposure, 10_000_000.0); // 10 s — the exposure clock starts after frame generation, so the assertions below land well inside the window
+    state.parameters.insert(ControlType::Exposure, 10_000_000.0); // 10 s — the exposure clock starts after frame generation, so the assertions below land well inside the window
     state.start_exposure();
 
     // Exposure should be in progress
@@ -76,7 +76,7 @@ fn test_abort_exposure() {
     let mut state = SimulatedCameraState::new(config);
 
     // Set exposure time via parameter (start_exposure reads from this)
-    state.parameters.insert(Control::Exposure, 10_000_000.0); // 10 s — the exposure clock starts after frame generation, so the assertions below land well inside the window
+    state.parameters.insert(ControlType::Exposure, 10_000_000.0); // 10 s — the exposure clock starts after frame generation, so the assertions below land well inside the window
     state.start_exposure();
 
     // Exposure should be in progress
@@ -119,7 +119,7 @@ fn test_update_temperature_cooling() {
     assert!(state.current_temperature < initial_temp);
     // CurTemp parameter should be updated
     assert!(
-        (state.parameters.get(&Control::CurTemp).unwrap() - state.current_temperature).abs()
+        (state.parameters.get(&ControlType::CurTemp).unwrap() - state.current_temperature).abs()
             < f64::EPSILON
     );
 }
@@ -231,7 +231,7 @@ fn test_start_exposure_uses_parameter() {
     let mut state = SimulatedCameraState::new(config);
 
     // Set exposure parameter
-    state.parameters.insert(Control::Exposure, 5_000_000.0); // 5 seconds
+    state.parameters.insert(ControlType::Exposure, 5_000_000.0); // 5 seconds
 
     state.start_exposure();
 

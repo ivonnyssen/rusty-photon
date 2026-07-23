@@ -153,7 +153,7 @@ fn get_number_of_filters_success() {
     ctx_available
         .expect()
         .withf_st(|handle, control| {
-            *handle == TEST_HANDLE && *control == Control::CfwSlotsNum as u32
+            *handle == TEST_HANDLE && *control == ControlType::CfwSlotsNum.to_raw()
         })
         .times(1)
         .return_const_st(QHYCCD_SUCCESS);
@@ -161,7 +161,7 @@ fn get_number_of_filters_success() {
     ctx_num
         .expect()
         .withf_st(|handle, control| {
-            *handle == TEST_HANDLE && *control == Control::CfwSlotsNum as u32
+            *handle == TEST_HANDLE && *control == ControlType::CfwSlotsNum.to_raw()
         })
         .once()
         .return_const_st(7.0);
@@ -180,7 +180,7 @@ fn get_number_of_filters_fail_no_filter_wheel() {
     ctx_available
         .expect()
         .withf_st(|handle, control| {
-            *handle == TEST_HANDLE && *control == Control::CfwSlotsNum as u32
+            *handle == TEST_HANDLE && *control == ControlType::CfwSlotsNum.to_raw()
         })
         .once()
         .return_const_st(QHYCCD_ERROR);
@@ -199,7 +199,7 @@ fn get_number_of_filters_fail_get_parameter() {
     ctx_available
         .expect()
         .withf_st(|handle, control| {
-            *handle == TEST_HANDLE && *control == Control::CfwSlotsNum as u32
+            *handle == TEST_HANDLE && *control == ControlType::CfwSlotsNum.to_raw()
         })
         .times(1)
         .return_const_st(QHYCCD_SUCCESS);
@@ -207,7 +207,7 @@ fn get_number_of_filters_fail_get_parameter() {
     ctx_num
         .expect()
         .withf_st(|handle, control| {
-            *handle == TEST_HANDLE && *control == Control::CfwSlotsNum as u32
+            *handle == TEST_HANDLE && *control == ControlType::CfwSlotsNum.to_raw()
         })
         .once()
         .return_const_st(QHYCCD_ERROR);
@@ -225,13 +225,17 @@ fn get_fw_position_success() {
     let ctx_available = IsQHYCCDControlAvailable_context();
     ctx_available
         .expect()
-        .withf_st(|handle, control| *handle == TEST_HANDLE && *control == Control::CfwPort as u32)
+        .withf_st(|handle, control| {
+            *handle == TEST_HANDLE && *control == ControlType::CfwPort.to_raw()
+        })
         .times(1)
         .return_const_st(QHYCCD_SUCCESS);
     let ctx_num = GetQHYCCDParam_context();
     ctx_num
         .expect()
-        .withf_st(|handle, control| *handle == TEST_HANDLE && *control == Control::CfwPort as u32)
+        .withf_st(|handle, control| {
+            *handle == TEST_HANDLE && *control == ControlType::CfwPort.to_raw()
+        })
         .once()
         .return_const_st(53.0); //ASCII for 5
     let fw = new_filter_wheel();
@@ -248,7 +252,9 @@ fn get_fw_position_fail_no_filter_wheel() {
     let ctx_available = IsQHYCCDControlAvailable_context();
     ctx_available
         .expect()
-        .withf_st(|handle, control| *handle == TEST_HANDLE && *control == Control::CfwPort as u32)
+        .withf_st(|handle, control| {
+            *handle == TEST_HANDLE && *control == ControlType::CfwPort.to_raw()
+        })
         .once()
         .return_const_st(QHYCCD_ERROR);
     let fw = new_filter_wheel();
@@ -265,13 +271,17 @@ fn get_fw_position_fail_get_parameter() {
     let ctx_available = IsQHYCCDControlAvailable_context();
     ctx_available
         .expect()
-        .withf_st(|handle, control| *handle == TEST_HANDLE && *control == Control::CfwPort as u32)
+        .withf_st(|handle, control| {
+            *handle == TEST_HANDLE && *control == ControlType::CfwPort.to_raw()
+        })
         .times(1)
         .return_const_st(QHYCCD_SUCCESS);
     let ctx_num = GetQHYCCDParam_context();
     ctx_num
         .expect()
-        .withf_st(|handle, control| *handle == TEST_HANDLE && *control == Control::CfwPort as u32)
+        .withf_st(|handle, control| {
+            *handle == TEST_HANDLE && *control == ControlType::CfwPort.to_raw()
+        })
         .once()
         .return_const_st(QHYCCD_ERROR);
     let fw = new_filter_wheel();
@@ -288,14 +298,16 @@ fn set_fw_position_success() {
     let ctx_available = IsQHYCCDControlAvailable_context();
     ctx_available
         .expect()
-        .withf_st(|handle, control| *handle == TEST_HANDLE && *control == Control::CfwPort as u32)
+        .withf_st(|handle, control| {
+            *handle == TEST_HANDLE && *control == ControlType::CfwPort.to_raw()
+        })
         .times(1)
         .return_const_st(QHYCCD_SUCCESS);
     let ctx_num = SetQHYCCDParam_context();
     ctx_num
         .expect()
         .withf_st(|handle, control, value| {
-            *handle == TEST_HANDLE && *control == Control::CfwPort as u32 && *value == 53.0
+            *handle == TEST_HANDLE && *control == ControlType::CfwPort.to_raw() && *value == 53.0
             //ASCII for 5
         })
         .once()
@@ -314,7 +326,9 @@ fn set_fw_position_fail_no_filter_wheel() {
     let ctx_available = IsQHYCCDControlAvailable_context();
     ctx_available
         .expect()
-        .withf_st(|handle, control| *handle == TEST_HANDLE && *control == Control::CfwPort as u32)
+        .withf_st(|handle, control| {
+            *handle == TEST_HANDLE && *control == ControlType::CfwPort.to_raw()
+        })
         .once()
         .return_const_st(QHYCCD_ERROR);
     let fw = new_filter_wheel();
@@ -331,14 +345,16 @@ fn set_fw_position_fail_set_parameter() {
     let ctx_available = IsQHYCCDControlAvailable_context();
     ctx_available
         .expect()
-        .withf_st(|handle, control| *handle == TEST_HANDLE && *control == Control::CfwPort as u32)
+        .withf_st(|handle, control| {
+            *handle == TEST_HANDLE && *control == ControlType::CfwPort.to_raw()
+        })
         .times(1)
         .return_const_st(QHYCCD_SUCCESS);
     let ctx_num = SetQHYCCDParam_context();
     ctx_num
         .expect()
         .withf_st(|handle, control, value| {
-            *handle == TEST_HANDLE && *control == Control::CfwPort as u32 && *value == 53.0
+            *handle == TEST_HANDLE && *control == ControlType::CfwPort.to_raw() && *value == 53.0
             //ASCII for 5
         })
         .once()

@@ -6,7 +6,7 @@
 //! [`FilterWheelHandle`] (1) collapses that error into a typed [`BackendError`] at
 //! one boundary, (2) lets the
 //! ASCOM device hold an `Arc<dyn CameraHandle>` so unit tests can substitute a mock
-//! with neither hardware nor the simulation runtime, and (3) keeps the `Control`
+//! with neither hardware nor the simulation runtime, and (3) keeps the `ControlType`
 //! vocabulary in one place. Production impls wrap the real `qhyccd-rs` handles
 //! (which are `Clone` over an internal `Arc`, so cloning shares the open camera).
 
@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use qhyccd_rs::{CCDChipArea, CCDChipInfo, Control, ImageData, StreamMode};
+use qhyccd_rs::{CCDChipArea, CCDChipInfo, ControlType, ImageData, StreamMode};
 
 /// A QHYCCD SDK call failed. Carries the underlying error message; the ASCOM
 /// device decides the `ASCOMError` per call site (the SDK error kind does not
@@ -60,12 +60,72 @@ pub trait CameraHandle: std::fmt::Debug + Send + Sync {
     fn get_ccd_info(&self) -> BackendResult<CCDChipInfo>;
     fn get_effective_area(&self) -> BackendResult<CCDChipArea>;
 
-    /// `Some(value)` when the control exists. For `Control::CamColor` the value is
+    /// `Some(value)` when the control exists. For `ControlType::CamColor` the value is
     /// the Bayer-pattern discriminant; for other controls it is a presence flag.
-    fn is_control_available(&self, control: Control) -> Option<u32>;
-    fn get_parameter(&self, control: Control) -> BackendResult<f64>;
-    fn get_parameter_min_max_step(&self, control: Control) -> BackendResult<(f64, f64, f64)>;
-    fn set_parameter(&self, control: Control, value: f64) -> BackendResult<()>;
+    fn is_control_available(&self, control: ControlType) -> Option<u32>;
+    fn get_parameter(&self, control: ControlType) -> BackendResult<f64>;
+    fn get_parameter_min_max_step(&self, control: ControlType) -> BackendResult<(f64, f64, f64)>;
+    fn set_parameter(&self, control: ControlType, value: f64) -> BackendResult<()>;
+
+    // Typed accessors — the routine surface for the well-known controls, so the
+    // device logic reads `handle.gain()` rather than `handle.get_parameter(
+    // ControlType::Gain)`. Provided as defaults over the generic methods above
+    // (mirroring `qhyccd_rs::Camera`'s own accessors), so every impl — the
+    // production wrapper and the hand-written test mock — inherits them for free
+    // and their existing per-control setup still satisfies them. The generic
+    // `get_parameter`/`set_parameter` stay for controls without a dedicated
+    // accessor (e.g. `OutputDataActualBits`) and for capability *probes* via
+    // `is_control_available`.
+
+    /// Current sensor gain (`ControlType::Gain`).
+    fn gain(&self) -> BackendResult<f64> {
+        self.get_parameter(ControlType::Gain)
+    }
+    /// Set the sensor gain (`ControlType::Gain`).
+    fn set_gain(&self, gain: f64) -> BackendResult<()> {
+        self.set_parameter(ControlType::Gain, gain)
+    }
+    /// `(min, max, step)` for gain (`ControlType::Gain`).
+    fn gain_range(&self) -> BackendResult<(f64, f64, f64)> {
+        self.get_parameter_min_max_step(ControlType::Gain)
+    }
+    /// Current sensor offset / black level (`ControlType::Offset`).
+    fn offset(&self) -> BackendResult<f64> {
+        self.get_parameter(ControlType::Offset)
+    }
+    /// Set the sensor offset / black level (`ControlType::Offset`).
+    fn set_offset(&self, offset: f64) -> BackendResult<()> {
+        self.set_parameter(ControlType::Offset, offset)
+    }
+    /// `(min, max, step)` for offset (`ControlType::Offset`).
+    fn offset_range(&self) -> BackendResult<(f64, f64, f64)> {
+        self.get_parameter_min_max_step(ControlType::Offset)
+    }
+    /// Set the exposure time in microseconds (`ControlType::Exposure`).
+    fn set_exposure_us(&self, exposure_us: f64) -> BackendResult<()> {
+        self.set_parameter(ControlType::Exposure, exposure_us)
+    }
+    /// `(min, max, step)` for exposure in microseconds (`ControlType::Exposure`).
+    fn exposure_range_us(&self) -> BackendResult<(f64, f64, f64)> {
+        self.get_parameter_min_max_step(ControlType::Exposure)
+    }
+    /// Current sensor temperature in °C (`ControlType::CurTemp`).
+    fn current_temperature_celsius(&self) -> BackendResult<f64> {
+        self.get_parameter(ControlType::CurTemp)
+    }
+    /// Engage the cooler's auto-regulation to `celsius` (`ControlType::Cooler`).
+    fn set_target_temperature_celsius(&self, celsius: f64) -> BackendResult<()> {
+        self.set_parameter(ControlType::Cooler, celsius)
+    }
+    /// Set a fixed manual cooler duty cycle (`ControlType::ManualPWM`); `0.0`
+    /// stops the cooler.
+    fn set_manual_cooler_pwm(&self, pwm: f64) -> BackendResult<()> {
+        self.set_parameter(ControlType::ManualPWM, pwm)
+    }
+    /// Current cooler power as the raw SDK PWM, 0–255 (`ControlType::CurPWM`).
+    fn cooler_power_raw(&self) -> BackendResult<f64> {
+        self.get_parameter(ControlType::CurPWM)
+    }
 
     fn set_bin_mode(&self, bin_x: u32, bin_y: u32) -> BackendResult<()>;
     fn set_roi(&self, area: CCDChipArea) -> BackendResult<()>;
@@ -83,7 +143,7 @@ pub trait FilterWheelHandle: std::fmt::Debug + Send + Sync {
     fn open(&self) -> BackendResult<()>;
     fn close(&self) -> BackendResult<()>;
     fn is_open(&self) -> BackendResult<bool>;
-    /// Number of slots (via `Control::CfwSlotsNum`).
+    /// Number of slots (via `ControlType::CfwSlotsNum`).
     fn get_number_of_filters(&self) -> BackendResult<u32>;
     /// Current 0-indexed slot.
     fn get_position(&self) -> BackendResult<u32>;
@@ -95,7 +155,7 @@ pub trait FilterWheelHandle: std::fmt::Debug + Send + Sync {
 
 /// One physical QHYCCD connection shared by the Camera and (when present) the
 /// FilterWheel ASCOM devices that map to the same SDK id. A QHY CFW is wired to
-/// the camera's USB and driven through the camera handle (`Control::CfwPort`), so
+/// the camera's USB and driven through the camera handle (`ControlType::CfwPort`), so
 /// both ASCOM devices must talk to ONE physical `OpenQHYCCD` handle. We refcount
 /// logical connects and only `CloseQHYCCD` on the LAST disconnect: opening the
 /// same camera id as two handles and closing either one tears down the shared
@@ -235,7 +295,7 @@ impl CameraHandle for QhyCameraHandle {
     fn set_transfer_bit_16(&self) -> BackendResult<()> {
         self.conn
             .camera()
-            .set_if_available(Control::TransferBit, 16.0)
+            .set_if_available(ControlType::TransferBit, 16.0)
             .map_err(BackendError::from_err)
     }
     fn get_model(&self) -> BackendResult<String> {
@@ -256,22 +316,22 @@ impl CameraHandle for QhyCameraHandle {
             .get_effective_area()
             .map_err(BackendError::from_err)
     }
-    fn is_control_available(&self, control: Control) -> Option<u32> {
+    fn is_control_available(&self, control: ControlType) -> Option<u32> {
         self.conn.camera().is_control_available(control)
     }
-    fn get_parameter(&self, control: Control) -> BackendResult<f64> {
+    fn get_parameter(&self, control: ControlType) -> BackendResult<f64> {
         self.conn
             .camera()
             .get_parameter(control)
             .map_err(BackendError::from_err)
     }
-    fn get_parameter_min_max_step(&self, control: Control) -> BackendResult<(f64, f64, f64)> {
+    fn get_parameter_min_max_step(&self, control: ControlType) -> BackendResult<(f64, f64, f64)> {
         self.conn
             .camera()
             .get_parameter_min_max_step(control)
             .map_err(BackendError::from_err)
     }
-    fn set_parameter(&self, control: Control, value: f64) -> BackendResult<()> {
+    fn set_parameter(&self, control: ControlType, value: f64) -> BackendResult<()> {
         self.conn
             .camera()
             .set_parameter(control, value)
@@ -402,9 +462,9 @@ pub(crate) mod mock {
         open: AtomicBool,
         /// Controls reported available; for `CamColor`, the stored value is the
         /// Bayer discriminant returned by `is_control_available`.
-        controls: Mutex<HashMap<Control, u32>>,
-        params: Mutex<HashMap<Control, f64>>,
-        ranges: Mutex<HashMap<Control, (f64, f64, f64)>>,
+        controls: Mutex<HashMap<ControlType, u32>>,
+        params: Mutex<HashMap<ControlType, f64>>,
+        ranges: Mutex<HashMap<ControlType, (f64, f64, f64)>>,
         ccd_info: CCDChipInfo,
         effective_area: CCDChipArea,
         readout_modes: Vec<(String, (u32, u32))>,
@@ -428,30 +488,30 @@ pub(crate) mod mock {
             // cooler, gain/offset, single readout mode, bins 1 & 2, shutterless.
             let mut controls = HashMap::new();
             for c in [
-                Control::Gain,
-                Control::Offset,
-                Control::Exposure,
-                Control::CamSingleFrameMode,
-                Control::CamBin1x1mode,
-                Control::CamBin2x2mode,
-                Control::Cooler,
-                Control::CurTemp,
-                Control::CurPWM,
-                Control::ManualPWM,
-                Control::TransferBit,
+                ControlType::Gain,
+                ControlType::Offset,
+                ControlType::Exposure,
+                ControlType::CamSingleFrameMode,
+                ControlType::CamBin1x1mode,
+                ControlType::CamBin2x2mode,
+                ControlType::Cooler,
+                ControlType::CurTemp,
+                ControlType::CurPWM,
+                ControlType::ManualPWM,
+                ControlType::TransferBit,
             ] {
                 controls.insert(c, 1);
             }
             let mut ranges = HashMap::new();
-            ranges.insert(Control::Gain, (0.0, 100.0, 1.0));
-            ranges.insert(Control::Offset, (0.0, 255.0, 1.0));
-            ranges.insert(Control::Exposure, (1.0, 3_600_000_000.0, 1.0));
+            ranges.insert(ControlType::Gain, (0.0, 100.0, 1.0));
+            ranges.insert(ControlType::Offset, (0.0, 255.0, 1.0));
+            ranges.insert(ControlType::Exposure, (1.0, 3_600_000_000.0, 1.0));
             let mut params = HashMap::new();
-            params.insert(Control::Gain, 10.0);
-            params.insert(Control::Offset, 10.0);
-            params.insert(Control::CurTemp, 20.0);
-            params.insert(Control::CurPWM, 0.0);
-            params.insert(Control::OutputDataActualBits, 16.0);
+            params.insert(ControlType::Gain, 10.0);
+            params.insert(ControlType::Offset, 10.0);
+            params.insert(ControlType::CurTemp, 20.0);
+            params.insert(ControlType::CurPWM, 0.0);
+            params.insert(ControlType::OutputDataActualBits, 16.0);
             let area = CCDChipArea {
                 start_x: 0,
                 start_y: 0,
@@ -491,28 +551,28 @@ pub(crate) mod mock {
     impl MockCameraHandle {
         /// Drop a control so it reports unavailable (e.g. remove `Gain` to test
         /// the `NOT_IMPLEMENTED` gate).
-        pub fn without_control(self, control: Control) -> Self {
+        pub fn without_control(self, control: ControlType) -> Self {
             self.controls.lock().remove(&control);
             self
         }
         /// Add a control with a presence/value (e.g. `CamColor` → Bayer code, or
         /// `CamMechanicalShutter` to report a shutter).
-        pub fn with_control(self, control: Control, value: u32) -> Self {
+        pub fn with_control(self, control: ControlType, value: u32) -> Self {
             self.controls.lock().insert(control, value);
             self
         }
         /// Override a numeric parameter returned by `get_parameter` (e.g. set
         /// `OutputDataActualBits` to 0 to mimic the QHY5III715C's SDK quirk).
-        pub fn with_param(self, control: Control, value: f64) -> Self {
+        pub fn with_param(self, control: ControlType, value: f64) -> Self {
             self.params.lock().insert(control, value);
             self
         }
         /// Read back a parameter value as last written via `set_parameter`
         /// (test introspection, e.g. to assert which cooler control a call
-        /// wrote to). Note the routing above: a `Control::ManualPWM` write
-        /// lands under `Control::CurPWM`, not `Control::ManualPWM` — query
+        /// wrote to). Note the routing above: a `ControlType::ManualPWM` write
+        /// lands under `ControlType::CurPWM`, not `ControlType::ManualPWM` — query
         /// `CurPWM` to observe it.
-        pub fn param(&self, control: Control) -> Option<f64> {
+        pub fn param(&self, control: ControlType) -> Option<f64> {
             self.params.lock().get(&control).copied()
         }
         pub fn set_single_frame_delay(&self, delay: Duration) {
@@ -586,32 +646,35 @@ pub(crate) mod mock {
         fn get_effective_area(&self) -> BackendResult<CCDChipArea> {
             Ok(self.effective_area)
         }
-        fn is_control_available(&self, control: Control) -> Option<u32> {
+        fn is_control_available(&self, control: ControlType) -> Option<u32> {
             self.controls.lock().get(&control).copied()
         }
-        fn get_parameter(&self, control: Control) -> BackendResult<f64> {
+        fn get_parameter(&self, control: ControlType) -> BackendResult<f64> {
             self.params
                 .lock()
                 .get(&control)
                 .copied()
                 .ok_or_else(|| BackendError(format!("no parameter {control:?}")))
         }
-        fn get_parameter_min_max_step(&self, control: Control) -> BackendResult<(f64, f64, f64)> {
+        fn get_parameter_min_max_step(
+            &self,
+            control: ControlType,
+        ) -> BackendResult<(f64, f64, f64)> {
             self.ranges
                 .lock()
                 .get(&control)
                 .copied()
                 .ok_or_else(|| BackendError(format!("no range for {control:?}")))
         }
-        fn set_parameter(&self, control: Control, value: f64) -> BackendResult<()> {
+        fn set_parameter(&self, control: ControlType, value: f64) -> BackendResult<()> {
             // Mirror the simulation's cooler routing so device-level cooling tests
             // observe the same coupling as the live backend.
             match control {
-                Control::ManualPWM => {
-                    self.params.lock().insert(Control::CurPWM, value);
+                ControlType::ManualPWM => {
+                    self.params.lock().insert(ControlType::CurPWM, value);
                 }
-                Control::Cooler => {
-                    self.params.lock().insert(Control::Cooler, value);
+                ControlType::Cooler => {
+                    self.params.lock().insert(ControlType::Cooler, value);
                 }
                 _ => {
                     self.params.lock().insert(control, value);

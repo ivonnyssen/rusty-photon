@@ -451,14 +451,16 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   supported.
 - **K3.** `set_set_ccd_temperature` validates `[-273.15, 80]` and sets the target;
   `SetCCDTemperature` reads it back.
-- **K4.** `set_cooler_on(true)` (re-)engages the SDK's auto-regulation by
-  writing `Control::Cooler` to the stored `SetCCDTemperature` target (falling
-  back to the current `CCDTemperature` if no target has been set yet);
-  `set_cooler_on(false)` writes `Control::ManualPWM = 0`. `CoolerOn` reports
-  the last-commanded on/off state (tracked independently of the PWM readback,
-  since neither real hardware nor the simulation backend updates `CurPWM`
-  synchronously when `Control::Cooler` is asserted). `CoolerPower` remains the
-  normalized `CurPWM` percent.
+- **K4.** `set_cooler_on(true)` (re-)engages the SDK's auto-regulation via
+  `handle.set_target_temperature_celsius(…)` (the `ControlType::Cooler` typed
+  accessor) at the stored `SetCCDTemperature` target (falling back to the
+  current `CCDTemperature` if no target has been set yet); `set_cooler_on(false)`
+  calls `handle.set_manual_cooler_pwm(0.0)` (the `ControlType::ManualPWM`
+  accessor). `CoolerOn` reports the last-commanded on/off state (tracked
+  independently of the PWM readback, since neither real hardware nor the
+  simulation backend updates `CurPWM` synchronously when the cooler target is
+  asserted). `CoolerPower` remains the normalized `CurPWM` percent (read via
+  `handle.cooler_power_raw()`).
 
 ### Sensor type
 
@@ -793,7 +795,18 @@ the "how" decisions made while building.
   the E9 `Error`-state path and colour/shutter models the mono sim can't show —
   run with no hardware and no *real* SDK calls. (The static `qhyccd` lib is still
   linked into the test binary — that link is unconditional, see above; only the
-  runtime seam is mocked.)
+  runtime seam is mocked.) The device logic reaches the well-known controls
+  through **typed accessors** — `handle.gain()` / `set_gain(…)`,
+  `handle.current_temperature_celsius()`, `set_target_temperature_celsius(…)`,
+  `set_manual_cooler_pwm(…)`, `cooler_power_raw()`, `exposure_range_us()`, … —
+  which the trait provides as defaults over the generic
+  `get_parameter`/`set_parameter(ControlType, )` methods (mirroring
+  `qhyccd_rs::Camera`'s own accessors; Phase 2 of the
+  [convention-alignment plan](../plans/qhyccd-convention-alignment.md)). The
+  generic pair stays for capability *probes* (`is_control_available`) and any
+  control without a dedicated accessor. `qhyccd-rs`'s control enum is the
+  `ControlType` subset (semantic variants + `Other(i32)`), not the SDK's full
+  `CONTROL_ID` list.
 - **MaxADU.** `2^bits − 1` where `bits` is the **transfer-container depth** from
   the cached `ccd_info.bits_per_pixel` (16 ⇒ 65535), defaulting to 16 if unset.
   It is **not** `OutputDataActualBits`: the driver sets a 16-bit container at
@@ -877,7 +890,8 @@ the "how" decisions made while building.
   regulation `SetCCDTemperature` drives — a real ASCOM client sequence of
   `SetCCDTemperature` then `CoolerOn(true)` left the cooler pinned near 1%
   power (confirmed on real hardware). `set_cooler_on(true)` now
-  re-asserts `Control::Cooler` with the stored target instead; see
+  re-asserts the cooler target (`ControlType::Cooler`, via
+  `set_target_temperature_celsius`) with the stored target instead; see
   [Cooling contract K4](#cooling).
 
 ## Future Work

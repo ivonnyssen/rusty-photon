@@ -2,8 +2,11 @@
 
 **Status:** Phase 1 IMPLEMENTED (2026-07-23, branch
 `feature/qhy-convention-phase-1-handle-model`): shared handle cell + RAII
-last-drop close + `Sdk::drop` Close-before-Release. Phases 2–5 not started.
-Analysis complete 2026-07-23.
+last-drop close + `Sdk::drop` Close-before-Release. Phase 2 IMPLEMENTED
+(2026-07-23, branch `feature/qhy-convention-phase-2-control-repr`, stacked on
+Phase 1): `Control` → `ControlType` (31-variant subset + `Other(i32)` +
+`to_raw`), typed accessors on `Camera` + the service seam. Phases 3–5 not
+started. Analysis complete 2026-07-23.
 **Author:** drafted 2026-07-23 on `docs/qhyccd-convention-alignment`.
 **Depends on:** the vendoring of `qhyccd-rs` + `libqhyccd-sys` into the workspace
 ([vendor-qhyccd-rs.md](vendor-qhyccd-rs.md), Phases 1 & 2 DONE) — this plan is
@@ -191,6 +194,38 @@ it is unaffected by this plan, despite the shared "QHY" name.)
   mirroring `svbony camera.rs` — including the CFW controls (`CfwPort`,
   `CfwSlotsNum`) that Phase 1's wheel needs, so the wheel keeps working through
   typed accessors rather than raw `Control` variants.
+
+**Concrete design (decided 2026-07-23 during implementation):**
+- **Rename `Control` → `ControlType`** (sibling name) and reduce it to the
+  **subset actually referenced anywhere in the workspace** (crate src + crate
+  tests + crate **examples** + the `qhy-camera` service + sim scaffolding) — 31
+  variants — plus `Other(i32)`. The ~60 never-referenced SDK `CONTROL_ID`s are
+  dropped; the escape hatch carries their raw id if one is ever needed. (`DDR`
+  is kept only because a crate example uses it — the rule is literal:
+  referenced anywhere ⇒ named.) The kept variants
+  are no longer `#[repr]`-discriminated (a data-carrying enum can't be
+  `as u32`-cast), so an explicit `to_raw(self) -> u32` match replaces every
+  `control as u32`, and a `#[cfg(test)]` `from_raw` + round-trip test guards the
+  two hand-written matches from drifting. The discriminant *values* returned by
+  `to_raw` still equal the SDK `CONTROL_ID`s (forced fact #3).
+- **Typed accessors on `qhyccd_rs::Camera`** wrap the retained generic
+  `get_parameter`/`set_parameter`/`get_parameter_min_max_step`: `gain`/`set_gain`/
+  `gain_range`, `offset`/`set_offset`/`offset_range`, `exposure_us`/
+  `set_exposure_us`/`exposure_range_us`, `current_temperature_celsius`,
+  `set_cooler_target_celsius`, `set_manual_cooler_pwm`, `cooler_power_raw`, and
+  the CFW accessors `cfw_slot_count`/`cfw_position`/`set_cfw_position` (which
+  own the ASCII ±48 offset, so `filter_wheel.rs` stops open-coding it). QHY
+  temperatures are already whole °C — no 0.1 °C decode like svbony. Capability
+  *probes* stay on the generic `is_control_available(ControlType)` (they are
+  boolean presence queries, not value accessors).
+- **Service migration is low-churn.** `qhy-camera`'s `CameraHandle` seam keeps
+  its generic `get_parameter`/`set_parameter`/… as the required methods and
+  gains the same typed accessors as **default trait methods** built on them.
+  The service's mock is hand-written, so it inherits the defaults for free
+  (routing to the same underlying controls its existing test setup keys on);
+  only `camera.rs`'s call sites move to `handle.gain()` / `handle.set_gain(…)` /
+  `handle.current_temperature_celsius()` / etc. The generic `get_parameter`
+  stays for `Other`/uncovered controls but is no longer the routine surface.
 
 **Exit:** services/tests consume typed accessors; raw `get_parameter(Control, )`
 no longer part of the routine surface; suites green.

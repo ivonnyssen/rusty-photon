@@ -105,7 +105,7 @@ pub mod simulation;
 
 // Public re-exports
 pub use camera::Camera;
-pub use control::Control;
+pub use control::ControlType;
 pub use error::{QHYError, Result};
 pub use filter_wheel::FilterWheel;
 pub use sdk::Sdk;

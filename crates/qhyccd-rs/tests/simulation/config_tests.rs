@@ -1,7 +1,7 @@
 //! Tests for the SimulatedCameraConfig module
 
 use qhyccd_rs::simulation::SimulatedCameraConfig;
-use qhyccd_rs::{BayerMode, CCDChipInfo, Control};
+use qhyccd_rs::{BayerMode, CCDChipInfo, ControlType};
 
 #[test]
 fn test_default_config() {
@@ -16,25 +16,31 @@ fn test_default_config() {
 fn test_with_filter_wheel() {
     let config = SimulatedCameraConfig::default().with_filter_wheel(5);
     assert_eq!(config.filter_wheel_slots, 5);
-    assert!(config.supported_controls.contains_key(&Control::CfwPort));
     assert!(config
         .supported_controls
-        .contains_key(&Control::CfwSlotsNum));
+        .contains_key(&ControlType::CfwPort));
+    assert!(config
+        .supported_controls
+        .contains_key(&ControlType::CfwSlotsNum));
 }
 
 #[test]
 fn test_with_cooler() {
     let config = SimulatedCameraConfig::default().with_cooler();
     assert!(config.has_cooler);
-    assert!(config.supported_controls.contains_key(&Control::Cooler));
-    assert!(config.supported_controls.contains_key(&Control::CurTemp));
+    assert!(config.supported_controls.contains_key(&ControlType::Cooler));
+    assert!(config
+        .supported_controls
+        .contains_key(&ControlType::CurTemp));
 }
 
 #[test]
 fn test_with_color() {
     let config = SimulatedCameraConfig::default().with_color(BayerMode::RGGB);
     assert_eq!(config.bayer_mode, Some(BayerMode::RGGB));
-    assert!(config.supported_controls.contains_key(&Control::CamColor));
+    assert!(config
+        .supported_controls
+        .contains_key(&ControlType::CamColor));
 }
 
 #[test]
@@ -92,10 +98,15 @@ fn test_with_firmware_version() {
 #[test]
 fn test_with_control() {
     let config =
-        SimulatedCameraConfig::default().with_control(Control::Brightness, 0.0, 100.0, 0.1);
+        SimulatedCameraConfig::default().with_control(ControlType::Brightness, 0.0, 100.0, 0.1);
 
-    assert!(config.supported_controls.contains_key(&Control::Brightness));
-    let (min, max, step) = config.supported_controls.get(&Control::Brightness).unwrap();
+    assert!(config
+        .supported_controls
+        .contains_key(&ControlType::Brightness));
+    let (min, max, step) = config
+        .supported_controls
+        .get(&ControlType::Brightness)
+        .unwrap();
     assert!((min - 0.0).abs() < f64::EPSILON);
     assert!((max - 100.0).abs() < f64::EPSILON);
     assert!((step - 0.1).abs() < f64::EPSILON);
@@ -106,7 +117,9 @@ fn test_with_filter_wheel_zero_slots() {
     // Edge case: filter wheel with 0 slots should not add CFW controls
     let config = SimulatedCameraConfig::default().with_filter_wheel(0);
     assert_eq!(config.filter_wheel_slots, 0);
-    assert!(!config.supported_controls.contains_key(&Control::CfwPort));
+    assert!(!config
+        .supported_controls
+        .contains_key(&ControlType::CfwPort));
 }
 
 #[test]

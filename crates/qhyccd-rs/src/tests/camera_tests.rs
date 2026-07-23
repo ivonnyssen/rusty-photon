@@ -1165,7 +1165,7 @@ fn is_control_available_success_some() {
         .return_const_st(QHYCCD_SUCCESS);
     let cam = new_camera();
     //when
-    let res = cam.is_control_available(Control::Brightness);
+    let res = cam.is_control_available(ControlType::Brightness);
     //then
     assert!(res.is_some());
     assert_eq!(res.unwrap(), QHYCCD_SUCCESS)
@@ -1182,7 +1182,7 @@ fn is_control_available_success_none() {
         .return_const_st(QHYCCD_ERROR);
     let cam = new_camera();
     //when
-    let res = cam.is_control_available(Control::Brightness);
+    let res = cam.is_control_available(ControlType::Brightness);
     //then
     assert!(res.is_none());
 }
@@ -1303,13 +1303,13 @@ fn get_parameter_success() {
     let ctx = GetQHYCCDParam_context();
     ctx.expect()
         .withf_st(|handle, control| {
-            *handle == TEST_HANDLE && *control == Control::CfwSlotsNum as u32
+            *handle == TEST_HANDLE && *control == ControlType::CfwSlotsNum.to_raw()
         })
         .times(1)
         .return_const_st(5.0);
     let cam = new_camera();
     //when
-    let res = cam.get_parameter(Control::CfwSlotsNum);
+    let res = cam.get_parameter(ControlType::CfwSlotsNum);
     //then
     assert!(res.is_ok());
     assert_eq!(res.unwrap(), 5.0);
@@ -1322,19 +1322,19 @@ fn get_parameter_fail() {
     let ctx = GetQHYCCDParam_context();
     ctx.expect()
         .withf_st(|handle, control| {
-            *handle == TEST_HANDLE && *control == Control::CfwSlotsNum as u32
+            *handle == TEST_HANDLE && *control == ControlType::CfwSlotsNum.to_raw()
         })
         .once()
         .return_const_st(QHYCCD_ERROR_F64);
     let cam = new_camera();
     //when
-    let res = cam.get_parameter(Control::CfwSlotsNum);
+    let res = cam.get_parameter(ControlType::CfwSlotsNum);
     //then
     assert!(res.is_err());
     assert_eq!(
         res.err().unwrap().to_string(),
         QHYError::GetParameterError {
-            control: Control::CfwSlotsNum
+            control: ControlType::CfwSlotsNum
         }
         .to_string()
     );
@@ -1347,7 +1347,7 @@ fn get_parameter_min_max_step_success() {
     let ctx = GetQHYCCDParamMinMaxStep_context();
     ctx.expect()
         .withf_st(|handle, control, _min, _max, _step| {
-            *handle == TEST_HANDLE && *control == Control::Exposure as u32
+            *handle == TEST_HANDLE && *control == ControlType::Exposure.to_raw()
         })
         .once()
         .returning_st(|_handle, _control, min, max, step| unsafe {
@@ -1358,7 +1358,7 @@ fn get_parameter_min_max_step_success() {
         });
     let cam = new_camera();
     //when
-    let res = cam.get_parameter_min_max_step(Control::Exposure);
+    let res = cam.get_parameter_min_max_step(ControlType::Exposure);
     //then
     assert!(res.is_ok());
     assert_eq!(res.unwrap(), (0.0, 100.0, 0.1));
@@ -1371,19 +1371,19 @@ fn get_parameter_min_max_step_fail() {
     let ctx = GetQHYCCDParamMinMaxStep_context();
     ctx.expect()
         .withf_st(|handle, control, _min, _max, _step| {
-            *handle == TEST_HANDLE && *control == Control::Exposure as u32
+            *handle == TEST_HANDLE && *control == ControlType::Exposure.to_raw()
         })
         .once()
         .return_const_st(QHYCCD_ERROR);
     let cam = new_camera();
     //when
-    let res = cam.get_parameter_min_max_step(Control::Exposure);
+    let res = cam.get_parameter_min_max_step(ControlType::Exposure);
     //then
     assert!(res.is_err());
     assert_eq!(
         res.err().unwrap().to_string(),
         QHYError::GetMinMaxStepError {
-            control: Control::Exposure
+            control: ControlType::Exposure
         }
         .to_string()
     );
@@ -1396,13 +1396,15 @@ fn set_parameter_success() {
     let ctx = SetQHYCCDParam_context();
     ctx.expect()
         .withf_st(|handle, control, value| {
-            *handle == TEST_HANDLE && *control == Control::TransferBit as u32 && *value == 16.0
+            *handle == TEST_HANDLE
+                && *control == ControlType::TransferBit.to_raw()
+                && *value == 16.0
         })
         .times(1)
         .return_const_st(QHYCCD_SUCCESS);
     let cam = new_camera();
     //when
-    let res = cam.set_parameter(Control::TransferBit, 16.0);
+    let res = cam.set_parameter(ControlType::TransferBit, 16.0);
     //then
     assert!(res.is_ok());
 }
@@ -1414,13 +1416,15 @@ fn set_parameter_fail() {
     let ctx = SetQHYCCDParam_context();
     ctx.expect()
         .withf_st(|handle, control, value| {
-            *handle == TEST_HANDLE && *control == Control::TransferBit as u32 && *value == 16.0
+            *handle == TEST_HANDLE
+                && *control == ControlType::TransferBit.to_raw()
+                && *value == 16.0
         })
         .times(1)
         .return_const_st(QHYCCD_ERROR);
     let cam = new_camera();
     //when
-    let res = cam.set_parameter(Control::TransferBit, 16.0);
+    let res = cam.set_parameter(ControlType::TransferBit, 16.0);
     //then
     assert!(res.is_err());
     assert_eq!(
@@ -1440,7 +1444,7 @@ fn set_if_available_success() {
     ctx_get
         .expect()
         .withf_st(|handle, control| {
-            *handle == TEST_HANDLE && *control == Control::TransferBit as u32
+            *handle == TEST_HANDLE && *control == ControlType::TransferBit.to_raw()
         })
         .times(1)
         .return_const_st(QHYCCD_SUCCESS);
@@ -1449,13 +1453,15 @@ fn set_if_available_success() {
     ctx_set
         .expect()
         .withf_st(|handle, control, value| {
-            *handle == TEST_HANDLE && *control == Control::TransferBit as u32 && *value == 16.0
+            *handle == TEST_HANDLE
+                && *control == ControlType::TransferBit.to_raw()
+                && *value == 16.0
         })
         .times(1)
         .return_const_st(QHYCCD_SUCCESS);
     let cam = new_camera();
     //when
-    let res = cam.set_if_available(Control::TransferBit, 16.0);
+    let res = cam.set_if_available(ControlType::TransferBit, 16.0);
     //then
     assert!(res.is_ok());
 }
@@ -1468,7 +1474,7 @@ fn set_if_available_fail() {
     ctx_get
         .expect()
         .withf_st(|handle, control| {
-            *handle == TEST_HANDLE && *control == Control::TransferBit as u32
+            *handle == TEST_HANDLE && *control == ControlType::TransferBit.to_raw()
         })
         .times(1)
         .return_const_st(QHYCCD_ERROR);
@@ -1477,20 +1483,20 @@ fn set_if_available_fail() {
        ctx_set
            .expect()
            .withf_st(|handle, control, value| {
-               *handle == TEST_HANDLE && *control == Control::TransferBit as u32 && *value == 16.0
+               *handle == TEST_HANDLE && *control == ControlType::TransferBit.to_raw() && *value == 16.0
            })
            .times(1)
            .return_const_st(QHYCCD_ERROR);
     */
     let cam = new_camera();
     //when
-    let res = cam.set_if_available(Control::TransferBit, 16.0);
+    let res = cam.set_if_available(ControlType::TransferBit, 16.0);
     //then
     assert!(res.is_err());
     assert_eq!(
         res.err().unwrap().to_string(),
         QHYError::IsControlAvailableError {
-            control: Control::TransferBit
+            control: ControlType::TransferBit
         }
         .to_string()
     );
@@ -1504,7 +1510,7 @@ fn set_if_available_fail() {
     ctx_get
         .expect()
         .withf_st(|handle, control| {
-            *handle == TEST_HANDLE && *control == Control::TransferBit as u32
+            *handle == TEST_HANDLE && *control == ControlType::TransferBit.to_raw()
         })
         .times(1)
         .return_const_st(QHYCCD_SUCCESS);
@@ -1513,13 +1519,15 @@ fn set_if_available_fail() {
     ctx_set
         .expect()
         .withf_st(|handle, control, value| {
-            *handle == TEST_HANDLE && *control == Control::TransferBit as u32 && *value == 16.0
+            *handle == TEST_HANDLE
+                && *control == ControlType::TransferBit.to_raw()
+                && *value == 16.0
         })
         .times(1)
         .return_const_st(QHYCCD_ERROR);
     let cam = new_camera();
     //when
-    let res = cam.set_if_available(Control::TransferBit, 16.0);
+    let res = cam.set_if_available(ControlType::TransferBit, 16.0);
     //then
     assert!(res.is_err());
     assert_eq!(

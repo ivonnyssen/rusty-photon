@@ -1,6 +1,6 @@
 //! Configuration for simulated cameras
 
-use crate::{BayerMode, CCDChipArea, CCDChipInfo, Control};
+use crate::{BayerMode, CCDChipArea, CCDChipInfo, ControlType};
 use std::collections::HashMap;
 
 /// Configuration for a simulated camera
@@ -26,7 +26,7 @@ pub struct SimulatedCameraConfig {
     /// Overscan area (if any)
     pub overscan_area: CCDChipArea,
     /// Supported controls with their (min, max, step) values
-    pub supported_controls: HashMap<Control, (f64, f64, f64)>,
+    pub supported_controls: HashMap<ControlType, (f64, f64, f64)>,
     /// Number of filter wheel slots (0 = no filter wheel)
     pub filter_wheel_slots: u32,
     /// Whether the camera has a cooler
@@ -47,24 +47,24 @@ impl Default for SimulatedCameraConfig {
         let mut supported_controls = HashMap::new();
 
         // Basic controls
-        supported_controls.insert(Control::Gain, (0.0, 100.0, 1.0));
-        supported_controls.insert(Control::Offset, (0.0, 255.0, 1.0));
-        supported_controls.insert(Control::Exposure, (1.0, 3_600_000_000.0, 1.0)); // 1us to 1hr
-        supported_controls.insert(Control::Speed, (0.0, 2.0, 1.0));
-        supported_controls.insert(Control::UsbTraffic, (0.0, 255.0, 1.0));
-        supported_controls.insert(Control::TransferBit, (8.0, 16.0, 8.0));
+        supported_controls.insert(ControlType::Gain, (0.0, 100.0, 1.0));
+        supported_controls.insert(ControlType::Offset, (0.0, 255.0, 1.0));
+        supported_controls.insert(ControlType::Exposure, (1.0, 3_600_000_000.0, 1.0)); // 1us to 1hr
+        supported_controls.insert(ControlType::Speed, (0.0, 2.0, 1.0));
+        supported_controls.insert(ControlType::UsbTraffic, (0.0, 255.0, 1.0));
+        supported_controls.insert(ControlType::TransferBit, (8.0, 16.0, 8.0));
 
         // Binning modes
-        supported_controls.insert(Control::CamBin1x1mode, (1.0, 1.0, 1.0));
-        supported_controls.insert(Control::CamBin2x2mode, (1.0, 1.0, 1.0));
+        supported_controls.insert(ControlType::CamBin1x1mode, (1.0, 1.0, 1.0));
+        supported_controls.insert(ControlType::CamBin2x2mode, (1.0, 1.0, 1.0));
 
         // Frame modes
-        supported_controls.insert(Control::CamSingleFrameMode, (1.0, 1.0, 1.0));
-        supported_controls.insert(Control::CamLiveVideoMode, (1.0, 1.0, 1.0));
+        supported_controls.insert(ControlType::CamSingleFrameMode, (1.0, 1.0, 1.0));
+        supported_controls.insert(ControlType::CamLiveVideoMode, (1.0, 1.0, 1.0));
 
         // Bit modes
-        supported_controls.insert(Control::Cam8bits, (1.0, 1.0, 1.0));
-        supported_controls.insert(Control::Cam16bits, (1.0, 1.0, 1.0));
+        supported_controls.insert(ControlType::Cam8bits, (1.0, 1.0, 1.0));
+        supported_controls.insert(ControlType::Cam16bits, (1.0, 1.0, 1.0));
 
         Self {
             id: "SIM-001".to_string(),
@@ -121,9 +121,9 @@ impl SimulatedCameraConfig {
         self.filter_wheel_slots = slots;
         if slots > 0 {
             self.supported_controls
-                .insert(Control::CfwPort, (0.0, (slots - 1) as f64, 1.0));
+                .insert(ControlType::CfwPort, (0.0, (slots - 1) as f64, 1.0));
             self.supported_controls
-                .insert(Control::CfwSlotsNum, (slots as f64, slots as f64, 0.0));
+                .insert(ControlType::CfwSlotsNum, (slots as f64, slots as f64, 0.0));
         }
         self
     }
@@ -132,15 +132,15 @@ impl SimulatedCameraConfig {
     pub fn with_color(mut self, bayer_mode: BayerMode) -> Self {
         self.bayer_mode = Some(bayer_mode);
         self.supported_controls.insert(
-            Control::CamColor,
+            ControlType::CamColor,
             (bayer_mode as u32 as f64, bayer_mode as u32 as f64, 0.0),
         );
         self.supported_controls
-            .insert(Control::Wbr, (0.0, 255.0, 1.0));
+            .insert(ControlType::Wbr, (0.0, 255.0, 1.0));
         self.supported_controls
-            .insert(Control::Wbb, (0.0, 255.0, 1.0));
+            .insert(ControlType::Wbb, (0.0, 255.0, 1.0));
         self.supported_controls
-            .insert(Control::Wbg, (0.0, 255.0, 1.0));
+            .insert(ControlType::Wbg, (0.0, 255.0, 1.0));
         self
     }
 
@@ -148,13 +148,13 @@ impl SimulatedCameraConfig {
     pub fn with_cooler(mut self) -> Self {
         self.has_cooler = true;
         self.supported_controls
-            .insert(Control::Cooler, (-40.0, 30.0, 0.1));
+            .insert(ControlType::Cooler, (-40.0, 30.0, 0.1));
         self.supported_controls
-            .insert(Control::CurTemp, (-40.0, 50.0, 0.1));
+            .insert(ControlType::CurTemp, (-40.0, 50.0, 0.1));
         self.supported_controls
-            .insert(Control::CurPWM, (0.0, 255.0, 1.0));
+            .insert(ControlType::CurPWM, (0.0, 255.0, 1.0));
         self.supported_controls
-            .insert(Control::ManualPWM, (0.0, 255.0, 1.0));
+            .insert(ControlType::ManualPWM, (0.0, 255.0, 1.0));
         self
     }
 
@@ -184,7 +184,7 @@ impl SimulatedCameraConfig {
     }
 
     /// Adds support for a control with the specified min, max, step values
-    pub fn with_control(mut self, control: Control, min: f64, max: f64, step: f64) -> Self {
+    pub fn with_control(mut self, control: ControlType, min: f64, max: f64, step: f64) -> Self {
         self.supported_controls.insert(control, (min, max, step));
         self
     }

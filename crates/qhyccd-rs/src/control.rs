@@ -1,236 +1,226 @@
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
-/// Controls used in `is_control_available` and `set_parameter` nad `get_parameter`
-/// documentation is taken from the QHYCCD SDK
-/// here <https://www.qhyccd.cn/file/repository/publish/SDK/code/QHYCCD%20SDK_API_EN_V2.3.pdf>
-pub enum Control {
-    /// Check if support brightness
-    Brightness = 0,
-    /// Check if support contrast
-    Contrast = 1,
-    /// Check if support red balance
-    Wbr = 2,
-    /// Check if support blue balance
-    Wbb = 3,
-    /// Check if support green balance
-    Wbg = 4,
-    /// Check if support gamma
-    Gamma = 5,
-    /// Check if support gain
-    Gain = 6,
-    /// Check if support offset
-    Offset = 7,
-    /// Used to set exposure time in microseconds
-    Exposure = 8,
-    /// Check if support speed
-    Speed = 9,
-    /// Check if support bits setting
-    TransferBit = 10,
-    /// Check if support get channels number(Discontinued)
-    Channels = 11,
-    /// Check if support traffic
-    UsbTraffic = 12,
-    /// Check if support row denoise
-    RowDeNoise = 13,
-    /// Check if support get current temperature
-    CurTemp = 14,
-    /// Check if support get current PWM
-    CurPWM = 15,
-    /// Check if support manual cool mode
-    ManualPWM = 16,
-    /// Check if support CFW - Color Filter Wheel
-    CfwPort = 17,
-    /// Check if support auto cool mode
-    Cooler = 18,
-    /// Check if support ST4 port
-    St4Port = 19,
-    /// Check if support get bayer matrix - clashes with `CamIsColor`, but use this one here
-    CamColor = 20,
-    /// Check if support 1X1 bin mode
-    CamBin1x1mode = 21,
-    /// Check if support 2X2 bin mode
-    CamBin2x2mode = 22,
-    /// Check if support 3X3 bin mode
-    CamBin3x3mode = 23,
-    /// Check if support 4X4 bin mode
-    CamBin4x4mode = 24,
-    /// Check if support machine shutter
-    CamMechanicalShutter = 25,
-    /// Check if support trigger mode
-    CamTrigerInterface = 26,
-    /// Check if support temperature over protect,this
-    /// function will limit cooler max PWM be 70%(Disabled)
-    CamTecoverprotectInterface = 27,
-    /// Check whether the camera supports the
-    /// SINGNALCLAMP function, which is a unique feature
-    /// of CCD cameras for dark bands behind bright stars
-    CamSignalClampInterface = 28,
-    /// Check whether the camera supports fine tuning,
-    /// which is used for CCD cameras to optimize the noise
-    /// characteristics of the camera by fine-tuning the CCD
-    /// drive and sampling timing
-    CamFinetoneInterface = 29,
-    /// Check whether the camera supports shutter motor
-    /// heating
-    CamShutterMotorHeatingInterface = 30,
-    /// Check whether the camera supports FPN calibration,
-    /// which reduces FPN noise such as vertical stripes
-    CamCalibrateFpnInterface = 31,
-    /// Check whether the camera supports an on-chip
-    /// temperature sensor
-    CamChipTemperatureSensorInterface = 32,
-    /// Check whether the camera supports the USB
-    /// minimum speed readout function (this function
-    /// duplicates the CONTROL_SPEED function and is no
-    /// longer in use)
-    CamUsbReadoutSlowestInterface = 33,
-    /// Check whether the camera supports 8-bit image data
-    /// output
-    Cam8bits = 34,
-    /// Check whether the camera supports 16-bit image
-    /// data output
-    Cam16bits = 35,
-    /// Check whether the camera supports GPS
-    CamGps = 36,
-    /// Check whether the camera supports the function of
-    /// overscanning area calibration
-    CamIgnoreOverscanInterface = 37,
-    // Check whether the camera supports automatic white
-    // balance
-    //Qhyccd3aAutoWhiteBalance = 38,
-    /// Check whether the camera supports auto exposure
-    Qhyccd3aAutoexposure = 39,
-    /// Check whether the camera supports autofocus
-    Qhyccd3aAutofocus = 40,
-    /// Check whether the camera supports glow
-    /// suppression
-    Ampv = 41,
-    /// Check whether the camera supports WDM broadcast
-    Vcam = 42,
-    /// Check whether preview mode is supported (not
-    /// enabled)
-    CamViewMode = 43,
-    /// Check whether the camera can obtain the number of
-    /// filter wheel holes
-    CfwSlotsNum = 44,
-    /// Check whether the camera is exposed (not enabled)
-    IsExposingDone = 45,
-    /// Check whether the camera can be stretched Black
-    /// gray scale
-    ScreenStretchB = 46,
-    /// Check whether the camera can White grayscale
-    /// stretching
-    ScreenStretchW = 47,
-    /// Check whether the camera supports DDR
-    DDR = 48,
-    /// Check whether the camera supports the high-low
-    /// gain switching function
-    CamLightPerformanceMode = 49,
-    ///C heck if the camera is a 5II series camera that
-    /// supports guide mode
-    CamQhy5IIGuideMode = 50,
-    /// Check whether the camera can get the current
-    /// amount of DDR buffer data
-    DDRBufferCapacity = 51,
-    /// Check whether the camera can get the buffer read
-    /// threshold
-    DDRBufferReadThreshold = 52,
-    /// Check whether the camera can obtain the default
-    /// gain recommendation
-    DefaultGain = 53,
-    /// Check whether the camera can obtain the default
-    /// bias recommendation
-    DefaultOffset = 54,
-    /// Check whether the camera can get the actual bits of
-    /// output data
-    OutputDataActualBits = 55,
-    /// Check whether the camera supports getting output
-    /// data alignment formats
-    OutputDataAlignment = 56,
-    /// Check whether the camera supports single frame
-    /// mode
-    CamSingleFrameMode = 57,
-    /// Check whether the camera supports live frame mode
-    CamLiveVideoMode = 58,
-    /// Check if the camera is color
-    CamIsColor = 59,
-    /// Check whether the camera supports hardware frame
-    /// counting
-    HasHardwareFrameCounter = 60,
-    /// Get the maximum value of CONTROL_ID (deprecated)
-    MaxIdError = 61,
-    /// Check whether the camera supports a humidity
-    /// sensor
-    CamHumidity = 62,
-    /// Check whether the camera supports pressure sensors
-    CamPressure = 63,
-    /// Check whether the camera supports vacuum pump
-    VacuumPump = 64,
-    /// Check that the camera supports internal circulation
-    /// pumps
-    SensorChamberCyclePump = 65,
-    /// Check whether the camera supports 32-bit image
-    /// data output
-    Cam32bits = 66,
-    /// Check whether the camera supports ULVO status
-    /// detection
-    CamSensorUlvoStatus = 67,
-    /// Check whether the camera supports phase
-    /// adjustment, which handles image streaks due to
-    /// phase
-    CamSensorPhaseReTrain = 68,
-    /// Check whether the camera supports Flash read and
-    /// write Config
-    CamInitConfigFromFlash = 69,
-    /// Check whether the camera supports multiple trigger
-    /// mode Settings
-    CamTriggerMode = 70,
-    /// Check whether the camera supports trigger output
-    CamTriggerOut = 71,
-    /// Check whether the camera supports Burst mode
-    CamBurstMode = 72,
-    /// Check whether the camera supports the signal lamp
-    /// function (currently only for customized models
-    CamSpeakerLedAlarm = 73,
-    /// Check whether camera FPGA supports watchdog
-    /// processing function (currently only for customized
-    /// models)
-    CamWatchDogFpga = 74,
-    /// Check whether the camera supports 6X6 BIN
-    CamBin6x6mode = 75,
-    /// Check whether the camera supports 8X8 BIN
-    CamBin8x8mode = 76,
-    /// Check whether the camera sensor supports global
-    /// LED calibration lights
-    CamGlobalSensorGpsLED = 77,
-    /// Check whether the camera supports image
-    /// processing
-    ImgProc = 78,
-    /// not documented
-    RemoveRbi = 79,
-    /// not documented
-    GlobalReset = 80,
-    /// not documented
-    FrameDetect = 81,
-    /// not documented
-    CamGainDbConversion = 82,
-    /// not documented
-    CamCurveSystemGain = 83,
-    /// not documented
-    CamCurveFullWell = 84,
-    /// not documented
-    CamCurveReadoutNoise = 85,
-    /// not documented
-    MaxId = 86,
-    /// not documented - see missing value 38
-    Autowhitebalance = 1024,
-    /// not documented
-    Autoexposure = 1025,
-    /// not documented
-    AutoexpMessureValue = 1026,
-    /// not documented
-    AutoexpMessureMethod = 1027,
-    /// not documented
-    ImageStabilization = 1028,
-    /// not documented
-    GaindB = 1029,
+/// A QHYCCD control (`CONTROL_ID`) addressed by `is_control_available`,
+/// `get_parameter`, `set_parameter`, and `get_parameter_min_max_step`.
+///
+/// Only the controls this workspace actually touches are named; every other
+/// SDK `CONTROL_ID` is preserved as [`ControlType::Other`] carrying its raw
+/// value. This mirrors the `zwo-rs` / `svbony-rs` `ControlType` shape (a small
+/// semantic subset plus an `Other` escape) rather than transcribing the SDK's
+/// full ~90-entry enum. Documentation is taken from the QHYCCD SDK
+/// (<https://www.qhyccd.cn/file/repository/publish/SDK/code/QHYCCD%20SDK_API_EN_V2.3.pdf>).
+///
+/// The named variants are no longer `#[repr]`-discriminated (a data-carrying
+/// enum cannot be `as u32`-cast); use [`ControlType::to_raw`] to obtain the SDK
+/// `CONTROL_ID`, whose numeric values still match the SDK's own numbering
+/// (`Gain == 6`, `CfwPort == 17`, …).
+pub enum ControlType {
+    /// `CONTROL_BRIGHTNESS` (0) — image brightness.
+    Brightness,
+    /// `CONTROL_WBR` (2) — red white balance.
+    Wbr,
+    /// `CONTROL_WBB` (3) — blue white balance.
+    Wbb,
+    /// `CONTROL_WBG` (4) — green white balance.
+    Wbg,
+    /// `CONTROL_GAIN` (6) — sensor gain.
+    Gain,
+    /// `CONTROL_OFFSET` (7) — sensor offset (black level).
+    Offset,
+    /// `CONTROL_EXPOSURE` (8) — exposure time in microseconds.
+    Exposure,
+    /// `CONTROL_SPEED` (9) — readout speed.
+    Speed,
+    /// `CONTROL_TRANSFERBIT` (10) — USB transfer bit depth (8 or 16).
+    TransferBit,
+    /// `CONTROL_USBTRAFFIC` (12) — USB traffic / bandwidth control.
+    UsbTraffic,
+    /// `CONTROL_CURTEMP` (14) — current sensor temperature (°C).
+    CurTemp,
+    /// `CONTROL_CURPWM` (15) — current cooler PWM (0–255).
+    CurPWM,
+    /// `CONTROL_MANULPWM` (16) — manual cooler PWM set-point (0–255).
+    ManualPWM,
+    /// `CONTROL_CFWPORT` (17) — filter-wheel position (ASCII-offset value).
+    CfwPort,
+    /// `CONTROL_COOLER` (18) — auto-cooling target temperature (°C).
+    Cooler,
+    /// `CONTROL_CAM_COLOR` (20) — Bayer matrix / colour support.
+    CamColor,
+    /// `CAM_BIN1X1MODE` (21) — 1×1 binning support.
+    CamBin1x1mode,
+    /// `CAM_BIN2X2MODE` (22) — 2×2 binning support.
+    CamBin2x2mode,
+    /// `CAM_BIN3X3MODE` (23) — 3×3 binning support.
+    CamBin3x3mode,
+    /// `CAM_BIN4X4MODE` (24) — 4×4 binning support.
+    CamBin4x4mode,
+    /// `CAM_MECHANICALSHUTTER` (25) — mechanical-shutter presence.
+    CamMechanicalShutter,
+    /// `CAM_8BITS` (34) — 8-bit image output support.
+    Cam8bits,
+    /// `CAM_16BITS` (35) — 16-bit image output support.
+    Cam16bits,
+    /// `CONTROL_CFWSLOTSNUM` (44) — number of filter-wheel slots.
+    CfwSlotsNum,
+    /// `CONTROL_DDR` (48) — DDR frame buffer support (live-mode capture).
+    DDR,
+    /// `OutputDataActualBits` (55) — actual bit depth of the output data.
+    OutputDataActualBits,
+    /// `CAM_SINGLEFRAMEMODE` (57) — single-frame capture support.
+    CamSingleFrameMode,
+    /// `CAM_LIVEVIDEOMODE` (58) — live-video capture support.
+    CamLiveVideoMode,
+    /// `CAM_IS_COLOR` (59) — colour-sensor flag.
+    CamIsColor,
+    /// `CAM_BIN6X6MODE` (75) — 6×6 binning support.
+    CamBin6x6mode,
+    /// `CAM_BIN8X8MODE` (76) — 8×8 binning support.
+    CamBin8x8mode,
+    /// Any control outside the subset named above; carries the raw SDK
+    /// `CONTROL_ID`.
+    Other(i32),
+}
+
+impl ControlType {
+    /// The SDK `CONTROL_ID` for this control. The numeric values match the
+    /// QHYCCD SDK's own numbering (forced fact #3 of the convention plan).
+    #[must_use]
+    pub(crate) fn to_raw(self) -> u32 {
+        match self {
+            Self::Brightness => 0,
+            Self::Wbr => 2,
+            Self::Wbb => 3,
+            Self::Wbg => 4,
+            Self::Gain => 6,
+            Self::Offset => 7,
+            Self::Exposure => 8,
+            Self::Speed => 9,
+            Self::TransferBit => 10,
+            Self::UsbTraffic => 12,
+            Self::CurTemp => 14,
+            Self::CurPWM => 15,
+            Self::ManualPWM => 16,
+            Self::CfwPort => 17,
+            Self::Cooler => 18,
+            Self::CamColor => 20,
+            Self::CamBin1x1mode => 21,
+            Self::CamBin2x2mode => 22,
+            Self::CamBin3x3mode => 23,
+            Self::CamBin4x4mode => 24,
+            Self::CamMechanicalShutter => 25,
+            Self::Cam8bits => 34,
+            Self::Cam16bits => 35,
+            Self::CfwSlotsNum => 44,
+            Self::DDR => 48,
+            Self::OutputDataActualBits => 55,
+            Self::CamSingleFrameMode => 57,
+            Self::CamLiveVideoMode => 58,
+            Self::CamIsColor => 59,
+            Self::CamBin6x6mode => 75,
+            Self::CamBin8x8mode => 76,
+            Self::Other(v) => v as u32,
+        }
+    }
+
+    /// The [`ControlType`] for an SDK `CONTROL_ID` — the inverse of
+    /// [`Self::to_raw`]. Unnamed ids round-trip through [`ControlType::Other`].
+    /// Only the round-trip test consumes this today (no runtime path converts a
+    /// raw id back to a `ControlType`), so it is test-only.
+    #[cfg(test)]
+    #[must_use]
+    fn from_raw(v: i32) -> Self {
+        match v {
+            0 => Self::Brightness,
+            2 => Self::Wbr,
+            3 => Self::Wbb,
+            4 => Self::Wbg,
+            6 => Self::Gain,
+            7 => Self::Offset,
+            8 => Self::Exposure,
+            9 => Self::Speed,
+            10 => Self::TransferBit,
+            12 => Self::UsbTraffic,
+            14 => Self::CurTemp,
+            15 => Self::CurPWM,
+            16 => Self::ManualPWM,
+            17 => Self::CfwPort,
+            18 => Self::Cooler,
+            20 => Self::CamColor,
+            21 => Self::CamBin1x1mode,
+            22 => Self::CamBin2x2mode,
+            23 => Self::CamBin3x3mode,
+            24 => Self::CamBin4x4mode,
+            25 => Self::CamMechanicalShutter,
+            34 => Self::Cam8bits,
+            35 => Self::Cam16bits,
+            44 => Self::CfwSlotsNum,
+            48 => Self::DDR,
+            55 => Self::OutputDataActualBits,
+            57 => Self::CamSingleFrameMode,
+            58 => Self::CamLiveVideoMode,
+            59 => Self::CamIsColor,
+            75 => Self::CamBin6x6mode,
+            76 => Self::CamBin8x8mode,
+            other => Self::Other(other),
+        }
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::ControlType;
+
+    /// Every named variant round-trips through its raw SDK `CONTROL_ID`, so the
+    /// two hand-written `to_raw`/`from_raw` matches can never silently drift.
+    #[test]
+    fn named_variants_round_trip() {
+        let named = [
+            ControlType::Brightness,
+            ControlType::Wbr,
+            ControlType::Wbb,
+            ControlType::Wbg,
+            ControlType::Gain,
+            ControlType::Offset,
+            ControlType::Exposure,
+            ControlType::Speed,
+            ControlType::TransferBit,
+            ControlType::UsbTraffic,
+            ControlType::CurTemp,
+            ControlType::CurPWM,
+            ControlType::ManualPWM,
+            ControlType::CfwPort,
+            ControlType::Cooler,
+            ControlType::CamColor,
+            ControlType::CamBin1x1mode,
+            ControlType::CamBin2x2mode,
+            ControlType::CamBin3x3mode,
+            ControlType::CamBin4x4mode,
+            ControlType::CamMechanicalShutter,
+            ControlType::Cam8bits,
+            ControlType::Cam16bits,
+            ControlType::CfwSlotsNum,
+            ControlType::DDR,
+            ControlType::OutputDataActualBits,
+            ControlType::CamSingleFrameMode,
+            ControlType::CamLiveVideoMode,
+            ControlType::CamIsColor,
+            ControlType::CamBin6x6mode,
+            ControlType::CamBin8x8mode,
+        ];
+        for control in named {
+            assert_eq!(ControlType::from_raw(control.to_raw() as i32), control);
+        }
+    }
+
+    /// A control id outside the named subset survives as `Other`, and the key
+    /// SDK ids keep their documented numeric values.
+    #[test]
+    fn unnamed_id_survives_as_other() {
+        assert_eq!(ControlType::from_raw(1), ControlType::Other(1));
+        assert_eq!(ControlType::Other(1).to_raw(), 1);
+        assert_eq!(ControlType::Gain.to_raw(), 6);
+        assert_eq!(ControlType::CfwPort.to_raw(), 17);
+        assert_eq!(ControlType::CamBin8x8mode.to_raw(), 76);
+    }
 }

@@ -2,7 +2,7 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 #![cfg_attr(coverage_nightly, coverage(off))]
 #![allow(non_snake_case)]
-use qhyccd_rs::{Control, Sdk, StreamMode};
+use qhyccd_rs::{ControlType, Sdk, StreamMode};
 use tracing::{error, trace};
 use tracing_subscriber::FmtSubscriber;
 
@@ -31,7 +31,7 @@ fn main() {
     trace!(fw_version = ?fw_version);
 
     if camera
-        .is_control_available(Control::CamSingleFrameMode)
+        .is_control_available(ControlType::CamSingleFrameMode)
         .is_none()
     {
         panic!("CameraFeature::CamLiveVideoMode is not supported");
@@ -63,18 +63,18 @@ fn main() {
     let info = camera.get_ccd_info().expect("get_camera_ccd_info failed");
     trace!(ccd_info = ?info);
 
-    let bayer_id = match camera.is_control_available(Control::CamIsColor) {
+    let bayer_id = match camera.is_control_available(ControlType::CamIsColor) {
         Some(camera_is_color) => {
             trace!(camera_is_color = ?camera_is_color);
             //camera.set_debayer(true).expect("set debayer true failed"); -- this core-dumps on
             //QHY290C
-            camera.is_control_available(Control::CamColor)
+            camera.is_control_available(ControlType::CamColor)
         }
         None => None,
     };
     trace!(bayer_id = ?bayer_id);
 
-    match camera.set_if_available(Control::UsbTraffic, 255.0) {
+    match camera.set_if_available(ControlType::UsbTraffic, 255.0) {
         Ok(_) => trace!(control_usb_traffic = 255.0),
         Err(_) => {
             error!("ControlUsbTraffic is not supported");
@@ -82,7 +82,7 @@ fn main() {
         }
     }
 
-    match camera.set_if_available(Control::Gain, 10.0) {
+    match camera.set_if_available(ControlType::Gain, 10.0) {
         Ok(_) => trace!(control_gain = 10),
         Err(_) => {
             error!("ControlGain is not supported");
@@ -90,7 +90,7 @@ fn main() {
         }
     }
 
-    match camera.set_if_available(Control::Offset, 140.0) {
+    match camera.set_if_available(ControlType::Offset, 140.0) {
         Ok(_) => trace!(control_offset = 140),
         Err(_) => {
             error!("ControlOffset is not supported");
@@ -99,7 +99,7 @@ fn main() {
     }
 
     camera
-        .set_parameter(Control::Exposure, 2000.0)
+        .set_parameter(ControlType::Exposure, 2000.0)
         .expect("setting exposure time failed");
     trace!(exposure_time = 2000.0);
 
@@ -113,7 +113,7 @@ fn main() {
         .expect("set_camera_bin_mode failed");
     trace!(bin_mode = "(1, 1)");
 
-    match camera.set_if_available(Control::TransferBit, 16.0) {
+    match camera.set_if_available(ControlType::TransferBit, 16.0) {
         Ok(_) => trace!(cam_transfer_bit = 16.0),
         Err(_) => {
             error!("setting transfer bits is not supported");

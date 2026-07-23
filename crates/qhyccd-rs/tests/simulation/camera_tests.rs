@@ -4,7 +4,7 @@
 //! requiring actual QHYCCD hardware.
 
 use qhyccd_rs::simulation::{ImageGenerator, ImagePattern, SimulatedCameraConfig};
-use qhyccd_rs::{BayerMode, CCDChipArea, Camera, Control, FilterWheel, Sdk, StreamMode};
+use qhyccd_rs::{BayerMode, CCDChipArea, Camera, ControlType, FilterWheel, Sdk, StreamMode};
 
 #[test]
 fn test_simulated_camera_creation() {
@@ -78,17 +78,19 @@ fn test_simulated_camera_parameters() {
     camera.open().unwrap();
 
     // Set and get exposure
-    camera.set_parameter(Control::Exposure, 1000.0).unwrap();
-    let exposure = camera.get_parameter(Control::Exposure).unwrap();
+    camera.set_parameter(ControlType::Exposure, 1000.0).unwrap();
+    let exposure = camera.get_parameter(ControlType::Exposure).unwrap();
     assert!((exposure - 1000.0).abs() < f64::EPSILON);
 
     // Set and get gain
-    camera.set_parameter(Control::Gain, 50.0).unwrap();
-    let gain = camera.get_parameter(Control::Gain).unwrap();
+    camera.set_parameter(ControlType::Gain, 50.0).unwrap();
+    let gain = camera.get_parameter(ControlType::Gain).unwrap();
     assert!((gain - 50.0).abs() < f64::EPSILON);
 
     // Get parameter min/max/step
-    let (min, max, step) = camera.get_parameter_min_max_step(Control::Gain).unwrap();
+    let (min, max, step) = camera
+        .get_parameter_min_max_step(ControlType::Gain)
+        .unwrap();
     assert!((min - 0.0).abs() < f64::EPSILON);
     assert!((max - 100.0).abs() < f64::EPSILON);
     assert!((step - 1.0).abs() < f64::EPSILON);
@@ -103,15 +105,15 @@ fn test_simulated_camera_is_control_available() {
     camera.open().unwrap();
 
     // Default controls should be available
-    assert!(camera.is_control_available(Control::Gain).is_some());
-    assert!(camera.is_control_available(Control::Exposure).is_some());
+    assert!(camera.is_control_available(ControlType::Gain).is_some());
+    assert!(camera.is_control_available(ControlType::Exposure).is_some());
 
     // Cooler controls should be available
-    assert!(camera.is_control_available(Control::Cooler).is_some());
-    assert!(camera.is_control_available(Control::CurTemp).is_some());
+    assert!(camera.is_control_available(ControlType::Cooler).is_some());
+    assert!(camera.is_control_available(ControlType::CurTemp).is_some());
 
     // CFW controls should NOT be available (no filter wheel)
-    assert!(camera.is_control_available(Control::CfwPort).is_none());
+    assert!(camera.is_control_available(ControlType::CfwPort).is_none());
 
     camera.close().unwrap();
 }
@@ -123,14 +125,16 @@ fn test_simulated_camera_with_filter_wheel() {
     camera.open().unwrap();
 
     // CFW controls should be available
-    assert!(camera.is_control_available(Control::CfwPort).is_some());
-    assert!(camera.is_control_available(Control::CfwSlotsNum).is_some());
+    assert!(camera.is_control_available(ControlType::CfwPort).is_some());
+    assert!(camera
+        .is_control_available(ControlType::CfwSlotsNum)
+        .is_some());
 
     // Check filter wheel plugged in
     assert!(camera.is_cfw_plugged_in().unwrap());
 
     // Get number of slots
-    let slots = camera.get_parameter(Control::CfwSlotsNum).unwrap();
+    let slots = camera.get_parameter(ControlType::CfwSlotsNum).unwrap();
     assert!((slots - 5.0).abs() < f64::EPSILON);
 
     camera.close().unwrap();
@@ -144,7 +148,7 @@ fn test_simulated_camera_single_frame_mode() {
 
     camera.set_stream_mode(StreamMode::SingleFrameMode).unwrap();
     camera.init().unwrap();
-    camera.set_parameter(Control::Exposure, 1000.0).unwrap(); // 1ms
+    camera.set_parameter(ControlType::Exposure, 1000.0).unwrap(); // 1ms
 
     let buffer_size = camera.get_image_size().unwrap();
     assert!(buffer_size > 0);
@@ -284,7 +288,7 @@ fn test_sdk_new_with_default_simulated_camera() {
 
     // Verify camera has cooler support
     assert!(
-        camera.is_control_available(Control::Cooler).is_some(),
+        camera.is_control_available(ControlType::Cooler).is_some(),
         "Camera should have cooler support"
     );
 
@@ -370,7 +374,7 @@ fn test_sdk_shares_one_handle_between_camera_and_filter_wheel() {
     wheel.set_fw_position(3).unwrap();
     assert_eq!(wheel.get_fw_position().unwrap(), 3);
     assert_eq!(
-        camera.get_parameter(Control::CfwPort).unwrap() as u32,
+        camera.get_parameter(ControlType::CfwPort).unwrap() as u32,
         3 + 48
     );
 
@@ -386,7 +390,7 @@ fn test_simulated_color_camera() {
     camera.open().unwrap();
 
     // Check color mode is available
-    let bayer = camera.is_control_available(Control::CamColor);
+    let bayer = camera.is_control_available(ControlType::CamColor);
     assert!(bayer.is_some());
     assert_eq!(bayer.unwrap(), BayerMode::RGGB as u32);
 
@@ -537,7 +541,7 @@ fn test_stop_exposure() {
 
     // Set a long exposure
     camera
-        .set_parameter(Control::Exposure, 10_000_000.0)
+        .set_parameter(ControlType::Exposure, 10_000_000.0)
         .unwrap(); // 10 seconds
 
     camera.start_single_frame_exposure().unwrap();
@@ -566,7 +570,7 @@ fn test_abort_exposure_and_readout() {
 
     // Set a long exposure
     camera
-        .set_parameter(Control::Exposure, 10_000_000.0)
+        .set_parameter(ControlType::Exposure, 10_000_000.0)
         .unwrap(); // 10 seconds
 
     camera.start_single_frame_exposure().unwrap();
@@ -634,8 +638,8 @@ fn test_camera_not_open_errors() {
     assert!(camera.get_firmware_version().is_err());
     assert!(camera.get_effective_area().is_err());
     assert!(camera.get_overscan_area().is_err());
-    assert!(camera.set_parameter(Control::Gain, 50.0).is_err());
-    assert!(camera.get_parameter(Control::Gain).is_err());
+    assert!(camera.set_parameter(ControlType::Gain, 50.0).is_err());
+    assert!(camera.get_parameter(ControlType::Gain).is_err());
     assert!(camera.stop_exposure().is_err());
     assert!(camera.abort_exposure_and_readout().is_err());
 }
@@ -647,16 +651,18 @@ fn test_parameter_not_available_error() {
     camera.open().unwrap();
 
     // Cooler control should not be available
-    assert!(camera.is_control_available(Control::Cooler).is_none());
+    assert!(camera.is_control_available(ControlType::Cooler).is_none());
 
     // Getting an unavailable control should fail
-    assert!(camera.get_parameter(Control::Cooler).is_err());
+    assert!(camera.get_parameter(ControlType::Cooler).is_err());
 
     // get_parameter_min_max_step should fail for unavailable control
-    assert!(camera.get_parameter_min_max_step(Control::Cooler).is_err());
+    assert!(camera
+        .get_parameter_min_max_step(ControlType::Cooler)
+        .is_err());
 
     // set_if_available should fail for unavailable control
-    assert!(camera.set_if_available(Control::Cooler, -10.0).is_err());
+    assert!(camera.set_if_available(ControlType::Cooler, -10.0).is_err());
 
     camera.close().unwrap();
 }
@@ -668,12 +674,12 @@ fn test_set_if_available() {
     camera.open().unwrap();
 
     // set_if_available should work for available control
-    camera.set_if_available(Control::Gain, 50.0).unwrap();
-    let gain = camera.get_parameter(Control::Gain).unwrap();
+    camera.set_if_available(ControlType::Gain, 50.0).unwrap();
+    let gain = camera.get_parameter(ControlType::Gain).unwrap();
     assert!((gain - 50.0).abs() < f64::EPSILON);
 
     // set_if_available should work for cooler (available due to with_cooler)
-    camera.set_if_available(Control::Cooler, -10.0).unwrap();
+    camera.set_if_available(ControlType::Cooler, -10.0).unwrap();
 
     camera.close().unwrap();
 }
@@ -737,7 +743,7 @@ fn test_no_filter_wheel() {
     assert!(!camera.is_cfw_plugged_in().unwrap());
 
     // CFW control should not be available
-    assert!(camera.is_control_available(Control::CfwPort).is_none());
+    assert!(camera.is_control_available(ControlType::CfwPort).is_none());
 
     camera.close().unwrap();
 }
@@ -985,7 +991,7 @@ fn test_is_control_available_not_open_error() {
 
     // is_control_available() without opening returns None (not an error, but no result)
     // This is expected behavior - returns None when camera not open
-    let result = camera.is_control_available(Control::Gain);
+    let result = camera.is_control_available(ControlType::Gain);
     assert!(result.is_none());
 }
 
@@ -995,7 +1001,9 @@ fn test_get_parameter_min_max_step_not_open_error() {
     let camera = Camera::new_simulated(config);
 
     // get_parameter_min_max_step() without opening should fail
-    assert!(camera.get_parameter_min_max_step(Control::Gain).is_err());
+    assert!(camera
+        .get_parameter_min_max_step(ControlType::Gain)
+        .is_err());
 }
 
 #[test]
@@ -1131,17 +1139,61 @@ fn test_cooler_controls() {
     camera.open().unwrap();
 
     // Check cooler control is available
-    assert!(camera.is_control_available(Control::Cooler).is_some());
-    assert!(camera.is_control_available(Control::CurTemp).is_some());
+    assert!(camera.is_control_available(ControlType::Cooler).is_some());
+    assert!(camera.is_control_available(ControlType::CurTemp).is_some());
 
     // Get current temperature
-    let temp = camera.get_parameter(Control::CurTemp).unwrap();
+    let temp = camera.get_parameter(ControlType::CurTemp).unwrap();
     assert!(temp > -50.0 && temp < 50.0); // Reasonable range
 
     // Set cooler target temperature
-    camera.set_parameter(Control::Cooler, -10.0).unwrap();
-    let cooler_target = camera.get_parameter(Control::Cooler).unwrap();
+    camera.set_parameter(ControlType::Cooler, -10.0).unwrap();
+    let cooler_target = camera.get_parameter(ControlType::Cooler).unwrap();
     assert!((cooler_target - (-10.0)).abs() < 0.001);
+
+    camera.close().unwrap();
+}
+
+/// The typed accessors are the routine surface over the generic
+/// `get_parameter`/`set_parameter` controls, so exercise the full set against
+/// the simulation backend (Phase 2 of the convention-alignment plan).
+#[test]
+fn test_camera_typed_accessors() {
+    let config = SimulatedCameraConfig::default()
+        .with_cooler()
+        .with_filter_wheel(5);
+    let camera = Camera::new_simulated(config);
+    camera.open().unwrap();
+
+    // gain / offset / exposure round-trip through the typed setters + getters.
+    camera.set_gain(50.0).unwrap();
+    assert!((camera.gain().unwrap() - 50.0).abs() < f64::EPSILON);
+    camera.set_offset(20.0).unwrap();
+    assert!((camera.offset().unwrap() - 20.0).abs() < f64::EPSILON);
+    camera.set_exposure_us(1000.0).unwrap();
+    assert!((camera.exposure_us().unwrap() - 1000.0).abs() < f64::EPSILON);
+
+    // Ranges come from the simulated control table.
+    let (gain_min, gain_max, _) = camera.gain_range().unwrap();
+    assert!(gain_min <= gain_max);
+    assert!(camera.offset_range().unwrap().1 >= camera.offset_range().unwrap().0);
+    assert!(camera.exposure_range_us().unwrap().1 > 0.0);
+
+    // Temperature is already whole °C — no decode.
+    let temp = camera.current_temperature_celsius().unwrap();
+    assert!((-50.0..50.0).contains(&temp));
+
+    // Cooler set-point and manual PWM route to the same controls the generic
+    // path reads back.
+    camera.set_target_temperature_celsius(-15.0).unwrap();
+    assert!((camera.get_parameter(ControlType::Cooler).unwrap() - (-15.0)).abs() < 0.001);
+    camera.set_manual_cooler_pwm(80.0).unwrap();
+    assert!((camera.cooler_power_raw().unwrap() - 80.0).abs() < f64::EPSILON);
+
+    // CFW accessors own the ASCII ±48 offset: position 3 round-trips to 3.
+    assert_eq!(camera.cfw_slot_count().unwrap(), 5);
+    camera.set_cfw_position(3).unwrap();
+    assert_eq!(camera.cfw_position().unwrap(), 3);
 
     camera.close().unwrap();
 }
@@ -1153,17 +1205,19 @@ fn test_usb_traffic_control() {
     camera.open().unwrap();
 
     // Check USB traffic control is available
-    assert!(camera.is_control_available(Control::UsbTraffic).is_some());
+    assert!(camera
+        .is_control_available(ControlType::UsbTraffic)
+        .is_some());
 
     // Get and set USB traffic
     let (min, max, step) = camera
-        .get_parameter_min_max_step(Control::UsbTraffic)
+        .get_parameter_min_max_step(ControlType::UsbTraffic)
         .unwrap();
     assert!(min <= max);
     assert!(step > 0.0);
 
-    camera.set_parameter(Control::UsbTraffic, 50.0).unwrap();
-    let traffic = camera.get_parameter(Control::UsbTraffic).unwrap();
+    camera.set_parameter(ControlType::UsbTraffic, 50.0).unwrap();
+    let traffic = camera.get_parameter(ControlType::UsbTraffic).unwrap();
     assert!((traffic - 50.0).abs() < f64::EPSILON);
 
     camera.close().unwrap();
@@ -1176,11 +1230,11 @@ fn test_offset_control() {
     camera.open().unwrap();
 
     // Check offset control is available
-    assert!(camera.is_control_available(Control::Offset).is_some());
+    assert!(camera.is_control_available(ControlType::Offset).is_some());
 
     // Get and set offset
-    camera.set_parameter(Control::Offset, 10.0).unwrap();
-    let offset = camera.get_parameter(Control::Offset).unwrap();
+    camera.set_parameter(ControlType::Offset, 10.0).unwrap();
+    let offset = camera.get_parameter(ControlType::Offset).unwrap();
     assert!((offset - 10.0).abs() < f64::EPSILON);
 
     camera.close().unwrap();

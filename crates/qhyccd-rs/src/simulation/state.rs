@@ -1,6 +1,6 @@
 //! Runtime state for simulated cameras
 
-use crate::{CCDChipArea, Control, StreamMode};
+use crate::{CCDChipArea, ControlType, StreamMode};
 use std::collections::HashMap;
 use std::time::Instant;
 
@@ -27,7 +27,7 @@ pub struct SimulatedCameraState {
     /// Current stream mode
     pub stream_mode: Option<StreamMode>,
     /// Current parameter values
-    pub parameters: HashMap<Control, f64>,
+    pub parameters: HashMap<ControlType, f64>,
     /// Current ROI settings
     pub roi: CCDChipArea,
     /// Current binning (x, y)
@@ -68,18 +68,18 @@ impl SimulatedCameraState {
         let mut parameters = HashMap::new();
         for (control, (min, max, _step)) in &config.supported_controls {
             let default = match control {
-                Control::Gain => 0.0,
-                Control::Offset => 10.0,
-                Control::Exposure => 1000.0, // 1ms default
-                Control::Speed => 0.0,
-                Control::UsbTraffic => 50.0,
-                Control::TransferBit => 16.0,
-                Control::CfwPort => 0.0,
-                Control::CfwSlotsNum => config.filter_wheel_slots as f64,
-                Control::CurTemp => 20.0, // Room temperature
-                Control::CurPWM => 0.0,
-                Control::Cooler => 20.0,
-                Control::ManualPWM => 0.0,
+                ControlType::Gain => 0.0,
+                ControlType::Offset => 10.0,
+                ControlType::Exposure => 1000.0, // 1ms default
+                ControlType::Speed => 0.0,
+                ControlType::UsbTraffic => 50.0,
+                ControlType::TransferBit => 16.0,
+                ControlType::CfwPort => 0.0,
+                ControlType::CfwSlotsNum => config.filter_wheel_slots as f64,
+                ControlType::CurTemp => 20.0, // Room temperature
+                ControlType::CurPWM => 0.0,
+                ControlType::Cooler => 20.0,
+                ControlType::ManualPWM => 0.0,
                 _ => (*min + *max) / 2.0,
             };
             parameters.insert(*control, default);
@@ -170,7 +170,7 @@ impl SimulatedCameraState {
     /// Starts an exposure
     pub fn start_exposure(&mut self) {
         // Get exposure time from parameters
-        if let Some(&exposure_us) = self.parameters.get(&Control::Exposure) {
+        if let Some(&exposure_us) = self.parameters.get(&ControlType::Exposure) {
             self.exposure_duration_us = exposure_us as u64;
         }
 
@@ -235,6 +235,6 @@ impl SimulatedCameraState {
         }
         // Update the parameter
         self.parameters
-            .insert(Control::CurTemp, self.current_temperature);
+            .insert(ControlType::CurTemp, self.current_temperature);
     }
 }
