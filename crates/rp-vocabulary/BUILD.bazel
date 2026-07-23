@@ -1,0 +1,41 @@
+load("@cr//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+exports_files(
+    ["Cargo.toml"],
+    visibility = ["//visibility:public"],
+)
+
+# The optional `schema` feature (schemars) is off in the default build:
+# crate_universe only resolves schemars into the "normal" bucket once a
+# real consumer activates rp-vocabulary's `schema` feature (rp will, via
+# `features = ["schema"]`). Until then this target builds schemars-free,
+# matching the crate's `default = []`.
+rust_library(
+    name = "rp-vocabulary",
+    srcs = glob(["src/**/*.rs"]),
+    aliases = aliases(),
+    crate_name = "rp_vocabulary",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//visibility:public"],
+    deps = all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "rp-vocabulary_unit_test",
+    size = "small",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate = ":rp-vocabulary",
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)

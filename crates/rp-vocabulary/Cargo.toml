@@ -1,0 +1,30 @@
+[package]
+name = "rp-vocabulary"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared, validated plan-data value types for rp: ICRS coordinates, binning, frame type, exposure (ADR-019)"
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+derive_more = { workspace = true, features = ["display"] }
+humantime = { workspace = true }
+# Optional: JsonSchema derives for the wire projection (the plan-data
+# schema/validate protocol, ADR-019). Off by default so pure-value
+# consumers — e.g. rp-targets, the store leaf — stay schemars-free; rp
+# enables it. See docs/crates/rp-vocabulary.md "Feature flags".
+schemars = { workspace = true, optional = true }
+
+[features]
+default = []
+schema = ["dep:schemars"]
+
+[dev-dependencies]
+serde_json = { workspace = true }
