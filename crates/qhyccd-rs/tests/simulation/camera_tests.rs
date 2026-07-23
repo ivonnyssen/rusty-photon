@@ -343,6 +343,43 @@ fn test_simulated_filter_wheel() {
 }
 
 #[test]
+fn test_sdk_shares_one_handle_between_camera_and_filter_wheel() {
+    // Phase 1(B): the SDK builds the filter wheel from a CLONE of the camera, so
+    // both share ONE backend state (a real QHY CFW is driven through the camera
+    // handle). Opening the camera therefore also opens the wheel, and the wheel
+    // position is one shared value visible through the camera's CFW control.
+    let mut sdk = Sdk::new_simulated();
+    sdk.add_simulated_camera(
+        SimulatedCameraConfig::default()
+            .with_id("SHARED-CAM")
+            .with_filter_wheel(7),
+    );
+
+    let camera = sdk.cameras().next().unwrap();
+    let wheel = sdk.filter_wheels().next().unwrap();
+    // The wheel delegates its id to the shared camera.
+    assert_eq!(wheel.id(), "SHARED-CAM");
+
+    // Opening the camera opens the shared handle the wheel reads through.
+    camera.open().unwrap();
+    assert!(wheel.is_open().unwrap());
+    assert_eq!(wheel.get_number_of_filters().unwrap(), 7);
+
+    // A position set on the wheel is visible through the camera's CFW control
+    // (ASCII-offset by 48), proving the single shared state.
+    wheel.set_fw_position(3).unwrap();
+    assert_eq!(wheel.get_fw_position().unwrap(), 3);
+    assert_eq!(
+        camera.get_parameter(Control::CfwPort).unwrap() as u32,
+        3 + 48
+    );
+
+    // Closing the camera closes the wheel (shared open state).
+    camera.close().unwrap();
+    assert!(!wheel.is_open().unwrap());
+}
+
+#[test]
 fn test_simulated_color_camera() {
     let config = SimulatedCameraConfig::default().with_color(BayerMode::RGGB);
     let camera = Camera::new_simulated(config);

@@ -1,7 +1,9 @@
 # Align `qhyccd-rs` to the `zwo-rs` / `svbony-rs` conventions
 
-**Status:** Draft — not started. Analysis complete 2026-07-23; awaiting
-prioritisation/scheduling.
+**Status:** Phase 1 IMPLEMENTED (2026-07-23, branch
+`feature/qhy-convention-phase-1-handle-model`): shared handle cell + RAII
+last-drop close + `Sdk::drop` Close-before-Release. Phases 2–5 not started.
+Analysis complete 2026-07-23.
 **Author:** drafted 2026-07-23 on `docs/qhyccd-convention-alignment`.
 **Depends on:** the vendoring of `qhyccd-rs` + `libqhyccd-sys` into the workspace
 ([vendor-qhyccd-rs.md](vendor-qhyccd-rs.md), Phases 1 & 2 DONE) — this plan is
@@ -140,6 +142,16 @@ single-owner shape.
   instead of minting a second `Camera::new(id)`, so the wheel and camera share
   **one** open handle. This both removes the double-open path and makes the
   shared-handle abstraction earn its keep.
+- **`Sdk::drop` closes every open camera handle *before* `ReleaseQHYCCDResource`.**
+  The SDK manual documents Close-each-then-Release and warns the reverse is unsafe
+  (§ *Disconnecting the camera*, `docs/references/qhyccd-sdk-manual.md`).
+  `HandleCell::Drop` alone cannot guarantee this: a consumer (the qhy-camera
+  service) holds a *clone* of the camera handle that can outlive this `Sdk`, so
+  its last-drop close would otherwise run **after** `ReleaseQHYCCDResource`.
+  Closing on the shared cell in `Sdk::drop` sets it to `None`, so any surviving
+  clone's `HandleCell::Drop` becomes a no-op. *(Discovered during
+  implementation — the original target design omitted this ordering; a
+  `drop_closes_cameras_before_releasing_sdk` unit test locks it in.)*
 
 **Go/no-go gate — RESOLVED 2026-07-23 from the SDK manual: share one handle
 (the fix is required, not optional).** The QHYCCD SDK's documented model is
@@ -163,9 +175,10 @@ crate's use of `GetQHYCCDParam` over `GetQHYCCDCFWStatus` matches the manual's o
 recommendation.)
 
 **Exit:** `Camera`/shared-handle closes on last-drop; filter wheel shares the
-camera's handle (or the double-open is proven safe and explicitly documented);
-crate sim + unit suites green; `docs/services/qhy-camera.md` /
-`docs/services/qhy-focuser.md` updated if the observable lifecycle changes.
+camera's handle; `Sdk::drop` closes handles before releasing the SDK; crate sim +
+unit suites green; `docs/services/qhy-camera.md` updated for the teardown change.
+(`qhy-focuser` is a serial-port EAF driver and does **not** consume `qhyccd-rs` —
+it is unaffected by this plan, despite the shared "QHY" name.)
 
 ### Phase 2 — Control representation
 
@@ -257,7 +270,13 @@ behaviour.
    §45). Phase 1 must share one handle rather than re-open by id. See the Phase 1
    go/no-go gate for the full citation.
 2. **Does any service depend on `Camera: Clone` / equality-by-id semantics** that
-   the Phase 1 handle rework would change? Audit `services/qhy-camera` +
-   `services/qhy-focuser` usage first.
+   the Phase 1 handle rework would change? **RESOLVED (2026-07-23):**
+   `services/qhy-camera` (the only consumer) depends on `Camera: Clone`
+   (Arc-share) in three load-bearing places — `sdk.cameras().cloned()`,
+   `FilterWheel::new(conn.camera().clone())`, and a conn test — and does **not**
+   depend on `Camera == Camera` eq-by-id or on `FilterWheel: Clone/PartialEq`;
+   all preserved. `services/qhy-focuser` is a serial-port EAF driver with no
+   `qhyccd-rs` dependency (the earlier mention was a name collision, now
+   corrected in the Exit criteria above).
 3. **Phase ordering vs. an in-flight qhy-camera change** — if a service-level qhy
    change is active, land Phase 1 behind it to avoid a lifecycle-semantics clash.

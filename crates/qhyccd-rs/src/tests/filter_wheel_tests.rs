@@ -7,12 +7,40 @@ use crate::*;
 
 const TEST_HANDLE: *const std::ffi::c_void = 0xdeadbeef as *const std::ffi::c_void;
 
-fn new_filter_wheel() -> FilterWheel {
+/// An opened test [`FilterWheel`] bundled with a permissive `CloseQHYCCD` mock
+/// expectation. The wheel owns the Real [`Camera`] it was built from, whose new
+/// `HandleCell::Drop` closes the still-open handle when the wheel drops at the
+/// end of a test; under `#[cfg(test)]` that calls the mocked `CloseQHYCCD`, so an
+/// expectation must be live at drop time. Field order is load-bearing:
+/// `filter_wheel` (owning the camera) is declared before `_close_ctx`, so it
+/// drops FIRST while the context guard is still alive. Derefs to [`FilterWheel`]
+/// so tests call wheel methods unchanged.
+struct OpenTestFilterWheel<G> {
+    filter_wheel: FilterWheel,
+    _close_ctx: G,
+}
+
+impl<G> std::ops::Deref for OpenTestFilterWheel<G> {
+    type Target = FilterWheel;
+    fn deref(&self) -> &FilterWheel {
+        &self.filter_wheel
+    }
+}
+
+fn new_filter_wheel() -> OpenTestFilterWheel<impl Sized> {
     let ctx_open = OpenQHYCCD_context();
     ctx_open.expect().times(1).return_const_st(TEST_HANDLE);
     let camera = Camera::new("test_camera".to_owned());
     camera.open().unwrap();
-    FilterWheel::new(camera)
+    // `ctx_open` drops here — its `times(1)` is already satisfied by `open()`. The
+    // `CloseQHYCCD` expectation must outlive the wheel (which owns the camera), so
+    // it is carried out inside the wrapper (dropped after `filter_wheel`).
+    let close_ctx = CloseQHYCCD_context();
+    close_ctx.expect().return_const_st(QHYCCD_SUCCESS);
+    OpenTestFilterWheel {
+        filter_wheel: FilterWheel::new(camera),
+        _close_ctx: close_ctx,
+    }
 }
 
 #[test]

@@ -119,7 +119,11 @@ impl Sdk {
                         }
                     }
                     if has_filter_wheel {
-                        filter_wheels.push(FilterWheel::new(Camera::new(id)))
+                        // Share the camera's handle cell (Arc) instead of opening
+                        // the same id a second time: a QHY CFW is driven through the
+                        // camera handle, and the SDK keeps one open device per id
+                        // (docs/plans/qhyccd-convention-alignment.md, Phase 1).
+                        filter_wheels.push(FilterWheel::new(camera.clone()))
                     };
                     cameras.push(camera);
                 }
@@ -218,18 +222,14 @@ impl Sdk {
     #[cfg(feature = "simulation")]
     pub fn add_simulated_camera(&mut self, config: simulation::SimulatedCameraConfig) {
         let has_filter_wheel = config.filter_wheel_slots > 0;
-        let filter_wheel_slots = config.filter_wheel_slots;
-        let id = config.id.clone();
         let camera = Camera::new_simulated(config);
 
         if has_filter_wheel {
-            // Create a separate simulated camera instance for the filter wheel
-            // This matches the pattern used for real hardware
-            let fw_config = simulation::SimulatedCameraConfig::default()
-                .with_id(&id)
-                .with_filter_wheel(filter_wheel_slots);
-            self.filter_wheels
-                .push(FilterWheel::new(Camera::new_simulated(fw_config)));
+            // Share the camera's backend state (Arc) with the wheel, mirroring the
+            // real path (one handle per device). The camera's own config already
+            // carries the CFW controls whenever it has a wheel: `with_filter_wheel`
+            // sets both the slot count and the `CfwPort`/`CfwSlotsNum` controls.
+            self.filter_wheels.push(FilterWheel::new(camera.clone()));
         }
 
         self.cameras.push(camera);
@@ -306,14 +306,30 @@ impl Sdk {
 impl Drop for Sdk {
     fn drop(&mut self) {
         // Real-SDK cleanup only. Under `simulation` no QHYCCD SDK is linked (every
-        // such SDK is simulated), so the release call is compiled out entirely and
-        // `drop` is a no-op.
+        // such SDK is simulated), so this whole body is compiled out and `drop` is
+        // a no-op.
         #[cfg(not(feature = "simulation"))]
-        match unsafe { ReleaseQHYCCDResource() } {
-            QHYCCD_SUCCESS => (),
-            error_code => {
-                let error = CloseSDKError { error_code };
-                tracing::error!(error = ?error);
+        {
+            // Close every still-open camera handle BEFORE releasing the SDK. The
+            // QHYCCD manual documents Close-each-then-Release and warns the reverse
+            // is unsafe (Close destroys the handle). `HandleCell::Drop` alone is not
+            // enough: a consumer may hold a clone of a camera handle (the qhy-camera
+            // service does) that outlives this `Sdk`, so its last-drop close would
+            // otherwise run AFTER `ReleaseQHYCCDResource`. Closing here on the shared
+            // cell sets it to `None`, making any surviving clone's `HandleCell::Drop`
+            // a harmless no-op. Because the filter wheel shares its camera's handle
+            // cell, closing the cameras also releases the wheels.
+            for camera in &self.cameras {
+                if let Err(error) = camera.close() {
+                    tracing::error!(error = ?error, "failed to close camera during SDK teardown");
+                }
+            }
+            match unsafe { ReleaseQHYCCDResource() } {
+                QHYCCD_SUCCESS => (),
+                error_code => {
+                    let error = CloseSDKError { error_code };
+                    tracing::error!(error = ?error);
+                }
             }
         }
     }

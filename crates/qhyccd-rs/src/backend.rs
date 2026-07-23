@@ -11,30 +11,83 @@ pub(crate) struct QHYCCDHandle {
 
 // SAFETY: the struct holds a raw pointer (`*const c_void`), which makes it
 // `!Send + !Sync` by default — so these impls are REQUIRED for `Camera`
-// (`CameraBackend::Real { handle: Arc<RwLock<Option<QHYCCDHandle>>> }`) to be
-// `Send + Sync`, which it must be to move across the async runtime / blocking
-// threads. The pointer is an opaque QHYCCD SDK handle that is never dereferenced
-// in Rust.
+// (`CameraBackend::Real { handle: Arc<HandleCell> }`) to be `Send + Sync`, which
+// it must be to move across the async runtime / blocking threads. The pointer is
+// an opaque QHYCCD SDK handle that is never dereferenced in Rust.
 //
 // This type does NOT itself serialize concurrent SDK calls on one handle: the
-// `parking_lot::RwLock` above only guards the `Option<handle>` (open/close), and
-// `read_lock!` copies the pointer out and releases the guard *before* the FFI
-// call. So
-// soundness of concurrent calls on a shared `Camera` relies on synchronization
-// provided by the caller and/or the QHYCCD SDK being thread-safe per handle. The
-// qhy-camera driver provides it: every SDK call runs on `spawn_blocking` with a
-// single logical owner per device, so calls on one handle are not made
-// concurrently.
+// `parking_lot::RwLock` inside `HandleCell` only guards the `Option<handle>`
+// (open/close), and `read_lock!` copies the pointer out and releases the guard
+// *before* the FFI call. So soundness of concurrent calls on a shared `Camera`
+// relies on synchronization provided by the caller and/or the QHYCCD SDK being
+// thread-safe per handle. The qhy-camera driver provides it: every SDK call runs
+// on `spawn_blocking` with a single logical owner per device, so calls on one
+// handle are not made concurrently.
 unsafe impl Send for QHYCCDHandle {}
 unsafe impl Sync for QHYCCDHandle {}
+
+/// RAII owner of one open QHYCCD device handle. Wraps the `RwLock<Option<..>>`
+/// cell so a [`Drop`] can close the device when the last strong reference is
+/// released — the zwo/svbony convention (`Camera: Drop`), which this crate
+/// previously lacked (a dropped-open camera leaked the handle). The cell is
+/// shared as `Arc<HandleCell>` by a [`Camera`](crate::Camera) and its clones —
+/// including the filter wheel, which a QHY CFW is driven through the *same*
+/// camera handle — so `CloseQHYCCD` runs exactly once, on the last clone's drop.
+///
+/// `Drop` closes only an *open* handle (`Some`), so an explicit
+/// [`Camera::close`](crate::Camera::close) (which `take()`s the `Option`) makes
+/// it a no-op. Under the `simulation` feature the [`crate::ffi`] alias is the
+/// `unimplemented!()` stub, but a Real handle is never opened there (`open()`
+/// hits the stub and panics first), so the `Option` is always `None` and the
+/// stub is never reached.
+#[derive(Debug)]
+pub(crate) struct HandleCell {
+    inner: RwLock<Option<QHYCCDHandle>>,
+}
+
+impl HandleCell {
+    /// A fresh, unopened handle cell.
+    pub(crate) fn new() -> Self {
+        Self {
+            inner: RwLock::new(None),
+        }
+    }
+}
+
+// Transparent access to the underlying lock so every existing `handle.read()` /
+// `handle.write()` / `read_lock!(handle)` call site keeps working unchanged.
+impl std::ops::Deref for HandleCell {
+    type Target = RwLock<Option<QHYCCDHandle>>;
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl Drop for HandleCell {
+    fn drop(&mut self) {
+        // Best-effort last-drop close. `get_mut()` is contention-free — we hold
+        // the only strong reference at drop. Closing a `None` handle is skipped,
+        // so a prior explicit `close()` (or `Sdk::drop`'s pre-release close)
+        // makes this a no-op rather than a double-close.
+        if let Some(handle) = self.inner.get_mut().take() {
+            match unsafe { crate::ffi::CloseQHYCCD(handle.ptr) } {
+                crate::ffi::QHYCCD_SUCCESS => {}
+                error_code => {
+                    tracing::error!(
+                        error = ?crate::QHYError::CloseCameraError { error_code },
+                        "failed to close camera handle on drop"
+                    );
+                }
+            }
+        }
+    }
+}
 
 /// Internal backend for camera operations
 #[derive(Debug)]
 pub(crate) enum CameraBackend {
     /// Real hardware camera using FFI calls
-    Real {
-        handle: Arc<RwLock<Option<QHYCCDHandle>>>,
-    },
+    Real { handle: Arc<HandleCell> },
     /// Simulated camera for testing
     #[cfg(feature = "simulation")]
     Simulated {

@@ -864,7 +864,14 @@ the "how" decisions made while building.
   disconnect-camera-then-move-CFW both succeed) plus unit tests over the
   simulation backend (`backend::conn_tests`). *This supersedes the v0 plan, which
   used independent handles "as the reference `qhyccd-alpaca` does" and deferred
-  the refcount as Future Work pending hardware.*
+  the refcount as Future Work pending hardware.* Since the `qhyccd-rs` **Phase-1
+  handle-model alignment** ([qhyccd-convention-alignment.md](../plans/qhyccd-convention-alignment.md)),
+  the crate itself shares one handle cell between a camera and its filter wheel
+  and closes it on last-drop (RAII), and `Sdk::drop` closes every open camera
+  handle **before** `ReleaseQHYCCDResource` (the SDK-documented Close-then-Release
+  order). So a device still Connected at process shutdown or reload is now torn
+  down cleanly instead of leaked; the service's own `SharedCameraConnection`
+  refcount and per-device `Connected` semantics are unchanged.
 - **Cooling model.** v0 had `set_cooler_on(true)` engage a nominal 1% *manual*
   PWM (matching the reference), distinct from the automatic target-temperature
   regulation `SetCCDTemperature` drives — a real ASCOM client sequence of

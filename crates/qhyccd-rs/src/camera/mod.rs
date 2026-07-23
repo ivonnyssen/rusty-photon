@@ -5,13 +5,14 @@ mod lifecycle;
 mod parameters;
 mod readout_modes;
 
-use parking_lot::RwLock;
 use std::sync::Arc;
 
 use crate::backend::CameraBackend;
 
 #[cfg(feature = "simulation")]
 use crate::simulation::{self, SimulatedCameraState};
+#[cfg(feature = "simulation")]
+use parking_lot::RwLock;
 
 #[derive(Debug, Clone, derive_more::PartialEq)]
 /// The representation of a camera. It is constructed by the SDK and can be used to
@@ -37,7 +38,7 @@ impl Camera {
         Self {
             id,
             backend: CameraBackend::Real {
-                handle: Arc::new(RwLock::new(None)),
+                handle: Arc::new(crate::backend::HandleCell::new()),
             },
         }
     }

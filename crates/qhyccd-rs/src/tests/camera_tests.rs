@@ -18,12 +18,40 @@ use crate::*;
 
 const TEST_HANDLE: *const std::ffi::c_void = 0xdeadbeef as *const std::ffi::c_void;
 
-fn new_camera() -> Camera {
+/// An opened test [`Camera`] bundled with a permissive `CloseQHYCCD` mock
+/// expectation. `Camera::new` builds a Real backend whose new `HandleCell::Drop`
+/// closes the still-open handle when the camera is dropped at the end of a test;
+/// under `#[cfg(test)]` that calls the mocked `CloseQHYCCD`, so an expectation
+/// must be live at drop time. Field order is load-bearing: `camera` is declared
+/// before `_close_ctx`, so it drops FIRST (firing `CloseQHYCCD`) while the
+/// context guard is still alive. Derefs to [`Camera`] so tests call camera
+/// methods unchanged.
+struct OpenTestCamera<G> {
+    camera: Camera,
+    _close_ctx: G,
+}
+
+impl<G> std::ops::Deref for OpenTestCamera<G> {
+    type Target = Camera;
+    fn deref(&self) -> &Camera {
+        &self.camera
+    }
+}
+
+fn new_camera() -> OpenTestCamera<impl Sized> {
     let ctx_open = OpenQHYCCD_context();
     ctx_open.expect().times(1).return_const_st(TEST_HANDLE);
     let camera = Camera::new("test_camera".to_owned());
     camera.open().unwrap();
-    camera
+    // `ctx_open` drops here — its `times(1)` is already satisfied by `open()`.
+    // The `CloseQHYCCD` expectation must outlive the returned camera, so it is
+    // carried out inside the wrapper (dropped after `camera`, see the struct doc).
+    let close_ctx = CloseQHYCCD_context();
+    close_ctx.expect().return_const_st(QHYCCD_SUCCESS);
+    OpenTestCamera {
+        camera,
+        _close_ctx: close_ctx,
+    }
 }
 
 #[test]
@@ -210,6 +238,10 @@ fn get_firmware_version_success() {
     //then
     assert!(res.is_ok());
     assert_eq!(res.unwrap(), "Firmware version: 2016_1_35");
+    // Drop the first camera (closing its handle) before building a second one:
+    // each `new_camera()` carries its own `CloseQHYCCD` mock context, and two live
+    // at once would clear each other's expectation on drop.
+    drop(cam);
 
     //given
     let ctx = GetQHYCCDFWVersion_context();
@@ -1462,6 +1494,10 @@ fn set_if_available_fail() {
         }
         .to_string()
     );
+    // Drop the first camera (closing its handle) before building a second one:
+    // each `new_camera()` carries its own `CloseQHYCCD` mock context, and two live
+    // at once would clear each other's expectation on drop.
+    drop(cam);
 
     //given
     let ctx_get = IsQHYCCDControlAvailable_context();
@@ -1499,9 +1535,13 @@ fn set_if_available_fail() {
 fn open_success() {
     let _mock = super::mock_guard();
     //given
-    let cam = Camera::new("test_camera".to_owned());
     let ctx_open = OpenQHYCCD_context();
     ctx_open.expect().times(1).return_const_st(TEST_HANDLE);
+    // The opened handle is closed by `HandleCell::Drop` when `cam` drops; declare
+    // the expectation (and `cam` last) so it is live at that drop.
+    let ctx_close = CloseQHYCCD_context();
+    ctx_close.expect().return_const_st(QHYCCD_SUCCESS);
+    let cam = Camera::new("test_camera".to_owned());
     //when
     let res = cam.open();
     //then
@@ -1513,9 +1553,11 @@ fn open_success() {
 fn open_already_open() {
     let _mock = super::mock_guard();
     //given
-    let cam = Camera::new("test_camera".to_owned());
     let ctx_open = OpenQHYCCD_context();
     ctx_open.expect().times(1).return_const_st(TEST_HANDLE);
+    let ctx_close = CloseQHYCCD_context();
+    ctx_close.expect().return_const_st(QHYCCD_SUCCESS);
+    let cam = Camera::new("test_camera".to_owned());
     let _res = cam.open();
     //when
     let res = cam.open();
@@ -1560,9 +1602,15 @@ fn open_nulerror() {
 fn close_success() {
     let _mock = super::mock_guard();
     //given
-    let ctx = CloseQHYCCD_context();
-    ctx.expect().times(1).return_const_st(QHYCCD_SUCCESS);
-    let cam = new_camera();
+    let ctx_open = OpenQHYCCD_context();
+    ctx_open.expect().times(1).return_const_st(TEST_HANDLE);
+    // One close: the explicit `close()` below takes the handle, so `HandleCell::Drop`
+    // is a no-op when `cam` drops. Built manually (not via `new_camera`) so this
+    // test owns the sole `CloseQHYCCD` expectation.
+    let ctx_close = CloseQHYCCD_context();
+    ctx_close.expect().times(1).return_const_st(QHYCCD_SUCCESS);
+    let cam = Camera::new("test_camera".to_owned());
+    cam.open().unwrap();
     //when
     let res = cam.close();
     //then
@@ -1573,9 +1621,13 @@ fn close_success() {
 fn close_already_closed() {
     let _mock = super::mock_guard();
     //given
-    let ctx = CloseQHYCCD_context();
-    ctx.expect().times(1).return_const_st(QHYCCD_SUCCESS);
-    let cam = new_camera();
+    let ctx_open = OpenQHYCCD_context();
+    ctx_open.expect().times(1).return_const_st(TEST_HANDLE);
+    // First close takes the handle; the second close and the drop are both no-ops.
+    let ctx_close = CloseQHYCCD_context();
+    ctx_close.expect().times(1).return_const_st(QHYCCD_SUCCESS);
+    let cam = Camera::new("test_camera".to_owned());
+    cam.open().unwrap();
     let _res = cam.close();
     //when
     let res = cam.close();
@@ -1587,9 +1639,14 @@ fn close_already_closed() {
 fn close_fail() {
     let _mock = super::mock_guard();
     //given
-    let ctx = CloseQHYCCD_context();
-    ctx.expect().times(1).return_const_st(QHYCCD_ERROR);
-    let cam = new_camera();
+    let ctx_open = OpenQHYCCD_context();
+    ctx_open.expect().times(1).return_const_st(TEST_HANDLE);
+    // A failed close leaves the handle open, so `HandleCell::Drop` retries it when
+    // `cam` drops: CloseQHYCCD is called twice (the explicit close + the drop).
+    let ctx_close = CloseQHYCCD_context();
+    ctx_close.expect().times(2).return_const_st(QHYCCD_ERROR);
+    let cam = Camera::new("test_camera".to_owned());
+    cam.open().unwrap();
     //when
     let res = cam.close();
     //then

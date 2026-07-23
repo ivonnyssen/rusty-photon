@@ -367,8 +367,10 @@ fn new_fail_close() {
             ADDR1 => QHYCCD_SUCCESS,
             _ => panic!("invalid handle"),
         });
+    // Called twice: the failed close inside `Sdk::new` leaves the local camera's
+    // handle open, so `HandleCell::Drop` retries it when that camera drops.
     let ctx_close = CloseQHYCCD_context();
-    ctx_close.expect().once().return_const_st(QHYCCD_ERROR);
+    ctx_close.expect().times(2).return_const_st(QHYCCD_ERROR);
     let ctx_release = ReleaseQHYCCDResource_context();
     ctx_release.expect().return_const_st(QHYCCD_SUCCESS);
     //when
@@ -378,4 +380,66 @@ fn new_fail_close() {
     assert!(sdk.cameras().last().is_none());
     assert_eq!(sdk.filter_wheels().count(), 0);
     assert!(sdk.filter_wheels().last().is_none());
+}
+
+/// Phase-1 teardown-ordering contract: when the `Sdk` is dropped while a camera
+/// handle is still open (the shutdown-while-connected path), `Sdk::drop` must call
+/// `CloseQHYCCD` on that handle BEFORE `ReleaseQHYCCDResource`. The QHYCCD manual
+/// documents Close-each-then-Release and warns the reverse is unsafe (Close
+/// destroys the handle) — see docs/references/qhyccd-sdk-manual.md
+/// "Disconnecting the camera".
+#[test]
+#[cfg(not(feature = "simulation"))]
+fn drop_closes_cameras_before_releasing_sdk() {
+    let _mock = super::mock_guard();
+    // Records the order of teardown FFI calls so we can assert Close-before-Release.
+    let calls: std::sync::Arc<std::sync::Mutex<Vec<&'static str>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+
+    let ctx_init = InitQHYCCDResource_context();
+    ctx_init.expect().times(1).return_const_st(QHYCCD_SUCCESS);
+    let ctx_scan = ScanQHYCCD_context();
+    ctx_scan.expect().times(1).return_const_st(1_u32);
+    let ctx_id = GetQHYCCDId_context();
+    ctx_id
+        .expect()
+        .times(1)
+        .returning_st(|_index, c_id| unsafe {
+            let cam_id = "QHY178M-DROP\0";
+            c_id.copy_from(cam_id.as_ptr() as *const c_char, cam_id.len());
+            QHYCCD_SUCCESS
+        });
+    const ADDR: *const core::ffi::c_void = 0xdeadbeef as *mut std::ffi::c_void;
+    // Opened twice: once during enumeration, once by the explicit re-open below.
+    let ctx_open = OpenQHYCCD_context();
+    ctx_open.expect().times(2).return_const_st(ADDR);
+    // No filter wheel: keep the ordering assertion to a single camera handle.
+    let ctx_plugged = IsQHYCCDCFWPlugged_context();
+    ctx_plugged.expect().times(1).return_const_st(QHYCCD_ERROR);
+
+    let calls_close = calls.clone();
+    let ctx_close = CloseQHYCCD_context();
+    // Called twice: the enumeration close, then the pre-release close in `Sdk::drop`.
+    ctx_close.expect().times(2).returning_st(move |_handle| {
+        calls_close.lock().unwrap().push("close");
+        QHYCCD_SUCCESS
+    });
+    let calls_release = calls.clone();
+    let ctx_release = ReleaseQHYCCDResource_context();
+    ctx_release.expect().times(1).returning_st(move || {
+        calls_release.lock().unwrap().push("release");
+        QHYCCD_SUCCESS
+    });
+
+    let sdk = Sdk::new().unwrap();
+    // Enumeration opened then closed the camera; re-open it so a live handle is
+    // present at drop (the shutdown-while-connected path).
+    sdk.cameras().next().unwrap().open().unwrap();
+    drop(sdk);
+
+    // Enumeration close during `Sdk::new`, then at drop: the pre-release close,
+    // then release. The "release" is last and is preceded by a "close" — never the
+    // reverse — which is the ordering contract.
+    let calls = calls.lock().unwrap();
+    assert_eq!(*calls, vec!["close", "close", "release"]);
 }
