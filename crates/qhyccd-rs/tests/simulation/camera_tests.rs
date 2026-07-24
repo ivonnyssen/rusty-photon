@@ -1224,6 +1224,84 @@ fn test_camera_typed_accessors() {
     camera.close().unwrap();
 }
 
+/// Audit #2: reading `CurTemp` after a set-point drives the reported sensor
+/// temperature toward it, one poll-step at a time (advance-on-poll, like the
+/// sibling `svbony-rs` sim), instead of staying frozen at ambient.
+#[test]
+fn cooling_ramps_toward_target_over_polls() {
+    let config = SimulatedCameraConfig::default().with_cooler();
+    let camera = Camera::new_simulated(config);
+    camera.open().unwrap();
+
+    // No set-point yet: the temperature holds at ambient across polls.
+    let ambient = camera.current_temperature_celsius().unwrap();
+    assert!((camera.current_temperature_celsius().unwrap() - ambient).abs() < f64::EPSILON);
+
+    // Engage cooling; the reported temperature must descend toward the target and
+    // eventually settle there.
+    camera.set_target_temperature_celsius(-10.0).unwrap();
+    let mut previous = camera.current_temperature_celsius().unwrap();
+    for _ in 0..200 {
+        let next = camera.current_temperature_celsius().unwrap();
+        assert!(next <= previous, "temperature must not rise while cooling");
+        previous = next;
+    }
+    assert!(
+        (camera.current_temperature_celsius().unwrap() - (-10.0)).abs() < f64::EPSILON,
+        "temperature should reach the set-point after enough polls"
+    );
+    // Auto-cooling now reports a nonzero cooler PWM (was frozen at 0 before).
+    assert!(camera.cooler_power_raw().unwrap() > 0.0);
+
+    camera.close().unwrap();
+}
+
+/// Audit #11: a `close()` -> `open()` cycle presents a clean device. Real
+/// `CloseQHYCCD` destroys the handle, so retained live/exposure/frame state must
+/// not survive to make a frame call falsely succeed without re-arming.
+#[test]
+fn close_then_open_clears_session_state() {
+    let config = SimulatedCameraConfig::default();
+    let camera = Camera::new_simulated(config);
+    camera.open().unwrap();
+
+    // Engage live mode and confirm a frame flows.
+    camera.begin_live().unwrap();
+    let size = camera.get_image_size().unwrap();
+    let mut buf = vec![0u8; size];
+    camera.get_live_frame(&mut buf).unwrap();
+
+    // Reconnect. Live mode must NOT still be engaged on the fresh device.
+    camera.close().unwrap();
+    camera.open().unwrap();
+    let err = camera.get_live_frame(&mut buf).unwrap_err();
+    assert!(
+        matches!(err, QHYError::Sdk { .. }),
+        "live frame must fail after reconnect until begin_live() is called again, got {err:?}"
+    );
+
+    camera.close().unwrap();
+}
+
+/// Audit #3: the CFW position is carried on `CONTROL_CFWPORT` as a HEX ASCII
+/// digit, so slot 10 encodes to 'A' (65), not ':' (58). Exercise a >= 10 slot.
+#[test]
+fn cfw_position_uses_hex_ascii_for_high_slots() {
+    let config = SimulatedCameraConfig::default().with_filter_wheel(16);
+    let camera = Camera::new_simulated(config);
+    camera.open().unwrap();
+
+    camera.set_cfw_position(10).unwrap();
+    assert_eq!(camera.cfw_position().unwrap(), 10);
+    // On the wire the value is the hex-ASCII code 'A' == 65, not decimal 10 + 48 == 58.
+    assert_eq!(
+        camera.get_parameter(ControlType::CfwPort).unwrap() as u32,
+        65
+    );
+
+    camera.close().unwrap();
+}
+
 #[test]
 fn test_usb_traffic_control() {
     let config = SimulatedCameraConfig::default();

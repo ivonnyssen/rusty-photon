@@ -26,6 +26,14 @@ use crate::sys::{
 /// The representation of the SDK. It automatically allocates the SDK when constructed
 /// and automatically frees resource when deconstructed.
 ///
+/// # Lifetime
+///
+/// Construct **at most one `Sdk` at a time**. `Sdk::new` calls the process-global
+/// `InitQHYCCDResource` and [`Drop`] calls `ReleaseQHYCCDResource`; these are NOT
+/// reference-counted, so a second live `Sdk` re-inits the global resource and
+/// dropping either releases it for both. Hold a single `Sdk` for the program's
+/// lifetime.
+///
 /// # Example
 /// ```no_run
 /// use qhyccd_rs::Sdk;
@@ -35,7 +43,6 @@ use crate::sys::{
 /// println!("SDK version: {:?}", sdk_version);
 /// let camera = sdk.cameras().last().expect("no camera found");
 /// println!("Camera: {:?}", camera);
-/// let sdk = Sdk::new().expect("SDK::new failed");
 /// println!("{} filter wheels connected.", sdk.filter_wheels().count());
 /// ```
 pub struct Sdk {
@@ -54,6 +61,9 @@ impl Sdk {
     /// ```
     #[cfg(not(feature = "simulation"))]
     pub fn new() -> Result<Self> {
+        // Retry the CFW-plugged probe a few times (200ms apart), like the
+        // reference driver: a single post-init probe occasionally misses the wheel.
+        const CFW_PROBE_ATTEMPTS: u32 = 3;
         match unsafe { InitQHYCCDResource() } {
             QHYCCD_SUCCESS => {
                 let num_cameras = match unsafe { ScanQHYCCD() } {
@@ -91,18 +101,55 @@ impl Sdk {
                     let camera = Camera::new(id.clone());
                     let mut has_filter_wheel = false;
                     match camera.open() {
-                        Ok(_) => match camera.is_cfw_plugged_in() {
-                            Ok(true) => {
-                                tracing::trace!("Camera {} reporting a filter wheel", id);
-                                has_filter_wheel = true;
+                        Ok(_) => {
+                            // The CFW-plugged probe is a live transaction over the
+                            // camera USB link that `InitQHYCCD` must bring up first;
+                            // the reference driver (indi-qhy) calls `InitQHYCCD`
+                            // (return-checked) BEFORE `IsQHYCCDCFWPlugged`, and
+                            // retries the probe because a single post-init probe
+                            // still occasionally misses the wheel. Reachable only on
+                            // real hardware — the `simulation` `Sdk::new` decides
+                            // `has_filter_wheel` from config and never runs this
+                            // open -> init -> probe -> close path.
+                            match camera.init() {
+                                Ok(_) => {
+                                    for attempt in 0..CFW_PROBE_ATTEMPTS {
+                                        match camera.is_cfw_plugged_in() {
+                                            Ok(true) => {
+                                                tracing::trace!(
+                                                    "Camera {} reporting a filter wheel",
+                                                    id
+                                                );
+                                                has_filter_wheel = true;
+                                                break;
+                                            }
+                                            Ok(false) => {
+                                                if attempt + 1 < CFW_PROBE_ATTEMPTS {
+                                                    std::thread::sleep(
+                                                        std::time::Duration::from_millis(200),
+                                                    );
+                                                } else {
+                                                    tracing::trace!(
+                                                        "Camera {} has no filter wheel",
+                                                        id
+                                                    );
+                                                }
+                                            }
+                                            Err(error) => {
+                                                tracing::error!(error = ?error);
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                                Err(error) => {
+                                    tracing::error!(
+                                        error = ?error,
+                                        "init before CFW probe failed; assuming no filter wheel"
+                                    );
+                                }
                             }
-                            Ok(false) => {
-                                tracing::trace!("Camera {} has no filter wheel", id)
-                            }
-                            Err(error) => {
-                                tracing::error!(error = ?error);
-                            }
-                        },
+                        }
                         Err(error) => {
                             tracing::error!(error = ?error);
                             continue;

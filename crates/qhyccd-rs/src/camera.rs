@@ -40,6 +40,76 @@ use crate::sys::{
 #[cfg(feature = "simulation")]
 use crate::simulation::{self, SimulatedCameraState};
 
+// --- filter-wheel position <-> CONTROL_CFWPORT ASCII encoding ------------------
+//
+// A QHY CFW addresses slots by a single HEX ASCII digit carried on
+// `CONTROL_CFWPORT`: slot 0 -> '0' (0x30) .. slot 9 -> '9', slot 10 -> 'A' (0x41)
+// .. slot 15 -> 'F' (0x46), up to the SDK's 16 positions. (QHYCCD Filter Wheel
+// API manual: '0' == position 1 .. 'F' == position 16; INDI's indi-qhy encodes
+// `position - 1` with `"%X"` and decodes with `strtol(.., 16)`.) For slots 0-9
+// hex and decimal coincide, so this differs from a plain `+48` decimal offset
+// only from slot 10 up — where a decimal offset would command/report the WRONG
+// physical slot. Shared by the real accessors and the simulation backend so a
+// crate round-trip stays consistent; verified only on hardware for slots >= 10.
+
+/// Encode a 0-indexed slot as its `CONTROL_CFWPORT` hex-ASCII code.
+fn cfw_slot_to_ascii(slot: u32) -> u32 {
+    if slot < 10 {
+        slot + b'0' as u32
+    } else {
+        (slot - 10) + b'A' as u32
+    }
+}
+
+/// Decode a `CONTROL_CFWPORT` hex-ASCII code back to a 0-indexed slot. Accepts
+/// upper- or lower-case hex; any out-of-range byte falls back to the legacy
+/// decimal decode so a nonstandard value degrades rather than panics.
+fn cfw_ascii_to_slot(ascii: u32) -> u32 {
+    match ascii {
+        d @ 0x30..=0x39 => d - 0x30,      // '0'..='9'
+        d @ 0x41..=0x46 => d - 0x41 + 10, // 'A'..='F'
+        d @ 0x61..=0x66 => d - 0x61 + 10, // 'a'..='f'
+        other => other.saturating_sub(0x30),
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod cfw_encoding_tests {
+    use super::{cfw_ascii_to_slot, cfw_slot_to_ascii};
+
+    #[test]
+    fn slot_to_ascii_uses_hex_digits() {
+        assert_eq!(cfw_slot_to_ascii(0), u32::from(b'0')); // 48
+        assert_eq!(cfw_slot_to_ascii(9), u32::from(b'9')); // 57
+        assert_eq!(cfw_slot_to_ascii(10), u32::from(b'A')); // 65, NOT ':' (58)
+        assert_eq!(cfw_slot_to_ascii(15), u32::from(b'F')); // 70
+    }
+
+    #[test]
+    fn ascii_to_slot_decodes_hex_including_lowercase() {
+        assert_eq!(cfw_ascii_to_slot(u32::from(b'0')), 0);
+        assert_eq!(cfw_ascii_to_slot(u32::from(b'9')), 9);
+        assert_eq!(cfw_ascii_to_slot(u32::from(b'A')), 10);
+        assert_eq!(cfw_ascii_to_slot(u32::from(b'f')), 15);
+    }
+
+    #[test]
+    fn encoding_round_trips_every_slot_0_to_15() {
+        for slot in 0..16 {
+            assert_eq!(cfw_ascii_to_slot(cfw_slot_to_ascii(slot)), slot);
+        }
+    }
+
+    #[test]
+    fn slots_0_through_9_match_the_legacy_decimal_offset() {
+        // Hex and decimal `+48` coincide below 10; they diverge only from slot 10.
+        for slot in 0..10 {
+            assert_eq!(cfw_slot_to_ascii(slot), slot + 48);
+        }
+    }
+}
+
 // --- ControlType: the SDK CONTROL_ID address space ----------------------------
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
@@ -559,6 +629,18 @@ impl Camera {
             let mut state = self.state.write();
             state.is_open = false;
             state.is_initialized = false;
+            // Real `CloseQHYCCD` destroys the device handle; a later `open()`
+            // yields a fresh device with NO retained session state. Clear the
+            // per-session imaging state so a `close()` -> `open()` cycle presents a
+            // clean device — otherwise a stale `live_mode_active` / `captured_image`
+            // / `exposure_start` makes `get_live_frame` / `get_single_frame`
+            // falsely succeed with no intervening `begin_live()` / exposure, a
+            // false pass real hardware can never produce.
+            state.live_mode_active = false;
+            state.captured_image = None;
+            state.captured_image_metadata = None;
+            state.exposure_start = None;
+            state.stream_mode = None;
             Ok(())
         }
     }
@@ -1634,7 +1716,10 @@ impl Camera {
                 if control == ControlType::CamColor {
                     return state.config.bayer_mode.map(|m| m as u32);
                 }
-                Some(1) // ControlType is available
+                // Real `IsQHYCCDControlAvailable` returns `QHYCCD_SUCCESS` (0) for an
+                // available non-color control, and the real arm passes that raw
+                // status through as the `Some` payload — so match it (was `Some(1)`).
+                Some(0)
             } else {
                 None
             }
@@ -1666,18 +1751,25 @@ impl Camera {
         }
         #[cfg(feature = "simulation")]
         {
-            let state = self.state.read();
+            // Write lock: reading `CONTROL_CURTEMP` advances the poll-based cooling
+            // ramp (`SimulatedCameraState::update_temperature`).
+            let mut state = self.state.write();
             if !state.is_open {
                 return Err(QHYError::CameraNotOpen);
             }
             // Handle special controls
             match control {
                 ControlType::CfwPort => {
-                    // Return position as ASCII value (48 = '0')
-                    Ok((state.filter_wheel_position + 48) as f64)
+                    // Position carried as its hex-ASCII code (see `cfw_slot_to_ascii`).
+                    Ok(cfw_slot_to_ascii(state.filter_wheel_position) as f64)
                 }
                 ControlType::CfwSlotsNum => Ok(state.config.filter_wheel_slots as f64),
-                ControlType::CurTemp => Ok(state.current_temperature),
+                ControlType::CurTemp => {
+                    // Real GetQHYCCDParam(CURTEMP) tracks the CONTROL_COOLER setpoint;
+                    // advance one poll-step toward it and report the new value.
+                    state.update_temperature();
+                    Ok(state.current_temperature)
+                }
                 ControlType::CurPWM => Ok(state.cooler_pwm),
                 ControlType::Cooler => {
                     if state
@@ -1781,8 +1873,8 @@ impl Camera {
             // Handle special controls
             match control {
                 ControlType::CfwPort => {
-                    // Value is ASCII position, convert to 0-indexed
-                    state.filter_wheel_position = (value as u32).saturating_sub(48);
+                    // Value is the hex-ASCII position code (see `cfw_ascii_to_slot`).
+                    state.filter_wheel_position = cfw_ascii_to_slot(value as u32);
                 }
                 ControlType::Cooler => {
                     state.target_temperature = value;
@@ -1946,19 +2038,21 @@ impl Camera {
         Ok(self.get_parameter(ControlType::CfwSlotsNum)? as u32)
     }
 
-    /// Current 0-indexed filter-wheel position, decoding the SDK's ASCII-offset
-    /// `ControlType::CfwPort` value (`'0'` == slot 0).
+    /// Current 0-indexed filter-wheel position, decoding the SDK's hex-ASCII
+    /// `ControlType::CfwPort` value (`'0'` == slot 0 .. `'F'` == slot 15).
     pub fn cfw_position(&self) -> Result<u32> {
-        Ok((self.get_parameter(ControlType::CfwPort)? - 48_f64) as u32)
+        Ok(cfw_ascii_to_slot(
+            self.get_parameter(ControlType::CfwPort)? as u32
+        ))
     }
 
-    /// Command the filter wheel to a 0-indexed slot, encoding the SDK's ASCII
-    /// offset onto `ControlType::CfwPort`.
+    /// Command the filter wheel to a 0-indexed slot, encoding it as the SDK's
+    /// hex-ASCII `ControlType::CfwPort` code (`'0'` == slot 0 .. `'F'` == slot 15).
     ///
     /// Actuates hardware — see [`Camera::set_target_temperature_celsius`]'s
     /// tenet note.
     pub fn set_cfw_position(&self, position: u32) -> Result<()> {
-        self.set_parameter(ControlType::CfwPort, f64::from(position + 48))
+        self.set_parameter(ControlType::CfwPort, f64::from(cfw_slot_to_ascii(position)))
     }
 }
 

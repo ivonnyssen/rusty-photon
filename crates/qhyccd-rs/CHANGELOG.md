@@ -18,9 +18,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   single-frame capture on the cameras/modes that take that path. Affects real
   hardware only — the `simulation` backend never returns this code, so no test in
   the crate covers the branch. Adds `libqhyccd_sys::QHYCCD_READ_DIRECTLY`.
+- Filter-wheel position is now encoded on `CONTROL_CFWPORT` as a **hex** ASCII
+  digit (`'0'`..`'F'`, up to 16 positions), matching the QHYCCD Filter Wheel API
+  and INDI's indi-qhy, instead of a decimal `+48` offset. Slots 0–9 are
+  unchanged; slots ≥ 10 previously commanded/reported the wrong physical slot
+  (slot 10 encoded to `':'` instead of `'A'`). Affects real hardware only (the
+  simulation mirrors the crate's encoding); a new pure
+  `cfw_slot_to_ascii`/`cfw_ascii_to_slot` pair is unit-tested for every slot 0–15.
+- `Sdk::new` now calls `InitQHYCCD` (return-checked) before probing each camera
+  for a filter wheel with `IsQHYCCDCFWPlugged`, and retries the probe up to 3×
+  (200 ms apart), mirroring the reference driver: the CFW-plugged check is a live
+  transaction over the camera link that `InitQHYCCD` must bring up first, so the
+  previous pre-init one-shot probe could silently miss or phantom a filter wheel.
+  Enumerating a camera without a filter wheel is now up to ~400 ms slower.
+  Real-hardware path only.
+- Documented that at most one `Sdk` may exist at a time (`InitQHYCCDResource` /
+  `ReleaseQHYCCDResource` are process-global and not reference-counted) and fixed
+  the `Sdk` doc example, which constructed two `Sdk` instances and so redundantly
+  re-initialised / double-released the global SDK resource.
 
 ### Changed
 
+- The simulated cooler now **ramps**: reading `CONTROL_CURTEMP` advances the
+  reported sensor temperature one step (1 °C) per poll toward the `CONTROL_COOLER`
+  set-point and reflects a plausible `CONTROL_CURPWM`, matching real auto-cooling
+  and the sibling `svbony-rs` sim. Previously the simulated temperature was frozen
+  at ambient (20 °C) and auto-cooling never populated PWM, so a "wait until cooled"
+  loop never settled in simulation.
+- The simulated `is_control_available` now returns `Some(0)` (`QHYCCD_SUCCESS`)
+  for an available non-color control, matching the value the real arm passes
+  through (was `Some(1)`); the `CamColor` bayer-code payload is unchanged.
+- The simulated `close()` now clears per-session state (live-mode engagement,
+  captured frame + metadata, in-flight exposure, stream mode), so a `close()` →
+  `open()` cycle presents a fresh device as real `CloseQHYCCD` (which destroys the
+  handle) does — previously stale state let `get_live_frame` / `get_single_frame`
+  falsely succeed after a reconnect without re-arming.
 - Simulated exposures now capture their start timestamp *after* the frame is
   pre-generated, so frame-generation time no longer counts against the
   simulated exposure duration (on a loaded machine it could consume — or

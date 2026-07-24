@@ -273,6 +273,15 @@ pub(crate) struct SimulatedCameraState {
     pub debayer_enabled: bool,
 }
 
+/// Ambient (cooler-off) sensor temperature the simulated camera settles at, °C.
+const SIM_AMBIENT_C: f64 = 20.0;
+/// Per-poll cooling-ramp step, °C. Advance-on-poll (not wall-clock) mirrors the
+/// sibling `svbony-rs` / `zwo-rs` sims so tests converge deterministically
+/// without sleeping.
+const SIM_COOLING_STEP_C: f64 = 1.0;
+/// Simulated cooler PWM per °C below ambient (result saturated to 0..255).
+const SIM_COOLER_PWM_PER_DEGREE: f64 = 12.0;
+
 impl SimulatedCameraState {
     /// Creates a new state from a configuration
     pub fn new(config: SimulatedCameraConfig) -> Self {
@@ -432,23 +441,21 @@ impl SimulatedCameraState {
         self.captured_image_metadata = None;
     }
 
-    /// Updates the simulated temperature (call periodically for realistic behavior)
-    #[allow(dead_code)]
+    /// Advance the reported sensor temperature one poll-step toward the current
+    /// target (the `CONTROL_COOLER` auto-cooling setpoint) and reflect a plausible
+    /// cooler PWM. Advance-on-poll — a read of `CONTROL_CURTEMP` moves the value
+    /// one step — mirrors the sibling `svbony-rs` / `zwo-rs` sims: it converges
+    /// deterministically without sleeping. Real `GetQHYCCDParam(CURTEMP)` tracks
+    /// the setpoint the same way. Called from the `get_parameter(CurTemp)` read
+    /// path; with no setpoint the target stays at ambient so the value holds.
     pub fn update_temperature(&mut self) {
-        if self.config.has_cooler && self.cooler_pwm > 0.0 {
-            // Simple simulation: temperature approaches target based on PWM
-            let cooling_rate = self.cooler_pwm / 255.0 * 0.1; // Max 0.1C per update
-            if self.current_temperature > self.target_temperature {
-                self.current_temperature =
-                    (self.current_temperature - cooling_rate).max(self.target_temperature);
-            }
-        } else {
-            // Warm up towards ambient (20C)
-            if self.current_temperature < 20.0 {
-                self.current_temperature = (self.current_temperature + 0.05).min(20.0);
-            }
-        }
-        // Update the parameter
+        let delta = self.target_temperature - self.current_temperature;
+        let step = delta.clamp(-SIM_COOLING_STEP_C, SIM_COOLING_STEP_C);
+        self.current_temperature += step;
+        // A real cooler burns PWM proportional to how far below ambient it must
+        // hold the sensor; zero at/above ambient (0..255 per the SDK's CurPWM).
+        self.cooler_pwm = ((SIM_AMBIENT_C - self.current_temperature) * SIM_COOLER_PWM_PER_DEGREE)
+            .clamp(0.0, 255.0);
         self.parameters
             .insert(ControlType::CurTemp, self.current_temperature);
     }
