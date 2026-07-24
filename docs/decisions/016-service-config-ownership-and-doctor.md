@@ -3,8 +3,8 @@
 ## Status
 
 Accepted (2026-07-15); amended 2026-07-16 (see [Amendments](#amendments-2026-07-16));
-implementation tracked by
-[`docs/plans/service-config-doctor.md`](../plans/service-config-doctor.md).
+implemented in full and archived —
+[`docs/plans/archive/service-config-doctor.md`](../plans/archive/service-config-doctor.md).
 
 Builds on [ADR-012](012-service-packaging-architecture.md) §3 without
 superseding it: packages still ship no config file, and services still
@@ -495,7 +495,7 @@ starting D1.
 ## References
 
 - Plan (phases, verification matrix, flagged unknowns):
-  [`docs/plans/service-config-doctor.md`](../plans/service-config-doctor.md)
+  [`docs/plans/archive/service-config-doctor.md`](../plans/archive/service-config-doctor.md)
 - Config ownership this builds on: [ADR-012](012-service-packaging-architecture.md) §3
 - Native SDK payload policy: [ADR-013](013-native-sdk-payload-policy.md)
 - The link policy that draws the SDK line:

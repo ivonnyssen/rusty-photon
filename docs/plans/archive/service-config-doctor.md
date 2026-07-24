@@ -1,5 +1,28 @@
 # Service Config Doctor Plan — installer puts bytes, doctor wires configs
 
+**Status: COMPLETE (archived 2026-07-24).** All eight phases shipped to `main`:
+D0 #539, D1 #549, D2 #554, D3 #560, D3s #559, D4 #563, D5 #568, D6 #564 + #573,
+D7 [#589](https://github.com/ivonnyssen/rusty-photon/pull/589) (merged
+2026-07-19). The on-rig verification leg ran after D7 and its field findings
+landed as follow-up fixes — notably
+[#602](https://github.com/ivonnyssen/rusty-photon/pull/602) (the
+`hardware.serial-access` check now models the kernel's group union, after a
+false FAIL on a healthy rig), plus ACME/provisioning hardening (#616/#646,
+#618, #623, #640), credential and CA wiring (#612, #649, #652, #655, #656),
+and catalog registrations for late-packaged services (#661/#692 session-runner,
+#678/#687 svbony-camera).
+
+Deliberately parked, tracked separately:
+[#582](https://github.com/ivonnyssen/rusty-photon/issues/582) — re-enable the
+MSI nightly-over-nightly upgrade proof, redesigned around the now-shipped
+`doctor --fix`; and
+[#229](https://github.com/ivonnyssen/rusty-photon/issues/229) — the
+`cloudflare`/`reqwest` duplication, whose blast radius D6 reduced from the
+workspace to doctor as promised (`install_default_crypto_provider` survives at
+`crates/rusty-photon-tls/src/lib.rs:27` as the belt-and-suspenders this plan
+said it would). The "Future considerations" section below is unstarted by
+design — it was never in scope.
+
 ## Goal
 
 Make a multi-service rusty-photon install coherent without hand-wiring. Today
@@ -24,7 +47,7 @@ doctor *out* of the services rather than a component of them.
 
 | Phase | Description | Status | Branch / PR |
 |-------|-------------|--------|-------------|
-| D0 | This plan + [ADR-016](../decisions/016-service-config-ownership-and-doctor.md) (config ownership + the SDK line) | Merged | #539 |
+| D0 | This plan + [ADR-016](../../decisions/016-service-config-ownership-and-doctor.md) (config ownership + the SDK line) | Merged | #539 |
 | D1 | `rusty-photon-server-config` (core + Alpaca shapes); all 18 services adopt; TLS/auth for the 9 that lack it; `bind_address` everywhere (default `0.0.0.0`); per-service TLS+auth smoke scenarios | Merged | #549 (follow-up: [#550](https://github.com/ivonnyssen/rusty-photon/issues/550), smoke-fixture dedupe) |
 | D2 | `rusty-photon-doctor` binary: catalog + service-config diagnosis (read-only) | Merged | #554 |
 | D3 | `--fix`; ui-htmx sources from rp's roster (its `drivers` map becomes an empty-by-default override; the map was later deleted entirely — [#569](https://github.com/ivonnyssen/rusty-photon/issues/569), ADR-016 amendment 6) | Merged | #560 → #559 |
@@ -32,9 +55,9 @@ doctor *out* of the services rather than a component of them.
 | D4 | `rusty-photon-doctor-checks` crate + generic hardware checks (no SDK) | Merged | [#563](https://github.com/ivonnyssen/rusty-photon/pull/563) |
 | D5 | Per-service `doctor` subcommand + aggregation | Merged | [#568](https://github.com/ivonnyssen/rusty-photon/pull/568) |
 | D6 | Move the TLS + credential lifecycle `rp` → doctor; split `rp-tls`; certs to `~/.config/rusty-photon/pki`; doctor generates certs + mints one credential + writes TLS-on/auth-on config | Merged | D6a [#564](https://github.com/ivonnyssen/rusty-photon/pull/564); D6b [#573](https://github.com/ivonnyssen/rusty-photon/pull/573) |
-| D7 | Packaging (doctor + renewal timers ride sentinel's artifacts), install-flow docs, on-rig verification | In review | [#589](https://github.com/ivonnyssen/rusty-photon/pull/589) |
+| D7 | Packaging (doctor + renewal timers ride sentinel's artifacts), install-flow docs, on-rig verification | Merged | [#589](https://github.com/ivonnyssen/rusty-photon/pull/589) (on-rig follow-up: [#602](https://github.com/ivonnyssen/rusty-photon/pull/602); MSI upgrade proof: [#582](https://github.com/ivonnyssen/rusty-photon/issues/582)) |
 
-## Decisions (fixed — see [ADR-016](../decisions/016-service-config-ownership-and-doctor.md) for rationale)
+## Decisions (fixed — see [ADR-016](../../decisions/016-service-config-ownership-and-doctor.md) for rationale)
 
 1. **The installer puts bytes on disk. Doctor wires the configs.** Packages do
    not generate or seed config; postinst does not call doctor. Services
@@ -69,7 +92,7 @@ doctor *out* of the services rather than a component of them.
 
 5. **Hardware checks split at the SDK line.** Central doctor does everything
    that needs no vendor blob. Services own everything that does. This is forced
-   by [ADR-014](../decisions/014-zwo-per-device-services-and-link-features.md),
+   by [ADR-014](../../decisions/014-zwo-per-device-services-and-link-features.md),
    not a judgment call — see Design below.
 
 6. **The similarity lives in a shared library, not a shared binary.** Serial
@@ -226,7 +249,7 @@ deep representative suite for the shared Alpaca driver stack.
 ### D2 — the catalog and service-config diagnosis
 
 The full D2 specification is the design doc,
-[`docs/services/doctor.md`](../services/doctor.md). Settled interactively
+[`docs/services/doctor.md`](../../services/doctor.md). Settled interactively
 2026-07-16 (the eight open choices, recorded here so later phases inherit
 them):
 
@@ -240,8 +263,9 @@ them):
    `services/<svc>/pkg/doctor.toml` (`class = "alpaca"|"core"`, `port`).
    Each service unit-tests its own file against its own config defaults;
    doctor embeds the files at build time; CI asserts every `services/*/pkg`
-   dir carries one. Note the packaged set is **17** services — session-runner
-   has no `pkg/` yet and self-enrolls when packaging lands.
+   dir carries one. The packaged set was **17** services when D2 landed;
+   session-runner and svbony-camera self-enrolled as their packaging landed
+   (#661/#692, #678/#687), so it is **19** as of archiving.
 3. **Installed-detection** — the service manager knows a `rusty-photon-*`
    unit, OR a config file exists (covers dev checkouts). Matches D3s's
    discovery exactly.
@@ -526,7 +550,7 @@ the implementation and later phases inherit them):
 
 ### D4/D5 — hardware checks, and why the SDK line is not a judgment call
 
-[ADR-014](../decisions/014-zwo-per-device-services-and-link-features.md) exists
+[ADR-014](../../decisions/014-zwo-per-device-services-and-link-features.md) exists
 because of exactly the failure a central hardware-probing doctor would recreate:
 
 > Installing `rusty-photon-zwo-camera` and `rusty-photon-zwo-focuser` together
@@ -544,7 +568,7 @@ So:
 
 **D4 — no SDK needed → central doctor**, via a shared
 `rusty-photon-doctor-checks` crate (contract now specified in
-[doctor.md §Hardware](../services/doctor.md); settled choices: one severity
+[doctor.md §Hardware](../../services/doctor.md); settled choices: one severity
 rule — fail when the unit is enabled, warn otherwise; device-presence
 checks on all three platforms, the udev/group/firmware mechanics on Linux):
 
@@ -585,7 +609,7 @@ The precedent for this shape is already in the tree:
 `services/zwo-camera/pkg/90-rusty-photon-zwo.rules` is **per-service** data.
 
 D5's settled choices (contract in [doctor.md §Per-service
-doctors](../services/doctor.md)):
+doctors](../../services/doctor.md)):
 
 - **All catalog services** carry the subcommand, not just the three SDK
   services — the subcommand's `config.full-shape` check is where the
@@ -741,22 +765,22 @@ permissive in both directions across the binary boundary.
 
 ## References
 
-- [ADR-016](../decisions/016-service-config-ownership-and-doctor.md) — the
+- [ADR-016](../../decisions/016-service-config-ownership-and-doctor.md) — the
   decision record behind this plan: config ownership, the installer/doctor
   split, and the SDK line, with the rejected alternatives (runtime discovery,
   postinst generation, a joint file, a hardware-probing central doctor).
-- [ADR-012](../decisions/012-service-packaging-architecture.md) — config is
+- [ADR-012](../../decisions/012-service-packaging-architecture.md) — config is
   user-based XDG, owned by the service; conffiles rejected because services
   rewrite their own config. Generation is not shipping: this plan does not
   reopen that decision.
-- [ADR-013](../decisions/013-native-sdk-payload-policy.md) — native SDK payload
+- [ADR-013](../../decisions/013-native-sdk-payload-policy.md) — native SDK payload
   policy; proprietary firmware is never packaged.
-- [ADR-014](../decisions/014-zwo-per-device-services-and-link-features.md) —
+- [ADR-014](../../decisions/014-zwo-per-device-services-and-link-features.md) —
   one service per independently usable device; each package ships exactly its
   own blob. Draws the SDK line this plan follows.
-- [ADR-015](../decisions/015-windows-packaging-architecture.md) — config and
+- [ADR-015](../../decisions/015-windows-packaging-architecture.md) — config and
   state are platform-dependent defaults in code, not installer artifacts.
-- [config-actions](../services/config-actions.md) — the `config.get`/`apply`/
+- [config-actions](../../services/config-actions.md) — the `config.get`/`apply`/
   `schema` protocol doctor must not fight with.
-- [packaging.md](../packaging.md) / [packaging-windows.md](../packaging-windows.md)
-  / [packaging-macos.md](../packaging-macos.md) — current per-platform reality.
+- [packaging.md](../../packaging.md) / [packaging-windows.md](../../packaging-windows.md)
+  / [packaging-macos.md](../../packaging-macos.md) — current per-platform reality.

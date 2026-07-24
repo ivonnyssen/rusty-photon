@@ -121,7 +121,7 @@ ASCOM Alpaca **Focuser** driver for the ZWO EAF, built on the same vendored `zwo
 
 ### Doctor
 
-One-shot CLI that diagnoses a multi-service install, read-only: packages put bytes on disk, services self-create their configs, and `rusty-photon-doctor` reports what does not line up — unparseable configs, port collisions, dangling cross-service name references, units that will never start, and sentinel's restart-privilege gap. Its service catalog is derived from each service's `pkg/doctor.toml`, never hand-maintained. Repair (`--fix`), hardware checks, and the TLS/credential lifecycle arrive in later phases of [the plan](docs/plans/service-config-doctor.md) (ADR-016). See [docs/services/doctor.md](docs/services/doctor.md) for design documentation.
+One-shot CLI that diagnoses a multi-service install and repairs it: packages put bytes on disk, services self-create their configs, and `rusty-photon-doctor` reports what does not line up — unparseable configs, port collisions, dangling cross-service name references, units that will never start, and sentinel's restart-privilege gap — then wires it with `--fix`. It also owns the hardware checks that need no vendor SDK (device nodes, group access, udev rules, USB presence, firmware helper), aggregates each service's own `doctor` subcommand for the SDK-gated ones, and owns the TLS and credential lifecycle (cert issuance, ACME, `tls renew`, credential mint and rotation). Its service catalog is derived from each service's `pkg/doctor.toml`, never hand-maintained. Ships in sentinel's packages alongside the daily renewal timer (ADR-016). See [docs/services/doctor.md](docs/services/doctor.md) for design documentation.
 
 ## Getting Started
 
