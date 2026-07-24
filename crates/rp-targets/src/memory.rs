@@ -81,8 +81,7 @@ mod tests {
         Target {
             slug: TargetSlug::new(slug).unwrap(),
             display_name: "M33".to_string(),
-            ra_hours: 1.5642,
-            dec_degrees: 30.6602,
+            coord: crate::IcrsCoord::try_new(1.5642, 30.6602).unwrap(),
             catalog_ref: Some("M33".to_string()),
             object_type: Some("Galaxy".to_string()),
             magnitude: Some(5.7),

@@ -314,15 +314,15 @@ impl From<&rp_targets::Target> for PlannerTarget {
     fn from(t: &rp_targets::Target) -> Self {
         Self {
             name: t.slug.as_str().to_string(),
-            ra_hours: t.ra_hours,
-            dec_degrees: t.dec_degrees,
+            ra_hours: t.coord.ra_hours(),
+            dec_degrees: t.coord.dec_degrees(),
             min_altitude_degrees: t.scheduling.and_then(|s| s.min_altitude_degrees),
             exposures: t
                 .goals
                 .iter()
                 .map(|g| ExposureSpec {
                     filter: (!g.filter.is_empty()).then(|| g.filter.clone()),
-                    duration_secs: g.exposure.as_secs_f64(),
+                    duration_secs: g.exposure_duration.as_secs_f64(),
                     count: Some(g.desired_count),
                 })
                 .collect(),
@@ -1151,8 +1151,7 @@ mod tests {
         rp_targets::Target {
             slug: rp_targets::TargetSlug::new(slug).unwrap(),
             display_name: slug.to_string(),
-            ra_hours: 1.0,
-            dec_degrees: 2.0,
+            coord: rp_targets::IcrsCoord::try_new(1.0, 2.0).unwrap(),
             catalog_ref: None,
             object_type: None,
             magnitude: None,
@@ -1196,7 +1195,7 @@ mod tests {
         let goal = rp_targets::AcquisitionGoal {
             filter: "L".to_string(),
             binning: rp_targets::Binning { x: 1, y: 1 },
-            exposure: std::time::Duration::from_secs(300),
+            exposure_duration: std::time::Duration::from_secs(300),
             desired_count: 20,
         };
         let t = store_target("ngc7000", None, vec![goal]);

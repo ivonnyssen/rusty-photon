@@ -17,7 +17,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use rp_targets::{AcquisitionGoal, Target, TargetSlug, TargetStore};
+use rp_targets::{AcquisitionGoal, IcrsCoord, Target, TargetSlug, TargetStore};
 
 use crate::equipment::EquipmentRegistry;
 use crate::planner::goal_wire::{format_exposure, parse_goal, GoalWire};
@@ -223,6 +223,14 @@ impl McpHandler {
             }
         };
 
+        // Validate coordinates up front — the newtype closes the
+        // store-write gap by construction (ADR-019), so an out-of-range
+        // add is rejected here before any store I/O.
+        let coord = match IcrsCoord::try_new(ra_hours, dec_degrees) {
+            Ok(c) => c,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
+
         let base_slug_str = match &catalog_ref {
             Some(_) => base_slug_input,
             None => kebab_slug_candidate(&base_slug_input),
@@ -242,8 +250,8 @@ impl McpHandler {
                 if same_object(
                     ra_hours,
                     dec_degrees,
-                    existing.ra_hours,
-                    existing.dec_degrees,
+                    existing.coord.ra_hours(),
+                    existing.coord.dec_degrees(),
                 ) =>
             {
                 (base_slug, false)
@@ -275,8 +283,7 @@ impl McpHandler {
         let target = Target {
             slug: final_slug,
             display_name,
-            ra_hours,
-            dec_degrees,
+            coord,
             catalog_ref,
             object_type,
             magnitude,
@@ -377,11 +384,17 @@ impl McpHandler {
         if let Some(v) = params.display_name {
             target.display_name = v;
         }
-        if let Some(v) = params.ra_hours {
-            target.ra_hours = v;
-        }
-        if let Some(v) = params.dec_degrees {
-            target.dec_degrees = v;
+        // Re-validate through the newtype whenever either coordinate moves,
+        // so an out-of-range edit is rejected (ADR-019 store-write gap).
+        if params.ra_hours.is_some() || params.dec_degrees.is_some() {
+            let ra = params.ra_hours.unwrap_or_else(|| target.coord.ra_hours());
+            let dec = params
+                .dec_degrees
+                .unwrap_or_else(|| target.coord.dec_degrees());
+            match IcrsCoord::try_new(ra, dec) {
+                Ok(c) => target.coord = c,
+                Err(e) => return Ok(tool_error!("{}", e)),
+            }
         }
         if let Some(v) = params.active {
             target.active = v;
@@ -524,8 +537,8 @@ fn target_to_json(t: &Target) -> Value {
     json!({
         "slug": t.slug.as_str(),
         "display_name": t.display_name,
-        "ra_hours": t.ra_hours,
-        "dec_degrees": t.dec_degrees,
+        "ra_hours": t.coord.ra_hours(),
+        "dec_degrees": t.coord.dec_degrees(),
         "catalog_ref": t.catalog_ref,
         "object_type": t.object_type,
         "magnitude": t.magnitude,
@@ -551,7 +564,7 @@ fn progress_for(t: &Target) -> Vec<Value> {
             json!({
                 "filter": g.filter,
                 "binning": g.binning.to_string(),
-                "exposure": format_exposure(g.exposure),
+                "exposure": format_exposure(g.exposure_duration),
                 "good": 0,
                 "total": 0,
                 "desired": g.desired_count,

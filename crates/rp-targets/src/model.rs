@@ -4,6 +4,7 @@
 
 use std::time::Duration;
 
+use rp_vocabulary::{Binning, IcrsCoord};
 use serde::{Deserialize, Serialize};
 
 use crate::error::TargetStoreError;
@@ -79,29 +80,19 @@ pub enum TargetSlugError {
     },
 }
 
-/// Frame binning, rendered as `"{x}x{y}"` (e.g. `"1x1"`, `"2x2"`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, derive_more::Display)]
-#[display("{x}x{y}")]
-pub struct Binning {
-    /// Horizontal binning factor.
-    pub x: u8,
-    /// Vertical binning factor.
-    pub y: u8,
-}
-
 /// Desired frame count for one acquisition sub-spec. The
-/// `(filter, binning, exposure)` triple is the quota key from the
+/// `(filter, binning, exposure_duration)` triple is the quota key from the
 /// filename scheme — frame type is always `Light` for goals, and gain is
 /// a fixed per-setup camera setting rather than a sub-spec dimension.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AcquisitionGoal {
     /// Filter name, e.g. `"Ha"`, `"L"`, `"R"`.
     pub filter: String,
-    /// Frame binning.
+    /// Frame binning ([`rp_vocabulary::Binning`], rendered `"1x1"`).
     pub binning: Binning,
-    /// Per-frame exposure length.
+    /// Per-frame exposure length, encoded as a humantime string on the wire.
     #[serde(with = "humantime_serde")]
-    pub exposure: Duration,
+    pub exposure_duration: Duration,
     /// Number of good frames desired for this sub-spec.
     pub desired_count: u32,
 }
@@ -157,10 +148,11 @@ pub struct Target {
     /// existing on-disk frames.
     pub display_name: String,
 
-    /// Right ascension, decimal hours, ICRS.
-    pub ra_hours: f64,
-    /// Declination, decimal degrees, ICRS.
-    pub dec_degrees: f64,
+    /// J2000/ICRS pointing, validated by construction ([`IcrsCoord`],
+    /// ADR-019). `#[serde(flatten)]` keeps the flat `{ra_hours, dec_degrees}`
+    /// on-disk shape, so the newtype changes no stored form.
+    #[serde(flatten)]
+    pub coord: IcrsCoord,
 
     /// Canonical catalog name this was resolved from, e.g. `"NGC 224"`.
     /// `None` for non-catalog targets (comets, custom framings).
@@ -207,8 +199,8 @@ pub struct Target {
 
 /// Validates a goal set for [`crate::TargetStore::upsert_target`] and
 /// [`crate::TargetStore::set_goals`]: no two goals may share the same
-/// `(filter, binning, exposure)` key, and no goal may have a zero
-/// `desired_count` or zero `exposure`.
+/// `(filter, binning, exposure_duration)` key, and no goal may have a zero
+/// `desired_count` or zero `exposure_duration`.
 ///
 /// # Errors
 ///
@@ -223,10 +215,10 @@ pub fn validate_goals(goals: &[AcquisitionGoal]) -> Result<(), TargetStoreError>
                 ),
             });
         }
-        if goal.exposure.is_zero() {
+        if goal.exposure_duration.is_zero() {
             return Err(TargetStoreError::InvalidGoals {
                 reason: format!(
-                    "goal for filter {:?} at {} has a zero exposure",
+                    "goal for filter {:?} at {} has a zero exposure_duration",
                     goal.filter, goal.binning
                 ),
             });
@@ -235,11 +227,14 @@ pub fn validate_goals(goals: &[AcquisitionGoal]) -> Result<(), TargetStoreError>
 
     for (i, a) in goals.iter().enumerate() {
         for b in &goals[i + 1..] {
-            if a.filter == b.filter && a.binning == b.binning && a.exposure == b.exposure {
+            if a.filter == b.filter
+                && a.binning == b.binning
+                && a.exposure_duration == b.exposure_duration
+            {
                 return Err(TargetStoreError::InvalidGoals {
                     reason: format!(
-                        "duplicate goal key: filter {:?}, binning {}, exposure {:?}",
-                        a.filter, a.binning, a.exposure
+                        "duplicate goal key: filter {:?}, binning {}, exposure_duration {:?}",
+                        a.filter, a.binning, a.exposure_duration
                     ),
                 });
             }
@@ -283,16 +278,14 @@ mod tests {
         );
     }
 
-    #[test]
-    fn binning_displays_as_wxh() {
-        assert_eq!(Binning { x: 2, y: 2 }.to_string(), "2x2");
-    }
+    // `Binning`'s Display/FromStr round-trip is tested in `rp-vocabulary`,
+    // where the type now lives (ADR-019).
 
     fn goal(filter: &str, x: u8, y: u8, secs: u64, desired_count: u32) -> AcquisitionGoal {
         AcquisitionGoal {
             filter: filter.to_string(),
             binning: Binning { x, y },
-            exposure: Duration::from_secs(secs),
+            exposure_duration: Duration::from_secs(secs),
             desired_count,
         }
     }

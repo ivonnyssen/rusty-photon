@@ -35,7 +35,7 @@ pub fn parse_goal(g: &GoalWire) -> Result<AcquisitionGoal, String> {
     Ok(AcquisitionGoal {
         filter: g.filter.clone(),
         binning: parse_binning(&g.binning)?,
-        exposure: humantime::parse_duration(&g.exposure)
+        exposure_duration: humantime::parse_duration(&g.exposure)
             .map_err(|e| format!("goal exposure {:?}: {e}", g.exposure))?,
         desired_count: g.desired_count,
     })
@@ -81,7 +81,7 @@ pub fn goal_to_json(g: &AcquisitionGoal) -> Value {
     json!({
         "filter": g.filter,
         "binning": g.binning.to_string(),
-        "exposure": format_exposure(g.exposure),
+        "exposure": format_exposure(g.exposure_duration),
         "desired_count": g.desired_count,
     })
 }
@@ -104,7 +104,7 @@ mod tests {
     fn parse_goal_round_trips_whole_second_exposure() {
         let goal = parse_goal(&wire("Ha", "1x1", "300s", 20)).unwrap();
         assert_eq!(goal.binning, Binning { x: 1, y: 1 });
-        assert_eq!(goal.exposure, Duration::from_secs(300));
+        assert_eq!(goal.exposure_duration, Duration::from_secs(300));
         assert_eq!(
             goal_to_json(&goal),
             json!({

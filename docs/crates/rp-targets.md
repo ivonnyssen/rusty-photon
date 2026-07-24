@@ -22,7 +22,7 @@ file:
 - **Targets** — a named pointing with denormalized coordinates,
   priority, an active flag, and optional per-target overrides.
 - **Acquisition goals** — the desired frame count per
-  `(filter, binning, exposure)` sub-spec, owned by a target.
+  `(filter, binning, exposure_duration)` sub-spec, owned by a target.
 - **Override storage** — per-target grading thresholds and scheduling
   constraints (the global defaults live in `rp` config; this crate
   stores only the deltas).
@@ -99,9 +99,9 @@ pub struct Target {
     /// identity or existing on-disk frames (e.g. "M33 — Triangulum").
     pub display_name: String,
 
-    // --- Pointing (denormalized; plain decimal ICRS, see note below) ---
-    pub ra_hours: f64,
-    pub dec_degrees: f64,
+    // --- Pointing (denormalized; validated IcrsCoord, see note below) ---
+    // `#[serde(flatten)]` keeps the flat {ra_hours, dec_degrees} on-disk shape.
+    pub coord: IcrsCoord,
 
     // --- Catalog provenance (None for non-catalog targets) ---
     /// Canonical catalog name this was resolved from, e.g. "NGC 224".
@@ -128,18 +128,21 @@ pub struct Target {
 }
 
 /// Desired frame count for one acquisition sub-spec. The
-/// `(filter, binning, exposure)` triple is exactly the quota key from
-/// the filename scheme (frame type is always Light for goals; gain is
+/// `(filter, binning, exposure_duration)` triple is exactly the quota key
+/// from the filename scheme (frame type is always Light for goals; gain is
 /// not a sub-spec dimension — it is a fixed per-setup camera setting).
 pub struct AcquisitionGoal {
     pub filter: String,          // "Ha", "L", "R", ...
-    pub binning: Binning,        // renders as "1x1"
+    pub binning: Binning,        // rp_vocabulary::Binning, renders as "1x1"
     #[serde(with = "humantime_serde")]
-    pub exposure: std::time::Duration,
+    pub exposure_duration: std::time::Duration,
     pub desired_count: u32,
 }
 
-pub struct Binning { pub x: u8, pub y: u8 }
+// Binning and IcrsCoord are the shared plan value types from
+// `rp-vocabulary` (ADR-019), re-exported here as `rp_targets::{Binning,
+// IcrsCoord}`. `Binning { pub x: u8, pub y: u8 }`; `IcrsCoord` is a
+// validated newtype (private fields, `try_new`).
 
 /// Per-target scheduling constraints. Each `None` field falls back to
 /// the rp-config global default. *Stored here; evaluated by rp's
@@ -185,17 +188,26 @@ name rather than a surrogate id. UUIDs in this codebase identify
 *transient operational artifacts* (exposure documents, operations,
 events); a target is a durable plan entity, so it is name-keyed.
 
-### Coordinates: plain decimal, not typed quantities
+### Coordinates: validated `IcrsCoord`, flat decimals on disk
 
-`ra_hours` / `dec_degrees` are bare `f64` in decimal ICRS, matching
-`rp_catalog::ResolvedTarget` and `rp_ephemeris::IcrsCoord`. Per
-[ADR-006](../decisions/006-typed-physical-quantities-for-mount-pointing.md),
-the typed-quantity newtypes (`MechHa`/`Ra`/`Dec`, encoder ticks) are
-**mount-local** — they exist to make frame/unit mix-ups in pointing math
-into compile errors. A target row is plan data, not pointing math; it
-flows straight into `IcrsCoord` when the planner needs a position. Bare
-decimals here keep the store aligned with the catalog it is populated
-from.
+The pointing is `coord: IcrsCoord` — the validated plan value type from
+[`rp-vocabulary`](rp-vocabulary.md) ([ADR-019](../decisions/019-plan-data-vocabulary-and-validation.md)),
+re-exported as `rp_targets::IcrsCoord`. It is a private-field newtype
+constructed through `IcrsCoord::try_new` (`ra_hours ∈ [0,24)`,
+`dec_degrees ∈ [-90,90]`), so a `Target` cannot hold an out-of-range
+pointing — the store-write validation gap the old bare-`f64` fields left
+open (`add_target`/`update_target` accepted any `f64`) is closed by
+construction. `#[serde(flatten)]` keeps the on-disk form the flat
+`{ra_hours, dec_degrees}` decimal pair, unchanged by the newtype; read
+sites use `coord.ra_hours()` / `coord.dec_degrees()`.
+
+This unifies the plan-side coordinate with `rp_catalog::ResolvedTarget`
+(catalog → store → planner is now one `IcrsCoord` type).
+`rp_ephemeris::IcrsCoord` stays a *separate* computed, `NaN`-capable type
+(a false cognate), bridged by `From`/`TryFrom` at the planner boundary —
+see ADR-019. This is distinct from [ADR-006](../decisions/006-typed-physical-quantities-for-mount-pointing.md)'s
+**mount-local** `MechHa`/`Ra`/`Dec` typed quantities, which model
+frame/unit mix-ups in pointing math and are not plan data.
 
 ## The `TargetStore` trait (the seam)
 
@@ -227,8 +239,9 @@ single `list_targets` call answers all-target progress with no N+1 fetch.
 `list_targets` is sorted by slug (deterministic; the planner re-sorts by
 its own policy). `delete_target` returns `false` for an absent slug;
 `set_goals` on an absent slug returns `TargetStoreError::NotFound`, and
-rejects a goal set that contains duplicate `(filter, binning, exposure)`
-keys or a zero `desired_count`/`exposure`.
+rejects a goal set that contains duplicate
+`(filter, binning, exposure_duration)` keys or a zero
+`desired_count`/`exposure_duration`.
 
 **Upsert precedence.** `upsert_target` writes the whole value (including
 `goals`) atomically. On upsert of an existing slug the stored
@@ -514,10 +527,11 @@ are computed from the store (goals) + the derivation above (actuals).
 documents progress keyed by filter alone
 (`{"Luminance": {completed, goal}}`), which would collapse two goals that
 share a filter (e.g. Ha@120s and Ha@300s). Because an `AcquisitionGoal`
-is keyed by the full `(filter, binning, exposure)` triple, the progress
-shape becomes, per target, a list of
-`{filter, binning, exposure, good, total, desired}`. The Rule-2 rp.md
-update must replace the filter-only shape accordingly.
+is keyed by the full `(filter, binning, exposure_duration)` triple, the
+progress shape becomes, per target, a list of
+`{filter, binning, exposure, good, total, desired}` (the JSON key stays
+`exposure` on the wire). The Rule-2 rp.md update must replace the
+filter-only shape accordingly.
 
 ### Constraint evaluation
 
@@ -653,9 +667,11 @@ partial one (the migration runs in a single write transaction).
 
 ```
 crates/rp-targets/src/
-├── lib.rs        # crate root: TargetStore trait + re-exports
-├── model.rs      # Target, AcquisitionGoal, Binning,
-│                 #   SchedulingConstraints, GradingThresholds, TargetSlug
+├── lib.rs        # crate root: TargetStore trait + re-exports (incl.
+│                 #   rp_vocabulary::{Binning, IcrsCoord})
+├── model.rs      # Target, AcquisitionGoal, SchedulingConstraints,
+│                 #   GradingThresholds, TargetSlug (Binning/IcrsCoord
+│                 #   come from rp-vocabulary, ADR-019)
 ├── error.rs      # TargetStoreError (thiserror)
 ├── redb_store.rs # RedbTargetStore: tables, transaction-per-op, spawn_blocking
 ├── migrate.rs    # schema_version constant + ordered migration steps
@@ -690,8 +706,10 @@ Crate-root attributes match the sibling crates:
 | Crate | Purpose |
 |---|---|
 | `redb` | embedded ACID key-value store (the file format) |
+| `rp-vocabulary` | shared plan value types `Binning` / `IcrsCoord` (ADR-019); `schema` feature off, so the store stays schemars-free |
 | `serde` / `serde_json` | value encoding inside `redb` |
-| `humantime-serde` | `Duration` (exposure) config/value encoding |
+| `humantime-serde` | `exposure_duration` (`Duration`) config/value encoding |
+| `derive_more` | `Display` derive for `TargetSlug` |
 | `thiserror` | `TargetStoreError` derive |
 | `tracing` | `debug!` on store operations |
 | `async-trait` | the `TargetStore` async seam |

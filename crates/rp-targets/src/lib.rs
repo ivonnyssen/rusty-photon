@@ -24,10 +24,14 @@ pub use error::TargetStoreError;
 pub use memory::InMemoryTargetStore;
 pub use migrate::CURRENT_SCHEMA_VERSION;
 pub use model::{
-    validate_goals, AcquisitionGoal, Binning, GradingThresholds, SchedulingConstraints, Target,
-    TargetSlug, TargetSlugError,
+    validate_goals, AcquisitionGoal, GradingThresholds, SchedulingConstraints, Target, TargetSlug,
+    TargetSlugError,
 };
 pub use redb_store::RedbTargetStore;
+// The plan value types live in `rp-vocabulary` (ADR-019); re-export the ones
+// this store's public API is built from so consumers can name them as
+// `rp_targets::{Binning, IcrsCoord}` without a direct vocab dependency.
+pub use rp_vocabulary::{Binning, IcrsCoord};
 
 use async_trait::async_trait;
 

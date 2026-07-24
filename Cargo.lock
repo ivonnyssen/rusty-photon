@@ -4450,6 +4450,7 @@ dependencies = [
  "humantime-serde",
  "mockall",
  "redb",
+ "rp-vocabulary",
  "serde",
  "serde_json",
  "tempfile",

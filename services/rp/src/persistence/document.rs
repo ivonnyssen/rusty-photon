@@ -113,8 +113,8 @@ impl From<&rp_targets::Target> for ExposureTarget {
         Self {
             slug: t.slug.as_str().to_string(),
             display_name: Some(t.display_name.clone()),
-            ra_hours: Some(t.ra_hours),
-            dec_degrees: Some(t.dec_degrees),
+            ra_hours: Some(t.coord.ra_hours()),
+            dec_degrees: Some(t.coord.dec_degrees()),
         }
     }
 }
@@ -483,8 +483,7 @@ mod tests {
         let target = rp_targets::Target {
             slug: rp_targets::TargetSlug::new("m33").unwrap(),
             display_name: "M33".to_string(),
-            ra_hours: 1.4642,
-            dec_degrees: 30.6602,
+            coord: rp_targets::IcrsCoord::try_new(1.4642, 30.6602).unwrap(),
             catalog_ref: None,
             object_type: None,
             magnitude: None,

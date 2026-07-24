@@ -226,8 +226,7 @@ mod tests {
         Target {
             slug: TargetSlug::new(slug).unwrap(),
             display_name: "NGC 7000".to_string(),
-            ra_hours: 20.9738,
-            dec_degrees: 44.5197,
+            coord: crate::IcrsCoord::try_new(20.9738, 44.5197).unwrap(),
             catalog_ref: Some("NGC 7000".to_string()),
             object_type: Some("Nebula".to_string()),
             magnitude: Some(4.0),
@@ -339,8 +338,8 @@ mod tests {
         let slug = TargetSlug::new("ngc7000").unwrap();
         let goals = vec![AcquisitionGoal {
             filter: "Ha".to_string(),
-            binning: crate::model::Binning { x: 1, y: 1 },
-            exposure: std::time::Duration::from_secs(300),
+            binning: crate::Binning { x: 1, y: 1 },
+            exposure_duration: std::time::Duration::from_secs(300),
             desired_count: 20,
         }];
         store.set_goals(&slug, goals.clone()).await.unwrap();

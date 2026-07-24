@@ -6,6 +6,14 @@ exports_files(
     visibility = ["//visibility:public"],
 )
 
+# rp-vocabulary is a first-party leaf (not an `@cr` entry), so it is named
+# as an explicit Bazel label rather than resolved by `all_crate_deps`. The
+# store's Binning/IcrsCoord value types are re-exported from it (ADR-019);
+# the `schema` feature stays off so the store leaf remains schemars-free.
+_INTRA_WORKSPACE_DEPS = [
+    "//crates/rp-vocabulary:rp-vocabulary",
+]
+
 # Production-clean library: no `mock` feature, no mockall in the linked
 # binary. crate_universe only resolves the optional `mockall` dependency
 # into the "normal" bucket once a real consumer activates rp-targets'
@@ -25,7 +33,7 @@ rust_library(
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = ["//visibility:public"],
-    deps = all_crate_deps(normal = True),
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
 
 rust_test(
@@ -40,7 +48,7 @@ rust_test(
         proc_macro = True,
         proc_macro_dev = True,
     ),
-    deps = all_crate_deps(
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(
         normal = True,
         normal_dev = True,
     ),
