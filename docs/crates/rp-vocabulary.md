@@ -19,7 +19,7 @@ talks to `rp` about plans must agree on. Each type is
 that one constructor is the single validator every surface shares.
 
 This is a workspace library, not a service, and it holds **no logic** —
-no store, no template engine, no ephemeris math, no protocol endpoints.
+no store, no template engine, no ephemeris math, no protocol tools.
 It holds *nouns*: the validated representations those layers exchange. It
 is the plan-side analogue of what
 [`rusty-photon-config`](../../crates/rusty-photon-config) is for driver
@@ -104,7 +104,7 @@ Out of scope — owned elsewhere, listed so the boundary is explicit:
   `CompiledTemplate`, `TOKENS`, `parse_segments`, `check_unambiguous`) —
   stays in `rp`. Only the grammar's *value types* live here. See
   [Naming: the deferred slice](#naming-the-deferred-slice).
-- **The schema + validate protocol endpoints** and the dotted
+- **The schema + validate protocol MCP tools** and the dotted
   `FieldError` mapping — live in `rp` (parameterized by these types).
 - **ASCOM driver quantities** — camera `BinX`/`BinY`, mount
   `RightAscension`/`Declination`, the shutter `light: bool`. These are a
@@ -140,7 +140,7 @@ never to each other.
                               services/rp
         Target & PlannerTarget hold IcrsCoord; depends on rp-vocabulary
         with `features = ["schema"]`; owns the naming engine + the
-        schema/validate protocol endpoints.
+        schema/validate protocol MCP tools.
 ```
 
 The reason the value must live *below* both consumers is
@@ -358,7 +358,7 @@ contract.
   `schema` feature — the `JsonSchema` derives with constraints encoded
   (`ra_hours` min/max, `Binning`/`FrameType` shapes), so the
   published schema cannot drift from the validator.
-- **`rp` provides**: the `schema`/`validate` endpoints for targets, goals,
+- **`rp` provides**: the `schema`/`validate` MCP tools for targets, goals,
   and naming patterns, and the mapping from a constructor `Err` to a
   dotted-path `FieldError { path, message }` (e.g.
   `{ path: "ra_hours", message: "must be in [0, 24)" }`) — the same shape
@@ -514,7 +514,7 @@ on the store-write path closed by construction; the round-trip tests moved
 with their types.
 
 **Deferred:** the `NamingPattern` grammar slice (stays in `rp` until a
-pattern editor exists); the full `schema`/`validate`/`apply` *endpoints*
+pattern editor exists); the full `schema`/`validate`/`apply` *MCP tools*
 on `rp` (the protocol machinery — this crate only supplies the typed
 vocabulary they speak).
 

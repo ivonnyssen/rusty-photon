@@ -7,7 +7,8 @@ Accepted
 ## Context
 
 `rp` runs the workspace's only MCP server, at `/mcp` on the same listener
-as its REST surface. Its TLS and HTTP Basic authentication are
+as its technical HTTP routes (image bytes, event stream, plugin callbacks,
+config). Its TLS and HTTP Basic authentication are
 **server-wide**: when `server.tls` / `server.auth` are configured,
 `rp_auth::layer` and `serve_tls` wrap the whole router — `/mcp` included.
 There is no carve-out that leaves the MCP endpoint open.

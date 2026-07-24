@@ -329,8 +329,9 @@ Testing follows the conventions in `docs/skills/testing.md`.
 ### BDD Tests (Cucumber)
 
 BDD tests live in `services/calibrator-flats/tests/` and exercise the
-full three-process topology (OmniSim + rp + calibrator-flats) end-to-end
-via rp's REST API. The test harness comes from the `rp-harness` feature
+full three-process topology (OmniSim + rp + calibrator-flats) end-to-end,
+driving rp over its MCP tools (with completion posted over the REST plugin
+callback). The test harness comes from the `rp-harness` feature
 of the `bdd-infra` workspace crate (`bdd_infra::rp_harness`), which
 provides the OmniSim singleton, rp launcher, config builder, webhook
 receiver, and MCP client.

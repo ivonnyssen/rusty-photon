@@ -6,7 +6,7 @@ Accepted (2026-07-23); landing across `feature/rp-targets-p1`
 (planetarium target import P1). The value types, the `rp_targets::Target`
 and `PlannerTarget` `coord: IcrsCoord` newtype migration, and the
 `rp-ephemeris` `From`/`TryFrom` boundary bridge have landed; the
-`schema`/`validate` endpoints follow (see Non-goals).
+`schema`/`validate` MCP tools follow (see Non-goals).
 Full type design: [`docs/crates/rp-vocabulary.md`](../crates/rp-vocabulary.md).
 Plan entry: [`planetarium-target-import.md`](../plans/planetarium-target-import.md)
 Decision 12.
@@ -81,9 +81,11 @@ home.
   crate doc.
 - A shared `rusty-photon-units` driver foundation — deferred to ADR-006's
   own trigger (a third pointing device).
-- Building the full protocol *endpoints* — this ADR establishes the crate,
-  the value types, and the newtype migration; the `schema`/`validate`
-  endpoints on `rp` follow.
+- Building the full protocol out as `rp` **MCP tools** — this ADR establishes
+  the crate, the value types, and the newtype migration; the
+  `schema`/`validate` MCP tools on `rp` follow. (Plan-data validation has no
+  safety-gate reason to be REST — unlike config — so it is MCP, per rp's
+  *MCP is the surface* tenet.)
 
 ## Options Considered
 
@@ -185,7 +187,7 @@ Consequential decisions settled here:
   schemars-purity reason that would have kept it out of the store leaf.
 - **The schema/validate protocol lives in `rp`,** parameterized by these
   types: the crate supplies the validating constructors + schema; `rp`
-  owns the `schema`/`validate` endpoints and the constructor-error →
+  owns the `schema`/`validate` MCP tools and the constructor-error →
   dotted-`FieldError` mapping.
 
 This design does not conflict with
