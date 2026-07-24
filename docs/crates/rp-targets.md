@@ -338,7 +338,7 @@ On open, read `meta["schema_version"]`:
 
 ### File location
 
-Configurable via `targets.db_path`, defaulting to
+Configurable via `target_store.db_path`, defaulting to
 `<session.data_directory>/targets.redb` so the plan travels with the
 frames it describes and a single directory copy backs up both. Backup is
 "copy the one file" — `redb` is a single-file store.
@@ -521,13 +521,14 @@ culls. This hand-off mechanism is deferred and out of scope for the MVP.
 ### `record_exposure` and progress tools
 
 Because actuals are filesystem-derived, the design-doc-but-unbuilt
-`record_exposure(target, filter)` tool (rp.md:830) no longer increments a
-stored counter — capture already wrote the frame. It collapses to a no-op
-or a progress-cache-invalidation hook. `get_session_progress`
-(rp.md:831) and `get_target_status.progress` (today `null`, rp.md:828)
-are computed from the store (goals) + the derivation above (actuals).
+`record_exposure(target, filter)` tool (rp.md § Planner Tools) no longer
+increments a stored counter — capture already wrote the frame. It
+collapses to a no-op or a progress-cache-invalidation hook.
+`get_session_progress` and `get_target_status.progress` (today `null`;
+rp.md § Planner Tools) are computed from the store (goals) + the
+derivation above (actuals).
 
-**Progress shape supersedes the filter-only map.** rp.md:2769-2772
+**Progress shape supersedes the filter-only map.** rp.md § Planner Tools
 documents progress keyed by filter alone
 (`{"Luminance": {completed, goal}}`), which would collapse two goals that
 share a filter (e.g. Ha@120s and Ha@300s). Because an `AcquisitionGoal`
@@ -560,27 +561,28 @@ are bare decimal degrees):
     "directory_pattern": "{target}/{night_date}/{frame_type}",
     "file_naming_pattern": "{target}_{filter}_{binning}_{frame_number}_{exposure_duration}_fpos_{filter_position}_{sensor_temp}_{uuid8}"
   },
-  "targets": {
+  "target_store": {
     "db_path": "/data/lights/targets.redb",      // default: <data_directory>/targets.redb
+    "default_goals": [                           // applied by add_target when a target supplies no goals[]
+      { "filter": "L", "binning": "1x1", "exposure_duration": "300s", "desired_count": 20 }
+    ],
     "default_scheduling": {
       "min_altitude_degrees": 20.0,
       "min_moon_separation_degrees": 30.0,
       "max_moon_illumination_fraction": 1.0,     // 1.0 ⇒ no moon-brightness limit
       "meridian_window_hours": null              // null ⇒ no meridian window
-    },
-    "default_grading": {
-      "max_hfr_pixels": null,                    // setup-dependent; opt-in
-      "min_star_count": 20,
-      "max_eccentricity": 0.6,
-      "min_snr": null
     }
+    // `default_grading` is not yet an accepted key — the typed `target_store`
+    // config (deny_unknown_fields) rejects it until the on-disk frame scan lands.
   }
 }
 ```
 
-`targets.default_*` are the global defaults a `Target`'s `None` override
-fields fall back to. The grading defaults are owned by the grading
-plugin's contract; they are shown here as the override target.
+`target_store.default_*` are the global defaults a `Target`'s `None`
+override fields fall back to. `default_goals` (the `add_target`
+no-goals fallback) and `default_scheduling` are accepted today;
+`default_grading` — owned by the grading plugin's contract — lands with
+the on-disk frame scan.
 
 ## MVP scope
 
@@ -608,7 +610,7 @@ already evaluates it via `rp-ephemeris`; see
 [rp.md § Target Store](../services/rp.md#target-store)) — **landed**:
 `get_next_target` reads a store-backed target's
 `scheduling.min_altitude_degrees`, falling back to
-`targets.default_scheduling.min_altitude_degrees`. So only
+`target_store.default_scheduling.min_altitude_degrees`. So only
 moon-separation, moon-illumination, and meridian-window gating remain
 deferred here; seasonal/date scheduling windows; seeding the catalog into the DB for
 indexed type/magnitude/cone-search browse; alternative naming grammars

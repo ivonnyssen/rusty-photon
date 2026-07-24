@@ -2,12 +2,14 @@
 
 ## Goal
 
-Target selection today means editing `targets[]` in rp's JSON config by hand.
+Target selection today means adding targets to rp's redb target store by
+hand, one `add_target` MCP call at a time (the legacy `targets[]` JSON
+config array was removed once the store cutover landed).
 The operator's actual planning tool is a planetarium — SkySafari on the couch,
 Stellarium or Cartes du Ciel at a desk — where they compose the frame: an
 offset center to fit a nebula plus a star field, a mosaic anchor, a rotation
 that puts a companion galaxy in the corner. None of that survives into
-rusty-photon; it is retyped, approximately, into config.
+rusty-photon; it is retyped, approximately, into the store.
 
 The outcome of this plan: **pressing GoTo in the planetarium adds the target
 to rusty-photon's target database.** The planetarium connects to a virtual
@@ -36,7 +38,7 @@ P5/P6 frontends.
 | Phase | Description | Status | Branch / PR |
 |-------|-------------|--------|-------------|
 | P0 | This plan | In progress | feature/planetarium-target-import |
-| P1 | Build the `rp-targets` crate + rp integration (per [rp-targets.md](../crates/rp-targets.md) MVP). Three requirements are fixed here: **altitude-gating parity**, a **minimal operator surface**, and **capture-time target linkage** (Decisions 9, 10, 11), plus a **shared plan-data vocabulary crate** `rp-vocabulary` with validation-by-construction (Decision 12, settled 2026-07-23 — decided, not yet landed) | Crate scaffold, BDD scaffold (Phase 2), and design doc landed. Phase 3 implementation landed *incrementally, additive*: the store wired into rp, its 6 CRUD/goals MCP tools (Decision 10 — done), `session.file_naming_pattern`'s config-load token validation (`target_naming_template.feature`, all 4 scenarios passing), `get_next_target`'s altitude-gating parity against the store (Decision 9 — done: `add_target`/`update_target` now accept `scheduling`, `targets.default_scheduling.min_altitude_degrees` config, `target_store_planner.feature`'s 2 scenarios passing, `@wip` removed), the naming-template's render/parse engine (`rp::config::naming_template::CompiledTemplate`, regex-backed, unit-tested including a `parse(render(x)) == x` round trip), and (Decision 11 — done) `capture`'s `target`/`frame_type` parameters: `frame_type: Light` resolves `target` against the store and denormalizes onto the exposure document; `Dark`/`Flat`/`Bias` use a reserved `"dark"`/`"flat"`/`"bias"` slug absent an explicit `target`; `capture` renders `directory_pattern` (now a real config field, landed alongside `file_naming_pattern`) then `file_naming_pattern`, deriving `{frame_number}` via an on-disk scan of the target directory (`CompiledTemplate::parse`, scoped to `capture`'s own use, not yet reused by the progress tools below) and `{night_date}` via `rp_ephemeris::Site::night_date`'s noon-rollover rule. `auto_focus`/`center_on_target`'s internal captures are explicitly deferred (see Decision 11's amendment) and keep `frame_type` omitted. **Not yet landed**: the rest of the Dynamic Planner cutover (`record_exposure`/`get_session_progress`/`get_target_status` still read only the legacy `targets[]` array — blocked on full progress-shape derivation), and that full on-disk frame scan behind progress (`good`/`total` per goal — needs the grading plugin's sidecar shape in addition to the frame-counting primitive `capture` already uses) | feature/rp-targets-p1 |
+| P1 | Build the `rp-targets` crate + rp integration (per [rp-targets.md](../crates/rp-targets.md) MVP). Three requirements are fixed here: **altitude-gating parity**, a **minimal operator surface**, and **capture-time target linkage** (Decisions 9, 10, 11), plus a **shared plan-data vocabulary crate** `rp-vocabulary` with validation-by-construction (Decision 12, settled 2026-07-23 — decided, not yet landed) | Crate scaffold, BDD scaffold (Phase 2), and design doc landed. Phase 3 implementation landed *incrementally*: the store wired into rp, its 6 CRUD/goals MCP tools (Decision 10 — done), `session.file_naming_pattern`'s config-load token validation (`target_naming_template.feature`, all 4 scenarios passing), `get_next_target`'s altitude-gating parity against the store (Decision 9 — done: `add_target`/`update_target` now accept `scheduling`, `target_store.default_scheduling.min_altitude_degrees` config, `target_store_planner.feature`'s 2 scenarios passing, `@wip` removed), the naming-template's render/parse engine (`rp::config::naming_template::CompiledTemplate`, regex-backed, unit-tested including a `parse(render(x)) == x` round trip), and (Decision 11 — done) `capture`'s `target`/`frame_type` parameters: `frame_type: Light` resolves `target` against the store and denormalizes onto the exposure document; `Dark`/`Flat`/`Bias` use a reserved `"dark"`/`"flat"`/`"bias"` slug absent an explicit `target`; `capture` renders `directory_pattern` (now a real config field, landed alongside `file_naming_pattern`) then `file_naming_pattern`, deriving `{frame_number}` via an on-disk scan of the target directory (`CompiledTemplate::parse`, scoped to `capture`'s own use, not yet reused by the progress tools below) and `{night_date}` via `rp_ephemeris::Site::night_date`'s noon-rollover rule. `auto_focus`/`center_on_target`'s internal captures are explicitly deferred (see Decision 11's amendment) and keep `frame_type` omitted. The Dynamic Planner cutover has now **landed**: `record_exposure`/`get_session_progress`/`get_target_status` read only the active rows of the target store, identifying targets by slug — the legacy `targets[]` config array is **removed** (`Config.targets` renamed to the typed `target_store`; a stray `targets` key or an array-shaped `target_store` now fails config load loudly). The `record_exposure` progress counters keep their `{completed, goal}` shape; only their source moved from the config array to the store, and plan rotation / target balancing / all-goals-met end_of_session still run off those counters. **Still not landed**: the full on-disk frame scan behind progress (`good`/`total` per goal — needs the grading plugin's sidecar shape in addition to the frame-counting primitive `capture` already uses) | feature/rp-targets-p1 |
 | P2 | Position-angle plumbing: `position_angle_degrees` on `Target`, per-train config default, `get_next_target` returns effective angle, `deep_sky` workflow rotator step. Decision 11's blackboard-threading pattern (target identity into `capture`) is this phase's own idiom, applied to P1 a phase early | Not started | |
 | P3 | `planetarium-bridge` service: Alpaca Telescope impersonation → target creation via rp (gated by milestone P3a, a sanctioned verification spike) | Not started | |
 | P4 | ui-htmx target inbox: review pending targets, goal editing, PA override, activate/discard | Not started | |
@@ -193,10 +195,12 @@ Explicitly rejected / out of scope (see Decisions 6–8):
 9. **P1 must not regress shipped altitude gating.** Today's planner
    eliminates targets below `min_altitude_degrees` (rp.md, Dynamic Planner
    v1); rp-targets.md defers *general* constraint enforcement to
-   post-MVP. Fixed requirement: the P1 migration keeps altitude
-   elimination working against the new store from day one — only the
-   not-yet-shipped constraints (moon separation/illumination, meridian
-   window) remain deferred. Without this, an imported target could be
+   post-MVP. Fixed requirement, now landed: the P1 migration kept altitude
+   elimination working against the store from day one — `get_next_target`
+   gates on the active store rows (the legacy `targets[]` array it once read
+   is removed, so gating is store-only) — only the not-yet-shipped
+   constraints (moon separation/illumination, meridian window) remain
+   deferred. Without this, an imported target could be
    imaged below the horizon profile today's system already respects.
    This deliberately amends rp-targets.md's deferred list (altitude
    gating is *not* new ephemeris work — the shipped v1 planner already
@@ -207,7 +211,7 @@ Explicitly rejected / out of scope (see Decisions 6–8):
     `list_targets`/`update_target`/`set_goals`/`delete_target`) are
     implemented against the new store, giving list/edit/activate before
     the P4 inbox exists. Default acquisition goals are **rp-owned
-    policy** (a `targets.default_goals` config in rp, applied by the
+    policy** (a `target_store.default_goals` config in rp, applied by the
     create tool when the caller supplies none — not bridge config), and
     goal filter names are validated against the configured filter
     roster at create/edit time so a template referencing a filter the

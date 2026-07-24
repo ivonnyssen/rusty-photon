@@ -22,10 +22,14 @@ Two problems, both visible in the P1 target-store code.
 
 - ICRS coordinate bounds (`ra_hours ∈ [0,24)`, `dec_degrees ∈ [-90,90]`)
   existed twice in agreement — `rp::planner::primitives::validate_icrs`
-  and inline in `rp::planner::decision::parse_targets_from_value` — and
-  were **missing entirely** on the store-write path (`add_target` /
-  `update_target` accepted raw `f64`), so a store-backed target could hold
-  coordinates the legacy config-array path rejects.
+  and inline in the legacy config-array parser
+  `rp::planner::decision::parse_targets_from_value` — and were **missing
+  entirely** on the store-write path (`add_target` / `update_target`
+  accepted raw `f64`), so a store-backed target could hold coordinates that
+  parser rejected. (That parser and the config `targets[]` array it read
+  have since been deleted, leaving the store as the sole target source; the
+  `IcrsCoord`/`PlannerTarget` validation this ADR establishes is independent
+  of it and unaffected by its removal.)
 - `Binning`'s round-trip was split across three modules in two crates:
   `Display` in `rp-targets::model`, the `"AxB"` parse (`parse_binning`) in
   `rp::planner::goal_wire`, and a config→planner import reaching *up* into
