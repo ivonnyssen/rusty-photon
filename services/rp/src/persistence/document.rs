@@ -88,7 +88,7 @@ pub struct ExposureDocument {
     /// This capture's `frame_type` parameter, verbatim. Omitted under
     /// the same condition as `target`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub frame_type: Option<crate::config::naming_template::FrameType>,
+    pub frame_type: Option<rp_vocabulary::FrameType>,
     #[serde(default)]
     pub sections: Map<String, Value>,
 }
@@ -513,7 +513,7 @@ mod tests {
             ra_hours: None,
             dec_degrees: None,
         });
-        doc.frame_type = Some(crate::config::naming_template::FrameType::Dark);
+        doc.frame_type = Some(rp_vocabulary::FrameType::Dark);
         let body = serde_json::to_string(&doc).unwrap();
         let parsed: ExposureDocument = serde_json::from_str(&body).unwrap();
         assert_eq!(parsed.target, doc.target);

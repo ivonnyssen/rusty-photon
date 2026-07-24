@@ -19,10 +19,9 @@ use std::time::Duration;
 
 use chrono::NaiveDate;
 use regex::Regex;
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
 
 use rp_targets::{Binning, TargetSlug};
+use rp_vocabulary::FrameType;
 
 use crate::planner::goal_wire::parse_binning;
 
@@ -253,56 +252,6 @@ fn edge_class_regex(class: &str) -> Result<Regex, String> {
         .map_err(|e| format!("internal: token edge-class {class:?} is invalid: {e}"))
 }
 
-/// A capture's intent — the `{frame_type}` token's value. Only
-/// `Light` frames bucket against `AcquisitionGoal` quotas (Dark/Flat/
-/// Bias live under their own dirs) — see rp-targets.md § File-naming
-/// template.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, derive_more::Display,
-)]
-pub enum FrameType {
-    #[display("Light")]
-    Light,
-    #[display("Dark")]
-    Dark,
-    #[display("Flat")]
-    Flat,
-    #[display("Bias")]
-    Bias,
-}
-
-impl FrameType {
-    /// The inverse of the derived `Display` — `None` for anything
-    /// other than the four exact, case-sensitive literals the
-    /// `{frame_type}` shape (`Light|Dark|Flat|Bias`) allows.
-    fn parse(s: &str) -> Option<Self> {
-        match s {
-            "Light" => Some(FrameType::Light),
-            "Dark" => Some(FrameType::Dark),
-            "Flat" => Some(FrameType::Flat),
-            "Bias" => Some(FrameType::Bias),
-            _ => None,
-        }
-    }
-}
-
-/// The `{target}` value `capture` uses for a calibration frame
-/// (`Dark`/`Flat`/`Bias`) when the caller supplied no explicit
-/// `target` — a reserved slug equal to the lowercased frame type, so
-/// every calibration frame of one type shares a directory bucket
-/// (rp.md § Capture Tool Details, rp-targets.md § File-naming
-/// template). `None` for `Light`, which always requires an explicit
-/// `target` — callers should never reach this for `Light`.
-#[must_use]
-pub fn reserved_calibration_slug(frame_type: FrameType) -> Option<&'static str> {
-    match frame_type {
-        FrameType::Light => None,
-        FrameType::Dark => Some("dark"),
-        FrameType::Flat => Some("flat"),
-        FrameType::Bias => Some("bias"),
-    }
-}
-
 /// One frame's naming-template field values — [`CompiledTemplate::render`]'s
 /// input and [`CompiledTemplate::parse`]'s output. Every field is
 /// optional: a caller supplies only what its configured pattern
@@ -387,7 +336,7 @@ impl TemplateFields {
                 self.sensor_temp_c = value.strip_suffix('C').and_then(|s| s.parse().ok());
             }
             "night_date" => self.night_date = NaiveDate::parse_from_str(value, "%Y-%m-%d").ok(),
-            "frame_type" => self.frame_type = FrameType::parse(value),
+            "frame_type" => self.frame_type = value.parse().ok(),
             "uuid8" => self.uuid8 = Some(value.to_string()),
             _ => {}
         }
@@ -785,38 +734,9 @@ mod tests {
         assert_eq!(template.parse(&rendered).unwrap(), fields);
     }
 
-    #[test]
-    fn frame_type_round_trips_every_variant() {
-        for ft in [
-            FrameType::Light,
-            FrameType::Dark,
-            FrameType::Flat,
-            FrameType::Bias,
-        ] {
-            assert_eq!(FrameType::parse(&ft.to_string()), Some(ft));
-        }
-    }
-
-    #[test]
-    fn frame_type_deserializes_from_its_display_string() {
-        for (json, expected) in [
-            ("\"Light\"", FrameType::Light),
-            ("\"Dark\"", FrameType::Dark),
-            ("\"Flat\"", FrameType::Flat),
-            ("\"Bias\"", FrameType::Bias),
-        ] {
-            let parsed: FrameType = serde_json::from_str(json).unwrap();
-            assert_eq!(parsed, expected);
-        }
-    }
-
-    #[test]
-    fn reserved_calibration_slug_covers_every_calibration_type() {
-        assert_eq!(reserved_calibration_slug(FrameType::Dark), Some("dark"));
-        assert_eq!(reserved_calibration_slug(FrameType::Flat), Some("flat"));
-        assert_eq!(reserved_calibration_slug(FrameType::Bias), Some("bias"));
-        assert_eq!(reserved_calibration_slug(FrameType::Light), None);
-    }
+    // `FrameType` and its `Display`/`FromStr`/`calibration_slug` round
+    // trips are owned by `rp_vocabulary::frame_type` (incl. serde); this
+    // module only threads it through the naming template.
 
     // --- directory_pattern validation / compilation ------------------
 

@@ -17,6 +17,8 @@ use tokio::time::Instant;
 use tracing::debug;
 use uuid::Uuid;
 
+use rp_vocabulary::FrameType;
+
 use crate::config::naming_template;
 use crate::equipment::alpaca::retry_idempotent_read;
 use crate::equipment::trains::TrainDeviceKind;
@@ -618,7 +620,7 @@ impl McpHandler {
         camera_id: &str,
         duration: Duration,
         target: Option<&str>,
-        frame_type: Option<naming_template::FrameType>,
+        frame_type: Option<FrameType>,
         progress: Option<&dyn ProgressEmitter>,
     ) -> std::result::Result<(String, String), String> {
         let cam_entry = self
@@ -832,7 +834,7 @@ impl McpHandler {
             // as the flat `<doc_uuid_8>.fits` computed above and leaves
             // the document's `target`/`frame_type` fields unset.
             let mut exposure_target: Option<persistence::ExposureTarget> = None;
-            let mut resolved_frame_type: Option<naming_template::FrameType> = None;
+            let mut resolved_frame_type: Option<FrameType> = None;
             if let Some(frame_type) = frame_type {
                 let templates = self.naming_templates.as_ref().ok_or_else(|| {
                     "capture: frame_type requires session.file_naming_pattern to be configured"
@@ -1058,11 +1060,11 @@ impl McpHandler {
     /// `frame_type` (an unknown slug or an absent store both error).
     /// Absent `target`: `Light` errors (a Light frame always needs a
     /// real target), `Dark`/`Flat`/`Bias` fall back to
-    /// [`naming_template::reserved_calibration_slug`].
+    /// [`rp_vocabulary::FrameType::calibration_slug`].
     async fn resolve_capture_target(
         &self,
         target: Option<&str>,
-        frame_type: naming_template::FrameType,
+        frame_type: FrameType,
     ) -> std::result::Result<(persistence::ExposureTarget, rp_targets::TargetSlug), String> {
         if let Some(target) = target {
             let slug = rp_targets::TargetSlug::new(target)
@@ -1079,10 +1081,10 @@ impl McpHandler {
             return Ok((persistence::ExposureTarget::from(&found), slug));
         }
 
-        match naming_template::reserved_calibration_slug(frame_type) {
+        match frame_type.calibration_slug() {
             Some(reserved) => {
-                // Infallible in practice — `reserved_calibration_slug`'s
-                // three values are static lowercase-ASCII literals,
+                // Infallible in practice — `calibration_slug`'s three
+                // values are static lowercase-ASCII literals,
                 // always valid `TargetSlug`s — but propagate rather than
                 // `expect()` per this crate's no-panics-outside-tests rule.
                 let slug = rp_targets::TargetSlug::new(reserved).map_err(|e| {
@@ -1109,12 +1111,9 @@ impl McpHandler {
     async fn resolve_capture_filter(
         &self,
         camera_id: &str,
-        frame_type: naming_template::FrameType,
+        frame_type: FrameType,
     ) -> std::result::Result<(String, u32), String> {
-        let reads_live = matches!(
-            frame_type,
-            naming_template::FrameType::Light | naming_template::FrameType::Flat
-        );
+        let reads_live = matches!(frame_type, FrameType::Light | FrameType::Flat);
         if !reads_live {
             return Ok(("NA".to_string(), 0));
         }

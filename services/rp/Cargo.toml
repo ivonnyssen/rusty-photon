@@ -34,6 +34,7 @@ rp-ephemeris = { workspace = true }
 rp-guider = { workspace = true }
 rp-plate-solver = { workspace = true }
 rp-targets = { workspace = true }
+rp-vocabulary = { workspace = true, features = ["schema"] }
 rusty-photon-tls = { workspace = true }
 rpassword = { workspace = true }
 rp-fits = { workspace = true }

@@ -93,4 +93,15 @@ mod tests {
         assert_eq!(FrameType::Flat.calibration_slug(), Some("flat"));
         assert_eq!(FrameType::Bias.calibration_slug(), Some("bias"));
     }
+
+    #[test]
+    fn serde_round_trips_through_the_display_string() {
+        // The on-disk / MCP-wire shape is the bare display string, so an
+        // exposure document's `frame_type` round-trips exactly.
+        for ft in ALL {
+            let json = serde_json::to_string(&ft).unwrap();
+            assert_eq!(json, format!("\"{ft}\""));
+            assert_eq!(serde_json::from_str::<FrameType>(&json).unwrap(), ft);
+        }
+    }
 }

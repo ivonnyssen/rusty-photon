@@ -6,15 +6,18 @@ exports_files(
     visibility = ["//visibility:public"],
 )
 
-# The optional `schema` feature (schemars) is off in the default build:
-# crate_universe only resolves schemars into the "normal" bucket once a
-# real consumer activates rp-vocabulary's `schema` feature (rp will, via
-# `features = ["schema"]`). Until then this target builds schemars-free,
-# matching the crate's `default = []`.
+# `rp` activates the `schema` feature (`services/rp/Cargo.toml`:
+# `rp-vocabulary = { features = ["schema"] }`), so after the repin
+# crate_universe resolves schemars into this target's "normal" bucket
+# (`all_crate_deps(normal = True)` picks it up). Unlike Cargo, Bazel does
+# NOT infer a first-party crate's feature activation from a consumer's
+# Cargo.toml, so `crate_features = ["schema"]` is set explicitly below to
+# turn on the `#[cfg(feature = "schema")]` JsonSchema derives.
 rust_library(
     name = "rp-vocabulary",
     srcs = glob(["src/**/*.rs"]),
     aliases = aliases(),
+    crate_features = ["schema"],
     crate_name = "rp_vocabulary",
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
@@ -30,6 +33,7 @@ rust_test(
         proc_macro_dev = True,
     ),
     crate = ":rp-vocabulary",
+    crate_features = ["schema"],
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,

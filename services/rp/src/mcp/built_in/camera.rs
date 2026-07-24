@@ -40,7 +40,7 @@ pub struct CaptureParams {
     /// activates directory/file rendering per docs/services/rp.md §
     /// Capture Tool Details.
     #[serde(default)]
-    pub frame_type: Option<crate::config::naming_template::FrameType>,
+    pub frame_type: Option<rp_vocabulary::FrameType>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
